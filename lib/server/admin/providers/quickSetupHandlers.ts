@@ -1,15 +1,20 @@
 import {
   ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS,
-  type AdminProviderQuickSetupClearRequest,
+  type AdminProviderQuickSetupConnectionOverrides,
   type AdminProviderQuickSetupProviderId,
   type AdminProviderQuickSetupRequest,
   type AdminProviderQuickSetupSelection
 } from "../../../contracts/adminProviderQuickSetup";
+import {
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
+  ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS
+} from "../../../contracts/adminProviders";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
 } from "../../http/requestBody";
+import { ProviderConfigurationError } from "../../providers/providerConfiguration";
 import {
   AdminProviderQuickSetupServiceError,
   type AdminProviderQuickSetupService
@@ -56,6 +61,29 @@ function selection(value: unknown): AdminProviderQuickSetupSelection | null | un
   return { candidateId, policyVersion: Number(record.policyVersion) };
 }
 
+/** Endpoint overrides for a separate connection; `null` marks an invalid shape. */
+function overrides(value: unknown): AdminProviderQuickSetupConnectionOverrides | null | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const allowed = new Set(["allowPrivateNetwork", "apiRoot", "responseTimeoutSeconds"]);
+  if (Object.keys(record).some((key) => !allowed.has(key))) return null;
+  const apiRoot = boundedText(record.apiRoot, 2_048);
+  const allowPrivateNetwork = record.allowPrivateNetwork;
+  const timeout = record.responseTimeoutSeconds;
+  if (
+    !apiRoot ||
+    typeof allowPrivateNetwork !== "boolean" ||
+    typeof timeout !== "number" ||
+    !Number.isSafeInteger(timeout) ||
+    timeout < ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS ||
+    timeout > ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS
+  ) {
+    return null;
+  }
+  return { allowPrivateNetwork, apiRoot, responseTimeoutSeconds: timeout };
+}
+
 async function requireAdmin(request: Request, deps: AdminProviderQuickSetupHandlerDeps) {
   const session = await deps.resolveAuth(request);
   if (!session) return { actor: null, response: errorJson("unauthorized", 401) };
@@ -70,7 +98,8 @@ async function requireAdmin(request: Request, deps: AdminProviderQuickSetupHandl
 
 function serviceError(error: AdminProviderQuickSetupServiceError): Response {
   const status = error.code === "provider_draft_stale" ||
-    error.code === "provider_quick_setup_advanced_required"
+    error.code === "provider_quick_setup_advanced_required" ||
+    error.code === "provider_quick_setup_name_taken"
     ? 409
     : error.code === "provider_quick_setup_selection_invalid"
       ? 400
@@ -83,6 +112,9 @@ async function safely(operation: () => Promise<Response>): Promise<Response> {
     return await operation();
   } catch (error) {
     if (error instanceof AdminProviderQuickSetupServiceError) return serviceError(error);
+    if (error instanceof ProviderConfigurationError) {
+      return errorJson("provider_configuration_invalid", 400);
+    }
     console.error("provider_quick_setup_failed");
     return errorJson("provider_quick_setup_failed", 500);
   }
@@ -112,7 +144,14 @@ export function createAdminProviderQuickSetupMutationHandler(
       return errorJson("provider_configuration_invalid", 400);
     }
     const record = body as Record<string, unknown>;
-    const allowedKeys = new Set(["expectedState", "provider", "secret", "selectedModel"]);
+    const allowedKeys = new Set([
+      "configuration",
+      "connectionDisplayName",
+      "expectedState",
+      "provider",
+      "secret",
+      "selectedModel"
+    ]);
     if (Object.keys(record).some((key) => !allowedKeys.has(key))) {
       return errorJson("provider_configuration_invalid", 400);
     }
@@ -120,7 +159,13 @@ export function createAdminProviderQuickSetupMutationHandler(
     const secret = boundedText(record.secret, 16_384);
     const expectedState = boundedText(record.expectedState, 128);
     const selectedModel = selection(record.selectedModel);
-    if (!providerId || !secret || !expectedState || selectedModel === null) {
+    const connectionDisplayName = record.connectionDisplayName === undefined
+      ? undefined
+      : boundedText(record.connectionDisplayName, 160) ?? null;
+    const configuration = overrides(record.configuration);
+    if (!providerId || !secret || !expectedState || selectedModel === null ||
+      connectionDisplayName === null || configuration === null ||
+      (configuration !== undefined && connectionDisplayName === undefined)) {
       return errorJson(
         selectedModel === null
           ? "provider_quick_setup_selection_invalid"
@@ -129,6 +174,8 @@ export function createAdminProviderQuickSetupMutationHandler(
       );
     }
     const quickSetupRequest: AdminProviderQuickSetupRequest = {
+      ...(configuration ? { configuration } : {}),
+      ...(connectionDisplayName === undefined ? {} : { connectionDisplayName }),
       expectedState,
       provider: providerId,
       secret,
@@ -138,39 +185,6 @@ export function createAdminProviderQuickSetupMutationHandler(
       actor: auth.actor,
       request: quickSetupRequest,
       signal: request.signal
-    })));
-  };
-}
-
-export function createAdminProviderQuickSetupClearHandler(
-  deps: AdminProviderQuickSetupHandlerDeps
-) {
-  return async function DELETE(request: Request): Promise<Response> {
-    if (!hasJsonContentType(request)) return errorJson("json_required", 415);
-    const auth = await requireAdmin(request, deps);
-    if (auth.response || !auth.actor) return auth.response ?? errorJson("unauthorized", 401);
-    const body = await readJsonBodyOrNull(request, "json");
-    const bodyError = requestBodyErrorResponse(body);
-    if (bodyError) return bodyError;
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      return errorJson("provider_configuration_invalid", 400);
-    }
-    const record = body as Record<string, unknown>;
-    if (Object.keys(record).some((key) => key !== "expectedState" && key !== "provider")) {
-      return errorJson("provider_configuration_invalid", 400);
-    }
-    const providerId = provider(record.provider);
-    const expectedState = boundedText(record.expectedState, 128);
-    if (!providerId || !expectedState) {
-      return errorJson("provider_configuration_invalid", 400);
-    }
-    const clearRequest: AdminProviderQuickSetupClearRequest = {
-      expectedState,
-      provider: providerId
-    };
-    return safely(async () => Response.json(await deps.service.clearAssignment({
-      actor: auth.actor,
-      request: clearRequest
     })));
   };
 }

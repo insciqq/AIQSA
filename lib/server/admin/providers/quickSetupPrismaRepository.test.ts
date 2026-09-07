@@ -88,7 +88,7 @@ function readyGraph(
     enabled: true,
     groupAssignments: [],
     id: credentialId,
-    label: `Quick setup · ${credentialId}`,
+    label: "Primary",
     testedAt: now,
     updatedAt: now,
     userAssignments: [{
@@ -696,5 +696,218 @@ describe("Prisma provider Quick setup connection summaries", () => {
       orderBy: [{ displayName: "asc" }, { id: "asc" }],
       where: expect.objectContaining({ family: { not: "fake" } })
     }));
+  });
+});
+
+describe("Prisma provider Quick setup additional connections", () => {
+  const actor = { sessionId: "session-admin", userId: "admin" };
+
+  /** A recording transaction client: reads come from the canonical graph, writes are kept for the eligibility read-back. */
+  function transactionalRepository(connections: unknown[]) {
+    const created: Record<string, Array<Record<string, unknown>>> = {};
+    const updates: Array<{ data: unknown; table: string; where: unknown }> = [];
+    const create = (table: string) => vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      (created[table] ??= []).push(data);
+      return data;
+    });
+    const update = (table: string) => vi.fn(async (value: { data: unknown; where: unknown }) => {
+      updates.push({ data: value.data, table, where: value.where });
+      return value.data;
+    });
+    const eligibilityModels = () => {
+      const connection = created.providerConnection?.[0];
+      const credential = created.providerCredential?.[0];
+      const version = created.providerCredentialVersion?.[0];
+      if (!connection || !credential || !version) return [];
+      return (created.providerModel ?? []).map((model) => ({
+        ...model,
+        activeCredentialChecks: (created.providerModelCredentialCheck ?? [])
+          .filter((check) => check.providerModelId === model.id),
+        connection: {
+          ...connection,
+          credentials: [{
+            activeVersion: { id: version.id, revokedAt: null },
+            enabled: true,
+            groupAssignments: [],
+            id: credential.id,
+            userAssignments: (created.providerUserCredentialAssignment ?? [])
+              .filter((assignment) => assignment.credentialId === credential.id)
+          }],
+          defaultCredentialId: credential.id
+        }
+      }));
+    };
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      accessGrant: {
+        create: create("accessGrant"),
+        findMany: vi.fn(async (query: { include?: unknown }) => query.include
+          ? (created.accessGrant ?? []).map((grant) => ({
+              ...grant,
+              providerModel: { connectionId: created.providerConnection?.[0]?.id ?? null }
+            }))
+          : [])
+      },
+      authSession: {
+        findUnique: vi.fn(async () => ({
+          expiresAt: new Date("2027-01-01T00:00:00.000Z"),
+          id: "session-admin",
+          revokedAt: null,
+          userId: "admin"
+        }))
+      },
+      providerConnection: {
+        create: create("providerConnection"),
+        findMany: vi.fn(async () => connections),
+        update: update("providerConnection")
+      },
+      providerCredential: { create: create("providerCredential"), update: update("providerCredential") },
+      providerCredentialVersion: { create: create("providerCredentialVersion") },
+      providerModel: {
+        create: create("providerModel"),
+        findMany: vi.fn(async () => eligibilityModels())
+      },
+      providerModelCredentialCheck: { create: create("providerModelCredentialCheck") },
+      providerUserCredentialAssignment: { create: create("providerUserCredentialAssignment") },
+      user: {
+        findUnique: vi.fn(async () => ({ id: "admin", role: "admin", status: "active", updatedAt: now }))
+      },
+      userGroup: { findMany: vi.fn(async () => []) },
+      userSettings: {
+        findUnique: vi.fn(async () => ({ defaultProviderModelId: null, id: "settings-admin", updatedAt: now }))
+      }
+    };
+    const repository = createPrismaAdminProviderQuickSetupRepository({
+      ...tx,
+      $transaction: vi.fn(async (run: (client: unknown) => Promise<unknown>) => run(tx))
+    } as never);
+    return { created, repository, tx, updates };
+  }
+
+  function additionalPlan(fingerprint: string, overrides: Record<string, unknown> = {}) {
+    const luna = policy.candidates[1]!;
+    return {
+      actor,
+      checkedAt: now,
+      connection: {
+        configuration: policy.connection.configuration,
+        displayName: "OpenAI · Research account",
+        id: "connection-second"
+      },
+      credential: {
+        id: "credential-second",
+        label: "Primary",
+        versionEnvelope: "envelope-second",
+        versionId: "credential-version-second"
+      },
+      expectedFingerprint: fingerprint,
+      models: [
+        {
+          candidate: terra,
+          evidence: {
+            detail: "ok" as const,
+            method: "models_catalog" as const,
+            selectedProviders: [],
+            upstreamModelId: terra.configuration.upstreamModelId
+          },
+          grantId: "grant-second-terra",
+          id: "model-second-terra"
+        },
+        {
+          candidate: luna,
+          evidence: {
+            detail: "ok" as const,
+            method: "models_catalog" as const,
+            selectedProviders: [],
+            upstreamModelId: luna.configuration.upstreamModelId
+          },
+          grantId: "grant-second-luna",
+          id: "model-second-luna"
+        }
+      ],
+      now,
+      provider: "openai" as const,
+      ...overrides
+    };
+  }
+
+  it("reports the canonical row and every family name in the inspection", async () => {
+    const graph = readyGraph();
+    const { repository } = inspectionRepository({
+      connections: [graph.connection, canonicalConnection({ displayName: "OpenAI · EU", id: "openai-eu", templateKey: null })],
+      grants: [exactGrant()]
+    });
+    await expect(repository.inspect({ now, provider: "openai", ...actor })).resolves.toMatchObject({
+      canonicalConnection: true,
+      connectionNames: ["OpenAI", "OpenAI · EU"]
+    });
+    const empty = inspectionRepository({ connections: [] });
+    await expect(empty.repository.inspect({ now, provider: "openai", ...actor })).resolves.toMatchObject({
+      canonicalConnection: false,
+      connectionNames: []
+    });
+  });
+
+  it("creates a separate connection graph with no template identity and a Primary default key", async () => {
+    const graph = readyGraph();
+    const { created, repository, tx, updates } = transactionalRepository([graph.connection]);
+    const inspection = await repository.inspect({ now, provider: "openai", ...actor });
+
+    const result = await repository.commitAdditional(additionalPlan(inspection.fingerprint));
+
+    expect(result).toEqual({ status: "ready" });
+    expect(created.providerConnection).toEqual([expect.objectContaining({
+      displayName: "OpenAI · Research account",
+      enabled: true,
+      family: "openai",
+      id: "connection-second",
+      templateKey: null,
+      unassignedPolicy: "use_default"
+    })]);
+    expect(created.providerModel?.map((model) => [model.id, model.templateKey, model.provider, model.enabled])).toEqual([
+      ["model-second-terra", null, "openai", true],
+      ["model-second-luna", null, "openai", true]
+    ]);
+    expect(created.providerCredential).toEqual([expect.objectContaining({
+      connectionId: "connection-second",
+      id: "credential-second",
+      label: "Primary"
+    })]);
+    expect(created.providerCredentialVersion).toEqual([expect.objectContaining({
+      credentialId: "credential-second",
+      id: "credential-version-second",
+      secretEnvelope: "envelope-second",
+      version: 1
+    })]);
+    expect(updates).toEqual(expect.arrayContaining([
+      { data: { activeVersionId: "credential-version-second" }, table: "providerCredential", where: { id: "credential-second" } },
+      { data: { defaultCredentialId: "credential-second" }, table: "providerConnection", where: { id: "connection-second" } }
+    ]));
+    expect(created.providerModelCredentialCheck?.map((check) => [check.providerModelId, check.status])).toEqual([
+      ["model-second-terra", "available"],
+      ["model-second-luna", "available"]
+    ]);
+    expect(created.accessGrant?.map((grant) => [grant.providerModelId, grant.userId])).toEqual([
+      ["model-second-terra", "admin"],
+      ["model-second-luna", "admin"]
+    ]);
+    // The canonical connection and its rows are never touched.
+    expect(updates.some(({ where }) => JSON.stringify(where).includes(policy.connection.id))).toBe(false);
+    expect(tx.$queryRaw).toHaveBeenCalled();
+  });
+
+  it("writes nothing behind a stale fence or a name the family already uses", async () => {
+    const graph = readyGraph();
+    const { created, repository } = transactionalRepository([graph.connection]);
+    const inspection = await repository.inspect({ now, provider: "openai", ...actor });
+
+    expect(await repository.commitAdditional(additionalPlan("obsolete"))).toBe("stale");
+    expect(await repository.commitAdditional(additionalPlan(inspection.fingerprint, {
+      connection: { configuration: policy.connection.configuration, displayName: " openai ", id: "connection-second" }
+    }))).toBe("stale");
+    expect(await repository.commitAdditional(additionalPlan(inspection.fingerprint, {
+      connection: { configuration: policy.connection.configuration, displayName: "OpenAI · Research", id: policy.connection.id }
+    }))).toBe("stale");
+    expect(created).toEqual({});
   });
 });

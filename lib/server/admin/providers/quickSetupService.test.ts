@@ -8,6 +8,7 @@ import {
 } from "../../../domain/search";
 import type { AdminProviderQuickSetupProviderId } from "../../../contracts/adminProviderQuickSetup";
 import { decryptProviderCredentialSecret } from "../../providers/credentialSecrets";
+import { ProviderConfigurationError } from "../../providers/providerConfiguration";
 import { pdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
 import type { ProviderPdfInputProbeInput } from "../../providers/pdfInputProbe";
 import type {
@@ -34,7 +35,9 @@ function inspection(
   return {
     actingUserDefault: false,
     authorized: true,
+    canonicalConnection: false,
     configured: false,
+    connectionNames: [],
     fingerprint: `fence-${provider}`,
     mode: "initial",
     model: null,
@@ -81,9 +84,13 @@ function fixture(input: {
       status: "ready" as const
     };
   }));
+  const commitAdditional = vi.fn(async () => {
+    order.push("commit");
+    return { status: "ready" as const };
+  });
   const repository: AdminProviderQuickSetupRepository = {
-    clearAssignment: vi.fn(async () => ({ status: "cleared" as const })),
     commit,
+    commitAdditional,
     inspect: vi.fn(async (
       value: Parameters<AdminProviderQuickSetupRepository["inspect"]>[0]
     ) => inspections[value.provider]),
@@ -144,6 +151,7 @@ function fixture(input: {
   });
   return {
     commit,
+    commitAdditional,
     inspections,
     onCompleted,
     order,
@@ -788,53 +796,6 @@ describe("provider Quick setup service", () => {
     expect(value.commit).not.toHaveBeenCalled();
   });
 
-  it("clears only the fenced Quick assignment and reports credential retention", async () => {
-    const ready = inspection("openai", {
-      configured: true,
-      mode: "replacement",
-      quickSetupAssignment: { credentialId: "credential-primary" },
-      quickSetupCredential: { draftVersion: 1, id: "credential-primary" },
-      state: "ready"
-    });
-    const value = fixture({ inspections: { openai: ready } });
-    const clearAssignment = vi.mocked(value.repository.clearAssignment);
-
-    await expect(value.service.clearAssignment({
-      actor,
-      request: {
-        expectedState: await expectedState(value.service, "openai"),
-        provider: "openai"
-      }
-    })).resolves.toEqual({
-      credentialRetained: true,
-      outcome: "assignment_cleared",
-      provider: "openai",
-      providerDisplayName: "OpenAI"
-    });
-    expect(clearAssignment).toHaveBeenCalledWith(expect.objectContaining({
-      actor,
-      expectedFingerprint: ready.fingerprint,
-      provider: "openai"
-    }));
-  });
-
-  it("rejects a stale clear fence without a repository write", async () => {
-    const ready = inspection("openai", {
-      configured: true,
-      mode: "replacement",
-      quickSetupAssignment: { credentialId: "credential-primary" },
-      quickSetupCredential: { draftVersion: 1, id: "credential-primary" },
-      state: "ready"
-    });
-    const value = fixture({ inspections: { openai: ready } });
-
-    await expect(value.service.clearAssignment({
-      actor,
-      request: { expectedState: "stale", provider: "openai" }
-    })).rejects.toMatchObject({ code: "provider_draft_stale" });
-    expect(value.repository.clearAssignment).not.toHaveBeenCalled();
-  });
-
   it("leaves replacement untouched when the old model is absent remotely", async () => {
     const replacement = inspection("openai", {
       configured: true,
@@ -924,5 +885,210 @@ describe("provider Quick setup service", () => {
     });
     const value = fixture({ inspections: { anthropic: ready } });
     expect((await value.service.getSnapshot(actor)).suggestedProvider).toBe("anthropic");
+  });
+
+  it("names a fresh canonical connection and reports the template connection id", async () => {
+    const value = fixture({ modelIds: ["gpt-5.6-terra"] });
+    const result = await value.service.setup({
+      actor,
+      request: {
+        connectionDisplayName: "OpenAI · Research",
+        expectedState: await expectedState(value.service, "openai"),
+        provider: "openai",
+        secret: "sk-fresh"
+      }
+    });
+    expect(value.commit).toHaveBeenCalledOnce();
+    expect(value.commit.mock.calls[0][0]).toMatchObject({
+      connectionDisplayName: "OpenAI · Research",
+      mode: "initial"
+    });
+    expect(value.commitAdditional).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      connectionId: "00000000-0000-4000-8000-000000001102",
+      outcome: "ready"
+    });
+  });
+
+  it("adds a separate connection with fresh ids and a Primary key when the family is already connected", async () => {
+    const ready = inspection("openai", {
+      canonicalConnection: true,
+      configured: true,
+      connectionNames: ["OpenAI"],
+      mode: "replacement",
+      model: {
+        checkedAt,
+        displayName: "GPT-5.6 Terra",
+        id: "00000000-0000-4000-8000-000000001204",
+        templateKey: "openai:gpt-5.6-terra"
+      },
+      quickSetupAssignment: { credentialId: "credential-primary" },
+      quickSetupCredential: { draftVersion: 1, id: "credential-primary" },
+      state: "ready"
+    });
+    // Only non-recommended models: the canonical path would ask for a choice.
+    const value = fixture({ inspections: { openai: ready }, modelIds: ["gpt-5.6-luna", "gpt-5.6-sol"] });
+    const result = await value.service.setup({
+      actor,
+      request: {
+        connectionDisplayName: "OpenAI · Research account",
+        expectedState: await expectedState(value.service, "openai"),
+        provider: "openai",
+        secret: "sk-second-account"
+      }
+    });
+
+    expect(value.commit).not.toHaveBeenCalled();
+    expect(value.commitAdditional).toHaveBeenCalledOnce();
+    const plan = value.commitAdditional.mock.calls[0]![0];
+    expect(plan.connection).toMatchObject({
+      configuration: expect.objectContaining({ apiRoot: "https://api.openai.com/v1" }),
+      displayName: "OpenAI · Research account"
+    });
+    expect(plan.connection.id).not.toBe("00000000-0000-4000-8000-000000001102");
+    expect(plan.credential.label).toBe("Primary");
+    expect(plan.models.map(({ candidate, evidence }) => ({
+      candidateId: candidate.candidateId,
+      upstreamModelId: evidence.upstreamModelId
+    }))).toEqual([
+      { candidateId: "p2-o2", upstreamModelId: "gpt-5.6-luna" },
+      { candidateId: "p2-o3", upstreamModelId: "gpt-5.6-sol" }
+    ]);
+    expect(plan.models.every(({ candidate, id }) => id !== candidate.modelId)).toBe(true);
+    expect(new Set([plan.connection.id, plan.credential.id, plan.credential.versionId,
+      ...plan.models.flatMap(({ grantId, id }) => [grantId, id])]).size).toBe(7);
+    expect(plan.expectedFingerprint).toBe(ready.fingerprint);
+    expect(decryptProviderCredentialSecret({
+      credentialId: plan.credential.id,
+      envelope: plan.credential.versionEnvelope,
+      key,
+      valueId: plan.credential.versionId
+    })).toBe("sk-second-account");
+    expect(value.pdfInputProbe).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({
+      checkedAt: checkedAt.toISOString(),
+      connectionId: plan.connection.id,
+      defaultCredentialChanged: true,
+      defaultChanged: false,
+      model: { displayName: "GPT-5.6 Luna" },
+      models: [{ displayName: "GPT-5.6 Luna" }, { displayName: "GPT-5.6 Sol" }],
+      outcome: "ready",
+      provider: "openai",
+      providerDisplayName: "OpenAI",
+      search: null
+    });
+    expect(value.onCompleted).toHaveBeenCalledWith({
+      connectionId: plan.connection.id,
+      credentialId: plan.credential.id
+    });
+    expect(JSON.stringify(result)).not.toContain("sk-second-account");
+  });
+
+  it("refuses a separate connection whose name is already used, before any network call", async () => {
+    const ready = inspection("openai", {
+      canonicalConnection: true,
+      configured: true,
+      connectionNames: ["OpenAI", "OpenAI · Research"],
+      mode: "replacement",
+      state: "ready"
+    });
+    const value = fixture({ inspections: { openai: ready }, modelIds: ["gpt-5.6-terra"] });
+    await expect(value.service.setup({
+      actor,
+      request: {
+        connectionDisplayName: " openai · research ",
+        expectedState: await expectedState(value.service, "openai"),
+        provider: "openai",
+        secret: "sk-second-account"
+      }
+    })).rejects.toMatchObject({ code: "provider_quick_setup_name_taken" });
+    expect(value.order).toEqual([]);
+    expect(value.commitAdditional).not.toHaveBeenCalled();
+  });
+
+  it("creates a separate connection for an endpoint override even for a fresh family", async () => {
+    const value = fixture({ modelIds: ["gpt-5.6-terra"] });
+    const result = await value.service.setup({
+      actor,
+      request: {
+        configuration: {
+          allowPrivateNetwork: false,
+          apiRoot: "https://gateway.example.test/v1",
+          responseTimeoutSeconds: 120
+        },
+        connectionDisplayName: "OpenAI via gateway",
+        expectedState: await expectedState(value.service, "openai"),
+        provider: "openai",
+        secret: "sk-gateway"
+      }
+    });
+    expect(value.commit).not.toHaveBeenCalled();
+    expect(value.test).toHaveBeenCalledWith(expect.objectContaining({
+      connection: expect.objectContaining({
+        allowPrivateNetwork: false,
+        apiRoot: "https://gateway.example.test/v1",
+        responseTimeoutMs: 120_000
+      }),
+      family: "openai"
+    }));
+    expect(value.commitAdditional.mock.calls[0]![0].connection.configuration).toMatchObject({
+      apiRoot: "https://gateway.example.test/v1",
+      responseTimeoutMs: 120_000
+    });
+    expect(result).toMatchObject({ connectionId: expect.any(String), outcome: "ready" });
+  });
+
+  it("rejects an invalid endpoint override before any network call", async () => {
+    const value = fixture({ modelIds: ["gpt-5.6-terra"] });
+    await expect(value.service.setup({
+      actor,
+      request: {
+        configuration: {
+          allowPrivateNetwork: false,
+          apiRoot: "not a url",
+          responseTimeoutSeconds: 120
+        },
+        connectionDisplayName: "OpenAI via gateway",
+        expectedState: await expectedState(value.service, "openai"),
+        provider: "openai",
+        secret: "sk-gateway"
+      }
+    })).rejects.toBeInstanceOf(ProviderConfigurationError);
+    expect(value.order).toEqual([]);
+  });
+
+  it("does not take a model choice for a separate connection", async () => {
+    const ready = inspection("openai", {
+      canonicalConnection: true,
+      configured: true,
+      connectionNames: ["OpenAI"],
+      mode: "replacement",
+      state: "ready"
+    });
+    const value = fixture({ inspections: { openai: ready }, modelIds: ["gpt-5.6-luna"] });
+    await expect(value.service.setup({
+      actor,
+      request: {
+        connectionDisplayName: "OpenAI · Research",
+        expectedState: await expectedState(value.service, "openai"),
+        provider: "openai",
+        secret: "sk-second-account",
+        selectedModel: { candidateId: "p2-o2", policyVersion: 6 }
+      }
+    })).rejects.toMatchObject({ code: "provider_quick_setup_selection_invalid" });
+    expect(value.order).toEqual([]);
+  });
+
+  it("lists the code-owned candidate models per provider in the snapshot", async () => {
+    const value = fixture();
+    const snapshot = await value.service.getSnapshot(actor);
+    expect(snapshot.providers.find(({ provider }) => provider === "openai")).toMatchObject({
+      candidateModels: [
+        { displayName: "GPT-5.6 Terra" },
+        { displayName: "GPT-5.6 Luna" },
+        { displayName: "GPT-5.6 Sol" }
+      ]
+    });
+    expect(JSON.stringify(snapshot)).not.toContain("quickSetupAssigned");
   });
 });

@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  createAdminProviderQuickSetupClearHandler,
   createAdminProviderQuickSetupMutationHandler,
   createAdminProviderQuickSetupSnapshotHandler
 } from "./quickSetupHandlers";
+import { ProviderConfigurationError } from "../../providers/providerConfiguration";
 import {
   AdminProviderQuickSetupServiceError,
   type AdminProviderQuickSetupService
@@ -24,12 +24,6 @@ const session = {
 
 function service(overrides: Partial<AdminProviderQuickSetupService> = {}): AdminProviderQuickSetupService {
   return {
-    clearAssignment: vi.fn(async () => ({
-      credentialRetained: true as const,
-      outcome: "assignment_cleared" as const,
-      provider: "openai" as const,
-      providerDisplayName: "OpenAI"
-    })),
     getSnapshot: vi.fn(async () => ({
       configuredConnections: [],
       providers: [],
@@ -37,6 +31,7 @@ function service(overrides: Partial<AdminProviderQuickSetupService> = {}): Admin
     })),
     setup: vi.fn(async () => ({
       checkedAt: "2026-07-26T10:00:00.000Z",
+      connectionId: "00000000-0000-4000-8000-000000001102",
       defaultCredentialChanged: true,
       defaultChanged: true,
       model: { displayName: "GPT-5.6 Terra" },
@@ -54,7 +49,7 @@ function service(overrides: Partial<AdminProviderQuickSetupService> = {}): Admin
 }
 
 describe("provider Quick setup handlers", () => {
-  it("requires an active administrator for GET, POST, and DELETE", async () => {
+  it("requires an active administrator for GET and POST", async () => {
     const deps = { resolveAuth: vi.fn(async () => null), service: service() };
     const getResponse = await createAdminProviderQuickSetupSnapshotHandler(deps)(
       new Request("http://localhost/api/admin/providers/quick-setup")
@@ -66,22 +61,14 @@ describe("provider Quick setup handlers", () => {
         method: "POST"
       })
     );
-    const deleteResponse = await createAdminProviderQuickSetupClearHandler(deps)(
-      new Request("http://localhost/api/admin/providers/quick-setup", {
-        body: JSON.stringify({ expectedState: "state-token", provider: "openai" }),
-        headers: { "content-type": "application/json" },
-        method: "DELETE"
-      })
-    );
     expect(getResponse.status).toBe(401);
     expect(postResponse.status).toBe(401);
-    expect(deleteResponse.status).toBe(401);
   });
 
   it.each([
     ["active ordinary user", { role: "user", status: "active" }],
     ["inactive administrator", { role: "admin", status: "disabled" }]
-  ] as const)("rejects an %s for GET, POST, and DELETE", async (_label, userState) => {
+  ] as const)("rejects an %s for GET and POST", async (_label, userState) => {
     const deniedSession = {
       ...session,
       user: { ...session.user, ...userState }
@@ -105,19 +92,10 @@ describe("provider Quick setup handlers", () => {
         method: "POST"
       })
     );
-    const deleteResponse = await createAdminProviderQuickSetupClearHandler(deps as never)(
-      new Request("http://localhost/api/admin/providers/quick-setup", {
-        body: JSON.stringify({ expectedState: "state-token", provider: "openai" }),
-        headers: { "content-type": "application/json" },
-        method: "DELETE"
-      })
-    );
     expect(getResponse.status).toBe(403);
     expect(postResponse.status).toBe(403);
-    expect(deleteResponse.status).toBe(403);
     expect(deniedService.getSnapshot).not.toHaveBeenCalled();
     expect(deniedService.setup).not.toHaveBeenCalled();
-    expect(deniedService.clearAssignment).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -127,6 +105,20 @@ describe("provider Quick setup handlers", () => {
       provider: "openai",
       secret: "sk-secret",
       selectedModel: { candidateId: "p2-o2", extra: true, policyVersion: 3 }
+    }],
+    [{ connectionDisplayName: "   ", expectedState: "state-token", provider: "openai", secret: "sk-secret" }],
+    [{
+      configuration: { allowPrivateNetwork: false, apiRoot: "https://gateway.example.test/v1", responseTimeoutSeconds: 120 },
+      expectedState: "state-token",
+      provider: "openai",
+      secret: "sk-secret"
+    }],
+    [{
+      configuration: { apiRoot: "https://gateway.example.test/v1", responseTimeoutSeconds: 1 },
+      connectionDisplayName: "OpenAI via gateway",
+      expectedState: "state-token",
+      provider: "openai",
+      secret: "sk-secret"
     }]
   ])("rejects request fields outside the exact contract", async (body) => {
     const quickService = service();
@@ -145,6 +137,7 @@ describe("provider Quick setup handlers", () => {
   it("passes only the authenticated actor and validated write-only request", async () => {
     const setup = vi.fn(async () => ({
       checkedAt: "2026-07-26T10:00:00.000Z",
+      connectionId: "00000000-0000-4000-8000-000000001102",
       defaultCredentialChanged: true,
       defaultChanged: true,
       model: { displayName: "GPT-5.6 Luna" },
@@ -175,60 +168,81 @@ describe("provider Quick setup handlers", () => {
     expect(JSON.stringify(await response.json())).not.toContain("sk-write-only");
   });
 
-  it("clears only a validated provider assignment for the authenticated actor", async () => {
-    const clearAssignment = vi.fn(async () => ({
-      credentialRetained: true as const,
-      outcome: "assignment_cleared" as const,
+  it("passes the connection name and endpoint overrides of a separate connection", async () => {
+    const setup = vi.fn(async () => ({
+      checkedAt: "2026-07-26T10:00:00.000Z",
+      connectionId: "connection-second",
+      defaultCredentialChanged: true,
+      defaultChanged: false,
+      model: { displayName: "GPT-5.6 Terra" },
+      models: [{ displayName: "GPT-5.6 Terra" }],
+      outcome: "ready" as const,
       provider: "openai" as const,
-      providerDisplayName: "OpenAI"
+      providerDisplayName: "OpenAI",
+      search: null
     }));
-    const handler = createAdminProviderQuickSetupClearHandler({
+    const handler = createAdminProviderQuickSetupMutationHandler({
       resolveAuth: vi.fn(async () => session),
-      service: service({ clearAssignment })
+      service: service({ setup })
     });
-    const response = await handler(new Request(
-      "http://localhost/api/admin/providers/quick-setup",
-      {
-        body: JSON.stringify({ expectedState: "state-token", provider: "openai" }),
-        headers: { "content-type": "application/json" },
-        method: "DELETE"
-      }
-    ));
-
-    expect(response.status).toBe(200);
-    expect(clearAssignment).toHaveBeenCalledWith({
-      actor: { sessionId: "session-admin", userId: "admin" },
-      request: { expectedState: "state-token", provider: "openai" }
-    });
-    expect(await response.json()).toEqual({
-      credentialRetained: true,
-      outcome: "assignment_cleared",
-      provider: "openai",
-      providerDisplayName: "OpenAI"
-    });
-  });
-
-  it("rejects extra fields in a clear-assignment request", async () => {
-    const quickService = service();
-    const response = await createAdminProviderQuickSetupClearHandler({
-      resolveAuth: vi.fn(async () => session),
-      service: quickService
-    })(new Request("http://localhost/api/admin/providers/quick-setup", {
+    const response = await handler(new Request("http://localhost/api/admin/providers/quick-setup", {
       body: JSON.stringify({
+        configuration: {
+          allowPrivateNetwork: false,
+          apiRoot: "https://gateway.example.test/v1",
+          responseTimeoutSeconds: 120
+        },
+        connectionDisplayName: "OpenAI via gateway",
         expectedState: "state-token",
         provider: "openai",
-        credentialId: "must-not-be-accepted"
+        secret: "sk-write-only"
       }),
       headers: { "content-type": "application/json" },
-      method: "DELETE"
+      method: "POST"
+    }));
+    expect(response.status).toBe(200);
+    expect(setup).toHaveBeenCalledWith(expect.objectContaining({
+      request: {
+        configuration: {
+          allowPrivateNetwork: false,
+          apiRoot: "https://gateway.example.test/v1",
+          responseTimeoutSeconds: 120
+        },
+        connectionDisplayName: "OpenAI via gateway",
+        expectedState: "state-token",
+        provider: "openai",
+        secret: "sk-write-only"
+      }
+    }));
+    expect(await response.json()).toMatchObject({ connectionId: "connection-second" });
+  });
+
+  it("maps an invalid endpoint override to a 400 without a stack trace", async () => {
+    const handler = createAdminProviderQuickSetupMutationHandler({
+      resolveAuth: vi.fn(async () => session),
+      service: service({
+        setup: vi.fn(async () => { throw new ProviderConfigurationError("provider_api_root_invalid"); })
+      })
+    });
+    const response = await handler(new Request("http://localhost/api/admin/providers/quick-setup", {
+      body: JSON.stringify({
+        configuration: { allowPrivateNetwork: false, apiRoot: "https://x.example.test", responseTimeoutSeconds: 30 },
+        connectionDisplayName: "OpenAI via gateway",
+        expectedState: "state-token",
+        provider: "openai",
+        secret: "sk-secret"
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
     }));
     expect(response.status).toBe(400);
-    expect(quickService.clearAssignment).not.toHaveBeenCalled();
+    expect(await response.json()).toEqual({ error: "provider_configuration_invalid" });
   });
 
   it.each([
     ["provider_draft_stale", 409],
     ["provider_quick_setup_advanced_required", 409],
+    ["provider_quick_setup_name_taken", 409],
     ["provider_quick_setup_selection_invalid", 400],
     ["provider_quick_setup_unsupported_catalog", 422],
     ["provider_credential_test_failed", 422]

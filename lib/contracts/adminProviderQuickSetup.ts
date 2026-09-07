@@ -21,10 +21,11 @@ export type AdminProviderQuickSetupState =
   | "ready";
 
 export type AdminProviderQuickSetupProviderSnapshot = Readonly<{
+  /** The code-owned models a setup turns on when the key's catalog has them, in policy order. */
+  candidateModels: AdminProviderQuickSetupModelDisplay[];
   model?: AdminProviderQuickSetupModelDisplay;
   provider: AdminProviderQuickSetupProviderId;
   providerDisplayName: string;
-  quickSetupAssigned: boolean;
   state: AdminProviderQuickSetupState;
   stateToken: string;
 }>;
@@ -48,17 +49,30 @@ export type AdminProviderQuickSetupSelection = Readonly<{
   policyVersion: number;
 }>;
 
-/** The secret is write-only and must never appear in a response DTO. */
+/** Endpoint settings for a separate connection (PRD 5.3 Advanced). */
+export type AdminProviderQuickSetupConnectionOverrides = Readonly<{
+  allowPrivateNetwork: boolean;
+  apiRoot: string;
+  responseTimeoutSeconds: number;
+}>;
+
+/**
+ * The secret is write-only and must never appear in a response DTO.
+ *
+ * Without `connectionDisplayName` and `configuration` the setup targets the
+ * family's canonical connection (creating, recovering or replacing its key).
+ * `connectionDisplayName` names the connection the setup creates; when the
+ * canonical connection already exists, or when `configuration` overrides the
+ * vendor endpoint, the setup adds a separate connection of the family with
+ * that name instead and never returns `selection_required`.
+ */
 export type AdminProviderQuickSetupRequest = Readonly<{
+  configuration?: AdminProviderQuickSetupConnectionOverrides;
+  connectionDisplayName?: string;
   expectedState: string;
   provider: AdminProviderQuickSetupProviderId;
   secret: string;
   selectedModel?: AdminProviderQuickSetupSelection;
-}>;
-
-export type AdminProviderQuickSetupClearRequest = Readonly<{
-  expectedState: string;
-  provider: AdminProviderQuickSetupProviderId;
 }>;
 
 export type AdminProviderQuickSetupCandidate = Readonly<{
@@ -68,6 +82,8 @@ export type AdminProviderQuickSetupCandidate = Readonly<{
 
 export type AdminProviderQuickSetupReadyResult = Readonly<{
   checkedAt: string;
+  /** The connection the key and models now live on. */
+  connectionId: string;
   defaultCredentialChanged: boolean;
   defaultChanged: boolean;
   model: AdminProviderQuickSetupModelDisplay;
@@ -95,16 +111,10 @@ export type AdminProviderQuickSetupResult =
   | AdminProviderQuickSetupReadyResult
   | AdminProviderQuickSetupSelectionRequiredResult;
 
-export type AdminProviderQuickSetupClearResult = Readonly<{
-  credentialRetained: true;
-  outcome: "assignment_cleared";
-  provider: AdminProviderQuickSetupProviderId;
-  providerDisplayName: string;
-}>;
-
 export type AdminProviderQuickSetupErrorCode =
   | "provider_credential_test_failed"
   | "provider_draft_stale"
   | "provider_quick_setup_advanced_required"
+  | "provider_quick_setup_name_taken"
   | "provider_quick_setup_selection_invalid"
   | "provider_quick_setup_unsupported_catalog";

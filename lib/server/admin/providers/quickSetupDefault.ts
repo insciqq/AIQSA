@@ -5,7 +5,6 @@ import { prisma } from "../../prisma";
 import { createAdminProviderCredentialTester } from "./credentialTester";
 import { adminProviderService } from "./defaultProviders";
 import {
-  createAdminProviderQuickSetupClearHandler,
   createAdminProviderQuickSetupMutationHandler,
   createAdminProviderQuickSetupSnapshotHandler
 } from "./quickSetupHandlers";
@@ -41,4 +40,3 @@ const deps = {
 
 export const adminProviderQuickSetupGET = createAdminProviderQuickSetupSnapshotHandler(deps);
 export const adminProviderQuickSetupPOST = createAdminProviderQuickSetupMutationHandler(deps);
-export const adminProviderQuickSetupDELETE = createAdminProviderQuickSetupClearHandler(deps);
