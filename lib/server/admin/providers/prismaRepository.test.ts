@@ -1022,6 +1022,92 @@ describe("Prisma admin provider repository", () => {
     }
   );
 
+  it("reads a model activation candidate with only the default key's usability, never its ciphertext", async () => {
+    const db = transactional({
+      providerConnection: {
+        findUnique: vi.fn(async () => ({
+          activeVersion: 0,
+          defaultCredential: {
+            activeVersion: { id: "version-1", revokedAt: null, secretEnvelope: "active-envelope" },
+            activeVersionId: "version-1",
+            enabled: true,
+            id: "credential-1"
+          },
+          draftConfig: candidate().connection.configuration,
+          draftVersion: 2,
+          family: "openai_compatible",
+          id: "connection-1"
+        }))
+      },
+      providerModel: {
+        findFirst: vi.fn(async () => ({
+          displayName: "Model",
+          draftConfig: candidate().model.configuration,
+          draftVersion: 4,
+          id: "model-1"
+        }))
+      }
+    });
+    const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
+    const loaded = await repository.loadModelActivationCandidate({ connectionId: "connection-1", modelId: "model-1" });
+    expect(loaded).toMatchObject({
+      connection: { activeVersion: 0, defaultCredential: { id: "credential-1", usable: true }, draftVersion: 2 },
+      model: { draftVersion: 4, id: "model-1" }
+    });
+    expect(JSON.stringify(loaded)).not.toContain("active-envelope");
+  });
+
+  it("activates exactly one model draft by CAS, taking a never-activated connection live with it", async () => {
+    const connectionUpdate = vi.fn(async () => ({ count: 1 }));
+    const modelUpdate = vi.fn(async () => ({ count: 1 }));
+    const model = { draftVersion: 4, id: "model-1" };
+    const db = transactional({
+      providerConnection: {
+        findUnique: vi.fn(async () => ({
+          activeVersion: 0,
+          displayName: "Provider",
+          draftVersion: 2,
+          family: "openai_compatible",
+          id: "connection-1",
+          templateKey: null
+        })),
+        updateMany: connectionUpdate
+      },
+      providerModel: {
+        findFirst: vi.fn(async () => model),
+        findMany: vi.fn(async () => [{ activeConfig: candidate().model.configuration, id: "model-1" }]),
+        updateMany: modelUpdate
+      },
+      searchOption: { findUnique: vi.fn(async () => null) },
+      searchStrategy: { findFirst: vi.fn(async () => null), updateMany: vi.fn(async () => ({ count: 0 })) }
+    });
+    const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
+    const configuration = candidate().model.configuration;
+    const write = {
+      connection: {
+        activateDraft: { configuration: candidate().connection.configuration, draftVersion: 2 },
+        id: "connection-1"
+      },
+      enable: true,
+      model: { configuration, draftVersion: 4, id: "model-1" },
+      now: NOW
+    } as const;
+
+    await expect(repository.activateModelCas(write)).resolves.toBe("updated");
+    expect(connectionUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ activatedAt: NOW, activeVersion: 2 }),
+      where: { activeVersion: 0, draftVersion: 2, id: "connection-1" }
+    }));
+    expect(modelUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ activatedAt: NOW, activeVersion: 4, enabled: true, modelId: "vendor/model" }),
+      where: { draftVersion: 4, id: "model-1" }
+    }));
+
+    model.draftVersion = 5;
+    await expect(repository.activateModelCas(write)).resolves.toBe("stale");
+    expect(modelUpdate).toHaveBeenCalledOnce();
+  });
+
   it("records a value-free refresh warning without overwriting prior active status", async () => {
     const updateMany = vi.fn(async (_args: unknown) => ({ count: 1 }));
     const db = transactional({

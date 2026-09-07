@@ -111,11 +111,18 @@ function replacementCandidate(
   ) ?? null;
 }
 
+export type AdminProviderSetupCompletion = Readonly<{
+  connectionId: string;
+  credentialId: string;
+}>;
+
 export function createAdminProviderQuickSetupService(input: Readonly<{
   credentialTester: AdminProviderCredentialTester;
   encryptionKey?: () => Buffer;
   idFactory?: () => string;
   now?: () => Date;
+  /** Runs after a committed setup (PRD B3 trigger); its failures never reach the caller. */
+  onCompleted?(completion: AdminProviderSetupCompletion): void;
   pdfInputProbe: ProviderPdfInputProbe;
   rerankerTester?: AdminProviderDraftTester;
   searchTester?: AdminProviderQuickSetupSearchTester;
@@ -495,6 +502,11 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         throw new AdminProviderQuickSetupServiceError(
           "provider_quick_setup_unsupported_catalog"
         );
+      }
+      try {
+        input.onCompleted?.({ connectionId: policy.connection.id, credentialId });
+      } catch {
+        // Background checks are best effort; the setup itself is complete.
       }
       return {
         checkedAt: checkedAt.toISOString(),

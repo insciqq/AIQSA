@@ -8,6 +8,7 @@ import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
 import { AdminProvidersSection } from "./AdminProvidersSection";
 import {
   fixtureCheck,
+  fixtureCheckRun,
   fixtureConnection,
   fixtureCredential,
   fixtureModel,
@@ -390,6 +391,42 @@ describe("AdminProvidersSection", () => {
     fireEvent.click(within(await screen.findByRole("dialog", { name: "Discard unsaved connection settings" }))
       .getByRole("button", { name: "Confirm discard changes" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("shows the check in progress from the catalog when the page opens, and stops it in one request", async () => {
+    connections.current = connections.current.map((connection) => connection.id === "conn-openai"
+      ? {
+          ...connection,
+          checkRun: fixtureCheckRun({ credentialId: "cred-primary", current: "model-luna", done: 1, id: "run-7", inFlight: ["model-luna"], total: 2 })
+        }
+      : connection);
+    const calls = mockFetch(connections, ({ body, method, url }) => {
+      if (method === "POST" && url === "/api/admin/providers/conn-openai/actions" && body?.action === "cancel_check") {
+        connections.current = connections.current.map((connection) => connection.id === "conn-openai"
+          ? {
+              ...connection,
+              checkRun: { ...connection.checkRun!, finishedAt: "2026-09-07T12:52:00.000Z", inFlight: [], state: "cancelled" }
+            }
+          : connection);
+        return Response.json({ connections: connections.current });
+      }
+      return null;
+    });
+    const { feedback } = renderSection("conn-openai");
+
+    const banner = await screen.findByTestId("provider-check-banner");
+    expect(banner).toHaveTextContent("Key Primary saved and working. Checking what each model can do — 1 of 2 done.");
+    expect(screen.getByRole("progressbar", { name: "Models checked" })).toHaveAttribute("aria-valuenow", "1");
+    expect(screen.getByTestId("provider-page-status")).toHaveTextContent("All keys working · 2 models on · checking models");
+    expect(screen.getByTestId("provider-model-model-luna-works-with")).toHaveAttribute("data-works-with", "checking");
+    expect(screen.getByRole("button", { name: "Re-check all" })).toBeDisabled();
+
+    fireEvent.click(within(banner).getByRole("button", { name: "Stop checking" }));
+    await waitFor(() => expect(screen.queryByTestId("provider-check-banner")).not.toBeInTheDocument());
+    expect(calls.find(({ body }) => body?.action === "cancel_check")?.body).toEqual({ action: "cancel_check", runId: "run-7" });
+    expect(feedback.reportNotice).toHaveBeenCalledWith("Checking stopped.");
+    expect(screen.getByTestId("provider-model-model-luna-works-with")).toHaveAttribute("data-works-with", "not_checked");
+    expect(screen.getByRole("button", { name: "Re-check all" })).toBeEnabled();
   });
 
   it("turns the provider off from the topbar switch and shows the Add provider entry behind the primary action", async () => {

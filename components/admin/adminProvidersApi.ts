@@ -2,8 +2,8 @@ import type {
   AdminCompatibleDiscoveredModel,
   AdminOpenRouterDiscoveredEndpoint,
   AdminOpenRouterDiscoveredModel,
-  AdminProviderConnection,
-  AdminProviderDraftCheck
+  AdminProviderCheckRun,
+  AdminProviderConnection
 } from "@/lib/contracts/adminProviders";
 import {
   ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
@@ -75,8 +75,23 @@ function isModel(value: unknown): boolean {
     typeof value.draftConfig.upstreamModelId === "string";
 }
 
+const checkRunStates = new Set(["cancelled", "completed", "interrupted", "running"]);
+const checkRunReasons = new Set(["credential", "model", "requested", "setup"]);
+
+function isCheckRun(value: unknown): value is AdminProviderCheckRun {
+  return record(value) && typeof value.id === "string" && typeof value.credentialId === "string" &&
+    typeof value.state === "string" && checkRunStates.has(value.state) &&
+    typeof value.reason === "string" && checkRunReasons.has(value.reason) &&
+    Number.isSafeInteger(value.done) && Number.isSafeInteger(value.total) &&
+    (value.current === null || typeof value.current === "string") &&
+    stringArray(value.inFlight) && stringArray(value.failed) &&
+    typeof value.startedAt === "string" &&
+    (value.finishedAt === null || typeof value.finishedAt === "string");
+}
+
 function isConnection(value: unknown): value is AdminProviderConnection {
   return record(value) && typeof value.id === "string" && typeof value.displayName === "string" &&
+    (value.checkRun === undefined || value.checkRun === null || isCheckRun(value.checkRun)) &&
     typeof value.family === "string" && typeof value.enabled === "boolean" &&
     typeof value.draftVersion === "number" && record(value.draftConfig) &&
     (value.draftConfig.authenticationMode === "bearer" ||
@@ -372,19 +387,18 @@ export function deleteAdminProviderModel(
   );
 }
 
-export function testAdminProviderDraft(
+/** Progress of one background capability check (PRD B3); an unknown id reads as interrupted. */
+export function getAdminProviderCheckRun(
   connectionId: string,
-  modelId: string,
-  body: unknown,
+  runId: string,
   fetcher: Fetcher = fetch
 ) {
   return request(
-    `/api/admin/providers/${encoded(connectionId)}/models/${encoded(modelId)}/tests`,
-    json("POST", body),
-    (value) => record(value) && record(value.check) && typeof value.check.fingerprint === "string"
-      ? value.check as AdminProviderDraftCheck
-      : null,
-    fetcher
+    `/api/admin/providers/${encoded(connectionId)}/actions?run=${encoded(runId)}`,
+    { method: "GET" },
+    (value) => record(value) && isCheckRun(value.run) ? value.run : null,
+    fetcher,
+    "provider_admin_route_unavailable"
   );
 }
 
@@ -396,6 +410,7 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     provider_activation_empty: "Add at least one enabled model and referenced credential before activation.",
     provider_activation_evidence_missing: "Every default or group key must be turned on and working before the change can be applied.",
     provider_activation_unavailable_confirmation_required: "A configured model ID is absent from one or more referenced key catalogs. Review the setup or confirm the override.",
+    provider_check_run_not_found: "This check is no longer running.",
     provider_active_tuple_not_found: "This model and key pair is no longer usable.",
     provider_admin_action_failed: "The provider action could not be completed.",
     provider_admin_route_unavailable: "The provider action route is unavailable in this app process. Restart the development app and try again.",

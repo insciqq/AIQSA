@@ -3,6 +3,7 @@ import { getAuthConfig } from "../../auth/config";
 import { exposeFakeProvider } from "../../catalog/prismaCatalogData";
 import { prisma } from "../../prisma";
 import { createAdminProviderCredentialTester } from "./credentialTester";
+import { adminProviderService } from "./defaultProviders";
 import {
   createAdminProviderQuickSetupClearHandler,
   createAdminProviderQuickSetupMutationHandler,
@@ -22,6 +23,9 @@ const repository = createPrismaAdminProviderQuickSetupRepository(prisma, {
 
 export const adminProviderQuickSetupService = createAdminProviderQuickSetupService({
   credentialTester: createAdminProviderCredentialTester(),
+  onCompleted: (completion) => {
+    void adminProviderService.startCheckRun({ ...completion, reason: "setup" }).catch(() => undefined);
+  },
   pdfInputProbe: createProviderPdfInputProbe(),
   rerankerTester: createAdminProviderDraftTester(),
   repository,

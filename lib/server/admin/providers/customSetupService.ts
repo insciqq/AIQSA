@@ -249,6 +249,8 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
   encryptionKey?: () => Buffer;
   idFactory?: () => string;
   now?: () => Date;
+  /** Runs after a committed setup (PRD B3 trigger); its failures never reach the caller. */
+  onCompleted?(completion: Readonly<{ connectionId: string; credentialId: string }>): void;
   repository: AdminProviderCustomSetupRepository;
   searchTester?: AdminProviderQuickSetupSearchTester;
   tester: AdminProviderCustomSetupTester;
@@ -436,6 +438,11 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
         throw new AdminProviderCustomSetupServiceError(
           "provider_custom_setup_stale"
         );
+      }
+      try {
+        input.onCompleted?.({ connectionId, credentialId });
+      } catch {
+        // Background checks are best effort; the setup itself is complete.
       }
 
       return {

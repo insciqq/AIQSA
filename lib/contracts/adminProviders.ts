@@ -239,12 +239,40 @@ export type AdminProviderUserCredentialAssignment = {
   };
 };
 
+export type AdminProviderCheckRunState = "cancelled" | "completed" | "interrupted" | "running";
+
+/** Why a background capability check started; the banner copy depends on it. */
+export type AdminProviderCheckRunReason = "credential" | "model" | "requested" | "setup";
+
+/**
+ * Progress of one background capability check over a connection's models
+ * with one key (PRD B3). Content-free: model ids, counts and states only.
+ * `failed` lists models whose latest check with this key hit a temporary
+ * failure, so a row can offer Retry even before any evidence exists.
+ */
+export type AdminProviderCheckRun = {
+  credentialId: string;
+  /** First model being checked right now, when any. */
+  current: string | null;
+  done: number;
+  failed: string[];
+  finishedAt: string | null;
+  id: string;
+  inFlight: string[];
+  reason: AdminProviderCheckRunReason;
+  startedAt: string;
+  state: AdminProviderCheckRunState;
+  total: number;
+};
+
 export type AdminProviderConnection = {
   activatedAt: string | null;
   activeChecks: AdminProviderActiveCheck[];
   activeConfig: AdminProviderConnectionConfiguration | null;
   activeVersion: number;
   assignments: AdminProviderGroupCredentialAssignment[];
+  /** Latest capability check on this connection; omitted by older payloads. */
+  checkRun?: AdminProviderCheckRun | null;
   createdAt: string;
   credentials: AdminProviderCredential[];
   defaultCredentialId: string | null;

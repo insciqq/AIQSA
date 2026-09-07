@@ -15,6 +15,7 @@ import type {
 } from "../../../contracts/adminProviders";
 import {
   normalizeProviderConnectionConfiguration,
+  normalizeProviderModelConfiguration,
   type ProviderModelConfiguration
 } from "../../providers/providerConfiguration";
 import {
@@ -636,7 +637,7 @@ async function publishProviderSearchRoute(
 
 async function synchronizeProviderSearch(
   tx: Prisma.TransactionClient,
-  input: ProviderActivationWrite,
+  input: Pick<ProviderActivationWrite, "models" | "now">,
   connection: Readonly<{
     displayName: string;
     family: string;
@@ -1057,6 +1058,132 @@ export function createPrismaAdminProviderRepository(
           id: model.id
         }
       };
+    },
+
+    async loadModelActivationCandidate(input) {
+      const [connection, model] = await Promise.all([
+        prisma.providerConnection.findUnique({
+          include: {
+            defaultCredential: {
+              include: {
+                activeVersion: { select: { id: true, revokedAt: true, secretEnvelope: true } }
+              }
+            }
+          },
+          where: { id: input.connectionId }
+        }),
+        prisma.providerModel.findFirst({
+          select: { displayName: true, draftConfig: true, draftVersion: true, id: true },
+          where: { connectionId: input.connectionId, id: input.modelId }
+        })
+      ]);
+      if (!connection || connection.family === "fake" || !model) return null;
+      const credential = connection.defaultCredential;
+      return {
+        connection: {
+          activeVersion: connection.activeVersion,
+          defaultCredential: credential
+            ? {
+                id: credential.id,
+                usable: credential.enabled &&
+                  credential.activeVersionId !== null &&
+                  credential.activeVersion?.id === credential.activeVersionId &&
+                  credential.activeVersion.revokedAt === null &&
+                  credential.activeVersion.secretEnvelope !== null
+              }
+            : null,
+          draftConfiguration: connection.draftConfig,
+          draftVersion: connection.draftVersion,
+          family: connection.family,
+          id: connection.id
+        },
+        model: {
+          configuration: model.draftConfig,
+          displayName: model.displayName,
+          draftVersion: model.draftVersion,
+          id: model.id
+        }
+      };
+    },
+
+    async activateModelCas(input) {
+      try {
+        return await repeatableRead(prisma, async (tx) => {
+          const connection = await tx.providerConnection.findUnique({
+            select: {
+              activeVersion: true,
+              displayName: true,
+              draftVersion: true,
+              family: true,
+              id: true,
+              templateKey: true
+            },
+            where: { id: input.connection.id }
+          });
+          if (!connection || connection.family === "fake") return "not_found" as const;
+          const model = await tx.providerModel.findFirst({
+            select: { draftVersion: true, id: true },
+            where: { connectionId: input.connection.id, id: input.model.id }
+          });
+          if (!model) return "not_found" as const;
+          if (model.draftVersion !== input.model.draftVersion) return "stale" as const;
+          if (input.connection.activateDraft) {
+            if (
+              connection.activeVersion !== 0 ||
+              connection.draftVersion !== input.connection.activateDraft.draftVersion
+            ) return "stale" as const;
+            const connectionUpdated = await tx.providerConnection.updateMany({
+              data: {
+                activatedAt: input.now,
+                activeConfig: json(input.connection.activateDraft.configuration),
+                activeVersion: input.connection.activateDraft.draftVersion
+              },
+              where: {
+                activeVersion: 0,
+                draftVersion: input.connection.activateDraft.draftVersion,
+                id: input.connection.id
+              }
+            });
+            if (connectionUpdated.count !== 1) throw new ProviderActivationStaleError();
+          } else if (connection.activeVersion < 1) {
+            return "stale" as const;
+          }
+          const updated = await tx.providerModel.updateMany({
+            data: {
+              activatedAt: input.now,
+              activeConfig: json(input.model.configuration),
+              activeVersion: input.model.draftVersion,
+              ...(input.enable ? { enabled: true } : {}),
+              ...modelColumns(input.model.configuration)
+            },
+            where: { draftVersion: input.model.draftVersion, id: input.model.id }
+          });
+          if (updated.count !== 1) throw new ProviderActivationStaleError();
+          const liveModels = await tx.providerModel.findMany({
+            select: { activeConfig: true, id: true },
+            where: { activeVersion: { gte: 1 }, connectionId: input.connection.id, enabled: true }
+          });
+          await synchronizeProviderSearch(tx, {
+            models: liveModels.flatMap((live) => live.activeConfig === null
+              ? []
+              : [{
+                  configuration: normalizeProviderModelConfiguration(live.activeConfig),
+                  draftVersion: 0,
+                  id: live.id
+                }]),
+            now: input.now
+          }, connection);
+          return "updated" as const;
+        });
+      } catch (error) {
+        if (
+          error instanceof ProviderActivationStaleError ||
+          (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")
+        ) {
+          return "stale";
+        }
+        throw error;
+      }
     },
 
     async storeDraftCheckCas(candidate, check) {
