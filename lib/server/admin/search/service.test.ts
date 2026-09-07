@@ -365,7 +365,7 @@ describe("admin Search service", () => {
     });
   });
 
-  it("keeps optional diagnostics separate from configuration publication", async () => {
+  it("records a Run check as diagnostics without republishing the configuration", async () => {
     const editable = child(draft, {
       draftTestEvidence: null,
       enabled: false,
@@ -382,7 +382,7 @@ describe("admin Search service", () => {
     });
     const strategyUpdate = vi.fn(async () => undefined);
     const revisionCreate = vi.fn(async () => ({ id: "unexpected-revision" }));
-    const tx = {
+    const prisma = {
       providerModel: { findFirst: vi.fn(async () => providerModel()) },
       searchIntegrationRevision: {
         create: revisionCreate,
@@ -390,10 +390,6 @@ describe("admin Search service", () => {
       },
       searchOption: { findUnique: vi.fn(async () => source) },
       searchStrategy: { update: strategyUpdate, updateMany }
-    };
-    const prisma = {
-      ...tx,
-      $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)
     } as unknown as PrismaClient;
     const currentBinding = vi.fn(async () => PROBE_BINDING);
     const tester = {
@@ -408,7 +404,6 @@ describe("admin Search service", () => {
     };
     const service = createAdminSearchService({ now: () => NOW, prisma, tester });
 
-    await service.activate({ id: "source-1", userId: "admin-1" });
     await service.testDraft({ id: "source-1", userId: "admin-1" });
 
     expect(tester.test).toHaveBeenCalledWith({ draft, userId: "admin-1" });
@@ -423,13 +418,7 @@ describe("admin Search service", () => {
       },
       where: { draftVersion: 1, id: "strategy-1" }
     });
-    expect(strategyUpdate).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        activeRevisionId: "revision-1",
-        enabled: true
-      }),
-      where: { id: "strategy-1" }
-    });
+    expect(strategyUpdate).not.toHaveBeenCalled();
     expect(revisionCreate).not.toHaveBeenCalled();
     expect(currentBinding).not.toHaveBeenCalled();
   });
@@ -482,7 +471,8 @@ describe("admin Search service", () => {
     const created = await service.createDraft({
       description: " Web evidence ",
       displayName: " Company Search ",
-      draft
+      draft,
+      userId: "admin-1"
     });
 
     expect(created).toEqual({
@@ -540,6 +530,90 @@ describe("admin Search service", () => {
     );
   });
 
+  it("records the check on the new client route when a manual source is created with a check", async () => {
+    const strategyUpdate = vi.fn(async () => undefined);
+    const createdOption = option([
+      pendingChild(draft, { id: "client-route", strategyId: "company-search-12345678:client" }),
+      pendingChild(hostedDraft, { id: "hosted-route", strategyId: "company-search-12345678:hosted" })
+    ], { id: "12345678-1234-4234-8234-123456789012" });
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      providerModel: { findFirst: vi.fn(async () => providerModel()) },
+      searchIntegrationRevision: revisionRepository(),
+      searchOption: {
+        create: vi.fn(async () => undefined),
+        findMany: vi.fn(async () => []),
+        findUnique: vi.fn(async () => createdOption)
+      },
+      searchStrategy: {
+        create: vi.fn(async () => undefined),
+        findUnique: vi.fn(async () => null),
+        update: strategyUpdate
+      }
+    };
+    const ids = ["12345678-1234-4234-8234-123456789012", "client-route", "hosted-route"];
+    const prisma = {
+      $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx),
+      providerModel: { findFirst: vi.fn(async () => providerModel()) }
+    } as unknown as PrismaClient;
+    const test = vi.fn(async () => ({
+      method: "provider_search" as const,
+      normalizedSourceCount: 2,
+      probeBinding: PROBE_BINDING,
+      protocol: draft.protocol,
+      status: "available" as const
+    }));
+    const service = createAdminSearchService({
+      idFactory: () => ids.shift()!,
+      now: () => NOW,
+      prisma,
+      tester: { test }
+    });
+
+    await service.createDraft({
+      check: true,
+      description: "Web evidence",
+      displayName: "Company Search",
+      draft,
+      userId: "admin-1"
+    });
+
+    expect(test).toHaveBeenCalledWith({ draft, userId: "admin-1" });
+    expect(strategyUpdate).toHaveBeenCalledWith({
+      data: {
+        draftTestEvidence: expect.objectContaining({
+          checkedAt: NOW.toISOString(),
+          method: "provider_search",
+          status: "available"
+        }),
+        testedDraftHash: searchDraftHash(draft)
+      },
+      where: { id: "client-route" }
+    });
+  });
+
+  it("creates nothing when a manual source's check fails", async () => {
+    const transaction = vi.fn();
+    const prisma = {
+      $transaction: transaction,
+      providerModel: { findFirst: vi.fn(async () => providerModel()) }
+    } as unknown as PrismaClient;
+    const test = vi.fn(async () => {
+      throw new Error("provider_unreachable");
+    });
+    const service = createAdminSearchService({ prisma, tester: { test } });
+
+    await expect(service.createDraft({
+      check: true,
+      description: "Web evidence",
+      displayName: "Company Search",
+      draft,
+      userId: "admin-1"
+    })).rejects.toMatchObject({ code: "search_test_failed" });
+    expect(test).toHaveBeenCalledTimes(1);
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
   it("keeps Perplexity Search client-only", async () => {
     const perplexityDraft: AdminSearchDraft = {
       ...draft,
@@ -588,7 +662,8 @@ describe("admin Search service", () => {
     await service.createDraft({
       description: "Perplexity evidence",
       displayName: "Perplexity Search",
-      draft: perplexityDraft
+      draft: perplexityDraft,
+      userId: "admin-1"
     });
 
     expect(strategyCreate).toHaveBeenCalledTimes(1);
@@ -648,7 +723,8 @@ describe("admin Search service", () => {
     const reused = await service.createDraft({
       description: "A duplicate form must not create another source.",
       displayName: "Duplicate Search",
-      draft
+      draft,
+      userId: "admin-1"
     });
 
     expect(reused).toEqual({ created: false, id: row.id });
@@ -705,7 +781,8 @@ describe("admin Search service", () => {
     await service.createDraft({
       description: "Ignored in favor of the existing logical source.",
       displayName: "Duplicate Search",
-      draft
+      draft,
+      userId: "admin-1"
     });
 
     expect(optionCreate).not.toHaveBeenCalled();
@@ -780,7 +857,8 @@ describe("admin Search service", () => {
     await service.createDraft({
       description: "Restore the prior source.",
       displayName: "Compatible Search",
-      draft: replacementDraft
+      draft: replacementDraft,
+      userId: "admin-1"
     });
 
     expect(optionCreate).not.toHaveBeenCalled();
@@ -801,9 +879,10 @@ describe("admin Search service", () => {
     });
   });
 
-  it("rejects an editable child moved to another provider connection", async () => {
+  it("rejects an editable child moved to another provider connection before any check", async () => {
     const strategyUpdate = vi.fn();
     const optionUpdate = vi.fn();
+    const test = vi.fn();
     const tx = {
       providerModel: {
         findFirst: vi.fn(async () => providerModel({ connectionId: "connection-2" }))
@@ -818,22 +897,25 @@ describe("admin Search service", () => {
       searchStrategy: { updateMany: strategyUpdate }
     };
     const prisma = {
+      ...tx,
       $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)
     } as unknown as PrismaClient;
-    const service = createAdminSearchService({ prisma, tester: { test: vi.fn() } });
+    const service = createAdminSearchService({ prisma, tester: { test } });
 
-    await expect(service.updateDraft({
+    await expect(service.saveAndCheck({
       description: "Web evidence",
       displayName: "OpenAI Search",
       draft,
       expectedDraftVersion: 1,
-      id: "source-1"
+      id: "source-1",
+      userId: "admin-1"
     })).rejects.toMatchObject({ code: "search_provider_model_not_available" });
+    expect(test).not.toHaveBeenCalled();
     expect(strategyUpdate).not.toHaveBeenCalled();
     expect(optionUpdate).not.toHaveBeenCalled();
   });
 
-  it("publishes a same-source technical-model replacement immediately on save", async () => {
+  it("saves, checks and publishes a same-source model replacement as one operation", async () => {
     const replacementDraft: AdminSearchDraft = {
       ...draft,
       providerModelId: "technical-2"
@@ -857,26 +939,41 @@ describe("admin Search service", () => {
       searchStrategy: { update: strategyPublish, updateMany: strategyUpdateMany }
     };
     const prisma = {
+      ...tx,
       $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)
     } as unknown as PrismaClient;
-    const service = createAdminSearchService({ prisma, tester: { test: vi.fn() } });
+    const test = vi.fn(async () => ({
+      method: "provider_search" as const,
+      normalizedSourceCount: 3,
+      probeBinding: { ...PROBE_BINDING, providerModelId: "technical-2" },
+      protocol: draft.protocol,
+      status: "available" as const
+    }));
+    const service = createAdminSearchService({ now: () => NOW, prisma, tester: { test } });
 
-    await service.updateDraft({
+    await service.saveAndCheck({
       description: "Web evidence",
       displayName: "OpenAI Search",
       draft: replacementDraft,
       expectedDraftVersion: 1,
-      id: "source-1"
+      id: "source-1",
+      userId: "admin-1"
     });
 
+    expect(test).toHaveBeenCalledWith({ draft: replacementDraft, userId: "admin-1" });
     expect(strategyUpdateMany).toHaveBeenCalledWith({
       data: {
         description: "Web evidence",
         displayName: "OpenAI Search",
         draft: replacementDraft,
-        draftTestEvidence: expect.anything(),
+        draftTestEvidence: expect.objectContaining({
+          checkedAt: NOW.toISOString(),
+          method: "provider_search",
+          normalizedSourceCount: 3,
+          status: "available"
+        }),
         draftVersion: { increment: 1 },
-        testedDraftHash: null
+        testedDraftHash: searchDraftHash(replacementDraft)
       },
       where: { draftVersion: 1, id: "strategy-1" }
     });
@@ -899,6 +996,88 @@ describe("admin Search service", () => {
       data: { description: "Web evidence", displayName: "OpenAI Search" },
       where: { id: "source-1" }
     });
+  });
+
+  it("keeps the previous configuration in use when the save-and-check fails", async () => {
+    const replacementDraft: AdminSearchDraft = { ...draft, providerModelId: "technical-2" };
+    const strategyUpdateMany = vi.fn(async () => ({ count: 1 }));
+    const strategyPublish = vi.fn(async () => undefined);
+    const optionUpdate = vi.fn(async () => undefined);
+    const revisions = revisionRepository();
+    const transaction = vi.fn();
+    const prisma = {
+      $transaction: transaction,
+      providerModel: { findFirst: vi.fn(async () => providerModel({ id: "technical-2" })) },
+      searchIntegrationRevision: revisions,
+      searchOption: {
+        findUnique: vi.fn(async () => option([
+          child(draft),
+          child(hostedDraft, { id: "strategy-hosted", strategyId: "physical-hosted" })
+        ])),
+        update: optionUpdate
+      },
+      searchStrategy: { update: strategyPublish, updateMany: strategyUpdateMany }
+    } as unknown as PrismaClient;
+    const test = vi.fn();
+    const service = createAdminSearchService({ now: () => NOW, prisma, tester: { test } });
+    const save = () => service.saveAndCheck({
+      description: "Web evidence",
+      displayName: "OpenAI Search",
+      draft: replacementDraft,
+      expectedDraftVersion: 1,
+      id: "source-1",
+      userId: "admin-1"
+    });
+
+    test.mockRejectedValueOnce(new Error("provider_unreachable"));
+    await expect(save()).rejects.toMatchObject({ code: "search_test_failed" });
+
+    test.mockResolvedValueOnce({
+      method: "provider_search",
+      normalizedSourceCount: 0,
+      probeBinding: { ...PROBE_BINDING, providerModelId: "technical-2" },
+      protocol: draft.protocol,
+      status: "unavailable"
+    });
+    await expect(save()).rejects.toMatchObject({ code: "search_test_failed" });
+
+    test.mockResolvedValueOnce({
+      method: "provider_search",
+      normalizedSourceCount: 2,
+      probeBinding: PROBE_BINDING,
+      protocol: draft.protocol,
+      status: "available"
+    });
+    await expect(save()).rejects.toMatchObject({ code: "search_test_failed" });
+
+    expect(test).toHaveBeenCalledTimes(3);
+    expect(transaction).not.toHaveBeenCalled();
+    expect(strategyUpdateMany).not.toHaveBeenCalled();
+    expect(strategyPublish).not.toHaveBeenCalled();
+    expect(optionUpdate).not.toHaveBeenCalled();
+    expect(revisions.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale save before running the paid check", async () => {
+    const transaction = vi.fn();
+    const test = vi.fn();
+    const prisma = {
+      $transaction: transaction,
+      providerModel: { findFirst: vi.fn(async () => providerModel()) },
+      searchOption: { findUnique: vi.fn(async () => option([child(draft)])) }
+    } as unknown as PrismaClient;
+    const service = createAdminSearchService({ prisma, tester: { test } });
+
+    await expect(service.saveAndCheck({
+      description: "Web evidence",
+      displayName: "OpenAI Search",
+      draft,
+      expectedDraftVersion: 2,
+      id: "source-1",
+      userId: "admin-1"
+    })).rejects.toMatchObject({ code: "search_draft_stale" });
+    expect(test).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it("applies advanced execution controls only to the broader-model route", async () => {
@@ -926,16 +1105,29 @@ describe("admin Search service", () => {
       searchStrategy: { update: strategyPublish, updateMany: strategyUpdateMany }
     };
     const prisma = {
+      ...tx,
       $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)
     } as unknown as PrismaClient;
-    const service = createAdminSearchService({ prisma, tester: { test: vi.fn() } });
+    const service = createAdminSearchService({
+      prisma,
+      tester: {
+        test: vi.fn(async () => ({
+          method: "provider_search" as const,
+          normalizedSourceCount: 2,
+          probeBinding: PROBE_BINDING,
+          protocol: draft.protocol,
+          status: "available" as const
+        }))
+      }
+    });
 
-    await service.updateDraft({
+    await service.saveAndCheck({
       description: "Web evidence",
       displayName: "OpenAI Search",
       draft: advancedDraft,
       expectedDraftVersion: 1,
-      id: "source-1"
+      id: "source-1",
+      userId: "admin-1"
     });
 
     expect(revisions.create).toHaveBeenCalledTimes(1);
@@ -960,90 +1152,6 @@ describe("admin Search service", () => {
       }),
       where: { id: "strategy-hosted" }
     });
-  });
-
-  it("keeps the activate endpoint as a network-free configuration publication", async () => {
-    const revisionCreate = vi.fn()
-      .mockResolvedValueOnce({ id: "revision-2" })
-      .mockResolvedValueOnce({ id: "revision-hosted-1" });
-    const strategyUpdate = vi.fn(async () => undefined);
-    const editable = child(draft, {
-      activeRevision: null,
-      activeRevisionId: null,
-      draftTestEvidence: {
-        checkedAt: NOW.toISOString(),
-        method: "provider_search",
-        normalizedSourceCount: 2,
-        probeBinding: PROBE_BINDING,
-        protocol: draft.protocol,
-        status: "available"
-      },
-      revisions: [{ revisionNumber: 1 }]
-    });
-    const hosted = child(hostedDraft, {
-      activeRevision: null,
-      activeRevisionId: null,
-      activatedAt: null,
-      enabled: false,
-      id: "strategy-hosted",
-      revisions: [],
-      strategyId: "physical-hosted"
-    });
-    const tx = {
-      providerModel: { findFirst: vi.fn(async () => providerModel()) },
-      searchIntegrationRevision: {
-        create: revisionCreate,
-        findUnique: vi.fn(async () => null)
-      },
-      searchOption: { findUnique: vi.fn(async () => option([editable, hosted])) },
-      searchStrategy: { update: strategyUpdate }
-    };
-    const prisma = {
-      $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)
-    } as unknown as PrismaClient;
-    const currentBinding = vi.fn(async () => PROBE_BINDING);
-    const service = createAdminSearchService({
-      now: () => NOW,
-      prisma,
-      tester: {
-        currentBinding,
-        test: vi.fn()
-      }
-    });
-
-    await service.activate({ id: "source-1", userId: "admin-1" });
-
-    expect(revisionCreate).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        draftHash: searchDraftHash(draft),
-        revisionNumber: 2,
-        searchStrategyId: "strategy-1",
-        validationEvidence: expect.objectContaining({ method: "configuration" })
-      })
-    });
-    expect(strategyUpdate).toHaveBeenCalledWith({
-      data: expect.objectContaining({ activeRevisionId: "revision-2", enabled: true }),
-      where: { id: "strategy-1" }
-    });
-    expect(revisionCreate).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        adapterKind: "answer_provider_hosted",
-        providerModelId: null,
-        searchStrategyId: "strategy-hosted"
-      })
-    });
-    expect(strategyUpdate).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        activeRevisionId: "revision-hosted-1",
-        adapterKind: "answer_provider_hosted",
-        enabled: true,
-        providerModelId: null
-      }),
-      where: { id: "strategy-hosted" }
-    });
-
-    expect(revisionCreate).toHaveBeenCalledTimes(2);
-    expect(currentBinding).not.toHaveBeenCalled();
   });
 
   it("does not let a failed optional diagnostic disable an active source", async () => {
@@ -1139,10 +1247,14 @@ describe("admin Search service", () => {
     const tx = {
       providerModel: { findFirst: vi.fn(async () => providerModel()) },
       searchIntegrationRevision: { create: revisionCreate, findUnique },
-      searchOption: { findUnique: vi.fn(async () => option([editable, hosted])) },
-      searchStrategy: { update: strategyUpdate }
+      searchOption: {
+        findUnique: vi.fn(async () => option([editable, hosted])),
+        update: vi.fn(async () => undefined)
+      },
+      searchStrategy: { update: strategyUpdate, updateMany: vi.fn(async () => ({ count: 1 })) }
     };
     const prisma = {
+      ...tx,
       $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)
     } as unknown as PrismaClient;
     const service = createAdminSearchService({
@@ -1150,11 +1262,24 @@ describe("admin Search service", () => {
       prisma,
       tester: {
         currentBinding: vi.fn(async () => PROBE_BINDING),
-        test: vi.fn()
+        test: vi.fn(async () => ({
+          method: "provider_search" as const,
+          normalizedSourceCount: 2,
+          probeBinding: PROBE_BINDING,
+          protocol: changedDraft.protocol,
+          status: "available" as const
+        }))
       }
     });
 
-    await service.activate({ id: "source-1", userId: "admin-1" });
+    await service.saveAndCheck({
+      description: "Web evidence",
+      displayName: "OpenAI Search",
+      draft: changedDraft,
+      expectedDraftVersion: 1,
+      id: "source-1",
+      userId: "admin-1"
+    });
 
     expect(revisionCreate).toHaveBeenCalledTimes(1);
     expect(revisionCreate).toHaveBeenCalledWith({

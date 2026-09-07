@@ -96,11 +96,14 @@ export function createAdminSearchCatalogHandler(input: Readonly<{
       }
       const displayName = value.displayName;
       const description = value.description;
+      const check = value.check === true;
       return safely(async () => {
         const selected = await input.service.createDraft({
+          check,
           description,
           displayName,
-          draft: value.draft
+          draft: value.draft,
+          userId: auth.session!.userId
         });
         return Response.json({
           search: await input.service.list({ userId: auth.session!.userId }),
@@ -132,39 +135,6 @@ export function createAdminSearchCatalogHandler(input: Readonly<{
   };
 }
 
-export function createAdminSearchIntegrationHandler(input: Readonly<{
-  resolveAuth: RequestAuthResolver;
-  service: AdminSearchService;
-}>) {
-  return async function PATCH(request: Request, context: SearchContext): Promise<Response> {
-    if (!hasJsonContentType(request)) {
-      return Response.json({ error: "json_required" }, { status: 415 });
-    }
-    const auth = await requireAdmin(request, input.resolveAuth);
-    if (auth.error || !auth.session) return auth.error!;
-    const [value, bodyError] = await body(request);
-    if (bodyError) return bodyError;
-    if (!value || typeof value.displayName !== "string" ||
-      typeof value.description !== "string" || !isRecord(value.draft) ||
-      !Number.isSafeInteger(value.expectedDraftVersion)) {
-      return Response.json({ error: "search_configuration_invalid" }, { status: 400 });
-    }
-    const { integrationId } = await context.params;
-    const displayName = value.displayName;
-    const description = value.description;
-    return safely(async () => {
-      await input.service.updateDraft({
-        description,
-        displayName,
-        draft: value.draft,
-        expectedDraftVersion: Number(value.expectedDraftVersion),
-        id: integrationId
-      });
-      return catalog(input.service, auth.session.userId);
-    });
-  };
-}
-
 export function createAdminSearchActionHandler(input: Readonly<{
   resolveAuth: RequestAuthResolver;
   service: AdminSearchService;
@@ -182,8 +152,20 @@ export function createAdminSearchActionHandler(input: Readonly<{
     return safely(async () => {
       if (action === "test") {
         await input.service.testDraft({ id: integrationId, userId: auth.session!.userId });
-      } else if (action === "activate") {
-        await input.service.activate({ id: integrationId, userId: auth.session!.userId });
+      } else if (action === "save_and_check") {
+        if (!value || typeof value.displayName !== "string" ||
+          typeof value.description !== "string" || !isRecord(value.draft) ||
+          !Number.isSafeInteger(value.expectedDraftVersion)) {
+          return Response.json({ error: "search_configuration_invalid" }, { status: 400 });
+        }
+        await input.service.saveAndCheck({
+          description: value.description,
+          displayName: value.displayName,
+          draft: value.draft,
+          expectedDraftVersion: Number(value.expectedDraftVersion),
+          id: integrationId,
+          userId: auth.session!.userId
+        });
       } else if (action === "enable") {
         await input.service.setEnabled({
           enabled: true,

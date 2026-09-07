@@ -799,15 +799,74 @@ export function createAdminSearchService(input: Readonly<{
     if (updated.count !== 1) throw new AdminSearchServiceError("search_policy_stale");
   }
 
+  async function loadOption(
+    store: PrismaClient | Prisma.TransactionClient,
+    id: string
+  ): Promise<SearchOptionRow> {
+    const option = await store.searchOption.findUnique({
+      include: {
+        strategies: {
+          include: {
+            activeRevision: true,
+            revisions: { orderBy: { revisionNumber: "desc" }, take: 1 }
+          },
+          orderBy: { strategyId: "asc" }
+        }
+      },
+      where: { id }
+    }) as SearchOptionRow | null;
+    if (!option || option.kind === "none") {
+      throw new AdminSearchServiceError("search_integration_not_found");
+    }
+    return option;
+  }
+
+  type LiveCheck = Readonly<{
+    evidence: AdminSearchTestEvidence & Readonly<{ probeBinding: SearchProbeBinding }>;
+    hash: string;
+  }>;
+
+  /** Live check of a configuration that is not stored yet. A thrown check, a
+   * check bound to another model or connection, and a check that found no
+   * source all fail the whole save, so nothing is written. */
+  async function liveCheck(
+    draft: AdminSearchDraft,
+    sourceConnectionId: string,
+    userId: string
+  ): Promise<LiveCheck> {
+    let outcome: Awaited<ReturnType<AdminSearchTester["test"]>>;
+    try {
+      outcome = await input.tester.test({ draft, userId });
+    } catch {
+      throw new AdminSearchServiceError("search_test_failed");
+    }
+    if (
+      outcome.status !== "available" ||
+      outcome.probeBinding.providerModelId !== draft.providerModelId ||
+      outcome.probeBinding.connectionId !== sourceConnectionId
+    ) {
+      throw new AdminSearchServiceError("search_test_failed");
+    }
+    return {
+      evidence: { ...outcome, checkedAt: now().toISOString() },
+      hash: searchDraftHash(draft)
+    };
+  }
+
   async function createDraft(args: Readonly<{
+    check?: boolean;
     description: string;
     displayName: string;
     draft: unknown;
+    userId: string;
   }>): Promise<Readonly<{ created: boolean; id: string }>> {
     const displayName = text(args.displayName, 160);
     const description = text(args.description, 500);
     const draft = normalizedDraft(args.draft);
     const technical = await providerModelForDraft(draft);
+    const check = args.check
+      ? await liveCheck(draft, technical.model.connectionId, args.userId)
+      : null;
     const optionRowId = idFactory();
     const strategyRowId = idFactory();
     const optionId = `${slug(displayName)}-${optionRowId.slice(0, 8)}`;
@@ -886,22 +945,21 @@ export function createAdminSearchService(input: Readonly<{
         });
       }
       async function publishOption(optionId: string): Promise<void> {
-        const refreshed = await tx.searchOption.findUnique({
-          include: {
-            strategies: {
-              include: {
-                activeRevision: true,
-                revisions: { orderBy: { revisionNumber: "desc" }, take: 1 }
-              },
-              orderBy: { strategyId: "asc" }
-            }
-          },
-          where: { id: optionId }
-        }) as SearchOptionRow | null;
-        if (!refreshed) {
-          throw new AdminSearchServiceError("search_integration_not_found");
-        }
+        const refreshed = await loadOption(tx, optionId);
         await publishLogicalOption(tx, refreshed);
+        if (!check) return;
+        // The check proved the exact configuration that was just published;
+        // a reused parent that kept an older configuration records nothing.
+        const published = editableChild(refreshed);
+        if (published && searchDraftHash(published.draft) === check.hash) {
+          await tx.searchStrategy.update({
+            data: {
+              draftTestEvidence: json(check.evidence),
+              testedDraftHash: check.hash
+            },
+            where: { id: published.child.id }
+          });
+        }
       }
       async function ensureHostedRoute(
         option: SearchOptionRow,
@@ -1035,60 +1093,58 @@ export function createAdminSearchService(input: Readonly<{
     });
   }
 
-  async function updateDraft(args: Readonly<{
+  async function saveAndCheck(args: Readonly<{
     description: string;
     displayName: string;
     draft: unknown;
     expectedDraftVersion: number;
     id: string;
+    userId: string;
   }>): Promise<void> {
     const displayName = text(args.displayName, 160);
     const description = text(args.description, 500);
     const draft = normalizedDraft(args.draft);
+    // Everything that can be rejected without a network call is rejected
+    // before the paid check; the transaction repeats the fences that matter.
+    const current = await loadOption(input.prisma, args.id);
+    const editable = editableChild(current);
+    if (!editable) throw new AdminSearchServiceError("search_configuration_unavailable");
+    if (editable.child.draftVersion !== args.expectedDraftVersion) {
+      throw new AdminSearchServiceError("search_draft_stale");
+    }
+    const technical = await providerModelForDraft(draft);
+    if (!current.sourceConnectionId || technical.model.connectionId !== current.sourceConnectionId) {
+      throw new AdminSearchServiceError("search_provider_model_not_available");
+    }
+    if (editable.child.activeRevision) {
+      const active = normalizedDraft(editable.child.activeRevision.configuration);
+      if (materialIdentity(active) !== materialIdentity(draft)) {
+        throw new AdminSearchServiceError("search_integration_material_identity_changed");
+      }
+    }
+    const check = await liveCheck(draft, current.sourceConnectionId, args.userId);
     await input.prisma.$transaction(async (tx) => {
-      const option = await tx.searchOption.findUnique({
-        include: {
-          strategies: {
-            include: {
-              activeRevision: true,
-              revisions: { orderBy: { revisionNumber: "desc" }, take: 1 }
-            },
-            orderBy: { strategyId: "asc" }
-          }
-        },
-        where: { id: args.id }
-      }) as SearchOptionRow | null;
-      if (!option || option.kind === "none") {
-        throw new AdminSearchServiceError("search_integration_not_found");
-      }
-      const editable = editableChild(option);
-      if (!editable) throw new AdminSearchServiceError("search_configuration_unavailable");
-      const technical = await providerModelForDraft(draft, tx);
-      if (technical.model.connectionId !== option.sourceConnectionId) {
-        throw new AdminSearchServiceError("search_provider_model_not_available");
-      }
-      if (editable.child.activeRevision) {
-        const active = normalizedDraft(editable.child.activeRevision.configuration);
-        if (materialIdentity(active) !== materialIdentity(draft)) {
-          throw new AdminSearchServiceError("search_integration_material_identity_changed");
-        }
+      const option = await loadOption(tx, args.id);
+      const target = editableChild(option);
+      if (!target || target.child.id !== editable.child.id) {
+        throw new AdminSearchServiceError("search_configuration_unavailable");
       }
       const updated = await tx.searchStrategy.updateMany({
         data: {
           description,
           displayName,
           draft: json(draft),
-          draftTestEvidence: Prisma.DbNull,
+          draftTestEvidence: json(check.evidence),
           draftVersion: { increment: 1 },
-          testedDraftHash: null
+          testedDraftHash: check.hash
         },
-        where: { draftVersion: args.expectedDraftVersion, id: editable.child.id }
+        where: { draftVersion: args.expectedDraftVersion, id: target.child.id }
       });
       if (updated.count !== 1) throw new AdminSearchServiceError("search_draft_stale");
-      editable.child.draft = draft;
-      editable.child.draftTestEvidence = null;
-      editable.child.draftVersion += 1;
-      editable.child.testedDraftHash = null;
+      target.child.draft = draft;
+      target.child.draftTestEvidence = check.evidence;
+      target.child.draftVersion += 1;
+      target.child.testedDraftHash = check.hash;
       await tx.searchOption.update({
         data: { description, displayName },
         where: { id: option.id }
@@ -1134,28 +1190,6 @@ export function createAdminSearchService(input: Readonly<{
     if (updated.count !== 1) throw new AdminSearchServiceError("search_draft_stale");
   }
 
-  async function activate(args: Readonly<{ id: string; userId: string }>): Promise<void> {
-    await input.prisma.$transaction(async (tx) => {
-      const option = await tx.searchOption.findUnique({
-        include: {
-          strategies: {
-            include: {
-              activeRevision: true,
-              revisions: { orderBy: { revisionNumber: "desc" }, take: 1 }
-            },
-            orderBy: { strategyId: "asc" }
-          }
-        },
-        where: { id: args.id }
-      }) as SearchOptionRow | null;
-      if (!option) throw new AdminSearchServiceError("search_integration_not_found");
-      // Activation publishes the saved configuration without a network call.
-      // It never depends on a prior live check or on the credential version
-      // used by one administrator.
-      await publishLogicalOption(tx, option);
-    });
-  }
-
   async function setEnabled(args: Readonly<{
     enabled: boolean;
     id: string;
@@ -1190,13 +1224,12 @@ export function createAdminSearchService(input: Readonly<{
   }
 
   return Object.freeze({
-    activate,
     archive,
     createDraft,
     list,
+    saveAndCheck,
     setEnabled,
     testDraft,
-    updateDraft,
     updatePolicy
   });
 }
