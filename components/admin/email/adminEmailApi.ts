@@ -4,7 +4,6 @@ import type {
   AdminEmailClearRequest,
   AdminEmailConfiguration,
   AdminEmailMutationResponse,
-  AdminEmailSaveRequest,
   AdminEmailState,
   AdminEmailTestResponse
 } from "@/lib/contracts/email";
@@ -14,6 +13,11 @@ type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respons
 export type AdminEmailClientResult<T> =
   | { data: T; ok: true }
   | { error: string; ok: false };
+
+/** The outcome of `test_and_activate`; a rejected test carries its cause and the stored settings. */
+export type AdminEmailTestAndActivateResult =
+  | { data: AdminEmailTestResponse; ok: true }
+  | { error: string; ok: false; testFailure: { code: AdminEmailAttemptCode; email: AdminEmailState } | null };
 
 const ATTEMPT_CODES = new Set<AdminEmailAttemptCode>([
   "accepted",
@@ -150,7 +154,7 @@ async function request<T>(
   }
 }
 
-function jsonInit(method: "DELETE" | "POST" | "PUT", body: unknown): RequestInit {
+function jsonInit(method: "DELETE" | "POST", body: unknown): RequestInit {
   return {
     body: JSON.stringify(body),
     headers: { "content-type": "application/json" },
@@ -162,14 +166,41 @@ export function requestAdminEmail(fetcher: Fetcher = fetch) {
   return request({ method: "GET" }, decodeMutation, fetcher);
 }
 
-export function saveAdminEmail(body: AdminEmailSaveRequest, fetcher: Fetcher = fetch) {
-  return request(jsonInit("PUT", body), decodeMutation, fetcher);
+export function runAdminEmailAction(
+  body: Extract<AdminEmailActionRequest, { action: "disable" | "enable" }>,
+  fetcher: Fetcher = fetch
+) {
+  return request(jsonInit("POST", body), decodeMutation, fetcher);
 }
 
-export function runAdminEmailAction(body: AdminEmailActionRequest, fetcher: Fetcher = fetch) {
-  return body.action === "test"
-    ? request(jsonInit("POST", body), decodeTest, fetcher)
-    : request(jsonInit("POST", body), decodeMutation, fetcher);
+/**
+ * One server operation (PRD B6): store the settings, send the test message,
+ * activate on acceptance. A 422 `email_test_failed` answer is decoded into
+ * `testFailure` so the form can show the cause with the fields preserved.
+ */
+export async function testAndActivateAdminEmail(
+  body: Extract<AdminEmailActionRequest, { action: "test_and_activate" }>,
+  fetcher: Fetcher = fetch
+): Promise<AdminEmailTestAndActivateResult> {
+  try {
+    const response = await fetcher("/api/admin/email", jsonInit("POST", body));
+    const value: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = isRecord(value) && typeof value.error === "string" ? value.error : "email_admin_action_failed";
+      const failed = error === "email_test_failed" ? decodeTest(value) : null;
+      return {
+        error,
+        ok: false,
+        testFailure: failed && !failed.test.tested ? { code: failed.test.code, email: failed.email } : null
+      };
+    }
+    const decoded = decodeTest(value);
+    return decoded
+      ? { data: decoded, ok: true }
+      : { error: "email_admin_response_invalid", ok: false, testFailure: null };
+  } catch {
+    return { error: "network_error", ok: false, testFailure: null };
+  }
 }
 
 export function clearAdminEmail(body: AdminEmailClearRequest, fetcher: Fetcher = fetch) {
@@ -178,20 +209,20 @@ export function clearAdminEmail(body: AdminEmailClearRequest, fetcher: Fetcher =
 
 export function adminEmailErrorMessage(code: string): string {
   const messages: Record<string, string> = {
-    email_active_conflict: "The active email configuration changed. Refresh and try again.",
-    email_admin_action_failed: "The email delivery action could not be completed.",
+    email_active_conflict: "Email settings changed elsewhere. The page was refreshed; try again.",
+    email_admin_action_failed: "The email action could not be completed.",
     email_admin_response_invalid: "The email API returned an unexpected response. Refresh and try again.",
-    email_configuration_invalid: "Review the email delivery fields and password action.",
-    email_draft_conflict: "The email draft changed. Refresh before saving again.",
-    email_draft_not_configured: "Save a complete draft before testing or activation.",
-    email_draft_not_tested: "Test the current draft successfully before activation.",
+    email_configuration_invalid: "Check the email fields and try again.",
+    email_draft_conflict: "Email settings changed elsewhere. The page was refreshed; try again.",
+    email_draft_not_configured: "Set up email before turning delivery on or off.",
+    email_draft_not_tested: "The settings were not tested. Use Test & Save.",
     email_encryption_unavailable: "Secret storage is unavailable. Check AIQSA_ENCRYPTION_KEY.",
-    email_state_invalid: "The stored email configuration is inconsistent. Clear it or restore a valid backup.",
-    email_test_overloaded: "Too many email tests are running. Wait briefly and try again.",
-    forbidden: "Your account no longer has permission to manage email delivery.",
+    email_state_invalid: "The stored email settings are inconsistent. Clear the configuration and set it up again.",
+    email_test_failed: "The test message was not accepted.",
+    forbidden: "Your account no longer has permission to manage email.",
     json_required: "The email request format was not accepted. Refresh and try again.",
     network_error: "Could not reach the email administration API.",
     unauthorized: "Your administrator session is no longer valid. Sign in again."
   };
-  return messages[code] ?? "The email delivery action could not be completed.";
+  return messages[code] ?? "The email action could not be completed.";
 }

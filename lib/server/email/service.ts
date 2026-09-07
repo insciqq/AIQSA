@@ -5,10 +5,12 @@ import type {
 } from "../../contracts/email";
 import {
   normalizeSmtpProductMessage,
+  type SmtpCompleteConfiguration,
   type SmtpProductMessage
 } from "./definitions";
 import type {
   EmailRepository,
+  EmailRepositoryFailureCode,
   EmailRepositoryResult
 } from "./repository";
 import type { SmtpSendOutcome, SmtpTransport } from "./smtpTransport";
@@ -48,12 +50,18 @@ function outcomeCode(outcome: SmtpSendOutcome): AdminEmailAttemptCode {
   return outcome.code;
 }
 
+/**
+ * Outcome of `testAndActivate`. `test_failed` means the settings were stored
+ * and the message was attempted, but the mail server did not accept it; every
+ * other failure code is a repository refusal before or after the send. In all
+ * failure cases the previously active configuration is untouched.
+ */
+export type AdminEmailTestAndActivateResult =
+  | { ok: true; value: AdminEmailTestResponse }
+  | { ok: false; code: EmailRepositoryFailureCode }
+  | { ok: false; code: "test_failed"; value: AdminEmailTestResponse };
+
 export type AdminEmailService = {
-  activate(input: {
-    actorUserId: string;
-    expectedActiveVersion: number;
-    expectedDraftVersion: number;
-  }): Promise<EmailRepositoryResult<AdminEmailState>>;
   clear(input: {
     actorUserId: string;
     expectedActiveVersion: number;
@@ -68,16 +76,14 @@ export type AdminEmailService = {
     expectedActiveVersion: number;
   }): Promise<EmailRepositoryResult<AdminEmailState>>;
   read(): Promise<EmailRepositoryResult<AdminEmailState>>;
-  saveDraft(input: {
+  testAndActivate(input: {
     actorUserId: string;
     configuration: unknown;
+    expectedActiveVersion: number;
     expectedDraftVersion: number;
     passwordAction: unknown;
-  }): Promise<EmailRepositoryResult<AdminEmailState>>;
-  testDraft(input: {
-    expectedDraftVersion: number;
-    recipient: string;
-  }): Promise<EmailRepositoryResult<AdminEmailTestResponse>>;
+    testRecipient: string;
+  }): Promise<AdminEmailTestAndActivateResult>;
 };
 
 export function createAdminEmailService(input: {
@@ -89,36 +95,23 @@ export function createAdminEmailService(input: {
   const now = input.now ?? (() => new Date());
   const attemptGate = input.attemptGate ?? defaultSmtpAttemptGate;
 
-  async function settleTest(
-    draftVersion: number,
-    code: AdminEmailAttemptCode
-  ): Promise<EmailRepositoryResult<AdminEmailTestResponse>> {
-    const stored = await input.repository.recordDraftTest({
-      at: now(),
-      code,
-      draftVersion
-    });
-    return stored.ok
-      ? {
-          ok: true,
-          value: {
-            email: stored.value,
-            test: { code, tested: code === "accepted" }
-          }
-        }
-      : stored;
+  async function attempt(
+    configuration: SmtpCompleteConfiguration,
+    message: SmtpProductMessage
+  ): Promise<AdminEmailAttemptCode> {
+    const release = attemptGate.tryAcquire();
+    if (!release) return "overloaded";
+    try {
+      return outcomeCode(await input.transport.send({ configuration, message }));
+    } catch {
+      return "smtp_connection_failed";
+    } finally {
+      release();
+    }
   }
 
   return {
     read: () => input.repository.readAdminState(),
-
-    saveDraft(request) {
-      return input.repository.saveDraft({ ...request, now: now() });
-    },
-
-    activate(request) {
-      return input.repository.activate({ ...request, now: now() });
-    },
 
     enable(request) {
       return input.repository.enable({ ...request, now: now() });
@@ -132,39 +125,62 @@ export function createAdminEmailService(input: {
       return input.repository.clear({ ...request, now: now() });
     },
 
-    async testDraft(request) {
-      const snapshot = await input.repository.loadDraftForTest(request.expectedDraftVersion);
-      if (!snapshot.ok) return snapshot;
-
+    async testAndActivate(request) {
       let message: SmtpProductMessage;
       try {
         message = normalizeSmtpProductMessage({
           kind: "configuration_test",
           subject: TEST_SUBJECT,
           text: TEST_TEXT,
-          to: request.recipient
+          to: request.testRecipient
         });
       } catch {
-        return settleTest(snapshot.value.draftVersion, "smtp_invalid_input");
+        return { ok: false, code: "invalid_configuration" };
       }
 
-      const release = attemptGate.tryAcquire();
-      if (!release) return settleTest(snapshot.value.draftVersion, "overloaded");
-
-      let code: AdminEmailAttemptCode;
-      try {
-        const outcome = await input.transport.send({
-          configuration: snapshot.value.configuration,
-          message
-        });
-        code = outcomeCode(outcome);
-      } catch {
-        code = "smtp_connection_failed";
-      } finally {
-        release();
+      // Refuse before storing or sending anything when the active configuration
+      // already moved; the CAS inside `activate` stays the authoritative check.
+      const current = await input.repository.readAdminState();
+      if (!current.ok) return current;
+      if (current.value.active.version !== request.expectedActiveVersion) {
+        return { ok: false, code: "active_conflict" };
       }
-      return settleTest(snapshot.value.draftVersion, code);
+
+      const saved = await input.repository.saveDraft({
+        actorUserId: request.actorUserId,
+        configuration: request.configuration,
+        expectedDraftVersion: request.expectedDraftVersion,
+        now: now(),
+        passwordAction: request.passwordAction
+      });
+      if (!saved.ok) return saved;
+      const draftVersion = saved.value.draft.version;
+
+      const snapshot = await input.repository.loadDraftForTest(draftVersion);
+      if (!snapshot.ok) return snapshot;
+
+      const code = await attempt(snapshot.value.configuration, message);
+      const recorded = await input.repository.recordDraftTest({ at: now(), code, draftVersion });
+      if (!recorded.ok) return recorded;
+      if (code !== "accepted") {
+        return {
+          ok: false,
+          code: "test_failed",
+          value: { email: recorded.value, test: { code, tested: false } }
+        };
+      }
+
+      const activated = await input.repository.activate({
+        actorUserId: request.actorUserId,
+        expectedActiveVersion: request.expectedActiveVersion,
+        expectedDraftVersion: draftVersion,
+        now: now()
+      });
+      if (!activated.ok) return activated;
+      return {
+        ok: true,
+        value: { email: activated.value, test: { code: "accepted", tested: true } }
+      };
     }
   };
 }
-

@@ -1,10 +1,11 @@
 import type {
   AdminEmailActionRequest,
   AdminEmailClearRequest,
+  AdminEmailDraftInput,
   AdminEmailErrorCode,
   AdminEmailErrorResponse,
   AdminEmailMutationResponse,
-  AdminEmailSaveRequest,
+  AdminEmailTestFailedResponse,
   AdminEmailTestResponse
 } from "../../contracts/email";
 import type { RequestAuthResolver } from "../auth/requestAuth";
@@ -97,17 +98,17 @@ function mutationResponse(result: EmailRepositoryResult<AdminEmailMutationRespon
     : repositoryError(result.code);
 }
 
-function saveRequest(body: Record<string, unknown> | null): AdminEmailSaveRequest | null {
-  if (!body || !hasOnlyKeys(body, ["configuration", "expectedDraftVersion", "passwordAction"])) {
+function draftInput(value: unknown): AdminEmailDraftInput | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["configuration", "expectedDraftVersion", "passwordAction"])) {
     return null;
   }
-  const expectedDraftVersion = version(body.expectedDraftVersion);
+  const expectedDraftVersion = version(value.expectedDraftVersion);
   if (expectedDraftVersion === null) return null;
   try {
     return {
-      configuration: normalizeSmtpConfiguration(body.configuration),
+      configuration: normalizeSmtpConfiguration(value.configuration),
       expectedDraftVersion,
-      passwordAction: normalizeSmtpPasswordAction(body.passwordAction)
+      passwordAction: normalizeSmtpPasswordAction(value.passwordAction)
     };
   } catch {
     return null;
@@ -128,14 +129,6 @@ function clearRequest(body: Record<string, unknown> | null): AdminEmailClearRequ
 
 function actionRequest(body: Record<string, unknown> | null): AdminEmailActionRequest | null {
   if (!body || typeof body.action !== "string") return null;
-  if (body.action === "activate") {
-    if (!hasOnlyKeys(body, ["action", "expectedActiveVersion", "expectedDraftVersion"])) return null;
-    const expectedActiveVersion = version(body.expectedActiveVersion);
-    const expectedDraftVersion = version(body.expectedDraftVersion);
-    return expectedActiveVersion === null || expectedDraftVersion === null
-      ? null
-      : { action: "activate", expectedActiveVersion, expectedDraftVersion };
-  }
   if (body.action === "disable" || body.action === "enable") {
     if (!hasOnlyKeys(body, ["action", "expectedActiveVersion"])) return null;
     const expectedActiveVersion = version(body.expectedActiveVersion);
@@ -143,18 +136,19 @@ function actionRequest(body: Record<string, unknown> | null): AdminEmailActionRe
       ? null
       : { action: body.action, expectedActiveVersion };
   }
-  if (body.action === "test") {
-    if (!hasOnlyKeys(body, ["action", "expectedDraftVersion", "recipient"])) return null;
-    const expectedDraftVersion = version(body.expectedDraftVersion);
-    if (expectedDraftVersion === null) return null;
+  if (body.action === "test_and_activate") {
+    if (!hasOnlyKeys(body, ["action", "draft", "expectedActiveVersion", "testRecipient"])) return null;
+    const draft = draftInput(body.draft);
+    const expectedActiveVersion = version(body.expectedActiveVersion);
+    if (!draft || expectedActiveVersion === null) return null;
     try {
       const message = normalizeSmtpProductMessage({
         kind: "configuration_test",
         subject: "AIQSA email delivery configuration test",
         text: "AIQSA configuration test.",
-        to: body.recipient
+        to: body.testRecipient
       });
-      return { action: "test", expectedDraftVersion, recipient: message.to };
+      return { action: "test_and_activate", draft, expectedActiveVersion, testRecipient: message.to };
     } catch {
       return null;
     }
@@ -167,22 +161,6 @@ export function createAdminEmailReadHandler(deps: AdminEmailHandlerDeps) {
     const auth = await requireAdmin(request, deps);
     if (!auth.session) return auth.response;
     return mutationResponse(await deps.service.read());
-  };
-}
-
-export function createAdminEmailSaveHandler(deps: AdminEmailHandlerDeps) {
-  return async function PUT(request: Request): Promise<Response> {
-    if (!hasJsonContentType(request)) return errorJson("json_required", 415);
-    const auth = await requireAdmin(request, deps);
-    if (!auth.session) return auth.response;
-    const [value, bodyError] = await readJsonRecord(request);
-    if (bodyError) return bodyError;
-    const body = saveRequest(value);
-    if (!body) return errorJson("email_configuration_invalid", 400);
-    return mutationResponse(await deps.service.saveDraft({
-      actorUserId: auth.session.userId,
-      ...body
-    }));
   };
 }
 
@@ -213,21 +191,24 @@ export function createAdminEmailActionHandler(deps: AdminEmailHandlerDeps) {
     const action = actionRequest(value);
     if (!action) return errorJson("email_configuration_invalid", 400);
 
-    if (action.action === "test") {
-      const result = await deps.service.testDraft({
-        expectedDraftVersion: action.expectedDraftVersion,
-        recipient: action.recipient
-      });
-      return result.ok
-        ? Response.json(result.value satisfies AdminEmailTestResponse)
-        : repositoryError(result.code);
-    }
-    if (action.action === "activate") {
-      return mutationResponse(await deps.service.activate({
+    if (action.action === "test_and_activate") {
+      const result = await deps.service.testAndActivate({
         actorUserId: auth.session.userId,
+        configuration: action.draft.configuration,
         expectedActiveVersion: action.expectedActiveVersion,
-        expectedDraftVersion: action.expectedDraftVersion
-      }));
+        expectedDraftVersion: action.draft.expectedDraftVersion,
+        passwordAction: action.draft.passwordAction,
+        testRecipient: action.testRecipient
+      });
+      if (result.ok) return Response.json(result.value satisfies AdminEmailTestResponse);
+      if (result.code === "test_failed") {
+        return Response.json({
+          email: result.value.email,
+          error: "email_test_failed",
+          test: { code: result.value.test.code, tested: false }
+        } satisfies AdminEmailTestFailedResponse, { status: 422 });
+      }
+      return repositoryError(result.code);
     }
     if (action.action === "enable") {
       return mutationResponse(await deps.service.enable({

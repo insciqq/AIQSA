@@ -690,9 +690,10 @@ describe("AdminPanel", () => {
     fireEvent.click(screen.getByRole("link", { name: "Email" }));
 
     const section = await screen.findByTestId("admin-section-email");
-    expect(within(section).getByRole("heading", { name: "Email tasks" })).toBeInTheDocument();
-    expect(within(section).getByRole("button", { name: /Draft configuration/ })).toBeInTheDocument();
-    expect(within(section).getAllByText("Not configured").length).toBeGreaterThan(0);
+    expect(await within(section).findByRole("form", { name: "Email settings" })).toBeInTheDocument();
+    expect(within(section).getByTestId("email-delivery-status")).toHaveTextContent("Not configured");
+    expect(within(section).getByLabelText("Send a test to")).toHaveValue("admin@example.com");
+    expect(within(section).getByRole("button", { name: "Test & Save" })).toBeInTheDocument();
     expect(fetch).toHaveBeenCalledWith("/api/admin/email", { method: "GET" });
   });
 

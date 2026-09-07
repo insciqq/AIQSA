@@ -1,16 +1,16 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import type { AdminDashboard } from "../../lib/contracts/admin";
 import type {
   AdminEmailConfiguration,
-  AdminEmailSaveRequest,
+  AdminEmailDraftInput,
   AdminEmailState
 } from "../../lib/contracts/email";
 import { LOCAL_RESTRICTED_MEMBER } from "../../prisma/local-seed-fixtures";
-import {
-  expectNoHorizontalOverflow,
-  expectTouchSafe
-} from "./support/layoutAssertions";
+import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
+
+const ADMIN_USER_ID = "00000000-0000-4000-8000-000000000001";
+const vocabulary = /\bdraft\b|revision|pending|probe|evidence|adapter|fingerprint|\bversion\b/iu;
 
 function emptyEmailState(): AdminEmailState {
   return {
@@ -27,6 +27,29 @@ function emptyEmailState(): AdminEmailState {
     draft: { configuration: null, passwordConfigured: false, test: null, version: 0 },
     health: {
       activeVersion: null,
+      degraded: false,
+      lastAcceptedAt: null,
+      lastAttemptAt: null,
+      lastFailureAt: null,
+      lastFailureCode: null
+    }
+  };
+}
+
+function workingEmailState(configuration: AdminEmailConfiguration): AdminEmailState {
+  return {
+    ...emptyEmailState(),
+    active: {
+      activatedAt: "2026-07-23T16:02:00.000Z",
+      activatedByUserId: ADMIN_USER_ID,
+      configuration,
+      enabled: true,
+      passwordConfigured: true,
+      version: 3
+    },
+    draft: { configuration, passwordConfigured: true, test: null, version: 5 },
+    health: {
+      activeVersion: 3,
       degraded: false,
       lastAcceptedAt: null,
       lastAttemptAt: null,
@@ -69,26 +92,18 @@ function emptyAdminDashboard(): AdminDashboard {
   };
 }
 
-async function openEmailDelivery(page: Page) {
-  const section = page.getByTestId("admin-section-email");
-  if (await section.isVisible().catch(() => false)) {
-    return section;
-  }
+async function mockDashboard(page: Page): Promise<void> {
+  await page.route("**/api/admin", async (route) => {
+    await route.fulfill({ contentType: "application/json", json: emptyAdminDashboard() });
+  });
+}
 
-  const allSections = page.getByRole("button", { name: "All sections" });
-  if (await allSections.isVisible().catch(() => false)) {
-    await allSections.click();
-    await expect(page.getByTestId("admin-section-index-pane")).toBeVisible();
-  }
-
-  let emailTab = page.getByRole("tab", { exact: true, name: "Email delivery" });
-  if ((await emailTab.count()) === 0) {
-    await page.getByRole("button", { exact: true, name: "Advanced" }).click();
-    emailTab = page.getByRole("tab", { exact: true, name: "Email delivery" });
-  }
-
-  await emailTab.click();
-  await expect(section).toBeVisible();
+async function openEmail(page: Page) {
+  await signInWithLocalToken(page);
+  await page.goto("/admin?section=email");
+  const section = page.getByTestId("admin-email-section");
+  await expect(page.getByTestId("admin-topbar-title")).toHaveText("Email");
+  await expect(section.getByRole("form", { name: "Email settings" })).toBeVisible();
   return section;
 }
 
@@ -100,26 +115,12 @@ async function signInOrdinaryUser(page: Page): Promise<void> {
   await expect(page).toHaveURL("/");
 }
 
-async function expectReadableDetail(page: Page, detail: Locator) {
-  const box = await detail.boundingBox();
-  const viewport = page.viewportSize();
-  expect(box).not.toBeNull();
-  expect(viewport).not.toBeNull();
-  if (!box || !viewport) return;
-  expect(box.width).toBeGreaterThanOrEqual(640);
-  expect(box.x).toBeGreaterThanOrEqual(-1);
-  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
-}
-
-test("admin saves, tests, and activates a write-only SMTP draft without network SMTP", async ({ page }) => {
+test("admin sets up email with one Test & Save and manages delivery from the topbar menu", async ({ page }) => {
   let email = emptyEmailState();
-  const saveBodies: AdminEmailSaveRequest[] = [];
-  const testBodies: Array<Record<string, unknown>> = [];
+  const posts: Array<Record<string, unknown>> = [];
+  const deletes: Array<Record<string, unknown>> = [];
 
-  await page.route("**/api/admin", async (route) => {
-    await route.fulfill({ contentType: "application/json", json: emptyAdminDashboard() });
-  });
-
+  await mockDashboard(page);
   await page.route("**/api/admin/email", async (route) => {
     const request = route.request();
     if (request.method() === "GET") {
@@ -128,37 +129,31 @@ test("admin saves, tests, and activates a write-only SMTP draft without network 
     }
 
     const body = request.postDataJSON() as Record<string, unknown>;
-    if (request.method() === "PUT") {
-      const save = body as AdminEmailSaveRequest;
-      saveBodies.push(save);
+    if (request.method() === "POST" && body.action === "test_and_activate") {
+      posts.push(body);
+      const draft = body.draft as AdminEmailDraftInput;
+      const nextDraftVersion = email.draft.version + 1;
+      const nextActiveVersion = email.active.version + 1;
+      const passwordConfigured = draft.passwordAction.kind !== "clear";
       email = {
         ...email,
-        configurationUpdatedAt: "2026-07-23T16:00:00.000Z",
-        configurationUpdatedByUserId: "00000000-0000-4000-8000-000000000001",
+        active: {
+          activatedAt: "2026-07-23T16:02:00.000Z",
+          activatedByUserId: ADMIN_USER_ID,
+          configuration: draft.configuration,
+          enabled: true,
+          passwordConfigured,
+          version: nextActiveVersion
+        },
+        configurationUpdatedAt: "2026-07-23T16:02:00.000Z",
+        configurationUpdatedByUserId: ADMIN_USER_ID,
         draft: {
-          configuration: save.configuration,
-          passwordConfigured: save.passwordAction.kind !== "clear",
-          test: null,
-          version: email.draft.version + 1
-        }
-      };
-      await route.fulfill({ contentType: "application/json", json: { email } });
-      return;
-    }
-
-    if (request.method() === "POST" && body.action === "test") {
-      testBodies.push(body);
-      email = {
-        ...email,
-        draft: {
-          ...email.draft,
-          test: {
-            attemptedAt: "2026-07-23T16:01:00.000Z",
-            code: "accepted",
-            tested: true,
-            version: email.draft.version
-          }
-        }
+          configuration: draft.configuration,
+          passwordConfigured,
+          test: { attemptedAt: "2026-07-23T16:01:00.000Z", code: "accepted", tested: true, version: nextDraftVersion },
+          version: nextDraftVersion
+        },
+        health: { ...emptyEmailState().health, activeVersion: nextActiveVersion }
       };
       await route.fulfill({
         contentType: "application/json",
@@ -167,26 +162,22 @@ test("admin saves, tests, and activates a write-only SMTP draft without network 
       return;
     }
 
-    if (request.method() === "POST" && body.action === "activate") {
-      const nextVersion = email.active.version + 1;
+    if (request.method() === "POST" && (body.action === "disable" || body.action === "enable")) {
+      posts.push(body);
       email = {
         ...email,
-        active: {
-          activatedAt: "2026-07-23T16:02:00.000Z",
-          activatedByUserId: "00000000-0000-4000-8000-000000000001",
-          configuration: email.draft.configuration,
-          enabled: true,
-          passwordConfigured: email.draft.passwordConfigured,
-          version: nextVersion
-        },
-        health: {
-          activeVersion: nextVersion,
-          degraded: false,
-          lastAcceptedAt: null,
-          lastAttemptAt: null,
-          lastFailureAt: null,
-          lastFailureCode: null
-        }
+        active: { ...email.active, enabled: body.action === "enable", version: email.active.version + 1 }
+      };
+      await route.fulfill({ contentType: "application/json", json: { email } });
+      return;
+    }
+
+    if (request.method() === "DELETE") {
+      deletes.push(body);
+      email = {
+        ...emptyEmailState(),
+        active: { ...emptyEmailState().active, version: email.active.version + 1 },
+        draft: { ...emptyEmailState().draft, version: email.draft.version + 1 }
       };
       await route.fulfill({ contentType: "application/json", json: { email } });
       return;
@@ -199,95 +190,170 @@ test("admin saves, tests, and activates a write-only SMTP draft without network 
     });
   });
 
-  await signInWithLocalToken(page);
-  await page.goto("/admin");
-  const section = await openEmailDelivery(page);
+  const section = await openEmail(page);
+  const form = section.getByRole("form", { name: "Email settings" });
+  await expect(section.getByTestId("email-delivery-status")).toHaveText("Not configured");
+  await expect(page.getByRole("button", { name: "More actions" })).toHaveCount(0);
+  await expect(section.getByRole("tab")).toHaveCount(0);
+  await expect(form.getByLabel("Send a test to")).not.toHaveValue("");
+  await expect(form).toContainText("A test message goes to that address first.");
+  await expect(section).not.toContainText(vocabulary);
   await expectNoHorizontalOverflow(page);
-  await expect(section.getByRole("heading", { name: "Email tasks" })).toBeVisible();
-  await section.getByRole("button", { name: /Draft configuration/u }).click();
-  await expect(section.getByRole("heading", { name: "Draft configuration" })).toBeVisible();
 
   const secret = "playwright-write-only-smtp-password";
-  await section.getByLabel("SMTP host").fill("smtp.example.test");
-  await section.getByLabel("From address").fill("noreply@example.test");
-  await section.getByLabel("Username").fill("mailer@example.test");
-  await section.getByLabel("New password").fill(secret);
-  await section.getByRole("button", { name: "Save draft" }).click();
+  await form.getByLabel("Host").fill("smtp.example.test");
+  await form.getByLabel("From address").fill("noreply@example.test");
+  await form.getByLabel("Username").fill("mailer@example.test");
+  await form.getByLabel("Password").fill(secret);
+  await form.getByLabel("Send a test to").fill("operator@example.test");
+  await form.getByRole("button", { name: "Test & Save" }).click();
 
-  await expect(section.getByText("Email draft saved. Test it before activation.")).toBeVisible();
-  expect(saveBodies).toHaveLength(1);
-  expect(saveBodies[0]).toMatchObject({
-    configuration: {
-      authentication: { mode: "password", username: "mailer@example.test" },
-      from: { address: "noreply@example.test", displayName: "AIQSA" },
-      host: "smtp.example.test",
-      port: 587,
-      transport: "starttls_required"
+  await expect(page.getByTestId("admin-feedback"))
+    .toContainText("Test message sent to operator@example.test. Email delivery is active.");
+  expect(posts).toEqual([{
+    action: "test_and_activate",
+    draft: {
+      configuration: {
+        allowInternalNetwork: false,
+        authentication: { mode: "password", username: "mailer@example.test" },
+        from: { address: "noreply@example.test", displayName: "AIQSA" },
+        host: "smtp.example.test",
+        port: 587,
+        transport: "starttls_required"
+      },
+      expectedDraftVersion: 0,
+      passwordAction: { kind: "replace", password: secret }
     },
-    expectedDraftVersion: 0,
-    passwordAction: { kind: "replace", password: secret }
-  });
-  await expect(section.getByRole("heading", { name: "Test & activate" })).toBeVisible();
-  await expect(section).not.toContainText(secret);
-  expect(JSON.stringify(email)).not.toContain(secret);
-
-  await section.getByRole("button", { name: /Draft configuration/u }).click();
-  await expect(section.getByLabel("Password action")).toHaveValue("preserve");
-  await expect(section.getByLabel("New password")).toHaveCount(0);
-  await section.getByRole("button", { name: /Test & activate/u }).click();
-
-  await section.getByLabel("Test recipient").fill("operator@example.test");
-  await section.getByRole("button", { name: "Test draft" }).click();
-  await expect(section.getByText(/accepted the test message/i)).toBeVisible();
-  expect(testBodies).toEqual([{
-    action: "test",
-    expectedDraftVersion: 1,
-    recipient: "operator@example.test"
+    expectedActiveVersion: 0,
+    testRecipient: "operator@example.test"
   }]);
+  await expect(section.getByTestId("email-delivery-status")).toHaveText("Working");
+  await expect(section.getByTestId("email-delivery-summary"))
+    .toHaveText("Delivering from noreply@example.test via smtp.example.test:587 (STARTTLS).");
+  await expect(form.getByLabel("Password")).toHaveValue("");
+  await expect(form).toContainText("Leave blank to keep the stored password.");
+  await expect(section).not.toContainText(secret);
+  await expect(section).not.toContainText(vocabulary);
+  expect(JSON.stringify(email)).not.toContain(secret);
   expect(JSON.stringify(email)).not.toContain("operator@example.test");
 
-  await section.getByTestId("email-task-detail").getByRole("button", { name: "Activate", exact: true }).click();
-  await expect(section.getByText("The tested email draft is now active.")).toBeVisible();
-  await expect(section.getByRole("heading", { name: "Runtime & health" })).toBeVisible();
-  await expect(section.locator('[data-resource-availability="enabled"]').first()).toHaveText("Enabled");
-  await expect(section.getByRole("button", { name: "Disable", exact: true })).toBeVisible();
-  expect(email.active).toMatchObject({ enabled: true, passwordConfigured: true, version: 1 });
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Disable" }).click();
+  await expect(page.getByTestId("admin-feedback")).toContainText("Email delivery turned off.");
+  await expect(section.getByTestId("email-delivery-status")).toHaveText("Disabled");
+  expect(posts[1]).toEqual({ action: "disable", expectedActiveVersion: 1 });
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 
   for (const viewport of [
     { height: 768, width: 1024 },
     { height: 500, width: 1280 },
-    { height: 900, width: 1440 }
+    { height: 900, width: 1440 },
+    { height: 1024, width: 768 },
+    { height: 844, width: 390 }
   ]) {
     await page.setViewportSize(viewport);
+    await expect(form.getByRole("button", { name: "Test & Save" })).toBeVisible();
     await expectNoHorizontalOverflow(page);
-    await expectReadableDetail(page, section.getByTestId("email-task-detail"));
   }
+  await page.setViewportSize({ height: 900, width: 1440 });
 
-  await page.setViewportSize({ height: 900, width: 768 });
-  await expectNoHorizontalOverflow(page);
-  const backToTasks = section.getByRole("button", { name: "Back to email tasks" });
-  await backToTasks.click();
-  await expect(section.getByTestId("email-task-index")).toBeVisible();
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Clear configuration" }).click();
+  const confirmation = page.getByTestId("admin-confirm-clear-email");
+  await expect(confirmation.getByRole("heading", { name: "Clear email configuration?" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(confirmation).toHaveCount(0);
+  expect(deletes).toHaveLength(0);
 
-  await page.setViewportSize({ height: 844, width: 390 });
-  await expectNoHorizontalOverflow(page);
-  const runtimeTask = section.getByRole("button", { name: /Runtime & health/u });
-  await expectTouchSafe(runtimeTask);
-  await runtimeTask.click();
-  await expect(section.getByTestId("email-task-detail")).toBeVisible();
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Clear configuration" }).click();
+  await confirmation.getByRole("button", { name: /confirm clear configuration/i }).click();
+  await expect(page.getByTestId("admin-feedback")).toContainText("Email configuration cleared.");
+  expect(deletes).toEqual([{ confirm: true, expectedActiveVersion: 2, expectedDraftVersion: 1 }]);
+  await expect(section.getByTestId("email-delivery-status")).toHaveText("Not configured");
+  await expect(form.getByLabel("Host")).toHaveValue("");
+  await expect(page.getByRole("button", { name: "More actions" })).toHaveCount(0);
+});
 
-  await page.setViewportSize({ height: 390, width: 844 });
-  await expectNoHorizontalOverflow(page);
-  await backToTasks.scrollIntoViewIfNeeded();
-  await backToTasks.click();
-  await expect(section.getByTestId("email-task-index")).toBeVisible();
+test("a rejected test message keeps the current delivery and shows the cause in the form", async ({ page }) => {
+  const configuration: AdminEmailConfiguration = {
+    allowInternalNetwork: false,
+    authentication: { mode: "password", username: "mailer@example.test" },
+    from: { address: "noreply@example.test", displayName: "AIQSA" },
+    host: "smtp.example.test",
+    port: 587,
+    transport: "starttls_required"
+  };
+  let email = workingEmailState(configuration);
+  const posts: Array<Record<string, unknown>> = [];
+
+  await mockDashboard(page);
+  await page.route("**/api/admin/email", async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      await route.fulfill({ contentType: "application/json", json: { email } });
+      return;
+    }
+    const body = request.postDataJSON() as Record<string, unknown>;
+    if (request.method() === "POST" && body.action === "test_and_activate") {
+      posts.push(body);
+      const draft = body.draft as AdminEmailDraftInput;
+      email = {
+        ...email,
+        draft: {
+          configuration: draft.configuration,
+          passwordConfigured: true,
+          test: {
+            attemptedAt: "2026-07-23T16:05:00.000Z",
+            code: "smtp_authentication_failed",
+            tested: false,
+            version: email.draft.version + 1
+          },
+          version: email.draft.version + 1
+        }
+      };
+      await route.fulfill({
+        contentType: "application/json",
+        json: { email, error: "email_test_failed", test: { code: "smtp_authentication_failed", tested: false } },
+        status: 422
+      });
+      return;
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      json: { error: "unexpected_admin_email_e2e_request" },
+      status: 400
+    });
+  });
+
+  const section = await openEmail(page);
+  const form = section.getByRole("form", { name: "Email settings" });
+  await expect(section.getByTestId("email-delivery-status")).toHaveText("Working");
+  await form.getByLabel("Host").fill("smtp-next.example.test");
+  await form.getByLabel("Password").fill("playwright-new-password");
+  await form.getByLabel("Send a test to").fill("operator@example.test");
+  await form.getByRole("button", { name: "Test & Save" }).click();
+
+  await expect(form.getByRole("alert")).toHaveText("The mail server rejected the username or password.");
+  expect(posts).toHaveLength(1);
+  expect(posts[0]).toMatchObject({
+    draft: { configuration: { host: "smtp-next.example.test" }, expectedDraftVersion: 5 },
+    expectedActiveVersion: 3
+  });
+  await expect(section.getByTestId("email-delivery-status")).toHaveText("Working");
+  await expect(section.getByTestId("email-delivery-summary")).toContainText("via smtp.example.test:587");
+  await expect(section.getByTestId("email-delivery-detail"))
+    .toContainText("Last test failed: The mail server rejected the username or password.");
+  await expect(form.getByLabel("Host")).toHaveValue("smtp-next.example.test");
+  await expect(page.getByTestId("admin-feedback")).toHaveCount(0);
+  await expect(section).not.toContainText("playwright-new-password");
+  await expect(section).not.toContainText(vocabulary);
+  expect(email.active.configuration?.host).toBe("smtp.example.test");
 });
 
 test("guards a dirty Control Center form across section navigation and native reload", async ({ page }) => {
   const email = emptyEmailState();
-  await page.route("**/api/admin", async (route) => {
-    await route.fulfill({ contentType: "application/json", json: emptyAdminDashboard() });
-  });
+  await mockDashboard(page);
   await page.route("**/api/admin/email", async (route) => {
     if (route.request().method() !== "GET") {
       await route.fulfill({
@@ -300,24 +366,20 @@ test("guards a dirty Control Center form across section navigation and native re
     await route.fulfill({ contentType: "application/json", json: { email } });
   });
 
-  await signInWithLocalToken(page);
-  await page.goto("/admin");
-  const section = await openEmailDelivery(page);
-  await section.getByRole("button", { name: /Draft configuration/u }).click();
-  const host = section.getByLabel("SMTP host");
+  const section = await openEmail(page);
+  const host = section.getByLabel("Host");
   const dirtyHost = "dirty-navigation.smtp.example.test";
   await host.fill(dirtyHost);
   const originalUrl = page.url();
 
-  const usageTab = page.getByRole("tab", { exact: true, name: "Usage" });
-  await usageTab.click();
+  const usageLink = page.getByRole("link", { exact: true, name: "Usage" });
+  await usageLink.click();
   const discard = page.getByTestId("admin-discard-unsaved-confirmation");
   await expect(discard.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
   await expect(page).toHaveURL(originalUrl);
   await discard.getByRole("button", { name: "Cancel" }).click();
   await expect(host).toHaveValue(dirtyHost);
   await expect(section).toBeVisible();
-  await expect(usageTab).toBeFocused();
 
   const nativeDialogPromise = page.waitForEvent("dialog");
   const reloadPromise = page.reload({ timeout: 1_000, waitUntil: "domcontentloaded" }).catch(() => null);
@@ -328,9 +390,9 @@ test("guards a dirty Control Center form across section navigation and native re
   await expect(page).toHaveURL(originalUrl);
   await expect(host).toHaveValue(dirtyHost);
 
-  await usageTab.click();
+  await usageLink.click();
   await expect(discard.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
-  await discard.getByRole("button", { name: "Confirm discard changes" }).click();
+  await discard.getByRole("button", { name: /confirm discard changes/i }).click();
   await expect(page.getByTestId("admin-section-usage")).toBeVisible();
   await expect(page).toHaveURL(/\/admin\?section=usage$/);
 });
@@ -342,18 +404,23 @@ test("ordinary user receives real active-admin denial for email configuration", 
   expect(read.status()).toBe(403);
   await expect(read.json()).resolves.toEqual({ error: "forbidden" });
 
-  const mutation = await page.request.put("/api/admin/email", {
+  const mutation = await page.request.post("/api/admin/email", {
     data: {
-      configuration: {
-        allowInternalNetwork: false,
-        authentication: { mode: "none" },
-        from: { address: "noreply@example.test", displayName: null },
-        host: "smtp.example.test",
-        port: 465,
-        transport: "implicit_tls"
-      } satisfies AdminEmailConfiguration,
-      expectedDraftVersion: 0,
-      passwordAction: { confirm: true, kind: "clear" }
+      action: "test_and_activate",
+      draft: {
+        configuration: {
+          allowInternalNetwork: false,
+          authentication: { mode: "none" },
+          from: { address: "noreply@example.test", displayName: null },
+          host: "smtp.example.test",
+          port: 465,
+          transport: "implicit_tls"
+        } satisfies AdminEmailConfiguration,
+        expectedDraftVersion: 0,
+        passwordAction: { confirm: true, kind: "clear" }
+      } satisfies AdminEmailDraftInput,
+      expectedActiveVersion: 0,
+      testRecipient: "operator@example.test"
     }
   });
   expect(mutation.status()).toBe(403);

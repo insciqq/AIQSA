@@ -3,8 +3,7 @@ import { adminEmailService } from "@/lib/server/email/defaultEmail";
 import {
   createAdminEmailActionHandler,
   createAdminEmailClearHandler,
-  createAdminEmailReadHandler,
-  createAdminEmailSaveHandler
+  createAdminEmailReadHandler
 } from "@/lib/server/email/handlers";
 
 export const runtime = "nodejs";
@@ -15,6 +14,5 @@ const deps = {
 };
 
 export const GET = createAdminEmailReadHandler(deps);
-export const PUT = createAdminEmailSaveHandler(deps);
 export const POST = createAdminEmailActionHandler(deps);
 export const DELETE = createAdminEmailClearHandler(deps);
