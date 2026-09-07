@@ -816,4 +816,113 @@ describe("administrator system model policy service", () => {
       })).rejects.toEqual(new AdminSystemModelPolicyServiceError(expected));
     }
   });
+
+  it("explains why each answer deployment is not ready for a role without exposing evidence", async () => {
+    const base = activeModel();
+    const visionConfiguration = {
+      ...activeConfiguration,
+      capabilities: { ...activeConfiguration.capabilities, vision: true }
+    };
+    const ready = verifiableModel({
+      activeConfig: visionConfiguration,
+      activeCredentialChecks: [{
+        connectionVersion: 1,
+        credentialId: "credential-1",
+        credentialVersionId: "credential-version-1",
+        evidence: {
+          forcedToolCall: {
+            adapterKind: "openai_responses_compatible",
+            probeVersion: 1,
+            upstreamModelId: "vendor/answer",
+            verified: true
+          },
+          structuredOutput: {
+            adapterKind: "openai_responses_compatible",
+            probeVersion: 2,
+            upstreamModelId: "vendor/answer",
+            verified: true
+          },
+          visionInput: {
+            adapterKind: "openai_responses_compatible",
+            probeVersion: 1,
+            upstreamModelId: "vendor/answer",
+            verified: true
+          }
+        },
+        modelVersion: 1,
+        status: "available"
+      }],
+      id: "model-ready"
+    });
+    const unsupportedAdapter = activeModel({
+      activeConfig: { ...activeConfiguration, adapterKind: "anthropic_messages" },
+      id: "model-anthropic"
+    });
+    const disabled = activeModel({ enabled: false, id: "model-disabled" });
+    const withoutKey = activeModel({ activeConfig: visionConfiguration, id: "model-no-key" });
+    const unchecked = verifiableModel({ activeConfig: visionConfiguration, id: "model-unchecked" });
+    const revokedKey = verifiableModel({
+      connection: {
+        ...base.connection,
+        defaultCredential: {
+          activeVersion: { id: "credential-version-9", revokedAt: NOW },
+          enabled: true,
+          id: "credential-9"
+        }
+      },
+      id: "model-revoked-key"
+    });
+    const prisma = {
+      providerModel: {
+        findMany: vi.fn().mockResolvedValue([
+          ready, unsupportedAdapter, disabled, withoutKey, unchecked, revokedKey
+        ])
+      },
+      systemModelPolicy: {
+        findUnique: vi.fn().mockResolvedValue({
+          providerModel: null,
+          providerModelId: null,
+          reasoningEffort: null,
+          updatedAt: NOW,
+          updatedBy: null,
+          version: 1
+        })
+      }
+    } as unknown as PrismaClient;
+
+    const catalog = await createAdminSystemModelPolicyService(prisma, {
+      resolveRole: vi.fn().mockResolvedValue({ code: "system_model_not_configured", ok: false })
+    }).list();
+
+    expect(catalog.candidates.map(({ id }) => id)).toEqual(["model-ready"]);
+    expect(catalog.documentCandidates.map(({ id }) => id)).toEqual(["model-ready"]);
+    expect(catalog.verificationCandidates.map(({ id }) => id)).not.toContain("model-disabled");
+    const reasons = (role: "direct_pdf" | "memory" | "vision") =>
+      Object.fromEntries(catalog.ineligible[role].map(({ id, reason }) => [id, reason]));
+    expect(reasons("memory")).toEqual({
+      "model-anthropic": "adapter_unsupported",
+      "model-disabled": "model_disabled",
+      "model-no-key": "no_default_credential",
+      "model-revoked-key": "no_default_credential",
+      "model-unchecked": "not_checked"
+    });
+    expect(reasons("vision")).toEqual({
+      "model-anthropic": "adapter_unsupported",
+      "model-disabled": "model_disabled",
+      "model-no-key": "no_default_credential",
+      "model-revoked-key": "adapter_unsupported",
+      "model-unchecked": "not_checked"
+    });
+    expect(reasons("direct_pdf")).toEqual({
+      "model-anthropic": "adapter_unsupported",
+      "model-disabled": "model_disabled",
+      "model-no-key": "adapter_unsupported",
+      "model-ready": "adapter_unsupported",
+      "model-revoked-key": "adapter_unsupported",
+      "model-unchecked": "adapter_unsupported"
+    });
+    for (const entry of Object.values(catalog.ineligible).flat()) {
+      expect(Object.keys(entry)).not.toContain("evidence");
+    }
+  });
 });

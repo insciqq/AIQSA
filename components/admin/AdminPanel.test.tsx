@@ -984,7 +984,7 @@ describe("AdminPanel", () => {
     expect(window.location.search).toBe("?section=groups");
   });
 
-  it("mounts Knowledge and Memory together under Knowledge & Memory and refreshes Knowledge directly", async () => {
+  it("mounts the Knowledge and Memory cards under Knowledge & Memory and links assignments to Defaults & roles", async () => {
     window.history.replaceState(null, "", "/admin?section=knowledge");
     const knowledge = {
       answerPolicy: adminKnowledgeAnswerPolicyFixture(),
@@ -1001,30 +1001,43 @@ describe("AdminPanel", () => {
         resultLimit: 16
       }
     };
-    let knowledgeGets = 0;
+    const memory = {
+      activeIssueCode: null,
+      admissionTimeout: { seconds: 30, version: 1 },
+      configuredTargets: [],
+      index: { generation: 1, readiness: "READY" },
+      queue: { length: 0, oldestAgeSeconds: null },
+      rebuild: { state: "NOT_REQUIRED" },
+      worker: { state: "RUNNING" }
+    };
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url === "/api/admin") return dashboardResponse();
       if (url === "/api/admin/knowledge" && (init?.method ?? "GET") === "GET") {
-        knowledgeGets += 1;
         return dashboardResponse({ knowledge });
+      }
+      if (url === "/api/admin/memory" && (init?.method ?? "GET") === "GET") {
+        return dashboardResponse({ memory });
       }
       return dashboardResponse({ error: "unexpected_request" }, 500);
     });
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const retrieval = await screen.findByTestId("admin-section-retrieval");
-    await screen.findByRole("heading", { name: "Answer retrieval" });
-    const knowledgeSection = within(retrieval).getByRole("region", { name: "Knowledge processing" });
-    expect(within(retrieval).getByTestId("admin-retrieval-memory")).toBeInTheDocument();
-    fireEvent.click(within(knowledgeSection).getByRole("button", { name: "Refresh" }));
-    await waitFor(() => expect(knowledgeGets).toBe(2));
-    expect(screen.queryByRole("heading", { name: "Discard unsaved changes?" }))
-      .not.toBeInTheDocument();
-    for (const save of within(knowledgeSection).getAllByRole("button", { name: "Save" })) {
+    expect(window.location.search).toBe("?section=retrieval");
+    const knowledgeCard = within(retrieval).getByTestId("admin-retrieval-knowledge");
+    await within(knowledgeCard).findByTestId("knowledge-processing-line");
+    await within(within(retrieval).getByTestId("admin-retrieval-memory")).findByText("Working");
+    for (const save of within(retrieval).getAllByRole("button", { name: "Save" })) {
       expect(save).toBeDisabled();
     }
-    expect(screen.getByRole("link", { name: "Providers" })).not.toHaveAttribute("aria-disabled");
+    expect(within(retrieval).queryByText(/Manage assignments in System Models/)).not.toBeInTheDocument();
+    fireEvent.click(within(knowledgeCard).getByRole("button", { name: "Processing model and embeddings: Defaults & roles" }));
+    await screen.findByTestId("admin-section-roles");
+    expect(window.location.search).toBe("?section=roles");
+    expect(screen.getByRole("link", { name: "Defaults & roles" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("heading", { name: "Discard unsaved changes?" }))
+      .not.toBeInTheDocument();
     const unload = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(unload);
     expect(unload.defaultPrevented).toBe(false);

@@ -66,8 +66,7 @@ describe("administrator model policy handlers", () => {
   it("accepts uncapped positive safe tool budgets and rejects invalid values", async () => {
     const service = {
       list: vi.fn().mockResolvedValue({}),
-      update: vi.fn(),
-      updateToolBudgets: vi.fn()
+      update: vi.fn()
     };
     const handlers = createAdminModelPolicyHandlers({
       resolveAuth: vi.fn().mockResolvedValue(session()) as never,
@@ -88,7 +87,7 @@ describe("administrator model policy handlers", () => {
       }
     ));
     expect(accepted.status).toBe(200);
-    expect(service.updateToolBudgets).toHaveBeenCalledWith({
+    expect(service.update).toHaveBeenCalledWith({
       expectedVersion: 2,
       mcpAutoDiscoveryTimeoutSeconds: 60,
       maxMcpToolsPerDiscovery: 10,
@@ -97,20 +96,57 @@ describe("administrator model policy handlers", () => {
       userId: "user-1"
     });
 
-    const rejected = await handlers.PATCH(new Request(
+    for (const body of [
+      { maxToolCalls: 0, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10, mcpAutoDiscoveryTimeoutSeconds: 60 },
+      { maxToolCalls: 4, maxToolRounds: 8 },
+      { expectedVersion: 2 },
+      { maxToolCalls: 4, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10, mcpAutoDiscoveryTimeoutSeconds: 60, extra: 1 }
+    ]) {
+      const rejected = await handlers.PATCH(new Request(
+        "http://local.test/api/admin/providers/model-policy",
+        {
+          body: JSON.stringify({ expectedVersion: 2, ...body }),
+          headers: { "content-type": "application/json" },
+          method: "PATCH"
+        }
+      ));
+      expect(rejected.status).toBe(400);
+    }
+    expect(service.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards the default model and tool limits as one validated update", async () => {
+    const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
+    const handlers = createAdminModelPolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never,
+      service: service as never
+    });
+    const response = await handlers.PATCH(new Request(
       "http://local.test/api/admin/providers/model-policy",
       {
         body: JSON.stringify({
-          expectedVersion: 2,
-          mcpAutoDiscoveryTimeoutSeconds: 60,
-          maxMcpToolsPerDiscovery: 10,
-          maxToolCalls: 0,
-          maxToolRounds: 8
+          expectedVersion: 3,
+          maxMcpToolsPerDiscovery: 12,
+          maxToolCalls: 24,
+          maxToolRounds: 8,
+          mcpAutoDiscoveryTimeoutSeconds: 20,
+          providerModelId: "model-1",
+          reasoningEffort: "medium"
         }),
         headers: { "content-type": "application/json" },
         method: "PATCH"
       }
     ));
-    expect(rejected.status).toBe(400);
+    expect(response.status).toBe(200);
+    expect(service.update).toHaveBeenCalledWith({
+      expectedVersion: 3,
+      maxMcpToolsPerDiscovery: 12,
+      maxToolCalls: 24,
+      maxToolRounds: 8,
+      mcpAutoDiscoveryTimeoutSeconds: 20,
+      providerModelId: "model-1",
+      reasoningEffort: "medium",
+      userId: "user-1"
+    });
   });
 });

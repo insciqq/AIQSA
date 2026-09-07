@@ -163,8 +163,9 @@ describe("AdminProvidersSection", () => {
     const { confirmations, feedback } = renderSection("conn-gemini");
 
     expect(await screen.findByTestId("provider-page-status")).toHaveTextContent("No keys yet · No models on");
+    // The topbar is owned through a context effect, so it settles one tick after the page.
+    await waitFor(() => expect(screen.getByTestId("topbar-title")).toHaveTextContent("Gemini"));
     expect(screen.getByTestId("topbar-title")).toHaveTextContent("Providers");
-    expect(screen.getByTestId("topbar-title")).toHaveTextContent("Gemini");
     expect(screen.getByRole("switch", { name: "Gemini enabled" })).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Add key" }));
     const form = screen.getByTestId("provider-key-form");

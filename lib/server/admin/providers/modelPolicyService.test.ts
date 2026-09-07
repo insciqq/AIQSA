@@ -250,7 +250,7 @@ describe("administrator model policy service", () => {
       $transaction: vi.fn(async (operation: (store: typeof tx) => Promise<void>) => operation(tx))
     } as unknown as PrismaClient;
 
-    await createAdminModelPolicyService(prisma).updateToolBudgets({
+    await createAdminModelPolicyService(prisma).update({
       expectedVersion: 5,
       mcpAutoDiscoveryTimeoutSeconds: 60,
       maxMcpToolsPerDiscovery: 10,
@@ -270,6 +270,61 @@ describe("administrator model policy service", () => {
       },
       where: { id: "installation" }
     });
+  });
+
+  it("saves the default model and tool limits together under one version check", async () => {
+    const queryRaw = vi.fn()
+      .mockResolvedValueOnce([{ version: 7 }])
+      .mockResolvedValueOnce([{
+        ...activeModel(),
+        activeConfig: reasoningConfiguration,
+        connectionActiveConfig: {}, connectionActiveVersion: 1,
+        connectionActivatedAt: NOW, connectionEnabled: true, connectionFamily: "openai_compatible"
+      }]);
+    const update = vi.fn().mockResolvedValue({});
+    const tx = { $queryRaw: queryRaw, modelPolicy: { update } };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (store: typeof tx) => Promise<void>) => operation(tx))
+    } as unknown as PrismaClient;
+
+    await createAdminModelPolicyService(prisma).update({
+      expectedVersion: 7,
+      maxMcpToolsPerDiscovery: 12,
+      maxToolCalls: 24,
+      maxToolRounds: 8,
+      mcpAutoDiscoveryTimeoutSeconds: 20,
+      providerModelId: "model-1",
+      reasoningEffort: "high",
+      userId: "admin-1"
+    });
+
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith({
+      data: {
+        defaultProviderModelId: "model-1",
+        maxMcpToolsPerDiscovery: 12n,
+        maxToolCalls: 24n,
+        maxToolRounds: 8n,
+        mcpAutoDiscoveryTimeoutSeconds: 20n,
+        reasoningEffort: "high",
+        updatedByUserId: "admin-1",
+        version: { increment: 1 }
+      },
+      where: { id: "installation" }
+    });
+  });
+
+  it("rejects a half-present model pair or limit set before touching the policy", async () => {
+    const transaction = vi.fn();
+    const service = createAdminModelPolicyService({ $transaction: transaction } as never);
+    await expect(service.update({ expectedVersion: 1, providerModelId: "model-1", userId: "admin-1" }))
+      .rejects.toThrow("model_policy_update_invalid");
+    await expect(service.update({ expectedVersion: 1, maxToolCalls: 4, userId: "admin-1" }))
+      .rejects.toThrow("model_policy_update_invalid");
+    await expect(service.update({ expectedVersion: 1, userId: "admin-1" }))
+      .rejects.toThrow("model_policy_update_invalid");
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it("maps a serializable transaction conflict to a stable stale-policy error", async () => {

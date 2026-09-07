@@ -13,6 +13,34 @@ export type AdminSystemModelCandidate = AdminModelDefaultCandidate & {
 
 export type AdminRerankerModelCandidate = AdminModelDefaultCandidate;
 
+/** Why an answer deployment cannot serve a generative system role right now.
+ * `not_checked` is the only recoverable reason: the deployment can be checked
+ * for that role from the picker. */
+export type AdminSystemModelIneligibilityReason =
+  | "adapter_unsupported"
+  | "model_disabled"
+  | "no_default_credential"
+  | "not_checked";
+
+export const ADMIN_SYSTEM_MODEL_INELIGIBILITY_REASONS: readonly AdminSystemModelIneligibilityReason[] = [
+  "adapter_unsupported",
+  "model_disabled",
+  "no_default_credential",
+  "not_checked"
+];
+
+export type AdminSystemModelEligibilityRole = "direct_pdf" | "memory" | "vision";
+
+export const ADMIN_SYSTEM_MODEL_ELIGIBILITY_ROLES: readonly AdminSystemModelEligibilityRole[] = [
+  "memory",
+  "vision",
+  "direct_pdf"
+];
+
+export type AdminSystemModelIneligibleCandidate = AdminSystemModelCandidate & {
+  reason: AdminSystemModelIneligibilityReason;
+};
+
 export type AdminRerankerRouteEntry = AdminRerankerModelCandidate & {
   available: boolean;
   position: number;
@@ -24,6 +52,8 @@ export type AdminSystemModelPolicyCatalog = {
   candidates: AdminSystemModelCandidate[];
   documentCandidates: AdminSystemModelCandidate[];
   verificationCandidates: AdminSystemModelCandidate[];
+  /** Every answer deployment that is not ready for the role, with the reason. */
+  ineligible: Record<AdminSystemModelEligibilityRole, AdminSystemModelIneligibleCandidate[]>;
   rerankerCandidates: AdminRerankerModelCandidate[];
   policy: {
     chatPdfPreparationAllowed: boolean;
@@ -81,11 +111,35 @@ function candidate(value: unknown): value is AdminSystemModelCandidate {
     value.reasoningEfforts.includes(value.defaultReasoningEffort);
 }
 
+function ineligibleCandidate(value: unknown): value is AdminSystemModelIneligibleCandidate {
+  return candidate(value) &&
+    ADMIN_SYSTEM_MODEL_INELIGIBILITY_REASONS.includes(
+      (value as Record<string, unknown>).reason as AdminSystemModelIneligibilityReason
+    );
+}
+
+function decodeIneligible(
+  value: unknown
+): AdminSystemModelPolicyCatalog["ineligible"] | null {
+  const empty: AdminSystemModelPolicyCatalog["ineligible"] = { direct_pdf: [], memory: [], vision: [] };
+  if (value === undefined) return empty;
+  if (!record(value)) return null;
+  for (const role of ADMIN_SYSTEM_MODEL_ELIGIBILITY_ROLES) {
+    const entries = value[role];
+    if (entries === undefined) continue;
+    if (!Array.isArray(entries) || !entries.every(ineligibleCandidate)) return null;
+    empty[role] = entries;
+  }
+  return empty;
+}
+
 export function decodeAdminSystemModelPolicyResponse(
   value: unknown
 ): AdminSystemModelPolicyResponse | null {
   if (!record(value) || !record(value.systemModelPolicy)) return null;
   const catalog = value.systemModelPolicy;
+  const ineligible = decodeIneligible(catalog.ineligible);
+  if (!ineligible) return null;
   if (!Array.isArray(catalog.candidates) || !catalog.candidates.every((value) =>
       candidate(value) && value.structuredOutput === "verified" && value.forcedToolCall === "verified") ||
     !Array.isArray(catalog.documentCandidates) || !catalog.documentCandidates.every((value) =>
@@ -134,6 +188,7 @@ export function decodeAdminSystemModelPolicyResponse(
       candidates: catalog.candidates,
       documentCandidates: catalog.documentCandidates,
       verificationCandidates: catalog.verificationCandidates,
+      ineligible,
       rerankerCandidates: catalog.rerankerCandidates,
       policy: {
         chatPdfPreparationAllowed: policy.chatPdfPreparationAllowed,
