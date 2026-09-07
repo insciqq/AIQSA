@@ -33,6 +33,10 @@ The trusted application base URL is the origin for OAuth callbacks, email links,
 
 ## Operations
 
+Each checkout owns its ignored `.env` and any private Compose overrides it selects. Preserve its project identity, ports, installation keys and existing resource bindings when synchronizing code.
+
+When `.env` defines `COMPOSE_FILE` and `COMPOSE_PROJECT_NAME`, use ordinary `docker compose` from that checkout so its base file and local overrides are applied together. Explicit `-f` arguments, including those in package scripts, replace that file selection. Use them only with a deliberately selected topology; changing `-p` alone does not isolate a test if an override pins existing external volumes. Inspect selectors without printing private environment values, and use a separate disposable topology for destructive checks.
+
 Runtime roles receive least configuration: app, Memory worker, migration/bootstrap, maintenance, parser, Workspace runner, and restore/review do not share every secret. Parser siblings receive no database/object/provider credentials. The Workspace runner receives only its internal token and bounded runtime/image policy; the maintenance role receives database and runner access but no object/provider credentials. Restore review receives no provider credentials and cannot start ordinary work.
 
 Emergency recovery switches are narrow, temporary, auditable, and fail closed by default. They do not redefine supported topology or bypass migration, ownership, egress, or retention guards. Record their use outside source control and remove them after the exact recovery action.
