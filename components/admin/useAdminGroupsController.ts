@@ -1,377 +1,141 @@
 "use client";
 
-import type {
-  AdminAccessGroupsSectionProps,
-  AdminAccessGroupsSectionRefs,
-  AdminAccessGroupView
-} from "@/components/admin/AdminAccessGroupsSection";
-import {
-  filterAdminGroups,
-  resolveAdminGroupSelection,
-  type AdminGrantTarget,
-  type AdminGroupStatusFilter
-} from "@/components/admin/adminGroupView";
-import { activeGroupIdsForUser } from "@/components/admin/users/usersView";
+import { adminActionErrorMessage } from "@/components/admin/adminApi";
 import type { AdminRunAction } from "@/components/admin/useAdminActionRunner";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
-import type { AdminDashboardRefresh } from "@/components/admin/useAdminDashboardResource";
-import type { AdminFieldErrorController } from "@/components/admin/useAdminFieldErrors";
-import type { AdminDashboard, AdminGroup } from "@/lib/contracts/admin";
-import { useCallback, useMemo, useState } from "react";
-
-type AdminGroupsFocus = Readonly<{
-  groups: AdminAccessGroupsSectionRefs;
-}>;
+import { activeGroupIdsForUser } from "@/components/admin/users/usersView";
+import type { AdminDashboard, AdminGroup, AdminGroupGrantChange } from "@/lib/contracts/admin";
+import { useCallback, useMemo } from "react";
 
 export type UseAdminGroupsControllerOptions = Readonly<{
   actionsDisabled: boolean;
-  dashboard: AdminDashboard | null;
-  fieldErrors: Pick<AdminFieldErrorController, "clearFieldError" | "fieldError" | "reportFieldError">;
-  focus: AdminGroupsFocus;
-  onMutationReconciled(): void;
-  refreshDashboard: AdminDashboardRefresh;
-  reportNotice(message: string): void;
-  requestConfirmation: AdminConfirmationController["requestConfirmation"];
+  dashboard: Pick<AdminDashboard, "groups" | "users"> | null;
   requestConfirmedAction: AdminConfirmationController["requestConfirmedAction"];
-  requestFocus(target: "group-detail"): void;
   runAction: AdminRunAction;
 }>;
 
+export type AdminGroupActionTarget = Pick<AdminGroup, "archivedAt" | "id" | "name" | "systemRole">;
+
+export type AdminGroupMutationResult =
+  | Readonly<{ groupId: string | null; ok: true }>
+  | Readonly<{ message: string; ok: false }>;
+
 export type AdminGroupsController = Readonly<{
-  access: Readonly<{
-    draftProtection: Readonly<{
-      dirty: boolean;
-      discard(): void;
-    }>;
-    sectionProps: AdminAccessGroupsSectionProps | null;
-    toggleCreateForm(): void;
+  actions: Readonly<{
+    /**
+     * Applies one batch of grant changes as a single request (`set_group_grants`);
+     * a rejected change leaves the group untouched and reports through the toast.
+     */
+    applyGrants(group: AdminGroupActionTarget, changes: readonly AdminGroupGrantChange[], notice?: string): Promise<boolean>;
+    /** The failure message goes back to the sheet, not to a toast. */
+    create(name: string): Promise<AdminGroupMutationResult>;
+    rename(group: AdminGroupActionTarget, name: string): Promise<AdminGroupMutationResult>;
+    requestArchive(group: AdminGroupActionTarget, onSuccess?: () => void): void;
+    requestDelete(group: AdminGroupActionTarget, onSuccess?: () => void): void;
+    setMembership(group: AdminGroupActionTarget, userId: string, enabled: boolean): Promise<boolean>;
   }>;
+  actionsDisabled: boolean;
 }>;
 
+function createdGroupId(value: unknown): string | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value) &&
+    typeof (value as { id?: unknown }).id === "string"
+    ? (value as { id: string }).id
+    : null;
+}
+
+function builtIn(group: Pick<AdminGroup, "systemRole">): boolean {
+  return group.systemRole === "full_access";
+}
+
+/**
+ * Mutations of the Groups section: create, rename, archive, delete,
+ * membership and grant batches. Selection lives in the URL (`?resource=`),
+ * list and form state in the components; this hook owns only the server
+ * calls and the confirmations the destructive ones need.
+ */
 export function useAdminGroupsController({
   actionsDisabled,
   dashboard,
-  fieldErrors,
-  focus,
-  onMutationReconciled,
-  refreshDashboard,
-  reportNotice,
-  requestConfirmation,
   requestConfirmedAction,
-  requestFocus,
   runAction
 }: UseAdminGroupsControllerOptions): AdminGroupsController {
-  const { clearFieldError, fieldError, reportFieldError } = fieldErrors;
-  const [activeView, setActiveView] = useState<AdminAccessGroupView>("overview");
-  const [createFormOpen, setCreateFormOpen] = useState(false);
-  const [createName, setCreateName] = useState("");
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [groupQuery, setGroupQuery] = useState("");
-  const [groupStatusFilter, setGroupStatusFilter] = useState<AdminGroupStatusFilter>("active");
-  const [renameName, setRenameName] = useState("");
-  const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
-  const [requestedSelectedGroupId, setRequestedSelectedGroupId] = useState<string | null>(null);
+  const groups = dashboard?.groups;
+  const users = dashboard?.users;
 
-  const visibleGroups = useMemo(
-    () =>
-      filterAdminGroups(
-        dashboard?.groups ?? [],
-        dashboard?.catalog ?? { models: [], providers: [], searchStrategies: [] },
-        groupQuery,
-        groupStatusFilter
-      ),
-    [dashboard?.catalog, dashboard?.groups, groupQuery, groupStatusFilter]
-  );
-  const selectedGroup = useMemo(
-    () => resolveAdminGroupSelection(dashboard?.groups ?? [], requestedSelectedGroupId),
-    [dashboard?.groups, requestedSelectedGroupId]
-  );
-  const selectedGroupMembers = useMemo(
-    () => selectedGroup
-      ? (dashboard?.users ?? []).filter((user) =>
-          user.groups.some((membership) => membership.groupId === selectedGroup.id)
-        )
-      : [],
-    [dashboard?.users, selectedGroup]
-  );
-  const draftDirty = createName.length > 0 || Boolean(
-    renamingGroupId &&
-    selectedGroup?.id === renamingGroupId &&
-    renameName !== selectedGroup.name
-  );
+  const create = useCallback(async (name: string): Promise<AdminGroupMutationResult> => {
+    const trimmed = name.trim();
+    if (!trimmed) return { message: adminActionErrorMessage("group_required"), ok: false };
+    const result = await runAction({ action: "create_group", name: trimmed }, "Group created.");
+    if (result.error) return { message: adminActionErrorMessage(result.error), ok: false };
+    return { groupId: createdGroupId(result.group), ok: true };
+  }, [runAction]);
 
-  const discardDraft = useCallback(() => {
-    setCreateName("");
-    setCreateFormOpen(false);
-    setRenameName("");
-    setRenamingGroupId(null);
-  }, []);
+  const rename = useCallback(async (group: AdminGroupActionTarget, name: string): Promise<AdminGroupMutationResult> => {
+    if (builtIn(group)) return { message: adminActionErrorMessage("system_group_forbidden"), ok: false };
+    const trimmed = name.trim();
+    if (!trimmed) return { message: adminActionErrorMessage("group_required"), ok: false };
+    const result = await runAction({ action: "rename_group", groupId: group.id, name: trimmed }, "Group renamed.");
+    if (result.error) return { message: adminActionErrorMessage(result.error), ok: false };
+    return { groupId: group.id, ok: true };
+  }, [runAction]);
 
-  const selectGroup = useCallback((groupId: string) => {
-    setRequestedSelectedGroupId(groupId);
-    setActiveView("overview");
-    setCreateFormOpen(false);
-    setDetailOpen(true);
-    requestFocus("group-detail");
-  }, [requestFocus]);
-
-  const closeDetail = useCallback(() => {
-    setCreateFormOpen(false);
-    setDetailOpen(false);
-    setRequestedSelectedGroupId(null);
-    setRenamingGroupId(null);
-    setActiveView("overview");
-  }, []);
-
-  const toggleCreateForm = useCallback(() => {
-    clearFieldError("group-name");
-    setCreateFormOpen((open) => {
-      const nextOpen = !open;
-      setDetailOpen(nextOpen);
-      if (nextOpen) {
-        setRequestedSelectedGroupId(null);
-        setRenamingGroupId(null);
-      }
-      return nextOpen;
+  const requestArchive = useCallback((group: AdminGroupActionTarget, onSuccess?: () => void) => {
+    if (builtIn(group) || group.archivedAt) return;
+    requestConfirmedAction({
+      body: { action: "archive_group", groupId: group.id },
+      confirmLabel: "Archive group",
+      dialogLabel: `Archive ${group.name}`,
+      message: "Group archived.",
+      onSuccess,
+      prompt: `Archive ${group.name}? Its grants stop applying to members right away. The group stays visible under Archived.`,
+      testId: "admin-confirm-archive-group",
+      title: "Archive group?",
+      tone: "warning"
     });
-  }, [clearFieldError]);
+  }, [requestConfirmedAction]);
 
-  const changeCreateName = useCallback((value: string) => {
-    setCreateName(value);
-    clearFieldError("group-name");
-  }, [clearFieldError]);
-
-  const changeRenameName = useCallback((value: string) => {
-    setRenameName(value);
-    clearFieldError("rename-selected-group");
-  }, [clearFieldError]);
-
-  const createGroup = useCallback(async () => {
-    const name = createName.trim();
-    if (!name) {
-      reportFieldError("group-name", "group_required");
-      return;
-    }
-    clearFieldError("group-name");
-
-    const result = await runAction({ action: "create_group", name }, "Group created.");
-    if (!result.error) {
-      setCreateName("");
-      setCreateFormOpen(false);
-      setDetailOpen(false);
-    }
-  }, [clearFieldError, createName, reportFieldError, runAction]);
-
-  const renameGroup = useCallback(async (group: AdminGroup) => {
-    if (group.systemRole === "full_access") return;
-    const name = renameName.trim();
-    if (!name) {
-      reportFieldError("rename-selected-group", "group_required");
-      return;
-    }
-    clearFieldError("rename-selected-group");
-
-    const result = await runAction(
-      { action: "rename_group", groupId: group.id, name },
-      "Group renamed."
-    );
-    if (!result.error) {
-      setRenameName("");
-      setRenamingGroupId(null);
-    }
-  }, [clearFieldError, renameName, reportFieldError, runAction]);
-
-  const requestDeleteGroup = useCallback((group: AdminGroup) => {
-    if (group.systemRole === "full_access") return;
+  const requestDelete = useCallback((group: AdminGroupActionTarget, onSuccess?: () => void) => {
+    if (builtIn(group)) return;
     requestConfirmedAction({
       body: { action: "delete_group", groupId: group.id },
       confirmLabel: "Delete group",
       dialogLabel: `Delete group ${group.name}`,
       icon: "trash",
       message: "Group deleted.",
-      onSuccess: closeDetail,
+      onSuccess,
       prompt: `Delete ${group.name}? This permanently removes the empty group. Groups with members or active grants are blocked.`,
       testId: "admin-confirm-delete-group",
       title: "Delete empty group?"
     });
-  }, [closeDetail, requestConfirmedAction]);
+  }, [requestConfirmedAction]);
 
-  const requestArchiveGroup = useCallback((group: AdminGroup) => {
-    if (group.systemRole === "full_access") return;
-    requestConfirmation({
-      body: `Archive ${group.name}? Its grants will stop applying to members immediately.`,
-      confirmLabel: "Archive group",
-      dialogLabel: `Archive ${group.name}`,
-      onConfirm: async () => {
-        const result = await runAction(
-          { action: "archive_group", groupId: group.id },
-          "Group archived."
-        );
-        if (!result.error) {
-          setGroupStatusFilter("archived");
-        }
-      },
-      testId: "admin-confirm-archive-group",
-      title: "Archive group?"
-    });
-  }, [requestConfirmation, runAction]);
-
-  const setGroupGrant = useCallback(async (
-    group: AdminGroup,
-    target: AdminGrantTarget,
-    enabled: boolean
+  const applyGrants = useCallback(async (
+    group: AdminGroupActionTarget,
+    changes: readonly AdminGroupGrantChange[],
+    notice = "Access updated."
   ) => {
-    if (group.systemRole === "full_access") return;
-    await runAction(
-      { action: "set_group_grant", enabled, groupId: group.id, ...target },
-      enabled ? "Grant enabled." : "Grant revoked."
-    );
+    if (builtIn(group) || group.archivedAt || !changes.length) return false;
+    const result = await runAction({ action: "set_group_grants", changes: [...changes], groupId: group.id }, notice);
+    return !result.error;
   }, [runAction]);
 
-  const setProviderModelGrants = useCallback(async (
-    group: AdminGroup,
-    providerId: string,
-    enabled: boolean
-  ) => {
-    if (group.systemRole === "full_access") return;
-    const models = dashboard?.catalog.models.filter((model) => model.provider === providerId) ?? [];
-    if (!models.length) {
-      reportNotice("No provider models to update.");
-      return;
-    }
-
-    for (const model of models) {
-      const result = await runAction(
-        {
-          action: "set_group_grant",
-          enabled,
-          groupId: group.id,
-          modelId: model.modelId,
-          provider: model.provider
-        },
-        enabled ? "Model grants enabled." : "Model grants revoked.",
-        { reload: false, successNotice: false }
-      );
-      if (result.error) return;
-    }
-
-    reportNotice(enabled ? "Provider model grants enabled." : "Provider model grants revoked.");
-    await refreshDashboard({ afterReconcile: onMutationReconciled });
-  }, [dashboard?.catalog.models, onMutationReconciled, refreshDashboard, reportNotice, runAction]);
-
-  const setGroupMembership = useCallback(async (
-    group: AdminGroup,
-    userId: string,
-    enabled: boolean
-  ) => {
-    const user = dashboard?.users.find((candidate) => candidate.id === userId);
+  const setMembership = useCallback(async (group: AdminGroupActionTarget, userId: string, enabled: boolean) => {
+    const user = users?.find((candidate) => candidate.id === userId);
     if (!user || group.archivedAt) return false;
-    const currentGroupIds = activeGroupIdsForUser(user, dashboard?.groups ?? []);
+    const currentGroupIds = activeGroupIdsForUser(user, groups ?? []);
     const nextGroupIds = enabled
       ? [...new Set([...currentGroupIds, group.id])]
       : currentGroupIds.filter((groupId) => groupId !== group.id);
     const result = await runAction(
       { action: "set_user_groups", groupIds: nextGroupIds, userId },
-      enabled ? "Member added to group." : "Member removed from group."
+      enabled ? "Member added." : "Member removed."
     );
     return !result.error;
-  }, [dashboard?.groups, dashboard?.users, runAction]);
-
-  const startRenaming = useCallback((group: AdminGroup) => {
-    if (group.systemRole === "full_access") return;
-    clearFieldError("rename-selected-group");
-    setRenameName(group.name);
-    setRenamingGroupId(group.id);
-  }, [clearFieldError]);
-
-  const sectionProps = useMemo<AdminAccessGroupsSectionProps | null>(() => {
-    if (!dashboard) return null;
-
-    return {
-      actions: {
-        onAddMember: (group, user) => setGroupMembership(group, user.id, true),
-        onBackToList: closeDetail,
-        onCreateNameChange: changeCreateName,
-        onCreateSubmit: createGroup,
-        onQueryChange: setGroupQuery,
-        onRenameNameChange: changeRenameName,
-        onRenameSubmit: renameGroup,
-        onRemoveMember: (group, user) => {
-          void setGroupMembership(group, user.id, false);
-        },
-        onRequestArchive: requestArchiveGroup,
-        onRequestDelete: requestDeleteGroup,
-        onSelectGroup: selectGroup,
-        onSelectView: setActiveView,
-        onStartRenaming: startRenaming,
-        onStatusFilterChange: setGroupStatusFilter,
-        onToggleGrant: (group, target, enabled) => void setGroupGrant(group, target, enabled),
-        onToggleProviderModels: (group, providerId, enabled) =>
-          void setProviderModelGrants(group, providerId, enabled)
-      },
-      data: {
-        allGroups: dashboard.groups,
-        allUsers: dashboard.users,
-        catalog: dashboard.catalog,
-        selectedGroup,
-        selectedGroupMembers,
-        visibleGroups
-      },
-      draft: {
-        activeView,
-        createFormOpen,
-        createName,
-        detailOpen,
-        query: groupQuery,
-        renameName,
-        renamingGroupId,
-        statusFilter: groupStatusFilter
-      },
-      refs: focus.groups,
-      status: {
-        actionsDisabled,
-        createError: fieldError?.field === "group-name" ? fieldError.message : null,
-        renameError: fieldError?.field === "rename-selected-group" ? fieldError.message : null
-      }
-    };
-  }, [
-    actionsDisabled,
-    activeView,
-    changeCreateName,
-    changeRenameName,
-    closeDetail,
-    createFormOpen,
-    createGroup,
-    createName,
-    dashboard,
-    detailOpen,
-    fieldError,
-    focus.groups,
-    groupQuery,
-    groupStatusFilter,
-    renameGroup,
-    renameName,
-    renamingGroupId,
-    requestArchiveGroup,
-    requestDeleteGroup,
-    selectGroup,
-    selectedGroup,
-    selectedGroupMembers,
-    setGroupGrant,
-    setGroupMembership,
-    setProviderModelGrants,
-    startRenaming,
-    visibleGroups
-  ]);
+  }, [groups, runAction, users]);
 
   return useMemo(() => ({
-    access: {
-      draftProtection: {
-        dirty: draftDirty,
-        discard: discardDraft
-      },
-      sectionProps,
-      toggleCreateForm
-    }
-  }), [discardDraft, draftDirty, sectionProps, toggleCreateForm]);
+    actions: { applyGrants, create, rename, requestArchive, requestDelete, setMembership },
+    actionsDisabled
+  }), [actionsDisabled, applyGrants, create, rename, requestArchive, requestDelete, setMembership]);
 }

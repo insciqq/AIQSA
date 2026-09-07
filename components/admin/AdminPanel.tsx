@@ -1,18 +1,15 @@
 "use client";
 
-import { AdminAccessGroupsSection } from "@/components/admin/AdminAccessGroupsSection";
 import { AdminConfirmationHost } from "@/components/admin/AdminConfirmationHost";
 import { AdminDashboardUnavailable } from "@/components/admin/AdminDashboardUnavailable";
 import {
   AdminDraftProtectionProvider,
-  AdminDraftRegistration,
-  useAdminDiscardAction,
   useAdminDraftRegistry,
   type AdminDraftOwner
 } from "@/components/admin/AdminDraftProtection";
 import { AdminEmailSection } from "@/components/admin/email/AdminEmailSection";
 import { AdminFeedbackHost } from "@/components/admin/AdminFeedbackHost";
-import { AdminMcpGroupAccessPanel } from "@/components/admin/mcp/AdminMcpGrantPanels";
+import { AdminGroupsSection } from "@/components/admin/groups/AdminGroupsSection";
 import { AdminMcpSection } from "@/components/admin/mcp/AdminMcpSection";
 import { AdminOverviewSection } from "@/components/admin/AdminOverviewSection";
 import { AdminProvidersSection } from "@/components/admin/providers/AdminProvidersSection";
@@ -28,7 +25,6 @@ import {
 import { AdminUsageSection } from "@/components/admin/AdminUsageSection";
 import { AdminUsersSection } from "@/components/admin/users/AdminUsersSection";
 import { AdminWorkspaceSection } from "@/components/admin/AdminWorkspaceSection";
-import { primaryButton } from "@/components/admin/adminPrimitives";
 import type { AdminSectionId } from "@/components/admin/adminSections";
 import { useAdminAccessRulesController, type AdminAccessRulesController } from "@/components/admin/useAdminAccessRulesController";
 import { useAdminActionRunner } from "@/components/admin/useAdminActionRunner";
@@ -39,11 +35,9 @@ import {
 } from "@/components/admin/useAdminConfirmationController";
 import { useAdminDashboardResource } from "@/components/admin/useAdminDashboardResource";
 import { useAdminFeedback, type AdminFeedbackController } from "@/components/admin/useAdminFeedback";
-import { useAdminFieldErrors } from "@/components/admin/useAdminFieldErrors";
 import { useAdminGroupsController, type AdminGroupsController } from "@/components/admin/useAdminGroupsController";
 import { useAdminInvitesController, type AdminInvitesController } from "@/components/admin/useAdminInvitesController";
 import { useAdminMcpController, type AdminMcpController } from "@/components/admin/useAdminMcpController";
-import { useAdminOperationalFocus } from "@/components/admin/useAdminOperationalFocus";
 import { useAdminReleaseStatus } from "@/components/admin/useAdminReleaseStatus";
 import {
   useAdminSectionNavigation,
@@ -54,7 +48,6 @@ import { useAdminUsersController, type AdminUsersController } from "@/components
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 import type { AdminDashboard } from "@/lib/contracts/admin";
 import type { AdminAttentionTarget } from "@/lib/contracts/adminAttention";
-import { Plus } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 
 type AdminPanelProps = Readonly<{
@@ -66,59 +59,20 @@ function assertNeverSection(section: never): never {
   throw new Error(`Unhandled admin section: ${section}`);
 }
 
-function HeaderFormToggle({
-  Icon,
-  label,
-  open,
-  owners,
-  toggle
-}: Readonly<{
-  Icon: typeof Plus;
-  label: string;
-  open: boolean;
-  owners: readonly AdminDraftOwner[];
-  toggle(): void;
-}>) {
-  const requestDiscardAction = useAdminDiscardAction();
-  return (
-    <button
-      className={primaryButton}
-      data-admin-task-opener="true"
-      onClick={() => requestDiscardAction(toggle, owners)}
-      type="button"
-    >
-      <Icon aria-hidden="true" className="size-3.5" />
-      {open ? "Hide form" : `New ${label}`}
-    </button>
-  );
-}
-
 /**
- * Topbar primary actions per section. Until later slices replace each
- * section, the existing header forms keep their toggles here.
+ * Topbar actions the panel provides itself; every section with its own
+ * topbar overrides this through `useAdminSectionTopbar`.
  */
 function AdminTopbarActions({
   activeSection,
-  groups,
   releaseStatus
 }: Readonly<{
   activeSection: AdminSectionId;
-  groups: AdminGroupsController;
   releaseStatus: ReturnType<typeof useAdminReleaseStatus>;
 }>): ReactNode {
   switch (activeSection) {
     case "overview":
       return <AdminReleaseUpdatePill releaseStatus={releaseStatus} />;
-    case "groups":
-      return groups.access.sectionProps && !groups.access.sectionProps.draft.detailOpen ? (
-        <HeaderFormToggle
-          Icon={Plus}
-          label="group"
-          open={groups.access.sectionProps.draft.createFormOpen}
-          owners={["access-groups-form", "access-group-member-form"]}
-          toggle={groups.access.toggleCreateForm}
-        />
-      ) : null;
     default:
       return null;
   }
@@ -135,6 +89,7 @@ function AdminSectionContent({
   invites,
   mcp,
   navigation,
+  nowMs,
   onJump,
   onMutationCommitted,
   reportError,
@@ -152,6 +107,7 @@ function AdminSectionContent({
   invites: AdminInvitesController;
   mcp: AdminMcpController;
   navigation: Pick<AdminSectionNavigation, "activeFilter" | "activeResource" | "selectFilter" | "selectResource" | "selectSection">;
+  nowMs: number;
   onJump(target: AdminAttentionTarget): void;
   onMutationCommitted(): void | Promise<unknown>;
   reportError: AdminFeedbackController["reportError"];
@@ -220,17 +176,16 @@ function AdminSectionContent({
         />
       );
     case "groups":
-      return groups.access.sectionProps ? (
-        <AdminAccessGroupsSection
-          {...groups.access.sectionProps}
-          mcpAccess={groups.access.sectionProps.data.selectedGroup ? (
-            <AdminMcpGroupAccessPanel
-              controller={mcp}
-              group={groups.access.sectionProps.data.selectedGroup}
-            />
-          ) : null}
+      return (
+        <AdminGroupsSection
+          dashboard={dashboard}
+          groups={groups}
+          mcp={mcp}
+          nowMs={nowMs}
+          onSelectResource={navigation.selectResource}
+          resource={navigation.activeResource}
         />
-      ) : null;
+      );
     case "mcp":
       return (
         <AdminMcpSection
@@ -289,8 +244,6 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     refreshDashboard: resource.refresh
   });
   const confirmation = useAdminConfirmationController({ runAction: actionRunner.runAction });
-  const fieldErrors = useAdminFieldErrors(feedback);
-  const operationalFocus = useAdminOperationalFocus();
   const nowMs = lastLoadedMs ?? 0;
   const actionsDisabled = Boolean(actionRunner.submitting);
   const navigationLocked = actionsDisabled || drafts.pending;
@@ -377,14 +330,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   const groups = useAdminGroupsController({
     actionsDisabled,
     dashboard: resource.dashboard,
-    fieldErrors,
-    focus: operationalFocus.focus,
-    onMutationReconciled: navigation.restoreFocusAfterMutation,
-    refreshDashboard: resource.refresh,
-    reportNotice: feedback.reportNotice,
-    requestConfirmation: confirmation.requestConfirmation,
     requestConfirmedAction: confirmation.requestConfirmedAction,
-    requestFocus: operationalFocus.requestFocus,
     runAction: actionRunner.runAction
   });
   const invites = useAdminInvitesController({
@@ -408,9 +354,9 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   });
   const { selectSection } = navigation;
   const jumpToTarget = useCallback((target: AdminAttentionTarget) => {
-    // Providers, Search, Users and MCP servers have resource pages; Users also pre-selects a filter pill.
+    // Providers, Search, Users, Groups and MCP servers have resource pages; Users also pre-selects a filter pill.
     const hasResourcePages = target.section === "providers" || target.section === "search" ||
-      target.section === "users" || target.section === "mcp";
+      target.section === "users" || target.section === "groups" || target.section === "mcp";
     selectSection(
       target.section,
       hasResourcePages ? target.resource ?? null : null,
@@ -432,11 +378,6 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
       aria-busy={isBusy}
       className="min-h-[100dvh] overflow-x-hidden bg-app-canvas pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-ink"
     >
-      <AdminDraftRegistration
-        dirty={navigation.activeSection === "groups" && groups.access.draftProtection.dirty}
-        onDiscard={groups.access.draftProtection.discard}
-        owner="access-groups-form"
-      />
       <div
         aria-hidden={confirmation.confirmation ? true : undefined}
         data-testid="admin-console-workspace"
@@ -453,7 +394,6 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
             actions: resource.dashboard ? (
               <AdminTopbarActions
                 activeSection={navigation.activeSection}
-                groups={groups}
                 releaseStatus={releaseStatus}
               />
             ) : null,
@@ -478,6 +418,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
                 invites={invites}
                 mcp={mcp}
                 navigation={navigation}
+                nowMs={nowMs}
                 onJump={jumpToTarget}
                 onMutationCommitted={resource.refresh}
                 reportError={feedback.reportError}
