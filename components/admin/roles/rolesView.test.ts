@@ -2,6 +2,7 @@ import { adminKnowledgeProfileFixture } from "@/tests/support/knowledgeProfile";
 import type { AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
 import { describe, expect, it } from "vitest";
 import {
+  embeddingDestinationLabel,
   generativeRoleItems,
   knowledgeDocumentItems,
   knowledgeProcessingState,
@@ -56,6 +57,16 @@ function catalog(overrides: Partial<AdminSystemModelPolicyCatalog["policy"]> = {
     verificationCandidates: [ready, unchecked, anthropic]
   };
 }
+
+describe("embeddingDestinationLabel", () => {
+  it("adds the vector size once, even when the display name already carries it", () => {
+    const base = { connectionDisplayName: "OpenRouter", deploymentId: "m", provider: "openrouter", targetDimension: 1536 };
+    expect(embeddingDestinationLabel({ ...base, modelDisplayName: "Qwen3 Embedding 8B" }))
+      .toBe("OpenRouter / Qwen3 Embedding 8B · 1536d");
+    expect(embeddingDestinationLabel({ ...base, modelDisplayName: "Qwen3 Embedding 8B · 1536d" }))
+      .toBe("OpenRouter / Qwen3 Embedding 8B · 1536d");
+  });
+});
 
 describe("rolesView", () => {
   it("groups Memory candidates from the server's eligibility lists without client guesses", () => {
