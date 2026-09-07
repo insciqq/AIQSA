@@ -82,20 +82,25 @@ export type AdminEmailState = {
   };
 };
 
-export type AdminEmailSaveRequest = {
+/** The settings `test_and_activate` stores before it sends the test message. */
+export type AdminEmailDraftInput = {
   configuration: AdminEmailConfiguration;
   expectedDraftVersion: number;
   passwordAction: AdminEmailPasswordAction;
 };
 
 export type AdminEmailActionRequest =
-  | {
-      action: "activate";
-      expectedActiveVersion: number;
-      expectedDraftVersion: number;
-    }
   | { action: "disable" | "enable"; expectedActiveVersion: number }
-  | { action: "test"; expectedDraftVersion: number; recipient: string };
+  | {
+      /**
+       * Stores `draft`, sends one test message to `testRecipient`, and activates
+       * on acceptance. Any failure leaves the active configuration untouched.
+       */
+      action: "test_and_activate";
+      draft: AdminEmailDraftInput;
+      expectedActiveVersion: number;
+      testRecipient: string;
+    };
 
 export type AdminEmailClearRequest = {
   confirm: true;
@@ -124,8 +129,19 @@ export type AdminEmailErrorCode =
   | "email_draft_not_tested"
   | "email_encryption_unavailable"
   | "email_state_invalid"
-  | "email_test_overloaded"
+  | "email_test_failed"
   | "json_required";
 
 export type AdminEmailErrorResponse = ErrorResponse<AdminEmailErrorCode>;
 
+/**
+ * 422 body of `test_and_activate` when the mail server did not accept the test
+ * message: the settings are stored for the next attempt, `test.code` carries
+ * the cause, and `email.active` is the untouched previous configuration.
+ */
+export type AdminEmailTestFailedResponse = ErrorResponse<"email_test_failed"> & AdminEmailMutationResponse & {
+  test: {
+    code: AdminEmailAttemptCode;
+    tested: false;
+  };
+};

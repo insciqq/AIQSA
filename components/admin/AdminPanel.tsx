@@ -10,7 +10,7 @@ import {
   useAdminDraftRegistry,
   type AdminDraftOwner
 } from "@/components/admin/AdminDraftProtection";
-import { AdminEmailSection } from "@/components/admin/AdminEmailSection";
+import { AdminEmailSection } from "@/components/admin/email/AdminEmailSection";
 import { AdminFeedbackHost } from "@/components/admin/AdminFeedbackHost";
 import { AdminMcpGroupAccessPanel } from "@/components/admin/AdminMcpGrantPanels";
 import { AdminMcpServersSection } from "@/components/admin/AdminMcpServersSection";
@@ -128,6 +128,7 @@ function AdminTopbarActions({
 function AdminSectionContent({
   accessRules,
   activeSection,
+  adminEmail,
   attention,
   dashboard,
   feedback,
@@ -145,6 +146,7 @@ function AdminSectionContent({
 }: Readonly<{
   accessRules: AdminAccessRulesController;
   activeSection: AdminSectionId;
+  adminEmail: string;
   attention: ReturnType<typeof useAdminAttention>;
   dashboard: AdminDashboard;
   feedback: Pick<AdminFeedbackController, "reportError" | "reportNotice">;
@@ -237,7 +239,15 @@ function AdminSectionContent({
     case "workspace":
       return <AdminWorkspaceSection />;
     case "email":
-      return <AdminEmailSection onMutationCommitted={onMutationCommitted} />;
+      return (
+        <AdminEmailSection
+          active
+          adminEmail={adminEmail}
+          feedback={feedback}
+          onMutationCommitted={onMutationCommitted}
+          requestConfirmation={requestConfirmation}
+        />
+      );
     case "usage":
       return <AdminUsageSection catalog={dashboard.catalog} usage={dashboard.usage} />;
   }
@@ -453,6 +463,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
               <AdminSectionContent
                 accessRules={accessRules}
                 activeSection={navigation.activeSection}
+                adminEmail={adminEmail}
                 attention={attention}
                 dashboard={resource.dashboard}
                 feedback={feedback}
