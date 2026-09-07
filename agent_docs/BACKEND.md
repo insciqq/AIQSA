@@ -25,6 +25,8 @@ The Personal Memory MCP is an inbound same-installation resource, not part of th
 
 Installation answer recommendations and purpose-specific System Model assignments are independent and never grant entitlement. Every role resolves only its configured deployment and installation credential; absence or invalidity fails that stage closed without substitution. Consolidated administration preserves each domain's state owner: Memory utility bindings are future-only, Knowledge document and embedding changes atomically activate an immutable profile with explicit reprocessing/reindexing, and owner-scoped Personal Memory embeddings retain their existing entitlement and generation contract.
 
+The Control Center attention list is a read-only, per-request aggregation of projections the administrator already receives; it persists nothing, names a source it could not read instead of failing the whole list, and carries only human copy plus a Control Center jump target, never secrets, raw failure messages, or private identifiers.
+
 ## Files, Jobs, And Shares
 
 Authenticate before consuming uploads. Validate complete multipart size, extension/MIME/content shape, parser bounds, ownership, and settled private-object metadata before a file becomes usable. Expensive processing is represented by durable claimed work; a request does not own a long-running in-memory queue.

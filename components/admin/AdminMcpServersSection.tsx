@@ -27,7 +27,7 @@ import {
   quietButton
 } from "@/components/admin/adminPrimitives";
 import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
-import { adminMcpAttention } from "@/components/admin/adminMcpAttention";
+import { adminMcpAttention } from "@/lib/contracts/mcp";
 import type { AdminMcpController } from "@/components/admin/useAdminMcpController";
 import type {
   AdminMcpEditorMode,

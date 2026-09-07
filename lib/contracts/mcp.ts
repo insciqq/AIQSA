@@ -335,3 +335,43 @@ export const MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS = Object.freeze({
   maxSeconds: 120,
   minSeconds: 1
 });
+
+export type AdminMcpAttention = {
+  action: string;
+  href: string | null;
+  label: string;
+  task: "runtime" | "validation";
+};
+
+/**
+ * What an administrator must still do for a server before it works for
+ * everyone: connect or reconnect validation OAuth, review a failed check, or
+ * repair a missing runtime artifact. `null` means nothing is owed.
+ */
+export function adminMcpAttention(server: AdminMcpServer): AdminMcpAttention | null {
+  if (server.archivedAt) return null;
+  if (server.draft.auth.mode === "oauth" && server.validationOAuth?.state === "disconnecting") {
+    return { action: "View connection", href: null, label: "Disconnecting authorization", task: "validation" };
+  }
+  if (server.draft.auth.mode === "oauth" && server.validationOAuth?.state !== "ready") {
+    const reconnect = server.validationOAuth?.state === "reauthorization_required";
+    return {
+      action: reconnect ? "Reconnect" : "Connect",
+      href: `/api/admin/mcp/${encodeURIComponent(server.id)}/oauth/validation/${reconnect ? "reconnect" : "connect"}`,
+      label: reconnect ? "Reconnect to check changes" : "Authorization required to check changes",
+      task: "validation"
+    };
+  }
+  if (server.activation?.stage === "failed") {
+    return { action: "Review and retry", href: null, label: "Settings check failed", task: "validation" };
+  }
+  if (server.activeRevision?.artifactStatus === "missing" || server.runtimeProblem) {
+    return {
+      action: "Review connection", href: null,
+      label: server.runtimeProblem === "reauthorization_required"
+        ? "A user connection needs reconnecting" : "MCP runtime unavailable",
+      task: "runtime"
+    };
+  }
+  return null;
+}

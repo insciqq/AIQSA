@@ -6,7 +6,7 @@ import {
   availabilityRowClass,
   enableActionTone
 } from "@/components/resource-lifecycle/AvailabilityStatus";
-import { ArrowLeft, type LucideIcon } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 
 export const focusRing =
@@ -101,31 +101,6 @@ export function GroupChips({ groups }: { groups: AdminMembership[] }) {
   );
 }
 
-export function SectionHeader({
-  actions,
-  description,
-  Icon,
-  title
-}: {
-  actions?: ReactNode;
-  description: string;
-  Icon: LucideIcon;
-  title: string;
-}) {
-  return (
-    <div className="flex flex-col gap-3 border-b border-trace-subtle bg-answer-paper px-4 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
-      <div className="flex min-w-0 items-start gap-3">
-        <Icon className="mt-0.5 size-4 shrink-0 text-ink-muted" aria-hidden="true" />
-        <div className="min-w-0">
-          <h2 className="text-lg font-semibold tracking-tight text-ink">{title}</h2>
-          <p className="mt-1 max-w-3xl text-sm leading-5 text-ink-muted">{description}</p>
-        </div>
-      </div>
-      {actions ? <div className="flex shrink-0 flex-wrap gap-2">{actions}</div> : null}
-    </div>
-  );
-}
-
 export function EmptyState({ detail, title }: { detail: string; title: string }) {
   return (
     <div className="px-4 py-10 text-center" role="status">
@@ -163,50 +138,6 @@ export function AdminTableRegion({
       className={`overflow-x-auto overscroll-x-contain ${focusRing}`}
       role="region"
       tabIndex={0}
-    >
-      {children}
-    </div>
-  );
-}
-
-export function AdminResourceIndexPane({
-  children,
-  className = "",
-  compactVisible,
-  testId
-}: Readonly<{
-  children: ReactNode;
-  className?: string;
-  compactVisible: boolean;
-  testId: string;
-}>) {
-  return (
-    <aside
-      className={`${compactVisible ? "block" : "hidden"} min-h-0 min-w-0 lg:block ${className}`}
-      data-admin-task-view="index"
-      data-testid={testId}
-    >
-      {children}
-    </aside>
-  );
-}
-
-export function AdminResourceDetailPane({
-  children,
-  className = "",
-  compactVisible,
-  testId
-}: Readonly<{
-  children: ReactNode;
-  className?: string;
-  compactVisible: boolean;
-  testId: string;
-}>) {
-  return (
-    <div
-      className={`${compactVisible ? "block" : "hidden"} min-h-0 min-w-0 lg:block ${className}`}
-      data-admin-task-view="detail"
-      data-testid={testId}
     >
       {children}
     </div>

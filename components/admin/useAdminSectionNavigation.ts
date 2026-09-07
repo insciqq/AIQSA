@@ -1,24 +1,21 @@
 import {
   adminSectionConfig,
-  adminSectionMoveForKey,
   adminSectionPath,
   defaultAdminSection,
-  moveAdminSection,
   normalizeAdminSectionPath,
   parseAdminSection,
   type AdminSection,
   type AdminSectionId
 } from "@/components/admin/adminSections";
-import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type AdminSectionNavigation = Readonly<{
   activeSection: AdminSectionId;
   activeSectionConfig: AdminSection;
   closeSectionIndex(): void;
-  focusActiveTab(): void;
+  focusActiveSection(): void;
   openSectionIndex(): void;
-  onTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, section: AdminSectionId): void;
-  registerTab(section: AdminSectionId, node: HTMLButtonElement | null): void;
+  registerSectionLink(section: AdminSectionId, node: HTMLElement | null): void;
   restoreFocusAfterMutation(): void;
   requestExit(href: string, proceed: () => void): boolean;
   sectionIndexOpen: boolean;
@@ -202,7 +199,7 @@ export function useAdminSectionNavigation({
   const [sectionIndexOpen, setSectionIndexOpen] = useState(false);
   const activeSectionRef = useRef(activeSection);
   const sectionIndexOpenRef = useRef(sectionIndexOpen);
-  const tabRefs = useRef(new Map<AdminSectionId, HTMLButtonElement>());
+  const linkRefs = useRef(new Map<AdminSectionId, HTMLElement>());
   const adminPathnameRef = useRef<string | null>(null);
   const currentAdminViewRef = useRef<AdminHistoryView | null>(null);
   const historySessionIdRef = useRef("");
@@ -246,13 +243,13 @@ export function useAdminSectionNavigation({
     sectionIndexOpenRef.current = sectionIndexOpen;
   }, [sectionIndexOpen]);
 
-  const registerTab = useCallback((section: AdminSectionId, node: HTMLButtonElement | null) => {
+  const registerSectionLink = useCallback((section: AdminSectionId, node: HTMLElement | null) => {
     if (node) {
-      tabRefs.current.set(section, node);
+      linkRefs.current.set(section, node);
       return;
     }
 
-    tabRefs.current.delete(section);
+    linkRefs.current.delete(section);
   }, []);
 
   const ensureOwnedCurrentEntry = useCallback((): AdminHistoryView => {
@@ -439,39 +436,14 @@ export function useAdminSectionNavigation({
     commitCloseSectionIndex();
   }, [commitCloseSectionIndex]);
 
-  const focusTab = useCallback((section: AdminSectionId) => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.setTimeout(() => tabRefs.current.get(section)?.focus(), 0);
-  }, []);
-
-  const focusActiveTab = useCallback(() => {
-    const selectedTab =
-      [...tabRefs.current.values()].find((tab) => tab.getAttribute("aria-selected") === "true") ??
-      tabRefs.current.get(activeSectionRef.current) ??
+  const focusActiveSection = useCallback(() => {
+    const selectedLink =
+      [...linkRefs.current.values()].find((link) => link.getAttribute("aria-current") === "page") ??
+      linkRefs.current.get(activeSectionRef.current) ??
       null;
 
-    focusElement(selectedTab);
+    focusElement(selectedLink);
   }, []);
-
-  const onTabKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLButtonElement>, section: AdminSectionId) => {
-      const direction = adminSectionMoveForKey(event.key);
-
-      if (!direction) {
-        return;
-      }
-
-      event.preventDefault();
-      const nextSection = moveAdminSection(section, direction);
-      if (selectSection(nextSection)) {
-        focusTab(nextSection);
-      }
-    },
-    [focusTab, selectSection]
-  );
 
   const restoreFocusAfterMutation = useCallback(() => {
     if (typeof window === "undefined" || typeof document === "undefined") {
@@ -480,7 +452,7 @@ export function useAdminSectionNavigation({
 
     const run = () => {
       if (!hasStableDocumentFocus()) {
-        focusActiveTab();
+        focusActiveSection();
       }
     };
 
@@ -490,7 +462,7 @@ export function useAdminSectionNavigation({
     }
 
     window.setTimeout(run, 0);
-  }, [focusActiveTab]);
+  }, [focusActiveSection]);
 
   useEffect(() => {
     const applyCurrentAdminEntry = (startNewSession = false) => {
@@ -653,10 +625,9 @@ export function useAdminSectionNavigation({
       activeSection,
       activeSectionConfig: adminSectionConfig(activeSection),
       closeSectionIndex,
-      focusActiveTab,
+      focusActiveSection,
       openSectionIndex,
-      onTabKeyDown,
-      registerTab,
+      registerSectionLink,
       requestExit,
       restoreFocusAfterMutation,
       sectionIndexOpen,
@@ -665,10 +636,9 @@ export function useAdminSectionNavigation({
     [
       activeSection,
       closeSectionIndex,
-      focusActiveTab,
+      focusActiveSection,
       openSectionIndex,
-      onTabKeyDown,
-      registerTab,
+      registerSectionLink,
       requestExit,
       restoreFocusAfterMutation,
       sectionIndexOpen,
