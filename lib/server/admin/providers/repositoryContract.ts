@@ -164,6 +164,45 @@ export type ProviderActivationWrite = Readonly<{
 
 export type ProviderDisableTarget = "connection" | "credential" | "model";
 
+/** What one model's `Test & Save` (PRD B2) reads before its scoped activation. */
+export type ProviderModelActivationCandidate = Readonly<{
+  connection: {
+    activeVersion: number;
+    /** The key the inline check runs with; null when none is set or usable. */
+    defaultCredential: { id: string; usable: boolean } | null;
+    draftConfiguration: unknown;
+    draftVersion: number;
+    family: string;
+    id: string;
+  };
+  model: {
+    configuration: unknown;
+    displayName: string;
+    draftVersion: number;
+    id: string;
+  };
+}>;
+
+/**
+ * Narrow activation of exactly one model draft: its draft becomes the active
+ * configuration while every other model, key and connection draft stays as
+ * it is. A connection that was never activated takes its current draft
+ * configuration live at the same time so the model can be checked and used.
+ */
+export type ProviderModelActivationWrite = Readonly<{
+  connection: {
+    activateDraft: { configuration: ProviderConnectionConfiguration; draftVersion: number } | null;
+    id: string;
+  };
+  enable: boolean;
+  model: {
+    configuration: ProviderModelConfiguration;
+    draftVersion: number;
+    id: string;
+  };
+  now: Date;
+}>;
+
 /**
  * One tested key becomes the active version of exactly one credential. A
  * `new` credential row is created enabled; a `rotate` write replaces the
@@ -195,6 +234,7 @@ export type AdminProviderRepository = Readonly<{
   activateCredentialCas(
     input: ProviderCredentialActivationWrite
   ): Promise<ProviderCredentialActivationResult>;
+  activateModelCas(input: ProviderModelActivationWrite): Promise<ProviderDraftMutationResult>;
   assignGroupCredential(input: {
     connectionId: string;
     credentialId: string;
@@ -235,6 +275,10 @@ export type AdminProviderRepository = Readonly<{
     credentialId: string;
     providerModelId: string;
   }): Promise<ProviderDraftTestCandidate | null>;
+  loadModelActivationCandidate(input: {
+    connectionId: string;
+    modelId: string;
+  }): Promise<ProviderModelActivationCandidate | null>;
   renameCredential(input: {
     credentialId: string;
     label: string;

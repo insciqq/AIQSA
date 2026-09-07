@@ -4,12 +4,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAdminProvidersController } from "./useAdminProvidersController";
 
 const api = vi.hoisted(() => ({
+  createModel: vi.fn(),
   getConnections: vi.fn(),
   runConnectionAction: vi.fn()
 }));
 
 vi.mock("./adminProvidersApi", () => ({
   adminProviderErrorMessage: (error: { code: string }) => error.code,
+  createAdminProviderModel: api.createModel,
   getAdminProviderConnections: api.getConnections,
   runAdminProviderConnectionAction: api.runConnectionAction
 }));
@@ -45,8 +47,74 @@ function connection(id: string, displayName: string): AdminProviderConnection {
 
 describe("useAdminProvidersController", () => {
   beforeEach(() => {
+    api.createModel.mockReset();
     api.getConnections.mockReset();
     api.runConnectionAction.mockReset();
+  });
+
+  it("saves a model with Test & Save in one request and starts background checks without a toast", async () => {
+    const original = connection("connection-a", "Provider A");
+    api.getConnections.mockResolvedValue({ data: [original], ok: true });
+    api.createModel.mockResolvedValue({ data: [original], ok: true });
+    api.runConnectionAction.mockResolvedValue({ data: [{ ...original, displayName: "checking" }], ok: true });
+    const onNotice = vi.fn();
+    const { result } = renderHook(() => useAdminProvidersController(true, { onNotice }));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+
+    await act(async () => {
+      await expect(result.current.actions.saveModel(original.id, null, { configuration: { upstreamModelId: "m" }, displayName: "M" }))
+        .resolves.toEqual({ ok: true });
+    });
+    expect(api.createModel).toHaveBeenCalledWith(original.id, {
+      activate: true,
+      configuration: { upstreamModelId: "m" },
+      displayName: "M"
+    });
+    expect(onNotice).toHaveBeenCalledWith("Model saved and turned on.");
+
+    await act(async () => {
+      await expect(result.current.actions.startModelChecks(original.id, "credential-1", ["model-1"]))
+        .resolves.toEqual({ ok: true });
+    });
+    expect(api.runConnectionAction).toHaveBeenCalledWith(original.id, {
+      action: "check_models",
+      credentialId: "credential-1",
+      modelIds: ["model-1"]
+    });
+    expect(onNotice).toHaveBeenCalledOnce();
+    expect(result.current.state.connections[0]?.displayName).toBe("checking");
+    expect(result.current.state.busy).toBe(false);
+  });
+
+  it("refreshes quietly without touching busy or loading and yields to a mutation in flight", async () => {
+    const original = connection("connection-a", "Provider A");
+    api.getConnections.mockResolvedValue({ data: [original], ok: true });
+    const { result } = renderHook(() => useAdminProvidersController(true));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+
+    api.getConnections.mockResolvedValue({ data: [{ ...original, displayName: "polled" }], ok: true });
+    await act(async () => {
+      await expect(result.current.actions.refreshQuietly()).resolves.toBe(true);
+    });
+    expect(result.current.state.connections[0]?.displayName).toBe("polled");
+    expect(result.current.state.loading).toBe(false);
+
+    let finishAction!: (value: { data: AdminProviderConnection[]; ok: true }) => void;
+    api.runConnectionAction.mockImplementation(() => new Promise((resolve) => { finishAction = resolve; }));
+    let pending!: Promise<boolean>;
+    act(() => {
+      pending = result.current.actions.connectionAction(original.id, { action: "enable" }, "On.");
+    });
+    await waitFor(() => expect(result.current.state.busy).toBe(true));
+    api.getConnections.mockResolvedValue({ data: [{ ...original, displayName: "late poll" }], ok: true });
+    await act(async () => {
+      await expect(result.current.actions.refreshQuietly()).resolves.toBe(false);
+    });
+    await act(async () => {
+      finishAction({ data: [{ ...original, displayName: "mutated" }], ok: true });
+      await pending;
+    });
+    expect(result.current.state.connections[0]?.displayName).toBe("mutated");
   });
 
   it("keeps a late activation override error scoped to the connection that produced it", async () => {
