@@ -12,6 +12,7 @@ import { ProviderConfigurationError } from "../../providers/providerConfiguratio
 import { pdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
 import type { ProviderPdfInputProbeInput } from "../../providers/pdfInputProbe";
 import type {
+  AdminProviderQuickSetupAdditionalPlan,
   AdminProviderQuickSetupInspection,
   AdminProviderQuickSetupRepository
 } from "./quickSetupRepositoryContract";
@@ -940,7 +941,7 @@ describe("provider Quick setup service", () => {
 
     expect(value.commit).not.toHaveBeenCalled();
     expect(value.commitAdditional).toHaveBeenCalledOnce();
-    const plan = value.commitAdditional.mock.calls[0]![0];
+    const [plan] = value.commitAdditional.mock.calls[0] as unknown as [AdminProviderQuickSetupAdditionalPlan];
     expect(plan.connection).toMatchObject({
       configuration: expect.objectContaining({ apiRoot: "https://api.openai.com/v1" }),
       displayName: "OpenAI · Research account"
@@ -1031,7 +1032,8 @@ describe("provider Quick setup service", () => {
       }),
       family: "openai"
     }));
-    expect(value.commitAdditional.mock.calls[0]![0].connection.configuration).toMatchObject({
+    const [additionalPlan] = value.commitAdditional.mock.calls[0] as unknown as [AdminProviderQuickSetupAdditionalPlan];
+    expect(additionalPlan.connection.configuration).toMatchObject({
       apiRoot: "https://gateway.example.test/v1",
       responseTimeoutMs: 120_000
     });
