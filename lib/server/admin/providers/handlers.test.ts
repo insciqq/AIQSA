@@ -3,11 +3,14 @@ import type { AdminProviderConnection } from "../../../contracts/adminProviders"
 import type { AuthenticatedSession, RequestAuthResolver } from "../../auth/requestAuth";
 import {
   createAdminProviderCatalogHandler,
+  createAdminProviderCheckRunHandler,
   createAdminProviderConnectionActionHandler,
   createAdminProviderConnectionCreateHandler,
   createAdminProviderCredentialCreateHandler,
   createAdminProviderCredentialUpdateHandler,
-  createAdminProviderDraftTestHandler
+  createAdminProviderDraftTestHandler,
+  createAdminProviderModelCreateHandler,
+  createAdminProviderModelUpdateHandler
 } from "./handlers";
 import {
   AdminProviderServiceError,
@@ -100,12 +103,15 @@ function resolver(value: AuthenticatedSession | null): RequestAuthResolver {
 function service(overrides: Partial<Record<keyof AdminProviderService, unknown>> = {}) {
   return {
     activateConnection: vi.fn(),
+    activateModel: vi.fn(),
     activateNewCredential: vi.fn(),
     activateRotatedCredential: vi.fn(),
     assignGroupCredential: vi.fn(),
+    cancelCheckRun: vi.fn(),
+    checkRun: vi.fn(),
     clearCredentialDraft: vi.fn(),
     createConnectionDraft: vi.fn(),
-    createModelDraft: vi.fn(),
+    createModelDraft: vi.fn(async () => ({ id: "model-new" })),
     deleteConnection: vi.fn(),
     deleteCredential: vi.fn(),
     deleteModel: vi.fn(),
@@ -121,6 +127,7 @@ function service(overrides: Partial<Record<keyof AdminProviderService, unknown>>
     revokeGroupCredential: vi.fn(),
     rotateCredential: vi.fn(),
     setDefaultCredential: vi.fn(),
+    startCheckRun: vi.fn(),
     testDraft: vi.fn(),
     updateConnectionDraft: vi.fn(),
     updateModelDraft: vi.fn(),
@@ -432,5 +439,103 @@ describe("admin provider HTTP handlers", () => {
       providerModelId: "model-1",
       signal: request.signal
     });
+  });
+
+  it("saves and checks a model in one request only with an explicit activate flag", async () => {
+    const providerService = service();
+    const create = createAdminProviderModelCreateHandler({ resolveAuth: resolver(auth()), service: providerService });
+    const body = { configuration: connection.models[0]!.draftConfig, displayName: "Sonnet" };
+    const draftOnly = await create(
+      jsonRequest("http://localhost/models", body),
+      { params: { connectionId: "connection-1" } }
+    );
+    expect(draftOnly.status).toBe(201);
+    expect(providerService.activateModel).not.toHaveBeenCalled();
+
+    const checked = await create(
+      jsonRequest("http://localhost/models", { ...body, activate: true }),
+      { params: { connectionId: "connection-1" } }
+    );
+    expect(checked.status).toBe(201);
+    expect(providerService.createModelDraft).toHaveBeenCalledTimes(2);
+    expect(providerService.activateModel).toHaveBeenCalledWith({ connectionId: "connection-1", modelId: "model-new" });
+    expect((await create(
+      jsonRequest("http://localhost/models", { ...body, activate: "yes" }),
+      { params: { connectionId: "connection-1" } }
+    )).status).toBe(400);
+
+    const update = createAdminProviderModelUpdateHandler({ resolveAuth: resolver(auth()), service: providerService });
+    const updated = await update(
+      jsonRequest("http://localhost/models/model-1", { ...body, action: "update", activate: true, expectedDraftVersion: 1 }, "PATCH"),
+      { params: { connectionId: "connection-1", modelId: "model-1" } }
+    );
+    expect(updated.status).toBe(200);
+    expect(providerService.updateModelDraft).toHaveBeenCalledWith(expect.objectContaining({ expectedDraftVersion: 1, modelId: "model-1" }));
+    expect(providerService.activateModel).toHaveBeenLastCalledWith({ connectionId: "connection-1", modelId: "model-1" });
+  });
+
+  it("starts, reads and cancels background checks without exposing anything but progress", async () => {
+    const run = {
+      credentialId: "credential-1",
+      current: "model-1",
+      done: 0,
+      failed: [],
+      finishedAt: null,
+      id: "run-1",
+      inFlight: ["model-1"],
+      reason: "requested" as const,
+      startedAt: "2026-09-07T12:51:00.000Z",
+      state: "running" as const,
+      total: 1
+    };
+    const providerService = service({
+      cancelCheckRun: vi.fn(() => ({ ...run, state: "cancelled" })),
+      checkRun: vi.fn(() => run),
+      startCheckRun: vi.fn(async () => run)
+    });
+    const actions = createAdminProviderConnectionActionHandler({ resolveAuth: resolver(auth()), service: providerService });
+    const started = await actions(
+      jsonRequest("http://localhost/actions", { action: "check_models", credentialId: "credential-1", modelIds: ["model-1"] }),
+      { params: { connectionId: "connection-1" } }
+    );
+    expect(started.status).toBe(200);
+    expect(await started.json()).toEqual({ connections: expect.any(Array) });
+    expect(providerService.startCheckRun).toHaveBeenCalledWith({
+      connectionId: "connection-1",
+      credentialId: "credential-1",
+      modelIds: ["model-1"],
+      reason: "requested"
+    });
+    expect((await actions(
+      jsonRequest("http://localhost/actions", { action: "check_models", credentialId: "credential-1", modelIds: "model-1" }),
+      { params: { connectionId: "connection-1" } }
+    )).status).toBe(400);
+
+    const cancelled = await actions(
+      jsonRequest("http://localhost/actions", { action: "cancel_check", runId: "run-1" }),
+      { params: { connectionId: "connection-1" } }
+    );
+    expect(cancelled.status).toBe(200);
+    expect(providerService.cancelCheckRun).toHaveBeenCalledWith({ connectionId: "connection-1", runId: "run-1" });
+
+    const progress = createAdminProviderCheckRunHandler({ resolveAuth: resolver(auth()), service: providerService });
+    const read = await progress(
+      new Request("http://localhost/api/admin/providers/connection-1/actions?run=run-1"),
+      { params: { connectionId: "connection-1" } }
+    );
+    expect(read.status).toBe(200);
+    expect(await read.json()).toEqual({ run });
+    expect((await progress(
+      new Request("http://localhost/api/admin/providers/connection-1/actions"),
+      { params: { connectionId: "connection-1" } }
+    )).status).toBe(400);
+    expect((await progress(
+      new Request("http://localhost/api/admin/providers/connection-2/actions?run=run-1"),
+      { params: { connectionId: "connection-2" } }
+    )).status).toBe(404);
+    expect((await createAdminProviderCheckRunHandler({ resolveAuth: resolver(null), service: providerService })(
+      new Request("http://localhost/api/admin/providers/connection-1/actions?run=run-1"),
+      { params: { connectionId: "connection-1" } }
+    )).status).toBe(401);
   });
 });

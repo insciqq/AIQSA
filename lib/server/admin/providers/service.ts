@@ -2,6 +2,10 @@ import { hasVerifiedDedicatedProtocol } from "../../providers/systemRoleEvidence
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import { createHash, randomUUID } from "node:crypto";
 import type {
+  AdminProviderActiveCheck,
+  AdminProviderCheckRun,
+  AdminProviderCheckRunReason,
+  AdminProviderConnection,
   AdminProviderConnectionConfiguration,
   AdminProviderDeleteResult,
   AdminProviderDraftCheck,
@@ -10,6 +14,11 @@ import type {
   AdminProviderTestEvidence,
   AdminProviderUnassignedPolicy
 } from "../../../contracts/adminProviders";
+import {
+  CAPABILITY_CHECK_CANCELLED,
+  createCapabilityCheckRunner,
+  type CapabilityCheckOutcome
+} from "./capabilityCheckRuns";
 import {
   decryptProviderCredentialSecret,
   encryptProviderCredentialSecret
@@ -39,6 +48,7 @@ import type {
   AdminProviderRepository,
   ProviderActivationCandidate,
   ProviderActivationWrite,
+  ProviderActiveRefreshCandidate,
   ProviderCredentialSecretSource,
   ProviderDisableTarget,
   ProviderDraftMutationResult,
@@ -65,6 +75,7 @@ export type AdminProviderServiceErrorCode =
   | "provider_activation_empty"
   | "provider_activation_evidence_missing"
   | "provider_activation_unavailable_confirmation_required"
+  | "provider_check_run_not_found"
   | "provider_connection_not_found"
   | "provider_credential_label_taken"
   | "provider_credential_not_found"
@@ -300,7 +311,14 @@ function activationFingerprint(input: {
   return createHash("sha256").update(canonicalJson({ ...input, version: 1 }), "utf8").digest("hex");
 }
 
+type ActiveCheckResult =
+  | { check: AdminProviderActiveCheck; kind: "stored" }
+  | { kind: "cancelled" | "failed" | "stale" };
+
 export function createAdminProviderService(input: Readonly<{
+  /** Parallel background checks per connection (PRD decision: 3). */
+  checkConcurrency?: number;
+  checkRunIdFactory?: () => string;
   credentialTester: AdminProviderCredentialTester;
   createDiscoveryClient?: (input: {
     allowPrivateNetwork: boolean;
@@ -317,6 +335,12 @@ export function createAdminProviderService(input: Readonly<{
   const encryptionKey = input.encryptionKey ?? getSecretEncryptionKey;
   const idFactory = input.idFactory ?? randomUUID;
   const now = input.now ?? (() => new Date());
+  const checkRuns = createCapabilityCheckRunner({
+    check: (request) => checkActiveModel(request),
+    concurrency: input.checkConcurrency,
+    idFactory: input.checkRunIdFactory,
+    now
+  });
 
   async function activeCredentialSecret(
     credentialId: string,
@@ -484,11 +508,250 @@ export function createAdminProviderService(input: Readonly<{
       throw new AdminProviderServiceError("provider_credential_label_taken");
     }
     if (result === "stale") throw new AdminProviderServiceError("provider_draft_stale");
+    startBackgroundChecks({ connectionId: connection.id, credentialId, reason: "credential" });
     return { credentialId, versionId };
   }
 
+  /**
+   * One exact active-tuple check: every provider call happens before the
+   * evidence CAS, a transient failure only marks the tuple (prior evidence
+   * stays), and an abort caused by cancellation writes nothing at all.
+   */
+  async function executeActiveCheck(value: {
+    candidate: ProviderActiveRefreshCandidate;
+    capabilityRole?: SystemModelVerificationRole;
+    mode: AdminProviderDraftTestMode;
+    signal?: AbortSignal;
+  }): Promise<ActiveCheckResult> {
+    const { candidate } = value;
+    const connection = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
+    const model = normalizeProviderModelConfiguration(candidate.model.configuration);
+    validateFamily(candidate.connection.family, model);
+    const secret = credentialSecretSource(candidate.credential.id, {
+      envelope: candidate.credential.envelope,
+      kind: "active",
+      versionId: candidate.credential.versionId
+    }, "provider_active_tuple_not_found");
+    let outcome: AdminProviderDraftTestOutcome;
+    try {
+      outcome = await input.tester.test({
+        ...(value.capabilityRole ? { capabilityRole: value.capabilityRole } : {}),
+        connection,
+        connectionDisplayName: candidate.connection.displayName,
+        connectionId: candidate.connection.id,
+        credentialId: candidate.credential.id,
+        credentialVersionIdentity: candidate.credential.versionId,
+        mode: value.mode,
+        model,
+        modelDisplayName: candidate.model.displayName,
+        providerFamily: candidate.connection.family,
+        providerModelId: candidate.model.id,
+        secret,
+        signal: value.signal
+      });
+    } catch {
+      if (value.signal?.aborted && value.signal.reason === CAPABILITY_CHECK_CANCELLED) {
+        return { kind: "cancelled" };
+      }
+      const failedAt = now();
+      if (await input.repository.recordActiveRefreshFailureCas({ candidate, failedAt }) === "stale") {
+        return { kind: "stale" };
+      }
+      return { kind: "failed" };
+    }
+    const checkedAt = now();
+    const evidence = validateEvidence(outcome, value.mode, model);
+    const stored = await input.repository.storeActiveRefreshCas({
+      candidate,
+      capabilityRole: value.capabilityRole,
+      checkedAt,
+      evidence,
+      status: outcome.status
+    });
+    if (stored === "stale") return { kind: "stale" };
+    return {
+      check: {
+        checkedAt: checkedAt.toISOString(),
+        connectionVersion: candidate.connection.version,
+        credentialId: candidate.credential.id,
+        credentialVersionId: candidate.credential.versionId,
+        evidence,
+        latestRefreshError: null,
+        modelVersion: candidate.model.version,
+        providerModelId: candidate.model.id,
+        refreshFailedAt: null,
+        status: outcome.status
+      },
+      kind: "stored"
+    };
+  }
+
+  /**
+   * Background check of one enabled active model with one key (PRD B3):
+   * `tiny_generation` for answer models, the embed round-trip for embedding
+   * models and the rerank probe for rerankers, bounded by the model's own
+   * response deadline. Never throws for provider outcomes.
+   */
+  async function checkActiveModel(value: {
+    connectionId: string;
+    credentialId: string;
+    providerModelId: string;
+    signal?: AbortSignal;
+  }): Promise<CapabilityCheckOutcome> {
+    const candidate = await input.repository.loadActiveRefreshCandidate(value);
+    if (!candidate) return "skipped";
+    const connection = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
+    const model = normalizeProviderModelConfiguration(candidate.model.configuration);
+    const controller = new AbortController();
+    const deadline = setTimeout(
+      () => controller.abort("capability_check_deadline"),
+      effectiveProviderResponseTimeoutMs(connection, model)
+    );
+    const forward = () => controller.abort(value.signal?.reason);
+    if (value.signal?.aborted) forward();
+    else value.signal?.addEventListener("abort", forward, { once: true });
+    try {
+      const result = await executeActiveCheck({
+        candidate,
+        mode: "tiny_generation",
+        signal: controller.signal
+      });
+      if (result.kind === "stored") return "stored";
+      if (result.kind === "stale") return "skipped";
+      return result.kind;
+    } finally {
+      clearTimeout(deadline);
+      value.signal?.removeEventListener("abort", forward);
+    }
+  }
+
+  function usableCredential(
+    connection: AdminProviderConnection,
+    credentialId: string
+  ): AdminProviderConnection["credentials"][number] | null {
+    const credential = connection.credentials.find(({ id }) => id === credentialId);
+    return credential && credential.enabled && credential.activeVersion &&
+      credential.activeVersion.revokedAt === null
+      ? credential
+      : null;
+  }
+
+  function checkableModelIds(
+    connection: AdminProviderConnection,
+    requested: readonly string[] | undefined
+  ): string[] {
+    const wanted = requested ? new Set(requested) : null;
+    return connection.models
+      .filter((model) =>
+        model.enabled && model.activeConfig !== null && model.activeVersion >= 1 &&
+        (!wanted || wanted.has(model.id)))
+      .map(({ id }) => id);
+  }
+
+  async function startCheckRun(value: {
+    connectionId: string;
+    credentialId: string;
+    modelIds?: readonly string[];
+    reason: AdminProviderCheckRunReason;
+  }): Promise<AdminProviderCheckRun> {
+    const connection = (await input.repository.listConnections())
+      .find(({ id }) => id === value.connectionId);
+    if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
+    if (!usableCredential(connection, value.credentialId)) {
+      throw new AdminProviderServiceError("provider_credential_not_found");
+    }
+    const running = checkRuns.running(connection.id, value.credentialId);
+    if (running) return running;
+    const run = checkRuns.start({
+      connectionId: connection.id,
+      credentialId: value.credentialId,
+      modelIds: checkableModelIds(connection, value.modelIds),
+      reason: value.reason
+    });
+    return checkRuns.get(run.id)!;
+  }
+
+  /** Fire-and-forget trigger after a key or setup succeeded; never fails the caller. */
+  function startBackgroundChecks(value: {
+    connectionId: string;
+    credentialId: string;
+    reason: AdminProviderCheckRunReason;
+  }): void {
+    void startCheckRun(value).catch(() => undefined);
+  }
+
   return {
-    listConnections: () => input.repository.listConnections(),
+    listConnections: async () => (await input.repository.listConnections()).map((connection) => ({
+      ...connection,
+      checkRun: checkRuns.latest(connection.id)
+    })),
+
+    /** Progress of one background check; an id this process never saw reads as interrupted. */
+    checkRun(value: { connectionId: string; runId: string }): AdminProviderCheckRun {
+      const run = checkRuns.get(value.runId);
+      return run && checkRuns.connectionOf(value.runId) === value.connectionId
+        ? run
+        : checkRuns.interrupted(value.runId);
+    },
+
+    startCheckRun,
+
+    cancelCheckRun(value: { connectionId: string; runId: string }): AdminProviderCheckRun {
+      if (checkRuns.connectionOf(value.runId) !== value.connectionId) {
+        throw new AdminProviderServiceError("provider_check_run_not_found");
+      }
+      checkRuns.cancel(value.runId);
+      return checkRuns.get(value.runId)!;
+    },
+
+    /**
+     * Model `Test & Save` (PRD B2): the model draft goes live through the
+     * narrow CAS, then the default key checks it inline within the model's
+     * deadline. A temporary check failure keeps the activation and shows up
+     * as `Check failed` through the catalog's check-run projection.
+     */
+    async activateModel(value: {
+      connectionId: string;
+      modelId: string;
+    }): Promise<{ check: "checked" | "failed" | "skipped" }> {
+      const candidate = await input.repository.loadModelActivationCandidate(value);
+      if (!candidate) throw new AdminProviderServiceError("provider_model_not_found");
+      const model = normalizeProviderModelConfiguration(candidate.model.configuration);
+      validateFamily(candidate.connection.family, model);
+      const result = await input.repository.activateModelCas({
+        connection: {
+          activateDraft: candidate.connection.activeVersion === 0
+            ? {
+                configuration: normalizeProviderConnectionConfiguration(
+                  candidate.connection.draftConfiguration
+                ),
+                draftVersion: candidate.connection.draftVersion
+              }
+            : null,
+          id: candidate.connection.id
+        },
+        enable: true,
+        model: {
+          configuration: model,
+          draftVersion: candidate.model.draftVersion,
+          id: candidate.model.id
+        },
+        now: now()
+      });
+      if (result === "stale") throw new AdminProviderServiceError("provider_draft_stale");
+      if (result === "not_found") throw new AdminProviderServiceError("provider_model_not_found");
+      const credential = candidate.connection.defaultCredential;
+      if (!credential?.usable) return { check: "skipped" };
+      const run = checkRuns.start({
+        connectionId: candidate.connection.id,
+        credentialId: credential.id,
+        modelIds: [candidate.model.id],
+        reason: "model"
+      });
+      await run.settled;
+      const failed = checkRuns.get(run.id)?.failed.includes(candidate.model.id) ?? false;
+      return { check: failed ? "failed" : "checked" };
+    },
 
     activateNewCredential: (value: {
       connectionId: string;
@@ -595,66 +858,25 @@ export function createAdminProviderService(input: Readonly<{
       if (!candidate) {
         throw new AdminProviderServiceError("provider_active_tuple_not_found");
       }
-      const connection = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
-      const model = normalizeProviderModelConfiguration(candidate.model.configuration);
-      validateFamily(candidate.connection.family, model);
+      validateFamily(
+        candidate.connection.family,
+        normalizeProviderModelConfiguration(candidate.model.configuration)
+      );
       const mode: AdminProviderDraftTestMode = !value.capabilityRole && candidate.connection.family === "openrouter"
         ? "account_catalog"
         : "tiny_generation";
       if (value.confirmPaidRequest !== true) {
         throw new AdminProviderServiceError("provider_paid_test_confirmation_required");
       }
-      const secret = credentialSecretSource(candidate.credential.id, {
-        envelope: candidate.credential.envelope,
-        kind: "active",
-        versionId: candidate.credential.versionId
-      }, "provider_active_tuple_not_found");
-      let outcome: AdminProviderDraftTestOutcome;
-      try {
-        outcome = await input.tester.test({
-          ...(value.capabilityRole ? { capabilityRole: value.capabilityRole } : {}),
-          connection,
-          connectionDisplayName: candidate.connection.displayName,
-          connectionId: candidate.connection.id,
-          credentialId: candidate.credential.id,
-          credentialVersionIdentity: candidate.credential.versionId,
-          mode,
-          model,
-          modelDisplayName: candidate.model.displayName,
-          providerFamily: candidate.connection.family,
-          providerModelId: candidate.model.id,
-          secret,
-          signal: value.signal
-        });
-      } catch {
-        const failedAt = now();
-        if (await input.repository.recordActiveRefreshFailureCas({ candidate, failedAt }) === "stale") {
-          throw new AdminProviderServiceError("provider_draft_stale");
-        }
-        throw new AdminProviderServiceError("provider_refresh_failed");
-      }
-      const checkedAt = now();
-      const check = {
+      const result = await executeActiveCheck({
         candidate,
-        checkedAt,
-        evidence: validateEvidence(outcome, mode, model),
-        status: outcome.status
-      };
-      if (await input.repository.storeActiveRefreshCas({ ...check, capabilityRole: value.capabilityRole }) === "stale") {
-        throw new AdminProviderServiceError("provider_draft_stale");
-      }
-      return {
-        checkedAt: checkedAt.toISOString(),
-        connectionVersion: candidate.connection.version,
-        credentialId: candidate.credential.id,
-        credentialVersionId: candidate.credential.versionId,
-        evidence: check.evidence,
-        latestRefreshError: null,
-        modelVersion: candidate.model.version,
-        providerModelId: candidate.model.id,
-        refreshFailedAt: null,
-        status: outcome.status
-      };
+        capabilityRole: value.capabilityRole,
+        mode,
+        signal: value.signal
+      });
+      if (result.kind === "stale") throw new AdminProviderServiceError("provider_draft_stale");
+      if (result.kind !== "stored") throw new AdminProviderServiceError("provider_refresh_failed");
+      return result.check;
     },
 
     async createConnectionDraft(value: {

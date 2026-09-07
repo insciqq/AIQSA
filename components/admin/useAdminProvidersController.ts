@@ -12,7 +12,6 @@ import {
   discoverAdminOpenRouterModels,
   getAdminProviderConnections,
   runAdminProviderConnectionAction,
-  testAdminProviderDraft,
   updateAdminProviderConnection,
   updateAdminProviderCredential,
   updateAdminProviderModel,
@@ -155,7 +154,7 @@ export function useAdminProvidersController(
 
   const finishSuccess = useCallback((
     catalog: AdminProviderConnection[],
-    success: string,
+    success: string | null,
     runOptions: CatalogRunOptions
   ): AdminProviderOperationResult => {
     busyRef.current = false;
@@ -169,14 +168,14 @@ export function useAdminProvidersController(
         : null
     );
     setNotice(success);
-    optionsRef.current.onNotice?.(success);
+    if (success !== null) optionsRef.current.onNotice?.(success);
     notifyMutationCommitted(optionsRef.current.onMutationCommitted);
     return { ok: true };
   }, [applyConnections]);
 
   const runCatalogResult = useCallback(async (
     operation: CatalogOperation,
-    success: string,
+    success: string | null,
     runOptions: CatalogRunOptions = {}
   ): Promise<AdminProviderOperationResult> => {
     if (busyRef.current) {
@@ -208,25 +207,19 @@ export function useAdminProvidersController(
   ) => (await runCatalogResult(operation, success, { reconcileFailure, scope: feedbackScope })).ok,
   [runCatalogResult]);
 
-  const runDiscovery = useCallback(async <T,>(
-    operation: () => Promise<AdminProviderClientResult<T>>,
-    feedbackScope: string
-  ): Promise<T | null> => {
-    if (busyRef.current) return null;
-    beginRun();
-    const result = await operation();
-    busyRef.current = false;
-    setBusy(false);
-    if (!result.ok) {
-      const message = adminProviderErrorMessage(result.error);
-      setError(message);
-      setErrorCode(result.error.code);
-      setErrorBlockers(result.error.blockers);
-      setFeedbackConnectionId(feedbackScope);
-      return null;
-    }
-    return result.data;
-  }, [beginRun]);
+  /**
+   * Background polling (capability checks in progress): replaces the catalog
+   * without touching busy, loading or feedback state, and yields to any
+   * mutation that started meanwhile.
+   */
+  const refreshQuietly = useCallback(async () => {
+    if (busyRef.current) return false;
+    const generation = catalogGenerationRef.current;
+    const result = await getAdminProviderConnections();
+    if (generation !== catalogGenerationRef.current || busyRef.current || !result.ok) return false;
+    applyConnections(result.data);
+    return true;
+  }, [applyConnections]);
 
   const runScopedDiscovery = useCallback(async <T,>(
     operation: () => Promise<AdminProviderClientResult<T>>
@@ -322,6 +315,14 @@ export function useAdminProvidersController(
   }, [applyConnections, beginRun, finishFailure, finishSuccess]);
 
   const actions = useMemo(() => ({
+    /** `Stop checking`: the run ends where it is; results already stored stay. */
+    cancelModelChecks: (connectionId: string, runId: string) =>
+      runCatalog(
+        () => runAdminProviderConnectionAction(connectionId, { action: "cancel_check", runId }),
+        "Checking stopped.",
+        true,
+        connectionId
+      ),
     connectionAction: async (
       connectionId: string,
       body: unknown,
@@ -332,13 +333,6 @@ export function useAdminProvidersController(
       success,
       { quiet: runOptions.quiet, scope: connectionId }
     )).ok,
-    createModel: (connectionId: string, body: unknown) =>
-      runCatalog(
-        () => createAdminProviderModel(connectionId, body),
-        "Model saved.",
-        false,
-        connectionId
-      ),
     deleteConnection: (connectionId: string) =>
       runCatalogResult(
         () => deleteAdminProviderConnection(connectionId),
@@ -352,11 +346,10 @@ export function useAdminProvidersController(
         { quiet: true, scope: connectionId }
       ),
     deleteModel: (connectionId: string, modelId: string) =>
-      runCatalog(
+      runCatalogResult(
         () => deleteAdminProviderModel(connectionId, modelId),
         "Model removed.",
-        false,
-        connectionId
+        { quiet: true, scope: connectionId }
       ),
     discoverEndpoints: (
       connectionId: string,
@@ -384,22 +377,7 @@ export function useAdminProvidersController(
     },
     dismissNotice: () => setNotice(null),
     refresh,
-    refreshActive: (
-      connectionId: string,
-      providerModelId: string,
-      credentialId: string,
-      confirmPaidRequest: boolean
-    ) => runCatalog(
-      () => runAdminProviderConnectionAction(connectionId, {
-        action: "refresh_active",
-        confirmPaidRequest,
-        credentialId,
-        providerModelId
-      }),
-      "Check finished.",
-      true,
-      connectionId
-    ),
+    refreshQuietly,
     /** One-step rotation: the new key is tested and switched in before the response. */
     rotateCredential: (
       connectionId: string,
@@ -416,6 +394,22 @@ export function useAdminProvidersController(
       { quiet: true, scope: connectionId }
     ),
     saveConnectionSettings,
+    /**
+     * Model `Test & Save` (PRD B2): create or update the model, take it live
+     * and check it with the default key in one request. The sheet shows the
+     * failure inline; a temporary check failure still saves the model.
+     */
+    saveModel: (
+      connectionId: string,
+      modelId: string | null,
+      body: Readonly<{ configuration: unknown; displayName: string; expectedDraftVersion?: number }>
+    ) => runCatalogResult(
+      () => modelId === null
+        ? createAdminProviderModel(connectionId, { ...body, activate: true })
+        : updateAdminProviderModel(connectionId, modelId, { ...body, action: "update", activate: true }),
+      "Model saved and turned on.",
+      { quiet: true, scope: connectionId }
+    ),
     /** One-step add: the key is tested and becomes the default when none is set. */
     saveCredential: (
       connectionId: string,
@@ -429,19 +423,24 @@ export function useAdminProvidersController(
       "Key saved and working.",
       { quiet: true, scope: connectionId }
     ),
-    testDraft: async (connectionId: string, modelId: string, body: unknown) => {
-      const check = await runDiscovery(
-        () => testAdminProviderDraft(connectionId, modelId, body),
-        connectionId
-      );
-      if (!check) return false;
-      await refresh();
-      setFeedbackConnectionId(connectionId);
-      setNotice(check.status === "available"
-        ? "The model is available with this key."
-        : "The provider reported this model or route as unavailable.");
-      return true;
-    },
+    /**
+     * Background capability checks (PRD B3) for every enabled model or the
+     * given ones with one key; progress arrives through the catalog. Silent:
+     * the banner and the rows are the feedback.
+     */
+    startModelChecks: (
+      connectionId: string,
+      credentialId: string,
+      modelIds?: readonly string[]
+    ) => runCatalogResult(
+      () => runAdminProviderConnectionAction(connectionId, {
+        action: "check_models",
+        credentialId,
+        ...(modelIds ? { modelIds: [...modelIds] } : {})
+      }),
+      null,
+      { scope: connectionId }
+    ),
     updateCredential: async (
       connectionId: string,
       credentialId: string,
@@ -460,7 +459,7 @@ export function useAdminProvidersController(
         false,
         connectionId
       )
-  }), [refresh, runCatalog, runCatalogResult, runDiscovery, runScopedDiscovery, saveConnectionSettings]);
+  }), [refresh, refreshQuietly, runCatalog, runCatalogResult, runScopedDiscovery, saveConnectionSettings]);
 
   return {
     actions,

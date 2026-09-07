@@ -77,20 +77,22 @@ function harness(options: {
     "extra-grant-1"
   ];
   const times = [CHECKED_AT, COMMITTED_AT];
+  const onCompleted = vi.fn();
   const service = createAdminProviderCustomSetupService({
     encryptionKey,
     idFactory: () => ids.shift()!,
     now: () => times.shift()!,
+    onCompleted,
     repository: { commit },
     ...(options.searchThrows ? { searchTester: { test: searchTest } } : {}),
     tester: { test }
   });
-  return { commit, encryptionKey, searchTest, service, test };
+  return { commit, encryptionKey, onCompleted, searchTest, service, test };
 }
 
 describe("custom OpenAI-compatible provider setup service", () => {
   it("tests once, then commits an active personal bearer graph", async () => {
-    const { commit, service, test } = harness();
+    const { commit, onCompleted, service, test } = harness();
 
     await expect(service.setup({ actor: ACTOR, request: request() })).resolves.toEqual({
       authenticationMode: "bearer",
@@ -132,6 +134,7 @@ describe("custom OpenAI-compatible provider setup service", () => {
       pdf: true,
       toolCalling: false
     });
+    expect(onCompleted).toHaveBeenCalledWith({ connectionId: "connection-1", credentialId: "credential-1" });
   });
 
   it("accepts an explicit keyless HTTP private setup without creating ciphertext", async () => {

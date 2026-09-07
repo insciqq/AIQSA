@@ -1,5 +1,6 @@
 import type {
   AdminProviderActiveCheck,
+  AdminProviderCheckRun,
   AdminProviderConnection,
   AdminProviderCredential,
   AdminProviderModel
@@ -74,6 +75,23 @@ export function fixtureCheck(
     modelVersion: 1,
     refreshFailedAt: null,
     status: "available",
+    ...overrides
+  };
+}
+
+export function fixtureCheckRun(
+  overrides: Partial<AdminProviderCheckRun> & { credentialId: string; id: string }
+): AdminProviderCheckRun {
+  return {
+    current: null,
+    done: 0,
+    failed: [],
+    finishedAt: null,
+    inFlight: [],
+    reason: "credential",
+    startedAt: FIXTURE_NOW,
+    state: "running",
+    total: 0,
     ...overrides
   };
 }

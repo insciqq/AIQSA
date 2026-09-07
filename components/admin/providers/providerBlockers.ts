@@ -36,12 +36,14 @@ function joinNames(names: readonly string[]): string {
  */
 export function describeDeleteBlockers(
   blockers: readonly Blocker[],
-  subject: "key" | "provider"
+  subject: "key" | "model" | "provider"
 ): string {
   const sentences: string[] = [];
   const kinds = new Set(blockers.map((blocker) => blocker.kind));
   if (kinds.has("code_owned_template")) {
-    sentences.push("Built-in providers can't be deleted — turn it off instead.");
+    sentences.push(subject === "model"
+      ? "Built-in models can't be removed — turn it off instead."
+      : "Built-in providers can't be deleted — turn it off instead.");
   }
   if (kinds.has("connection_default")) {
     sentences.push("It is the default key — choose another default first.");

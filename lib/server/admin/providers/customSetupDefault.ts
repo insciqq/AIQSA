@@ -3,6 +3,7 @@ import { exposeFakeProvider } from "../../catalog/prismaCatalogData";
 import { prisma } from "../../prisma";
 import { createAdminProviderCustomSetupHandler } from "./customSetupHandlers";
 import { createPrismaAdminProviderCustomSetupRepository } from "./customSetupPrismaRepository";
+import { adminProviderService } from "./defaultProviders";
 import {
   createAdminProviderCustomSetupService,
   type AdminProviderCustomSetupTester
@@ -34,6 +35,9 @@ const repository = createPrismaAdminProviderCustomSetupRepository(prisma, {
 });
 
 export const adminProviderCustomSetupService = createAdminProviderCustomSetupService({
+  onCompleted: (completion) => {
+    void adminProviderService.startCheckRun({ ...completion, reason: "setup" }).catch(() => undefined);
+  },
   repository,
   tester
 });

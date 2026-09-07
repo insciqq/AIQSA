@@ -1541,6 +1541,255 @@ test("administrator saves a rejected and then a working OpenRouter key with one 
   await expectNoPageOverflow(page);
 });
 
+test("administrator adds a model with one Test & Save, follows the background check, and manages rows without leaving the page", async ({ page }) => {
+  const configuration = {
+    allowPrivateNetwork: false,
+    apiRoot: "https://api.openai.com/v1",
+    authenticationMode: "bearer" as const,
+    responseTimeoutSeconds: 300
+  };
+  const modelConfiguration = (upstreamModelId: string): AdminProviderModelConfiguration => ({
+    adapterKind: "openai_responses_native",
+    answerSelectable: true,
+    capabilities: {
+      nativePdfInput: true,
+      nativeSearch: false,
+      pdf: true,
+      reasoning: false,
+      streaming: true,
+      toolCalling: true,
+      vision: false
+    },
+    defaultParams: {},
+    modelClass: "answer",
+    upstreamModelId
+  });
+  const model = (id: string, displayName: string, upstreamModelId: string) => ({
+    activatedAt: now,
+    activeConfig: modelConfiguration(upstreamModelId),
+    activeVersion: 1,
+    connectionId: "provider-models-e2e",
+    createdAt: now,
+    displayName,
+    draftConfig: modelConfiguration(upstreamModelId),
+    draftVersion: 1,
+    enabled: true,
+    id,
+    modelClass: "answer" as const,
+    updatedAt: now
+  });
+  const check = (providerModelId: string, upstreamModelId: string, directPdf: "not_supported" | "verified") => ({
+    checkedAt: now,
+    connectionVersion: 1,
+    credentialId: "credential-e2e",
+    credentialVersionId: "credential-version-e2e",
+    evidence: {
+      compatibility: {
+        directPdf,
+        forcedToolCall: "verified" as const,
+        modelAccess: "verified" as const,
+        probeVersion: 1 as const,
+        streaming: "verified" as const,
+        structuredOutput: "verified" as const,
+        usage: "verified" as const
+      },
+      detail: "ok" as const,
+      method: "tiny_generation" as const,
+      selectedProviders: [],
+      upstreamModelId
+    },
+    latestRefreshError: null,
+    modelVersion: 1,
+    providerModelId,
+    refreshFailedAt: null,
+    status: "available" as const
+  });
+  let connection: AdminProviderConnection = {
+    activatedAt: now,
+    activeChecks: [check("model-terra", "gpt-5.6-terra", "verified"), check("model-sol", "gpt-5.6-sol", "not_supported")],
+    activeConfig: configuration,
+    activeVersion: 1,
+    assignments: [],
+    checkRun: null,
+    createdAt: now,
+    credentials: [{
+      activatedAt: now,
+      activeVersion: { activatedAt: now, id: "credential-version-e2e", revokedAt: null, testedAt: now, version: 1 },
+      createdAt: now,
+      draftSecretConfigured: false,
+      draftVersion: 1,
+      enabled: true,
+      id: "credential-e2e",
+      label: "Primary",
+      testedAt: now,
+      updatedAt: now
+    }],
+    defaultCredentialId: "credential-e2e",
+    displayName: "OpenAI",
+    draftChecks: [],
+    draftConfig: configuration,
+    draftVersion: 1,
+    enabled: true,
+    family: "openai",
+    id: "provider-models-e2e",
+    models: [model("model-terra", "GPT-5.6 Terra", "gpt-5.6-terra"), model("model-sol", "GPT-5.6 Sol", "gpt-5.6-sol")],
+    unassignedPolicy: "use_default",
+    updatedAt: now,
+    userAssignments: []
+  };
+  const requests: Array<{ body: Record<string, unknown>; method: string; path: string }> = [];
+  let polls = 0;
+
+  await page.route("**/api/admin/providers**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const method = request.method();
+    const body = method === "GET" ? {} : request.postDataJSON() as Record<string, unknown>;
+    if (method !== "GET") requests.push({ body, method, path });
+
+    if (method === "GET" && path === "/api/admin/providers") {
+      // Progress arrives through the catalog: the second poll finishes the running check.
+      if (connection.checkRun?.state === "running" && connection.checkRun.reason === "requested") {
+        polls += 1;
+        if (polls >= 2) {
+          connection = {
+            ...connection,
+            checkRun: { ...connection.checkRun, current: null, done: 3, finishedAt: now, inFlight: [], state: "completed" }
+          };
+        }
+      }
+      await route.fulfill({ contentType: "application/json", json: { connections: [connection] } });
+      return;
+    }
+    if (method === "POST" && path === "/api/admin/providers/provider-models-e2e/models") {
+      const upstreamModelId = String((body.configuration as { upstreamModelId: string }).upstreamModelId);
+      connection = {
+        ...connection,
+        activeChecks: [...connection.activeChecks, check("model-new", upstreamModelId, "verified")],
+        checkRun: {
+          credentialId: "credential-e2e",
+          current: null,
+          done: 1,
+          failed: [],
+          finishedAt: now,
+          id: "run-model",
+          inFlight: [],
+          reason: "model",
+          startedAt: now,
+          state: "completed",
+          total: 1
+        },
+        models: [...connection.models, model("model-new", String(body.displayName), upstreamModelId)]
+      };
+      await route.fulfill({ contentType: "application/json", json: { connections: [connection] }, status: 201 });
+      return;
+    }
+    if (method === "PATCH" && path === "/api/admin/providers/provider-models-e2e/models/model-sol") {
+      connection = {
+        ...connection,
+        models: connection.models.map((entry) => entry.id === "model-sol" ? { ...entry, enabled: body.action === "enable" } : entry)
+      };
+      await route.fulfill({ contentType: "application/json", json: { connections: [connection] } });
+      return;
+    }
+    if (method === "POST" && path === "/api/admin/providers/provider-models-e2e/actions") {
+      if (body.action === "check_models") {
+        connection = {
+          ...connection,
+          checkRun: {
+            credentialId: String(body.credentialId),
+            current: "model-terra",
+            done: 1,
+            failed: [],
+            finishedAt: null,
+            id: "run-all",
+            inFlight: ["model-terra", "model-sol"],
+            reason: "requested",
+            startedAt: now,
+            state: "running",
+            total: 3
+          }
+        };
+      }
+      if (body.action === "cancel_check" && connection.checkRun) {
+        connection = { ...connection, checkRun: { ...connection.checkRun, inFlight: [], state: "cancelled" } };
+      }
+      await route.fulfill({ contentType: "application/json", json: { connections: [connection] } });
+      return;
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      json: { error: "unexpected_provider_models_e2e_request", method, path },
+      status: 400
+    });
+  });
+
+  await signInWithLocalToken(page);
+  await page.goto("/admin?section=providers&resource=provider-models-e2e");
+  const section = page.getByTestId("admin-section-providers");
+  const models = section.getByTestId("provider-models");
+  await expect(models.getByRole("table", { name: "Models" })).toBeVisible();
+  await expect(models).toContainText("Chat models · 2");
+  const sol = models.getByTestId("provider-model-model-sol");
+  await expect(sol.getByTestId("model-chip-pdf")).toHaveText("No PDF");
+  await expect(models.getByTestId("provider-model-model-terra").getByTestId("model-chip-pdf")).toHaveText("PDF");
+  await expect(models).not.toContainText(/\bdraft\b|\brevision\b|\bpending\b|\bevidence\b|\bprobe\b|\badapter\b|\bfingerprint\b|\bdimensions\b/iu);
+
+  // Add model: one Test & Save saves, turns on and checks the model with the default key.
+  await models.getByTestId("provider-add-model").click();
+  await page.getByRole("menuitem", { name: "Chat model" }).click();
+  const sheet = page.getByRole("dialog", { name: "Add model" });
+  await expect(sheet).toContainText("Checks the model with key Primary, then turns it on");
+  await sheet.getByRole("combobox", { name: "Model" }).fill("gpt-5.6-luna");
+  await expect(sheet.getByLabel("Display name")).toHaveValue("GPT-5.6 Luna");
+  await sheet.getByRole("button", { name: "Test & Save" }).click();
+  await expect(sheet).toHaveCount(0);
+  expect(requests.filter(({ path }) => path.endsWith("/models")).map(({ body }) => body)).toEqual([
+    expect.objectContaining({ activate: true, displayName: "GPT-5.6 Luna" })
+  ]);
+  const added = models.getByTestId("provider-model-model-new");
+  await expect(added).toContainText("GPT-5.6 Luna");
+  await expect(added.getByTestId("model-chip-tools")).toHaveText("Tools");
+  await expect(models).toContainText("Chat models · 3");
+
+  // Re-check all: the banner tracks the background run and Stop checking ends it.
+  await models.getByRole("button", { name: "Re-check all" }).click();
+  const banner = section.getByTestId("provider-check-banner");
+  await expect(banner).toContainText("Checking what each model can do with key Primary — 1 of 3 done.");
+  await expect(section.getByRole("progressbar", { name: "Models checked" })).toHaveAttribute("aria-valuenow", "1");
+  await expect(models.getByTestId("provider-model-model-terra-works-with")).toHaveAttribute("data-works-with", "checking");
+  await expect(banner).toHaveCount(0, { timeout: 10_000 });
+  expect(polls).toBeGreaterThanOrEqual(2);
+  await expect(models.getByTestId("provider-model-model-terra-works-with")).toHaveAttribute("data-works-with", "checked");
+
+  await models.getByRole("button", { name: "Re-check all" }).click();
+  await expect(section.getByTestId("provider-check-banner")).toBeVisible();
+  polls = -10;
+  await section.getByRole("button", { name: "Stop checking" }).click();
+  await expect(section.getByTestId("provider-check-banner")).toHaveCount(0);
+  expect(requests.filter(({ body }) => body.action === "cancel_check")).toHaveLength(1);
+
+  // Row expansion shows the last check; the On switch turns an unused model off without a dialog.
+  await sol.getByRole("button", { name: "GPT-5.6 Sol" }).click();
+  const details = models.getByTestId("provider-model-model-sol-details");
+  await expect(details).toContainText("with key Primary · works without PDF input");
+  await expect(details.getByRole("button", { name: "Re-check" })).toBeVisible();
+  await sol.getByRole("switch", { name: "GPT-5.6 Sol on" }).click();
+  await expect(sol.getByRole("switch", { name: "GPT-5.6 Sol on" })).not.toBeChecked();
+  expect(requests.filter(({ path }) => path.endsWith("/models/model-sol")).map(({ body }) => body)).toEqual([{ action: "disable" }]);
+  await expect(page.getByTestId("admin-confirm-turn-off-provider-model")).toHaveCount(0);
+
+  for (const viewport of [
+    { height: 900, width: 1440 },
+    { height: 1024, width: 768 },
+    { height: 844, width: 390 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await expect(models.getByRole("table", { name: "Models" })).toBeVisible();
+    await expectNoPageOverflow(page);
+  }
+});
+
 test("administrator saves a versioned Search recommendation that grants no access", async ({ page }) => {
   let search: AdminSearchCatalog = {
     integrations: [{

@@ -125,11 +125,13 @@ function fixture(input: {
     };
   });
   let nextId = 0;
+  const onCompleted = vi.fn();
   const service = createAdminProviderQuickSetupService({
     credentialTester: { test },
     encryptionKey: () => key,
     idFactory: () => `00000000-0000-4000-8000-${String(++nextId).padStart(12, "0")}`,
     now: () => checkedAt,
+    onCompleted,
     pdfInputProbe: { probe: pdfInputProbe },
     ...(input.rerankerOutcomes
       ? { rerankerTester: { test: rerankerTest as never } }
@@ -143,6 +145,7 @@ function fixture(input: {
   return {
     commit,
     inspections,
+    onCompleted,
     order,
     pdfInputProbe,
     repository,
@@ -314,6 +317,14 @@ describe("provider Quick setup service", () => {
       ],
       outcome: "ready"
     });
+    // The committed setup hands the connection and key to the background
+    // capability checks (PRD B3); nothing secret travels with them.
+    expect(value.onCompleted).toHaveBeenCalledOnce();
+    expect(value.onCompleted).toHaveBeenCalledWith({
+      connectionId: expect.any(String),
+      credentialId: plan.credential.id
+    });
+    expect(JSON.stringify(value.onCompleted.mock.calls[0])).not.toContain("sk-current-catalog");
   });
 
   it("includes Gemini 3.1 Pro Preview in a fresh Gemini setup when the catalog exposes it", async () => {
