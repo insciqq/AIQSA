@@ -156,7 +156,10 @@ export function knowledgeDestinationLabel(
 }
 
 export function embeddingDestinationLabel(destination: AdminKnowledgeProfileDestination): string {
-  return `${knowledgeDestinationLabel(destination)} · ${destination.targetDimension}d`;
+  const label = knowledgeDestinationLabel(destination);
+  const suffix = `· ${destination.targetDimension}d`;
+  // Preset display names already carry the vector size (`Qwen3 Embedding 8B · 1536d`).
+  return label.endsWith(suffix) ? label : `${label} ${suffix}`;
 }
 
 /**
