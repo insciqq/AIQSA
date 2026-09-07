@@ -2,13 +2,11 @@ import {
   BarChart3,
   BookOpenText,
   Boxes,
-  BrainCircuit,
-  Globe2,
-  Link2,
+  Home,
+  Layers,
   Mail,
   Search,
-  ServerCog,
-  ShieldAlert,
+  Sparkles,
   SquareTerminal,
   Users,
   Wrench,
@@ -16,142 +14,59 @@ import {
 } from "lucide-react";
 
 export type AdminSectionId =
-  | "access-rules"
-  | "access"
   | "email"
-  | "invites"
-  | "knowledge"
-  | "memory"
+  | "groups"
   | "mcp"
+  | "overview"
   | "providers"
-  | "system-models"
+  | "retrieval"
+  | "roles"
   | "search"
-  | "safety"
   | "usage"
   | "users"
   | "workspace";
 
-export type AdminSectionMove = "first" | "last" | "next" | "previous";
-export type AdminSectionGroupId = "ai-setup" | "infrastructure" | "operations" | "safety" | "team-access";
+export type AdminSectionGroupId = "models" | "people" | "platform";
 
 export type AdminSection = Readonly<{
   Icon: LucideIcon;
-  description: string;
-  group: AdminSectionGroupId;
+  group: AdminSectionGroupId | null;
   id: AdminSectionId;
   label: string;
 }>;
 
-export const defaultAdminSection: AdminSectionId = "providers";
+export const defaultAdminSection: AdminSectionId = "overview";
 
 export const adminSectionGroups = [
-  { id: "ai-setup", label: "AI setup" },
-  { id: "team-access", label: "Team & access" },
-  { id: "operations", label: "Operations" },
-  { id: "infrastructure", label: "Infrastructure" },
-  { id: "safety", label: "Safety" }
+  { id: "models", label: "Models" },
+  { id: "people", label: "People" },
+  { id: "platform", label: "Platform" }
 ] as const satisfies readonly Readonly<{ id: AdminSectionGroupId; label: string }>[];
 
 export const adminSections = [
-  {
-    Icon: ServerCog,
-    description: "Connect providers and manage models, credentials, access, and defaults.",
-    group: "ai-setup",
-    id: "providers",
-    label: "Providers"
-  },
-  {
-    Icon: BrainCircuit,
-    description: "Assign verified models to Memory, document processing, embeddings, and reranking.",
-    group: "ai-setup",
-    id: "system-models",
-    label: "System Models"
-  },
-  {
-    Icon: Search,
-    description: "Add, test, activate, publish, and inspect replaceable Search engines.",
-    group: "ai-setup",
-    id: "search",
-    label: "Search"
-  },
-  {
-    Icon: BookOpenText,
-    description: "Review processing health and manage Knowledge limits without exposing private bases.",
-    group: "ai-setup",
-    id: "knowledge",
-    label: "Knowledge"
-  },
-  {
-    Icon: BrainCircuit,
-    description: "Check configured Memory models, worker, queue, index readiness, and bounded rebuild.",
-    group: "ai-setup",
-    id: "memory",
-    label: "Memory"
-  },
-  {
-    Icon: Users,
-    description: "Review accounts, approvals, memberships, and user session actions.",
-    group: "team-access",
-    id: "users",
-    label: "Users"
-  },
-  {
-    Icon: Boxes,
-    description: "Manage access groups, memberships, model and search entitlements, and MCP tools.",
-    group: "team-access",
-    id: "access",
-    label: "Access & groups"
-  },
-  {
-    Icon: Link2,
-    description: "Create one-off invitations and revoke open invite links.",
-    group: "team-access",
-    id: "invites",
-    label: "Invites"
-  },
-  {
-    Icon: Globe2,
-    description: "Approve exact emails or domains and assign their default groups.",
-    group: "team-access",
-    id: "access-rules",
-    label: "Access rules"
-  },
-  {
-    Icon: BarChart3,
-    description: "Review provider-reported token usage by group and user.",
-    group: "operations",
-    id: "usage",
-    label: "Usage"
-  },
-  {
-    Icon: Wrench,
-    description: "Install, test, activate, update, and grant trusted MCP servers.",
-    group: "infrastructure",
-    id: "mcp",
-    label: "MCP servers"
-  },
-  {
-    Icon: SquareTerminal,
-    description: "Control isolated per-chat workspaces, public network policy, and runtime readiness.",
-    group: "infrastructure",
-    id: "workspace",
-    label: "Workspace"
-  },
-  {
-    Icon: Mail,
-    description: "Configure, test, activate, and monitor installation email delivery.",
-    group: "infrastructure",
-    id: "email",
-    label: "Email delivery"
-  },
-  {
-    Icon: ShieldAlert,
-    description: "High-risk session controls live here instead of the main header.",
-    group: "safety",
-    id: "safety",
-    label: "Safety"
-  }
+  { Icon: Home, group: null, id: "overview", label: "Overview" },
+  { Icon: Boxes, group: "models", id: "providers", label: "Providers" },
+  { Icon: Sparkles, group: "models", id: "roles", label: "Defaults & roles" },
+  { Icon: Search, group: "models", id: "search", label: "Search" },
+  { Icon: BookOpenText, group: "models", id: "retrieval", label: "Knowledge & Memory" },
+  { Icon: Users, group: "people", id: "users", label: "Users" },
+  { Icon: Layers, group: "people", id: "groups", label: "Groups" },
+  { Icon: Wrench, group: "platform", id: "mcp", label: "MCP servers" },
+  { Icon: SquareTerminal, group: "platform", id: "workspace", label: "Workspace" },
+  { Icon: Mail, group: "platform", id: "email", label: "Email" },
+  { Icon: BarChart3, group: "platform", id: "usage", label: "Usage" }
 ] as const satisfies readonly AdminSection[];
+
+/** Section ids that existed before the Control Center redesign; links from chat and bookmarks still use them. */
+const legacyAdminSections: Readonly<Record<string, AdminSectionId>> = {
+  access: "groups",
+  "access-rules": "users",
+  invites: "users",
+  knowledge: "retrieval",
+  memory: "retrieval",
+  safety: "users",
+  "system-models": "roles"
+};
 
 const adminSectionIds = new Set<AdminSectionId>(adminSections.map((section) => section.id));
 
@@ -159,11 +74,16 @@ export function isAdminSectionId(value: string | null): value is AdminSectionId 
   return value !== null && adminSectionIds.has(value as AdminSectionId);
 }
 
-export function parseAdminSection(search: string): AdminSectionId {
-  const section = new URLSearchParams(search).get("section");
-  return isAdminSectionId(section) ? section : defaultAdminSection;
+export function resolveAdminSectionId(value: string | null): AdminSectionId {
+  if (isAdminSectionId(value)) return value;
+  return (value !== null && legacyAdminSections[value]) || defaultAdminSection;
 }
 
+export function parseAdminSection(search: string): AdminSectionId {
+  return resolveAdminSectionId(new URLSearchParams(search).get("section"));
+}
+
+/** Rewrites a legacy or unknown `section` to its current id while keeping every other URL part. */
 export function normalizeAdminSectionPath(currentHref: string): string {
   const url = new URL(currentHref, "http://localhost");
   const rawSection = url.searchParams.get("section");
@@ -172,7 +92,7 @@ export function normalizeAdminSectionPath(currentHref: string): string {
     return `${url.pathname}${url.search}${url.hash}`;
   }
 
-  return adminSectionPath(currentHref, parseAdminSection(url.search));
+  return adminSectionPath(currentHref, resolveAdminSectionId(rawSection));
 }
 
 export function adminSectionPath(currentHref: string, section: AdminSectionId): string {
@@ -185,45 +105,6 @@ export function adminSectionPath(currentHref: string, section: AdminSectionId): 
   }
 
   return `${url.pathname}${url.search}${url.hash}`;
-}
-
-export function moveAdminSection(currentSection: AdminSectionId, direction: AdminSectionMove): AdminSectionId {
-  const currentIndex = adminSections.findIndex((section) => section.id === currentSection);
-  const fallbackIndex = currentIndex === -1 ? 0 : currentIndex;
-  const nextIndex =
-    direction === "first"
-      ? 0
-      : direction === "last"
-        ? adminSections.length - 1
-        : direction === "next"
-          ? (fallbackIndex + 1) % adminSections.length
-          : (fallbackIndex - 1 + adminSections.length) % adminSections.length;
-
-  return adminSections[nextIndex]!.id;
-}
-
-export function adminSectionMoveForKey(key: string): AdminSectionMove | null {
-  if (key === "ArrowRight" || key === "ArrowDown") {
-    return "next";
-  }
-
-  if (key === "ArrowLeft" || key === "ArrowUp") {
-    return "previous";
-  }
-
-  if (key === "Home") {
-    return "first";
-  }
-
-  return key === "End" ? "last" : null;
-}
-
-export function adminSectionTabId(section: AdminSectionId): string {
-  return `admin-tab-${section}`;
-}
-
-export function adminSectionPanelId(section: AdminSectionId): string {
-  return `admin-panel-${section}`;
 }
 
 export function adminSectionConfig(section: AdminSectionId): AdminSection {

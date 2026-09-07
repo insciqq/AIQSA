@@ -36,10 +36,16 @@ function emptyAdminDashboard(): AdminDashboard {
   };
 }
 
-test("shows administrators a bounded update notice at desktop and compact widths", async ({ page }) => {
+test("shows administrators the installed version and a bounded update pill at desktop and compact widths", async ({ page }) => {
   let releaseRequests = 0;
   await page.route("**/api/admin", async (route) => {
     await route.fulfill({ contentType: "application/json", json: emptyAdminDashboard() });
+  });
+  await page.route("**/api/admin/attention", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      json: { attention: { checkedAt: "2026-07-31T13:00:00.000Z", items: [], unavailable: [] } }
+    });
   });
   await page.route("**/api/admin/release", async (route) => {
     releaseRequests += 1;
@@ -59,24 +65,24 @@ test("shows administrators a bounded update notice at desktop and compact widths
   await signInWithLocalToken(page);
   await page.goto("/admin");
 
-  const update = page.getByText("Update available · v0.2.0", { exact: true });
+  await expect(page.getByTestId("admin-section-overview")).toBeVisible();
+  await expect(page.getByTestId("admin-version")).toHaveText("v0.1.12");
+  const update = page.getByTestId("admin-release-update");
   await expect(update).toBeVisible();
+  await expect(update).toHaveText("Update available · v0.2.0");
+  await expect(update).toHaveAttribute("href", "https://github.com/insciqq/AIQSA/releases/tag/v0.2.0");
+  await expect(update).toHaveAttribute("target", "_blank");
   await expect.poll(() => releaseRequests).toBe(1);
-  await update.click();
-  const detail = page.getByTestId("admin-release-update-details");
-  await expect(detail).toBeVisible();
-  await expect(detail).toContainText("Installed");
-  await expect(detail).toContainText("v0.1.12");
-  await expect(detail).toContainText("Latest");
-  await expect(detail).toContainText("v0.2.0");
-  await expect(detail.getByRole("link", { name: "View release notes" })).toHaveAttribute(
-    "href",
-    "https://github.com/insciqq/AIQSA/releases/tag/v0.2.0"
-  );
+  await expect(page.getByText(/When the list is empty, everything is working/)).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
+  await page.getByRole("link", { exact: true, name: "Usage" }).click();
+  await expect(page.getByTestId("admin-section-usage")).toBeVisible();
+  await expect(update).toHaveCount(0);
+  await expect(page.getByTestId("admin-version")).toHaveText("v0.1.12");
+
+  await page.goto("/admin");
   await page.setViewportSize({ height: 844, width: 390 });
-  await expect(update).toBeVisible();
-  await expect(detail).toBeVisible();
+  await expect(page.getByTestId("admin-release-update")).toBeVisible();
   await expectNoHorizontalOverflow(page);
 });

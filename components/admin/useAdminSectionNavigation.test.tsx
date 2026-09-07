@@ -1,12 +1,20 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { adminSectionPanelId, adminSectionTabId } from "./adminSections";
-import { AdminInactiveSectionPanels, AdminSectionTabs } from "./AdminSectionTabs";
+import { AdminShell } from "./AdminShell";
 import {
   useAdminSectionNavigation,
   type AdminSectionNavigation,
   type AdminSectionNavigationOptions
 } from "./useAdminSectionNavigation";
+
+function stubViewport(width: number) {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    addEventListener: () => undefined,
+    matches: query.includes("max-width: 1023px") ? width < 1024 : query.includes("max-width: 767px") ? width < 768 : false,
+    media: query,
+    removeEventListener: () => undefined
+  }));
+}
 
 function renderNavigation(options: AdminSectionNavigationOptions = {}) {
   let currentNavigation: AdminSectionNavigation | null = null;
@@ -20,22 +28,17 @@ function renderNavigation(options: AdminSectionNavigationOptions = {}) {
         <button data-testid="stable-focus" type="button">
           Stable focus
         </button>
-        <button data-testid="open-section-index" onClick={navigation.openSectionIndex} type="button">
-          Open sections
-        </button>
         <output data-testid="section-index-state">
           {navigation.sectionIndexOpen ? "open" : "closed"}
         </output>
-        <AdminSectionTabs navigation={navigation} />
-        <section
-          aria-labelledby={adminSectionTabId(navigation.activeSection)}
-          data-testid="active-panel"
-          id={adminSectionPanelId(navigation.activeSection)}
-          role="tabpanel"
+        <AdminShell
+          accountLabel="admin@example.com"
+          navigation={navigation}
+          releaseStatus={null}
+          topbar={{ title: navigation.activeSectionConfig.label }}
         >
-          {navigation.activeSectionConfig.label}
-        </section>
-        <AdminInactiveSectionPanels activeSection={navigation.activeSection} />
+          <section data-testid="active-panel">{navigation.activeSectionConfig.label}</section>
+        </AdminShell>
       </>
     );
   }
@@ -54,6 +57,12 @@ function renderNavigation(options: AdminSectionNavigationOptions = {}) {
   };
 }
 
+function sectionLink(name: string) {
+  return screen.getByTestId("admin-section-index").querySelector<HTMLAnchorElement>(
+    `a[data-testid="admin-nav-${name}"]`
+  )!;
+}
+
 describe("useAdminSectionNavigation", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -64,113 +73,110 @@ describe("useAdminSectionNavigation", () => {
     window.history.replaceState(
       { nextRouter: { marker: "keep" } },
       "",
-      "/admin?mode=compact&section=invites#current"
+      "/admin?mode=compact&section=users#current"
     );
     renderNavigation();
 
-    await waitFor(() => expect(screen.getByRole("tab", { name: "Invites" })).toHaveAttribute("aria-selected", "true"));
-    expect(screen.getByTestId("active-panel")).toHaveTextContent("Invites");
+    await waitFor(() => expect(screen.getByRole("link", { name: "Users" })).toHaveAttribute("aria-current", "page"));
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Users");
+    expect(screen.getByRole("link", { name: "Groups" })).toHaveAttribute("href", "/admin?mode=compact&section=groups#current");
 
-    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
+    fireEvent.click(screen.getByRole("link", { name: "Groups" }));
     expect(window.location.pathname).toBe("/admin");
-    expect(window.location.search).toBe("?mode=compact&section=access");
+    expect(window.location.search).toBe("?mode=compact&section=groups");
     expect(window.location.hash).toBe("#current");
     expect(window.history.state).toMatchObject({ nextRouter: { marker: "keep" } });
 
-    fireEvent.click(screen.getByRole("tab", { name: "Providers" }));
+    fireEvent.click(screen.getByRole("link", { name: "Overview" }));
     expect(window.location.search).toBe("?mode=compact");
     expect(window.location.hash).toBe("#current");
 
     act(() => window.history.back());
-    await waitFor(() => expect(window.location.search).toBe("?mode=compact&section=access"));
-    expect(screen.getByRole("tab", { name: "Access & groups" })).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect(window.location.search).toBe("?mode=compact&section=groups"));
+    expect(screen.getByRole("link", { name: "Groups" })).toHaveAttribute("aria-current", "page");
 
     act(() => window.history.back());
-    await waitFor(() => expect(window.location.search).toBe("?mode=compact&section=invites"));
-    expect(screen.getByTestId("active-panel")).toHaveTextContent("Invites");
+    await waitFor(() => expect(window.location.search).toBe("?mode=compact&section=users"));
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Users");
 
     act(() => window.history.forward());
-    await waitFor(() => expect(window.location.search).toBe("?mode=compact&section=access"));
-    expect(screen.getByTestId("active-panel")).toHaveTextContent("Access & groups");
+    await waitFor(() => expect(window.location.search).toBe("?mode=compact&section=groups"));
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Groups");
   });
 
-  it("models the compact section index as a history entry without inventing a route", async () => {
-    window.history.replaceState({ retained: true }, "", "/admin?section=usage#current");
+  it("normalizes retired section ids in the address bar without a redirect", async () => {
+    window.history.replaceState(null, "", "/admin?section=system-models");
+    renderNavigation();
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Defaults & roles"));
+    expect(window.location.search).toBe("?section=roles");
+    expect(screen.getByRole("link", { name: "Defaults & roles" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("leaves modified clicks to the browser so a section can open in a new tab", async () => {
+    window.history.replaceState(null, "", "/admin");
+    renderNavigation();
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Overview"));
+
+    const accepted = fireEvent.click(screen.getByRole("link", { name: "Usage" }), { ctrlKey: true });
+    expect(accepted).toBe(true);
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Overview");
+    expect(window.location.search).toBe("");
+  });
+
+  it("models the compact section drawer as a history entry without inventing a route", async () => {
+    stubViewport(800);
+    window.history.replaceState({ retained: true }, "", "/admin?section=usage");
     renderNavigation();
     await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Usage"));
+    expect(screen.getByTestId("admin-section-column")).toHaveClass("max-lg:hidden");
 
-    fireEvent.click(screen.getByTestId("open-section-index"));
+    fireEvent.click(screen.getByRole("button", { name: "Sections" }));
     expect(screen.getByTestId("section-index-state")).toHaveTextContent("open");
-    expect(window.location.pathname + window.location.search + window.location.hash).toBe(
-      "/admin?section=usage#current"
-    );
+    expect(screen.getByTestId("admin-section-column")).not.toHaveClass("max-lg:hidden");
+    expect(screen.getByTestId("admin-section-column")).toHaveAttribute("role", "dialog");
+    expect(screen.getByTestId("admin-drawer-scrim")).toBeInTheDocument();
+    expect(window.location.pathname + window.location.search).toBe("/admin?section=usage");
     expect(window.history.state).toMatchObject({
       aiqsaControlCenter: { view: "section-index" },
       retained: true
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close sections" }));
     await waitFor(() => expect(screen.getByTestId("section-index-state")).toHaveTextContent("closed"));
     expect(screen.getByTestId("active-panel")).toHaveTextContent("Usage");
+
+    fireEvent.click(screen.getByRole("button", { name: "Sections" }));
+    await waitFor(() => expect(screen.getByTestId("section-index-state")).toHaveTextContent("open"));
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.getByTestId("section-index-state")).toHaveTextContent("closed"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Sections" }));
+    await waitFor(() => expect(screen.getByTestId("section-index-state")).toHaveTextContent("open"));
+    fireEvent.click(screen.getByRole("link", { name: "Email" }));
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Email"));
+    expect(screen.getByTestId("section-index-state")).toHaveTextContent("closed");
   });
 
-  it("implements Arrow, Home, and End roving navigation with wraparound", async () => {
-    window.history.replaceState(null, "", "/admin");
-    renderNavigation();
-    await waitFor(() => expect(screen.getByRole("tab", { name: "Providers" })).toHaveAttribute("aria-selected", "true"));
-
-    async function press(from: string, key: string, to: string) {
-      const target = screen.getByRole("tab", { name: to });
-      const scrollIntoView = vi.fn();
-      target.scrollIntoView = scrollIntoView;
-      const accepted = fireEvent.keyDown(screen.getByRole("tab", { name: from }), { key });
-      expect(accepted).toBe(false);
-      await waitFor(() => expect(screen.getByRole("tab", { name: to })).toHaveFocus());
-      expect(screen.getByRole("tab", { name: to })).toHaveAttribute("aria-selected", "true");
-      expect(scrollIntoView).not.toHaveBeenCalled();
-    }
-
-    await press("Providers", "ArrowLeft", "Safety");
-    await press("Safety", "ArrowRight", "Providers");
-    await press("Providers", "ArrowDown", "System Models");
-    await press("System Models", "ArrowDown", "Search");
-    await press("Search", "ArrowDown", "Knowledge");
-    await press("Knowledge", "ArrowDown", "Memory");
-    await press("Memory", "ArrowDown", "Users");
-    await press("Users", "ArrowUp", "Memory");
-    await press("Memory", "ArrowUp", "Knowledge");
-    await press("Knowledge", "ArrowUp", "Search");
-    await press("Search", "ArrowUp", "System Models");
-    await press("System Models", "ArrowUp", "Providers");
-    await press("Providers", "End", "Safety");
-    await press("Safety", "Home", "Providers");
-
-    const accepted = fireEvent.keyDown(screen.getByRole("tab", { name: "Providers" }), { key: "PageDown" });
-    expect(accepted).toBe(true);
-    expect(screen.getByRole("tab", { name: "Providers" })).toHaveAttribute("aria-selected", "true");
-  });
-
-  it("keeps the current section and URL when guarded click or keyboard navigation is refused", async () => {
+  it("keeps the current section and URL when guarded navigation is refused", async () => {
     window.history.replaceState(null, "", "/admin");
     const canSelectSection = vi.fn((section: AdminSectionNavigation["activeSection"]) => (
-      section !== "system-models" && section !== "users"
+      section !== "roles" && section !== "users"
     ));
     const onNavigationBlocked = vi.fn();
     renderNavigation({ canSelectSection, onNavigationBlocked });
-    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers"));
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Overview"));
 
-    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
-    expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers");
+    fireEvent.click(screen.getByRole("link", { name: "Users" }));
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Overview");
     expect(window.location.search).toBe("");
-
-    screen.getByRole("tab", { name: "Providers" }).focus();
-    fireEvent.keyDown(screen.getByRole("tab", { name: "Providers" }), { key: "ArrowRight" });
-    expect(screen.getByRole("tab", { name: "Providers" })).toHaveFocus();
-    expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers");
+    fireEvent.click(screen.getByRole("link", { name: "Defaults & roles" }));
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Overview");
     expect(onNavigationBlocked).toHaveBeenCalledTimes(2);
+    expect(onNavigationBlocked.mock.calls[0]?.[0].target).toMatchObject({ kind: "section", section: "users" });
   });
 
-  it("guards compact All sections and Back without changing history until approval", async () => {
+  it("guards the compact drawer open and close without changing history until approval", async () => {
+    stubViewport(800);
     window.history.replaceState(null, "", "/admin?section=users");
     let allowed = false;
     const blocked: Parameters<NonNullable<AdminSectionNavigationOptions["onNavigationBlocked"]>>[0][] = [];
@@ -181,7 +187,7 @@ describe("useAdminSectionNavigation", () => {
     await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Users"));
     const originalState = structuredClone(window.history.state);
 
-    fireEvent.click(screen.getByTestId("open-section-index"));
+    fireEvent.click(screen.getByRole("button", { name: "Sections" }));
     expect(screen.getByTestId("section-index-state")).toHaveTextContent("closed");
     expect(window.history.state).toEqual(originalState);
     expect(blocked[0]?.target).toMatchObject({ kind: "section-index", open: true });
@@ -190,7 +196,7 @@ describe("useAdminSectionNavigation", () => {
     expect(screen.getByTestId("section-index-state")).toHaveTextContent("open");
     const indexState = structuredClone(window.history.state);
 
-    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close sections" }));
     expect(screen.getByTestId("section-index-state")).toHaveTextContent("open");
     expect(window.history.state).toEqual(indexState);
     expect(blocked[1]?.target).toMatchObject({ kind: "section-index", open: false });
@@ -212,17 +218,17 @@ describe("useAdminSectionNavigation", () => {
       canSelectSection,
       onNavigationBlocked: (navigation) => blocked.push(navigation)
     });
-    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers"));
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Overview"));
 
-    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Providers" }));
+    fireEvent.click(screen.getByRole("link", { name: "Users" }));
+    fireEvent.click(screen.getByRole("link", { name: "Overview" }));
     expect(window.location.search).toBe("");
     guarded = true;
 
     act(() => window.history.back());
     await waitFor(() => expect(blocked).toHaveLength(1));
     expect(window.location.search).toBe("");
-    expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers");
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Overview");
 
     // Cancel means leaving the supplied retry unused. A second Back still
     // targets the same Users entry instead of a rewritten duplicate.
@@ -243,18 +249,18 @@ describe("useAdminSectionNavigation", () => {
       canSelectSection: (section) => !guarded || section !== "users",
       onNavigationBlocked: (navigation) => blocked.push(navigation)
     });
-    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers"));
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Overview"));
 
-    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Access & groups" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Providers" }));
+    fireEvent.click(screen.getByRole("link", { name: "Users" }));
+    fireEvent.click(screen.getByRole("link", { name: "Groups" }));
+    fireEvent.click(screen.getByRole("link", { name: "Overview" }));
     expect(window.location.search).toBe("");
     guarded = true;
 
     act(() => window.history.go(-2));
     await waitFor(() => expect(blocked).toHaveLength(1));
     expect(window.location.search).toBe("");
-    expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers");
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Overview");
 
     act(() => blocked[0]!.proceed());
     await waitFor(() => expect(window.location.search).toBe("?section=users"));
@@ -264,11 +270,11 @@ describe("useAdminSectionNavigation", () => {
   it("rebases an unmarked current entry before creating a contiguous owned history session", async () => {
     window.history.replaceState({ route: "initial" }, "", "/admin");
     renderNavigation();
-    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers"));
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Overview"));
     const initialSession = window.history.state.aiqsaControlCenter.sessionId as string;
 
     window.history.pushState({ route: "foreign" }, "", "/admin#foreign");
-    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
+    fireEvent.click(screen.getByRole("link", { name: "Users" }));
 
     const pushedView = window.history.state.aiqsaControlCenter;
     expect(pushedView).toMatchObject({
@@ -303,7 +309,7 @@ describe("useAdminSectionNavigation", () => {
     const replaceState = window.history.replaceState;
     renderNavigation();
 
-    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers"));
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Overview"));
     expect(window.history.pushState).toBe(pushState);
     expect(window.history.replaceState).toBe(replaceState);
     expect(window.history.state).toMatchObject({
@@ -329,17 +335,17 @@ describe("useAdminSectionNavigation", () => {
       canSelectSection,
       onNavigationBlocked: (navigation) => blocked.push(navigation)
     });
-    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers"));
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Overview"));
 
-    fireEvent.click(screen.getByRole("tab", { name: "Users" }));
+    fireEvent.click(screen.getByRole("link", { name: "Users" }));
     act(() => window.history.back());
-    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers"));
+    await waitFor(() => expect(screen.getByTestId("active-panel")).toHaveTextContent("Overview"));
     guarded = true;
 
     act(() => window.history.forward());
     await waitFor(() => expect(blocked).toHaveLength(1));
     expect(window.location.search).toBe("");
-    expect(screen.getByTestId("active-panel")).toHaveTextContent("Providers");
+    expect(screen.getByTestId("active-panel")).toHaveTextContent("Overview");
 
     // Cancelling leaves the replay callback unused, so the same Forward entry
     // remains available and retains its original state.
@@ -351,11 +357,11 @@ describe("useAdminSectionNavigation", () => {
     expect(screen.getByTestId("active-panel")).toHaveTextContent("Users");
   });
 
-  it("does not steal valid focus and restores the active operational tab after an opener disappears", async () => {
-    window.history.replaceState(null, "", "/admin?section=access-rules");
+  it("does not steal valid focus and restores the active section link after an opener disappears", async () => {
+    window.history.replaceState(null, "", "/admin?section=email");
     const harness = renderNavigation();
-    const activeTab = await screen.findByRole("tab", { name: "Access rules" });
-    await waitFor(() => expect(activeTab).toHaveAttribute("aria-selected", "true"));
+    const activeLink = await screen.findByRole("link", { name: "Email" });
+    await waitFor(() => expect(activeLink).toHaveAttribute("aria-current", "page"));
 
     const stable = screen.getByTestId("stable-focus");
     stable.focus();
@@ -368,15 +374,16 @@ describe("useAdminSectionNavigation", () => {
     removedOpener.remove();
     act(() => harness.navigation.restoreFocusAfterMutation());
 
-    await waitFor(() => expect(activeTab).toHaveFocus());
+    await waitFor(() => expect(activeLink).toHaveFocus());
   });
 
   it("treats focus inside hidden or inert content as unstable", async () => {
     window.history.replaceState(null, "", "/admin?section=access");
     const harness = renderNavigation();
-    const activeTab = await screen.findByRole("tab", { name: "Access & groups" });
-    await waitFor(() => expect(activeTab).toHaveAttribute("aria-selected", "true"));
-    expect(window.location.search).toBe("?section=access");
+    const activeLink = await screen.findByRole("link", { name: "Groups" });
+    await waitFor(() => expect(activeLink).toHaveAttribute("aria-current", "page"));
+    expect(window.location.search).toBe("?section=groups");
+    expect(sectionLink("groups")).toBe(activeLink);
 
     const hiddenOwner = document.createElement("div");
     hiddenOwner.setAttribute("aria-hidden", "true");
@@ -387,7 +394,7 @@ describe("useAdminSectionNavigation", () => {
     expect(hiddenButton).toHaveFocus();
 
     act(() => harness.navigation.restoreFocusAfterMutation());
-    await waitFor(() => expect(activeTab).toHaveFocus());
+    await waitFor(() => expect(activeLink).toHaveFocus());
     hiddenOwner.remove();
   });
 });

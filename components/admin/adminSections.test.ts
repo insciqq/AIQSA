@@ -2,103 +2,64 @@ import { describe, expect, it } from "vitest";
 import {
   adminSectionConfig,
   adminSectionGroups,
-  adminSectionMoveForKey,
-  adminSectionPanelId,
   adminSectionPath,
   adminSections,
-  adminSectionTabId,
-  moveAdminSection,
   normalizeAdminSectionPath,
-  parseAdminSection
+  parseAdminSection,
+  resolveAdminSectionId
 } from "./adminSections";
 
 describe("adminSections", () => {
-  it("groups the approved destinations under static subject headings", () => {
+  it("lists Overview first and groups the other destinations as Models, People and Platform", () => {
     expect(adminSections.map(({ group, id, label }) => ({ group, id, label }))).toEqual([
-      { group: "ai-setup", id: "providers", label: "Providers" },
-      { group: "ai-setup", id: "system-models", label: "System Models" },
-      { group: "ai-setup", id: "search", label: "Search" },
-      { group: "ai-setup", id: "knowledge", label: "Knowledge" },
-      { group: "ai-setup", id: "memory", label: "Memory" },
-      { group: "team-access", id: "users", label: "Users" },
-      { group: "team-access", id: "access", label: "Access & groups" },
-      { group: "team-access", id: "invites", label: "Invites" },
-      { group: "team-access", id: "access-rules", label: "Access rules" },
-      { group: "operations", id: "usage", label: "Usage" },
-      { group: "infrastructure", id: "mcp", label: "MCP servers" },
-      { group: "infrastructure", id: "workspace", label: "Workspace" },
-      { group: "infrastructure", id: "email", label: "Email delivery" },
-      { group: "safety", id: "safety", label: "Safety" }
+      { group: null, id: "overview", label: "Overview" },
+      { group: "models", id: "providers", label: "Providers" },
+      { group: "models", id: "roles", label: "Defaults & roles" },
+      { group: "models", id: "search", label: "Search" },
+      { group: "models", id: "retrieval", label: "Knowledge & Memory" },
+      { group: "people", id: "users", label: "Users" },
+      { group: "people", id: "groups", label: "Groups" },
+      { group: "platform", id: "mcp", label: "MCP servers" },
+      { group: "platform", id: "workspace", label: "Workspace" },
+      { group: "platform", id: "email", label: "Email" },
+      { group: "platform", id: "usage", label: "Usage" }
     ]);
-    expect(
-      adminSectionGroups.map((group) => ({
-        label: group.label,
-        sections: adminSections.filter((section) => section.group === group.id).map((section) => section.label)
-      }))
-    ).toEqual([
-      { label: "AI setup", sections: ["Providers", "System Models", "Search", "Knowledge", "Memory"] },
-      { label: "Team & access", sections: ["Users", "Access & groups", "Invites", "Access rules"] },
-      { label: "Operations", sections: ["Usage"] },
-      { label: "Infrastructure", sections: ["MCP servers", "Workspace", "Email delivery"] },
-      { label: "Safety", sections: ["Safety"] }
-    ]);
-    expect(adminSectionConfig("access").description).toContain("model and search entitlements");
+    expect(adminSectionGroups.map((group) => group.label)).toEqual(["Models", "People", "Platform"]);
+    expect(adminSectionConfig("roles").label).toBe("Defaults & roles");
   });
 
-  it("describes the current provider workspace without retired Run profiles", () => {
-    const providers = adminSections.find((section) => section.id === "providers");
-
-    expect(providers?.description).toContain("models");
-    expect(providers?.description).not.toMatch(/profiles/i);
+  it("defaults to Overview and maps every retired section id to its new owner", () => {
+    expect(parseAdminSection("")).toBe("overview");
+    expect(parseAdminSection("?section=groups")).toBe("groups");
+    expect(parseAdminSection("?section=unknown-section")).toBe("overview");
+    expect(resolveAdminSectionId("system-models")).toBe("roles");
+    expect(resolveAdminSectionId("access")).toBe("groups");
+    expect(resolveAdminSectionId("invites")).toBe("users");
+    expect(resolveAdminSectionId("access-rules")).toBe("users");
+    expect(resolveAdminSectionId("safety")).toBe("users");
+    expect(resolveAdminSectionId("knowledge")).toBe("retrieval");
+    expect(resolveAdminSectionId("memory")).toBe("retrieval");
+    expect(resolveAdminSectionId(null)).toBe("overview");
   });
 
-  it("defaults unknown destinations to Providers", () => {
-    expect(parseAdminSection("")).toBe("providers");
-    expect(parseAdminSection("?section=invites")).toBe("invites");
-    expect(parseAdminSection("?section=removed-section")).toBe("providers");
-    expect(parseAdminSection("?section=unknown-section")).toBe("providers");
-    expect(parseAdminSection("?section=unknown")).toBe("providers");
+  it("rewrites legacy and unknown sections in the URL while keeping other parts", () => {
+    expect(normalizeAdminSectionPath("https://aiqsa.example/admin?mode=compact&section=system-models#current"))
+      .toBe("/admin?mode=compact&section=roles#current");
+    expect(normalizeAdminSectionPath("https://aiqsa.example/admin?section=invites")).toBe("/admin?section=users");
+    expect(normalizeAdminSectionPath("https://aiqsa.example/admin?section=removed-section")).toBe("/admin");
+    expect(normalizeAdminSectionPath("https://aiqsa.example/admin?section=search")).toBe("/admin?section=search");
+    expect(normalizeAdminSectionPath("https://aiqsa.example/admin")).toBe("/admin");
+  });
 
-    expect(normalizeAdminSectionPath("https://aiqsa.example/admin?mode=compact&section=removed-section#current")).toBe(
+  it("updates only the section query while preserving the path, other queries and hash", () => {
+    expect(adminSectionPath("https://aiqsa.example/admin?mode=compact#current", "users")).toBe(
+      "/admin?mode=compact&section=users#current"
+    );
+    expect(adminSectionPath("https://aiqsa.example/admin?mode=compact&section=users#current", "groups")).toBe(
+      "/admin?mode=compact&section=groups#current"
+    );
+    expect(adminSectionPath("https://aiqsa.example/admin?mode=compact&section=users#current", "overview")).toBe(
       "/admin?mode=compact#current"
     );
-    expect(normalizeAdminSectionPath("https://aiqsa.example/admin?section=unknown-section")).toBe(
-      "/admin"
-    );
-    expect(normalizeAdminSectionPath("https://aiqsa.example/admin?section=unknown#current")).toBe(
-      "/admin#current"
-    );
-  });
-
-  it("updates only the section query while preserving the path, other queries, and hash", () => {
-    expect(adminSectionPath("https://aiqsa.example/admin?mode=compact#current", "invites")).toBe(
-      "/admin?mode=compact&section=invites#current"
-    );
-    expect(adminSectionPath("https://aiqsa.example/admin?mode=compact&section=invites#current", "access")).toBe(
-      "/admin?mode=compact&section=access#current"
-    );
-    expect(adminSectionPath("https://aiqsa.example/admin?mode=compact&section=invites#current", "providers")).toBe(
-      "/admin?mode=compact#current"
-    );
-  });
-
-  it("maps roving keys and wraps through the ordered section inventory", () => {
-    expect(adminSectionMoveForKey("ArrowRight")).toBe("next");
-    expect(adminSectionMoveForKey("ArrowDown")).toBe("next");
-    expect(adminSectionMoveForKey("ArrowLeft")).toBe("previous");
-    expect(adminSectionMoveForKey("ArrowUp")).toBe("previous");
-    expect(adminSectionMoveForKey("Home")).toBe("first");
-    expect(adminSectionMoveForKey("End")).toBe("last");
-    expect(adminSectionMoveForKey("PageDown")).toBeNull();
-
-    expect(moveAdminSection("providers", "previous")).toBe("safety");
-    expect(moveAdminSection("safety", "next")).toBe("providers");
-    expect(moveAdminSection("access", "first")).toBe("providers");
-    expect(moveAdminSection("access", "last")).toBe("safety");
-  });
-
-  it("owns stable tab and panel ids", () => {
-    expect(adminSectionTabId("access")).toBe("admin-tab-access");
-    expect(adminSectionPanelId("access")).toBe("admin-panel-access");
   });
 });

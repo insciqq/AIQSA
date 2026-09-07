@@ -5,8 +5,6 @@ import { useState } from "react";
 import {
   AdminAvailabilityStatus,
   AdminGroupOptions,
-  AdminResourceDetailPane,
-  AdminResourceIndexPane,
   AdminTaskBackButton,
   AdminTaskDetailPane,
   AdminTaskIndexPane,
@@ -95,25 +93,6 @@ describe("admin interactive recipes", () => {
 });
 
 describe("admin resource task panes", () => {
-  it("keeps index and detail mounted while switching the compact task owner", () => {
-    render(
-      <>
-        <AdminResourceIndexPane compactVisible testId="resource-index">
-          Resource index
-        </AdminResourceIndexPane>
-        <AdminResourceDetailPane compactVisible={false} testId="resource-detail">
-          Resource detail
-        </AdminResourceDetailPane>
-      </>
-    );
-
-    expect(screen.getByTestId("resource-index")).toHaveAttribute("data-admin-task-view", "index");
-    expect(screen.getByTestId("resource-index")).toHaveClass("block", "lg:block");
-    expect(screen.getByTestId("resource-detail")).toHaveAttribute("data-admin-task-view", "detail");
-    expect(screen.getByTestId("resource-detail")).toHaveClass("hidden", "lg:block");
-    expect(screen.getByText("Resource detail")).toBeInTheDocument();
-  });
-
   it("keeps an inner resource list mounted while compact detail owns the viewport", () => {
     const onBack = vi.fn();
     render(

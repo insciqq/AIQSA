@@ -1,11 +1,8 @@
 "use client";
 
-import { AdminProviderSystemModelTask } from "@/components/admin/AdminProviderSystemModelTask";
-
-import { AdminAccessRulesSection } from "@/components/admin/AdminAccessRulesSection";
 import { AdminAccessGroupsSection } from "@/components/admin/AdminAccessGroupsSection";
+import { AdminAccessRulesSection } from "@/components/admin/AdminAccessRulesSection";
 import { AdminConfirmationHost } from "@/components/admin/AdminConfirmationHost";
-import { AdminConsoleHeader } from "@/components/admin/AdminConsoleHeader";
 import { AdminDashboardUnavailable } from "@/components/admin/AdminDashboardUnavailable";
 import {
   AdminDraftProtectionProvider,
@@ -14,36 +11,39 @@ import {
   useAdminDraftRegistry,
   type AdminDraftOwner
 } from "@/components/admin/AdminDraftProtection";
-import { AdminFeedbackMessages } from "@/components/admin/AdminFeedbackMessages";
 import { AdminEmailSection } from "@/components/admin/AdminEmailSection";
+import { AdminFeedbackHost } from "@/components/admin/AdminFeedbackHost";
 import { AdminInvitesSection } from "@/components/admin/AdminInvitesSection";
 import { AdminKnowledgeSection } from "@/components/admin/AdminKnowledgeSection";
-import { AdminMemorySection } from "@/components/admin/AdminMemorySection";
 import { AdminMcpGroupAccessPanel, AdminMcpUserAccessPanel } from "@/components/admin/AdminMcpGrantPanels";
 import { AdminMcpServersSection } from "@/components/admin/AdminMcpServersSection";
+import { AdminMemorySection } from "@/components/admin/AdminMemorySection";
+import { AdminOverviewSection } from "@/components/admin/AdminOverviewSection";
+import { AdminProviderModelDefaultTask } from "@/components/admin/AdminProviderModelDefaultTask";
+import { AdminProviderRunLimitsTask } from "@/components/admin/AdminProviderRunLimitsTask";
+import { AdminProviderSystemModelTask } from "@/components/admin/AdminProviderSystemModelTask";
 import { AdminProvidersExperience } from "@/components/admin/AdminProvidersExperience";
-import { AdminSafetySection } from "@/components/admin/AdminSafetySection";
 import { AdminSearchSection } from "@/components/admin/AdminSearchSection";
-import { AdminSectionFrame } from "@/components/admin/AdminSectionFrame";
-import { AdminSectionTabs } from "@/components/admin/AdminSectionTabs";
+import {
+  AdminReleaseUpdatePill,
+  AdminSectionTopbarProvider,
+  AdminShell,
+  AdminTopbarMenu,
+  type AdminShellTopbar
+} from "@/components/admin/AdminShell";
 import { AdminUsageSection } from "@/components/admin/AdminUsageSection";
 import { AdminUsersSection } from "@/components/admin/AdminUsersSection";
 import { AdminWorkspaceSection } from "@/components/admin/AdminWorkspaceSection";
-import {
-  AdminResourceDetailPane,
-  AdminResourceIndexPane,
-  primaryButton
-} from "@/components/admin/adminPrimitives";
+import { primaryButton } from "@/components/admin/adminPrimitives";
 import type { AdminSectionId } from "@/components/admin/adminSections";
-import { formatTime } from "@/components/admin/adminViewUtils";
 import { useAdminAccessRulesController, type AdminAccessRulesController } from "@/components/admin/useAdminAccessRulesController";
 import { useAdminActionRunner } from "@/components/admin/useAdminActionRunner";
+import { useAdminAttention } from "@/components/admin/useAdminAttention";
 import {
   useAdminConfirmationController,
   type AdminConfirmationController
 } from "@/components/admin/useAdminConfirmationController";
 import { useAdminDashboardResource } from "@/components/admin/useAdminDashboardResource";
-import { useAdminReleaseStatus } from "@/components/admin/useAdminReleaseStatus";
 import { useAdminFeedback } from "@/components/admin/useAdminFeedback";
 import { useAdminFieldErrors } from "@/components/admin/useAdminFieldErrors";
 import { useAdminGroupsController, type AdminGroupsController } from "@/components/admin/useAdminGroupsController";
@@ -51,6 +51,7 @@ import { useAdminInvitesController, type AdminInvitesController } from "@/compon
 import { useAdminMcpController, type AdminMcpController } from "@/components/admin/useAdminMcpController";
 import { useAdminMcpSectionState, type AdminMcpSectionState } from "@/components/admin/useAdminMcpSectionState";
 import { useAdminOperationalFocus } from "@/components/admin/useAdminOperationalFocus";
+import { useAdminReleaseStatus } from "@/components/admin/useAdminReleaseStatus";
 import {
   useAdminSectionNavigation,
   type AdminBlockedNavigation
@@ -58,8 +59,9 @@ import {
 import { useAdminUsersController, type AdminUsersController } from "@/components/admin/useAdminUsersController";
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 import type { AdminDashboard } from "@/lib/contracts/admin";
+import type { AdminAttentionTarget } from "@/lib/contracts/adminAttention";
 import { Link2, Plus } from "lucide-react";
-import { useCallback, useEffect, useRef, type MouseEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 
 type AdminPanelProps = Readonly<{
   adminEmail: string;
@@ -70,96 +72,209 @@ function assertNeverSection(section: never): never {
   throw new Error(`Unhandled admin section: ${section}`);
 }
 
-function AdminHeaderAction({
-  activeSection,
-  accessRules,
-  groups,
-  invites
+function HeaderFormToggle({
+  Icon,
+  label,
+  open,
+  owners,
+  toggle
 }: Readonly<{
-  activeSection: AdminSectionId;
-  accessRules: AdminAccessRulesController;
-  groups: AdminGroupsController;
-  invites: AdminInvitesController;
+  Icon: typeof Plus;
+  label: string;
+  open: boolean;
+  owners: readonly AdminDraftOwner[];
+  toggle(): void;
 }>) {
   const requestDiscardAction = useAdminDiscardAction();
-  const form =
-    activeSection === "access" && !groups.access.sectionProps?.draft.detailOpen
-      ? {
-          Icon: Plus,
-          label: "group",
-          open: groups.access.sectionProps?.draft.createFormOpen ?? false,
-          owners: ["access-groups-form", "access-group-member-form"],
-          toggle: groups.access.toggleCreateForm
-        }
-      : activeSection === "invites"
-        ? {
-            Icon: Link2,
-            label: "invite",
-            open: invites.headerForm.formOpen,
-            owners: ["invite-form"],
-            toggle: invites.headerForm.toggleForm
-          }
-        : activeSection === "access-rules"
-          ? {
-              Icon: Plus,
-              label: "rule",
-              open: accessRules.headerForm.formOpen,
-              owners: ["access-rule-form"],
-              toggle: accessRules.headerForm.toggleForm
-            }
-          : null;
-
-  if (!form) {
-    return null;
-  }
-
-  const FormIcon = form.Icon;
   return (
     <button
       className={primaryButton}
       data-admin-task-opener="true"
-      onClick={() => requestDiscardAction(form.toggle, form.owners)}
+      onClick={() => requestDiscardAction(toggle, owners)}
       type="button"
     >
-      <FormIcon aria-hidden="true" className="size-3.5" />
-      {form.open ? "Hide form" : `New ${form.label}`}
+      <Icon aria-hidden="true" className="size-3.5" />
+      {open ? "Hide form" : `New ${label}`}
     </button>
+  );
+}
+
+/**
+ * Topbar primary actions per section. Until later slices replace each
+ * section, the existing header forms keep their toggles here.
+ */
+function AdminTopbarActions({
+  accessRules,
+  activeSection,
+  actionsDisabled,
+  groups,
+  invites,
+  onRequestRevokeAllSessions,
+  releaseStatus
+}: Readonly<{
+  accessRules: AdminAccessRulesController;
+  activeSection: AdminSectionId;
+  actionsDisabled: boolean;
+  groups: AdminGroupsController;
+  invites: AdminInvitesController;
+  onRequestRevokeAllSessions(): void;
+  releaseStatus: ReturnType<typeof useAdminReleaseStatus>;
+}>): ReactNode {
+  switch (activeSection) {
+    case "overview":
+      return (
+        <>
+          <AdminReleaseUpdatePill releaseStatus={releaseStatus} />
+          <AdminTopbarMenu
+            actions={[
+              {
+                disabled: actionsDisabled,
+                icon: "logout",
+                label: "Revoke all sessions",
+                onSelect: onRequestRevokeAllSessions,
+                tone: "destructive"
+              }
+            ]}
+          />
+        </>
+      );
+    case "groups":
+      return groups.access.sectionProps && !groups.access.sectionProps.draft.detailOpen ? (
+        <HeaderFormToggle
+          Icon={Plus}
+          label="group"
+          open={groups.access.sectionProps.draft.createFormOpen}
+          owners={["access-groups-form", "access-group-member-form"]}
+          toggle={groups.access.toggleCreateForm}
+        />
+      ) : null;
+    case "users":
+      return (
+        <>
+          <HeaderFormToggle
+            Icon={Link2}
+            label="invite"
+            open={invites.headerForm.formOpen}
+            owners={["invite-form"]}
+            toggle={invites.headerForm.toggleForm}
+          />
+          <HeaderFormToggle
+            Icon={Plus}
+            label="rule"
+            open={accessRules.headerForm.formOpen}
+            owners={["access-rule-form"]}
+            toggle={accessRules.headerForm.toggleForm}
+          />
+        </>
+      );
+    default:
+      return null;
+  }
+}
+
+function StackedBlock({ children, heading, testId }: Readonly<{ children: ReactNode; heading: string; testId: string }>) {
+  return (
+    <section
+      aria-label={heading}
+      className="border-t border-trace-subtle first:border-t-0"
+      data-testid={testId}
+    >
+      <h2 className="px-4 pt-6 text-base font-semibold text-ink sm:px-6 lg:px-8">{heading}</h2>
+      {children}
+    </section>
   );
 }
 
 function AdminSectionContent({
   accessRules,
   activeSection,
-  adminEmail,
+  attention,
   dashboard,
   groups,
   invites,
-  lastLoadedAt,
   mcp,
   mcpSection,
+  onJump,
   onMutationCommitted,
   requestConfirmation,
-  onRequestRevokeAllSessions,
-  submitting,
   users
 }: Readonly<{
   accessRules: AdminAccessRulesController;
   activeSection: AdminSectionId;
-  adminEmail: string;
+  attention: ReturnType<typeof useAdminAttention>;
   dashboard: AdminDashboard;
   groups: AdminGroupsController;
   invites: AdminInvitesController;
-  lastLoadedAt: Date | null;
   mcp: AdminMcpController;
   mcpSection: AdminMcpSectionState;
+  onJump(target: AdminAttentionTarget): void;
   onMutationCommitted(): void | Promise<unknown>;
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
-  onRequestRevokeAllSessions(): void;
-  submitting: boolean;
   users: AdminUsersController;
 }>) {
   switch (activeSection) {
-    case "access":
+    case "overview":
+      return <AdminOverviewSection controller={attention} onJump={onJump} />;
+    case "providers":
+      return (
+        <AdminProvidersExperience
+          active
+          groups={dashboard.groups}
+          onMutationCommitted={onMutationCommitted}
+          requestConfirmation={requestConfirmation}
+        />
+      );
+    case "roles":
+      return (
+        <>
+          <AdminProviderSystemModelTask active onMutationCommitted={onMutationCommitted} />
+          <StackedBlock heading="Chat defaults" testId="admin-roles-defaults">
+            <AdminProviderModelDefaultTask active onMutationCommitted={onMutationCommitted} />
+          </StackedBlock>
+          <StackedBlock heading="Tool limits" testId="admin-roles-limits">
+            <AdminProviderRunLimitsTask active onMutationCommitted={onMutationCommitted} />
+          </StackedBlock>
+        </>
+      );
+    case "search":
+      return <AdminSearchSection active onMutationCommitted={onMutationCommitted} />;
+    case "retrieval":
+      return (
+        <>
+          <AdminKnowledgeSection active onMutationCommitted={onMutationCommitted} />
+          <StackedBlock heading="Memory" testId="admin-retrieval-memory">
+            <AdminMemorySection active />
+          </StackedBlock>
+        </>
+      );
+    case "users":
+      return (
+        <>
+          {users.sectionProps ? (
+            <AdminUsersSection
+              {...users.sectionProps}
+              mcpAccess={users.sectionProps.data.selectedUser ? (
+                <AdminMcpUserAccessPanel
+                  controller={mcp}
+                  groups={dashboard.groups}
+                  user={users.sectionProps.data.selectedUser}
+                />
+              ) : null}
+            />
+          ) : null}
+          {invites.sectionProps ? (
+            <StackedBlock heading="Invites" testId="admin-section-invites">
+              <AdminInvitesSection {...invites.sectionProps} />
+            </StackedBlock>
+          ) : null}
+          {accessRules.sectionProps ? (
+            <StackedBlock heading="Sign-up rules" testId="admin-section-access-rules">
+              <AdminAccessRulesSection {...accessRules.sectionProps} />
+            </StackedBlock>
+          ) : null}
+        </>
+      );
+    case "groups":
       return groups.access.sectionProps ? (
         <AdminAccessGroupsSection
           {...groups.access.sectionProps}
@@ -173,65 +288,12 @@ function AdminSectionContent({
       ) : null;
     case "mcp":
       return <AdminMcpServersSection controller={mcp} section={mcpSection} />;
-    case "email":
-      return <AdminEmailSection onMutationCommitted={onMutationCommitted} />;
-    case "providers":
-      return (
-        <AdminProvidersExperience
-          active
-          groups={dashboard.groups}
-          onMutationCommitted={onMutationCommitted}
-          requestConfirmation={requestConfirmation}
-        />
-      );
-    case "search":
-      return (
-        <AdminSearchSection
-          active
-          onMutationCommitted={onMutationCommitted}
-        />
-      );
-    case "system-models":
-      return <AdminProviderSystemModelTask active onMutationCommitted={onMutationCommitted} />;
-    case "knowledge":
-      return (
-        <AdminKnowledgeSection
-          active
-          onMutationCommitted={onMutationCommitted}
-        />
-      );
-    case "memory":
-      return <AdminMemorySection active />;
-    case "invites":
-      return invites.sectionProps ? <AdminInvitesSection {...invites.sectionProps} /> : null;
-    case "access-rules":
-      return accessRules.sectionProps ? <AdminAccessRulesSection {...accessRules.sectionProps} /> : null;
-    case "usage":
-      return <AdminUsageSection catalog={dashboard.catalog} usage={dashboard.usage} />;
     case "workspace":
       return <AdminWorkspaceSection />;
-    case "safety":
-      return (
-        <AdminSafetySection
-          actionsDisabled={submitting}
-          currentAdminEmail={adminEmail}
-          lastRefreshedText={formatTime(lastLoadedAt)}
-          onRequestRevokeAllSessions={onRequestRevokeAllSessions}
-        />
-      );
-    case "users":
-      return users.sectionProps ? (
-        <AdminUsersSection
-          {...users.sectionProps}
-          mcpAccess={users.sectionProps.data.selectedUser ? (
-            <AdminMcpUserAccessPanel
-              controller={mcp}
-              groups={dashboard.groups}
-              user={users.sectionProps.data.selectedUser}
-            />
-          ) : null}
-        />
-      ) : null;
+    case "email":
+      return <AdminEmailSection onMutationCommitted={onMutationCommitted} />;
+    case "usage":
+      return <AdminUsageSection catalog={dashboard.catalog} usage={dashboard.usage} />;
   }
 
   return assertNeverSection(activeSection);
@@ -257,7 +319,8 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     onNavigationBlocked
   });
   const resource = useAdminDashboardResource({ feedback });
-  const releaseStatus = useAdminReleaseStatus(resource.lastLoadedAt?.getTime() ?? null);
+  const lastLoadedMs = resource.lastLoadedAt?.getTime() ?? null;
+  const releaseStatus = useAdminReleaseStatus(lastLoadedMs);
   const actionRunner = useAdminActionRunner({
     feedback,
     onMutationReconciled: navigation.restoreFocusAfterMutation,
@@ -266,20 +329,22 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   const confirmation = useAdminConfirmationController({ runAction: actionRunner.runAction });
   const fieldErrors = useAdminFieldErrors(feedback);
   const operationalFocus = useAdminOperationalFocus();
-  const nowMs = resource.lastLoadedAt?.getTime() ?? 0;
+  const nowMs = lastLoadedMs ?? 0;
   const actionsDisabled = Boolean(actionRunner.submitting);
   const navigationLocked = actionsDisabled || drafts.pending;
   const allowReturnToChatRef = useRef(false);
   const returnToChatLinkRef = useRef<HTMLAnchorElement | null>(null);
+  const attention = useAdminAttention({
+    active: navigation.activeSection === "overview" && resource.dashboard !== null,
+    refreshKey: lastLoadedMs
+  });
 
   useEffect(() => {
     navigationBlockedRef.current = navigationLocked || drafts.dirty;
   }, [drafts.dirty, navigationLocked]);
   useBeforeUnloadGuard(drafts.dirty, drafts.hasDirty);
 
-  const documentTitle = resource.dashboard
-    ? `${navigation.activeSectionConfig.label} · Control Center · AIQSA`
-    : "Control Center · AIQSA";
+  const documentTitle = `${navigation.activeSectionConfig.label} · Control Center · AIQSA`;
   useEffect(() => {
     document.title = documentTitle;
   }, [documentTitle]);
@@ -295,7 +360,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     }
 
     confirmation.requestConfirmation({
-      body: "Unsaved edits in this Control Center task will be lost.",
+      body: "Unsaved edits in this Control Center form will be lost.",
       confirmLabel: "Discard changes",
       dialogLabel: "Discard unsaved changes",
       icon: "x",
@@ -379,7 +444,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     runAction: actionRunner.runAction
   });
   const mcp = useAdminMcpController({
-    active: Boolean(resource.dashboard) && ["mcp", "access", "users"].includes(navigation.activeSection),
+    active: Boolean(resource.dashboard) && ["mcp", "groups", "users"].includes(navigation.activeSection),
     onMutationCommitted: resource.refresh
   });
   const mcpSection = useAdminMcpSectionState();
@@ -399,8 +464,19 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
       tone: "warning"
     });
   }, [requestConfirmedAction]);
+  const { selectSection } = navigation;
+  const jumpToTarget = useCallback((target: AdminAttentionTarget) => {
+    selectSection(target.section);
+  }, [selectSection]);
 
+  const [sectionTopbar, setSectionTopbar] = useState<AdminShellTopbar | null>(null);
+  const dashboardAttention = resource.dashboard?.navigation.attention ?? null;
+  const usersAttention = dashboardAttention
+    ? dashboardAttention.pendingUsers + dashboardAttention.activeUsersWithoutModelAccess
+    : 0;
+  const activeSectionConfig = navigation.activeSectionConfig;
   const isBusy = resource.loading || navigationLocked;
+
   return (
     <AdminDraftProtectionProvider registry={drafts} requestDiscardAction={requestDiscardAction}>
     <main
@@ -408,17 +484,17 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
       className="min-h-[100dvh] overflow-x-hidden bg-app-canvas pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-ink"
     >
       <AdminDraftRegistration
-        dirty={navigation.activeSection === "access" && groups.access.draftProtection.dirty}
+        dirty={navigation.activeSection === "groups" && groups.access.draftProtection.dirty}
         onDiscard={groups.access.draftProtection.discard}
         owner="access-groups-form"
       />
       <AdminDraftRegistration
-        dirty={navigation.activeSection === "invites" && invites.draftProtection.dirty}
+        dirty={navigation.activeSection === "users" && invites.draftProtection.dirty}
         onDiscard={invites.draftProtection.discard}
         owner="invite-form"
       />
       <AdminDraftRegistration
-        dirty={navigation.activeSection === "access-rules" && accessRules.draftProtection.dirty}
+        dirty={navigation.activeSection === "users" && accessRules.draftProtection.dirty}
         onDiscard={accessRules.draftProtection.discard}
         owner="access-rule-form"
       />
@@ -429,81 +505,62 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
       />
       <div
         aria-hidden={confirmation.confirmation ? true : undefined}
-        className="mx-auto grid min-h-[100dvh] min-w-0 max-w-[1680px] grid-rows-[auto_minmax(0,1fr)] bg-answer-paper lg:grid-cols-[15rem_minmax(0,1fr)]"
         data-testid="admin-console-workspace"
         inert={confirmation.confirmation ? true : undefined}
       >
-        <div className="min-w-0 lg:col-start-2 lg:row-start-1">
-          <AdminConsoleHeader
-            adminEmail={adminEmail}
-            lastLoadedAt={resource.lastLoadedAt}
-            loading={resource.loading}
-            navigationDisabled={drafts.pending}
-            onReturnToChatClick={requestReturnToChat}
-            onRefresh={() => requestDiscardAction(() => void resource.refresh())}
-            releaseStatus={releaseStatus}
-            submitting={actionsDisabled}
-          />
-        </div>
-        <AdminResourceIndexPane
-          className="border-b border-trace-subtle bg-workspace-rail lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:border-b-0 lg:border-r"
-          compactVisible={navigation.sectionIndexOpen}
-          testId="admin-section-index-pane"
+        <AdminShell
+          accountLabel={adminEmail}
+          attentionCounts={{ users: usersAttention }}
+          navigation={navigation}
+          navigationBlocked={navigationLocked}
+          onReturnToChat={requestReturnToChat}
+          releaseStatus={releaseStatus}
+          topbar={sectionTopbar ?? {
+            actions: resource.dashboard ? (
+              <AdminTopbarActions
+                accessRules={accessRules}
+                actionsDisabled={actionsDisabled}
+                activeSection={navigation.activeSection}
+                groups={groups}
+                invites={invites}
+                onRequestRevokeAllSessions={requestRevokeAllSessions}
+                releaseStatus={releaseStatus}
+              />
+            ) : null,
+            title: activeSectionConfig.label
+          }}
         >
-          <AdminSectionTabs
-            navigation={navigation}
-            navigationBlocked={navigationLocked}
-            summary={resource.dashboard?.navigation ?? null}
-          />
-        </AdminResourceIndexPane>
-        <AdminResourceDetailPane
-          className="bg-answer-paper lg:col-start-2 lg:row-start-2"
-          compactVisible={!navigation.sectionIndexOpen}
-          testId="admin-active-task-pane"
-        >
-          <div className="px-4 sm:px-6 lg:px-8">
-            <AdminFeedbackMessages error={feedback.error} notice={feedback.notice} />
-          </div>
-
           {resource.dashboard ? (
-            <AdminSectionFrame
-              headerActions={
-                <AdminHeaderAction
-                  accessRules={accessRules}
-                  activeSection={navigation.activeSection}
-                  groups={groups}
-                  invites={invites}
-                />
-              }
-              navigation={navigation}
-              navigationBlocked={navigationLocked}
+            <section
+              aria-label={activeSectionConfig.label}
+              className="min-h-full min-w-0"
+              data-testid={`admin-section-${navigation.activeSection}`}
             >
-              <div>
-                <AdminSectionContent
-                  accessRules={accessRules}
-                  activeSection={navigation.activeSection}
-                  adminEmail={adminEmail}
-                  dashboard={resource.dashboard}
-                  groups={groups}
-                  invites={invites}
-                  lastLoadedAt={resource.lastLoadedAt}
-                  mcp={mcp}
-                  mcpSection={mcpSection}
-                  onMutationCommitted={resource.refresh}
-                  requestConfirmation={confirmation.requestConfirmation}
-                  onRequestRevokeAllSessions={requestRevokeAllSessions}
-                  submitting={actionsDisabled}
-                  users={users}
-                />
-              </div>
-            </AdminSectionFrame>
+              <AdminSectionTopbarProvider value={setSectionTopbar}>
+              <AdminSectionContent
+                accessRules={accessRules}
+                activeSection={navigation.activeSection}
+                attention={attention}
+                dashboard={resource.dashboard}
+                groups={groups}
+                invites={invites}
+                mcp={mcp}
+                mcpSection={mcpSection}
+                onJump={jumpToTarget}
+                onMutationCommitted={resource.refresh}
+                requestConfirmation={confirmation.requestConfirmation}
+                users={users}
+              />
+              </AdminSectionTopbarProvider>
+            </section>
           ) : (
-            <section aria-label="Admin data state" className="min-h-full bg-answer-paper">
-              <AdminDashboardUnavailable loading={resource.loading} />
+            <section aria-label="Admin data state" className="min-h-full">
+              <AdminDashboardUnavailable loading={resource.loading} onRetry={() => void resource.refresh()} />
             </section>
           )}
-        </AdminResourceDetailPane>
+        </AdminShell>
       </div>
+      <AdminFeedbackHost feedback={feedback} />
       <AdminConfirmationHost controller={confirmation} onClosed={navigation.restoreFocusAfterMutation} />
     </main>
     </AdminDraftProtectionProvider>
