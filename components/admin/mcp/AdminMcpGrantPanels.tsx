@@ -467,8 +467,8 @@ export function AdminMcpServerUserAccessPanel({
                 const direct = grant?.canUse === true;
                 const inherited = inheritedAccessLabel(inheritedMcpAccessGroups(server, user, groups));
                 return (
-                  <li className="grid min-w-0 gap-2 px-4 py-2.5 sm:px-5" key={user.id}>
-                    <div className="flex min-h-7 items-center justify-between gap-3">
+                  <li className="flex min-w-0 flex-col gap-2 px-4 py-2.5 sm:px-5" key={user.id}>
+                    <div className="flex min-h-7 min-w-0 items-center justify-between gap-3">
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium text-ink">{user.displayName}</p>
                         <p className="truncate text-xs text-ink-muted">

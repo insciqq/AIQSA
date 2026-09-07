@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { useState } from "react";
 import { AdminSectionTopbarProvider, type AdminShellTopbar } from "@/components/admin/AdminShell";
 import type { AdminConfirmationRequest } from "@/components/admin/useAdminConfirmationController";
@@ -252,9 +252,9 @@ function Harness({
   requestConfirmation,
   resource
 }: Readonly<{
-  feedback: { reportError: ReturnType<typeof vi.fn>; reportNotice: ReturnType<typeof vi.fn> };
+  feedback: { reportError: Mock<(message: string) => void>; reportNotice: Mock<(message: string) => void> };
   fetcher: ReturnType<typeof fakeApi>["fetcher"];
-  onSelectResource: ReturnType<typeof vi.fn>;
+  onSelectResource: Mock<(resource: string | null) => void>;
   requestConfirmation(config: AdminConfirmationRequest): void;
   resource: string | null;
 }>) {
@@ -286,8 +286,11 @@ function Harness({
 function renderSection(state: ApiState, resource: string | null = null) {
   const api = fakeApi(state);
   const confirmations: AdminConfirmationRequest[] = [];
-  const feedback = { reportError: vi.fn(), reportNotice: vi.fn() };
-  const onSelectResource = vi.fn();
+  const feedback = {
+    reportError: vi.fn<(message: string) => void>(),
+    reportNotice: vi.fn<(message: string) => void>()
+  };
+  const onSelectResource = vi.fn<(resource: string | null) => void>();
   const requestConfirmation = (config: AdminConfirmationRequest) => { confirmations.push(config); };
   const props = { feedback, fetcher: api.fetcher, onSelectResource, requestConfirmation };
   const view = render(<Harness {...props} resource={resource} />);
@@ -321,7 +324,7 @@ describe("AdminMcpSection", () => {
     expect(rows[1]).toHaveTextContent("Authorization required to check changes");
     expect(within(rows[1]!).getByRole("link", { name: "Connect Workspace tools" }))
       .toHaveAttribute("href", "/api/admin/mcp/server-oauth/oauth/validation/connect");
-    expect(screen.getByTestId("topbar-title")).toHaveTextContent("MCP servers");
+    await waitFor(() => expect(screen.getByTestId("topbar-title")).toHaveTextContent("MCP servers"));
     expect(view.container.textContent).not.toMatch(bannedWords);
 
     fireEvent.click(within(rows[0]!).getByRole("link", { name: "Open Working Tools · Working" }));
@@ -335,7 +338,7 @@ describe("AdminMcpSection", () => {
     const { calls, onSelectResource } = renderSection(state);
     await screen.findByRole("list", { name: "MCP servers" });
 
-    fireEvent.click(screen.getByTestId("mcp-new-server"));
+    fireEvent.click(await screen.findByTestId("mcp-new-server"));
     const sheet = await screen.findByRole("dialog", { name: "New server" });
     expect(sheet).toHaveAttribute("aria-modal", "true");
     const parse = within(sheet).getByRole("button", { name: "Parse" });
@@ -379,8 +382,9 @@ describe("AdminMcpSection", () => {
 
     const page = await screen.findByTestId("mcp-server-page");
     expect(screen.getByTestId("mcp-server-page-status")).toHaveTextContent(/^Working · 2 tools on · checked /u);
+    // The shell renders the topbar one commit after the page.
+    await waitFor(() => expect(screen.getByTestId("topbar-title")).toHaveTextContent("Working Tools"));
     expect(screen.getByTestId("topbar-title")).toHaveTextContent("MCP servers");
-    expect(screen.getByTestId("topbar-title")).toHaveTextContent("Working Tools");
     expect(screen.queryByRole("tab")).not.toBeInTheDocument();
     expect(within(page).getByTestId("mcp-tools-summary")).toHaveTextContent("2 of 2 on");
     expect(view.container.textContent).not.toMatch(bannedWords);
@@ -494,7 +498,7 @@ describe("AdminMcpSection", () => {
     const { calls } = renderSection(state, "server-1");
     await screen.findByTestId("mcp-server-page");
 
-    fireEvent.click(screen.getByTestId("mcp-open-settings"));
+    fireEvent.click(await screen.findByTestId("mcp-open-settings"));
     const sheet = await screen.findByRole("dialog", { name: "Settings" });
     expect(sheet).toHaveAttribute("aria-modal", "true");
     await waitFor(() => expect(within(sheet).getByRole("button", { name: "Close" })).toHaveFocus());
@@ -505,7 +509,7 @@ describe("AdminMcpSection", () => {
     fireEvent.keyDown(sheet, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 
-    fireEvent.click(screen.getByTestId("mcp-open-settings"));
+    fireEvent.click(await screen.findByTestId("mcp-open-settings"));
     const reopened = await screen.findByRole("dialog", { name: "Settings" });
     fireEvent.change(within(reopened).getByLabelText("Name"), { target: { value: "Renamed Tools" } });
     fireEvent.keyDown(reopened, { key: "Escape" });
@@ -518,14 +522,14 @@ describe("AdminMcpSection", () => {
     const patch = calls.find((call) => call.method === "PATCH");
     expect(patch?.body).toMatchObject({ expectedUpdatedAt: NOW, name: "Renamed Tools" });
     expect(calls.at(-1)).toMatchObject({ body: { expectedUpdatedAt: "2026-09-07T10:05:00.000Z", publish: true }, url: "/api/admin/mcp/server-1/test" });
-    expect(screen.getByTestId("topbar-title")).toHaveTextContent("Renamed Tools");
+    await waitFor(() => expect(screen.getByTestId("topbar-title")).toHaveTextContent("Renamed Tools"));
   });
 
   it("keeps a failed check inside the settings sheet with the fields preserved", async () => {
     renderSection(state, "server-1");
     await screen.findByTestId("mcp-server-page");
 
-    fireEvent.click(screen.getByTestId("mcp-open-settings"));
+    fireEvent.click(await screen.findByTestId("mcp-open-settings"));
     const sheet = await screen.findByRole("dialog", { name: "Settings" });
     fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Broken Tools" } });
     state.failNextCheck = true;
@@ -546,6 +550,8 @@ describe("AdminMcpSection", () => {
     state.servers = [workingServer({ revisions: [workingServer().activeRevision!, older] })];
     const { calls, confirmations, onSelectResource } = renderSection(state, "server-1");
     await screen.findByTestId("mcp-server-page");
+    // The topbar is rendered by the shell one commit after the page.
+    await screen.findByRole("button", { name: "More actions for Working Tools" });
     const menu = () => screen.getByRole("button", { name: "More actions for Working Tools" });
 
     fireEvent.click(menu());
@@ -592,7 +598,7 @@ describe("AdminMcpSection", () => {
     await screen.findByTestId("mcp-archived-note");
     expect(screen.getByTestId("mcp-server-page-status")).toHaveTextContent("Archived");
     expect(screen.queryByTestId("mcp-test-save")).not.toBeInTheDocument();
-    expect(screen.getByTestId("mcp-open-settings")).toBeDisabled();
+    expect(await screen.findByTestId("mcp-open-settings")).toBeDisabled();
     expect(screen.queryByRole("button", { name: /More actions/u })).not.toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Use remember" })).toBeDisabled();
 
