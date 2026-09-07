@@ -2,7 +2,7 @@
 
 import { adminSectionPath, type AdminSectionId } from "@/components/admin/adminSections";
 import { AdminTopbarMenu, useAdminSectionTopbar, type AdminShellTopbar } from "@/components/admin/AdminShell";
-import { AdminProviderAddEntry } from "@/components/admin/providers/AdminProviderAddEntry";
+import { AdminProviderAddSheet } from "@/components/admin/providers/add/AdminProviderAddSheet";
 import { AdminProviderPage } from "@/components/admin/providers/AdminProviderPage";
 import { AdminProvidersList } from "@/components/admin/providers/AdminProvidersList";
 import { describeDeleteBlockers } from "@/components/admin/providers/providerBlockers";
@@ -56,8 +56,8 @@ function Crumbs({
 }
 
 /**
- * Providers section (PRD 5.2, 5.4): the list, one provider page per
- * `?resource=`, and the temporary Add provider entry. The section owns the
+ * Providers section (PRD 5.2, 5.3, 5.4): the list with the Add provider sheet
+ * over it, and one provider page per `?resource=`. The section owns the
  * topbar and the one controller; pages receive the connection they show.
  */
 export function AdminProvidersSection({
@@ -85,7 +85,7 @@ export function AdminProvidersSection({
     onNotice: feedback.reportNotice
   });
   const { connections, loaded } = controller.state;
-  const usageSources = useAdminProviderUsage(active && !adding, connections);
+  const usageSources = useAdminProviderUsage(active, connections);
   const usage = useMemo(() => deriveProviderUsage(connections, usageSources), [connections, usageSources]);
   const connection = useMemo(
     () => (resource ? connections.find(({ id }) => id === resource) ?? null : null),
@@ -97,6 +97,17 @@ export function AdminProvidersSection({
     setAdding(false);
     onSelectResource(null);
   }, [onSelectResource]);
+
+  // A created provider opens once the catalog knows it, so the page never
+  // flashes "no longer exists" between the setup and the refetch.
+  const openCreated = useCallback((connectionId: string) => {
+    void (async () => {
+      await refresh();
+      setAdding(false);
+      onSelectResource(connectionId);
+    })();
+    void onMutationCommitted?.();
+  }, [onMutationCommitted, onSelectResource, refresh]);
 
   const requestDelete = useCallback((target: AdminProviderConnection) => {
     const name = target.displayName;
@@ -138,9 +149,6 @@ export function AdminProvidersSection({
 
   const busy = controller.state.busy;
   const topbar = useMemo<AdminShellTopbar>(() => {
-    if (adding) {
-      return { title: <Crumbs current="Add provider" onBack={backToList} /> };
-    }
     if (resource && connection) {
       return {
         actions: (
@@ -196,26 +204,8 @@ export function AdminProvidersSection({
       ),
       title: "Providers"
     };
-  }, [adding, backToList, busy, connection, controller.actions, loaded, requestDelete, resource, setSettingsOpen]);
+  }, [backToList, busy, connection, controller.actions, loaded, requestDelete, resource, setSettingsOpen]);
   useAdminSectionTopbar(topbar);
-
-  if (adding) {
-    return (
-      <AdminProviderAddEntry
-        active={active}
-        connections={connections}
-        onMutationCommitted={() => {
-          void refresh();
-          return onMutationCommitted?.();
-        }}
-        onOpenConnection={(connectionId) => {
-          setAdding(false);
-          onSelectResource(connectionId);
-        }}
-        requestConfirmation={requestConfirmation}
-      />
-    );
-  }
 
   if (resource) {
     if (!connection) {
@@ -259,6 +249,12 @@ export function AdminProvidersSection({
         onOpen={(connectionId) => onSelectResource(connectionId)}
         onRetry={() => void refresh()}
         usage={usage}
+      />
+      <AdminProviderAddSheet
+        connections={connections}
+        onClose={() => setAdding(false)}
+        onCreated={openCreated}
+        open={adding}
       />
     </div>
   );

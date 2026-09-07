@@ -1,7 +1,5 @@
 import {
   ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS,
-  type AdminProviderQuickSetupClearRequest,
-  type AdminProviderQuickSetupClearResult,
   type AdminProviderQuickSetupCandidate,
   type AdminProviderQuickSetupConnectionSummary,
   type AdminProviderQuickSetupModelDisplay,
@@ -22,9 +20,7 @@ export type AdminProviderQuickSetupProvider = AdminProviderQuickSetupProviderSna
 export type AdminProviderQuickSetupSelectionResult =
   AdminProviderQuickSetupSelectionRequiredResult;
 export type AdminProviderQuickSetupSubmit = AdminProviderQuickSetupRequest;
-export type AdminProviderQuickSetupClearSubmit = AdminProviderQuickSetupClearRequest;
 export type {
-  AdminProviderQuickSetupClearResult,
   AdminProviderQuickSetupReadyResult,
   AdminProviderQuickSetupResult,
   AdminProviderQuickSetupSnapshot
@@ -51,7 +47,6 @@ const forbiddenResponseKeys = new Set([
   "body",
   "catalog",
   "ciphertext",
-  "connectionId",
   "connections",
   "credentialId",
   "credentialVersionId",
@@ -121,16 +116,21 @@ function searchReceipt(
   );
 }
 
+function models(value: unknown): value is AdminProviderQuickSetupModel[] {
+  return Array.isArray(value) && value.length > 0 && value.length <= 16 && value.every(model) &&
+    new Set(value.map((entry) => (entry as AdminProviderQuickSetupModel).displayName)).size === value.length;
+}
+
 function provider(value: unknown): AdminProviderQuickSetupProvider | null {
   if (!record(value) || !exactKeys(value, [
+    "candidateModels",
     "provider",
     "providerDisplayName",
-    "quickSetupAssigned",
     "state",
     "stateToken",
     ...(value.model === undefined ? [] : ["model"])
   ]) || !providerId(value.provider) || !safeText(value.providerDisplayName, 80) ||
-    typeof value.quickSetupAssigned !== "boolean" ||
+    !models(value.candidateModels) ||
     !safeText(value.stateToken, 512) ||
     (value.state !== "advanced_required" && value.state !== "disabled" &&
       value.state !== "needs_attention" &&
@@ -139,10 +139,10 @@ function provider(value: unknown): AdminProviderQuickSetupProvider | null {
     return null;
   }
   return {
+    candidateModels: value.candidateModels,
     ...(value.model === undefined ? {} : { model: value.model as AdminProviderQuickSetupModel }),
     provider: value.provider,
     providerDisplayName: value.providerDisplayName,
-    quickSetupAssigned: value.quickSetupAssigned,
     state: value.state,
     stateToken: value.stateToken
   };
@@ -202,6 +202,7 @@ function result(value: unknown): AdminProviderQuickSetupResult | null {
   if (!record(value) || containsForbiddenMaterial(value) || typeof value.outcome !== "string") return null;
   if (value.outcome === "ready" && exactKeys(value, [
     "checkedAt",
+    "connectionId",
     "defaultCredentialChanged",
     "defaultChanged",
     "model",
@@ -210,13 +211,10 @@ function result(value: unknown): AdminProviderQuickSetupResult | null {
     "provider",
     "providerDisplayName",
     ...(value.search === undefined ? [] : ["search"])
-  ]) && timestamp(value.checkedAt) &&
+  ]) && timestamp(value.checkedAt) && safeText(value.connectionId, 128) &&
     typeof value.defaultCredentialChanged === "boolean" &&
     typeof value.defaultChanged === "boolean" &&
-    model(value.model) && Array.isArray(value.models) && value.models.length > 0 &&
-    value.models.length <= 16 && value.models.every(model) &&
-    new Set(value.models.map((entry) => (entry as AdminProviderQuickSetupModel).displayName)).size ===
-      value.models.length &&
+    model(value.model) && models(value.models) &&
     providerId(value.provider) && safeText(value.providerDisplayName, 80) &&
     searchReceipt(value.search ?? null)) {
     return value as AdminProviderQuickSetupReadyResult;
@@ -238,18 +236,6 @@ function result(value: unknown): AdminProviderQuickSetupResult | null {
     return value as AdminProviderQuickSetupSelectionResult;
   }
   return null;
-}
-
-function clearResult(value: unknown): AdminProviderQuickSetupClearResult | null {
-  return record(value) && !containsForbiddenMaterial(value) && exactKeys(value, [
-    "credentialRetained",
-    "outcome",
-    "provider",
-    "providerDisplayName"
-  ]) && value.credentialRetained === true && value.outcome === "assignment_cleared" &&
-    providerId(value.provider) && safeText(value.providerDisplayName, 80)
-    ? value as AdminProviderQuickSetupClearResult
-    : null;
 }
 
 function errorCode(value: unknown, fallback: string): string {
@@ -304,32 +290,21 @@ export function submitAdminProviderQuickSetup(
   }, result, fetcher);
 }
 
-export function clearAdminProviderQuickSetupAssignment(
-  body: AdminProviderQuickSetupClearSubmit,
-  fetcher: Fetcher = fetch,
-  signal?: AbortSignal
-) {
-  return request({
-    body: JSON.stringify(body),
-    headers: { "content-type": "application/json" },
-    method: "DELETE",
-    signal
-  }, clearResult, fetcher);
-}
-
 export function adminProviderQuickSetupErrorMessage(
   error: AdminProviderQuickSetupClientError
 ): string {
   const messages: Record<string, string> = {
     forbidden: "Your account no longer has permission to manage providers.",
     network_error: "Could not reach the provider setup API. Try again.",
-    provider_admin_action_failed: "Provider setup could not be completed. Your existing configuration was not changed.",
+    provider_admin_action_failed: "The provider could not be added. Nothing was changed.",
+    provider_configuration_invalid: "Review the name, endpoint and timeout, then try again.",
     provider_credential_test_failed: "The provider rejected the key or its account catalog could not be reached.",
-    provider_draft_stale: "Provider settings changed in another request. Refresh and try again.",
-    provider_quick_setup_advanced_required: "This provider has configuration that must be managed in Connections.",
-    provider_quick_setup_response_invalid: "The provider setup API returned an unexpected response. Refresh and try again.",
+    provider_draft_stale: "Providers changed in another window. Close this sheet and try again.",
+    provider_quick_setup_advanced_required: "This provider's connection was changed by hand, so it cannot be set up here. Add the key on its provider page instead.",
+    provider_quick_setup_name_taken: "Another provider already has this name. Choose a different one.",
+    provider_quick_setup_response_invalid: "The provider setup API returned an unexpected response. Close this sheet and try again.",
     provider_quick_setup_selection_invalid: "That model choice is no longer available. Test the key again.",
-    provider_quick_setup_unsupported_catalog: "No supported answer model is available for this key. Continue in Connections.",
+    provider_quick_setup_unsupported_catalog: "This key has no access to a model AIQSA can set up for this provider.",
     unauthorized: "Your administrator session is no longer valid. Sign in again."
   };
   return messages[error.code] ?? messages.provider_admin_action_failed!;

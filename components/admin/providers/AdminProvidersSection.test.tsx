@@ -70,6 +70,27 @@ function mockFetch(connections: { current: AdminProviderConnection[] }, router: 
   return calls;
 }
 
+function quickSetupSnapshot() {
+  const provider = (id: string, label: string, models: string[]) => ({
+    candidateModels: models.map((displayName) => ({ displayName })),
+    provider: id,
+    providerDisplayName: label,
+    state: "not_configured",
+    stateToken: `state-${id}`
+  });
+  return {
+    configuredConnections: [],
+    providers: [
+      provider("openai", "OpenAI", ["GPT-5.6 Terra"]),
+      provider("anthropic", "Anthropic", ["Claude Opus 5"]),
+      provider("gemini", "Gemini", ["Gemini 3.6 Flash"]),
+      provider("deepseek", "DeepSeek", ["DeepSeek V4 Pro"]),
+      provider("openrouter", "OpenRouter", ["Claude Opus 4.8"])
+    ],
+    suggestedProvider: null
+  };
+}
+
 function TopbarHarness({ children }: Readonly<{ children: ReactNode }>) {
   const [topbar, setTopbar] = useState<AdminShellTopbar | null>(null);
   return (
@@ -429,7 +450,7 @@ describe("AdminProvidersSection", () => {
     expect(screen.getByRole("button", { name: "Re-check all" })).toBeEnabled();
   });
 
-  it("turns the provider off from the topbar switch and shows the Add provider entry behind the primary action", async () => {
+  it("turns the provider off from the topbar switch and opens the Add provider sheet behind the primary action", async () => {
     const calls = mockFetch(connections, ({ body, method, url }) => {
       if (method === "POST" && url === "/api/admin/providers/conn-openai/actions") {
         connections.current = connections.current.map((connection) => connection.id === "conn-openai"
@@ -437,19 +458,7 @@ describe("AdminProvidersSection", () => {
           : connection);
         return Response.json({ connections: connections.current });
       }
-      if (url === "/api/admin/providers/quick-setup") {
-        return Response.json({
-          configuredConnections: [],
-          providers: [
-            { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "s1" },
-            { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "s2" },
-            { provider: "deepseek", providerDisplayName: "DeepSeek", quickSetupAssigned: false, state: "not_configured", stateToken: "s3" },
-            { provider: "gemini", providerDisplayName: "Gemini", quickSetupAssigned: false, state: "not_configured", stateToken: "s4" },
-            { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "s5" }
-          ],
-          suggestedProvider: null
-        });
-      }
+      if (url === "/api/admin/providers/quick-setup") return Response.json(quickSetupSnapshot());
       return null;
     });
     const { view, feedback } = renderSection("conn-openai");
@@ -475,10 +484,78 @@ describe("AdminProvidersSection", () => {
     );
     await waitFor(() => expect(screen.getByRole("button", { name: "Add provider" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
-    expect(await screen.findByTestId("provider-add-entry")).toBeInTheDocument();
-    expect(screen.getByTestId("topbar-title")).toHaveTextContent("Add provider");
-    expect(await screen.findByRole("button", { name: /OpenAI Not configured/ })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "Providers" }));
-    expect(await screen.findByRole("list", { name: "Providers" })).toBeInTheDocument();
+    const sheet = await screen.findByRole("dialog", { name: "Add provider" });
+    expect(screen.getByTestId("topbar-title")).toHaveTextContent("Providers");
+    expect(within(sheet).getByTestId("provider-add-tiles").querySelectorAll("button")).toHaveLength(6);
+    // The list stays mounted (inert) behind the sheet.
+    expect(screen.getByRole("list", { hidden: true, name: "Providers" })).toBeInTheDocument();
+    fireEvent.keyDown(sheet, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add provider" })).not.toBeInTheDocument());
+  });
+
+  it("adds a provider through the sheet and opens its page once the catalog knows it, in the checking state", async () => {
+    const created = fixtureConnection({
+      checkRun: fixtureCheckRun({ credentialId: "cred-new", current: "model-opus", done: 0, id: "run-new", inFlight: ["model-opus"], total: 1 }),
+      credentials: [fixtureCredential({ id: "cred-new", label: "Primary" })],
+      defaultCredentialId: "cred-new",
+      displayName: "Anthropic",
+      family: "anthropic",
+      id: "conn-anthropic",
+      models: [fixtureModel({ connectionId: "conn-anthropic", displayName: "Claude Opus 5", id: "model-opus" })]
+    });
+    const calls = mockFetch(connections, ({ method, url }) => {
+      if (url === "/api/admin/providers/quick-setup" && method === "GET") return Response.json(quickSetupSnapshot());
+      if (url === "/api/admin/providers/quick-setup" && method === "POST") {
+        connections.current = [...connections.current, created];
+        return Response.json({
+          checkedAt: "2026-09-07T12:51:00.000Z",
+          connectionId: "conn-anthropic",
+          defaultCredentialChanged: true,
+          defaultChanged: false,
+          model: { displayName: "Claude Opus 5" },
+          models: [{ displayName: "Claude Opus 5" }],
+          outcome: "ready",
+          provider: "anthropic",
+          providerDisplayName: "Anthropic",
+          search: null
+        });
+      }
+      return null;
+    });
+    const { feedback, onSelectResource, view } = renderSection();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add provider" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
+    const sheet = await screen.findByRole("dialog", { name: "Add provider" });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Anthropic" }));
+    await within(sheet).findByText(/Claude Opus 5/);
+    fireEvent.change(within(sheet).getByLabelText("API key"), { target: { value: "sk-ant" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Test & Save" }));
+
+    await waitFor(() => expect(onSelectResource).toHaveBeenCalledWith("conn-anthropic"));
+    const catalogReads = calls.filter(({ method, url }) => method === "GET" && url === "/api/admin/providers");
+    const setupIndex = calls.findIndex(({ method, url }) => method === "POST" && url === "/api/admin/providers/quick-setup");
+    expect(calls.slice(setupIndex + 1).some(({ method, url }) => method === "GET" && url === "/api/admin/providers")).toBe(true);
+    expect(catalogReads.length).toBeGreaterThanOrEqual(2);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add provider" })).not.toBeInTheDocument());
+    expect(feedback.reportError).not.toHaveBeenCalled();
+
+    view.rerender(
+      <TopbarHarness>
+        <AdminProvidersSection
+          active
+          feedback={feedback}
+          groups={groups}
+          onNavigateSection={vi.fn()}
+          onSelectResource={onSelectResource}
+          requestConfirmation={vi.fn()}
+          resource="conn-anthropic"
+        />
+      </TopbarHarness>
+    );
+    const banner = await screen.findByTestId("provider-check-banner");
+    expect(banner).toHaveTextContent("Key Primary saved and working. Checking what each model can do — 0 of 1 done.");
+    expect(screen.getByTestId("provider-key-cred-new")).toHaveTextContent("Primary");
+    expect(document.body.textContent).not.toContain("sk-ant");
   });
 });

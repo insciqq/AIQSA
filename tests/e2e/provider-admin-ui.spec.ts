@@ -294,7 +294,7 @@ async function installQuickChatFixture(apiRoot: string): Promise<QuickChatFixtur
         draftVersion: 1,
         enabled: true,
         id: fixture.credentialId,
-        label: `Quick setup · ${fixture.credentialId}`,
+        label: "Primary",
         testedAt: checkedAt
       }
     });
@@ -523,7 +523,121 @@ async function expectReadableDetail(page: Page, detail: Locator): Promise<void> 
   expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
 }
 
-test("administrator completes the Quick direct-user picker, retry, Ready, and safe replacement journey", async ({ page }) => {
+function quickSetupSnapshot(configured: boolean) {
+  const provider = (id: string, label: string, models: string[]) => ({
+    candidateModels: models.map((displayName) => ({ displayName })),
+    provider: id,
+    providerDisplayName: label,
+    state: "not_configured",
+    stateToken: `state-${id}`
+  });
+  return {
+    configuredConnections: [],
+    providers: [
+      {
+        ...provider("openai", "OpenAI", ["GPT-5.6 Terra", "GPT-5.6 Luna", "GPT-5.6 Sol"]),
+        ...(configured ? { model: { displayName: "GPT-5.6 Sol" } } : {}),
+        state: configured ? "ready" : "not_configured",
+        stateToken: configured ? "state-openai-ready" : "state-openai-fresh"
+      },
+      provider("anthropic", "Anthropic", ["Claude Opus 5", "Claude Sonnet 5"]),
+      provider("gemini", "Gemini", ["Gemini 3.6 Flash"]),
+      provider("deepseek", "DeepSeek", ["DeepSeek V4 Pro"]),
+      provider("openrouter", "OpenRouter", ["Claude Opus 4.8"])
+    ],
+    suggestedProvider: null
+  };
+}
+
+/** A catalog row for a custom connection the mocked custom-setup just created. */
+function customConnectionFixture(input: {
+  apiRoot: string;
+  displayName: string;
+  id: string;
+  modelIds: readonly string[];
+}): AdminProviderConnection {
+  const configuration = {
+    allowPrivateNetwork: false,
+    apiRoot: input.apiRoot,
+    authenticationMode: "bearer" as const,
+    responseTimeoutSeconds: 300
+  };
+  const credentialId = `${input.id}-credential`;
+  const versionId = `${input.id}-version-1`;
+  const models = input.modelIds.map((upstreamModelId, index) => {
+    const modelConfiguration: AdminProviderModelConfiguration = {
+      adapterKind: "openai_responses_compatible",
+      answerSelectable: true,
+      capabilities: { nativePdfInput: false, nativeSearch: false, pdf: true, reasoning: false, streaming: true, vision: false },
+      defaultParams: {},
+      modelClass: "answer",
+      upstreamModelId
+    };
+    return {
+      activatedAt: now,
+      activeConfig: modelConfiguration,
+      activeVersion: 1,
+      connectionId: input.id,
+      createdAt: now,
+      displayName: upstreamModelId,
+      draftConfig: modelConfiguration,
+      draftVersion: 1,
+      enabled: true,
+      id: `${input.id}-model-${index + 1}`,
+      updatedAt: now
+    };
+  });
+  return {
+    activatedAt: now,
+    activeChecks: models.map((model) => ({
+      checkedAt: now,
+      connectionVersion: 1,
+      credentialId,
+      credentialVersionId: versionId,
+      evidence: {
+        detail: "ok",
+        method: "tiny_generation",
+        selectedProviders: [],
+        upstreamModelId: model.activeConfig.upstreamModelId
+      },
+      latestRefreshError: null,
+      modelVersion: 1,
+      providerModelId: model.id,
+      refreshFailedAt: null,
+      status: "available"
+    })),
+    activeConfig: configuration,
+    activeVersion: 1,
+    assignments: [],
+    createdAt: now,
+    credentials: [{
+      activatedAt: now,
+      activeVersion: { activatedAt: now, id: versionId, revokedAt: null, testedAt: now, version: 1 },
+      createdAt: now,
+      draftSecretConfigured: false,
+      draftVersion: 1,
+      enabled: true,
+      id: credentialId,
+      label: "Primary",
+      testedAt: now,
+      updatedAt: now
+    }],
+    defaultCredentialId: credentialId,
+    displayName: input.displayName,
+    draftChecks: [],
+    draftConfig: configuration,
+    draftVersion: 1,
+    enabled: true,
+    family: "openai_compatible",
+    id: input.id,
+    models,
+    unassignedPolicy: "use_default",
+    updatedAt: now,
+    userAssignments: []
+  };
+}
+
+test("administrator adds OpenAI through the Add provider sheet, retries a rejected key, chooses a model, and chats with it", async ({ page }) => {
   const upstream = await startLocalResponsesServer();
   const enabledMcpPreferences = await prisma.mcpUserServer.findMany({
     select: { id: true },
@@ -542,12 +656,8 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   const quickRequests: Array<{ body: Record<string, unknown>; method: string }> = [];
   const messageRequests: Record<string, unknown>[] = [];
   let releasePickerRetry!: () => void;
-  let releaseReplacement!: () => void;
   const pickerRetryCanFinish = new Promise<void>((resolve) => {
     releasePickerRetry = resolve;
-  });
-  const replacementCanFinish = new Promise<void>((resolve) => {
-    releaseReplacement = resolve;
   });
 
   try {
@@ -562,33 +672,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     const request = route.request();
     if (request.method() === "GET") {
       quickRequests.push({ body: {}, method: "GET" });
-      await route.fulfill({
-        contentType: "application/json",
-        json: {
-          configuredConnections: configured ? [{
-            activeModelCount: 3,
-            displayName: "Quick OpenAI",
-            enabled: true,
-            family: "openai",
-            id: "quick-openai-connection"
-          }] : [],
-          providers: [
-            {
-              ...(configured ? { model: { displayName: "GPT-5.6 Sol" } } : {}),
-              provider: "openai",
-              providerDisplayName: "OpenAI",
-              quickSetupAssigned: configured,
-              state: configured ? "ready" : "not_configured",
-              stateToken: configured ? "state-openai-ready" : "state-openai-fresh"
-            },
-            { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
-            { provider: "gemini", providerDisplayName: "Gemini", quickSetupAssigned: false, state: "not_configured", stateToken: "state-gemini" },
-            { provider: "deepseek", providerDisplayName: "DeepSeek", quickSetupAssigned: false, state: "not_configured", stateToken: "state-deepseek" },
-            { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openrouter" }
-          ],
-          suggestedProvider: configured ? "openai" : null
-        }
-      });
+      await route.fulfill({ contentType: "application/json", json: quickSetupSnapshot(configured) });
       return;
     }
 
@@ -597,6 +681,7 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     const postNumber = quickRequests.filter(({ method }) => method === "POST").length;
     if (postNumber === 1) {
       expect(body).toEqual({
+        connectionDisplayName: "OpenAI",
         expectedState: "state-openai-fresh",
         provider: "openai",
         secret: "e2e-quick-write-only-key"
@@ -618,54 +703,43 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
       });
       return;
     }
-    if (postNumber === 2 || postNumber === 3) {
-      expect(body).toEqual({
-        expectedState: "state-openai-picker",
-        provider: "openai",
-        secret: "e2e-quick-write-only-key",
-        selectedModel: { candidateId: "p2-o3", policyVersion: 3 }
-      });
-      if (postNumber === 2) {
-        await pickerRetryCanFinish;
-        await route.fulfill({
-          contentType: "application/json",
-          json: { error: "provider_credential_test_failed" },
-          status: 422
-        });
-        return;
-      }
-      configured = true;
-      fixtureState.current = await installQuickChatFixture(upstream.apiRoot);
+    expect(postNumber).toBeLessThanOrEqual(3);
+    expect(body).toEqual({
+      connectionDisplayName: "OpenAI",
+      expectedState: "state-openai-picker",
+      provider: "openai",
+      secret: "e2e-quick-write-only-key",
+      selectedModel: { candidateId: "p2-o3", policyVersion: 3 }
+    });
+    if (postNumber === 2) {
+      await pickerRetryCanFinish;
       await route.fulfill({
         contentType: "application/json",
-        json: {
-          checkedAt: now,
-          defaultCredentialChanged: true,
-          defaultChanged: false,
-          model: { displayName: "GPT-5.6 Sol" },
-          models: [
-            { displayName: "GPT-5.6 Terra" },
-            { displayName: "GPT-5.6 Luna" },
-            { displayName: "GPT-5.6 Sol" }
-          ],
-          outcome: "ready",
-          provider: "openai",
-          providerDisplayName: "OpenAI"
-        }
+        json: { error: "provider_credential_test_failed" },
+        status: 422
       });
       return;
     }
-    expect(postNumber).toBe(4);
-    expect(body).toEqual({
-      expectedState: "state-openai-ready",
-      provider: "openai",
-      secret: "e2e-failing-replacement-key"
-    });
-    await replacementCanFinish;
+    configured = true;
+    fixtureState.current = await installQuickChatFixture(upstream.apiRoot);
     await route.fulfill({
       contentType: "application/json",
-      json: { error: "provider_credential_test_failed" },
-      status: 422
+      json: {
+        checkedAt: now,
+        connectionId: fixtureState.current.connectionId,
+        defaultCredentialChanged: true,
+        defaultChanged: false,
+        model: { displayName: "GPT-5.6 Sol" },
+        models: [
+          { displayName: "GPT-5.6 Terra" },
+          { displayName: "GPT-5.6 Luna" },
+          { displayName: "GPT-5.6 Sol" }
+        ],
+        outcome: "ready",
+        provider: "openai",
+        providerDisplayName: "OpenAI",
+        search: null
+      }
     });
   });
 
@@ -676,106 +750,51 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   await expect(page.getByTestId("admin-topbar-title")).toHaveText("Providers");
   await expect(section.getByRole("list", { name: "Providers" })).toBeVisible();
   await page.getByRole("button", { name: "Add provider" }).click();
-  await expect(page.getByTestId("admin-topbar-title")).toContainText("Add provider");
-  const quickFeedback = section.getByTestId("provider-quick-feedback");
-  await expect(quickFeedback).toHaveAttribute("role", "status");
-  await expect(quickFeedback).toHaveText("Provider Quick setup loaded.");
-  await expect(section.getByLabel("API key")).toHaveCount(0);
-
-  await section.getByRole("button", { name: /OpenAI Not configured/ }).click();
-  await section.getByLabel("API key").fill("e2e-quick-write-only-key");
-  const keyBox = await section.getByLabel("API key").boundingBox();
-  const saveBox = await section.getByRole("button", { name: "Test & Save" }).boundingBox();
-  expect(keyBox).toBeTruthy();
-  expect(saveBox).toBeTruthy();
-  expect(saveBox!.y).toBeGreaterThanOrEqual(keyBox!.y + keyBox!.height);
+  const sheet = page.getByRole("dialog", { name: "Add provider" });
+  await expect(sheet).toBeVisible();
+  await expect(page.getByTestId("admin-topbar-title")).toHaveText("Providers");
+  await expect(sheet.getByTestId("provider-add-tiles").getByRole("button")).toHaveCount(6);
+  await expect(sheet.getByRole("button", { name: "OpenAI" })).toHaveAttribute("aria-pressed", "true");
+  await expect(sheet.getByTestId("provider-add-summary")).toContainText("GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol");
+  await expect(sheet.getByLabel("Name")).toHaveValue("OpenAI");
+  await expect(sheet.getByText("Runs a few small paid requests")).toBeVisible();
+  const keyField = sheet.getByLabel("API key");
+  await expect(keyField).toHaveAttribute("type", "password");
+  await keyField.fill("e2e-quick-write-only-key");
   await expectNoPageOverflow(page);
-  await section.getByRole("button", { name: "Test & Save" }).click();
-  await expect(section.getByText("Choose a model available to this key")).toBeVisible();
-  await expect(quickFeedback).toHaveText(
-    "OpenAI needs a model choice. Choose one to finish setup."
-  );
-  await expect(section.getByLabel("API key")).toHaveValue("e2e-quick-write-only-key");
-  await section.getByLabel("GPT-5.6 Sol").click();
-  await expect(quickFeedback).toHaveText(
-    "GPT-5.6 Sol selected. Submit again to finish setup."
-  );
-  await section.getByRole("button", { name: "Use selected model & save" }).click();
-  await expect(section.getByRole("button", { name: "Testing & saving…" })).toBeVisible();
-  await expect(quickFeedback).toHaveText("Testing and saving OpenAI.");
-  await expect(section.getByLabel("API key")).toBeDisabled();
-  await expect(section.getByLabel("GPT-5.6 Luna")).toBeDisabled();
-  await expect(section.getByLabel("GPT-5.6 Sol")).toBeDisabled();
+  await sheet.getByRole("button", { name: "Test & Save" }).click();
+
+  const picker = sheet.getByTestId("provider-add-selection");
+  await expect(picker).toContainText("Choose a model available to this key");
+  await expect(keyField).toHaveValue("e2e-quick-write-only-key");
+  await expect(sheet.getByRole("button", { name: "Test & Save" })).toBeDisabled();
+  await picker.getByLabel("GPT-5.6 Sol").check();
+  await sheet.getByRole("button", { name: "Test & Save" }).click();
+  await expect(sheet.getByRole("button", { name: "Test & Save" })).toBeDisabled();
+  await expect(keyField).toBeDisabled();
   await expectNoPageOverflow(page);
   releasePickerRetry();
-  await expect(section.getByText(
-    "The provider rejected the key or its account catalog could not be reached.",
-    { exact: true }
-  )).toBeVisible();
-  await expect(quickFeedback).toHaveAttribute("role", "status");
-  await expect(quickFeedback).toHaveAttribute("data-feedback-tone", "error");
-  await expect(quickFeedback).toContainText("OpenAI setup failed.");
-  await expect(section.getByLabel("API key")).toHaveAttribute("aria-invalid", "true");
-  await expect(section.getByLabel("API key")).toHaveAttribute(
-    "aria-errormessage",
-    "provider-quick-setup-error"
+  await expect(sheet.getByTestId("provider-add-error")).toHaveText(
+    "The provider rejected the key or its account catalog could not be reached."
   );
-  await expect(section.getByLabel("API key")).toHaveValue("e2e-quick-write-only-key");
-  await section.getByRole("button", { name: "Use selected model & save" }).click();
-  await expect(quickFeedback).toHaveAttribute("role", "status");
-  await expect(section.getByLabel("API key")).toHaveCount(0);
-  await expect(section.getByText("Ready to chat", { exact: true })).toBeVisible();
-  await expect(section.getByRole("heading", { name: "GPT-5.6 Sol" })).toBeVisible();
-  const readySummary = section.getByTestId("provider-quick-ready-summary");
-  await expect(readySummary).toContainText("API key: saved and verified.");
-  await expect(readySummary).toContainText("Prepared model: GPT-5.6 Sol.");
-  await expect(readySummary).toContainText(
-    "Available models: GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol."
-  );
-  await expect(readySummary).toContainText("Access: available to this administrator.");
-  await expect(readySummary).toContainText(
-    "Connection default credential: set to this verified key."
-  );
-  await expect(readySummary).toContainText(
-    "Default models: unchanged. Choose one explicitly from the model picker or the Default model task."
-  );
-  await expect(readySummary).not.toContainText("Default selection: updated.");
-  await expect(readySummary).not.toContainText("Run profiles filled");
-  await expect(section.getByRole("link", { name: "Start chatting" })).toHaveAttribute("href", "/");
-  await expect(quickFeedback).toHaveText("OpenAI is ready to chat with GPT-5.6 Sol.");
+  await expect(keyField).toHaveAttribute("aria-invalid", "true");
+  await expect(keyField).toHaveValue("e2e-quick-write-only-key");
+  await expect(picker.getByLabel("GPT-5.6 Sol")).toBeChecked();
+  await expect(sheet.getByRole("button", { name: "Test & Save" })).toBeEnabled();
+
+  await sheet.getByRole("button", { name: "Test & Save" }).click();
+  await expect(sheet).toHaveCount(0);
+  await expect(page).toHaveURL(/section=providers&resource=/u);
+  const installedFixture = fixtureState.current;
+  if (!installedFixture) throw new Error("Quick setup fixture was not installed");
+  await expect(page.getByTestId("admin-topbar-title")).toContainText("OpenAI");
+  await expect(section.getByTestId("provider-page-status")).toContainText("All keys working · 1 model on");
+  const primaryKey = section.getByTestId(`provider-key-${installedFixture.credentialId}`);
+  await expect(primaryKey).toContainText("Primary");
+  await expect(primaryKey).toContainText("Default key");
   await expect(section.getByText("e2e-quick-write-only-key")).toHaveCount(0);
-  await expect(section.getByRole("heading", { name: "Configured connections" })).toBeVisible();
-  await expect(section.getByTestId("provider-configured-connection-quick-openai-connection"))
-    .toContainText("Quick OpenAI");
-  await expect(section.getByTestId("provider-configured-connection-quick-openai-connection"))
-    .toContainText("OpenAI · 3 active models");
-
-  await expect(section.getByRole("button", { name: /OpenAI Ready/ })).toBeVisible();
-  await section.getByRole("button", { name: "Replace API key" }).click();
-  await expect(section.getByLabel("API key")).toHaveValue("");
-  await section.getByLabel("API key").fill("e2e-failing-replacement-key");
-  await section.getByRole("button", { name: "Test & Save" }).click();
-  await expect(section.getByRole("button", { name: "Testing & saving…" })).toBeVisible();
-  await expect(section.getByText("Ready to chat", { exact: true })).toBeVisible();
-  await expect(section.getByLabel("API key")).toBeDisabled();
-  await expectNoPageOverflow(page);
-  releaseReplacement();
-  await expect(section.getByText(
-    "The provider rejected the key or its account catalog could not be reached.",
-    { exact: true }
-  )).toBeVisible();
-  await expect(quickFeedback).toHaveAttribute("role", "status");
-  await expect(quickFeedback).toHaveAttribute("data-feedback-tone", "error");
-  await expect(section.getByLabel("API key")).toHaveAttribute("aria-invalid", "true");
-  await expect(section.getByText("Ready to chat", { exact: true })).toBeVisible();
-  await expect(section.getByLabel("API key")).toHaveValue("e2e-failing-replacement-key");
-  await section.getByRole("button", { name: "Cancel replacement" }).click();
-  await section.getByRole("button", { name: "Replace API key" }).click();
-  await expect(section.getByLabel("API key")).toHaveValue("");
-  await section.getByRole("button", { name: "Cancel replacement" }).click();
-
-  expect(quickRequests.filter(({ method }) => method === "POST")).toHaveLength(4);
-  expect(quickRequests.filter(({ method }) => method === "GET").length).toBeGreaterThanOrEqual(2);
+  expect(quickRequests.filter(({ method }) => method === "POST")).toHaveLength(3);
+  expect(quickRequests.filter(({ method }) => method === "GET").length).toBeGreaterThanOrEqual(1);
 
   for (const viewport of [
     { height: 900, width: 1440 },
@@ -784,26 +803,34 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
     { height: 390, width: 844 }
   ]) {
     await page.setViewportSize(viewport);
-    await section.getByRole("link", { name: "Start chatting" }).scrollIntoViewIfNeeded();
-    await expect(section.getByRole("link", { name: "Start chatting" })).toBeVisible();
+    await expect(section.getByTestId("provider-page")).toBeVisible();
     await expect(page.getByTestId("admin-topbar-title").getByRole("link", { name: "Providers" })).toBeVisible();
     await expectNoPageOverflow(page);
-    const columns = await section.getByTestId("provider-quick-choice-strip").evaluate((element) =>
+  }
+  await page.getByTestId("admin-topbar-title").getByRole("link", { name: "Providers" }).click();
+  await expect(section.getByRole("list", { name: "Providers" })).toBeVisible();
+  for (const viewport of [{ height: 900, width: 1440 }, { height: 844, width: 390 }]) {
+    await page.setViewportSize(viewport);
+    await page.getByRole("button", { name: "Add provider" }).click();
+    const reopened = page.getByRole("dialog", { name: "Add provider" });
+    await expect(reopened.getByTestId("provider-add-tiles").getByRole("button")).toHaveCount(6);
+    const columns = await reopened.getByTestId("provider-add-tiles").evaluate((element) =>
       getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length
     );
-    expect(columns).toBe(viewport.width < 640 ? 2 : viewport.width < 1024 ? 3 : 6);
+    expect(columns).toBe(viewport.width < 640 ? 2 : 3);
+    await expectNoPageOverflow(page);
+    await page.keyboard.press("Escape");
+    await expect(reopened).toHaveCount(0);
   }
 
   const catalogResponse = page.waitForResponse((response) =>
     response.request().method() === "GET" &&
     new URL(response.url()).pathname === "/api/me/catalog"
   );
-  await section.getByRole("link", { name: "Start chatting" }).click();
+  await page.goto("/");
   const realCatalogResponse = await catalogResponse;
   expect(realCatalogResponse.ok()).toBe(true);
   await expect(page).toHaveURL(/\/$/);
-  const installedFixture = fixtureState.current;
-  if (!installedFixture) throw new Error("Quick setup fixture was not installed");
   await expect(prisma.userSettings.findUniqueOrThrow({
     select: { defaultProviderModelId: true },
     where: { userId: installedFixture.userId }
@@ -928,7 +955,6 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   });
   } finally {
     releasePickerRetry();
-    releaseReplacement();
     try {
       if (fixtureState.current) {
         await cleanupQuickChatFixture(fixtureState.current, trackedChatIds, trackedRunIds);
@@ -948,65 +974,50 @@ test("administrator completes the Quick direct-user picker, retry, Ready, and sa
   }
 });
 
-test("administrator discovers and configures a Custom compatible provider on wide and compact screens", async ({ page }) => {
+test("administrator discovers and configures a Custom compatible provider through the sheet on wide and compact screens", async ({ page }) => {
   const discovered: Record<string, unknown>[] = [];
   const submitted: Record<string, unknown>[] = [];
-  let receipt = 0;
+  const createdConnections: AdminProviderConnection[] = [];
 
+  await page.route("**/api/admin/providers", async (route) => {
+    expect(route.request().method()).toBe("GET");
+    await route.fulfill({ contentType: "application/json", json: { connections: createdConnections } });
+  });
   await page.route("**/api/admin/providers/quick-setup", async (route) => {
     expect(route.request().method()).toBe("GET");
-    await route.fulfill({
-      contentType: "application/json",
-      json: {
-        configuredConnections: [{
-          activeModelCount: 2,
-          displayName: "Existing Compatible",
-          enabled: true,
-          family: "openai_compatible",
-          id: "existing-compatible"
-        }],
-        providers: [
-          { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
-          { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
-          { provider: "gemini", providerDisplayName: "Gemini", quickSetupAssigned: false, state: "not_configured", stateToken: "state-gemini" },
-          { provider: "deepseek", providerDisplayName: "DeepSeek", quickSetupAssigned: false, state: "not_configured", stateToken: "state-deepseek" },
-          { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openrouter" }
-        ],
-        suggestedProvider: null
-      }
-    });
+    await route.fulfill({ contentType: "application/json", json: quickSetupSnapshot(false) });
   });
   await page.route("**/api/admin/providers/custom-setup", async (route) => {
     expect(route.request().method()).toBe("POST");
     const body = route.request().postDataJSON() as Record<string, unknown>;
     submitted.push(body);
-    receipt += 1;
+    const receipt = submitted.length;
     const selectedModelIds = Array.isArray(body.modelIds)
       ? body.modelIds.filter((value): value is string => typeof value === "string")
       : [];
-    const readyModels = selectedModelIds.map((modelDisplayName, index) => ({
-      modelDisplayName,
-      providerModelId: `custom-model-${receipt}-${index + 1}`
-    }));
+    const connection = customConnectionFixture({
+      apiRoot: String(body.apiRoot),
+      displayName: String(body.connectionDisplayName),
+      id: `custom-connection-${receipt}`,
+      modelIds: selectedModelIds
+    });
+    createdConnections.push(connection);
     await route.fulfill({
       contentType: "application/json",
       json: {
         authenticationMode: "bearer",
         checkedAt: now,
-        connectionDisplayName: `Fixture Compatible ${receipt}`,
-        connectionId: `custom-connection-${receipt}`,
+        connectionDisplayName: connection.displayName,
+        connectionId: connection.id,
         defaultChanged: receipt === 1,
-        modelDisplayName: readyModels[0]?.modelDisplayName ?? `Fixture Model ${receipt}`,
-        models: readyModels.length ? readyModels : [{
-          modelDisplayName: `Fixture Model ${receipt}`,
-          providerModelId: `custom-model-${receipt}`
-        }],
+        modelDisplayName: connection.models[0]!.displayName,
+        models: connection.models.map((model) => ({
+          modelDisplayName: model.displayName,
+          providerModelId: model.id
+        })),
         outcome: "ready",
-        providerModelId: readyModels[0]?.providerModelId ?? `custom-model-${receipt}`,
-        search: {
-          displayName: `Fixture Compatible ${receipt} Search`,
-          status: "ready"
-        }
+        providerModelId: connection.models[0]!.id,
+        search: null
       }
     });
   });
@@ -1034,67 +1045,53 @@ test("administrator discovers and configures a Custom compatible provider on wid
   await signInWithLocalToken(page);
   await page.goto("/admin?section=providers");
   const section = page.getByTestId("admin-section-providers");
-  await page.getByRole("button", { name: "Add provider" }).click();
-  await expect(section.getByRole("button", { name: /Custom 1 configured/ })).toBeVisible();
-  await expect(section.getByTestId("provider-configured-connection-existing-compatible"))
-    .toContainText("OpenAI-compatible · 2 active models");
 
-  for (const viewport of [
+  for (const [index, viewport] of [
     { height: 900, width: 1440 },
     { height: 844, width: 390 }
-  ]) {
+  ].entries()) {
     await page.setViewportSize(viewport);
-    await expect(page.getByTestId("admin-topbar-title")).toContainText("Add provider");
-    // Five native providers plus the Custom (OpenAI-compatible) entry.
-    await expect(section.getByTestId("provider-quick-choice-strip").getByRole("button"))
-      .toHaveCount(6);
-    await section.getByRole("button", { name: /Custom 1 configured/ }).click();
-    await expect(section.getByRole("heading", { name: "Connect a custom endpoint" })).toBeVisible();
-    await expect(section.getByLabel("API root")).toBeVisible();
-    await expect(section.getByLabel("Model ID")).toBeVisible();
-    await expect(section.getByLabel("API key")).toHaveAttribute("type", "password");
-    await expect(section.getByLabel("Context window")).toBeHidden();
+    await expect(section.getByRole("list", { name: "Providers" })).toBeVisible();
+    await page.getByRole("button", { name: "Add provider" }).click();
+    const sheet = page.getByRole("dialog", { name: "Add provider" });
+    await expect(sheet.getByTestId("provider-add-tiles").getByRole("button")).toHaveCount(6);
+    await sheet.getByRole("button", { name: /^Custom/ }).click();
+    await expect(sheet.getByLabel("Base URL")).toBeVisible();
+    await expect(sheet.getByLabel("API style")).toHaveValue("chat_completions");
+    await expect(sheet.getByLabel("API key")).toHaveAttribute("type", "password");
+    await expect(sheet.getByRole("button", { name: "Test & Save" })).toBeDisabled();
+    await expect(sheet.getByText("A few small paid requests per model")).toBeVisible();
     await expectNoPageOverflow(page);
 
     const key = `e2e-custom-write-only-key-${viewport.width}`;
-    await section.getByLabel("API root").fill("https://llm.fixture.invalid/v1");
-    await section.getByLabel("API key").fill(key);
-    await section.getByRole("button", { name: "Discover models" }).click();
-    await section.getByRole("button", { name: "Add models reported by this endpoint (2)" }).click();
-    await section.getByRole("option", { name: new RegExp(`fixture/model-${viewport.width}`) })
-      .click();
-    await section.getByRole("button", { name: "Add models reported by this endpoint (2)" }).click();
-    await section.getByRole("option", { name: /fixture\/alternate/ }).click();
+    await sheet.getByLabel("Base URL").fill("https://llm.fixture.invalid/v1");
+    await expect(sheet.getByLabel("Name")).toHaveValue("Custom · llm.fixture.invalid");
+    await sheet.getByLabel("Name").fill(`Fixture Compatible ${viewport.width}`);
+    await sheet.getByLabel("API key").fill(key);
+    await sheet.getByLabel("API style").selectOption("responses");
+    await sheet.getByRole("button", { name: "Find models" }).click();
+    await expect(sheet.getByText("Models found on this endpoint · 2")).toBeVisible();
+    const models = sheet.getByTestId("provider-add-models");
+    await models.getByLabel(new RegExp(`fixture/model-${viewport.width}`)).check();
+    await expect(sheet.getByRole("button", { name: "Test & Save 1 model" })).toBeEnabled();
+    await models.getByLabel(/fixture\/alternate/).check();
+    await expect(sheet.getByRole("button", { name: "Look again" })).toBeVisible();
 
-    await section.getByText("Advanced settings", { exact: true }).click();
-    await expect(section.getByLabel("Context window")).toBeVisible();
-    await expect(section.getByLabel("Default max output")).toBeVisible();
-    await expect(section.getByLabel("Reasoning controls"))
-      .toHaveValue("automatic");
-    await expect(section.getByText(/Effort: none, low, medium, high, xhigh, max; default medium/))
-      .toBeVisible();
-    await section.getByLabel("Hosted web search").check();
-    await section.getByLabel("Image generation (future workflows)").check();
-    await expect(section.getByLabel(/^Reasoning effort field/))
-      .toHaveValue("reasoning.effort");
-    await expect(section.getByLabel(/^Reasoning mode field \(optional\)/))
-      .toHaveValue("reasoning.mode");
-    await expect(section.getByText(/Image support is recorded now but is not yet runnable/))
-      .toBeVisible();
-    await expect(section.getByText("https://llm.fixture.invalid/v1/responses"))
-      .toBeVisible();
+    await sheet.getByText("Advanced · timeout, private network, reasoning mapping").click();
+    await expect(sheet.getByLabel("Reasoning")).toHaveValue("automatic");
+    await expect(sheet.getByText(/Effort: none, low, medium, high, xhigh, max; default medium/)).toBeVisible();
+    await expect(sheet.getByLabel("Reasoning effort field")).toHaveValue("reasoning.effort");
+    await expect(sheet.getByLabel("Reasoning mode field (optional)")).toHaveValue("reasoning.mode");
     await expectNoPageOverflow(page);
 
-    await section.getByRole("button", { name: "Test & Save" }).click();
-    await expect(section.getByText("Ready to chat", { exact: true })).toBeVisible();
-    const ready = section.getByTestId("provider-custom-ready-summary");
-    await expect(ready).toContainText("API key saved and verified.");
-    await expect(ready).toContainText("assigned directly to this administrator");
+    await sheet.getByRole("button", { name: "Test & Save 2 models" }).click();
+    await expect(sheet).toHaveCount(0);
+    await expect(page).toHaveURL(new RegExp(`section=providers&resource=custom-connection-${index + 1}`, "u"));
+    await expect(page.getByTestId("admin-topbar-title")).toContainText(`Fixture Compatible ${viewport.width}`);
+    await expect(section.getByTestId("provider-page-status")).toContainText("All keys working · 2 models on");
     await expect(section.getByText(key)).toHaveCount(0);
     await expectNoPageOverflow(page);
-
-    await section.getByRole("button", { name: "Add another provider" }).click();
-    await expect(section.getByRole("button", { name: /Custom 1 configured/ })).toBeVisible();
+    await page.getByTestId("admin-topbar-title").getByRole("link", { name: "Providers" }).click();
   }
 
   expect(discovered).toHaveLength(2);
@@ -1109,6 +1106,7 @@ test("administrator discovers and configures a Custom compatible provider on wid
   }
   expect(submitted).toHaveLength(2);
   for (const [index, body] of submitted.entries()) {
+    const width = index === 0 ? 1440 : 390;
     expect(body).toMatchObject({
       allowPrivateNetwork: false,
       apiRoot: "https://llm.fixture.invalid/v1",
@@ -1116,24 +1114,20 @@ test("administrator discovers and configures a Custom compatible provider on wid
       capabilities: expect.objectContaining({
         defaultReasoningEffort: "medium",
         defaultReasoningMode: "standard",
-        nativeImageGeneration: true,
-        nativeSearch: true,
         reasoning: true,
         reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
         reasoningModes: ["standard", "pro"]
       }),
       confirmPaidRequest: true,
-      modelIds: [
-        `fixture/model-${index === 0 ? 1440 : 390}`,
-        "fixture/alternate"
-      ],
+      connectionDisplayName: `Fixture Compatible ${width}`,
+      modelIds: [`fixture/model-${width}`, "fixture/alternate"],
       protocol: "responses",
       reasoningRequestMapping: {
         effortPath: "reasoning.effort",
         modePath: "reasoning.mode"
       },
       responseTimeoutSeconds: 300,
-      secret: `e2e-custom-write-only-key-${index === 0 ? 1440 : 390}`
+      secret: `e2e-custom-write-only-key-${width}`
     });
   }
 });
