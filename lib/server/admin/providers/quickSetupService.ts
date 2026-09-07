@@ -397,6 +397,11 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           signal: inputValue.signal
         });
       }
+      // The canonical path was guarded above; this only narrows the type for the commit plan.
+      const mode = inspection.mode;
+      if (mode === null) {
+        throw new AdminProviderQuickSetupServiceError("provider_quick_setup_advanced_required");
+      }
 
       const existingCandidate = replacementCandidate(inspection);
       if (inspection.mode === "replacement" && !existingCandidate) {
@@ -626,7 +631,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           id: idFactory(),
           modelId
         })),
-        mode: inspection.mode,
+        mode,
         modelChecks,
         now: now(),
         preservedModels: inspection.preservedModels,
