@@ -341,6 +341,10 @@ export function providerHeaderStatus(connection: AdminProviderConnection, now = 
   }
   const on = connection.models.filter((model) => model.enabled).length;
   parts.push(on === 0 ? "No models on" : `${on} model${on === 1 ? "" : "s"} on`);
+  if (connection.checkRun?.state === "running" && connection.checkRun.reason !== "model") {
+    parts.push("checking models");
+    return parts.join(" · ");
+  }
   const checked = [
     ...connection.activeChecks.map((check) => check.checkedAt),
     ...connection.credentials.flatMap((credential) =>
@@ -348,11 +352,4 @@ export function providerHeaderStatus(connection: AdminProviderConnection, now = 
   ].filter((iso) => Number.isFinite(Date.parse(iso))).sort().at(-1);
   if (checked) parts.push(`last checked ${formatCheckedAt(checked, now)}`);
   return parts.join(" · ");
-}
-
-/** Whether the bridge Models block still holds changes the server has not applied. */
-export function hasUnappliedModelChanges(connection: AdminProviderConnection): boolean {
-  return connection.models.some((model) =>
-    model.enabled && (model.activeConfig === null || model.draftVersion !== model.activeVersion)
-  );
 }

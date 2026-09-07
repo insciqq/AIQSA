@@ -239,9 +239,11 @@ export function AdminProvidersSection({
         groups={groups}
         onCloseSettings={() => setSettingsOpen(false)}
         onError={feedback.reportError}
+        onNotice={feedback.reportNotice}
         onOpenSettings={() => setSettingsOpen(true)}
         requestConfirmation={requestConfirmation}
         settingsOpen={settingsOpen}
+        usageSources={usageSources}
       />
     );
   }

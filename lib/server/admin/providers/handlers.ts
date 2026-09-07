@@ -52,6 +52,13 @@ function version(value: unknown): number | null {
     : null;
 }
 
+function optionalIdList(value: unknown, maxLength = 256): string[] | null | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > maxLength) return null;
+  const ids = value.map((entry) => text(entry, 128));
+  return ids.every((entry): entry is string => entry !== null) ? ids : null;
+}
+
 function family(value: unknown): AdminProviderFamily | null {
   return value === "anthropic" || value === "deepseek" || value === "gemini" || value === "openai" ||
     value === "openai_compatible" || value === "openrouter"
@@ -92,6 +99,7 @@ async function requireAdmin(request: Request, deps: AdminProviderHandlerDeps): P
 function serviceError(error: AdminProviderServiceError): Response {
   const notFound = new Set([
     "provider_active_tuple_not_found",
+    "provider_check_run_not_found",
     "provider_connection_not_found",
     "provider_credential_not_found",
     "provider_group_not_found",
@@ -350,7 +358,45 @@ export function createAdminProviderConnectionActionHandler(deps: AdminProviderHa
         });
         return catalog(deps.service);
       }
+      if (action === "check_models") {
+        // Background capability checks (PRD B3): the response is the catalog
+        // with the run in progress; progress arrives through the catalog or
+        // `GET …/actions?run=<id>`.
+        const credentialId = text(body.credentialId, 128);
+        const modelIds = optionalIdList(body.modelIds);
+        if (!credentialId || modelIds === null) return errorJson("provider_action_invalid", 400);
+        await deps.service.startCheckRun({
+          connectionId,
+          credentialId,
+          ...(modelIds ? { modelIds } : {}),
+          reason: "requested"
+        });
+        return catalog(deps.service);
+      }
+      if (action === "cancel_check") {
+        const runId = text(body.runId, 128);
+        if (!runId) return errorJson("provider_action_invalid", 400);
+        deps.service.cancelCheckRun({ connectionId, runId });
+        return catalog(deps.service);
+      }
       return errorJson("provider_action_invalid", 400);
+    });
+  };
+}
+
+/** `GET …/actions?run=<id>`: one background check's progress, content-free. */
+export function createAdminProviderCheckRunHandler(deps: AdminProviderHandlerDeps) {
+  return async function GET(request: Request, context: ConnectionContext): Promise<Response> {
+    const authError = await requireAdmin(request, deps);
+    if (authError) return authError;
+    const runId = text(new URL(request.url).searchParams.get("run"), 128);
+    if (!runId) return errorJson("provider_action_invalid", 400);
+    const { connectionId } = await context.params;
+    return safely(async () => {
+      if (!await connectionExists(deps.service, connectionId)) {
+        return errorJson("provider_connection_not_found", 404);
+      }
+      return Response.json({ run: deps.service.checkRun({ connectionId, runId }) });
     });
   };
 }
@@ -481,16 +527,22 @@ export function createAdminProviderModelCreateHandler(deps: AdminProviderHandler
     const [body, bodyError] = await readBody(request);
     if (bodyError) return bodyError;
     const displayName = text(body?.displayName, 160);
-    if (!body || !displayName || !isRecord(body.configuration)) {
+    if (!body || !displayName || !isRecord(body.configuration) ||
+      (body.activate !== undefined && typeof body.activate !== "boolean")) {
       return errorJson("provider_configuration_invalid", 400);
     }
     const { connectionId } = await context.params;
     return safely(async () => {
-      await deps.service.createModelDraft({
+      const { id } = await deps.service.createModelDraft({
         configuration: body.configuration as AdminProviderModelConfiguration,
         connectionId,
         displayName
       });
+      // `Test & Save` (PRD B2): the saved model goes live and is checked with
+      // the default key in the same request.
+      if (body.activate === true) {
+        await deps.service.activateModel({ connectionId, modelId: id });
+      }
       return catalog(deps.service, 201);
     });
   };
@@ -513,7 +565,8 @@ export function createAdminProviderModelUpdateHandler(deps: AdminProviderHandler
       if (action === "update") {
         const displayName = text(body.displayName, 160);
         const expectedDraftVersion = version(body.expectedDraftVersion);
-        if (!displayName || expectedDraftVersion === null || !isRecord(body.configuration)) {
+        if (!displayName || expectedDraftVersion === null || !isRecord(body.configuration) ||
+          (body.activate !== undefined && typeof body.activate !== "boolean")) {
           return errorJson("provider_configuration_invalid", 400);
         }
         await deps.service.updateModelDraft({
@@ -522,6 +575,9 @@ export function createAdminProviderModelUpdateHandler(deps: AdminProviderHandler
           expectedDraftVersion,
           modelId
         });
+        if (body.activate === true) {
+          await deps.service.activateModel({ connectionId, modelId });
+        }
       } else if (action === "enable" || action === "disable") {
         await deps.service[action]("model", modelId);
       } else {
