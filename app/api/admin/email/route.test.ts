@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import type { AdminEmailState } from "@/lib/contracts/email";
+import type { AdminEmailConfiguration, AdminEmailState } from "@/lib/contracts/email";
 
 const mocks = vi.hoisted(() => ({
   read: vi.fn(),
@@ -56,7 +56,7 @@ const testAndActivateBody = {
       host: "smtp.example.com",
       port: 465,
       transport: "implicit_tls"
-    },
+    } satisfies AdminEmailConfiguration,
     expectedDraftVersion: 0,
     passwordAction: { confirm: true, kind: "clear" }
   },

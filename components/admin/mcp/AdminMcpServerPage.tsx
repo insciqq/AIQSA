@@ -161,7 +161,7 @@ function AuthorizationCard({ controller, server }: Readonly<{ controller: AdminM
   const reconnect = connection?.state === "reauthorization_required";
   const disconnecting = connection?.state === "disconnecting";
   return (
-    <section aria-labelledby="mcp-authorization-heading" className="grid gap-2.5">
+    <section aria-labelledby="mcp-authorization-heading" className="grid grid-cols-[minmax(0,1fr)] gap-2.5">
       <h3 className={sectionHeadingClass} id="mcp-authorization-heading">Authorization</h3>
       <div className={cardClass}>
         <div className="grid gap-3 px-5 py-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
@@ -221,7 +221,7 @@ function ToolsSection({ controller, server }: Readonly<{ controller: AdminMcpCon
   });
 
   return (
-    <section aria-labelledby="mcp-tools-heading" className="grid gap-2.5">
+    <section aria-labelledby="mcp-tools-heading" className="grid grid-cols-[minmax(0,1fr)] gap-2.5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h3 className={sectionHeadingClass} id="mcp-tools-heading">Tools</h3>
         <span className="text-xs text-ink-muted" data-testid="mcp-tools-summary">
@@ -381,7 +381,7 @@ export function AdminMcpServerPage({
 
       <ToolsSection controller={controller} server={server} />
 
-      <section aria-labelledby="mcp-access-heading" className="grid gap-2.5">
+      <section aria-labelledby="mcp-access-heading" className="grid grid-cols-[minmax(0,1fr)] gap-2.5">
         <h3 className={sectionHeadingClass} id="mcp-access-heading">Access</h3>
         <p className="text-xs leading-5 text-ink-muted">
           Groups and people who may use this server in chats. Full access groups are always included; personal fields are granted per person.
