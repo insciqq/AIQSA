@@ -485,6 +485,28 @@ function stubCompactViewport(width = 800) {
   }));
 }
 
+const emptyEmail: AdminEmailState = {
+  active: {
+    activatedAt: null,
+    activatedByUserId: null,
+    configuration: null,
+    enabled: false,
+    passwordConfigured: false,
+    version: 0
+  },
+  configurationUpdatedAt: null,
+  configurationUpdatedByUserId: null,
+  draft: { configuration: null, passwordConfigured: false, test: null, version: 0 },
+  health: {
+    activeVersion: null,
+    degraded: false,
+    lastAcceptedAt: null,
+    lastAttemptAt: null,
+    lastFailureAt: null,
+    lastFailureCode: null
+  }
+};
+
 function mockAdminFetch(attention: AdminAttention = emptyAttention) {
   const posts: Record<string, unknown>[] = [];
   const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -504,18 +526,8 @@ function mockAdminFetch(attention: AdminAttention = emptyAttention) {
       return dashboardResponse({ error: "unavailable" }, 503);
     }
 
-    if (url === "/api/admin/providers/quick-setup" && (init?.method ?? "GET") === "GET") {
-      return dashboardResponse({
-        configuredConnections: [],
-        providers: [
-          { provider: "openai", providerDisplayName: "OpenAI", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openai" },
-          { provider: "anthropic", providerDisplayName: "Anthropic", quickSetupAssigned: false, state: "not_configured", stateToken: "state-anthropic" },
-          { provider: "deepseek", providerDisplayName: "DeepSeek", quickSetupAssigned: false, state: "not_configured", stateToken: "state-deepseek" },
-          { provider: "gemini", providerDisplayName: "Gemini", quickSetupAssigned: false, state: "not_configured", stateToken: "state-gemini" },
-          { provider: "openrouter", providerDisplayName: "OpenRouter", quickSetupAssigned: false, state: "not_configured", stateToken: "state-openrouter" }
-        ],
-        suggestedProvider: null
-      });
+    if (url === "/api/admin/email" && (init?.method ?? "GET") === "GET") {
+      return dashboardResponse({ email: emptyEmail });
     }
 
     if (url === "/api/admin/action" && init?.body && typeof init.body === "string") {
@@ -861,14 +873,12 @@ describe("AdminPanel", () => {
   it("guards dirty section and drawer navigation while cancel preserves exact state and focus", async () => {
     stubCompactViewport();
     mockAdminFetch();
-    window.history.replaceState(null, "", "/admin?section=providers");
+    window.history.replaceState(null, "", "/admin?section=email");
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    const providers = await screen.findByTestId("admin-section-providers");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Add provider" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
-    fireEvent.click(await within(providers).findByRole("button", { name: /OpenAI Not configured/ }));
-    const name = within(providers).getByLabelText(/^API key/);
+    const emailSection = await screen.findByTestId("admin-section-email");
+    const form = await within(emailSection).findByRole("form", { name: "Email settings" });
+    const name = within(form).getByLabelText("Host");
     fireEvent.change(name, { target: { value: "draft-secret" } });
     name.focus();
     const originalPath = `${window.location.pathname}${window.location.search}`;
@@ -885,7 +895,7 @@ describe("AdminPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(name).toHaveFocus());
     expect(name).toHaveValue("draft-secret");
-    expect(screen.getByTestId("admin-section-providers")).toBeVisible();
+    expect(screen.getByTestId("admin-section-email")).toBeVisible();
 
     const returnToChat = screen.getAllByRole("link", { name: "Chats" })[0]!;
     returnToChat.focus();
@@ -897,7 +907,7 @@ describe("AdminPanel", () => {
     expect(name).toHaveValue("draft-secret");
 
     fireEvent.click(screen.getByRole("link", { name: "Usage" }));
-    expect(screen.getByTestId("admin-section-providers")).toBeVisible();
+    expect(screen.getByTestId("admin-section-email")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
     await screen.findByTestId("admin-section-usage");
     expect(window.location.search).toBe("?section=usage");
@@ -927,23 +937,21 @@ describe("AdminPanel", () => {
     fireEvent.click(within(await screen.findByTestId("admin-signup-rules-discard")).getByRole("button", { name: "Confirm discard changes" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sign-up rules" })).not.toBeInTheDocument());
   });
-  it("guards provider setup secrets before leaving the Providers section", async () => {
+  it("guards unsaved section edits before leaving the section", async () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(screen.getByRole("link", { name: "Providers" }));
-    const providers = await screen.findByTestId("admin-section-providers");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Add provider" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
-    fireEvent.click(await within(providers).findByRole("button", { name: /OpenAI Not configured/ }));
-    const secret = within(providers).getByLabelText(/^API key/);
+    fireEvent.click(screen.getByRole("link", { name: "Email" }));
+    const emailSection = await screen.findByTestId("admin-section-email");
+    const form = await within(emailSection).findByRole("form", { name: "Email settings" });
+    const secret = within(form).getByLabelText("Host");
     fireEvent.change(secret, { target: { value: "provider-secret-draft" } });
 
     fireEvent.click(screen.getByRole("link", { name: "Usage" }));
     expect(screen.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
     expect(secret).toHaveValue("provider-secret-draft");
-    expect(screen.getByTestId("admin-section-providers")).toBeVisible();
+    expect(screen.getByTestId("admin-section-email")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(secret).toHaveValue("provider-secret-draft");
 
@@ -960,21 +968,19 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(screen.getByRole("link", { name: "Providers" }));
-    const providers = await screen.findByTestId("admin-section-providers");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Add provider" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
-    fireEvent.click(await within(providers).findByRole("button", { name: /OpenAI Not configured/ }));
-    fireEvent.change(within(providers).getByLabelText(/^API key/), {
+    fireEvent.click(screen.getByRole("link", { name: "Email" }));
+    const emailSection = await screen.findByTestId("admin-section-email");
+    const form = await within(emailSection).findByRole("form", { name: "Email settings" });
+    fireEvent.change(within(form).getByLabelText("Host"), {
       target: { value: "history-secret" }
     });
 
     act(() => window.history.back());
     await screen.findByRole("heading", { name: "Discard unsaved changes?" });
-    expect(window.location.search).toBe("?section=providers");
-    expect(within(providers).getByLabelText(/^API key/)).toHaveValue("history-secret");
+    expect(window.location.search).toBe("?section=email");
+    expect(within(form).getByLabelText("Host")).toHaveValue("history-secret");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(window.location.search).toBe("?section=providers");
+    expect(window.location.search).toBe("?section=email");
 
     act(() => window.history.back());
     await screen.findByRole("heading", { name: "Discard unsaved changes?" });

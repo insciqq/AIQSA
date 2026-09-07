@@ -100,19 +100,23 @@ async function main() {
     stage = "quick_setup";
     await page.goto("/admin?section=providers", { waitUntil: "domcontentloaded" });
     const section = page.getByTestId("admin-section-providers");
-    await section.getByRole("heading", { exact: true, name: "Providers" }).last()
+    await section.getByRole("list", { name: "Providers" })
       .waitFor({ state: "visible", timeout: 60_000 });
-    await section.getByRole("button", { name: /DeepSeek Not configured/u }).click();
-    await section.getByLabel("API key").fill(apiKey);
-    await section.getByRole("button", { name: "Test & Save" }).click();
-    await section.getByText("Ready to chat", { exact: true })
-      .waitFor({ state: "visible", timeout: 180_000 });
-    const readySummary = await section.getByTestId("provider-quick-ready-summary").textContent();
+    await page.getByRole("button", { name: "Add provider" }).click();
+    const sheet = page.getByRole("dialog", { name: "Add provider" });
+    await sheet.getByRole("button", { name: "DeepSeek" }).click();
+    await sheet.getByLabel("API key").fill(apiKey);
+    await sheet.getByRole("button", { name: "Test & Save" }).click();
+    // The sheet hands over to the new provider page in its checking state.
+    await section.getByTestId("provider-page").waitFor({ state: "visible", timeout: 180_000 });
+    const modelsTable = section.getByTestId("provider-models");
+    await modelsTable.waitFor({ state: "visible", timeout: 60_000 });
+    const modelsText = await modelsTable.textContent();
     checks.quickSetup = expectedModels.length === 3 &&
-      readySummary?.includes("DeepSeek V4 Pro") &&
-      readySummary.includes("DeepSeek V4 Flash") &&
-      readySummary.includes("DeepSeek V4 Flash Vision (Experimental)") &&
-      readySummary.includes("DeepSeek Search: ready");
+      modelsText?.includes("DeepSeek V4 Pro") &&
+      modelsText.includes("DeepSeek V4 Flash") &&
+      modelsText.includes("DeepSeek V4 Flash Vision (Experimental)") &&
+      (await section.getByTestId("provider-page-status").textContent())?.includes("All keys working");
     ensure(checks.quickSetup, "deepseek_browser_quick_setup_contract_invalid");
     const visibleText = await section.textContent();
     ensure(!visibleText?.includes(apiKey), "deepseek_browser_secret_visible");
@@ -134,7 +138,7 @@ async function main() {
     ensure(checks.catalog, "deepseek_browser_catalog_contract_invalid");
 
     stage = "model_selection";
-    await section.getByRole("link", { name: "Start chatting" }).click();
+    await page.goto("/", { waitUntil: "domcontentloaded" });
     await page.getByTestId("app-shell").waitFor({ state: "visible", timeout: 30_000 });
     await page.locator(".v2-composer-model-trigger").click();
     const picker = page.getByRole("dialog", { name: "Choose model" });

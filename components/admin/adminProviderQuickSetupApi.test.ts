@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  clearAdminProviderQuickSetupAssignment,
   getAdminProviderQuickSetup,
   submitAdminProviderQuickSetup
 } from "./adminProviderQuickSetupApi";
@@ -18,38 +17,38 @@ function snapshot() {
     }],
     providers: [
       {
+        candidateModels: [{ displayName: "GPT-5.6 Terra" }, { displayName: "GPT-5.6 Luna" }],
         provider: "openai",
         providerDisplayName: "OpenAI",
-        quickSetupAssigned: false,
         state: "not_configured",
         stateToken: "state-openai"
       },
       {
+        candidateModels: [{ displayName: "Claude Opus 5" }],
         model: { displayName: "Claude Opus 5" },
         provider: "anthropic",
         providerDisplayName: "Anthropic",
-        quickSetupAssigned: true,
         state: "ready",
         stateToken: "state-anthropic"
       },
       {
+        candidateModels: [{ displayName: "DeepSeek V4 Pro" }],
         provider: "deepseek",
         providerDisplayName: "DeepSeek",
-        quickSetupAssigned: false,
         state: "not_configured",
         stateToken: "state-deepseek"
       },
       {
+        candidateModels: [{ displayName: "Gemini 3.6 Flash" }],
         provider: "gemini",
         providerDisplayName: "Gemini",
-        quickSetupAssigned: false,
         state: "disabled",
         stateToken: "state-gemini"
       },
       {
+        candidateModels: [{ displayName: "Claude Opus 4.8" }],
         provider: "openrouter",
         providerDisplayName: "OpenRouter",
-        quickSetupAssigned: false,
         state: "needs_attention",
         stateToken: "state-openrouter"
       }
@@ -79,6 +78,7 @@ describe("admin provider Quick setup API", () => {
   it("sends only the write-only atomic request and decodes Ready", async () => {
     const ready = {
       checkedAt,
+      connectionId: "00000000-0000-4000-8000-000000001102",
       defaultCredentialChanged: true,
       defaultChanged: false,
       model: { displayName: "GPT-5.6 Terra" },
@@ -100,6 +100,7 @@ describe("admin provider Quick setup API", () => {
       _init?: RequestInit
     ) => response(ready));
     const request = {
+      connectionDisplayName: "OpenAI · Research",
       expectedState: "state-openai",
       provider: "openai" as const,
       secret: "write-only-key",
@@ -145,26 +146,24 @@ describe("admin provider Quick setup API", () => {
     expect(JSON.stringify(result)).not.toContain("write-only-key");
   });
 
-  it("sends a fenced clear request and decodes credential retention", async () => {
-    const cleared = {
-      credentialRetained: true,
-      outcome: "assignment_cleared",
+  it("rejects a Ready result without the connection it created", async () => {
+    const result = await submitAdminProviderQuickSetup({
+      expectedState: "state-openai",
+      provider: "openai",
+      secret: "write-only-key"
+    }, async () => response({
+      checkedAt,
+      defaultCredentialChanged: true,
+      defaultChanged: false,
+      model: { displayName: "GPT-5.6 Terra" },
+      models: [{ displayName: "GPT-5.6 Terra" }],
+      outcome: "ready",
       provider: "openai",
       providerDisplayName: "OpenAI"
-    };
-    const fetcher = vi.fn(async () => response(cleared));
-    const request = { expectedState: "state-openai", provider: "openai" as const };
-
-    await expect(clearAdminProviderQuickSetupAssignment(request, fetcher)).resolves.toEqual({
-      data: cleared,
-      ok: true
-    });
-    expect(fetcher).toHaveBeenCalledWith("/api/admin/providers/quick-setup", {
-      body: JSON.stringify(request),
-      credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      method: "DELETE",
-      signal: undefined
+    }));
+    expect(result).toEqual({
+      error: { code: "provider_quick_setup_response_invalid" },
+      ok: false
     });
   });
 
@@ -178,7 +177,15 @@ describe("admin provider Quick setup API", () => {
         : provider),
       suggestedProvider: "anthropic"
     },
-    { providers: snapshot().providers, suggestedProvider: "fake" }
+    { providers: snapshot().providers, suggestedProvider: "fake" },
+    {
+      ...snapshot(),
+      providers: snapshot().providers.map((provider) => ({ ...provider, quickSetupAssigned: false }))
+    },
+    {
+      ...snapshot(),
+      providers: snapshot().providers.map((provider) => ({ ...provider, candidateModels: [] }))
+    }
   ])("rejects malformed or expanded snapshots", async (body) => {
     const result = await getAdminProviderQuickSetup(async () => response(body));
     expect(result).toEqual({
@@ -190,7 +197,6 @@ describe("admin provider Quick setup API", () => {
   it.each([
     { secret: "reflected" },
     { nested: { secretEnvelope: "encrypted" } },
-    { connectionId: "internal" },
     { credentialVersionId: "internal" },
     { evidence: { detail: "ok" } },
     { groups: [] },
