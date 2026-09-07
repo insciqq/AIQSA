@@ -75,7 +75,6 @@ describe("useAdminProvidersController", () => {
     });
     await waitFor(() => expect(result.current.state.busy).toBe(true));
 
-    act(() => result.current.actions.select(second.id));
     await act(async () => {
       finishAction({
         error: {
@@ -88,7 +87,7 @@ describe("useAdminProvidersController", () => {
       await pending;
     });
 
-    expect(result.current.state.selectedConnection?.id).toBe(second.id);
+    expect(result.current.state.connections.map(({ id }) => id)).toEqual([first.id, second.id]);
     expect(result.current.state.errorCode).toBe(
       "provider_activation_unavailable_confirmation_required"
     );
@@ -114,7 +113,7 @@ describe("useAdminProvidersController", () => {
       )).resolves.toBe(true);
     });
 
-    expect(result.current.state.selectedConnection?.displayName).toBe("Provider A updated");
+    expect(result.current.state.connections[0]?.displayName).toBe("Provider A updated");
     expect(result.current.state.notice).toBe("Group credential assignment saved.");
     await waitFor(() => expect(onMutationCommitted).toHaveBeenCalledOnce());
   });

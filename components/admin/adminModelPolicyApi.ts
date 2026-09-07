@@ -38,25 +38,20 @@ export function getAdminModelPolicy(fetcher: Fetcher = fetch) {
   return request({ method: "GET" }, fetcher);
 }
 
-export function updateAdminModelPolicy(input: Readonly<{
+export type AdminModelPolicyUpdateInput = Readonly<{
   expectedVersion: number;
-  providerModelId: string | null;
-  reasoningEffort: string | null;
-}>, fetcher: Fetcher = fetch) {
-  return request({
-    body: JSON.stringify(input),
-    headers: { "content-type": "application/json" },
-    method: "PATCH"
-  }, fetcher);
-}
+  /** The default model pair travels together; omit both to leave it alone. */
+  providerModelId?: string | null;
+  reasoningEffort?: string | null;
+  /** The four tool limits travel together; omit all to leave them alone. */
+  maxMcpToolsPerDiscovery?: number;
+  maxToolCalls?: number;
+  maxToolRounds?: number;
+  mcpAutoDiscoveryTimeoutSeconds?: number;
+}>;
 
-export function updateAdminToolBudgets(input: Readonly<{
-  expectedVersion: number;
-  mcpAutoDiscoveryTimeoutSeconds: number;
-  maxMcpToolsPerDiscovery: number;
-  maxToolCalls: number;
-  maxToolRounds: number;
-}>, fetcher: Fetcher = fetch) {
+/** One PATCH for the Chat defaults card: model and limits under one version. */
+export function updateAdminModelPolicy(input: AdminModelPolicyUpdateInput, fetcher: Fetcher = fetch) {
   return request({
     body: JSON.stringify(input),
     headers: { "content-type": "application/json" },

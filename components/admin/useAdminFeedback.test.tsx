@@ -1,5 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { useAdminFeedback } from "./useAdminFeedback";
 
 describe("useAdminFeedback", () => {
@@ -30,5 +30,23 @@ describe("useAdminFeedback", () => {
       error: null,
       notice: null
     });
+  });
+
+  it("carries one optional action with a notice and drops it with the notice", () => {
+    const onSelect = vi.fn();
+    const { result } = renderHook(() => useAdminFeedback());
+
+    act(() => result.current.reportNotice("Saved for future work", { label: "Undo", onSelect }));
+    expect(result.current.notice).toBe("Saved for future work");
+    expect(result.current.noticeAction?.label).toBe("Undo");
+
+    act(() => result.current.reportNotice("Plain notice"));
+    expect(result.current.noticeAction).toBeNull();
+
+    act(() => result.current.reportNotice("Again", { label: "Undo", onSelect }));
+    act(() => result.current.clearNotice());
+    expect(result.current.notice).toBeNull();
+    expect(result.current.noticeAction).toBeNull();
+    expect(onSelect).not.toHaveBeenCalled();
   });
 });

@@ -50,7 +50,7 @@ async function fixture(run: (input: {
       });
       await tx.providerModel.create({
         data: {
-          activeConfig: null,
+          activeConfig: Prisma.DbNull,
           activeVersion: 0,
           capabilities: {},
           connectionId,

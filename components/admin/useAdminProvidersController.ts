@@ -54,7 +54,7 @@ function notifyMutationCommitted(callback: UseAdminProvidersControllerOptions["o
   void Promise.resolve().then(callback).catch(() => undefined);
 }
 
-function failure(error: AdminProviderClientError): AdminProviderOperationResult {
+function failure(error: AdminProviderClientError): Extract<AdminProviderOperationResult, { ok: false }> {
   return { error, message: adminProviderErrorMessage(error), ok: false };
 }
 

@@ -53,23 +53,37 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       }
       await route.fulfill({ json: { modelPolicy: policy } });
     });
+    // The Chat defaults picker lists only models some group can reach.
+    await page.route("**/api/admin", (route) => route.fulfill({ json: {
+      accessRules: [], catalog: { models: [], providers: [], searchStrategies: [] },
+      groups: [{
+        accessGrants: [
+          { enabled: true, groupId: "g", id: "grant-openai", modelId: null, provider: "openai", searchStrategy: null, userId: null },
+          { enabled: true, groupId: "g", id: "grant-fake", modelId: null, provider: "fake", searchStrategy: null, userId: null }
+        ],
+        archivedAt: null, deletion: { canDelete: false, reason: null, summary: "" }, id: "g", name: "everyone", systemRole: null, userCount: 1
+      }],
+      invites: [],
+      navigation: { advancedConfigured: false, attention: { activeUsersWithoutModelAccess: 0, openInvites: 0, pendingUsers: 0 }, teamConfigured: false },
+      usage: { byGroup: [], byUser: [], totals: { cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 0, lastUsedAt: null, outputTokens: 0, reasoningTokens: 0, runCount: 0, totalTokens: 0 } },
+      users: []
+    } }));
     await signInWithLocalToken(page);
     const livePolicy = await page.request.get("/api/admin/providers/model-policy");
     expect(livePolicy.status()).toBe(200);
     expect(Boolean(decodeAdminModelPolicyResponse(await livePolicy.json()))).toBe(true);
-    await page.goto("/admin");
-    await page.getByRole("tab", { name: "Default model" }).click();
-    const model = page.getByLabel("Active answer model deployment");
-    const effort = page.getByLabel("Default reasoning effort");
-    const save = page.getByRole("button", { name: "Save default" });
+    await page.goto("/admin?section=roles");
+    const model = page.getByRole("combobox", { name: "Default chat model" });
+    const effort = page.getByRole("combobox", { name: "Reasoning" });
+    const save = page.getByTestId("admin-chat-defaults").getByRole("button", { name: "Save" });
+    const savedNotice = page.getByTestId("admin-feedback").getByText("Chat defaults saved for new chats");
     await expect(model).toHaveValue(reasoningModel.id);
     await expect(save).toBeDisabled();
     await effort.selectOption("high");
     await save.click();
-    await expect(page.getByText("Installation default updated.", { exact: true })).toBeVisible();
+    await expect(savedNotice).toBeVisible();
     expect(saved).toEqual([{ expectedVersion: 1, providerModelId: reasoningModel.id, reasoningEffort: "high" }]);
     await page.reload();
-    await page.getByRole("tab", { name: "Default model" }).click();
     await expect(effort).toHaveValue("high");
     await expect(save).toBeDisabled();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -84,8 +98,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     await page.reload();
     await expectRunSummary(page, { model: "GPT-5.5", reasoning: "low" });
 
-    await page.goto("/admin");
-    await page.getByRole("tab", { name: "Default model" }).click();
+    await page.goto("/admin?section=roles");
     await effort.selectOption("");
     await save.click();
     await expect(save).toBeDisabled();
@@ -94,12 +107,13 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     await model.selectOption(plainModel.id);
     await expect(effort).toHaveValue("");
     await expect(effort).toBeDisabled();
-    await expect(page.getByText("This model does not support adjustable reasoning.")).toBeVisible();
     await save.click();
     await expect(save).toBeDisabled();
     expect(saved.at(-1)).toMatchObject({ providerModelId: plainModel.id, reasoningEffort: null });
-    await page.getByRole("button", { name: "Clear default" }).click();
-    await expect(page.getByText("Installation default cleared.", { exact: true })).toBeVisible();
+    // Clearing the default is the empty choice of the same picker, saved the same way.
+    await model.selectOption("");
+    await save.click();
+    await expect(save).toBeDisabled();
     expect(saved.at(-1)).toMatchObject({ providerModelId: null, reasoningEffort: null });
   });
 }

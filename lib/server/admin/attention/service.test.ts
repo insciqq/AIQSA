@@ -147,6 +147,7 @@ function roles(overrides: Partial<AdminSystemModelPolicyCatalog["policy"]> = {})
   return {
     candidates: [],
     documentCandidates: [],
+    ineligible: { direct_pdf: [], memory: [], vision: [] },
     policy: {
       chatPdfModel: null,
       chatPdfPreparationAllowed: false,
