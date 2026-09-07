@@ -33,7 +33,7 @@ function grantTransaction(overrides: {
   searchLookup?: (where: { optionId: string }) => unknown;
 } = {}) {
   const create = vi.fn(async (input: { data: object }) => input.data);
-  const deleteMany = vi.fn(async () => ({ count: 1 }));
+  const deleteMany = vi.fn<(input: { where: object }) => Promise<{ count: number }>>(async () => ({ count: 1 }));
   return {
     create,
     deleteMany,

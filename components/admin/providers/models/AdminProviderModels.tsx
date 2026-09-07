@@ -7,6 +7,7 @@ import {
   checkableCredentials,
   defaultCredentialOf,
   deriveModelUsage,
+  embeddingModelLabel,
   groupProviderModels,
   liveConfiguration,
   modelCheckSummaries,
@@ -127,6 +128,7 @@ function AddModelMenu({
         disabled={disabled}
         icon="plus"
         onClick={() => setOpen((value) => !value)}
+        className="whitespace-nowrap"
         ref={triggerRef}
         tone="primary"
         type="button"
@@ -250,7 +252,7 @@ export function AdminProviderModels({
           label: "Embedding preset",
           submenu: embeddingPresets.length
             ? embeddingPresets.map((preset) => ({
-                label: `${preset.displayName} · ${preset.targetDimension}d`,
+                label: embeddingModelLabel(preset.displayName, preset.targetDimension),
                 onSelect: () => addPreset(preset.displayName, embeddingPresetConfiguration(preset))
               }))
             : [{ label: "Every preset is already added", onSelect: () => undefined }]
@@ -311,7 +313,7 @@ export function AdminProviderModels({
                   <th className="px-3 py-2.5 font-semibold" scope="col">Works with</th>
                   <th className="px-3 py-2.5 font-semibold" scope="col">Used as</th>
                   <th className="px-3 py-2.5 font-semibold" scope="col">On</th>
-                  <th className="px-3 py-2.5" scope="col"><span className="sr-only">Actions</span></th>
+                  <th className="relative px-3 py-2.5" scope="col"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               {groups.map((group) => (

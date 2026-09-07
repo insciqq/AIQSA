@@ -7,6 +7,7 @@ import type { AdminProviderTestEvidence } from "../../../contracts/adminProvider
 import type {
   ProviderActiveRefreshCandidate,
   ProviderDraftTestCandidate,
+  ProviderModelActivationWrite,
   StoredProviderDraftCheck
 } from "./repositoryContract";
 
@@ -35,7 +36,7 @@ function candidate() {
       configuration: {
         allowPrivateNetwork: false,
         apiRoot: "https://provider.example.test/v1",
-        authenticationMode: "bearer",
+        authenticationMode: "bearer" as const,
         responseTimeoutMs: 300_000
       },
       displayName: "Provider",
@@ -104,7 +105,7 @@ function activeCandidate() {
       configuration: {
         allowPrivateNetwork: false,
         apiRoot: "https://provider.example.test/v1",
-        authenticationMode: "bearer",
+        authenticationMode: "bearer" as const,
         responseTimeoutMs: 300_000
       },
       displayName: "Provider",
@@ -173,7 +174,7 @@ describe("Prisma admin provider repository", () => {
           draftConfig: {
             allowPrivateNetwork: false,
             apiRoot: "https://provider.example.test/v1",
-            authenticationMode: "bearer",
+            authenticationMode: "bearer" as const,
             responseTimeoutMs: 300_000
           },
           draftVersion: 1,
@@ -587,7 +588,7 @@ describe("Prisma admin provider repository", () => {
         configuration: {
           allowPrivateNetwork: false,
           apiRoot: "https://provider.example.test/v1",
-          authenticationMode: "bearer",
+          authenticationMode: "bearer" as const,
           responseTimeoutMs: 300_000
         },
         draftVersion: 2,
@@ -1091,7 +1092,7 @@ describe("Prisma admin provider repository", () => {
       enable: true,
       model: { configuration, draftVersion: 4, id: "model-1" },
       now: NOW
-    } as const;
+    } as ProviderModelActivationWrite;
 
     await expect(repository.activateModelCas(write)).resolves.toBe("updated");
     expect(connectionUpdate).toHaveBeenCalledWith(expect.objectContaining({

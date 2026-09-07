@@ -50,10 +50,16 @@ export function groupProviderModels(models: readonly AdminProviderModel[]): read
   });
 }
 
-/** `Qwen3 Embedding 8B · 1536d`: the only place a dimension is spoken (PRD 3.3). */
+/** `Qwen3 Embedding 8B · 1536d`: the only place a dimension is spoken (PRD 3.3).
+ * Preset display names may already carry the suffix; it is never doubled. */
+export function embeddingModelLabel(displayName: string, targetDimension: number): string {
+  const suffix = `· ${targetDimension}d`;
+  return displayName.endsWith(suffix) ? displayName : `${displayName} ${suffix}`;
+}
+
 export function modelTitle(model: AdminProviderModel): string {
   const embedding = liveConfiguration(model).embedding;
-  return embedding ? `${model.displayName} · ${embedding.targetDimension}d` : model.displayName;
+  return embedding ? embeddingModelLabel(model.displayName, embedding.targetDimension) : model.displayName;
 }
 
 /** `via Anthropic only` · `via 2 providers` · `automatic routing`; nothing outside OpenRouter. */

@@ -1,9 +1,10 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminConfirmationRequest } from "@/components/admin/useAdminConfirmationController";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import type { ProviderUsageSources } from "@/components/admin/providers/providerListView";
 import {
+  FIXTURE_NOW,
   fixtureCheck,
   fixtureCheckRun,
   fixtureConnection,
@@ -164,6 +165,16 @@ function harness(connection = openRouter(), busy = false) {
 }
 
 describe("AdminProviderModels", () => {
+  // The fixtures are checked at FIXTURE_NOW; "Checked today" must not depend on the wall clock.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(FIXTURE_NOW));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("groups models by class in a fixed order with chips, routes, Used as tags and the dimension in the title", () => {
     harness();
     const table = screen.getByRole("table", { name: "Models" });
