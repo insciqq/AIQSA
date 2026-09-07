@@ -50,6 +50,7 @@ import {
   type ProviderExecutionSnapshot
 } from "../providers/runtimeFactory";
 import { isProviderDeadlineExceededError } from "../providers/network";
+import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import { openAIRetryableErrorPayload } from "../providers/openaiResponsesTransport";
 import {
   executeWithProviderRetry,
@@ -105,7 +106,6 @@ type PdfVisionDetail = "auto" | "original";
 
 export const KNOWLEDGE_MODEL_PDF_VISION_PAGE_CONCURRENCY = 4 as const;
 export const KNOWLEDGE_MODEL_PDF_PROVIDER_MAX_ATTEMPTS = 3 as const;
-export const KNOWLEDGE_MODEL_PDF_PROVIDER_ATTEMPT_TIMEOUT_MS = 120_000 as const;
 
 class RetryableKnowledgeModelPdfOutputError extends Error {
   constructor() {
@@ -585,7 +585,10 @@ export function createKnowledgeModelPdfParser(
                 visionDetail
               }), {
                 signal,
-                timeoutMs: KNOWLEDGE_MODEL_PDF_PROVIDER_ATTEMPT_TIMEOUT_MS
+                timeoutMs: effectiveProviderResponseTimeoutMs(
+                  snapshot.connection,
+                  snapshot.model.adapterKind === "fake" ? null : snapshot.model
+                )
               });
               try {
                 decodeModelPdfBatchOutput({

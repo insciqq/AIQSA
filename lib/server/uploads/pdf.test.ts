@@ -594,8 +594,10 @@ describe("PDF extraction", () => {
     const controller = new AbortController();
     const reason = new Error("request_cancelled");
     const { createWorker, fakeWorker } = workerOptions();
-    const extraction = extractPdfTextChunks(Buffer.from("pdf"), { createWorker, signal: controller.signal });
+    const startWorker = vi.fn(createWorker);
+    const extraction = extractPdfTextChunks(Buffer.from("pdf"), { createWorker: startWorker, signal: controller.signal });
 
+    await vi.waitFor(() => expect(startWorker).toHaveBeenCalledOnce());
     controller.abort(reason);
     await expect(extraction).rejects.toBe(reason);
     expect(fakeWorker.terminate).toHaveBeenCalledOnce();
