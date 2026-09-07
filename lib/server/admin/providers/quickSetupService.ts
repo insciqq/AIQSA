@@ -5,9 +5,8 @@ import {
 } from "node:crypto";
 import {
   ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS,
-  type AdminProviderQuickSetupClearRequest,
-  type AdminProviderQuickSetupClearResult,
   type AdminProviderQuickSetupErrorCode,
+  type AdminProviderQuickSetupReadyResult,
   type AdminProviderQuickSetupRequest,
   type AdminProviderQuickSetupResult,
   type AdminProviderQuickSetupSnapshot
@@ -17,6 +16,7 @@ import {
   type AdminSearchDraft,
   type AdminSearchTestEvidence
 } from "../../../contracts/adminSearch";
+import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
 import {
   ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
   DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID,
@@ -27,6 +27,11 @@ import {
   encryptProviderCredentialSecret,
   normalizeProviderCredentialSecret
 } from "../../providers/credentialSecrets";
+import {
+  normalizeProviderConnectionConfiguration,
+  providerResponseTimeoutMsFromSeconds,
+  type ProviderConnectionConfiguration
+} from "../../providers/providerConfiguration";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
 import type { AdminProviderCredentialTester } from "./credentialTester";
 import {
@@ -34,11 +39,12 @@ import {
   decideAdminProviderQuickSetupModel,
   type AdminProviderQuickSetupPolicyCandidate
 } from "./quickSetupPolicy";
-import type {
-  AdminProviderQuickSetupActor,
-  AdminProviderQuickSetupCommitPlan,
-  AdminProviderQuickSetupInspection,
-  AdminProviderQuickSetupRepository
+import {
+  ADMIN_PROVIDER_SETUP_CREDENTIAL_LABEL,
+  type AdminProviderQuickSetupActor,
+  type AdminProviderQuickSetupCommitPlan,
+  type AdminProviderQuickSetupInspection,
+  type AdminProviderQuickSetupRepository
 } from "./quickSetupRepositoryContract";
 import type { AdminProviderQuickSetupSearchTester } from "./quickSetupSearchTester";
 import { searchDraftHash } from "../../search/configuration";
@@ -88,12 +94,12 @@ function providerSnapshot(
 ): AdminProviderQuickSetupSnapshot["providers"][number] {
   const policy = adminProviderQuickSetupPolicy(inspection.provider);
   return {
+    candidateModels: policy.candidates.map(({ displayName }) => ({ displayName })),
     ...(inspection.state === "ready" && inspection.model
       ? { model: { displayName: inspection.model.displayName } }
       : {}),
     provider: inspection.provider,
     providerDisplayName: policy.connection.displayName,
-    quickSetupAssigned: inspection.quickSetupAssignment !== null,
     state: inspection.state,
     stateToken: stateToken(key, inspection)
   };
@@ -109,6 +115,10 @@ function replacementCandidate(
   return adminProviderQuickSetupPolicy(inspection.provider).candidates.find(
     (candidate) => candidate.templateKey === inspection.model?.templateKey
   ) ?? null;
+}
+
+function sameName(left: string, right: string): boolean {
+  return left.trim().toLowerCase() === right.trim().toLowerCase();
 }
 
 export type AdminProviderSetupCompletion = Readonly<{
@@ -134,49 +144,195 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
   const now = input.now ?? (() => new Date());
   const stateTokenKey = input.stateTokenKey;
 
-  return {
-    async clearAssignment(inputValue: Readonly<{
-      actor: AdminProviderQuickSetupActor;
-      request: AdminProviderQuickSetupClearRequest;
-    }>): Promise<AdminProviderQuickSetupClearResult> {
-      const policy = adminProviderQuickSetupPolicy(inputValue.request.provider);
-      const inspectedAt = now();
-      const inspection = await input.repository.inspect({
-        ...inputValue.actor,
-        now: inspectedAt,
-        provider: inputValue.request.provider
-      });
-      if (!inspection.authorized) {
-        throw new AdminProviderQuickSetupServiceError(
-          "provider_quick_setup_advanced_required"
-        );
-      }
-      if (!sameToken(inputValue.request.expectedState, stateToken(stateTokenKey(), inspection)) ||
-        !inspection.quickSetupAssignment) {
-        throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
-      }
-      const commit = await input.repository.clearAssignment({
-        actor: inputValue.actor,
-        expectedFingerprint: inspection.fingerprint,
-        now: now(),
-        provider: policy.provider
-      });
-      if (commit === "stale") {
-        throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
-      }
-      if (commit === "advanced_required") {
-        throw new AdminProviderQuickSetupServiceError(
-          "provider_quick_setup_advanced_required"
-        );
-      }
-      return {
-        credentialRetained: true,
-        outcome: "assignment_cleared",
-        provider: policy.provider,
-        providerDisplayName: policy.connection.displayName
-      };
-    },
+  function testedSecret(raw: string): string {
+    try {
+      return normalizeProviderCredentialSecret(raw).trim();
+    } catch {
+      throw new AdminProviderQuickSetupServiceError("provider_credential_test_failed");
+    }
+  }
 
+  async function catalogModelIds(value: Readonly<{
+    connection: ProviderConnectionConfiguration;
+    provider: AdminProviderQuickSetupRequest["provider"];
+    secret: string;
+    signal?: AbortSignal;
+  }>): Promise<string[]> {
+    try {
+      const outcome = await input.credentialTester.test({
+        connection: value.connection,
+        family: value.provider,
+        secret: value.secret,
+        signal: value.signal
+      });
+      return outcome.modelIds;
+    } catch {
+      throw new AdminProviderQuickSetupServiceError("provider_credential_test_failed");
+    }
+  }
+
+  /** Catalog evidence per candidate, with the direct-PDF probe where the model declares it. */
+  async function modelEvidence(value: Readonly<{
+    candidates: readonly AdminProviderQuickSetupPolicyCandidate[];
+    connection: ProviderConnectionConfiguration;
+    connectionDisplayName: string;
+    connectionId: string;
+    credentialId: string;
+    credentialVersionId: string;
+    modelIdOf(candidate: AdminProviderQuickSetupPolicyCandidate): string;
+    provider: AdminProviderQuickSetupRequest["provider"];
+    secret: string;
+    signal?: AbortSignal;
+  }>): Promise<Map<string, AdminProviderTestEvidence>> {
+    const evidence = new Map<string, AdminProviderTestEvidence>();
+    for (const candidate of value.candidates) {
+      let pdfInput = null;
+      if (candidate.configuration.capabilities.nativePdfInput) {
+        try {
+          pdfInput = await input.pdfInputProbe.probe({
+            connection: value.connection,
+            connectionDisplayName: value.connectionDisplayName,
+            connectionId: value.connectionId,
+            credentialId: value.credentialId,
+            credentialVersionId: value.credentialVersionId,
+            model: candidate.configuration,
+            modelDisplayName: candidate.displayName,
+            providerFamily: value.provider,
+            providerModelId: value.modelIdOf(candidate),
+            secret: value.secret,
+            ...(value.signal ? { signal: value.signal } : {})
+          });
+        } catch {
+          if (value.signal?.aborted) {
+            throw new AdminProviderQuickSetupServiceError("provider_credential_test_failed");
+          }
+          // A failed capability probe must not turn a catalog-verified text
+          // deployment into an unavailable model.
+          pdfInput = null;
+        }
+      }
+      evidence.set(candidate.candidateId, {
+        detail: "ok",
+        method: "models_catalog",
+        ...(pdfInput ? { pdfInput } : {}),
+        selectedProviders: candidate.configuration.openRouterRouting?.providers ?? [],
+        upstreamModelId: candidate.configuration.upstreamModelId
+      });
+    }
+    return evidence;
+  }
+
+  /** A separate connection of the family (PRD 5.3): fresh ids, no Search or reranker presets. */
+  async function setupAdditional(inputValue: Readonly<{
+    actor: AdminProviderQuickSetupActor;
+    inspection: AdminProviderQuickSetupInspection;
+    request: AdminProviderQuickSetupRequest;
+    signal?: AbortSignal;
+  }>): Promise<AdminProviderQuickSetupReadyResult> {
+    const { inspection, request } = inputValue;
+    const policy = adminProviderQuickSetupPolicy(request.provider);
+    if (request.selectedModel) {
+      throw new AdminProviderQuickSetupServiceError("provider_quick_setup_selection_invalid");
+    }
+    const displayName = request.connectionDisplayName?.trim() ?? "";
+    if (!displayName || inspection.connectionNames.some((name) => sameName(name, displayName))) {
+      throw new AdminProviderQuickSetupServiceError("provider_quick_setup_name_taken");
+    }
+    const connection: ProviderConnectionConfiguration = request.configuration
+      ? normalizeProviderConnectionConfiguration({
+          allowPrivateNetwork: request.configuration.allowPrivateNetwork,
+          apiRoot: request.configuration.apiRoot,
+          authenticationMode: "bearer",
+          responseTimeoutMs: providerResponseTimeoutMsFromSeconds(
+            request.configuration.responseTimeoutSeconds
+          )
+        })
+      : policy.connection.configuration;
+    const secret = testedSecret(request.secret);
+    const modelIds = await catalogModelIds({
+      connection,
+      provider: policy.provider,
+      secret,
+      signal: inputValue.signal
+    });
+    const checkedAt = now();
+    const remotelyAvailable = new Set(modelIds);
+    const candidates = policy.candidates.filter((candidate) =>
+      remotelyAvailable.has(candidate.configuration.upstreamModelId)
+    );
+    if (candidates.length === 0) {
+      throw new AdminProviderQuickSetupServiceError("provider_quick_setup_unsupported_catalog");
+    }
+    const connectionId = idFactory();
+    const credentialId = idFactory();
+    const versionId = idFactory();
+    const modelIdByCandidate = new Map(candidates.map((candidate) => [candidate.candidateId, idFactory()]));
+    const evidence = await modelEvidence({
+      candidates,
+      connection,
+      connectionDisplayName: displayName,
+      connectionId,
+      credentialId,
+      credentialVersionId: versionId,
+      modelIdOf: (candidate) => modelIdByCandidate.get(candidate.candidateId)!,
+      provider: policy.provider,
+      secret,
+      signal: inputValue.signal
+    });
+    const commit = await input.repository.commitAdditional({
+      actor: inputValue.actor,
+      checkedAt,
+      connection: { configuration: connection, displayName, id: connectionId },
+      credential: {
+        id: credentialId,
+        label: ADMIN_PROVIDER_SETUP_CREDENTIAL_LABEL,
+        versionEnvelope: encryptProviderCredentialSecret({
+          credentialId,
+          key: encryptionKey(),
+          secret,
+          valueId: versionId
+        }),
+        versionId
+      },
+      expectedFingerprint: inspection.fingerprint,
+      models: candidates.map((candidate) => ({
+        candidate,
+        evidence: evidence.get(candidate.candidateId)!,
+        grantId: idFactory(),
+        id: modelIdByCandidate.get(candidate.candidateId)!
+      })),
+      now: now(),
+      provider: policy.provider
+    });
+    if (commit === "stale") {
+      throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
+    }
+    if (commit === "advanced_required") {
+      throw new AdminProviderQuickSetupServiceError("provider_quick_setup_advanced_required");
+    }
+    if (commit === "catalog_unavailable") {
+      throw new AdminProviderQuickSetupServiceError("provider_quick_setup_unsupported_catalog");
+    }
+    try {
+      input.onCompleted?.({ connectionId, credentialId });
+    } catch {
+      // Background checks are best effort; the setup itself is complete.
+    }
+    return {
+      checkedAt: checkedAt.toISOString(),
+      connectionId,
+      defaultCredentialChanged: true,
+      defaultChanged: false,
+      model: { displayName: candidates[0]!.displayName },
+      models: candidates.map(({ displayName: modelName }) => ({ displayName: modelName })),
+      outcome: "ready",
+      provider: policy.provider,
+      providerDisplayName: policy.connection.displayName,
+      search: null
+    };
+  }
+
+  return {
     async getSnapshot(actor: AdminProviderQuickSetupActor): Promise<AdminProviderQuickSetupSnapshot> {
       const inspectedAt = now();
       const inspections = await Promise.all(ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.map((provider) =>
@@ -216,14 +372,30 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         now: inspectedAt,
         provider: inputValue.request.provider
       });
-      if (!inspection.authorized || inspection.state === "advanced_required" ||
-        inspection.mode === null) {
+      if (!inspection.authorized) {
+        throw new AdminProviderQuickSetupServiceError(
+          "provider_quick_setup_advanced_required"
+        );
+      }
+      const additional = inputValue.request.configuration !== undefined || (
+        inputValue.request.connectionDisplayName !== undefined &&
+        (inspection.canonicalConnection || inspection.mode === null)
+      );
+      if (!additional && (inspection.state === "advanced_required" || inspection.mode === null)) {
         throw new AdminProviderQuickSetupServiceError(
           "provider_quick_setup_advanced_required"
         );
       }
       if (!sameToken(inputValue.request.expectedState, stateToken(stateTokenKey(), inspection))) {
         throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
+      }
+      if (additional) {
+        return setupAdditional({
+          actor: inputValue.actor,
+          inspection,
+          request: inputValue.request,
+          signal: inputValue.signal
+        });
       }
 
       const existingCandidate = replacementCandidate(inspection);
@@ -247,26 +419,19 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           "provider_quick_setup_selection_invalid"
         );
       }
-
-      let secret: string;
-      try {
-        secret = normalizeProviderCredentialSecret(inputValue.request.secret).trim();
-      } catch {
-        throw new AdminProviderQuickSetupServiceError("provider_credential_test_failed");
+      const connectionDisplayName = inputValue.request.connectionDisplayName?.trim();
+      if (connectionDisplayName !== undefined && (!connectionDisplayName ||
+        inspection.connectionNames.some((name) => sameName(name, connectionDisplayName)))) {
+        throw new AdminProviderQuickSetupServiceError("provider_quick_setup_name_taken");
       }
 
-      let modelIds: string[];
-      try {
-        const outcome = await input.credentialTester.test({
-          connection: policy.connection.configuration,
-          family: policy.provider,
-          secret,
-          signal: inputValue.signal
-        });
-        modelIds = outcome.modelIds;
-      } catch {
-        throw new AdminProviderQuickSetupServiceError("provider_credential_test_failed");
-      }
+      const secret = testedSecret(inputValue.request.secret);
+      const modelIds = await catalogModelIds({
+        connection: policy.connection.configuration,
+        provider: policy.provider,
+        secret,
+        signal: inputValue.signal
+      });
       const checkedAt = now();
       const remotelyAvailableModelIds = new Set(modelIds);
       const availableCandidates = policy.candidates.filter((candidate) =>
@@ -328,47 +493,23 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
       }
       const versionId = idFactory();
-      const modelChecks: Array<AdminProviderQuickSetupCommitPlan["modelChecks"][number]> = [];
-      for (const availableCandidate of availableCandidates) {
-        let pdfInput = null;
-        if (availableCandidate.configuration.capabilities.nativePdfInput) {
-          try {
-            pdfInput = await input.pdfInputProbe.probe({
-              connection: policy.connection.configuration,
-              connectionDisplayName: policy.connection.displayName,
-              connectionId: policy.connection.id,
-              credentialId,
-              credentialVersionId: versionId,
-              model: availableCandidate.configuration,
-              modelDisplayName: availableCandidate.displayName,
-              providerFamily: policy.provider,
-              providerModelId: availableCandidate.modelId,
-              secret,
-              ...(inputValue.signal ? { signal: inputValue.signal } : {})
-            });
-          } catch (error) {
-            if (inputValue.signal?.aborted) {
-              throw new AdminProviderQuickSetupServiceError(
-                "provider_credential_test_failed"
-              );
-            }
-            // A failed capability probe must not turn a catalog-verified text
-            // deployment into an unavailable model.
-            pdfInput = null;
-          }
-        }
-        modelChecks.push({
-          evidence: {
-            detail: "ok",
-            method: "models_catalog",
-            ...(pdfInput ? { pdfInput } : {}),
-            selectedProviders:
-              availableCandidate.configuration.openRouterRouting?.providers ?? [],
-            upstreamModelId: availableCandidate.configuration.upstreamModelId
-          },
+      const evidence = await modelEvidence({
+        candidates: availableCandidates,
+        connection: policy.connection.configuration,
+        connectionDisplayName: policy.connection.displayName,
+        connectionId: policy.connection.id,
+        credentialId,
+        credentialVersionId: versionId,
+        modelIdOf: ({ modelId }) => modelId,
+        provider: policy.provider,
+        secret,
+        signal: inputValue.signal
+      });
+      const modelChecks: Array<AdminProviderQuickSetupCommitPlan["modelChecks"][number]> =
+        availableCandidates.map((availableCandidate) => ({
+          evidence: evidence.get(availableCandidate.candidateId)!,
           modelId: availableCandidate.modelId
-        });
-      }
+        }));
       const rerankerChecks: Array<
         AdminProviderQuickSetupCommitPlan["rerankerChecks"][number]
       > = [];
@@ -438,7 +579,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
           timeoutMs: 300_000
         };
-        const evidence: AdminSearchTestEvidence = {
+        const searchEvidence: AdminSearchTestEvidence = {
           checkedAt: checkedAt.toISOString(),
           method: "configuration",
           normalizedSourceCount: 0,
@@ -448,7 +589,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         search = {
           draft,
           draftHash: searchDraftHash(draft),
-          evidence,
+          evidence: searchEvidence,
           grantId: idFactory(),
           integrationId: anthropic
             ? ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID
@@ -465,6 +606,9 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         candidate,
         candidates: availableCandidates,
         checkedAt,
+        ...(connectionDisplayName && !inspection.canonicalConnection
+          ? { connectionDisplayName }
+          : {}),
         credential: {
           draftVersion,
           id: credentialId,
@@ -510,6 +654,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       }
       return {
         checkedAt: checkedAt.toISOString(),
+        connectionId: policy.connection.id,
         defaultCredentialChanged: commit.defaultCredentialChanged,
         defaultChanged: commit.defaultChanged,
         model: { displayName: candidate.displayName },

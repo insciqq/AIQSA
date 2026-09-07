@@ -31,6 +31,7 @@ import {
 import { getSecretEncryptionKey } from "../../secrets/envelope";
 import { searchDraftHash } from "../../search/configuration";
 import type { AdminProviderQuickSetupSearchTester } from "./quickSetupSearchTester";
+import { ADMIN_PROVIDER_SETUP_CREDENTIAL_LABEL } from "./quickSetupRepositoryContract";
 import type { AdminProviderDraftTestOutcome } from "./tester";
 import type {
   AdminProviderCustomConnectionConfiguration,
@@ -383,7 +384,7 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
           id: credentialId,
           label: request.authenticationMode === "none"
             ? "No authentication"
-            : "Personal API key",
+            : ADMIN_PROVIDER_SETUP_CREDENTIAL_LABEL,
           secretEnvelope: secret === null
             ? null
             : encryptProviderCredentialSecret({

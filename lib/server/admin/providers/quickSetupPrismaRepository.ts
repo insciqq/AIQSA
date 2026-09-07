@@ -26,16 +26,21 @@ import {
 import {
   searchValidationFingerprint
 } from "../../search/probeBinding";
-import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
+import {
+  adminProviderQuickSetupPolicy,
+  type AdminProviderQuickSetupPolicyCandidate
+} from "./quickSetupPolicy";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
 import { hasVerifiedVisionInput } from "../../providers/visionInputEvidence";
-import type {
-  AdminProviderQuickSetupActor,
-  AdminProviderQuickSetupClearPlan,
-  AdminProviderQuickSetupCommitPlan,
-  AdminProviderQuickSetupCommitResult,
-  AdminProviderQuickSetupInspection,
-  AdminProviderQuickSetupRepository
+import {
+  ADMIN_PROVIDER_SETUP_CREDENTIAL_LABEL,
+  type AdminProviderQuickSetupActor,
+  type AdminProviderQuickSetupAdditionalCommitResult,
+  type AdminProviderQuickSetupAdditionalPlan,
+  type AdminProviderQuickSetupCommitPlan,
+  type AdminProviderQuickSetupCommitResult,
+  type AdminProviderQuickSetupInspection,
+  type AdminProviderQuickSetupRepository
 } from "./quickSetupRepositoryContract";
 import {
   approvedRerankerDeployments,
@@ -236,9 +241,6 @@ function modelColumns(configuration: ProviderModelConfiguration) {
   };
 }
 
-function quickSetupCredentialLabel(credentialId: string): string {
-  return `Quick setup · ${credentialId}`;
-}
 
 async function loadQuickSetupState(
   db: QuickSetupDb,
@@ -408,7 +410,7 @@ async function loadQuickSetupState(
     : null;
 
   const reusableQuickSetupCredential = assignedCredential &&
-    assignedCredential.label === quickSetupCredentialLabel(assignedCredential.id) &&
+    assignedCredential.label === ADMIN_PROVIDER_SETUP_CREDENTIAL_LABEL &&
     assignedCredential.groupAssignments.length === 0 &&
     (assignedCredential.userAssignments ?? []).length === 1 &&
     assignedCredential.userAssignments?.[0]?.userId === input.userId &&
@@ -730,7 +732,11 @@ async function loadQuickSetupState(
   const inspection: AdminProviderQuickSetupInspection = {
     actingUserDefault: Boolean(selectedModel && settings?.defaultProviderModelId === selectedModel.id),
     authorized: Boolean(actorAuthorized),
+    canonicalConnection: connection !== null,
     configured,
+    connectionNames: connections
+      .filter((candidate) => candidate.family === policy.provider)
+      .map((candidate) => candidate.displayName),
     fingerprint: safeFingerprint,
     mode,
     model: selectedModel,
@@ -752,7 +758,7 @@ async function loadQuickSetupState(
 
 export async function lockAdminProviderQuickSetupState(
   tx: Prisma.TransactionClient,
-  plan: AdminProviderQuickSetupCommitPlan | AdminProviderQuickSetupClearPlan
+  plan: Pick<AdminProviderQuickSetupCommitPlan, "actor" | "provider">
 ): Promise<void> {
   const policy = adminProviderQuickSetupPolicy(plan.provider);
   const searchSpec = quickSetupSearchSpec(plan.provider);
@@ -1540,7 +1546,7 @@ async function applyQuickSetupPlan(
         activeVersion: 1,
         activatedAt: plan.now,
         defaultCredentialId: null,
-        displayName: policy.connection.displayName,
+        displayName: plan.connectionDisplayName ?? policy.connection.displayName,
         draftConfig: json(policy.connection.configuration),
         draftVersion: 1,
         enabled: true,
@@ -1625,7 +1631,7 @@ async function applyQuickSetupPlan(
         draftVersion: plan.credential.draftVersion,
         enabled: true,
         id: plan.credential.id,
-        label: quickSetupCredentialLabel(plan.credential.id)
+        label: ADMIN_PROVIDER_SETUP_CREDENTIAL_LABEL
       }
     });
   }
@@ -1751,31 +1757,190 @@ async function applyQuickSetupPlan(
   };
 }
 
-async function applyQuickSetupClearPlan(
+function sameModelIdentity(
+  planned: AdminProviderQuickSetupPolicyCandidate,
+  canonical: AdminProviderQuickSetupPolicyCandidate | undefined
+): boolean {
+  return Boolean(canonical) &&
+    canonical!.provider === planned.provider &&
+    canonical!.modelId === planned.modelId &&
+    canonical!.templateKey === planned.templateKey &&
+    canonical!.displayName === planned.displayName &&
+    canonicalJson(canonical!.configuration) === canonicalJson(planned.configuration);
+}
+
+async function applyQuickSetupAdditionalPlan(
   tx: Prisma.TransactionClient,
-  plan: AdminProviderQuickSetupClearPlan
-) {
+  plan: AdminProviderQuickSetupAdditionalPlan,
+  exposeFake: boolean
+): Promise<Exclude<AdminProviderQuickSetupAdditionalCommitResult, "catalog_unavailable">> {
   await lockAdminProviderQuickSetupState(tx, plan);
   const current = await loadQuickSetupState(tx, {
     ...plan.actor,
     now: plan.now,
     provider: plan.provider
   });
-  if (!current.inspection.authorized) return "advanced_required" as const;
-  if (current.inspection.fingerprint !== plan.expectedFingerprint ||
-    !current.inspection.quickSetupAssignment) {
-    return "stale" as const;
+  if (!current.inspection.authorized) return "advanced_required";
+  if (current.inspection.fingerprint !== plan.expectedFingerprint) return "stale";
+  const policy = adminProviderQuickSetupPolicy(plan.provider);
+  const reservedIds = new Set<string>([
+    policy.connection.id,
+    ...policy.candidates.map(({ modelId }) => modelId)
+  ]);
+  const generatedIds = [
+    plan.connection.id,
+    plan.credential.id,
+    plan.credential.versionId,
+    ...plan.models.flatMap(({ grantId, id }) => [grantId, id])
+  ];
+  const candidateIds = plan.models.map(({ candidate }) => candidate.candidateId);
+  if (
+    plan.models.length < 1 || plan.models.length > policy.candidates.length ||
+    new Set(candidateIds).size !== candidateIds.length ||
+    new Set(generatedIds).size !== generatedIds.length ||
+    generatedIds.some((id) => !id || reservedIds.has(id)) ||
+    plan.models.some(({ candidate }) => !sameModelIdentity(
+      candidate,
+      policy.candidates.find(({ candidateId }) => candidateId === candidate.candidateId)
+    )) ||
+    !plan.connection.displayName.trim() ||
+    current.inspection.connectionNames.some((name) =>
+      name.trim().toLowerCase() === plan.connection.displayName.trim().toLowerCase()
+    )
+  ) {
+    return "stale";
   }
-  const deleted = await tx.providerUserCredentialAssignment.deleteMany({
-    where: {
-      connectionId: adminProviderQuickSetupPolicy(plan.provider).connection.id,
-      credentialId: current.inspection.quickSetupAssignment.credentialId,
+  for (const model of plan.models) {
+    const expectedProviders = model.candidate.configuration.openRouterRouting?.providers ?? [];
+    const pdfInput = decodePdfInputVerificationEvidence(model.evidence.pdfInput);
+    const hasPdfInput = Object.prototype.hasOwnProperty.call(model.evidence, "pdfInput");
+    if (
+      model.evidence.detail !== "ok" ||
+      model.evidence.method !== "models_catalog" ||
+      model.evidence.upstreamModelId !== model.candidate.configuration.upstreamModelId ||
+      model.evidence.selectedProviders.length !== expectedProviders.length ||
+      model.evidence.selectedProviders.some(
+        (provider, index) => provider !== expectedProviders[index]
+      ) ||
+      (Object.hasOwn(model.evidence, "visionInput") &&
+        !hasVerifiedVisionInput(model.evidence, model.candidate.configuration)) ||
+      (hasPdfInput && (!pdfInput ||
+        !model.candidate.configuration.capabilities.nativePdfInput ||
+        pdfInput.adapterKind !== model.candidate.configuration.adapterKind ||
+        pdfInput.upstreamModelId !== model.candidate.configuration.upstreamModelId))
+    ) return "stale";
+  }
+
+  await tx.providerConnection.create({
+    data: {
+      activeConfig: json(plan.connection.configuration),
+      activeVersion: 1,
+      activatedAt: plan.now,
+      defaultCredentialId: null,
+      displayName: plan.connection.displayName,
+      draftConfig: json(plan.connection.configuration),
+      draftVersion: 1,
+      enabled: true,
+      family: plan.provider,
+      id: plan.connection.id,
+      templateKey: null,
+      unassignedPolicy: "use_default"
+    }
+  });
+  for (const model of plan.models) {
+    await tx.providerModel.create({
+      data: {
+        activeConfig: json(model.candidate.configuration),
+        activeVersion: 1,
+        activatedAt: plan.now,
+        connectionId: plan.connection.id,
+        displayName: model.candidate.displayName,
+        draftConfig: json(model.candidate.configuration),
+        draftVersion: 1,
+        enabled: true,
+        id: model.id,
+        inputTokenPriceMicros: model.candidate.model.inputTokenPriceMicros,
+        outputTokenPriceMicros: model.candidate.model.outputTokenPriceMicros,
+        provider: plan.provider,
+        templateKey: null,
+        ...modelColumns(model.candidate.configuration)
+      }
+    });
+  }
+  await tx.providerCredential.create({
+    data: {
+      activatedAt: plan.now,
+      connectionId: plan.connection.id,
+      draftSecretEnvelope: null,
+      draftVersion: 1,
+      enabled: true,
+      id: plan.credential.id,
+      label: plan.credential.label,
+      testedAt: plan.checkedAt
+    }
+  });
+  await tx.providerCredentialVersion.create({
+    data: {
+      activatedAt: plan.now,
+      credentialId: plan.credential.id,
+      id: plan.credential.versionId,
+      secretEnvelope: plan.credential.versionEnvelope,
+      testEvidence: json({
+        method: "models_catalog",
+        policyVersion: policy.version,
+        version: 1
+      }),
+      testedAt: plan.checkedAt,
+      version: 1
+    }
+  });
+  await tx.providerCredential.update({
+    data: { activeVersionId: plan.credential.versionId },
+    where: { id: plan.credential.id }
+  });
+  await tx.providerConnection.update({
+    data: { defaultCredentialId: plan.credential.id },
+    where: { id: plan.connection.id }
+  });
+  await tx.providerUserCredentialAssignment.create({
+    data: {
+      connectionId: plan.connection.id,
+      credentialId: plan.credential.id,
       userId: plan.actor.userId
     }
   });
-  return deleted.count === 1
-    ? { status: "cleared" as const }
-    : "stale" as const;
+  for (const model of plan.models) {
+    await tx.providerModelCredentialCheck.create({
+      data: {
+        checkedAt: plan.checkedAt,
+        connectionId: plan.connection.id,
+        connectionVersion: 1,
+        credentialId: plan.credential.id,
+        credentialVersionId: plan.credential.versionId,
+        evidence: json(model.evidence),
+        modelVersion: 1,
+        providerModelId: model.id,
+        status: "available"
+      }
+    });
+    await tx.accessGrant.create({
+      data: {
+        enabled: true,
+        groupId: null,
+        id: model.grantId,
+        providerConnectionId: null,
+        providerModelId: model.id,
+        searchStrategy: null,
+        userId: plan.actor.userId
+      }
+    });
+  }
+
+  const eligibleModelIds = await eligibleProviderModelIds(tx, plan.actor.userId, exposeFake);
+  if (plan.models.some((model) => !eligibleModelIds.has(model.id))) {
+    throw new QuickSetupCatalogUnavailableError();
+  }
+  return { status: "ready" };
 }
 
 export function createPrismaAdminProviderQuickSetupRepository(
@@ -1784,11 +1949,11 @@ export function createPrismaAdminProviderQuickSetupRepository(
 ): AdminProviderQuickSetupRepository {
   const exposeFake = options.exposeFake ?? false;
   return {
-    async clearAssignment(plan) {
+    async commitAdditional(plan) {
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
           return await prisma.$transaction(
-            (tx) => applyQuickSetupClearPlan(tx, plan),
+            (tx) => applyQuickSetupAdditionalPlan(tx, plan, exposeFake),
             {
               isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
               maxWait: 10_000,
@@ -1796,6 +1961,7 @@ export function createPrismaAdminProviderQuickSetupRepository(
             }
           );
         } catch (error) {
+          if (error instanceof QuickSetupCatalogUnavailableError) return "catalog_unavailable";
           if (
             error instanceof Prisma.PrismaClientKnownRequestError &&
             (error.code === "P2002" || error.code === "P2025" ||
