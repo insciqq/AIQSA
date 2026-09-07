@@ -1,5 +1,6 @@
 import type { KnowledgeDocumentContextV1 } from "./documentContext";
 import { formatKnowledgeRerankCandidate } from "./rerankCandidateFormatter";
+import { knowledgeEvidenceOccurrenceKeyV1 } from "./evidenceOccurrence";
 
 export const KNOWLEDGE_RETRIEVAL_FUSION = "weighted_rrf_v2" as const;
 export const KNOWLEDGE_RRF_K = 60;
@@ -19,10 +20,31 @@ export const KNOWLEDGE_SIGNAL_RANK_MAX = KNOWLEDGE_RANKING_CANDIDATE_MAX;
  * hosted reranking instead of allowing an uncalibrated provider score to
  * erase every first-stage lexical signal. Version 4 replaces only the
  * passage-level PostgreSQL lexical vote with the OpenSearch BM25 projection.
+ * Version 5 changes only deduplication to immutable occurrence identity,
+ * including bounded novelty history. Version 6 retains the bounded union of
+ * BM25 query variants until the common pre-rerank pool is selected. Scoring,
+ * per-query limits, rerank input limits and model bindings are unchanged.
+ * Version 7 uses passage BM25/dense candidates with exact and metadata lanes;
+ * section/document text contributes through bounded context expansion rather
+ * than corpus-wide PostgreSQL full-text ranking and duplicate fusion votes.
+ * Version 8 carries scoped exact-match specificity into fusion and reserves
+ * pre-rerank slots only for discriminating exact evidence. Common literals
+ * remain eligible without displacing stronger passage evidence by default.
+ * Version 9 uses a fixed reciprocal-rank scale for the learned signal, so
+ * unrelated additions to the pool cannot change its weight against query
+ * coverage merely by changing the number of scored candidates.
+ * Version 10 keeps diversity within the combined relevance band as well as
+ * the learned-score band, preserving stronger query coverage in final results.
+ * Version 11 budgets distinct query terms so a repetitive preamble cannot
+ * consume the coverage vocabulary before later constraints are considered.
+ * Version 12 assigns one position in the deduplicated semantic union when
+ * a binding has multiple distinct query vectors, retaining best local rank
+ * and distance order before fusion and neighbor selection.
  * These values are internal retrieval defaults, never user or Admin settings.
  */
-export const KNOWLEDGE_RANKING_PROFILE_VERSION = 4 as const;
+export const KNOWLEDGE_RANKING_PROFILE_VERSION = 12 as const;
 export const KNOWLEDGE_LANE_CANDIDATE_LIMIT = 64 as const;
+export const KNOWLEDGE_SEMANTIC_UNION_RANK_MAX = KNOWLEDGE_LANE_CANDIDATE_LIMIT * 2;
 export const KNOWLEDGE_BROAD_RERANK_INPUT_MAX = 96 as const;
 export const KNOWLEDGE_SCOPED_RERANK_INPUT_MAX = 48 as const;
 export const KNOWLEDGE_LEXICAL_RELEVANCE_FLOOR = 0.1;
@@ -207,7 +229,8 @@ export function fuseKnowledgeCandidates(
       }
     }
     const fusedScore = clamp([...bestByLane.values()].reduce((sum, signal) =>
-      sum + KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS[signal.lane] /
+      sum + KNOWLEDGE_RETRIEVAL_LANE_WEIGHTS[signal.lane] *
+        (signal.lane === "exact" ? clamp(signal.rawScore) : 1) /
         (KNOWLEDGE_RRF_K + signal.rank), 0) / maximum);
     return Object.freeze({
       ...candidate,
@@ -267,12 +290,20 @@ export function knowledgeCandidateHasExactSignal(
   return candidate.signals.some((signal) => signal.lane === "exact");
 }
 
+/** SQL sums inverse scoped passage frequencies for the matched literals.
+ * One unique match (or equally discriminating combined matches) reaches one;
+ * a ubiquitous literal must not reserve a slot merely because it is exact.
+ * Eligibility and exact attribution remain independent of this preference. */
+function hasDiscriminatingExactSignal(candidate: KnowledgeRetrievalCandidate): boolean {
+  return candidate.signals.some(signal => signal.lane === "exact" && signal.rawScore >= 1);
+}
+
 /**
  * Builds the merged pre-rerank candidate pool: weighted RRF pre-order,
- * canonical content deduplication, guaranteed exact-candidate survival, and
+ * canonical occurrence deduplication, discriminating exact preservation, and
  * soft balancing across accepted bindings, capped at the versioned rerank
- * input maximum. Relevance floors are deliberately not applied here — the
- * hosted reranker sees every authority-scoped candidate.
+ * input maximum. Relevance floors are deliberately not applied here; the
+ * hosted reranker judges the selected authority-scoped pool.
  */
 export function selectKnowledgePreRerankPool(input: Readonly<{
   bindingOrdinals: readonly number[];
@@ -284,22 +315,18 @@ export function selectKnowledgePreRerankPool(input: Readonly<{
     throw new Error("knowledge_prererank_pool_invalid");
   }
   const fused = fuseKnowledgeCandidates(input.candidates);
-  const representativeByContent = new Map<string, KnowledgeRankedCandidate>();
-  const seenChunks = new Set<string>();
+  const representativeByOccurrence = new Map<string, KnowledgeRankedCandidate>();
   for (const candidate of fused) {
-    if (seenChunks.has(candidate.chunkId)) continue;
-    seenChunks.add(candidate.chunkId);
-    const existing = representativeByContent.get(candidate.contentHash);
+    const key = knowledgeEvidenceOccurrenceKeyV1(candidate);
+    const existing = representativeByOccurrence.get(key);
     if (!existing || knowledgeCandidateHasExactSignal(candidate) &&
       !knowledgeCandidateHasExactSignal(existing)) {
-      // Canonical content dedup must not erase the exact signal merely
-      // because another Source's duplicate happened to have stronger dense
-      // evidence. Keep the exact-bearing representative; ties retain the
-      // deterministic fused pre-order.
-      representativeByContent.set(candidate.contentHash, candidate);
+      // Repeated lane delivery cannot erase this occurrence's exact signal.
+      // Equal text from a different occurrence retains its own slot.
+      representativeByOccurrence.set(key, candidate);
     }
   }
-  const deduped = [...representativeByContent.values()].sort((left, right) =>
+  const deduped = [...representativeByOccurrence.values()].sort((left, right) =>
     right.fusedScore - left.fusedScore || left.chunkId.localeCompare(right.chunkId));
   if (deduped.length <= input.maximum) return deduped;
   const selected: KnowledgeRankedCandidate[] = [];
@@ -313,11 +340,11 @@ export function selectKnowledgePreRerankPool(input: Readonly<{
       (perBinding.get(candidate.bindingOrdinal) ?? 0) + 1
     );
   };
-  // Exact candidates survive pre-rerank bounding regardless of dense or
-  // lexical strength and regardless of binding quotas.
+  // Preserve discriminating literals. Common exact matches compete through
+  // specificity-weighted fusion instead of exhausting the pool reservation.
   for (const candidate of deduped) {
     if (selected.length >= input.maximum) break;
-    if (knowledgeCandidateHasExactSignal(candidate)) take(candidate);
+    if (hasDiscriminatingExactSignal(candidate)) take(candidate);
   }
   const quota = Math.max(1, Math.floor(input.maximum / bindingCount));
   for (const candidate of deduped) {
@@ -339,12 +366,15 @@ export type KnowledgeRerankedCandidate = KnowledgeRankedCandidate & Readonly<{
   rerankScore: number | null;
 }>;
 
-function genericWordTokens(value: string, maximum: number): string[] {
+function genericWordTokens(value: string, maximum: number, distinct = false): string[] {
   const tokens: string[] = [];
+  const seen = distinct ? new Set<string>() : null;
   const normalized = value.normalize("NFKC").toLocaleLowerCase("und");
   for (const match of normalized.matchAll(GENERIC_WORD)) {
     const token = match[0];
     if (!token || [...token].length > 128) continue;
+    if (seen?.has(token)) continue;
+    seen?.add(token);
     tokens.push(token);
     if (tokens.length >= maximum) break;
   }
@@ -380,7 +410,8 @@ function tokenCoverageScores(
 ): ReadonlyMap<string, number> {
   const queryTokens = [...new Set(genericWordTokens(
     query,
-    KNOWLEDGE_TOKEN_COVERAGE_QUERY_MAX
+    KNOWLEDGE_TOKEN_COVERAGE_QUERY_MAX,
+    true
   ))];
   if (queryTokens.length === 0 || candidates.length === 0) return new Map();
   const candidateTokens = new Map<string, ReadonlySet<string>>();
@@ -425,20 +456,21 @@ function hostedRerankFusionScores(
     score: candidate.rerankScore!
   })));
   const coverage = tokenCoverageScores(scored, query);
-  const rankDenominator = Math.max(1, scored.length - 1);
   return new Map(scored.map((candidate) => [
     candidate.chunkId,
-    KNOWLEDGE_RERANK_MODEL_RANK_WEIGHT * (scored.length === 1
-      ? 1
-      : 1 - (rerankRanks.get(candidate.chunkId)! - 1) / rankDenominator) +
+    // Normalize the first reciprocal rank to one without using pool size.
+    // A percentile rank would dilute the same learned ordering whenever
+    // lower-scoring background passages extend the candidate list.
+    KNOWLEDGE_RERANK_MODEL_RANK_WEIGHT * (KNOWLEDGE_RRF_K + 1) /
+      (KNOWLEDGE_RRF_K + rerankRanks.get(candidate.chunkId)!) +
     KNOWLEDGE_RERANK_TOKEN_COVERAGE_RANK_WEIGHT *
       (coverage.get(candidate.chunkId) ?? 0)
   ]));
 }
 
 /**
- * Final ranking after hosted reranking: descending rerank score, exact signal
- * as tie-breaker, fused RRF score next, deterministic chunk id last. Scored
+ * Final ranking after hosted reranking: combined learned-rank/token-coverage
+ * score, then raw rerank score, exact signal, fused RRF score, and chunk id. Scored
  * candidates retain the accepted hosted-rerank semantics. Candidates omitted
  * by the provider rejoin only through the same signal eligibility as the
  * deterministic path, with their weighted RRF recomputed from eligible
@@ -482,25 +514,26 @@ export function orderRerankedKnowledgeCandidates(input: Readonly<{
 }
 
 /**
- * Post-rerank final selection: canonical content deduplication, then soft
- * Source diversity applied only inside the narrow relative score band, then
+ * Post-rerank final selection: canonical occurrence deduplication, then soft
+ * Source diversity inside both the combined relevance and learned-score bands, then
  * the final broad/scoped result limit. Diversity never promotes an unscored
  * candidate above a scored one and never lifts a candidate outside the band.
  */
 export function selectRerankedKnowledgeCandidates(input: Readonly<{
   candidates: readonly KnowledgeRerankedCandidate[];
+  query: string;
   resultLimit: number;
 }>): KnowledgeRerankedCandidate[] {
-  const selectedChunks = new Set<string>();
-  const selectedContent = new Set<string>();
+  const selectedOccurrences = new Set<string>();
   const remaining = input.candidates.filter(primaryCandidate).filter((candidate) => {
-    if (selectedChunks.has(candidate.chunkId) || selectedContent.has(candidate.contentHash)) {
-      return false;
-    }
-    selectedChunks.add(candidate.chunkId);
-    selectedContent.add(candidate.contentHash);
+    const key = knowledgeEvidenceOccurrenceKeyV1(candidate);
+    if (selectedOccurrences.has(key)) return false;
+    selectedOccurrences.add(key);
     return true;
   });
+  const fusionScores = hostedRerankFusionScores(remaining, input.query);
+  const relevanceScore = (candidate: KnowledgeRerankedCandidate): number =>
+    fusionScores.get(candidate.chunkId) ?? candidate.fusedScore;
   const bandScore = (candidate: KnowledgeRerankedCandidate): number =>
     candidate.rerankScore ?? candidate.fusedScore;
   const selected: KnowledgeRerankedCandidate[] = [];
@@ -509,13 +542,16 @@ export function selectRerankedKnowledgeCandidates(input: Readonly<{
     const strongest = remaining[0]!;
     const strongestSourceCount = counts.get(sourceKey(strongest)) ?? 0;
     const bandFloor = bandScore(strongest) * (1 - KNOWLEDGE_SOFT_DIVERSITY_RELATIVE_BAND);
+    const relevanceFloor = relevanceScore(strongest) * (1 - KNOWLEDGE_SOFT_DIVERSITY_RELATIVE_BAND);
     const alternative = remaining
       .filter((candidate) =>
         (candidate.rerankScore === null) === (strongest.rerankScore === null) &&
         bandScore(candidate) >= bandFloor &&
+        relevanceScore(candidate) >= relevanceFloor &&
         (counts.get(sourceKey(candidate)) ?? 0) < strongestSourceCount)
       .sort((left, right) =>
         (counts.get(sourceKey(left)) ?? 0) - (counts.get(sourceKey(right)) ?? 0) ||
+        relevanceScore(right) - relevanceScore(left) ||
         bandScore(right) - bandScore(left) ||
         left.chunkId.localeCompare(right.chunkId))[0];
     const chosen = alternative ?? strongest;
@@ -531,14 +567,11 @@ export function selectSourceDiverseKnowledgeCandidates(input: Readonly<{
   candidates: readonly KnowledgeRankedCandidate[];
   resultLimit: number;
 }>): KnowledgeRankedCandidate[] {
-  const selectedChunks = new Set<string>();
-  const selectedContent = new Set<string>();
+  const selectedOccurrences = new Set<string>();
   const remaining = input.candidates.filter(primaryCandidate).filter((candidate) => {
-    if (selectedChunks.has(candidate.chunkId) || selectedContent.has(candidate.contentHash)) {
-      return false;
-    }
-    selectedChunks.add(candidate.chunkId);
-    selectedContent.add(candidate.contentHash);
+    const key = knowledgeEvidenceOccurrenceKeyV1(candidate);
+    if (selectedOccurrences.has(key)) return false;
+    selectedOccurrences.add(key);
     return true;
   });
   const selected: KnowledgeRankedCandidate[] = [];

@@ -1,3 +1,4 @@
+import { boundedOpenRagCitedEvidence } from "./openRagAnswerEvaluate";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
@@ -190,7 +191,7 @@ function answerUpstreamModelId(): string {
   return value;
 }
 
-function openRagDatabaseUrl(): string {
+export function openRagDatabaseUrl(): string {
   const raw = process.env.AIQSA_OPENRAG_DATABASE_URL?.trim() ||
     process.env.DATABASE_URL?.trim();
   if (!raw) throw new Error("open_rag_answer_database_url_required");
@@ -221,7 +222,7 @@ async function assertIgnoredPrivatePath(path: string): Promise<string> {
   return absolute;
 }
 
-function decodeProfileAttestation(value: unknown): ProfileAttestation {
+export function decodeProfileAttestation(value: unknown): ProfileAttestation {
   if (!isRecord(value) || !hasExactKeys(value, [
     "version",
     "createdAt",
@@ -281,7 +282,7 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
   });
 }
 
-function pinModel(input: Readonly<{
+export function pinModel(input: Readonly<{
   catalog: unknown;
   connectionId: string;
   upstreamModelId: string;
@@ -325,13 +326,13 @@ async function sessionToken(): Promise<string> {
   return match[1];
 }
 
-function textFromContent(value: unknown): string {
+export function textFromContent(value: unknown): string {
   if (!isRecord(value) || !Array.isArray(value.blocks)) return "";
   return value.blocks.flatMap((block) => isRecord(block) && block.type === "text" &&
     typeof block.text === "string" ? [block.text] : []).join("\n").trim();
 }
 
-function parseSse(value: string): readonly Readonly<{
+export function parseSse(value: string): readonly Readonly<{
   data: Record<string, unknown>;
   type: string;
 }>[] {
@@ -416,7 +417,7 @@ function createApiClient(input: Readonly<{
 
 type ApiClient = ReturnType<typeof createApiClient>;
 
-function controlDefaults(model: CatalogModel, stage: "answer" | "judge") {
+export function controlDefaults(model: CatalogModel, stage: "answer" | "judge") {
   const controls = model.parameterControls;
   const result: Record<string, unknown> = {};
   const background = isRecord(controls.background) ? controls.background : null;
@@ -620,31 +621,7 @@ function boundedCitedEvidence(
   answer: string,
   snapshot: OpenRagAnswerReplaySnapshot
 ): OpenRagProductAnswer["citedEvidence"] {
-  const handles = [...new Set(
-    [...answer.matchAll(/\[(K[1-9][0-9]{0,3})\]/gu)].map((match) => match[1]!)
-  )];
-  if (handles.length > 96) throw new Error("open_rag_answer_citation_limit_invalid");
-  const byHandle = new Map(snapshot.evidence.items.map((item) => [item.handle, item]));
-  const perItemLimit = Math.min(12_000, Math.floor(96_000 / Math.max(1, handles.length)));
-  return Object.freeze(handles.map((handle) => {
-    const item = byHandle.get(handle);
-    if (!item) throw new Error("open_rag_answer_cited_evidence_missing");
-    const original = item.text;
-    const marker = "\n...[middle omitted by benchmark judge budget]...\n";
-    const truncated = original.length > perItemLimit;
-    const available = perItemLimit - marker.length;
-    const providerEvidence = truncated
-      ? `${original.slice(0, Math.ceil(available / 2))}${marker}${
-          original.slice(-Math.floor(available / 2))}`
-      : original;
-    return Object.freeze({
-      handle,
-      locator: item.locator || null,
-      providerEvidence,
-      providerEvidenceTruncated: truncated,
-      sourceLabel: item.sourceLabel || null
-    });
-  }));
+  return boundedOpenRagCitedEvidence(answer, snapshot.evidence.items);
 }
 
 function evidenceFacts(input: Readonly<{
@@ -1040,7 +1017,7 @@ function createLiveRuntime(input: Readonly<{
   });
 }
 
-async function readPrivateJson(path: string): Promise<unknown> {
+export async function readPrivateJson(path: string): Promise<unknown> {
   const privatePath = await assertIgnoredPrivatePath(path);
   try {
     return JSON.parse(await readFile(privatePath, "utf8")) as unknown;
@@ -1052,7 +1029,7 @@ async function readPrivateJson(path: string): Promise<unknown> {
   }
 }
 
-async function loadPinnedBundle() {
+export async function loadPinnedBundle() {
   const questionPath = process.env.AIQSA_OPENRAG_QUESTIONS_PATH?.trim() ||
     resolve(defaultSliceRoot, "runner", "questions.json");
   const aliasPath = process.env.AIQSA_OPENRAG_ALIAS_MAP_PATH?.trim() ||
@@ -1090,7 +1067,7 @@ async function loadPinnedBundle() {
   });
 }
 
-async function admittedModelPin(input: Readonly<{
+export async function admittedModelPin(input: Readonly<{
   model: CatalogModel;
   prisma: PrismaClient;
   userId: string;
@@ -1146,16 +1123,15 @@ function selectCases(input: Readonly<{
   return Object.freeze(selected as OpenRagAnswerCase[]);
 }
 
-async function attestLiveRetrievalOrigin(input: Readonly<{
+export async function attestOpenRagCorpus(input: Readonly<{
   aliases: Readonly<Record<string, string>>;
   prisma: PrismaClient;
   userId: string;
-}>): Promise<Readonly<{
-  baseId: string;
-  origin: OpenRagAnswerReplayOrigin;
-}>> {
-  if (Number(KNOWLEDGE_ANSWER_PIPELINE_ROLLOUT_V1.v21CanaryBasisPoints) !== 10_000) {
-    throw new Error("open_rag_answer_v21_rollout_inactive");
+  retainedChunkingProfileVersion?: number;
+}>) {
+  const chunkingVersion = input.retainedChunkingProfileVersion ?? KNOWLEDGE_CHUNKING_PROFILE_VERSION;
+  if (!Number.isSafeInteger(chunkingVersion) || chunkingVersion < 1 || chunkingVersion > KNOWLEDGE_CHUNKING_PROFILE_VERSION) {
+    throw Error("open_rag_answer_chunking_profile_invalid");
   }
   const profilePath = process.env.AIQSA_OPENRAG_PROFILE_ATTESTATION_PATH?.trim() ||
     resolve(repositoryRoot, ".aiqsa", "openrag100-v8-profile-attestation.json");
@@ -1166,6 +1142,8 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
         select: {
           chunkingProfileVersion: true,
           id: true,
+          targetDimension: true,
+          vectorSpaceFingerprint: true,
           profileRevision: {
             select: {
               id: true,
@@ -1178,6 +1156,7 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
       },
       activeIndexGenerationId: true,
       archivedAt: true,
+      deletionRequestedAt: true,
       ownerUserId: true,
       sourceRevision: true,
       trashedAt: true
@@ -1186,12 +1165,12 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
   });
   const generation = base?.activeIndexGeneration;
   const revision = generation?.profileRevision;
-  if (!base || base.ownerUserId !== input.userId || base.archivedAt || base.trashedAt ||
+  if (!base || base.ownerUserId !== input.userId || base.archivedAt || base.trashedAt || base.deletionRequestedAt ||
     !generation || generation.id !== base.activeIndexGenerationId ||
     generation.status !== "active" && generation.status !== "ready" || !revision ||
     revision.id !== profile.profileRevisionId ||
     revision.revisionNumber !== profile.profileRevisionNumber ||
-    generation.chunkingProfileVersion !== KNOWLEDGE_CHUNKING_PROFILE_VERSION ||
+    generation.chunkingProfileVersion !== chunkingVersion ||
     !Number.isSafeInteger(revision.pdfParserProfileVersion) ||
     revision.pdfParserProfileVersion < 1 ||
     revision.pdfParserProfileVersion > KNOWLEDGE_PDF_PARSER_PROFILE_VERSION) {
@@ -1200,6 +1179,7 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
   const snapshot = await input.prisma.knowledgeBaseSnapshot.findFirst({
     orderBy: { createdAt: "desc" },
     select: {
+      id: true,
       evidenceFingerprint: true,
       readySourceCount: true,
       sourceCount: true,
@@ -1249,8 +1229,20 @@ async function attestLiveRetrievalOrigin(input: Readonly<{
       "PAID_OPENROUTER_AUTHORIZED") {
     throw new Error("open_rag_answer_openrouter_reranker_forbidden");
   }
+  return Object.freeze({ baseId: profile.baseId, generation, revision, snapshot, rerankerSnapshot });
+}
+
+async function attestLiveRetrievalOrigin(input: Readonly<{
+  aliases: Readonly<Record<string, string>>;
+  prisma: PrismaClient;
+  userId: string;
+}>): Promise<Readonly<{ baseId: string; origin: OpenRagAnswerReplayOrigin }>> {
+  if (Number(KNOWLEDGE_ANSWER_PIPELINE_ROLLOUT_V1.v21CanaryBasisPoints) !== 10_000) {
+    throw new Error("open_rag_answer_v21_rollout_inactive");
+  }
+  const { baseId, generation, revision, snapshot, rerankerSnapshot } = await attestOpenRagCorpus(input);
   return Object.freeze({
-    baseId: profile.baseId,
+    baseId,
     origin: Object.freeze({
       baseFingerprint: snapshot.evidenceFingerprint,
       engine: Object.freeze({

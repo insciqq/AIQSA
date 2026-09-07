@@ -43,6 +43,7 @@ import type {
 import type { PersistedToolLoopCall } from "./toolLoopPersistence";
 import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
 import { knowledgeRetrievalTool, type KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import { knowledgeRetrievalToolV2 } from "../knowledge/knowledgeTools";
 import {
   createKnowledgeFocusedRequest,
   type KnowledgeFocusedRequestV1
@@ -66,14 +67,10 @@ import {
 } from "../knowledge/answerGroundingV5";
 import { KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21 } from
   "../knowledge/answerGroundingV21";
-import { KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21 } from
-  "../knowledge/answerGroundingSelectorV21";
-import { KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION } from
-  "../knowledge/coverageScopeV6";
-import { KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION } from
-  "../knowledge/coverageScopeCompletenessV1";
-import { KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION } from
-  "../knowledge/coverageScopeClosureV2";
+import { KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V22, KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION_V3 } from
+  "../knowledge/answerGroundingSnapshotV40";
+import { KNOWLEDGE_COVERAGE_SCOPE_OPERATION_V7, KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION_V2 } from
+  "../knowledge/coverageScopeV7";
 import type { KnowledgeRunFinalizationEnvelope } from "../knowledge/evidenceRepository";
 import type {
   KnowledgeProviderDispatchLifecycle,
@@ -170,14 +167,13 @@ function plannedDraftOutput(text: string) {
 function plannedSelectorOutput() {
   return {
     claims: [{ id: "C1", supportHandles: ["K1"], verdict: "supported" }],
-    coverage: [{ id: "D1", status: "covered", supportIds: ["C1"] }],
-    extractIds: [],
+    coverage: [{ id: "D1", status: "covered", contributionIds: ["C1"] }],
     insufficientReason: "not_applicable",
-    version: 1
+    version: 2
   } as const;
 }
 
-function plannedScopeV6Output() {
+function plannedScopeV7Output() {
   return {
     evidenceUnits: [{
       findings: [{
@@ -189,21 +185,22 @@ function plannedScopeV6Output() {
     }],
     jointFindings: [],
     unsupportedDimensions: [],
-    version: 6
+    overflow: { pending: [], unparsedRemainder: false, version: 1 },
+    version: 7
   } as const;
 }
 
 function plannedScopeClosureOutput() {
   return {
     decisions: [{ id: "D1", status: "closed" }],
-    version: 2
+    version: 3
   } as const;
 }
 
 function plannedCurrentKnowledgeOutput(call: number, text: string) {
   if (call === 1) return plannedDraftOutput(text);
-  if (call === 2) return plannedScopeV6Output();
-  if (call === 3) return { additions: [], version: 1 } as const;
+  if (call === 2) return plannedScopeV7Output();
+  if (call === 3) return { additions: [], overflow: { pending: [], unparsedRemainder: false, version: 1 }, version: 2 } as const;
   if (call === 4) return plannedSelectorOutput();
   if (call === 5) return plannedScopeClosureOutput();
   throw new Error("current_knowledge_operation_fixture_invalid");
@@ -211,10 +208,10 @@ function plannedCurrentKnowledgeOutput(call: number, text: string) {
 
 const CURRENT_KNOWLEDGE_OPERATION_NAMES = [
   KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21,
-  KNOWLEDGE_COVERAGE_SCOPE_V6_OPERATION,
-  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION,
-  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V21,
-  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_V2_OPERATION
+  KNOWLEDGE_COVERAGE_SCOPE_OPERATION_V7,
+  KNOWLEDGE_COVERAGE_SCOPE_COMPLETENESS_OPERATION_V2,
+  KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V22,
+  KNOWLEDGE_COVERAGE_SCOPE_CLOSURE_OPERATION_V3
 ] as const;
 
 function projectAdmission(): ProjectRunAdmission {
@@ -926,6 +923,7 @@ function createRepository(options: RepositoryOptions = {}) {
   let toolCallSequence = 0;
   let chatUpdateLoads = 0;
   const repository: RunExecutionRepository = {
+    async loadCheckpointedToolLoopRun() { return null; },
     async advanceToolLoopCallBatch() {
       return "advanced";
     },
@@ -1024,6 +1022,11 @@ function createRepository(options: RepositoryOptions = {}) {
       if (!options.groundingResult) {
         throw new Error("knowledge_grounding_fixture_missing");
       }
+      return knowledgeFinalizationEnvelope(options.groundingResult);
+    },
+    async groundKnowledgeEvidenceAnswer() {
+      if (options.groundingError) throw options.groundingError;
+      if (!options.groundingResult) throw Error("knowledge_grounding_fixture_missing");
       return knowledgeFinalizationEnvelope(options.groundingResult);
     },
     async groundKnowledgeAnswerV21() {
@@ -2662,7 +2665,7 @@ describe("run execution", () => {
     })]);
   });
 
-  it("runs one focused retrieval followed by the current hidden grounding pipeline", async () => {
+  it.each([undefined, 2, 3, 4, 5, 6, 7] as const)("runs one focused retrieval with the frozen hidden workflow (%s)", async (workflowVersion) => {
     const finalText = "Supported answer [K1]";
     const repository = createRepository({
       groundingResult: structuralGroundingResult(finalText)
@@ -2682,11 +2685,13 @@ describe("run execution", () => {
       return providerResult({ finalText: providerText });
     });
 
+    const prepared = focusedKnowledgePreparedData();
+    if (workflowVersion !== undefined) prepared.normalizedRequest.knowledgeAnswerWorkflowVersion = workflowVersion;
     const body = await createRunExecutionResponse(executionInput({
       adapter,
       knowledgeExecutor: executor,
       knowledgeProviderDispatch: dispatch.lifecycle,
-      prepared: focusedKnowledgePreparedData(),
+      prepared,
       repository: repository.repository
     })).text();
     const events = parseSse(body);
@@ -2704,11 +2709,13 @@ describe("run execution", () => {
     expect(providerRequests[0]?.prompt.system).toContain(
       '<aiqsa_knowledge_answer_draft_contract version="21">'
     );
+    expect(providerRequests[0]?.prompt.system?.includes(workflowVersion === 7 ? "Every claim text is one literal plain-text line" : "Every claim text must be a single plain-text line."))
+      .toBe(workflowVersion !== undefined);
     expect(providerRequests[1]?.prompt.system).toContain(
-      '<aiqsa_knowledge_coverage_scope_contract version="6">'
+      workflowVersion === 7 ? '<aiqsa_knowledge_coverage_scope_partial_evidence_contract version="1">' : '<aiqsa_knowledge_coverage_scope_contract version="7">'
     );
     expect(providerRequests[3]?.prompt.system).toContain(
-      '<aiqsa_knowledge_grounded_selector_contract version="21">'
+      '<aiqsa_knowledge_grounded_selector_contract version="22">'
     );
     expect(repository.groundingAnswers).toEqual([]);
     expect(repository.completeRuns).toHaveLength(1);
@@ -2972,8 +2979,8 @@ describe("run execution", () => {
     expect(repository.failedRuns).toEqual([
       expect.objectContaining({
         error: {
-          code: "knowledge_retrieval_failed",
-          message: "Knowledge retrieval failed."
+          code: "opensearch_timeout",
+          message: "Knowledge search timed out. Try again later."
         }
       })
     ]);
@@ -3069,6 +3076,120 @@ describe("run execution", () => {
     ]);
     expect(dispatch.order).toEqual(CURRENT_KNOWLEDGE_OPERATION_NAMES.flatMap(() =>
       ["prepare", "dispatch", "settle"]));
+  });
+
+  it.each([
+    [8, undefined, undefined, undefined],
+    [9, undefined, undefined, undefined],
+    [9, 2, 2, undefined],
+    [10, 2, 3, undefined],
+    [11, 2, 3, undefined],
+    [11, 3, 3, undefined],
+    [11, 3, 4, undefined],
+    [11, 3, 5, undefined],
+    [11, 3, 5, 1]
+  ] as const)("composes and reviews Knowledge with workflow %s, search instructions %s, packing %s and review repair %s", async (workflowVersion, knowledgeSearchInstructionVersion, knowledgeEvidencePackingVersion, knowledgeReviewRepairFeedbackVersion) => {
+    const repository = createRepository({ groundingResult: structuralGroundingResult("Reviewed answer [K1].") });
+    const finalize = vi.spyOn(repository.repository, "groundKnowledgeEvidenceAnswer");
+    const legacy = vi.spyOn(repository.repository, "groundKnowledgeAnswerV21");
+    const { execute, executor } = toolLoopKnowledgeExecutor();
+    const dispatch = createKnowledgeProviderDispatchRecorder();
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{
+        name: KNOWLEDGE_SEARCH_TOOL_NAME, id: "knowledge-call-1", arguments: { query: "retention", sourceAliases: [] }
+      }] });
+      if (requests.length === 2) return providerResult({ finalText: "AIQSA_KNOWLEDGE_RETRIEVAL_COMPLETE" });
+      return providerResult({ finalText: JSON.stringify(requests.length === 3
+        ? { version: 1, blocks: [{ kind: "paragraph", text: "A supported answer.", evidenceHandles: ["K1"] }] }
+        : workflowVersion === 11 ? { version: 2, blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: ["K1"], reason: "" }],
+          analysisComplete: true, requirements: [{ requirement: "Explain retention.", status: "answered", blockIds: ["B1"], correctionEvidenceHandles: [], gap: "" }], followUps: [] }
+        : { version: 1, blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: ["K1"] }],
+          coverage: "complete", analysisComplete: true, missingInformation: [], followUps: [] }) });
+    });
+    const base = preparedData({ knowledgeBaseIds: ["base-1"], modelId: "openai-answer-model", provider: "openai" });
+    const searchPolicy = knowledgeSearchInstructionVersion === undefined ? {} : { knowledgeSearchInstructionVersion };
+    const packingPolicy = knowledgeEvidencePackingVersion === undefined ? {} : { knowledgeEvidencePackingVersion };
+    const repairPolicy = knowledgeReviewRepairFeedbackVersion === undefined ? {} : { knowledgeReviewRepairFeedbackVersion };
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, knowledgeAnswerWorkflowVersion: workflowVersion, ...searchPolicy, ...packingPolicy, ...repairPolicy },
+      providerRequest: { ...base.providerRequest, knowledgeAnswerWorkflowVersion: workflowVersion, ...searchPolicy, ...packingPolicy, ...repairPolicy } };
+    const response = await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository,
+      knowledgeExecutor: executor, knowledgeProviderDispatch: dispatch.lifecycle })).text();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(4);
+    expect(dispatch.prepare.mock.calls.map(([input]) => input.purpose)).toEqual(workflowVersion === 11
+      ? ["knowledge_evidence_compose_v2", "knowledge_evidence_review_v2"] : ["knowledge_evidence_compose_v1", "knowledge_evidence_review_v1"]);
+    for (const [input] of dispatch.prepare.mock.calls) {
+      if (knowledgeReviewRepairFeedbackVersion === 1) expect(input.acceptedRequest).toMatchObject({ repairFeedbackVersion: 1 });
+      else expect(input.acceptedRequest).not.toHaveProperty("repairFeedbackVersion");
+    }
+    for (const request of requests.slice(0, 2)) {
+      expect(request.knowledgeSearchInstructionVersion).toBe(knowledgeSearchInstructionVersion);
+      expect(request.knowledgeEvidencePackingVersion).toBe(knowledgeEvidencePackingVersion);
+      expect(request.tools?.find(tool => tool.name === KNOWLEDGE_SEARCH_TOOL_NAME)?.description)
+        .toBe((knowledgeSearchInstructionVersion !== undefined ? knowledgeRetrievalToolV2 : knowledgeRetrievalTool).description);
+    }
+    expect(finalize).toHaveBeenCalledOnce();
+    expect(legacy).not.toHaveBeenCalled();
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(response).not.toContain("A supported answer.");
+  });
+
+  it.each([9, 10, 11] as const)("uses reviewed gaps to retrieve new evidence before revising an ordinary answer (%s)", async workflowVersion => {
+    const repository = createRepository({ groundingResult: structuralGroundingResult("Reviewed answer [K1] [K2].") });
+    const initial = knowledgeEvidence();
+    const { execute, executor } = toolLoopKnowledgeExecutor(initial);
+    const moreDraft = { ...initial, invocationOrdinal: 2, results: initial.results.map(item => ({ ...item,
+      chunkId: "chunk-2", handle: "K2", includedText: "The missing procedural step.",
+      includedTextBytes: Buffer.byteLength("The missing procedural step."), sourceTextBytes: Buffer.byteLength("The missing procedural step.") })) };
+    const more = { ...moreDraft, providerText: knowledgeToolResultText(moreDraft) };
+    execute.mockImplementation(async call => {
+      const evidence = call.id.startsWith("knowledge-review-v1-") ? more : initial;
+      return { callId: call.id, name: call.name, status: "complete", content: knowledgeToolResultContent(evidence),
+        rawPreview: { knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION, knowledgeRetrieval: evidence, providerCall: true } };
+    });
+    const base = preparedData({ knowledgeBaseIds: ["base-1"], modelId: "openai-answer-model", provider: "openai" });
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, knowledgeAnswerWorkflowVersion: workflowVersion },
+      providerRequest: { ...base.providerRequest, knowledgeAnswerWorkflowVersion: workflowVersion } };
+    repository.repository.loadCheckpointedToolLoopRun = async ({ runId, userId }) => ({
+      assistantMessageId: "assistant-1", assistantText: null, calls: [...repository.toolCalls.values()], chatId: "chat-1",
+      checkpoint: { version: 2, phase: "provider_running", roundIndex: 2, providerContinuation: null, providerCursor: null, answerRoundUsage: [] },
+      id: runId, userId, status: "streaming", modelId: prepared.normalizedRequest.modelId, provider: "openai", providerResponseId: null,
+      normalizedRequest: prepared.normalizedRequest, knowledgeScope: { bindings: [], budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+        exclusions: [], knowledgePlan: prepared.normalizedRequest.knowledgePlan }
+    });
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      const step = requests.length;
+      if (step === 1) return providerResult({ finalText: "", toolCalls: [{ name: KNOWLEDGE_SEARCH_TOOL_NAME,
+        id: "first-search", arguments: { query: "procedure", sourceAliases: [] } }] });
+      if (step === 2) return providerResult({ finalText: "AIQSA_KNOWLEDGE_RETRIEVAL_COMPLETE" });
+      return providerResult({ finalText: JSON.stringify(step === 3 || step === 5
+        ? { version: 1, blocks: [{ kind: "paragraph", text: step === 3 ? "The first supported step." : "The complete supported procedure.", evidenceHandles: step === 3 ? ["K1"] : ["K1", "K2"] }] }
+        : workflowVersion === 11 ? { version: 2, blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: step === 4 ? ["K1"] : ["K1", "K2"], reason: "" }],
+          analysisComplete: true, requirements: [{ requirement: "Explain the complete procedure.", status: step === 4 ? "missing_evidence" : "answered",
+            blockIds: ["B1"], correctionEvidenceHandles: [], gap: step === 4 ? "The final step." : "" }],
+          followUps: step === 4 ? [{ query: "procedure final step", sourceAliases: [], requirementIds: ["R1"] }] : [] }
+        : { version: 1, blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: step === 4 ? ["K1"] : ["K1", "K2"] }],
+          coverage: step === 4 ? "partial" : "complete", analysisComplete: true,
+          missingInformation: step === 4 ? ["The final step."] : [],
+          followUps: step === 4 ? [{ query: "procedure final step", sourceAliases: [] }] : [] }) });
+    });
+    const dispatch = createKnowledgeProviderDispatchRecorder();
+    await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository,
+      knowledgeExecutor: executor, knowledgeProviderDispatch: dispatch.lifecycle })).text();
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(requests).toHaveLength(6);
+    const suffix = workflowVersion === 11 ? "v2" : "v1";
+    expect(dispatch.prepare.mock.calls.map(([input]) => input.purpose)).toEqual([
+      `knowledge_evidence_compose_${suffix}`, `knowledge_evidence_review_${suffix}`,
+      `knowledge_evidence_compose_${suffix}`, `knowledge_evidence_review_${suffix}`
+    ]);
   });
 
   it("settles parallel Knowledge and Search calls before one continuation", async () => {
@@ -3289,12 +3410,14 @@ describe("run execution", () => {
       .not.toContain(internalFailure);
   });
 
-  it("durably settles a local Knowledge deadline before continuing the tool loop", async () => {
+  it.each(["knowledge_retrieval_aborted", "knowledge_search_projection_incomplete", "opensearch_connection_failed",
+    "opensearch_authentication_failed", "opensearch_configuration_invalid", "opensearch_index_incompatible", "opensearch_rate_limited"])(
+    "durably preserves %s through tool result and terminal failure", async (failureCode) => {
     const finalText = "Knowledge retrieval was unavailable.";
     const repository = createRepository({
       groundingResult: structuralGroundingResult(finalText)
     });
-    const deadline = new Error("knowledge_retrieval_aborted");
+    const deadline = new Error(failureCode);
     deadline.name = "AbortError";
     const { executor: baseExecutor } = toolLoopKnowledgeExecutor();
     const execute = vi.fn<KnowledgeToolExecutor["execute"]>(async () => {
@@ -3329,13 +3452,16 @@ describe("run execution", () => {
 
     expect(execute).toHaveBeenCalledOnce();
     expect(providerRequests).toHaveLength(2);
-    expect(JSON.stringify(providerRequests[1]?.providerToolMessages))
-      .toContain("knowledge_retrieval_failed");
+    const persistedFailureCode = failureCode === "knowledge_retrieval_aborted" ? "opensearch_timeout" : failureCode;
+    expect(JSON.stringify(providerRequests[1]?.providerToolMessages)).toContain("Knowledge");
     expect([...repository.toolCalls.values()]).toEqual([
-      expect.objectContaining({ result: expect.anything(), state: "error" })
+      expect.objectContaining({ result: expect.objectContaining({ rawPreview: { knowledgeFailure: expect.objectContaining({
+        code: persistedFailureCode, mappingVersion: 1, version: 1
+      }) } }), state: "error" })
     ]);
-    expect(repository.completeRuns).toHaveLength(1);
-    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(0);
+    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: persistedFailureCode }) })]);
+    expect(JSON.stringify(repository.failedRuns)).not.toContain("bounded private lookup");
   });
 
   it("durably settles a classified Knowledge outage and exposes only its safe result", async () => {

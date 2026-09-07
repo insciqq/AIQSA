@@ -6,11 +6,14 @@ export const KNOWLEDGE_SEARCH_INDEX_NAME = "aiqsa-knowledge-passages-v1" as cons
 export const KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION = 1 as const;
 export const KNOWLEDGE_SEARCH_MAPPING_VERSION = 1 as const;
 export const KNOWLEDGE_SEARCH_ANALYZER_PROFILE = "standard_v1" as const;
-export const KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS = 60_000;
+export const KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS = 120_000;
 export const KNOWLEDGE_SEARCH_MAX_HITS_PER_VARIANT = 64;
 export const KNOWLEDGE_SEARCH_MAX_QUERY_VARIANTS = 2;
+export const KNOWLEDGE_SEARCH_MAX_MERGED_HITS =
+  KNOWLEDGE_SEARCH_MAX_HITS_PER_VARIANT * KNOWLEDGE_SEARCH_MAX_QUERY_VARIANTS;
 export const KNOWLEDGE_SEARCH_BULK_MAX_DOCUMENTS = 500;
 export const KNOWLEDGE_SEARCH_BULK_MAX_BYTES = 5 * 1024 * 1024;
+export const KNOWLEDGE_SEARCH_QUERY_MAX_BYTES = 16 * 1024 * 1024;
 
 export const KNOWLEDGE_SEARCH_FIELD_WEIGHTS = Object.freeze({
   body: 1,
@@ -38,6 +41,7 @@ export const KNOWLEDGE_SEARCH_INDEX_DEFINITION = Object.freeze({
   settings: {
     index: {
       max_result_window: KNOWLEDGE_SEARCH_MAX_HITS_PER_VARIANT,
+      max_terms_count: KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS,
       number_of_replicas: 0,
       number_of_shards: 1,
       similarity: {
@@ -146,7 +150,9 @@ export function mergeKnowledgeBm25Variants(
       knowledgeSearchDocumentId(left.identity).localeCompare(
         knowledgeSearchDocumentId(right.identity)
       ))
-    .slice(0, KNOWLEDGE_SEARCH_MAX_HITS_PER_VARIANT)
+    // Each variant is already bounded. Preserve its candidates until the
+    // common lexical/dense/exact pool is selected and reranked; applying one
+    // variant's limit here silently discards the other query's evidence.
     .map((entry, index) => Object.freeze({
       ...entry.identity,
       rank: index + 1,

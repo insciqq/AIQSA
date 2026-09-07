@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createKnowledgeTableDocumentContext } from "./documentContext";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
+import { knowledgeEvidenceOccurrenceKeyV1 } from "./evidenceOccurrence";
 import {
   KNOWLEDGE_SIGNAL_RANK_MAX,
   type KnowledgeRetrievalLane
@@ -10,6 +11,7 @@ import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFi
 type CoreClient = Parameters<typeof executeKnowledgeRetrievalCore>[0];
 type MockCoreClient = CoreClient & Readonly<{
   $queryRaw: ReturnType<typeof vi.fn>;
+  $querySemantic: ReturnType<typeof vi.fn>;
   vectors: readonly Readonly<{
     bindingOrdinal: number;
     indexGenerationId: string;
@@ -99,9 +101,10 @@ function mockClient(scopes: readonly unknown[], rows: readonly unknown[]): MockC
     };
   });
   return {
+    $querySemantic: vi.fn().mockResolvedValue([]),
     $queryRaw: vi.fn()
       .mockResolvedValueOnce([...scopes])
-      .mockResolvedValueOnce([{ candidates: [...rows], scopes: [...scopes] }]),
+      .mockResolvedValueOnce([{ candidates: [...rows], scopeVerified: true, semanticRevalidatedCount: 0 }]),
     vectors
   } as unknown as MockCoreClient;
 }
@@ -116,7 +119,7 @@ async function execute(
 ) {
   return executeKnowledgeRetrievalCore(client, {
     candidateLimit: 64,
-    excludedContentHashes: [],
+    excludedOccurrenceKeys: [],
     query: "canonical source evidence",
     resultLimit: 8,
     runId: "run-1",
@@ -137,7 +140,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
     const client = mockClient([admitted], []);
     client.$queryRaw.mockReset()
       .mockResolvedValueOnce([admitted])
-      .mockResolvedValueOnce([{ candidates: [], scopes: [admitted] }])
+      .mockResolvedValueOnce([{ candidates: [], scopeVerified: true, semanticRevalidatedCount: 0 }])
       .mockResolvedValueOnce([row({
         artifactId: "source-artifact-1",
         baseName: "Policies",
@@ -166,6 +169,17 @@ describe("Prisma retrieval core canonical Source identity", () => {
 
     expect(lexicalSearch).toHaveBeenCalledOnce();
     expect(client.$queryRaw).toHaveBeenCalledTimes(3);
+    const focusedQuery = client.$querySemantic.mock.calls[0]![0] as {
+      strings: readonly string[];
+      values: readonly unknown[];
+    };
+    expect(sqlText(focusedQuery)).toContain(
+      'jsonb_object_agg(accepted."indexArtifactId", true)'
+    );
+    expect(sqlText(focusedQuery)).toContain(
+      'SELECT scope."indexArtifactMap" FROM accepted_scope AS scope'
+    );
+    expect(focusedQuery.values).toContainEqual([indexArtifactId]);
     expect(sqlText(client.$queryRaw.mock.calls[2]![0])).toContain(
       'chunk."indexArtifactId" = hit."indexArtifactId"'
     );
@@ -174,6 +188,37 @@ describe("Prisma retrieval core canonical Source identity", () => {
       signals: [{ lane: "passage_bm25", rank: 1 }]
     }]);
     expect(result.lexicalBackendEvidence.backendKind).toBe("opensearch_bm25_v1");
+  });
+
+  it.each([false, true])("revalidates the full merged query pool before final selection (missing tail: %s)", async (missingTail) => {
+    const indexArtifactId = "hierarchy-1";
+    const admitted = { ...scope(0, "Policies", "base-policies"), acceptedIndexArtifactIds: [indexArtifactId] };
+    const hits = Array.from({ length: 128 }, (_, index) => ({
+      contentHash: "a".repeat(64), indexArtifactId, passageId: `passage-${index}`, rank: index + 1,
+      score: 1 / (61 + index), sourceVersionId: "source-version-1"
+    }));
+    const client = mockClient([admitted], []);
+    client.$queryRaw.mockReset()
+      .mockResolvedValueOnce([admitted])
+      .mockResolvedValueOnce([{ candidates: [], scopeVerified: true, semanticRevalidatedCount: 0 }])
+      .mockResolvedValueOnce(hits.slice(0, missingTail ? -1 : undefined).map((hit, index) => row({
+        artifactId: "source-artifact-1", baseName: "Policies", bindingOrdinal: 0,
+        chunkId: hit.passageId, chunkIndex: index, knowledgeBaseId: "base-policies",
+        searchIndexArtifactId: indexArtifactId, sourceId: "source-1", sourceVersionId: hit.sourceVersionId,
+        laneRank: hit.rank, rawScore: hit.score
+      })));
+    const result = execute(client, { lexicalSearch: async () => ({
+      evidence: knowledgeLexicalBackendEvidenceFixture({ candidateCount: 128, queryVariantCount: 2 }), hits
+    }) });
+    if (missingTail) await expect(result).rejects.toThrow("knowledge_search_candidate_revalidation_failed");
+    else {
+      const selected = await result;
+      expect(selected.lexicalBackendEvidence.candidateCount).toBe(128);
+      expect(selected.passages.length).toBeGreaterThan(0);
+      expect(selected.passages.length).toBeLessThanOrEqual(16);
+      expect(selected.candidateCount).toBe(64);
+    }
+    expect(client.$queryRaw).toHaveBeenCalledTimes(3);
   });
 
   it("fails closed when the OpenSearch projection is incomplete", async () => {
@@ -192,22 +237,52 @@ describe("Prisma retrieval core canonical Source identity", () => {
     expect(client.$queryRaw).toHaveBeenCalledOnce();
   });
 
-  it("fails closed on an unavailable OpenSearch request without a PostgreSQL lexical retry", async () => {
+  it.each(["opensearch_timeout", "opensearch_connection_failed", "opensearch_authentication_failed",
+    "opensearch_configuration_invalid", "opensearch_index_incompatible", "opensearch_rate_limited"])(
+    "preserves %s without a lexical or dense-only fallback", async (code) => {
     const admitted = {
       ...scope(0, "Policies", "base-policies"),
       acceptedIndexArtifactIds: ["hierarchy-1"]
     };
     const client = mockClient([admitted], []);
     const lexicalSearch = vi.fn(async () => {
-      throw new Error("opensearch_connection_failed");
+      throw new Error(code);
     });
 
     await expect(execute(client, { lexicalSearch })).rejects.toThrow(
-      "opensearch_connection_failed"
+      code
     );
     expect(lexicalSearch).toHaveBeenCalledOnce();
     expect(client.$queryRaw).toHaveBeenCalledTimes(2);
   });
+
+  it("rechecks readiness before external search and never accepts a changed scope", async () => {
+    const admitted = { ...scope(0, "Policies", "base-1"), acceptedIndexArtifactIds: ["hierarchy-1"] };
+    const client = mockClient([admitted], []);
+    client.$queryRaw.mockReset().mockResolvedValueOnce([admitted])
+      .mockResolvedValueOnce([{ candidates: [], scopeVerified: false, semanticRevalidatedCount: 0 }]);
+    const lexicalSearch = vi.fn();
+    await expect(execute(client, { lexicalSearch })).rejects.toMatchObject({
+      code: "knowledge_retrieval_scope_changed", scopeFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u)
+    });
+    expect(lexicalSearch).not.toHaveBeenCalled();
+    expect(client.$queryRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([undefined, null, "true", 1])(
+    "requires an explicit SQL scope proof before external search (%s)", async (scopeVerified) => {
+      const admitted = scope(0, "Policies", "base-1");
+      const client = mockClient([admitted], []);
+      client.$queryRaw.mockReset().mockResolvedValueOnce([admitted])
+        .mockResolvedValueOnce([{ candidates: [], scopeVerified, semanticRevalidatedCount: 0, scopes: [admitted] }]);
+      const lexicalSearch = vi.fn();
+      await expect(execute(client, { lexicalSearch })).rejects.toThrow(
+        "knowledge_retrieval_envelope_invalid"
+      );
+      expect(lexicalSearch).not.toHaveBeenCalled();
+      expect(client.$queryRaw).toHaveBeenCalledTimes(2);
+    }
+  );
 
   it("fails closed when any OpenSearch identity misses canonical revalidation", async () => {
     const admitted = {
@@ -217,7 +292,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
     const client = mockClient([admitted], []);
     client.$queryRaw.mockReset()
       .mockResolvedValueOnce([admitted])
-      .mockResolvedValueOnce([{ candidates: [], scopes: [admitted] }])
+      .mockResolvedValueOnce([{ candidates: [], scopeVerified: true, semanticRevalidatedCount: 0 }])
       .mockResolvedValueOnce([]);
     const lexicalSearch = vi.fn(async () => ({
       evidence: knowledgeLexicalBackendEvidenceFixture(),
@@ -286,12 +361,12 @@ describe("Prisma retrieval core canonical Source identity", () => {
     const queryText = sqlText(query);
     expect(queryText).toContain("exact_query_values AS MATERIALIZED");
     expect(queryText).toContain("exact_match_frequencies AS MATERIALIZED");
+    expect(queryText).toContain("metadata_runtime_settings AS MATERIALIZED");
+    expect(queryText).toContain('entry."normalizedValue" %>');
     expect(queryText).toContain('PARTITION BY exact_match."bindingOrdinal", exact_match."normalizedValue"');
     expect(queryText).toContain('sum(1.0 / exact_match."matchFrequency")');
     expect(queryText).toContain("KnowledgeArtifactExactEntry");
     expect(queryText).toContain("unnest(");
-    expect(queryText).toContain('"modelSimpleQuery"');
-    expect(queryText).toContain('"anchorSimpleQuery"');
     expect(query.values).toEqual(expect.arrayContaining(["safe-2718", "2026-08-20"]));
     expect(result.passages).toHaveLength(1);
     expect(result.passages[0]).toMatchObject({
@@ -318,7 +393,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
       })
     });
 
-    const candidateQuery = client.$queryRaw.mock.calls[1]![0] as {
+    const candidateQuery = client.$querySemantic.mock.calls[0]![0] as {
       strings: readonly string[];
       values: readonly unknown[];
     };
@@ -326,12 +401,16 @@ describe("Prisma retrieval core canonical Source identity", () => {
     expect(candidateSql).toContain(
       'FROM "KnowledgeArtifactPassageEmbedding" AS embedding'
     );
-    expect(candidateSql).toContain('embedding."indexArtifactId" = ANY(');
+    expect(candidateSql).toContain(
+      'SELECT scope."indexArtifactMap" FROM accepted_scope AS scope'
+    );
+    expect(candidateSql).toContain(
+      'jsonb_object_agg(accepted."indexArtifactId", true)'
+    );
     expect(candidateSql).not.toContain("FROM scoped_passages AS scoped");
-    expect(candidateQuery.values).toEqual(expect.arrayContaining([
-      "hierarchy-allowed-1",
-      "hierarchy-allowed-2"
-    ]));
+    expect(candidateQuery.values).toContainEqual([
+      "hierarchy-allowed-1", "hierarchy-allowed-2"
+    ]);
   });
 
   it("filters a weak nearest neighbor before fusion and returns an empty ranking", async () => {
@@ -386,7 +465,10 @@ describe("Prisma retrieval core canonical Source identity", () => {
     ]);
 
     const result = await execute(client, {
-      excludedContentHashes: ["a".repeat(64)]
+      excludedOccurrenceKeys: [knowledgeEvidenceOccurrenceKeyV1({
+        chunkId: "chunk-prior", documentId: "source-policy",
+        documentVersionId: "version-policy", sourceArtifactId: "artifact-policy"
+      })]
     });
 
     expect(result).toMatchObject({
@@ -396,7 +478,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
     });
     expect(result.passages[0]).not.toHaveProperty("expandedContext");
     await expect(execute(client, {
-      excludedContentHashes: ["not-a-content-hash"]
+      excludedOccurrenceKeys: ["not-a-content-hash"]
     })).rejects.toThrow("knowledge_retrieval_exclusion_invalid");
   });
 
@@ -531,11 +613,8 @@ describe("Prisma retrieval core canonical Source identity", () => {
     expect(result.passages[0]!.layoutKind).toBe("table_row");
     expect(client.$queryRaw).toHaveBeenCalledTimes(2);
     const neighborSql = sqlText(client.$queryRaw.mock.calls[1]![0]);
-    // One generic language-neutral lexical configuration only (FR-9).
-    expect(neighborSql).toContain("websearch_to_tsquery('simple'::regconfig");
-    expect(neighborSql).not.toContain("'english'::regconfig");
-    expect(neighborSql).not.toContain("'russian'::regconfig");
-    expect(neighborSql).toContain("<=>");
+    expect(sqlText(client.$querySemantic.mock.calls[0]![0])).toContain("<=>");
+    expect(neighborSql).toContain("revalidated_semantic_hits AS MATERIALIZED");
     expect(neighborSql).toContain(`60.0 + candidate."laneRank"`);
     expect(neighborSql).toContain(
       `source."documentContext" IS NULL AND neighbor."documentContext" IS NULL`

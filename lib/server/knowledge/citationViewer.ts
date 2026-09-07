@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   KNOWLEDGE_VIEWER_MAX_BLOCKS,
   KNOWLEDGE_VIEWER_MAX_BOXES,
+  KNOWLEDGE_VIEWER_MAX_RELATED_EXCERPTS,
   KNOWLEDGE_VIEWER_MAX_TABLE_CELLS,
   KNOWLEDGE_VIEWER_MAX_WORKBOOK_CELLS,
   type KnowledgeCitationViewer,
@@ -10,9 +11,10 @@ import {
   type KnowledgeViewerAvailable,
   type KnowledgeViewerBlock,
   type KnowledgeViewerBoundingBox,
+  type KnowledgeViewerRelatedExcerpt,
+  type KnowledgeViewerSourceStatus,
   type KnowledgeViewerVisualEvidence,
-  type KnowledgeViewerWorkbook,
-  type KnowledgeViewerSourceStatus
+  type KnowledgeViewerWorkbook
 } from "../../contracts/knowledgeCitations";
 import {
   decodeKnowledgeCitationHandle,
@@ -41,6 +43,7 @@ import {
   type KnowledgeVisualAnalysisResult
 } from "./visualEvidence";
 import { utils as spreadsheetUtils } from "xlsx";
+import { decodeKnowledgeExpandedContextOrderV1 } from "./parentContextExpansion";
 
 type CitationViewerClient = PrismaClient | Prisma.TransactionClient;
 
@@ -86,6 +89,7 @@ type CurrentBase = Readonly<{
 type ViewerSourceVersion = Readonly<{
   artifacts: readonly Readonly<{
     hierarchicalIndexes: readonly Readonly<{
+      id: string;
       passageIndexes: readonly Readonly<{
         contentHash: string;
         headingPath: readonly string[];
@@ -606,6 +610,44 @@ function targetBoxes(blocks: readonly KnowledgeViewerBlock[]) {
     .slice(0, KNOWLEDGE_VIEWER_MAX_BOXES);
 }
 
+/** Only the context actually included in a settled answer dispatch is eligible.
+ * Source order is an immutable index coordinate, never a page inferred from text. */
+async function relatedExcerpts(
+  client: CitationViewerClient,
+  boundaries: Prisma.JsonValue | null | undefined,
+  indexArtifactId: string | undefined,
+  pageCount: number
+): Promise<readonly KnowledgeViewerRelatedExcerpt[]> {
+  if (!indexArtifactId || pageCount < 1 || !record(boundaries) || boundaries.expandedContextState !== "included" ||
+    typeof boundaries.expandedContext !== "string" || !boundaries.expandedContext ||
+    boundaries.expandedContext.length > 64_000 || /\u0000/u.test(boundaries.expandedContext) ||
+    Buffer.byteLength(boundaries.expandedContext, "utf8") !== boundaries.expandedContextOriginalBytes ||
+    createHash("sha256").update(boundaries.expandedContext).digest("hex") !== boundaries.expandedContextOriginalHash) return [];
+  const order = decodeKnowledgeExpandedContextOrderV1(boundaries.expandedContextOrder, boundaries.expandedContext);
+  if (!order || order.segments.length > KNOWLEDGE_VIEWER_MAX_RELATED_EXCERPTS) return [];
+  const ordinals = order.segments.map((segment) => segment.sourceOrdinal);
+  if (new Set(ordinals).size !== ordinals.length) return [];
+  const rows = await client.knowledgeArtifactPassageIndex.findMany({
+    select: { headingPath: true, indexArtifactId: true, ordinal: true,
+      page: true, pageEnd: true, text: true },
+    take: ordinals.length,
+    where: { indexArtifactId, ordinal: { in: ordinals } }
+  });
+  if (rows.length !== ordinals.length) return [];
+  const result: KnowledgeViewerRelatedExcerpt[] = [];
+  for (const segment of order.segments) {
+    const row = rows.find((candidate) => candidate.ordinal === segment.sourceOrdinal);
+    const text = boundaries.expandedContext.slice(segment.start, segment.end);
+    if (!row || row.indexArtifactId !== indexArtifactId || row.text !== text ||
+      !Number.isSafeInteger(row.page) || !Number.isSafeInteger(row.pageEnd) ||
+      row.page < 1 || row.pageEnd < row.page || row.pageEnd > pageCount ||
+      row.headingPath.length > 16 || row.headingPath.some((heading) =>
+        !heading || heading.length > 256 || /\u0000/u.test(heading))) return [];
+    result.push({ headingPath: [...row.headingPath], pageEnd: row.pageEnd, pageStart: row.page, text });
+  }
+  return result;
+}
+
 function availableViewer(input: Readonly<{
   baseName: string | null;
   blocks: readonly KnowledgeViewerBlock[];
@@ -749,6 +791,7 @@ async function sourceVersionForEvidence(
           hierarchicalIndexes: {
             orderBy: { schemaVersion: "desc" },
             select: {
+              id: true,
               passageIndexes: {
                 select: {
                   contentHash: true,
@@ -907,6 +950,7 @@ async function citationFromEvidence(
   storage: StorageAdapter,
   input: Readonly<{
     access: ChatAccess;
+    dispatchedContext?: Prisma.JsonValue | null;
     item: EvidenceItem;
     runId: string;
     userId: string;
@@ -966,6 +1010,8 @@ async function citationFromEvidence(
     userId: input.userId,
     version
   });
+  const related = await relatedExcerpts(client, input.dispatchedContext,
+    artifact.hierarchicalIndexes[0]?.id, document?.pageCount ?? 0);
   return {
     citation: {
       ...availableViewer({
@@ -994,6 +1040,7 @@ async function citationFromEvidence(
         visual: visualViewer(visual),
         workbook
       }),
+      ...(related.length > 0 ? { relatedExcerpts: related } : {}),
       handle: input.item.handle
     },
     librarySourceId,
@@ -1099,6 +1146,9 @@ export async function resolveKnowledgeCitationViewer(
       assistantMessage: { select: { content: true } },
       chatId: true,
       id: true,
+      knowledgeRetrievalSession: {
+        select: { groundingResult: { select: { evidence: true } } }
+      },
       normalizedRequest: true,
       toolLoopState: true
     },
@@ -1112,8 +1162,26 @@ export async function resolveKnowledgeCitationViewer(
   if (!access) return null;
 
   if ("evidenceOrdinal" in decodedHandle) {
+    const grounding = run.knowledgeRetrievalSession?.groundingResult?.evidence;
+    const contracts = record(grounding) && record(grounding.contracts) ? grounding.contracts : null;
+    const compositionVersion = record(grounding) && contracts && Object.keys(contracts).length === 4 &&
+      contracts.settlementVersion === 1
+      ? (grounding.version === 59 || grounding.version === 57) &&
+        contracts.pipeline === "evidence_answer_review_v1" && contracts.composeVersion === 1 && contracts.reviewVersion === 1 ? 1
+        : (grounding.version === 60 || grounding.version === 58) &&
+          contracts.pipeline === "evidence_answer_review_v2" && contracts.composeVersion === 2 && contracts.reviewVersion === 2 ? 2 : null
+      : null;
+    const composition = compositionVersion !== null && record(grounding) ? grounding : null;
+    if (!composition && record(grounding) && (grounding.version === 59 || grounding.version === 60 ||
+      contracts?.pipeline === "evidence_answer_review_v1" || contracts?.pipeline === "evidence_answer_review_v2")) return null;
+    if (composition && (typeof composition.evidenceReceiptHash !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(composition.evidenceReceiptHash) ||
+      composition.finalAnswerHash !== createHash("sha256").update(messageText(run.assistantMessage?.content)).digest("hex"))) {
+      return null;
+    }
     const dispatchedItem = await client.knowledgeEvidenceDispatchManifestItem.findFirst({
       select: {
+        contextBoundaries: true,
         evidenceItem: { select: evidenceItemViewerSelect },
         manifest: { select: { retrievalSessionId: true } }
       },
@@ -1131,7 +1199,18 @@ export async function resolveKnowledgeCitationViewer(
             providerAttempt: {
               is: {
                 modelRunId: run.id,
-                purpose: "answer",
+                purpose: composition
+                  ? compositionVersion === 2 ? "knowledge_evidence_compose_v2" : "knowledge_evidence_compose_v1"
+                  : "answer",
+                // A later revision may be rejected in favor of an earlier answer.
+                // Follow the published evidence hash, not the newest attempt.
+                ...(composition ? {
+                  dispatchedAt: { not: null },
+                  evidenceReceiptHash: composition.evidenceReceiptHash as string,
+                  providerBindingKey: "answer",
+                  resultAcceptedAt: { not: null },
+                  settledAt: { not: null }
+                } : {}),
                 state: "settled"
               }
             },
@@ -1183,6 +1262,7 @@ export async function resolveKnowledgeCitationViewer(
     if (item.retrievalSessionId !== dispatchedItem.manifest.retrievalSessionId) return null;
     return citationFromEvidence(client, storage, {
       access,
+      dispatchedContext: dispatchedItem.contextBoundaries,
       item,
       runId: run.id,
       userId: input.userId

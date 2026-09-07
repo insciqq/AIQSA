@@ -19,7 +19,9 @@ import {
   KNOWLEDGE_TABLE_ROW_MAX_UTF8_BYTES,
   normalizeKnowledgeObservationValue,
   normalizeKnowledgeTableHeaderPeriodV1,
+  knowledgeTableHeaderRoleIsExplicitV1,
   type KnowledgeDocumentContextV1,
+  type KnowledgeObservationNormalizationVersion,
   type KnowledgeTableContextCell,
   type KnowledgeTableHeaderLineageV1
 } from "./documentContext";
@@ -28,11 +30,14 @@ import {
   KNOWLEDGE_CHUNKING_PROFILE_VERSION,
   KNOWLEDGE_CONSERVATIVE_FURNITURE_PROFILE_MIN_VERSION,
   KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION,
+  KNOWLEDGE_EXACT_OBSERVATION_NORMALIZATION_PROFILE_MIN_VERSION,
   KNOWLEDGE_INLINE_PAIR_PROFILE_MIN_VERSION,
   KNOWLEDGE_INLINE_REFERENCE_PROFILE_MIN_VERSION,
   KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION,
   KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION,
   KNOWLEDGE_REPEATED_TABLE_HEADER_PROFILE_MIN_VERSION,
+  KNOWLEDGE_SAFE_TABLE_HEADER_PROFILE_MIN_VERSION,
+  KNOWLEDGE_SINGLE_BUDGET_CHUNKING_PROFILE_MIN_VERSION,
   KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION
 } from "./indexProfile";
 import { isInlineReferenceMarkerText } from "./layoutInlineReferences";
@@ -385,17 +390,17 @@ function tableRowSignature(grid: TableGrid, rowIndex: number): string {
     .toLocaleLowerCase("und");
 }
 
-function tableRowHasNumericOrDateObservation(grid: TableGrid, rowIndex: number): boolean {
+function tableRowHasNumericOrDateObservation(grid: TableGrid, rowIndex: number, normalizationVersion: KnowledgeObservationNormalizationVersion): boolean {
   if (/(?<![\p{L}\p{N}])(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|[+-]?\d+(?:[.,]\d+)?%?)(?![\p{L}\p{N}])/u
     .test(tableRowLine(grid, rowIndex, 0, grid.columnCount - 1))) return true;
   return cellsForRange(grid, rowIndex, 0, grid.columnCount - 1).some((cell) => {
-    const value = normalizeKnowledgeObservationValue(cell.text);
+    const value = normalizeKnowledgeObservationValue(cell.text, normalizationVersion);
     return value.ambiguityReasons.length === 0 && value.normalizedValue !== null &&
       (value.kind === "date" || value.kind === "number" || value.kind === "number_range");
   });
 }
 
-function tableRowIsDatedSeriesHeader(grid: TableGrid, rowIndex: number): boolean {
+function tableRowIsDatedSeriesHeader(grid: TableGrid, rowIndex: number, normalizationVersion: KnowledgeObservationNormalizationVersion): boolean {
   const cells = cellsForRange(grid, rowIndex, 0, grid.columnCount - 1);
   if (cells.length < 3) return false;
   const label = cells[0]!.text.normalize("NFKC").replace(/\s+/gu, " ").trim();
@@ -403,7 +408,7 @@ function tableRowIsDatedSeriesHeader(grid: TableGrid, rowIndex: number): boolean
   // bounded year/quarter periods (or one slash-separated pair). No English/
   // Russian vocabulary is allowed to decide the chunking path.
   if (!label || !/[\p{L}\p{M}]/u.test(label) ||
-    normalizeKnowledgeObservationValue(label).kind !== "text") return false;
+    normalizeKnowledgeObservationValue(label, normalizationVersion).kind !== "text") return false;
   return cells.slice(1).every((cell) => {
     const periods = cell.text.normalize("NFKC").replace(/\s+/gu, " ").trim()
       .split(/\s*\/\s*/u);
@@ -697,7 +702,9 @@ function profile4TableSegments(
   block: KnowledgeNormalizedBlock,
   currentSizing: boolean,
   repeatedHeaderRow: number | null,
-  inlinePairs: boolean
+  inlinePairs: boolean,
+  safeHeaders: boolean,
+  normalizationVersion: KnowledgeObservationNormalizationVersion
 ): Segment[] {
   const grid = tableGrid(block);
   const nonEmptyRows = Array.from({ length: grid.rowCount }, (_, rowIndex) => rowIndex)
@@ -705,12 +712,18 @@ function profile4TableSegments(
   if (nonEmptyRows.length === 0) return [];
   const firstRow = nonEmptyRows[0]!;
   const hasFollowingObservation = nonEmptyRows.slice(1)
-    .some((rowIndex) => tableRowHasNumericOrDateObservation(grid, rowIndex));
-  const canonicalHeaderRow = repeatedHeaderRow === firstRow
+    .some((rowIndex) => tableRowHasNumericOrDateObservation(grid, rowIndex, normalizationVersion));
+  const firstCells = cellsForRange(grid, firstRow, 0, grid.columnCount - 1);
+  const headerCorroborated = !safeHeaders || repeatedHeaderRow === firstRow ||
+    tableRowIsDatedSeriesHeader(grid, firstRow, normalizationVersion) ||
+    firstCells.filter(({ text }) => knowledgeTableHeaderRoleIsExplicitV1(text))
+      .reduce((count, cell) => count + cell.columnEnd - cell.columnStart + 1, 0) >=
+      Math.min(2, grid.columnCount);
+  const canonicalHeaderRow = !headerCorroborated ? null : repeatedHeaderRow === firstRow
     ? firstRow
     : hasFollowingObservation && (
-      !tableRowHasNumericOrDateObservation(grid, firstRow) ||
-      tableRowIsDatedSeriesHeader(grid, firstRow)
+      !tableRowHasNumericOrDateObservation(grid, firstRow, normalizationVersion) ||
+      tableRowIsDatedSeriesHeader(grid, firstRow, normalizationVersion)
     )
       ? firstRow
       : null;
@@ -740,6 +753,7 @@ function profile4TableSegments(
         blockIds: Object.freeze([block.id]),
         blockStart: block.order,
         documentContext: tableDocumentContext({
+          normalizationVersion,
           blockId: block.id,
           cells,
           headerLineage: activeHeaderRow === null
@@ -789,6 +803,7 @@ function profile4TableSegments(
       blockIds: Object.freeze([block.id]),
       blockStart: block.order,
       documentContext: tableDocumentContext({
+        normalizationVersion,
         blockId: block.id,
         cells: projection.cells,
         columnEnd: projection.columnEnd,
@@ -917,7 +932,8 @@ function fieldHeadingPath(
 function profile4FieldSegments(
   document: StoredKnowledgeNormalizedDocument,
   group: KnowledgeNormalizedFieldGroup,
-  currentSizing: boolean
+  currentSizing: boolean,
+  normalizationVersion: KnowledgeObservationNormalizationVersion
 ): Segment[] {
   const headingPath = fieldHeadingPath(document, group);
   const blockOrder = Math.min(group.readingOrder, Math.max(0, document.blocks.length - 1));
@@ -962,7 +978,7 @@ function profile4FieldSegments(
     const candidates = candidateCellIds(cell.id);
     const reasons = Object.freeze(["ambiguous_role" as const]);
     return parts.map((text) => {
-      const rawValue = normalizeKnowledgeObservationValue(text).rawValue;
+      const rawValue = normalizeKnowledgeObservationValue(text, normalizationVersion).rawValue;
       if (!rawValue) throw new KnowledgeChunkingError("chunking_failed");
       const documentContext: KnowledgeDocumentContextV1 = Object.freeze({
         ambiguityReasons: reasons,
@@ -1014,7 +1030,7 @@ function profile4FieldSegments(
   }
   let fields: ReturnType<typeof createKnowledgeFieldContextSegments>;
   try {
-    fields = createKnowledgeFieldContextSegments(group);
+    fields = createKnowledgeFieldContextSegments(group, normalizationVersion);
   } catch {
     throw new KnowledgeChunkingError("chunking_failed");
   }
@@ -1049,6 +1065,7 @@ function structuralSegments(
 ): Segment[] {
   const blocks = document.blocks;
   const excluded = repeatedFurniture(document, profileVersion);
+  const normalizationVersion = profileVersion >= KNOWLEDGE_EXACT_OBSERVATION_NORMALIZATION_PROFILE_MIN_VERSION ? 2 : 1;
   const result: Segment[] = [];
   const currentSizing = profileVersion >= KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION;
   const repeatedHeaderRows = profileVersion >=
@@ -1065,7 +1082,7 @@ function structuralSegments(
   }
   for (let readingOrder = 0; readingOrder <= blocks.length; readingOrder += 1) {
     for (const group of fieldGroupsByReadingOrder.get(readingOrder) ?? []) {
-      result.push(...profile4FieldSegments(document, group, currentSizing));
+      result.push(...profile4FieldSegments(document, group, currentSizing, normalizationVersion));
     }
     const block = blocks[readingOrder];
     if (!block) continue;
@@ -1079,7 +1096,9 @@ function structuralSegments(
               block,
               currentSizing,
               repeatedHeaderRows.get(block.id) ?? null,
-              profileVersion >= KNOWLEDGE_INLINE_PAIR_PROFILE_MIN_VERSION
+              profileVersion >= KNOWLEDGE_INLINE_PAIR_PROFILE_MIN_VERSION,
+              profileVersion >= KNOWLEDGE_SAFE_TABLE_HEADER_PROFILE_MIN_VERSION,
+              normalizationVersion
             )
           : profile3TableSegments(block)
         : profileVersion >= KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION
@@ -1087,7 +1106,12 @@ function structuralSegments(
           : profile2TableSegments(block)));
       continue;
     }
-    for (const split of splitTextByTokens(block.text)) {
+    // Keep unstructured blocks whole until the final embedding-input fitter:
+    // an earlier lexical split applies a second, incompatible overlap window.
+    // tokenCount is structural metadata here, never the current budget test.
+    for (const split of profileVersion >= KNOWLEDGE_SINGLE_BUDGET_CHUNKING_PROFILE_MIN_VERSION
+      ? [{ text: block.text, tokenCount: legacyKnowledgeTokenCount(block.text) }]
+      : splitTextByTokens(block.text)) {
       result.push(Object.freeze({
         blockEnd: block.order,
         blockIds: Object.freeze([block.id]),
@@ -1108,7 +1132,8 @@ function structuralSegments(
 
 function mergeStructuralSegments(
   segments: readonly Segment[],
-  profileVersion: number
+  profileVersion: number,
+  document: StoredKnowledgeNormalizedDocument
 ): Segment[] {
   const result: Segment[] = [];
   let current: Segment | null = null;
@@ -1130,8 +1155,13 @@ function mergeStructuralSegments(
       sameHeading(current.headingPath, segment.headingPath) &&
       current.layoutKind === "body" && segment.layoutKind === "body" &&
       !cannotMerge.has(current.type) && !cannotMerge.has(segment.type) &&
-      legacyKnowledgeTokenCount(candidateText) <= KNOWLEDGE_CHUNK_MAX_TOKENS &&
-      candidateText.length <= KNOWLEDGE_CHUNK_MAX_CHARS;
+      (profileVersion >= KNOWLEDGE_SINGLE_BUDGET_CHUNKING_PROFILE_MIN_VERSION
+        ? currentEmbeddingInputFits(
+            contextPrefix(document, current, true, true, true),
+            candidateText
+          )
+        : legacyKnowledgeTokenCount(candidateText) <= KNOWLEDGE_CHUNK_MAX_TOKENS &&
+          candidateText.length <= KNOWLEDGE_CHUNK_MAX_CHARS);
     if (canMerge) {
       current = Object.freeze({
         blockEnd: segment.blockEnd,
@@ -1297,6 +1327,7 @@ function fitCurrentEmbeddingSegments(
       }
     }
     if (acceptedEnd <= start) throw new KnowledgeChunkingError("chunking_failed");
+    const fittedEnd = acceptedEnd;
     if (acceptedEnd < segment.text.length) {
       const minimumBreak = start + Math.floor((acceptedEnd - start) * 0.6);
       for (let index = acceptedEnd; index > minimumBreak; index -= 1) {
@@ -1306,7 +1337,28 @@ function fitCurrentEmbeddingSegments(
         }
       }
     }
-    const text = segment.text.slice(start, acceptedEnd).trim();
+    let text = segment.text.slice(start, acceptedEnd).trim();
+    // BPE token counts are not monotonic under suffix removal: backing up to
+    // a semantic whitespace can break a merge and make the shorter candidate
+    // exceed the budget. The binary-search endpoint itself was measured and
+    // accepted, so retain it when the preferred semantic break is not safe.
+    if (text && !currentEmbeddingInputFits(prefix, text)) {
+      acceptedEnd = fittedEnd;
+      text = segment.text.slice(start, acceptedEnd).trim();
+    }
+    // The measured endpoint may itself end in whitespace whose removal also
+    // breaks a BPE merge. Walk backward only on this exceptional path until a
+    // code-point-safe, trimmed candidate is measured inside the hard budget.
+    // This preserves fail-closed sizing without assuming tokenizer monotonicity.
+    while (text && !currentEmbeddingInputFits(prefix, text) &&
+      acceptedEnd > start + 1) {
+      acceptedEnd -= 1;
+      if (/[\uDC00-\uDFFF]/u.test(segment.text[acceptedEnd] ?? "") &&
+        /[\uD800-\uDBFF]/u.test(segment.text[acceptedEnd - 1] ?? "")) {
+        acceptedEnd -= 1;
+      }
+      text = segment.text.slice(start, acceptedEnd).trim();
+    }
     if (!text || !currentEmbeddingInputFits(prefix, text)) {
       throw new KnowledgeChunkingError("chunking_failed");
     }
@@ -1454,7 +1506,8 @@ export function chunkKnowledgeDocument(input: Readonly<{
       ? legacyCharacterSegments(input.document)
       : mergeStructuralSegments(
           structuralSegments(input.document, input.profileVersion),
-          input.profileVersion
+          input.profileVersion,
+          input.document
         );
     const currentSizing = input.profileVersion >=
       KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION;
@@ -1486,69 +1539,135 @@ export function chunkKnowledgeDocument(input: Readonly<{
   }
 }
 
+export type KnowledgeEmbeddingInput = Readonly<{
+  embeddingText: string;
+}>;
+
+export type KnowledgeEmbeddingInputBatch<T extends KnowledgeEmbeddingInput> = Readonly<{
+  batchIndex: number;
+  inputs: readonly T[];
+}>;
+
+export type KnowledgeEmbeddingBatchAccumulator<T extends KnowledgeEmbeddingInput> =
+  Readonly<{
+    finish(): readonly T[] | null;
+    /** Returns the preceding complete batch when `input` starts a new one. */
+    push(input: T): readonly T[] | null;
+  }>;
+
+/** Bounded streaming form used when a corpus cannot retain every chunk. */
+export function createKnowledgeEmbeddingBatchAccumulator<
+  T extends KnowledgeEmbeddingInput
+>(
+  profileVersion = KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+  tokenCounter?: KnowledgeTokenCounter
+): KnowledgeEmbeddingBatchAccumulator<T> {
+  const currentSizing = profileVersion >=
+    KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION;
+  const neutralFormat = profileVersion >=
+    KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION;
+  if (!Number.isSafeInteger(profileVersion) || profileVersion < 1 ||
+    profileVersion > KNOWLEDGE_CHUNKING_PROFILE_VERSION ||
+    (neutralFormat && !tokenCounter)) {
+    throw new KnowledgeChunkingError("chunking_failed");
+  }
+  let current: T[] = [];
+  let currentTokens = 0;
+  let currentBytes = 0;
+  // Exact JSON array size: two brackets, one comma between inputs, and each
+  // independently serialized string.
+  let currentRequestBytes = 2;
+
+  const take = (): readonly T[] | null => {
+    if (current.length === 0) return null;
+    const batch = Object.freeze(current);
+    current = [];
+    currentTokens = 0;
+    currentBytes = 0;
+    currentRequestBytes = 2;
+    return batch;
+  };
+
+  return Object.freeze({
+    finish: take,
+    push: (input: T) => {
+      if (!currentSizing) {
+        const completed = current.length >= KNOWLEDGE_EMBEDDING_BATCH_SIZE
+          ? take()
+          : null;
+        current.push(input);
+        return completed;
+      }
+      const tokens = neutralFormat
+        ? Math.max(1, tokenCounter!.countTokens(input.embeddingText))
+        : approximateKnowledgeTokenCount(input.embeddingText);
+      const bytes = Buffer.byteLength(input.embeddingText, "utf8");
+      const serializedBytes = Buffer.byteLength(
+        JSON.stringify(input.embeddingText),
+        "utf8"
+      );
+      if (!input.embeddingText.trim() || input.embeddingText.length >
+        Math.min(KNOWLEDGE_CHUNK_MAX_CHARS, MAX_EMBEDDING_INPUT_CHARS) ||
+        tokens > KNOWLEDGE_CHUNK_MAX_TOKENS || bytes > KNOWLEDGE_CHUNK_MAX_UTF8_BYTES ||
+        serializedBytes + 2 > MAX_EMBEDDING_REQUEST_BYTES) {
+        throw new KnowledgeChunkingError("chunking_failed");
+      }
+      const candidateRequestBytes = currentRequestBytes +
+        (current.length > 0 ? 1 : 0) + serializedBytes;
+      const exceedsBatch = current.length >= Math.min(
+        KNOWLEDGE_EMBEDDING_BATCH_SIZE,
+        MAX_EMBEDDING_BATCH_INPUTS
+      ) || currentTokens + tokens > KNOWLEDGE_EMBEDDING_BATCH_MAX_TOKENS ||
+        currentBytes + bytes > KNOWLEDGE_EMBEDDING_BATCH_MAX_UTF8_BYTES ||
+        candidateRequestBytes > MAX_EMBEDDING_REQUEST_BYTES;
+      const completed = exceedsBatch ? take() : null;
+      current.push(input);
+      currentTokens += tokens;
+      currentBytes += bytes;
+      currentRequestBytes += (current.length > 1 ? 1 : 0) + serializedBytes;
+      return completed;
+    }
+  });
+}
+
+/**
+ * Validates and batches embedding inputs independently of Source boundaries.
+ * Ordinary single-Source ingestion delegates to this primitive below; bulk
+ * preparation can tag inputs with Source/chunk identity and obtain the exact
+ * same provider-request limits without rewriting chunk text or storage rules.
+ */
+export function knowledgeEmbeddingInputBatches<T extends KnowledgeEmbeddingInput>(
+  inputs: readonly T[],
+  profileVersion = KNOWLEDGE_CHUNKING_PROFILE_VERSION,
+  tokenCounter?: KnowledgeTokenCounter
+): Array<KnowledgeEmbeddingInputBatch<T>> {
+  const batches: Array<KnowledgeEmbeddingInputBatch<T>> = [];
+  const accumulator = createKnowledgeEmbeddingBatchAccumulator<T>(
+    profileVersion,
+    tokenCounter
+  );
+  const append = (batch: readonly T[] | null) => {
+    if (batch) {
+      batches.push(Object.freeze({
+        batchIndex: batches.length,
+        inputs: batch
+      }));
+    }
+  };
+  for (const input of inputs) append(accumulator.push(input));
+  append(accumulator.finish());
+  return batches;
+}
+
 export function knowledgeEmbeddingBatches(
   chunks: readonly KnowledgeChunkPlanEntry[],
   profileVersion = KNOWLEDGE_CHUNKING_PROFILE_VERSION,
   tokenCounter?: KnowledgeTokenCounter
 ): Array<Readonly<{ batchIndex: number; chunks: readonly KnowledgeChunkPlanEntry[] }>> {
-  if (profileVersion < KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION) {
-    const legacyBatches: Array<Readonly<{
-      batchIndex: number;
-      chunks: readonly KnowledgeChunkPlanEntry[];
-    }>> = [];
-    for (let offset = 0; offset < chunks.length; offset += KNOWLEDGE_EMBEDDING_BATCH_SIZE) {
-      legacyBatches.push(Object.freeze({
-        batchIndex: Math.floor(offset / KNOWLEDGE_EMBEDDING_BATCH_SIZE),
-        chunks: Object.freeze(chunks.slice(offset, offset + KNOWLEDGE_EMBEDDING_BATCH_SIZE))
-      }));
-    }
-    return legacyBatches;
-  }
-  const neutralFormat = profileVersion >=
-    KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION;
-  if (profileVersion > KNOWLEDGE_CHUNKING_PROFILE_VERSION ||
-    (neutralFormat && !tokenCounter)) {
-    throw new KnowledgeChunkingError("chunking_failed");
-  }
-  activeTokenCounter = neutralFormat ? tokenCounter ?? null : null;
-  try {
-  const batches: Array<Readonly<{ batchIndex: number; chunks: readonly KnowledgeChunkPlanEntry[] }>> = [];
-  let current: KnowledgeChunkPlanEntry[] = [];
-  let currentTokens = 0;
-  let currentBytes = 0;
-  const flush = () => {
-    if (current.length === 0) return;
-    batches.push(Object.freeze({
-      batchIndex: batches.length,
-      chunks: Object.freeze(current)
-    }));
-    current = [];
-    currentTokens = 0;
-    currentBytes = 0;
-  };
-  for (const chunk of chunks) {
-    const tokens = sizedTokenCount(chunk.embeddingText);
-    const bytes = Buffer.byteLength(chunk.embeddingText, "utf8");
-    if (!chunk.embeddingText.trim() || chunk.embeddingText.length >
-      Math.min(KNOWLEDGE_CHUNK_MAX_CHARS, MAX_EMBEDDING_INPUT_CHARS) ||
-      tokens > KNOWLEDGE_CHUNK_MAX_TOKENS || bytes > KNOWLEDGE_CHUNK_MAX_UTF8_BYTES) {
-      throw new KnowledgeChunkingError("chunking_failed");
-    }
-    const exceedsBatch = current.length >= Math.min(
-      KNOWLEDGE_EMBEDDING_BATCH_SIZE,
-      MAX_EMBEDDING_BATCH_INPUTS
-    ) || currentTokens + tokens > KNOWLEDGE_EMBEDDING_BATCH_MAX_TOKENS ||
-      currentBytes + bytes > KNOWLEDGE_EMBEDDING_BATCH_MAX_UTF8_BYTES ||
-      Buffer.byteLength(JSON.stringify([...current, chunk].map((item) => item.embeddingText)),
-        "utf8") > MAX_EMBEDDING_REQUEST_BYTES;
-    if (exceedsBatch) flush();
-    current.push(chunk);
-    currentTokens += tokens;
-    currentBytes += bytes;
-  }
-  flush();
-  return batches;
-  } finally {
-    activeTokenCounter = null;
-  }
+  return knowledgeEmbeddingInputBatches(chunks, profileVersion, tokenCounter).map(
+    (batch) => Object.freeze({
+      batchIndex: batch.batchIndex,
+      chunks: batch.inputs
+    })
+  );
 }

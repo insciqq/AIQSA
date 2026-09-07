@@ -4,10 +4,7 @@ import { EmbeddingAdapterError, type EmbeddingAdapter } from "../providers/embed
 import { ProviderAdmissionError } from "../providerRuntime/admission";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { elapsedMilliseconds, monotonicNowMilliseconds } from "../monotonicTime";
-import {
-  OpenSearchTransportError,
-  type OpenSearchFailureCode
-} from "../search/opensearch/transport";
+import { OpenSearchTransportError } from "../search/opensearch/transport";
 import type {
   ModelToolCall,
   RunTool,
@@ -16,6 +13,7 @@ import type {
   ToolExecutor
 } from "../tools/types";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
+import { KnowledgeSearchFailure } from "./searchFailure";
 import {
   aggregateKnowledgeUsage,
   knowledgeToolResultContent,
@@ -64,7 +62,7 @@ import type {
 import type { KnowledgeBudgetReservationStopReason } from "./knowledgeBudgetReservation";
 import {
   knowledgeRetrievalTool,
-  normalizeKnowledgeQuery,
+  normalizeKnowledgeAnchorQuery,
   parseKnowledgeExecutionRequest
 } from "./knowledgeTools";
 import {
@@ -77,7 +75,7 @@ import {
   type KnowledgeDocumentLocatorV1
 } from "./documentContext";
 import type { KnowledgeCanonicalSourceProvenance } from "./canonicalSourceCandidates";
-import { KNOWLEDGE_LANE_CANDIDATE_LIMIT } from "./retrievalRanking";
+import { KNOWLEDGE_LANE_CANDIDATE_LIMIT, KNOWLEDGE_RANKING_PROFILE_VERSION } from "./retrievalRanking";
 import {
   createKnowledgeRerankStage,
   knowledgeRerankerDisabledEvidence,
@@ -100,7 +98,7 @@ export { knowledgeRetrievalTool } from "./knowledgeTools";
  * are sequential stages; this must leave headroom beyond the reranker's own
  * bounded fallback deadline instead of racing it at the same wall clock.
  */
-export const KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS = 60_000 as const;
+export const KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS = 90_000 as const;
 
 export type KnowledgeAcceptedEmbeddingRuntime = Readonly<{
   adapter: EmbeddingAdapter;
@@ -136,7 +134,7 @@ export type KnowledgeRetrievalStore = Readonly<{
     anchorQuery?: string;
     bindingOrdinals?: readonly number[];
     candidateLimit: number;
-    excludedContentHashes: readonly string[];
+    excludedOccurrenceKeys: readonly string[];
     operation: KnowledgeOperationKind;
     query: string;
     rerank?: Readonly<{
@@ -230,7 +228,7 @@ export type KnowledgeBudgetState = Readonly<{
   excludedResources?: number;
   invocationOrdinal: number;
   policy: KnowledgeBudgetPolicy;
-  priorContentHashes: readonly string[];
+  priorOccurrenceKeys: readonly string[];
   priorSourceAliases: readonly string[];
   stopReason: KnowledgeBudgetStopReason | null;
   usage: KnowledgeBudgetUsage;
@@ -307,7 +305,7 @@ function errorResult(call: ModelToolCall, code: string, message?: string): ToolE
 type KnowledgeSearchUnavailableFailureCode =
   (typeof KNOWLEDGE_SEARCH_UNAVAILABLE_FAILURE_CODES)[number];
 
-const SEARCH_INFRASTRUCTURE_FAILURE_CODES = new Set<OpenSearchFailureCode>([
+const SEARCH_INFRASTRUCTURE_FAILURE_CODES: ReadonlySet<string> = new Set([
   "opensearch_authentication_failed",
   "opensearch_connection_failed",
   "opensearch_index_incompatible",
@@ -329,7 +327,7 @@ function classifiedSearchUnavailable(error: unknown): Readonly<{
       failureCode: "knowledge_search_projection_unavailable"
     };
   }
-  if ((error instanceof OpenSearchTransportError &&
+  if (((error instanceof OpenSearchTransportError || error instanceof KnowledgeSearchFailure) &&
       SEARCH_INFRASTRUCTURE_FAILURE_CODES.has(error.code)) ||
     (error instanceof Error && error.message === "knowledge_search_candidate_revalidation_failed")) {
     return {
@@ -670,7 +668,7 @@ async function loadBudgetState(input: Readonly<{
     evidenceCount: (invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT,
     invocationOrdinal,
     policy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
-    priorContentHashes: [],
+    priorOccurrenceKeys: [],
     priorSourceAliases: [],
     stopReason: knowledgeBudgetStopReason(DEFAULT_KNOWLEDGE_BUDGET_POLICY, usage),
     usage
@@ -754,8 +752,8 @@ function currentUserAnchorQuery(
     request.operation !== "automatic_search" ||
     request.focused
   ) return null;
-  const currentUserQuery = normalizeKnowledgeQuery(
-    textFromContentBlocks(context.request.content)
+  const currentUserQuery = normalizeKnowledgeAnchorQuery(
+    textFromContentBlocks(context.request.content), context.request.knowledgeQueryAnchorVersion
   );
   return currentUserQuery && currentUserQuery !== request.query
     ? currentUserQuery
@@ -1740,7 +1738,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           ...(anchorQuery ? { anchorQuery } : {}),
           ...(filter.bindingOrdinals ? { bindingOrdinals: filter.bindingOrdinals } : {}),
           candidateLimit,
-          excludedContentHashes: budgetState.priorContentHashes,
+          excludedOccurrenceKeys: budgetState.priorOccurrenceKeys,
           operation: request.operation,
           query: request.query,
           ...(rerankExecutor
@@ -1774,7 +1772,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         ranking.candidateOrder.length !== search.candidateCount ||
         (search.candidateCount > 0 && search.passages.length === 0) ||
         lexicalBackend?.backendKind !== "opensearch_bm25_v1" ||
-        lexicalBackend.rankingProfileVersion !== 4 ||
+        lexicalBackend.rankingProfileVersion !== KNOWLEDGE_RANKING_PROFILE_VERSION ||
         lexicalBackend.status !== "complete") {
         throw new Error("knowledge_hybrid_ranking_invalid");
       }

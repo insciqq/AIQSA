@@ -1,4 +1,6 @@
 import type { ChatUpdateDataWire } from "../../contracts/chats";
+import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1 } from "../knowledge/evidenceAnswerExecutionV1";
+import { refineKnowledgeEvidence } from "./knowledgeEvidenceRefinement";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { textMessageContent } from "../../domain/content";
 import {
@@ -81,6 +83,8 @@ import {
   withAutomaticKnowledgeEvidence
 } from "../knowledge/automaticEvidence";
 import type { KnowledgeEvidenceDispatchManifestDraft } from "../knowledge/evidenceDispatchManifest";
+import { knowledgeSearchFailureCode, knowledgeSearchFailureMessage, knowledgeSearchFailureToolResult,
+  knowledgeSearchFailureFromToolResult, knowledgeScopeLimitedMessage, isKnowledgeSearchFailureCode } from "../knowledge/searchFailure";
 import type { KnowledgeEvidenceDispatchBinding } from "../knowledge/evidenceDispatchRepository";
 import { KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT } from "../knowledge/fullContext";
 import type {
@@ -109,6 +113,7 @@ import {
   KNOWLEDGE_TOOL_LOOP_DRAFT_ROUTE_INSTRUCTION
 } from "../knowledge/answerGroundingV5";
 import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
+import { knowledgeRetrievalToolsForRequest } from "../knowledge/knowledgeTools";
 import { KNOWLEDGE_FOCUSED_OPERATION_NAME } from "../knowledge/retrievalTypes";
 import {
   knowledgeEvidenceFromToolResult,
@@ -247,9 +252,11 @@ export type RunExecutionRepository = Pick<
   | "groundKnowledgeAnswer"
   | "groundKnowledgeAnswerV5"
   | "groundKnowledgeAnswerV21"
+  | "groundKnowledgeEvidenceAnswer"
   | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
   | "loadEntitlements"
+  | "loadCheckpointedToolLoopRun"
   | "loadFocusedKnowledgeRecoveryScope"
   | "loadModelPricing"
   | "markRunAnswerStarted"
@@ -532,14 +539,11 @@ function toolExecutionErrorResult(
   error: unknown,
   label: "Knowledge" | "Search" | "Tool" | "Workspace" = "Tool"
 ): ToolExecutionResult {
-  const overflowResult = label === "Knowledge"
-    ? null
-    : mcpResponseOverflowToolExecutionResult(call, error, label);
+  if (label === "Knowledge") return knowledgeSearchFailureToolResult(call, error);
+  const overflowResult = mcpResponseOverflowToolExecutionResult(call, error, label);
   if (overflowResult) return overflowResult;
 
-  const message = label === "Knowledge"
-    ? "knowledge_retrieval_failed"
-    : error instanceof Error ? error.message : `${label} execution failed`;
+  const message = error instanceof Error ? error.message : `${label} execution failed`;
 
   return {
     callId: call.id,
@@ -566,6 +570,7 @@ function toolExecutionErrorResult(
 }
 
 function safeKnowledgeFailureMessage(code: string): string {
+  if (isKnowledgeSearchFailureCode(code)) return knowledgeSearchFailureMessage(code);
   switch (code) {
     case "sources_processing":
       return "The selected Knowledge documents are still processing.";
@@ -590,6 +595,8 @@ function safeKnowledgeFailureMessage(code: string): string {
  * implementation details to the client).
  */
 function focusedKnowledgeFailureCode(error: unknown): string {
+  const searchFailure = knowledgeSearchFailureCode(error);
+  if (searchFailure) return searchFailure;
   const code = error instanceof RunPipelineError
     ? error.code
     : isRecord(error) && typeof error.code === "string"
@@ -1256,9 +1263,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
         const evidence = knowledgeEvidenceFromToolResult(result);
         if (result.status !== "complete" || !evidence) {
+          const code = knowledgeSearchFailureFromToolResult(result) ?? "knowledge_retrieval_failed";
           throw new RunPipelineError(
-            "knowledge_retrieval_failed",
-            "Focused Knowledge retrieval failed"
+            code,
+            knowledgeSearchFailureMessage(code)
           );
         }
         if (evidence.results.length < 1) {
@@ -1442,9 +1450,11 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         result: ProviderRunResult & { usageAttributions: RunUsageAttribution[] };
       }>> {
         const pipeline = selectKnowledgeAnswerPipelineForNewRun({ modelRunId: runId });
+        const evidenceAnswer = normalizedRequest.knowledgeAnswerWorkflowVersion === 8 || normalizedRequest.knowledgeAnswerWorkflowVersion === 9 || normalizedRequest.knowledgeAnswerWorkflowVersion === 10 || normalizedRequest.knowledgeAnswerWorkflowVersion === 11;
         const groundingUnavailable = !input.knowledgeProviderDispatch ||
-          (pipeline === "v20_v16" && !input.repository.groundKnowledgeAnswerV5) ||
-          (pipeline === "v21_scope_v6" && !input.repository.groundKnowledgeAnswerV21);
+          (evidenceAnswer ? !input.repository.groundKnowledgeEvidenceAnswer :
+            (pipeline === "v20_v16" && !input.repository.groundKnowledgeAnswerV5) ||
+            (pipeline === "v21_scope_v6" && !input.repository.groundKnowledgeAnswerV21));
         if (groundingUnavailable) {
           throw new RunPipelineError(
             pipeline === "v20_v16"
@@ -1466,7 +1476,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           acceptedReasoningEffort: normalizedRequest.reasoningEffort,
           params: normalizedRequest.params
         });
-        const groundingExecutionPolicy = pipeline === "v21_scope_v6"
+        const groundingExecutionPolicy = evidenceAnswer || pipeline === "v21_scope_v6"
           ? resolveKnowledgeGroundingExecutionPolicyV1({
               inheritedReasoningEffort: reasoningEffort,
               modelCapabilities: normalizedRequest.modelCapabilities,
@@ -1475,6 +1485,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 : {})
             })
           : null;
+        const workflowVersion = normalizedRequest.knowledgeAnswerWorkflowVersion;
         const executionInput = {
           authorize: authorizeKnowledgeAnswerOperation,
           draft: inputRequest.dispatchDraft,
@@ -1493,6 +1504,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           ],
           lifecycle: input.knowledgeProviderDispatch,
           modelRunId: runId,
+          ...(workflowVersion === 2 || workflowVersion === 3 || workflowVersion === 4 ||
+            workflowVersion === 5 || workflowVersion === 6 || workflowVersion === 7
+            ? { workflowVersion } : {}),
           ...(groundingExecutionPolicy
             ? { executionPolicy: groundingExecutionPolicy }
             : { reasoningEffort }),
@@ -1505,6 +1519,38 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             ? "native_strict"
             : "provider_neutral_json"
         } as const;
+        if (evidenceAnswer) {
+          const evidenceInput = { ...executionInput, executionPolicy: groundingExecutionPolicy!,
+            repairFeedbackVersion: normalizedRequest.knowledgeReviewRepairFeedbackVersion,
+            onOperationAccepted(operation: { usage: ModelRunUsage }) {
+              rememberReportedUsage(normalizedRequest.provider, normalizedRequest.modelId, operation.usage);
+            } };
+          const operationResult = normalizedRequest.knowledgeAnswerWorkflowVersion === 9 || normalizedRequest.knowledgeAnswerWorkflowVersion === 10 || normalizedRequest.knowledgeAnswerWorkflowVersion === 11
+            ? await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...evidenceInput,
+                workflowVersion: normalizedRequest.knowledgeAnswerWorkflowVersion === 10 || normalizedRequest.knowledgeAnswerWorkflowVersion === 11 ? normalizedRequest.knowledgeAnswerWorkflowVersion : undefined,
+                refineEvidence: (result, previousEvidence) => fullContextPlan ? Promise.resolve(null) : refineKnowledgeEvidence({
+                  authorize: authorizeKnowledgeAnswerOperation, executor: input.knowledgeExecutor,
+                  memoryEgress: input.memoryEgress, repository: input.repository,
+                  previousEvidence,
+                  request: input.prepared.providerRequest, result, runId, signal, userId: input.userId,
+                  async onResult(toolResult) {
+                    for (const attribution of knowledgeUsageAttributionsFromToolResult(toolResult)) {
+                      rememberReportedUsage(attribution.provider, attribution.modelId, attribution.usage);
+                    }
+                    for (const artifact of toolResult.artifacts ?? []) await emit(controller, encoder, input.repository, runId, artifact);
+                  }
+                }) })
+            : await executeKnowledgeEvidenceAnswerV1(evidenceInput);
+          const usageAttributions = operationResult.operations.map(operation => ({
+            modelId: normalizedRequest.modelId, provider: normalizedRequest.provider, usage: operation.usage
+          }));
+          const providerResponseId = operationResult.operations.at(-1)?.providerResponseId;
+          return Object.freeze({ contracts: operationResult.contracts, result: {
+            finalText: "", finalProviderResponsePreview: { ...operationResult.contracts, structuredKnowledgeAnswer: true },
+            ...(providerResponseId ? { providerResponseId } : {}),
+            usage: sumTokenUsage(usageAttributions.map(entry => entry.usage)), usageAttributions
+          } });
+        }
         const operationResult = pipeline === "v21_scope_v6"
           ? await executeKnowledgeAnswerGroundingV21(executionInput)
           : await executeKnowledgeAnswerGroundingV8(executionInput);
@@ -1512,10 +1558,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           ? operationResult.contracts.draftContractVersion !== 20 ||
             operationResult.contracts.selectorContractVersion !== 16
           : operationResult.contracts.draftContractVersion !== 21 ||
-            operationResult.contracts.selectorContractVersion !== 21 ||
+            operationResult.contracts.selectorContractVersion !== 22 ||
             !("coverageAuditorContractVersion" in operationResult.contracts) ||
-            operationResult.contracts.coverageAuditorContractVersion !== 6 ||
-            operationResult.contracts.settlementVersion !== 6;
+            operationResult.contracts.coverageAuditorContractVersion !== 7 ||
+            operationResult.contracts.settlementVersion !== 7;
         if (contractConflict) {
           throw new RunPipelineError(
             "knowledge_answer_contract_conflict",
@@ -1541,10 +1587,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             finalText: "",
             finalProviderResponsePreview: pipeline === "v21_scope_v6"
               ? {
-                  coverageAuditorContractVersion: 6,
-                  draftContractVersion: 21,
-                  selectorContractVersion: 21,
-                  settlementVersion: 6,
+                  ...operationResult.contracts,
                   structuredKnowledgeAnswer: true
                 }
               : {
@@ -1714,7 +1757,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const isSearchCall = (name: string) =>
           searchPlanRouter?.accepts(name) === true;
         const knowledgeTools = clientToolsEnabled && admittedKnowledgeReady
-          ? input.knowledgeExecutor?.tools ?? []
+          ? knowledgeRetrievalToolsForRequest(normalizedRequest, input.knowledgeExecutor?.tools ?? [])
           : [];
         const isKnowledgeCall = (name: string) =>
           knowledgeTools.length > 0 && input.knowledgeExecutor?.accepts(name) === true;
@@ -2204,7 +2247,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 if (externalReceipt) {
                   await input.memoryEgress!.failDispatch(
                     externalReceipt.id,
-                    error instanceof Error && /^[a-z][a-z0-9_]{0,127}$/u.test(error.message)
+                    isKnowledgeCall(call.name) ? knowledgeSearchFailureCode(error) ?? "knowledge_retrieval_failed"
+                      : error instanceof Error && /^[a-z][a-z0-9_]{0,127}$/u.test(error.message)
                       ? error.message
                       : "external_tool_dispatch_failed"
                   ).catch(() => undefined);
@@ -2501,16 +2545,18 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             knowledgeEvidenceFromToolResult(result)?.outcome === "search_unavailable");
           try {
             knowledgeDispatchDraft = toolLoopKnowledgeEvidenceDispatchDraft({
+              exclusions: input.prepared.knowledgeAdmissionPlan?.exclusions,
               request,
               results
             }) ?? undefined;
             knowledgeEvidenceEmpty = knowledgeDispatchDraft === undefined;
           } catch (error) {
+            const failureCode = knowledgeSearchFailureCode(error);
             throw new RunPipelineError(
-              error instanceof Error && error.message === "no_retrieval_candidates"
+              failureCode ?? (error instanceof Error && error.message === "no_retrieval_candidates"
                 ? "no_retrieval_candidates"
-                : "knowledge_retrieval_failed",
-              "The final Knowledge tool evidence could not be prepared"
+                : "knowledge_retrieval_failed"),
+              failureCode ? knowledgeSearchFailureMessage(failureCode) : "The final Knowledge tool evidence could not be prepared"
             );
           }
         }
@@ -2633,9 +2679,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               knowledgeZeroEvidence = true;
               providerResult = {
                 ...emptyResult,
-                finalText: toolLoopResult.knowledgeSearchUnavailable
-                  ? KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE
-                  : KNOWLEDGE_INSUFFICIENT_MESSAGE
+                finalText: knowledgeScopeLimitedMessage(
+                  toolLoopResult.knowledgeSearchUnavailable
+                    ? KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE
+                    : KNOWLEDGE_INSUFFICIENT_MESSAGE,
+                  input.prepared.knowledgeAdmissionPlan?.exclusions
+                )
               };
             } else {
               knowledgeAnswerAttempted = true;

@@ -4,6 +4,14 @@ export const KNOWLEDGE_VIEWER_MAX_BLOCKS = 12;
 export const KNOWLEDGE_VIEWER_MAX_BOXES = 64;
 export const KNOWLEDGE_VIEWER_MAX_TABLE_CELLS = 400;
 export const KNOWLEDGE_VIEWER_MAX_WORKBOOK_CELLS = 400;
+export const KNOWLEDGE_VIEWER_MAX_RELATED_EXCERPTS = 32;
+
+export type KnowledgeViewerRelatedExcerpt = Readonly<{
+  headingPath: readonly string[];
+  pageEnd: number;
+  pageStart: number;
+  text: string;
+}>;
 
 export type KnowledgeViewerBoundingBox = Readonly<{
   bottom: number;
@@ -104,6 +112,7 @@ export type KnowledgeViewerAvailable = Readonly<{
     pageStart: number;
   }>;
   originalKind: "image" | "pdf" | null;
+  relatedExcerpts?: readonly KnowledgeViewerRelatedExcerpt[];
   source: Readonly<{
     baseName: string | null;
     fileName: string;
@@ -410,6 +419,9 @@ function decodeAvailable(value: unknown): KnowledgeViewerAvailable | null {
     return null;
   }
   const blocks = value.blocks.map(decodeBlock);
+  const relatedExcerpts = value.relatedExcerpts === undefined
+    ? undefined
+    : decodeRelatedExcerpts(value.relatedExcerpts);
   const excerpt = boundedString(value.excerpt, 64_000, true);
   const headingPath = stringArray(value.headingPath, 16, 256);
   const pageStart = positiveInteger(value.locator.pageStart, 100_000);
@@ -464,7 +476,7 @@ function decodeAvailable(value: unknown): KnowledgeViewerAvailable | null {
     pageEnd === null || pageEnd < pageStart || !boundingBoxes ||
     (value.source.baseName !== null && decodedBaseName === null) ||
     !fileName || !mimeType || !name || versionNumber === null || !statuses ||
-    workbook === undefined || visual === undefined) return null;
+    workbook === undefined || visual === undefined || relatedExcerpts === null) return null;
   return {
     blocks: blocks as KnowledgeViewerBlock[],
     excerpt,
@@ -473,6 +485,7 @@ function decodeAvailable(value: unknown): KnowledgeViewerAvailable | null {
     libraryAvailable: value.libraryAvailable,
     locator: { boundingBoxes, pageEnd, pageStart },
     originalKind: value.originalKind,
+    ...(relatedExcerpts ? { relatedExcerpts } : {}),
     source: {
       baseName: decodedBaseName,
       fileName,
@@ -485,6 +498,23 @@ function decodeAvailable(value: unknown): KnowledgeViewerAvailable | null {
     visual,
     workbook
   };
+}
+
+function decodeRelatedExcerpts(value: unknown): readonly KnowledgeViewerRelatedExcerpt[] | null {
+  if (!Array.isArray(value) || value.length > KNOWLEDGE_VIEWER_MAX_RELATED_EXCERPTS) return null;
+  let characters = 0;
+  const excerpts: KnowledgeViewerRelatedExcerpt[] = [];
+  for (const item of value) {
+    if (!record(item)) return null;
+    const text = boundedString(item.text, 64_000);
+    const pageStart = positiveInteger(item.pageStart, 100_000);
+    const pageEnd = positiveInteger(item.pageEnd, 100_000);
+    const headingPath = stringArray(item.headingPath, 16, 256);
+    if (!text?.trim() || pageStart === null || pageEnd === null || pageEnd < pageStart ||
+      !headingPath || (characters += text.length) > 64_000) return null;
+    excerpts.push({ headingPath, pageEnd, pageStart, text });
+  }
+  return excerpts;
 }
 
 export function decodeKnowledgeCitationViewer(value: unknown): KnowledgeCitationViewer | null {

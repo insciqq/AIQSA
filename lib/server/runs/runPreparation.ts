@@ -74,7 +74,7 @@ import type {
 } from "../skills/runMaterialization";
 import { withSelectedSkillContext } from "../skills/userContext";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
-import { knowledgeRetrievalTool } from "../knowledge/knowledgeTools";
+import { knowledgeRetrievalToolsForRequest } from "../knowledge/knowledgeTools";
 import {
   knowledgeAdmissionMayFitFullContext,
   knowledgeAnsweringRequestSnapshot,
@@ -1662,7 +1662,13 @@ export async function prepareRun(
     chatId: chat.id,
     content,
     context: { messages: contextMessages, mode: "branch_path" },
-    ...(knowledgeRequested ? { knowledgeEvidencePackingVersion: 2 as const } : {}),
+    ...(knowledgeRequested ? {
+      knowledgeAnswerWorkflowVersion: 11 as const,
+      knowledgeReviewRepairFeedbackVersion: 1 as const,
+      knowledgeSearchInstructionVersion: 3 as const,
+      knowledgeQueryAnchorVersion: 2 as const,
+      knowledgeEvidencePackingVersion: 5 as const
+    } : {}),
     knowledgePlan: decodedKnowledgePlan.plan,
     modelCapabilities,
     modelId: executionModelId,
@@ -1772,7 +1778,8 @@ export async function prepareRun(
       plan && !fullContext && knowledgeRequested
     );
     const clientTools = [
-          ...(baseNormalizedRequest.toolMode !== "none" && !fullContext && knowledgeRequested ? [knowledgeRetrievalTool] : []),
+          ...(baseNormalizedRequest.toolMode !== "none" && !fullContext && knowledgeRequested
+            ? knowledgeRetrievalToolsForRequest(baseNormalizedRequest) : []),
           ...nonKnowledgeClientTools
         ];
     const normalized: NormalizedRunRequest = {

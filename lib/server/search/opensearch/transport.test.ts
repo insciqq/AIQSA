@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createKnowledgePassageBm25Search } from "../../knowledge/searchRetrieval";
 import {
+  KNOWLEDGE_SEARCH_BULK_MAX_BYTES,
   KNOWLEDGE_SEARCH_INDEX_DEFINITION,
   KNOWLEDGE_SEARCH_INDEX_NAME,
-  KNOWLEDGE_SEARCH_MAX_HITS_PER_VARIANT
+  KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS,
+  KNOWLEDGE_SEARCH_MAX_HITS_PER_VARIANT,
+  KNOWLEDGE_SEARCH_QUERY_MAX_BYTES
 } from "./contract";
 import {
   AiqsaOpenSearchTransport,
@@ -33,6 +37,7 @@ function knowledgeIndexSettings(overrides: Record<string, unknown> = {}) {
       max_result_window: String(
         KNOWLEDGE_SEARCH_INDEX_DEFINITION.settings.index.max_result_window
       ),
+      max_terms_count: String(KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS),
       number_of_replicas: "0",
       number_of_shards: "1",
       provided_name: KNOWLEDGE_SEARCH_INDEX_NAME,
@@ -50,6 +55,63 @@ afterEach(() => {
 });
 
 describe("AIQSA OpenSearch transport", () => {
+  it("distinguishes invalid local configuration before any network request", () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    for (const env of [{ AIQSA_OPENSEARCH_URL: "not a URL" },
+      { AIQSA_OPENSEARCH_URL: "http://user:PRIVATE@search.example.test" },
+      { AIQSA_OPENSEARCH_URL: "http://search.example.test", AIQSA_OPENSEARCH_USERNAME: "user" }]) {
+      expect(() => new AiqsaOpenSearchTransport({ env: { ...env, NODE_ENV: "test" }, namespace: "knowledge" })).toThrow("opensearch_configuration_invalid");
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "65536"])("raises an existing index from the default terms-query ceiling (%s)", async (maxTermsCount) => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ version: { number: "3.8.0" } }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(jsonResponse({
+        [KNOWLEDGE_SEARCH_INDEX_NAME]: {
+          mappings: KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings,
+          settings: knowledgeIndexSettings({ max_terms_count: maxTermsCount })
+        }
+      }))
+      .mockResolvedValueOnce(jsonResponse({ acknowledged: true }))
+      .mockResolvedValueOnce(jsonResponse({
+        [KNOWLEDGE_SEARCH_INDEX_NAME]: {
+          mappings: KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings,
+          settings: knowledgeIndexSettings({ max_terms_count: String(KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS) })
+        }
+      }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(transport().ensureKnowledgeIndex()).resolves.toBeUndefined();
+
+    expect(fetch.mock.calls[3]![0].toString()).toBe(
+      `http://search.example.test:9200/${KNOWLEDGE_SEARCH_INDEX_NAME}/_settings`
+    );
+    expect(JSON.parse(fetch.mock.calls[3]![1].body)).toEqual({
+      index: { max_terms_count: KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS }
+    });
+  });
+
+  it.each([undefined, "65536"])("rejects an insufficient terms ceiling without a write (%s)", async (maxTermsCount) => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ version: { number: "3.8.0" } }))
+      .mockResolvedValueOnce(jsonResponse({
+        [KNOWLEDGE_SEARCH_INDEX_NAME]: {
+          mappings: KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings,
+          settings: knowledgeIndexSettings({ max_terms_count: maxTermsCount })
+        }
+      }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(transport().checkKnowledgeIndex()).rejects.toMatchObject({
+      code: "opensearch_index_incompatible"
+    });
+    expect(fetch.mock.calls.map((call) => call[1]?.method)).toEqual(["GET", "GET"]);
+  });
+
   it("checks the existing Knowledge index without issuing a write", async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ version: { number: "3.8.0" } }))
@@ -326,6 +388,7 @@ describe("AIQSA OpenSearch transport", () => {
   it("applies owner, artifact, and mapping filters before top-k and returns identity only", async () => {
     const fetch = vi.fn().mockResolvedValueOnce(jsonResponse({
       responses: [{
+        timed_out: false,
         _shards: { failed: 0 },
         hits: {
           hits: [{
@@ -382,9 +445,50 @@ describe("AIQSA OpenSearch transport", () => {
     expect(query).not.toHaveProperty("fields");
   });
 
+  it("accepts one 120,000-artifact search even when two variants exceed the bulk cap", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(jsonResponse({
+      responses: [
+        { timed_out: false, _shards: { failed: 0 }, hits: { hits: [] } },
+        { timed_out: false, _shards: { failed: 0 }, hits: { hits: [] } }
+      ]
+    }));
+    vi.stubGlobal("fetch", fetch);
+    const indexArtifactIds = Array.from(
+      { length: KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS },
+      (_, index) => `artifact-${String(index).padStart(35, "0")}`
+    );
+
+    await expect(transport().searchKnowledgePassages({
+      indexArtifactIds,
+      ownerUserId: "owner-1",
+      queryVariants: ["first query", "second query"]
+    })).resolves.toMatchObject({ variants: [[], []] });
+
+    const body = String(fetch.mock.calls[0]![1].body);
+    expect(Buffer.byteLength(body, "utf8")).toBeGreaterThan(
+      KNOWLEDGE_SEARCH_BULK_MAX_BYTES
+    );
+    expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(
+      KNOWLEDGE_SEARCH_QUERY_MAX_BYTES
+    );
+    expect(body).toContain(indexArtifactIds.at(-1));
+  });
+
+  it("rejects a search above the 120,000-artifact scope before dispatch", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(transport().searchKnowledgePassages({
+      indexArtifactIds: new Array(KNOWLEDGE_SEARCH_MAX_ARTIFACT_IDS + 1).fill("artifact"),
+      ownerUserId: "owner-1",
+      queryVariants: ["query"]
+    })).rejects.toMatchObject({ code: "opensearch_scope_too_large" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("rejects partial shard results and never returns them as a degraded candidate set", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse({
-      responses: [{ _shards: { failed: 1 }, hits: { hits: [] } }]
+      responses: [{ timed_out: false, _shards: { failed: 1 }, hits: { hits: [] } }]
     })));
 
     await expect(transport().searchKnowledgePassages({
@@ -392,5 +496,33 @@ describe("AIQSA OpenSearch transport", () => {
       ownerUserId: "owner-1",
       queryVariants: ["query"]
     })).rejects.toBeInstanceOf(OpenSearchTransportError);
+  });
+
+  it.each([
+    { state: { timed_out: true }, code: "opensearch_timeout", timedOut: true },
+    { state: {}, code: "opensearch_response_invalid", timedOut: false },
+    { state: { timed_out: "false" }, code: "opensearch_response_invalid", timedOut: false },
+    { state: { timed_out: false, terminated_early: true }, code: "opensearch_response_invalid", timedOut: false }
+  ])("does not certify an incomplete search as complete: $state", async ({ state, code, timedOut }) => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ version: { number: "3.8.0" } }))
+      .mockResolvedValueOnce(jsonResponse({
+        [KNOWLEDGE_SEARCH_INDEX_NAME]: {
+          mappings: KNOWLEDGE_SEARCH_INDEX_DEFINITION.mappings,
+          settings: knowledgeIndexSettings()
+        }
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+      responses: [
+        { timed_out: false, _shards: { failed: 0 }, hits: { hits: [] } },
+        { ...state, _shards: { failed: 0 }, hits: { hits: [] } }
+      ]
+    })));
+
+    await expect(createKnowledgePassageBm25Search(transport())({
+      indexArtifactIds: ["hierarchy-1"],
+      ownerUserId: "owner-1",
+      queryVariants: ["annual revenue", "revenue"]
+    })).rejects.toMatchObject({ code, timedOut });
   });
 });

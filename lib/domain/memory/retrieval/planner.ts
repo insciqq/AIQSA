@@ -16,8 +16,8 @@ import {
 } from "./temporal";
 import { normalizeMemoryLexicalProjection } from "./lexical";
 
-export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v17";
-export const MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS = 2_000;
+export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v19";
+export const MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS = 2_000;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_MENTIONS = 8;
 export const MEMORY_RETRIEVAL_MAX_ENTITY_REF_CHARACTERS = 2_048;
 export const MEMORY_RETRIEVAL_MAX_SEMANTIC_QUERY_VARIANTS = 4;
@@ -30,21 +30,29 @@ const opaqueTargetPattern = /^[^\u0000-\u001f\u007f]{1,256}$/u;
 const opaqueEntityRefPattern = /^[^\u0000-\u0020\u007f]{1,2048}$/u;
 
 function boundedUnicode(value: string): string {
-  return Array.from(value.normalize("NFKC").trim().replace(/\s+/gu, " "))
-    .slice(0, MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS)
-    .join("");
+  // Preserve row, column and code boundaries in semantic queries. Folding
+  // whitespace can join independent values into a different literal; the
+  // separate lexical projection owns search-token normalization.
+  // Durable snapshots use UTF-16 length. Iterate
+  // whole code points so the common limit never cuts a surrogate pair.
+  let bounded = "";
+  for (const character of value.normalize("NFKC").trim()) {
+    if (bounded.length + character.length > MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS) break;
+    bounded += character;
+  }
+  return bounded;
 }
 
 function lexicalQuery(values: readonly string[]): string | null {
   const tokens = values.flatMap((value) => value.match(/[\p{L}\p{N}]+/gu) ?? []);
   if (tokens.length === 0) return null;
   const seen = new Set<string>();
-  return tokens.filter((token) => {
+  return boundedUnicode(tokens.filter((token) => {
     const key = token.toLocaleLowerCase("und");
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
-  }).join(" ").slice(0, MEMORY_RETRIEVAL_QUERY_MAX_CHARACTERS);
+  }).join(" "));
 }
 
 function validDate(value: Date | null): boolean {

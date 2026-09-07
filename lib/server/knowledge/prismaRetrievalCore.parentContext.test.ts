@@ -82,9 +82,10 @@ function mockClient(scopes: readonly unknown[], rows: readonly unknown[]): MockC
     };
   });
   return {
+    $querySemantic: vi.fn().mockResolvedValue([]),
     $queryRaw: vi.fn()
       .mockResolvedValueOnce([...scopes])
-      .mockResolvedValueOnce([{ candidates: [...rows], scopes: [...scopes] }]),
+      .mockResolvedValueOnce([{ candidates: [...rows], scopeVerified: true, semanticRevalidatedCount: 0 }]),
     vectors
   } as unknown as MockCoreClient;
 }
@@ -95,7 +96,7 @@ async function execute(
 ) {
   return executeKnowledgeRetrievalCore(client, {
     candidateLimit: 64,
-    excludedContentHashes: [],
+    excludedOccurrenceKeys: [],
     query: "canonical source evidence",
     resultLimit: 8,
     runId: "run-1",

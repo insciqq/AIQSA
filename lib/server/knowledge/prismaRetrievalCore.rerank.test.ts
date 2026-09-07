@@ -99,15 +99,12 @@ function mockClient(scopes: readonly unknown[], rows: readonly unknown[]): MockC
     };
   });
   return {
+    $querySemantic: vi.fn().mockResolvedValue([]),
     $queryRaw: vi.fn()
       .mockResolvedValueOnce([...scopes])
-      .mockResolvedValueOnce([{ candidates: [...rows], scopes: [...scopes] }]),
+      .mockResolvedValueOnce([{ candidates: [...rows], scopeVerified: true, semanticRevalidatedCount: 0 }]),
     vectors
   } as unknown as MockCoreClient;
-}
-
-function sqlText(value: unknown): string {
-  return (value as { strings: readonly string[] }).strings.join("?");
 }
 
 async function execute(
@@ -116,7 +113,7 @@ async function execute(
 ) {
   return executeKnowledgeRetrievalCore(client, {
     candidateLimit: 64,
-    excludedContentHashes: [],
+    excludedOccurrenceKeys: [],
     query: "договор аренды",
     resultLimit: 16,
     runId: "run-1",
@@ -229,7 +226,7 @@ describe("Prisma retrieval core hosted rerank stage", () => {
       .toEqual(["chunk-a", "chunk-b"]);
   });
 
-  it("relaxes the global dense/lexical floors only when a reranker is configured", async () => {
+  it("lets hosted reranking evaluate candidates below deterministic relevance floors", async () => {
     const rows = [
       row({ chunkId: "chunk-strong", laneRank: 1 }),
       row({
@@ -256,16 +253,11 @@ describe("Prisma retrieval core hosted rerank stage", () => {
     expect(executor.mock.calls[0]![0].candidates.map((candidate) => candidate.chunkId).sort())
       .toEqual(["chunk-strong", "chunk-weak-dense", "chunk-weak-lexical"]);
     expect(reranked.candidateCount).toBe(3);
-    // The metadata match floor stays; the global lexical floor is lifted.
-    const rerankSql = sqlText(client.$queryRaw.mock.calls[1]![0]);
-    expect(rerankSql.match(/"rawScore" >= \?/gu)).toHaveLength(1);
 
     const deterministicClient = mockClient([scope(0, "Base A", "base-a")], rows);
     const deterministic = await execute(deterministicClient);
     expect(deterministic.candidateCount).toBe(1);
     expect(deterministic.passages.map((passage) => passage.chunkId)).toEqual(["chunk-strong"]);
-    const deterministicSql = sqlText(deterministicClient.$queryRaw.mock.calls[1]![0]);
-    expect(deterministicSql.match(/"rawScore" >= \?/gu)).toHaveLength(2);
   });
 
   it("admits only eligible provider omissions after every scored candidate", async () => {

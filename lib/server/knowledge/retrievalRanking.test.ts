@@ -242,7 +242,7 @@ describe("Knowledge retrieval ranking", () => {
     ]));
   });
 
-  it("uses all slots for one Source, deduplicates content, and excludes neighbor-only rows", async () => {
+  it("retains distinct equal-text occurrences and excludes neighbor-only rows", async () => {
     const result = await rankKnowledgeCandidates({
       candidates: [
         ...Array.from({ length: 8 }, (_, index) => candidate({
@@ -255,7 +255,8 @@ describe("Knowledge retrieval ranking", () => {
       ],
       resultLimit: 8
     });
-    expect(result.selected).toHaveLength(7);
+    expect(result.selected).toHaveLength(8);
+    expect(result.selected.filter((entry) => entry.contentHash === "hash-a6")).toHaveLength(2);
     expect(result.selected.some((entry) => entry.chunkId === "neighbor")).toBe(false);
   });
 });

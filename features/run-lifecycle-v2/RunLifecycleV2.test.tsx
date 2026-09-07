@@ -137,7 +137,7 @@ describe("Run lifecycle v2", () => {
       />
     );
     expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent(
-      "Worked for 1m 4s · Used 1 memory"
+      "Worked for 1m 4s · Memory · 1"
     );
   });
 

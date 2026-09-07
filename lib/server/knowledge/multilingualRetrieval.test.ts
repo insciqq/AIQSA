@@ -55,11 +55,11 @@ async function capturedHybridSql(query: string): Promise<string> {
   const client = {
     $queryRaw: vi.fn()
       .mockResolvedValueOnce(scopes)
-      .mockResolvedValueOnce([{ candidates: [], scopes }])
+      .mockResolvedValueOnce([{ candidates: [], scopeVerified: true, semanticRevalidatedCount: 0 }])
   };
   await executeKnowledgeRetrievalCore(client as never, {
     candidateLimit: 64,
-    excludedContentHashes: [],
+    excludedOccurrenceKeys: [],
     query,
     resultLimit: 8,
     runId: "run-1",
@@ -132,7 +132,7 @@ function indexFor(languageHints: readonly string[], languages: readonly string[]
 }
 
 describe("multilingual generic lexical path", () => {
-  it("emits one identical simple-config hybrid statement for every query language", async () => {
+  it("emits one identical hybrid statement for every query language", async () => {
     const statements = await Promise.all(
       MATRIX_QUERIES.map(([, query]) => capturedHybridSql(query))
     );
@@ -140,7 +140,7 @@ describe("multilingual generic lexical path", () => {
       expect(statement).toBe(statements[0]);
     }
     const statement = statements[0]!;
-    expect(statement).toContain("'simple'::regconfig");
+    expect(statement).toContain("lexical_candidates AS MATERIALIZED");
     expect(statement).not.toContain("'english'::regconfig");
     expect(statement).not.toContain("'russian'::regconfig");
     expect(statement).not.toContain("languageConfig");

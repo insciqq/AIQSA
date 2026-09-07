@@ -13,6 +13,8 @@ import {
   resetKnowledgeSearchProjections,
   runKnowledgeSearchProjectionPass
 } from "./searchProjection";
+import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
+import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
 
 const checksum = "a".repeat(64);
 const projectionFingerprint = knowledgeSearchProjectionFingerprint({
@@ -39,35 +41,40 @@ function clientFixture() {
     update: vi.fn(),
     updateMany: vi.fn(async () => ({ count: 1 }))
   };
-  const knowledgeHierarchicalIndexArtifact = {
-    findMany: vi.fn(async () => [{
-      checksum,
-      id: "hierarchy-1",
-      passageCount: 1,
-      sourceArtifactId: "source-artifact-1"
-    }]),
-    findUnique: vi.fn(async () => ({
-      checksum,
-      passageCount: 1,
-      passageIndexes: [{
-        contentHash: "b".repeat(64),
-        contextPrefix: "",
-        documentContext: null,
-        headingPath: ["Annual report"],
-        id: "passage-1",
-        layoutKind: "body",
-        text: "Canonical PostgreSQL passage."
-      }],
-      sourceArtifact: {
-        sourceVersion: {
-          id: "source-version-1",
-          ownerUserId: "owner-1",
-          source: { deletionRequestedAt: null, trashedAt: null }
-        },
-        state: "ready"
+  const hierarchy = {
+    checksum,
+    id: "hierarchy-1",
+    passageCount: 1,
+    passageIndexes: [{
+      contentHash: "b".repeat(64),
+      contextPrefix: "",
+      documentContext: null,
+      headingPath: ["Annual report"],
+      id: "passage-1",
+      layoutKind: "body",
+      text: "Canonical PostgreSQL passage."
+    }],
+    sourceArtifact: {
+      sourceVersion: {
+        id: "source-version-1",
+        ownerUserId: "owner-1",
+        source: { deletionRequestedAt: null, trashedAt: null }
       },
       state: "ready"
-    }))
+    },
+    state: "ready"
+  } as const;
+  const knowledgeHierarchicalIndexArtifact = {
+    findMany: vi.fn(async (input?: { where?: { id?: unknown } }) =>
+      input?.where?.id
+        ? [hierarchy]
+        : [{
+            checksum,
+            id: "hierarchy-1",
+            passageCount: 1,
+            sourceArtifactId: "source-artifact-1"
+          }]),
+    findUnique: vi.fn(async () => hierarchy)
   };
   const queryRaw = vi.fn(async () => [{
     attemptCount: 1,
@@ -77,6 +84,7 @@ function clientFixture() {
     projectionFingerprint
   }]);
   const client = {
+    $executeRaw: vi.fn(async () => 1),
     $queryRaw: queryRaw,
     knowledgeHierarchicalIndexArtifact,
     knowledgeSearchProjection
@@ -118,6 +126,77 @@ function searchFixture(overrides: Readonly<{
 }
 
 describe("Knowledge OpenSearch projection lifecycle", () => {
+  it("repairs the same failed projection, permits search only after READY, and does not claim it twice", async () => {
+    const fixture = clientFixture();
+    const { mocks, search } = searchFixture();
+    let state = "FAILED";
+    fixture.knowledgeSearchProjection.findMany.mockImplementation(async () => [{
+      backendKind: "opensearch_bm25_v1", expectedPassageCount: 1, indexedPassageCount: state === "READY" ? 1 : 0,
+      indexArtifactId: "hierarchy-1", mappingVersion: 1, projectionFingerprint, state
+    }]);
+    fixture.queryRaw.mockImplementation(async () => {
+      if (state !== "PENDING") return [];
+      state = "BUILDING";
+      return [{ attemptCount: 1, expectedPassageCount: 1, id: "projection-1", indexArtifactId: "hierarchy-1", projectionFingerprint }];
+    });
+    fixture.knowledgeSearchProjection.updateMany.mockImplementation(async (value?: unknown) => {
+      const update = value as { data: { state: string }; where: { state?: string; projectionFingerprint?: string } };
+      if (update.where.state && update.where.state !== state ||
+        update.where.projectionFingerprint && update.where.projectionFingerprint !== projectionFingerprint) return { count: 0 };
+      state = update.data.state;
+      return { count: 1 };
+    });
+    const lexicalSearch = vi.fn(async () => ({ evidence: knowledgeLexicalBackendEvidenceFixture(), hits: [] }));
+    const retrieve = () => {
+      const scopes = [{ acceptedIndexArtifactIds: ["hierarchy-1"], baseName: "Synthetic Base", bindingOrdinal: 0,
+        eligibleRows: 1, indexGenerationId: "generation-1", knowledgeBaseId: "base-1", projectionComplete: state === "READY", targetDimension: 1_024 }];
+      const client = { $queryRaw: vi.fn().mockResolvedValueOnce(scopes).mockResolvedValueOnce([
+        { candidates: [], scopeVerified: true, semanticRevalidatedCount: 0 }
+      ]) };
+      return executeKnowledgeRetrievalCore(client, { candidateLimit: 64, excludedOccurrenceKeys: [], lexicalSearch,
+        query: "synthetic fact", resultLimit: 8, runId: "run-1", userId: "owner-1", vectors: [] });
+    };
+    await expect(retrieve()).rejects.toThrow("knowledge_search_projection_incomplete");
+    expect(lexicalSearch).not.toHaveBeenCalled();
+    await resetKnowledgeSearchProjections(fixture.client);
+    expect(state).toBe("PENDING");
+    await expect(retrieve()).rejects.toThrow("knowledge_search_projection_incomplete");
+    await expect(runKnowledgeSearchProjectionPass({ client: fixture.client, search })).resolves.toEqual({
+      claimed: 1, failed: 0, projected: 1, seeded: 0
+    });
+    expect(state).toBe("READY");
+    await expect(retrieve()).resolves.toMatchObject({ lexicalBackendEvidence: { status: "complete" } });
+    await expect(runKnowledgeSearchProjectionPass({ client: fixture.client, search })).resolves.toEqual({
+      claimed: 0, failed: 0, projected: 0, seeded: 0
+    });
+    expect(mocks.bulkUpsertKnowledgeDocuments).toHaveBeenCalledOnce();
+    expect(mocks.bulkUpsertKnowledgeDocuments.mock.calls[0]).toEqual([[expect.objectContaining({
+      indexArtifactId: "hierarchy-1", sourceVersionId: "source-version-1", ownerUserId: "owner-1"
+    })]]);
+  });
+
+  it("rejects a changed canonical fingerprint before index mutation", async () => {
+    const fixture = clientFixture();
+    const hierarchy = await fixture.knowledgeHierarchicalIndexArtifact.findUnique();
+    fixture.knowledgeHierarchicalIndexArtifact.findUnique.mockResolvedValue({ ...hierarchy, checksum: "c".repeat(64) });
+    const { mocks, search } = searchFixture();
+    await expect(runKnowledgeSearchProjectionPass({ client: fixture.client, search })).resolves.toMatchObject({ failed: 1, projected: 0 });
+    expect(mocks.deleteKnowledgeArtifact).not.toHaveBeenCalled();
+    expect(mocks.bulkUpsertKnowledgeDocuments).not.toHaveBeenCalled();
+    expect(fixture.knowledgeSearchProjection.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ lastErrorCode: "knowledge_search_projection_source_invalid", state: "RETRY_WAIT" })
+    }));
+  });
+
+  it("does not store code-shaped private error messages as projection reasons", async () => {
+    const fixture = clientFixture();
+    const { search } = searchFixture({ bulkFailure: new Error("private_secret_value") });
+    await runKnowledgeSearchProjectionPass({ client: fixture.client, search });
+    expect(fixture.knowledgeSearchProjection.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ lastErrorCode: "knowledge_search_projection_failed" })
+    }));
+  });
+
   it("projects only canonical PostgreSQL passages and settles exact count", async () => {
     const { client, knowledgeSearchProjection } = clientFixture();
     const { mocks, search } = searchFixture();
@@ -184,9 +263,7 @@ describe("Knowledge OpenSearch projection lifecycle", () => {
       reset: 1
     });
 
-    expect(knowledgeSearchProjection.deleteMany).toHaveBeenCalledWith({
-      where: { indexArtifactId: { notIn: ["hierarchy-1"] } }
-    });
+    expect(knowledgeSearchProjection.deleteMany).not.toHaveBeenCalled();
     expect(knowledgeSearchProjection.updateMany).toHaveBeenCalledWith({
       data: {
         attemptCount: 0,

@@ -217,10 +217,10 @@ describe("accepted Knowledge Source snapshot binding", () => {
     );
   });
 
-  it("freezes a large whole-Base scope without eagerly persisting every Source", async () => {
+  it.each([999, 1_000, 1_001])("freezes a whole-Base scope of %i Sources with the appropriate binding strategy", async (count) => {
     const legacy = plan();
     const profile = canonicalProfile(legacy);
-    const sources = Array.from({ length: 1_000 }, (_, ordinal) => ({
+    const sources = Array.from({ length: count }, (_, ordinal) => ({
       approxTokens: 100,
       authority: { knowledgeBaseIds: ["base-1"], owner: false, projectId: null },
       baseProvenance: [{ indexGenerationId: "generation-1", knowledgeBaseId: "base-1" }],
@@ -278,12 +278,12 @@ describe("accepted Knowledge Source snapshot binding", () => {
 
     expect(scopeCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        resolvedSourceCount: 1_000,
-        sourceBindingStrategy: "disclosed_v1"
+        resolvedSourceCount: count,
+        sourceBindingStrategy: count > 999 ? "disclosed_v1" : "eager_v1"
       })
     });
-    expect(sourceCreate).not.toHaveBeenCalled();
-    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(sourceCreate).toHaveBeenCalledTimes(count > 999 ? 0 : count);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(count > 999 ? 1 : count + 1);
   });
 
   it("links a legacy Base binding to the exact locked profile revision and runtime", async () => {

@@ -500,8 +500,8 @@ describe("AuthLogin", () => {
       expect(screen.getByRole("alert")).toHaveTextContent(
         "Could not reach the server. Check your connection and try again. (network_error)"
       );
+      expect(screen.getByLabelText("Email")).toHaveFocus();
     });
-    expect(screen.getByLabelText("Email")).toHaveFocus();
   });
 
   it.each([

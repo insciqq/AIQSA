@@ -18,7 +18,7 @@ import {
 import { KNOWLEDGE_RANKING_PROFILE_VERSION } from "./retrievalRanking";
 
 /** Versioned Knowledge-side identity of the hosted rerank adapter contract. */
-export const KNOWLEDGE_RERANK_ADAPTER_VERSION = "openrouter-rerank-v1" as const;
+export const KNOWLEDGE_RERANK_ADAPTER_VERSION = "openrouter-rerank-v2" as const;
 /** Overall wall-clock budget for one hosted rerank operation. */
 export const KNOWLEDGE_RERANK_TIMEOUT_MS = 15_000 as const;
 
@@ -67,12 +67,14 @@ export function isKnowledgeRerankMalformedResponseCode(code: string): boolean {
   return MALFORMED_RESPONSE_CODES.has(code);
 }
 
-function boundedRerankQuery(query: string): string {
-  if (query.length <= MAX_RERANK_QUERY_CHARACTERS) return query;
-  let sliced = query.slice(0, MAX_RERANK_QUERY_CHARACTERS);
-  const last = sliced.charCodeAt(sliced.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) sliced = sliced.slice(0, -1);
-  return sliced;
+function acceptedRerankQuery(query: string): string {
+  // The accepted tool query already has a Unicode code-point bound. Ranking
+  // a shorter prefix can discard the requested condition while the lexical
+  // and auxiliary relevance stages still use the complete query.
+  if (query.length > MAX_RERANK_QUERY_CHARACTERS) {
+    throw new RerankAdapterError("rerank_input_invalid");
+  }
+  return query;
 }
 
 function rerankCancellationError(signal: AbortSignal): Error {
@@ -208,7 +210,7 @@ export function createKnowledgeRerankStage(input: Readonly<{
 }>): KnowledgeRerankExecutor {
   const now = input.now ?? monotonicNowMilliseconds;
   const timeoutMs = input.timeoutMs ?? KNOWLEDGE_RERANK_TIMEOUT_MS;
-  const query = boundedRerankQuery(input.query);
+  const query = acceptedRerankQuery(input.query);
   return async ({ candidates, signal }) => {
     if (candidates.length > MAX_RERANK_DOCUMENTS ||
       new Set(candidates.map((candidate) => candidate.chunkId)).size !== candidates.length) {

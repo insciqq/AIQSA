@@ -22,7 +22,7 @@ import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-
 const BASELINE = "20260815000000_baseline";
 const BASELINE_SHA256 = "71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33";
 const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
-  "c929e15cc20cb176b9dc31970c3c82801951a9267e873cf386bc95ea005d16b9";
+  "56be04c60153a543f48bbbf247a1301ebce93bfcc4631191ffc54a108441de02";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const KNOWLEDGE_PROFILE_MIGRATION = "20260818023000_knowledge_index_profile";
 const KNOWLEDGE_SOURCES_MIGRATION = "20260818043000_knowledge_sources_v2";
@@ -1615,11 +1615,11 @@ function runKnowledgeH2DurableDispatchMigrationProof(
             'KnowledgeProviderAttempt_answer_result_state_check'
           )
           AND convalidated
-          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_scope_v[3-6]%'
-          AND pg_get_constraintdef(oid) LIKE '%knowledge_grounded_selector%2[01]%';
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_scope_v[3-7]%'
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_grounded_selector%2[0-2]%';
       `),
       "2",
-      "Positive-finding Scope V6 and Selector V21 are missing from durable constraints",
+      "Scope V3–V7 and Selector through V22 are missing from durable constraints",
     );
     assert.equal(
       psqlScalar(database, `
@@ -1648,10 +1648,10 @@ function runKnowledgeH2DurableDispatchMigrationProof(
             'KnowledgeProviderAttempt_answer_result_state_check'
           )
           AND convalidated
-          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_scope_completeness_v1%';
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_scope_completeness_v[12]%';
       `),
       "2",
-      "Scope Completeness V1 is missing from durable provider-attempt constraints",
+      "Scope Completeness V1/V2 is missing from durable provider-attempt constraints",
     );
     assert.equal(
       psqlScalar(database, `
@@ -1672,10 +1672,10 @@ function runKnowledgeH2DurableDispatchMigrationProof(
             'KnowledgeProviderAttempt_answer_result_state_check'
           )
           AND convalidated
-          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_scope_closure_v[12]%';
+          AND pg_get_constraintdef(oid) LIKE '%knowledge_coverage_scope_closure_v[1-3]%';
       `),
       "2",
-      "Scope Closure V1/V2 is missing from durable provider-attempt constraints",
+      "Scope Closure V1/V2/V3 is missing from durable provider-attempt constraints",
     );
     assert.equal(
       psqlScalar(database, `

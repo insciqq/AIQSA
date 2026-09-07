@@ -1,0 +1,260 @@
+import { describe, expect, it, vi } from "vitest";
+import { knowledgeRefinementUsageAfter, refineKnowledgeEvidence } from "./knowledgeEvidenceRefinement";
+import { KNOWLEDGE_RESULT_VERSION, type KnowledgeRetrievalEvidence } from "../knowledge/retrievalTypes";
+import { knowledgeToolResultContent, knowledgeToolResultText } from "../knowledge/toolResult";
+import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
+import { toolLoopKnowledgeEvidenceDispatchDraft } from "../knowledge/automaticEvidence";
+import { KnowledgeSearchFailure } from "../knowledge/searchFailure";
+import { EMPTY_KNOWLEDGE_COVERAGE_LIMITATIONS_V1 } from "../knowledge/searchFailure";
+import type { KnowledgeEvidenceAnswerReviewV1 } from "../knowledge/evidenceAnswerV1";
+import type { ProviderRunRequest } from "../providers/types";
+import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
+import { snapshotToolExecutionResult } from "./toolExecutionPersistence";
+import { packKnowledgeEvidenceDispatchManifest, KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION } from "../knowledge/evidenceDispatchManifest";
+import { buildKnowledgeEvidenceAnswerPublicationV2, validateKnowledgeEvidenceAnswerReviewV2 } from "../knowledge/evidenceAnswerReviewV2";
+import type { CheckpointedToolLoopRun, PersistedToolLoopCall, ToolLoopCheckpoint } from "./toolLoopPersistence";
+
+vi.mock("../knowledge/automaticEvidence", () => ({ toolLoopKnowledgeEvidenceDispatchDraft: vi.fn(() => null) }));
+type Input = Parameters<typeof refineKnowledgeEvidence>[0];
+const resultFor = (call: Pick<ModelToolCall, "id" | "name">): ToolExecutionResult => ({ callId: call.id, name: call.name,
+  status: "complete", content: [{ type: "text", text: "Source evidence for the requested date." }] });
+function fixture(workflowVersion: 9 | 10 | 11 = 9) {
+  const request: ProviderRunRequest = { attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [{ type: "text", text: "Compare the North and South effective dates." }] },
+    knowledgeAnswerWorkflowVersion: workflowVersion, knowledgePlan: { mode: "explicit", version: 1, baseIds: ["base"], sourceIds: [] },
+    modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: true, reasoning: false, vision: false }, modelId: "answer", params: {}, prompt: { developer: null, system: null }, provider: "fake",
+    searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto", toolBudgets: {
+      maxToolCalls: 8, maxToolRounds: 4, maxMcpToolsPerDiscovery: 10, mcpAutoDiscoveryTimeoutSeconds: 60 } };
+  const first: PersistedToolLoopCall = { arguments: { query: "North effective date", sourceAliases: [] }, completedAt: new Date(1).toISOString(),
+    id: "first", mcpBinding: null, ordinal: 0, providerCallId: "first-provider-call", result: null, roundIndex: 1,
+    startedAt: new Date(0).toISOString(), state: "complete", toolName: "search_knowledge" };
+  const calls = new Map<string, PersistedToolLoopCall>([[first.id, { ...first, result: snapshotToolExecutionResult(resultFor({ id: first.providerCallId, name: first.toolName }), 10000) }]]);
+  let checkpoint: ToolLoopCheckpoint = { answerRoundUsage: [], phase: "provider_running", providerContinuation: null,
+    providerCursor: null, roundIndex: 2, version: 2 };
+  const review: KnowledgeEvidenceAnswerReviewV1 = { version: 1, blocks: [], coverage: "partial", analysisComplete: true,
+    missingInformation: ["The effective date for South."], followUps: [{ query: "South effective date", sourceAliases: [] }] };
+  const scope = { bindings: [], budgetPolicy: { ...DEFAULT_KNOWLEDGE_BUDGET_POLICY }, exclusions: [], knowledgePlan: request.knowledgePlan };
+  const repository: Input["repository"] = {
+    loadCheckpointedToolLoopRun: vi.fn(async (): Promise<CheckpointedToolLoopRun> => ({ assistantMessageId: "answer", assistantText: null,
+      calls: [...calls.values()], chatId: "chat", checkpoint, id: "run", knowledgeScope: scope,
+      modelId: request.modelId, normalizedRequest: request, provider: request.provider, providerResponseId: null, status: "streaming", userId: "user" })),
+    persistToolLoopCallBatch: vi.fn<Input["repository"]["persistToolLoopCallBatch"]>(async input => {
+      const batch = input.calls.map((call): PersistedToolLoopCall => ({ ...call, id: call.providerCallId,
+        completedAt: null, mcpBinding: null, result: null, roundIndex: input.roundIndex, startedAt: null, state: "pending" }));
+      for (const call of batch) calls.set(call.id, call);
+      checkpoint = { ...checkpoint, phase: "tools_pending" };
+      return { kind: "persisted", calls: batch };
+    }),
+    claimToolLoopCall: vi.fn<Input["repository"]["claimToolLoopCall"]>(async input => {
+      const call = calls.get(input.callId)!;
+      if (call.state === "complete" || call.state === "error") return { kind: "settled", call };
+      if (call.state === "running") return { kind: "ambiguous", call };
+      const claimed = { ...call, state: "running" as const };
+      calls.set(call.id, claimed);
+      return { kind: "claimed", call: claimed };
+    }),
+    settleToolLoopCall: vi.fn<Input["repository"]["settleToolLoopCall"]>(async input => {
+      calls.set(input.callId, { ...calls.get(input.callId)!, state: input.state, result: input.result, completedAt: new Date(2).toISOString() });
+      return "settled";
+    }),
+    advanceToolLoopCallBatch: vi.fn<Input["repository"]["advanceToolLoopCallBatch"]>(async () => { checkpoint = { ...checkpoint, phase: "provider_running", roundIndex: checkpoint.roundIndex + 1 }; return "advanced"; })
+  };
+  const execute = vi.fn(async (call: ModelToolCall) => resultFor(call));
+  const preflight = vi.fn(async () => ({ kind: "admitted" as const }));
+  const abort = new AbortController();
+  const input: Input & { result: { review: KnowledgeEvidenceAnswerReviewV1 } } = { authorize: vi.fn(async () => undefined), executor: { capability: "knowledge", tool: {
+    capability: "knowledge", name: "search_knowledge", description: "Search", inputSchema: {} },
+    accepts: name => name === "search_knowledge", execute, preflight },
+    repository, request, previousEvidence: { items: [] }, result: { review, evidenceReceiptHash: "c".repeat(64), publication: { version: 1, blocks: [], coverage: "none",
+      analysisComplete: true, missingInformation: ["The effective date for South."], coverageLimitations: EMPTY_KNOWLEDGE_COVERAGE_LIMITATIONS_V1,
+      draftHash: "a".repeat(64), reviewHash: "b".repeat(64) } }, runId: "run", userId: "user", signal: abort.signal, onResult: vi.fn() };
+  return { input, execute, preflight, calls, scope, abort, repository, request };
+}
+
+describe("review-driven Knowledge retrieval", () => {
+  it.each([9, 10, 11] as const)("persists the missing-date search and reuses it after checkpoint advancement (%s)", async workflowVersion => {
+    const f = fixture(workflowVersion);
+    await refineKnowledgeEvidence(f.input);
+    expect(f.execute).toHaveBeenCalledTimes(1);
+    expect(f.execute.mock.calls[0]?.[0].arguments).toEqual({ query: "South effective date", sourceAliases: [] });
+    expect(f.repository.advanceToolLoopCallBatch).toHaveBeenCalledTimes(1);
+    expect(toolLoopKnowledgeEvidenceDispatchDraft).toHaveBeenLastCalledWith(expect.objectContaining({ results: [expect.any(Object), expect.any(Object)] }));
+    await refineKnowledgeEvidence(f.input);
+    expect(f.execute).toHaveBeenCalledTimes(1);
+    expect(f.repository.persistToolLoopCallBatch).toHaveBeenCalledTimes(1);
+    expect(f.repository.advanceToolLoopCallBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["calls", "rounds", "knowledge"])("respects the accepted %s budget before dispatch", async kind => {
+    const f = fixture();
+    if (kind === "knowledge") f.scope.budgetPolicy.maxOperations = 1;
+    else f.input = { ...f.input, request: f.request };
+    if (kind === "calls") Object.assign(f.request.toolBudgets!, { maxToolCalls: 1 });
+    if (kind === "rounds") Object.assign(f.request.toolBudgets!, { maxToolRounds: 1 });
+    expect(await refineKnowledgeEvidence(f.input)).toBeNull();
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.repository.persistToolLoopCallBatch).not.toHaveBeenCalled();
+  });
+
+  it("stops a recurring gap after later evidence instead of replaying an earlier checkpoint", async () => {
+    const f = fixture(10);
+    const first = f.input;
+    await refineKnowledgeEvidence(first);
+    await refineKnowledgeEvidence({ ...f.input, result: { ...f.input.result, evidenceReceiptHash: "d".repeat(64),
+      review: { ...f.input.result.review, missingInformation: ["The effective date for West."],
+        followUps: [{ query: "West effective date", sourceAliases: [] }] }
+    } });
+    const recurring = { ...first, result: { ...first.result, evidenceReceiptHash: "e".repeat(64) } };
+    await expect(refineKnowledgeEvidence(recurring)).resolves.toBeNull();
+    expect(f.execute).toHaveBeenCalledTimes(2);
+    expect(f.repository.persistToolLoopCallBatch).toHaveBeenCalledTimes(2);
+    expect(f.repository.advanceToolLoopCallBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it("deduplicates normalized queries with the same aliases while retaining a different scope", async () => {
+    const f = fixture();
+    await refineKnowledgeEvidence({ ...f.input, result: { ...f.input.result, review: { ...f.input.result.review, followUps: [
+      { query: " North   effective date ", sourceAliases: [] },
+      { query: "North effective date", sourceAliases: ["S1"] },
+      { query: "South effective date", sourceAliases: [] }
+    ] } } });
+    expect(f.execute).toHaveBeenCalledTimes(2);
+    expect(f.execute.mock.calls[0]?.[0].arguments.sourceAliases).toEqual(["S1"]);
+  });
+
+  it("does not repeat a running search with an unknown outcome", async () => {
+    const f = fixture();
+    vi.mocked(f.repository.claimToolLoopCall).mockImplementation(async ({ callId }) => ({ kind: "ambiguous", call: f.calls.get(callId)! }));
+    await expect(refineKnowledgeEvidence(f.input)).rejects.toMatchObject({
+      code: "knowledge_answer_contract_failed",
+      message: "knowledge_refinement_checkpoint_conflict"
+    });
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it("recovers a running refinement from its durable receipt without repeating retrieval or usage", async () => {
+    const f = fixture(11);
+    const evidenceDraft: KnowledgeRetrievalEvidence = {
+      bases: [], candidateCount: 0, candidateLimit: 64, durationMs: 3,
+      embeddingExecutions: [{ bindingOrdinals: [0], durationMs: 1, inputTokens: 2,
+        modelId: "embedding-model", provider: "test", providerModelId: "embedding-upstream",
+        requestId: null, status: "complete", totalTokens: 2 }],
+      failureCode: "knowledge_search_backend_unavailable", fusion: "weighted_rrf_v2",
+      invocationOrdinal: 2, operation: "automatic_search", outcome: "search_unavailable",
+      providerText: "pending", query: "knowledge_search_unavailable", resultLimit: 16,
+      results: [], version: KNOWLEDGE_RESULT_VERSION
+    };
+    const evidence = { ...evidenceDraft, providerText: knowledgeToolResultText(evidenceDraft) };
+    const memoryEgress: NonNullable<Input["memoryEgress"]> = {
+      beginDispatch: vi.fn(async () => ({ id: "egress", requestOrdinal: 1 })),
+      recordBlockedDispatch: vi.fn(async () => ({ id: "blocked", requestOrdinal: 1 })),
+      settleRecoveredProviderDispatch: vi.fn(async () => true),
+      settleRecoveredToolDispatch: vi.fn(async () => true),
+      completeDispatch: vi.fn(async () => true),
+      failDispatch: vi.fn(async () => true)
+    };
+    f.input = { ...f.input, memoryEgress };
+    f.execute.mockImplementation(async call => ({ callId: call.id, name: call.name, status: "error",
+      content: knowledgeToolResultContent(evidence), rawPreview: {
+        knowledgeResultVersion: KNOWLEDGE_RESULT_VERSION, knowledgeRetrieval: evidence, providerCall: true
+      } }));
+    vi.mocked(f.repository.settleToolLoopCall).mockRejectedValueOnce(Error("simulated_process_loss"));
+    await expect(refineKnowledgeEvidence(f.input)).rejects.toThrow("simulated_process_loss");
+    const pending = [...f.calls.values()].find(call => call.state === "running")!;
+    const receipt = await f.execute.mock.results[0]!.value;
+    const preflight = vi.fn(async () => ({ kind: "replayed" as const, result: receipt }));
+    const recovered = { ...f.input, executor: { ...f.input.executor!, preflight } };
+
+    await refineKnowledgeEvidence(recovered);
+
+    expect(preflight).toHaveBeenCalledOnce();
+    expect(preflight).toHaveBeenCalledWith(expect.objectContaining({ id: pending.providerCallId }),
+      expect.objectContaining({ persistedToolCallId: pending.id, runId: "run", userId: "user" }));
+    expect(f.repository.claimToolLoopCall).toHaveBeenCalledOnce();
+    expect(memoryEgress.settleRecoveredToolDispatch).toHaveBeenCalledWith({
+      modelRunToolCallId: pending.id, outcome: "COMPLETED", runId: "run", userId: "user"
+    });
+    expect(f.calls.get(pending.id)).toMatchObject({ state: "error", result: expect.any(Object) });
+    expect(toolLoopKnowledgeEvidenceDispatchDraft).toHaveBeenLastCalledWith(
+      expect.objectContaining({ results: [expect.any(Object), receipt] }));
+    expect(knowledgeRefinementUsageAfter([...f.calls.values()], [])).toEqual([{
+      provider: "test", modelId: "embedding-model",
+      usage: { inputTokens: 2, outputTokens: 0, reasoningTokens: 0, totalTokens: 2 }
+    }]);
+
+    await refineKnowledgeEvidence(recovered);
+
+    expect(f.execute).toHaveBeenCalledOnce();
+    expect(preflight).toHaveBeenCalledOnce();
+    expect(memoryEgress.beginDispatch).toHaveBeenCalledOnce();
+    expect(f.repository.persistToolLoopCallBatch).toHaveBeenCalledOnce();
+    expect(f.repository.advanceToolLoopCallBatch).toHaveBeenCalledOnce();
+    expect(f.input.onResult).toHaveBeenCalledExactlyOnceWith(receipt);
+  });
+
+  it("does not dispatch after authority is lost", async () => {
+    const f = fixture();
+    await expect(refineKnowledgeEvidence({ ...f.input, authorize: async () => { throw Error("scope_revoked"); } })).rejects.toThrow("scope_revoked");
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.repository.persistToolLoopCallBatch).not.toHaveBeenCalled();
+  });
+
+  it("settles a local timeout as a technical search result, but keeps cancellation terminal", async () => {
+    const f = fixture();
+    f.execute.mockRejectedValue(new KnowledgeSearchFailure("opensearch_timeout"));
+    await refineKnowledgeEvidence(f.input);
+    expect(f.repository.settleToolLoopCall).toHaveBeenCalledWith(expect.objectContaining({ state: "error" }));
+    const cancelled = fixture();
+    cancelled.execute.mockImplementation(async () => { cancelled.abort.abort(); throw Error("cancelled"); });
+    await expect(refineKnowledgeEvidence(cancelled.input)).rejects.toThrow();
+    expect(cancelled.repository.settleToolLoopCall).not.toHaveBeenCalled();
+  });
+
+  it.each([4, 5] as const)("retains correction premises with packing policy %s across search and recovery", async packingVersion => {
+    const candidates = ["North takes effect on June 2.", "North is active.", "The archive uses plain text."].map((text, index) => ({
+      ambiguity: "none" as const, evidenceId: `evidence-${index + 1}`, exactExcerpt: text,
+      fileName: "schedule.txt", handle: `K${index + 1}`, locator: `page=${index + 1}; heading=Schedule`,
+      operationOrdinal: 1, resultOrdinal: [3, 1, 2][index]!, sourceAlias: "S1", sourceLabel: "Schedule",
+      sourceTruncated: false, sourceVersionNumber: 1, state: "available" as const
+    }));
+    const fresh = { ...candidates[0]!, evidenceId: "evidence-4", handle: "K4", operationOrdinal: 2, resultOrdinal: 1,
+      exactExcerpt: "South takes effect on June 3." };
+    const options = { coverageStatement: "Retrieved schedule fragments.", header: "<evidence>", footer: "</evidence>",
+      maximumBytes: 10_000, maximumTokens: 10_000, runtimeVersion: 1 as const, profileId: "fake:answer", promptFragmentVersion: 1 as const,
+      packingVersion: KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION };
+    const previous = packKnowledgeEvidenceDispatchManifest({ ...options, candidates });
+    const required = packKnowledgeEvidenceDispatchManifest({ ...options, candidates: [candidates[0]!, candidates[1]!, fresh] });
+    const maximumBytes = Math.max(previous.messageBytes, required.messageBytes);
+    const draft = { version: 1 as const, blocks: [
+      { id: "B1", kind: "paragraph" as const, text: "North is active.", evidenceHandles: ["K2"] },
+      { id: "B2", kind: "paragraph" as const, text: "North takes effect on June 9.", evidenceHandles: ["K1"] }
+    ] };
+    const context = { draft, availableHandles: previous.items.map(item => item.handle), availableSourceAliases: ["S1"] };
+    const validation = validateKnowledgeEvidenceAnswerReviewV2({ version: 2, analysisComplete: true,
+      blocks: [
+        { blockId: "B1", verdict: "supported", evidenceHandles: ["K2"], reason: "" },
+        { blockId: "B2", verdict: "contradicted", evidenceHandles: [], reason: "The documented date is June 2." }
+      ], requirements: [
+        { requirement: "Give the North effective date.", status: "needs_correction", blockIds: [], correctionEvidenceHandles: ["K1"], gap: "Use the documented date." },
+        { requirement: "Give the South effective date.", status: "missing_evidence", blockIds: [], correctionEvidenceHandles: [], gap: "The South date is absent." }
+      ], followUps: [{ query: "South effective date", sourceAliases: [], requirementIds: ["R2"] }]
+    }, context);
+    expect(validation.kind).toBe("accepted");
+    if (validation.kind !== "accepted") throw Error("neutral_review_rejected");
+    const f = fixture(11);
+    f.request.knowledgeEvidencePackingVersion = packingVersion;
+    const input = { ...f.input, previousEvidence: previous, result: { ...f.input.result, review: validation.value,
+      publication: buildKnowledgeEvidenceAnswerPublicationV2({ ...context, review: validation.value,
+        coverageLimitations: EMPTY_KNOWLEDGE_COVERAGE_LIMITATIONS_V1 }) } };
+    const pack = ({ retainedItems }: Parameters<typeof toolLoopKnowledgeEvidenceDispatchDraft>[0]) =>
+      packKnowledgeEvidenceDispatchManifest({ ...options, maximumBytes, candidates: [...candidates, fresh], retainedItems });
+    vi.mocked(toolLoopKnowledgeEvidenceDispatchDraft).mockImplementationOnce(pack).mockImplementationOnce(pack);
+    const packed = await refineKnowledgeEvidence(input);
+    const recovered = await refineKnowledgeEvidence(input);
+    expect(f.execute).toHaveBeenCalledTimes(1);
+    expect(recovered).toEqual(packed);
+    expect(packed?.items.map(item => item.handle).sort()).toEqual(packingVersion === 5 ? ["K1", "K2", "K4"] : ["K2", "K3", "K4"]);
+    if (packingVersion === 5) {
+      expect(packed?.items.find(item => item.handle === "K1")?.itemHash).toBe(previous.items.find(item => item.handle === "K1")?.itemHash);
+    }
+  });
+});

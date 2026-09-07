@@ -2605,6 +2605,7 @@ describe("Personal Memory v1 run admission", () => {
     const rankedTexts = vi.mocked(runUtilities.rerank).mock.calls[0]![0].candidates.map(({ text }) => text);
     expect(rankedTexts).toHaveLength(2);
     expect(rankedTexts).toEqual(expect.arrayContaining([question, round]));
+    if (!result.items) throw new Error("Expected admitted Memory evidence");
     expect(new Set(result.items.map(({ exactItemId }) => exactItemId))).toEqual(new Set(["round", "separate"]));
   });
 
@@ -4458,6 +4459,7 @@ describe("Personal Memory v1 run admission", () => {
     });
 
     vi.mocked(options.utilities.rerank).mockImplementation(async (input) => ({
+      bindingId: "binding-linked-excerpt-relevance",
       status: "READY",
       relevanceScoreFloor: 0.01,
       decisions: input.candidates.map((candidate) => ({
@@ -4504,6 +4506,7 @@ describe("Personal Memory v1 run admission", () => {
       },
       outcome: "USED"
     });
+    if (!result.items) throw new Error("Expected admitted Memory evidence");
     expect(result.items.some(({ exactItemId }) => exactItemId === "completed-round")).toBe(completionRelevant);
     expect(result.preparedContext?.text.includes("relevant round text completed-round")).toBe(completionRelevant);
     if (completionRelevant) {

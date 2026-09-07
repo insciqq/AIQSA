@@ -20,6 +20,7 @@ import type {
 import {
   knowledgeCoverageEvidenceAtomIndex,
   type KnowledgeCoverageEvidenceAtomContextRoleV2,
+  type KnowledgeCoverageEvidenceAtomV3,
   type KnowledgeCoverageEvidenceAtomIndexVersion
 } from "./coverageScopeV4";
 import {
@@ -135,7 +136,12 @@ export type KnowledgeTargetedEvidenceAtomIndexV2 = Readonly<{
 
 export type KnowledgeTargetedEvidenceAtomIndex =
   | KnowledgeTargetedEvidenceAtomIndexV1
-  | KnowledgeTargetedEvidenceAtomIndexV2;
+  | KnowledgeTargetedEvidenceAtomIndexV2
+  | Readonly<{
+    atoms: readonly KnowledgeCoverageEvidenceAtomV3[];
+    targets: KnowledgeTargetedEvidenceAtomIndexV2["targets"];
+    version: 3;
+  }>;
 
 export type KnowledgeTargetedSupplementFailureReasonV1 =
   | "draft_duplicate_primary_claim"
@@ -549,6 +555,8 @@ export function knowledgeTargetedEvidenceAtomIndex(
       targetDimensionId: dimension.id
     })))
   };
+  if (atomIndex.version === 3) return Object.freeze({ ...common, version: 3 as const }) as
+    Extract<KnowledgeTargetedEvidenceAtomIndex, { version: 3 }>;
   return atomIndex.version === 2
     ? Object.freeze({ ...common, version: 2 as const }) as KnowledgeTargetedEvidenceAtomIndexV2
     : Object.freeze({ ...common, version: 1 as const }) as KnowledgeTargetedEvidenceAtomIndexV1;

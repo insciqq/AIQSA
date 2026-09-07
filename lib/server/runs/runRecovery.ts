@@ -1,9 +1,14 @@
+import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1 } from "../knowledge/evidenceAnswerExecutionV1";
+import { knowledgeRefinementUsageAfter, refineKnowledgeEvidence } from "./knowledgeEvidenceRefinement";
+import { decodeKnowledgeEvidenceAnswerSnapshot } from "../knowledge/evidenceAnswerSnapshot";
 import {
   textFromContentBlocks,
   type ModelRunSseEvent,
   type ModelRunUsage
 } from "../../domain/modelRunEvents";
 import { textMessageContent } from "../../domain/content";
+import { knowledgeSearchFailureCode, knowledgeSearchFailureMessage, knowledgeSearchFailureToolResult,
+  knowledgeSearchFailureFromToolResult, knowledgeScopeLimitedMessage, isKnowledgeSearchFailureCode, type KnowledgeSearchFailureCode } from "../knowledge/searchFailure";
 import {
   normalizeTokenUsage,
   subtractTokenUsage,
@@ -126,6 +131,7 @@ import type {
 } from "../knowledge/evidenceDispatchManifest";
 import { KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT } from "../knowledge/fullContext";
 import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
+import { knowledgeRetrievalToolsForRequest } from "../knowledge/knowledgeTools";
 import {
   KNOWLEDGE_FOCUSED_OPERATION_NAME,
   KNOWLEDGE_SEARCH_TOOL_NAME
@@ -245,6 +251,7 @@ export type RunRecoveryRepository = Pick<
   | "groundKnowledgeAnswer"
   | "groundKnowledgeAnswerV5"
   | "groundKnowledgeAnswerV21"
+  | "groundKnowledgeEvidenceAnswer"
   | "hasPendingPdfPreparation"
   | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
@@ -408,6 +415,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 type FocusedKnowledgeFailureCode =
+  | KnowledgeSearchFailureCode
   | "sources_processing"
   | "no_retrieval_candidates"
   | "knowledge_retrieval_failed"
@@ -418,13 +426,13 @@ type FocusedKnowledgeFailureCode =
 function focusedKnowledgeFailure(
   code: FocusedKnowledgeFailureCode
 ): Readonly<{ code: FocusedKnowledgeFailureCode; message: string }> {
-  const messages: Record<FocusedKnowledgeFailureCode, string> = {
+  if (isKnowledgeSearchFailureCode(code)) return { code, message: knowledgeSearchFailureMessage(code) };
+  const messages: Record<Exclude<FocusedKnowledgeFailureCode, KnowledgeSearchFailureCode>, string> = {
     knowledge_answer_contract_failed:
       "The Knowledge answer did not satisfy the required output contract.",
     knowledge_answer_failed: "The Knowledge answer provider failed.",
     knowledge_citation_contract_failed:
       "The Knowledge answer cited evidence outside the final manifest.",
-    knowledge_retrieval_failed: "Knowledge retrieval failed.",
     no_retrieval_candidates:
       "No retrieval candidates were found in the ready Knowledge documents.",
     sources_processing: "The selected Knowledge documents are still processing."
@@ -439,7 +447,8 @@ function recoveryErrorCode(error: unknown): string | null {
 }
 
 function focusedRetrievalFailure(error: unknown): ReturnType<typeof focusedKnowledgeFailure> {
-  const code = recoveryErrorCode(error);
+  const code = knowledgeSearchFailureCode(error) ?? recoveryErrorCode(error);
+  if (isKnowledgeSearchFailureCode(code)) return focusedKnowledgeFailure(code);
   if (code === "no_retrieval_candidates") {
     return focusedKnowledgeFailure("no_retrieval_candidates");
   }
@@ -499,15 +508,12 @@ function toolExecutionErrorResult(
   error: unknown,
   label: "Knowledge" | "Search" | "Tool" | "Workspace" = "Tool"
 ): ToolExecutionResult {
-  const overflowResult = label === "Knowledge"
-    ? null
-    : mcpResponseOverflowToolExecutionResult(call, error, label);
+  if (label === "Knowledge") return knowledgeSearchFailureToolResult(call, error);
+  const overflowResult = mcpResponseOverflowToolExecutionResult(call, error, label);
   if (overflowResult) return overflowResult;
 
   const rawMessage = error instanceof Error ? error.message : `${label} execution failed`;
-  const message = label === "Knowledge"
-    ? "knowledge_retrieval_failed"
-    : rawMessage.slice(0, 512);
+  const message = rawMessage.slice(0, 512);
   return {
     callId: call.id,
     content: [{ text: `${label} failed: ${message}`, type: "text" }],
@@ -1519,7 +1525,8 @@ async function executePersistedToolCall(
     if (externalReceipt) {
       await context.deps.memoryEgress!.failDispatch(
         externalReceipt.id,
-        error instanceof Error && /^[a-z][a-z0-9_]{0,127}$/u.test(error.message)
+        isRecoveredKnowledgeCall(context, call.name) ? knowledgeSearchFailureCode(error) ?? "knowledge_retrieval_failed"
+          : error instanceof Error && /^[a-z][a-z0-9_]{0,127}$/u.test(error.message)
           ? error.message
           : "external_tool_dispatch_failed"
       ).catch(() => undefined);
@@ -1561,6 +1568,11 @@ async function executePersistedToolCall(
       "tool_call_settle_conflict",
       "A recovered tool result could not be durably settled."
     );
+  }
+  if (isRecoveredKnowledgeCall(context, call.name) && result.status === "error") {
+    recordRecoveredKnowledgeResult({
+      callId: call.id, context, includeUsage: false, modelRunToolCallId: persisted.id, result
+    });
   }
   if (fatalToolError) throw fatalToolError;
   return {
@@ -1851,7 +1863,9 @@ async function recoverCheckpointedToolLoop(
       : [];
     const tools: RunTool[] = [
       ...(run.normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
-      ...(recoveredKnowledgeEnabled ? deps.knowledgeExecutor?.tools ?? [] : []),
+      ...(recoveredKnowledgeEnabled
+        ? knowledgeRetrievalToolsForRequest(run.normalizedRequest, deps.knowledgeExecutor?.tools ?? [])
+        : []),
       ...(searchExecutor?.tools ?? []),
       ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
       ...(clientToolsEnabled ? mcpRunTools(run.normalizedRequest.mcp) : []),
@@ -2194,13 +2208,14 @@ async function recoverCheckpointedToolLoop(
         return result;
       });
       try {
-        return toolLoopKnowledgeEvidenceDispatchDraft({ request: providerRequest, results });
+        return toolLoopKnowledgeEvidenceDispatchDraft({ exclusions: run.knowledgeScope?.exclusions, request: providerRequest, results });
       } catch (error) {
+        const failureCode = knowledgeSearchFailureCode(error);
         throw new ToolLoopRecoveryError(
-          error instanceof Error && error.message === "no_retrieval_candidates"
+          failureCode ?? (error instanceof Error && error.message === "no_retrieval_candidates"
             ? "no_retrieval_candidates"
-            : "knowledge_retrieval_failed",
-          "The recovered Knowledge evidence manifest is invalid."
+            : "knowledge_retrieval_failed"),
+          failureCode ? knowledgeSearchFailureMessage(failureCode) : "The recovered Knowledge evidence manifest is invalid."
         );
       }
     }
@@ -2230,9 +2245,12 @@ async function recoverCheckpointedToolLoop(
           knowledgeZeroEvidence: true,
           repository: deps.repository,
           result: {
-            finalText: recoveredKnowledgeSearchUnavailable()
-              ? KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE
-              : KNOWLEDGE_INSUFFICIENT_MESSAGE,
+            finalText: knowledgeScopeLimitedMessage(
+              recoveredKnowledgeSearchUnavailable()
+                ? KNOWLEDGE_SEARCH_UNAVAILABLE_MESSAGE
+                : KNOWLEDGE_INSUFFICIENT_MESSAGE,
+              run.knowledgeScope?.exclusions
+            ),
             ...(currentProviderResponseId
               ? { providerResponseId: currentProviderResponseId }
               : {}),
@@ -2263,6 +2281,8 @@ async function recoverCheckpointedToolLoop(
         runId: run.id,
         seed: {
           draft: dispatchDraft,
+          ...(run.normalizedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: run.normalizedRequest.knowledgeAnswerWorkflowVersion } : {}),
+          repairFeedbackVersion: run.normalizedRequest.knowledgeReviewRepairFeedbackVersion,
           modelCapabilities: run.normalizedRequest.modelCapabilities,
           reasoningEffort: knowledgeGroundingInheritedReasoningEffortV1({
             acceptedReasoningEffort: run.normalizedRequest.reasoningEffort,
@@ -3131,6 +3151,8 @@ async function dispatchRecoveredReservedAnswer(input: Readonly<{
 type LoadedRecoveryControl = NonNullable<Awaited<ReturnType<typeof loadRecoveryRunControl>>>;
 
 type KnowledgeAnswerGroundingRecoverySeed = Readonly<{
+  workflowVersion?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+  repairFeedbackVersion?: 1;
   draft: KnowledgeEvidenceDispatchManifestDraft;
   evidenceBindings?: readonly KnowledgeEvidenceDispatchBinding[];
   executionPolicy?: KnowledgeGroundingEffectiveExecutionPolicyV1;
@@ -3162,10 +3184,25 @@ async function recoverKnowledgeAnswerGrounding(
 ): Promise<void> {
   let seed: KnowledgeAnswerGroundingRecoverySeed;
   let contractPair: KnowledgeAnswerContractPair = KNOWLEDGE_ANSWER_CONTRACT_PAIR_V20_V16;
-  let pipeline: "v20_v16" | "v21_scope_v6";
-  let scopeV6SnapshotVersion: 37 | 38 | 39 | 40 | 41 | undefined;
+  let pipeline: "v20_v16" | "v21_scope_v6" | "evidence_answer_v1";
+  let scopeV6SnapshotVersion: 37 | 38 | 39 | 40 | 41 | 42 | undefined;
   if (input.draftDispatch) {
-    if (input.draftDispatch.attempt.purpose === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21) {
+    if (input.draftDispatch.attempt.purpose === "knowledge_evidence_compose_v1" || input.draftDispatch.attempt.purpose === "knowledge_evidence_compose_v2") {
+      const snapshot = decodeKnowledgeEvidenceAnswerSnapshot(input.draftDispatch.attempt.acceptedRequest);
+      let request: unknown;
+      try { request = snapshot ? JSON.parse(snapshot.userPrompt).request : null; } catch { request = null; }
+      if (!snapshot || (snapshot.operation !== "knowledge_evidence_compose_v1" && snapshot.operation !== "knowledge_evidence_compose_v2") || input.draftDispatch.attempt.ordinal !== 1 ||
+        input.draftDispatch.attempt.providerBindingKey !== "answer" || typeof request !== "string" || !request.trim()) {
+        throw new ToolLoopRecoveryError("knowledge_answer_contract_failed", "The saved Knowledge answer contract is invalid.");
+      }
+      pipeline = "evidence_answer_v1";
+      seed = Object.freeze({ workflowVersion: snapshot.workflowVersion ?? 8, draft: input.draftDispatch.draft,
+        repairFeedbackVersion: "repairFeedbackVersion" in snapshot ? snapshot.repairFeedbackVersion : undefined,
+        evidenceBindings: [...input.draftDispatch.items, ...input.draftDispatch.exclusions].flatMap(item => item.evidenceItemId
+          ? [{ dispatchEvidenceId: item.dispatchEvidenceId, evidenceItemId: item.evidenceItemId }] : []),
+        forbiddenIdentityFragments: input.draftDispatch.draft.items.map(item => item.evidenceId),
+        executionPolicy: snapshot.executionPolicy, request, routeInstruction: "", transport: snapshot.transport });
+    } else if (input.draftDispatch.attempt.purpose === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21) {
       if (input.draftDispatch.attempt.ordinal !== 1 ||
         input.draftDispatch.attempt.providerBindingKey !== "answer") {
         throw new ToolLoopRecoveryError(
@@ -3211,6 +3248,7 @@ async function recoverKnowledgeAnswerGrounding(
           (item) => item.evidenceId
         ),
         executionPolicy: draftRequest.executionPolicy,
+        ...(draftRequest.version === 42 && draftRequest.workflowVersion !== undefined ? { workflowVersion: draftRequest.workflowVersion } : {}),
         request: prompt.request,
         routeInstruction: prompt.routeInstruction,
         transport: draftRequest.transport
@@ -3264,8 +3302,8 @@ async function recoverKnowledgeAnswerGrounding(
     }
   } else {
     seed = input.seed;
-    pipeline = selectKnowledgeAnswerPipelineForNewRun({ modelRunId: input.runId });
-    if (pipeline === "v21_scope_v6") {
+    pipeline = seed.workflowVersion === 8 || seed.workflowVersion === 9 || seed.workflowVersion === 10 || seed.workflowVersion === 11 ? "evidence_answer_v1" : selectKnowledgeAnswerPipelineForNewRun({ modelRunId: input.runId });
+    if (pipeline === "v21_scope_v6" || pipeline === "evidence_answer_v1") {
       if (!seed.modelCapabilities) {
         throw new ToolLoopRecoveryError(
           "knowledge_answer_contract_failed",
@@ -3283,7 +3321,7 @@ async function recoverKnowledgeAnswerGrounding(
     }
   }
   const groundingUnavailable = !deps.knowledgeProviderDispatch ||
-    (pipeline === "v21_scope_v6"
+    (pipeline === "evidence_answer_v1" ? !deps.repository.groundKnowledgeEvidenceAnswer : pipeline === "v21_scope_v6"
       ? !deps.repository.groundKnowledgeAnswerV21
       : !deps.repository.groundKnowledgeAnswerV5);
   if (groundingUnavailable) {
@@ -3459,6 +3497,7 @@ async function recoverKnowledgeAnswerGrounding(
       usage: normalizeTokenUsage(next.value.usage)
     });
   };
+  const workflowVersion = seed.workflowVersion;
   const groundingInput = {
     authorize,
     draft: seed.draft,
@@ -3472,6 +3511,9 @@ async function recoverKnowledgeAnswerGrounding(
     ],
     lifecycle: deps.knowledgeProviderDispatch,
     modelRunId: input.runId,
+    ...(workflowVersion === 2 || workflowVersion === 3 || workflowVersion === 4 ||
+      workflowVersion === 5 || workflowVersion === 6 || workflowVersion === 7
+      ? { workflowVersion } : {}),
     ...(seed.executionPolicy
       ? { executionPolicy: seed.executionPolicy }
       : { reasoningEffort: seed.reasoningEffort }),
@@ -3480,7 +3522,27 @@ async function recoverKnowledgeAnswerGrounding(
     shouldAbort: () => input.signal.aborted,
     transport: seed.transport
   } as const;
-  const operationResult = pipeline === "v21_scope_v6"
+  const operationResult = seed.workflowVersion === 9 || seed.workflowVersion === 10 || seed.workflowVersion === 11
+    ? await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...groundingInput, executionPolicy: seed.executionPolicy!,
+        repairFeedbackVersion: seed.repairFeedbackVersion,
+        workflowVersion: seed.workflowVersion === 10 || seed.workflowVersion === 11 ? seed.workflowVersion : undefined,
+        async refineEvidence(result, previousEvidence) {
+          // Accepted child operations pin their exact manifest. Never rebuild
+          // or redispatch their preceding search during recovery.
+          const child = await deps.knowledgeProviderDispatch!.inspect({ modelRunId: input.runId,
+            ordinal: result.operations.length + 1 });
+          if (child) return child.draft;
+          const normalized = await deps.repository.loadProviderDispatchRecoveryRequest?.({ runId: input.runId, userId: input.userId });
+          if (!normalized) throw Error("provider_dispatch_request_invalid");
+          return refineKnowledgeEvidence({ authorize, executor: deps.knowledgeExecutor, memoryEgress: deps.memoryEgress,
+            previousEvidence,
+            repository: deps.repository, request: { ...normalized, attachments: [] }, result,
+            runId: input.runId, userId: input.userId, signal: input.signal
+          });
+        } })
+    : pipeline === "evidence_answer_v1"
+    ? await executeKnowledgeEvidenceAnswerV1({ ...groundingInput, executionPolicy: seed.executionPolicy! })
+    : pipeline === "v21_scope_v6"
     ? await executeKnowledgeAnswerGroundingV21({
         ...groundingInput,
         ...(scopeV6SnapshotVersion ? { snapshotVersion: scopeV6SnapshotVersion } : {}),
@@ -3491,7 +3553,9 @@ async function recoverKnowledgeAnswerGrounding(
               3: input.control.providerResponseId,
               4: input.control.providerResponseId,
               5: input.control.providerResponseId,
-              6: input.control.providerResponseId
+              6: input.control.providerResponseId,
+              7: input.control.providerResponseId,
+              8: input.control.providerResponseId
             }
           : undefined
       })
@@ -3533,7 +3597,10 @@ async function recoverKnowledgeAnswerGrounding(
     runId: input.runId,
     userId: input.userId
   });
+  const refinementRun = seed.workflowVersion === 9 || seed.workflowVersion === 10 || seed.workflowVersion === 11
+    ? await deps.repository.loadCheckpointedToolLoopRun({ runId: input.runId, userId: input.userId }) : null;
   const usageAttributions = groupedUsageAttributions([
+    ...knowledgeRefinementUsageAfter(refinementRun?.calls ?? [], persistedUsage.map(item => item.recordedAt)),
     ...persistedUsage.map(({ recordedAt: _recordedAt, ...attribution }) => attribution),
     ...operationResult.operations.map((operation) => ({
       modelId: latest.modelId,
@@ -3590,6 +3657,7 @@ async function refreshProviderRunOnceRegistered(
         });
       }
       if (draftDispatch && (
+        draftDispatch.attempt.purpose === "knowledge_evidence_compose_v1" || draftDispatch.attempt.purpose === "knowledge_evidence_compose_v2" ||
         draftDispatch.attempt.purpose === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21 ||
         knowledgeAnswerContractPairForDraftOperation(draftDispatch.attempt.purpose)
       )) {
@@ -3689,6 +3757,8 @@ async function refreshProviderRunOnceRegistered(
         );
       }
       const recovered = await deps.repository.loadKnowledgeFullContextDispatchRecovery({
+        ...(acceptedRequest.knowledgeEvidencePackingVersion !== undefined
+          ? { knowledgeEvidencePackingVersion: acceptedRequest.knowledgeEvidencePackingVersion } : {}),
         maximumTokens,
         modelId: acceptedRequest.modelId,
         provider: acceptedRequest.provider,
@@ -3720,6 +3790,8 @@ async function refreshProviderRunOnceRegistered(
         runId,
         seed: {
           draft: recovered.draft,
+          ...(acceptedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: acceptedRequest.knowledgeAnswerWorkflowVersion } : {}),
+          repairFeedbackVersion: acceptedRequest.knowledgeReviewRepairFeedbackVersion,
           evidenceBindings: recovered.evidenceBindings,
           modelCapabilities: acceptedRequest.modelCapabilities,
           reasoningEffort: knowledgeGroundingInheritedReasoningEffortV1({
@@ -3976,9 +4048,10 @@ async function refreshProviderRunOnceRegistered(
         }
         const evidence = knowledgeEvidenceFromToolResult(result);
         if (result.status !== "complete" || !evidence) {
+          const code = knowledgeSearchFailureFromToolResult(result) ?? "knowledge_retrieval_failed";
           throw new ToolLoopRecoveryError(
-            "knowledge_retrieval_failed",
-            "Focused Knowledge retrieval failed."
+            code,
+            knowledgeSearchFailureMessage(code)
           );
         }
         if (evidence.results.length < 1) {
@@ -4029,6 +4102,8 @@ async function refreshProviderRunOnceRegistered(
           runId,
           seed: {
             draft,
+            ...(acceptedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: acceptedRequest.knowledgeAnswerWorkflowVersion } : {}),
+            repairFeedbackVersion: acceptedRequest.knowledgeReviewRepairFeedbackVersion,
             forbiddenIdentityFragments: authorization.scope?.sources.flatMap((source) => [
               source.sourceId,
               source.sourceVersionId,

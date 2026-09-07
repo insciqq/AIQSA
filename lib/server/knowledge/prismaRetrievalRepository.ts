@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { decodeKnowledgeEvidenceOccurrenceKeyV1 } from "./evidenceOccurrence";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   decodeKnowledgeCitationHandle,
@@ -50,7 +51,8 @@ import {
 } from "./toolResult";
 import {
   assertKnowledgeSearchScopeReady,
-  executeKnowledgeRetrievalCore
+  executeKnowledgeRetrievalCore,
+  knowledgeRetrievalRuntimeSettingsSql
 } from "./prismaRetrievalCore";
 import { KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS } from "./hierarchicalIndex";
 import {
@@ -109,9 +111,12 @@ type RetrievalPrisma = Pick<
   | "modelRunToolCall"
 > & AcceptedEmbeddingRuntimeStore;
 
-const KNOWLEDGE_RETRIEVAL_STATEMENT_TIMEOUT_MS = 30_000;
+// Whole-Base admission permits large immutable scopes. Leave room for the
+// exact, lexical and dense lanes on a small installation, with a separate
+// transaction margin so PostgreSQL owns the classified statement timeout.
+const KNOWLEDGE_RETRIEVAL_STATEMENT_TIMEOUT_MS = 45_000;
 const KNOWLEDGE_RETRIEVAL_TRANSACTION_MAX_WAIT_MS = 5_000;
-const KNOWLEDGE_RETRIEVAL_TRANSACTION_TIMEOUT_MS = 35_000;
+const KNOWLEDGE_RETRIEVAL_TRANSACTION_TIMEOUT_MS = 50_000;
 
 function retrievalQueryTimedOut(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && (
@@ -130,27 +135,36 @@ function retrievalQueryTimedOut(error: unknown): boolean {
 function boundedRetrievalCoreClient(
   client: Pick<RetrievalPrisma, "$transaction">
 ): Parameters<typeof executeKnowledgeRetrievalCore>[0] {
-  return {
-    async $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T> {
-      try {
-        return await client.$transaction(async (tx) => {
-          await tx.$executeRaw`SELECT set_config(
+  const query = async <T>(statement: Prisma.Sql, semantic: boolean): Promise<T> => {
+    try {
+      return await client.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT set_config(
             'statement_timeout',
             ${String(KNOWLEDGE_RETRIEVAL_STATEMENT_TIMEOUT_MS)},
             true
           )`;
-          return tx.$queryRaw<T>(query);
-        }, {
-          maxWait: KNOWLEDGE_RETRIEVAL_TRANSACTION_MAX_WAIT_MS,
-          timeout: KNOWLEDGE_RETRIEVAL_TRANSACTION_TIMEOUT_MS
-        });
-      } catch (error) {
-        if (retrievalQueryTimedOut(error)) {
-          throw new Error("knowledge_retrieval_query_timed_out", { cause: error });
+        await tx.$executeRaw(knowledgeRetrievalRuntimeSettingsSql());
+        if (semantic) {
+          // Scope and lexical joins retain their ordinary planning choices.
+          // This preference expires with the standalone vector transaction.
+          await tx.$executeRaw`SET LOCAL enable_seqscan = off`;
         }
-        throw error;
+        return tx.$queryRaw<T>(statement);
+      }, {
+        maxWait: KNOWLEDGE_RETRIEVAL_TRANSACTION_MAX_WAIT_MS,
+        timeout: KNOWLEDGE_RETRIEVAL_TRANSACTION_TIMEOUT_MS
+      });
+    } catch (error) {
+      if (retrievalQueryTimedOut(error)) {
+        throw new Error("knowledge_retrieval_query_timed_out", { cause: error });
       }
+      throw error;
     }
+  };
+  return {
+    transactionLocalRetrievalSettings: true,
+    $queryRaw: <T>(statement: Prisma.Sql) => query<T>(statement, false),
+    $querySemantic: <T>(statement: Prisma.Sql) => query<T>(statement, true)
   };
 }
 
@@ -182,19 +196,18 @@ function embeddingTokens(value: unknown): number {
 }
 
 function resultMetrics(value: unknown): Readonly<{
-  contentHashes: readonly string[];
+  occurrenceKeys: readonly string[];
   retrievedTokens: number;
   sourceAliases: readonly string[];
 }> {
-  if (!Array.isArray(value)) return { contentHashes: [], retrievedTokens: 0, sourceAliases: [] };
-  const contentHashes: string[] = [];
+  if (!Array.isArray(value)) return { occurrenceKeys: [], retrievedTokens: 0, sourceAliases: [] };
+  const occurrenceKeys: string[] = [];
   const sourceAliases: string[] = [];
   let bytes = 0;
   for (const entry of value) {
     if (!record(entry)) continue;
-    if (typeof entry.contentHash === "string" && /^[0-9a-f]{64}$/u.test(entry.contentHash)) {
-      contentHashes.push(entry.contentHash);
-    }
+    const occurrenceKey = decodeKnowledgeEvidenceOccurrenceKeyV1(entry);
+    if (occurrenceKey) occurrenceKeys.push(occurrenceKey);
     if (typeof entry.sourceAlias === "string" && /^S[1-9]\d{0,2}$/u.test(entry.sourceAlias)) {
       sourceAliases.push(entry.sourceAlias);
     }
@@ -202,7 +215,7 @@ function resultMetrics(value: unknown): Readonly<{
     bytes += includedTextBytes ?? 0;
   }
   return {
-    contentHashes,
+    occurrenceKeys,
     retrievedTokens: Math.ceil(bytes / 4),
     sourceAliases: [...new Set(sourceAliases)].sort()
   };
@@ -545,7 +558,7 @@ export function createPrismaKnowledgeRetrievalStore(
       let queryEmbeddingCalls = 0;
       let retrievedTokens = 0;
       let totalEmbeddingTokens = 0;
-      const priorContentHashes: string[] = [];
+      const priorOccurrenceKeys: string[] = [];
       const priorSourceAliases: string[] = [];
       for (const receipt of receipts) {
         cumulativeCandidates += receipt.candidateCount;
@@ -556,7 +569,7 @@ export function createPrismaKnowledgeRetrievalStore(
         const result = resultMetrics(receipt.results);
         evidenceCount += Array.isArray(receipt.results) ? receipt.results.length : 0;
         retrievedTokens += result.retrievedTokens;
-        priorContentHashes.push(...result.contentHashes);
+        priorOccurrenceKeys.push(...result.occurrenceKeys);
         priorSourceAliases.push(...result.sourceAliases);
       }
       const usage: KnowledgeBudgetUsage = {
@@ -575,7 +588,7 @@ export function createPrismaKnowledgeRetrievalStore(
         excludedResources,
         invocationOrdinal: summary.invocationOrdinal,
         policy,
-        priorContentHashes: [...new Set(priorContentHashes)],
+        priorOccurrenceKeys: [...new Set(priorOccurrenceKeys)],
         priorSourceAliases: [...new Set(priorSourceAliases)].sort(),
         stopReason: knowledgeBudgetStopReason(policy, usage),
         usage
@@ -598,7 +611,7 @@ export function createPrismaKnowledgeRetrievalStore(
         ...(input.anchorQuery ? { anchorQuery: input.anchorQuery } : {}),
         ...(input.bindingOrdinals ? { bindingOrdinals: input.bindingOrdinals } : {}),
         candidateLimit: input.candidateLimit,
-        excludedContentHashes: input.excludedContentHashes,
+        excludedOccurrenceKeys: input.excludedOccurrenceKeys,
         lexicalSearch: passageBm25Search,
         // FR-14/FR-15: child-to-parent expansion applies only to automatic
         // search results; bounded exact reads and metadata discovery never

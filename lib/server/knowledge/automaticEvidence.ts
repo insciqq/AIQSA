@@ -6,7 +6,10 @@ import {
   type ToolLoopJsonValue
 } from "../runs/toolLoopPersistence";
 import {
+  KNOWLEDGE_EVIDENCE_PACKING_VERSION,
   KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION,
+  KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION,
+  KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION,
   packKnowledgeEvidenceDispatchManifest,
   type CurrentKnowledgeEvidenceDispatchCandidate,
   type KnowledgeEvidenceDispatchManifestDraft
@@ -24,6 +27,8 @@ import {
 import { KNOWLEDGE_EVIDENCE_MESSAGE_ID } from "./evidenceContext";
 import type { KnowledgeRunAdmissionExclusion } from "./runAdmission";
 import { knowledgeDocumentContextHasAssociationAmbiguity } from "./documentContext";
+import { knowledgeRetrievalDispatchLocators } from "./fullContext";
+import { KnowledgeSearchFailure, knowledgeSearchFailureFromToolResult, knowledgeCoverageLimitationNotes } from "./searchFailure";
 
 export { KNOWLEDGE_EVIDENCE_MESSAGE_ID } from "./evidenceContext";
 
@@ -141,6 +146,26 @@ function focusedKnowledgeEvidenceHeader(): string {
   ].join("\n");
 }
 
+function occurrenceDispatchCandidates(results: readonly ToolExecutionResult[]): CurrentKnowledgeEvidenceDispatchCandidate[] {
+  const candidates = results.flatMap((result, index) => knowledgeEvidenceDispatchCandidatesFromToolResult(result, index + 1));
+  const retrieved = new Map(results.flatMap((result) =>
+    (knowledgeEvidenceFromToolResult(result)?.results ?? []).map((passage, index) =>
+      [`${result.callId}:result:${index + 1}` as string, passage] as const)));
+  const available = candidates.filter((candidate) => candidate.state === "available");
+  // Allocate table aliases across the complete accepted result set, including
+  // separate calls, so two different tables cannot accidentally share T1.
+  const locators = knowledgeRetrievalDispatchLocators(available.map((candidate) => {
+    const passage = retrieved.get(candidate.evidenceId);
+    if (!passage) throw new Error("knowledge_retrieval_result_invalid");
+    return { documentContext: passage.documentContext, exactExcerpt: candidate.exactExcerpt,
+      handle: candidate.handle, headingPath: passage.headingPath ?? [], page: passage.page,
+      sourceAlias: candidate.sourceAlias };
+  }));
+  const locatorByEvidenceId = new Map(available.map((candidate, index) => [candidate.evidenceId, locators[index]!]));
+  return candidates.map((candidate) => candidate.state === "available"
+    ? { ...candidate, locator: locatorByEvidenceId.get(candidate.evidenceId)! } : candidate);
+}
+
 function providerEvidenceBudget(request: ProviderRunRequest): number {
   const contextWindow = request.modelCapabilities.contextWindow;
   const contextBound = Number.isFinite(contextWindow) && Number(contextWindow) > 0
@@ -164,6 +189,7 @@ function packFocusedManifest(input: Readonly<{
     maximumBytes,
     maximumTokens: Math.max(1, Math.floor(maximumBytes / 4)),
     runtimeVersion: 1,
+    packingVersion: KNOWLEDGE_EVIDENCE_PACKING_VERSION,
     profileId: `${input.request.provider}:${input.request.modelId}`,
     promptFragmentVersion: 6
   });
@@ -179,27 +205,44 @@ function toolLoopKnowledgeEvidenceHeader(): string {
 }
 
 export function toolLoopKnowledgeEvidenceDispatchDraft(input: Readonly<{
+  exclusions?: readonly KnowledgeRunAdmissionExclusion[];
+  retainedItems?: KnowledgeEvidenceDispatchManifestDraft["items"];
   request: ProviderRunRequest;
   results: readonly ToolExecutionResult[];
 }>): KnowledgeEvidenceDispatchManifestDraft | null {
-  const candidates = input.results.flatMap((result, index) =>
-    knowledgeEvidenceDispatchCandidatesFromToolResult(result, index + 1));
+  const retrievalFailures = [...new Set(input.results.map(knowledgeSearchFailureFromToolResult).filter((code) => code !== null))].sort();
+  const coverageLimitations = { excludedResources: (input.exclusions ?? []).reduce((sum, item) => sum + item.count, 0),
+    retrievalFailures, version: 1 as const };
+  const candidates = input.request.knowledgeEvidencePackingVersion === 3 || input.request.knowledgeEvidencePackingVersion === 4 || input.request.knowledgeEvidencePackingVersion === 5
+    ? occurrenceDispatchCandidates(input.results)
+    : input.results.flatMap((result, index) => knowledgeEvidenceDispatchCandidatesFromToolResult(result, index + 1));
   if (candidates.every((candidate) => candidate.state !== "available")) {
+    // A persisted, validated infrastructure receipt already owns its safe
+    // zero-evidence terminal outcome. Other retrieval errors remain failures.
+    const fatalFailure = input.results
+      .filter((result) => knowledgeEvidenceFromToolResult(result)?.outcome !== "search_unavailable")
+      .map(knowledgeSearchFailureFromToolResult).find((code) => code !== null);
+    if (fatalFailure) throw new KnowledgeSearchFailure(fatalFailure);
     return null;
   }
   const maximumBytes = providerEvidenceBudget(input.request);
   const draft = packKnowledgeEvidenceDispatchManifest({
     allowExpandedContextOmission: true,
     candidates,
-    coverageStatement:
-      "Coverage is limited to the final settled Knowledge tool evidence supplied below.",
+    retainedItems: input.retainedItems,
+    coverageLimitations,
+    coverageStatement: ["Coverage is limited to the final settled Knowledge tool evidence supplied below.",
+      ...knowledgeCoverageLimitationNotes(coverageLimitations)].join("\n"),
     footer: "</private_knowledge_evidence>",
     header: toolLoopKnowledgeEvidenceHeader(),
     maximumBytes,
     maximumTokens: Math.max(1, Math.floor(maximumBytes / 4)),
-    ...(input.request.knowledgeEvidencePackingVersion === 2
-      ? { packingVersion: KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION }
-      : {}),
+    packingVersion: input.request.knowledgeEvidencePackingVersion === 4 || input.request.knowledgeEvidencePackingVersion === 5
+      ? KNOWLEDGE_TOOL_LOOP_PRIMARY_EVIDENCE_PACKING_VERSION
+      : input.request.knowledgeEvidencePackingVersion === 3
+      ? KNOWLEDGE_TOOL_LOOP_OCCURRENCE_EVIDENCE_PACKING_VERSION
+      : input.request.knowledgeEvidencePackingVersion === 2
+      ? KNOWLEDGE_TOOL_LOOP_EVIDENCE_PACKING_VERSION : KNOWLEDGE_EVIDENCE_PACKING_VERSION,
     profileId: `${input.request.provider}:${input.request.modelId}`,
     promptFragmentVersion: 1,
     runtimeVersion: 1

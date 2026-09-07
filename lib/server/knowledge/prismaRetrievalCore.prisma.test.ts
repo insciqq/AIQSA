@@ -549,13 +549,13 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
     expect(scores?.irrelevant).toBe(0);
   });
 
-  it("keeps filename routing in the coarse document lane, not the passage BM25 vote", async () => {
+  it("routes indexed filenames through metadata without a passage BM25 vote", async () => {
     const fixture = await createFixture();
     try {
       const result = await executeKnowledgeRetrievalCore(prisma, {
         candidateLimit: 64,
-        excludedContentHashes: [],
-        query: "reference",
+        excludedOccurrenceKeys: [],
+        query: "policy",
         resultLimit: 16,
         runId: fixture.runId,
         userId: fixture.userId,
@@ -565,11 +565,22 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
       expect(result.passages).toHaveLength(1);
       expect(result.passages[0]?.chunkId).toBe(fixture.passageIds[0]);
       expect(result.passages[0]?.signals).toEqual(expect.arrayContaining([
-        expect.objectContaining({ lane: "document_lexical" })
+        expect.objectContaining({ exactKind: "filename", lane: "metadata" })
       ]));
       expect(result.passages[0]?.signals).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ lane: "passage_bm25" })
       ]));
+
+      const unindexedFilename = await executeKnowledgeRetrievalCore(prisma, {
+        candidateLimit: 64,
+        excludedOccurrenceKeys: [],
+        query: "reference",
+        resultLimit: 16,
+        runId: fixture.runId,
+        userId: fixture.userId,
+        vectors: []
+      });
+      expect(unindexedFilename.passages).toEqual([]);
     } finally {
       await cleanupFixture(fixture);
     }
@@ -584,7 +595,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
 
       await expect(executeKnowledgeRetrievalCore(prisma, {
         candidateLimit: 64,
-        excludedContentHashes: [],
+        excludedOccurrenceKeys: [],
         query: "SAFE-2718",
         resultLimit: 16,
         runId: fixture.runId,
@@ -618,7 +629,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
 
         await expect(executeKnowledgeRetrievalCore(tx as never, {
           candidateLimit: 64,
-          excludedContentHashes: [],
+          excludedOccurrenceKeys: [],
           query: "SAFE-2718",
           resultLimit: 16,
           runId: fixture.runId,
@@ -683,7 +694,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
     try {
       const result = await executeKnowledgeRetrievalCore(prisma, {
         candidateLimit: 64,
-        excludedContentHashes: [],
+        excludedOccurrenceKeys: [],
         query: "Find SAFE-2718 from 2026-08-20 in policy.pdf under \"Release Schedule\"",
         resultLimit: 16,
         runId: fixture.runId,
@@ -709,7 +720,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
 
       const discriminating = await executeKnowledgeRetrievalCore(prisma, {
         candidateLimit: 64,
-        excludedContentHashes: [],
+        excludedOccurrenceKeys: [],
         query: "SAFE-2718 2026-08-20",
         resultLimit: 8,
         runId: fixture.runId,
@@ -726,7 +737,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
       const anchored = await executeKnowledgeRetrievalCore(prisma, {
         anchorQuery: "What changed for SAFE-2718 on 2026-08-20?",
         candidateLimit: 64,
-        excludedContentHashes: [],
+        excludedOccurrenceKeys: [],
         query: "policy event details",
         resultLimit: 8,
         runId: fixture.runId,
@@ -740,7 +751,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
       const anchorLexical = await executeKnowledgeRetrievalCore(prisma, {
         anchorQuery: "Find the opaque beta evidence",
         candidateLimit: 64,
-        excludedContentHashes: [],
+        excludedOccurrenceKeys: [],
         query: "policy event details",
         resultLimit: 8,
         runId: fixture.runId,
@@ -754,7 +765,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
       const modelLexical = await executeKnowledgeRetrievalCore(prisma, {
         anchorQuery: "unrelated current request framing",
         candidateLimit: 64,
-        excludedContentHashes: [],
+        excludedOccurrenceKeys: [],
         query: "Find the opaque alpha evidence",
         resultLimit: 8,
         runId: fixture.runId,
@@ -768,7 +779,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
       const semanticFusion = await executeKnowledgeRetrievalCore(prisma, {
         anchorQuery: "second latent concept",
         candidateLimit: 64,
-        excludedContentHashes: [],
+        excludedOccurrenceKeys: [],
         query: "first latent concept",
         resultLimit: 8,
         runId: fixture.runId,
@@ -797,7 +808,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
       for (const query of ["acme invoice", "invoice 2024"]) {
         const metadata = await executeKnowledgeRetrievalCore(prisma, {
           candidateLimit: 64,
-          excludedContentHashes: [],
+          excludedOccurrenceKeys: [],
           query,
           resultLimit: 8,
           runId: fixture.runId,
@@ -814,7 +825,7 @@ describe("Prisma Knowledge ordinary exact retrieval", () => {
 
       await expect(executeKnowledgeRetrievalCore(prisma, {
         candidateLimit: 64,
-        excludedContentHashes: [],
+        excludedOccurrenceKeys: [],
         query: "quarterly report",
         resultLimit: 8,
         runId: fixture.runId,

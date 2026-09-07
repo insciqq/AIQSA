@@ -6,8 +6,10 @@ import type { ParsedDocument } from "./types";
 
 /** Storage-neutral final assembly; missing required pages remain an error. */
 export function assembleAdaptivePdfPages(input: Readonly<{
+  deduplicateNativeProseRows?: boolean;
   docling: ParsedDocument | null;
   geometry: NativePdfGeometry;
+  legacyTableInference?: boolean;
   maxBlocks: number;
   maxCharacters: number;
   pages: readonly Readonly<{ page: number; text: string }>[];
@@ -18,6 +20,7 @@ export function assembleAdaptivePdfPages(input: Readonly<{
     decodedByPage.get(index + 1) ?? Object.freeze({ page: index + 1, text: "" }));
   const vision = input.plan.visionRequiredPageCount > 0
     ? modelPdfPagesToDocument({
+        legacyTableInference: input.legacyTableInference,
         maxBlocks: input.maxBlocks,
         maxCharacters: input.maxCharacters,
         mode: "system_model_vision",
