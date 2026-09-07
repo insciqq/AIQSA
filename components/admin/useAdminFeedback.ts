@@ -1,8 +1,15 @@
 import { useCallback, useMemo, useState } from "react";
 
+/** One optional verb on a notice, e.g. `Undo` after an immediate apply. */
+export type AdminFeedbackNoticeAction = Readonly<{
+  label: string;
+  onSelect(): void;
+}>;
+
 export type AdminFeedbackState = Readonly<{
   error: string | null;
   notice: string | null;
+  noticeAction: AdminFeedbackNoticeAction | null;
 }>;
 
 export type AdminFeedbackController = AdminFeedbackState &
@@ -12,7 +19,7 @@ export type AdminFeedbackController = AdminFeedbackState &
     clearErrorIf(message: string): void;
     clearNotice(): void;
     reportError(message: string): void;
-    reportNotice(message: string): void;
+    reportNotice(message: string, action?: AdminFeedbackNoticeAction): void;
   }>;
 
 /**
@@ -22,7 +29,10 @@ export type AdminFeedbackController = AdminFeedbackState &
  */
 export function useAdminFeedback(): AdminFeedbackController {
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Readonly<{
+    action: AdminFeedbackNoticeAction | null;
+    message: string;
+  }> | null>(null);
 
   const clearAll = useCallback(() => {
     setError(null);
@@ -34,7 +44,9 @@ export function useAdminFeedback(): AdminFeedbackController {
   }, []);
   const clearNotice = useCallback(() => setNotice(null), []);
   const reportError = useCallback((message: string) => setError(message), []);
-  const reportNotice = useCallback((message: string) => setNotice(message), []);
+  const reportNotice = useCallback((message: string, action?: AdminFeedbackNoticeAction) => {
+    setNotice({ action: action ?? null, message });
+  }, []);
 
   return useMemo(
     () => ({
@@ -43,7 +55,8 @@ export function useAdminFeedback(): AdminFeedbackController {
       clearErrorIf,
       clearNotice,
       error,
-      notice,
+      notice: notice?.message ?? null,
+      noticeAction: notice?.action ?? null,
       reportError,
       reportNotice
     }),

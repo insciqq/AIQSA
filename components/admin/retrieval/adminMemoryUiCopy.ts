@@ -3,26 +3,25 @@ import type { AdminMemoryStatus } from "@/lib/contracts/adminMemory";
 export type AdminMemoryLocale = "EN" | "RU";
 
 const COPY = {
-  configured: "Configured models and providers",
+  configured: "Models in use",
   configuredEmpty: "No Memory models are configured",
-  generation: "Index generation",
-  heading: "Memory status",
+  heading: "Memory",
   index: "Personal index",
-  intro: "Check the few runtime signals needed to keep personal Memory available.",
-  activeIssue: "Active issue code",
-  loading: "Loading Memory status…",
+  intro: "The few runtime signals needed to keep personal Memory available.",
+  activeIssue: "Active issue",
+  loading: "Loading Memory status...",
   noError: "None",
   notice: "A bounded Memory index rebuild was queued.",
   queue: "Worker queue",
-  rebuild: "Rebuild index",
-  rebuildDescription: "The active index is incompatible or incomplete. This action admits a bounded batch and preserves the current generation until replacements are ready.",
-  rebuildInProgress: "A generation-safe rebuild is in progress.",
+  rebuild: "Rebuild",
+  rebuildConfirmTitle: "Rebuild the Memory index?",
+  rebuildDescription: "The current index is incompatible or incomplete. Rebuilding admits a bounded batch and keeps the current index in use until replacements are ready.",
+  rebuildInProgress: "A rebuild is in progress. Answers keep using the current index until it is ready.",
   rebuildUnavailable: "A rebuild is required, but it cannot start until the Memory worker and model setup are ready.",
-  refresh: "Refresh",
-  saveTimeout: "Save timeout",
+  saveTimeout: "Save",
   statusUnavailable: "Status unavailable",
-  timeoutDescription: "Applies to new personal Memory lookups. If the full Control, embedding, retrieval, and reranking chain exceeds this budget, the answer continues without Memory.",
-  timeoutLabel: "Memory admission timeout (seconds)",
+  timeoutDescription: "Applies to new personal Memory lookups. If the full Memory chain exceeds this budget, the answer continues without Memory.",
+  timeoutLabel: "Admission timeout (seconds)",
   timeoutNotice: "Memory admission timeout saved. New messages use the updated budget.",
   worker: "Memory worker"
 } as const;
@@ -49,11 +48,7 @@ export function adminMemoryIndexCopy(
     REBUILD_REQUIRED: "Rebuild required",
     REBUILDING: "Rebuilding"
   } as const;
-  if (status.generation === null) return readiness[status.readiness];
-  const generation = status.generation === "MIXED"
-    ? "Mixed generations"
-    : `Generation ${status.generation.toLocaleString("en-US")}`;
-  return `${generation} · ${readiness[status.readiness]}`;
+  return readiness[status.readiness];
 }
 
 export function adminMemoryQueueCopy(

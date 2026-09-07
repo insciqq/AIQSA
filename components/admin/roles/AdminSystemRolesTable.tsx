@@ -1,0 +1,243 @@
+"use client";
+
+import { AdminTopbarMenu } from "@/components/admin/AdminShell";
+import { AdminKnowledgeProcessingRows } from "@/components/admin/roles/AdminKnowledgeProcessingRows";
+import { AdminRolePicker } from "@/components/admin/roles/AdminRolePicker";
+import { AdminStatusPill } from "@/components/admin/roles/AdminStatusPill";
+import { cardClass, compactSelectClass } from "@/components/admin/roles/rolesControls";
+import {
+  ADMIN_ROLE_STATUS_LABEL,
+  deploymentLabeller,
+  generativeRoleItems,
+  rerankerFallbacksLine,
+  rerankerItems,
+  roleStatus,
+  type AdminRoleStatus
+} from "@/components/admin/roles/rolesView";
+import type { AdminRolesController } from "@/components/admin/roles/useAdminRolesController";
+import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
+import { UiV2Switch, type UiV2MenuAction } from "@/components/ui-v2";
+import type { AdminSystemModelCandidate } from "@/lib/contracts/adminSystemModelPolicy";
+import type { ReactNode } from "react";
+
+const rowGrid = "grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_8.5rem_2.5rem] md:items-start md:gap-4";
+
+function RoleRow({
+  children,
+  description,
+  menu,
+  status,
+  testId,
+  title
+}: Readonly<{
+  children: ReactNode;
+  description: string;
+  menu: readonly UiV2MenuAction[];
+  status: AdminRoleStatus;
+  testId: string;
+  title: string;
+}>) {
+  return (
+    <div className={`${rowGrid} border-t border-trace-subtle first:border-t-0`} data-testid={testId}>
+      <div className="order-1 min-w-0">
+        <p className="text-sm font-medium text-ink">{title}</p>
+        <p className="mt-0.5 text-xs leading-5 text-ink-muted">{description}</p>
+      </div>
+      <div className="order-2 md:order-4 md:justify-self-end">
+        <AdminTopbarMenu actions={menu} label={`${title} actions`} />
+      </div>
+      <div className="order-3 col-span-2 grid gap-1.5 md:order-2 md:col-span-1">{children}</div>
+      <div className="order-4 col-span-2 md:order-3 md:col-span-1 md:pt-1.5">
+        <AdminStatusPill label={ADMIN_ROLE_STATUS_LABEL[status]} status={status} testId={`${testId}-status`} />
+      </div>
+    </div>
+  );
+}
+
+function ReasoningSelect({
+  disabled,
+  label,
+  model,
+  onChange,
+  value
+}: Readonly<{
+  disabled: boolean;
+  label: string;
+  model: AdminSystemModelCandidate | null;
+  onChange(effort: string | null): void;
+  value: string | null;
+}>) {
+  const efforts = model?.reasoningEfforts ?? [];
+  const unavailable = value !== null && !efforts.includes(value);
+  return (
+    <select
+      aria-label={label}
+      className={`${compactSelectClass} md:w-[11.5rem]`}
+      disabled={disabled || !model || (efforts.length === 0 && value === null)}
+      onChange={(event) => onChange(event.currentTarget.value || null)}
+      value={value ?? ""}
+    >
+      <option value="">
+        Reasoning: provider default{model?.defaultReasoningEffort ? ` (${model.defaultReasoningEffort})` : ""}
+      </option>
+      {unavailable ? <option disabled value={value}>Reasoning: {value} (unavailable)</option> : null}
+      {efforts.map((effort) => <option key={effort} value={effort}>Reasoning: {effort}</option>)}
+    </select>
+  );
+}
+
+/**
+ * System roles (PRD 5.5): one row per internal role. Rows 1–3 apply on
+ * selection with Undo; the Knowledge processing group needs Apply.
+ */
+export function AdminSystemRolesTable({
+  controller,
+  requestConfirmation
+}: Readonly<{
+  controller: AdminRolesController;
+  requestConfirmation: AdminConfirmationController["requestConfirmation"];
+}>) {
+  const catalog = controller.policy;
+  if (!catalog) return null;
+  const policy = catalog.policy;
+  const label = deploymentLabeller(catalog);
+  const busy = controller.busy || controller.checking !== null;
+  const checkingId = controller.checking?.id ?? null;
+  const memoryUndo = {
+    providerModelId: policy.systemModel?.id ?? null,
+    reasoningEffort: policy.reasoningEffort
+  };
+  const pdfUndo = {
+    chatPdfProviderModelId: policy.chatPdfModel?.id ?? null,
+    chatPdfReasoningEffort: policy.chatPdfReasoningEffort
+  };
+  const rerankerUndo = { rerankerProviderModelId: policy.rerankerModel?.id ?? null };
+  const fallbacks = rerankerFallbacksLine(catalog);
+
+  return (
+    <div className={cardClass} data-testid="admin-system-roles">
+      <div className="hidden border-b border-trace-subtle px-4 py-2 text-metadata font-semibold uppercase tracking-[0.08em] text-ink-muted md:grid md:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_8.5rem_2.5rem] md:gap-4">
+        <span>Role</span>
+        <span>Deployment</span>
+        <span>Status</span>
+        <span />
+      </div>
+
+      <RoleRow
+        description="Needs strict JSON output and forced tool calls. Also titles and MCP routing."
+        menu={[{
+          disabled: !policy.systemModel || busy,
+          label: "Clear assignment",
+          onSelect: () => void controller.assign({ providerModelId: null, reasoningEffort: null }, memoryUndo)
+        }]}
+        status={roleStatus(policy.systemModel)}
+        testId="admin-role-memory"
+        title="Memory & structured helpers"
+      >
+        <AdminRolePicker
+          busy={busy}
+          checkingId={checkingId}
+          items={generativeRoleItems(catalog, "memory")}
+          label="Memory & structured helpers deployment"
+          onCheck={(id) => controller.checkAndAssign("memory", id)}
+          onSelect={(id) => void controller.assign({ providerModelId: id, reasoningEffort: null }, memoryUndo)}
+          roleName="Memory"
+          selectedId={policy.systemModel?.id ?? null}
+          selectedLabel={policy.systemModel ? label(policy.systemModel) : null}
+          testId="admin-memory-picker"
+        />
+        <ReasoningSelect
+          disabled={busy}
+          label="Memory reasoning"
+          model={policy.systemModel}
+          onChange={(effort) => void controller.assign(
+            { providerModelId: policy.systemModel?.id ?? null, reasoningEffort: effort },
+            memoryUndo
+          )}
+          value={policy.reasoningEffort}
+        />
+      </RoleRow>
+
+      <RoleRow
+        description="Reads PDF pages as images before the chat model answers. Needs image input."
+        menu={[{
+          disabled: !policy.chatPdfModel || busy,
+          label: "Clear assignment",
+          onSelect: () => void controller.assign(
+            { chatPdfProviderModelId: null, chatPdfReasoningEffort: null },
+            pdfUndo
+          )
+        }]}
+        status={roleStatus(policy.chatPdfModel)}
+        testId="admin-role-chat-pdf"
+        title="Chat PDF preparation"
+      >
+        <AdminRolePicker
+          busy={busy}
+          checkingId={checkingId}
+          items={generativeRoleItems(catalog, "vision")}
+          label="Chat PDF preparation deployment"
+          onCheck={(id) => controller.checkAndAssign("vision", id)}
+          onSelect={(id) => void controller.assign(
+            { chatPdfProviderModelId: id, chatPdfReasoningEffort: null },
+            pdfUndo
+          )}
+          roleName="Chat PDF"
+          selectedId={policy.chatPdfModel?.id ?? null}
+          selectedLabel={policy.chatPdfModel ? label(policy.chatPdfModel) : null}
+          testId="admin-chat-pdf-picker"
+        />
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <ReasoningSelect
+            disabled={busy}
+            label="Chat PDF reasoning"
+            model={policy.chatPdfModel}
+            onChange={(effort) => void controller.assign(
+              { chatPdfProviderModelId: policy.chatPdfModel?.id ?? null, chatPdfReasoningEffort: effort },
+              pdfUndo
+            )}
+            value={policy.chatPdfReasoningEffort}
+          />
+          <span className="inline-flex items-center gap-1.5 text-xs text-ink-secondary">
+            <UiV2Switch
+              checked={policy.chatPdfPreparationAllowed}
+              disabled={busy}
+              label="Send pages there"
+              onChange={(next) => void controller.assign(
+                { chatPdfPreparationAllowed: next },
+                { chatPdfPreparationAllowed: policy.chatPdfPreparationAllowed }
+              )}
+            />
+            <span aria-hidden="true">Send pages there</span>
+          </span>
+        </div>
+      </RoleRow>
+
+      <RoleRow
+        description="Reorders Memory and Knowledge candidates. Dedicated reranker only."
+        menu={[{
+          disabled: !policy.rerankerModel || busy,
+          label: "Clear assignment",
+          onSelect: () => void controller.assign({ rerankerProviderModelId: null }, rerankerUndo)
+        }]}
+        status={roleStatus(policy.rerankerModel)}
+        testId="admin-role-reranker"
+        title="Reranking"
+      >
+        <AdminRolePicker
+          busy={busy}
+          items={rerankerItems(catalog)}
+          label="Reranking deployment"
+          onSelect={(id) => void controller.assign({ rerankerProviderModelId: id }, rerankerUndo)}
+          roleName="Reranking"
+          selectedId={policy.rerankerModel?.id ?? null}
+          selectedLabel={policy.rerankerModel ? label(policy.rerankerModel) : null}
+          testId="admin-reranker-picker"
+        />
+        {fallbacks ? <p className="text-xs leading-5 text-ink-muted" data-testid="admin-reranker-fallbacks">{fallbacks}</p> : null}
+      </RoleRow>
+
+      <AdminKnowledgeProcessingRows controller={controller} requestConfirmation={requestConfirmation} />
+    </div>
+  );
+}
