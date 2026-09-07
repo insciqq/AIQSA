@@ -3,7 +3,7 @@
 import { adminActionErrorMessage } from "@/components/admin/adminApi";
 import { useCallback, useMemo, useRef, useState } from "react";
 
-export type AdminFieldErrorId = "group-name" | "invite-email" | "rename-selected-group" | "rule-value";
+export type AdminFieldErrorId = "group-name" | "rename-selected-group";
 
 export type AdminFieldError = Readonly<{
   field: AdminFieldErrorId;

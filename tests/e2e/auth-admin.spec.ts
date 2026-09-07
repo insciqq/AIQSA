@@ -87,17 +87,6 @@ async function expectTouchTarget(locator: Locator) {
   expect(box!.height).toBeGreaterThanOrEqual(43);
 }
 
-async function expectReadableDetail(page: Page, detail: Locator) {
-  const box = await detail.boundingBox();
-  const viewport = page.viewportSize();
-  expect(box).not.toBeNull();
-  expect(viewport).not.toBeNull();
-  if (!box || !viewport) return;
-  expect(box.width).toBeGreaterThanOrEqual(640);
-  expect(box.x).toBeGreaterThanOrEqual(-1);
-  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
-}
-
 async function createPasswordUser(input: {
   displayName: string;
   email: string;
@@ -165,8 +154,32 @@ function inviteRow(section: Locator, email: string) {
   return section.getByTestId("admin-invite-row").filter({ hasText: email });
 }
 
-function accessRuleRow(section: Locator, value: string) {
-  return section.getByTestId("admin-access-rule-row").filter({ hasText: value });
+function signupRule(sheet: Locator, value: string) {
+  return sheet.getByTestId("admin-signup-rule").filter({ hasText: value });
+}
+
+function usersCrumb(page: Page) {
+  return page.getByTestId("admin-topbar-title").getByRole("link", { name: "Users" });
+}
+
+/** Opens the Users section and returns to its list when a user page is open. */
+async function openUsersList(page: Page): Promise<void> {
+  await openAdminSection(page, adminSection("users"));
+  const crumb = usersCrumb(page);
+  if (await crumb.isVisible().catch(() => false)) {
+    await crumb.click();
+  }
+  await expect(page.getByTestId("admin-users-index")).toBeVisible();
+}
+
+async function expectContainedInViewport(page: Page, locator: Locator) {
+  const box = await locator.boundingBox();
+  const viewport = page.viewportSize();
+  expect(box).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  if (!box || !viewport) return;
+  expect(box.x).toBeGreaterThanOrEqual(-1);
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
 }
 
 async function confirmAdminDialog(page: Page, testId: string, buttonName: RegExp) {
@@ -470,52 +483,41 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
 
   try {
     await bootstrapAdmin(page);
-    await openAdminSection(page, adminSection("users"));
+    await openUsersList(page);
 
     const approvedRow = userRow(page, approvedEmail);
-    await expect(approvedRow.getByText("pending")).toBeVisible();
-    await approvedRow.click();
-    const approvedDetail = page.getByTestId("admin-user-detail");
-    await approvedDetail.getByLabel(group.name).check();
-    await approvedDetail.getByRole("button", { name: "Approve user" }).click();
-    await expect(approvedDetail.getByText("Active", { exact: true })).toBeVisible();
-    const activeApprovedDetail = page.getByTestId("admin-user-detail");
-    const saveGroups = activeApprovedDetail.getByRole("button", { name: "Save groups" });
-    await expect(saveGroups).toBeDisabled();
-    await expect(saveGroups).toHaveClass(/\bbg-control-surface\b/);
-    const detailBox = await activeApprovedDetail.boundingBox();
-    const saveGroupsBox = await saveGroups.boundingBox();
-    expect(detailBox).toBeTruthy();
-    expect(saveGroupsBox).toBeTruthy();
-    expect(saveGroupsBox!.width).toBeLessThan(detailBox!.width / 2);
-    await activeApprovedDetail.getByRole("button", { name: "Back to users" }).click();
+    await expect(approvedRow).toHaveAttribute("data-user-status", "pending");
+    await approvedRow.getByRole("combobox", { name: "Group for Approved E2E User" }).selectOption(group.id);
+    await approvedRow.getByRole("button", { name: "Approve" }).click();
+    await expect(page.getByText("User approved and added to the group.")).toBeVisible();
+    await expect(approvedRow).toHaveAttribute("data-user-status", "active");
+    await expect(approvedRow.getByText(group.name, { exact: true })).toBeVisible();
+    await expect(approvedRow.getByRole("button", { name: "Approve" })).toHaveCount(0);
 
     const rejectedRow = userRow(page, rejectedEmail);
-    await expect(rejectedRow.getByText("pending")).toBeVisible();
-    await rejectedRow.click();
-    const rejectedDetail = page.getByTestId("admin-user-detail");
-    await rejectedDetail.getByRole("button", { name: "Reject user" }).click();
+    await expect(rejectedRow).toHaveAttribute("data-user-status", "pending");
+    await rejectedRow.getByRole("button", { name: "Reject" }).click();
     await confirmAdminDialog(page, "admin-confirm-reject-user", /confirm reject user/i);
-    await expect(rejectedDetail.getByText("denied", { exact: true })).toBeVisible();
+    await expect(rejectedRow).toHaveAttribute("data-user-status", "denied");
 
-    await openAdminSection(page, adminSection("users"));
-    const rules = page.getByTestId("admin-section-access-rules");
-    await page.getByRole("button", { name: "New rule" }).click();
-    await rules.getByLabel("Value").fill(ruleEmail);
-    await rules.getByLabel(group.name).check();
-    await rules.getByRole("button", { name: "Save rule" }).click();
-    await expect(rules.getByText(ruleEmail)).toBeVisible();
+    await page.getByRole("button", { name: "Sign-up rules" }).click();
+    const rulesSheet = page.getByTestId("admin-signup-rules-sheet");
+    await rulesSheet.getByLabel("Value").fill(ruleEmail);
+    await rulesSheet.getByLabel(group.name).check();
+    await rulesSheet.getByRole("button", { name: "Add rule" }).click();
+    await expect(signupRule(rulesSheet, ruleEmail)).toContainText(`Email · ${group.name}`);
+    await rulesSheet.getByRole("button", { exact: true, name: "Done" }).click();
+    await expect(rulesSheet).toHaveCount(0);
 
-    await openAdminSection(page, adminSection("users"));
-    const invites = page.getByTestId("admin-section-invites");
-    await expect(invites.getByRole("button", { name: "Expiring soon" })).toBeVisible();
-    await page.getByRole("button", { name: "New invite" }).click();
-    await invites.getByLabel("Email", { exact: true }).fill(inviteEmail);
-    await invites.getByLabel(group.name).check();
-    await expect(invites.getByRole("checkbox", { name: "Send invitation email" })).toBeChecked();
-    await invites.getByRole("button", { name: "Create invite" }).click();
-    const inviteLink = invites.getByLabel("Invite create-account link");
+    await page.getByRole("button", { exact: true, name: "Invite" }).click();
+    const inviteSheet = page.getByTestId("admin-invite-sheet");
+    await inviteSheet.getByLabel("Email", { exact: true }).fill(inviteEmail);
+    await inviteSheet.getByLabel(group.name).check();
+    await expect(inviteSheet.getByRole("checkbox", { name: /Send invitation email/ })).toBeChecked();
+    await inviteSheet.getByRole("button", { name: "Create invite" }).click();
+    const inviteLink = inviteSheet.getByLabel("Invite link");
     await expect(inviteLink).toHaveValue(/\/login\?invite=/);
+    await expect(inviteSheet.getByTestId("admin-invite-result")).toContainText("email sent");
     await expect(page.getByText("Invite created and email sent.")).toBeVisible();
     await expect
       .poll(async () => (await listAuthEmails(page.request)).filter((message) => message.to === inviteEmail).length)
@@ -525,13 +527,20 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
       subject: "You're invited to AIQSA",
       to: inviteEmail
     });
-    expect(inviteMessage?.text).toContain(await inviteLink.inputValue());
+    const inviteUrl = await inviteLink.inputValue();
+    expect(inviteMessage?.text).toContain(inviteUrl);
     expect(inviteMessage?.text).not.toContain(group.name);
-    await expect(invites.getByText(inviteEmail)).toBeVisible();
+    await inviteSheet.getByRole("button", { exact: true, name: "Done" }).click();
+    await expect(inviteSheet).toHaveCount(0);
+    const openInvites = page.getByTestId("admin-open-invites");
+    const freshInviteRow = inviteRow(openInvites, inviteEmail);
+    await expect(freshInviteRow).toContainText(`${group.name} · expires in`);
+    await expect(freshInviteRow).toContainText("email sent");
+    await expect(freshInviteRow.getByRole("button", { name: `Copy link for ${inviteEmail}` })).toBeVisible();
 
     const inviteContext = await browser.newContext();
     invitePage = await inviteContext.newPage();
-    await invitePage.goto(await inviteLink.inputValue());
+    await invitePage.goto(inviteUrl);
     await expect(invitePage.getByRole("heading", { level: 1, name: "Create your account" })).toBeVisible();
     await expect(invitePage.getByLabel("Email")).toHaveCount(0);
     await invitePage.getByLabel("Name").fill("Invited E2E User");
@@ -563,13 +572,17 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
       status: "active"
     });
 
-    await invites.getByLabel("Email", { exact: true }).fill(linkOnlyInviteEmail);
-    await invites.getByRole("checkbox", { name: "Send invitation email" }).uncheck();
-    await invites.getByRole("button", { name: "Create invite" }).click();
-    await expect(page.getByText("Invite created without email. Copy and share the link below.")).toBeVisible();
-    await expect(invites.getByText("No invitation email was sent.")).toBeVisible();
-    await expect(invites.getByLabel("Invite create-account link")).toHaveValue(/\/login\?invite=/);
+    await page.getByRole("button", { exact: true, name: "Invite" }).click();
+    const linkOnlySheet = page.getByTestId("admin-invite-sheet");
+    await linkOnlySheet.getByLabel("Email", { exact: true }).fill(linkOnlyInviteEmail);
+    await linkOnlySheet.getByRole("checkbox", { name: /Send invitation email/ }).uncheck();
+    await linkOnlySheet.getByRole("button", { name: "Create invite" }).click();
+    await expect(linkOnlySheet.getByTestId("admin-invite-result")).toContainText("no email sent");
+    await expect(linkOnlySheet.getByLabel("Invite link")).toHaveValue(/\/login\?invite=/);
     expect((await listAuthEmails(page.request)).filter((message) => message.to === linkOnlyInviteEmail)).toHaveLength(0);
+    await linkOnlySheet.getByRole("button", { exact: true, name: "Done" }).click();
+    await expect(linkOnlySheet).toHaveCount(0);
+    await expect(inviteRow(openInvites, linkOnlyInviteEmail)).toContainText("no email sent");
 
     const userContext = await browser.newContext();
     userPage = await userContext.newPage();
@@ -649,15 +662,12 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
       error: "model_not_available"
     });
 
-    await openAdminSection(page, adminSection("users"));
-    const selectedUserDetail = page.getByTestId("admin-user-detail");
-    if (await selectedUserDetail.isVisible()) {
-      await selectedUserDetail.getByRole("button", { name: "Back to users" }).click();
-      await expect(selectedUserDetail).toHaveCount(0);
-    }
-    await userRow(page, approvedEmail).click();
-    const activeUserDetail = page.getByTestId("admin-user-detail");
+    await openUsersList(page);
+    await userRow(page, approvedEmail).getByRole("link", { name: "Open Approved E2E User" }).click();
+    const activeUserDetail = page.getByTestId("admin-user-page");
+    await expect(page).toHaveURL(/section=users&resource=/);
     await expect(activeUserDetail.getByText("Disable this user before deletion can be considered.")).toBeVisible();
+    await expect(activeUserDetail.getByRole("button", { name: "Save" })).toBeDisabled();
     await activeUserDetail.getByRole("button", { name: "Revoke sessions" }).click();
     await confirmAdminDialog(page, "admin-confirm-revoke-user-sessions", /confirm revoke sessions/i);
     await expect.poll(
@@ -668,9 +678,10 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     await loginWithPassword(userPage, approvedEmail, approvedPassword);
     await expect(userPage.getByTestId("app-shell")).toBeVisible();
 
-    await activeUserDetail.getByRole("button", { name: "Disable user" }).click();
+    await activeUserDetail.getByRole("button", { exact: true, name: "Disable" }).click();
     await confirmAdminDialog(page, "admin-confirm-disable-user", /confirm disable user/i);
     await expect(activeUserDetail.getByText("Disabled", { exact: true })).toBeVisible();
+    await expect(activeUserDetail.getByRole("button", { exact: true, name: "Disable" })).toHaveCount(0);
     await expect.poll(
       () => browserFetchStatus(userPage!, "/api/me"),
       { timeout: 15_000 }
@@ -787,6 +798,10 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await expect(attention.getByText(/When the list is empty, everything is working/)).toBeVisible();
     await attention.getByRole("button", { name: /^Review users:/ }).click();
     await expect(page.getByTestId("admin-section-users")).toBeVisible();
+    await expect(page).toHaveURL(/section=users&filter=pending$/);
+    await expect(page.getByRole("button", { name: /^Pending · \d+$/ })).toHaveAttribute("aria-pressed", "true");
+    await expect(userRow(page, staleUserEmail)).toHaveAttribute("data-user-status", "pending");
+    await page.getByRole("button", { name: /^All · \d+$/ }).click();
     await expect(page).toHaveURL(/section=users$/);
 
     for (const section of adminSections) {
@@ -942,65 +957,79 @@ test("admin console keeps all redesigned sections operable end to end", async ({
       )
       .toBe(0);
 
-    await openAdminSection(page, adminSection("users"));
-    const rules = page.getByTestId("admin-section-access-rules");
-    await page.getByRole("button", { name: "New rule" }).click();
-    await rules.getByLabel("Kind").selectOption("domain");
-    await rules.getByLabel("Value").fill(` ${domain.toUpperCase()} `);
-    await expect(rules.getByText(domain)).toBeVisible();
-    await rules.getByLabel(renamedGroupName).check();
-    await rules.getByRole("button", { name: "Save rule" }).click();
-    await expect(rules.getByText(domain)).toBeVisible();
-    await rules.getByLabel("Search access rules").fill(domain);
-    await expect(rules.getByText(domain)).toBeVisible();
+    await openUsersList(page);
+    await page.getByRole("button", { name: "Sign-up rules" }).click();
+    const rulesSheet = page.getByTestId("admin-signup-rules-sheet");
+    await rulesSheet.getByLabel("Kind").selectOption("domain");
+    await rulesSheet.getByLabel("Value").fill(` ${domain.toUpperCase()} `);
+    await expect(rulesSheet.getByTestId("admin-signup-rule-preview")).toContainText(domain);
+    await rulesSheet.getByLabel(renamedGroupName).check();
+    await rulesSheet.getByRole("button", { name: "Add rule" }).click();
+    await expect(signupRule(rulesSheet, domain)).toContainText(`Domain · ${renamedGroupName}`);
+    await expect(rulesSheet.getByLabel("Value")).toHaveValue("");
+    await rulesSheet.getByRole("button", { exact: true, name: "Done" }).click();
+    await expect(rulesSheet).toHaveCount(0);
 
-    await openAdminSection(page, adminSection("users"));
-    const invites = page.getByTestId("admin-section-invites");
-    await page.getByRole("button", { name: "New invite" }).click();
-    await invites.getByLabel("Email", { exact: true }).fill(inviteEmail);
-    await invites.getByLabel(renamedGroupName).check();
-    await invites.getByRole("button", { name: "Create invite" }).click();
-    await expect(invites.getByLabel("Invite create-account link")).toHaveValue(/\/login\?invite=/);
-    await invites.getByRole("button", { name: "Copy" }).click();
-    await expect(invites.getByRole("button", { name: "Copied" })).toBeVisible();
-    await invites.getByLabel("Search invites").fill(inviteEmail);
-    await expect(invites.getByText(inviteEmail)).toBeVisible();
-    const createdInviteRow = inviteRow(invites, inviteEmail);
-    await createdInviteRow.getByRole("button", { name: "Details" }).click();
-    await page.getByTestId("admin-invite-detail").getByRole("button", { name: "Revoke invite" }).click();
+    await page.getByRole("button", { exact: true, name: "Invite" }).click();
+    const inviteSheet = page.getByTestId("admin-invite-sheet");
+    await inviteSheet.getByLabel("Email", { exact: true }).fill(inviteEmail);
+    await inviteSheet.getByLabel(renamedGroupName).check();
+    await inviteSheet.getByRole("button", { name: "Create invite" }).click();
+    await expect(inviteSheet.getByLabel("Invite link")).toHaveValue(/\/login\?invite=/);
+    await inviteSheet.getByRole("button", { exact: true, name: "Copy" }).click();
+    await expect(inviteSheet.getByRole("button", { name: "Copied" })).toBeVisible();
+    await inviteSheet.getByRole("button", { exact: true, name: "Done" }).click();
+    await expect(inviteSheet).toHaveCount(0);
+    const openInvites = page.getByTestId("admin-open-invites");
+    const createdInviteRow = inviteRow(openInvites, inviteEmail);
+    await expect(createdInviteRow).toContainText(renamedGroupName);
+    await createdInviteRow.getByRole("button", { name: `Copy link for ${inviteEmail}` }).click();
+    await expect(createdInviteRow.getByRole("button", { name: "Copied" })).toBeVisible();
+    await createdInviteRow.getByRole("button", { name: `More actions for ${inviteEmail}` }).click();
+    await page.getByRole("menuitem", { name: "Revoke" }).click();
     await confirmAdminDialog(page, "admin-confirm-revoke-invite", /confirm revoke invite/i);
-    await expect(createdInviteRow.getByText("revoked", { exact: true })).toBeVisible();
-    await page.getByTestId("admin-invite-detail").getByRole("button", { name: "Delete invite" }).click();
-    await confirmAdminDialog(page, "admin-confirm-delete-invite", /confirm delete invite/i);
     await expect(createdInviteRow).toHaveCount(0);
+    await openInvites.getByRole("button", { exact: true, name: "Show" }).click();
+    const revokedInviteRow = inviteRow(openInvites, inviteEmail);
+    await expect(revokedInviteRow).toContainText("revoked");
+    await expect(revokedInviteRow.getByRole("button", { name: /Copy link/ })).toHaveCount(0);
+    await revokedInviteRow.getByRole("button", { name: `More actions for ${inviteEmail}` }).click();
+    await page.getByRole("menuitem", { name: "Delete" }).click();
+    await confirmAdminDialog(page, "admin-confirm-delete-invite", /confirm delete invite/i);
+    await expect(revokedInviteRow).toHaveCount(0);
 
-    await openAdminSection(page, adminSection("users"));
     const users = page.getByTestId("admin-section-users");
-    await users.getByLabel("Search users").fill("operator@aiqsa.local");
+    const search = users.getByRole("searchbox", { name: "Search users" });
+    await search.fill("operator@aiqsa.local");
     const selfRow = userRow(page, "operator@aiqsa.local");
     await expect(selfRow).toBeVisible();
-    await selfRow.click();
-    const selfDetail = page.getByTestId("admin-user-detail");
-    await expect(selfDetail.getByText(/Self-disable and self-delete are not exposed/)).toBeVisible();
-    await expect(selfDetail.getByRole("button", { name: "Delete stale user" })).toHaveCount(0);
-    await selfDetail.getByRole("button", { name: "Back to users" }).click();
+    await expect(selfRow).toContainText("you · admin");
+    await selfRow.getByRole("link", { name: /^Open / }).click();
+    const selfPage = page.getByTestId("admin-user-page");
+    await expect(selfPage.getByText(/Self-disable and self-delete are not exposed/)).toBeVisible();
+    await expect(selfPage.getByRole("button", { name: "Delete stale" })).toHaveCount(0);
+    await expect(selfPage.getByRole("button", { exact: true, name: "Disable" })).toHaveCount(0);
+    await usersCrumb(page).click();
+    await expect(search).toHaveValue("operator@aiqsa.local");
 
-    await users.getByLabel("Search users").fill(staleUserEmail);
+    await search.fill(staleUserEmail);
     const staleUserRow = userRow(page, staleUserEmail);
     await expect(staleUserRow).toBeVisible();
-    await staleUserRow.click();
-    await page.getByTestId("admin-user-detail").getByRole("button", { name: "Delete stale user" }).click();
+    await staleUserRow.getByRole("link", { name: /^Open / }).click();
+    await page.getByTestId("admin-user-page").getByRole("button", { name: "Delete stale" }).click();
     await confirmAdminDialog(page, "admin-confirm-delete-user", /confirm delete user/i);
+    await expect(page.getByTestId("admin-users-index")).toBeVisible();
+    await expect(page).toHaveURL(/section=users$/);
     await expect(staleUserRow).toHaveCount(0);
 
-    await openAdminSection(page, adminSection("users"));
-    const ruleSection = page.getByTestId("admin-section-access-rules");
-    const ruleRow = accessRuleRow(ruleSection, domain);
-    await expect(ruleRow).toBeVisible();
-    await ruleRow.getByRole("button", { name: "Details" }).click();
-    await page.getByTestId("admin-access-rule-detail").getByRole("button", { name: "Delete rule" }).click();
+    await page.getByRole("button", { name: "Sign-up rules" }).click();
+    const rulesSheetAgain = page.getByTestId("admin-signup-rules-sheet");
+    await rulesSheetAgain.getByRole("button", { name: `Delete rule ${domain}` }).click();
     await confirmAdminDialog(page, "admin-confirm-delete-access-rule", /confirm delete rule/i);
-    await expect(ruleRow).toHaveCount(0);
+    await expect(signupRule(rulesSheetAgain, domain)).toHaveCount(0);
+    await expect(rulesSheetAgain.getByLabel("Value")).toBeFocused();
+    await rulesSheetAgain.getByRole("button", { exact: true, name: "Done" }).click();
+    await expect(rulesSheetAgain).toHaveCount(0);
 
     await openAdminSection(page, adminSection("groups"));
     const accessAfterDelete = page.getByTestId("admin-section-groups");
@@ -1047,8 +1076,8 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     });
     await page.goto("/admin?section=users");
     await expect(page.getByTestId("admin-section-users")).toBeVisible();
+    await expectNoPageOverflow(page);
 
-    await openAdminSection(page, adminSection("overview"));
     await page.getByRole("button", { name: "More actions" }).click();
     await page.getByRole("menuitem", { name: "Revoke all sessions" }).click();
     await confirmAdminDialog(page, "admin-confirm-revoke-all-sessions", /confirm revoke all sessions/i);
@@ -1153,23 +1182,22 @@ test("admin console keeps every section touch-operable in the documented compact
       await expectNoPageOverflow(page);
     }
 
-    await openAdminSection(page, adminSection("users"));
+    await openUsersList(page);
     const users = page.getByTestId("admin-section-users");
-    await expectTouchTarget(users.getByLabel("Search users"));
-    await expectTouchTarget(users.getByRole("button", { exact: true, name: "all" }));
+    const search = users.getByRole("searchbox", { name: "Search users" });
+    await expectTouchTarget(search);
+    await expectTouchTarget(users.getByRole("button", { name: /^All · \d+$/ }));
 
-    await users.getByLabel("Search users").fill("operator@aiqsa.local");
+    await search.fill("operator@aiqsa.local");
     const operatorRow = userRow(page, "operator@aiqsa.local");
     await operatorRow.scrollIntoViewIfNeeded();
     await expectTouchTarget(operatorRow);
-    await operatorRow.click();
-    const selectedDetail = page.getByTestId("admin-user-detail");
-    await expect(selectedDetail).toContainText("Acting admin");
+    await operatorRow.getByRole("link", { name: /^Open / }).click();
+    const selectedPage = page.getByTestId("admin-user-page");
+    await expect(selectedPage).toContainText("you");
     await expectNoPageOverflow(page);
-    const backToUsers = selectedDetail.getByRole("button", { name: "Back to users" });
-    await expectTouchTarget(backToUsers);
-    await backToUsers.click();
-    await expect(users.getByLabel("Search users")).toHaveValue("operator@aiqsa.local");
+    await usersCrumb(page).click();
+    await expect(search).toHaveValue("operator@aiqsa.local");
     await expect(operatorRow).toBeVisible();
 
     await openAdminSection(page, adminSection("groups"));
@@ -1203,17 +1231,15 @@ test("admin console keeps every section touch-operable in the documented compact
     await expect(accessGroupSearch).toHaveValue(compactGroupName);
     await expect(accessGroupRow).toBeVisible();
 
-    await openAdminSection(page, adminSection("users"));
-    const invites = page.getByTestId("admin-section-invites");
-    await invites.getByLabel("Search invites").fill(compactGroupName);
-    const newInvite = page.getByRole("button", { exact: true, name: "New invite" });
-    await expectTouchTarget(newInvite);
-    await newInvite.click();
-    const backToInvites = invites.getByRole("button", { name: "Back to invites" });
-    await expect(backToInvites).toBeFocused();
-    await expectTouchTarget(invites.getByLabel("Email", { exact: true }));
-    await expectTouchTarget(invites.getByRole("button", { exact: true, name: "Create invite" }));
-    await expectTouchTarget(invites.getByLabel(compactGroupName).locator(".."));
+    await openUsersList(page);
+    const invite = page.getByRole("button", { exact: true, name: "Invite" });
+    await expectTouchTarget(invite);
+    await invite.click();
+    const inviteSheet = page.getByTestId("admin-invite-sheet");
+    await expect(inviteSheet.getByRole("button", { name: "Close" })).toBeFocused();
+    await expectTouchTarget(inviteSheet.getByLabel("Email", { exact: true }));
+    await expectTouchTarget(inviteSheet.getByRole("button", { exact: true, name: "Create invite" }));
+    await expectTouchTarget(inviteSheet.getByLabel(compactGroupName).locator(".."));
     await expectNoPageOverflow(page);
     for (const viewport of [
       { height: 768, width: 1024 },
@@ -1222,26 +1248,22 @@ test("admin console keeps every section touch-operable in the documented compact
     ]) {
       await page.setViewportSize(viewport);
       await expectNoPageOverflow(page);
-      await expectReadableDetail(page, invites.getByTestId("admin-invites-detail-pane"));
+      await expectContainedInViewport(page, inviteSheet.getByRole("dialog"));
     }
     await page.setViewportSize({ height: 844, width: 390 });
-    await expectTouchTarget(backToInvites);
-    await backToInvites.click();
-    await expect(newInvite).toBeFocused();
-    await expect(invites.getByLabel("Search invites")).toHaveValue(compactGroupName);
+    await inviteSheet.getByRole("button", { exact: true, name: "Cancel" }).click();
+    await expect(inviteSheet).toHaveCount(0);
+    await expect(invite).toBeFocused();
 
-    await openAdminSection(page, adminSection("users"));
-    const rules = page.getByTestId("admin-section-access-rules");
-    await rules.getByLabel("Search access rules").fill(compactGroupName);
-    const newRule = page.getByRole("button", { exact: true, name: "New rule" });
-    await expectTouchTarget(newRule);
-    await newRule.click();
-    const backToRules = rules.getByRole("button", { name: "Back to access rules" });
-    await expect(backToRules).toBeFocused();
-    await expectTouchTarget(rules.getByLabel("Kind"));
-    await expectTouchTarget(rules.getByLabel("Value"));
-    await expectTouchTarget(rules.getByRole("button", { exact: true, name: "Save rule" }));
-    await expectTouchTarget(rules.getByLabel(compactGroupName).locator(".."));
+    const signupRules = page.getByRole("button", { exact: true, name: "Sign-up rules" });
+    await expectTouchTarget(signupRules);
+    await signupRules.click();
+    const rulesSheet = page.getByTestId("admin-signup-rules-sheet");
+    await expect(rulesSheet.getByRole("button", { name: "Close" })).toBeFocused();
+    await expectTouchTarget(rulesSheet.getByLabel("Kind"));
+    await expectTouchTarget(rulesSheet.getByLabel("Value"));
+    await expectTouchTarget(rulesSheet.getByRole("button", { exact: true, name: "Add rule" }));
+    await expectTouchTarget(rulesSheet.getByLabel(compactGroupName).locator(".."));
     await expectNoPageOverflow(page);
     for (const viewport of [
       { height: 768, width: 1024 },
@@ -1250,15 +1272,13 @@ test("admin console keeps every section touch-operable in the documented compact
     ]) {
       await page.setViewportSize(viewport);
       await expectNoPageOverflow(page);
-      await expectReadableDetail(page, rules.getByTestId("admin-access-rules-detail-pane"));
+      await expectContainedInViewport(page, rulesSheet.getByRole("dialog"));
     }
     await page.setViewportSize({ height: 844, width: 390 });
-    await expectTouchTarget(backToRules);
-    await backToRules.click();
-    await expect(newRule).toBeFocused();
-    await expect(rules.getByLabel("Search access rules")).toHaveValue(compactGroupName);
+    await page.keyboard.press("Escape");
+    await expect(rulesSheet).toHaveCount(0);
+    await expect(signupRules).toBeFocused();
 
-    await openAdminSection(page, adminSection("overview"));
     const moreActions = page.getByRole("button", { exact: true, name: "More actions" });
     await expectTouchTarget(moreActions);
     await moreActions.click();
@@ -1325,11 +1345,11 @@ test("admin compact usage and empty access-rule states stay in the visible workf
     await expect(usage.getByTestId("admin-usage-users-mobile")).toBeVisible();
     await expectNoPageOverflow(page);
 
-    await openAdminSection(page, adminSection("users"));
-    const rules = page.getByTestId("admin-section-access-rules");
-    await rules.getByLabel("Search access rules").fill("definitely-no-matching-access-rule");
-    const emptyState = rules.getByRole("status");
-    await expect(emptyState).toContainText(/No access rules/);
+    await openUsersList(page);
+    const users = page.getByTestId("admin-section-users");
+    await users.getByRole("searchbox", { name: "Search users" }).fill("definitely-no-matching-user");
+    const emptyState = users.getByTestId("admin-users-list").getByRole("status");
+    await expect(emptyState).toContainText(/No users match this view/);
     await expect
       .poll(() =>
         emptyState.evaluate((element) => {
@@ -1368,7 +1388,7 @@ test("Control Center keeps the current workflow in the short-landscape viewport"
 
     const users = page.getByTestId("admin-section-users");
     await expect(page.getByRole("heading", { exact: true, name: "Users" })).toBeInViewport();
-    await expect(users.getByLabel("Search users")).toBeInViewport();
+    await expect(users.getByRole("searchbox", { name: "Search users" })).toBeInViewport();
     await expect(page.getByTestId("admin-section-column")).toBeHidden();
 
     await page.getByRole("button", { name: "Sections" }).click();

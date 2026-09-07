@@ -31,7 +31,7 @@ describe("useAdminFieldErrors", () => {
     expect(feedback.reportError).toHaveBeenCalledWith("Enter a group name.");
     expect(document.activeElement).toBe(input);
 
-    act(() => result.current.clearFieldError("invite-email"));
+    act(() => result.current.clearFieldError("rename-selected-group"));
     expect(result.current.fieldError?.field).toBe("group-name");
     expect(feedback.clearErrorIf).not.toHaveBeenCalled();
 

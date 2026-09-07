@@ -563,6 +563,11 @@ async function findUserListItem(text: string): Promise<HTMLElement> {
   return row;
 }
 
+async function openUserPage(name: string): Promise<HTMLElement> {
+  fireEvent.click(await screen.findByRole("link", { name: `Open ${name}` }));
+  return screen.findByTestId("admin-user-page");
+}
+
 function findResourceListItem(scope: HTMLElement, text: string): HTMLElement {
   const row = within(scope)
     .getAllByText(text)
@@ -635,27 +640,22 @@ describe("AdminPanel", () => {
     expect(screen.getByRole("link", { name: "Email" })).toHaveAttribute("aria-current", "page");
   });
 
-  it("keeps global session reset behind the Overview menu until Users owns it", async () => {
+  it("keeps Revoke all sessions behind the Users topbar menu and off the Overview", async () => {
     const { posts } = mockAdminFetch();
     window.history.replaceState(null, "", "/admin");
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-overview");
-    expect(screen.queryByRole("menuitem", { name: "Revoke all sessions" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    expect(screen.queryByRole("button", { name: "More actions" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Users" }));
+    await screen.findByTestId("admin-section-users");
+    fireEvent.click(await screen.findByRole("button", { name: "More actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Revoke all sessions" }));
     const confirmation = await screen.findByTestId("admin-confirm-revoke-all-sessions");
     fireEvent.click(within(confirmation).getByRole("button", { name: /confirm revoke all sessions/i }));
     await waitFor(() => expect(posts).toContainEqual({ action: "revoke_all_sessions" }));
     expect(await screen.findByText("All sessions revoked.")).toBeInTheDocument();
-
-    const usersLink = screen.getByRole("link", { name: "Users" });
-    await waitFor(() => expect(usersLink).not.toHaveAttribute("aria-disabled"));
-    fireEvent.click(usersLink);
-    await screen.findByTestId("admin-section-users");
-    expect(screen.queryByRole("button", { name: "More actions" })).not.toBeInTheDocument();
   });
-
   it("opens the database-backed Email section from shared navigation", async () => {
     const email: AdminEmailState = {
       active: {
@@ -761,11 +761,9 @@ describe("AdminPanel", () => {
     await act(async () => firstRequest.promise);
     expect(screen.queryByText("No users yet")).not.toBeInTheDocument();
 
-    const row = await findUserListItem("Active User");
-    fireEvent.click(row);
-    const detail = await screen.findByTestId("admin-user-detail");
+    const detail = await openUserPage("Active User");
     await waitFor(() => expect(detail).toHaveFocus());
-    const opener = within(detail).getByRole("button", { name: "Disable user" });
+    const opener = within(detail).getByRole("button", { name: "Disable" });
     opener.focus();
     fireEvent.click(opener);
     const confirmation = await screen.findByTestId("admin-confirm-disable-user");
@@ -787,16 +785,15 @@ describe("AdminPanel", () => {
     });
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    fireEvent.click(await findUserListItem("Active User"));
-    const detail = await screen.findByTestId("admin-user-detail");
-    fireEvent.click(within(detail).getByRole("button", { name: "Disable user" }));
+    const detail = await openUserPage("Active User");
+    fireEvent.click(within(detail).getByRole("button", { name: "Disable" }));
     const confirmation = await screen.findByTestId("admin-confirm-disable-user");
     fireEvent.click(within(confirmation).getByRole("button", { name: "Confirm disable user" }));
 
     await waitFor(() => expect(screen.getByRole("link", { name: "Providers" })).toHaveAttribute("aria-disabled", "true"));
     expect(screen.getByRole("button", { name: "Sections" })).toBeDisabled();
     fireEvent.click(screen.getByRole("link", { name: "Providers" }));
-    expect(screen.getByRole("link", { name: "Users" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByTestId("admin-nav-users")).toHaveAttribute("aria-current", "page");
     expect(screen.queryByTestId("admin-section-providers")).not.toBeInTheDocument();
 
     await act(async () => {
@@ -816,8 +813,8 @@ describe("AdminPanel", () => {
 
     const users = await screen.findByTestId("admin-section-users");
     expect(window.location.search).toBe("?section=users");
-    expect(within(users).getByTestId("admin-section-invites")).toBeInTheDocument();
-    expect(within(users).getByTestId("admin-section-access-rules")).toBeInTheDocument();
+    expect(within(users).getByTestId("admin-users-list")).toBeInTheDocument();
+    expect(within(users).getByTestId("admin-open-invites")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Users" })).toHaveAttribute("aria-current", "page");
     expect(screen.queryByRole("link", { name: "Invites" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Safety" })).not.toBeInTheDocument();
@@ -863,15 +860,14 @@ describe("AdminPanel", () => {
   it("guards dirty section and drawer navigation while cancel preserves exact state and focus", async () => {
     stubCompactViewport();
     mockAdminFetch();
+    window.history.replaceState(null, "", "/admin?section=groups");
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    const users = await screen.findByTestId("admin-section-users");
-    const activeUserRow = findResourceListItem(users, "active@example.com");
-    fireEvent.click(activeUserRow);
-    const reviewers = within(await screen.findByTestId("admin-user-detail"))
-      .getByRole("checkbox", { name: "reviewers" });
-    fireEvent.click(reviewers);
-    reviewers.focus();
+    const access = await screen.findByTestId("admin-section-groups");
+    fireEvent.click(screen.getByRole("button", { name: "New group" }));
+    const name = within(access).getByLabelText("Group name");
+    fireEvent.change(name, { target: { value: "draft team" } });
+    name.focus();
     const originalPath = `${window.location.pathname}${window.location.search}`;
     const originalHistoryState = structuredClone(window.history.state);
 
@@ -884,9 +880,9 @@ describe("AdminPanel", () => {
     expect(window.location.pathname + window.location.search).toBe(originalPath);
     expect(window.history.state).toEqual(originalHistoryState);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(reviewers).toHaveFocus());
-    expect(reviewers).toBeChecked();
-    expect(screen.getByTestId("admin-section-users")).toBeVisible();
+    await waitFor(() => expect(name).toHaveFocus());
+    expect(name).toHaveValue("draft team");
+    expect(screen.getByTestId("admin-section-groups")).toBeVisible();
 
     const returnToChat = screen.getAllByRole("link", { name: "Chats" })[0]!;
     returnToChat.focus();
@@ -895,10 +891,10 @@ describe("AdminPanel", () => {
     expect(window.location.pathname + window.location.search).toBe(originalPath);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(returnToChat).toHaveFocus());
-    expect(reviewers).toBeChecked();
+    expect(name).toHaveValue("draft team");
 
     fireEvent.click(screen.getByRole("link", { name: "Usage" }));
-    expect(screen.getByTestId("admin-section-users")).toBeVisible();
+    expect(screen.getByTestId("admin-section-groups")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
     await screen.findByTestId("admin-section-usage");
     expect(window.location.search).toBe("?section=usage");
@@ -906,28 +902,28 @@ describe("AdminPanel", () => {
     window.dispatchEvent(cleanUnload);
     expect(cleanUnload.defaultPrevented).toBe(false);
   });
-
-  it("guards a form-local Cancel action with the same deferred confirmation", async () => {
+  it("guards an unsaved sign-up rule behind the sheet's own discard dialog", async () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(screen.getByRole("button", { name: "New rule" }));
-    const rules = await screen.findByTestId("admin-section-access-rules");
-    const value = within(rules).getByLabelText("Value");
+    fireEvent.click(await screen.findByRole("button", { name: "Sign-up rules" }));
+    const sheet = await screen.findByRole("dialog", { name: "Sign-up rules" });
+    const value = within(sheet).getByLabelText("Value");
     fireEvent.change(value, { target: { value: "cancel@example.com" } });
-    fireEvent.click(within(rules).getByRole("button", { name: "Cancel" }));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Done" }));
 
-    expect(screen.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
+    const discard = await screen.findByTestId("admin-signup-rules-discard");
+    expect(within(discard).getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
     expect(value).toHaveValue("cancel@example.com");
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(within(discard).getByRole("button", { name: "Cancel" }));
     expect(value).toHaveValue("cancel@example.com");
+    expect(screen.getByRole("dialog", { name: "Sign-up rules" })).toBeInTheDocument();
 
-    fireEvent.click(within(rules).getByRole("button", { name: "Cancel" }));
-    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
-    expect(within(rules).queryByLabelText("Value")).not.toBeInTheDocument();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Done" }));
+    fireEvent.click(within(await screen.findByTestId("admin-signup-rules-discard")).getByRole("button", { name: "Confirm discard changes" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sign-up rules" })).not.toBeInTheDocument());
   });
-
   it("guards provider setup secrets before leaving the Providers section", async () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
@@ -963,27 +959,24 @@ describe("AdminPanel", () => {
     await screen.findByTestId("admin-section-users");
     fireEvent.click(screen.getByRole("link", { name: "Groups" }));
     await screen.findByTestId("admin-section-groups");
-    fireEvent.click(screen.getByRole("link", { name: "Users" }));
-    await screen.findByTestId("admin-section-users");
-    fireEvent.click(screen.getByRole("button", { name: "New rule" }));
-    fireEvent.change(screen.getByLabelText("Value"), {
-      target: { value: "history@example.com" }
+    fireEvent.click(screen.getByRole("button", { name: "New group" }));
+    fireEvent.change(screen.getByLabelText("Group name"), {
+      target: { value: "history team" }
     });
 
     act(() => window.history.back());
     await screen.findByRole("heading", { name: "Discard unsaved changes?" });
-    expect(window.location.search).toBe("?section=users");
-    expect(screen.getByLabelText("Value")).toHaveValue("history@example.com");
+    expect(window.location.search).toBe("?section=groups");
+    expect(screen.getByLabelText("Group name")).toHaveValue("history team");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(window.location.search).toBe("?section=users");
+    expect(window.location.search).toBe("?section=groups");
 
     act(() => window.history.back());
     await screen.findByRole("heading", { name: "Discard unsaved changes?" });
     fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
-    await screen.findByTestId("admin-section-groups");
-    expect(window.location.search).toBe("?section=groups");
+    await screen.findByTestId("admin-section-users");
+    expect(window.location.search).toBe("?section=users");
   });
-
   it("mounts the Knowledge and Memory cards under Knowledge & Memory and links assignments to Defaults & roles", async () => {
     window.history.replaceState(null, "", "/admin?section=knowledge");
     const knowledge = {
@@ -1078,21 +1071,10 @@ describe("AdminPanel", () => {
     }
 
     const users = screen.getByTestId("admin-section-users");
-    const sort = within(users).getByLabelText("Sort users");
-    expect(sort).toHaveValue("user");
-    fireEvent.change(sort, { target: { value: "status" } });
-    expect(sort).toHaveValue("status");
-    const direction = within(users).getByRole("button", {
-      name: "Change sort direction to descending"
-    });
-    fireEvent.click(direction);
-    expect(within(users).getByRole("button", {
-      name: "Change sort direction to ascending"
-    })).toHaveTextContent("Descending");
-    expect(screen.getByTestId("admin-invites-index")).toBeInTheDocument();
-    expect(screen.getByTestId("admin-invites-detail-pane")).toBeInTheDocument();
-    expect(screen.getByTestId("admin-access-rules-index")).toBeInTheDocument();
-    expect(screen.getByTestId("admin-access-rules-detail-pane")).toBeInTheDocument();
+    expect(within(users).getByRole("list", { name: "Users" })).toBeInTheDocument();
+    expect(within(users).getByRole("group", { name: "User filters" })).toBeInTheDocument();
+    expect(within(users).getByTestId("admin-open-invites")).toBeInTheDocument();
+    expect(within(users).queryByLabelText("Sort users")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("link", { name: "Usage" }));
     expectBoundedComparisonTable("Group usage table");
@@ -1128,37 +1110,35 @@ describe("AdminPanel", () => {
     expect(within(access).getByTestId("admin-access-groups-index")).toBeInTheDocument();
   });
 
-  it("approves a pending user with selected groups", async () => {
+  it("approves a pending user with the group chosen in the row as one client action", async () => {
     const { posts } = mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const row = await findUserListItem("Pending User");
-    fireEvent.click(row);
-    const detail = await screen.findByTestId("admin-user-detail");
-    fireEvent.click(within(detail).getByLabelText("operators"));
-    fireEvent.click(within(detail).getByRole("button", { name: "Approve user" }));
+    fireEvent.change(within(row).getByRole("combobox", { name: "Group for Pending User" }), {
+      target: { value: "group-1" }
+    });
+    fireEvent.click(within(row).getByRole("button", { name: "Approve" }));
 
     await waitFor(() => {
-      expect(posts).toContainEqual({
-        action: "approve_user",
-        groupIds: ["group-1"],
-        userId: "pending-1"
-      });
+      expect(posts).toEqual([
+        { action: "set_user_groups", groupIds: ["group-1"], userId: "pending-1" },
+        { action: "approve_user", groupIds: ["group-1"], userId: "pending-1" }
+      ]);
     });
+    expect(await screen.findByText("User approved and added to the group.")).toBeInTheDocument();
   });
-
-  it("updates active user memberships", async () => {
+  it("updates active user memberships from the user page", async () => {
     const { posts } = mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    const row = await findUserListItem("Active User");
-    fireEvent.click(row);
-    const detail = await screen.findByTestId("admin-user-detail");
+    const page = await openUserPage("Active User");
     await waitFor(() => {
-      expect(detail).toHaveFocus();
+      expect(page).toHaveFocus();
     });
-    fireEvent.click(within(detail).getByLabelText("reviewers"));
-    fireEvent.click(within(detail).getByRole("button", { name: "Save groups" }));
+    expect(within(page).getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.click(within(page).getByLabelText("reviewers"));
+    fireEvent.click(within(page).getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(posts).toContainEqual({
@@ -1168,24 +1148,23 @@ describe("AdminPanel", () => {
       });
     });
   });
-
-  it("focuses selected user details from list actions and returns to the list", async () => {
+  it("opens a user page from its row, focuses it, and returns to the list through the crumb", async () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    const row = await findUserListItem("Active User");
-    fireEvent.click(row);
-
-    const detail = await screen.findByTestId("admin-user-detail");
-    expect(within(detail).getByText("Active User")).toBeInTheDocument();
+    const page = await openUserPage("Active User");
+    expect(window.location.search).toBe("?section=users&resource=active-1");
+    expect(within(page).getByRole("heading", { name: "Active User" })).toBeInTheDocument();
     await waitFor(() => {
-      expect(detail).toHaveFocus();
+      expect(page).toHaveFocus();
     });
-    fireEvent.click(within(detail).getByRole("button", { name: "Back to users" }));
-    expect(screen.getByTestId("admin-users-index")).toBeInTheDocument();
-    expect(screen.queryByTestId("admin-users-detail-pane")).not.toBeInTheDocument();
+    const title = screen.getByTestId("admin-topbar-title");
+    await waitFor(() => expect(title).toHaveTextContent("Active User"));
+    fireEvent.click(within(title).getByRole("link", { name: "Users" }));
+    expect(await screen.findByTestId("admin-users-index")).toBeInTheDocument();
+    expect(screen.queryByTestId("admin-user-page")).not.toBeInTheDocument();
+    expect(window.location.search).toBe("?section=users");
   });
-
   it("creates groups and toggles group grants", async () => {
     const { posts } = mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
@@ -1362,7 +1341,7 @@ describe("AdminPanel", () => {
     expect(within(access).queryByText(`openai:${longModelId}`)).not.toBeInTheDocument();
   });
 
-  it("creates invites from the topbar and shows the returned link", async () => {
+  it("creates invites from the topbar sheet and shows the returned link", async () => {
     const { posts } = mockAdminFetch();
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
@@ -1374,16 +1353,16 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(screen.getByRole("button", { name: "New invite" }));
-    const invites = await screen.findByTestId("admin-section-invites");
-    expect(within(invites).getByRole("group", { name: "Default groups" })).toBeInTheDocument();
-    expect(within(invites).getByRole("checkbox", { name: "Send invitation email" })).toBeChecked();
-    fireEvent.change(within(invites).getByLabelText("Email"), {
+    fireEvent.click(await screen.findByRole("button", { name: "Invite" }));
+    const sheet = await screen.findByRole("dialog", { name: "Invite" });
+    expect(within(sheet).getByRole("group", { name: "Groups" })).toBeInTheDocument();
+    expect(within(sheet).getByRole("checkbox", { name: /Send invitation email/ })).toBeChecked();
+    fireEvent.change(within(sheet).getByLabelText("Email"), {
       target: {
         value: "friend@example.com"
       }
     });
-    fireEvent.click(within(invites).getByRole("button", { name: "Create invite" }));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Create invite" }));
 
     await waitFor(() => {
       expect(posts).toContainEqual({
@@ -1394,14 +1373,15 @@ describe("AdminPanel", () => {
       });
     });
     expect((await screen.findByText("Invite created and email sent.")).closest('[role="status"]')).toBeInTheDocument();
-    expect(await within(invites).findByDisplayValue("https://aiqsa.local/login?invite=test-token")).toBeInTheDocument();
-    fireEvent.click(within(invites).getByRole("button", { name: "Copy" }));
+    expect(await within(sheet).findByDisplayValue("https://aiqsa.local/login?invite=test-token")).toBeInTheDocument();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Copy" }));
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith("https://aiqsa.local/login?invite=test-token");
     });
-    expect(await within(invites).findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    expect(await within(sheet).findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Invite" })).not.toBeInTheDocument());
   });
-
   it("clears a clipboard failure when retrying the one-time invite copy succeeds", async () => {
     mockAdminFetch();
     const inviteLink = "https://aiqsa.local/login?invite=test-token";
@@ -1418,56 +1398,53 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(screen.getByRole("button", { name: "New invite" }));
-    const invites = await screen.findByTestId("admin-section-invites");
-    fireEvent.change(within(invites).getByLabelText("Email"), {
+    fireEvent.click(await screen.findByRole("button", { name: "Invite" }));
+    const sheet = await screen.findByRole("dialog", { name: "Invite" });
+    fireEvent.change(within(sheet).getByLabelText("Email"), {
       target: {
         value: "retry@example.com"
       }
     });
-    fireEvent.click(within(invites).getByRole("button", { name: "Create invite" }));
-    expect(await within(invites).findByDisplayValue(inviteLink)).toBeInTheDocument();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Create invite" }));
+    expect(await within(sheet).findByDisplayValue(inviteLink)).toBeInTheDocument();
 
-    fireEvent.click(within(invites).getByRole("button", { name: "Copy" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(/invite link could not be copied/i);
-    expect(within(invites).getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Copy" }));
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent(/invite link could not be copied/i);
+    expect(within(sheet).getByRole("button", { name: "Copy" })).toBeInTheDocument();
 
-    fireEvent.click(within(invites).getByRole("button", { name: "Copy" }));
-    expect(await within(invites).findByRole("button", { name: "Copied" })).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    fireEvent.click(within(sheet).getByRole("button", { name: "Copy" }));
+    expect(await within(sheet).findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    await waitFor(() => expect(within(sheet).queryByRole("alert")).not.toBeInTheDocument());
     expect(screen.getByText("Invite link copied.").closest('[role="status"]')).toBeInTheDocument();
     expect(writeText).toHaveBeenCalledTimes(2);
     expect(writeText).toHaveBeenNthCalledWith(1, inviteLink);
     expect(writeText).toHaveBeenNthCalledWith(2, inviteLink);
   });
-
   it("filters users and keeps self-protection visible", async () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.change(screen.getByLabelText("Search users"), {
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search users" }), {
       target: {
         value: "admin@example.com"
       }
     });
 
     const adminRow = await findUserListItem("Admin User");
-    expect(adminRow).toBeInTheDocument();
+    expect(adminRow).toHaveTextContent("admin@example.com · you · admin");
     expect(screen.queryByText("Active User")).not.toBeInTheDocument();
-    expect(screen.getByText("You")).toBeInTheDocument();
-    expect(screen.queryByTestId("admin-user-detail")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("admin-user-page")).not.toBeInTheDocument();
 
-    fireEvent.click(adminRow);
-    const detail = await screen.findByTestId("admin-user-detail");
-    expect(within(detail).getByText(/Self-disable and self-delete are not exposed/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Disable user" })).not.toBeInTheDocument();
+    const page = await openUserPage("Admin User");
+    expect(within(page).getByText(/Self-disable and self-delete are not exposed/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Disable" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete stale" })).not.toBeInTheDocument();
   });
-
-  it("paginates the user directory without auto-opening a detail", async () => {
+  it("caps the users table behind Show more without auto-opening a page", async () => {
     const paginatedDashboard = structuredClone(dashboard);
     const userTemplate = structuredClone(must(dashboard.users[2], "pagination user template"));
-    paginatedDashboard.users = Array.from({ length: 27 }, (_, index) => {
+    paginatedDashboard.users = Array.from({ length: 60 }, (_, index) => {
       const number = String(index + 1).padStart(2, "0");
 
       return {
@@ -1481,18 +1458,16 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const users = await screen.findByTestId("admin-section-users");
-    expect(within(users).queryByTestId("admin-user-detail")).not.toBeInTheDocument();
-    fireEvent.click(within(users).getByRole("button", { name: "Next users page" }));
+    expect(within(users).queryByTestId("admin-user-page")).not.toBeInTheDocument();
+    expect(within(users).getAllByTestId("admin-user-row")).toHaveLength(50);
+    expect(within(users).queryByText("Paged User 55")).not.toBeInTheDocument();
+    fireEvent.click(within(users).getByRole("button", { name: "Show 10 more" }));
+    expect(within(users).getAllByTestId("admin-user-row")).toHaveLength(60);
+    expect(within(users).queryByTestId("admin-user-page")).not.toBeInTheDocument();
 
-    const visibleRow = await findUserListItem("Paged User 26");
-    expect(visibleRow).toBeInTheDocument();
-    expect(within(users).queryByText("Paged User 01")).not.toBeInTheDocument();
-    expect(within(users).queryByTestId("admin-user-detail")).not.toBeInTheDocument();
-
-    fireEvent.click(visibleRow);
-    expect(await within(screen.getByTestId("admin-user-detail")).findByText("Paged User 26")).toBeInTheDocument();
+    const page = await openUserPage("Paged User 55");
+    expect(within(page).getByRole("heading", { name: "Paged User 55" })).toBeInTheDocument();
   });
-
   it("counts people attention on the Users destination without a global metric strip", async () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
@@ -1503,14 +1478,36 @@ describe("AdminPanel", () => {
     expect(screen.getByRole("link", { name: "Users" })).toHaveTextContent("1");
     expect(screen.getByRole("link", { name: "Groups" })).not.toHaveTextContent("1");
     const pendingRow = findResourceListItem(users, "pending@example.com");
-    expect(pendingRow).toHaveAccessibleName("Open Pending User");
-    fireEvent.click(pendingRow);
-    expect(within(users).getByText("No model access")).toBeInTheDocument();
+    expect(within(pendingRow).getByRole("link", { name: "Open Pending User" })).toBeInTheDocument();
+    expect(pendingRow).toHaveTextContent("via group after approval");
+    expect(within(users).getByRole("button", { name: "Pending · 1" })).toBeInTheDocument();
 
-    const invites = within(users).getByTestId("admin-section-invites");
+    const invites = within(users).getByTestId("admin-open-invites");
     const openInvite = findResourceListItem(invites, "open@example.com");
-    fireEvent.click(within(openInvite).getByRole("button", { name: "Details" }));
-    expect(within(screen.getByTestId("admin-invite-detail")).getByRole("button", { name: "Revoke invite" })).toBeInTheDocument();
+    fireEvent.click(within(openInvite).getByRole("button", { name: "More actions for open@example.com" }));
+    expect(screen.getByRole("menuitem", { name: "Revoke" })).toBeInTheDocument();
+  });
+
+  it("pre-selects the Users filter pill from an Overview attention jump and keeps it in the URL", async () => {
+    mockAdminFetch(seededAttention);
+    window.history.replaceState(null, "", "/admin");
+    render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
+
+    const overview = await screen.findByTestId("admin-section-overview");
+    const list = await within(overview).findByRole("list", { name: "Needs attention" });
+    fireEvent.click(within(list).getByRole("button", { name: /Review users/ }));
+
+    const users = await screen.findByTestId("admin-section-users");
+    expect(window.location.search).toBe("?section=users&filter=pending");
+    expect(within(users).getByRole("button", { name: "Pending · 1" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(users).getAllByTestId("admin-user-row")).toHaveLength(1);
+    expect(within(users).getByRole("link", { name: "Open Pending User" })).toHaveAttribute(
+      "href",
+      "/admin?section=users&filter=pending&resource=pending-1"
+    );
+    fireEvent.click(within(users).getByRole("button", { name: "All · 3" }));
+    await waitFor(() => expect(window.location.search).toBe("?section=users"));
+    expect(within(users).getAllByTestId("admin-user-row")).toHaveLength(3);
   });
 
   it("translates local validation and API failures without exposing raw error codes", async () => {
@@ -1564,21 +1561,25 @@ describe("AdminPanel", () => {
 
     await screen.findByTestId("admin-section-users");
 
-    fireEvent.click(screen.getByRole("button", { name: "New invite" }));
-    const invites = await screen.findByTestId("admin-section-invites");
-    fireEvent.click(within(invites).getByRole("button", { name: "Create invite" }));
-    const inviteEmail = within(invites).getByLabelText("Email");
+    fireEvent.click(await screen.findByRole("button", { name: "Invite" }));
+    const inviteSheet = await screen.findByRole("dialog", { name: "Invite" });
+    fireEvent.click(within(inviteSheet).getByRole("button", { name: "Create invite" }));
+    const inviteEmail = within(inviteSheet).getByLabelText("Email");
     expect(inviteEmail).toHaveAttribute("aria-invalid", "true");
     expect(inviteEmail).toHaveAccessibleDescription(/email address/i);
     await waitFor(() => expect(inviteEmail).toHaveFocus());
+    fireEvent.click(within(inviteSheet).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Invite" })).not.toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: "New rule" }));
-    const rules = await screen.findByTestId("admin-section-access-rules");
-    fireEvent.click(within(rules).getByRole("button", { name: "Save rule" }));
-    const ruleValue = within(rules).getByLabelText("Value");
+    fireEvent.click(await screen.findByRole("button", { name: "Sign-up rules" }));
+    const rulesSheet = await screen.findByRole("dialog", { name: "Sign-up rules" });
+    fireEvent.click(within(rulesSheet).getByRole("button", { name: "Add rule" }));
+    const ruleValue = within(rulesSheet).getByLabelText("Value");
     expect(ruleValue).toHaveAttribute("aria-invalid", "true");
-    expect(ruleValue).toHaveAccessibleDescription(/email or domain/i);
+    expect(ruleValue).toHaveAccessibleDescription(/email address/i);
     await waitFor(() => expect(ruleValue).toHaveFocus());
+    fireEvent.click(within(rulesSheet).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sign-up rules" })).not.toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("link", { name: "Groups" }));
     const access = await screen.findByTestId("admin-section-groups");
@@ -1594,39 +1595,44 @@ describe("AdminPanel", () => {
     await waitFor(() => expect(renameInput).toHaveFocus());
   });
 
-  it("renders invite statuses and filters invites", async () => {
+  it("lists open invites under the table, keeps stale ones behind a toggle, and expands them under Invited", async () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    await screen.findByTestId("admin-section-users");
-    const invites = await screen.findByTestId("admin-section-invites");
-    const acceptedRow = findResourceListItem(invites, "accepted@example.com");
-    const revokedRow = findResourceListItem(invites, "revoked@example.com");
+    const users = await screen.findByTestId("admin-section-users");
+    const block = within(users).getByTestId("admin-open-invites");
+    expect(within(block).getByRole("heading", { name: "Open invites · 1" })).toBeInTheDocument();
+    expect(within(block).getByText("open@example.com")).toBeInTheDocument();
+    expect(block).toHaveTextContent("operators · expires in");
+    expect(block).not.toHaveTextContent("accepted@example.com");
+    expect(block).not.toHaveTextContent("revoked@example.com");
+    expect(within(block).queryByRole("button", { name: /Copy link/ })).not.toBeInTheDocument();
 
-    expect(within(invites).getByText("open@example.com")).toBeInTheDocument();
-    expect(within(acceptedRow).getByText("accepted")).toBeInTheDocument();
-    expect(within(revokedRow).getByText("revoked")).toBeInTheDocument();
+    fireEvent.click(within(block).getByRole("button", { name: "Show" }));
+    expect(within(block).getByText("revoked@example.com")).toBeInTheDocument();
+    expect(block).toHaveTextContent("revoked Jun 2");
 
-    fireEvent.click(within(invites).getByRole("button", { name: "Accepted" }));
-    expect(within(invites).getByText("accepted@example.com")).toBeInTheDocument();
-    expect(within(invites).queryByText("open@example.com")).not.toBeInTheDocument();
+    fireEvent.click(within(users).getByRole("button", { name: "Invited · 1" }));
+    await waitFor(() => expect(window.location.search).toBe("?section=users&filter=invited"));
+    expect(within(users).queryByRole("list", { name: "Users" })).not.toBeInTheDocument();
+    expect(within(within(users).getByTestId("admin-open-invites")).getAllByTestId("admin-invite-row")).toHaveLength(1);
   });
-
-  it("creates access rules with normalized preview and confirms deletion", async () => {
+  it("creates sign-up rules with a normalized preview and confirms deletion inside the sheet", async () => {
     const { posts } = mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(screen.getByRole("button", { name: "New rule" }));
-    const rules = await screen.findByTestId("admin-section-access-rules");
-    expect(within(rules).getByRole("group", { name: "Default groups" })).toBeInTheDocument();
-    fireEvent.change(within(rules).getByLabelText("Value"), {
+    fireEvent.click(await screen.findByRole("button", { name: "Sign-up rules" }));
+    const sheet = await screen.findByRole("dialog", { name: "Sign-up rules" });
+    expect(within(sheet).getByRole("group", { name: "Groups" })).toBeInTheDocument();
+    expect(within(sheet).getByRole("list", { name: "Sign-up rules" })).toHaveTextContent("allowed@example.com");
+    fireEvent.change(within(sheet).getByLabelText("Value"), {
       target: {
         value: " PERSON@Example.COM "
       }
     });
-    expect(within(rules).getByText(/person@example.com/)).toBeInTheDocument();
-    fireEvent.click(within(rules).getByRole("button", { name: "Save rule" }));
+    expect(within(sheet).getByTestId("admin-signup-rule-preview")).toHaveTextContent("person@example.com");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Add rule" }));
 
     await waitFor(() => {
       expect(posts).toContainEqual({
@@ -1636,12 +1642,9 @@ describe("AdminPanel", () => {
         value: "person@example.com"
       });
     });
-    await waitFor(() => expect(within(rules).queryByLabelText("Value")).not.toBeInTheDocument());
+    await waitFor(() => expect(within(sheet).getByLabelText("Value")).toHaveValue(""));
 
-    const ruleItem = findResourceListItem(rules, "allowed@example.com");
-    fireEvent.click(within(ruleItem).getByRole("button", { name: "Details" }));
-    const ruleDetail = await screen.findByTestId("admin-access-rule-detail");
-    fireEvent.click(within(ruleDetail).getByRole("button", { name: "Delete rule" }));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Delete rule allowed@example.com" }));
     const confirmation = await screen.findByTestId("admin-confirm-delete-access-rule");
     fireEvent.click(within(confirmation).getByRole("button", { name: /confirm delete rule/i }));
 
@@ -1652,15 +1655,12 @@ describe("AdminPanel", () => {
       });
     });
   });
-
   it("uses app-native destructive confirmations", async () => {
     const { posts } = mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    const row = await findUserListItem("Active User");
-    fireEvent.click(row);
-    const detail = await screen.findByTestId("admin-user-detail");
-    fireEvent.click(within(detail).getByRole("button", { name: "Disable user" }));
+    const detail = await openUserPage("Active User");
+    fireEvent.click(within(detail).getByRole("button", { name: "Disable" }));
     const confirmation = await screen.findByTestId("admin-confirm-disable-user");
     expect(confirmation).toHaveTextContent("Disable active user?");
     fireEvent.click(within(confirmation).getByRole("button", { name: /confirm disable user/i }));
@@ -1677,11 +1677,9 @@ describe("AdminPanel", () => {
     const { posts } = mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    const row = await findUserListItem("Active User");
-    fireEvent.click(row);
-    const detail = await screen.findByTestId("admin-user-detail");
+    const detail = await openUserPage("Active User");
     await waitFor(() => expect(detail).toHaveFocus());
-    const opener = within(detail).getByRole("button", { name: "Disable user" });
+    const opener = within(detail).getByRole("button", { name: "Disable" });
     opener.focus();
     fireEvent.click(opener);
 
@@ -1710,10 +1708,8 @@ describe("AdminPanel", () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    const row = await findUserListItem("Active User");
-    fireEvent.click(row);
-    const detail = await screen.findByTestId("admin-user-detail");
-    fireEvent.click(within(detail).getByRole("button", { name: "Disable user" }));
+    const detail = await openUserPage("Active User");
+    fireEvent.click(within(detail).getByRole("button", { name: "Disable" }));
     const confirmation = await screen.findByTestId("admin-confirm-disable-user");
 
     window.history.pushState(null, "", "/admin?section=usage");
@@ -1749,11 +1745,9 @@ describe("AdminPanel", () => {
     });
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    const row = await findUserListItem("Pending User");
-    fireEvent.click(row);
-    const detail = await screen.findByTestId("admin-user-detail");
+    const detail = await openUserPage("Pending User");
     await waitFor(() => expect(detail).toHaveFocus());
-    const opener = within(detail).getByRole("button", { name: "Delete stale user" });
+    const opener = within(detail).getByRole("button", { name: "Delete stale" });
     opener.focus();
     fireEvent.click(opener);
     const confirmation = await screen.findByTestId("admin-confirm-delete-user");
@@ -1764,10 +1758,12 @@ describe("AdminPanel", () => {
       action: "delete_user",
       userId: "pending-1"
     });
-    await waitFor(() => expect(screen.getByRole("link", { name: "Users" })).toHaveFocus());
+    await screen.findByTestId("admin-users-index");
+    expect(window.location.search).toBe("?section=users");
+    await waitFor(() => expect(screen.getByTestId("admin-nav-users")).toHaveFocus());
   });
 
-  it("restores the active section link when a deleted rule removes its opener", async () => {
+  it("keeps focus inside the Sign-up rules sheet when a deleted rule removes its opener", async () => {
     const afterDelete = structuredClone(dashboard);
     afterDelete.accessRules = [];
     let dashboardRequests = 0;
@@ -1789,28 +1785,24 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    const rules = await screen.findByTestId("admin-section-access-rules");
-    const ruleItem = findResourceListItem(rules, "allowed@example.com");
-    fireEvent.click(within(ruleItem).getByRole("button", { name: "Details" }));
-    const ruleDetail = await screen.findByTestId("admin-access-rule-detail");
-    const opener = within(ruleDetail).getByRole("button", { name: "Delete rule" });
+    fireEvent.click(await screen.findByRole("button", { name: "Sign-up rules" }));
+    const sheet = await screen.findByRole("dialog", { name: "Sign-up rules" });
+    const opener = within(sheet).getByRole("button", { name: "Delete rule allowed@example.com" });
     opener.focus();
     fireEvent.click(opener);
     const confirmation = await screen.findByTestId("admin-confirm-delete-access-rule");
     fireEvent.click(within(confirmation).getByRole("button", { name: /confirm delete rule/i }));
 
-    await screen.findByText("No access rules");
-    await waitFor(() => expect(screen.getByRole("link", { name: "Users" })).toHaveFocus());
+    await within(sheet).findByText("No rules yet. Every sign-up waits for approval.");
+    await waitFor(() => expect(within(sheet).getByLabelText("Value")).toHaveFocus());
+    expect(screen.getByRole("dialog", { name: "Sign-up rules" })).toBeInTheDocument();
   });
-
   it("confirms stale user, empty group, and stale invite deletion actions", async () => {
     const { posts } = mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    const pendingRow = await findUserListItem("Pending User");
-    fireEvent.click(pendingRow);
-    const pendingDetail = await screen.findByTestId("admin-user-detail");
-    fireEvent.click(within(pendingDetail).getByRole("button", { name: "Delete stale user" }));
+    const pendingDetail = await openUserPage("Pending User");
+    fireEvent.click(within(pendingDetail).getByRole("button", { name: "Delete stale" }));
     let confirmation = await screen.findByTestId("admin-confirm-delete-user");
     fireEvent.click(within(confirmation).getByRole("button", { name: /confirm delete user/i }));
 
@@ -1847,13 +1839,14 @@ describe("AdminPanel", () => {
       });
     });
 
-    const usersLink = screen.getByRole("link", { name: "Users" });
+    const usersLink = screen.getByTestId("admin-nav-users");
     await waitFor(() => expect(usersLink).not.toHaveAttribute("aria-disabled"));
     fireEvent.click(usersLink);
-    const invites = await screen.findByTestId("admin-section-invites");
+    const invites = await screen.findByTestId("admin-open-invites");
+    fireEvent.click(within(invites).getByRole("button", { name: "Show" }));
     const revokedRow = findResourceListItem(invites, "revoked@example.com");
-    fireEvent.click(within(revokedRow).getByRole("button", { name: "Details" }));
-    fireEvent.click(within(screen.getByTestId("admin-invite-detail")).getByRole("button", { name: "Delete invite" }));
+    fireEvent.click(within(revokedRow).getByRole("button", { name: "More actions for revoked@example.com" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
     confirmation = await screen.findByTestId("admin-confirm-delete-invite");
     fireEvent.click(within(confirmation).getByRole("button", { name: /confirm delete invite/i }));
 
@@ -1869,14 +1862,9 @@ describe("AdminPanel", () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
-    const activeRow = await findUserListItem("Active User");
-    fireEvent.click(activeRow);
-    expect(await screen.findByText("Disable this user before deletion can be considered.")).toBeInTheDocument();
-
-    const invites = screen.getByTestId("admin-section-invites");
-    const acceptedRow = findResourceListItem(invites, "accepted@example.com");
-    fireEvent.click(within(acceptedRow).getByRole("button", { name: "Details" }));
-    expect(within(screen.getByTestId("admin-invite-detail")).getByText("Accepted invites are kept for audit history.")).toBeInTheDocument();
+    const activePage = await openUserPage("Active User");
+    expect(await within(activePage).findByText("Disable this user before deletion can be considered.")).toBeInTheDocument();
+    expect(within(activePage).queryByRole("button", { name: "Delete stale" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("link", { name: "Groups" }));
     const access = await screen.findByTestId("admin-section-groups");
