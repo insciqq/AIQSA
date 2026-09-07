@@ -5,6 +5,7 @@ import {
 } from "./adaptivePdf";
 import { DocumentParserError } from "./errors";
 import type { NativePdfGeometry } from "./nativePdf";
+import { nativeRowAlreadyRepresentedInProse } from "./pdfGeometry";
 import type {
   ParsedDocument,
   ParsedDocumentBlock,
@@ -248,6 +249,7 @@ function attempts(input: Readonly<{
 }
 
 export function mergeAdaptivePdfDocument(input: Readonly<{
+  deduplicateNativeProseRows?: boolean;
   docling: ParsedDocument | null;
   geometry: NativePdfGeometry;
   maxBlocks: number;
@@ -275,10 +277,15 @@ export function mergeAdaptivePdfDocument(input: Readonly<{
       block.page <= page.page && block.pageEnd >= page.page);
     if (!lexicalNativePage(input.geometry, page.page)) return primary;
     const primaryText = normalizedText(primary.map((block) => block.text).join("\n"));
+    const primaryProse = input.deduplicateNativeProseRows
+      ? primary.filter((block) => block.type === "paragraph" &&
+          !block.isTable && block.table === null).map((block) => normalizedText(block.text))
+      : [];
     const preserved = input.geometry.blocks.filter((block) => {
       if (block.page !== page.page) return false;
       const key = normalizedText(block.text);
-      return key.length > 0 && !primaryText.includes(key);
+      return key.length > 0 && !primaryText.includes(key) &&
+        !(input.deduplicateNativeProseRows && nativeRowAlreadyRepresentedInProse(block, primaryProse));
     });
     return [...primary, ...preserved];
   });

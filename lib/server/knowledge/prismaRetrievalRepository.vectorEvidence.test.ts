@@ -192,4 +192,66 @@ describe("Prisma Knowledge vector evidence projection", () => {
     expect(executeRaw.mock.invocationCallOrder[1])
       .toBeLessThan(queryRaw.mock.invocationCallOrder[0]!);
   });
+
+  it("keeps the vector planner preference inside its own bounded transaction", async () => {
+    const statements: string[][] = [];
+    const text = (sql: Prisma.Sql | TemplateStringsArray) => Array.isArray(sql)
+      ? sql.join("?") : (sql as Prisma.Sql).text;
+    const transaction = vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => {
+      const current: string[] = [];
+      statements.push(current);
+      return operation({
+        $executeRaw: async (sql: Prisma.Sql | TemplateStringsArray) => {
+          current.push(text(sql));
+          return 1;
+        },
+        $queryRaw: async (sql: Prisma.Sql) => {
+          current.push(text(sql));
+          return [];
+        }
+      });
+    });
+    vi.mocked(executeKnowledgeRetrievalCore).mockImplementationOnce(async (coreClient) => {
+      await coreClient.$queryRaw(Prisma.sql`SELECT 'scope'`);
+      await coreClient.$querySemantic!(Prisma.sql`SELECT 'semantic'`);
+      await coreClient.$queryRaw(Prisma.sql`SELECT 'canonical'`);
+      return {
+        bindingCount: 1, candidateCount: 0, candidateCounts: { 0: 0 },
+        canonicalSourceProvenance: [], lexicalBackendEvidence, passages: [],
+        rankingEvidence: {} as never, vectorSearchEvidence
+      };
+    });
+    await createPrismaKnowledgeRetrievalStore({ $transaction: transaction } as never).hybridSearch({
+      candidateLimit: 64, excludedOccurrenceKeys: [], operation: "automatic_search",
+      query: "bounded retrieval", resultLimit: 16, runId: "run-1", userId: "user-1", vectors: []
+    });
+
+    expect(statements).toHaveLength(3);
+    expect(statements.map(group => group.some(statement => statement.includes("enable_seqscan"))))
+      .toEqual([false, true, false]);
+    for (const [index, name] of ["scope", "semantic", "canonical"].entries()) {
+      expect(statements[index]![0]).toContain("statement_timeout");
+      expect(statements[index]![1]).toContain("hnsw.iterative_scan");
+      expect(statements[index]!.at(-1)).toBe(`SELECT '${name}'`);
+      expect(transaction.mock.calls[index]).toEqual([expect.any(Function), { maxWait: 5_000, timeout: 50_000 }]);
+    }
+    expect(statements[1]![2]).toBe("SET LOCAL enable_seqscan = off");
+  });
+
+  it("classifies a semantic statement timeout and stops before the next query", async () => {
+    const failure = new Prisma.PrismaClientKnownRequestError("synthetic timeout", {
+      code: "P2010", clientVersion: "test", meta: { code: "57014" }
+    });
+    const transaction = vi.fn(async () => { throw failure; });
+    vi.mocked(executeKnowledgeRetrievalCore).mockImplementationOnce(async (coreClient) => {
+      await coreClient.$querySemantic!(Prisma.sql`SELECT 'semantic'`);
+      await coreClient.$queryRaw(Prisma.sql`SELECT 'canonical'`);
+      throw new Error("unexpected_query_after_timeout");
+    });
+    await expect(createPrismaKnowledgeRetrievalStore({ $transaction: transaction } as never).hybridSearch({
+      candidateLimit: 64, excludedOccurrenceKeys: [], operation: "automatic_search",
+      query: "bounded retrieval", resultLimit: 16, runId: "run-1", userId: "user-1", vectors: []
+    })).rejects.toMatchObject({ message: "knowledge_retrieval_query_timed_out", cause: failure });
+    expect(transaction).toHaveBeenCalledOnce();
+  });
 });

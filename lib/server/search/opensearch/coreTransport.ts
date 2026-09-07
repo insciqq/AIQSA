@@ -141,13 +141,17 @@ export class BoundedOpenSearchCoreTransport {
       throw new OpenSearchTransportError("opensearch_scope_too_large");
     }
     if (input.indexName) this.#assertIndex(input.indexName);
+    input.signal?.throwIfAborted();
     const controller = new AbortController();
     let timedOut = false;
     const timeout = setTimeout(() => {
       timedOut = true;
       controller.abort();
     }, input.timeoutMs);
-    const abort = (): void => controller.abort();
+    const abort = (): void => {
+      clearTimeout(timeout);
+      controller.abort(input.signal?.reason);
+    };
     input.signal?.addEventListener("abort", abort, { once: true });
     try {
       const url = new URL(input.path.replace(/^\/+/u, ""), this.#configuration.url);

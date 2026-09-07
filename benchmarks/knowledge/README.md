@@ -223,10 +223,23 @@ be replayed to verify that all settled outcomes are reused without provider
 calls. Keep retrieval concurrency at one until measured; the document
 embedding concurrency of sixteen is not a retrieval-concurrency recommendation.
 
-A complete scoreable run uses a stable ignored output directory. Every query
-settles one atomic content-free checkpoint, so an interruption resumes only
-the missing queries. The resume command must retain the exact manifest and
-scheduling controls:
+A complete scoreable run uses a stable ignored output directory. `--batch-size`
+limits each invocation to one through five new queries while preserving the
+full selected query set and original indices. The first such batch can serve
+as the non-scoreable canary; its settled results are reused when continuing
+the full run. Partial execution writes `progress.json`, with no scoreable
+summary. Only completion of every selected query produces the final summary.
+
+New manifests pin the executable source fingerprint as well as configuration.
+Resume must retain both and the scheduling controls. Historical manifests
+remain readable, but an old checkpoint without the current executable identity
+cannot be resumed as a current run. Query embeddings remain reusable when
+their own input, model and corpus identity match.
+
+Each query records admission before external work and settles one atomic
+content-free checkpoint. An admitted query without a settled outcome blocks
+resume as ambiguous work; inspect it before deciding how to proceed, since
+resuming must never silently repeat an uncertain paid request.
 
 ```bash
 # Initial run after successful canaries and explicit provider authorization.
@@ -234,7 +247,7 @@ docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f 
   -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-runner \
   npx tsx benchmarks/knowledge/retrieve.ts \
   --confirm-paid BRIGHT_RETRIEVAL --suite bright-stackoverflow-50m --config A \
-  --concurrency 1 --query-start-interval-ms 30000 \
+  --batch-size 5 --concurrency 1 --query-start-interval-ms 30000 \
   --output results/bright-stackoverflow-50m-A-live
 
 # Exact continuation; settled query embeddings and outcomes are reused.
@@ -242,7 +255,7 @@ docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f 
   -e AIQSA_BRIGHT_BENCHMARK_ACK=RETAINED_BRIGHT_KB benchmark-runner \
   npx tsx benchmarks/knowledge/retrieve.ts \
   --confirm-paid BRIGHT_RETRIEVAL --suite bright-stackoverflow-50m --config A \
-  --concurrency 1 --query-start-interval-ms 30000 \
+  --batch-size 5 --concurrency 1 --query-start-interval-ms 30000 \
   --output results/bright-stackoverflow-50m-A-live --resume
 ```
 
@@ -404,6 +417,11 @@ do not create a second experiment journal:
 1. Freeze a baseline and name one suspected stage, the observed symptom, the
    expected measurable change, and a condition that would reject the hypothesis.
    Separate observed facts from explanations still needing evidence.
+   Pin input provenance separately from the executing code: the corpus/artifact
+   profile, exact query text and query preparation contract. Compare a reused
+   query with the current entry-point normalization, including whitespace,
+   truncation and embedding instructions. Report which input path each result
+   exercises; qualify current request preparation before generalizing a replay.
 2. Inspect the corresponding implementation in a mature production engine when
    it addresses this mechanism. Record the primary source and the applicable
    pattern; different defaults or a popular architecture do not prove a fix.
@@ -413,6 +431,10 @@ do not create a second experiment journal:
    reference answers and evaluator labels out of answer/retrieval inputs. If
    inputs are missing, capture them once at an
    existing private benchmark boundary before repeating the experiment.
+   For an opted-in paid probe, save its bounded replay response before
+   diagnostic postconditions or accounting can fail. Honor nullable provider
+   usage fields and retain missing usage as unknown. An observer failure must
+   not trigger a repeat of dispatched provider work.
 4. Change one mechanism, run its focused checks, and compare the isolated result
    with the frozen baseline plus a passing control. Preserve negative results;
    do not reroll settled provider calls or repeat a rejected unchanged variant.
@@ -432,8 +454,14 @@ historical full run, use `npm run benchmark:knowledge:openrag:current --
 <case> --output results/<new-run> --confirm-paid OPENRAG`. This adapter reuses
 the pinned question package and the original judge, coverage/citation ceilings,
 and cited-evidence budget. It requires identical admitted answer/judge models,
-controls, reranker, Base/source fingerprints and parsing profile. The old live
-and replay harness below retains its historical protocol guards.
+declared control defaults, reranker, Base/source fingerprints and parsing profile.
+New current OpenRAG and BRIGHT runs materialize those defaults into API params
+and verify the accepted parameter fingerprint and reasoning effort, including
+when resuming a settled stage. Their changed manifests cannot resume an older
+campaign. Historical manifests attest declared defaults only: verify the saved
+accepted parameters before attributing a score difference solely to engine
+changes. The old live and replay harness below retains its historical protocol
+guards and is not the current-workflow execution lane.
 
 The current adapter requires `AIQSA_OPENRAG_RETAINED_ACK=RETAINED_OPENRAG_KB`,
 the existing OpenRAG loopback database, app URL, mutation origin and private
@@ -456,6 +484,32 @@ ambiguous stages. Semantic nonpasses remain recorded and do not abort the
 batch. `--preflight-only` performs no provider calls. Only a completed full
 selection produces a scoreable aggregate; a smaller regression selection
 cannot qualify corpus-scale performance or yield a new overall benchmark score.
+
+Diagnose saved current-workflow OpenRAG runs before starting another paid batch:
+
+```bash
+npm run benchmark:knowledge:openrag:diagnose -- --input results/openrag-current --baseline results/openrag-baseline --output results/openrag-diagnosis
+```
+
+`--baseline` is optional. Inputs must have released their campaign locks; output
+must be a fresh, separate ignored directory. The command verifies checksum
+envelopes, request/case bindings and the terminal publication's selected review.
+It uses the existing exact product-packing replay without database or provider
+calls. Paid artifacts remain unchanged. Current-workflow OCR control exports
+use the same diagnostic path, but different protocols, scopes, parsing profiles,
+models, budgets or unknown manifest controls prevent an unqualified comparison.
+Historical pre-current-workflow exports require their original replay harness.
+
+The private report pairs cases by identity, checks the original question, and
+compares query sequences, canonical passage identities, delivered text and
+review decisions. It separates absent, unsettled and technically failed cases
+from judged answers. A complete internal review with a nonpassing external
+judgment flags a disagreement to inspect; it does not prove either judgment
+correct. Passage overlap is not semantic recall, and a packing mismatch is not
+a quality improvement. Inspect the changed stage with saved inputs and a passing
+control before another end-to-end run; reference answers never enter packing
+replay. Stdout contains aggregate counts only, with detailed results protected
+by the same `0700`/`0600` checkpoint boundary as the source campaigns.
 
 `openRagAnswerRunner.ts` is the answer/judge and frozen-evidence harness for
 the pinned 100-PDF OpenRAG slice. Unlike the isolated public retrieval suites
@@ -946,7 +1000,7 @@ docker compose -p aiqsa-knowledge-benchmark-second -f docker-compose.dev.yml -f 
   --suite rusbeir-rus-scifact --config C
 ```
 
-Each full run writes sanitized aggregates only —
+By default each full run writes sanitized aggregates only —
 `results/<run-id>/summary.json` (metrics plus the frozen manifest) and
 `results/<run-id>/rankings.json` (official public dataset ids plus content-free
 reranker status, timeout, and normalized fallback code). No query text,
@@ -992,6 +1046,34 @@ candidate-recall failure distinguishable from a reranker ordering failure.
 `--diagnostic-candidate-audit` instead keeps the configured reranker and emits
 only the public relevant-document rank within its complete pre-settlement
 candidate order; it never prints query text, passage text, or internal ids.
+
+For subsequent offline diagnosis, opt in to `--capture-replay --batch-size 5`
+from the beginning of a new run and keep these flags on resume. Capture requires
+concurrency one. It saves the actual reranker inputs and scores, authorized SQL
+and lexical results, and parent-context reads under a private `replay/` child
+of the ignored run directory. Objects are bounded, hashed, permission-restricted
+and shared across cases when identical; large immutable scopes are not copied
+into each case. The normal query claim still prevents repeating crash-ambiguous
+paid work. Capture must finish before evaluation/outcome settlement, and does
+not change candidate or model settings. Measured retrieval time excludes file
+writes but includes in-memory recording overhead.
+
+Replay a zero-based index within that run's selected query order:
+
+```bash
+npx tsx benchmarks/knowledge/replayRetrieval.ts \
+  --output results/<captured-run> --query-index 0
+```
+
+This invokes the real retrieval repository with recorded dependencies only:
+no database, OpenSearch or provider requests. It checks source identity,
+object integrity, every dependency input, consumption of all recorded calls
+and exact output. `--compare-current` explicitly allows changed source/output
+for an offline comparison on fixed dependency results. A changed SQL, lexical
+or reranker candidate input still fails; a new provider/query/embedding behavior
+requires fresh evidence. Neither mode evaluates relevance or replaces a frozen
+score. Ordinary result files and console output remain content-free; captured
+queries, passages and identities belong only in the private replay directory.
 
 5. Optional: compare two deliberately captured frozen configurations. The
 current task does not require or claim a baseline comparison; a standalone

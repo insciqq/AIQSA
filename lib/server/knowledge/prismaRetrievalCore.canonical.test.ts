@@ -11,6 +11,7 @@ import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFi
 type CoreClient = Parameters<typeof executeKnowledgeRetrievalCore>[0];
 type MockCoreClient = CoreClient & Readonly<{
   $queryRaw: ReturnType<typeof vi.fn>;
+  $querySemantic: ReturnType<typeof vi.fn>;
   vectors: readonly Readonly<{
     bindingOrdinal: number;
     indexGenerationId: string;
@@ -100,9 +101,10 @@ function mockClient(scopes: readonly unknown[], rows: readonly unknown[]): MockC
     };
   });
   return {
+    $querySemantic: vi.fn().mockResolvedValue([]),
     $queryRaw: vi.fn()
       .mockResolvedValueOnce([...scopes])
-      .mockResolvedValueOnce([{ candidates: [...rows], scopes: [...scopes] }]),
+      .mockResolvedValueOnce([{ candidates: [...rows], scopeVerified: true, semanticRevalidatedCount: 0 }]),
     vectors
   } as unknown as MockCoreClient;
 }
@@ -138,7 +140,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
     const client = mockClient([admitted], []);
     client.$queryRaw.mockReset()
       .mockResolvedValueOnce([admitted])
-      .mockResolvedValueOnce([{ candidates: [], scopes: [admitted] }])
+      .mockResolvedValueOnce([{ candidates: [], scopeVerified: true, semanticRevalidatedCount: 0 }])
       .mockResolvedValueOnce([row({
         artifactId: "source-artifact-1",
         baseName: "Policies",
@@ -167,18 +169,17 @@ describe("Prisma retrieval core canonical Source identity", () => {
 
     expect(lexicalSearch).toHaveBeenCalledOnce();
     expect(client.$queryRaw).toHaveBeenCalledTimes(3);
-    const focusedQuery = client.$queryRaw.mock.calls[1]![0] as {
+    const focusedQuery = client.$querySemantic.mock.calls[0]![0] as {
       strings: readonly string[];
       values: readonly unknown[];
     };
     expect(sqlText(focusedQuery)).toContain(
-      'jsonb_object_agg(artifact."indexArtifactId", true)'
+      'jsonb_object_agg(accepted."indexArtifactId", true)'
     );
     expect(sqlText(focusedQuery)).toContain(
       'SELECT scope."indexArtifactMap" FROM accepted_scope AS scope'
     );
-    expect(focusedQuery.values.some((value) =>
-      typeof value === "string" && value.includes(indexArtifactId))).toBe(true);
+    expect(focusedQuery.values).toContainEqual([indexArtifactId]);
     expect(sqlText(client.$queryRaw.mock.calls[2]![0])).toContain(
       'chunk."indexArtifactId" = hit."indexArtifactId"'
     );
@@ -199,7 +200,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
     const client = mockClient([admitted], []);
     client.$queryRaw.mockReset()
       .mockResolvedValueOnce([admitted])
-      .mockResolvedValueOnce([{ candidates: [], scopes: [admitted] }])
+      .mockResolvedValueOnce([{ candidates: [], scopeVerified: true, semanticRevalidatedCount: 0 }])
       .mockResolvedValueOnce(hits.slice(0, missingTail ? -1 : undefined).map((hit, index) => row({
         artifactId: "source-artifact-1", baseName: "Policies", bindingOrdinal: 0,
         chunkId: hit.passageId, chunkIndex: index, knowledgeBaseId: "base-policies",
@@ -259,7 +260,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
     const admitted = { ...scope(0, "Policies", "base-1"), acceptedIndexArtifactIds: ["hierarchy-1"] };
     const client = mockClient([admitted], []);
     client.$queryRaw.mockReset().mockResolvedValueOnce([admitted])
-      .mockResolvedValueOnce([{ candidates: [], scopes: [{ ...admitted, projectionComplete: false }] }]);
+      .mockResolvedValueOnce([{ candidates: [], scopeVerified: false, semanticRevalidatedCount: 0 }]);
     const lexicalSearch = vi.fn();
     await expect(execute(client, { lexicalSearch })).rejects.toMatchObject({
       code: "knowledge_retrieval_scope_changed", scopeFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u)
@@ -267,6 +268,21 @@ describe("Prisma retrieval core canonical Source identity", () => {
     expect(lexicalSearch).not.toHaveBeenCalled();
     expect(client.$queryRaw).toHaveBeenCalledTimes(2);
   });
+
+  it.each([undefined, null, "true", 1])(
+    "requires an explicit SQL scope proof before external search (%s)", async (scopeVerified) => {
+      const admitted = scope(0, "Policies", "base-1");
+      const client = mockClient([admitted], []);
+      client.$queryRaw.mockReset().mockResolvedValueOnce([admitted])
+        .mockResolvedValueOnce([{ candidates: [], scopeVerified, semanticRevalidatedCount: 0, scopes: [admitted] }]);
+      const lexicalSearch = vi.fn();
+      await expect(execute(client, { lexicalSearch })).rejects.toThrow(
+        "knowledge_retrieval_envelope_invalid"
+      );
+      expect(lexicalSearch).not.toHaveBeenCalled();
+      expect(client.$queryRaw).toHaveBeenCalledTimes(2);
+    }
+  );
 
   it("fails closed when any OpenSearch identity misses canonical revalidation", async () => {
     const admitted = {
@@ -276,7 +292,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
     const client = mockClient([admitted], []);
     client.$queryRaw.mockReset()
       .mockResolvedValueOnce([admitted])
-      .mockResolvedValueOnce([{ candidates: [], scopes: [admitted] }])
+      .mockResolvedValueOnce([{ candidates: [], scopeVerified: true, semanticRevalidatedCount: 0 }])
       .mockResolvedValueOnce([]);
     const lexicalSearch = vi.fn(async () => ({
       evidence: knowledgeLexicalBackendEvidenceFixture(),
@@ -377,7 +393,7 @@ describe("Prisma retrieval core canonical Source identity", () => {
       })
     });
 
-    const candidateQuery = client.$queryRaw.mock.calls[1]![0] as {
+    const candidateQuery = client.$querySemantic.mock.calls[0]![0] as {
       strings: readonly string[];
       values: readonly unknown[];
     };
@@ -389,12 +405,12 @@ describe("Prisma retrieval core canonical Source identity", () => {
       'SELECT scope."indexArtifactMap" FROM accepted_scope AS scope'
     );
     expect(candidateSql).toContain(
-      'jsonb_object_agg(artifact."indexArtifactId", true)'
+      'jsonb_object_agg(accepted."indexArtifactId", true)'
     );
     expect(candidateSql).not.toContain("FROM scoped_passages AS scoped");
-    expect(candidateQuery.values.some((value) => typeof value === "string" &&
-      value.includes("hierarchy-allowed-1") &&
-      value.includes("hierarchy-allowed-2"))).toBe(true);
+    expect(candidateQuery.values).toContainEqual([
+      "hierarchy-allowed-1", "hierarchy-allowed-2"
+    ]);
   });
 
   it("filters a weak nearest neighbor before fusion and returns an empty ranking", async () => {
@@ -597,7 +613,8 @@ describe("Prisma retrieval core canonical Source identity", () => {
     expect(result.passages[0]!.layoutKind).toBe("table_row");
     expect(client.$queryRaw).toHaveBeenCalledTimes(2);
     const neighborSql = sqlText(client.$queryRaw.mock.calls[1]![0]);
-    expect(neighborSql).toContain("<=>");
+    expect(sqlText(client.$querySemantic.mock.calls[0]![0])).toContain("<=>");
+    expect(neighborSql).toContain("revalidated_semantic_hits AS MATERIALIZED");
     expect(neighborSql).toContain(`60.0 + candidate."laneRank"`);
     expect(neighborSql).toContain(
       `source."documentContext" IS NULL AND neighbor."documentContext" IS NULL`

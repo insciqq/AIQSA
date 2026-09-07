@@ -60,9 +60,9 @@ function candidate(input: Readonly<{
   };
 }
 
-describe("Knowledge ranking profile v10", () => {
+describe("Knowledge ranking profile v12", () => {
   it("versions the widened candidate and rerank pool constants", () => {
-    expect(KNOWLEDGE_RANKING_PROFILE_VERSION).toBe(10);
+    expect(KNOWLEDGE_RANKING_PROFILE_VERSION).toBe(12);
     expect(KNOWLEDGE_LANE_CANDIDATE_LIMIT).toBe(64);
     expect(KNOWLEDGE_BROAD_RERANK_INPUT_MAX).toBe(96);
     expect(KNOWLEDGE_SCOPED_RERANK_INPUT_MAX).toBe(48);
@@ -222,6 +222,21 @@ describe("Pre-rerank pool selection", () => {
 });
 
 describe("Post-rerank final ranking", () => {
+  it("preserves later query constraints after a repetitive preamble", () => {
+    const pool = fuseKnowledgeCandidates([
+      candidate({ chunkId: "decoy-a", text: "context granite" }),
+      candidate({ chunkId: "match-z", text: "context limestone" })
+    ]);
+    const rerankScores = new Map(pool.map(({ chunkId }) => [chunkId, 0.5]));
+    for (const query of ["context limestone", `${"context ".repeat(128)}limestone`]) {
+      const ordered = orderRerankedKnowledgeCandidates({ pool, query, rerankScores });
+      const selected = selectRerankedKnowledgeCandidates({
+        candidates: ordered, query, resultLimit: 1
+      });
+      expect(selected.map(({ chunkId }) => chunkId)).toEqual(["match-z"]);
+    }
+  });
+
   it("keeps existing relevance order when only lower-scoring unrelated passages are added", () => {
     const original = [
       candidate({ chunkId: "model-first", source: "Primary", text: "A mechanism description." }),

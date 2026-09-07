@@ -600,6 +600,23 @@ describe("document-level ranking projection", () => {
 });
 
 describe("frozen manifest and comparison guard", () => {
+  it("pins executable changes without invalidating unchanged query embeddings or historical manifests", () => {
+    const historical = frozenManifestFixture();
+    const current = frozenManifestFixture({ codeFingerprint: "a".repeat(64) });
+    const changed = frozenManifestFixture({ codeFingerprint: "b".repeat(64) });
+    expect(decodeKnowledgeFrozenRunManifest(historical)).toEqual(historical);
+    expect(current.codeFingerprint).toBe("a".repeat(64));
+    expect(knowledgeRunManifestFingerprint(historical)).not.toBe(knowledgeRunManifestFingerprint(current));
+    expect(knowledgeRunManifestFingerprint(current)).not.toBe(knowledgeRunManifestFingerprint(changed));
+    expect(knowledgeDatasetFingerprint(historical)).toBe(knowledgeDatasetFingerprint(current));
+    expect(queryEmbeddingCacheKey(historical, "Synthetic query"))
+      .toBe(queryEmbeddingCacheKey(changed, "Synthetic query"));
+    for (const codeFingerprint of [null, "", "invalid", "a".repeat(63)]) {
+      expect(() => decodeKnowledgeFrozenRunManifest({ ...historical, codeFingerprint }))
+        .toThrow("frozen_manifest_invalid");
+    }
+  });
+
   it("keeps the dataset fingerprint independent of the configuration", () => {
     const baseline = frozenManifestFixture();
     const candidate = frozenManifestFixture({

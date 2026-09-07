@@ -31,6 +31,7 @@ import {
   KNOWLEDGE_NEUTRAL_EMBEDDING_FORMAT_PROFILE_MIN_VERSION,
   KNOWLEDGE_REPEATED_TABLE_HEADER_PROFILE_MIN_VERSION,
   KNOWLEDGE_SAFE_TABLE_HEADER_PROFILE_MIN_VERSION,
+  KNOWLEDGE_SINGLE_BUDGET_CHUNKING_PROFILE_MIN_VERSION,
   KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION
 } from "./indexProfile";
 import { isInlineReferenceMarkerText } from "./layoutInlineReferences";
@@ -1178,7 +1179,12 @@ function structuralSegments(
           : profile2TableSegments(block)));
       continue;
     }
-    for (const split of splitTextByTokens(block.text)) {
+    // Keep unstructured blocks whole until the final embedding-input fitter:
+    // an earlier lexical split applies a second, incompatible overlap window.
+    // tokenCount is structural metadata here, never the current budget test.
+    for (const split of profileVersion >= KNOWLEDGE_SINGLE_BUDGET_CHUNKING_PROFILE_MIN_VERSION
+      ? [{ text: block.text, tokenCount: legacyKnowledgeTokenCount(block.text) }]
+      : splitTextByTokens(block.text)) {
       result.push(Object.freeze({
         blockEnd: block.order,
         blockIds: Object.freeze([block.id]),
@@ -1199,7 +1205,8 @@ function structuralSegments(
 
 function mergeStructuralSegments(
   segments: readonly Segment[],
-  profileVersion: number
+  profileVersion: number,
+  document: StoredKnowledgeNormalizedDocument
 ): Segment[] {
   const result: Segment[] = [];
   let current: Segment | null = null;
@@ -1221,8 +1228,13 @@ function mergeStructuralSegments(
       sameHeading(current.headingPath, segment.headingPath) &&
       current.layoutKind === "body" && segment.layoutKind === "body" &&
       !cannotMerge.has(current.type) && !cannotMerge.has(segment.type) &&
-      legacyKnowledgeTokenCount(candidateText) <= KNOWLEDGE_CHUNK_MAX_TOKENS &&
-      candidateText.length <= KNOWLEDGE_CHUNK_MAX_CHARS;
+      (profileVersion >= KNOWLEDGE_SINGLE_BUDGET_CHUNKING_PROFILE_MIN_VERSION
+        ? currentEmbeddingInputFits(
+            contextPrefix(document, current, true, true, true),
+            candidateText
+          )
+        : legacyKnowledgeTokenCount(candidateText) <= KNOWLEDGE_CHUNK_MAX_TOKENS &&
+          candidateText.length <= KNOWLEDGE_CHUNK_MAX_CHARS);
     if (canMerge) {
       current = Object.freeze({
         blockEnd: segment.blockEnd,
@@ -1567,7 +1579,8 @@ export function chunkKnowledgeDocument(input: Readonly<{
       ? legacyCharacterSegments(input.document)
       : mergeStructuralSegments(
           structuralSegments(input.document, input.profileVersion),
-          input.profileVersion
+          input.profileVersion,
+          input.document
         );
     const currentSizing = input.profileVersion >=
       KNOWLEDGE_TOKEN_SIZED_CHUNKING_PROFILE_MIN_VERSION;

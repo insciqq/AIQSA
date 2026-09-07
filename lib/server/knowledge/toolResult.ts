@@ -48,6 +48,7 @@ import { decodeStructuredAnalysisResult } from "./structuredData";
 import { decodeKnowledgeVisualAnalysisResult } from "./visualEvidence";
 import {
   KNOWLEDGE_SIGNAL_RANK_MAX,
+  KNOWLEDGE_SEMANTIC_UNION_RANK_MAX,
   type KnowledgeCandidateSignal,
   type KnowledgeRerankerBindingEvidence,
   type KnowledgeRetrievalLane
@@ -111,7 +112,7 @@ function decodeKnowledgeLexicalBackendEvidence(
     value.physicalIndexVersion !== KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION ||
     value.mappingVersion !== KNOWLEDGE_SEARCH_MAPPING_VERSION ||
     value.analyzerProfile !== KNOWLEDGE_SEARCH_ANALYZER_PROFILE ||
-    value.rankingProfileVersion !== 4 && value.rankingProfileVersion !== 5 && value.rankingProfileVersion !== 6 && value.rankingProfileVersion !== 7 && value.rankingProfileVersion !== 8 && value.rankingProfileVersion !== 9 && value.rankingProfileVersion !== 10 || value.status !== "complete" ||
+    value.rankingProfileVersion !== 4 && value.rankingProfileVersion !== 5 && value.rankingProfileVersion !== 6 && value.rankingProfileVersion !== 7 && value.rankingProfileVersion !== 8 && value.rankingProfileVersion !== 9 && value.rankingProfileVersion !== 10 && value.rankingProfileVersion !== 11 && value.rankingProfileVersion !== 12 || value.status !== "complete" ||
     value.projectionCompleteness !== "complete" || value.timedOut !== false ||
     value.canonicalRejectionCount !== 0 ||
     nonNegativeInteger(value.candidateCount) === null ||
@@ -1323,8 +1324,11 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     .filter((entry) => entry.status === "error")
     .flatMap((entry) => entry.bindingOrdinals));
   const advanced = fusion === "weighted_rrf_v2";
-  const ftsRankLimit = advanced && (lexicalBackend?.rankingProfileVersion === 6 || lexicalBackend?.rankingProfileVersion === 7 || lexicalBackend?.rankingProfileVersion === 8 || lexicalBackend?.rankingProfileVersion === 9 || lexicalBackend?.rankingProfileVersion === 10)
+  const ftsRankLimit = advanced && (lexicalBackend?.rankingProfileVersion === 6 || lexicalBackend?.rankingProfileVersion === 7 || lexicalBackend?.rankingProfileVersion === 8 || lexicalBackend?.rankingProfileVersion === 9 || lexicalBackend?.rankingProfileVersion === 10 || lexicalBackend?.rankingProfileVersion === 11 || lexicalBackend?.rankingProfileVersion === 12)
     ? KNOWLEDGE_SEARCH_MAX_MERGED_HITS
+    : advanced ? 100 : candidateLimit;
+  const annRankLimit = advanced && lexicalBackend?.rankingProfileVersion === 12
+    ? KNOWLEDGE_SEMANTIC_UNION_RANK_MAX
     : advanced ? 100 : candidateLimit;
   const resultHandles = decodedResults.map((result) =>
     decodeKnowledgeCitationHandle(result.handle));
@@ -1429,7 +1433,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
           ))) ||
     new Set(decodedResults.map((result) => result.handle)).size !== decodedResults.length ||
     decodedResults.some((result) =>
-      result.annRank !== null && result.annRank > (advanced ? 100 : candidateLimit) ||
+      result.annRank !== null && result.annRank > annRankLimit ||
       result.ftsRank !== null && result.ftsRank > ftsRankLimit ||
       result.structuredAnalysis !== undefined || result.visualAnalysis !== undefined ||
       (deterministicRead || deterministicExact

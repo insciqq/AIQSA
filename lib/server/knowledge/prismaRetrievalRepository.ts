@@ -130,29 +130,36 @@ function retrievalQueryTimedOut(error: unknown): boolean {
 function boundedRetrievalCoreClient(
   client: Pick<RetrievalPrisma, "$transaction">
 ): Parameters<typeof executeKnowledgeRetrievalCore>[0] {
-  return {
-    transactionLocalRetrievalSettings: true,
-    async $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T> {
-      try {
-        return await client.$transaction(async (tx) => {
-          await tx.$executeRaw`SELECT set_config(
+  const query = async <T>(statement: Prisma.Sql, semantic: boolean): Promise<T> => {
+    try {
+      return await client.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT set_config(
             'statement_timeout',
             ${String(KNOWLEDGE_RETRIEVAL_STATEMENT_TIMEOUT_MS)},
             true
           )`;
-          await tx.$executeRaw(knowledgeRetrievalRuntimeSettingsSql());
-          return tx.$queryRaw<T>(query);
-        }, {
-          maxWait: KNOWLEDGE_RETRIEVAL_TRANSACTION_MAX_WAIT_MS,
-          timeout: KNOWLEDGE_RETRIEVAL_TRANSACTION_TIMEOUT_MS
-        });
-      } catch (error) {
-        if (retrievalQueryTimedOut(error)) {
-          throw new Error("knowledge_retrieval_query_timed_out", { cause: error });
+        await tx.$executeRaw(knowledgeRetrievalRuntimeSettingsSql());
+        if (semantic) {
+          // Scope and lexical joins retain their ordinary planning choices.
+          // This preference expires with the standalone vector transaction.
+          await tx.$executeRaw`SET LOCAL enable_seqscan = off`;
         }
-        throw error;
+        return tx.$queryRaw<T>(statement);
+      }, {
+        maxWait: KNOWLEDGE_RETRIEVAL_TRANSACTION_MAX_WAIT_MS,
+        timeout: KNOWLEDGE_RETRIEVAL_TRANSACTION_TIMEOUT_MS
+      });
+    } catch (error) {
+      if (retrievalQueryTimedOut(error)) {
+        throw new Error("knowledge_retrieval_query_timed_out", { cause: error });
       }
+      throw error;
     }
+  };
+  return {
+    transactionLocalRetrievalSettings: true,
+    $queryRaw: <T>(statement: Prisma.Sql) => query<T>(statement, false),
+    $querySemantic: <T>(statement: Prisma.Sql) => query<T>(statement, true)
   };
 }
 

@@ -4,6 +4,11 @@ import type { ProviderModelConfiguration } from "../providers/providerConfigurat
 
 export const KNOWLEDGE_INDEX_DIMENSIONS = [1024, 1536] as const;
 /**
+ * Version 13 fits unstructured blocks with one model-token budget including
+ * context, and applies overlap only at that final split. Structural merging
+ * reserves the same context budget; structured table/field boundaries retain
+ * their existing behavior. Versions 1–12 remain byte-identical.
+ *
  * Version 12 requires independent table-header evidence and normalizes
  * decimal observations exactly within fixed string bounds. Older artifact
  * profiles retain their original projection and numeric semantics.
@@ -50,7 +55,7 @@ export const KNOWLEDGE_INDEX_DIMENSIONS = [1024, 1536] as const;
  * resolved identity label (name:version[:asset fingerprint]) is additionally
  * recorded in retrieval evidence next to the vector-space fingerprint.
  */
-export const KNOWLEDGE_CHUNKING_PROFILE_VERSION = 12;
+export const KNOWLEDGE_CHUNKING_PROFILE_VERSION = 13;
 export const KNOWLEDGE_LAYOUT_AWARE_CHUNKING_PROFILE_MIN_VERSION = 3;
 export const KNOWLEDGE_DOCUMENT_CONTEXT_CHUNKING_PROFILE_MIN_VERSION = 4;
 export const KNOWLEDGE_CONSERVATIVE_FURNITURE_PROFILE_MIN_VERSION = 5;
@@ -71,6 +76,8 @@ export const KNOWLEDGE_INLINE_PAIR_PROFILE_MIN_VERSION = 11;
  * structure. Headerless forms retain raw cells and association ambiguity. */
 export const KNOWLEDGE_SAFE_TABLE_HEADER_PROFILE_MIN_VERSION = 12;
 export const KNOWLEDGE_EXACT_OBSERVATION_NORMALIZATION_PROFILE_MIN_VERSION = 12;
+/** Unstructured text is fitted once against its complete embedding input. */
+export const KNOWLEDGE_SINGLE_BUDGET_CHUNKING_PROFILE_MIN_VERSION = 13;
 
 export type KnowledgeIndexDimension = (typeof KNOWLEDGE_INDEX_DIMENSIONS)[number];
 

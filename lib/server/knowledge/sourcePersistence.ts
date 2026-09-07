@@ -976,7 +976,7 @@ export async function materializeKnowledgeBaseSnapshot(
   };
   const evidenceFingerprint = sha256(canonicalJson(evidence));
   const canonicalSnapshotId = snapshotId(input.knowledgeBaseId, evidenceFingerprint);
-  await tx.$executeRaw(Prisma.sql`
+  const createdSnapshotCount = await tx.$executeRaw(Prisma.sql`
     INSERT INTO "KnowledgeBaseSnapshot" (
       "id", "knowledgeBaseId", "ownerUserId", "profileRevisionId",
       "indexGenerationId", "sourceRevision", "sourceCount", "readySourceCount",
@@ -988,30 +988,35 @@ export async function materializeKnowledgeBaseSnapshot(
     )
     ON CONFLICT DO NOTHING
   `);
-  await tx.$executeRaw(Prisma.sql`
-    INSERT INTO "KnowledgeBaseSnapshotSource" (
-      "snapshotId", "knowledgeBaseId", "ownerUserId", "sourceId",
-      "sourceVersionId", "artifactId", "ordinal", "createdAt"
-    )
-    SELECT
-      ${canonicalSnapshotId}, ${input.knowledgeBaseId}, membership."ownerUserId",
-      membership."sourceId", source."currentVersionId", artifact."id",
-      (row_number() OVER (ORDER BY membership."sourceId") - 1)::integer,
-      CURRENT_TIMESTAMP
-    FROM "KnowledgeBaseSource" AS membership
-    INNER JOIN "KnowledgeSource" AS source
-      ON source."id" = membership."sourceId"
-     AND source."ownerUserId" = membership."ownerUserId"
-     AND source."trashedAt" IS NULL
-     AND source."deletionRequestedAt" IS NULL
-    INNER JOIN "KnowledgeSourceIndexArtifact" AS artifact
-      ON artifact."sourceVersionId" = source."currentVersionId"
-     AND artifact."profileRevisionId" = ${base.profileRevisionId}
-     AND artifact."state" = 'ready'
-    WHERE membership."knowledgeBaseId" = ${input.knowledgeBaseId}
-      AND membership."removedAt" IS NULL
-    ON CONFLICT ("snapshotId", "sourceId") DO NOTHING
-  `);
+  // The header and its members are created in the same transaction. An
+  // existing immutable snapshot needs exact validation below, not another
+  // insert attempt for every Source. Incomplete snapshots fail validation.
+  if (createdSnapshotCount > 0) {
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "KnowledgeBaseSnapshotSource" (
+        "snapshotId", "knowledgeBaseId", "ownerUserId", "sourceId",
+        "sourceVersionId", "artifactId", "ordinal", "createdAt"
+      )
+      SELECT
+        ${canonicalSnapshotId}, ${input.knowledgeBaseId}, membership."ownerUserId",
+        membership."sourceId", source."currentVersionId", artifact."id",
+        (row_number() OVER (ORDER BY membership."sourceId") - 1)::integer,
+        CURRENT_TIMESTAMP
+      FROM "KnowledgeBaseSource" AS membership
+      INNER JOIN "KnowledgeSource" AS source
+        ON source."id" = membership."sourceId"
+       AND source."ownerUserId" = membership."ownerUserId"
+       AND source."trashedAt" IS NULL
+       AND source."deletionRequestedAt" IS NULL
+      INNER JOIN "KnowledgeSourceIndexArtifact" AS artifact
+        ON artifact."sourceVersionId" = source."currentVersionId"
+       AND artifact."profileRevisionId" = ${base.profileRevisionId}
+       AND artifact."state" = 'ready'
+      WHERE membership."knowledgeBaseId" = ${input.knowledgeBaseId}
+        AND membership."removedAt" IS NULL
+      ON CONFLICT ("snapshotId", "sourceId") DO NOTHING
+    `);
+  }
   const snapshotSources = await tx.$queryRaw<Array<{
     exactCount: number;
     totalCount: number;

@@ -9,6 +9,7 @@ import type { KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
 import { STRUCTURED_PLAN_VERSION } from "./structuredData";
 import { tableOccurrenceFixture } from "./tableOccurrence.testFixtures";
+import { renderKnowledgeParentExpansionProjectionV1 } from "./parentContextExpansion";
 import {
   createKnowledgeFieldContextSegments,
   createKnowledgeTableDocumentContext
@@ -440,6 +441,7 @@ function personalClient(input: Readonly<{
   fullContextEvidence?: Record<string, unknown> | null;
   fullContextEvidenceCount?: number;
   groupIds?: readonly string[];
+  groundingEvidence?: Record<string, unknown>;
   manifestRetrievalSessionId?: string;
   projectSourceBindingVisible?: boolean;
   ragEvidence?: Record<string, unknown> | null;
@@ -513,6 +515,7 @@ function personalClient(input: Readonly<{
   const versionFindFirst = vi.fn().mockResolvedValue(
     input.versionVisible === false ? null : version
   );
+  const relatedPassagesFindMany = vi.fn().mockResolvedValue([]);
   const bindingTuple = input.bindingTuple ?? {
     sourceArtifactId: "artifact-1",
     sourceId: "source-1",
@@ -551,6 +554,7 @@ function personalClient(input: Readonly<{
     deletedEvidenceFindFirst,
     dispatchManifestItemFindFirst,
     projectSourceBindingFindUnique,
+    relatedPassagesFindMany,
     value: {
       chat: {
         findUnique: vi.fn().mockResolvedValue({
@@ -561,6 +565,7 @@ function personalClient(input: Readonly<{
         })
       },
       knowledgeBase: { findFirst: baseFindFirst },
+      knowledgeArtifactPassageIndex: { findMany: relatedPassagesFindMany },
       knowledgeEvidenceDispatchManifestItem: { findFirst: dispatchManifestItemFindFirst },
       knowledgeEvidenceItem: { findFirst: deletedEvidenceFindFirst },
       knowledgeRetrievalSession: { findFirst: retrievalSessionFindFirst },
@@ -575,6 +580,9 @@ function personalClient(input: Readonly<{
           },
           chatId: "chat-1",
           id: "run-1",
+          knowledgeRetrievalSession: input.groundingEvidence
+            ? { groundingResult: { evidence: input.groundingEvidence } }
+            : null,
           normalizedRequest: fullContextEvidence
             ? {
                 context: {
@@ -633,7 +641,154 @@ const request = {
   userId: "user-1"
 };
 
+function relatedContextFixture(input: Readonly<{
+  boundaries?: Record<string, unknown>;
+  groundingEvidence?: Record<string, unknown>;
+  passage?: Record<string, unknown> | null;
+}> = {}) {
+  const text = "Retries require a fresh upload token. Повторить 🔁.";
+  const parsed = parsedDocument();
+  const normalized = encodeKnowledgeNormalizedDocument({
+    ...parsed,
+    blocks: parsed.blocks.map((block, index) =>
+      index === 0 ? { ...block, page: 1, pageEnd: 1, text } : block)
+  }, config, { sourceDisplayName: "policy.pdf" });
+  const expansion = renderKnowledgeParentExpansionProjectionV1([{
+    chunkId: "related-private-passage",
+    chunkIndex: 0,
+    contentHash: createHash("sha256").update(text).digest("hex"),
+    label: "Additional independently matched passage from the same Source",
+    origin: "independent",
+    position: "previous",
+    rank: 0,
+    text,
+    tokens: 16
+  }]);
+  const fixture = personalClient({ groundingEvidence: input.groundingEvidence });
+  const dispatchItem = {
+    contextBoundaries: {
+      expandedContext: expansion.text,
+      expandedContextOrder: expansion.contextOrder,
+      expandedContextOriginalBytes: Buffer.byteLength(expansion.text),
+      expandedContextOriginalHash: createHash("sha256").update(expansion.text).digest("hex"),
+      expandedContextState: "included",
+      ...input.boundaries
+    },
+    evidenceItem: { ...defaultEvidence(), retrievalSessionId: "retrieval-session-1" },
+    manifest: { retrievalSessionId: "retrieval-session-1" }
+  };
+  fixture.dispatchManifestItemFindFirst.mockResolvedValue(dispatchItem);
+  const version = defaultVersion();
+  fixture.versionFindFirst.mockResolvedValue({
+    ...version,
+    artifacts: [{
+      ...version.artifacts[0],
+      normalizedTextByteSize: normalized.body.byteLength,
+      normalizedTextChecksum: normalized.checksum,
+      hierarchicalIndexes: [{
+        id: "immutable-private-index",
+        passageIndexes: version.artifacts[0]!.hierarchicalIndexes[0]!.passageIndexes
+      }]
+    }]
+  });
+  fixture.relatedPassagesFindMany.mockResolvedValue(input.passage === null ? [] : [{
+    indexArtifactId: "immutable-private-index",
+    ordinal: 0,
+    text,
+    headingPath: ["Policy"],
+    page: 1,
+    pageEnd: 1,
+    ...input.passage
+  }]);
+  return { dispatchItem, fixture, normalized, text };
+}
+
 describe("Knowledge citation viewer authorization and projection", () => {
+  it.each([
+    { version: 57, purpose: "knowledge_evidence_compose_v1" },
+    { version: 58, purpose: "knowledge_evidence_compose_v2" }
+  ])("resolves the published compose context for grounding version $version", async ({ version, purpose }) => {
+    const evidenceReceiptHash = "a".repeat(64);
+    const { dispatchItem, fixture, normalized, text } = relatedContextFixture({ groundingEvidence: {
+      version, evidenceReceiptHash,
+      finalAnswerHash: createHash("sha256").update("Supported answer [K1]").digest("hex")
+    } });
+    // Only the composer with the publication's evidence may satisfy this read.
+    // Another revision or the reviewer can have the same handle.
+    fixture.dispatchManifestItemFindFirst.mockImplementation(async ({ where }) => {
+      const accepted = where.manifest.is.providerAttempt.is;
+      return accepted.purpose === purpose && accepted.evidenceReceiptHash === evidenceReceiptHash &&
+        accepted.state === "settled" && accepted.providerBindingKey === "answer"
+        ? dispatchItem : null;
+    });
+    const resolved = await resolveKnowledgeCitationViewer(fixture.value as never, storage(normalized.body), request);
+    expect(resolved?.citation).toMatchObject({
+      excerpt: "Maximum file size: 25 MB.", relatedExcerpts: [{ text, pageStart: 1 }]
+    });
+  });
+
+  it.each([
+    { evidenceReceiptHash: "invalid", finalAnswerHash: createHash("sha256").update("Supported answer [K1]").digest("hex") },
+    { evidenceReceiptHash: "a".repeat(64), finalAnswerHash: "b".repeat(64) }
+  ])("rejects a compose publication with changed evidence or answer hash %#", async (hashes) => {
+    const { fixture, normalized } = relatedContextFixture({ groundingEvidence: { version: 58, ...hashes } });
+    await expect(resolveKnowledgeCitationViewer(fixture.value as never, storage(normalized.body), request)).resolves.toBeNull();
+    expect(fixture.dispatchManifestItemFindFirst).not.toHaveBeenCalled();
+    expect(fixture.relatedPassagesFindMany).not.toHaveBeenCalled();
+  });
+
+  it("keeps a delivered related excerpt on its own immutable source page", async () => {
+    const { fixture, normalized, text } = relatedContextFixture();
+    const resolved = await resolveKnowledgeCitationViewer(fixture.value as never, storage(normalized.body), request);
+    expect(resolved?.citation).toMatchObject({
+      excerpt: "Maximum file size: 25 MB.", locator: { pageStart: 2, pageEnd: 2 },
+      relatedExcerpts: [{ text, headingPath: ["Policy"], pageStart: 1, pageEnd: 1 }]
+    });
+    expect(fixture.relatedPassagesFindMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { indexArtifactId: "immutable-private-index", ordinal: { in: [0] } }
+    }));
+    expect(JSON.stringify(resolved?.citation)).not.toContain("private");
+  });
+
+  it.each([
+    { name: "omitted context", boundaries: { expandedContextState: "omitted" } },
+    { name: "historical context without coordinates", boundaries: { expandedContextOrder: undefined } },
+    { name: "changed context bytes", boundaries: { expandedContextOriginalBytes: 1 } },
+    { name: "changed context hash", boundaries: { expandedContextOriginalHash: "0".repeat(64) } },
+    { name: "invalid context offsets", boundaries: { expandedContextOrder: {
+      version: 1, offsetEncoding: "utf16_code_units",
+      segments: [{ start: 0, end: 99_999, sourceOrdinal: 0, position: "previous" }]
+    } } }
+  ])("keeps the primary citation without loading $name", async ({ boundaries }) => {
+    const { fixture, normalized } = relatedContextFixture({ boundaries });
+    const resolved = await resolveKnowledgeCitationViewer(fixture.value as never, storage(normalized.body), request);
+    expect(resolved?.citation).toMatchObject({ state: "available", excerpt: "Maximum file size: 25 MB." });
+    expect(resolved?.citation).not.toHaveProperty("relatedExcerpts");
+    expect(fixture.relatedPassagesFindMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: "missing immutable passage", passage: null },
+    { name: "another immutable index", passage: { indexArtifactId: "different-private-index" } },
+    { name: "another passage ordinal", passage: { ordinal: 2 } },
+    { name: "changed indexed text", passage: { text: "Different source text." } },
+    { name: "page outside the source", passage: { page: 3, pageEnd: 3 } }
+  ])("does not attribute supplementary text to $name", async ({ passage }) => {
+    const { fixture, normalized } = relatedContextFixture({ passage });
+    const resolved = await resolveKnowledgeCitationViewer(fixture.value as never, storage(normalized.body), request);
+    expect(resolved?.citation).toMatchObject({ state: "available", excerpt: "Maximum file size: 25 MB." });
+    expect(resolved?.citation).not.toHaveProperty("relatedExcerpts");
+  });
+
+  it("does not load supplementary source text after current access is revoked", async () => {
+    const { fixture, normalized } = relatedContextFixture();
+    fixture.baseFindFirst.mockResolvedValue(null);
+    const adapter = storage(normalized.body);
+    await expect(resolveKnowledgeCitationViewer(fixture.value as never, adapter, request)).resolves.toBeNull();
+    expect(fixture.relatedPassagesFindMany).not.toHaveBeenCalled();
+    expect(adapter.getObject).not.toHaveBeenCalled();
+  });
+
   it("resolves immutable v2 evidence with normalized context, coordinates, table, and version states", async () => {
     const fixture = personalClient();
     const resolved = await resolveKnowledgeCitationViewer(
@@ -683,6 +838,7 @@ describe("Knowledge citation viewer authorization and projection", () => {
     }
     expect(fixture.dispatchManifestItemFindFirst).toHaveBeenCalledWith({
       select: {
+        contextBoundaries: true,
         evidenceItem: { select: expect.objectContaining({ handle: true }) },
         manifest: { select: { retrievalSessionId: true } }
       },

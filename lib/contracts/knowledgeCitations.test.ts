@@ -111,6 +111,41 @@ describe("Knowledge citation viewer contracts", () => {
     })).toBeNull();
   });
 
+  it("decodes related excerpts with their own pages and removes private fields", () => {
+    const excerpt = { text: "Retries need a new token.", headingPath: ["Policy"], pageStart: 2, pageEnd: 3 };
+    const citation = { ...available(), handle: "K1", relatedExcerpts: [excerpt] };
+    expect(decodeKnowledgeCitationViewerResponse({ citation: {
+      ...citation,
+      relatedExcerpts: [{ ...excerpt, indexArtifactId: "private-index", contentHash: "private-hash" }]
+    } })).toEqual({ citation });
+  });
+
+  it.each([
+    { pageStart: 0 },
+    { pageEnd: 1 },
+    { text: " " },
+    { text: "invalid\u0000text" },
+    { text: "x".repeat(64_001) },
+    { headingPath: ["x".repeat(257)] }
+  ])("rejects invalid related excerpt text or coordinates %#", (invalid) => {
+    expect(decodeKnowledgeCitationViewerResponse({ citation: {
+      ...available(), handle: "K1",
+      relatedExcerpts: [{ text: "Retry with a new token.", headingPath: [], pageStart: 2, pageEnd: 2, ...invalid }]
+    } })).toBeNull();
+  });
+
+  it("bounds the related excerpt collection and total text", () => {
+    const excerpt = { text: "Retry with a new token.", headingPath: [], pageStart: 2, pageEnd: 2 };
+    for (const relatedExcerpts of [
+      Array.from({ length: 33 }, () => excerpt),
+      [{ ...excerpt, text: "x".repeat(32_001) }, { ...excerpt, text: "y".repeat(32_000) }]
+    ]) {
+      expect(decodeKnowledgeCitationViewerResponse({ citation: {
+        ...available(), handle: "K1", relatedExcerpts
+      } })).toBeNull();
+    }
+  });
+
   it("decodes bounded workbook evidence and rejects malformed ranges", () => {
     const citation = {
       ...available(),

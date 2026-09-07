@@ -30,6 +30,7 @@ import {
 import { assertOpenRagPrivatePathNoSymlinks } from "./openRagAnswerRunner";
 import { brightJudgeEvidence, captureBrightAnswerTrace } from "./brightAnswerTrace";
 import { brightAnswerDiagnostics, buildBrightAnswerReport } from "./brightAnswerReport";
+import { ANSWER_BENCHMARK_CONTROL_VERSION, answerBenchmarkControlPlan, answerBenchmarkMessageRequest, assertAnswerBenchmarkControls } from "./answerControls";
 
 const benchmarkRoot = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(benchmarkRoot, "../..");
@@ -245,6 +246,8 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
     const reranker = await loadInstallationRerankerProviderRole(prisma, { providerModelId: system.rerankerProviderModelId });
     const answerControls = controlDefaults(answerModel, "answer");
     const judgeControls = controlDefaults(judgeModel, "judge");
+    const answerControlPlan = answerBenchmarkControlPlan(answer.snapshot, answerControls);
+    const judgeControlPlan = answerBenchmarkControlPlan(judge.snapshot, judgeControls);
     const knowledgePolicy = await prisma.knowledgeAnswerPolicy.findUnique({ where: { id: "installation" }, select: {
       maximumKnowledgeSearches: true, version: true
     } });
@@ -263,6 +266,7 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
       answerModel: answer.pin, judgeModel: judge.pin,
       rerankerFingerprint: brightAnswerHash(reranker.snapshot),
       answerControls, judgeControls, knowledgePolicy,
+      controlContractVersion: ANSWER_BENCHMARK_CONTROL_VERSION, answerControlPlan, judgeControlPlan,
       toolLimits: { calls: String(policy.maxToolCalls), rounds: String(policy.maxToolRounds) },
       codeFingerprint: await brightAnswerCodeFingerprint(repositoryRoot), concurrency: 1
     };
@@ -299,15 +303,9 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
       const model = stage === "answer" ? answerModel : judgeModel;
       const pin = stage === "answer" ? answer.pin : judge.pin;
       const selectedBase = stage === "answer" ? baseId : null;
-      const request = {
-        content: { blocks: [{ type: "text", text: prompt }] },
-        controlDefaults: stage === "answer" ? answerControls : judgeControls,
-        expectedActiveLeafId: null,
-        knowledgePlan: { baseIds: selectedBase ? [selectedBase] : [], mode: selectedBase ? "explicit" : "none", sourceIds: [], version: 1 },
-        modelId: model.modelId, params: {}, provider: model.provider,
-        searchPlan: { mode: "all_selected", optionIds: [] }, timeZone: "UTC", tools: "none"
-      };
-      return settleBrightChatStage({
+      const controlPlan = stage === "answer" ? answerControlPlan : judgeControlPlan;
+      const request = answerBenchmarkMessageRequest({ baseId: selectedBase, controlPlan, model, prompt });
+      const trace = await settleBrightChatStage({
         store: checkpoint, prefix, request, beforeSend: assertPins, deadlineMs: runDeadlineMs,
         continueKnowledgeFailures: stage === "answer",
         async createChat() {
@@ -323,7 +321,7 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
           const response = await api.request(`/api/chats/${encodeURIComponent(chatId)}/messages`, request);
           await consumeAnswerBenchmarkSse(response, checkpoint, prefix);
         },
-        capture: (chatId) => captureBrightAnswerTrace({ prisma, chatId, userId, expectedPin: pin,
+        capture: (chatId) => captureBrightAnswerTrace({ prisma, chatId, userId, expectedPin: pin, expectedControls: controlPlan,
           question: prompt, baseId: selectedBase,
           scopePin: selectedBase ? { snapshotId: snapshot.id, generationId,
             profileRevisionId: profile.profileRevisionId, targetDimension: profile.targetDimension,
@@ -333,6 +331,8 @@ export async function runBrightAnswerLive(argv: readonly string[]) {
           stage, status: trace.status, searches: trace.knowledgeRuns.length,
           groundingOperations: trace.knowledgeProviderAttempts.length })
       });
+      assertAnswerBenchmarkControls(trace.admittedControls, controlPlan);
+      return trace;
     };
     const outcomes: Array<Record<string, unknown>> = [];
     let newlySettled = 0;

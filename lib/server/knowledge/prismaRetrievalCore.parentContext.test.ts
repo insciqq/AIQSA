@@ -82,9 +82,10 @@ function mockClient(scopes: readonly unknown[], rows: readonly unknown[]): MockC
     };
   });
   return {
+    $querySemantic: vi.fn().mockResolvedValue([]),
     $queryRaw: vi.fn()
       .mockResolvedValueOnce([...scopes])
-      .mockResolvedValueOnce([{ candidates: [...rows], scopes: [...scopes] }]),
+      .mockResolvedValueOnce([{ candidates: [...rows], scopeVerified: true, semanticRevalidatedCount: 0 }]),
     vectors
   } as unknown as MockCoreClient;
 }

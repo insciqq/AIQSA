@@ -657,7 +657,9 @@ describe("Knowledge executor surface", () => {
         eligibleRows: 0, indexGenerationId: "generation-1", knowledgeBaseId: "base-1",
         projectionComplete: true, targetDimension: 1_024 };
       const core = await executeKnowledgeRetrievalCore({
-        $queryRaw: vi.fn().mockResolvedValueOnce([scope]).mockResolvedValueOnce([{ candidates: rows, scopes: [scope] }])
+        $querySemantic: vi.fn().mockResolvedValue([]),
+        $queryRaw: vi.fn().mockResolvedValueOnce([scope])
+          .mockResolvedValueOnce([{ candidates: rows, scopeVerified: true, semanticRevalidatedCount: 0 }])
       } as never, { ...input, lexicalSearch: async () => ({ evidence: knowledgeLexicalBackendEvidenceFixture(), hits: [] }) });
       return { ...core, passages: core.passages.map((passage) => ({ ...passage, signalProvenance: passage.signals })) };
     });
@@ -693,7 +695,7 @@ describe("Knowledge executor surface", () => {
     expect(accepted.map((receipt) => receipt.results.map(({ documentId }) => documentId)))
       .toEqual([["source-1", "source-2"], ["source-2"], []]);
     expect(accepted[2]?.outcome).toBe("no_relevant_evidence");
-    expect(accepted.slice(0, 2).map((receipt) => receipt.lexicalBackend?.rankingProfileVersion)).toEqual([10, 10]);
+    expect(accepted.slice(0, 2).map((receipt) => receipt.lexicalBackend?.rankingProfileVersion)).toEqual([12, 12]);
     const results = accepted.flatMap((receipt) => receipt.results);
     const manifest = packKnowledgeEvidenceDispatchManifest({
       candidates: results.map((result, index) => ({ ambiguity: "none" as const,
