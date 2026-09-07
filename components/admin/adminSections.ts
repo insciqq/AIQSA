@@ -84,13 +84,22 @@ export function parseAdminSection(search: string): AdminSectionId {
 }
 
 const MAX_RESOURCE_LENGTH = 256;
+const MAX_FILTER_LENGTH = 64;
+
+function boundedQueryValue(value: string | null, maxLength: number): string | null {
+  return value && value.length <= maxLength && !/[\u0000-\u001f\u007f]/u.test(value)
+    ? value
+    : null;
+}
 
 /** The resource opened inside a section (`?resource=<id>`), e.g. one provider page. */
 export function parseAdminSectionResource(search: string): string | null {
-  const value = new URLSearchParams(search).get("resource");
-  return value && value.length <= MAX_RESOURCE_LENGTH && !/[\u0000-\u001f\u007f]/u.test(value)
-    ? value
-    : null;
+  return boundedQueryValue(new URLSearchParams(search).get("resource"), MAX_RESOURCE_LENGTH);
+}
+
+/** The list filter selected inside a section (`?filter=<value>`), e.g. `pending` on Users. */
+export function parseAdminSectionFilter(search: string): string | null {
+  return boundedQueryValue(new URLSearchParams(search).get("filter"), MAX_FILTER_LENGTH);
 }
 
 /** Rewrites a legacy or unknown `section` to its current id while keeping every other URL part. */
@@ -102,18 +111,24 @@ export function normalizeAdminSectionPath(currentHref: string): string {
     return `${url.pathname}${url.search}${url.hash}`;
   }
 
-  return adminSectionPath(currentHref, resolveAdminSectionId(rawSection));
+  return adminSectionPath(
+    currentHref,
+    resolveAdminSectionId(rawSection),
+    parseAdminSectionResource(url.search),
+    parseAdminSectionFilter(url.search)
+  );
 }
 
 /**
- * Path for a section, optionally with one opened resource. A section change
- * always leaves the previous resource behind; every other query part and the
- * hash stay intact.
+ * Path for a section, optionally with one opened resource or one list filter.
+ * A section change always leaves the previous resource and filter behind;
+ * every other query part and the hash stay intact.
  */
 export function adminSectionPath(
   currentHref: string,
   section: AdminSectionId,
-  resource: string | null = null
+  resource: string | null = null,
+  filter: string | null = null
 ): string {
   const url = new URL(currentHref, "http://localhost");
 
@@ -126,6 +141,11 @@ export function adminSectionPath(
     url.searchParams.set("resource", resource);
   } else {
     url.searchParams.delete("resource");
+  }
+  if (filter) {
+    url.searchParams.set("filter", filter);
+  } else {
+    url.searchParams.delete("filter");
   }
 
   return `${url.pathname}${url.search}${url.hash}`;

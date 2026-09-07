@@ -1,214 +1,68 @@
 import { act, renderHook } from "@testing-library/react";
-import type { AdminAccessRuleRecord, AdminGroup } from "@/lib/contracts/admin";
 import { describe, expect, it, vi } from "vitest";
-import type { AdminRunAction } from "./useAdminActionRunner";
-import type { AdminConfirmationController } from "./useAdminConfirmationController";
-import type { AdminFieldErrorController } from "./useAdminFieldErrors";
-import {
-  useAdminAccessRulesController,
-  type AdminAccessRulesController,
-  type AdminAccessRulesDashboard,
-  type UseAdminAccessRulesControllerOptions
-} from "./useAdminAccessRulesController";
+import type { AdminRunAction } from "@/components/admin/useAdminActionRunner";
+import type { AdminAccessRuleRecord, AdminGroup } from "@/lib/contracts/admin";
+import { useAdminAccessRulesController } from "./useAdminAccessRulesController";
 
-const activeGroup: AdminGroup = {
-  accessGrants: [],
-  archivedAt: null,
-  id: "group-active",
-  name: "Operators",
-  systemRole: null,
-  userCount: 1
-};
-
-const archivedGroup: AdminGroup = {
-  ...activeGroup,
-  archivedAt: "2026-07-01T00:00:00.000Z",
-  id: "group-archived",
-  name: "Former operators"
-};
-
-const emailRule: AdminAccessRuleRecord = {
-  defaultGroups: [{ groupId: activeGroup.id, name: activeGroup.name, role: "member" }],
-  enabled: true,
-  id: "rule-email",
-  kind: "email",
-  value: "person@example.com"
-};
-
-const domainRule: AdminAccessRuleRecord = {
+const groups: AdminGroup[] = [
+  { accessGrants: [], archivedAt: null, id: "group-active", name: "Active group", systemRole: null, userCount: 2 },
+  { accessGrants: [], archivedAt: "2026-07-01T00:00:00.000Z", id: "group-archived", name: "Archived group", systemRole: null, userCount: 0 }
+];
+const rule: AdminAccessRuleRecord = {
   defaultGroups: [],
   enabled: true,
-  id: "rule-domain",
+  id: "rule-1",
   kind: "domain",
-  value: "example.org"
+  value: "example.com"
 };
-
-const dashboard: AdminAccessRulesDashboard = {
-  accessRules: [emailRule, domainRule],
-  groups: [activeGroup, archivedGroup]
-};
-
-function createDependencies() {
-  const fieldErrors = {
-    clearFieldError: vi.fn<AdminFieldErrorController["clearFieldError"]>(),
-    fieldError: null,
-    reportFieldError: vi.fn<AdminFieldErrorController["reportFieldError"]>()
-  } satisfies UseAdminAccessRulesControllerOptions["fieldErrors"];
-  const confirmation = {
-    requestConfirmedAction: vi.fn<AdminConfirmationController["requestConfirmedAction"]>()
-  } satisfies UseAdminAccessRulesControllerOptions["confirmation"];
-  const runAction = vi.fn<AdminRunAction>().mockResolvedValue({ ok: true });
-
-  return { confirmation, fieldErrors, runAction };
-}
-
-function section(controller: AdminAccessRulesController) {
-  if (!controller.sectionProps) {
-    throw new Error("Expected access-rule section props");
-  }
-
-  return controller.sectionProps;
-}
 
 describe("useAdminAccessRulesController", () => {
-  it("owns persistent form/filter drafts, normalized preview, and active-group projection", () => {
-    const dependencies = createDependencies();
-    const initialProps: { actionsDisabled: boolean; currentDashboard: AdminAccessRulesDashboard | null } = {
+  it("normalizes the value, keeps only active groups, and reports validation without a request", async () => {
+    const runAction: AdminRunAction = vi.fn(async () => ({ ok: true }));
+    const { result } = renderHook(() => useAdminAccessRulesController({
       actionsDisabled: false,
-      currentDashboard: dashboard
-    };
-    const { result, rerender } = renderHook(
-      ({ actionsDisabled, currentDashboard }: { actionsDisabled: boolean; currentDashboard: AdminAccessRulesDashboard | null }) =>
-        useAdminAccessRulesController({
-          ...dependencies,
-          actionsDisabled,
-          dashboard: currentDashboard
-      }),
-      {
-        initialProps
-      }
-    );
+      dashboard: { accessRules: [rule], groups },
+      runAction
+    }));
+    expect(result.current.rules).toEqual([rule]);
 
-    act(() => {
-      result.current.headerForm.toggleForm();
-      section(result.current).actions.changeKind("domain");
-      section(result.current).actions.changeValue("  @Example.COM  ");
-      section(result.current).actions.changeGroups([activeGroup.id, archivedGroup.id]);
-      section(result.current).actions.changeQuery("operators");
+    await act(async () => {
+      expect(await result.current.actions.createRule({ groupIds: [], kind: "email", value: "   " }))
+        .toEqual({ message: "Enter an exact email or domain before saving.", ok: false });
     });
+    expect(runAction).not.toHaveBeenCalled();
 
-    expect(result.current.headerForm.formOpen).toBe(true);
-    expect(section(result.current).state).toMatchObject({
-      formOpen: true,
-      groupIds: [activeGroup.id],
-      kind: "domain",
-      normalizedPreview: "example.com",
-      query: "operators",
-      value: "  @Example.COM  "
-    });
-    expect(section(result.current).data.rules.map((rule) => rule.id)).toEqual([emailRule.id]);
-
-    const refreshedDashboard: AdminAccessRulesDashboard = structuredClone(dashboard);
-    const refreshedActiveGroup = refreshedDashboard.groups.find((group) => group.id === activeGroup.id);
-    if (!refreshedActiveGroup) {
-      throw new Error("Expected active group fixture");
-    }
-    refreshedActiveGroup.archivedAt = "2026-07-12T00:00:00.000Z";
-    rerender({ actionsDisabled: true, currentDashboard: refreshedDashboard });
-
-    expect(section(result.current).state.groupIds).toEqual([]);
-    expect(section(result.current).state.value).toBe("  @Example.COM  ");
-    expect(section(result.current).status.actionsDisabled).toBe(true);
-
-    rerender({ actionsDisabled: true, currentDashboard: null });
-    expect(result.current.sectionProps).toBeNull();
-    expect(result.current.headerForm.formOpen).toBe(true);
-  });
-
-  it("validates locally, retains failed drafts, and resets only the successful rule form", async () => {
-    const dependencies = createDependencies();
-    const { result } = renderHook(() =>
-      useAdminAccessRulesController({
-        ...dependencies,
-        actionsDisabled: false,
-        dashboard
-      })
-    );
-
-    await act(async () => section(result.current).actions.createRule());
-    expect(dependencies.fieldErrors.reportFieldError).toHaveBeenCalledWith("rule-value", "access_rule_required");
-    expect(dependencies.runAction).not.toHaveBeenCalled();
-
-    act(() => {
-      result.current.headerForm.toggleForm();
-      section(result.current).actions.changeKind("domain");
-      section(result.current).actions.changeValue("  @Example.COM  ");
-      section(result.current).actions.changeGroups([activeGroup.id, archivedGroup.id]);
-      section(result.current).actions.changeQuery("domain");
-    });
-    dependencies.runAction.mockResolvedValueOnce({ error: "access_rule_invalid" });
-    await act(async () => section(result.current).actions.createRule());
-
-    expect(dependencies.runAction).toHaveBeenNthCalledWith(
-      1,
-      {
-        action: "create_access_rule",
-        groupIds: [activeGroup.id],
+    await act(async () => {
+      expect(await result.current.actions.createRule({
+        groupIds: ["group-active", "group-archived"],
         kind: "domain",
-        value: "example.com"
-      },
-      "Access rule saved."
+        value: " @Example.COM "
+      })).toEqual({ ok: true });
+    });
+    expect(runAction).toHaveBeenCalledWith(
+      { action: "create_access_rule", groupIds: ["group-active"], kind: "domain", value: "example.com" },
+      "Sign-up rule saved."
     );
-    expect(section(result.current).state).toMatchObject({
-      formOpen: true,
-      groupIds: [activeGroup.id],
-      kind: "domain",
-      query: "domain",
-      value: "  @Example.COM  "
-    });
-
-    dependencies.runAction.mockResolvedValueOnce({ ok: true });
-    await act(async () => section(result.current).actions.createRule());
-
-    expect(dependencies.runAction).toHaveBeenCalledTimes(2);
-    expect(result.current.headerForm.formOpen).toBe(false);
-    expect(section(result.current).state).toMatchObject({
-      formOpen: false,
-      groupIds: [],
-      kind: "domain",
-      query: "domain",
-      value: ""
-    });
   });
 
-  it("builds the exact access-rule deletion confirmation target", () => {
-    const dependencies = createDependencies();
-    const { result } = renderHook(() =>
-      useAdminAccessRulesController({
-        ...dependencies,
-        actionsDisabled: false,
-        dashboard
-      })
-    );
+  it("passes server errors back and deletes without its own confirmation", async () => {
+    const runAction: AdminRunAction = vi.fn()
+      .mockResolvedValueOnce({ error: "access_rule_invalid" })
+      .mockResolvedValueOnce({ ok: true });
+    const { result } = renderHook(() => useAdminAccessRulesController({
+      actionsDisabled: false,
+      dashboard: { accessRules: [rule], groups },
+      runAction
+    }));
 
-    act(() =>
-      section(result.current).actions.requestDeleteRule({
-        id: domainRule.id,
-        kind: domainRule.kind,
-        value: domainRule.value
-      })
-    );
-
-    expect(dependencies.confirmation.requestConfirmedAction).toHaveBeenCalledWith({
-      body: { action: "delete_access_rule", ruleId: domainRule.id },
-      confirmLabel: "Delete rule",
-      dialogLabel: "Delete access rule example.org",
-      message: "Access rule deleted.",
-      onSuccess: expect.any(Function),
-      prompt:
-        "Delete the domain access rule for example.org? Future matching requests will no longer auto-activate through this rule.",
-      testId: "admin-confirm-delete-access-rule",
-      title: "Delete access rule?"
+    await act(async () => {
+      const created = await result.current.actions.createRule({ groupIds: [], kind: "email", value: "person@example.com" });
+      expect(created.ok).toBe(false);
+      expect(created).toMatchObject({ message: expect.any(String) });
     });
+    await act(async () => {
+      expect(await result.current.actions.deleteRule(rule)).toBe(true);
+    });
+    expect(runAction).toHaveBeenLastCalledWith({ action: "delete_access_rule", ruleId: "rule-1" }, "Sign-up rule deleted.");
   });
 });

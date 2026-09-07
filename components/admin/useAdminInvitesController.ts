@@ -1,27 +1,41 @@
 "use client";
 
-import type { AdminInvitesSectionProps } from "@/components/admin/AdminInvitesSection";
+import { adminActionErrorMessage } from "@/components/admin/adminApi";
 import { activeDraftGroupIds } from "@/components/admin/adminDraftGroups";
-import {
-  filterAdminInvites,
-  type AdminInviteStatusFilter
-} from "@/components/admin/adminInviteView";
 import type { AdminRunAction } from "@/components/admin/useAdminActionRunner";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { AdminFeedbackController } from "@/components/admin/useAdminFeedback";
-import type { AdminFieldErrorController } from "@/components/admin/useAdminFieldErrors";
 import {
   useAdminOneTimeInviteLink,
   type AdminClipboardWriter
 } from "@/components/admin/useAdminOneTimeInviteLink";
-import type { AdminDashboard, AdminInviteEmailDelivery } from "@/lib/contracts/admin";
+import { openInvites, staleInvites } from "@/components/admin/users/usersView";
+import type { AdminDashboard, AdminInviteEmailDelivery, AdminInviteRecord } from "@/lib/contracts/admin";
 import { useCallback, useMemo, useState } from "react";
 
 export type AdminInvitesDashboard = Pick<AdminDashboard, "groups" | "invites">;
 
-export type AdminInvitesHeaderForm = Readonly<{
-  formOpen: boolean;
-  toggleForm(): void;
+export type AdminInviteActionTarget = Pick<AdminInviteRecord, "email" | "id">;
+
+export type AdminInviteCreateInput = Readonly<{
+  email: string;
+  groupIds: readonly string[];
+  sendEmail: boolean;
+}>;
+
+export type AdminInviteCreateResult =
+  | Readonly<{ delivery: AdminInviteEmailDelivery; ok: true }>
+  | Readonly<{ message: string; ok: false }>;
+
+/** The invite created in this session: the only one whose link is still known. */
+export type AdminFreshInvite = Readonly<{
+  copied: boolean;
+  /** Clipboard failure shown next to the link; the page toast is behind the sheet. */
+  copyError: string | null;
+  delivery: AdminInviteEmailDelivery;
+  email: string;
+  inviteId: string | null;
+  url: string;
 }>;
 
 export type UseAdminInvitesControllerOptions = Readonly<{
@@ -29,19 +43,23 @@ export type UseAdminInvitesControllerOptions = Readonly<{
   confirmation: Pick<AdminConfirmationController, "requestConfirmedAction">;
   dashboard: AdminInvitesDashboard | null;
   feedback: Pick<AdminFeedbackController, "clearAll" | "reportError" | "reportNotice">;
-  fieldErrors: Pick<AdminFieldErrorController, "clearFieldError" | "fieldError" | "reportFieldError">;
   nowMs: number;
   runAction: AdminRunAction;
   writeText?: AdminClipboardWriter;
 }>;
 
 export type AdminInvitesController = Readonly<{
-  draftProtection: Readonly<{
-    dirty: boolean;
-    discard(): void;
+  actions: Readonly<{
+    copyFreshLink(): Promise<void>;
+    createInvite(input: AdminInviteCreateInput): Promise<AdminInviteCreateResult>;
+    requestDeleteInvite(invite: AdminInviteActionTarget): void;
+    requestRevokeInvite(invite: AdminInviteActionTarget): void;
   }>;
-  headerForm: AdminInvitesHeaderForm;
-  sectionProps: AdminInvitesSectionProps | null;
+  actionsDisabled: boolean;
+  fresh: AdminFreshInvite | null;
+  nowMs: number;
+  open: AdminInviteRecord[];
+  stale: AdminInviteRecord[];
 }>;
 
 function inviteEmailDelivery(value: unknown): AdminInviteEmailDelivery | null {
@@ -50,258 +68,138 @@ function inviteEmailDelivery(value: unknown): AdminInviteEmailDelivery | null {
     : null;
 }
 
+function createdInviteId(value: unknown): string | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value) &&
+    typeof (value as { id?: unknown }).id === "string"
+    ? (value as { id: string }).id
+    : null;
+}
+
+/**
+ * Invites of the Users page: creation from the Invite sheet, the one-time
+ * link of the invite created in this session, and the revoke/delete
+ * confirmations of the Open invites block.
+ */
 export function useAdminInvitesController({
   actionsDisabled,
   confirmation,
   dashboard,
   feedback,
-  fieldErrors,
   nowMs,
   runAction,
   writeText
 }: UseAdminInvitesControllerOptions): AdminInvitesController {
-  const { clearFieldError, fieldError, reportFieldError } = fieldErrors;
-  const { reportError, reportNotice } = feedback;
+  const { clearAll, reportError, reportNotice } = feedback;
   const { requestConfirmedAction } = confirmation;
-  const [compactDetailOpen, setCompactDetailOpen] = useState(false);
-  const [email, setEmail] = useState("");
-  const [emailDelivery, setEmailDelivery] = useState<AdminInviteEmailDelivery | null>(null);
-  const [formOpen, setFormOpen] = useState(false);
-  const [groupIds, setGroupIds] = useState<string[]>([]);
-  const [query, setQuery] = useState("");
-  const [selectedInviteId, setSelectedInviteId] = useState<string | null>(null);
-  const [sendEmail, setSendEmail] = useState(true);
-  const [statusFilter, setStatusFilter] = useState<AdminInviteStatusFilter>("all");
-  const draftDirty = email.length > 0 || groupIds.length > 0 || !sendEmail;
-
-  const discardDraft = useCallback(() => {
-    setEmail("");
-    setGroupIds([]);
-    setSendEmail(true);
-    setFormOpen(false);
-    setCompactDetailOpen(false);
-    clearFieldError("invite-email");
-  }, [clearFieldError]);
-  const inviteLink = useAdminOneTimeInviteLink({ feedback, writeText });
-  const projectedGroupIds = useMemo(
-    () => activeDraftGroupIds(dashboard?.groups ?? [], groupIds),
-    [dashboard?.groups, groupIds]
-  );
-  const filteredInvites = useMemo(
-    () => filterAdminInvites(dashboard?.invites ?? [], query, statusFilter, nowMs),
-    [dashboard?.invites, nowMs, query, statusFilter]
-  );
-  const selectedInvite = useMemo(
-    () =>
-      (selectedInviteId
-        ? dashboard?.invites.find((invite) => invite.id === selectedInviteId)
-        : null) ?? null,
-    [dashboard?.invites, selectedInviteId]
-  );
-
-  const toggleForm = useCallback(() => {
-    clearFieldError("invite-email");
-    setFormOpen((open) => {
-      const nextOpen = !open;
-      if (nextOpen) {
-        setSelectedInviteId(null);
-      }
-      setCompactDetailOpen(nextOpen);
-      return nextOpen;
-    });
-  }, [clearFieldError]);
-
-  const backToList = useCallback(() => {
-    setFormOpen(false);
-    setCompactDetailOpen(false);
-  }, []);
-
-  const selectInvite = useCallback((inviteId: string) => {
-    setFormOpen(false);
-    setSelectedInviteId(inviteId);
-    setCompactDetailOpen(true);
-  }, []);
-
-  const changeEmail = useCallback(
-    (value: string) => {
-      setEmail(value);
-      clearFieldError("invite-email");
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const linkFeedback = useMemo(() => ({
+    clearAll: () => {
+      setCopyError(null);
+      clearAll();
     },
-    [clearFieldError]
-  );
+    reportError: (message: string) => {
+      setCopyError(message);
+      reportError(message);
+    },
+    reportNotice
+  }), [clearAll, reportError, reportNotice]);
+  const inviteLink = useAdminOneTimeInviteLink({ feedback: linkFeedback, writeText });
+  const [created, setCreated] = useState<Omit<AdminFreshInvite, "copied" | "copyError" | "url"> | null>(null);
+  const groups = dashboard?.groups;
 
-  const createInvite = useCallback(async () => {
-    const normalizedEmail = email.trim();
-
-    if (!normalizedEmail) {
-      reportFieldError("invite-email", "email_required");
-      return;
+  const createInvite = useCallback(async (input: AdminInviteCreateInput): Promise<AdminInviteCreateResult> => {
+    const email = input.email.trim();
+    if (!email) {
+      return { message: adminActionErrorMessage("email_required"), ok: false };
     }
-    clearFieldError("invite-email");
-
     const result = await runAction(
       {
         action: "create_invite",
-        email: normalizedEmail,
-        groupIds: projectedGroupIds,
-        sendEmail
+        email,
+        groupIds: activeDraftGroupIds(groups ?? [], input.groupIds),
+        sendEmail: input.sendEmail
       },
       "Invite created.",
       { successNotice: false }
     );
-
-    if (!result.error) {
-      const delivery = inviteEmailDelivery(result.emailDelivery) ?? (sendEmail ? "failed" : "not_requested");
-      setEmail("");
-      setEmailDelivery(delivery);
-      setGroupIds([]);
-      setSendEmail(true);
-      inviteLink.revealOneTimeUrl(result.inviteUrl);
-
-      if (delivery === "sent") {
-        reportNotice("Invite created and email sent.");
-      } else if (delivery === "not_requested") {
-        reportNotice("Invite created without email. Copy and share the link below.");
-      } else if (delivery === "unavailable") {
-        reportError("Invite created, but email delivery is not configured. Copy and share the link below.");
-      } else {
-        reportError("Invite created, but the email could not be sent. Copy and share the link below.");
-      }
+    if (result.error) {
+      return { message: adminActionErrorMessage(result.error), ok: false };
     }
-  }, [
-    clearFieldError,
-    email,
-    inviteLink,
-    projectedGroupIds,
-    reportError,
-    reportFieldError,
-    reportNotice,
-    runAction,
-    sendEmail
-  ]);
-
-  const requestRevokeInvite = useCallback(
-    (invite: Parameters<AdminInvitesSectionProps["actions"]["requestRevokeInvite"]>[0]) => {
-      requestConfirmedAction({
-        body: {
-          action: "revoke_invite",
-          inviteId: invite.id
-        },
-        confirmLabel: "Revoke invite",
-        dialogLabel: `Revoke invite for ${invite.email}`,
-        message: "Invite revoked.",
-        prompt: `Revoke the open invite for ${invite.email}? The invite link will stop working.`,
-        testId: "admin-confirm-revoke-invite",
-        title: "Revoke invite?"
-      });
-    },
-    [requestConfirmedAction]
-  );
-
-  const requestDeleteInvite = useCallback(
-    (invite: Parameters<AdminInvitesSectionProps["actions"]["requestDeleteInvite"]>[0]) => {
-      requestConfirmedAction({
-        body: {
-          action: "delete_invite",
-          inviteId: invite.id
-        },
-        confirmLabel: "Delete invite",
-        dialogLabel: `Delete invite for ${invite.email}`,
-        icon: "trash",
-        message: "Invite deleted.",
-        onSuccess: () => {
-          setSelectedInviteId(null);
-          setCompactDetailOpen(false);
-        },
-        prompt: `Delete the stale invite for ${invite.email}? Expired or revoked invite records and their hashed tokens will be removed.`,
-        testId: "admin-confirm-delete-invite",
-        title: "Delete stale invite?"
-      });
-    },
-    [requestConfirmedAction]
-  );
-
-  const sectionProps = useMemo<AdminInvitesSectionProps | null>(() => {
-    if (!dashboard) {
-      return null;
+    const delivery = inviteEmailDelivery(result.emailDelivery) ?? (input.sendEmail ? "failed" : "not_requested");
+    setCopyError(null);
+    setCreated({ delivery, email, inviteId: createdInviteId(result.invite) });
+    inviteLink.revealOneTimeUrl(result.inviteUrl);
+    if (delivery === "sent") {
+      reportNotice("Invite created and email sent.");
+    } else if (delivery === "not_requested") {
+      reportNotice("Invite created without email. Copy and share the link.");
+    } else if (delivery === "unavailable") {
+      reportError("Invite created, but email delivery is not configured. Copy and share the link.");
+    } else {
+      reportError("Invite created, but the email could not be sent. Copy and share the link.");
     }
+    return { delivery, ok: true };
+  }, [groups, inviteLink, reportError, reportNotice, runAction]);
 
-    return {
-      actions: {
-        backToList,
-        changeEmail,
-        changeGroups: setGroupIds,
-        changeQuery: setQuery,
-        changeSendEmail: setSendEmail,
-        changeStatusFilter: setStatusFilter,
-        copyOneTimeUrl: inviteLink.copyOneTimeUrl,
-        createInvite,
-        requestDeleteInvite,
-        requestRevokeInvite,
-        selectInvite
-      },
-      data: {
-        groups: dashboard.groups,
-        invites: filteredInvites,
-        nowMs,
-        selectedInvite,
-        totalInviteCount: dashboard.invites.length
-      },
-      state: {
-        compactDetailOpen,
-        email,
-        emailDelivery,
-        emailError: fieldError?.field === "invite-email" ? fieldError.message : null,
-        formOpen,
-        groupIds: projectedGroupIds,
-        oneTimeUrl: inviteLink.oneTimeUrl,
-        oneTimeUrlCopied: inviteLink.oneTimeUrlCopied,
-        query,
-        sendEmail,
-        statusFilter
-      },
-      status: {
-        actionsDisabled
-      }
-    };
-  }, [
+  const requestRevokeInvite = useCallback((invite: AdminInviteActionTarget) => {
+    requestConfirmedAction({
+      body: { action: "revoke_invite", inviteId: invite.id },
+      confirmLabel: "Revoke invite",
+      dialogLabel: `Revoke invite for ${invite.email}`,
+      icon: "x",
+      message: "Invite revoked.",
+      prompt: `Revoke the open invite for ${invite.email}? The invite link will stop working.`,
+      testId: "admin-confirm-revoke-invite",
+      title: "Revoke invite?",
+      tone: "warning"
+    });
+  }, [requestConfirmedAction]);
+
+  const requestDeleteInvite = useCallback((invite: AdminInviteActionTarget) => {
+    requestConfirmedAction({
+      body: { action: "delete_invite", inviteId: invite.id },
+      confirmLabel: "Delete invite",
+      dialogLabel: `Delete invite for ${invite.email}`,
+      icon: "trash",
+      message: "Invite deleted.",
+      prompt: `Delete the stale invite for ${invite.email}? Expired or revoked invite records and their hashed tokens will be removed.`,
+      testId: "admin-confirm-delete-invite",
+      title: "Delete stale invite?"
+    });
+  }, [requestConfirmedAction]);
+
+  const invites = dashboard?.invites;
+  const open = useMemo(() => openInvites(invites ?? [], nowMs), [invites, nowMs]);
+  const stale = useMemo(() => staleInvites(invites ?? [], nowMs), [invites, nowMs]);
+  const fresh = useMemo<AdminFreshInvite | null>(() => {
+    if (!created || !inviteLink.oneTimeUrl) return null;
+    // A revoked or accepted invite takes its link with it.
+    const record = created.inviteId ? invites?.find((invite) => invite.id === created.inviteId) : undefined;
+    if (record && (record.revokedAt || record.acceptedAt)) return null;
+    return { ...created, copied: inviteLink.oneTimeUrlCopied, copyError, url: inviteLink.oneTimeUrl };
+  }, [copyError, created, inviteLink.oneTimeUrl, inviteLink.oneTimeUrlCopied, invites]);
+
+  return useMemo(() => ({
+    actions: {
+      copyFreshLink: inviteLink.copyOneTimeUrl,
+      createInvite,
+      requestDeleteInvite,
+      requestRevokeInvite
+    },
     actionsDisabled,
-    backToList,
-    changeEmail,
-    compactDetailOpen,
-    createInvite,
-    dashboard,
-    email,
-    emailDelivery,
-    fieldError,
-    filteredInvites,
-    formOpen,
-    inviteLink.copyOneTimeUrl,
-    inviteLink.oneTimeUrl,
-    inviteLink.oneTimeUrlCopied,
+    fresh,
     nowMs,
-    projectedGroupIds,
-    query,
+    open,
+    stale
+  }), [
+    actionsDisabled,
+    createInvite,
+    fresh,
+    inviteLink.copyOneTimeUrl,
+    nowMs,
+    open,
     requestDeleteInvite,
     requestRevokeInvite,
-    selectInvite,
-    selectedInvite,
-    sendEmail,
-    statusFilter
+    stale
   ]);
-
-  return useMemo(
-    () => ({
-      draftProtection: {
-        dirty: draftDirty,
-        discard: discardDraft
-      },
-      headerForm: {
-        formOpen,
-        toggleForm
-      },
-      sectionProps
-    }),
-    [discardDraft, draftDirty, formOpen, sectionProps, toggleForm]
-  );
 }

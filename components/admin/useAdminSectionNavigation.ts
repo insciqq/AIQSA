@@ -4,6 +4,7 @@ import {
   defaultAdminSection,
   normalizeAdminSectionPath,
   parseAdminSection,
+  parseAdminSectionFilter,
   parseAdminSectionResource,
   type AdminSection,
   type AdminSectionId
@@ -11,6 +12,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type AdminSectionNavigation = Readonly<{
+  /** The list filter selected inside the active section (`?filter=`), or null for the unfiltered list. */
+  activeFilter: string | null;
   /** The resource opened inside the active section (`?resource=`), or null for the section's list. */
   activeResource: string | null;
   activeSection: AdminSectionId;
@@ -22,9 +25,11 @@ export type AdminSectionNavigation = Readonly<{
   restoreFocusAfterMutation(): void;
   requestExit(href: string, proceed: () => void): boolean;
   sectionIndexOpen: boolean;
+  /** Selects a list filter inside the active section, or clears it with `null`. */
+  selectFilter(filter: string | null): boolean;
   /** Opens a resource page inside the active section, or its list with `null`. */
   selectResource(resource: string | null): boolean;
-  selectSection(section: AdminSectionId, resource?: string | null): boolean;
+  selectSection(section: AdminSectionId, resource?: string | null, filter?: string | null): boolean;
 }>;
 
 export type AdminNavigationTarget =
@@ -33,6 +38,7 @@ export type AdminNavigationTarget =
       kind: "exit";
     }>
   | Readonly<{
+      filter: string | null;
       href: string;
       kind: "section";
       resource: string | null;
@@ -203,9 +209,11 @@ export function useAdminSectionNavigation({
 }: AdminSectionNavigationOptions = {}): AdminSectionNavigation {
   const [activeSection, setActiveSection] = useState<AdminSectionId>(defaultAdminSection);
   const [activeResource, setActiveResource] = useState<string | null>(null);
+  const [activeFilter, setActiveFilter] = useState<string | null>(null);
   const [sectionIndexOpen, setSectionIndexOpen] = useState(false);
   const activeSectionRef = useRef(activeSection);
   const activeResourceRef = useRef(activeResource);
+  const activeFilterRef = useRef(activeFilter);
   const sectionIndexOpenRef = useRef(sectionIndexOpen);
   const linkRefs = useRef(new Map<AdminSectionId, HTMLElement>());
   const adminPathnameRef = useRef<string | null>(null);
@@ -250,6 +258,10 @@ export function useAdminSectionNavigation({
   useEffect(() => {
     activeResourceRef.current = activeResource;
   }, [activeResource]);
+
+  useEffect(() => {
+    activeFilterRef.current = activeFilter;
+  }, [activeFilter]);
 
   useEffect(() => {
     sectionIndexOpenRef.current = sectionIndexOpen;
@@ -304,15 +316,22 @@ export function useAdminSectionNavigation({
     return view;
   }, []);
 
-  const commitSection = useCallback((section: AdminSectionId, resource: string | null) => {
+  const commitSection = useCallback((
+    section: AdminSectionId,
+    resource: string | null,
+    filter: string | null
+  ) => {
     const changedSection = section !== activeSectionRef.current ||
-      resource !== activeResourceRef.current;
+      resource !== activeResourceRef.current ||
+      filter !== activeFilterRef.current;
     const selectedFromIndex = sectionIndexOpenRef.current;
 
     setActiveSection(section);
     setActiveResource(resource);
+    setActiveFilter(filter);
     activeSectionRef.current = section;
     activeResourceRef.current = resource;
+    activeFilterRef.current = filter;
     setSectionIndexOpen(false);
 
     if (typeof window === "undefined") {
@@ -325,7 +344,7 @@ export function useAdminSectionNavigation({
 
     const baseView = ensureOwnedCurrentEntry();
     const position = baseView.position + 1;
-    const href = adminSectionPath(window.location.href, section, resource);
+    const href = adminSectionPath(window.location.href, section, resource, filter);
     const view: AdminHistoryView = {
       entryId: createHistoryEntryId(),
       position,
@@ -346,26 +365,36 @@ export function useAdminSectionNavigation({
     currentPathRef.current = href;
   }, [ensureOwnedCurrentEntry]);
 
-  const selectSection = useCallback((section: AdminSectionId, resource: string | null = null) => {
+  const selectSection = useCallback((
+    section: AdminSectionId,
+    resource: string | null = null,
+    filter: string | null = null
+  ) => {
     const changedSection = section !== activeSectionRef.current ||
-      resource !== activeResourceRef.current;
+      resource !== activeResourceRef.current ||
+      filter !== activeFilterRef.current;
     if (changedSection && canSelectSectionRef.current?.(section) === false) {
       const href = typeof window === "undefined"
-        ? adminSectionPath("http://localhost/admin", section, resource)
-        : adminSectionPath(window.location.href, section, resource);
+        ? adminSectionPath("http://localhost/admin", section, resource, filter)
+        : adminSectionPath(window.location.href, section, resource, filter);
       onNavigationBlockedRef.current?.({
-        proceed: () => commitSection(section, resource),
-        target: { href, kind: "section", resource, section }
+        proceed: () => commitSection(section, resource, filter),
+        target: { filter, href, kind: "section", resource, section }
       });
       return false;
     }
 
-    commitSection(section, resource);
+    commitSection(section, resource, filter);
     return true;
   }, [commitSection]);
 
   const selectResource = useCallback(
-    (resource: string | null) => selectSection(activeSectionRef.current, resource),
+    (resource: string | null) => selectSection(activeSectionRef.current, resource, activeFilterRef.current),
+    [selectSection]
+  );
+
+  const selectFilter = useCallback(
+    (filter: string | null) => selectSection(activeSectionRef.current, activeResourceRef.current, filter),
     [selectSection]
   );
 
@@ -490,10 +519,13 @@ export function useAdminSectionNavigation({
     const applyCurrentAdminEntry = (startNewSession = false) => {
       const nextSection = parseAdminSection(window.location.search);
       const nextResource = parseAdminSectionResource(window.location.search);
+      const nextFilter = parseAdminSectionFilter(window.location.search);
       setActiveSection(nextSection);
       setActiveResource(nextResource);
+      setActiveFilter(nextFilter);
       activeSectionRef.current = nextSection;
       activeResourceRef.current = nextResource;
+      activeFilterRef.current = nextFilter;
       setSectionIndexOpen(adminHistoryView(window.history.state)?.view === "section-index");
 
       const normalizedPath = normalizeAdminSectionPath(window.location.href);
@@ -613,8 +645,10 @@ export function useAdminSectionNavigation({
 
       const nextSection = parseAdminSection(window.location.search);
       const nextResource = parseAdminSectionResource(window.location.search);
+      const nextFilter = parseAdminSectionFilter(window.location.search);
       const sectionChanged = nextSection !== activeSectionRef.current ||
-        nextResource !== activeResourceRef.current;
+        nextResource !== activeResourceRef.current ||
+        nextFilter !== activeFilterRef.current;
       const nextIndexOpen = current.adminView?.view === "section-index";
       const indexViewChanged = nextIndexOpen !== sectionIndexOpenRef.current;
       if (
@@ -626,7 +660,7 @@ export function useAdminSectionNavigation({
       ) {
         rollbackBlockedTraversal(
           sectionChanged
-            ? { href: targetPath, kind: "section", resource: nextResource, section: nextSection }
+            ? { filter: nextFilter, href: targetPath, kind: "section", resource: nextResource, section: nextSection }
             : { href: targetPath, kind: "section-index", open: nextIndexOpen },
           origin,
           current,
@@ -651,6 +685,7 @@ export function useAdminSectionNavigation({
 
   return useMemo(
     () => ({
+      activeFilter,
       activeResource,
       activeSection,
       activeSectionConfig: adminSectionConfig(activeSection),
@@ -661,10 +696,12 @@ export function useAdminSectionNavigation({
       requestExit,
       restoreFocusAfterMutation,
       sectionIndexOpen,
+      selectFilter,
       selectResource,
       selectSection
     }),
     [
+      activeFilter,
       activeResource,
       activeSection,
       closeSectionIndex,
@@ -674,6 +711,7 @@ export function useAdminSectionNavigation({
       requestExit,
       restoreFocusAfterMutation,
       sectionIndexOpen,
+      selectFilter,
       selectResource,
       selectSection
     ]
