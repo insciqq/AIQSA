@@ -7,16 +7,12 @@ import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { highlightCodeBlock, resolveCodeLanguage } from "./codeHighlighting";
 import { renderMathExpression } from "./mathRendering";
 
-type MarkdownPart =
-  | {
-      code: string;
-      language: string;
-      type: "code";
-    }
-  | {
-      text: string;
-      type: "text";
-    };
+type FencedCodeBlock = {
+  closed: boolean;
+  code: string;
+  language: string;
+  nextIndex: number;
+};
 
 type ListBlock = {
   items: ListItem[];
@@ -40,31 +36,33 @@ type DisplayMathBlock = {
   source: string;
 };
 
-function splitMarkdown(markdown: string): MarkdownPart[] {
-  const parts: MarkdownPart[] = [];
-  const codeBlock = /^ {0,3}(`{3,})([a-zA-Z0-9_-]*)[ \t]*\r?\n([\s\S]*?)^ {0,3}\1`*[ \t]*(?=\r?$)/gm;
-  let lastIndex = 0;
-  let match = codeBlock.exec(markdown);
+function codeFenceStart(line: string): RegExpExecArray | null {
+  const match = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
+  return match && !(match[2][0] === "`" && match[3].includes("`")) ? match : null;
+}
 
-  while (match) {
-    if (match.index > lastIndex) {
-      parts.push({ text: markdown.slice(lastIndex, match.index), type: "text" });
-    }
+function parseFencedCode(lines: string[], startIndex: number): FencedCodeBlock | null {
+  const opening = codeFenceStart(lines[startIndex]);
+  if (!opening) return null;
 
-    parts.push({
-      code: match[3],
-      language: match[2],
-      type: "code"
-    });
-    lastIndex = match.index + match[0].length;
-    match = codeBlock.exec(markdown);
+  let endIndex = startIndex + 1;
+  while (endIndex < lines.length) {
+    const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(lines[endIndex]);
+    if (closing && closing[1][0] === opening[2][0] && closing[1].length >= opening[2].length) break;
+    endIndex += 1;
   }
 
-  if (lastIndex < markdown.length) {
-    parts.push({ text: markdown.slice(lastIndex), type: "text" });
-  }
-
-  return parts.length > 0 ? parts : [{ text: markdown, type: "text" }];
+  const closed = endIndex < lines.length;
+  const indent = new RegExp(`^ {0,${opening[1].length}}`);
+  const codeLines = lines.slice(startIndex + 1, endIndex).map((line) => line.replace(indent, ""));
+  let code = codeLines.join("\n");
+  if ((closed && codeLines.length > 0) || (code && !code.endsWith("\n"))) code += "\n";
+  return {
+    closed,
+    code,
+    language: opening[3].trim().split(/[ \t]+/, 1)[0] ?? "",
+    nextIndex: closed ? endIndex + 1 : endIndex
+  };
 }
 
 function MathExpression({ displayMode, raw, source }: { displayMode: boolean; raw: string; source: string }) {
@@ -581,7 +579,8 @@ function isBlockStart(lines: string[], index: number): boolean {
   const line = lines[index] ?? "";
 
   return Boolean(
-    renderHeading(line, "probe") ||
+    codeFenceStart(line) ||
+      renderHeading(line, "probe") ||
       parseListLine(line) ||
       line.trim().startsWith(">") ||
       isTableStart(lines, index) ||
@@ -594,15 +593,29 @@ function renderTextLines(
   markdown: string,
   keyPrefix: string,
   renderCitation?: MarkdownCitationRenderer,
-  resolveHref?: MarkdownHrefResolver
+  resolveHref?: MarkdownHrefResolver,
+  streaming = false
 ): ReactNode[] {
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
   const nodes: ReactNode[] = [];
   let index = 0;
 
   while (index < lines.length) {
     if (!lines[index].trim()) {
       index += 1;
+      continue;
+    }
+
+    const fencedCode = parseFencedCode(lines, index);
+    if (fencedCode) {
+      nodes.push(streaming && !fencedCode.closed ? (
+        <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]" key={`${keyPrefix}-code-${index}`}>
+          {lines.slice(index, fencedCode.nextIndex).join("\n")}
+        </p>
+      ) : (
+        <CodeBlock code={fencedCode.code} language={fencedCode.language} streaming={streaming} key={`${keyPrefix}-code-${index}`} />
+      ));
+      index = fencedCode.nextIndex;
       continue;
     }
 
@@ -642,7 +655,7 @@ function renderTextLines(
 
       nodes.push(
         <blockquote className="space-y-2 border-l-2 border-proof/40 pl-4 text-ink-secondary" key={`${keyPrefix}-quote-${index}`}>
-          {renderTextLines(quoteLines.join("\n"), `${keyPrefix}-quote-${index}`, renderCitation, resolveHref)}
+          {renderTextLines(quoteLines.join("\n"), `${keyPrefix}-quote-${index}`, renderCitation, resolveHref, streaming)}
         </blockquote>
       );
       continue;
@@ -798,13 +811,7 @@ function MarkdownMessageComponent({
 }: MarkdownMessageProps) {
   return (
     <div className="min-w-0 space-y-4">
-      {splitMarkdown(content).map((part, index) => {
-        if (part.type === "code") {
-          return <CodeBlock code={part.code} language={part.language} streaming={streaming} key={`${part.type}-${index}`} />;
-        }
-
-        return renderTextLines(part.text, `${part.type}-${index}`, renderCitation, resolveHref);
-      })}
+      {renderTextLines(content, "markdown", renderCitation, resolveHref, streaming)}
     </div>
   );
 }

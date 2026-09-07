@@ -1,6 +1,6 @@
 import { normalizeThreadStatus, shellFetch } from "@/components/app-shell/shellApi";
 import { errorMessage, responseErrorMessage } from "@/components/app-shell/shellFormatting";
-import { textFromPersistedContent } from "@/components/app-shell/threadContent";
+import { attachmentBlocksFromThreadContent, textFromPersistedContent } from "@/components/app-shell/threadContent";
 import {
   selectComposerSession,
   useComposerSessionStore,
@@ -94,7 +94,9 @@ export async function editMessageBranchAction({
     }
     if (!refreshed && useComposerSessionStore.getState().isEditCurrent(operation)) {
       const message: ThreadMessage = {
-        content: textFromPersistedContent(editedMessage.content) || text,
+        content: attachmentBlocksFromThreadContent(editedMessage.content).length > 0
+          ? editedMessage.content
+          : textFromPersistedContent(editedMessage.content) || text,
         id: editedMessage.id,
         modelId: editedMessage.modelId ?? undefined,
         parentMessageId: editedMessage.parentMessageId,

@@ -624,10 +624,40 @@ export function createPrismaMessageBranchRepository(
           : null;
         if (projectAuthor && (!projectAuthor.access || !projectAuthor.user)) return null;
 
+        // The inline editor changes only text. Its sibling must own new
+        // attachment rows so deleting either branch cannot detach the other.
+        const originalBlocks = typeof original.content === "object" && original.content !== null &&
+          !Array.isArray(original.content) && Array.isArray(original.content.blocks)
+          ? original.content.blocks : [];
+        const textOnlyEdit = content.blocks.every((block) =>
+          typeof block === "object" && block !== null && "type" in block && block.type === "text"
+        );
+        const editedContent = {
+          blocks: textOnlyEdit
+            ? [...content.blocks, ...originalBlocks.filter((block) =>
+                typeof block === "object" && block !== null && !Array.isArray(block) &&
+                (block.type === "file" || block.type === "image")
+              )]
+            : content.blocks
+        };
+        const attachmentIds = [...new Set(attachmentIdsFromMessageContent(editedContent))];
+        const attachments = attachmentIds.length === 0 ? [] : await tx.attachment.findMany({
+          where: {
+            chatId: lockedChat.id,
+            id: { in: attachmentIds },
+            messageId: original.id,
+            ...(isProjectChat(lockedChat)
+              ? { projectId: lockedChat.projectId, userId: null }
+              : { projectId: null, userId })
+          }
+        });
+        if (attachments.length !== attachmentIds.length) return null;
+        const clonedAttachmentIds = new Map(attachmentIds.map((id) => [id, randomUUID()]));
+
         const message = await tx.message.create({
           data: {
             chatId: original.chatId,
-            content: json(content),
+            content: rewriteMessageAttachmentIds(editedContent, clonedAttachmentIds),
             modelId: original.modelId,
             parentMessageId: original.parentMessageId,
             provider: original.provider,
@@ -642,6 +672,36 @@ export function createPrismaMessageBranchRepository(
               : {})
           }
         });
+
+        for (const attachment of attachments) {
+          await tx.attachment.create({
+            data: {
+              byteSize: attachment.byteSize,
+              chatId: lockedChat.id,
+              checksum: attachment.checksum,
+              extractedText: attachment.extractedText,
+              fileName: attachment.fileName,
+              id: clonedAttachmentIds.get(attachment.id)!,
+              kind: attachment.kind,
+              messageId: message.id,
+              metadata: attachment.metadata === null ? Prisma.JsonNull : json(attachment.metadata),
+              mimeType: attachment.mimeType,
+              processingErrorCode: attachment.processingErrorCode,
+              ...(attachment.status === "processing"
+                ? { processingJob: { create: { ownerUserId: userId } } }
+                : {}),
+              status: attachment.status,
+              storageKey: attachment.storageKey,
+              ...(isProjectChat(lockedChat)
+                ? {
+                    projectId: lockedChat.projectId,
+                    uploaderDisplayName: attachment.uploaderDisplayName ?? projectAuthor!.user!.displayName,
+                    uploaderUserId: attachment.uploaderUserId
+                  }
+                : { userId })
+            }
+          });
+        }
 
         if (isProjectChat(lockedChat)) {
           await tx.chat.update({

@@ -3,6 +3,52 @@ import { textMessageContent } from "../../domain/content";
 import { conversationMessagesFromPathRows } from "./prismaRepository";
 
 describe("grounded conversation persistence", () => {
+  it("includes the visible stopped answer before a follow-up without changing its terminal status", () => {
+    const rows = [
+      {
+        chatId: "chat-1", messageId: "question", messageRole: "user",
+        messageStatus: "complete", messageParentId: null,
+        messageContent: textMessageContent("Give three points")
+      },
+      {
+        chatId: "chat-1", messageId: "stopped", messageRole: "assistant",
+        messageStatus: "cancelled", messageParentId: "question",
+        messageContent: textMessageContent("1. First point\n2. Second")
+      },
+      {
+        chatId: "chat-1", messageId: "follow-up", messageRole: "user",
+        messageStatus: "complete", messageParentId: "stopped",
+        messageContent: textMessageContent("Continue from point two")
+      }
+    ];
+    const original = structuredClone(rows);
+
+    expect(conversationMessagesFromPathRows(rows)).toEqual([
+      { id: "question", role: "user", content: rows[0].messageContent },
+      { id: "stopped", role: "assistant", content: rows[1].messageContent },
+      { id: "follow-up", role: "user", content: rows[2].messageContent }
+    ]);
+    expect(rows).toEqual(original);
+  });
+
+  it.each([null, textMessageContent(""), textMessageContent(" \n ")])(
+    "omits an empty stopped answer while retaining its question (%j)", (content) => {
+      expect(conversationMessagesFromPathRows([
+        {
+          chatId: "chat-1", messageId: "question", messageRole: "user",
+          messageStatus: "complete", messageParentId: null,
+          messageContent: textMessageContent("Question")
+        },
+        {
+          chatId: "chat-1", messageId: "stopped", messageRole: "assistant",
+          messageStatus: "cancelled", messageParentId: "question", messageContent: content
+        }
+      ])).toEqual([
+        { id: "question", role: "user", content: textMessageContent("Question") }
+      ]);
+    }
+  );
+
   it("retains grounded assistant text in later branch context", () => {
     const messages = conversationMessagesFromPathRows([
       {

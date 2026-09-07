@@ -151,7 +151,13 @@ async function createAiqsaHighlighter(): Promise<HighlighterCore> {
 const SIGNAL_CODE_THEME = "aiqsa-signal";
 
 function getHighlighter(): Promise<HighlighterCore> {
-  highlighterPromise ??= createAiqsaHighlighter();
+  if (!highlighterPromise) {
+    const pending = createAiqsaHighlighter().catch((error: unknown) => {
+      if (highlighterPromise === pending) highlighterPromise = null;
+      throw error;
+    });
+    highlighterPromise = pending;
+  }
   return highlighterPromise;
 }
 
@@ -181,7 +187,10 @@ export function highlightCodeBlock(code: string, language: string): Promise<Code
       }),
       language: resolved.display
     }))
-    .catch(() => null);
+    .catch(() => {
+      if (highlightCache.get(cacheKey) === highlighted) highlightCache.delete(cacheKey);
+      return null;
+    });
 
   // Bound the long-session client cache; Map iteration order gives simple LRU eviction.
   if (highlightCache.size >= CODE_HIGHLIGHT_CACHE_LIMIT) {
