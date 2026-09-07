@@ -101,6 +101,7 @@ function serviceError(error: AdminProviderServiceError): Response {
     "provider_activation_empty",
     "provider_activation_evidence_missing",
     "provider_activation_unavailable_confirmation_required",
+    "provider_credential_label_taken",
     "provider_delete_confirmation_required",
     "provider_draft_stale",
     "provider_model_class_immutable",
@@ -364,35 +365,18 @@ export function createAdminProviderCredentialCreateHandler(deps: AdminProviderHa
     const label = text(body?.label, 160);
     const secret = text(body?.secret, 16_384);
     if (!body || !label || !secret) return errorJson("provider_configuration_invalid", 400);
+    // A new key is always tested and activated in one step (PRD B1); the
+    // explicit flag keeps the paid provider request visible in the contract.
+    if (body.activate !== true) return errorJson("provider_action_invalid", 400);
     const { connectionId } = await context.params;
     return safely(async () => {
-      await deps.service.createCredentialDraft({ connectionId, label, secret });
-      return catalog(deps.service, 201);
-    });
-  };
-}
-
-export function createAdminProviderCredentialTestHandler(deps: AdminProviderHandlerDeps) {
-  return async function POST(request: Request, context: ConnectionContext): Promise<Response> {
-    if (!hasJsonContentType(request)) return errorJson("json_required", 415);
-    const authError = await requireAdmin(request, deps);
-    if (authError) return authError;
-    const [body, bodyError] = await readBody(request);
-    if (bodyError) return bodyError;
-    const expectedConnectionDraftVersion = version(body?.expectedConnectionDraftVersion);
-    const secret = text(body?.secret, 16_384);
-    if (!body || expectedConnectionDraftVersion === null || !secret) {
-      return errorJson("provider_configuration_invalid", 400);
-    }
-    const { connectionId } = await context.params;
-    return safely(async () => {
-      const test = await deps.service.testCredential({
+      await deps.service.activateNewCredential({
         connectionId,
-        expectedConnectionDraftVersion,
+        label,
         secret,
         signal: request.signal
       });
-      return Response.json({ test });
+      return catalog(deps.service, 201);
     });
   };
 }
@@ -418,10 +402,24 @@ export function createAdminProviderCredentialUpdateHandler(deps: AdminProviderHa
       } else if (action === "rotate") {
         const expectedDraftVersion = version(body.expectedDraftVersion);
         const secret = text(body.secret, 16_384);
-        if (expectedDraftVersion === null || !secret) {
+        if (expectedDraftVersion === null || !secret ||
+          (body.activate !== undefined && typeof body.activate !== "boolean")) {
           return errorJson("provider_configuration_invalid", 400);
         }
-        await deps.service.rotateCredential({ credentialId, expectedDraftVersion, secret });
+        if (body.activate === true) {
+          // One-step rotation: test, write the immutable version, switch the key.
+          await deps.service.activateRotatedCredential({
+            connectionId,
+            credentialId,
+            expectedDraftVersion,
+            secret,
+            signal: request.signal
+          });
+        } else {
+          // Draft rotation remains for the connection-settings flow, where a
+          // changed endpoint is validated with the re-entered key at activation.
+          await deps.service.rotateCredential({ credentialId, expectedDraftVersion, secret });
+        }
       } else if (action === "clear_draft") {
         const expectedDraftVersion = version(body.expectedDraftVersion);
         if (expectedDraftVersion === null || body.confirmed !== true) {

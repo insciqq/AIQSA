@@ -6,7 +6,7 @@ import {
   createAdminProviderConnectionActionHandler,
   createAdminProviderConnectionCreateHandler,
   createAdminProviderCredentialCreateHandler,
-  createAdminProviderCredentialTestHandler,
+  createAdminProviderCredentialUpdateHandler,
   createAdminProviderDraftTestHandler
 } from "./handlers";
 import {
@@ -100,10 +100,11 @@ function resolver(value: AuthenticatedSession | null): RequestAuthResolver {
 function service(overrides: Partial<Record<keyof AdminProviderService, unknown>> = {}) {
   return {
     activateConnection: vi.fn(),
+    activateNewCredential: vi.fn(),
+    activateRotatedCredential: vi.fn(),
     assignGroupCredential: vi.fn(),
     clearCredentialDraft: vi.fn(),
     createConnectionDraft: vi.fn(),
-    createCredentialDraft: vi.fn(),
     createModelDraft: vi.fn(),
     deleteConnection: vi.fn(),
     deleteCredential: vi.fn(),
@@ -120,7 +121,6 @@ function service(overrides: Partial<Record<keyof AdminProviderService, unknown>>
     revokeGroupCredential: vi.fn(),
     rotateCredential: vi.fn(),
     setDefaultCredential: vi.fn(),
-    testCredential: vi.fn(),
     testDraft: vi.fn(),
     updateConnectionDraft: vi.fn(),
     updateModelDraft: vi.fn(),
@@ -162,69 +162,142 @@ describe("admin provider HTTP handlers", () => {
     expect(providerService.createConnectionDraft).not.toHaveBeenCalled();
   });
 
-  it("accepts a write-only key and never returns its plaintext", async () => {
-    const createCredentialDraft = vi.fn(async () => ({ id: "credential-1" }));
-    const providerService = service({ createCredentialDraft });
+  it("saves a write-only key in one step and never returns its plaintext", async () => {
+    const activateNewCredential = vi.fn(async () => ({
+      credentialId: "credential-1",
+      versionId: "version-1"
+    }));
+    const providerService = service({ activateNewCredential });
     const handler = createAdminProviderCredentialCreateHandler({
       resolveAuth: resolver(auth()),
       service: providerService
     });
-    const response = await handler(
+    const request = jsonRequest("http://localhost/api/admin/providers/connection-1/credentials", {
+      activate: true,
+      label: "Primary",
+      secret: "never-return-this-key"
+    });
+    const response = await handler(request, { params: { connectionId: "connection-1" } });
+    const body = await response.text();
+    expect(response.status).toBe(201);
+    expect(activateNewCredential).toHaveBeenCalledWith({
+      connectionId: "connection-1",
+      label: "Primary",
+      secret: "never-return-this-key",
+      signal: request.signal
+    });
+    expect(body).not.toContain("never-return-this-key");
+    expect(body).not.toContain("secretEnvelope");
+    expect(JSON.parse(body)).toEqual({ connections: [connection] });
+
+    const draftOnly = await handler(
       jsonRequest("http://localhost/api/admin/providers/connection-1/credentials", {
         label: "Primary",
         secret: "never-return-this-key"
       }),
       { params: { connectionId: "connection-1" } }
     );
-    const body = await response.text();
-    expect(response.status).toBe(201);
-    expect(createCredentialDraft).toHaveBeenCalledWith({
-      connectionId: "connection-1",
-      label: "Primary",
-      secret: "never-return-this-key"
-    });
-    expect(body).not.toContain("never-return-this-key");
-    expect(body).not.toContain("secretEnvelope");
-    expect(body).toContain("draftSecretConfigured");
+    expect(draftOnly.status).toBe(400);
+    expect(activateNewCredential).toHaveBeenCalledOnce();
   });
 
-  it("tests an unsaved key without returning or persisting it", async () => {
-    const testCredential = vi.fn(async () => ({
-      checkedAt: "2026-07-23T00:00:00.000Z",
-      connectionDraftVersion: 1,
-      modelCount: 3,
-      status: "valid" as const
-    }));
-    const createCredentialDraft = vi.fn();
-    const providerService = service({ createCredentialDraft, testCredential });
-    const handler = createAdminProviderCredentialTestHandler({
+  it("maps a rejected key to 422 without a catalog and a duplicate label to 409", async () => {
+    const providerService = service({
+      activateNewCredential: vi.fn(async () => {
+        throw new AdminProviderServiceError("provider_credential_test_failed");
+      })
+    });
+    const handler = createAdminProviderCredentialCreateHandler({
       resolveAuth: resolver(auth()),
       service: providerService
     });
-    const request = jsonRequest("http://localhost/api/admin/providers/connection-1/credential-tests", {
-      expectedConnectionDraftVersion: 1,
-      secret: "never-return-this-key"
-    });
-    const response = await handler(request, { params: { connectionId: "connection-1" } });
-    const body = await response.text();
+    const rejected = await handler(
+      jsonRequest("http://localhost/api/admin/providers/connection-1/credentials", {
+        activate: true,
+        label: "Primary",
+        secret: "rejected-key"
+      }),
+      { params: { connectionId: "connection-1" } }
+    );
+    expect(rejected.status).toBe(422);
+    const rejectedBody = await rejected.text();
+    expect(JSON.parse(rejectedBody)).toEqual({ error: "provider_credential_test_failed" });
+    expect(rejectedBody).not.toContain("rejected-key");
 
+    const taken = await createAdminProviderCredentialCreateHandler({
+      resolveAuth: resolver(auth()),
+      service: service({
+        activateNewCredential: vi.fn(async () => {
+          throw new AdminProviderServiceError("provider_credential_label_taken");
+        })
+      })
+    })(
+      jsonRequest("http://localhost/api/admin/providers/connection-1/credentials", {
+        activate: true,
+        label: "Primary",
+        secret: "another-key"
+      }),
+      { params: { connectionId: "connection-1" } }
+    );
+    expect(taken.status).toBe(409);
+  });
+
+  it("rotates a key in one step only with an explicit activate flag", async () => {
+    const activateRotatedCredential = vi.fn(async () => ({
+      credentialId: "credential-1",
+      versionId: "version-2"
+    }));
+    const rotateCredential = vi.fn(async () => ({ draftVersion: 2 }));
+    const providerService = service({ activateRotatedCredential, rotateCredential });
+    const handler = createAdminProviderCredentialUpdateHandler({
+      resolveAuth: resolver(auth()),
+      service: providerService
+    });
+    const context = { params: { connectionId: "connection-1", credentialId: "credential-1" } };
+    const request = jsonRequest("http://localhost/api/admin/providers/connection-1/credentials/credential-1", {
+      action: "rotate",
+      activate: true,
+      expectedDraftVersion: 1,
+      secret: "rotated-key"
+    }, "PATCH");
+    const response = await handler(request, context);
     expect(response.status).toBe(200);
-    expect(testCredential).toHaveBeenCalledWith({
+    expect(await response.text()).not.toContain("rotated-key");
+    expect(activateRotatedCredential).toHaveBeenCalledWith({
       connectionId: "connection-1",
-      expectedConnectionDraftVersion: 1,
-      secret: "never-return-this-key",
+      credentialId: "credential-1",
+      expectedDraftVersion: 1,
+      secret: "rotated-key",
       signal: request.signal
     });
-    expect(createCredentialDraft).not.toHaveBeenCalled();
-    expect(body).not.toContain("never-return-this-key");
-    expect(JSON.parse(body)).toEqual({
-      test: {
-        checkedAt: "2026-07-23T00:00:00.000Z",
-        connectionDraftVersion: 1,
-        modelCount: 3,
-        status: "valid"
-      }
+    expect(rotateCredential).not.toHaveBeenCalled();
+
+    const draft = await handler(
+      jsonRequest("http://localhost/api/admin/providers/connection-1/credentials/credential-1", {
+        action: "rotate",
+        expectedDraftVersion: 1,
+        secret: "rotated-key"
+      }, "PATCH"),
+      context
+    );
+    expect(draft.status).toBe(200);
+    expect(rotateCredential).toHaveBeenCalledWith({
+      credentialId: "credential-1",
+      expectedDraftVersion: 1,
+      secret: "rotated-key"
     });
+    expect(activateRotatedCredential).toHaveBeenCalledOnce();
+
+    const unknown = await handler(
+      jsonRequest("http://localhost/api/admin/providers/connection-1/credentials/credential-9", {
+        action: "rotate",
+        activate: true,
+        expectedDraftVersion: 1,
+        secret: "rotated-key"
+      }, "PATCH"),
+      { params: { connectionId: "connection-1", credentialId: "credential-9" } }
+    );
+    expect(unknown.status).toBe(404);
   });
 
   it("exposes account-filtered discovery without accepting a browser key", async () => {
