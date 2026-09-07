@@ -3,7 +3,12 @@ import type { AdminMcpController } from "@/components/admin/useAdminMcpControlle
 import type { AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
 import type { AdminMcpServer } from "@/lib/contracts/mcp";
 import { describe, expect, it, vi } from "vitest";
-import { AdminMcpGroupAccessPanel, AdminMcpUserAccessPanel } from "./AdminMcpGrantPanels";
+import {
+  AdminMcpGroupAccessPanel,
+  AdminMcpServerGroupAccessPanel,
+  AdminMcpServerUserAccessPanel,
+  AdminMcpUserAccessPanel
+} from "./AdminMcpGrantPanels";
 
 const server: AdminMcpServer = {
   activePersonalSlots: [{ label: "API key", slotKey: "api_key" }],
@@ -69,8 +74,6 @@ function controller(selectedServer: AdminMcpServer = server) {
         error: null,
         loaded: true,
         loading: false,
-        notice: null,
-        selectedServer,
         servers: [selectedServer]
       }
     } as unknown as AdminMcpController,
@@ -250,5 +253,79 @@ describe("Admin MCP grant ownership", () => {
       "not-granted"
     );
     expect(screen.getByRole("button", { name: "Grant Memory directly for Alice" })).toBeDisabled();
+  });
+});
+
+describe("Server page access panels", () => {
+  const fullAccess: AdminGroup = {
+    ...group,
+    id: "group-full-access",
+    name: "Full access",
+    systemRole: "full_access"
+  };
+
+  it("lists every group with a switch and shows Full access as always included", () => {
+    const view = controller();
+    render(
+      <AdminMcpServerGroupAccessPanel
+        controller={view.controller}
+        groups={[group, fullAccess, { ...group, archivedAt: "2026-07-22T00:00:00.000Z", id: "group-archived", name: "old" }]}
+        server={server}
+      />
+    );
+
+    const list = screen.getByRole("list", { name: "Groups with access to Memory" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(2);
+    expect(within(list).getByTestId("system-mcp-grant-group-full-access")).toHaveTextContent("Included");
+    expect(within(list).queryByRole("switch", { name: "Memory for Full access" })).not.toBeInTheDocument();
+    const toggle = within(list).getByRole("switch", { name: "Memory for operators" });
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    expect(view.grant).toHaveBeenCalledWith("server-1", { canUse: true, groupId: "group-1" });
+  });
+
+  it("lists active people granted first, keeps inherited access visible and edits personal fields inline", () => {
+    const granted = { ...user, displayName: "Zoe", id: "user-zoe" };
+    const member = { ...user, displayName: "Bob", groups: [{ groupId: group.id, name: group.name, role: "member" }], id: "user-bob" };
+    const view = controller({
+      ...server,
+      grants: [
+        { canUse: true, groupId: group.id, groupName: group.name, id: "grant-group", personalSlotKeys: [], userId: null, userName: null },
+        { canUse: true, groupId: null, groupName: null, id: "grant-zoe", personalSlotKeys: ["api_key"], userId: granted.id, userName: granted.displayName }
+      ]
+    });
+    render(
+      <AdminMcpServerUserAccessPanel
+        controller={view.controller}
+        groups={[group]}
+        server={view.controller.state.servers[0]}
+        users={[user, member, granted, { ...user, displayName: "Dana", id: "user-dana", status: "pending" }]}
+      />
+    );
+
+    const rows = within(screen.getByRole("list", { name: "Users with access to Memory" })).getAllByRole("listitem");
+    expect(rows.map((row) => within(row).getByRole("switch").getAttribute("aria-label")))
+      .toEqual(["Memory for Zoe", "Memory for Alice", "Memory for Bob"]);
+    expect(rows[2]).toHaveTextContent("Included via operators");
+    expect(within(rows[0]).getByRole("switch")).toBeChecked();
+    expect(within(rows[0]).getByRole("checkbox", { name: "API key" })).toBeChecked();
+
+    fireEvent.click(within(rows[1]).getByRole("switch"));
+    expect(view.grant).toHaveBeenLastCalledWith("server-1", { canUse: true, personalSlotKeys: [], userId: "user-1" });
+    fireEvent.click(within(rows[1]).getByRole("checkbox", { name: "API key" }));
+    expect(view.grant).toHaveBeenLastCalledWith("server-1", { canUse: false, personalSlotKeys: ["api_key"], userId: "user-1" });
+  });
+
+  it("searches people only once the list is long and disables edits on an archived server", () => {
+    const many = Array.from({ length: 10 }, (_, index) => ({ ...user, displayName: `Person ${index}`, id: `user-${index}` }));
+    const view = controller({ ...server, archivedAt: "2026-07-22T00:00:00.000Z" });
+    render(<AdminMcpServerUserAccessPanel controller={view.controller} groups={[]} server={view.controller.state.servers[0]} users={many} />);
+
+    expect(screen.getAllByRole("switch")).toHaveLength(8);
+    expect(screen.getByRole("button", { name: "Show 2 more" })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search users" }), { target: { value: "Person 9" } });
+    const remaining = screen.getAllByRole("switch");
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]).toBeDisabled();
   });
 });

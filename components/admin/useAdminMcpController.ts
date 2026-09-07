@@ -15,7 +15,7 @@ import {
   updateAdminMcpServer,
   type AdminMcpClientResult
 } from "@/components/admin/adminMcpApi";
-import { isAdminMcpActivationPending } from "@/components/admin/adminMcpActivation";
+import { isAdminMcpActivationPending } from "@/components/admin/mcp/adminMcpActivation";
 import type {
   AdminMcpCreateRequest,
   AdminMcpDraftTestRequest,
@@ -29,15 +29,26 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
+export type AdminMcpCreateResult =
+  | Readonly<{ ok: true; server: AdminMcpServer }>
+  | Readonly<{ message: string; ok: false }>;
+
+export type AdminMcpSaveResult = Readonly<{
+  applied: boolean;
+  /** The reason a check failed, for the form that keeps its fields. */
+  message?: string;
+  updatedAt?: string;
+}>;
+
 export type AdminMcpController = Readonly<{
   actions: Readonly<{
     activate(serverId: string): Promise<boolean>;
     checkUpdate(serverId: string, body: AdminMcpDraftTestRequest): Promise<boolean>;
-    create(body: AdminMcpCreateRequest): Promise<AdminMcpServer | null>;
+    /** Creates the server; the failure message goes back to the form, not to a toast. */
+    create(body: AdminMcpCreateRequest): Promise<AdminMcpCreateResult>;
+    /** Deletes after the shared confirmation; the caller navigates away. */
     delete(serverId: string): Promise<boolean>;
     disconnectValidationOAuth(serverId: string): Promise<boolean>;
-    dismissError(): void;
-    dismissNotice(): void;
     grant(serverId: string, body: AdminMcpGrantRequest): Promise<boolean>;
     rebuild(serverId: string, body: {
       oneTimeValues?: Record<string, McpSlotValue>;
@@ -46,18 +57,20 @@ export type AdminMcpController = Readonly<{
     }): Promise<boolean>;
     refresh(): Promise<void>;
     rollback(serverId: string, body: AdminMcpRollbackRequest): Promise<boolean>;
-    select(serverId: string): void;
-    save(serverId: string, body: AdminMcpUpdateRequest & AdminMcpDraftTestRequest): Promise<{ applied: boolean; updatedAt?: string }>;
-    test(serverId: string, body: AdminMcpDraftTestRequest): Promise<boolean>;
+    /**
+     * Test & Save: stages the changes, checks them and applies them as one
+     * client flow. A failed check keeps the previous configuration running and
+     * returns the message for the caller to show.
+     */
+    save(serverId: string, body: AdminMcpUpdateRequest & AdminMcpDraftTestRequest): Promise<AdminMcpSaveResult>;
     update(serverId: string, body: AdminMcpUpdateRequest): Promise<boolean>;
   }>;
   state: Readonly<{
     busy: boolean;
+    /** Why the catalog could not be loaded, for the list; action outcomes go to the feedback host. */
     error: string | null;
     loaded: boolean;
     loading: boolean;
-    notice: string | null;
-    selectedServer: AdminMcpServer | null;
     servers: readonly AdminMcpServer[];
   }>;
 }>;
@@ -65,7 +78,9 @@ export type AdminMcpController = Readonly<{
 export type UseAdminMcpControllerOptions = Readonly<{
   active: boolean;
   fetcher?: Fetcher;
+  onError?(message: string): void;
   onMutationCommitted?(): void | Promise<unknown>;
+  onNotice?(message: string): void;
 }>;
 
 function notifyMutationCommitted(callback: UseAdminMcpControllerOptions["onMutationCommitted"]): void {
@@ -80,18 +95,24 @@ function sortServers(servers: readonly AdminMcpServer[]): AdminMcpServer[] {
   });
 }
 
+/**
+ * The one state owner of the MCP servers section, shared with the Users and
+ * Groups pages for their access panels: the catalog the server returned last,
+ * one busy flag, background polling while a setup runs, and mutations that
+ * always replace a server with the server's answer.
+ */
 export function useAdminMcpController({
   active,
   fetcher = fetch,
-  onMutationCommitted
+  onError,
+  onMutationCommitted,
+  onNotice
 }: UseAdminMcpControllerOptions): AdminMcpController {
   const [servers, setServers] = useState<AdminMcpServer[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const loadRef = useRef<Promise<void> | null>(null);
   const busyRef = useRef(false);
   const mutationEpochRef = useRef(0);
@@ -172,80 +193,71 @@ export function useAdminMcpController({
 
   const runServerMutation = useCallback(async (
     operation: () => Promise<AdminMcpClientResult<AdminMcpServer>>,
-    success: string | ((server: AdminMcpServer) => string)
+    notice: string | null | ((server: AdminMcpServer) => string | null)
   ): Promise<AdminMcpServer | null> => {
     if (busyRef.current) return null;
     busyRef.current = true;
     mutationEpochRef.current += 1;
     setBusy(true);
-    setError(null);
-    setNotice(null);
     const result = await operation();
     busyRef.current = false;
     setBusy(false);
     if (!result.ok) {
-      setError(adminMcpErrorMessage(result.error));
+      onError?.(adminMcpErrorMessage(result.error));
       return null;
     }
     replaceServer(result.data);
-    setNotice(typeof success === "function" ? success(result.data) : success);
+    const message = typeof notice === "function" ? notice(result.data) : notice;
+    if (message) onNotice?.(message);
     notifyMutationCommitted(onMutationCommitted);
     return result.data;
-  }, [onMutationCommitted, replaceServer]);
+  }, [onError, onMutationCommitted, onNotice, replaceServer]);
 
-  const create = useCallback(async (body: AdminMcpCreateRequest) => {
-    if (busyRef.current) return null;
+  const booleanMutation = useCallback(async (
+    operation: () => Promise<AdminMcpClientResult<AdminMcpServer>>,
+    notice: string | null | ((server: AdminMcpServer) => string | null)
+  ) => Boolean(await runServerMutation(operation, notice)), [runServerMutation]);
+
+  const create = useCallback(async (body: AdminMcpCreateRequest): Promise<AdminMcpCreateResult> => {
+    if (busyRef.current) return { message: "Another MCP action is still running.", ok: false };
     busyRef.current = true;
     mutationEpochRef.current += 1;
     setBusy(true);
-    setError(null);
-    setNotice(null);
     try {
       const created = await createAdminMcpServer(body, fetcher);
-      if (!created.ok) {
-        setError(adminMcpErrorMessage(created.error));
-        return null;
-      }
+      if (!created.ok) return { message: adminMcpErrorMessage(created.error), ok: false };
       replaceServer(created.data);
-      setSelectedId(created.data.id);
       notifyMutationCommitted(onMutationCommitted);
-
-      if (body.draft.auth.mode === "oauth") {
-        setNotice("MCP settings prepared. Connect OAuth to check and apply them automatically.");
-        return created.data;
-      }
-
-      setNotice(body.activate
-        ? "MCP activation started. Setup continues in the background."
-        : "MCP settings prepared. Use Test & Save to apply them.");
-      return created.data;
+      onNotice?.(body.draft.auth.mode === "oauth"
+        ? "Settings saved. Connect your account to check and apply them."
+        : body.activate
+          ? "Settings saved. Setup continues in the background."
+          : "Settings saved. Use Test & Save to apply them.");
+      return { ok: true, server: created.data };
     } finally {
       busyRef.current = false;
       setBusy(false);
     }
-  }, [fetcher, onMutationCommitted, replaceServer]);
-
-  const booleanMutation = useCallback(async (
-    operation: () => Promise<AdminMcpClientResult<AdminMcpServer>>,
-    success: string | ((server: AdminMcpServer) => string)
-  ) => Boolean(await runServerMutation(operation, success)), [runServerMutation]);
+  }, [fetcher, onMutationCommitted, onNotice, replaceServer]);
 
   const update = useCallback((serverId: string, body: AdminMcpUpdateRequest) =>
     booleanMutation(() => updateAdminMcpServer(serverId, body.draft ? {
       ...body, expectedUpdatedAt: body.expectedUpdatedAt ?? servers.find((server) => server.id === serverId)?.updatedAt
-    } : body, fetcher), body.draft
-      ? "Use Test & Save to apply your changes."
-      : "MCP settings updated."),
+    } : body, fetcher), typeof body.enabled === "boolean"
+      ? body.enabled ? "MCP server enabled." : "MCP server disabled."
+      : body.draft ? null : "MCP settings updated."),
   [booleanMutation, fetcher, servers]);
-  const save = useCallback(async (serverId: string, body: AdminMcpUpdateRequest & AdminMcpDraftTestRequest) => {
-    if (busyRef.current) return { applied: false };
+
+  const save = useCallback(async (
+    serverId: string,
+    body: AdminMcpUpdateRequest & AdminMcpDraftTestRequest
+  ): Promise<AdminMcpSaveResult> => {
+    if (busyRef.current) return { applied: false, message: "Another MCP action is still running." };
     const current = servers.find((server) => server.id === serverId);
-    if (!current) return { applied: false };
+    if (!current) return { applied: false, message: "This MCP server no longer exists." };
     busyRef.current = true;
     mutationEpochRef.current += 1;
     setBusy(true);
-    setError(null);
-    setNotice(null);
     try {
       const { oneTimeValues, sharedValues, publish: _publish, ...patch } = body;
       let candidate = current;
@@ -254,10 +266,7 @@ export function useAdminMcpController({
           ...patch,
           expectedUpdatedAt: patch.expectedUpdatedAt ?? current.updatedAt
         }, fetcher);
-        if (!staged.ok) {
-          setError(adminMcpErrorMessage(staged.error));
-          return { applied: false };
-        }
+        if (!staged.ok) return { applied: false, message: adminMcpErrorMessage(staged.error) };
         candidate = staged.data;
         replaceServer(candidate);
       }
@@ -268,18 +277,20 @@ export function useAdminMcpController({
         ...(sharedValues ? { sharedValues } : {})
       }, fetcher);
       if (!saved.ok) {
-        setError(adminMcpErrorMessage(saved.error));
-        return { applied: false, updatedAt: candidate.updatedAt };
+        return { applied: false, message: adminMcpErrorMessage(saved.error), updatedAt: candidate.updatedAt };
       }
       replaceServer(saved.data);
-      setNotice("MCP settings checked and applied.");
+      onNotice?.(isAdminMcpActivationPending(saved.data.activation)
+        ? "Settings checked. Setup continues in the background."
+        : "Settings checked and applied.");
       notifyMutationCommitted(onMutationCommitted);
       return { applied: true, updatedAt: saved.data.updatedAt };
     } finally {
       busyRef.current = false;
       setBusy(false);
     }
-  }, [fetcher, onMutationCommitted, replaceServer, servers]);
+  }, [fetcher, onMutationCommitted, onNotice, replaceServer, servers]);
+
   const deleteServer = useCallback(async (serverId: string) => {
     const deleted = await runServerMutation(
       () => deleteAdminMcpServer(serverId, fetcher),
@@ -287,25 +298,26 @@ export function useAdminMcpController({
     );
     if (!deleted) return false;
     setServers((current) => current.filter((server) => server.id !== serverId));
-    setSelectedId((current) => current === serverId ? null : current);
     return true;
   }, [fetcher, runServerMutation]);
-  const test = useCallback((serverId: string, body: AdminMcpDraftTestRequest) =>
-    booleanMutation(() => testAdminMcpDraft(serverId, body, fetcher), "Draft tested and tool inventory refreshed."),
-  [booleanMutation, fetcher]);
   const checkUpdate = useCallback((serverId: string, body: AdminMcpDraftTestRequest) =>
-    booleanMutation(() => checkAdminMcpUpdate(serverId, body, fetcher), "Update check completed. Review the tested draft."),
+    booleanMutation(
+      () => checkAdminMcpUpdate(serverId, body, fetcher),
+      (server) => isAdminMcpActivationPending(server.activation)
+        ? "Update check started. It continues in the background."
+        : "Update check finished. Review the tools, then use Test & Save to apply."
+    ),
   [booleanMutation, fetcher]);
   const activate = useCallback((serverId: string) =>
     booleanMutation(
       () => activateAdminMcpDraft(serverId, fetcher),
       (server) => isAdminMcpActivationPending(server.activation)
-        ? "MCP activation started. Setup continues in the background."
-        : "Tested MCP revision activated."
+        ? "Setup restarted. It continues in the background."
+        : "Settings applied."
     ),
   [booleanMutation, fetcher]);
   const rollback = useCallback((serverId: string, body: AdminMcpRollbackRequest) =>
-    booleanMutation(() => rollbackAdminMcpServer(serverId, body, fetcher), "MCP server rolled back."),
+    booleanMutation(() => rollbackAdminMcpServer(serverId, body, fetcher), "Earlier configuration restored."),
   [booleanMutation, fetcher]);
   const rebuild = useCallback((serverId: string, body: {
     oneTimeValues?: Record<string, McpSlotValue>;
@@ -313,7 +325,9 @@ export function useAdminMcpController({
     revisionId: string;
   }) => booleanMutation(
     () => rebuildAdminMcpRevision(serverId, body, fetcher),
-    "Revision rebuilt and the newly materialized MCP revision activated."
+    (server) => isAdminMcpActivationPending(server.activation)
+      ? "Rebuild started. It continues in the background."
+      : "Configuration rebuilt and applied."
   ), [booleanMutation, fetcher]);
   const grant = useCallback((serverId: string, body: AdminMcpGrantRequest) =>
     booleanMutation(() => setAdminMcpGrant(serverId, body, fetcher), "MCP access updated."),
@@ -324,12 +338,10 @@ export function useAdminMcpController({
     busyRef.current = true;
     mutationEpochRef.current += 1;
     setBusy(true);
-    setError(null);
-    setNotice(null);
     try {
       const result = await disconnectAdminMcpValidationOAuth(serverId, fetcher);
       if (!result.ok) {
-        setError(adminMcpErrorMessage(result.error));
+        onError?.(adminMcpErrorMessage(result.error));
         return false;
       }
 
@@ -337,49 +349,33 @@ export function useAdminMcpController({
       if (catalog.ok) {
         setServers(sortServers(catalog.data.servers));
       } else {
-        setError(adminMcpErrorMessage(catalog.error));
+        onError?.(adminMcpErrorMessage(catalog.error));
       }
-      setNotice("Validation OAuth connection disconnected.");
+      onNotice?.("Your authorization was disconnected.");
       notifyMutationCommitted(onMutationCommitted);
       return true;
     } finally {
       busyRef.current = false;
       setBusy(false);
     }
-  }, [fetcher, onMutationCommitted]);
+  }, [fetcher, onError, onMutationCommitted, onNotice]);
 
-  const selectedServer = useMemo(() => {
-    return selectedId
-      ? servers.find((server) => server.id === selectedId) ?? null
-      : null;
-  }, [selectedId, servers]);
+  const actions = useMemo<AdminMcpController["actions"]>(() => ({
+    activate,
+    checkUpdate,
+    create,
+    delete: deleteServer,
+    disconnectValidationOAuth,
+    grant,
+    rebuild,
+    refresh,
+    rollback,
+    save,
+    update
+  }), [activate, checkUpdate, create, deleteServer, disconnectValidationOAuth, grant, rebuild, refresh, rollback, save, update]);
 
-  return {
-    actions: {
-      activate,
-      checkUpdate,
-      create,
-      delete: deleteServer,
-      disconnectValidationOAuth,
-      dismissError: () => setError(null),
-      dismissNotice: () => setNotice(null),
-      grant,
-      rebuild,
-      refresh,
-      rollback,
-      save,
-      select: setSelectedId,
-      test,
-      update
-    },
-    state: {
-      busy,
-      error,
-      loaded,
-      loading,
-      notice,
-      selectedServer,
-      servers
-    }
-  };
+  return useMemo(() => ({
+    actions,
+    state: { busy, error, loaded, loading, servers }
+  }), [actions, busy, error, loaded, loading, servers]);
 }

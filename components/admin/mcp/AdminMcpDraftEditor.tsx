@@ -8,7 +8,7 @@ import {
   preparedMcpOAuthPolicy,
   splitMcpArguments,
   splitMcpList
-} from "@/components/admin/adminMcpDraft";
+} from "@/components/admin/mcp/adminMcpDraft";
 import {
   focusRing,
   inputClass,
@@ -116,7 +116,7 @@ function SourceEditor({
     <section className="grid min-w-0 gap-3 rounded-panel bg-workspace-rail/45 p-3">
       <div>
         <h4 className="text-xs font-semibold text-ink">Source and transport</h4>
-        <p className={helpText}>Package selectors are resolved to an immutable revision when the draft is tested.</p>
+        <p className={helpText}>Package selectors are pinned to an exact build when the settings are checked.</p>
       </div>
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <label className="min-w-0">
@@ -196,7 +196,7 @@ function SourceEditor({
             />
           </label>
           <label>
-            <span className={fieldLabel}>Requested version selector</span>
+            <span className={fieldLabel}>Requested release (optional)</span>
             <input
               className={inputClass}
               disabled={disabled}
