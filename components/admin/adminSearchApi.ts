@@ -58,12 +58,14 @@ export function requestAdminSearchCatalog(fetcher?: Fetcher): Promise<AdminSearc
   return request("/api/admin/search", {}, fetcher);
 }
 
+/** Creates a manual source and runs its live check in one server operation;
+ * a failed check creates nothing. */
 export function createAdminSearchIntegration(input: Readonly<{
   description: string;
   displayName: string;
   draft: AdminSearchDraft;
 }>, fetcher?: Fetcher): Promise<AdminSearchApiResult> {
-  return request("/api/admin/search", json(input, "POST"), fetcher);
+  return request("/api/admin/search", json({ ...input, check: true }, "POST"), fetcher);
 }
 
 export function updateAdminSearchPolicy(input: Readonly<{
@@ -73,7 +75,9 @@ export function updateAdminSearchPolicy(input: Readonly<{
   return request("/api/admin/search", json(input, "PATCH"), fetcher);
 }
 
-export function updateAdminSearchIntegration(input: Readonly<{
+/** Saves a source configuration and runs its live check as one operation
+ * (PRD B7); when the check fails the previous configuration stays in use. */
+export function saveAndCheckAdminSearchIntegration(input: Readonly<{
   description: string;
   displayName: string;
   draft: AdminSearchDraft;
@@ -81,11 +85,15 @@ export function updateAdminSearchIntegration(input: Readonly<{
   id: string;
 }>, fetcher?: Fetcher): Promise<AdminSearchApiResult> {
   const { id, ...body } = input;
-  return request(`/api/admin/search/${encodeURIComponent(id)}`, json(body, "PATCH"), fetcher);
+  return request(
+    `/api/admin/search/${encodeURIComponent(id)}/actions`,
+    json({ action: "save_and_check", ...body }, "POST"),
+    fetcher
+  );
 }
 
 export function runAdminSearchAction(input: Readonly<{
-  action: "activate" | "archive" | "disable" | "enable" | "test";
+  action: "archive" | "disable" | "enable" | "test";
   confirmed?: boolean;
   id: string;
 }>, fetcher?: Fetcher): Promise<AdminSearchApiResult> {
@@ -99,19 +107,19 @@ export function runAdminSearchAction(input: Readonly<{
 
 export function adminSearchErrorMessage(code: string): string {
   const messages: Record<string, string> = {
-    network_error: "The Search control plane could not be reached.",
+    network_error: "The Search settings could not be reached.",
     search_admin_action_failed: "The Search action failed.",
     search_catalog_malformed: "The Search catalog response was invalid.",
-    search_configuration_invalid: "Review the Search configuration and bounded limits.",
+    search_configuration_invalid: "Review the Search configuration and its limits.",
     search_configuration_unavailable: "This Search source has no editable configuration.",
-    search_default_unavailable: "Choose only enabled, ready Search sources that can work together.",
-    search_draft_stale: "This configuration changed elsewhere. Reload and apply your edit again.",
+    search_default_unavailable: "Choose only enabled, working Search sources that can work together.",
+    search_draft_stale: "This source changed elsewhere. Reload and apply your edit again.",
     search_integration_material_identity_changed: "The Search connection cannot change after this source is in use. Add a new source instead.",
     search_provider_model_not_available: "Choose an enabled provider model that supports Search for this source.",
     search_source_not_ready: "This Search source cannot be enabled until its provider connection, Search-capable model, and saved configuration are ready.",
     search_policy_stale: "The organization Search default changed elsewhere. Reload and apply your edit again.",
     search_system_integration_forbidden: "This built-in Search source cannot be archived.",
-    search_test_failed: "The Search test did not produce a usable result."
+    search_test_failed: "The check found no working source, so nothing was changed. Check the model and its key, then try again."
   };
   return messages[code] ?? code.replaceAll("_", " ");
 }

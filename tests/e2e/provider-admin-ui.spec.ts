@@ -1623,14 +1623,18 @@ test("administrator saves a versioned Search recommendation that grants no acces
   await signInWithLocalToken(page);
   await page.goto("/admin?section=search");
   const section = page.getByTestId("admin-search-section");
+  const vocabulary = /native|provider-neutral|\broute\b|revision|adapter|technical|credential mode|physical|\bdraft\b|probe|evidence/iu;
   const policy = section.getByRole("region", { name: "Recommended Search plan" });
   await expect(policy).toContainText("This recommendation never grants access.");
-  await expect(section.getByText("Select or add a Search source.")).toBeVisible();
-  await expect(section).not.toContainText(/native|provider-neutral|\broute\b|revision|adapter|technical|credential mode|physical/iu);
+  const sourceList = section.getByRole("list", { name: "Search sources" });
+  const row = sourceList.getByTestId("search-source-row-search-source-1");
+  await expect(row.getByTestId("search-source-status")).toHaveText("Working");
+  await expect(section.getByRole("tab")).toHaveCount(0);
+  await expect(section).not.toContainText(vocabulary);
   await policy.getByRole("button", { name: "Company Search" }).click();
   await policy.getByRole("button", { name: "Save default" }).click();
 
-  await expect(section.getByText("Organization Search default saved.")).toBeVisible();
+  await expect(page.getByTestId("admin-feedback")).toContainText("Organization Search default saved.");
   expect(submitted).toEqual({
     defaultPlan: {
       mode: "all_selected",
@@ -1640,19 +1644,14 @@ test("administrator saves a versioned Search recommendation that grants no acces
   });
   await expect(policy.getByRole("button", { name: "Save default" })).toBeDisabled();
 
-  await page.setViewportSize({ height: 768, width: 1024 });
-  const sourceQuery = section.getByRole("searchbox", { name: "Search sources" });
-  await sourceQuery.fill("Company");
-  const sourceCatalog = section.getByRole("list", { name: "Search source catalog" });
-  const sourceButton = sourceCatalog.getByRole("button", { name: /Company Search/i });
-  await sourceButton.focus();
-  await sourceButton.press("Enter");
-  const backToSearch = section.getByRole("button", { name: "Back to Search" });
-  await expect(backToSearch).toBeFocused();
-  await backToSearch.press("Enter");
-  await expect(sourceButton).toBeFocused();
-  await expect(sourceQuery).toHaveValue("Company");
-  await sourceButton.press("Enter");
+  await row.click();
+  await expect(page).toHaveURL(/resource=search-source-1/u);
+  const sourcePage = section.getByTestId("search-source-page");
+  await expect(sourcePage.getByTestId("search-source-page-status"))
+    .toContainText("Working · Search model on Compatible gateway · checked today");
+  await expect(sourcePage.getByTestId("search-source-check")).toContainText("working, 2 sources found");
+  await expect(page.getByRole("switch", { name: "Company Search enabled" })).toBeChecked();
+  await expect(page.getByTestId("admin-topbar-title")).toContainText("Company Search");
 
   for (const viewport of [
     { height: 768, width: 1024 },
@@ -1661,24 +1660,43 @@ test("administrator saves a versioned Search recommendation that grants no acces
   ]) {
     await page.setViewportSize(viewport);
     await expectNoPageOverflow(page);
-    await expectReadableDetail(page, section.getByTestId("admin-search-detail-pane"));
+    await expectReadableDetail(page, sourcePage);
   }
+  for (const viewport of [
+    { height: 1024, width: 768 },
+    { height: 844, width: 390 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await expect(sourcePage).toBeVisible();
+    await expectNoPageOverflow(page);
+  }
+  await page.setViewportSize({ height: 900, width: 1440 });
 
-  await section.getByRole("tab", { name: "Configuration" }).click();
-  await expect(section.getByLabel(/^Search model/)).not.toBeVisible();
-  await section.getByText("Advanced Search execution").click();
-  await expect(section.getByLabel(/^Search model/)).toHaveValue("search-model-1");
-  await expect(section.getByRole("spinbutton", {
+  await sourcePage.getByRole("button", { name: "Configure" }).click();
+  const sheet = page.getByRole("dialog", { name: "Configure source" });
+  await expect(sheet.getByRole("button", { name: "Save" })).toBeDisabled();
+  await expect(sheet.getByLabel(/^Search model/)).not.toBeVisible();
+  await sheet.getByText("Advanced Search execution").click();
+  await expect(sheet.getByLabel(/^Search model/)).toHaveValue("search-model-1");
+  await expect(sheet.getByRole("spinbutton", {
     name: /^Maximum Search output, tokens/
   })).toHaveValue(String(adminSearchExecutionDefaults.maxOutputTokens));
-  await expect(section.getByRole("spinbutton", {
+  await expect(sheet.getByRole("spinbutton", {
     name: /^Maximum requests to this source per answer/
   })).toHaveValue(String(adminSearchExecutionDefaults.maxSearchCallsPerAnswer));
-  await expect(section.getByRole("combobox", { name: /^Search reasoning/ }))
+  await expect(sheet.getByRole("combobox", { name: /^Search reasoning/ }))
     .toHaveValue(adminSearchExecutionDefaults.reasoningPolicy);
-  await expect(section).not.toContainText(
-    /native|provider-neutral|\broute\b|revision|adapter|technical|credential mode|physical/iu
-  );
+  await expect(sheet).toContainText("If it fails, nothing changes.");
+  await expect(sheet).not.toContainText(vocabulary);
+  await expect(section).not.toContainText(vocabulary);
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+  await expect(sourcePage.getByRole("button", { name: "Configure" })).toBeFocused();
+
+  await page.getByTestId("admin-topbar-title").getByRole("link", { name: "Search" }).click();
+  await expect(sourceList).toBeVisible();
+  await expect(page).not.toHaveURL(/resource=/u);
+  await expectNoPageOverflow(page);
 });
 
 test("ordinary user receives real provider-admin denial without provider metadata", async ({ page }) => {

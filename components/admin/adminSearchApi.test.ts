@@ -5,7 +5,7 @@ import {
   createAdminSearchIntegration,
   requestAdminSearchCatalog,
   runAdminSearchAction,
-  updateAdminSearchIntegration,
+  saveAndCheckAdminSearchIntegration,
   updateAdminSearchPolicy
 } from "./adminSearchApi";
 
@@ -73,7 +73,7 @@ describe("adminSearchApi", () => {
     });
   });
 
-  it("uses narrow endpoints for catalog, draft, update, and lifecycle actions", async () => {
+  it("uses narrow endpoints for catalog, create-and-check, save-and-check, and lifecycle actions", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ search }));
 
     await requestAdminSearchCatalog(fetcher);
@@ -86,7 +86,7 @@ describe("adminSearchApi", () => {
       defaultPlan: { mode: "all_selected", optionIds: [] },
       expectedVersion: 1
     }, fetcher);
-    await updateAdminSearchIntegration({
+    await saveAndCheckAdminSearchIntegration({
       description: "Updated evidence",
       displayName: "Company Search",
       draft,
@@ -97,6 +97,12 @@ describe("adminSearchApi", () => {
 
     expect(fetcher).toHaveBeenNthCalledWith(1, "/api/admin/search", {});
     expect(fetcher).toHaveBeenNthCalledWith(2, "/api/admin/search", expect.objectContaining({
+      body: JSON.stringify({
+        description: "Query-only evidence",
+        displayName: "Company Search",
+        draft,
+        check: true
+      }),
       method: "POST"
     }));
     expect(fetcher).toHaveBeenNthCalledWith(3, "/api/admin/search", expect.objectContaining({
@@ -106,8 +112,15 @@ describe("adminSearchApi", () => {
       }),
       method: "PATCH"
     }));
-    expect(fetcher).toHaveBeenNthCalledWith(4, "/api/admin/search/integration%2F1", expect.objectContaining({
-      method: "PATCH"
+    expect(fetcher).toHaveBeenNthCalledWith(4, "/api/admin/search/integration%2F1/actions", expect.objectContaining({
+      body: JSON.stringify({
+        action: "save_and_check",
+        description: "Updated evidence",
+        displayName: "Company Search",
+        draft,
+        expectedDraftVersion: 1
+      }),
+      method: "POST"
     }));
     expect(fetcher).toHaveBeenNthCalledWith(
       5,
@@ -122,9 +135,13 @@ describe("adminSearchApi", () => {
     )).resolves.toEqual({ error: "search_catalog_malformed", ok: false });
 
     await expect(runAdminSearchAction(
-      { action: "activate", id: "integration-1" },
+      { action: "enable", id: "integration-1" },
       vi.fn().mockResolvedValue(response({ error: "search_source_not_ready" }, 409))
     )).resolves.toEqual({ error: "search_source_not_ready", ok: false });
+    await expect(saveAndCheckAdminSearchIntegration(
+      { description: "d", displayName: "n", draft, expectedDraftVersion: 1, id: "integration-1" },
+      vi.fn().mockResolvedValue(response({ error: "search_test_failed" }, 422))
+    )).resolves.toEqual({ error: "search_test_failed", ok: false });
   });
 
   it("explains readiness failures without prescribing a test or activation ritual", () => {
@@ -132,5 +149,9 @@ describe("adminSearchApi", () => {
 
     expect(current).toMatch(/provider connection.*Search-capable model.*saved configuration/iu);
     expect(current).not.toMatch(/test this|successfully before|activate/iu);
+    expect(adminSearchErrorMessage("search_test_failed")).toMatch(/nothing was changed/iu);
+    for (const code of ["search_draft_stale", "search_test_failed", "search_configuration_invalid"]) {
+      expect(adminSearchErrorMessage(code)).not.toMatch(/draft|revision|probe|evidence|version/iu);
+    }
   });
 });

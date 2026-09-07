@@ -2,8 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AuthenticatedSession, RequestAuthResolver } from "../../auth/requestAuth";
 import {
   createAdminSearchActionHandler,
-  createAdminSearchCatalogHandler,
-  createAdminSearchIntegrationHandler
+  createAdminSearchCatalogHandler
 } from "./handlers";
 import { AdminSearchServiceError } from "./service";
 
@@ -40,13 +39,12 @@ function resolver(value: AuthenticatedSession | null): RequestAuthResolver {
 
 function service(overrides: Partial<SearchService> = {}): SearchService {
   return {
-    activate: vi.fn(async () => undefined),
     archive: vi.fn(async () => undefined),
     createDraft: vi.fn(async () => ({ created: true, id: "integration-1" })),
     list: vi.fn(async () => emptyCatalog),
+    saveAndCheck: vi.fn(async () => undefined),
     setEnabled: vi.fn(async () => undefined),
     testDraft: vi.fn(async () => undefined),
-    updateDraft: vi.fn(async () => undefined),
     updatePolicy: vi.fn(async () => undefined),
     ...overrides
   };
@@ -71,24 +69,24 @@ describe("admin Search HTTP handlers", () => {
       resolveAuth: resolver(auth("user")),
       service: searchService
     });
-    const update = createAdminSearchIntegrationHandler({
+    const action = createAdminSearchActionHandler({
       resolveAuth: resolver(auth()),
       service: searchService
     });
 
     expect((await anonymous.GET(new Request("http://localhost/api/admin/search"))).status).toBe(401);
     expect((await ordinaryUser.GET(new Request("http://localhost/api/admin/search"))).status).toBe(403);
-    expect((await update(
-      jsonRequest("/api/admin/search/integration-1", {}, "PATCH", "text/plain"),
+    expect((await action(
+      jsonRequest("/api/admin/search/integration-1/actions", {}, "POST", "text/plain"),
       { params: { integrationId: "integration-1" } }
     )).status).toBe(415);
   });
 
   it("passes bounded draft data and the authenticated tester identity to the service", async () => {
-    const activate = vi.fn(async () => undefined);
     const createDraft = vi.fn(async () => ({ created: true, id: "integration-1" }));
+    const saveAndCheck = vi.fn(async () => undefined);
     const testDraft = vi.fn(async () => undefined);
-    const searchService = service({ activate, createDraft, testDraft });
+    const searchService = service({ createDraft, saveAndCheck, testDraft });
     const catalogHandlers = createAdminSearchCatalogHandler({
       resolveAuth: resolver(auth()),
       service: searchService
@@ -111,6 +109,7 @@ describe("admin Search HTTP handlers", () => {
     };
 
     const created = await catalogHandlers.POST(jsonRequest("/api/admin/search", {
+      check: true,
       description: "Query-only evidence",
       displayName: "Company Search",
       draft
@@ -125,8 +124,22 @@ describe("admin Search HTTP handlers", () => {
       jsonRequest("/api/admin/search/integration-1/actions", { action: "test" }),
       { params: { integrationId: "integration-1" } }
     );
-    const activated = await action(
-      jsonRequest("/api/admin/search/integration-1/actions", { action: "activate" }),
+    const saved = await action(
+      jsonRequest("/api/admin/search/integration-1/actions", {
+        action: "save_and_check",
+        description: "Query-only evidence",
+        displayName: "Company Search",
+        draft,
+        expectedDraftVersion: 3
+      }),
+      { params: { integrationId: "integration-1" } }
+    );
+    const malformed = await action(
+      jsonRequest("/api/admin/search/integration-1/actions", {
+        action: "save_and_check",
+        displayName: "Company Search",
+        draft
+      }),
       { params: { integrationId: "integration-1" } }
     );
 
@@ -138,15 +151,27 @@ describe("admin Search HTTP handlers", () => {
     await expect(reused.json()).resolves.toMatchObject({
       selectedIntegrationId: "integration-1"
     });
-    expect(createDraft).toHaveBeenCalledWith({
+    expect(createDraft).toHaveBeenNthCalledWith(1, {
+      check: true,
       description: "Query-only evidence",
       displayName: "Company Search",
-      draft
+      draft,
+      userId: "admin-1"
     });
+    expect(createDraft).toHaveBeenNthCalledWith(2, expect.objectContaining({ check: false }));
     expect(tested.status).toBe(200);
     expect(testDraft).toHaveBeenCalledWith({ id: "integration-1", userId: "admin-1" });
-    expect(activated.status).toBe(200);
-    expect(activate).toHaveBeenCalledWith({ id: "integration-1", userId: "admin-1" });
+    expect(saved.status).toBe(200);
+    expect(saveAndCheck).toHaveBeenCalledWith({
+      description: "Query-only evidence",
+      displayName: "Company Search",
+      draft,
+      expectedDraftVersion: 3,
+      id: "integration-1",
+      userId: "admin-1"
+    });
+    expect(malformed.status).toBe(400);
+    expect(saveAndCheck).toHaveBeenCalledTimes(1);
   });
 
   it("passes a version-fenced installation recommendation with admin attribution", async () => {
@@ -192,16 +217,35 @@ describe("admin Search HTTP handlers", () => {
     const conflict = createAdminSearchActionHandler({
       resolveAuth: resolver(auth()),
       service: service({
-        activate: vi.fn(async () => {
+        saveAndCheck: vi.fn(async () => {
+          throw new AdminSearchServiceError("search_test_failed");
+        }),
+        setEnabled: vi.fn(async () => {
           throw new AdminSearchServiceError("search_source_not_ready");
         })
       })
     });
     const response = await conflict(
-      jsonRequest("/api/admin/search/integration-1/actions", { action: "activate" }),
+      jsonRequest("/api/admin/search/integration-1/actions", { action: "enable" }),
       context
     );
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: "search_source_not_ready" });
+    const failedCheck = await conflict(
+      jsonRequest("/api/admin/search/integration-1/actions", {
+        action: "save_and_check",
+        description: "Query-only evidence",
+        displayName: "Company Search",
+        draft: { providerModelId: "technical-1" },
+        expectedDraftVersion: 1
+      }),
+      context
+    );
+    expect(failedCheck.status).toBe(422);
+    expect(await failedCheck.json()).toEqual({ error: "search_test_failed" });
+    expect((await conflict(
+      jsonRequest("/api/admin/search/integration-1/actions", { action: "activate" }),
+      context
+    )).status).toBe(400);
   });
 });

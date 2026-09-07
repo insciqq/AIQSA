@@ -20,7 +20,7 @@ import { AdminOverviewSection } from "@/components/admin/AdminOverviewSection";
 import { AdminProvidersSection } from "@/components/admin/providers/AdminProvidersSection";
 import { AdminRetrievalSection } from "@/components/admin/retrieval/AdminRetrievalSection";
 import { AdminRolesSection } from "@/components/admin/roles/AdminRolesSection";
-import { AdminSearchSection } from "@/components/admin/AdminSearchSection";
+import { AdminSearchSection } from "@/components/admin/search/AdminSearchSection";
 import {
   AdminReleaseUpdatePill,
   AdminSectionTopbarProvider,
@@ -245,7 +245,16 @@ function AdminSectionContent({
         />
       );
     case "search":
-      return <AdminSearchSection active onMutationCommitted={onMutationCommitted} />;
+      return (
+        <AdminSearchSection
+          active
+          feedback={feedback}
+          onMutationCommitted={onMutationCommitted}
+          onSelectResource={navigation.selectResource}
+          requestConfirmation={requestConfirmation}
+          resource={navigation.activeResource}
+        />
+      );
     case "retrieval":
       return (
         <AdminRetrievalSection
@@ -474,8 +483,9 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   }, [requestConfirmedAction]);
   const { selectSection } = navigation;
   const jumpToTarget = useCallback((target: AdminAttentionTarget) => {
-    // Only Providers has resource pages so far; later slices add theirs.
-    selectSection(target.section, target.section === "providers" ? target.resource ?? null : null);
+    // Providers and Search have resource pages; later slices add theirs.
+    const hasResourcePages = target.section === "providers" || target.section === "search";
+    selectSection(target.section, hasResourcePages ? target.resource ?? null : null);
   }, [selectSection]);
 
   const [sectionTopbar, setSectionTopbar] = useState<AdminShellTopbar | null>(null);
