@@ -131,6 +131,56 @@ describe("useAdminSectionNavigation", () => {
     expect(view.navigation.activeResource).toBeNull();
   });
 
+  it("selects a list filter inside a section, keeps it while a resource opens, and clears it with the section", async () => {
+    window.history.replaceState(null, "", "/admin?section=users&filter=pending");
+    const view = renderNavigation();
+    await waitFor(() => expect(view.navigation.activeSection).toBe("users"));
+    expect(view.navigation.activeFilter).toBe("pending");
+    expect(view.navigation.activeResource).toBeNull();
+    expect(screen.getByRole("link", { name: "Groups" })).toHaveAttribute("href", "/admin?section=groups");
+
+    act(() => { view.navigation.selectFilter("no-model-access"); });
+    expect(window.location.search).toBe("?section=users&filter=no-model-access");
+    expect(view.navigation.activeFilter).toBe("no-model-access");
+
+    act(() => { view.navigation.selectResource("user-1"); });
+    expect(window.location.search).toBe("?section=users&filter=no-model-access&resource=user-1");
+    expect(view.navigation.activeFilter).toBe("no-model-access");
+    expect(view.navigation.activeResource).toBe("user-1");
+
+    act(() => window.history.back());
+    await waitFor(() => expect(view.navigation.activeResource).toBeNull());
+    expect(view.navigation.activeFilter).toBe("no-model-access");
+
+    act(() => { view.navigation.selectFilter(null); });
+    expect(window.location.search).toBe("?section=users");
+    expect(view.navigation.activeFilter).toBeNull();
+
+    act(() => { view.navigation.selectSection("users", null, "pending"); });
+    expect(window.location.search).toBe("?section=users&filter=pending");
+    fireEvent.click(screen.getByRole("link", { name: "Usage" }));
+    expect(window.location.search).toBe("?section=usage");
+    expect(view.navigation.activeFilter).toBeNull();
+  });
+
+  it("guards a refused filter change like a section change", async () => {
+    window.history.replaceState(null, "", "/admin?section=users");
+    const onNavigationBlocked = vi.fn();
+    const view = renderNavigation({ canSelectSection: () => false, onNavigationBlocked });
+    await waitFor(() => expect(view.navigation.activeSection).toBe("users"));
+
+    act(() => { expect(view.navigation.selectFilter("pending")).toBe(false); });
+    expect(window.location.search).toBe("?section=users");
+    expect(view.navigation.activeFilter).toBeNull();
+    expect(onNavigationBlocked).toHaveBeenCalledWith(expect.objectContaining({
+      target: { filter: "pending", href: "/admin?section=users&filter=pending", kind: "section", resource: null, section: "users" }
+    }));
+
+    act(() => { onNavigationBlocked.mock.calls[0]![0].proceed(); });
+    expect(window.location.search).toBe("?section=users&filter=pending");
+    expect(view.navigation.activeFilter).toBe("pending");
+  });
+
   it("normalizes retired section ids in the address bar without a redirect", async () => {
     window.history.replaceState(null, "", "/admin?section=system-models");
     renderNavigation();

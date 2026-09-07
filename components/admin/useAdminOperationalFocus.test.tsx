@@ -35,9 +35,9 @@ describe("useAdminOperationalFocus", () => {
     });
     const { result } = renderHook(() => useAdminOperationalFocus());
     const detail = createFocusableElement();
-    result.current.focus.users.detail.current = detail;
+    result.current.focus.groups.detail.current = detail;
 
-    act(() => result.current.requestFocus("user-detail"));
+    act(() => result.current.requestFocus("group-detail"));
 
     expect(document.activeElement).toBe(detail);
     detail.remove();

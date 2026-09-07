@@ -2,10 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-export type AdminOperationalFocusTarget =
-  | "group-detail"
-  | "user-detail"
-  | "user-groups";
+export type AdminOperationalFocusTarget = "group-detail";
 
 export function focusAdminElement(element: HTMLElement | null) {
   if (!element) {
@@ -32,8 +29,6 @@ function scheduleFocus(callback: () => void) {
 export function useAdminOperationalFocus() {
   const groupDetailRef = useRef<HTMLElement | null>(null);
   const pendingTargetRef = useRef<AdminOperationalFocusTarget | null>(null);
-  const userDetailRef = useRef<HTMLElement | null>(null);
-  const userGroupsRef = useRef<HTMLDivElement | null>(null);
   const [requestRevision, setRequestRevision] = useState(0);
 
   const requestFocus = useCallback((target: AdminOperationalFocusTarget) => {
@@ -50,17 +45,7 @@ export function useAdminOperationalFocus() {
 
     pendingTargetRef.current = null;
     scheduleFocus(() => {
-      if (target === "user-groups") {
-        focusAdminElement(userGroupsRef.current);
-        return;
-      }
-
-      if (target === "group-detail") {
-        focusAdminElement(groupDetailRef.current);
-        return;
-      }
-
-      focusAdminElement(userDetailRef.current);
+      focusAdminElement(groupDetailRef.current);
     });
   }, [requestRevision]);
 
@@ -68,10 +53,6 @@ export function useAdminOperationalFocus() {
     () => ({
       groups: {
         detail: groupDetailRef
-      },
-      users: {
-        detail: userDetailRef,
-        groupsEditor: userGroupsRef
       }
     }),
     []

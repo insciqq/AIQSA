@@ -1,229 +1,79 @@
 "use client";
 
-import type { AdminAccessRulesSectionProps } from "@/components/admin/AdminAccessRulesSection";
-import { filterAdminAccessRules } from "@/components/admin/adminAccessRuleView";
+import { adminActionErrorMessage } from "@/components/admin/adminApi";
 import { activeDraftGroupIds } from "@/components/admin/adminDraftGroups";
 import { normalizedRuleValue } from "@/components/admin/adminViewUtils";
 import type { AdminRunAction } from "@/components/admin/useAdminActionRunner";
-import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
-import type { AdminFieldErrorController } from "@/components/admin/useAdminFieldErrors";
-import type { AdminAccessRuleKind, AdminDashboard } from "@/lib/contracts/admin";
-import { useCallback, useMemo, useState } from "react";
+import type { AdminAccessRuleKind, AdminAccessRuleRecord, AdminDashboard } from "@/lib/contracts/admin";
+import { useCallback, useMemo } from "react";
 
 export type AdminAccessRulesDashboard = Pick<AdminDashboard, "accessRules" | "groups">;
 
-export type AdminAccessRulesHeaderForm = Readonly<{
-  formOpen: boolean;
-  toggleForm(): void;
+export type AdminAccessRuleActionTarget = Pick<AdminAccessRuleRecord, "id" | "kind" | "value">;
+
+export type AdminAccessRuleCreateInput = Readonly<{
+  groupIds: readonly string[];
+  kind: AdminAccessRuleKind;
+  value: string;
 }>;
+
+export type AdminAccessRuleCreateResult =
+  | Readonly<{ ok: true }>
+  | Readonly<{ message: string; ok: false }>;
 
 export type UseAdminAccessRulesControllerOptions = Readonly<{
   actionsDisabled: boolean;
-  confirmation: Pick<AdminConfirmationController, "requestConfirmedAction">;
   dashboard: AdminAccessRulesDashboard | null;
-  fieldErrors: Pick<AdminFieldErrorController, "clearFieldError" | "fieldError" | "reportFieldError">;
   runAction: AdminRunAction;
 }>;
 
 export type AdminAccessRulesController = Readonly<{
-  draftProtection: Readonly<{
-    dirty: boolean;
-    discard(): void;
+  actions: Readonly<{
+    createRule(input: AdminAccessRuleCreateInput): Promise<AdminAccessRuleCreateResult>;
+    /** The Sign-up rules sheet confirms first; the page behind an open sheet is inert. */
+    deleteRule(rule: AdminAccessRuleActionTarget): Promise<boolean>;
   }>;
-  headerForm: AdminAccessRulesHeaderForm;
-  sectionProps: AdminAccessRulesSectionProps | null;
+  actionsDisabled: boolean;
+  rules: AdminAccessRuleRecord[];
 }>;
 
+/** Sign-up rules of the Users page: creation and deletion from the Sign-up rules sheet. */
 export function useAdminAccessRulesController({
   actionsDisabled,
-  confirmation,
   dashboard,
-  fieldErrors,
   runAction
 }: UseAdminAccessRulesControllerOptions): AdminAccessRulesController {
-  const { clearFieldError, fieldError, reportFieldError } = fieldErrors;
-  const { requestConfirmedAction } = confirmation;
-  const [compactDetailOpen, setCompactDetailOpen] = useState(false);
-  const [formOpen, setFormOpen] = useState(false);
-  const [groupIds, setGroupIds] = useState<string[]>([]);
-  const [kind, setKind] = useState<AdminAccessRuleKind>("email");
-  const [query, setQuery] = useState("");
-  const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
-  const [value, setValue] = useState("");
-  const draftDirty = value.length > 0 || groupIds.length > 0 || kind !== "email";
-  const discardDraft = useCallback(() => {
-    setValue("");
-    setGroupIds([]);
-    setKind("email");
-    setFormOpen(false);
-    setCompactDetailOpen(false);
-    clearFieldError("rule-value");
-  }, [clearFieldError]);
-  const normalizedPreview = normalizedRuleValue(kind, value);
-  const projectedGroupIds = useMemo(
-    () => activeDraftGroupIds(dashboard?.groups ?? [], groupIds),
-    [dashboard?.groups, groupIds]
-  );
-  const filteredRules = useMemo(
-    () => filterAdminAccessRules(dashboard?.accessRules ?? [], query),
-    [dashboard?.accessRules, query]
-  );
-  const selectedRule = useMemo(
-    () =>
-      (selectedRuleId
-        ? dashboard?.accessRules.find((rule) => rule.id === selectedRuleId)
-        : null) ?? null,
-    [dashboard?.accessRules, selectedRuleId]
-  );
+  const groups = dashboard?.groups;
 
-  const toggleForm = useCallback(() => {
-    clearFieldError("rule-value");
-    setFormOpen((open) => {
-      const nextOpen = !open;
-      if (nextOpen) {
-        setSelectedRuleId(null);
-      }
-      setCompactDetailOpen(nextOpen);
-      return nextOpen;
-    });
-  }, [clearFieldError]);
-
-  const backToList = useCallback(() => {
-    setFormOpen(false);
-    setCompactDetailOpen(false);
-  }, []);
-
-  const selectRule = useCallback((ruleId: string) => {
-    setFormOpen(false);
-    setSelectedRuleId(ruleId);
-    setCompactDetailOpen(true);
-  }, []);
-
-  const changeValue = useCallback(
-    (nextValue: string) => {
-      setValue(nextValue);
-      clearFieldError("rule-value");
-    },
-    [clearFieldError]
-  );
-
-  const createRule = useCallback(async () => {
-    const normalizedValue = normalizedRuleValue(kind, value);
-
-    if (!normalizedValue) {
-      reportFieldError("rule-value", "access_rule_required");
-      return;
+  const createRule = useCallback(async (input: AdminAccessRuleCreateInput): Promise<AdminAccessRuleCreateResult> => {
+    const value = normalizedRuleValue(input.kind, input.value);
+    if (!value) {
+      return { message: adminActionErrorMessage("access_rule_required"), ok: false };
     }
-    clearFieldError("rule-value");
-
     const result = await runAction(
       {
         action: "create_access_rule",
-        groupIds: projectedGroupIds,
-        kind,
-        value: normalizedValue
+        groupIds: activeDraftGroupIds(groups ?? [], input.groupIds),
+        kind: input.kind,
+        value
       },
-      "Access rule saved."
+      "Sign-up rule saved."
     );
+    return result.error ? { message: adminActionErrorMessage(result.error), ok: false } : { ok: true };
+  }, [groups, runAction]);
 
-    if (!result.error) {
-      setValue("");
-      setGroupIds([]);
-      setFormOpen(false);
-      setCompactDetailOpen(false);
-    }
-  }, [clearFieldError, kind, projectedGroupIds, reportFieldError, runAction, value]);
+  const deleteRule = useCallback(async (rule: AdminAccessRuleActionTarget) => {
+    const result = await runAction(
+      { action: "delete_access_rule", ruleId: rule.id },
+      "Sign-up rule deleted."
+    );
+    return !result.error;
+  }, [runAction]);
 
-  const requestDeleteRule = useCallback(
-    (rule: Parameters<AdminAccessRulesSectionProps["actions"]["requestDeleteRule"]>[0]) => {
-      requestConfirmedAction({
-        body: {
-          action: "delete_access_rule",
-          ruleId: rule.id
-        },
-        confirmLabel: "Delete rule",
-        dialogLabel: `Delete access rule ${rule.value}`,
-        message: "Access rule deleted.",
-        onSuccess: () => {
-          setSelectedRuleId(null);
-          setCompactDetailOpen(false);
-        },
-        prompt: `Delete the ${rule.kind} access rule for ${rule.value}? Future matching requests will no longer auto-activate through this rule.`,
-        testId: "admin-confirm-delete-access-rule",
-        title: "Delete access rule?"
-      });
-    },
-    [requestConfirmedAction]
-  );
-
-  const sectionProps = useMemo<AdminAccessRulesSectionProps | null>(() => {
-    if (!dashboard) {
-      return null;
-    }
-
-    return {
-      actions: {
-        backToList,
-        changeGroups: setGroupIds,
-        changeKind: setKind,
-        changeQuery: setQuery,
-        changeValue,
-        createRule,
-        requestDeleteRule,
-        selectRule
-      },
-      data: {
-        groups: dashboard.groups,
-        rules: filteredRules,
-        selectedRule,
-        totalRuleCount: dashboard.accessRules.length
-      },
-      state: {
-        compactDetailOpen,
-        formOpen,
-        groupIds: projectedGroupIds,
-        kind,
-        normalizedPreview,
-        query,
-        value,
-        valueError: fieldError?.field === "rule-value" ? fieldError.message : null
-      },
-      status: {
-        actionsDisabled
-      }
-    };
-  }, [
+  const rules = dashboard?.accessRules;
+  return useMemo(() => ({
+    actions: { createRule, deleteRule },
     actionsDisabled,
-    backToList,
-    changeValue,
-    compactDetailOpen,
-    createRule,
-    dashboard,
-    fieldError,
-    filteredRules,
-    formOpen,
-    kind,
-    normalizedPreview,
-    projectedGroupIds,
-    query,
-    requestDeleteRule,
-    selectRule,
-    selectedRule,
-    value
-  ]);
-
-  return useMemo(
-    () => ({
-      draftProtection: {
-        dirty: draftDirty,
-        discard: discardDraft
-      },
-      headerForm: {
-        formOpen,
-        toggleForm
-      },
-      sectionProps
-    }),
-    [discardDraft, draftDirty, formOpen, sectionProps, toggleForm]
-  );
+    rules: rules ?? []
+  }), [actionsDisabled, createRule, deleteRule, rules]);
 }

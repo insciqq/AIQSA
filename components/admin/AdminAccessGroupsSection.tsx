@@ -22,7 +22,7 @@ import {
   useAdminDraftProtection
 } from "@/components/admin/AdminDraftProtection";
 import { AdminUserStatus } from "@/components/admin/AdminUserStatus";
-import { userStatusRowClass } from "@/components/admin/adminUserView";
+import { userStatusRowClass } from "@/components/admin/users/usersView";
 import { formatDate } from "@/components/admin/adminViewUtils";
 import type { AdminCatalog, AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
 import { Archive, Check, ChevronRight, Plus, RotateCcw, Save, Search, Trash2 } from "lucide-react";

@@ -1,5 +1,5 @@
 import { AvailabilityStatus } from "@/components/resource-lifecycle/AvailabilityStatus";
-import { userStatusClass } from "@/components/admin/adminUserView";
+import { userStatusClass } from "@/components/admin/users/usersView";
 import type { AdminUserRecord } from "@/lib/contracts/admin";
 
 export function AdminUserStatus({ status }: Readonly<{ status: AdminUserRecord["status"] }>) {

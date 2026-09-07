@@ -6,6 +6,7 @@ import {
   adminSections,
   normalizeAdminSectionPath,
   parseAdminSection,
+  parseAdminSectionFilter,
   parseAdminSectionResource,
   resolveAdminSectionId
 } from "./adminSections";
@@ -80,6 +81,29 @@ describe("adminSections", () => {
     expect(parseAdminSectionResource(`?resource=${"x".repeat(300)}`)).toBeNull();
     expect(normalizeAdminSectionPath("https://aiqsa.example/admin?section=providers&resource=conn-1")).toBe(
       "/admin?section=providers&resource=conn-1"
+    );
+  });
+
+  it("selects a list filter inside a section and drops it with the resource when the section changes", () => {
+    expect(adminSectionPath("https://aiqsa.example/admin?mode=compact#current", "users", null, "pending")).toBe(
+      "/admin?mode=compact&section=users&filter=pending#current"
+    );
+    expect(adminSectionPath("https://aiqsa.example/admin?section=users&filter=pending", "users", "user-1", "pending")).toBe(
+      "/admin?section=users&filter=pending&resource=user-1"
+    );
+    expect(adminSectionPath("https://aiqsa.example/admin?section=users&filter=pending", "users", null, null)).toBe(
+      "/admin?section=users"
+    );
+    expect(adminSectionPath("https://aiqsa.example/admin?section=users&filter=pending&resource=user-1", "groups")).toBe(
+      "/admin?section=groups"
+    );
+    expect(parseAdminSectionFilter("?section=users&filter=no-model-access")).toBe("no-model-access");
+    expect(parseAdminSectionFilter("?section=users")).toBeNull();
+    expect(parseAdminSectionFilter("?filter=")).toBeNull();
+    expect(parseAdminSectionFilter(`?filter=${"x".repeat(65)}`)).toBeNull();
+    expect(parseAdminSectionFilter("?filter=pend%0Aing")).toBeNull();
+    expect(normalizeAdminSectionPath("https://aiqsa.example/admin?section=invites&filter=pending")).toBe(
+      "/admin?section=users&filter=pending"
     );
   });
 });
