@@ -86,9 +86,9 @@ function repository(
 ): AdminProviderRepository {
   return {
     async activateConnectionCas() { return "updated"; },
+    async activateCredentialCas() { return "updated"; },
     async assignGroupCredential() { return "assigned"; },
     async createConnection() {},
-    async createCredential() { return "created"; },
     async createModel() { return "created"; },
     async deleteConnection() { return { status: "deleted" }; },
     async deleteCredential() { return { status: "deleted" }; },
@@ -393,18 +393,15 @@ describe("admin provider service", () => {
   it("normalizes CRUD drafts and keeps credential ciphertext write-only", async () => {
     const createConnection = vi.fn<AdminProviderRepository["createConnection"]>(async () => {});
     const createModel = vi.fn<AdminProviderRepository["createModel"]>(async () => "created");
-    const createCredential = vi.fn<AdminProviderRepository["createCredential"]>(async () => "created");
     const updateCredentialDraft = vi.fn<AdminProviderRepository["updateCredentialDraft"]>(async () => "updated");
     const providerRepository = repository({
       createConnection,
-      createCredential,
       createModel,
       updateCredentialDraft
     });
     const providers = service(providerRepository, tester(), [
       "connection-new",
-      "model-new",
-      "credential-new"
+      "model-new"
     ]);
 
     await expect(providers.createConnectionDraft({
@@ -417,21 +414,6 @@ describe("admin provider service", () => {
       connectionId: "connection-new",
       displayName: "Model"
     });
-    const created = await providers.createCredentialDraft({
-      connectionId: "connection-new",
-      label: "Primary",
-      secret: "created-secret"
-    });
-    expect(created).toEqual({ id: "credential-new" });
-    const createInput = createCredential.mock.calls[0]?.[0];
-    expect(createInput).not.toHaveProperty("secret");
-    expect(JSON.stringify(created)).not.toContain("created-secret");
-    expect(decryptProviderCredentialSecret({
-      credentialId: "credential-new",
-      envelope: createInput!.draftSecretEnvelope,
-      key: KEY,
-      valueId: "draft:1"
-    })).toBe("created-secret");
 
     await expect(providers.rotateCredential({
       credentialId: "credential-new",
@@ -453,36 +435,157 @@ describe("admin provider service", () => {
     })).rejects.toMatchObject({ code: "provider_revoke_confirmation_required" });
   });
 
-  it("validates an unsaved credential against the current connection draft without persisting it", async () => {
-    const createCredential = vi.fn<AdminProviderRepository["createCredential"]>(async () => "created");
-    const test = vi.fn<AdminProviderCredentialTester["test"]>(async (input) => {
-      expect(input.secret).toBe("candidate-secret");
-      expect(input.family).toBe("openai_compatible");
-      return { method: "models_catalog", modelIds: ["vendor/model"] };
-    });
+  it("saves a new key in one step against the active configuration and writes nothing when the provider rejects it", async () => {
+    const activateCredentialCas = vi.fn<AdminProviderRepository["activateCredentialCas"]>(async () => "updated");
+    const activeConnection: AdminProviderConnection = {
+      ...adminConnection(),
+      activeConfig: { ...connectionConfiguration, apiRoot: "https://active.example.test/v1/" },
+      activeVersion: 2,
+      models: [{
+        activatedAt: NOW.toISOString(),
+        activeConfig: modelConfiguration,
+        activeVersion: 1,
+        connectionId: "connection-1",
+        createdAt: NOW.toISOString(),
+        displayName: "Vendor Model",
+        draftConfig: modelConfiguration,
+        draftVersion: 1,
+        enabled: true,
+        id: "model-1",
+        modelClass: "answer",
+        updatedAt: NOW.toISOString()
+      }]
+    };
+    const test = vi.fn<AdminProviderCredentialTester["test"]>(async () => ({
+      method: "models_catalog",
+      modelIds: ["vendor/model"]
+    }));
     const providers = service(repository({
-      createCredential,
-      async listConnections() { return [adminConnection()]; }
-    }), tester(), [], credentialTester(test));
+      activateCredentialCas,
+      async listConnections() { return [activeConnection]; }
+    }), tester(), ["credential-new", "version-new"], credentialTester(test));
 
-    await expect(providers.testCredential({
+    await expect(providers.activateNewCredential({
       connectionId: "connection-1",
-      expectedConnectionDraftVersion: 3,
+      label: "  Primary ",
       secret: "candidate-secret"
-    })).resolves.toEqual({
-      checkedAt: NOW.toISOString(),
-      connectionDraftVersion: 3,
-      modelCount: 1,
-      status: "valid"
-    });
-    expect(createCredential).not.toHaveBeenCalled();
-
-    await expect(providers.testCredential({
-      connectionId: "connection-1",
-      expectedConnectionDraftVersion: 2,
-      secret: "candidate-secret"
-    })).rejects.toMatchObject({ code: "provider_draft_stale" });
+    })).resolves.toEqual({ credentialId: "credential-new", versionId: "version-new" });
     expect(test).toHaveBeenCalledOnce();
+    expect(test.mock.calls[0]?.[0]).toMatchObject({
+      connection: expect.objectContaining({ apiRoot: expect.stringContaining("https://active.example.test/v1") }),
+      family: "openai_compatible",
+      modelClasses: ["answer"],
+      secret: "candidate-secret"
+    });
+    const write = activateCredentialCas.mock.calls[0]?.[0];
+    expect(write).toMatchObject({
+      checkedAt: NOW,
+      connectionId: "connection-1",
+      credential: { id: "credential-new", kind: "new", label: "Primary" },
+      testEvidence: { method: "models_catalog", modelCount: 1, version: 1 },
+      versionId: "version-new"
+    });
+    expect(JSON.stringify(write)).not.toContain("candidate-secret");
+    expect(decryptProviderCredentialSecret({
+      credentialId: "credential-new",
+      envelope: write!.versionEnvelope,
+      key: KEY,
+      valueId: "version-new"
+    })).toBe("candidate-secret");
+
+    const rejecting = service(repository({
+      activateCredentialCas,
+      async listConnections() { return [activeConnection]; }
+    }), tester(), [], credentialTester(async () => {
+      throw new Error("provider details must be discarded");
+    }));
+    await expect(rejecting.activateNewCredential({
+      connectionId: "connection-1",
+      label: "Finance",
+      secret: "rejected-secret"
+    })).rejects.toMatchObject({ code: "provider_credential_test_failed" });
+    expect(activateCredentialCas).toHaveBeenCalledOnce();
+
+    const taken = service(repository({
+      async activateCredentialCas() { return "label_taken"; },
+      async listConnections() { return [activeConnection]; }
+    }), tester(), [], credentialTester(test));
+    await expect(taken.activateNewCredential({
+      connectionId: "connection-1",
+      label: "Primary",
+      secret: "candidate-secret"
+    })).rejects.toMatchObject({ code: "provider_credential_label_taken" });
+  });
+
+  it("rotates a key in one step only for the exact current credential and never tests a stale one", async () => {
+    const activateCredentialCas = vi.fn<AdminProviderRepository["activateCredentialCas"]>(async () => "updated");
+    const test = vi.fn<AdminProviderCredentialTester["test"]>(async () => ({
+      method: "models_catalog",
+      modelIds: ["vendor/model"]
+    }));
+    const connection: AdminProviderConnection = {
+      ...adminConnection(),
+      credentials: [{
+        activatedAt: NOW.toISOString(),
+        activeVersion: {
+          activatedAt: NOW.toISOString(),
+          id: "version-1",
+          revokedAt: null,
+          testedAt: NOW.toISOString(),
+          version: 1
+        },
+        createdAt: NOW.toISOString(),
+        draftSecretConfigured: false,
+        draftVersion: 1,
+        enabled: true,
+        id: "credential-1",
+        label: "Primary",
+        testedAt: NOW.toISOString(),
+        updatedAt: NOW.toISOString()
+      }]
+    };
+    const providers = service(repository({
+      activateCredentialCas,
+      async listConnections() { return [connection]; }
+    }), tester(), ["version-2"], credentialTester(test));
+
+    await expect(providers.activateRotatedCredential({
+      connectionId: "connection-1",
+      credentialId: "credential-1",
+      expectedDraftVersion: 2,
+      secret: "new-secret"
+    })).rejects.toMatchObject({ code: "provider_draft_stale" });
+    await expect(providers.activateRotatedCredential({
+      connectionId: "connection-1",
+      credentialId: "credential-missing",
+      expectedDraftVersion: 1,
+      secret: "new-secret"
+    })).rejects.toMatchObject({ code: "provider_credential_not_found" });
+    expect(test).not.toHaveBeenCalled();
+    expect(activateCredentialCas).not.toHaveBeenCalled();
+
+    await expect(providers.activateRotatedCredential({
+      connectionId: "connection-1",
+      credentialId: "credential-1",
+      expectedDraftVersion: 1,
+      secret: "new-secret"
+    })).resolves.toEqual({ credentialId: "credential-1", versionId: "version-2" });
+    expect(test).toHaveBeenCalledOnce();
+    expect(activateCredentialCas.mock.calls[0]?.[0]).toMatchObject({
+      credential: { expectedDraftVersion: 1, id: "credential-1", kind: "rotate" },
+      versionId: "version-2"
+    });
+
+    const raced = service(repository({
+      async activateCredentialCas() { return "stale"; },
+      async listConnections() { return [connection]; }
+    }), tester(), ["version-3"], credentialTester(test));
+    await expect(raced.activateRotatedCredential({
+      connectionId: "connection-1",
+      credentialId: "credential-1",
+      expectedDraftVersion: 1,
+      secret: "new-secret"
+    })).rejects.toMatchObject({ code: "provider_draft_stale" });
   });
 
   it("does all network work before the evidence CAS and rejects a stale tuple", async () => {

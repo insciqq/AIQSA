@@ -980,25 +980,6 @@ export function createPrismaAdminProviderRepository(
       return updated.count === 1 ? "updated" : "stale";
     },
 
-    async createCredential(input) {
-      const connection = await prisma.providerConnection.findUnique({
-        select: { family: true, id: true },
-        where: { id: input.connectionId }
-      });
-      if (!connection || connection.family === "fake") return "connection_not_found";
-      await prisma.providerCredential.create({
-        data: {
-          connectionId: input.connectionId,
-          draftSecretEnvelope: input.draftSecretEnvelope,
-          draftVersion: 1,
-          enabled: true,
-          id: input.id,
-          label: input.label
-        }
-      });
-      return "created";
-    },
-
     async renameCredential(input) {
       const updated = await prisma.providerCredential.updateMany({
         data: { label: input.label },
@@ -1716,6 +1697,81 @@ export function createPrismaAdminProviderRepository(
           (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")
         ) {
           return "stale";
+        }
+        throw error;
+      }
+    },
+
+    async activateCredentialCas(input) {
+      try {
+        return await repeatableRead(prisma, async (tx) => {
+          const connection = await tx.providerConnection.findUnique({
+            select: { defaultCredentialId: true, family: true, id: true },
+            where: { id: input.connectionId }
+          });
+          if (!connection || connection.family === "fake") return "connection_not_found" as const;
+
+          let version: number;
+          let expectedDraftVersion: number;
+          if (input.credential.kind === "new") {
+            version = 1;
+            expectedDraftVersion = 1;
+            await tx.providerCredential.create({
+              data: {
+                connectionId: input.connectionId,
+                draftSecretEnvelope: null,
+                draftVersion: 1,
+                enabled: true,
+                id: input.credential.id,
+                label: input.credential.label
+              }
+            });
+          } else {
+            const existing = await tx.providerCredential.findFirst({
+              select: { draftVersion: true },
+              where: { connectionId: input.connectionId, id: input.credential.id }
+            });
+            if (!existing) return "credential_not_found" as const;
+            if (existing.draftVersion !== input.credential.expectedDraftVersion) return "stale" as const;
+            expectedDraftVersion = existing.draftVersion;
+            version = existing.draftVersion + 1;
+          }
+
+          await tx.providerCredentialVersion.create({
+            data: {
+              activatedAt: input.now,
+              credentialId: input.credential.id,
+              id: input.versionId,
+              secretEnvelope: input.versionEnvelope,
+              testEvidence: json(input.testEvidence),
+              testedAt: input.checkedAt,
+              version
+            }
+          });
+          const updated = await tx.providerCredential.updateMany({
+            data: {
+              activatedAt: input.now,
+              activeVersionId: input.versionId,
+              draftSecretEnvelope: null,
+              draftVersion: version,
+              testedAt: input.checkedAt
+            },
+            where: { draftVersion: expectedDraftVersion, id: input.credential.id }
+          });
+          if (updated.count !== 1) throw new ProviderActivationStaleError();
+
+          if (!connection.defaultCredentialId) {
+            await tx.providerConnection.update({
+              data: { defaultCredentialId: input.credential.id },
+              where: { id: input.connectionId }
+            });
+          }
+          return "updated" as const;
+        });
+      } catch (error) {
+        if (error instanceof ProviderActivationStaleError) return "stale";
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+          return input.credential.kind === "new" ? "label_taken" : "stale";
         }
         throw error;
       }

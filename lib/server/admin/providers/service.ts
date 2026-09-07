@@ -3,7 +3,6 @@ import type { SystemModelVerificationRole } from "../../../contracts/adminSystem
 import { createHash, randomUUID } from "node:crypto";
 import type {
   AdminProviderConnectionConfiguration,
-  AdminProviderCredentialTestResult,
   AdminProviderDeleteResult,
   AdminProviderDraftCheck,
   AdminProviderFamily,
@@ -67,6 +66,7 @@ export type AdminProviderServiceErrorCode =
   | "provider_activation_evidence_missing"
   | "provider_activation_unavailable_confirmation_required"
   | "provider_connection_not_found"
+  | "provider_credential_label_taken"
   | "provider_credential_not_found"
   | "provider_credential_test_failed"
   | "provider_delete_confirmation_required"
@@ -408,36 +408,116 @@ export function createAdminProviderService(input: Readonly<{
     });
   }
 
+  /**
+   * One-step key save (PRD B1): the plaintext secret is tested against the
+   * connection's active configuration (the draft only while nothing was ever
+   * activated), then written as an immutable active version of exactly one
+   * credential. A rejected key writes nothing.
+   */
+  async function activateCredentialSecret(value: {
+    connectionId: string;
+    credential:
+      | { kind: "new"; label: string }
+      | { credentialId: string; expectedDraftVersion: number; kind: "rotate" };
+    secret: string;
+    signal?: AbortSignal;
+  }): Promise<{ credentialId: string; versionId: string }> {
+    const connection = (await input.repository.listConnections())
+      .find(({ id }) => id === value.connectionId);
+    if (!connection) {
+      throw new AdminProviderServiceError("provider_connection_not_found");
+    }
+    const label = value.credential.kind === "new" ? name(value.credential.label) : null;
+    if (value.credential.kind === "rotate") {
+      const credentialId = value.credential.credentialId;
+      const credential = connection.credentials.find(({ id }) => id === credentialId);
+      if (!credential) {
+        throw new AdminProviderServiceError("provider_credential_not_found");
+      }
+      if (credential.draftVersion !== value.credential.expectedDraftVersion) {
+        throw new AdminProviderServiceError("provider_draft_stale");
+      }
+    }
+    const modelClasses = [...new Set(connection.models
+      .filter((model) => model.enabled)
+      .map((model) => model.modelClass ?? model.draftConfig.modelClass))];
+    const outcome = await testCredentialCatalog({
+      connection: connection.activeConfig ?? connection.draftConfig,
+      family: connection.family,
+      modelClasses: modelClasses.length ? modelClasses : ["answer"],
+      secret: value.secret,
+      signal: value.signal
+    });
+    const credentialId = value.credential.kind === "new" ? idFactory() : value.credential.credentialId;
+    const versionId = idFactory();
+    const result = await input.repository.activateCredentialCas({
+      checkedAt: now(),
+      connectionId: connection.id,
+      credential: value.credential.kind === "new"
+        ? { id: credentialId, kind: "new", label: label! }
+        : {
+            expectedDraftVersion: value.credential.expectedDraftVersion,
+            id: credentialId,
+            kind: "rotate"
+          },
+      now: now(),
+      testEvidence: {
+        method: outcome.method,
+        modelCount: outcome.modelIds.length,
+        version: 1
+      },
+      versionEnvelope: encryptProviderCredentialSecret({
+        credentialId,
+        key: encryptionKey(),
+        secret: value.secret,
+        valueId: versionId
+      }),
+      versionId
+    });
+    if (result === "connection_not_found") {
+      throw new AdminProviderServiceError("provider_connection_not_found");
+    }
+    if (result === "credential_not_found") {
+      throw new AdminProviderServiceError("provider_credential_not_found");
+    }
+    if (result === "label_taken") {
+      throw new AdminProviderServiceError("provider_credential_label_taken");
+    }
+    if (result === "stale") throw new AdminProviderServiceError("provider_draft_stale");
+    return { credentialId, versionId };
+  }
+
   return {
     listConnections: () => input.repository.listConnections(),
 
-    async testCredential(value: {
+    activateNewCredential: (value: {
       connectionId: string;
-      expectedConnectionDraftVersion: number;
+      label: string;
       secret: string;
       signal?: AbortSignal;
-    }): Promise<AdminProviderCredentialTestResult> {
-      const connection = (await input.repository.listConnections())
-        .find(({ id }) => id === value.connectionId);
-      if (!connection) {
-        throw new AdminProviderServiceError("provider_connection_not_found");
-      }
-      if (connection.draftVersion !== value.expectedConnectionDraftVersion) {
-        throw new AdminProviderServiceError("provider_draft_stale");
-      }
-      const outcome = await testCredentialCatalog({
-        connection: connection.draftConfig,
-        family: connection.family,
-        secret: value.secret,
-        signal: value.signal
-      });
-      return {
-        checkedAt: now().toISOString(),
-        connectionDraftVersion: connection.draftVersion,
-        modelCount: outcome.modelIds.length,
-        status: "valid"
-      };
-    },
+    }) => activateCredentialSecret({
+      connectionId: value.connectionId,
+      credential: { kind: "new", label: value.label },
+      secret: value.secret,
+      signal: value.signal
+    }),
+
+    activateRotatedCredential: (value: {
+      connectionId: string;
+      credentialId: string;
+      expectedDraftVersion: number;
+      secret: string;
+      signal?: AbortSignal;
+    }) => activateCredentialSecret({
+      connectionId: value.connectionId,
+      credential: {
+        credentialId: value.credentialId,
+        expectedDraftVersion: value.expectedDraftVersion,
+        kind: "rotate"
+      },
+      secret: value.secret,
+      signal: value.signal
+    }),
 
     async discoverOpenRouterModels(value: {
       connectionId: string;
@@ -658,30 +738,6 @@ export function createAdminProviderService(input: Readonly<{
         throw new AdminProviderServiceError("provider_family_adapter_mismatch");
       }
       return { draftVersion: value.expectedDraftVersion + 1 };
-    },
-
-    async createCredentialDraft(value: {
-      connectionId: string;
-      label: string;
-      secret: string;
-    }) {
-      const id = idFactory();
-      const draftSecretEnvelope = encryptProviderCredentialSecret({
-        credentialId: id,
-        key: encryptionKey(),
-        secret: value.secret,
-        valueId: providerCredentialDraftValueId(1)
-      });
-      const result = await input.repository.createCredential({
-        connectionId: value.connectionId,
-        draftSecretEnvelope,
-        id,
-        label: name(value.label)
-      });
-      if (result === "connection_not_found") {
-        throw new AdminProviderServiceError("provider_connection_not_found");
-      }
-      return { id };
     },
 
     async renameCredential(value: { credentialId: string; label: string }) {

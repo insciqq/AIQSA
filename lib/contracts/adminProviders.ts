@@ -155,13 +155,6 @@ export type AdminProviderTestEvidence = {
   upstreamModelId: string;
 };
 
-export type AdminProviderCredentialTestResult = {
-  checkedAt: string;
-  connectionDraftVersion: number;
-  modelCount: number;
-  status: "valid";
-};
-
 export type AdminProviderDraftCheck = {
   checkedAt: string;
   connectionDraftVersion: number;

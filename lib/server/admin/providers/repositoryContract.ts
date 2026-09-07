@@ -164,8 +164,37 @@ export type ProviderActivationWrite = Readonly<{
 
 export type ProviderDisableTarget = "connection" | "credential" | "model";
 
+/**
+ * One tested key becomes the active version of exactly one credential. A
+ * `new` credential row is created enabled; a `rotate` write replaces the
+ * active version of an existing credential only while its draft version is
+ * still the expected one. Connection and model drafts are never touched, and
+ * the credential becomes the connection default only when none is set.
+ */
+export type ProviderCredentialActivationWrite = Readonly<{
+  checkedAt: Date;
+  connectionId: string;
+  credential:
+    | { id: string; kind: "new"; label: string }
+    | { expectedDraftVersion: number; id: string; kind: "rotate" };
+  now: Date;
+  testEvidence: Record<string, unknown>;
+  versionEnvelope: string;
+  versionId: string;
+}>;
+
+export type ProviderCredentialActivationResult =
+  | "connection_not_found"
+  | "credential_not_found"
+  | "label_taken"
+  | "stale"
+  | "updated";
+
 export type AdminProviderRepository = Readonly<{
   activateConnectionCas(input: ProviderActivationWrite): Promise<ProviderDraftMutationResult>;
+  activateCredentialCas(
+    input: ProviderCredentialActivationWrite
+  ): Promise<ProviderCredentialActivationResult>;
   assignGroupCredential(input: {
     connectionId: string;
     credentialId: string;
@@ -178,12 +207,6 @@ export type AdminProviderRepository = Readonly<{
     id: string;
     unassignedPolicy: AdminProviderUnassignedPolicy;
   }): Promise<void>;
-  createCredential(input: {
-    connectionId: string;
-    draftSecretEnvelope: string;
-    id: string;
-    label: string;
-  }): Promise<"created" | "connection_not_found">;
   createModel(input: {
     configuration: ProviderModelConfiguration;
     connectionId: string;
