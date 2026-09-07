@@ -21,7 +21,6 @@ One conversation-first interface for OpenAI, Anthropic, Gemini, DeepSeek, OpenRo
   <a href="#features">Features</a> ·
   <a href="#integrations">Integrations</a> ·
   <a href="#architecture">Architecture</a> ·
-  <a href="#deployment-notes">Deployment</a> ·
   <a href="#development">Development</a> ·
   <a href="#contributing">Contributing</a>
 </p>
@@ -123,31 +122,21 @@ System, light, and dark themes, responsive desktop and mobile layouts, code and 
 
 ## Quick start
 
-You need Docker Engine with the Docker Compose plugin and OpenSSL.
+This repository contains application code, image builds and the local development
+profile. Production deployment is maintained separately by the installation operator.
+
+Start the disposable development stack:
 
 ```bash
-git clone https://github.com/insciqq/AIQSA.git aiqsa
-cd aiqsa
-bash prepare-secrets.sh
-docker compose pull --ignore-buildable
-docker compose build docling
-docker compose up -d
+git clone https://github.com/insciqq/AIQSA.git
+cd AIQSA
+docker compose -f docker-compose.dev.yml up -d --build app
 ```
 
-Open [http://localhost:3000](http://localhost:3000) and sign in with the initial administrator. In **Control Center → Providers**, choose a provider, paste its API key, and select **Test & Save**. Provider keys, SMTP, search integrations, and MCP definitions are stored in the database and normally need no restart.
-
-The setup helper asks only for the initial administrator email, generates the password and installation secrets, writes `.env` with mode `0600`, and prints the administrator password once. Save it in a password manager. For unattended setup:
-
-```bash
-bash prepare-secrets.sh --admin-email owner@example.com
-```
-
-To configure manually, copy `.env.example` to `.env`, set mode `0600`, and replace every required placeholder. Never commit `.env`. The complete environment contract is in [`agent_docs/ENV_VARIABLES.md`](agent_docs/ENV_VARIABLES.md).
-
-> [!IMPORTANT]
-> PostgreSQL and uploaded objects live in named Docker volumes and survive normal rebuilds and updates. Never run `docker compose down -v` unless permanent deletion of installation data is intended.
-
-The Docling parser image is built locally from a digest-pinned upstream image with checksum-pinned English/Cyrillic OCR assets. The build needs registry and model download access; document conversion afterwards uses the sealed local assets only.
+Open `http://localhost:3000`. The development Compose file supplies disposable
+credentials; optional local overrides are documented in `.env.example`. Existing
+local profile settings live in the ignored `.aiqsa/local-dev-profile/` directory.
+See [Development](#development) for verification commands.
 
 ## Integrations
 
@@ -159,7 +148,7 @@ The Docling parser image is built locally from a digest-pinned upstream image wi
 | **Documents** | PDF, office, and text formats through Docling and Apache Tika, with printed Russian/English OCR for scans and images |
 | **Sign-in** | Email and password with invitations, plus optional Google and Yandex OAuth |
 | **Storage** | PostgreSQL with pgvector, S3-compatible object storage (bundled MinIO), and OpenSearch for rebuildable lexical indexes |
-| **Delivery** | Multi-platform images on GHCR with immutable digests, a companion pgvector PostgreSQL image, and a guarded tagged-release update workflow |
+| **Delivery** | Multi-platform images on GHCR with immutable digests, a companion pgvector PostgreSQL image |
 
 ## Architecture
 
@@ -225,72 +214,6 @@ The consent page names the client and grants one fact-only permission. The clien
 
 Review or revoke a client in **Settings → Connected apps**. Revocation stops future calls for that client and keeps every stored fact. See the [Codex MCP](https://developers.openai.com/codex/mcp/), [Claude Code MCP](https://code.claude.com/docs/en/mcp), and [MCP Inspector](https://github.com/modelcontextprotocol/inspector) documentation for client-specific behavior.
 
-## Deployment notes
-
-<details>
-<summary><strong>Network exposure and reverse proxy</strong></summary>
-
-<br>
-
-The default application is intentionally bound to loopback. A trusted LAN or VPN may publish the app directly without another service by setting `AIQSA_BIND_ADDRESS=0.0.0.0`, using the matching browser-visible HTTP URL, and leaving both proxy variables blank. The release runtime ignores client forwarding headers in this mode and derives login-admission identity from the immediate TCP peer. Direct HTTP is unencrypted and emits a startup warning; an intermediary or NAT may make several users share one peer bucket.
-
-For Internet access or transport security, keep the application bind on loopback, set an HTTPS `AIQSA_APP_BASE_URL`, enable secure cookies and the exact trusted-proxy declaration, and expose only a reverse proxy. Do not publish PostgreSQL, MinIO, ToolHive control, or MCP proxy ports.
-
-The repository includes an [Nginx template and validation procedure](ops/nginx/README.md). For the bundled one-hop template use:
-
-```dotenv
-AIQSA_COOKIE_SECURE=1
-AIQSA_TRUST_PROXY_HEADERS=1
-AIQSA_TRUSTED_PROXY_COUNT=1
-```
-
-ToolHive can run administrator-selected npm, PyPI, or digest-pinned OCI MCP servers in sibling containers. ToolHive has trusted access to the host Docker socket, which is effectively host-root authority. Install only reviewed MCP code and grant a server only when its complete tool and external-data behavior is trusted.
-
-</details>
-
-<details>
-<summary><strong>Backups and disaster recovery</strong></summary>
-
-<br>
-
-Back up before an update that may apply migrations:
-
-```bash
-ops/backup/create.sh /secure/aiqsa-backups
-ops/backup/restore.sh --verify-only /secure/aiqsa-backups/aiqsa-backup-TIMESTAMP
-```
-
-Use an existing protected directory, copy verified bundles to encrypted off-host storage, and back up `AIQSA_ENCRYPTION_KEY`, `AIQSA_MEMORY_FINGERPRINT_KEYRING`, and `AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY` separately from those bundles. The helper stops and restores the web and Memory-worker roles around a durable lease fence; restore validates only the bundle's non-secret key IDs against the separately recovered keyring. The OpenSearch index is derived and rebuilt after restore rather than backed up. The bundled helper supports the bundled private MinIO storage; external S3 requires its own consistent object-backup procedure coordinated with PostgreSQL.
-
-Disaster recovery is deliberately two-step. Provision a unique private `aiqsa-restore-*` project with [`ops/backup/docker-compose.restore.yml`](ops/backup/docker-compose.restore.yml), restore into its empty Postgres/MinIO services with a new mode-0700 review directory, then reapply any operator-owned post-backup deletion journal. Run `ops/backup/review.sh` with either the applied journal file or an explicit no-journal attestation. The review role has no public port or provider credentials and writes a private promotion receipt only after keys, deletion/account obligations, source barriers, leases, and objects pass. The helpers never start the app or perform production cutover; see each script's `--help` for the exact environment.
-
-For automated backups, use the colocated [systemd timer templates](ops/systemd/README.md). Restore operations accept only unique disposable review projects and never overwrite canonical live services.
-
-</details>
-
-<details>
-<summary><strong>Updates and migrations</strong></summary>
-
-<br>
-
-For an existing installation, use the guarded tagged-release workflow whenever the update can cross committed migrations. Release automation must invoke both phases of the tracked cutover gate under the same installation operation lock; inspect its exact fail-closed interface with:
-
-```bash
-bash scripts/ops-knowledge-cutover.sh --help
-```
-
-The workflow takes the shared deploy/backup/prune operation lock, verifies a fresh backup, stops application writers, and applies migrations before running the resumable V1-to-Source Knowledge backfill. It starts the app and worker only after aggregate reconciliation reports zero discrepancies. Do not replace that sequence with a plain `docker compose up` when upgrading an installation that may contain pre-cutover Knowledge data.
-
-Migration `20260818073000_knowledge_ingestion_v2` rewrites every existing `KnowledgeChunk` row and rebuilds its generated text-search column and GIN index, so the guarded workflow treats it as downtime work. Before migration it rejects open transactions/lock waits and requires PostgreSQL-volume free space of at least 1 GiB or, for a larger chunk relation, three times its current total size plus 512 MiB. A failure before migration restores the previous release and writers. After migration begins, automatic old-code/schema rollback is blocked; the verified backup, pending deployment record, and mode-0600 aggregate cutover evidence remain for operator recovery, while the supported application rollback is a non-destructive Knowledge profile pointer restore.
-
-Existing users, settings, chats, and uploaded objects remain in the configured volumes. Pin `AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:X.Y.Z` in `.env` when a fixed release is preferred over `latest`.
-
-The release pipeline owns a same-Alpine PostgreSQL companion image with pgvector and records its immutable multi-platform digest; Compose adopts that image only after the manifest is published and verified, without changing the existing database volume. An external PostgreSQL deployment used with Knowledge features must make pgvector 0.7 or later available before its schema migration runs; pgvector 0.8.x is recommended for filtered approximate-nearest-neighbor retrieval.
-
-Personal Memory's derived OpenSearch lexical index has a separate [rollout and recovery runbook](ops/opensearch/README.md). Keep reads on `POSTGRES` until its aggregate integrity and shadow qualification gates pass; the runbook covers stable canary progression, immediate rollback, rebuild, restore, deletion verification, and routing-key rotation.
-
-</details>
-
 ## Development
 
 Routine deterministic checks need no database, provider key, or external service:
@@ -307,7 +230,7 @@ docker compose -f docker-compose.dev.yml up -d --build
 npm run check:container
 ```
 
-Never use the default persistent Compose installation as a development or test target. The complete verification contract is in [`agent_docs/TESTING.md`](agent_docs/TESTING.md).
+Use a unique disposable Compose project for automated stateful checks; preserve the operator's local development profile and volumes. The complete verification contract is in [`agent_docs/TESTING.md`](agent_docs/TESTING.md).
 
 | Document | Owns |
 | --- | --- |
@@ -315,8 +238,6 @@ Never use the default persistent Compose installation as a development or test t
 | [`agent_docs/ENV_VARIABLES.md`](agent_docs/ENV_VARIABLES.md) | The complete environment and Compose configuration contract |
 | [`agent_docs/SECURITY.md`](agent_docs/SECURITY.md) | Threat model, trust boundaries, and dependency-security policy |
 | [`agent_docs/TESTING.md`](agent_docs/TESTING.md) | Verification lanes and test-authoring rules |
-| [`ops/nginx/README.md`](ops/nginx/README.md) | Reverse-proxy template and validation |
-| [`ops/systemd/README.md`](ops/systemd/README.md) | Scheduled backup and prune timers |
 
 ## Project status
 

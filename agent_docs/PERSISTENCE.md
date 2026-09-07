@@ -103,7 +103,7 @@ Workspace idle stop preserves its guest disk, while expiry, reset, and owning-ch
 
 ## Backup And Restore
 
-`ops/backup/create.sh` is the Postgres/object consistency boundary. It verifies the migrated schema, stops app and Memory writers, releases or fences claimed Memory, Knowledge, and object-deletion work, copies both authorities, records format/schema and required non-secret Memory key IDs, then restores exactly the prior writer set. OpenSearch is deliberately excluded from the backup authority: its volume is disposable derived state.
+Backup/restore orchestration belongs to the separate infrastructure workspace. It must verify the migrated schema, stop app and Memory writers, release or fence claimed Memory, Knowledge, and object-deletion work, copy both authorities, record format/schema and required non-secret Memory key IDs, then restore exactly the prior writer set. OpenSearch is deliberately excluded from the backup authority: its volume is disposable derived state.
 
 Restore accepts only an acknowledged empty internal `aiqsa-restore-*` project with no published ports and no application writer. It preflights format, schema, identities, keys, and objects before producing a pending review manifest. Review runs credential-free Memory and Knowledge deletion reconciliation, resets restored search obligations to pending, and blocks promotion while deletion/account/barrier duties, leases, uncertain executions, missing keys, or object failures remain. Fresh OpenSearch projections must be rebuilt from canonical PostgreSQL and pass their strict aggregate integrity gates before their respective retrieval modes are enabled. Helpers never cut over production automatically.
 

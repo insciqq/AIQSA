@@ -5,9 +5,9 @@ Scope: Environment ownership, security-sensitive categories, Compose wiring, and
 
 ## Canonical Sources
 
-`.env.example` is the operator-facing inventory and starting template. `docker-compose.yml`, `docker-compose.dev.yml`, deployment assets, and the focused config parsers beside each subsystem own consumption, defaults, validation, reductions, and hard ceilings. Do not duplicate every key or numeric value here; inspect those sources and their tests when changing configuration.
+`.env.example` contains optional local-development overrides. `docker-compose.dev.yml` and the focused config parsers beside each subsystem own consumption, defaults, validation, reductions, and hard ceilings. Production templates, secret generation and runtime wiring are maintained in the separate infrastructure workspace. Do not duplicate every key or numeric value here; inspect those sources and their tests when changing configuration.
 
-A new or changed key updates its canonical parser, `.env.example`, relevant Compose/ops pass-through, focused tests, and this document only when it changes a durable operator/security contract. Canonical names replace pre-production aliases unless an external installation compatibility decision explicitly requires one. Unknown or malformed security-relevant values fail closed rather than silently enabling a weaker mode.
+A new or changed key updates its canonical parser, relevant development Compose pass-through and example overrides, focused tests, and this document only when it changes a durable operator/security contract. Canonical names replace pre-production aliases unless an external installation compatibility decision explicitly requires one. Unknown or malformed security-relevant values fail closed rather than silently enabling a weaker mode.
 
 | Category | Durable contract |
 | --- | --- |
@@ -25,7 +25,7 @@ A new or changed key updates its canonical parser, `.env.example`, relevant Comp
 
 ## Secrets And Rotation
 
-Keep `.env` mode-restricted and outside Git, images, logs, shell transcripts, and support bundles. `prepare-secrets.sh` creates a fresh file without reading/replacing an existing one and prints the generated initial password once; move that password to a manager and remove it from `.env` after bootstrap.
+Keep `.env` mode-restricted and outside Git, images, logs, shell transcripts, and support bundles. Development uses only its explicit disposable defaults or the ignored local profile. Production secret provisioning and rotation belong to the infrastructure operator.
 
 Changing `AIQSA_ENCRYPTION_KEY` without a planned migration makes encrypted provider, SMTP, MCP, and OAuth values unreadable and changes ToolHive ownership markers. Drain/clean exact owned ToolHive workloads before replacement. Losing a Memory fingerprint key blocks any state that references its version; the keyring supports additive rotation, and backup/restore preflight records required IDs without key material. Losing the independent Memory OpenSearch routing key does not lose canonical PostgreSQL data, but the derived lexical index must be rebuilt under a new key and identifier before it can become ready again.
 
@@ -37,7 +37,7 @@ Runtime roles receive least configuration: app, Memory worker, migration/bootstr
 
 Emergency recovery switches are narrow, temporary, auditable, and fail closed by default. They do not redefine supported topology or bypass migration, ownership, egress, or retention guards. Record their use outside source control and remove them after the exact recovery action.
 
-The [Memory OpenSearch runbook](../ops/opensearch/README.md) owns rollout, immediate rollback, circuit recovery, projection rebuild, restore, purge verification, routing-key rotation, and content-free alert procedures. Backend or percentage changes take effect only after the app role is recreated; the projection worker is independent and may continue accumulating or draining derived work while reads are forced to PostgreSQL.
+Memory OpenSearch rollout, rollback, recovery and monitoring procedures belong to the separate infrastructure workspace. Backend or percentage changes take effect only after the app role is recreated; the projection worker is independent and may continue accumulating or draining derived work while reads are forced to PostgreSQL.
 
 The Memory coordinator lease is a replay-safety window, not a provider timeout. A longer bounded lease delays crash recovery; a lease shorter than the runtime's heartbeat/provider window can force an otherwise healthy external call into `OUTCOME_UNKNOWN`. Development Compose therefore tolerates compiler pauses while production keeps the independently heartbeated worker default unless an operator deliberately changes it.
 

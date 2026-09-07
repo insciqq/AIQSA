@@ -21,9 +21,6 @@ test-results/
 .env.*
 !.env.example
 
-/DEPLOY.md
-/GITHUB_RELEASE.md
-/ops/deploy/
 /sa.json
 /sa.json:Zone.Identifier
 # Operator-local reference material outside the task namespace.
