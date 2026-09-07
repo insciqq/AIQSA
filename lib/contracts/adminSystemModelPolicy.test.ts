@@ -15,6 +15,7 @@ const response = {
     }],
     documentCandidates: [],
     verificationCandidates: [],
+    ineligible: { direct_pdf: [], memory: [], vision: [] },
     rerankerCandidates: [],
     policy: {
       chatPdfPreparationAllowed: false,
@@ -71,6 +72,43 @@ describe("administrator system model policy contract", () => {
           reasoningEffort: "xhigh"
         }
       }
+    })).toBeNull();
+  });
+
+  it("decodes per-role ineligibility with reasons and tolerates an absent list", () => {
+    const ineligibleModel = {
+      ...response.systemModelPolicy.candidates[0],
+      forcedToolCall: "not_verified",
+      id: "model-2",
+      structuredOutput: "not_verified"
+    };
+    const withReasons = {
+      systemModelPolicy: {
+        ...response.systemModelPolicy,
+        ineligible: {
+          direct_pdf: [{ ...ineligibleModel, reason: "adapter_unsupported" }],
+          memory: [{ ...ineligibleModel, reason: "not_checked" }],
+          vision: [{ ...ineligibleModel, reason: "no_default_credential" }]
+        }
+      }
+    };
+    expect(decodeAdminSystemModelPolicyResponse(withReasons)).toEqual(withReasons);
+
+    const { ineligible: _ineligible, ...legacyCatalog } = response.systemModelPolicy;
+    expect(decodeAdminSystemModelPolicyResponse({ systemModelPolicy: legacyCatalog }))
+      .toEqual(response);
+    expect(decodeAdminSystemModelPolicyResponse({
+      systemModelPolicy: { ...legacyCatalog, ineligible: { memory: [] } }
+    })).toEqual(response);
+
+    expect(decodeAdminSystemModelPolicyResponse({
+      systemModelPolicy: {
+        ...response.systemModelPolicy,
+        ineligible: { memory: [{ ...ineligibleModel, reason: "unknown" }] }
+      }
+    })).toBeNull();
+    expect(decodeAdminSystemModelPolicyResponse({
+      systemModelPolicy: { ...response.systemModelPolicy, ineligible: [] }
     })).toBeNull();
   });
 });

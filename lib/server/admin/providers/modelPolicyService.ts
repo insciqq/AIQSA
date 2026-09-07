@@ -151,12 +151,34 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
       };
     },
 
+    /**
+     * One optimistic save for the Chat defaults card: the default model pair
+     * and the four tool limits may arrive together or alone, all under the
+     * same expected version, so the administrator sees one result.
+     */
     async update(input: Readonly<{
       expectedVersion: number;
-      providerModelId: string | null;
-      reasoningEffort: string | null;
+      providerModelId?: string | null;
+      reasoningEffort?: string | null;
+      maxToolCalls?: number;
+      maxToolRounds?: number;
+      maxMcpToolsPerDiscovery?: number;
+      mcpAutoDiscoveryTimeoutSeconds?: number;
       userId: string;
     }>): Promise<void> {
+      const hasModel = input.providerModelId !== undefined;
+      const limits = [
+        input.maxToolCalls,
+        input.maxToolRounds,
+        input.maxMcpToolsPerDiscovery,
+        input.mcpAutoDiscoveryTimeoutSeconds
+      ];
+      const hasLimits = limits.some((value) => value !== undefined);
+      if (hasModel !== (input.reasoningEffort !== undefined) ||
+        hasLimits && limits.some((value) => value === undefined) ||
+        !hasModel && !hasLimits) {
+        throw new Error("model_policy_update_invalid");
+      }
       try {
         await prisma.$transaction(async (tx) => {
           const policies = await tx.$queryRaw<Array<{ version: number }>>(Prisma.sql`
@@ -170,7 +192,7 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
             throw new AdminModelPolicyServiceError("model_policy_stale");
           }
 
-          if (input.providerModelId !== null) {
+          if (hasModel && input.providerModelId !== null) {
             const models = await tx.$queryRaw<LockedModelRow[]>(Prisma.sql`
               SELECT
                 model."id",
@@ -193,65 +215,28 @@ export function createAdminModelPolicyService(prisma: PrismaClient) {
             if (!models[0] || !lockedModelAvailable(models[0])) {
               throw new AdminModelPolicyServiceError("model_policy_target_unavailable");
             }
-            if (input.reasoningEffort !== null) {
+            if (input.reasoningEffort) {
               const controls = reasoningControls(models[0].activeConfig, models[0].connectionFamily);
               if (!controls.supported || !controls.options.includes(input.reasoningEffort)) {
                 throw new AdminModelPolicyServiceError("model_policy_reasoning_invalid");
               }
             }
-          } else if (input.reasoningEffort !== null) {
+          } else if (hasModel && input.reasoningEffort !== null) {
             throw new AdminModelPolicyServiceError("model_policy_reasoning_invalid");
           }
 
           await tx.modelPolicy.update({
             data: {
-              defaultProviderModelId: input.providerModelId,
-              reasoningEffort: input.reasoningEffort,
-              updatedByUserId: input.userId,
-              version: { increment: 1 }
-            },
-            where: { id: "installation" }
-          });
-        }, {
-          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-          maxWait: 10_000,
-          timeout: 30_000
-        });
-      } catch (error) {
-        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") {
-          throw new AdminModelPolicyServiceError("model_policy_stale");
-        }
-        throw error;
-      }
-    },
-
-    async updateToolBudgets(input: Readonly<{
-      expectedVersion: number;
-      mcpAutoDiscoveryTimeoutSeconds: number;
-      maxMcpToolsPerDiscovery: number;
-      maxToolCalls: number;
-      maxToolRounds: number;
-      userId: string;
-    }>): Promise<void> {
-      try {
-        await prisma.$transaction(async (tx) => {
-          const policies = await tx.$queryRaw<Array<{ version: number }>>(Prisma.sql`
-            SELECT "version"
-            FROM "ModelPolicy"
-            WHERE "id" = 'installation'
-            FOR UPDATE
-          `);
-          if (!policies[0]) throw new Error("installation_model_policy_missing");
-          if (policies[0].version !== input.expectedVersion) {
-            throw new AdminModelPolicyServiceError("model_policy_stale");
-          }
-
-          await tx.modelPolicy.update({
-            data: {
-              mcpAutoDiscoveryTimeoutSeconds: BigInt(input.mcpAutoDiscoveryTimeoutSeconds),
-              maxMcpToolsPerDiscovery: BigInt(input.maxMcpToolsPerDiscovery),
-              maxToolCalls: BigInt(input.maxToolCalls),
-              maxToolRounds: BigInt(input.maxToolRounds),
+              ...(hasModel ? {
+                defaultProviderModelId: input.providerModelId,
+                reasoningEffort: input.reasoningEffort
+              } : {}),
+              ...(hasLimits ? {
+                mcpAutoDiscoveryTimeoutSeconds: BigInt(input.mcpAutoDiscoveryTimeoutSeconds!),
+                maxMcpToolsPerDiscovery: BigInt(input.maxMcpToolsPerDiscovery!),
+                maxToolCalls: BigInt(input.maxToolCalls!),
+                maxToolRounds: BigInt(input.maxToolRounds!)
+              } : {}),
               updatedByUserId: input.userId,
               version: { increment: 1 }
             },

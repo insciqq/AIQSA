@@ -63,56 +63,48 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
       const value = await readJsonBodyOrNull(request, "json");
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
-      if (!record(value) || !Number.isSafeInteger(value.expectedVersion) ||
-        Number(value.expectedVersion) < 1) {
+      const limitKeys = [
+        "maxToolCalls", "maxToolRounds", "maxMcpToolsPerDiscovery", "mcpAutoDiscoveryTimeoutSeconds"
+      ] as const;
+      const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", ...limitKeys];
+      const textOrNull = (entry: unknown, limit: number) => entry === null ||
+        typeof entry === "string" && entry.trim() === entry && entry.length > 0 &&
+        entry.length <= limit && !/[\u0000-\u001f\u007f]/u.test(entry);
+      const hasModel = record(value) &&
+        (Object.hasOwn(value, "providerModelId") || Object.hasOwn(value, "reasoningEffort"));
+      const presentLimits = record(value) ? limitKeys.filter((key) => Object.hasOwn(value, key)) : [];
+      if (!record(value) || Object.keys(value).some((key) => !allowed.includes(key)) ||
+        !Number.isSafeInteger(value.expectedVersion) || Number(value.expectedVersion) < 1 ||
+        !hasModel && presentLimits.length === 0 ||
+        hasModel && (!Object.hasOwn(value, "providerModelId") || !Object.hasOwn(value, "reasoningEffort") ||
+          !textOrNull(value.providerModelId, 256) || !textOrNull(value.reasoningEffort, 32) ||
+          value.providerModelId === null && value.reasoningEffort !== null) ||
+        presentLimits.length > 0 && (presentLimits.length !== limitKeys.length ||
+          !Number.isSafeInteger(value.mcpAutoDiscoveryTimeoutSeconds) ||
+          Number(value.mcpAutoDiscoveryTimeoutSeconds) < MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds ||
+          Number(value.mcpAutoDiscoveryTimeoutSeconds) > MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds ||
+          !Number.isSafeInteger(value.maxMcpToolsPerDiscovery) ||
+          Number(value.maxMcpToolsPerDiscovery) < 1 ||
+          Number(value.maxMcpToolsPerDiscovery) > MCP_RUN_PLAN_LIMITS.maxTools ||
+          !Number.isSafeInteger(value.maxToolCalls) || Number(value.maxToolCalls) < 1 ||
+          !Number.isSafeInteger(value.maxToolRounds) || Number(value.maxToolRounds) < 1)) {
         return Response.json({ error: "model_policy_update_invalid" }, { status: 400 });
       }
       try {
-        if ("maxToolCalls" in value || "maxToolRounds" in value ||
-          "maxMcpToolsPerDiscovery" in value ||
-          "mcpAutoDiscoveryTimeoutSeconds" in value) {
-          if (!Number.isSafeInteger(value.mcpAutoDiscoveryTimeoutSeconds) ||
-            Number(value.mcpAutoDiscoveryTimeoutSeconds) <
-              MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds ||
-            Number(value.mcpAutoDiscoveryTimeoutSeconds) >
-              MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds ||
-            !Number.isSafeInteger(value.maxMcpToolsPerDiscovery) ||
-            Number(value.maxMcpToolsPerDiscovery) < 1 ||
-            Number(value.maxMcpToolsPerDiscovery) > MCP_RUN_PLAN_LIMITS.maxTools ||
-            !Number.isSafeInteger(value.maxToolCalls) || Number(value.maxToolCalls) < 1 ||
-            !Number.isSafeInteger(value.maxToolRounds) || Number(value.maxToolRounds) < 1 ||
-            "providerModelId" in value || "reasoningEffort" in value) {
-            return Response.json({ error: "model_policy_update_invalid" }, { status: 400 });
-          }
-          await input.service.updateToolBudgets({
-            expectedVersion: Number(value.expectedVersion),
-            mcpAutoDiscoveryTimeoutSeconds: Number(value.mcpAutoDiscoveryTimeoutSeconds),
+        await input.service.update({
+          expectedVersion: Number(value.expectedVersion),
+          ...(hasModel ? {
+            providerModelId: value.providerModelId as string | null,
+            reasoningEffort: value.reasoningEffort as string | null
+          } : {}),
+          ...(presentLimits.length > 0 ? {
             maxMcpToolsPerDiscovery: Number(value.maxMcpToolsPerDiscovery),
             maxToolCalls: Number(value.maxToolCalls),
             maxToolRounds: Number(value.maxToolRounds),
-            userId: auth.session.userId
-          });
-        } else {
-          if (!(value.providerModelId === null || typeof value.providerModelId === "string" &&
-            value.providerModelId.trim() === value.providerModelId &&
-            value.providerModelId.length > 0 && value.providerModelId.length <= 256 &&
-            !/[\u0000-\u001f\u007f]/u.test(value.providerModelId))) {
-            return Response.json({ error: "model_policy_update_invalid" }, { status: 400 });
-          }
-          if (!(value.reasoningEffort === null || typeof value.reasoningEffort === "string" &&
-            value.reasoningEffort.trim() === value.reasoningEffort &&
-            value.reasoningEffort.length > 0 && value.reasoningEffort.length <= 32 &&
-            !/[\u0000-\u001f\u007f]/u.test(value.reasoningEffort)) ||
-            value.providerModelId === null && value.reasoningEffort !== null) {
-            return Response.json({ error: "model_policy_update_invalid" }, { status: 400 });
-          }
-          await input.service.update({
-            expectedVersion: Number(value.expectedVersion),
-            providerModelId: value.providerModelId,
-            reasoningEffort: value.reasoningEffort,
-            userId: auth.session.userId
-          });
-        }
+            mcpAutoDiscoveryTimeoutSeconds: Number(value.mcpAutoDiscoveryTimeoutSeconds)
+          } : {}),
+          userId: auth.session.userId
+        });
         return Response.json({ modelPolicy: await input.service.list() });
       } catch (error) {
         return failure(error);

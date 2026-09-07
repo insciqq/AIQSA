@@ -1,6 +1,10 @@
 import { hasVerifiedDedicatedProtocol } from "../../providers/systemRoleEvidence";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type { AdminSystemModelPolicyCatalog, SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
+import type {
+  AdminSystemModelIneligibilityReason,
+  AdminSystemModelPolicyCatalog,
+  SystemModelVerificationRole
+} from "../../../contracts/adminSystemModelPolicy";
 import {
   loadInstallationAnswerProviderRole,
   loadInstallationRerankerProviderRole,
@@ -128,6 +132,56 @@ function serializeSystemModel(row: SystemModelRow) {
     reasoningEfforts,
     structuredOutput
   };
+}
+
+function defaultCredentialUsable(row: SystemModelRow): boolean {
+  const credential = row.connection.defaultCredential;
+  return Boolean(credential?.activeVersion && credential.enabled !== false &&
+    !credential.activeVersion.revokedAt);
+}
+
+function answerDeploymentActive(row: SystemModelRow): boolean {
+  if (!row.enabled || row.activeVersion < 1 || !row.activatedAt || !row.connection.enabled ||
+    row.connection.activeVersion < 1 || !row.connection.activatedAt || !row.connection.activeConfig) return false;
+  try { return normalizeProviderModelConfiguration(row.activeConfig).modelClass === "answer"; }
+  catch { return false; }
+}
+
+/** Why an answer deployment is not ready for a generative role. Only
+ * `not_checked` can be fixed from the role picker; the others need provider
+ * work first, so the picker can explain them without guessing. */
+function roleIneligibility(
+  row: SystemModelRow,
+  serialized: ReturnType<typeof serializeSystemModel>
+): Partial<Record<"direct_pdf" | "memory" | "vision", AdminSystemModelIneligibilityReason>> {
+  if (!answerDeploymentActive(row)) {
+    return { direct_pdf: "model_disabled", memory: "model_disabled", vision: "model_disabled" };
+  }
+  let visionCapable = false;
+  try {
+    visionCapable = normalizeProviderModelConfiguration(row.activeConfig).capabilities.vision === true;
+  } catch {
+    // A malformed capability payload cannot claim image input.
+  }
+  const credentialReason: AdminSystemModelIneligibilityReason = defaultCredentialUsable(row)
+    ? "not_checked"
+    : "no_default_credential";
+  const reasons: ReturnType<typeof roleIneligibility> = {};
+  if (serialized.structuredOutput !== "verified" || serialized.forcedToolCall !== "verified") {
+    reasons.memory = serialized.structuredOutput === "unsupported" ||
+      serialized.forcedToolCall === "unsupported"
+      ? "adapter_unsupported"
+      : credentialReason;
+  }
+  if (serialized.visionInput !== "verified") {
+    reasons.vision = visionCapable ? credentialReason : "adapter_unsupported";
+  }
+  if (serialized.pdfInput !== "verified") {
+    reasons.direct_pdf = serialized.pdfInput === "not_verified"
+      ? credentialReason
+      : "adapter_unsupported";
+  }
+  return reasons;
 }
 
 function rerankerModelAvailable(row: AdminAnswerModelRow): boolean {
@@ -310,12 +364,20 @@ export function createAdminSystemModelPolicyService(
           role: position === 0 ? "primary" as const : "fallback" as const
         }];
       });
-      const deployments = models.filter((row) => {
-        if (!row.enabled || row.activeVersion < 1 || !row.activatedAt || !row.connection.enabled ||
-          row.connection.activeVersion < 1 || !row.connection.activatedAt || !row.connection.activeConfig) return false;
-        try { return normalizeProviderModelConfiguration(row.activeConfig).modelClass === "answer"; }
-        catch { return false; }
-      }).map(serializeSystemModel);
+      const deployments = models.filter(answerDeploymentActive).map(serializeSystemModel);
+      const ineligible: AdminSystemModelPolicyCatalog["ineligible"] = {
+        direct_pdf: [],
+        memory: [],
+        vision: []
+      };
+      for (const row of models) {
+        const serialized = deployments.find((model) => model.id === row.id) ?? serializeSystemModel(row);
+        const reasons = roleIneligibility(row, serialized);
+        for (const role of ["memory", "vision", "direct_pdf"] as const) {
+          const reason = reasons[role];
+          if (reason) ineligible[role].push({ ...serialized, reason });
+        }
+      }
       const rerankerCandidates = [];
       for (const row of typedRerankerRows.filter(rerankerModelAvailable)) {
         try {
@@ -330,6 +392,7 @@ export function createAdminSystemModelPolicyService(
           model.forcedToolCall === "verified"),
         documentCandidates: deployments.filter((model) => model.pdfInput === "verified" || model.visionInput === "verified"),
         verificationCandidates: deployments,
+        ineligible,
         rerankerCandidates,
         policy: {
           chatPdfPreparationAllowed: policy.chatPdfPreparationAllowed === true,
