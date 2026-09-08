@@ -8,13 +8,14 @@ on:
       - .github/workflows/release.yml
       - scripts/configure.sh
       - scripts/production-smoke.mjs
+      - scripts/release-plan.mjs
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"
 
 permissions: {}
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ contains(github.ref_name, '-rc.') && 'rc' || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -30,6 +31,8 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.release.outputs.version }}
+      fast_rc: ${{ steps.release.outputs.fast_rc }}
+      reuse: ${{ steps.release.outputs.reuse }}
 
     steps:
       - name: Check out release tag
@@ -40,35 +43,24 @@ jobs:
       - name: Verify public repository privacy
         run: node scripts/release-privacy-check.mjs --ref HEAD --require-origin
 
-      - name: Validate release version
+      - name: Validate version and select reusable infrastructure images
         id: release
-        env:
-          TAG: ${{ github.ref_name }}
-          REF_TYPE: ${{ github.ref_type }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${TAG#v}"
-          package_version="$(node -p "require('./package.json').version")"
-          if [[ "${REF_TYPE}" != "tag" ]]; then
-            echo "version=${package_version}" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          if [[ "${version}" != "${package_version}" && "${version}" != "${package_version}-"* ]]; then
-            echo "Tag ${TAG} does not match package version ${package_version}." >&2
-            exit 1
-          fi
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+        run: node scripts/release-plan.mjs
 
   quality:
     name: Release technical gates
     needs: prepare
+    if: needs.prepare.outputs.fast_rc != 'true'
     permissions:
       contents: read
     uses: ./.github/workflows/release-technical.yml
 
   build:
     name: Build ${{ matrix.platform }}
+    if: >-
+      ${{ !cancelled() && needs.prepare.result == 'success' &&
+          (needs.quality.result == 'success' ||
+           (needs.prepare.outputs.fast_rc == 'true' && needs.quality.result == 'skipped')) }}
     needs:
       - prepare
       - quality
@@ -91,6 +83,10 @@ jobs:
       - name: Check out release tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.2
 
+      - name: Free hosted runner disk for application and Workspace images
+        if: runner.environment == 'github-hosted'
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
@@ -110,6 +106,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=rc,enable=${{ needs.prepare.outputs.fast_rc == 'true' }}
             type=sha,format=short,prefix=sha-
           labels: |
             org.opencontainers.image.title=AIQSA
@@ -125,6 +122,7 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: |
+            type=registry,ref=${{ env.IMAGE }}:buildcache-workspace-${{ matrix.id }}
             type=gha,scope=release-${{ matrix.id }}
             type=gha
           cache-to: type=gha,mode=max,scope=release-${{ matrix.id }}
@@ -153,6 +151,7 @@ jobs:
           compression-level: 0
 
       - name: Build and publish Postgres platform image by digest
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse).postgres }}
         id: postgres_image
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
@@ -164,8 +163,9 @@ jobs:
           cache-to: type=gha,mode=max,scope=postgres-release-${{ matrix.id }}
 
       - name: Export Postgres platform digest
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse).postgres || matrix.id == 'amd64' }}
         env:
-          DIGEST: ${{ steps.postgres_image.outputs.digest }}
+          DIGEST: ${{ fromJSON(needs.prepare.outputs.reuse).postgres || steps.postgres_image.outputs.digest }}
         shell: bash
         run: |
           set -euo pipefail
@@ -178,6 +178,7 @@ jobs:
           touch "${digest_dir}/${DIGEST#sha256:}"
 
       - name: Upload Postgres platform digest
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse).postgres || matrix.id == 'amd64' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: postgres-digests-${{ matrix.id }}
@@ -186,9 +187,51 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+      # This target extends release. Building it here shares the application
+      # layers in the same builder instead of compiling AIQSA a second time.
+      - name: Build and publish Workspace runner by digest
+        id: workspace_image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          target: workspace-runner
+          platforms: ${{ matrix.platform }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/insciqq/AIQSA
+            org.opencontainers.image.title=AIQSA workspace-runner
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: |
+            type=registry,ref=${{ env.IMAGE }}:buildcache-workspace-${{ matrix.id }}
+            type=gha,scope=workspace-runner-${{ matrix.id }}
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache-workspace-${{ matrix.id }},mode=max,ignore-error=true
+
+      - name: Export Workspace runner digest
+        env:
+          DIGEST: ${{ steps.workspace_image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p "${RUNNER_TEMP}/workspace-digests/workspace-runner"
+          touch "${RUNNER_TEMP}/workspace-digests/workspace-runner/${DIGEST#sha256:}"
+
+      - name: Upload Workspace runner digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: component-digests-workspace-runner-${{ matrix.id }}
+          path: ${{ runner.temp }}/workspace-digests
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
   build-components:
     name: Build ${{ matrix.component.name }} (${{ matrix.platform.name }})
     needs: [prepare, quality]
+    if: >-
+      ${{ !cancelled() && needs.prepare.result == 'success' &&
+          (needs.quality.result == 'success' ||
+           (needs.prepare.outputs.fast_rc == 'true' && needs.quality.result == 'skipped')) }}
     runs-on: ${{ matrix.platform.runner }}
     permissions:
       contents: read
@@ -216,23 +259,21 @@ jobs:
             context: ops/opensearch
             file: ops/opensearch/Dockerfile
             target: ""
-          - name: workspace-runner
-            context: .
-            file: Dockerfile
-            target: workspace-runner
 
     steps:
       - name: Check out release tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.2
 
       - name: Free hosted runner disk for component images
-        if: runner.environment == 'github-hosted'
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse)[matrix.component.name] && runner.environment == 'github-hosted' }}
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
 
       - name: Set up Docker Buildx
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse)[matrix.component.name] }}
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       - name: Sign in to GHCR
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse)[matrix.component.name] }}
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ghcr.io
@@ -240,6 +281,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build component by digest
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse)[matrix.component.name] }}
         id: image
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
@@ -256,8 +298,9 @@ jobs:
           cache-to: type=gha,mode=min,ignore-error=true,scope=${{ matrix.component.name }}-${{ matrix.platform.id }}
 
       - name: Export component digest
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse)[matrix.component.name] || matrix.platform.id == 'amd64' }}
         env:
-          DIGEST: ${{ steps.image.outputs.digest }}
+          DIGEST: ${{ fromJSON(needs.prepare.outputs.reuse)[matrix.component.name] || steps.image.outputs.digest }}
           COMPONENT: ${{ matrix.component.name }}
         shell: bash
         run: |
@@ -267,6 +310,7 @@ jobs:
           touch "${RUNNER_TEMP}/component-digests/${COMPONENT}/${DIGEST#sha256:}"
 
       - name: Upload component digest
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse)[matrix.component.name] || matrix.platform.id == 'amd64' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: component-digests-${{ matrix.component.name }}-${{ matrix.platform.id }}
@@ -277,7 +321,10 @@ jobs:
 
   production-smoke:
     name: Production installation and update
-    needs: [build, build-components]
+    needs: [prepare, build, build-components]
+    if: >-
+      ${{ !cancelled() && needs.prepare.outputs.fast_rc != 'true' &&
+          needs.build.result == 'success' && needs.build-components.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -321,7 +368,12 @@ jobs:
 
   publish:
     name: Publish multi-platform images and GitHub Release
-    if: github.ref_type == 'tag'
+    if: >-
+      ${{ !cancelled() && github.ref_type == 'tag' && needs.prepare.result == 'success' &&
+          needs.build.result == 'success' && needs.build-components.result == 'success' &&
+          ((needs.quality.result == 'success' && needs.production-smoke.result == 'success') ||
+           (needs.prepare.outputs.fast_rc == 'true' && needs.quality.result == 'skipped' &&
+            needs.production-smoke.result == 'skipped')) }}
     needs:
       - prepare
       - quality
@@ -380,6 +432,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=rc,enable=${{ needs.prepare.outputs.fast_rc == 'true' }}
             type=sha,format=short,prefix=sha-
           labels: |
             org.opencontainers.image.title=AIQSA
@@ -390,6 +443,7 @@ jobs:
         env:
           METADATA_JSON: ${{ steps.metadata.outputs.json }}
           VERSION: ${{ needs.prepare.outputs.version }}
+          FAST_RC: ${{ needs.prepare.outputs.fast_rc }}
         shell: bash
         run: |
           set -euo pipefail
@@ -420,6 +474,12 @@ jobs:
           for tag in "${tags[@]}"; do
             if [[ "${tag}" != "${IMAGE}:"* ]]; then
               echo "Image metadata produced a tag outside the release repository." >&2
+              exit 1
+            fi
+            if [[ "${VERSION}" == *-* && "${tag}" != "${IMAGE}:${VERSION}" &&
+                  ! "${tag}" =~ :sha-[0-9a-f]{7}$ &&
+                  ! ( "${FAST_RC}" == "true" && "${tag}" == "${IMAGE}:rc" ) ]]; then
+              echo "A prerelease must not update stable image tags." >&2
               exit 1
             fi
             tag_args+=(--tag "${tag}")
@@ -459,14 +519,18 @@ jobs:
         id: postgres_manifest
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          FAST_RC: ${{ needs.prepare.outputs.fast_rc }}
+          REUSE_DIGEST: ${{ fromJSON(needs.prepare.outputs.reuse).postgres }}
         shell: bash
         run: |
           set -euo pipefail
           digest_dir="${RUNNER_TEMP}/postgres-digests"
           shopt -s nullglob
           digest_files=("${digest_dir}"/*)
-          if (( ${#digest_files[@]} != 2 )); then
-            echo "Expected exactly two Postgres platform digests, found ${#digest_files[@]}." >&2
+          expected=2
+          if [[ -n "${REUSE_DIGEST}" ]]; then expected=1; fi
+          if (( ${#digest_files[@]} != expected )); then
+            echo "Expected ${expected} Postgres digest artifacts, found ${#digest_files[@]}." >&2
             exit 1
           fi
 
@@ -479,13 +543,18 @@ jobs:
             fi
             sources+=("${POSTGRES_IMAGE}@sha256:${digest}")
           done
+          if [[ -n "${REUSE_DIGEST}" ]]; then
+            [[ "${sources[0]}" == "${POSTGRES_IMAGE}@${REUSE_DIGEST}" ]]
+          fi
 
           component_ref="${POSTGRES_IMAGE}:${POSTGRES_COMPONENT_TAG}"
           release_ref="${POSTGRES_IMAGE}:${POSTGRES_COMPONENT_TAG}-${VERSION}"
-          postgres_tags=(--tag "${component_ref}" --tag "${release_ref}")
+          postgres_tags=(--tag "${release_ref}")
           major_ref="${POSTGRES_IMAGE}:${POSTGRES_COMPONENT_TAG%%.*}"
           if [[ "${VERSION}" != *-* ]]; then
-            postgres_tags+=(--tag "${major_ref}")
+            postgres_tags+=(--tag "${component_ref}" --tag "${major_ref}")
+          elif [[ "${FAST_RC}" == "true" ]]; then
+            postgres_tags+=(--tag "${POSTGRES_IMAGE}:rc")
           fi
           docker buildx imagetools create "${postgres_tags[@]}" "${sources[@]}"
 
@@ -496,14 +565,14 @@ jobs:
             exit 1
           fi
 
-          component_digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${component_ref}" | jq -er '.digest')"
-          if [[ "${component_digest}" != "${manifest_digest}" ]]; then
-            echo "Published Postgres tags do not resolve to one manifest digest." >&2
-            exit 1
-          fi
           if [[ "${VERSION}" != *-* ]]; then
+            component_digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${component_ref}" | jq -er '.digest')"
+            [[ "${component_digest}" == "${manifest_digest}" ]]
             major_digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${major_ref}" | jq -er '.digest')"
             [[ "${major_digest}" == "${manifest_digest}" ]]
+          elif [[ "${FAST_RC}" == "true" ]]; then
+            rc_digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${POSTGRES_IMAGE}:rc" | jq -er '.digest')"
+            [[ "${rc_digest}" == "${manifest_digest}" ]]
           fi
 
           mapfile -t platforms < <(
@@ -521,6 +590,8 @@ jobs:
       - name: Publish and verify component manifests
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          FAST_RC: ${{ needs.prepare.outputs.fast_rc }}
+          REUSE_IMAGES: ${{ needs.prepare.outputs.reuse }}
         shell: bash
         run: |
           set -euo pipefail
@@ -529,8 +600,11 @@ jobs:
           : > "${notes_file}"
           for component in docling tika opensearch workspace-runner; do
             digest_files=("${RUNNER_TEMP}/component-digests/${component}"/*)
-            if (( ${#digest_files[@]} != 2 )); then
-              echo "Expected two platform digests for ${component}." >&2
+            reuse_digest="$(jq -r --arg component "${component}" '.[$component] // ""' <<< "${REUSE_IMAGES}")"
+            expected=2
+            if [[ -n "${reuse_digest}" ]]; then expected=1; fi
+            if (( ${#digest_files[@]} != expected )); then
+              echo "Expected ${expected} digest artifacts for ${component}." >&2
               exit 1
             fi
             sources=()
@@ -539,10 +613,15 @@ jobs:
               [[ "${digest}" =~ ^[0-9a-f]{64}$ ]]
               sources+=("${IMAGE}@sha256:${digest}")
             done
+            if [[ -n "${reuse_digest}" ]]; then
+              [[ "${sources[0]}" == "${IMAGE}@${reuse_digest}" ]]
+            fi
             release_ref="${IMAGE}:${component}-${VERSION}"
             tags=(--tag "${release_ref}")
             if [[ "${VERSION}" != *-* ]]; then
               tags+=(--tag "${IMAGE}:${component}")
+            elif [[ "${FAST_RC}" == "true" ]]; then
+              tags+=(--tag "${IMAGE}:${component}-rc")
             fi
             docker buildx imagetools create "${tags[@]}" "${sources[@]}"
             manifest_json="$(docker buildx imagetools inspect --raw "${release_ref}")"
@@ -553,6 +632,9 @@ jobs:
             if [[ "${VERSION}" != *-* ]]; then
               stable_digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${IMAGE}:${component}" | jq -er '.digest')"
               [[ "${stable_digest}" == "${manifest_digest}" ]]
+            elif [[ "${FAST_RC}" == "true" ]]; then
+              rc_digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${IMAGE}:${component}-rc" | jq -er '.digest')"
+              [[ "${rc_digest}" == "${manifest_digest}" ]]
             fi
             printf '%s image: %s\nImmutable digest: %s@%s\n\n' "${component}" "${release_ref}" "${IMAGE}" "${manifest_digest}" >> "${notes_file}"
           done
@@ -564,6 +646,7 @@ jobs:
           POSTGRES_DIGEST: ${{ steps.postgres_manifest.outputs.digest }}
           TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.prepare.outputs.version }}
+          FAST_RC: ${{ needs.prepare.outputs.fast_rc }}
         shell: bash
         run: |
           set -euo pipefail
@@ -573,6 +656,23 @@ jobs:
           printf '\n' >> "${notes_file}"
           cat "${RUNNER_TEMP}/component-images.md" >> "${notes_file}"
           printf '\n' >> "${notes_file}"
+          if [[ "${FAST_RC}" == "true" ]]; then
+            cat >> "${notes_file}" <<'RC_NOTES'
+          CI test suites and installation smoke tests are skipped for this release candidate.
+
+          To follow the RC channel, set these image overrides in your installation's `.env`, then run `docker compose pull && docker compose up -d`:
+
+          ```dotenv
+          AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:rc
+          AIQSA_POSTGRES_IMAGE=ghcr.io/insciqq/aiqsa-postgres:rc
+          AIQSA_DOCLING_IMAGE=ghcr.io/insciqq/aiqsa:docling-rc
+          AIQSA_TIKA_IMAGE=ghcr.io/insciqq/aiqsa:tika-rc
+          AIQSA_OPENSEARCH_IMAGE=ghcr.io/insciqq/aiqsa:opensearch-rc
+          AIQSA_WORKSPACE_RUNNER_IMAGE=ghcr.io/insciqq/aiqsa:workspace-runner-rc
+          ```
+
+          RC_NOTES
+          fi
           gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
             -f "tag_name=${TAG}" --jq '.body' >> "${notes_file}"
           release_flags=(--verify-tag --title "AIQSA ${TAG}" --notes-file "${notes_file}")
