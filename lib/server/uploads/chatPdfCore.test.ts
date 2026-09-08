@@ -6,7 +6,7 @@ import { modelPdfPageEndMarker, modelPdfPageStartMarker } from "../parsing/model
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import { isLongChatPdf, decodeChatPdfPreparation } from "../../contracts/chatPdfPreparation";
 import { chatPdfFingerprint, resolveChatPdfRoute, type ChatPdfAttachmentAdmission } from "./chatPdfAdmission";
-import { createChatPdfCore, decodeChatPdfArtifact, encodeChatPdfArtifact } from "./chatPdfCore";
+import { chatPdfCompatibilityKey, createChatPdfCore, decodeChatPdfArtifact, encodeChatPdfArtifact } from "./chatPdfCore";
 
 function role(verifiedVisionInput = false, nativePdfInput = false): ProviderAdmissionRole {
   const capabilities = { nativePdfInput, nativeSearch: false, pdf: true, reasoning: false,
@@ -80,6 +80,28 @@ describe("chat PDF admission and artifacts", () => {
 });
 
 describe("chat PDF adaptive preparation", () => {
+  it("retains accepted legacy preparation and its prompt instead of mixing parser generations", async () => {
+    const bytes = await source();
+    const admitted = admission(bytes);
+    const versions = { parserVersion: 14, promptVersion: 6, renderVersion: 1 };
+    const acceptedCompatibilityKey = chatPdfCompatibilityKey(admitted, versions);
+    expect(acceptedCompatibilityKey).not.toBe(chatPdfCompatibilityKey(admitted));
+    const core = createChatPdfCore({ parseDocling: null });
+    const planned = await core.plan({ admission: admitted, bytes, acceptedCompatibilityKey,
+      onPageCount: async () => undefined });
+    expect(planned.plan).toMatchObject({ ...versions, compatibilityKey: acceptedCompatibilityKey,
+      limits: { imageBytes: 2097152, payloadBytes: 9437184 } });
+    const work = await core.page({ admission: admitted, bytes, ...planned, page: 1 });
+    expect(JSON.stringify(work.request.content)).not.toContain("an explicitly approximate point value");
+    const formula = "\\[\nz=\\frac{p}{q}\n\\]";
+    const document = core.assemble({ admission: admitted, ...planned,
+      results: [pageResult(1, formula), pageResult(2, "Second page result.")] });
+    expect(document.blocks.some(block => block.text === formula)).toBe(false);
+    expect(() => chatPdfCompatibilityKey(admitted, { ...versions, promptVersion: 8 })).toThrow("pdf_preparation_invalid");
+    await expect(core.plan({ admission: admitted, bytes, acceptedCompatibilityKey: "0".repeat(64),
+      onPageCount: async () => undefined })).rejects.toThrow("pdf_preparation_invalid");
+  }, 20_000);
+
   it("discovers pages before slow inspection and prepares bounded isolated requests with real native rendering", async () => {
     const bytes = await source();
     const core = createChatPdfCore({ parseDocling: null });
@@ -114,7 +136,7 @@ describe("chat PDF adaptive preparation", () => {
       } } } } };
     const core = createChatPdfCore({ parseDocling: null });
     const planned = await core.plan({ admission: admitted, bytes, onPageCount: async () => undefined });
-    expect(planned.plan.limits).toMatchObject({ imageBytes: 2097152, imageCount: 1, imagePixels: 1 });
+    expect(planned.plan.limits).toMatchObject({ imageBytes: 6 * 1024 * 1024, imageCount: 1, imagePixels: 1 });
     await expect(core.page({ admission: admitted, bytes, ...planned, page: 1 }))
       .rejects.toThrow("pdf_preparation_invalid");
   }, 20000);

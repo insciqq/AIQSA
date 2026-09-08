@@ -107,6 +107,36 @@ function nativeColumns(cells: readonly string[], index = 0): ParsedDocumentBlock
 }
 
 describe("adaptive PDF deterministic merge", () => {
+  it("retains governed line corrections when model prose is grouped into a paragraph", () => {
+    const first = "The northern station recorded 17 samples.";
+    const corrected = "The northern station recorded 19 samples.";
+    const second = "Maintenance begins after the operator confirms every recorded measurement.";
+    const native = geometry([block(corrected), block(second, 1)]);
+    const common = { docling: null, geometry: native, maxBlocks: 20, maxCharacters: 2_000,
+      plan, deduplicateNativeText: true };
+    const previous = mergeAdaptivePdfDocument({ ...common, vision: vision([block(first), block(second, 1)]) });
+    expect(previous.text).toContain(corrected);
+    const current = mergeAdaptivePdfDocument({ ...common, deduplicateNativeFragments: true,
+      vision: vision([block(first + "\n" + second)]) });
+    expect(current.blocks.some(block => block.text === corrected + "\n" + second)).toBe(true);
+    expect(current.text).not.toContain(first);
+  });
+
+  it("rejects a native mathematical duplicate while preserving an omitted paragraph", () => {
+    const formula = String.raw`The limit is \(\beta_i\leq\sqrt{11}\,s_i\).`;
+    const duplicate = "The limit is β i ≤ 11 s i.";
+    const omitted = "Calibration completed on 2042-03-06.";
+    const input = {
+      docling: null, geometry: geometry([block(duplicate), block(omitted, 1)]),
+      maxBlocks: 20, maxCharacters: 2_000, plan, vision: vision([block(formula)])
+    };
+    expect(mergeAdaptivePdfDocument(input).text).toContain(duplicate);
+    const current = mergeAdaptivePdfDocument({ ...input, deduplicateNativeText: true });
+    expect(current.text).toContain(formula);
+    expect(current.text).toContain(omitted);
+    expect(current.text).not.toContain(duplicate);
+  });
+
   it("does not add a synthetic table joining prose already read in separate columns", () => {
     const left = "The northern workshop builds wooden boats.";
     const right = "The southern workshop repairs bicycles.";

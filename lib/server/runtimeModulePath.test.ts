@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { resolveRuntimeModulePath } from "./runtimeModulePath";
 
 describe("runtime worker module resolution", () => {
-  it.each(["pdf-lib", "unpdf", "@napi-rs/canvas"])(
+  it.each(["pdf-lib", "unpdf", "@napi-rs/canvas", "pdfjs-dist/package.json"])(
     "returns a loadable absolute path for %s",
     (specifier) => {
       const resolved = resolveRuntimeModulePath(specifier);

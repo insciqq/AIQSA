@@ -207,7 +207,7 @@ function adaptiveDocling(geometry: NativePdfGeometry) {
 }
 
 describe("Knowledge System Model PDF parser", () => {
-  it.each([17, 18])("binds supplemental figure images only at profile %s or later", async (parserProfileVersion) => {
+  it.each([17, 18, 19])("keeps figure crops opt-in when parsing profile %s", async (parserProfileVersion) => {
     const bytes = await (await import("sharp")).default({
       create: { width: 600, height: 800, channels: 3, background: "white" }
     }).png().toBuffer();
@@ -260,14 +260,24 @@ describe("Knowledge System Model PDF parser", () => {
     }
   });
 
-  it.each([[15, true], [15, false], [16, true], [16, false], [17, true], [17, false]] as const)(
-    "pins native prose deduplication at profile %s with layout parser %s",
-    async (parserProfileVersion, withLayoutParser) => {
+  it.each([
+    [15, true, "prose"], [15, false, "prose"], [16, true, "prose"], [16, false, "prose"],
+    [17, true, "prose"], [17, false, "prose"], [19, true, "prose"], [19, false, "prose"],
+    [17, true, "math"], [17, false, "math"], [19, true, "math"], [19, false, "math"]
+  ] as const)(
+    "pins native deduplication at profile %s with layout parser %s and %s",
+    async (parserProfileVersion, withLayoutParser, content) => {
       const image = await (await import("sharp")).default({
         create: { width: 600, height: 800, channels: 3, background: "white" }
       }).png().toBuffer();
       const source = adaptiveGeometry(1);
-      const cells = ["Left panel contains the maintenance notes.", "Right panel lists the repair schedule."];
+      const cells = content === "math"
+        ? ["Left panel reports q i = 14 samples.", "Right panel reports p j = 23 cycles."]
+        : ["Left panel contains the maintenance notes.", "Right panel lists the repair schedule."];
+      const modelCells = content === "math"
+        ? [String.raw`Left panel reports \(q_i=14\) samples.`, String.raw`Right panel reports \(p_j=23\) cycles.`]
+        : cells;
+      const formula = "\\[\nu=\\frac{m+4}{n}\n\\]";
       const native = {
         ...source.blocks[0]!,
         isTable: true,
@@ -289,12 +299,13 @@ describe("Knowledge System Model PDF parser", () => {
       };
       const execute = vi.fn(async (_snapshot: unknown, request: unknown) => {
         expect(JSON.stringify(request).includes("an explicitly approximate point value"))
-          .toBe(parserProfileVersion === 17);
+          .toBe(parserProfileVersion >= 17);
         return {
           finalProviderResponsePreview: {},
           finalText: [modelPdfPageStartMarker(1),
-            `${cells[0]} The inspection is complete.`,
-            `${cells[1]} The next visit is planned.`, modelPdfPageEndMarker(1)].join("\n"),
+            `${modelCells[0]} The inspection is complete.`,
+            `${modelCells[1]} The next visit is planned.`,
+            ...(content === "math" ? [formula] : []), modelPdfPageEndMarker(1)].join("\n"),
           usage: { inputTokens: 100, outputTokens: 20, reasoningTokens: 0, totalTokens: 120 }
         };
       });
@@ -323,8 +334,12 @@ describe("Knowledge System Model PDF parser", () => {
         systemModelPolicyVersion: 3, systemModelSnapshot: snapshot()
       });
 
-      expect(document.blocks.some(({ text }) => text === native.text)).toBe(parserProfileVersion === 15);
-      for (const cell of cells) expect(document.text).toContain(cell);
+      expect(document.blocks.some(({ text }) => text === native.text))
+        .toBe(content === "math" ? parserProfileVersion < 19 : parserProfileVersion === 15);
+      for (const cell of modelCells) expect(document.text).toContain(cell);
+      if (content === "math") {
+        expect(document.blocks.some(block => block.text === formula)).toBe(parserProfileVersion >= 19);
+      }
       expect(document.quality.coveredPageCount).toBe(1);
   });
 
@@ -763,7 +778,11 @@ describe("Knowledge System Model PDF parser", () => {
     expect(prompt).not.toContain("Visual data:");
   });
 
-  it("bounds concurrent Vision pages and restores source page order", async () => {
+  it.each([
+    { concurrency: undefined, documents: 1 },
+    { concurrency: 2, documents: 2 },
+    { concurrency: 8, documents: 2 }
+  ])("bounds Vision work across $documents documents at $concurrency and restores page order", async ({ concurrency, documents }) => {
     let active = 0;
     let maximumActive = 0;
     const reserve = vi.fn(async (input: Record<string, unknown>) => ({
@@ -812,7 +831,8 @@ describe("Knowledge System Model PDF parser", () => {
         settle
       } as never,
       execute: execute as never,
-      inspect: vi.fn(async () => ({ pageCount: 4 })),
+      inspect: vi.fn(async () => ({ pageCount: 10 })),
+      visionConcurrency: concurrency,
       prepare: vi.fn(async (input) => ({
         images: [{
           bytes: Buffer.from(`page-${input.pageStart}`),
@@ -829,8 +849,8 @@ describe("Knowledge System Model PDF parser", () => {
       }))
     });
 
-    const document = await parser.parse({
-      artifactId: "artifact-parallel-vision",
+    const parsed = await Promise.all(Array.from({ length: documents }, (_, index) => parser.parse({
+      artifactId: `artifact-parallel-vision-${index}`,
       bytes: Buffer.from("%PDF-source"),
       maxBlocks: 100,
       maxCharacters: 10_000,
@@ -840,21 +860,20 @@ describe("Knowledge System Model PDF parser", () => {
       parserProfileVersion: KNOWLEDGE_PDF_PARSER_PROFILE_VERSION,
       processingGeneration: 0,
       profileRevisionId: "profile-parallel-vision",
-      sourceVersionId: "source-version-parallel-vision",
+      sourceVersionId: `source-version-parallel-vision-${index}`,
       systemModelPolicyVersion: 3,
       systemModelSnapshot: snapshot()
-    });
+    })));
 
     expect(KNOWLEDGE_MODEL_PDF_VISION_PAGE_CONCURRENCY).toBe(4);
-    expect(maximumActive).toBe(KNOWLEDGE_MODEL_PDF_VISION_PAGE_CONCURRENCY);
-    expect(execute).toHaveBeenCalledTimes(4);
-    expect(settle).toHaveBeenCalledTimes(4);
-    expect(document.blocks.map(({ text }) => text)).toEqual([
-      "Page 1",
-      "Page 2",
-      "Page 3",
-      "Page 4"
-    ]);
+    expect(maximumActive).toBe(concurrency ?? KNOWLEDGE_MODEL_PDF_VISION_PAGE_CONCURRENCY);
+    expect(execute).toHaveBeenCalledTimes(10 * documents);
+    expect(settle).toHaveBeenCalledTimes(10 * documents);
+    for (const document of parsed) {
+      expect(document.blocks.map(({ text }) => text)).toEqual(
+        Array.from({ length: 10 }, (_, index) => `Page ${index + 1}`)
+      );
+    }
   });
 
   it.each([

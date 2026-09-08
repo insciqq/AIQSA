@@ -215,6 +215,7 @@ export function createMemoryPasswordAuthRepository(input: {
         ...tokenInput,
         consumedAt: null
       });
+      return true;
     },
     async findPasswordIdentityByEmail(normalizedEmail) {
       return repository.identity?.normalizedEmail === normalizedEmail ? repository.identity : null;

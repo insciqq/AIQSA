@@ -521,7 +521,7 @@ export function createPasswordResetRequestHandler(deps: PasswordResetRequestHand
       const now = deps.now?.() ?? new Date();
       const token = createSessionToken();
 
-      await deps.repository.createPasswordResetToken({
+      const created = await deps.repository.createPasswordResetToken({
         expiresAt: passwordResetExpiresAt(now),
         identityId: identity.id,
         normalizedEmail,
@@ -529,15 +529,17 @@ export function createPasswordResetRequestHandler(deps: PasswordResetRequestHand
         tokenHash: hashToken(token),
         userId: identity.userId
       });
-      void deps.mailer
-        .send(
-          passwordResetEmail({
-            resetUrl: passwordResetUrl(config.appBaseUrl, token),
-            to: identity.user.email ?? identity.normalizedEmail
-          }),
-          "password_reset"
-        )
-        .catch(() => undefined);
+      if (created) {
+        void deps.mailer
+          .send(
+            passwordResetEmail({
+              resetUrl: passwordResetUrl(config.appBaseUrl, token),
+              to: identity.user.email ?? identity.normalizedEmail
+            }),
+            "password_reset"
+          )
+          .catch(() => undefined);
+      }
     }
 
     await waitForAuthResponseFloor({
