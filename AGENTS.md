@@ -19,6 +19,8 @@ Before the first production deployment, compatibility for persisted data, wire f
 
 Use existing code and contracts before adding scope or abstractions. Remove unused diagnostic surfaces and projections. Routine implementation changes need no documentation update; each durable rule has one owner.
 
+`human_docs/**` is secondary documentation for people, not a source of truth or agent context. Do not consult it for planning, implementation, debugging, or verification. Read, create, or change it only when the operator explicitly requests work on those documents; never synchronize it as a side effect of other changes. Its scoped `AGENTS.md` and `CLAUDE.md` remain mandatory agent instructions.
+
 Use only the scoped `.aiqsa/handoff/` (when explicitly requested), `.aiqsa/local-dev-profile/`, and `.aiqsa/kb-microbench/` workspaces under their local instructions; do not create sibling variants.
 
 ## Publication
