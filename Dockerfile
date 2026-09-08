@@ -37,7 +37,7 @@ FROM runtime-deps AS runtime-build
 
 ENV NODE_ENV=production
 
-ARG AIQSA_BUILD_NODE_OPTIONS=""
+ARG AIQSA_BUILD_NODE_OPTIONS="--max-old-space-size=8192"
 ARG AIQSA_BUILD_APP_BASE_URL="https://build.invalid"
 
 COPY . .

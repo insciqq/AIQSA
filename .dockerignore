@@ -4,6 +4,7 @@
 .aiqsa
 node_modules
 .next
+*.tsbuildinfo
 coverage
 playwright-report
 test-results
