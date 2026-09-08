@@ -1,157 +1,76 @@
 # TESTING
 
-Owner: Verification maintainers
-Scope: Test-level selection, canonical commands, disposable boundaries, evidence, and authoring rules.
-
-## Selection Rule
-
-Use the cheapest deterministic check that proves the increment, then run the completion lane proportional to the changed boundary. Documentation-only work runs `npm run docs:check`. Pure code normally completes through the hermetic lane. Add database, browser, image, dependency, deployment, or provider evidence only when the change crosses that boundary.
-
-`scripts/docs-manifest.mjs` owns the small mandatory document set and budgets. The docs checker verifies required owners, handwritten-document budgets/orphans, and internal links; it does not mirror source inventories, encode implementation prose, or inspect task-ledger state. Task-ledger changes run `npm run task:check` explicitly plus focused ledger/privacy tests; this remains independent of documentation validation.
+Owns verification selection, target safety, external-call permission, and test authoring. Run the cheapest deterministic check that proves the increment, then the completion lane proportional to the changed boundary. Unrelated expensive lanes are not cumulative release requirements.
 
 ## Core Lanes
 
-Install from the lockfile in a clean checkout:
+Install with `npm ci`. Iterate with `npm test -- <test-files>`, `npx eslint <changed-paths>`, and `npx tsc --noEmit` as applicable.
 
-```bash
-npm ci
-```
+| Change | Completion evidence |
+| --- | --- |
+| Documentation only | `npm run docs:check` |
+| Deterministic code | `npm run check:hermetic` (Prisma generation, docs, lint, types, deterministic tests; no database/provider keys) |
+| Database, concurrency, process/service boundary | Disposable container parity below |
+| Browser/server routing, auth/session, streaming, geometry/input/focus | Focused components plus affected Playwright states |
 
-Iterate narrowly:
+Cold full checks may exceed Node's default heap; use `NODE_OPTIONS=--max-old-space-size=8192 npm run check:hermetic`, matching [CI](../.github/workflows/ci.yml). Stale generated `.next` types can reference deleted routes; verify in a clean checkout rather than changing source to satisfy old generated files.
 
-```bash
-npm test -- <test-files>
-npx eslint <changed-paths>
-npx tsc --noEmit
-```
-
-Complete deterministic application work with:
-
-```bash
-npm run check:hermetic
-```
-
-This generates Prisma, checks docs, lints, type-checks, and runs deterministic Vitest/Testing Library tests without a database, Docker, provider keys, or external services. `*.prisma.test.*` and `*.integration.test.*` belong only to the full stateful project.
-
-Benchmark sources and suites are opt-in verification and are excluded from the
-ordinary product ESLint, TypeScript, and Vitest lanes. LongMemEval contracts,
-including the frozen revision guard, run only through
-`npm run test:benchmark:longmemeval`; a historical qualification revision must
-not block unrelated product development.
-
-Use disposable container parity for PostgreSQL, migrations, concurrency, service/process topology, or another real integration boundary:
+Read [Environment](ENV_VARIABLES.md) first. Preserve the checkout's configuration and operator profile; use a unique acknowledged disposable project for stateful work. Never target the persistent installation. Commands for the disposable topology:
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d --build
 npm run check:container
-```
-
-The full lane deploys committed migrations and runs deterministic plus stateful tests against the exact acknowledged disposable database. Stateful/container checks are serialized. Production deployment and its operational tests are maintained separately; they must never target the local development profile.
-
-`test:full:inner` is an internal command for the disposable development container and intentionally fails closed on the host. Use `check:container` for the full lane; when an already migrated disposable stack is running, a focused stateful file may be passed to `test:full:inner` only from that app container.
-
-Use Playwright only for browser/server routing, auth/session, streaming, responsive geometry/input, or focus behavior:
-
-```bash
 docker compose -f docker-compose.dev.yml run --rm -T app npm run test:e2e
 ```
 
-This may reset disposable data and must not overlap another stateful check. Reusable-server focused specs are allowed only when their fixtures own no reset/global mutation. Store task-owned browser output under a fresh `/tmp` path when default artifacts are not writable; never delete another process's artifacts.
+Select only the needed commands. Container parity deploys committed migrations and runs deterministic plus stateful tests. `*.prisma.test.*` and `*.integration.test.*` are excluded from the hermetic project. `test:full:inner` runs only inside the acknowledged disposable app container; an already migrated stand may run a focused file there.
 
-Knowledge changes use small co-located tests through the same narrow, hermetic, container, and browser lanes. Select only the executable owners crossed by the change and prove the applicable contracts:
-
-- tenant, Project, direct-Source, Base, and `All my knowledge` scope isolation;
-- one canonical Source vote across overlapping Bases;
-- the sole strict `search_knowledge({ query, sourceAliases })` descriptor, Unicode/code-point bounds, rejection of hidden controls, an empty alias list on the broad first call, and later narrowing only to previously disclosed Sources;
-- no generated focused request on new runs, plus read/recovery compatibility for accepted historical focused runs;
-- Search, Knowledge, MCP, attachments, Assistants, and Personal Memory context remain independently composable;
-- one query embedding per compatible Profile and one hybrid repository operation per accepted Knowledge call, with at most sixteen broad-map results and eight Source-scoped reduce results;
-- installation-scoped Knowledge-search limits (default `12`, bounded `1..32`), pre-I/O rejection of the next over-budget call, authority/egress rechecks, and bounded timeout;
-- normal hybrid retrieval plus classified query-embedding degradation that retains authorized nonsemantic candidates, while database, lexical-backend, authority, SQL, and invariant failures remain visible;
-- named relevance eligibility before weighted reciprocal-rank fusion, exact preservation, weak-nearest-neighbor rejection, occurrence deduplication, cross-call evidence novelty, soft Source diversity, and same-Source neighbor bounds;
-- completed result replay in execution/recovery and normal `no_relevant_evidence` continuation after every generated candidate is ineligible;
-- real PostgreSQL `pg_trgm` evidence for query-first containment-like metadata matching, including beginning, middle, and irrelevant stored values;
-- exact checkpoint-delivered handle binding, Source Version/locator attribution, ordinary Markdown, and no second generation;
-- distinct processing, partial-ready, zero-candidate, insufficient-evidence, retrieval, provider, and contract outcomes;
-- embedding-free Source-local reads, bounded exact search, and metadata-only discovery;
-- recovery never repeats settled or crash-ambiguous provider I/O;
-- adaptive full-context admission proves the entire canonical ready corpus is retained inside the frozen provider budget with zero query embeddings and zero Knowledge-search calls, otherwise routing falls back to RAG before provider I/O;
-- one session per run, durable full-context evidence without synthetic retrieval receipts, and one receipt per actual RAG Knowledge call with exact binding persistence/replay;
-- replacement/deletion immutability, private-payload purge, and content-free logs/client projections;
-- normalized page, heading, table, form, OCR, and layout locators remain attributable citation context.
-
-These are binary technical contracts. Keep one tiny fixture per named defect and no more than six tiny documents in a shared Knowledge fixture. Do not add scored corpora, labels, expected-answer collections, frozen outputs, or large question sets. The owner may inspect a few private documents manually after completion, but those results are neither repository artifacts nor an implementation gate.
+Serialize stateful/container/browser-reset checks. Reusable-server specs may overlap only when they own no reset/global mutation. Use a fresh `/tmp` directory for task-owned browser output when necessary; never delete another process's artifacts.
 
 ## Boundary Evidence
 
 | Changed boundary | Additional evidence |
 | --- | --- |
-| Prisma schema/migration/bootstrap | `npm run db:migration:smoke`; use `npm run db:baseline:contract` for baseline/custom PostgreSQL DDL or adoption logic. Both create only acknowledged disposable databases. |
-| Compose/image/installation | Focused config tests, release-target build, fresh bootstrap/adoption, non-root roles, and unique disposable project plus volume/image identities. |
-| Backup/restore or destructive retention | Dry run first, then real backup/empty-target restore or deletion only when explicitly authorized against disposable/intended targets. |
-| Browser interaction/visual composition | Focused component tests, then affected browser states/viewports/themes; assert observable state, focus, containment, geometry, and overflow rather than screenshots. |
-| Provider adapter | Deterministic request/stream/parser/fake tests first; real smoke only under the permission below. |
-| Dependency/security | Focused threat tests and `npm run security:deps`; review manifest, lockfile, lifecycle scripts, and any override/upstream contract. |
-| MCP/ToolHive/OAuth | Deterministic protocol/security tests, then the relevant disposable local runtime. Registry pulls, hosted consent, upstream OAuth, and Docker-side effects need separate authority. |
-| Workspace/KVM | Pure domain, policy, official-catalog, runner-protocol, deterministic-runtime, output/path, activity-projection, and UI tests first; lease, registry, and output-race concurrency through the stateful project against disposable PostgreSQL. Then build/inspect the release and runner/guest images, prove reproducible guest image identity, run the deterministic browser flows in isolated Compose (including Stop after an async start, runner-side execution loss, export failure with recovery, session recreation, and exact `sandbox:` link resolution; the deterministic runtime models delayed executions, staging counters, and one-shot export faults through `aiqsa-test` shell directives), and finally use the opt-in live smoke/browser flow on an acknowledged disposable KVM host. The whole Chromium suite exceeds the app container's default 3 GiB in dev mode: raise `AIQSA_APP_MEMORY_LIMIT` (6 GiB proved enough) or run Playwright shards, each with its own dev server. The runner-restart proof (`scripts/smoke-workspace-runner-restart.ts`) runs on the Docker host against the live-profile app and reads settlement through the stack's postgres container, so the host needs no database route. Live evidence must cover public-only and no-network modes, persistence/stop/reset, Stop after a real `exec_start` with no delayed side effect, a runner restart, incremental staging, package/runtime execution, streamed files/checksums, recovery, and exact cleanup without recording user content. |
-| Upload/parser sidecars | Deterministic routing/bounds/decoder tests, then the parser smoke in disposable Compose; prove stopped parsers degrade locally without breaking core readiness. |
-| Memory/Knowledge/recovery/concurrency | Pure policy/source/handler tests, then focused container-internal `test:full:inner` cases or container parity against disposable PostgreSQL/pgvector and, for passage retrieval/projection changes, the isolated OpenSearch service. Rebuild/integrity evidence is aggregate and content-free. |
-| Repository publication | `npm run release:privacy:check`, inspected-tree release build, and image inspection; publication/tag/ref changes still need explicit authority. |
+| Schema, migration, bootstrap | `npm run db:migration:smoke`; `npm run db:baseline:contract` for baseline/custom PostgreSQL DDL/adoption. Only acknowledged disposable databases. |
+| Compose, image, installation | Focused config tests, release-target build, fresh bootstrap/adoption, non-root roles, and isolated project/volume/image identities. |
+| Backup/restore, destructive retention | Dry run first; real backup/empty-target restore/deletion only with explicit authority over disposable/intended targets. Production procedures belong to the separate infrastructure workspace. |
+| UI | Affected browser states, themes, viewports, focus transitions, containment and overflow; see [Frontend](FRONTEND.md). |
+| Provider | Deterministic request/stream/parser/fake checks first; real calls require the permission below. |
+| Dependencies/security | Focused threat checks and `npm run security:deps`; review manifest, lockfile, lifecycle scripts, overrides and upstream compatibility. |
+| MCP/ToolHive/OAuth | Deterministic protocol/security tests, then relevant disposable runtime. Registry pulls, hosted consent, upstream OAuth and Docker side effects require their own authority. |
+| Workspace/KVM | Policy/protocol/output tests, disposable database race checks, release/runner/guest image builds and reproducible guest identity, isolated browser flows, then opt-in real KVM evidence. Cover execution loss, Stop without delayed side effects, runner restart, export/recovery, file integrity, network modes and cleanup. A fake runtime is never live evidence. |
+| Upload/parser sidecars | Deterministic routing/bounds/decoders, then disposable parser smoke; stopped parsers degrade locally without breaking core readiness. |
+| Memory/Knowledge/recovery | Focused policy/handler tests, then disposable PostgreSQL/pgvector for persistence/concurrency and isolated OpenSearch for retrieval/projection changes. Integrity/rebuild output is content-free. |
+| Publication | `npm run release:privacy:check`, inspected-tree release build and image inspection. Tags, pushes and publication still require explicit operator authority. |
 
-These are routing rules, not a cumulative release matrix. Do not run unrelated expensive lanes because another task once used them.
+Knowledge tests prove the changed scope, evidence-delivery, citation, egress, degradation or immutability contract with tiny fixtures. Keep ordinary co-located tests free of scored corpora, relevance labels, expected-answer collections and large question sets. Optional manual document inspection is not an implementation gate.
+
+`docs:check` owns required documents, orphan/link checks, and text budgets through [docs-manifest](../scripts/docs-manifest.mjs). It neither inventories implementation nor validates task state. Task-ledger changes separately run `npm run task:check` and focused ledger/privacy tests.
 
 ## External And Opt-In Checks
 
-Fake providers are the automation default. `npm run smoke:custom-openai-compatible` is a local credential-free fixture. `npm run smoke:gemini` may run only with the current operator-provided key, bounded request, and sanitized output; missing key skips. Anthropic, OpenAI, OpenRouter, hosted Search, OAuth/registry, or other real-provider smokes require explicit operator authorization for that provider and the smallest useful call. Never print keys, prompts, answers, sources/URLs, private IDs, or raw payloads.
+Fake providers are the default. Never print keys, prompts, answers, source text/URLs, private identifiers, raw tool payloads, or capability-bearing paths. Evidence is limited to versions, stable codes, booleans, counts, latency, limits, hashes and cleanup results.
 
-Independent public Knowledge retrieval evaluation is a separate opt-in workspace owned by [`benchmarks/knowledge/README.md`](../benchmarks/knowledge/README.md), never a default hermetic or release gate. It requires an isolated disposable Compose project with distinct ports/volumes, an explicit paid-work acknowledgement and provider permission, frozen public dataset revisions, conservative canary-first concurrency, and content-free checkpoint/results. Corpora, queries, rankings, credentials, and run state remain ignored; only harness contracts and aggregate documentation belong in the repository. Scored corpora and relevance labels remain forbidden in ordinary co-located tests.
+- `smoke:custom-openai-compatible` is credential-free and local.
+- `smoke:gemini` may use a current operator-provided key for a bounded request with sanitized output; a missing key skips.
+- Anthropic, OpenAI, OpenRouter, hosted Search, OAuth/registry and other real-provider calls require explicit provider-specific authorization and the smallest useful call.
+- `smoke:memory-semantic` has standing permission only for the bounded loopback disposable app using credentials already stored through Admin and sanitized aggregate output. No persistent/non-loopback authority is implied.
+- `security:deps` is the approved external npm advisory check during dependency work under [Security](SECURITY.md). Network failure may be retried with required sandbox escalation; audit suggestions do not authorize breaking upgrades.
 
-`npm run security:deps` is the approved external npm advisory check during dependency work. Network failure may be retried with the required sandbox escalation. Its remediation suggestions are evidence, not authority for a breaking upgrade.
+Read an opt-in script and its guards before running it. Exact flags, fixtures, limits, cleanup and assertions belong to that script, not this document.
 
-Parser, Memory semantic and MCP runtime smokes use their checked-in scripts as the executable command/source of bounds. Production backup/restore and deployment checks belong to the separate infrastructure workspace. Read the script and relevant owner before running; do not copy exact test-file matrices into prose. `npm run smoke:memory-semantic` has standing permission only for the bounded loopback disposable app using credentials already stored through Admin and sanitized aggregate output; it has no permission for a persistent or non-loopback installation.
+Workspace receiver/export/file-integrity browser fixtures run alone in isolated Compose. Live operation-fence evidence runs as the sole command in a disposable KVM runner with one receiver/guest; database lease-expiry evidence remains separate. `smoke:workspace-live` requires explicit disposable opt-in, real KVM, and synthetic owned sessions/objects. `smoke:workspace-user-paid` is optional and outside default/release gates: it additionally requires explicit paid codex-lb permission, a fresh isolated topology satisfying [its guards](../scripts/workspace-user-paid-support.ts), sequential guests and independent artifact oracles. Diagnose a failure before a paid retry; clean only its resources.
 
-The opt-in [Workspace receiver browser fixture](../tests/e2e/workspace-operation-fence.spec.ts) runs alone against a dedicated loopback receiver and verifies rejected resend plus draft preservation while cleanup is held. The [operation-fence live smoke](../scripts/smoke-workspace-operation-fence.ts) runs as the sole command of a disposable KVM runner container: one receiver process at a time and one 1024-MiB guest. It qualifies delayed requests across an actual receiver process restart; real PostgreSQL lease-expiry barriers remain separate required evidence.
+`smoke:memory-browser-paid` and `smoke:memory-mcp-codex` have no standing paid permission. Both require their explicit disposable target and sanitized evidence. The inbound MCP smoke owns a fresh database, app origin, synthetic account, isolated client configuration and real browser OAuth; it must prove native fact parity, revocation, lexical/semantic retrieval and absence of chat artifacts independently of the generated answer. The browser DREAM scenario may validly produce no pattern; never reroll an unchanged source set to force one.
 
-The opt-in [Workspace export browser fixture](../tests/e2e/workspace-export-fence.spec.ts) owns a loopback proxy and runs alone in disposable Compose. Its interrupted export/recovery barrier qualifies reset, archive, independent downloads, and answer preservation with either a deterministic receiver or the explicitly selected Compose KVM runner. A deterministic provider on KVM qualifies that runtime boundary; paid real-user scenarios require an actual provider and separate artifact oracles.
+Any unexplained Personal Memory `DEGRADED` result blocks a provider smoke, benchmark or qualification even if the answer is correct. Diagnose and fix the shared path or prove that the scenario deliberately injected that fallback. A clean qualification has zero unexplained degradation.
 
-The opt-in [Workspace file-integrity fixture](../tests/e2e/workspace-file-integrity.spec.ts) runs alone with `AIQSA_WORKSPACE_FILE_INTEGRITY_E2E=DISPOSABLE` and its own loopback proxy. It qualifies same-size transport corruption, classified failure and recovery from a closed capture despite guest mutation/addition, canonical original restaging across turns, and independent downloads. Selecting `AIQSA_WORKSPACE_FILE_INTEGRITY_UPSTREAM=http://workspace-runner:4310` requires the disposable KVM runner with one CPU and 1024 MiB; it never joins a default browser gate.
-
-`npm run smoke:workspace-live` has no implicit authority over an operator installation. It requires its explicit disposable opt-in, a real KVM-capable runner from the isolated Workspace profile, and only synthetic task-owned sessions/objects. The deterministic runtime is never live evidence. A successful result exposes only versions, catalog/image hashes, booleans, counts, byte/checksum parity, stable states/codes, and cleanup outcome; prompts, file contents, paths containing user identity, tool arguments/results, tokens, and runtime identifiers remain private.
-
-`npm run smoke:workspace-user-paid` is an optional real-user browser qualification, excluded from default suites and release gates. It requires explicit paid codex-lb permission, `AIQSA_WORKSPACE_USER_PAID_E2E=DISPOSABLE`, and `AIQSA_WORKSPACE_USER_PAID_COMPOSE_FILE` pointing to a fresh isolated Compose JSON that satisfies the [script's guards](../scripts/workspace-user-paid-support.ts). The app, database, real KVM runner and maintenance role must already be ready; a production app also needs `memory-worker` for durable chat deletion. It reads the existing codex-lb profile and key, uses ordinary Admin compatibility checks, and tests uploads, code execution, downloads and later revisions with independent artifact oracles. Run it alone: guests are sequential, generated code is checked in a separate networkless container, and failures require diagnosis before another paid attempt. Select one case with `AIQSA_WORKSPACE_USER_PAID_SCENARIO=CSV`, `CODE`, `SCHEDULE` or `OFFICE` when a diagnosed retry needs only that case. Office checks use the existing pinned `workspace-guest` image stage in a separate networkless container; `AIQSA_WORKSPACE_USER_PAID_OFFICE_CASE` selects `STOCK`, `PRESENTATION`, `DOCX` or `MONTHLY` for a diagnosed retry. Office artifacts remain in an ignored temporary directory for independent inspection. It removes only its own chats and saved-file pins; the stand owner must remove the disposable stack afterward.
-
-Any observed Personal Memory `DEGRADED` outcome in a provider smoke, benchmark, or qualification run blocks that qualification even when the generated answer or external oracle is correct. Diagnose the exact degradation reason and either fix the shared product path with a neutral regression or prove that the run is an explicitly injected fallback scenario whose purpose is to exercise that degradation. A clean qualification requires zero unexplained `DEGRADED` outcomes; answer accuracy never waives this runtime-health gate.
-
-`npm run smoke:memory-browser-paid` is an optional, non-gating Playwright smoke for the local disposable Compose stand. It has no standing paid-provider permission: set `AIQSA_MEMORY_BROWSER_PAID_SMOKE=DISPOSABLE`, provide the exact loopback `AIQSA_MEMORY_BROWSER_PAID_SMOKE_DATABASE_URL`, and select either the `DIRECT` or `DREAM` scenario through `AIQSA_MEMORY_BROWSER_PAID_SMOKE_SCENARIO` only after the operator authorizes paid calls. Run both scenarios separately when full browser evidence is wanted. The script requires the dev profile's 120-second Memory admission timeout, emits sanitized aggregates, bounds provider work, and permanently deletes only chats and Memory refs it created. A successful `DREAM` result may contain either one classified/retrieved pattern or a structurally valid empty synthesis result; do not reroll an unchanged source set to force a model-authored pattern.
-
-`npm run smoke:memory-mcp-codex` is the opt-in external-client gate for inbound
-Personal Memory MCP. It requires
-`AIQSA_MEMORY_MCP_CODEX_SMOKE=DISPOSABLE`, accepts only the explicit loopback
-`aiqsa` PostgreSQL administrator URL ending in `/postgres`, and creates a
-unique database, app origin, synthetic account, facts, and isolated Codex home
-for each run. It uses only the reviewed `codex-lb` provider from the existing
-Codex profile, performs real browser OAuth with the installed Codex, checks the
-current protocol and stable stateless compatibility schemas, and exercises
-Codex without an experimental MCP feature flag. It exercises all six
-fact-only tools, proves revoke-before-execution, compares independent AIQSA
-state, and always removes its database and temporary client configuration. Its
-semantic leg restores the existing local development profile into the
-disposable database, selects the reviewed Memory embedding/reranker routes,
-activates a hybrid generation, and waits for the synthetic fact vector. It
-captures the actual autonomous `search_memories` argument only in process and
-requires zero normalized lexical overlap, a deterministic lexical miss, a
-compatible vector hit, ordered identity parity with the native facts-only entry
-point, the expected content-free utility bindings, and no Chat/run/history
-artifacts; the client answer alone is never evidence. The command has no
-standing paid-provider permission and must never target the default persistent
-installation. Evidence is limited to versions, tool names, stable codes,
-booleans, counts, and bounded duration; raw prompts, facts, answers, OAuth
-material, refs, identifiers, and event payloads remain private.
+Benchmark suites are opt-in and excluded from product lint/types/tests. [Knowledge benchmarks](../benchmarks/knowledge/README.md) require isolated disposable infrastructure, paid-work/provider permission, frozen public datasets, conservative canary-first concurrency and content-free outputs. Corpora and run state remain ignored. LongMemEval contracts run through `npm run test:benchmark:longmemeval`; a frozen historical revision must not block unrelated work.
 
 ## Test Authoring And Completion
 
-Test observable contracts, not implementation shape. Add the cheapest deterministic regression. Keep fixtures small, isolated, content-safe, and order-independent; `.only`, broad snapshots, permanent environment skips, real paid calls, and unowned global cleanup are forbidden. Explicitly cover loading/error/empty and lifecycle terminals when changed.
+Test observable contracts with the cheapest meaningful deterministic regression. Keep fixtures small, isolated, content-safe and order-independent. Do not use `.only`, broad snapshots, permanent environment skips, real paid calls in ordinary suites, or unowned global cleanup. Cover affected loading/error/empty and lifecycle terminals.
 
-Database/integration tests fail closed unless the acknowledged disposable target is present. Migration, prune, backup, browser reset, and installation tests validate exact targets before mutation and clean only resources they own. Sanitize external evidence to booleans, counts, stable codes, versions, plan names, latency, and bounded limits.
+Database, migration, prune, backup, reset and installation checks validate exact targets before mutation and clean only owned resources. Required live/runtime evidence cannot be replaced with a fake or prose assertion.
 
-Before completion, run the root task-owned status/diff checks, inspect the complete task diff and new files, reject secrets/artifacts/unrelated drift, and record exact checks plus specific reasons for any relevant omission. Required-but-unavailable evidence blocks completion.
+Before completion, perform root [final review](../AGENTS.md#before-final-response) and report exact passed checks and reasons for relevant omissions. Required-but-unavailable evidence leaves the affected work blocked.

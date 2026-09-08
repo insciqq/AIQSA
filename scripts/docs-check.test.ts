@@ -109,4 +109,39 @@ describe("documentation sanity check", () => {
       `agent_docs: ${total} nonempty lines exceed the ${AGENT_DOC_BUDGETS.nonEmptyLines}-line budget`
     );
   });
+
+  it("rejects an oversized paragraph even when it fits the line budget", () => {
+    const root = fixture();
+    const words = AGENT_DOC_BUDGETS.wordsPerFile + 1;
+    write(root, "agent_docs/INDEX.md", `  ${Array(words).fill("word").join(" \t ")}  \n`);
+
+    expect(checkDocs(root)).toEqual([
+      `agent_docs/INDEX.md: ${words} words exceed the ${AGENT_DOC_BUDGETS.wordsPerFile}-word file budget`
+    ]);
+  });
+
+  it("bounds total reading size even when each document is within budget", () => {
+    const root = fixture();
+    const docs = HANDWRITTEN_AGENT_DOCS as readonly string[];
+    const expanded = docs.slice(0, Math.ceil(AGENT_DOC_BUDGETS.words / AGENT_DOC_BUDGETS.wordsPerFile));
+    for (const relative of expanded) {
+      write(root, relative, Array(AGENT_DOC_BUDGETS.wordsPerFile).fill("word").join(" "));
+    }
+    const total = expanded.length * AGENT_DOC_BUDGETS.wordsPerFile + (docs.length - expanded.length) * 2;
+
+    expect(checkDocs(root)).toEqual([
+      `agent_docs: ${total} words exceed the ${AGENT_DOC_BUDGETS.words}-word budget`
+    ]);
+  });
+
+  it("also bounds instructions outside agent_docs", () => {
+    const root = fixture();
+    write(root, "AGENTS.md", Array(801).fill("word").join(" "));
+    write(root, "components/AGENTS.md", Array(301).fill("word").join(" "));
+
+    expect(checkDocs(root)).toEqual([
+      "AGENTS.md: 801 words exceed the 800-word instruction budget",
+      "components/AGENTS.md: 301 words exceed the 300-word instruction budget"
+    ]);
+  });
 });

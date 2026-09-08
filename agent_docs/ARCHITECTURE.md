@@ -1,66 +1,37 @@
 # ARCHITECTURE
 
 Owner: System architecture maintainers
-Scope: Dependency direction, supported deployment shape, durable data/egress boundaries, and architectural prohibitions. Exact modules, services, adapters, and runtime flows belong to executable artifacts.
+Scope: Dependency direction, deployment shape, and data/egress ownership.
 
 ## Architectural Stance
 
-AIQSA is a TypeScript/Node.js Next.js modular monolith. Browser rendering, authenticated HTTP entry points, domain logic, persistence, and external-service adapters ship as one application rather than independently deployed frontend and backend services. PostgreSQL/Prisma owns relational state, private S3-compatible object storage owns attachment, Knowledge, and generated Workspace bytes, and OpenSearch holds only rebuildable Knowledge-passage and Personal-Memory lexical projections. The optional Workspace runner is a narrow isolation role rather than another application backend: it owns only KVM/Microsandbox lifecycle and official sandbox-tool transport, while the application retains tenancy, admission, storage, recovery, and presentation authority.
+AIQSA is a Next.js modular monolith for authenticated users in an operator-managed organization. The supported production shape is one hardened, single-host, single-replica Compose installation. Process-local cancellation and external sessions do not support replica handover. Revisit admission, scheduling, recovery, and isolation before adding replicas, untrusted tenancy, or spend/latency guarantees.
 
-The supported production shape is one hardened, single-host, single-replica Compose installation for authenticated users in an operator-managed organization. Multi-replica/HA operation and a separately deployed application backend are unsupported. Revisit admission, scheduling, state ownership, and failure recovery before accepting untrusted external tenancy, promising spend/latency guarantees, or adding replicas.
+Do not split services or introduce a remote control plane without a measured blocker and an explicit design for authentication, ownership, networking, deployment, recovery, and observability.
 
 ## Dependency Direction
 
-```text
-browser UI
-  -> client-safe contracts and API clients
-  -> thin authenticated route handlers
-  -> provider-neutral domain and server orchestration
-  -> repositories or bounded external adapters
-  -> PostgreSQL, private object storage, or reviewed egress
-```
+Browser UI → client-safe contracts/API clients → authenticated routes → provider-neutral domain/server orchestration → repositories and bounded adapters.
 
-- `components/` and browser code may depend on client-safe contracts, never server modules, Prisma, credentials, Node-only APIs, or provider transports.
-- `lib/contracts/` is a dependency leaf for explicit client-safe wire shapes. `lib/domain/` remains provider-neutral and free of runtime/framework consumers.
-- Route handlers authenticate, validate, and compose boundaries; reusable behavior lives below the route file.
-- Repositories own durable-state access. Provider, Search, embedding, MCP, storage, and parsing wire formats remain inside server adapters and do not leak into browser contracts or neutral domain rules.
-- Dependencies point inward toward contracts and pure rules. A lower layer does not import its route, UI, or runtime consumer.
+Browser code cannot import server modules, Prisma, credentials, Node-only APIs, or provider transports. Contracts are a dependency leaf; domain rules do not import framework/runtime consumers. Routes compose boundaries; reusable behavior belongs below them. Repositories own durable access and adapters contain external wire formats. Lower layers never import their UI, route, or runtime consumers.
 
-The enforceable owners are [ESLint configuration](../eslint.config.mjs), the [architecture-boundary checker](../scripts/eslint/architecture-boundaries.mjs), its [focused tests](../scripts/eslint/architecture-boundaries.test.ts), and the imports in [`app/`](../app/), [`components/`](../components/), and [`lib/`](../lib/).
+Enforcement: [ESLint](../eslint.config.mjs), [boundary checker](../scripts/eslint/architecture-boundaries.mjs), and imports in [`lib/`](../lib/), [`app/`](../app/), and [`components/`](../components/).
 
 ## Supported Deployment Shape
 
-- This repository owns application code, runtime image builds and local development. Production Compose, deployment automation, reverse proxies, backup/restore orchestration, schedules and installation secrets are owned by a separate infrastructure workspace. Committed migrations and bootstrap remain application code; infrastructure invokes them before starting dependent roles.
-- [`docker-compose.dev.yml`](../docker-compose.dev.yml) is the disposable development and integration topology. It is never a preservation or recovery target and must not share state with the persistent installation.
-- The application is the only public application boundary. PostgreSQL, OpenSearch, object storage, parser sidecars, ToolHive control/proxies, and sibling workloads remain on private networks without direct host publication. Default publication and supported proxy/identity choices are constrained by [Environment](ENV_VARIABLES.md) and [Security](SECURITY.md).
-- The optional Workspace profile adds an internally authenticated runner on a private control network and a maintenance role backed by PostgreSQL. Only the runner receives `/dev/kvm` and the dedicated runtime volume; it receives no database, object-storage, provider, or browser-session credentials. Its separate egress network is not shared with the application or data services.
-- Sidecars are bounded helpers, not owners of application tenancy or durable product state. Optional provider, Search, SMTP, MCP, parser, release-awareness, and Memory failures remain feature-local unless an explicit contract changes core readiness. OpenSearch is a derived search dependency and never replaces PostgreSQL authority. Knowledge passage retrieval fails closed rather than selecting another lexical backend; Personal Memory may exercise OpenSearch only as detached shadow observation until its separately gated read cutover, with PostgreSQL retaining the complete answer and health path. Knowledge parsing may try only the canonical format route's bounded parser sequence; availability and quality outcomes may select a fallback, while tenant authority and durable settlement remain in the application.
-- Live cancellation and external sessions are process-local. Durable accepted state and recovery data live in PostgreSQL, but process ownership does not cross replicas; this is why multi-replica operation is not supported.
+Application code, images, committed migrations, bootstrap, and disposable development belong here. Production Compose, proxies, deployment, secrets, schedules, and backup/restore orchestration belong to the separate infrastructure workspace; do not reintroduce them as application-repository tooling. Infrastructure runs migrations/bootstrap before dependent roles.
 
-Executable application owners are [development Compose](../docker-compose.dev.yml), the [runtime image](../Dockerfile), companion-image build inputs in [`ops/`](../ops/), and the runtime modules and tests. Production operations must not be reintroduced as application-repository tooling.
+[`docker-compose.dev.yml`](../docker-compose.dev.yml) is disposable and must never share persistent-installation state. The application is the public application boundary; data services, parsers, controllers, and sibling workloads stay private. Publication and proxy rules belong to [Environment](ENV_VARIABLES.md) and [Security](SECURITY.md).
+
+Sidecars are bounded helpers, never tenancy or durable-state authorities. Optional integration failures remain feature-local unless an explicit contract makes them core readiness dependencies. The Workspace runner owns only guest lifecycle/tool transport; the app retains admission, storage, recovery, and presentation authority. Runtime build owners are [Dockerfile](../Dockerfile) and [`ops/`](../ops/).
 
 ## Data And Egress Boundaries
 
-| Boundary | Durable rule | Executable owner |
-| --- | --- | --- |
-| PostgreSQL | Owns authenticated tenancy, mutable control state, conversation/run graphs, immutable accepted bindings, recovery checkpoints, lifecycle metadata, and user-visible output records. | [Prisma schema](../prisma/schema.prisma) and [migrations](../prisma/migrations/) |
-| OpenSearch | Holds versioned, rebuildable Knowledge-passage and Personal-Memory lexical projections. It returns bounded identities and scores only; PostgreSQL retains canonical content and revalidates every owner, scope, generation, source, lifecycle, safety, suppression, deletion, and citation boundary before admission. | [shared transport](../lib/server/search/opensearch/coreTransport.ts), [Knowledge contract](../lib/server/search/opensearch/contract.ts), [Memory contract](../lib/server/search/opensearch/memoryContract.ts), and their projection lifecycles under [`lib/server/knowledge/`](../lib/server/knowledge/) and [`lib/server/memory/searchProjection/`](../lib/server/memory/searchProjection/) |
-| Knowledge identity | A Source and its immutable Versions/artifacts are reusable owner-scoped content identity; a Base is membership and retrieval scope, and accepted scope is an immutable exact-ready snapshot rather than a live membership query. | [Knowledge persistence](../lib/server/knowledge/sourcePersistence.ts), [Prisma schema](../prisma/schema.prisma), and stateful tests |
-| Private object storage | Owns attachment and Knowledge object bytes behind relational ownership/lifecycle references; it is not a public file host. An explicitly configured browser-reachable endpoint may receive only short-lived object-specific multipart uploads; server settlement remains the authority before bytes become a Source. | [Development storage wiring](../docker-compose.dev.yml), server storage code, and focused tests |
-| Browser boundary | Receives explicit allowlisted projections only. Repository objects, credentials, raw upstream payloads, internal event histories, retrieval internals, and tool traces do not become client contracts by existing. | [`lib/contracts/`](../lib/contracts/) and route/component tests |
-| Provider, Search, and embedding egress | Leaves the server only through bounded adapters after authorization and validation. Embedding/indexing is a distinct egress from answer generation and is governed by an administrator-activated installation Knowledge Profile rather than ordinary browser selection. | [`lib/server/`](../lib/server/) adapters and focused tests |
-| MCP egress | Uses reviewed remote MCP or the private ToolHive boundary; MCP authorization grants no unrelated provider or application-data authority. | Server MCP code, Compose/ToolHive wiring, and focused tests |
-| Parser egress | Receives only bounded document work over a private network and has no database, object-storage, or tenancy credentials and no durable document state. | Parser code, [`ops/docling/`](../ops/docling/), Compose, and focused tests |
-| Workspace runtime | Receives opaque sandbox identity, bounded file streams, and allowlisted official tool calls from the application over an authenticated private protocol. Guest disks are operational state outside backup authority; PostgreSQL bindings plus private originals and exported outputs remain canonical for recovery. | [`lib/server/workspace/`](../lib/server/workspace/), [Workspace runner](../scripts/workspace-runner.ts), [Development Compose](../docker-compose.dev.yml), and focused/live tests |
+- PostgreSQL is canonical for ownership, control state, accepted bindings, recovery, and output records; [schema and migrations](../prisma/) own exact storage.
+- Private object storage owns originals and exported bytes; relational references govern access and lifetime. It is not a public file host.
+- OpenSearch is a rebuildable candidate projection, never canonical content or authority. PostgreSQL reauthorizes every hit. Knowledge passage retrieval has no alternate lexical backend; Memory fallback/rollout belongs to [Memory](MEMORY.md) and [Environment](ENV_VARIABLES.md).
+- Browsers receive explicit allowlisted projections. Storage objects and upstream formats do not become client contracts by existing.
+- External I/O crosses authorized, bounded server adapters. Knowledge embedding/indexing has an independently disclosed installation-profile destination; answer-model selection does not authorize it.
+- Parsers receive bounded documents without data credentials or durable document state. Workspace receives opaque runtime identity, bounded streams, and allowlisted tools, never application/data credentials. Guest disks are operational state outside backup authority.
 
-No new external destination, credential audience, public projection, or durable store is implicit. Adding one requires an explicit data/egress boundary and the applicable privacy, failure, retention, and operator controls.
-
-## Architectural Prohibitions
-
-- Do not split a microservice, separate frontend/backend runtime, remote control plane, or dedicated tool host without a measured blocker and an explicit design for authentication, data ownership, networking, deployment, recovery, and observability.
-- Do not let browsers or sidecars become entitlement, credential-selection, persistence, or provider-transport authorities.
-- Do not expose a private service merely to simplify local wiring, and do not make an optional integration a core readiness dependency accidentally.
-- Do not mix disposable verification state with the persistent installation.
-- Do not duplicate executable inventories or runtime-flow narration in this document. Link the owning source, schema, migration, configuration, or test instead.
-
-Subject semantics and operations route to [Backend](BACKEND.md), [Persistence](PERSISTENCE.md), [Run contracts](RUN_CONTRACTS.md), [Providers](PROVIDERS.md), [Frontend](FRONTEND.md), [Environment](ENV_VARIABLES.md), [Security](SECURITY.md), and [Testing](TESTING.md). Those documents constrain non-derivable behavior and boundaries; executable artifacts remain the exact implementation record.
+No new destination, credential audience, public projection, or durable store is implicit: define its privacy, failure, retention, and operator boundary. Execution semantics belong to [Run contracts](RUN_CONTRACTS.md); lifecycle and recovery operations belong to [Persistence](PERSISTENCE.md).

@@ -4,14 +4,14 @@ Thanks for helping improve AIQSA. For a substantial product or architecture chan
 
 ## Development setup
 
-AIQSA uses a separate disposable development stack. Follow the development section in [README.md](README.md#development) and always name `docker-compose.dev.yml` for container development or test commands; the default Compose file is the persistent operator installation. Deterministic host checks use `npm run check:hermetic`.
+AIQSA includes a disposable development stack in `docker-compose.dev.yml`; production deployment is maintained separately by the installation operator. Follow [README.md](README.md#development) and [Environment](agent_docs/ENV_VARIABLES.md) to select the intended topology while preserving checkout-specific configuration and data.
 
 Before opening a pull request:
 
 ```bash
-docker compose -f docker-compose.dev.yml exec -T app npm run check
+NODE_OPTIONS=--max-old-space-size=8192 npm run check:hermetic
 ```
 
-Keep changes focused and add tests when behavior changes. Update the owning living document only when a change modifies a durable product contract, invariant, architecture/data boundary, configuration/environment contract, operator workflow, security boundary, or verification policy. A bug fix or implementation change that restores or preserves an already documented contract does not require a documentation edit. Real provider credentials are not required for routine checks and must never be committed.
+Select additional database, browser, image, or dependency checks through [Testing](agent_docs/TESTING.md) when the change crosses those boundaries. Keep changes focused and test observable behavior. Update documentation only for a changed durable rule, boundary, operator contract, or rationale; ordinary implementation changes need no prose synchronization. Routine checks require no real provider credentials, and secrets must never be committed.
 
 By contributing, you agree that your contribution is licensed under the repository's [AGPL-3.0-only license](LICENSE).

@@ -125,6 +125,10 @@ System, light, and dark themes, responsive desktop and mobile layouts, code and 
 This repository contains application code, image builds and the local development
 profile. Production deployment is maintained separately by the installation operator.
 
+**v0.2.0 requires a clean database.** Upgrading from v0.1.x, including v0.1.24,
+is intentionally unsupported; remove the old database before initializing the new
+installation. See the [database compatibility policy](agent_docs/PERSISTENCE.md#migrations-and-bootstrap).
+
 Start the disposable development stack:
 
 ```bash
