@@ -5,7 +5,7 @@ import {
 } from "./adaptivePdf";
 import { DocumentParserError } from "./errors";
 import type { NativePdfGeometry } from "./nativePdf";
-import { nativeRowAlreadyRepresentedInProse } from "./pdfGeometry";
+import { mergeModelPdfWithNativeText, nativeRowAlreadyRepresentedInProse, nativeTextIsProse } from "./pdfGeometry";
 import type {
   ParsedDocument,
   ParsedDocumentBlock,
@@ -140,13 +140,16 @@ function tableText(table: ParsedTable): string {
 function correctedParagraphs(
   document: ParsedDocument,
   geometry: NativePdfGeometry,
-  visionPages: ReadonlySet<number>
+  visionPages: ReadonlySet<number>,
+  plainTextOnly = false
 ): readonly ParsedDocumentBlock[] {
   const nativeRows = geometry.blocks.filter((candidate) =>
     visionPages.has(candidate.page) && lexicalNativePage(geometry, candidate.page) &&
+    (!plainTextOnly || nativeTextIsProse(candidate.text)) &&
     !candidate.isTable && candidate.table === null && !candidate.text.includes("\t"));
   const modelRows = document.blocks.flatMap((candidate, modelIndex) =>
     visionPages.has(candidate.page) && candidate.page === candidate.pageEnd &&
+      (!plainTextOnly || nativeTextIsProse(candidate.text)) &&
       !candidate.isTable && candidate.table === null && !/[\r\n\t]/u.test(candidate.text)
       ? [Object.freeze({ modelIndex, page: candidate.page, text: candidate.text })]
       : []);
@@ -171,7 +174,8 @@ function correctedParagraphs(
 function correctedTables(
   blocks: readonly ParsedDocumentBlock[],
   geometry: NativePdfGeometry,
-  visionPages: ReadonlySet<number>
+  visionPages: ReadonlySet<number>,
+  plainTextOnly = false
 ): readonly ParsedDocumentBlock[] {
   return Object.freeze(blocks.map((block) => {
     if (!visionPages.has(block.page) || block.page !== block.pageEnd || !block.table ||
@@ -179,8 +183,10 @@ function correctedTables(
         cell.columnSpan !== 1 || cell.rowSpan !== 1)) return block;
     const nativeRows = geometry.blocks.filter((candidate) =>
       candidate.page === block.page && candidate.table?.rowCount === 1 &&
+      (!plainTextOnly || nativeTextIsProse(candidate.text)) &&
       candidate.table.columnCount === block.table?.columnCount);
-    const modelRows = tableRows(block.table).map((text) => ({ page: block.page, text }));
+    const modelRows = tableRows(block.table).map((text) => ({ page: block.page,
+      text: plainTextOnly && !nativeTextIsProse(text) ? "" : text }));
     const alignments = uniqueAlignments(modelRows, nativeRows);
     if (alignments.length < 1) return block;
     const nativeByRow = new Map(alignments.map((alignment) => [
@@ -250,6 +256,7 @@ function attempts(input: Readonly<{
 
 export function mergeAdaptivePdfDocument(input: Readonly<{
   deduplicateNativeProseRows?: boolean;
+  deduplicateNativeText?: boolean;
   docling: ParsedDocument | null;
   geometry: NativePdfGeometry;
   maxBlocks: number;
@@ -264,9 +271,10 @@ export function mergeAdaptivePdfDocument(input: Readonly<{
   }
   const visionBlocks = input.vision
     ? doclingGeometry(correctedTables(
-        correctedParagraphs(input.vision, input.geometry, visionPages),
+        correctedParagraphs(input.vision, input.geometry, visionPages, input.deduplicateNativeText),
         input.geometry,
-        visionPages
+        visionPages,
+        input.deduplicateNativeText
       ), input.docling)
     : Object.freeze([]);
   const blocks = input.plan.pages.flatMap((page) => {
@@ -276,6 +284,15 @@ export function mergeAdaptivePdfDocument(input: Readonly<{
     const primary = visionBlocks.filter((block) =>
       block.page <= page.page && block.pageEnd >= page.page);
     if (!lexicalNativePage(input.geometry, page.page)) return primary;
+    if (input.deduplicateNativeText) {
+      const document = finalizeParsedDocument({ blocks: primary, engine: "system_model_vision",
+        mediaType: "application/pdf", pageCount: input.geometry.pageCount, status: "complete" });
+      return mergeModelPdfWithNativeText(document, {
+        ...input.geometry, blocks: input.geometry.blocks.filter(block => block.page === page.page)
+      }, { allowTextCorrections: false, deduplicateNativeText: true,
+        deduplicateNativeProseRows: input.deduplicateNativeProseRows,
+        maxBlocks: input.maxBlocks, maxCharacters: input.maxCharacters }).document.blocks;
+    }
     const primaryText = normalizedText(primary.map((block) => block.text).join("\n"));
     const primaryProse = input.deduplicateNativeProseRows
       ? primary.filter((block) => block.type === "paragraph" &&

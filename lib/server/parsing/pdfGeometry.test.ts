@@ -195,6 +195,79 @@ describe("model PDF geometry enrichment", () => {
     });
   });
 
+  it("rejects a represented mathematical duplicate while still filling a real omission", () => {
+    const formula = String.raw`The limit is \(\beta_i\leq\sqrt{11}\,s_i\).`;
+    const duplicate = "The limit is β i ≤ 11 s i.";
+    const omitted = "Calibration completed on 2042-03-06.";
+    const model = document([block(formula, 0)]);
+    const native = geometry([geometryBlock(duplicate, 0), geometryBlock(omitted, 1)]);
+    const options = { allowTextCorrections: true, maxBlocks: 10, maxCharacters: 10_000 };
+    const legacy = mergeModelPdfWithNativeText(model, native, options);
+    expect(legacy.document.text).toContain(duplicate);
+    const current = mergeModelPdfWithNativeText(model, native, { ...options, deduplicateNativeText: true });
+    expect(current.document.text).toContain(formula);
+    expect(current.document.text).toContain(omitted);
+    expect(current.document.text).not.toContain(duplicate);
+    expect(current.addedBlockCount).toBe(1);
+  });
+
+  it("retains an omitted prose column without inventing a native table", () => {
+    const left = "The northern workshop is open every weekday.";
+    const right = "Maintenance is scheduled for Thursday.";
+    const row = {
+      ...geometryBlock([left, right].join("\t"), 0),
+      table: { rowCount: 1, columnCount: 2, cells: [left, right].map((text, column) => ({
+        text, column, row: 0, columnSpan: 1, rowSpan: 1
+      })) }
+    };
+    const merged = mergeModelPdfWithNativeText(document([block(left, 0)]), geometry([row]), {
+      allowTextCorrections: true, deduplicateNativeText: true, maxBlocks: 10, maxCharacters: 2_000
+    });
+    expect(merged.document.blocks.map(block => block.text)).toEqual([left, right]);
+    expect(merged.document.blocks.every(block => block.type === "paragraph" && block.table === null)).toBe(true);
+  });
+
+  it("does not let a native fraction reorder rewrite a model formula or reappear as a fragment", () => {
+    const formula = "The normalized rate r = 1/5.";
+    const broken = "The normalized rate r = 5/1.";
+    const merged = mergeModelPdfWithNativeText(document([block(formula, 0)]), geometry([
+      geometryBlock(broken, 0), geometryBlock("1 5 r r", 1), geometryBlock("Recorded pressure 42", 2)
+    ]), { allowTextCorrections: true, deduplicateNativeText: true, maxBlocks: 10, maxCharacters: 2_000 });
+    expect(merged.document.text).toContain(formula);
+    expect(merged.document.text).not.toContain(broken);
+    expect(merged.document.text).not.toContain("1 5 r r");
+    expect(merged.document.text).toContain("Recorded pressure 42");
+    expect(merged.correctedBlockCount).toBe(0);
+  });
+
+  it("does not treat scattered formula glyphs as omitted prose", () => {
+    const fragments = ["α X M K X − 1 h", "π X ( x | y ) d x", "P | x | i j k l"];
+    const merged = mergeModelPdfWithNativeText(document([block("Visible heading", 0)]), geometry([
+      ...fragments.map((text, index) => geometryBlock(text, index)),
+      geometryBlock("The lab was open", 3)
+    ]), { allowTextCorrections: true, deduplicateNativeText: true, maxBlocks: 10, maxCharacters: 2_000 });
+    expect(merged.document.blocks.map(block => block.text)).toEqual(["Visible heading", "The lab was open"]);
+  });
+
+  it("withholds an unsplit row across columns but keeps an unambiguous prose omission", () => {
+    const joined = "Left reference continues Right appendix begins";
+    const wide = { ...geometryBlock(joined, 0), boundingBoxes: [{
+      ...geometryBlock(joined, 0).boundingBoxes[0]!, left: 24, right: 570
+    }] };
+    const native = geometry([wide, geometryBlock("Maintenance starts on Monday", 1)]);
+    const columns = { ...native, quality: { ...native.quality, pages: [{
+      ...native.quality.pages[0]!, rowCount: 12, multiGroupRowCount: 8, maxVisualGroupCount: 2
+    }] } };
+    const model = document([block("Visible model paragraph", 0)]);
+    const options = { allowTextCorrections: true, deduplicateNativeText: true, maxBlocks: 10, maxCharacters: 2_000 };
+    const merged = mergeModelPdfWithNativeText(model, columns, options);
+    expect(merged.document.text).not.toContain(joined);
+    expect(merged.document.text).toContain("Maintenance starts on Monday");
+    expect(mergeModelPdfWithNativeText(model, native, options).document.text).toContain(joined);
+    expect(mergeModelPdfWithNativeText(model, columns, { ...options, deduplicateNativeText: false })
+      .document.text).toContain(joined);
+  });
+
   it("attaches coordinates without duplicating text already emitted by Vision", () => {
     const model = document([block("Exact native sentence 17", 0)]);
     const sourceGeometry = geometry([geometryBlock("Exact native sentence 17", 0)]);

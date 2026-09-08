@@ -1,4 +1,6 @@
 import type { ParsedDocument } from "../parsing/types";
+import { PDF_OCR_PARSER_VERSION } from "../parsing/pdfOcrPipeline";
+import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import { DocumentParserError } from "../parsing/errors";
 import { isProviderDeadlineExceededError } from "../providers/network";
 import { isRetryableProviderHttpStatus, isRetryableProviderNetworkError } from "../providers/providerRetry";
@@ -98,6 +100,7 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
         maxBytes: admission.byteSize, signal
       });
       const planned = await core.plan({ admission, bytes: object.body,
+        acceptedCompatibilityKey: preparation.compatibilityKey,
         onPageCount: (pageCount) => deps.repository.pageCount(claim, preparation.id, pageCount), signal });
       const localArtifactId = await storeArtifact(claim, admission, "local", planned.plan.pageCount,
         planned.local, signal);
@@ -132,7 +135,7 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
       if (reserved.kind === "settled") {
         const settled = await readArtifact<{ page: number; text: string }>(reserved.resultArtifactId, admission.attachmentId, signal);
         if (settled.page !== pending.page) throw new ChatPdfPreparationError("pdf_preparation_invalid");
-        decodeChatPdfPage(pending.page, settled.text);
+        decodeChatPdfPage(pending.page, settled.text, plan.parserVersion);
         await deps.repository.completedPages(claim, preparation.id);
         return;
       }
@@ -141,11 +144,15 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
       }
       signal.throwIfAborted();
       const dispatch = await deps.attempts.dispatch(claim, reserved.attemptId);
-      const providerSignal = AbortSignal.any([signal, AbortSignal.timeout(120_000)]);
+      const responseTimeoutMs = plan.parserVersion === PDF_OCR_PARSER_VERSION
+        ? effectiveProviderResponseTimeoutMs(admission.snapshot.connection,
+          admission.snapshot.model.adapterKind === "fake" ? null : admission.snapshot.model)
+        : 120_000;
+      const providerSignal = AbortSignal.any([signal, AbortSignal.timeout(responseTimeoutMs)]);
       // Accounting also runs for a late provider resolution after Stop/deadline.
       // Only the live, leased continuation may accept it as a page result.
       const operation = deps.execute(admission.snapshot, prepared.request, {
-        signal: providerSignal, timeoutMs: 120_000
+        signal: providerSignal, timeoutMs: responseTimeoutMs
       }).then(async (result) => {
         await deps.attempts.recordUsage(dispatch, result.usage);
         return result;
@@ -164,7 +171,7 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
         throw new ChatPdfPreparationError(code, true);
       }
       try {
-        decodeChatPdfPage(pending.page, result.finalText);
+        decodeChatPdfPage(pending.page, result.finalText, plan.parserVersion);
       } catch {
         await deps.attempts.settle(dispatch, { errorCode: "pdf_transcription_failed",
           resultArtifactId: null, usage: result.usage });

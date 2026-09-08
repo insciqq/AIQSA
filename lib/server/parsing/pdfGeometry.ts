@@ -4,8 +4,13 @@ import type {
   ParsedDocumentBlock,
   ParsedDocumentParserAttempt
 } from "./types";
-import type { NativePdfGeometry } from "./nativePdf";
+import {
+  type NativePdfGeometry,
+  NATIVE_PDF_MULTI_GROUP_MIN_RATIO,
+  NATIVE_PDF_MULTI_GROUP_MIN_ROWS
+} from "./nativePdf";
 import { finalizeParsedDocument } from "./assessment";
+import { createNativeTextCoverage } from "./pdfTextCoverage";
 
 const MAX_GEOMETRY_BOXES_PER_BLOCK = 256;
 const MAX_PARSER_ATTEMPTS = 4;
@@ -34,6 +39,7 @@ export type ModelPdfNativeTextMergeResult = Readonly<{
 type ModelPdfNativeTextMergeOptions = Readonly<{
   allowTextCorrections: boolean;
   deduplicateNativeProseRows?: boolean;
+  deduplicateNativeText?: boolean;
   maxBlocks: number;
   maxCharacters: number;
 }>;
@@ -292,6 +298,37 @@ function safeNativePage(geometry: NativePdfGeometry, page: number): boolean {
     metrics.invalidCharacterCount === 0 && metrics.invisibleText === false;
 }
 
+/** The native glyph stream cannot establish missing fraction bars, scripts,
+ * radicals or cross-column table relationships. Only readable prose may fill
+ * a Vision omission; mathematical structure stays with the model. */
+export function nativeTextIsProse(text: string): boolean {
+  if (/[\\{}^=<>|∂∫∑∏√≤≥≠≈±×÷⊕⊖⊗⊙∥↦↔→←⎧⎨⎩\uE000-\uF8FF]/u.test(text)) return false;
+  const words = text.normalize("NFKC").match(/[\p{L}\p{M}]+/gu) ?? [];
+  const wordLengths = words.map(word => [...word].length).filter(length => length >= 2);
+  return words.some(word => [...word].length >= 4) ||
+    wordLengths.length >= 2 && wordLengths.reduce((total, length) => total + length, 0) >= 6;
+}
+
+function ambiguousNativeWideRow(block: ParsedDocumentBlock, geometry: NativePdfGeometry): boolean {
+  const page = geometry.quality.pages[block.page - 1];
+  if (!page || page.multiGroupRowCount < NATIVE_PDF_MULTI_GROUP_MIN_ROWS ||
+    page.multiGroupRowCount / Math.max(1, page.rowCount) < NATIVE_PDF_MULTI_GROUP_MIN_RATIO) return false;
+  // On a multi-column page, a full-width native row may already have joined
+  // independent columns before gap detection. Without separate cells its
+  // reading order is unproven, so it cannot supply or correct model prose.
+  return block.table === null && block.boundingBoxes.some(box =>
+    box.right - box.left > (page.pageRight - page.pageLeft) * 2 / 3);
+}
+
+function proseSupplements(candidate: ParsedDocumentBlock): readonly ParsedDocumentBlock[] {
+  if (!candidate.table) return !candidate.isTable && candidate.type !== "table" &&
+    nativeTextIsProse(candidate.text) ? [candidate] : [];
+  // A native gap group is not independent evidence of a table. Preserve any
+  // omitted readable cell separately, without manufacturing a row association.
+  return candidate.table.cells.filter(cell => nativeTextIsProse(cell.text)).map(cell =>
+    Object.freeze({ ...candidate, isTable: false, table: null, text: cell.text, type: "paragraph" as const }));
+}
+
 type NativeTextCorrectionPlan = Readonly<{
   blocks: readonly ParsedDocumentBlock[];
   characterDelta: number;
@@ -301,17 +338,21 @@ type NativeTextCorrectionPlan = Readonly<{
 
 function nativeTextCorrectionPlan(
   document: ParsedDocument,
-  geometry: NativePdfGeometry
+  geometry: NativePdfGeometry,
+  plainTextOnly = false
 ): NativeTextCorrectionPlan {
   const candidates: Array<Readonly<{
     modelIndex: number;
     nativeIndex: number;
   }>> = [];
   for (const [nativeIndex, nativeBlock] of geometry.blocks.entries()) {
-    if (!safeNativePage(geometry, nativeBlock.page)) continue;
+    if (!safeNativePage(geometry, nativeBlock.page) || plainTextOnly &&
+      (nativeBlock.isTable || !nativeTextIsProse(nativeBlock.text) ||
+        ambiguousNativeWideRow(nativeBlock, geometry))) continue;
     for (const [modelIndex, modelBlock] of document.blocks.entries()) {
       if (modelBlock.isTable || modelBlock.table || modelBlock.type === "table" ||
         modelBlock.page > nativeBlock.page || modelBlock.pageEnd < nativeBlock.page ||
+        plainTextOnly && !nativeTextIsProse(modelBlock.text) ||
         !numericConflictMatch(modelBlock.text, nativeBlock.text)) continue;
       if (modelBlock.boundingBoxes.length > 0 && !nativeBlock.boundingBoxes.some((nativeBox) =>
         modelBlock.boundingBoxes.some((modelBox) =>
@@ -439,7 +480,7 @@ export function mergeModelPdfWithNativeText(
     });
   }
   const corrections = options.allowTextCorrections
-    ? nativeTextCorrectionPlan(document, geometry)
+    ? nativeTextCorrectionPlan(document, geometry, options.deduplicateNativeText)
     : Object.freeze({
         blocks: document.blocks,
         characterDelta: 0,
@@ -455,19 +496,26 @@ export function mergeModelPdfWithNativeText(
     ? correctedDocument
     : Object.freeze({ ...correctedDocument, blocks: plan.blocks });
   const evidenceByPage = modelPageEvidence(plan.blocks);
-  const additions = geometry.blocks.flatMap((candidate, geometryIndex) => {
-    if (plan.consumedGeometryIndexes.has(geometryIndex) ||
-      !safeNativePage(geometry, candidate.page) ||
-      options.deduplicateNativeProseRows && nativeRowAlreadyRepresentedInProse(
-        candidate, evidenceByPage.get(candidate.page)?.prose ?? []) ||
-      !materiallyNovelNativeText(candidate, evidenceByPage) ||
-      spatialConflict(candidate, plan.blocks) ||
-      unlocatedConflict(candidate, plan.blocks)) return [];
-    return [Object.freeze({
-      block: candidate,
-      geometryIndex,
-      insertionIndex: insertionIndexForGeometry(geometryIndex, candidate, plan)
-    })];
+  const alreadyRepresented = options.deduplicateNativeText ? createNativeTextCoverage(plan.blocks) : null;
+  const additions = geometry.blocks.flatMap((nativeBlock, geometryIndex) => {
+    const separatedCells = options.deduplicateNativeText && nativeBlock.table !== null;
+    if (plan.consumedGeometryIndexes.has(geometryIndex) && !separatedCells ||
+      !safeNativePage(geometry, nativeBlock.page) ||
+      options.deduplicateNativeText && ambiguousNativeWideRow(nativeBlock, geometry)) return [];
+    const candidates = options.deduplicateNativeText ? proseSupplements(nativeBlock) : [nativeBlock];
+    return candidates.flatMap(candidate => {
+      if (alreadyRepresented?.(candidate) ||
+        options.deduplicateNativeProseRows && nativeRowAlreadyRepresentedInProse(
+          candidate, evidenceByPage.get(candidate.page)?.prose ?? []) ||
+        !materiallyNovelNativeText(candidate, evidenceByPage) ||
+        !separatedCells && spatialConflict(candidate, plan.blocks) ||
+        unlocatedConflict(candidate, plan.blocks)) return [];
+      return [Object.freeze({
+        block: candidate,
+        geometryIndex,
+        insertionIndex: insertionIndexForGeometry(geometryIndex, candidate, plan)
+      })];
+    });
   });
   if (additions.length < 1 && corrections.correctedBlockCount < 1) {
     return Object.freeze({

@@ -72,6 +72,19 @@ function harness(workspace = false) {
 }
 
 describe("durable PDF coordinator", () => {
+  it.each([[14, 120_000], [19, 300_000]])(
+    "uses the accepted timeout policy for parser %s", async (parserVersion, timeoutMs) => {
+      const h = harness();
+      Object.assign(h.row.workPlan, { parserVersion });
+      h.row.bindingSnapshot.connection.responseTimeoutMs = 300_000;
+      await h.coordinator().runOne();
+      expect(h.deps.fail).not.toHaveBeenCalled();
+      expect(h.deps.execute).toHaveBeenCalledWith(expect.anything(), expect.anything(),
+        expect.objectContaining({ timeoutMs }));
+      expect(h.row.completedPages).toBe(1);
+    }
+  );
+
   it.each([false, true])("keeps successful Vision preparation with Workspace=%s", async (workspace) => {
     const h = harness(workspace); const worker = h.coordinator();
     await worker.runOne();

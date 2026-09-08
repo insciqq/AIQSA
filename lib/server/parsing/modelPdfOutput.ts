@@ -24,6 +24,9 @@ export const MODEL_PDF_CHART_POINT_PROJECTION_PROFILE_VERSION = 17 as const;
 /** Add bounded layout-derived figure images alongside the full page so small
  * plotted marks remain readable without losing their surrounding context. */
 export const MODEL_PDF_FIGURE_CROP_PROFILE_VERSION = 18 as const;
+/** Preserve display-math blocks and reject represented native text even when
+ * its PDF glyph stream lacks the model's LaTeX structure. */
+export const MODEL_PDF_TEXT_COVERAGE_PROFILE_VERSION = 19 as const;
 export const MODEL_PDF_ROW_CONTINUATION_CELL = "[[AIQSA_ROW_CONTINUATION]]";
 
 export type DecodedModelPdfPage = Readonly<{
@@ -449,6 +452,33 @@ function block(input: Readonly<{
   });
 }
 
+function displayMathEnds(lines: readonly string[]): ReadonlyMap<number, number> {
+  const ends = new Map<number, number>();
+  let bracketEnd: number | null = null;
+  let dollarEnd: number | null = null;
+  let casesEnd: number | null = null;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]!.trim();
+    if (/^\\\](?:\s*\([\p{L}\p{N}.:-]{1,32}\))?$/u.test(line)) bracketEnd = index;
+    if (line === "\\[" && bracketEnd !== null) {
+      ends.set(index, bracketEnd);
+      bracketEnd = null;
+    }
+    if (/^\$\$(?:\s*\([\p{L}\p{N}.:-]{1,32}\))?$/u.test(line)) {
+      if (line === "$$" && dollarEnd !== null) {
+        ends.set(index, dollarEnd);
+        dollarEnd = null;
+      } else dollarEnd = index;
+    }
+    if (line.startsWith("⎩")) casesEnd = index;
+    else if (casesEnd !== null && line.includes("⎧")) {
+      ends.set(index, casesEnd);
+      casesEnd = null;
+    } else if (line && !line.startsWith("⎨")) casesEnd = null;
+  }
+  return ends;
+}
+
 function pageBlocks(
   page: DecodedModelPdfPage,
   firstIndex: number,
@@ -456,12 +486,14 @@ function pageBlocks(
     continuationMarkers: boolean;
     legacyInference: boolean;
     mode: PdfModelProcessingMode;
+    preserveDisplayMath: boolean;
   }>
 ): ParsedDocumentBlock[] {
   const lines = input.legacyInference
     ? page.text.split("\n").filter((line) => Boolean(line.trim()))
     : page.text.split("\n");
   const blocks: ParsedDocumentBlock[] = [];
+  const mathEnds = input.preserveDisplayMath ? displayMathEnds(lines) : new Map<number, number>();
   const headings: Array<Readonly<{ level: number; text: string }>> = [];
   const headingPath = (): readonly string[] => headings.map(({ text }) => text);
   let lineIndex = 0;
@@ -469,6 +501,15 @@ function pageBlocks(
     const rawLine = lines[lineIndex]!;
     const line = rawLine.trim();
     if (!line) { lineIndex += 1; continue; }
+    const endIndex = mathEnds.get(lineIndex);
+    if (endIndex !== undefined) {
+      blocks.push(block({
+        headingPath: headingPath(), index: firstIndex + blocks.length, page: page.page,
+        text: lines.slice(lineIndex, endIndex + 1).join("\n"), type: "paragraph"
+      }));
+      lineIndex = endIndex + 1;
+      continue;
+    }
     const cells = rowCells(rawLine);
     if (cells) {
       const rows: string[][] = [];
@@ -529,6 +570,7 @@ export function modelPdfPagesToDocument(input: Readonly<{
   mode: PdfModelProcessingMode;
   pageCount: number;
   pages: readonly DecodedModelPdfPage[];
+  preserveDisplayMath?: boolean;
   tableContinuationMarkers?: boolean;
 }>): ParsedDocument {
   if (input.pages.length !== input.pageCount || input.pages.some((page, index) =>
@@ -543,7 +585,8 @@ export function modelPdfPagesToDocument(input: Readonly<{
     blocks.push(...pageBlocks(page, blocks.length, {
       continuationMarkers: input.tableContinuationMarkers === true,
       legacyInference: input.legacyTableInference === true,
-      mode: input.mode
+      mode: input.mode,
+      preserveDisplayMath: input.preserveDisplayMath === true
     }));
     if (blocks.length > input.maxBlocks) {
       throw new DocumentParserError("parser_output_too_large", input.mode);

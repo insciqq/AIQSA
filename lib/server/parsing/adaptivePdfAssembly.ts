@@ -7,6 +7,7 @@ import type { ParsedDocument } from "./types";
 /** Storage-neutral final assembly; missing required pages remain an error. */
 export function assembleAdaptivePdfPages(input: Readonly<{
   deduplicateNativeProseRows?: boolean;
+  deduplicateNativeText?: boolean;
   docling: ParsedDocument | null;
   geometry: NativePdfGeometry;
   legacyTableInference?: boolean;
@@ -26,6 +27,7 @@ export function assembleAdaptivePdfPages(input: Readonly<{
         mode: "system_model_vision",
         pageCount: input.geometry.pageCount,
         pages,
+        preserveDisplayMath: input.deduplicateNativeText,
         tableContinuationMarkers: true
       })
     : null;
