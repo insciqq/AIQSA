@@ -44,7 +44,7 @@ COPY . .
 RUN AIQSA_APP_BASE_URL="$AIQSA_BUILD_APP_BASE_URL" \
   NODE_OPTIONS="$AIQSA_BUILD_NODE_OPTIONS" npm run build
 
-# Retain the direct installation-tool and isolated PDF-worker roots and let npm
+# Retain the direct runtime-worker and installation-tool roots and let npm
 # preserve their complete locked transitive closure. Deriving versions from the
 # npm-ci result keeps package-lock.json authoritative without naming transitive
 # packages.
@@ -53,10 +53,13 @@ FROM runtime-deps AS tools-deps
 RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').version")" \
   && PRISMA_CLIENT_VERSION="$(node -p "require('./node_modules/@prisma/client/package.json').version")" \
   && AWS_SDK_VERSION="$(node -p "require('./node_modules/@aws-sdk/client-s3/package.json').version")" \
+  && S3_PRESIGNER_VERSION="$(node -p "require('./node_modules/@aws-sdk/s3-request-presigner/package.json').version")" \
   && TSX_VERSION="$(node -p "require('./node_modules/tsx/package.json').version")" \
   && CANVAS_VERSION="$(node -p "require('./node_modules/@napi-rs/canvas/package.json').version")" \
   && PDF_LIB_VERSION="$(node -p "require('./node_modules/pdf-lib/package.json').version")" \
   && PDFJS_VERSION="$(node -p "require('./node_modules/pdfjs-dist/package.json').version")" \
+  && PARSE5_VERSION="$(node -p "require('./node_modules/parse5/package.json').version")" \
+  && ZOD_VERSION="$(node -p "require('./node_modules/zod/package.json').version")" \
   && UNPDF_VERSION="$(node -p "require('./node_modules/unpdf/package.json').version")" \
   && MCP_SDK_VERSION="$(node -p "require('./node_modules/@modelcontextprotocol/sdk/package.json').version")" \
   && MICROSANDBOX_VERSION="$(node -p "require('./node_modules/microsandbox/package.json').version")" \
@@ -65,10 +68,13 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
   && npm pkg set \
     "dependencies.@napi-rs/canvas=$CANVAS_VERSION" \
     "dependencies.@aws-sdk/client-s3=$AWS_SDK_VERSION" \
+    "dependencies.@aws-sdk/s3-request-presigner=$S3_PRESIGNER_VERSION" \
     "dependencies.@modelcontextprotocol/sdk=$MCP_SDK_VERSION" \
     "dependencies.@prisma/client=$PRISMA_CLIENT_VERSION" \
     "dependencies.pdf-lib=$PDF_LIB_VERSION" \
     "dependencies.pdfjs-dist=$PDFJS_VERSION" \
+    "dependencies.parse5=$PARSE5_VERSION" \
+    "dependencies.zod=$ZOD_VERSION" \
     "dependencies.microsandbox=$MICROSANDBOX_VERSION" \
     "dependencies.microsandbox-mcp=$MICROSANDBOX_MCP_VERSION" \
     "dependencies.prisma=$PRISMA_VERSION" \

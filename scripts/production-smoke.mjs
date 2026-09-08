@@ -59,6 +59,16 @@ const docker = (...args) => command("docker", args);
 const compose = (...args) => docker("compose", "--project-name", project, ...args);
 const inApp = (script) => command("docker", ["compose", "--project-name", project, "exec", "-T", "app", "node", "--input-type=module", "-"], script);
 
+async function assertWorkersRunning() {
+  for (const service of ["memory-worker", "memory-search-worker", "knowledge-search-worker"]) {
+    const id = await compose("ps", "--all", "--quiet", service);
+    assert.ok(id, `${service} must exist`);
+    const [container] = JSON.parse(await docker("inspect", id));
+    assert.equal(container.State.Running, true, `${service} must stay running`);
+    assert.equal(container.RestartCount, 0, `${service} must not crash and restart`);
+  }
+}
+
 async function freePort() {
   const server = createServer();
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
@@ -131,6 +141,7 @@ try {
   console.log("production smoke: starting a fresh production installation");
   await compose("up", "-d", "--wait", "--wait-timeout", "600");
   assert.equal(await inApp("console.log((await fetch('http://127.0.0.1:3000/api/health/ready')).status)"), "200");
+  await assertWorkersRunning();
   await inApp(`
     import { PrismaClient } from '@prisma/client';
     const db = new PrismaClient();
@@ -154,6 +165,7 @@ try {
   assert.notEqual(await docker("image", "inspect", "--format", "{{.Id}}", upgradeImage), initialImage);
   await compose("up", "-d", "--wait", "--wait-timeout", "600");
   assert.notEqual(await compose("ps", "--quiet", "app"), oldApp);
+  await assertWorkersRunning();
   assert.equal(await inApp(stateScript), before, "Operator data and credentials must survive updates");
   const migrated = await inApp(`
     import { PrismaClient } from '@prisma/client';
@@ -164,6 +176,7 @@ try {
   assert.equal(migrated, "1");
   await compose("up", "-d", "--wait", "--wait-timeout", "600");
   assert.equal(await inApp(stateScript), before, "A repeated up must preserve operator state");
+  await assertWorkersRunning();
   console.log("production smoke: verifying that a failed migration blocks the new application");
   await writeFile(path.join(upgradeDirectory, "migration.sql"), "SELECT 1 / 0;\n");
   await writeFile(path.join(upgradeDirectory, "Dockerfile"), `FROM ${upgradeImage}\nCOPY --chown=node:node migration.sql /app/prisma/migrations/20990102000000_release_smoke_failure/migration.sql\n`);

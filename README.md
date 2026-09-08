@@ -20,13 +20,13 @@ AIQSA is pre-1.0 and designed for small, operator-managed installations with a s
 
 ## System requirements
 
-For a small production installation with the bundled document parsers, plan for:
+For local use by one person with external model providers:
 
 - 64-bit Linux on amd64 or arm64, Docker Engine with Compose v2, and OpenSSL.
-- **4 CPU cores, 24 GB RAM, and 50 GB free SSD space**, plus storage for uploads, indexes, and backups.
-- **32 GB RAM or more** for concurrent OCR jobs or the optional Workspace. Workspace also requires `/dev/kvm`; each workspace defaults to 4 GB RAM and 10 GB disk.
+- **Minimum for basic chat: 2 CPU cores, 4 GB RAM, and 50 GB free SSD space**, plus storage for uploads and backups.
+- **Recommended: 8 GB RAM.** Active Knowledge ingestion, OCR, and Workspace need additional memory. Workspace also requires `/dev/kvm`; each workspace defaults to 4 GB RAM and 10 GB disk.
 
-These are resource budgets, not measured concurrency limits. No GPU is required; locally hosted model servers need their own resources. OpenSearch requires [`vm.max_map_count` of at least 262144](https://docs.opensearch.org/latest/install-and-configure/install-opensearch/docker/#linux-settings).
+Memory use depends on document size and workload. No GPU is required; locally hosted model servers need their own resources. OpenSearch requires [`vm.max_map_count` of at least 262144](https://docs.opensearch.org/latest/install-and-configure/install-opensearch/docker/#linux-settings).
 
 ## Install
 
