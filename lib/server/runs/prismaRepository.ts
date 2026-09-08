@@ -134,11 +134,15 @@ export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): P
   }
 
   return rows.flatMap((row) => {
+    const cancelledWithText = row.messageRole === "assistant" &&
+      row.messageStatus === "cancelled" &&
+      isRecord(row.messageContent) &&
+      Boolean(textFromContentBlocks(row.messageContent).trim());
     if (
       !row.messageId ||
       failedWithoutAnswer.has(row.messageId) ||
       (row.messageRole !== "user" && row.messageRole !== "assistant") ||
-      (row.messageStatus !== "complete" && row.messageStatus !== "streaming")
+      (row.messageStatus !== "complete" && row.messageStatus !== "streaming" && !cancelledWithText)
     ) {
       return [];
     }

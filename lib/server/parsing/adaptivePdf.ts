@@ -26,6 +26,7 @@ export type AdaptivePdfPageReason =
   | "native_invalid_unicode"
   | "native_invisible_text"
   | "native_low_text_coverage"
+  | "native_math_structure"
   | "native_multi_column"
   | "native_non_text"
   | "native_overlapping_glyphs"

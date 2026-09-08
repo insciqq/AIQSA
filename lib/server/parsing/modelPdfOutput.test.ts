@@ -26,6 +26,128 @@ function output(): string {
 }
 
 describe("model PDF transcription contract", () => {
+  it.each(["The measurement varies by ±3 units.", "The directed transition is north → south."])(
+    "keeps mathematical prose boundaries intact: %s", text => {
+      const input = { pages: [{ page: 1, text: text + "\nThe instrument remains available for calibration." }],
+        pageCount: 1, mode: "system_model_vision" as const, maxBlocks: 20, maxCharacters: 2_000 };
+      expect(modelPdfPagesToDocument({ ...input, preserveTextStructure: true })).toEqual(modelPdfPagesToDocument(input));
+    }
+  );
+
+  it("retains ordinary wrapped prose in one paragraph without guessing hyphenated words", () => {
+    const text = ["## Measurements", "The northern instrument records regular measurements",
+      "and the southern instrument records additional readings.", "", "The state-of-the-art sensor uses a cali-",
+      "bration procedure described in the following section.", "", "Figure C2: The two instruments.",
+      "Station\tCount", "North\t7", "", "\\[", "a = 3", "\\]"].join("\n");
+    const input = { pages: [{ page: 1, text }], pageCount: 1, mode: "system_model_vision" as const,
+      maxBlocks: 20, maxCharacters: 2_000, preserveDisplayMath: true };
+    const legacy = modelPdfPagesToDocument(input);
+    const current = modelPdfPagesToDocument({ ...input, preserveTextStructure: true });
+    expect(current.blocks.map(block => block.text)).toEqual([
+      "Measurements", "The northern instrument records regular measurements\nand the southern instrument records additional readings.",
+      "The state-of-the-art sensor uses a cali-\nbration procedure described in the following section.",
+      "Figure C2: The two instruments.", "Station\tCount\nNorth\t7", "\\[\na = 3\n\\]"
+    ]);
+    expect(current.blocks[1]?.headingPath).toEqual(["Measurements"]);
+    expect(current.blocks.at(-1)).toMatchObject({ text: "\\[\na = 3\n\\]", isTable: false });
+    expect(legacy.blocks).toHaveLength(current.blocks.length + 2);
+  });
+
+  it("preserves explicit tab-indented lists and bibliography entries without manufacturing tables", () => {
+    const pages = [{ page: 1, text: [
+      "1.\tOpen the control panel.", "2.\tChoose the desired options:",
+      "\t•\tEnter the sample name.", "\t\t•\tKeep the original spelling.", "",
+      "[31]\tA. Example, A study of northern stations,", "\tJournal of Field Science 12 (2041) 8–19.",
+      "[32]\tB. Sample, Measurements from southern stations."
+    ].join("\n") }];
+    const input = { pages, pageCount: 1, mode: "system_model_vision" as const, maxBlocks: 20, maxCharacters: 2_000 };
+    expect(modelPdfPagesToDocument(input).blocks.every(block => block.isTable)).toBe(true);
+    const document = modelPdfPagesToDocument({ ...input, preserveTextStructure: true });
+    expect(document.blocks.map(block => block.type)).toEqual(Array(6).fill("list_item"));
+    expect(document.blocks.map(block => block.text)).toEqual([
+      "1. Open the control panel.", "2. Choose the desired options:",
+      "  • Enter the sample name.", "    • Keep the original spelling.",
+      "[31] A. Example, A study of northern stations,\n  Journal of Field Science 12 (2041) 8–19.",
+      "[32] B. Sample, Measurements from southern stations."
+    ]);
+  });
+
+  it.each([
+    "1.\t12.4\n2.\t18.3",
+    "Index\tDescription\n1.\tThe first measurement.\n2.\tThe second measurement.",
+    "1.\tThe first measurement.\t12.4\n2.\tThe second measurement.\t18.3",
+    "| 1. | The first measurement. |\n| 2. | The second measurement. |"
+  ])("retains real table structure despite numbered row labels: %s", text => {
+    const input = { pages: [{ page: 1, text }], pageCount: 1, mode: "system_model_vision" as const,
+      maxBlocks: 20, maxCharacters: 2_000 };
+    expect(modelPdfPagesToDocument({ ...input, preserveTextStructure: true }))
+      .toEqual(modelPdfPagesToDocument(input));
+  });
+
+  it("keeps a delimited multiline formula atomic only when requested", () => {
+    const formula = String.raw`\[
+u = \frac{m+4}{n}
+\quad \text{with } m>0
+\]`;
+    const input = {
+      maxBlocks: 100, maxCharacters: 10_000,
+      mode: "system_model_vision" as const, pageCount: 1,
+      pages: [{ page: 1, text: `Before\n${formula}\nAfter` }]
+    };
+    expect(modelPdfPagesToDocument(input).blocks).toHaveLength(6);
+    const current = modelPdfPagesToDocument({ ...input, preserveDisplayMath: true });
+    expect(current.blocks.map(block => block.text)).toEqual(["Before", formula, "After"]);
+    expect(current.blocks[1]).toMatchObject({ type: "paragraph", page: 1, pageEnd: 1 });
+  });
+
+  it("preserves dollars, tabs and matrix rows inside display math", () => {
+    const formula = "$$\nA = [p\tq]\n[r\ts]\n$$";
+    const document = modelPdfPagesToDocument({
+      maxBlocks: 5, maxCharacters: 10_000, preserveDisplayMath: true,
+      mode: "system_model_vision", pageCount: 1,
+      pages: [{ page: 1, text: formula + "\nName\tValue\nSensor\t18" }]
+    });
+    expect(document.blocks[0]?.text).toBe(formula);
+    expect(document.blocks[0]?.isTable).toBe(false);
+    expect(document.blocks[1]?.table?.rowCount).toBe(2);
+  });
+
+  it("keeps an explicitly bracketed Unicode piecewise expression together", () => {
+    const formula = "g(x) = ⎧ 3 if x > 4\n       ⎨ 2 if x = 4\n       ⎩ 0 otherwise";
+    const document = modelPdfPagesToDocument({
+      maxBlocks: 5, maxCharacters: 1_000, preserveDisplayMath: true,
+      mode: "system_model_vision", pageCount: 1,
+      pages: [{ page: 1, text: `Before\n${formula}\nAfter` }]
+    });
+    expect(document.blocks.map(block => block.text)).toEqual(["Before", formula, "After"]);
+  });
+
+  it("does not consume another page or a following table for an unclosed formula", () => {
+    const document = modelPdfPagesToDocument({
+      maxBlocks: 10, maxCharacters: 10_000, preserveDisplayMath: true,
+      mode: "system_model_vision", pageCount: 2,
+      pages: [{ page: 1, text: "\\[\nu = 4\nName\tValue\nSensor\t18" }, { page: 2, text: "\\]" }]
+    });
+    expect(document.blocks.filter(block => block.isTable)).toHaveLength(1);
+    expect(document.blocks.at(-1)).toMatchObject({ page: 2, text: "\\]" });
+  });
+
+  it("preserves numbered display formulas and does not reuse a later closing delimiter", () => {
+    const first = "\\[\na = 7\n\\] (1)";
+    const second = "\\[\nb = 9\n\\] (A.2)";
+    const dollars = "$$\nc = 11\n$$ (3)";
+    const document = modelPdfPagesToDocument({
+      maxBlocks: 20, maxCharacters: 10_000, preserveDisplayMath: true,
+      mode: "system_model_vision", pageCount: 1,
+      pages: [{ page: 1, text: ["\\[", "Unclosed fragment", "Name\tValue", "Sensor\t18",
+        first, "Between", second, dollars, "After"].join("\n") }]
+    });
+    expect(document.blocks.map(block => block.text)).toEqual([
+      "\\[", "Unclosed fragment", "Name\tValue\nSensor\t18", first, "Between", second, dollars, "After"
+    ]);
+    expect(document.blocks.filter(block => block.isTable)).toHaveLength(1);
+  });
+
   it("uses deterministic page markers and preserves TSV and Markdown table cells", () => {
     const prompt = modelPdfTranscriptionPrompt({
       mode: "system_model_direct_pdf",

@@ -6,12 +6,20 @@ import type { EmbeddingRuntimeBinding } from "../providerRuntime/embeddingRuntim
 import { EmbeddingAdapterError } from "../providers/embeddings";
 import type { ProviderModelConfiguration } from "../providers/providerConfiguration";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
-import { createKnowledgeIngestionProcessor } from "./ingestionProcessor";
+import { createKnowledgeIngestionProcessor, type KnowledgeIngestionProcessorRepository } from "./ingestionProcessor";
 import type { KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
 import { KnowledgeHierarchicalIndexPersistenceError } from "./hierarchicalIndexRepository";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
 import type { KnowledgeSourceWorkClaim } from "./ingestionTypes";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
+
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((settle, fail) => { resolve = settle; reject = fail; });
+  return { promise, resolve, reject };
+}
 
 const config: KnowledgeExtractionConfig = {
   maxChunksPerDocument: 200,
@@ -102,7 +110,7 @@ function repository() {
     completedBatchIndexes: vi.fn(async () => [] as number[]),
     completeChunking: vi.fn(async () => true),
     completeParsing: vi.fn(async () => true),
-    persistEmbeddingBatch: vi.fn(async () => true),
+    persistEmbeddingBatch: vi.fn<KnowledgeIngestionProcessorRepository["persistEmbeddingBatch"]>(async () => true),
     persistHierarchicalIndex: vi.fn(async () => true),
     reuseEmbeddingChunks: vi.fn(async () => [] as number[])
   };
@@ -574,6 +582,80 @@ describe("Knowledge ingestion processor", () => {
     expect(repo.activateSourceVersion).toHaveBeenCalledWith(expect.objectContaining({
       expectedChunkCount: 65
     }));
+  });
+
+  it("settles parallel embedding batches by original passage identity before activation", async () => {
+    const storage = createMemoryStorageAdapter();
+    const encoded = encodeKnowledgeNormalizedDocument(parsed(193), config);
+    await storage.putObject({ body: encoded.body, contentType: "application/json", storageKey: "normalized.json" });
+    const pending = Array.from({ length: 4 }, () => deferred<void>());
+    const embed = vi.fn<EmbeddingRuntimeBinding["adapter"]["embed"]>(async request => {
+      const first = Number(request.texts[0]!.split(" ").at(-1));
+      await pending[first / 64]!.promise;
+      return {
+        model: "embed-v1", requestId: `request-${first}`, usage: { inputTokens: 3, totalTokens: 3 },
+        vectors: request.texts.map(text => Array.from({ length: 1024 }, () => Number(text.split(" ").at(-1)) / 1000))
+      };
+    });
+    const repo = repository();
+    const resolveForUser = vi.fn(async () => binding(embed));
+    const process = createKnowledgeIngestionProcessor({
+      config, embeddingConcurrency: 2, embeddingRuntime: { resolveForInstallation: vi.fn(), resolveForUser },
+      repository: repo, storage
+    });
+    const running = process(claim("embedding", {
+      ingestChunkCount: 193, normalizedTextByteSize: encoded.body.byteLength, normalizedTextChecksum: encoded.checksum
+    }));
+    await vi.waitFor(() => expect(embed).toHaveBeenCalledTimes(2));
+    pending[1]!.resolve();
+    await vi.waitFor(() => expect(embed).toHaveBeenCalledTimes(3));
+    pending[2]!.resolve();
+    await vi.waitFor(() => expect(embed).toHaveBeenCalledTimes(4));
+    expect(repo.activateSourceVersion).not.toHaveBeenCalled();
+    expect(resolveForUser).toHaveBeenCalledOnce();
+    pending[3]!.resolve();
+    pending[0]!.resolve();
+    await running;
+    expect(repo.persistEmbeddingBatch).toHaveBeenCalledTimes(4);
+    const batches = repo.persistEmbeddingBatch.mock.calls.map(([input]) => input.batch);
+    expect(batches[0]!.batchIndex).toBe(1);
+    expect(batches.flatMap(batch => batch.chunks).sort((a, b) => a.index - b.index))
+      .toEqual(Array.from({ length: 193 }, (_, index) => expect.objectContaining({ index, vector: Array(1024).fill(index / 1000) })));
+    expect(repo.activateSourceVersion).toHaveBeenCalledOnce();
+  });
+
+  it.each(["provider_failure", "lease_lost"])("drains parallel settlements and stops dispatch on %s", async outcome => {
+    const storage = createMemoryStorageAdapter();
+    const encoded = encodeKnowledgeNormalizedDocument(parsed(193), config);
+    await storage.putObject({ body: encoded.body, contentType: "application/json", storageKey: "normalized.json" });
+    const first = deferred<void>(), second = deferred<void>();
+    const embed = vi.fn<EmbeddingRuntimeBinding["adapter"]["embed"]>(async request => {
+      await (request.texts[0] === "document block 0" ? first : second).promise;
+      return { model: "embed-v1", requestId: "request-drain", usage: { inputTokens: 3, totalTokens: 3 },
+        vectors: request.texts.map(() => Array(1024).fill(0.1)) };
+    });
+    const repo = repository();
+    if (outcome === "lease_lost") repo.persistEmbeddingBatch.mockResolvedValueOnce(false);
+    const process = createKnowledgeIngestionProcessor({
+      config, embeddingConcurrency: 2,
+      embeddingRuntime: { resolveForInstallation: vi.fn(), resolveForUser: vi.fn(async () => binding(embed)) },
+      repository: repo, storage
+    });
+    let finished = false;
+    const running = process(claim("embedding", {
+      ingestChunkCount: 193, normalizedTextByteSize: encoded.body.byteLength, normalizedTextChecksum: encoded.checksum
+    })).then(() => { finished = true; }, error => { finished = true; return error; });
+    await vi.waitFor(() => expect(embed).toHaveBeenCalledTimes(2));
+    if (outcome === "provider_failure") first.reject(new Error("provider_unavailable"));
+    else first.resolve();
+    await vi.waitFor(() => expect(outcome === "lease_lost" ? repo.persistEmbeddingBatch.mock.calls.length : embed.mock.settledResults[0]?.type)
+      .toBe(outcome === "lease_lost" ? 1 : "rejected"));
+    expect(finished).toBe(false);
+    second.resolve();
+    await running;
+    expect(embed).toHaveBeenCalledTimes(2);
+    expect(repo.persistEmbeddingBatch).toHaveBeenCalledTimes(outcome === "lease_lost" ? 2 : 1);
+    expect(repo.activateSourceVersion).not.toHaveBeenCalled();
   });
 
   it("activates a replacement without provider access when every embedding is reusable", async () => {
