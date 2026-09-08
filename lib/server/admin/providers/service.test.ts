@@ -24,6 +24,9 @@ import type { AdminProviderCredentialTester } from "./credentialTester";
 import type { AdminProviderConnection } from "../../../contracts/adminProviders";
 import { createPrismaAdminProviderRepository } from "./prismaRepository";
 import { approvedRerankerDeployments } from "./approvedRerankers";
+import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
+import { adminProviderConnectionConfiguration } from "./adminConfiguration";
+import { adminRerankerModelConfiguration, automaticRerankerRoutePresets } from "../../../domain/rerankerModels";
 
 const KEY = Buffer.alloc(32, 19);
 const NOW = new Date("2026-07-23T12:00:00.000Z");
@@ -432,6 +435,33 @@ describe("admin provider service", () => {
     ]);
     expect(write.modelChecks.every(({ evidence }) => evidence.compatibility === undefined)).toBe(true);
     expect(JSON.stringify(write)).not.toContain("candidate-secret");
+  });
+
+  it.each([0, 1])("discovers OpenRouter chat presets alongside existing rerankers (active version %s)", async (version) => {
+    const policy = adminProviderQuickSetupPolicy("openrouter");
+    const reranker = adminRerankerModelConfiguration(automaticRerankerRoutePresets[0]!);
+    const connection: AdminProviderConnection = {
+      ...adminConnection(), id: policy.connection.id, family: "openrouter", enabled: version > 0,
+      activeVersion: version, draftConfig: adminProviderConnectionConfiguration(policy.connection.configuration),
+      activeConfig: version ? adminProviderConnectionConfiguration(policy.connection.configuration) : null,
+      models: [{ id: "reranker", connectionId: policy.connection.id, modelClass: "reranker",
+        displayName: "Reranker", draftConfig: reranker, draftVersion: 1, activeConfig: version ? reranker : null,
+        activeVersion: version, enabled: true, activatedAt: null, createdAt: NOW.toISOString(), updatedAt: NOW.toISOString() }]
+    };
+    const activateCredentialCas = vi.fn<AdminProviderRepository["activateCredentialCas"]>(async () => "updated");
+    const test = vi.fn<AdminProviderCredentialTester["test"]>(async () => ({
+      method: "models_catalog", modelIds: [...policy.candidates.map((c) => c.configuration.upstreamModelId), reranker.upstreamModelId],
+      modelIdsByClass: { answer: policy.candidates.map((c) => c.configuration.upstreamModelId), embedding: [], reranker: [reranker.upstreamModelId] }
+    }));
+    const providers = service(repository({ activateCredentialCas, listConnections: async () => [connection] }),
+      tester(), ["credential-new", "version-new"], { test });
+    await providers.activateNewCredential({ connectionId: connection.id, label: "Main", secret: "candidate-secret" });
+    expect(test).toHaveBeenCalledWith(expect.objectContaining({ modelClasses: ["reranker", "answer"] }));
+    expect(activateCredentialCas.mock.calls[0]![0].catalogAdditions?.map((model) => model.configuration.upstreamModelId))
+      .toEqual(expect.arrayContaining([
+        "deepseek/deepseek-v4-pro-0813", "anthropic/claude-opus-5", "anthropic/claude-fable-5.1",
+        "google/gemini-3.8-flash", "openai/gpt-6-astra", "perplexity/sonar-pro-search"
+      ]));
   });
 
   it("saves a new key in one step against the active configuration and writes nothing when the provider rejects it", async () => {

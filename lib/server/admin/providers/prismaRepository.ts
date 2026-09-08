@@ -89,8 +89,19 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
   const pdfInput = decodePdfInputVerificationEvidence(value.pdfInput);
   const visionInput = decodeVisionInputVerificationEvidence(value.visionInput);
   const compatibility = decodeAdminProviderCompatibilityEvidence(value.compatibility);
+  const dedicatedProbe = value.detail === "ok" && value.method !== "models_catalog";
+  const embedding = dedicatedProbe && isRecord(value.embedding) &&
+    value.embedding.probeVersion === 1 && value.embedding.document === true && value.embedding.query === true &&
+    Number.isSafeInteger(value.embedding.dimensions) && Number(value.embedding.dimensions) > 0
+    ? { probeVersion: 1 as const, document: true as const, query: true as const, dimensions: Number(value.embedding.dimensions) }
+    : null;
+  const reranking = dedicatedProbe && isRecord(value.reranking) &&
+    value.reranking.probeVersion === 1 && value.reranking.completeScores === true
+    ? { probeVersion: 1 as const, completeScores: true as const } : null;
   return {
     ...(compatibility ? { compatibility } : {}),
+    ...(embedding ? { embedding } : {}),
+    ...(reranking ? { reranking } : {}),
     detail: value.detail,
     method: value.method,
     selectedProviders: value.selectedProviders as string[],

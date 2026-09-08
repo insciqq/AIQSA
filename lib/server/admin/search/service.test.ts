@@ -443,6 +443,7 @@ describe("admin Search service", () => {
       })
     ], { id: "12345678-1234-4234-8234-123456789012" });
     const tx = {
+      searchPolicy: { updateMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       providerModel: { findFirst: vi.fn(async () => providerModel()) },
       searchIntegrationRevision: revisions,
@@ -541,6 +542,7 @@ describe("admin Search service", () => {
       pendingChild(hostedDraft, { id: "hosted-route", strategyId: "company-search-12345678:hosted" })
     ], { id: "12345678-1234-4234-8234-123456789012" });
     const tx = {
+      searchPolicy: { updateMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       providerModel: { findFirst: vi.fn(async () => providerModel()) },
       searchIntegrationRevision: revisionRepository(),
@@ -628,6 +630,7 @@ describe("admin Search service", () => {
     const strategyUpdate = vi.fn(async () => undefined);
     const revisions = revisionRepository();
     const tx = {
+      searchPolicy: { updateMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       providerModel: { findFirst: vi.fn(async () => technical) },
       searchIntegrationRevision: revisions,
@@ -705,6 +708,7 @@ describe("admin Search service", () => {
     const strategyCreate = vi.fn(async () => undefined);
     const strategyUpdate = vi.fn(async () => undefined);
     const tx = {
+      searchPolicy: { updateMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       providerModel: { findFirst: vi.fn(async () => providerModel()) },
       searchOption: {
@@ -762,6 +766,7 @@ describe("admin Search service", () => {
       templateKey: null
     });
     const tx = {
+      searchPolicy: { updateMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       providerModel: { findFirst: vi.fn(async () => providerModel()) },
       searchIntegrationRevision: revisions,
@@ -855,6 +860,7 @@ describe("admin Search service", () => {
     });
     const revisions = revisionRepository();
     const tx = {
+      searchPolicy: { updateMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       providerModel: {
         findFirst: vi.fn(async () => providerModel({ id: "technical-2" }))
@@ -908,6 +914,7 @@ describe("admin Search service", () => {
     const optionUpdate = vi.fn();
     const test = vi.fn();
     const tx = {
+      searchPolicy: { updateMany: vi.fn(async () => ({ count: 0 })) },
       providerModel: {
         findFirst: vi.fn(async () => providerModel({ connectionId: "connection-2" }))
       },
@@ -949,6 +956,7 @@ describe("admin Search service", () => {
     const optionUpdate = vi.fn(async () => undefined);
     const revisions = revisionRepository();
     const tx = {
+      searchPolicy: { updateMany: vi.fn(async () => ({ count: 0 })) },
       providerModel: {
         findFirst: vi.fn(async () => providerModel({ id: "technical-2" }))
       },
@@ -1115,6 +1123,7 @@ describe("admin Search service", () => {
     const strategyPublish = vi.fn(async () => undefined);
     const revisions = revisionRepository();
     const tx = {
+      searchPolicy: { updateMany: vi.fn(async () => ({ count: 0 })) },
       providerModel: {
         findFirst: vi.fn(async () => providerModel())
       },
@@ -1269,6 +1278,7 @@ describe("admin Search service", () => {
     });
     const strategyUpdate = vi.fn(async () => undefined);
     const tx = {
+      searchPolicy: { updateMany: vi.fn(async () => ({ count: 0 })) },
       providerModel: { findFirst: vi.fn(async () => providerModel()) },
       searchIntegrationRevision: { create: revisionCreate, findUnique },
       searchOption: {
@@ -1336,7 +1346,8 @@ describe("admin Search service", () => {
         findUnique,
         update: sourceUpdate
       },
-      searchPolicy: { findUnique: vi.fn(async () => policyRow()) }
+      searchPolicy: { findUnique: vi.fn(async () => policyRow()), updateMany: vi.fn(async () => ({ count: 0 })) },
+      $transaction: async (operation: (store: PrismaClient) => Promise<unknown>) => operation(prisma)
     } as unknown as PrismaClient;
     const service = createAdminSearchService({
       now: () => NOW,
@@ -1471,6 +1482,7 @@ describe.each(["create", "save"] as const)("Search %s publication binding", (ope
     const write = vi.fn(async () => ({ count: 1 }));
     const revisions = revisionRepository();
     const tx = {
+      searchPolicy: { updateMany: vi.fn(async () => ({ count: 0 })) },
       $queryRaw: vi.fn(async () => []),
       providerModel: { findFirst: vi.fn(async () => model) },
       searchIntegrationRevision: revisions,
@@ -1503,6 +1515,10 @@ describe.each(["create", "save"] as const)("Search %s publication binding", (ope
     expect(state.transaction).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ isolationLevel: "Serializable" }));
     expect(state.currentBinding.mock.invocationCallOrder[0]).toBeLessThan(state.write.mock.invocationCallOrder[0]!);
     expect(state.test).toHaveBeenCalledOnce();
+    expect(state.tx.searchPolicy.updateMany).toHaveBeenCalledWith({
+      data: { defaultPlan: { mode: "all_selected", optionIds: ["openai-search"] }, updatedByUserId: "admin-1", version: { increment: 1 } },
+      where: { id: "installation", version: 1, updatedByUserId: null, defaultPlan: { equals: { mode: "all_selected", optionIds: [] } } }
+    });
   });
 
   it.each([
@@ -1519,6 +1535,7 @@ describe.each(["create", "save"] as const)("Search %s publication binding", (ope
     expect(state.test).toHaveBeenCalledOnce();
     expect(state.write).not.toHaveBeenCalled();
     expect(state.revisions.create).not.toHaveBeenCalled();
+    expect(state.tx.searchPolicy.updateMany).not.toHaveBeenCalled();
   });
 
   it("rejects available results with no sources before opening a publication transaction", async () => {

@@ -410,7 +410,7 @@ async function loadQuickSetupState(
     : null;
 
   const reusableQuickSetupCredential = assignedCredential &&
-    assignedCredential.label === ADMIN_PROVIDER_SETUP_CREDENTIAL_LABEL &&
+    (assignedCredential.label === ADMIN_PROVIDER_SETUP_CREDENTIAL_LABEL || assignedCredential.label === "Primary") &&
     assignedCredential.groupAssignments.length === 0 &&
     (assignedCredential.userAssignments ?? []).length === 1 &&
     assignedCredential.userAssignments?.[0]?.userId === input.userId &&

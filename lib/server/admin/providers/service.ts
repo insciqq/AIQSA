@@ -482,9 +482,13 @@ export function createAdminProviderService(input: Readonly<{
       }
     }
     const initialSetup = connection.activeVersion === 0;
-    const modelClasses = [...new Set(connection.models
-      .filter((model) => initialSetup || model.enabled)
-      .map((model) => model.modelClass ?? model.draftConfig.modelClass))];
+    const setupPolicy = ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.includes(connection.family as AdminProviderQuickSetupProviderId)
+      ? adminProviderQuickSetupPolicy(connection.family as AdminProviderQuickSetupProviderId) : null;
+    const modelClasses = [...new Set([
+      ...connection.models.filter((model) => initialSetup || model.enabled)
+        .map((model) => model.modelClass ?? model.draftConfig.modelClass),
+      ...(setupPolicy?.candidates.map((candidate) => candidate.configuration.modelClass) ?? [])
+    ])];
     const outcome = await testCredentialCatalog({
       connection: connection.activeConfig ?? connection.draftConfig,
       family: connection.family,
@@ -506,10 +510,9 @@ export function createAdminProviderService(input: Readonly<{
         id: model.id
       };
     }) : [];
-    const setupPolicy = ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.includes(connection.family as AdminProviderQuickSetupProviderId)
-      ? adminProviderQuickSetupPolicy(connection.family as AdminProviderQuickSetupProviderId) : null;
     const additions = setupPolicy?.candidates.filter((candidate) =>
-      outcome.modelIds.includes(candidate.configuration.upstreamModelId) && !connection.models.some((model) =>
+      (outcome.modelIdsByClass?.[candidate.configuration.modelClass] ?? outcome.modelIds)
+        .includes(candidate.configuration.upstreamModelId) && !connection.models.some((model) =>
         model.draftConfig.upstreamModelId === candidate.configuration.upstreamModelId))
       .map((candidate) => ({
         configuration: candidate.configuration,

@@ -127,6 +127,44 @@ function activeCandidate() {
 }
 
 describe("Prisma admin provider repository", () => {
+  it.each([
+    ["embedding", { embedding: { probeVersion: 1, document: true, query: true, dimensions: 1024 } }],
+    ["reranking", { reranking: { probeVersion: 1, completeScores: true } }]
+  ])("retains verified %s evidence in draft and active model reads", async (_kind, proof) => {
+    const successful = { ...storedCheck().evidence, ...proof };
+    const checks = [
+      successful,
+      { ...successful, method: "models_catalog" },
+      { ...successful, detail: "model_missing" },
+      { ...successful, embedding: { probeVersion: 1, document: true, query: false, dimensions: -1 },
+        reranking: { probeVersion: 1, completeScores: false } }
+    ].map((checkEvidence) => ({
+      ...storedCheck(), connectionId: "connection-1", connectionVersion: 1,
+      credentialVersionId: "version-1", evidence: checkEvidence,
+      latestRefreshError: null, modelVersion: 1, refreshFailedAt: null
+    }));
+    const db = {
+      providerConnection: { findMany: vi.fn(async () => [{
+        activatedAt: NOW, activeConfig: candidate().connection.configuration,
+        activeVersion: 1, createdAt: NOW, credentials: [], defaultCredentialId: null,
+        displayName: "Provider", draftConfig: candidate().connection.configuration,
+        draftVersion: 1, enabled: true, family: "openai_compatible", id: "connection-1",
+        models: [], templateKey: null, unassignedPolicy: "use_default", updatedAt: NOW
+      }]) },
+      providerDraftCheck: { findMany: vi.fn(async () => checks) },
+      providerModelCredentialCheck: { findMany: vi.fn(async () => checks) }
+    };
+    const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
+    const [connection] = await repository.listConnections();
+    for (const projected of [connection!.draftChecks, connection!.activeChecks]) {
+      expect(projected[0]?.evidence).toMatchObject(proof);
+      for (const check of projected.slice(1)) {
+        expect(check.evidence).not.toHaveProperty("embedding");
+        expect(check.evidence).not.toHaveProperty("reranking");
+      }
+    }
+  });
+
   it("serializes configured-secret metadata without returning either ciphertext", async () => {
     const createdAt = new Date("2026-07-20T00:00:00.000Z");
     const db = {

@@ -124,6 +124,7 @@ function KeyRow({
 function KeyFormRow({
   busy,
   credentialLabel,
+  firstKey,
   error,
   kind,
   onCancel,
@@ -131,12 +132,13 @@ function KeyFormRow({
 }: Readonly<{
   busy: boolean;
   credentialLabel: string | null;
+  firstKey: boolean;
   error: string | null;
   kind: KeyForm["kind"];
   onCancel(): void;
   onSubmit(input: { label: string; secret: string }): void;
 }>) {
-  const [label, setLabel] = useState("");
+  const [label, setLabel] = useState(firstKey ? "Main" : "");
   const [secret, setSecret] = useState("");
   const errorId = useId();
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -150,7 +152,7 @@ function KeyFormRow({
           <label className="min-w-0 md:w-52">
             <span className={fieldLabel}>Label</span>
             <input
-              autoFocus
+              autoFocus={!firstKey}
               className={inputClass}
               disabled={busy}
               maxLength={160}
@@ -168,7 +170,7 @@ function KeyFormRow({
             aria-invalid={error ? true : undefined}
             autoComplete="off"
             autoCapitalize="none"
-            autoFocus={kind === "rotate"}
+            autoFocus={kind === "rotate" || firstKey}
             className={`${inputClass} font-mono [-webkit-text-security:disc]`}
             disabled={busy}
             onChange={(event) => setSecret(event.currentTarget.value)}
@@ -412,6 +414,7 @@ export function AdminProviderKeys({
               busy={busy}
               credentialLabel={form.kind === "rotate" ? credentialById.get(form.credentialId)?.label ?? null : null}
               error={formError}
+              firstKey={connection.credentials.length === 0}
               key={form.kind === "rotate" ? `rotate:${form.credentialId}` : "add"}
               kind={form.kind}
               onCancel={() => { setForm(null); setFormError(null); }}

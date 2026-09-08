@@ -775,7 +775,7 @@ describe("provider Quick setup service", () => {
       displayName: "OpenAI · Research account"
     });
     expect(plan.connection.id).not.toBe("00000000-0000-4000-8000-000000001102");
-    expect(plan.credential.label).toBe("Primary");
+    expect(plan.credential.label).toBe("Main");
     expect(plan.models.map(({ candidate, evidence }) => ({
       candidateId: candidate.candidateId,
       upstreamModelId: evidence.upstreamModelId

@@ -88,7 +88,7 @@ function readyGraph(
     enabled: true,
     groupAssignments: [],
     id: credentialId,
-    label: "Primary",
+    label: "Main",
     testedAt: now,
     updatedAt: now,
     userAssignments: [{
@@ -586,8 +586,9 @@ describe("Prisma provider Quick setup eligibility", () => {
     expect(inspection.quickSetupCredential).toBeNull();
   });
 
-  it("keeps the assigned Quick credential reusable when it is the connection default", async () => {
+  it.each(["Main", "Primary"])("keeps the assigned %s credential reusable when it is the connection default", async (label) => {
     const graph = readyGraph();
+    graph.credential.label = label;
     (graph.connection as unknown as { defaultCredentialId: string | null }).defaultCredentialId =
       graph.credential.id;
     const { repository } = inspectionRepository({
@@ -752,7 +753,7 @@ describe("Prisma provider Quick setup additional connections", () => {
       },
       credential: {
         id: "credential-second",
-        label: "Primary",
+        label: "Main",
         versionEnvelope: "envelope-second",
         versionId: "credential-version-second"
       },
@@ -827,7 +828,7 @@ describe("Prisma provider Quick setup additional connections", () => {
     expect(created.providerCredential).toEqual([expect.objectContaining({
       connectionId: "connection-second",
       id: "credential-second",
-      label: "Primary"
+      label: "Main"
     })]);
     expect(created.providerCredentialVersion).toEqual([expect.objectContaining({
       credentialId: "credential-second",

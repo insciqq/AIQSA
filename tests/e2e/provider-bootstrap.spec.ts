@@ -15,7 +15,7 @@ test.afterAll(() => prisma.$disconnect());
 
 /** Actual HTTP adapters and database publication; only the upstream is local. */
 test("one key save activates models, fills empty defaults and retries failed Search", async ({ page, context }, testInfo) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   execFileSync(process.execPath, ["--import", "tsx", "scripts/stateful-test-target.ts"], { stdio: "pipe" });
   const connectionId = randomUUID();
   const modelId = randomUUID();
@@ -23,6 +23,7 @@ test("one key save activates models, fills empty defaults and retries failed Sea
   const candidate = policy.candidates.find(({ recommended }) => recommended)!;
   const priorChat = await prisma.modelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
   const priorRoles = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+  const priorSearch = await prisma.searchPolicy.findUniqueOrThrow({ where: { id: "installation" } });
   let failSearch = true;
   let searchCalls = 0;
   const server = createServer((request, response) => {
@@ -95,6 +96,9 @@ test("one key save activates models, fills empty defaults and retries failed Sea
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const apiRoot = "http://127.0.0.1:" + (server.address() as AddressInfo).port;
   try {
+    await prisma.searchPolicy.update({ where: { id: "installation" }, data: {
+      defaultPlan: { mode: "all_selected", optionIds: [] }, version: 1, updatedByUserId: null
+    } });
     await prisma.modelPolicy.update({ where: { id: "installation" }, data: { defaultProviderModelId: null, reasoningEffort: null } });
     await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: {
       providerModelId: null, reasoningEffort: null, chatPdfProviderModelId: null, chatPdfReasoningEffort: null,
@@ -121,8 +125,9 @@ test("one key save activates models, fills empty defaults and retries failed Sea
     await page.goto("/admin?section=providers&resource=" + connectionId);
     await page.getByRole("button", { name: "Add key", exact: true }).click();
     const form = page.getByTestId("provider-key-form");
-    await form.getByLabel("Label", { exact: true }).fill("Primary");
+    await expect(form.getByLabel("Label", { exact: true })).toHaveValue("Main");
     const key = form.getByLabel("API key", { exact: true });
+    await expect(key).toBeFocused();
     await expect(key).toHaveAttribute("type", "text");
     expect(await key.evaluate((element) => getComputedStyle(element).getPropertyValue("-webkit-text-security"))).toBe("disc");
     await key.fill("rejected-fixture-key");
@@ -139,6 +144,9 @@ test("one key save activates models, fills empty defaults and retries failed Sea
     expect(checked.models).toHaveLength(2);
     expect(checked.models.every((model) => model.enabled && model.activeVersion > 0)).toBe(true);
     expect(checked.checkRun).toMatchObject({ total: 2, failed: [], setup: { state: "partial", search: "failed" } });
+    expect(await prisma.searchPolicy.findUnique({ where: { id: "installation" } })).toMatchObject({
+      defaultPlan: { mode: "all_selected", optionIds: [] }, version: 1, updatedByUserId: null
+    });
     expect(checked.models.map(({ activeConfig }) => activeConfig?.upstreamModelId)).toContain("gpt-6-astra");
     await expect(page.getByRole("button", { name: "Retry setup" })).toBeVisible();
     failSearch = false;
@@ -154,6 +162,20 @@ test("one key save activates models, fills empty defaults and retries failed Sea
       include: { strategies: { include: { activeRevision: true } } } });
     expect(search.enabled).toBe(true);
     expect(search.strategies.some(({ activeRevision }) => activeRevision !== null)).toBe(true);
+    expect(await prisma.searchPolicy.findUnique({ where: { id: "installation" } })).toMatchObject({
+      defaultPlan: { mode: "all_selected", optionIds: [search.optionId] }, version: 2
+    });
+    const selectOff = await page.request.patch("/api/admin/search", { data: {
+      defaultPlan: { mode: "all_selected", optionIds: [] }, expectedVersion: 2
+    } });
+    expect(selectOff.ok()).toBe(true);
+    const enableAgain = await page.request.post(`/api/admin/search/${search.id}/actions`, {
+      data: { action: "enable" }
+    });
+    expect(enableAgain.ok()).toBe(true);
+    expect(await prisma.searchPolicy.findUnique({ where: { id: "installation" } })).toMatchObject({
+      defaultPlan: { mode: "all_selected", optionIds: [] }, version: 3
+    });
     await page.reload();
     await expect(page.getByTestId("provider-page-status")).not.toContainText("Disabled");
     await expect(page.getByText("Automatic setup finished.", { exact: true })).toBeVisible();
@@ -166,8 +188,8 @@ test("one key save activates models, fills empty defaults and retries failed Sea
         { width: 768, height: 1024 }, { width: 390, height: 844 }, { width: 844, height: 390 }
       ]) {
         await page.setViewportSize(viewport);
-        await page.reload();
-        await expect(page.getByTestId("provider-page")).toBeVisible();
+        await page.goto("/admin?section=providers&resource=" + connectionId);
+        await expect(page.getByTestId("provider-page")).toBeVisible({ timeout: 30_000 });
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         for (const model of checked.models) {
           const row = page.getByTestId("provider-model-" + model.id);
@@ -179,11 +201,31 @@ test("one key save activates models, fills empty defaults and retries failed Sea
           expect(await capabilities.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
         }
         await page.screenshot({ path: testInfo.outputPath("bootstrap-" + theme + "-" + viewport.width + ".png"), fullPage: true });
+        await page.goto("/admin?section=roles");
+        const knowledgeStatus = page.getByTestId("admin-knowledge-state");
+        await expect(knowledgeStatus).toBeVisible({ timeout: 30_000 });
+        const chip = await knowledgeStatus.boundingBox();
+        const group = await page.getByTestId("admin-role-knowledge").boundingBox();
+        expect(chip).not.toBeNull();
+        expect(group).not.toBeNull();
+        expect(chip!.x).toBeGreaterThanOrEqual(group!.x);
+        expect(chip!.x + chip!.width).toBeLessThanOrEqual(group!.x + group!.width);
+        expect(await knowledgeStatus.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        if (viewport.width >= 1280) {
+          const memoryStatus = await page.getByTestId("admin-role-memory-status").boundingBox();
+          expect(memoryStatus).not.toBeNull();
+          expect(Math.abs(chip!.x - memoryStatus!.x)).toBeLessThanOrEqual(1);
+        }
+        await page.screenshot({ path: testInfo.outputPath("roles-" + theme + "-" + viewport.width + ".png"), fullPage: true });
       }
     }
   } finally {
     await prisma.modelPolicy.update({ where: { id: "installation" }, data: priorChat });
     await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: priorRoles });
+    await prisma.searchPolicy.update({ where: { id: "installation" }, data: { ...priorSearch,
+      defaultPlan: priorSearch.defaultPlan as Prisma.InputJsonValue
+    } });
     const options = await prisma.searchOption.findMany({ where: { sourceConnectionId: connectionId }, select: { id: true } });
     const where = { searchOptionId: { in: options.map(({ id }) => id) } };
     const strategies = await prisma.searchStrategy.findMany({ where, select: { id: true } });
