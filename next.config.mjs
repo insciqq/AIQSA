@@ -29,14 +29,14 @@ const nextConfig = {
     // Next 16 persistent Turbopack caches can enter a CPU/RSS growth loop
     // after broad bind-mount changes. Keep incremental in-process compilation,
     // but rebuild the disposable dev cache on each container start.
-    turbopackFileSystemCacheForDev: false,
-    // The native compiler cache is outside V8's heap ceiling. Bound its
-    // development target so repeated route compilation fits small containers.
-    ...(process.env.NODE_ENV === "development"
-      ? { turbopackMemoryLimit: 768 * 1024 * 1024 }
-      : {})
+    turbopackFileSystemCacheForDev: false
   },
   output: "standalone",
+  // Native sharp loads libvips through the dynamic linker. JS tracing retains
+  // lib/index.js but can omit the shared library resolved by the addon wrapper.
+  outputFileTracingIncludes: {
+    "/*": ["./node_modules/@img/sharp-libvips-*/lib/**/*"]
+  },
   serverExternalPackages: [
     "@napi-rs/canvas",
     "microsandbox",

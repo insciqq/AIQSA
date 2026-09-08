@@ -1,3 +1,4 @@
+import type { AdminProviderSetupProgress } from "../../../contracts/adminProviderSetupProgress";
 import { randomUUID } from "node:crypto";
 import {
   ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
@@ -263,9 +264,12 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
   return {
     async setup(inputValue: Readonly<{
       actor: AdminProviderCustomSetupActor;
+      onProgress?(value: AdminProviderSetupProgress): void;
       request: AdminProviderCustomSetupRequest;
       signal?: AbortSignal;
     }>): Promise<AdminProviderCustomSetupReadyResult> {
+      inputValue.signal?.throwIfAborted();
+      inputValue.onProgress?.({ phase: "validating", completed: 0, total: null });
       const request = inputValue.request;
       const connection = connectionConfiguration(request);
       const upstreamModelIds = requestedModelIds(request);
@@ -310,6 +314,8 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
 
       const evidence: AdminProviderTestEvidence[] = [];
       for (const [index, model] of modelConfigurations.entries()) {
+        inputValue.signal?.throwIfAborted();
+        inputValue.onProgress?.({ phase: "checking", completed: index, total: modelConfigurations.length });
         let testOutcome: AdminProviderDraftTestOutcome;
         try {
           testOutcome = await input.tester.test({
@@ -330,7 +336,9 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
             "provider_custom_setup_test_failed"
           );
         }
+        inputValue.signal?.throwIfAborted();
         evidence.push(validatedEvidence(testOutcome, model));
+        inputValue.onProgress?.({ phase: "checking", completed: index + 1, total: modelConfigurations.length });
       }
 
       const checkedAt = now();
@@ -372,6 +380,8 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
             timeoutMs: 300_000
           }
         : null;
+      inputValue.signal?.throwIfAborted();
+      inputValue.onProgress?.({ phase: "saving", completed: 0, total: null });
       const commit = await input.repository.commit({
         actor: inputValue.actor,
         checkedAt,
@@ -440,6 +450,7 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
           "provider_custom_setup_stale"
         );
       }
+      inputValue.onProgress?.({ phase: "finishing", completed: 0, total: null });
       try {
         await input.onCompleted?.({ connectionId, credentialId, userId: inputValue.actor.userId });
       } catch {

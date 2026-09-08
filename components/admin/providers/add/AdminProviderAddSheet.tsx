@@ -1,5 +1,7 @@
 "use client";
 
+import { AdminProviderSetupProgress } from "./AdminProviderSetupProgress";
+import type { AdminProviderSetupProgress as SetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 import { inputClass } from "@/components/admin/adminPrimitives";
 import {
   adminProviderCustomSetupErrorMessage,
@@ -202,6 +204,8 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
   const [selection, setSelection] = useState<AdminProviderQuickSetupSelectionResult | null>(null);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [progress, setProgress] = useState<SetupProgress | null>(null);
+  const [interrupted, setInterrupted] = useState(false);
   const [error, setError] = useState<FormError | null>(null);
   const [discarding, setDiscarding] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -276,8 +280,23 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
     }
   };
 
+  const stopSetup = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    if (discovery.loading && !submitting) {
+      setDiscovery((current) => ({ ...current, loading: false, error: "Model discovery stopped. You can try again." }));
+      return;
+    }
+    setSubmitting(false);
+    setProgress(null);
+    setInterrupted(true);
+    setDiscovery((current) => ({ ...current, loading: false }));
+    setError({ field: null, message: "Setup stopped. A save already in progress may finish. Close this sheet and check the provider list before trying again." });
+  };
+
   const requestClose = () => {
     if (busy) return;
+    if (interrupted) { onClose(); return; }
     if (dirty) {
       setDiscarding(true);
       return;
@@ -341,12 +360,21 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
     abortRef.current?.abort();
     abortRef.current = abort;
     setSubmitting(true);
+    setProgress({ phase: "validating", completed: 0, total: null });
     setError(null);
-    const result = await submitAdminProviderQuickSetup(validation.body, fetch, abort.signal);
+    const result = await submitAdminProviderQuickSetup(validation.body, fetch, abort.signal, (value) => {
+      if (abortRef.current === abort && !abort.signal.aborted) setProgress(value);
+    });
     if (abort.signal.aborted) return;
     abortRef.current = null;
     if (!result.ok) {
       setSubmitting(false);
+      setProgress(null);
+      if (["network_error", "provider_setup_interrupted"].includes(result.error.code) || result.error.code.endsWith("response_invalid")) {
+        setInterrupted(true);
+        setError({ field: null, message: "The setup connection was interrupted. A save may have completed. Close this sheet and check the provider list before trying again." });
+        return;
+      }
       setError({
         field: result.error.code === "provider_credential_test_failed" ? "secret" : null,
         message: adminProviderQuickSetupErrorMessage(result.error)
@@ -361,6 +389,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
     }
     if (result.data.outcome === "selection_required") {
       setSubmitting(false);
+      setProgress(null);
       setSelection(result.data);
       setSelectedCandidateId(null);
       return;
@@ -379,12 +408,21 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
     abortRef.current?.abort();
     abortRef.current = abort;
     setSubmitting(true);
+    setProgress({ phase: "validating", completed: 0, total: null });
     setError(null);
-    const result = await submitAdminProviderCustomSetup(validation.body, fetch, abort.signal);
+    const result = await submitAdminProviderCustomSetup(validation.body, fetch, abort.signal, (value) => {
+      if (abortRef.current === abort && !abort.signal.aborted) setProgress(value);
+    });
     if (abort.signal.aborted) return;
     abortRef.current = null;
     if (!result.ok) {
       setSubmitting(false);
+      setProgress(null);
+      if (["network_error", "provider_setup_interrupted"].includes(result.error.code) || result.error.code.endsWith("response_invalid")) {
+        setInterrupted(true);
+        setError({ field: null, message: "The setup connection was interrupted. A save may have completed. Close this sheet and check the provider list before trying again." });
+        return;
+      }
       setError({
         field: result.error.code === "provider_custom_setup_test_failed" ? "secret" : null,
         message: adminProviderCustomSetupErrorMessage(result.error)
@@ -413,10 +451,10 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
       closeBlocked={busy}
       footer={(
         <>
-          <UiV2Button busy={submitting} disabled={busy || !canSave} form={formId} tone="primary" type="submit">
+          <UiV2Button busy={submitting} disabled={busy || interrupted || !canSave} form={formId} tone="primary" type="submit">
             {saveLabel}
           </UiV2Button>
-          <UiV2Button disabled={busy} onClick={requestClose} tone="ghost" type="button">Cancel</UiV2Button>
+          <UiV2Button onClick={busy ? stopSetup : requestClose} tone="ghost" type="button">{busy ? "Stop" : interrupted ? "Close and review providers" : "Cancel"}</UiV2Button>
           <span className="min-w-0 text-xs leading-5 text-ink-muted sm:ml-auto sm:text-right">
             Checks supported models and Search, then fills empty roles, including Knowledge. Assigned PDF readers receive page images and text. Uses small paid requests.
           </span>
@@ -434,7 +472,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
         id={formId}
         onSubmit={(event) => {
           event.preventDefault();
-          if (busy) return;
+          if (busy || interrupted) return;
           void (family === "custom" ? submitCustom() : submitBuiltIn());
         }}
       >
@@ -482,6 +520,9 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
             update={updateCustom}
           />
         )}
+
+        {submitting && progress ? <AdminProviderSetupProgress progress={progress} /> : discovery.loading
+          ? <AdminProviderSetupProgress progress={{ phase: "discovering", completed: 0, total: null }} /> : null}
 
         {error ? (
           <p className="text-xs leading-5 text-critical" data-testid="provider-add-error" id={errorId} role="alert">
@@ -750,6 +791,7 @@ function CustomFields({
           />
           This endpoint needs no key (private network)
         </label>
+        <p className={helpText}>This key is assigned to you personally. Its label does not make it the installation default or give other users access.</p>
       </div>
       <Field
         label="Name"

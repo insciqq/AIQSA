@@ -1,11 +1,12 @@
 "use client";
 
+import { inputClass } from "@/components/admin/adminPrimitives";
 import { AdminProviderModelSheet } from "@/components/admin/providers/models/AdminProviderModelSheet";
 import { modelWorksWith, type ModelChip } from "@/components/admin/providers/models/modelChips";
 import {
   activeModelCheck,
   checkableCredentials,
-  defaultCredentialOf,
+  diagnosticCheckRun,
   deriveModelUsage,
   embeddingModelLabel,
   groupProviderModels,
@@ -68,6 +69,8 @@ function Chip({ chip }: Readonly<{ chip: ModelChip }>) {
 export type AdminProviderModelsProps = Readonly<{
   connection: AdminProviderConnection;
   controller: AdminProvidersController;
+  diagnosticCredentialId: string | null;
+  onDiagnosticCredentialChange(credentialId: string | null): void;
   onError(message: string): void;
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
   usageSources: ProviderUsageSources;
@@ -122,13 +125,15 @@ function AddModelMenu({
 
 /**
  * Models block of a provider page (PRD 5.4): one table grouped by class,
- * `Works with` chips from the last check with the default key, `Used as`
+ * `Works with` chips from the last check with the selected key, `Used as`
  * tags, the On switch with its consequence dialog, the `⋯` actions, one
  * expandable row, `Re-check all` and `Add model ▾`.
  */
 export function AdminProviderModels({
   connection,
   controller,
+  diagnosticCredentialId,
+  onDiagnosticCredentialChange,
   onError,
   requestConfirmation,
   usageSources
@@ -143,23 +148,27 @@ export function AdminProviderModels({
   const busy = controller.state.busy;
   const usage = useMemo(() => deriveModelUsage(usageSources), [usageSources]);
   const groups = useMemo(() => groupProviderModels(connection.models), [connection.models]);
-  const defaultCredential = defaultCredentialOf(connection);
   const checkable = checkableCredentials(connection);
-  const checkKey = defaultCredential && checkable.some(({ id }) => id === defaultCredential.id) ? defaultCredential : null;
-  const run = connection.checkRun ?? null;
-  const running = run?.state === "running";
+  const selectedKey = connection.credentials.find(({ id }) => id === diagnosticCredentialId) ?? null;
+  const checkKey = checkable.find(({ id }) => id === diagnosticCredentialId) ?? null;
+  const run = diagnosticCheckRun(connection, diagnosticCredentialId);
+  const running = connection.checkRun?.state === "running";
   // Keep the edit baseline so a catalog refresh cannot replace fields or advance its CAS version.
   const editing = sheet?.kind === "edit" ? sheet.model : null;
   const initialSetup = connection.activeVersion === 0;
   const checkHelpId = useId();
   const hasCheckableModels = connection.models.some((model) => initialSetup || model.enabled && model.activeConfig !== null);
-  const checkHelp = !checkKey ? "Add a working default API key first."
+  const checkHelp = !checkKey ? selectedKey || diagnosticCredentialId
+    ? "This key is unavailable. Choose a working key to check models."
+    : "Choose a working API key to see its results and check models."
     : !hasCheckableModels ? "Add or turn on a model first."
       : running ? "Model checks are already running."
         : "Sends small requests to verify model access, tools, JSON output, PDF and image input, and streaming.";
 
-  const startChecks = (credentialId: string, modelIds?: readonly string[]) =>
+  const startChecks = (credentialId: string, modelIds?: readonly string[]) => {
+    onDiagnosticCredentialChange(credentialId);
     void controller.actions.startModelChecks(connection.id, credentialId, modelIds);
+  };
 
   const setEnabled = (model: AdminProviderModel, enabled: boolean) => {
     const successMessage = enabled ? "Model turned on." : "Model turned off.";
@@ -279,7 +288,25 @@ export function AdminProviderModels({
         </div>
       </div>
 
-      <p className="text-xs leading-5 text-ink-muted" id={checkHelpId}>{checkHelp}</p>
+      <label className="flex min-w-0 flex-wrap items-center gap-2 text-[13px] text-ink-secondary">
+        <span>Check results for key</span>
+        <select
+          className={`${inputClass} h-8 min-h-0 w-full py-0 text-[13px] sm:w-64`}
+          onChange={(event) => onDiagnosticCredentialChange(event.currentTarget.value || null)}
+          value={diagnosticCredentialId ?? ""}
+        >
+          <option value="">Choose a key</option>
+          {diagnosticCredentialId && !selectedKey ? <option value={diagnosticCredentialId}>Selected key unavailable</option> : null}
+          {connection.credentials.map((credential) => (
+            <option disabled={!checkable.some(({ id }) => id === credential.id)} key={credential.id} value={credential.id}>
+              {credential.label}{!checkable.some(({ id }) => id === credential.id) ? " · unavailable" : ""}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="text-xs leading-5 text-ink-muted" id={checkHelpId}>
+        {checkHelp} Selecting a key here only changes diagnostics; it does not change anyone’s access.
+      </p>
 
       <div className="overflow-hidden rounded-[12px] border border-trace-subtle bg-answer-paper">
         {groups.length === 0 ? (
@@ -311,23 +338,23 @@ export function AdminProviderModels({
                   </tr>
                   {group.models.map((model) => {
                     const configuration = liveConfiguration(model);
-                    const check = activeModelCheck(connection, model, defaultCredential);
+                    const check = activeModelCheck(connection, model, checkKey);
                     const worksWith = modelWorksWith({
                       check,
-                      checkRun: run,
+                      checkRun: run && (!model.activatedAt || Date.parse(model.activatedAt) <= Date.parse(run.startedAt)) ? run : null,
                       configuration,
-                      defaultCredentialId: connection.defaultCredentialId,
+                      defaultCredentialId: diagnosticCredentialId,
                       modelId: model.id
                     });
                     const tags = usage.get(model.id) ?? [];
                     const route = modelRouteLabel(connection, model);
                     const expanded = expandedId === model.id;
-                    const summaries = expanded ? modelCheckSummaries(connection, model) : [];
-                    const canCheck = Boolean(checkKey) && (initialSetup || model.enabled && model.activeConfig !== null) && !running;
+                    const summaries = expanded ? modelCheckSummaries(connection, model, checkKey) : [];
+                    const canCheck = !busy && Boolean(checkKey) && (initialSetup || model.enabled && model.activeConfig !== null) && !running;
                     const menu: UiV2MenuAction[] = [
                       { icon: "edit", label: "Edit", onSelect: () => setSheet({ kind: "edit", model }) },
                       {
-                        disabled: !checkable.length || !model.enabled || model.activeConfig === null,
+                        disabled: busy || running || !checkable.length || !model.enabled || model.activeConfig === null,
                         icon: "regenerate",
                         label: "Re-check with key…",
                         submenu: checkable.map((credential) => ({
@@ -419,6 +446,8 @@ export function AdminProviderModels({
                           <td className="block px-4 pb-3.5 xl:table-cell sm:px-5" colSpan={5}>
                             <div className="flex min-w-0 flex-col gap-3 rounded-[10px] bg-control-surface/60 px-3.5 py-3 sm:flex-row sm:items-center">
                               <div className="min-w-0 flex-1 text-xs leading-5 text-ink-secondary">
+                                {worksWith.kind === "checking" ? <p>Checking with key {checkKey?.label}…</p> : null}
+                                {worksWith.kind === "failed" ? <p>The last check with key {checkKey?.label} hit a temporary provider failure; earlier results were kept.</p> : null}
                                 {summaries.length ? summaries.map((summary) => (
                                   <p key={summary.credentialLabel}>
                                     {summary.sentence}
@@ -426,12 +455,8 @@ export function AdminProviderModels({
                                       <span className="block text-caution">No usage reporting — cost accounting for this model will be empty.</span>
                                     ) : null}
                                   </p>
-                                )) : worksWith.kind === "checking" ? (
-                                  <p>Checking with key {checkKey?.label ?? "the default key"}…</p>
-                                ) : worksWith.kind === "failed" ? (
-                                  <p>The last check hit a temporary provider failure; earlier results were kept.</p>
-                                ) : (
-                                  <p>{checkKey ? `Not checked yet with key ${checkKey.label}.` : "Add a working default key to check this model."}</p>
+                                )) : worksWith.kind === "checking" || worksWith.kind === "failed" ? null : (
+                                  <p>{checkKey ? `Not checked yet with key ${checkKey.label}.` : "Choose a working key to check this model."}</p>
                                 )}
                                 {route ? <p className="text-ink-muted">Route: {route}.</p> : null}
                               </div>

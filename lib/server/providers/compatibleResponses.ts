@@ -1,3 +1,4 @@
+import { providerResponseFailure } from "./responseFailure";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import {
   buildOpenAIResponsesRequest,
@@ -145,7 +146,7 @@ export function createCompatibleResponsesAdapter(
           : undefined;
       if (isFailedOpenAIResponse(response)) {
         if (usageEvent) yield usageEvent;
-        throw new Error(`compatible_response_${openAIResponseStatus(response)}`);
+        throw providerResponseFailure(`compatible_response_${openAIResponseStatus(response)}`, response);
       }
       if (openAIResponseStatus(response) !== "completed") {
         if (usageEvent) yield usageEvent;

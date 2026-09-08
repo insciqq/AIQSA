@@ -1,3 +1,4 @@
+import { setupProgressResponse } from "./setupProgressResponse";
 import {
   ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS,
   type AdminProviderQuickSetupConnectionOverrides,
@@ -181,10 +182,12 @@ export function createAdminProviderQuickSetupMutationHandler(
       secret,
       ...(selectedModel ? { selectedModel } : {})
     };
-    return safely(async () => Response.json(await deps.service.setup({
-      actor: auth.actor,
-      request: quickSetupRequest,
-      signal: request.signal
-    })));
+    return setupProgressResponse(request, (signal, onProgress) => safely(async () =>
+      Response.json(await deps.service.setup({
+        actor: auth.actor,
+        onProgress,
+        request: quickSetupRequest,
+        signal
+      }))));
   };
 }

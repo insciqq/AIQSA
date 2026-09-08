@@ -4,6 +4,7 @@ import { AdminProviderConnectionSettingsSheet } from "@/components/admin/provide
 import { AdminProviderKeys } from "@/components/admin/providers/AdminProviderKeys";
 import { AdminProviderCheckBanner } from "@/components/admin/providers/models/AdminProviderCheckBanner";
 import { AdminProviderModels } from "@/components/admin/providers/models/AdminProviderModels";
+import { checkableCredentials, diagnosticCheckRun, initialDiagnosticCredentialId } from "@/components/admin/providers/models/modelListView";
 import { useAdminModelChecks } from "@/components/admin/providers/models/useAdminModelChecks";
 import { providerHeaderStatus, type ProviderUsageSources } from "@/components/admin/providers/providerListView";
 import { ProviderAvatar } from "@/components/admin/providers/providerPrimitives";
@@ -12,6 +13,7 @@ import type { AdminProvidersController } from "@/components/admin/useAdminProvid
 import { UiV2Button } from "@/components/ui-v2";
 import type { AdminGroup } from "@/lib/contracts/admin";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
+import { useState } from "react";
 
 export type AdminProviderPageProps = Readonly<{
   connection: AdminProviderConnection;
@@ -43,6 +45,11 @@ export function AdminProviderPage({
   usageSources
 }: AdminProviderPageProps) {
   const checks = useAdminModelChecks({ connection, controller, onNotice });
+  const [selection, setSelection] = useState<{ connectionId: string; credentialId: string | null } | null>(null);
+  const diagnosticCredentialId = selection?.connectionId === connection.id
+    ? selection.credentialId : initialDiagnosticCredentialId(connection);
+  const selectedRun = diagnosticCheckRun(connection, diagnosticCredentialId);
+  const selectedKeyAvailable = checkableCredentials(connection).some(({ id }) => id === diagnosticCredentialId);
 
   return (
     <div className="flex max-w-[1120px] flex-col gap-7 px-4 py-6 sm:px-6 lg:px-8" data-testid="provider-page">
@@ -61,7 +68,12 @@ export function AdminProviderPage({
         </UiV2Button>
       </header>
 
-      <AdminProviderCheckBanner checks={checks} connection={connection} disabled={controller.state.busy} />
+      <AdminProviderCheckBanner
+        checks={{ ...checks, interrupted: selectedKeyAvailable ? checks.interrupted : null, run: selectedRun }}
+        connection={connection}
+        disabled={controller.state.busy}
+        selectedCredentialId={diagnosticCredentialId}
+      />
 
       <AdminProviderKeys
         connection={connection}
@@ -74,6 +86,8 @@ export function AdminProviderPage({
       <AdminProviderModels
         connection={connection}
         controller={controller}
+        diagnosticCredentialId={diagnosticCredentialId}
+        onDiagnosticCredentialChange={(credentialId) => setSelection({ connectionId: connection.id, credentialId })}
         onError={onError}
         requestConfirmation={requestConfirmation}
         usageSources={usageSources}

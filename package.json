@@ -1,6 +1,6 @@
 {
   "name": "aiqsa",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Self-hosted multi-user AI workspace with multi-provider chat, MCP tools, and web search.",
   "license": "AGPL-3.0-only",
@@ -106,7 +106,7 @@
     "lucide-react": "0.468.0",
     "microsandbox": "0.6.16",
     "microsandbox-mcp": "0.6.16",
-    "next": "16.2.11",
+    "next": "16.3.3",
     "parse5": "7.3.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "6.2.108",
@@ -132,24 +132,23 @@
     "@types/semver": "7.7.1",
     "autoprefixer": "10.4.20",
     "eslint": "9",
-    "eslint-config-next": "16.2.11",
+    "eslint-config-next": "16.3.3",
     "gpt-tokenizer": "4.0.0",
     "hyparquet": "1.29.2",
     "jsdom": "29.1.1",
     "postcss": "8.5.25",
     "prisma": "^6.19.3",
-    "sharp": "0.35.3",
+    "sharp": "0.35.4",
     "tailwindcss": "3.4.17",
     "tsx": "^4.22.4",
     "typescript": "5.7.2",
-    "vitest": "4.1.8"
+    "vitest": "4.1.11"
   },
   "overrides": {
     "@hono/node-server": "^2.0.10",
     "deepmerge-ts": "8.0.0",
     "esbuild": "0.28.1",
     "nanoid": "3.3.18",
-    "postcss": "8.5.25",
-    "sharp": "0.35.3"
+    "postcss": "8.5.25"
   }
 }

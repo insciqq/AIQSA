@@ -47,7 +47,8 @@ RUN AIQSA_APP_BASE_URL="$AIQSA_BUILD_APP_BASE_URL" \
 # Retain the direct runtime-worker and installation-tool roots and let npm
 # preserve their complete locked transitive closure. Deriving versions from the
 # npm-ci result keeps package-lock.json authoritative without naming transitive
-# packages.
+# packages. Keep security overrides when pruning so npm cannot downgrade the
+# retained worker dependencies below their reviewed versions.
 FROM runtime-deps AS tools-deps
 
 RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').version")" \
@@ -55,6 +56,7 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
   && AWS_SDK_VERSION="$(node -p "require('./node_modules/@aws-sdk/client-s3/package.json').version")" \
   && S3_PRESIGNER_VERSION="$(node -p "require('./node_modules/@aws-sdk/s3-request-presigner/package.json').version")" \
   && TSX_VERSION="$(node -p "require('./node_modules/tsx/package.json').version")" \
+  && SHARP_VERSION="$(node -p "require('./node_modules/sharp/package.json').version")" \
   && CANVAS_VERSION="$(node -p "require('./node_modules/@napi-rs/canvas/package.json').version")" \
   && PDF_LIB_VERSION="$(node -p "require('./node_modules/pdf-lib/package.json').version")" \
   && PDFJS_VERSION="$(node -p "require('./node_modules/pdfjs-dist/package.json').version")" \
@@ -64,7 +66,7 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
   && MCP_SDK_VERSION="$(node -p "require('./node_modules/@modelcontextprotocol/sdk/package.json').version")" \
   && MICROSANDBOX_VERSION="$(node -p "require('./node_modules/microsandbox/package.json').version")" \
   && MICROSANDBOX_MCP_VERSION="$(node -p "require('./node_modules/microsandbox-mcp/package.json').version")" \
-  && npm pkg delete dependencies devDependencies overrides \
+  && npm pkg delete dependencies devDependencies \
   && npm pkg set \
     "dependencies.@napi-rs/canvas=$CANVAS_VERSION" \
     "dependencies.@aws-sdk/client-s3=$AWS_SDK_VERSION" \
@@ -79,6 +81,7 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
     "dependencies.microsandbox-mcp=$MICROSANDBOX_MCP_VERSION" \
     "dependencies.prisma=$PRISMA_VERSION" \
     "dependencies.tsx=$TSX_VERSION" \
+    "dependencies.sharp=$SHARP_VERSION" \
     "dependencies.unpdf=$UNPDF_VERSION" \
   && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 
@@ -105,6 +108,8 @@ COPY --chown=node:node --from=runtime-build /app/.next/static ./runtime/.next/st
 COPY --chown=node:node --from=runtime-build /app/public ./runtime/public
 
 USER node
+
+RUN node scripts/verify-release-vision.cjs
 
 EXPOSE 3000
 

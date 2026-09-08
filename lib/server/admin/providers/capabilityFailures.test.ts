@@ -1,0 +1,153 @@
+import type { PrismaClient } from "@prisma/client";
+import { describe, expect, it, vi } from "vitest";
+import type { AdminProviderConnection, AdminProviderTestEvidence } from "../../../contracts/adminProviders";
+import { encryptProviderCredentialSecret } from "../../providers/credentialSecrets";
+import { createPrismaAdminProviderRepository } from "./prismaRepository";
+import { createAdminProviderService } from "./service";
+import { createAdminProviderDraftTester } from "./tester";
+
+const NOW = new Date("2026-09-09T00:00:00Z");
+const KEY = Buffer.alloc(32, 17);
+const configuration = {
+  allowPrivateNetwork: false, apiRoot: "https://provider.example.test/v1",
+  authenticationMode: "bearer" as const, responseTimeoutMs: 300_000
+};
+const model = {
+  adapterKind: "openai_responses_compatible" as const, answerSelectable: true,
+  capabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
+  defaultParams: {}, modelClass: "answer" as const, upstreamModelId: "synthetic-model"
+};
+const request = { confirmPaidRequest: true, connectionId: "connection", credentialId: "credential", providerModelId: "model" };
+const previous: AdminProviderTestEvidence = {
+  detail: "ok", method: "tiny_generation", selectedProviders: [], upstreamModelId: model.upstreamModelId,
+  compatibility: { probeVersion: 2, modelAccess: "verified", streaming: "verified", usage: "verified",
+    structuredOutput: "verified", directPdf: "verified", vision: "verified" },
+  structuredOutput: { adapterKind: model.adapterKind, upstreamModelId: model.upstreamModelId, probeVersion: 2, verified: true },
+  pdfInput: { adapterKind: model.adapterKind, upstreamModelId: model.upstreamModelId, probeVersion: 1, verified: true },
+  visionInput: { adapterKind: model.adapterKind, upstreamModelId: model.upstreamModelId, probeVersion: 1, verified: true }
+};
+
+function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "failed" | "incomplete") {
+  const envelope = encryptProviderCredentialSecret({ credentialId: request.credentialId, key: KEY,
+    secret: "synthetic-secret", valueId: "version" });
+  const candidate = {
+    connection: { configuration, displayName: "Synthetic", family: "openai_compatible", id: request.connectionId, version: 3 },
+    credential: { envelope, id: request.credentialId, versionId: "version" },
+    model: { configuration: model, displayName: "Synthetic", id: request.providerModelId, version: 4 }
+  };
+  let row: Record<string, unknown> | null = prior ? { status: "available", evidence: previous } : null;
+  const active = { connection: 3, model: 4, credential: "version", revokedAt: null as Date | null };
+  const updateMany = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+    if (row) Object.assign(row, data);
+    return { count: row ? 1 : 0 };
+  });
+  const upsert = vi.fn(async ({ create, update }: { create: Record<string, unknown>; update: Record<string, unknown> }) => {
+    row = row ? { ...row, ...update } : create;
+    return row;
+  });
+  const db = {
+    providerConnection: { findUnique: async () => ({ activeVersion: active.connection }) },
+    providerModel: { findFirst: async () => ({ activeVersion: active.model }) },
+    providerCredential: { findFirst: async () => ({ activeVersionId: active.credential,
+      activeVersion: { revokedAt: active.revokedAt, secretEnvelope: envelope } }) },
+    providerModelCredentialCheck: { updateMany, upsert, findUnique: async () => row }
+  };
+  const repository = createPrismaAdminProviderRepository({ ...db,
+    $transaction: async (operation: (tx: typeof db) => Promise<unknown>) => operation(db)
+  } as unknown as PrismaClient);
+  vi.spyOn(repository, "loadActiveRefreshCandidate").mockResolvedValue(candidate);
+  vi.spyOn(repository, "withLockedCredential").mockImplementation(async (_id, _version, consume) =>
+    consume({ credentialId: request.credentialId, id: "version", revokedAt: null, secretEnvelope: envelope }));
+  const adminConfig = { allowPrivateNetwork: false, apiRoot: configuration.apiRoot,
+    authenticationMode: "bearer" as const, responseTimeoutSeconds: 300 };
+  const timestamp = NOW.toISOString();
+  const connection: AdminProviderConnection = {
+    activatedAt: timestamp, activeChecks: [], activeConfig: adminConfig, activeVersion: 3, assignments: [],
+    createdAt: timestamp, defaultCredentialId: request.credentialId, displayName: "Synthetic", draftChecks: [],
+    draftConfig: adminConfig, draftVersion: 3, enabled: true, family: "openai_compatible", id: request.connectionId,
+    unassignedPolicy: "use_default", updatedAt: timestamp, userAssignments: [],
+    credentials: [{ activatedAt: timestamp, activeVersion: { activatedAt: timestamp, id: "version",
+      revokedAt: null, testedAt: timestamp, version: 1 }, createdAt: timestamp, draftSecretConfigured: false,
+      draftVersion: 1, enabled: true, id: request.credentialId, label: "Synthetic", testedAt: timestamp, updatedAt: timestamp }],
+    models: [{ activatedAt: timestamp, activeConfig: model, activeVersion: 4, connectionId: request.connectionId,
+      createdAt: timestamp, displayName: "Synthetic", draftConfig: model, draftVersion: 4, enabled: true,
+      id: request.providerModelId, updatedAt: timestamp }]
+  };
+  vi.spyOn(repository, "listConnections").mockResolvedValue([connection]);
+  let fail = true;
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    const structured = Boolean(body.text?.format);
+    const pdf = JSON.stringify(body.input).includes("input_file");
+    if (fail && (target === "memory" ? structured : pdf)) return Response.json({
+      id: "synthetic-response", status: terminal, output: [],
+      error: { code: "server_error", message: "PRIVATE_SYNTHETIC_UPSTREAM_DETAIL" },
+      incomplete_details: { reason: "max_output_tokens" }
+    });
+    const response = { id: "synthetic-response", status: "completed", output: [{ type: "message", role: "assistant",
+      content: [{ type: "output_text", text: structured
+        ? JSON.stringify({ count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] }) : pdf ? "Q7K4P9" : "OK" }] }],
+      usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 } };
+    return body.stream ? new Response(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response })}\n\n`,
+      { headers: { "content-type": "text/event-stream" } }) : Response.json(response);
+  });
+  const service = createAdminProviderService({ repository, now: () => NOW, encryptionKey: () => KEY,
+    credentialTester: { async test() { throw new Error("unexpected_credential_test"); } },
+    tester: createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn }) });
+  return { active, candidate, fetchFn, repository, service, updateMany, upsert,
+    row: () => row, succeed: () => { fail = false; } };
+}
+
+describe("failed capability response publication", () => {
+  it.each([
+    ["memory", "failed"], ["memory", "incomplete"], ["direct_pdf", "failed"], ["direct_pdf", "incomplete"]
+  ] as const)("preserves prior or absent evidence on %s/%s and permits an ordinary recheck", async (target, terminal) => {
+    for (const prior of [true, false]) {
+      for (const capabilityRole of [target, undefined] as const) {
+        const f = fixture(prior, target, terminal);
+        await expect(f.service.refreshActive({ ...request, capabilityRole })).rejects.toMatchObject({ code: "provider_refresh_failed" });
+        expect(f.upsert).not.toHaveBeenCalled();
+        expect(f.updateMany).toHaveBeenCalledWith({ data: {
+          latestRefreshError: { code: "provider_refresh_failed", version: 1 }, refreshFailedAt: NOW
+        }, where: { connectionId: request.connectionId, connectionVersion: 3, credentialId: request.credentialId,
+          credentialVersionId: "version", modelVersion: 4, providerModelId: request.providerModelId } });
+        expect(f.row()?.evidence ?? null).toEqual(prior ? previous : null);
+        expect(f.row()?.status ?? null).toBe(prior ? "available" : null);
+        expect(JSON.stringify(f.row())).not.toContain("PRIVATE_SYNTHETIC_UPSTREAM_DETAIL");
+        f.succeed();
+        const result = await f.service.refreshActive({ ...request, capabilityRole });
+        expect(result).toMatchObject({ status: "available", latestRefreshError: null, refreshFailedAt: null,
+          connectionVersion: 3, modelVersion: 4, credentialVersionId: "version" });
+        expect(result.evidence?.compatibility?.[target === "memory" ? "structuredOutput" : "directPdf"]).toBe("verified");
+        if (prior) expect(f.row()?.refreshFailedAt).toBeNull();
+        if (prior && capabilityRole) expect((f.row()?.evidence as AdminProviderTestEvidence).visionInput).toEqual(previous.visionInput);
+      }
+    }
+  });
+
+  it.each(["connection", "model", "credential", "revokedAt"] as const)("does not mark a different %s authority tuple", async (changed) => {
+    const f = fixture(true, "direct_pdf", "failed");
+    if (changed === "credential") f.active.credential = "new-version";
+    else if (changed === "revokedAt") f.active.revokedAt = NOW;
+    else f.active[changed] += 1;
+    await expect(f.service.refreshActive({ ...request, capabilityRole: "direct_pdf" }))
+      .rejects.toMatchObject({ code: "provider_draft_stale" });
+    expect(f.updateMany).not.toHaveBeenCalled();
+    expect(f.upsert).not.toHaveBeenCalled();
+    expect(f.row()).toEqual({ status: "available", evidence: previous });
+  });
+
+  it.each(["memory", "direct_pdf"] as const)("reports failed first-setup %s checks and clears failure after retry", async (target) => {
+    const f = fixture(false, target, "incomplete");
+    const started = await f.service.startCheckRun({ ...request, modelIds: [request.providerModelId], reason: "setup" });
+    await vi.waitFor(() => expect(f.service.checkRun({ connectionId: request.connectionId, runId: started.id }))
+      .toMatchObject({ state: "completed", done: 1, failed: [request.providerModelId] }));
+    expect(f.row()).toBeNull();
+    expect(f.upsert).not.toHaveBeenCalled();
+    f.succeed();
+    const retry = await f.service.startCheckRun({ ...request, modelIds: [request.providerModelId], reason: "requested" });
+    await vi.waitFor(() => expect(f.service.checkRun({ connectionId: request.connectionId, runId: retry.id }))
+      .toMatchObject({ state: "completed", done: 1, failed: [] }));
+    expect(f.row()?.status).toBe("available");
+  });
+});

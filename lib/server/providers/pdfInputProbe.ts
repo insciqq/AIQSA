@@ -196,6 +196,7 @@ export type ProviderPdfInputProbe = Readonly<{
 }>;
 
 type ProbeOptions = Readonly<{
+  disableRequestRetries?: boolean;
   createAdapter?: (input: ProviderPdfInputProbeInput) => Pick<ProviderAdapter, "stream">;
   createFetch?: (configuration: ProviderPdfInputProbeInput["connection"]) => typeof fetch;
 }>;
@@ -271,7 +272,7 @@ function adapterFor(
     configuration: input.connection
   });
   return createProviderRuntimeBinding({
-    options: { allowFake: false, fetchFn },
+    options: { allowFake: false, fetchFn, disableRequestRetries: options.disableRequestRetries },
     secret: input.secret,
     snapshot: executionSnapshot(input)
   }).adapter;

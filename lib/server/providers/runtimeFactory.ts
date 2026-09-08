@@ -86,6 +86,8 @@ export type ProviderExecutionSnapshot = Readonly<{
 
 export type ProviderRuntimeFactoryOptions = Readonly<{
   allowFake: boolean;
+  /** Capability probes own their bounded retries at the whole-probe boundary. */
+  disableRequestRetries?: boolean;
   fetchFn?: typeof fetch;
 }>;
 
@@ -277,7 +279,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         baseUrl: snapshot.connection.apiRoot,
         defaultTimeoutMs: responseTimeoutMs,
         fetchFn,
-        initialRequestRetry: { maxAttempts: 3 }
+        initialRequestRetry: { maxAttempts: input.options.disableRequestRetries ? 1 : 3 }
       });
       return {
         adapter: createCompatibleResponsesAdapter({
@@ -398,7 +400,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         baseUrl,
         defaultTimeoutMs: responseTimeoutMs,
         fetchFn,
-        initialRequestRetry: { maxAttempts: 3 }
+        initialRequestRetry: { maxAttempts: input.options.disableRequestRetries ? 1 : 3 }
       });
       return {
         adapter: createCompatibleResponsesAdapter({

@@ -1,3 +1,4 @@
+import { providerResponseFailure } from "./responseFailure";
 import type { CatalogAdapterKind } from "../../domain/catalog";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { normalizeOpenRouterParams } from "../../domain/providerParams";
@@ -267,7 +268,7 @@ function boundedProviderResponseId(value: unknown): string | null {
 
 function openAIResponseText(response: Record<string, unknown>): string {
   if (response.status !== undefined && response.status !== "completed") {
-    throw new Error("structured_output_provider_incomplete");
+    throw providerResponseFailure("structured_output_provider_incomplete", response);
   }
   if (typeof response.output_text === "string") return response.output_text;
   const output = Array.isArray(response.output) ? response.output : [];
@@ -502,7 +503,7 @@ export function createOpenRouterStructuredOutputAdapter(input: Readonly<{
       if (!isRecord(choice) || choice.finish_reason !== "stop" || !message ||
         (message.tool_calls !== undefined && (!Array.isArray(message.tool_calls) || message.tool_calls.length > 0)) ||
         message.refusal || response.error || choice.error || message.error) {
-        throw new Error("structured_output_provider_incomplete");
+        throw providerResponseFailure("structured_output_provider_incomplete", response);
       }
       options?.onProviderResponseId?.(boundedProviderResponseId(response.id));
       if (isRecord(response.usage)) {

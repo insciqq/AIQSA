@@ -724,6 +724,8 @@ export function createAdminProviderService(input: Readonly<{
   }
 
   async function startCheckRun(value: {
+    /** Internal setup continuation; explicit rechecks always probe again. */
+    reuseCurrentChecks?: boolean;
     userId?: string;
     connectionId: string;
     credentialId: string;
@@ -786,7 +788,21 @@ export function createAdminProviderService(input: Readonly<{
         if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
       }
     }
+    const modelIds = checkableModelIds(connection, value.modelIds);
+    const completedModelIds = value.reason === "setup" && value.reuseCurrentChecks
+      ? modelIds.filter((id) => {
+          const model = connection!.models.find((candidate) => candidate.id === id)!;
+          return connection!.activeChecks.some((check) =>
+            check.providerModelId === id && check.connectionVersion === connection!.activeVersion &&
+            check.modelVersion === model.activeVersion && check.credentialId === credential.id &&
+            check.credentialVersionId === credential.activeVersion!.id &&
+            check.status === "available" && check.latestRefreshError === null &&
+            check.evidence?.method === "tiny_generation" && check.evidence.detail === "ok" &&
+            check.evidence.compatibility?.modelAccess === "verified");
+        })
+      : [];
     const run = checkRuns.start({
+      completedModelIds,
       ...(value.userId && input.completeSetup ? {
         completeSetup: (signal: AbortSignal) => input.completeSetup!({
           connectionId: value.connectionId, credentialId: value.credentialId, userId: value.userId!, signal
@@ -794,7 +810,7 @@ export function createAdminProviderService(input: Readonly<{
       } : {}),
       connectionId: connection.id,
       credentialId: value.credentialId,
-      modelIds: checkableModelIds(connection, value.modelIds),
+      modelIds,
       reason: value.reason
     });
     return checkRuns.get(run.id)!;

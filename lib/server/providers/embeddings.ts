@@ -529,10 +529,10 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
             providerRequestRoutes
           });
         }
-        throw new EmbeddingAdapterError("embedding_provider_request_failed", {
+        throw Object.assign(new EmbeddingAdapterError("embedding_provider_request_failed", {
           providerRequestCount: providerRequestRoutes.length,
           providerRequestRoutes
-        });
+        }), { retryableNetworkFailure: isRetryableProviderNetworkError(error) });
       } finally {
         timeout.clear();
       }
