@@ -138,7 +138,7 @@ export function AdminWorkspaceSection({ reportNotice }: Readonly<{
             <h2 className={`${sectionHeadingClass} pt-4`}>Workspace access</h2>
             <PolicyToggle
               checked={policy.enabled}
-              description="Makes Workspace available when the selected model supports tools and the runtime is healthy. New installations default to off."
+              description="Enabled by default. Workspace is available when the selected model supports tools and the runtime is ready."
               disabled={busy}
               label="Enable Workspace"
               onChange={(enabled) => void update({ enabled })}

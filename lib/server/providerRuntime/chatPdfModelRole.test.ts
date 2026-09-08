@@ -5,6 +5,22 @@ import { createChatPdfModelRoleResolver } from "./chatPdfModelRole";
 import { createSystemModelRoleResolver } from "./systemModelRole";
 
 describe("independent Memory and document assignments", () => {
+  it.each(["low", "high"])("admits configured %s reasoning without a redundant capability list", async (effort) => {
+    const db = { systemModelPolicy: { findUnique: vi.fn(async () => ({
+      providerModelId: "semantic", reasoningEffort: effort, chatPdfProviderModelId: "document",
+      chatPdfReasoningEffort: effort, version: 4
+    })) } } as unknown as PrismaClient;
+    const loadRole = vi.fn(async (_db: unknown, { providerModelId }: { providerModelId: string }) => ({
+      verifiedStructuredOutput: true, verifiedForcedToolCall: true, verifiedVisionInput: true,
+      snapshot: { providerModelId, providerFamily: "openrouter", model: {
+        adapterKind: "openrouter_chat_completions", upstreamModelId: "google/gemini-3.8-flash",
+        capabilities: { reasoning: true }, defaultParams: { reasoning: { effort: "medium" } }
+      } }
+    }) as unknown as ProviderAdmissionRole);
+    expect(await createSystemModelRoleResolver(db, { loadRole }).resolve()).toMatchObject({ ok: true, reasoningEffort: effort });
+    expect(await createChatPdfModelRoleResolver(db, loadRole).resolve()).toMatchObject({ ok: true, reasoningEffort: effort });
+  });
+
   it("admits a Vision-only PDF model alongside a non-Vision strict Memory model", async () => {
     const db = { systemModelPolicy: { findUnique: vi.fn(async () => ({
       providerModelId: "semantic", reasoningEffort: null, chatPdfProviderModelId: "document",

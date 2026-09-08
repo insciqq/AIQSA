@@ -32,7 +32,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /** Fields of one immediate role save; absent fields preserve the other roles. */
 export type AdminRolePatch = Readonly<{
-  chatPdfPreparationAllowed?: boolean;
   chatPdfProviderModelId?: string | null;
   chatPdfReasoningEffort?: string | null;
   providerModelId?: string | null;

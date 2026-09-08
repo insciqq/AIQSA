@@ -30,7 +30,7 @@ function rolesCatalog(): AdminSystemModelPolicyCatalog {
       vision: [{ ...luna, reason: "not_checked" }, { ...terra, reason: "not_checked" }, { ...claude, reason: "adapter_unsupported" }]
     },
     policy: {
-      chatPdfModel: null, chatPdfPreparationAllowed: false, chatPdfReasoningEffort: null, reasoningEffort: null,
+      chatPdfModel: null, chatPdfReasoningEffort: null, reasoningEffort: null,
       rerankerModel: { ...voyage, available: true },
       rerankerRoute: {
         entries: [
@@ -85,10 +85,10 @@ function knowledgeSettings(): AdminKnowledgeSettings {
 
 type Call = { body: Record<string, unknown> | null; method: string; url: string };
 
-function server() {
-  let roles = rolesCatalog();
+function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSettings()) {
+  let roles = initialRoles;
   let model = modelCatalog();
-  let knowledge = knowledgeSettings();
+  let knowledge = initialKnowledge;
   const calls: Call[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -116,9 +116,12 @@ function server() {
             reasoningEffort: body.reasoningEffort as string | null,
             systemModel: body.providerModelId ? { ...pick(body.providerModelId)!, available: true } : null
           } : {}),
-          ...(Object.hasOwn(body, "chatPdfPreparationAllowed") ? { chatPdfPreparationAllowed: Boolean(body.chatPdfPreparationAllowed) } : {}),
           ...(Object.hasOwn(body, "rerankerProviderModelId") ? {
             rerankerModel: body.rerankerProviderModelId ? { ...roles.rerankerCandidates.find((item) => item.id === body.rerankerProviderModelId)!, available: true } : null
+          } : {}),
+          ...(Object.hasOwn(body, "chatPdfProviderModelId") ? {
+            chatPdfModel: body.chatPdfProviderModelId ? { ...pick(body.chatPdfProviderModelId)!, available: true } : null,
+            chatPdfReasoningEffort: body.chatPdfReasoningEffort as string | null
           } : {})
         } };
       }
@@ -233,13 +236,13 @@ describe("AdminRolesSection", () => {
   it("lists Ready, Check first and Not eligible groups and assigns through Check in one flow", async () => {
     const calls = server();
     const { reportNotice } = renderSection();
-    const trigger = await screen.findByRole("button", { name: "Memory & structured helpers deployment" });
+    const trigger = await screen.findByRole("button", { name: "System model deployment" });
     expect(trigger).toHaveTextContent("OpenAI / GPT Luna");
     expect(screen.getByTestId("admin-role-memory-status")).toHaveTextContent("Working");
     fireEvent.click(trigger);
 
-    const dialog = screen.getByRole("dialog", { name: "Memory & structured helpers deployment" });
-    expect(within(dialog).getByText("Ready for Memory")).toBeInTheDocument();
+    const dialog = screen.getByRole("dialog", { name: "System model deployment" });
+    expect(within(dialog).getByText("Ready for System model")).toBeInTheDocument();
     expect(within(dialog).getByRole("option", { name: /GPT Luna/ })).toHaveAttribute("aria-selected", "true");
     expect(within(dialog).getByText("Check first · one small paid request")).toBeInTheDocument();
     expect(within(dialog).getByText("Not eligible")).toBeInTheDocument();
@@ -274,6 +277,51 @@ describe("AdminRolesSection", () => {
       .toEqual({ expectedVersion: 2, rerankerProviderModelId: "voyage" });
     expect(reportNotice).toHaveBeenLastCalledWith("Previous assignment restored for future work");
     expect(screen.getByTestId("admin-reranker-fallbacks")).toHaveTextContent("Fallbacks: OpenRouter / Cohere 4 Pro");
+  });
+
+  it("edits reasoning for both working roles and selects a PDF reader without a second switch", async () => {
+    const roles = rolesCatalog();
+    const reader = { ...luna, visionInput: "verified" as const };
+    roles.documentCandidates = [reader];
+    roles.verificationCandidates = [reader];
+    const calls = server(roles);
+    renderSection();
+    const picker = await screen.findByRole("button", { name: "PDF reading in chats deployment" });
+    expect(screen.queryByRole("switch", { name: "Send pages there" })).not.toBeInTheDocument();
+    fireEvent.click(picker);
+    fireEvent.click(within(screen.getByRole("dialog", { name: "PDF reading in chats deployment" })).getByRole("option", { name: /GPT Luna/ }));
+    await waitFor(() => expect(screen.getByTestId("admin-role-chat-pdf-status")).toHaveTextContent("Working"));
+    for (const [id, label] of [["admin-role-memory", "System model reasoning"], ["admin-role-chat-pdf", "Chat PDF reasoning"]]) {
+      fireEvent.click(within(screen.getByTestId(id!)).getByText("Advanced"));
+      const reasoning = screen.getByRole("combobox", { name: label! });
+      expect(reasoning).toBeEnabled();
+      fireEvent.change(reasoning, { target: { value: "high" } });
+      await waitFor(() => expect(reasoning).toBeEnabled());
+      expect(reasoning).toHaveValue("high");
+    }
+    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
+      { expectedVersion: 1, chatPdfProviderModelId: "luna", chatPdfReasoningEffort: null },
+      { expectedVersion: 2, providerModelId: "luna", reasoningEffort: "high" },
+      { expectedVersion: 3, chatPdfProviderModelId: "luna", chatPdfReasoningEffort: "high" }
+    ]);
+  });
+
+  it("starts unconfigured Knowledge with image reading and the first eligible document model", async () => {
+    const roles = rolesCatalog();
+    const reader = { ...luna, visionInput: "verified" as const };
+    roles.documentCandidates = [reader];
+    const knowledge = knowledgeSettings();
+    const calls = server(roles, { ...knowledge, profile: {
+      ...knowledge.profile, activeRevision: null, availablePdfDestinations: [{
+        deploymentId: "luna", modelDisplayName: "GPT Luna", connectionDisplayName: "OpenAI", provider: "openai", upstreamModelId: "luna", vision: true, directPdf: false
+      }], health: { checkedAt: null, code: "knowledge_profile_not_configured", state: "not_configured" },
+      egress: { embeddingDestination: null, pdfDestination: null, representations: ["document_text_chunks", "search_queries"] }
+    } });
+    renderSection();
+    expect(await screen.findByRole("combobox", { name: "Documents mode" })).toHaveValue("system_model_vision");
+    expect(screen.getByRole("button", { name: "Documents model" })).toHaveTextContent("GPT Luna");
+    expect(screen.getByRole("button", { name: "Apply" })).toBeEnabled();
+    expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([]);
   });
 
   it("saves the default chat model and tool limits with one request", async () => {
@@ -348,14 +396,14 @@ describe("AdminRolesSection", () => {
   it("reports a stale immediate apply and reloads the current assignment instead of guessing", async () => {
     const calls = server();
     const { reportError } = renderSection();
-    const trigger = await screen.findByRole("button", { name: "Memory & structured helpers deployment" });
+    const trigger = await screen.findByRole("button", { name: "System model deployment" });
     // Another session moved the policy on: the picker's optimistic version is behind.
     const original = globalThis.fetch;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "PATCH") return Response.json({ error: "system_model_policy_stale" }, { status: 409 });
       return original(input, init);
     }));
-    fireEvent.click(screen.getByRole("button", { name: "Memory & structured helpers actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "System model actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Clear assignment" }));
     await waitFor(() => expect(reportError).toHaveBeenCalledWith(expect.stringMatching(/changed elsewhere/)));
     expect(trigger).toHaveTextContent("OpenAI / GPT Luna");

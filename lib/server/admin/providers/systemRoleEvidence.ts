@@ -24,5 +24,6 @@ export function mergeSystemRoleEvidence(
     if (next[field]) Object.assign(result, { [field]: next[field] });
     result.compatibility[capability] = next.compatibility[capability] ?? "not_supported";
   }
+  if (role === "memory") result.compatibility.probeVersion = next.compatibility.probeVersion;
   return result;
 }

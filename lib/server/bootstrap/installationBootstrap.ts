@@ -350,12 +350,12 @@ async function synchronizeInstallationFoundation(
   });
   await tx.workspacePolicy.upsert({
     create: {
-      enabled: false,
+      enabled: true,
       id: "installation",
       internetEnabled: true
     },
-    // Workspace is deliberately disabled on first install. Adoption repairs a
-    // missing singleton but never overwrites the administrator-owned policy.
+    // Runtime readiness and model tools still gate availability. Adoption
+    // repairs a missing singleton but preserves administrator-owned policy.
     update: {},
     where: { id: "installation" }
   });

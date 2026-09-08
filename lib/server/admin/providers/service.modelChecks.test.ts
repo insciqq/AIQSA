@@ -9,6 +9,8 @@ import type {
 } from "./repositoryContract";
 import { createAdminProviderService } from "./service";
 import type { AdminProviderDraftTester, AdminProviderDraftTesterInput } from "./tester";
+import { providerSetupModels } from "./setupModels";
+import { adminProviderModelConfiguration } from "./adminConfiguration";
 
 /**
  * Model `Test & Save` (PRD B2) and background capability checks (PRD B3)
@@ -182,6 +184,7 @@ function activationCandidate(
 function repository(overrides: Partial<AdminProviderRepository> = {}): AdminProviderRepository {
   const catalog = connection();
   return {
+    async addSetupModelsCas() { return "updated"; },
     async activateConnectionCas() { return "updated"; },
     async activateCredentialCas() { return "updated"; },
     async activateModelCas() { return "updated"; },
@@ -254,14 +257,14 @@ function credentialTester(): AdminProviderCredentialTester {
 function service(
   providerRepository: AdminProviderRepository,
   tester: AdminProviderDraftTester,
-  options: { checkConcurrency?: number } = {}
+  options: { checkConcurrency?: number; credentialTester?: AdminProviderCredentialTester } = {}
 ) {
   let runIndex = 0;
   let index = 0;
   return createAdminProviderService({
     checkConcurrency: options.checkConcurrency,
     checkRunIdFactory: () => `run-${++runIndex}`,
-    credentialTester: credentialTester(),
+    credentialTester: options.credentialTester ?? credentialTester(),
     encryptionKey: () => KEY,
     idFactory: () => `generated-${++index}`,
     now: () => NOW,
@@ -366,6 +369,55 @@ describe("model Test & Save (B2)", () => {
 });
 
 describe("background capability checks (B3)", () => {
+  it.each(["requested", "setup"] as const)("adds and checks missing dedicated models on %s without replacing the key or enabling disabled models", async (reason) => {
+    const presets = providerSetupModels("openrouter");
+    const catalog = connection({ family: "openrouter", models: presets.filter((preset) => preset.configuration.modelClass === "answer")
+      .map((preset) => model(preset.modelId, preset.configuration.upstreamModelId, {
+        activeConfig: adminProviderModelConfiguration(preset.configuration),
+        draftConfig: adminProviderModelConfiguration(preset.configuration), enabled: false
+      })) });
+    const addSetupModelsCas = vi.fn<AdminProviderRepository["addSetupModelsCas"]>(async (write) => {
+      for (const addition of write.models) catalog.models.push(model(addition.id, addition.configuration.upstreamModelId, {
+        activeConfig: adminProviderModelConfiguration(addition.configuration),
+        draftConfig: adminProviderModelConfiguration(addition.configuration), modelClass: addition.configuration.modelClass
+      }));
+      return "updated";
+    });
+    const activateCredentialCas = vi.fn<AdminProviderRepository["activateCredentialCas"]>();
+    const test = vi.fn<AdminProviderDraftTester["test"]>(async (input) => ({
+      ...okOutcome(input), evidence: { ...okOutcome(input).evidence,
+        ...(input.model.modelClass === "embedding" ? { embedding: {
+          probeVersion: 1, dimensions: 1536, document: true, query: true
+        } } : { reranking: { probeVersion: 1, completeScores: true } })
+      }
+    }));
+    const catalogTest = vi.fn<AdminProviderCredentialTester["test"]>(async () => ({
+      method: "models_catalog", modelIds: [], modelIdsByClass: {
+        answer: [], embedding: ["qwen/qwen3-embedding-8b"], reranker: ["voyageai/rerank-2.5"]
+      }
+    }));
+    const providers = service(repository({ addSetupModelsCas, activateCredentialCas, listConnections: async () => [catalog],
+      loadActiveRefreshCandidate: async ({ providerModelId }) => {
+        const selected = presets.find((preset) => preset.configuration.upstreamModelId ===
+          catalog.models.find((model) => model.id === providerModelId)?.activeConfig?.upstreamModelId)!;
+        return { ...refreshCandidate(providerModelId, selected.configuration.upstreamModelId),
+          connection: { ...refreshCandidate(providerModelId, "").connection, family: "openrouter" },
+          model: { configuration: selected.configuration, displayName: selected.displayName, id: providerModelId, version: 1 }
+        };
+      }
+    }), { test }, { credentialTester: { test: catalogTest } });
+    const run = await providers.startCheckRun({ connectionId: catalog.id, credentialId: "cred-primary", reason });
+    await waitFor(() => providers.checkRun({ connectionId: catalog.id, runId: run.id }).state === "completed");
+    expect(addSetupModelsCas).toHaveBeenCalledWith(expect.objectContaining({ connectionVersion: 1,
+      credentialId: "cred-primary", credentialVersionId: "version-primary" }));
+    expect(test.mock.calls.map(([input]) => input.model.modelClass).sort()).toEqual(["embedding", "reranker"]);
+    expect(activateCredentialCas).not.toHaveBeenCalled();
+    const retry = await providers.startCheckRun({ connectionId: catalog.id, credentialId: "cred-primary", reason });
+    await waitFor(() => providers.checkRun({ connectionId: catalog.id, runId: retry.id }).state === "completed");
+    expect(addSetupModelsCas).toHaveBeenCalledOnce();
+    expect(catalogTest).toHaveBeenCalledOnce();
+  });
+
   it("checks every enabled active model with the key, three at a time, and stores each result", async () => {
     const gates = new Map<string, () => void>();
     let active = 0;

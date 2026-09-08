@@ -276,11 +276,11 @@ describe("list copy", () => {
     } as unknown as AdminSearchCatalog;
 
     const usage = deriveProviderUsage([openai, openrouter], { knowledge, modelPolicy, search, systemModelPolicy });
-    expect(usage.get("conn-openai")).toEqual(["Default chat", "Memory", "Chat PDF", "Knowledge docs", "OpenAI Search"]);
+    expect(usage.get("conn-openai")).toEqual(["Default chat", "System model", "Chat PDF", "Knowledge docs", "OpenAI Search"]);
     expect(usage.get("conn-openrouter")).toEqual(["Reranker", "Knowledge embeddings", "Perplexity Search"]);
     expect(visibleUsageTags(usage.get("conn-openai")!)).toEqual({
       hidden: 2,
-      shown: ["Default chat", "Memory", "Chat PDF"]
+      shown: ["Default chat", "System model", "Chat PDF"]
     });
     expect(deriveProviderUsage([openai], { knowledge: null, modelPolicy: null, search: null, systemModelPolicy: null }).size).toBe(0);
 

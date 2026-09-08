@@ -6,7 +6,7 @@ import type { OpenAIResponsesClient } from "./openaiResponsesTransport";
 import type { DeepSeekResponsesClient } from "./deepSeekResponsesTransport";
 import { extractOpenAIUsage } from "./openaiResponsesResponse";
 import {
-  assertValidOpenRouterTerminalResponse,
+  extractOpenRouterText,
   extractOpenRouterUsage
 } from "./openRouterChatResponse";
 import type { OpenRouterChatClient } from "./openRouterChatTransport";
@@ -15,7 +15,6 @@ import {
   STRUCTURED_OUTPUT_LIMITS,
   structuredOutputPromptFits
 } from "./structuredOutputLimits";
-import { openRouterChatToolBridge } from "../tools/bridges";
 
 export { STRUCTURED_OUTPUT_LIMITS } from "./structuredOutputLimits";
 
@@ -421,30 +420,21 @@ export function buildOpenRouterStructuredOutputRequest(
   return {
     max_tokens: maxTokens,
     messages: [
-      {
-        content: [
-          normalized.systemPrompt,
-          "Call the single supplied function exactly once and do not return a free-form answer."
-        ].join("\n\n"),
-        role: "system"
-      },
+      { content: normalized.systemPrompt, role: "system" },
       { content: normalized.userPrompt, role: "user" }
     ],
     model: model.upstreamModelId,
     provider: openRouterProviderRouting(model),
     ...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),
     stream: false,
-    tool_choice: params.provider.structuredOutputToolChoice ?? "required",
-    tools: [{
-      function: {
-        description: "Return the structured result required by the system instruction.",
+    response_format: {
+      json_schema: {
         name: normalized.name,
-        parameters: schemaForProvider(normalized.schema).schema,
+        schema: schemaForProvider(normalized.schema).schema,
         strict: true
       },
-      type: "function"
-    }],
-    ...(typeof params.temperature === "number" ? { temperature: params.temperature } : {})
+      type: "json_schema"
+    }
   };
 }
 
@@ -506,23 +496,22 @@ export function createOpenRouterStructuredOutputAdapter(input: Readonly<{
         buildOpenRouterStructuredOutputRequest(input.model, request),
         options
       );
-      assertValidOpenRouterTerminalResponse(response, { allowToolCalls: true });
+      const choices = response.choices;
+      const choice = Array.isArray(choices) && choices.length === 1 ? choices[0] : null;
+      const message = isRecord(choice) && isRecord(choice.message) ? choice.message : null;
+      if (!isRecord(choice) || choice.finish_reason !== "stop" || !message ||
+        (message.tool_calls !== undefined && (!Array.isArray(message.tool_calls) || message.tool_calls.length > 0)) ||
+        message.refusal || response.error || choice.error || message.error) {
+        throw new Error("structured_output_provider_incomplete");
+      }
       options?.onProviderResponseId?.(boundedProviderResponseId(response.id));
       if (isRecord(response.usage)) {
         options?.onUsage?.(extractOpenRouterUsage(response));
       }
-      let calls;
-      try {
-        calls = openRouterChatToolBridge.parseToolCalls(response);
-      } catch {
-        throw new Error("structured_output_invalid");
-      }
-      if (calls.length !== 1 || calls[0]?.name !== request.name ||
-        !isRecord(calls[0].arguments) ||
-        jsonBytes(calls[0].arguments) > STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters * 4) {
-        throw new Error("structured_output_invalid");
-      }
-      return decodeProviderStructuredOutput(request, calls[0].arguments);
+      return decodeProviderStructuredOutput(
+        request,
+        parseProviderStructuredOutputObject(extractOpenRouterText(response))
+      );
     }
   };
 }

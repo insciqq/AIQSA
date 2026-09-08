@@ -73,8 +73,6 @@ describe("image input compatibility", () => {
       });
       const name = body.tools?.[0]?.function?.name;
       if (name === "aiqsa_forced_tool_call_probe") return strictToolChatResponse(name, { nonce: "aiqsa-control-ready" });
-      if (name === "aiqsa_structured_output_probe") return strictToolChatResponse(name,
-        { count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] });
       return structuredChatResponse();
     });
     const base = input();
@@ -119,33 +117,14 @@ describe("image input compatibility", () => {
   });
 });
 
-function structuredChatResponse(toolCall = false) {
-  const result = {
-    count: 2,
-    label: "AIQSA",
-    ready: true,
-    tool_ids: ["alpha", "beta"]
-  };
-  return new Response(JSON.stringify({
+function structuredChatResponse() {
+  return Response.json({
     choices: [{
-      finish_reason: toolCall ? "tool_calls" : "stop",
-      message: toolCall
-        ? {
-            content: null,
-            role: "assistant",
-            tool_calls: [{
-              function: {
-                arguments: JSON.stringify(result),
-                name: "aiqsa_structured_output_probe"
-              },
-              id: "call-1",
-              type: "function"
-            }]
-          }
-        : { content: JSON.stringify(result), role: "assistant" }
+      finish_reason: "stop",
+      message: { content: JSON.stringify({ count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] }), role: "assistant" }
     }],
     usage: { completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 }
-  }), { headers: { "content-type": "application/json" }, status: 200 });
+  });
 }
 
 function streamedChatResponse() {
@@ -185,155 +164,80 @@ function strictToolChatResponse(
 }
 
 describe("admin provider draft tester", () => {
-  it("verifies forced strict calls independently from an auto structured-output route", async () => {
-    const bodies: Record<string, unknown>[] = [];
-    const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
-      const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
-      bodies.push(body);
-      if (body.stream === true) return streamedChatResponse();
-      const tools = body.tools as Array<{
-        function?: { name?: string };
-      }> | undefined;
-      const name = tools?.[0]?.function?.name;
-      if (name === "aiqsa_structured_output_probe") {
-        return strictToolChatResponse(name, {
-          count: 2,
-          label: "AIQSA",
-          ready: true,
-          tool_ids: ["alpha", "beta"]
-        });
-      }
-      if (name === "aiqsa_forced_tool_call_probe") {
-        return strictToolChatResponse(name, { nonce: "aiqsa-control-ready" });
-      }
-      return structuredChatResponse();
-    });
-    const configured = input({
-      mode: "tiny_generation",
-      model: {
-        ...input().model,
-        capabilities: { ...input().model.capabilities, toolCalling: true },
-        defaultParams: {
-          provider: { structuredOutputToolChoice: "auto" }
+  it.each(["verified", "ignored", "rejected"] as const)(
+    "verifies ordinary tools and native JSON independently of a %s strict Memory call",
+    async (strictResult) => {
+      const bodies: Record<string, unknown>[] = [];
+      const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
+        const body = JSON.parse(String(request?.body));
+        bodies.push(body);
+        if (body.stream) return streamedChatResponse();
+        const name = body.tools?.[0]?.function?.name;
+        if (name === "aiqsa_tool_call_probe") return strictToolChatResponse(name, { city: "Oslo" });
+        if (name === "aiqsa_forced_tool_call_probe") {
+          if (strictResult === "verified") return strictToolChatResponse(name, { nonce: "aiqsa-control-ready" });
+          if (strictResult === "rejected") return Response.json({ error: { code: 404 } }, { status: 404 });
         }
-      }
-    });
-    const providerTester = createAdminProviderDraftTester({
-      createFetch: () => fetchFn
-    });
-
-    await expect(providerTester.test(configured)).resolves.toMatchObject({
-      evidence: {
-        compatibility: {
-          forcedToolCall: "verified",
-          structuredOutput: "verified"
+        return structuredChatResponse();
+      });
+      const configured = input({
+        mode: "tiny_generation",
+        model: { ...input().model, capabilities: { ...input().model.capabilities, toolCalling: true } }
+      });
+      const outcome = await createAdminProviderDraftTester({ createFetch: () => fetchFn }).test(configured);
+      expect(outcome).toMatchObject({
+        evidence: {
+          compatibility: {
+            toolCalling: "verified", structuredOutput: "verified",
+            forcedToolCall: strictResult === "verified" ? "verified" : "not_supported",
+            modelAccess: "verified", streaming: "verified"
+          },
+          structuredOutput: { adapterKind: "openrouter_chat_completions", probeVersion: 5, verified: true }
         },
-        forcedToolCall: {
-          adapterKind: "openrouter_chat_completions",
-          probeVersion: 1,
-          upstreamModelId: "vendor/model",
-          verified: true
-        }
-      },
-      status: "available"
+        status: "available"
+      });
+      expect(Boolean(outcome.evidence.forcedToolCall)).toBe(strictResult === "verified");
+      const structured = bodies.find((body) => body.response_format);
+      expect(structured).toMatchObject({
+        provider: { require_parameters: true }, response_format: { type: "json_schema", json_schema: { strict: true } }
+      });
+      expect(structured).not.toHaveProperty("tools");
+      expect(structured).not.toHaveProperty("tool_choice");
+      const ordinary = bodies.find((body) => body.tool_choice === "auto");
+      expect(ordinary).toMatchObject({ tools: [{ function: { strict: false, name: "aiqsa_tool_call_probe" } }] });
+      const forced = bodies.find((body) => body.tool_choice === "required");
+      expect(forced).toMatchObject({ provider: { require_parameters: true }, tools: [{ function: { strict: true } }] });
+      expect(forced).not.toHaveProperty("parallel_tool_calls");
+    }
+  );
+
+  it.each(["wrong_name", "wrong_arguments", "no_call"])("does not verify ordinary tools from %s", async (failure) => {
+    const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
+      const body = JSON.parse(String(request?.body));
+      const name = body.tools?.[0]?.function?.name;
+      if (name === "aiqsa_tool_call_probe" && failure !== "no_call") {
+        return strictToolChatResponse(failure === "wrong_name" ? "other_function" : name,
+          failure === "wrong_arguments" ? { city: "Oslo", extra: true } : { city: "Oslo" });
+      }
+      return body.stream ? streamedChatResponse() : structuredChatResponse();
     });
-    const structured = bodies.find((body) => {
-      const tools = body.tools as Array<{ function?: { name?: string } }> | undefined;
-      return tools?.[0]?.function?.name === "aiqsa_structured_output_probe";
-    });
-    const forced = bodies.find((body) => {
-      const tools = body.tools as Array<{ function?: { name?: string } }> | undefined;
-      return tools?.[0]?.function?.name === "aiqsa_forced_tool_call_probe";
-    });
-    expect(structured).toMatchObject({ tool_choice: "auto" });
-    expect(forced).toMatchObject({
-      provider: { require_parameters: true },
-      tool_choice: "required",
-      tools: [{ function: { strict: true }, type: "function" }]
-    });
-    expect(forced).not.toHaveProperty("parallel_tool_calls");
+    const outcome = await createAdminProviderDraftTester({ createFetch: () => fetchFn }).test(input({
+      mode: "tiny_generation",
+      model: { ...input().model, capabilities: { ...input().model.capabilities, toolCalling: true } }
+    }));
+    expect(outcome.evidence.compatibility).toMatchObject({ toolCalling: "not_supported", structuredOutput: "verified" });
   });
 
-  it("does not mint forced-call evidence when the selected route ignores it", async () => {
+  it.each([401, 429, 503])("fails the refresh on an ordinary-tool HTTP %s without publishing incompatibility", async (status) => {
     const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
-      const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
-      if (body.stream === true) return streamedChatResponse();
-      const tools = body.tools as Array<{ function?: { name?: string } }> | undefined;
-      const name = tools?.[0]?.function?.name;
-      return name === "aiqsa_structured_output_probe"
-        ? strictToolChatResponse(name, {
-            count: 2,
-            label: "AIQSA",
-            ready: true,
-            tool_ids: ["alpha", "beta"]
-          })
-        : structuredChatResponse();
+      const body = JSON.parse(String(request?.body));
+      return body.tools?.[0]?.function?.name === "aiqsa_tool_call_probe"
+        ? Response.json({ error: { code: status } }, { status }) : structuredChatResponse();
     });
-    const configured = input({
+    await expect(createAdminProviderDraftTester({ createFetch: () => fetchFn }).test(input({
       mode: "tiny_generation",
-      model: {
-        ...input().model,
-        capabilities: { ...input().model.capabilities, toolCalling: true }
-      }
-    });
-
-    const outcome = await createAdminProviderDraftTester({
-      createFetch: () => fetchFn
-    }).test(configured);
-
-    expect(outcome.evidence.compatibility).toMatchObject({
-      forcedToolCall: "not_supported",
-      structuredOutput: "verified"
-    });
-    expect(outcome.evidence).not.toHaveProperty("forcedToolCall");
-  });
-
-  it("records a route-level forced-call 404 as unsupported after access succeeds", async () => {
-    const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
-      const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
-      if (body.stream === true) return streamedChatResponse();
-      const tools = body.tools as Array<{
-        function?: { name?: string };
-      }> | undefined;
-      const name = tools?.[0]?.function?.name;
-      if (name === "aiqsa_structured_output_probe") {
-        return strictToolChatResponse(name, {
-          count: 2,
-          label: "AIQSA",
-          ready: true,
-          tool_ids: ["alpha", "beta"]
-        });
-      }
-      if (name === "aiqsa_forced_tool_call_probe") {
-        return new Response(JSON.stringify({
-          error: { code: 404, message: "No endpoint supports these parameters." }
-        }), { headers: { "content-type": "application/json" }, status: 404 });
-      }
-      return structuredChatResponse();
-    });
-    const configured = input({
-      mode: "tiny_generation",
-      model: {
-        ...input().model,
-        capabilities: { ...input().model.capabilities, toolCalling: true }
-      }
-    });
-
-    const outcome = await createAdminProviderDraftTester({
-      createFetch: () => fetchFn
-    }).test(configured);
-
-    expect(outcome).toMatchObject({
-      evidence: {
-        compatibility: {
-          forcedToolCall: "not_supported",
-          modelAccess: "verified",
-          streaming: "verified"
-        }
-      },
-      status: "available"
-    });
-    expect(outcome.evidence).not.toHaveProperty("forcedToolCall");
+      model: { ...input().model, capabilities: { ...input().model.capabilities, toolCalling: true } }
+    }))).rejects.toThrow();
   });
 
   it("verifies all five answer-model compatibility contracts", async () => {
@@ -341,7 +245,7 @@ describe("admin provider draft tester", () => {
       const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
       return body.stream === true
         ? streamedChatResponse()
-        : structuredChatResponse(Array.isArray(body.tools));
+        : structuredChatResponse();
     });
     const providerTester = createAdminProviderDraftTester({
       createDiscoveryClient: () => discovery(),
@@ -363,7 +267,7 @@ describe("admin provider draft tester", () => {
         compatibility: {
           directPdf: "verified",
           modelAccess: "verified",
-          probeVersion: 1,
+          probeVersion: 2,
           streaming: "verified",
           structuredOutput: "verified",
           usage: "verified"
@@ -521,7 +425,7 @@ describe("admin provider draft tester", () => {
         compatibility: {
           directPdf: "not_supported",
           modelAccess: "verified",
-          probeVersion: 1,
+          probeVersion: 2,
           streaming: "not_supported",
           structuredOutput: "not_supported",
           usage: "verified"
@@ -623,7 +527,7 @@ describe("admin provider draft tester", () => {
         compatibility: {
           directPdf: "not_supported",
           modelAccess: "not_supported",
-          probeVersion: 1,
+          probeVersion: 2,
           streaming: "not_supported",
           structuredOutput: "not_supported",
           usage: "not_supported"
@@ -691,10 +595,7 @@ describe("admin provider draft tester", () => {
           }];
         }
       }),
-      createFetch: () => async (_url, request) => {
-        const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
-        return structuredChatResponse(Array.isArray(body.tools));
-      }
+      createFetch: () => async () => structuredChatResponse()
     });
     const selected = input({
       model: {
@@ -711,7 +612,7 @@ describe("admin provider draft tester", () => {
         compatibility: {
           directPdf: "not_supported",
           modelAccess: "verified",
-          probeVersion: 1,
+          probeVersion: 2,
           streaming: "not_supported",
           structuredOutput: "verified",
           usage: "verified"
@@ -721,7 +622,7 @@ describe("admin provider draft tester", () => {
         selectedProviders: ["Anthropic"],
         structuredOutput: {
           adapterKind: "openrouter_chat_completions",
-          probeVersion: 4,
+          probeVersion: 5,
           upstreamModelId: "vendor/model",
           verified: true
         },
@@ -731,7 +632,7 @@ describe("admin provider draft tester", () => {
     });
   });
 
-  it("keeps model access verified when an OpenRouter backend ignores a required tool call", async () => {
+  it("keeps model access verified when an OpenRouter backend ignores native JSON Schema", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       choices: [{
         finish_reason: "stop",
@@ -748,7 +649,7 @@ describe("admin provider draft tester", () => {
         compatibility: {
           directPdf: "not_supported",
           modelAccess: "verified",
-          probeVersion: 1,
+          probeVersion: 2,
           streaming: "not_supported",
           structuredOutput: "not_supported",
           usage: "not_supported"
@@ -763,8 +664,7 @@ describe("admin provider draft tester", () => {
     const [, request] = fetchFn.mock.calls[1] ?? [];
     expect(JSON.parse(String(request?.body))).toMatchObject({
       provider: { require_parameters: true },
-      tool_choice: "required",
-      tools: [{ type: "function" }]
+      response_format: { type: "json_schema", json_schema: { strict: true } }
     });
   });
 
@@ -823,7 +723,7 @@ describe("admin provider draft tester", () => {
         compatibility: {
           directPdf: "not_supported",
           modelAccess: "verified",
-          probeVersion: 1,
+          probeVersion: 2,
           streaming: "not_supported",
           structuredOutput: "not_supported",
           usage: "not_supported"
@@ -841,8 +741,7 @@ describe("admin provider draft tester", () => {
     const fourthBody = JSON.parse(String(fetchFn.mock.calls[3]?.[1]?.body));
     expect(firstBody).not.toHaveProperty("response_format");
     expect(secondBody).toMatchObject({
-      tool_choice: "required",
-      tools: [{ type: "function" }]
+      response_format: { type: "json_schema", json_schema: { strict: true } }
     });
     expect(fourthBody).toMatchObject({ stream: true });
   });
@@ -880,7 +779,7 @@ describe("admin provider draft tester", () => {
         compatibility: {
           directPdf: "not_supported",
           modelAccess: "verified",
-          probeVersion: 1,
+          probeVersion: 2,
           streaming: "not_supported",
           structuredOutput: "not_supported",
           usage: "verified"
@@ -944,10 +843,7 @@ describe("admin provider draft tester", () => {
   });
 
   it("gives an OpenRouter reasoning diagnostic the standard output budget", async () => {
-    const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
-      const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
-      return structuredChatResponse(Array.isArray(body.tools));
-    });
+    const fetchFn = vi.fn<typeof fetch>(async () => structuredChatResponse());
     const providerTester = createAdminProviderDraftTester({ createFetch: () => fetchFn });
     const openRouter = input({
       mode: "tiny_generation",
@@ -955,7 +851,9 @@ describe("admin provider draft tester", () => {
         ...input().model,
         capabilities: {
           ...input().model.capabilities,
-          reasoning: true
+          reasoning: true,
+          reasoningEfforts: ["low", "medium", "high"],
+          defaultReasoningEffort: "medium"
         },
         defaultParams: {
           reasoning: {
@@ -977,8 +875,7 @@ describe("admin provider draft tester", () => {
       max_tokens: 1_024,
       provider: { require_parameters: true },
       stream: false,
-      tool_choice: "required",
-      tools: [{ type: "function" }]
+      response_format: { type: "json_schema", json_schema: { strict: true } }
     });
   });
 

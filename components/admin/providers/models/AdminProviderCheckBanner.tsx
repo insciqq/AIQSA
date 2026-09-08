@@ -25,7 +25,7 @@ export function AdminProviderCheckBanner({ checks, connection, disabled }: Admin
 
   if (run?.state === "running" && run.reason !== "model") {
     const progress = run.total === 0 ? 0 : Math.round((run.done / run.total) * 100);
-    const title = run.setup?.state === "running" ? "Models checked. Setting up Search and suitable empty defaults…" : run.reason === "requested"
+    const title = run.setup?.state === "running" ? "Models checked. Setting up Search, roles and Knowledge…" : run.reason === "requested"
       ? `Checking what each model can do with key ${keyLabel(run.credentialId)} — ${run.done} of ${run.total} done.`
       : `Key ${keyLabel(run.credentialId)} saved. Checking what each model can do — ${run.done} of ${run.total} done.`;
     return (
@@ -41,8 +41,8 @@ export function AdminProviderCheckBanner({ checks, connection, disabled }: Admin
             <p className="text-sm font-medium text-ink" data-testid="provider-check-progress">{title}</p>
             <p className="mt-0.5 text-xs leading-5 text-ink-muted">
               {run.setup?.state === "running"
-                ? "Search uses one small real query. Existing default models and role assignments are kept."
-                : "Tools, JSON output, PDF and image input, streaming. About 6 small requests per model. You can leave this page."}
+                ? "Uses small verification requests. Existing models, role assignments and Knowledge configurations are kept."
+                : "Checks supported capabilities, including tools, JSON, PDF, embeddings and reranking. You can leave this page."}
             </p>
           </div>
           <UiV2Button

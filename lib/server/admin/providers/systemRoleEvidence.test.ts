@@ -4,7 +4,7 @@ import { mergeSystemRoleEvidence } from "./systemRoleEvidence";
 
 const current: AdminProviderTestEvidence = {
   method: "tiny_generation", detail: "ok", upstreamModelId: "fixture", selectedProviders: ["Selected route"],
-  compatibility: { probeVersion: 1, directPdf: "verified", vision: "verified", structuredOutput: "verified",
+  compatibility: { probeVersion: 2, toolCalling: "verified", directPdf: "verified", vision: "verified", structuredOutput: "verified",
     forcedToolCall: "verified", modelAccess: "verified", streaming: "verified", usage: "verified" },
   structuredOutput: { adapterKind: "openai_responses_native", probeVersion: 2, upstreamModelId: "fixture", verified: true },
   forcedToolCall: { adapterKind: "openai_responses_native", probeVersion: 1, upstreamModelId: "fixture", verified: true },
@@ -12,6 +12,13 @@ const current: AdminProviderTestEvidence = {
   visionInput: { adapterKind: "openai_responses_native", probeVersion: 1, upstreamModelId: "fixture", verified: true }
 };
 describe("independent role evidence", () => {
+  it("preserves ordinary tools when a Memory check rejects forced calls", () => {
+    const next = { ...current, forcedToolCall: undefined, compatibility: { ...current.compatibility!,
+      forcedToolCall: "not_supported" as const, toolCalling: "not_supported" as const } };
+    const merged = mergeSystemRoleEvidence(current, next, "memory");
+    expect(merged.compatibility).toMatchObject({ toolCalling: "verified", structuredOutput: "verified", forcedToolCall: "not_supported" });
+    expect(merged).not.toHaveProperty("forcedToolCall");
+  });
   it("removes unsupported Vision evidence while preserving Memory, PDF and ordinary answer admission", () => {
     const next = { ...current, visionInput: undefined, compatibility: { ...current.compatibility!, vision: "not_supported" as const,
       streaming: "not_supported" as const, usage: "not_supported" as const } };

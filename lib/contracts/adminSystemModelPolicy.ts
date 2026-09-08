@@ -56,7 +56,6 @@ export type AdminSystemModelPolicyCatalog = {
   ineligible: Record<AdminSystemModelEligibilityRole, AdminSystemModelIneligibleCandidate[]>;
   rerankerCandidates: AdminRerankerModelCandidate[];
   policy: {
-    chatPdfPreparationAllowed: boolean;
     chatPdfModel: (AdminSystemModelCandidate & { available: boolean }) | null;
     chatPdfReasoningEffort: string | null;
     rerankerModel: (AdminRerankerModelCandidate & { available: boolean }) | null;
@@ -178,7 +177,6 @@ export function decodeAdminSystemModelPolicyResponse(
     (systemModel === null && reasoningEffort !== null) ||
     (updatedBy !== null && (!record(updatedBy) || !boundedText(updatedBy.displayName, 160) ||
       !boundedText(updatedBy.id, 256))) ||
-    typeof policy.chatPdfPreparationAllowed !== "boolean" ||
     !(reasoningEffort === null || boundedText(reasoningEffort, 32)) ||
     typeof policy.updatedAt !== "string" || !Number.isFinite(Date.parse(policy.updatedAt)) ||
     !Number.isSafeInteger(policy.version) || Number(policy.version) < 1) return null;
@@ -191,7 +189,6 @@ export function decodeAdminSystemModelPolicyResponse(
       ineligible,
       rerankerCandidates: catalog.rerankerCandidates,
       policy: {
-        chatPdfPreparationAllowed: policy.chatPdfPreparationAllowed,
         chatPdfModel: policy.chatPdfModel as AdminSystemModelPolicyCatalog["policy"]["chatPdfModel"],
         chatPdfReasoningEffort: policy.chatPdfReasoningEffort as string | null,
         reasoningEffort: reasoningEffort as string | null,

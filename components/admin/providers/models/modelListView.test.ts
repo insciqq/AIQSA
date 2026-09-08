@@ -29,7 +29,6 @@ function candidate(id: string, displayName: string) {
 function sources(overrides: Partial<ProviderUsageSources> = {}): ProviderUsageSources {
   const policy: AdminSystemModelPolicyCatalog["policy"] = {
     chatPdfModel: { ...candidate("model-terra", "GPT-5.6 Terra"), available: true, defaultReasoningEffort: null, forcedToolCall: "verified", reasoningEfforts: [], structuredOutput: "verified" },
-    chatPdfPreparationAllowed: true,
     chatPdfReasoningEffort: null,
     reasoningEffort: null,
     rerankerModel: { ...candidate("model-voyage", "Voyage Rerank 2.5"), available: true },
@@ -111,7 +110,7 @@ describe("model row copy", () => {
 describe("deriveModelUsage and successors", () => {
   it("tags each model with its roles and names the next available reranker", () => {
     const usage = deriveModelUsage(sources());
-    expect(usage.get("model-terra")).toEqual(["Memory", "Chat PDF"]);
+    expect(usage.get("model-terra")).toEqual(["System model", "Chat PDF"]);
     expect(usage.get("model-luna")).toEqual(["Default chat"]);
     expect(usage.get("model-voyage")).toEqual(["Reranker · primary"]);
     expect(usage.get("model-cohere")).toEqual(["Reranker · fallback"]);
@@ -144,7 +143,7 @@ describe("check summaries", () => {
         checkedAt: "2026-09-07T12:51:00.000Z",
         credentialId: "cred-primary",
         evidence: {
-          compatibility: { directPdf: "verified", forcedToolCall: "verified", modelAccess: "verified", probeVersion: 1, streaming: "verified", structuredOutput: "verified", usage: "verified", vision: "verified" },
+          compatibility: { directPdf: "verified", forcedToolCall: "not_supported", toolCalling: "verified", modelAccess: "verified", probeVersion: 2, streaming: "verified", structuredOutput: "verified", usage: "verified", vision: "verified" },
           detail: "ok",
           method: "tiny_generation",
           selectedProviders: [],
@@ -156,7 +155,7 @@ describe("check summaries", () => {
         checkedAt: "2026-09-06T09:00:00.000Z",
         credentialId: "cred-research",
         evidence: {
-          compatibility: { directPdf: "not_supported", forcedToolCall: "verified", modelAccess: "verified", probeVersion: 1, streaming: "verified", structuredOutput: "verified", usage: "not_supported" },
+          compatibility: { directPdf: "not_supported", forcedToolCall: "not_supported", toolCalling: "verified", modelAccess: "verified", probeVersion: 2, streaming: "verified", structuredOutput: "verified", usage: "not_supported" },
           detail: "ok",
           method: "tiny_generation",
           selectedProviders: [],
@@ -172,8 +171,8 @@ describe("check summaries", () => {
     const summaries = modelCheckSummaries(connection, model, NOW);
     // Local clock formatting: the hour depends on the test machine's time zone.
     expect(summaries.map((summary) => summary.sentence.replace(/\d{2}:\d{2}/u, "HH:MM"))).toEqual([
-      "Checked today HH:MM with key Primary · everything works, including tools and JSON output needed for Memory.",
-      "Checked Sep 6 HH:MM with key Research team · works without PDF input; tools and JSON output needed for Memory are fine."
+      "Checked today HH:MM with key Primary · tools, JSON and the other checked capabilities work.",
+      "Checked Sep 6 HH:MM with key Research team · works without PDF input; tools and JSON output are fine."
     ]);
     expect(summaries.map((summary) => summary.usageMissing)).toEqual([false, true]);
     expect(modelCheckSummaries(connection, connection.models[1]!, NOW)).toEqual([]);

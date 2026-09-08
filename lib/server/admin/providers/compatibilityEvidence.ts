@@ -3,7 +3,7 @@ import type {
   AdminProviderCompatibilityStatus
 } from "../../../contracts/adminProviders";
 
-export const ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION = 1;
+export const ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION = 2;
 
 const statuses = new Set<AdminProviderCompatibilityStatus>([
   "not_supported",
@@ -23,7 +23,7 @@ export function decodeAdminProviderCompatibilityEvidence(
 ): AdminProviderCompatibilityEvidence | null {
   if (
     !isRecord(value) ||
-    value.probeVersion !== ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION ||
+    (value.probeVersion !== 1 && value.probeVersion !== ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION) ||
     !status(value.modelAccess) ||
     !status(value.structuredOutput) ||
     !status(value.directPdf) ||
@@ -34,15 +34,17 @@ export function decodeAdminProviderCompatibilityEvidence(
     return null;
   }
   if (value.vision !== undefined && !status(value.vision)) return null;
+  if (value.toolCalling !== undefined && !status(value.toolCalling)) return null;
 
   return {
     directPdf: value.directPdf,
+    ...(value.toolCalling === undefined ? {} : { toolCalling: value.toolCalling }),
     ...(value.vision === undefined ? {} : { vision: value.vision }),
     ...(value.forcedToolCall === undefined
       ? {}
       : { forcedToolCall: value.forcedToolCall }),
     modelAccess: value.modelAccess,
-    probeVersion: ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION,
+    probeVersion: value.probeVersion,
     streaming: value.streaming,
     structuredOutput: value.structuredOutput,
     usage: value.usage

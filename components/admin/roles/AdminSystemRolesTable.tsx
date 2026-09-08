@@ -16,7 +16,7 @@ import {
 } from "@/components/admin/roles/rolesView";
 import type { AdminRolesController } from "@/components/admin/roles/useAdminRolesController";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
-import { UiV2Switch, type UiV2MenuAction } from "@/components/ui-v2";
+import type { UiV2MenuAction } from "@/components/ui-v2";
 import type { AdminSystemModelCandidate } from "@/lib/contracts/adminSystemModelPolicy";
 import type { ReactNode } from "react";
 
@@ -72,13 +72,13 @@ function ReasoningSelect({
   return (
     <select
       aria-label={label}
-      className={`${compactSelectClass} xl:w-[11.5rem]`}
+      className={`${compactSelectClass} xl:w-[14rem]`}
       disabled={disabled || !model || (efforts.length === 0 && value === null)}
       onChange={(event) => onChange(event.currentTarget.value || null)}
       value={value ?? ""}
     >
       <option value="">
-        Reasoning: provider default{model?.defaultReasoningEffort ? ` (${model.defaultReasoningEffort})` : ""}
+        Reasoning: Default{model?.defaultReasoningEffort ? ` (${model.defaultReasoningEffort})` : ""}
       </option>
       {unavailable ? <option disabled value={value}>Reasoning: {value} (unavailable)</option> : null}
       {efforts.map((effort) => <option key={effort} value={effort}>Reasoning: {effort}</option>)}
@@ -124,7 +124,7 @@ export function AdminSystemRolesTable({
       </div>
 
       <RoleRow
-        description="Needs strict JSON output and forced tool calls. Also titles and MCP routing."
+        description="Handles Memory, chat titles, MCP routing and structured helpers. Needs strict JSON output and forced tool calls."
         menu={[{
           disabled: !policy.systemModel || busy,
           label: "Clear assignment",
@@ -132,16 +132,16 @@ export function AdminSystemRolesTable({
         }]}
         status={roleStatus(policy.systemModel)}
         testId="admin-role-memory"
-        title="Memory & structured helpers"
+        title="System model"
       >
         <AdminRolePicker
           busy={busy}
           checkingId={checkingId}
           items={generativeRoleItems(catalog, "memory")}
-          label="Memory & structured helpers deployment"
+          label="System model deployment"
           onCheck={(id) => controller.checkAndAssign("memory", id)}
           onSelect={(id) => void controller.assign({ providerModelId: id, reasoningEffort: null }, memoryUndo)}
-          roleName="Memory"
+          roleName="System model"
           selectedId={policy.systemModel?.id ?? null}
           selectedLabel={policy.systemModel ? label(policy.systemModel) : null}
           testId="admin-memory-picker"
@@ -151,7 +151,7 @@ export function AdminSystemRolesTable({
           <div className="pt-2">
             <ReasoningSelect
               disabled={busy}
-              label="Memory reasoning"
+              label="System model reasoning"
               model={policy.systemModel}
               onChange={(effort) => void controller.assign(
                 { providerModelId: policy.systemModel?.id ?? null, reasoningEffort: effort },
@@ -175,13 +175,13 @@ export function AdminSystemRolesTable({
         }]}
         status={roleStatus(policy.chatPdfModel)}
         testId="admin-role-chat-pdf"
-        title="Chat PDF preparation"
+        title="PDF reading in chats"
       >
         <AdminRolePicker
           busy={busy}
           checkingId={checkingId}
           items={generativeRoleItems(catalog, "vision")}
-          label="Chat PDF preparation deployment"
+          label="PDF reading in chats deployment"
           onCheck={(id) => controller.checkAndAssign("vision", id)}
           onSelect={(id) => void controller.assign(
             { chatPdfProviderModelId: id, chatPdfReasoningEffort: null },
@@ -192,35 +192,21 @@ export function AdminSystemRolesTable({
           selectedLabel={policy.chatPdfModel ? label(policy.chatPdfModel) : null}
           testId="admin-chat-pdf-picker"
         />
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <details>
-            <summary className="cursor-pointer text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">Advanced</summary>
-            <div className="pt-2">
-              <ReasoningSelect
-                disabled={busy}
-                label="Chat PDF reasoning"
-                model={policy.chatPdfModel}
-                onChange={(effort) => void controller.assign(
-                  { chatPdfProviderModelId: policy.chatPdfModel?.id ?? null, chatPdfReasoningEffort: effort },
-                  pdfUndo
-                )}
-                value={policy.chatPdfReasoningEffort}
-              />
-            </div>
-          </details>
-          <span className="inline-flex items-center gap-1.5 text-xs text-ink-secondary">
-            <UiV2Switch
-              checked={policy.chatPdfPreparationAllowed}
+        <details>
+          <summary className="cursor-pointer text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">Advanced</summary>
+          <div className="pt-2">
+            <ReasoningSelect
               disabled={busy}
-              label="Send pages there"
-              onChange={(next) => void controller.assign(
-                { chatPdfPreparationAllowed: next },
-                { chatPdfPreparationAllowed: policy.chatPdfPreparationAllowed }
+              label="Chat PDF reasoning"
+              model={policy.chatPdfModel}
+              onChange={(effort) => void controller.assign(
+                { chatPdfProviderModelId: policy.chatPdfModel?.id ?? null, chatPdfReasoningEffort: effort },
+                pdfUndo
               )}
+              value={policy.chatPdfReasoningEffort}
             />
-            <span aria-hidden="true">Send pages there</span>
-          </span>
-        </div>
+          </div>
+        </details>
       </RoleRow>
 
       <RoleRow

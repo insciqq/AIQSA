@@ -1,5 +1,13 @@
 /** Synthetic predecessor state; callers guard and own the disposable database. */
 export const SYSTEM_MODEL_ROLES_MIGRATION = "20260905080000_independent_system_model_roles";
+export const CHAT_PDF_ASSIGNMENT_MIGRATION = "20260908140000_chat_pdf_assignment_enables_reading";
+
+export function chatPdfAssignmentAdoptionFixtureSql(): string {
+  return systemModelRolesAdoptionFixtureSql(false) + `
+UPDATE "SystemModelPolicy" SET "chatPdfProviderModelId" = 'roles-adoption-memory',
+  "chatPdfReasoningEffort" = 'low' WHERE id = 'installation';
+`;
+}
 
 export function systemModelRolesAdoptionFixtureSql(pdfAllowed: boolean): string {
   return `
@@ -25,8 +33,7 @@ DECLARE policy "SystemModelPolicy"; definition text;
 BEGIN
   SELECT * INTO STRICT policy FROM "SystemModelPolicy" WHERE id = 'installation';
   IF policy."providerModelId" IS DISTINCT FROM 'roles-adoption-memory' OR policy."reasoningEffort" IS DISTINCT FROM 'low'
-    OR policy."rerankerProviderModelId" IS DISTINCT FROM 'roles-adoption-reranker' OR policy.version <> 7
-    OR policy."chatPdfPreparationAllowed" IS DISTINCT FROM ${pdfAllowed} THEN
+    OR policy."rerankerProviderModelId" IS DISTINCT FROM 'roles-adoption-reranker' OR policy.version <> 7 THEN
     RAISE EXCEPTION 'unrelated_role_changed';
   END IF;
   IF policy."chatPdfProviderModelId" IS DISTINCT FROM ${pdfAllowed ? "'roles-adoption-memory'" : "NULL"}
@@ -34,6 +41,11 @@ BEGIN
     RAISE EXCEPTION 'explicit_pdf_permission_not_preserved';
   END IF;
   definition := pg_get_functiondef('chat_pdf_preparation_guard()'::regprocedure);
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+    AND table_name = 'SystemModelPolicy' AND column_name = 'chatPdfPreparationAllowed')
+    OR position('p."chatPdfPreparationAllowed"' IN definition) <> 0 THEN
+    RAISE EXCEPTION 'pdf_assignment_still_needs_second_switch';
+  END IF;
   IF position('p."chatPdfProviderModelId" = NEW."providerModelId"' IN definition) = 0
     OR position('p."providerModelId" = NEW."providerModelId"' IN definition) <> 0 THEN
     RAISE EXCEPTION 'pdf_guard_still_borrows_memory';

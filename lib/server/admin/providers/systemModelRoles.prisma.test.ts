@@ -9,6 +9,7 @@ import { loadInstallationAnswerProviderRole } from "../../providerRuntime/admiss
 import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
 import { createChatPdfModelRoleResolver } from "../../providerRuntime/chatPdfModelRole";
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
+import { providerSetupModels } from "./setupModels";
 
 afterAll(() => prisma.$disconnect());
 
@@ -77,13 +78,34 @@ async function fixture(run: (input: {
 }
 
 describe("persisted independent System Model roles", () => {
+  it("provisions helpers only through the exact default key and keeps repeat checks idempotent", async () => {
+    await fixture(async ({ db, reranker }) => {
+      const target = await db.providerModel.findUniqueOrThrow({ where: { id: reranker }, include: { connection: true } });
+      const key = await db.providerCredential.findUniqueOrThrow({ where: { id: target.connection.defaultCredentialId! } });
+      const preset = providerSetupModels("openrouter").find((model) => model.configuration.modelClass === "embedding")!;
+      const id = randomUUID();
+      const write = { connectionId: target.connectionId, connectionVersion: target.connection.activeVersion,
+        credentialId: key.id, credentialVersionId: key.activeVersionId!, now: new Date(),
+        models: [{ ...preset, id, templateKey: null }] };
+      const repository = createPrismaAdminProviderRepository(db);
+      expect(await repository.addSetupModelsCas({ ...write, credentialVersionId: randomUUID() })).toBe("stale");
+      expect(await db.providerModel.count({ where: { id } })).toBe(0);
+      expect(await repository.addSetupModelsCas(write)).toBe("updated");
+      await db.providerModel.update({ where: { id }, data: { enabled: false } });
+      expect(await repository.addSetupModelsCas({ ...write, models: [{ ...write.models[0]!, id: randomUUID() }] })).toBe("updated");
+      expect(await db.providerModel.count({ where: { connectionId: target.connectionId, modelClass: "embedding" } })).toBe(1);
+      expect((await db.providerModel.findUniqueOrThrow({ where: { id } })).enabled).toBe(false);
+      expect(await db.providerModelCredentialCheck.count({ where: { providerModelId: id } })).toBe(0);
+    });
+  });
+
   it("saves roles independently and pins a separate document model in an immutable Knowledge profile", async () => {
     await fixture(async ({ db, adminId, memory, vision, embedding, reranker }) => {
       const service = createAdminSystemModelPolicyService(db);
       const version = async () => (await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).version;
       await service.update({ expectedVersion: await version(), providerModelId: memory, reasoningEffort: null, userId: adminId });
       await service.update({ expectedVersion: await version(), chatPdfProviderModelId: vision, chatPdfReasoningEffort: null,
-        chatPdfPreparationAllowed: true, userId: adminId });
+        userId: adminId });
       await service.update({ expectedVersion: await version(), rerankerProviderModelId: reranker, userId: adminId });
       const catalog = await service.list();
       expect(catalog.candidates.map((item) => item.id)).toContain(memory);

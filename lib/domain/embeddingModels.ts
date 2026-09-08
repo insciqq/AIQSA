@@ -82,3 +82,37 @@ export function embeddingPresetsForFamily(
 ): readonly EmbeddingModelPreset[] {
   return embeddingModelPresets.filter((preset) => preset.providerFamily === family);
 }
+
+export function embeddingModelConfiguration(preset: EmbeddingModelPreset) {
+  return {
+    adapterKind: "openai_embeddings_compatible" as const,
+    answerSelectable: false,
+    capabilities: {
+      contextWindow: preset.contextWindow,
+      nativePdfInput: false,
+      nativeSearch: false,
+      pdf: false,
+      reasoning: false,
+      streaming: false,
+      toolCalling: false,
+      vision: false
+    },
+    defaultParams: {},
+    embedding: {
+      nativeDimension: preset.nativeDimension,
+      providerFamily: preset.providerFamily,
+      queryInstructionTemplate: preset.queryInstructionTemplate,
+      supportsMrl: preset.supportsMrl,
+      targetDimension: preset.targetDimension
+    },
+    modelClass: "embedding" as const,
+    ...(preset.providerFamily === "openrouter"
+      ? {
+          openRouterRouting: preset.openRouterProviderTags?.length
+            ? { mode: "only_selected" as const, providers: [...preset.openRouterProviderTags] }
+            : { mode: "automatic" as const, providers: [] as [] }
+        }
+      : {}),
+    upstreamModelId: preset.upstreamModelId
+  };
+}

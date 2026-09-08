@@ -17,6 +17,7 @@ import { pdfInputVerificationStatus } from "../../providers/pdfInputEvidence";
 import { hasVerifiedVisionInput } from "../../providers/visionInputEvidence";
 import { createRerankerModelRoleResolver } from "../../providerRuntime/rerankerModelRole";
 import { normalizeProviderModelConfiguration } from "../../providers/providerConfiguration";
+import { configuredModelParameterControls, supportsConfiguredReasoningEffort } from "../../providers/providerModelCapabilities";
 import {
   serializeAdminAnswerModel,
   type AdminAnswerModelRow
@@ -90,13 +91,10 @@ function serializeSystemModel(row: SystemModelRow) {
   let structuredOutput: "not_verified" | "unsupported" | "verified" = "unsupported";
   try {
     const configuration = normalizeProviderModelConfiguration(row.activeConfig);
-    const capabilities = configuration.capabilities;
-    if (capabilities.reasoning) {
-      reasoningEfforts = [...(capabilities.reasoningEfforts ?? [])];
-      defaultReasoningEffort = capabilities.defaultReasoningEffort &&
-        reasoningEfforts.includes(capabilities.defaultReasoningEffort)
-        ? capabilities.defaultReasoningEffort
-        : null;
+    const control = configuredModelParameterControls(configuration, row.connection.family ?? "").reasoningEffort;
+    if (control.supported) {
+      reasoningEfforts = [...control.options];
+      defaultReasoningEffort = control.defaultValue;
     }
     const credential = row.connection.defaultCredential;
     const check = credential?.activeVersion && credential.enabled !== false &&
@@ -207,10 +205,7 @@ function supportsReasoningEffort(
   role: Awaited<ReturnType<RoleLoader>>,
   effort: string
 ): boolean {
-  const capabilities = role.snapshot.model.capabilities;
-  return capabilities.reasoning === true &&
-    Array.isArray(capabilities.reasoningEfforts) &&
-    capabilities.reasoningEfforts.includes(effort);
+  return supportsConfiguredReasoningEffort(role.snapshot.model, role.snapshot.providerFamily, effort);
 }
 
 export function createAdminSystemModelPolicyService(
@@ -395,7 +390,6 @@ export function createAdminSystemModelPolicyService(
         ineligible,
         rerankerCandidates,
         policy: {
-          chatPdfPreparationAllowed: policy.chatPdfPreparationAllowed === true,
           chatPdfReasoningEffort: policy.chatPdfReasoningEffort ?? null,
           chatPdfModel: policy.chatPdfProviderModel ? {
             ...serializeSystemModel(policy.chatPdfProviderModel as SystemModelRow),
@@ -487,7 +481,6 @@ export function createAdminSystemModelPolicyService(
     },
 
     async update(input: Readonly<{
-      chatPdfPreparationAllowed?: boolean;
       chatPdfProviderModelId?: string | null;
       chatPdfReasoningEffort?: string | null;
       expectedVersion: number;
@@ -511,10 +504,7 @@ export function createAdminSystemModelPolicyService(
       const hasUtilityUpdate = providerModelId !== undefined;
       const hasReasoningUpdate = reasoningEffort !== undefined;
       if (hasUtilityUpdate !== hasReasoningUpdate ||
-        !hasUtilityUpdate && !hasPdfUpdate && rerankerProviderModelId === undefined &&
-          input.chatPdfPreparationAllowed === undefined ||
-        input.chatPdfPreparationAllowed !== undefined &&
-          typeof input.chatPdfPreparationAllowed !== "boolean") {
+        !hasUtilityUpdate && !hasPdfUpdate && rerankerProviderModelId === undefined) {
         throw new Error("system_model_policy_update_invalid");
       }
       try {
@@ -604,9 +594,6 @@ export function createAdminSystemModelPolicyService(
 
           await tx.systemModelPolicy.update({
             data: {
-              ...(input.chatPdfPreparationAllowed === undefined ? {} : {
-                chatPdfPreparationAllowed: input.chatPdfPreparationAllowed
-              }),
               ...(hasPdfUpdate ? {
                 chatPdfProviderModelId: input.chatPdfProviderModelId,
                 chatPdfReasoningEffort: input.chatPdfReasoningEffort

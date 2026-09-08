@@ -186,6 +186,7 @@ describe("administrator system model policy handlers", () => {
     });
     for (const body of [
       { expectedVersion: 2, providerModelId: null },
+      { expectedVersion: 2, chatPdfPreparationAllowed: false },
       { expectedVersion: 2 }
     ]) {
       const response = await handlers.PATCH(new Request(

@@ -97,7 +97,7 @@ function ineligibleItems(
       : { group: "ineligible", id: item.id, label: label(item), note: ineligibilityNote(item.reason, role) });
 }
 
-/** Picker items for the Memory & structured helpers or Chat PDF role. */
+/** Picker items for the System model or Chat PDF role. */
 export function generativeRoleItems(
   catalog: AdminSystemModelPolicyCatalog,
   role: "memory" | "vision"

@@ -88,6 +88,7 @@ function repository(
   overrides: Partial<AdminProviderRepository> = {}
 ): AdminProviderRepository {
   return {
+    async addSetupModelsCas() { return "updated"; },
     async activateConnectionCas() { return "updated"; },
     async activateCredentialCas() { return "updated"; },
     async activateModelCas() { return "updated"; },
@@ -451,16 +452,16 @@ describe("admin provider service", () => {
     const activateCredentialCas = vi.fn<AdminProviderRepository["activateCredentialCas"]>(async () => "updated");
     const test = vi.fn<AdminProviderCredentialTester["test"]>(async () => ({
       method: "models_catalog", modelIds: [...policy.candidates.map((c) => c.configuration.upstreamModelId), reranker.upstreamModelId],
-      modelIdsByClass: { answer: policy.candidates.map((c) => c.configuration.upstreamModelId), embedding: [], reranker: [reranker.upstreamModelId] }
+      modelIdsByClass: { answer: policy.candidates.map((c) => c.configuration.upstreamModelId), embedding: ["qwen/qwen3-embedding-8b"], reranker: [reranker.upstreamModelId] }
     }));
     const providers = service(repository({ activateCredentialCas, listConnections: async () => [connection] }),
       tester(), ["credential-new", "version-new"], { test });
     await providers.activateNewCredential({ connectionId: connection.id, label: "Main", secret: "candidate-secret" });
-    expect(test).toHaveBeenCalledWith(expect.objectContaining({ modelClasses: ["reranker", "answer"] }));
+    expect(test).toHaveBeenCalledWith(expect.objectContaining({ modelClasses: ["reranker", "answer", "embedding"] }));
     expect(activateCredentialCas.mock.calls[0]![0].catalogAdditions?.map((model) => model.configuration.upstreamModelId))
       .toEqual(expect.arrayContaining([
         "deepseek/deepseek-v4-pro-0813", "anthropic/claude-opus-5", "anthropic/claude-fable-5.1",
-        "google/gemini-3.8-flash", "openai/gpt-6-astra", "perplexity/sonar-pro-search"
+        "google/gemini-3.8-flash", "openai/gpt-6-astra", "perplexity/sonar-pro-search", "qwen/qwen3-embedding-8b"
       ]));
   });
 

@@ -19,8 +19,9 @@ function evidence(upstreamModelId: string, overrides: Partial<NonNullable<AdminP
     compatibility: {
       directPdf: "verified",
       forcedToolCall: "verified",
+      toolCalling: "verified",
       modelAccess: "verified",
-      probeVersion: 1,
+      probeVersion: 2,
       streaming: "verified",
       structuredOutput: "verified",
       usage: "verified",
@@ -63,7 +64,7 @@ function openRouter(): AdminProviderConnection {
   return fixtureConnection({
     activeChecks: [
       fixtureCheck({ credentialId: "cred-primary", evidence: evidence("anthropic/claude-opus-4.8"), providerModelId: "model-opus" }),
-      fixtureCheck({ credentialId: "cred-primary", evidence: evidence("google/gemini-pro-latest", { directPdf: "not_supported", forcedToolCall: "not_supported", usage: "not_supported" }), providerModelId: "model-gemini" }),
+      fixtureCheck({ credentialId: "cred-primary", evidence: evidence("google/gemini-pro-latest", { directPdf: "not_supported", toolCalling: "not_supported", usage: "not_supported" }), providerModelId: "model-gemini" }),
       fixtureCheck({
         credentialId: "cred-primary",
         evidence: { ...evidence("voyageai/rerank-2.5"), compatibility: undefined, reranking: { completeScores: true, probeVersion: 1 } },
@@ -117,7 +118,6 @@ function usageSources(): ProviderUsageSources {
       ineligible: { direct_pdf: [], memory: [], vision: [] },
       policy: {
         chatPdfModel: null,
-        chatPdfPreparationAllowed: false,
         chatPdfReasoningEffort: null,
         reasoningEffort: null,
         rerankerModel: { ...candidate("model-voyage", "Voyage Rerank 2.5"), available: true },
@@ -222,6 +222,8 @@ describe("AdminProviderModels", () => {
     expect(opus).toHaveTextContent("anthropic/claude-opus-4.8 · via anthropic only");
     expect(within(opus).getAllByTestId(/model-chip-/).map((chip) => `${chip.textContent}:${chip.dataset.chipTone}`))
       .toEqual(["Tools:ok", "JSON:ok", "PDF:ok", "Images:ok", "Stream:ok"]);
+    expect(within(opus).getByTestId("model-chip-tools")).toHaveAccessibleName(/Ordinary function calling.*Memory calls are checked separately/);
+    expect(within(opus).getByTestId("model-chip-json")).toHaveAccessibleName(/strict JSON Schema/);
     expect(within(opus).getByText("Default chat")).toBeInTheDocument();
     expect(within(opus).getByRole("switch", { name: "Claude Opus 4.8 on" })).toBeChecked();
 
@@ -248,7 +250,7 @@ describe("AdminProviderModels", () => {
     const opus = screen.getByTestId("provider-model-model-opus");
     fireEvent.click(within(opus).getByRole("button", { name: "Claude Opus 4.8" }));
     const details = screen.getByTestId("provider-model-model-opus-details");
-    expect(details).toHaveTextContent(/Checked today \d{2}:\d{2} with key Primary · everything works, including tools and JSON output needed for Memory\./u);
+    expect(details).toHaveTextContent(/Checked today \d{2}:\d{2} with key Primary · tools, JSON and the other checked capabilities work\./u);
     expect(details).toHaveTextContent("Route: via anthropic only.");
     fireEvent.click(within(details).getByRole("button", { name: "Re-check" }));
     expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-primary", ["model-opus"]);

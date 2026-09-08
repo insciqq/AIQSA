@@ -12,13 +12,13 @@ export type AdminRolePickerProps = Readonly<{
   checkingId?: string | null;
   disabled?: boolean;
   items: readonly AdminRolePickerItem[];
-  /** Accessible name of the trigger, e.g. "Memory & structured helpers deployment". */
+  /** Accessible name of the trigger, e.g. "System model deployment". */
   label: string;
   /** Runs the role check; resolve `true` once the deployment is assigned. */
   onCheck?(id: string): Promise<boolean>;
   onSelect(id: string): void;
   placeholder?: string;
-  /** Short role name for the group heading: "Ready for Memory". */
+  /** Short role name for the group heading: "Ready for System model". */
   roleName: string;
   selectedId: string | null;
   /** Label of the current assignment when it is no longer among the items. */

@@ -91,7 +91,7 @@ export function deriveModelUsage(sources: ProviderUsageSources): ModelUsageIndex
   };
   add(sources.modelPolicy?.policy.defaultModel?.id, "Default chat");
   const roles = sources.systemModelPolicy?.policy;
-  add(roles?.systemModel?.id, "Memory");
+  add(roles?.systemModel?.id, "System model");
   add(roles?.chatPdfModel?.id, "Chat PDF");
   const route = roles?.rerankerRoute?.entries ?? [];
   if (route.length) {
@@ -145,7 +145,7 @@ export function turnOffConsequence(input: Readonly<{
   const roles = input.tags.filter((tag) => tag.startsWith("Reranker"));
   const uses: string[] = [];
   if (input.tags.includes("Default chat")) uses.push("the default chat model for new chats");
-  if (input.tags.includes("Memory")) uses.push("the Memory model");
+  if (input.tags.includes("System model")) uses.push("the System model");
   if (input.tags.includes("Chat PDF")) uses.push("the chat PDF model");
   if (roles.length) {
     uses.push(roles.includes("Reranker · primary") || roles.includes("Reranker")
@@ -154,7 +154,7 @@ export function turnOffConsequence(input: Readonly<{
   }
   if (input.tags.includes("Knowledge docs")) uses.push("the Knowledge document model");
   if (input.tags.includes("Knowledge embeddings")) uses.push("the Knowledge embedding model");
-  const known = new Set(["Default chat", "Memory", "Chat PDF", "Knowledge docs", "Knowledge embeddings"]);
+  const known = new Set(["Default chat", "System model", "Chat PDF", "Knowledge docs", "Knowledge embeddings"]);
   const searchSources = input.tags.filter((tag) => !known.has(tag) && !tag.startsWith("Reranker"));
   if (searchSources.length) {
     uses.push(`the model behind ${joinNames(searchSources.map((name) => `“${name}”`))} Search`);
@@ -221,11 +221,11 @@ function describeChips(chips: readonly ModelChip[], modelClass: AdminProviderMod
   const json = chips.some((entry) => entry.key === "json" && entry.tone === "ok");
   if (missing.length === 0) {
     return tools && json
-      ? "everything works, including tools and JSON output needed for Memory."
+      ? "tools, JSON and the other checked capabilities work."
       : "everything checked works.";
   }
   const labels = missing.map((entry) => entry.key === "pdf" ? "PDF input" : entry.key === "images" ? "image input" : entry.key === "stream" ? "streaming" : entry.key === "json" ? "JSON output" : "tools");
-  return `works without ${joinNames(labels)}${tools && json ? "; tools and JSON output needed for Memory are fine." : "."}`;
+  return `works without ${joinNames(labels)}${tools && json ? "; tools and JSON output are fine." : "."}`;
 }
 
 /** `Checked today 12:51 with key Primary · everything works, including …` per key with a result. */

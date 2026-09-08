@@ -10,6 +10,7 @@ function evidence(overrides: Partial<AdminProviderTestEvidence> = {}): AdminProv
     compatibility: {
       directPdf: "verified",
       forcedToolCall: "verified",
+      toolCalling: "verified",
       modelAccess: "verified",
       probeVersion: 1,
       streaming: "verified",
@@ -43,10 +44,28 @@ function run(overrides: Partial<AdminProviderCheckRun> = {}): AdminProviderCheck
 }
 
 describe("modelChipsFromEvidence", () => {
+  it("keeps ordinary Tools and JSON green when strict Memory calls are unsupported", () => {
+    const check = fixtureCheck({ credentialId: "cred-primary", providerModelId: "m", evidence: evidence({
+      compatibility: { ...evidence().compatibility!, probeVersion: 2, forcedToolCall: "not_supported" }
+    }) });
+    expect(modelChipsFromEvidence({ ...answer, adapterKind: "openrouter_chat_completions" }, check).slice(0, 2))
+      .toEqual([{ key: "tools", label: "Tools", tone: "ok" }, { key: "json", label: "JSON", tone: "ok" }]);
+  });
+
+  it.each(["not_supported", "verified"] as const)("does not relabel old %s strict-call results as ordinary Tools or native JSON", (status) => {
+    const check = fixtureCheck({ credentialId: "cred-primary", providerModelId: "m", evidence: evidence({
+      compatibility: { ...evidence().compatibility!, probeVersion: 1, toolCalling: undefined,
+        forcedToolCall: status, structuredOutput: status }
+    }) });
+    const chips = modelChipsFromEvidence({ ...answer, adapterKind: "openrouter_chat_completions" }, check);
+    expect(chips.some(({ key }) => key === "tools" || key === "json")).toBe(false);
+    expect(chips.some(({ key, tone }) => key === "images" && tone === "ok")).toBe(true);
+  });
+
   it("maps verified results to green chips, not_supported to muted ones and PDF to a yellow No PDF", () => {
     const check = fixtureCheck({
       credentialId: "cred-primary",
-      evidence: evidence({ compatibility: { ...evidence().compatibility!, directPdf: "not_supported", forcedToolCall: "not_supported" } }),
+      evidence: evidence({ compatibility: { ...evidence().compatibility!, directPdf: "not_supported", toolCalling: "not_supported" } }),
       providerModelId: "m"
     });
     expect(modelChipsFromEvidence(answer, check)).toEqual([

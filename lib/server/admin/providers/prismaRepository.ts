@@ -911,6 +911,35 @@ export function createPrismaAdminProviderRepository(
       });
     },
 
+    async addSetupModelsCas(input) {
+      return serializable(prisma, async (tx) => {
+        const connection = await tx.providerConnection.findUnique({
+          include: { defaultCredential: { include: { activeVersion: true } }, models: true },
+          where: { id: input.connectionId }
+        });
+        if (!connection) return "not_found" as const;
+        const credential = connection.defaultCredential;
+        if (!connection.enabled || connection.activeVersion !== input.connectionVersion ||
+          !credential?.enabled || credential.id !== input.credentialId ||
+          !credential.activeVersion || credential.activeVersion.id !== input.credentialVersionId ||
+          credential.activeVersion.revokedAt) return "stale" as const;
+        for (const model of input.models) {
+          const present = connection.models.some((existing) => existing.modelId === model.configuration.upstreamModelId ||
+            [existing.draftConfig, existing.activeConfig].some((config) => config && typeof config === "object" &&
+              !Array.isArray(config) && config.upstreamModelId === model.configuration.upstreamModelId));
+          if (present) continue;
+          await tx.providerModel.create({ data: {
+            ...modelColumns(model.configuration),
+            id: model.id, connectionId: connection.id, provider: connection.family, displayName: model.displayName,
+            inputTokenPriceMicros: model.inputTokenPriceMicros, outputTokenPriceMicros: model.outputTokenPriceMicros,
+            templateKey: model.templateKey, draftConfig: json(model.configuration), draftVersion: 1,
+            activeConfig: json(model.configuration), activeVersion: 1, activatedAt: input.now, enabled: true
+          } });
+        }
+        return "updated" as const;
+      });
+    },
+
     async createModel(input) {
       const connection = await prisma.providerConnection.findUnique({
         select: { family: true },

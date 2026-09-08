@@ -13,7 +13,7 @@ export type StructuredOutputVerificationEvidence = Readonly<
     }
   | {
       adapterKind: "openrouter_chat_completions";
-      probeVersion: 4;
+      probeVersion: 5;
       upstreamModelId: string;
       verified: true;
     }
@@ -35,7 +35,7 @@ export function structuredOutputVerificationEvidence(
   return supportsStructuredOutputAdapter(adapterKind) && upstreamModelId.trim()
     ? {
         adapterKind,
-        probeVersion: adapterKind === "openrouter_chat_completions" ? 4 : 2,
+        probeVersion: adapterKind === "openrouter_chat_completions" ? 5 : 2,
         upstreamModelId: upstreamModelId.trim(),
         verified: true
       } as StructuredOutputVerificationEvidence
@@ -49,7 +49,7 @@ export function decodeStructuredOutputVerificationEvidence(
     !isRecord(value) ||
     value.verified !== true ||
     (value.adapterKind === "openrouter_chat_completions"
-      ? value.probeVersion !== 4
+      ? value.probeVersion !== 5
       : value.probeVersion !== 2) ||
     typeof value.adapterKind !== "string" ||
     !supportsStructuredOutputAdapter(value.adapterKind) ||
@@ -59,7 +59,7 @@ export function decodeStructuredOutputVerificationEvidence(
   ) return null;
   return {
     adapterKind: value.adapterKind,
-    probeVersion: value.adapterKind === "openrouter_chat_completions" ? 4 : 2,
+    probeVersion: value.adapterKind === "openrouter_chat_completions" ? 5 : 2,
     upstreamModelId: value.upstreamModelId,
     verified: true
   } as StructuredOutputVerificationEvidence;
