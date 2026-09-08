@@ -351,7 +351,9 @@ describe("AdminMcpSection", () => {
     const { calls, onSelectResource } = renderSection(state);
     await screen.findByRole("list", { name: "MCP servers" });
 
-    fireEvent.click(await screen.findByTestId("mcp-new-server"));
+    // The shell publishes the enabled topbar action after the list renders.
+    await waitFor(() => expect(screen.getByRole("button", { name: "New server" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "New server" }));
     const sheet = await screen.findByRole("dialog", { name: "New server" });
     expect(sheet).toHaveAttribute("aria-modal", "true");
     const parse = within(sheet).getByRole("button", { name: "Parse" });
