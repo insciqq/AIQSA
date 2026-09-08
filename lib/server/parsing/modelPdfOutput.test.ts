@@ -26,6 +26,64 @@ function output(): string {
 }
 
 describe("model PDF transcription contract", () => {
+  it.each(["The measurement varies by ±3 units.", "The directed transition is north → south."])(
+    "keeps mathematical prose boundaries intact: %s", text => {
+      const input = { pages: [{ page: 1, text: text + "\nThe instrument remains available for calibration." }],
+        pageCount: 1, mode: "system_model_vision" as const, maxBlocks: 20, maxCharacters: 2_000 };
+      expect(modelPdfPagesToDocument({ ...input, preserveTextStructure: true })).toEqual(modelPdfPagesToDocument(input));
+    }
+  );
+
+  it("retains ordinary wrapped prose in one paragraph without guessing hyphenated words", () => {
+    const text = ["## Measurements", "The northern instrument records regular measurements",
+      "and the southern instrument records additional readings.", "", "The state-of-the-art sensor uses a cali-",
+      "bration procedure described in the following section.", "", "Figure C2: The two instruments.",
+      "Station\tCount", "North\t7", "", "\\[", "a = 3", "\\]"].join("\n");
+    const input = { pages: [{ page: 1, text }], pageCount: 1, mode: "system_model_vision" as const,
+      maxBlocks: 20, maxCharacters: 2_000, preserveDisplayMath: true };
+    const legacy = modelPdfPagesToDocument(input);
+    const current = modelPdfPagesToDocument({ ...input, preserveTextStructure: true });
+    expect(current.blocks.map(block => block.text)).toEqual([
+      "Measurements", "The northern instrument records regular measurements\nand the southern instrument records additional readings.",
+      "The state-of-the-art sensor uses a cali-\nbration procedure described in the following section.",
+      "Figure C2: The two instruments.", "Station\tCount\nNorth\t7", "\\[\na = 3\n\\]"
+    ]);
+    expect(current.blocks[1]?.headingPath).toEqual(["Measurements"]);
+    expect(current.blocks.at(-1)).toMatchObject({ text: "\\[\na = 3\n\\]", isTable: false });
+    expect(legacy.blocks).toHaveLength(current.blocks.length + 2);
+  });
+
+  it("preserves explicit tab-indented lists and bibliography entries without manufacturing tables", () => {
+    const pages = [{ page: 1, text: [
+      "1.\tOpen the control panel.", "2.\tChoose the desired options:",
+      "\t•\tEnter the sample name.", "\t\t•\tKeep the original spelling.", "",
+      "[31]\tA. Example, A study of northern stations,", "\tJournal of Field Science 12 (2041) 8–19.",
+      "[32]\tB. Sample, Measurements from southern stations."
+    ].join("\n") }];
+    const input = { pages, pageCount: 1, mode: "system_model_vision" as const, maxBlocks: 20, maxCharacters: 2_000 };
+    expect(modelPdfPagesToDocument(input).blocks.every(block => block.isTable)).toBe(true);
+    const document = modelPdfPagesToDocument({ ...input, preserveTextStructure: true });
+    expect(document.blocks.map(block => block.type)).toEqual(Array(6).fill("list_item"));
+    expect(document.blocks.map(block => block.text)).toEqual([
+      "1. Open the control panel.", "2. Choose the desired options:",
+      "  • Enter the sample name.", "    • Keep the original spelling.",
+      "[31] A. Example, A study of northern stations,\n  Journal of Field Science 12 (2041) 8–19.",
+      "[32] B. Sample, Measurements from southern stations."
+    ]);
+  });
+
+  it.each([
+    "1.\t12.4\n2.\t18.3",
+    "Index\tDescription\n1.\tThe first measurement.\n2.\tThe second measurement.",
+    "1.\tThe first measurement.\t12.4\n2.\tThe second measurement.\t18.3",
+    "| 1. | The first measurement. |\n| 2. | The second measurement. |"
+  ])("retains real table structure despite numbered row labels: %s", text => {
+    const input = { pages: [{ page: 1, text }], pageCount: 1, mode: "system_model_vision" as const,
+      maxBlocks: 20, maxCharacters: 2_000 };
+    expect(modelPdfPagesToDocument({ ...input, preserveTextStructure: true }))
+      .toEqual(modelPdfPagesToDocument(input));
+  });
+
   it("keeps a delimited multiline formula atomic only when requested", () => {
     const formula = String.raw`\[
 u = \frac{m+4}{n}

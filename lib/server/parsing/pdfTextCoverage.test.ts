@@ -24,6 +24,57 @@ function table(rows: string[][]): ParsedDocumentBlock {
 }
 
 describe("native PDF text coverage", () => {
+  it("recognizes split small capitals and superscript operands only with layout-aware coverage", () => {
+    const source = [paragraph("C SOCIETAL EFFECTS"), paragraph("Figure B4: Sections of 64³ cells.")];
+    const heading = paragraph("C S OCIETAL E FFECTS");
+    const caption = paragraph("Figure B4: Sections of 64 3 cells.");
+    expect(createNativeTextCoverage(source)(heading)).toBe(false);
+    expect(createNativeTextCoverage(source)(caption)).toBe(false);
+    const covered = createNativeTextCoverage(source, { layoutAware: true });
+    expect(covered(heading)).toBe(true);
+    expect(covered(caption)).toBe(true);
+    expect(covered(paragraph("Figure B4: Sections of 64 4 cells."))).toBe(false);
+    expect(covered(paragraph("C SOCIETAL COSTS"))).toBe(false);
+    expect(covered(paragraph("C S OCIETAL E FFECTS", 2))).toBe(false);
+  });
+
+  it("recognizes a source line split between consecutive model paragraphs without using a page-wide word bag", () => {
+    const source = [paragraph("The northern station records"), paragraph("seventeen samples each day.")];
+    const candidate = paragraph("The northern station records seventeen samples each day.");
+    expect(createNativeTextCoverage(source)(candidate)).toBe(false);
+    expect(createNativeTextCoverage(source, { layoutAware: true })(candidate)).toBe(true);
+    expect(createNativeTextCoverage([source[0]!, table([["Station", "Count"], ["South", "4"]]), source[1]!],
+      { layoutAware: true })(candidate)).toBe(false);
+    expect(createNativeTextCoverage(source, { layoutAware: true })(paragraph("The northern station records eighteen samples each day.")))
+      .toBe(false);
+  });
+
+  it("recognizes a partial cell followed by a complete adjacent cell from the same model row", () => {
+    const source = table([
+      ["Description", "Group", "Value"],
+      ["Northern workshop, sensor 12, first auxiliary station, second auxiliary station", "Group A", "7.3"],
+      ["Southern workshop, sensor 14, third auxiliary station, fourth auxiliary station", "Group B", "8.4"]
+    ]);
+    const candidate = paragraph("Northern workshop, sensor 12 Group A");
+    expect(createNativeTextCoverage([source])(candidate)).toBe(false);
+    const covered = createNativeTextCoverage([source], { layoutAware: true });
+    expect(covered(candidate)).toBe(true);
+    expect(covered(paragraph("Northern workshop, sensor 12 Group A 7.3"))).toBe(true);
+    for (const text of ["Northern workshop, sensor 12 Group B", "Northern workshop, sensor 12 Group A 8.4",
+      "Northern workshop, sensor 13 Group A", "Northern workshop, sensor 12 Group"]) {
+      expect(covered(paragraph(text))).toBe(false);
+    }
+  });
+
+  it("keeps conflicting signs and diacritics when comparing layout fragments", () => {
+    const covered = createNativeTextCoverage([
+      paragraph("The measured correction is −2.5 units."), paragraph("The café records measurements.")
+    ], { layoutAware: true });
+    expect(covered(paragraph("The measured correction is -2.5 units."))).toBe(true);
+    expect(covered(paragraph("The measured correction is 2.5 units."))).toBe(false);
+    expect(covered(paragraph("The cafe records measurements."))).toBe(false);
+  });
+
   it("does not add a degraded native copy of a model formula", () => {
     const formula = String.raw`\[r_a=\frac{a}{a+3}=\frac{2}{7}\]`;
     const covered = createNativeTextCoverage([paragraph(formula)]);

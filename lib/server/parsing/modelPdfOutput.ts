@@ -1,6 +1,7 @@
 import { finalizeParsedDocument, parsedLanguageHints } from "./assessment";
 import { DocumentParserError } from "./errors";
 import type { PdfModelProcessingMode } from "./pdfPreparation";
+import { nativeTextIsProse } from "./pdfTextCoverage";
 import type {
   ParsedDocument,
   ParsedDocumentBlock,
@@ -27,6 +28,9 @@ export const MODEL_PDF_FIGURE_CROP_PROFILE_VERSION = 18 as const;
 /** Preserve display-math blocks and reject represented native text even when
  * its PDF glyph stream lacks the model's LaTeX structure. */
 export const MODEL_PDF_TEXT_COVERAGE_PROFILE_VERSION = 19 as const;
+/** Recognize native layout fragments and explicit list structure without
+ * changing the accepted assembly of earlier profiles. */
+export const MODEL_PDF_LAYOUT_TEXT_PROFILE_VERSION = 20 as const;
 export const MODEL_PDF_ROW_CONTINUATION_CELL = "[[AIQSA_ROW_CONTINUATION]]";
 
 export type DecodedModelPdfPage = Readonly<{
@@ -479,6 +483,36 @@ function displayMathEnds(lines: readonly string[]): ReadonlyMap<number, number> 
   return ends;
 }
 
+function explicitTabList(lines: readonly string[]): readonly string[] | null {
+  const items: Array<{ depth: number; text: string }> = [];
+  for (const line of lines) {
+    if (!line.includes("\t") || line.trimStart().startsWith("|")) return null;
+    const cells = line.split("\t").map(cell => cell.trim());
+    const populated = cells.flatMap((text, index) => text ? [{ text, index }] : []);
+    const marker = populated[0];
+    if (!marker || marker.index > 16) return null;
+    if (populated.length === 2 && /^(?:[-*•]|\d{1,4}[.)]|\[\d{1,4}\])$/u.test(marker.text)) {
+      const body = populated[1]!;
+      // A numbered measurement, a header or further data columns remain a
+      // table. Only an explicit marker plus one readable text cell is a list.
+      if (body.index !== marker.index + 1 || (body.text.match(/[\p{L}\p{M}]{2,}/gu)?.length ?? 0) < 2) return null;
+      items.push({ depth: marker.index, text: "  ".repeat(marker.index) + marker.text + " " + body.text });
+    } else {
+      const previous = items.at(-1);
+      if (populated.length !== 1 || !previous || marker.index !== previous.depth + 1) return null;
+      previous.text += "\n" + "  ".repeat(marker.index) + marker.text;
+    }
+  }
+  return items.length >= 2 ? items.map(item => item.text) : null;
+}
+
+function wrappedProseLine(line: string): boolean {
+  return line.length >= 24 && nativeTextIsProse(line) && /\p{Ll}/u.test(line) &&
+    (line.match(/[\p{L}\p{M}]{2,}/gu)?.length ?? 0) >= 3 &&
+    !/[\\{}\t|=<>^∫∑√≤≥]/u.test(line) &&
+    !/^(?:#{1,6}\s|Visual data:|[-*•]\s|\[?\d{1,4}[.)\]]\s|(?:Figure|Table)\s)/iu.test(line);
+}
+
 function pageBlocks(
   page: DecodedModelPdfPage,
   firstIndex: number,
@@ -487,6 +521,7 @@ function pageBlocks(
     legacyInference: boolean;
     mode: PdfModelProcessingMode;
     preserveDisplayMath: boolean;
+    preserveTextStructure: boolean;
   }>
 ): ParsedDocumentBlock[] {
   const lines = input.legacyInference
@@ -513,13 +548,21 @@ function pageBlocks(
     const cells = rowCells(rawLine);
     if (cells) {
       const rows: string[][] = [];
+      const rawRows: string[] = [];
       while (lineIndex < lines.length) {
         const next = rowCells(lines[lineIndex]!);
         if (!next) break;
+        rawRows.push(lines[lineIndex]!);
         if (!delimiterRow(next)) rows.push(next);
         lineIndex += 1;
       }
       if (rows.length > 0) {
+        const list = input.preserveTextStructure ? explicitTabList(rawRows) : null;
+        if (list) {
+          for (const text of list) blocks.push(block({ headingPath: headingPath(),
+            index: firstIndex + blocks.length, page: page.page, text, type: "list_item" }));
+          continue;
+        }
         const table = tableFor(
           input.continuationMarkers && input.legacyInference ? inferRegularRowGroupContinuations(rows) : rows,
           input
@@ -534,6 +577,20 @@ function pageBlocks(
         }));
       }
       continue;
+    }
+    if (input.preserveTextStructure && wrappedProseLine(line)) {
+      const prose = [line];
+      let nextIndex = lineIndex + 1;
+      while (nextIndex < lines.length && wrappedProseLine(lines[nextIndex]!.trim())) {
+        prose.push(lines[nextIndex]!.trim());
+        nextIndex += 1;
+      }
+      if (prose.length > 1) {
+        blocks.push(block({ headingPath: headingPath(), index: firstIndex + blocks.length,
+          page: page.page, text: prose.join("\n"), type: "paragraph" }));
+        lineIndex = nextIndex;
+        continue;
+      }
     }
     const heading = /^(#{1,6})\s+(.+)$/u.exec(line);
     if (heading) {
@@ -571,6 +628,7 @@ export function modelPdfPagesToDocument(input: Readonly<{
   pageCount: number;
   pages: readonly DecodedModelPdfPage[];
   preserveDisplayMath?: boolean;
+  preserveTextStructure?: boolean;
   tableContinuationMarkers?: boolean;
 }>): ParsedDocument {
   if (input.pages.length !== input.pageCount || input.pages.some((page, index) =>
@@ -586,7 +644,8 @@ export function modelPdfPagesToDocument(input: Readonly<{
       continuationMarkers: input.tableContinuationMarkers === true,
       legacyInference: input.legacyTableInference === true,
       mode: input.mode,
-      preserveDisplayMath: input.preserveDisplayMath === true
+      preserveDisplayMath: input.preserveDisplayMath === true,
+      preserveTextStructure: input.preserveTextStructure === true
     }));
     if (blocks.length > input.maxBlocks) {
       throw new DocumentParserError("parser_output_too_large", input.mode);

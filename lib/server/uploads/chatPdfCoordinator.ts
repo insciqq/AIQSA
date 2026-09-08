@@ -1,5 +1,5 @@
 import type { ParsedDocument } from "../parsing/types";
-import { PDF_OCR_PARSER_VERSION } from "../parsing/pdfOcrPipeline";
+import { isSharedPdfOcrParserVersion } from "../parsing/pdfOcrPipeline";
 import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import { DocumentParserError } from "../parsing/errors";
 import { isProviderDeadlineExceededError } from "../providers/network";
@@ -144,7 +144,7 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
       }
       signal.throwIfAborted();
       const dispatch = await deps.attempts.dispatch(claim, reserved.attemptId);
-      const responseTimeoutMs = plan.parserVersion === PDF_OCR_PARSER_VERSION
+      const responseTimeoutMs = isSharedPdfOcrParserVersion(plan.parserVersion)
         ? effectiveProviderResponseTimeoutMs(admission.snapshot.connection,
           admission.snapshot.model.adapterKind === "fake" ? null : admission.snapshot.model)
         : 120_000;

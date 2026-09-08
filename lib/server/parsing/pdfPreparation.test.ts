@@ -1,4 +1,4 @@
-import { PDFDocument, rgb } from "pdf-lib";
+import { PDFDict, PDFDocument, PDFName, rgb, StandardFonts } from "pdf-lib";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import {
@@ -55,6 +55,39 @@ async function noisyScanPdf(): Promise<Buffer> {
 }
 
 describe("bounded model PDF preparation", () => {
+  it("renders distinct glyph outlines for an unembedded standard-font alias", async () => {
+    const document = await PDFDocument.create();
+    const font = await document.embedFont(StandardFonts.HelveticaOblique);
+    const page = document.addPage([240, 100]);
+    page.drawText("i", { font, size: 40, x: 30, y: 30 });
+    page.drawText("W", { font, size: 40, x: 130, y: 30 });
+    await document.flush();
+    document.context.lookup(font.ref, PDFDict)
+      .set(PDFName.of("BaseFont"), PDFName.of("Arial,Italic"));
+    const batch = await preparePdfModelBatch({
+      bytes: Buffer.from(await document.save()), mode: "system_model_vision", pageStart: 1, pageEnd: 1
+    }, { maxPages: 1, standardFonts: true });
+    expect(batch.kind).toBe("images");
+    if (batch.kind !== "images") return;
+    const pixels = await sharp(batch.images[0]!.bytes).flatten({ background: "white" })
+      .greyscale().raw().toBuffer({ resolveWithObject: true });
+    const widths = [{ start: 20, end: 80 }, { start: 120, end: 200 }].map(({ start, end }) => {
+      const columns: number[] = [];
+      for (let x = start * 4; x < end * 4; x += 1) {
+        for (let y = 0; y < pixels.info.height; y += 1) {
+          if (pixels.data[y * pixels.info.width + x]! < 128) {
+            columns.push(x);
+            break;
+          }
+        }
+      }
+      return columns.length ? Math.max(...columns) - Math.min(...columns) + 1 : 0;
+    });
+    // Missing-font boxes have equal widths; the actual italic glyphs do not.
+    expect(widths[0]).toBeGreaterThan(10);
+    expect(widths[1]).toBeGreaterThan(widths[0]! * 3);
+  });
+
   it("inspects and copies only the requested direct-input page range", async () => {
     const bytes = await threePagePdf();
     await expect(inspectPdfForModelProcessing({

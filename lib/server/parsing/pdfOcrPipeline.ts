@@ -7,7 +7,7 @@ import { adaptivePdfVisionPrompt, prepareAdaptivePdfVisionSupplement } from "./a
 import type { DoclingLayoutParser } from "./doclingLayout";
 import { DocumentParserError } from "./errors";
 import {
-  decodeModelPdfBatchOutput, MODEL_PDF_TEXT_COVERAGE_PROFILE_VERSION,
+  decodeModelPdfBatchOutput, MODEL_PDF_LAYOUT_TEXT_PROFILE_VERSION, MODEL_PDF_TEXT_COVERAGE_PROFILE_VERSION,
   modelPdfPagesToDocument, modelPdfTranscriptionPrompt
 } from "./modelPdfOutput";
 import { modelPdfProviderRequest } from "./modelPdfRequest";
@@ -16,23 +16,36 @@ import { extractNativePdfGeometry, type NativePdfGeometry } from "./nativePdf";
 import { PDF_MODEL_MAX_IMAGE_BYTES, PDF_MODEL_MAX_IMAGE_PIXELS, preparePdfModelBatch } from "./pdfPreparation";
 import type { ParsedDocument } from "./types";
 
-export const PDF_OCR_PARSER_VERSION = MODEL_PDF_TEXT_COVERAGE_PROFILE_VERSION;
+export const PDF_OCR_PARSER_VERSION = MODEL_PDF_LAYOUT_TEXT_PROFILE_VERSION;
+export const PDF_OCR_INITIAL_PARSER_VERSION = MODEL_PDF_TEXT_COVERAGE_PROFILE_VERSION;
 export const PDF_OCR_PROMPT_VERSION = 8;
 export const PDF_OCR_PAGE_OUTPUT_MAX_CHARACTERS = 500_000;
-// One full page plus at most two table crops. The renderer's 16 MiB page
-// ceiling and two 2 MiB crops fit within this bounded base64 request envelope.
+
+export function isSharedPdfOcrParserVersion(version: number): boolean {
+  return version === PDF_OCR_INITIAL_PARSER_VERSION || version === PDF_OCR_PARSER_VERSION;
+}
+// One 6 MiB page plus at most two 2 MiB crops leave room for base64 and
+// bounded text within 14 MiB, with transport headroom below a 15 MiB envelope.
 export const PDF_OCR_IMAGE_LIMITS: NonNullable<ProviderModelCapabilities["imageInputLimits"]> = Object.freeze({
+  imageBytes: 6 * 1024 * 1024, imageCount: 3,
+  imagePixels: PDF_MODEL_MAX_IMAGE_PIXELS, payloadBytes: 14 * 1024 * 1024
+});
+const INITIAL_PDF_OCR_IMAGE_LIMITS: typeof PDF_OCR_IMAGE_LIMITS = Object.freeze({
   imageBytes: PDF_MODEL_MAX_IMAGE_BYTES, imageCount: 3,
   imagePixels: PDF_MODEL_MAX_IMAGE_PIXELS, payloadBytes: 32 * 1024 * 1024
 });
 
-export function pdfOcrImageLimits(capabilities: ProviderModelCapabilities): typeof PDF_OCR_IMAGE_LIMITS {
-  const declared = capabilities.imageInputLimits;
+export function pdfOcrImageLimits(
+  capabilities: ProviderModelCapabilities | undefined, parserVersion: number = PDF_OCR_PARSER_VERSION
+): typeof PDF_OCR_IMAGE_LIMITS {
+  const declared = capabilities?.imageInputLimits;
+  const limits = parserVersion === PDF_OCR_INITIAL_PARSER_VERSION
+    ? INITIAL_PDF_OCR_IMAGE_LIMITS : PDF_OCR_IMAGE_LIMITS;
   return {
-    imageBytes: Math.min(declared?.imageBytes ?? Infinity, PDF_OCR_IMAGE_LIMITS.imageBytes),
-    imageCount: Math.min(declared?.imageCount ?? Infinity, PDF_OCR_IMAGE_LIMITS.imageCount),
-    imagePixels: Math.min(declared?.imagePixels ?? Infinity, PDF_OCR_IMAGE_LIMITS.imagePixels),
-    payloadBytes: Math.min(declared?.payloadBytes ?? Infinity, PDF_OCR_IMAGE_LIMITS.payloadBytes)
+    imageBytes: Math.min(declared?.imageBytes ?? Infinity, limits.imageBytes),
+    imageCount: Math.min(declared?.imageCount ?? Infinity, limits.imageCount),
+    imagePixels: Math.min(declared?.imagePixels ?? Infinity, limits.imagePixels),
+    payloadBytes: Math.min(declared?.payloadBytes ?? Infinity, limits.payloadBytes)
   };
 }
 
@@ -46,12 +59,16 @@ export type PdfOcrLocal = Readonly<{
  * storage, concurrency and accounting. Local failure never changes provider. */
 export async function planPdfOcrSource(input: Readonly<{
   bytes: Buffer; maxBlocks: number; maxCharacters: number; maxPages: number;
-  pageCount: number; signal?: AbortSignal;
+  pageCount: number; parserVersion?: number; signal?: AbortSignal;
 }>, options: Readonly<{
   extractGeometry?: typeof extractNativePdfGeometry;
   parseDocling?: DoclingLayoutParser | null;
 }> = {}): Promise<PdfOcrLocal> {
   input.signal?.throwIfAborted();
+  const parserVersion = input.parserVersion ?? PDF_OCR_PARSER_VERSION;
+  if (!isSharedPdfOcrParserVersion(parserVersion)) {
+    throw new DocumentParserError("parser_invalid_output", "system_model_vision");
+  }
   const source = { bytes: input.bytes, fileName: "source.pdf", mimeType: "application/pdf", signal: input.signal };
   let geometry: NativePdfGeometry | null = null;
   let docling: ParsedDocument | null = null;
@@ -63,7 +80,7 @@ export async function planPdfOcrSource(input: Readonly<{
   } catch { input.signal?.throwIfAborted(); }
   if (geometry && options.parseDocling) {
     try {
-      docling = await options.parseDocling({ ...source, parserProfileVersion: PDF_OCR_PARSER_VERSION });
+      docling = await options.parseDocling({ ...source, parserProfileVersion: parserVersion });
     } catch { input.signal?.throwIfAborted(); }
   }
   input.signal?.throwIfAborted();
@@ -81,13 +98,19 @@ export async function planPdfOcrSource(input: Readonly<{
 
 export async function preparePdfOcrPage(input: Readonly<{
   bytes: Buffer; local: PdfOcrLocal; maxPages: number; page: number;
-  signal?: AbortSignal; snapshot: ProviderExecutionSnapshot;
+  parserVersion?: number; signal?: AbortSignal; snapshot: ProviderExecutionSnapshot;
 }>, prepare: typeof preparePdfModelBatch = preparePdfModelBatch) {
   input.signal?.throwIfAborted();
-  const limits = pdfOcrImageLimits(input.snapshot.model.capabilities);
+  const parserVersion = input.parserVersion ?? PDF_OCR_PARSER_VERSION;
+  if (!isSharedPdfOcrParserVersion(parserVersion)) {
+    throw new DocumentParserError("parser_invalid_output", "system_model_vision");
+  }
+  const limits = pdfOcrImageLimits(input.snapshot.model.capabilities, parserVersion);
   const batch = await prepare({ bytes: input.bytes, mode: "system_model_vision",
     pageStart: input.page, pageEnd: input.page, signal: input.signal }, {
-    maxImageBytes: limits.imageBytes, maxPages: input.maxPages, visionQuality: "adaptive_high_fidelity"
+    maxImageBytes: limits.imageBytes, maxPages: input.maxPages,
+    standardFonts: parserVersion >= MODEL_PDF_LAYOUT_TEXT_PROFILE_VERSION,
+    visionQuality: "adaptive_high_fidelity"
   });
   input.signal?.throwIfAborted();
   const supplement = input.local.geometry ? await prepareAdaptivePdfVisionSupplement({
@@ -121,14 +144,22 @@ export function decodePdfOcrPage(page: number, text: string) {
 
 export function assemblePdfOcrDocument(input: Readonly<{
   local: PdfOcrLocal; maxBlocks: number; maxCharacters: number; pageCount: number;
+  parserVersion?: number;
   pages: readonly Readonly<{ page: number; text: string }>[];
 }>): ParsedDocument {
+  const parserVersion = input.parserVersion ?? PDF_OCR_PARSER_VERSION;
+  if (!isSharedPdfOcrParserVersion(parserVersion)) {
+    throw new DocumentParserError("parser_invalid_output", "system_model_vision");
+  }
+  const layoutText = parserVersion >= MODEL_PDF_LAYOUT_TEXT_PROFILE_VERSION;
   const { geometry, docling, plan } = input.local;
   return plan && geometry
     ? assembleAdaptivePdfPages({ docling, geometry, plan, pages: input.pages,
       maxBlocks: input.maxBlocks, maxCharacters: input.maxCharacters,
-      deduplicateNativeText: true, deduplicateNativeProseRows: true, legacyTableInference: false })
+      deduplicateNativeText: true, deduplicateNativeProseRows: true,
+      deduplicateNativeFragments: layoutText, legacyTableInference: false })
     : modelPdfPagesToDocument({ pages: input.pages, pageCount: input.pageCount,
       maxBlocks: input.maxBlocks, maxCharacters: input.maxCharacters, mode: "system_model_vision",
-      preserveDisplayMath: true, tableContinuationMarkers: true, legacyTableInference: false });
+      preserveDisplayMath: true, preserveTextStructure: layoutText,
+      tableContinuationMarkers: true, legacyTableInference: false });
 }

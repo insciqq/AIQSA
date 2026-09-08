@@ -10,6 +10,7 @@ import {
   MODEL_PDF_CHART_POINT_PROJECTION_PROFILE_VERSION,
   MODEL_PDF_FIGURE_CROP_PROFILE_VERSION,
   MODEL_PDF_TEXT_COVERAGE_PROFILE_VERSION,
+  MODEL_PDF_LAYOUT_TEXT_PROFILE_VERSION,
   modelPdfPagesToDocument,
   modelPdfTranscriptionPrompt
 } from "../parsing/modelPdfOutput";
@@ -33,7 +34,7 @@ import {
 } from "../parsing/adaptivePdf";
 import { assembleAdaptivePdfPages } from "../parsing/adaptivePdfAssembly";
 import {
-  assemblePdfOcrDocument, decodePdfOcrPage, PDF_OCR_PARSER_VERSION,
+  assemblePdfOcrDocument, decodePdfOcrPage, isSharedPdfOcrParserVersion,
   planPdfOcrSource, preparePdfOcrPage
 } from "../parsing/pdfOcrPipeline";
 import {
@@ -135,7 +136,7 @@ function validSnapshot(
   // Explicitly pinned supported profiles remain usable independently of the
   // profile selected by default for new installation revisions.
   if (!Number.isSafeInteger(input.parserProfileVersion) || input.parserProfileVersion < 1 ||
-    input.parserProfileVersion > MODEL_PDF_TEXT_COVERAGE_PROFILE_VERSION ||
+    input.parserProfileVersion > MODEL_PDF_LAYOUT_TEXT_PROFILE_VERSION ||
     !Number.isSafeInteger(input.systemModelPolicyVersion) ||
     Number(input.systemModelPolicyVersion) < 1) {
     throw new KnowledgeModelPdfParsingError("pdf_processing_unavailable");
@@ -211,11 +212,12 @@ export function createKnowledgeModelPdfParser(
       let adaptiveGeometry: NativePdfGeometry | null = null;
       let adaptiveDocling: ParsedDocument | null = null;
       let adaptivePlan: AdaptivePdfPlan | null = null;
-      const sharedOcr = input.mode === "system_model_vision" && input.parserProfileVersion >= PDF_OCR_PARSER_VERSION;
+      const sharedOcr = input.mode === "system_model_vision" && isSharedPdfOcrParserVersion(input.parserProfileVersion);
       const adaptiveHybrid = input.mode === "system_model_vision" &&
         input.parserProfileVersion >= MODEL_PDF_ADAPTIVE_HYBRID_PROFILE_VERSION;
       if (sharedOcr) {
-        const local = await planPdfOcrSource({ ...input, pageCount }, { extractGeometry, parseDocling });
+        const local = await planPdfOcrSource({ ...input, pageCount, parserVersion: input.parserProfileVersion },
+          { extractGeometry, parseDocling });
         adaptiveGeometry = local.geometry;
         adaptiveDocling = local.docling;
         adaptivePlan = local.plan;
@@ -300,7 +302,8 @@ export function createKnowledgeModelPdfParser(
             if (sharedOcr) {
               sharedPage = await preparePdfOcrPage({ bytes: input.bytes,
                 local: { geometry: adaptiveGeometry, docling: adaptiveDocling, plan: adaptivePlan },
-                maxPages: input.maxPages, page: pageStart, signal: input.signal, snapshot }, prepare);
+                maxPages: input.maxPages, page: pageStart, parserVersion: input.parserProfileVersion,
+                signal: input.signal, snapshot }, prepare);
               prepared = sharedPage.batch;
             } else prepared = await prepare({
               bytes: input.bytes,
@@ -472,6 +475,7 @@ export function createKnowledgeModelPdfParser(
           text: batch.resultText
         }));
         if (sharedOcr) return assemblePdfOcrDocument({
+          parserVersion: input.parserProfileVersion,
           local: { geometry: adaptiveGeometry, docling: adaptiveDocling, plan: adaptivePlan },
           maxBlocks: input.maxBlocks, maxCharacters: input.maxCharacters, pageCount, pages: decodedPages
         });
