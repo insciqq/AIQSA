@@ -206,8 +206,9 @@ describe("catalog capability matrix", () => {
   it("publishes current Claude 5 and native Gemini defaults as reviewed models", () => {
     const claudeModels = defaultProviderModels.filter(
       ({ provider }) => provider === "anthropic"
-    ).slice(0, 2);
+    ).slice(0, 3);
     expect(claudeModels.map(({ modelId }) => modelId)).toEqual([
+      "claude-fable-5-1",
       "claude-opus-5",
       "claude-sonnet-5"
     ]);
@@ -229,6 +230,7 @@ describe("catalog capability matrix", () => {
 
     const geminiModels = defaultProviderModels.filter(({ provider }) => provider === "gemini");
     expect(geminiModels.map(({ modelId }) => modelId)).toEqual([
+      "gemini-3.8-flash",
       "gemini-3.6-flash",
       "gemini-3.5-flash",
       "gemini-3.5-flash-lite",

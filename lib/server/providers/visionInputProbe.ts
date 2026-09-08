@@ -1,6 +1,7 @@
 import sharp from "sharp";
 import type { ProviderExecutionSnapshot } from "./runtimeFactory";
 import type { ProviderRunRequest, ProviderRunResult } from "./types";
+import { lowestConfiguredReasoningEffort } from "./providerModelCapabilities";
 
 export const VISION_INPUT_PROBE_CODE = "V4K8M2";
 
@@ -57,7 +58,7 @@ function request(snapshot: ProviderExecutionSnapshot, image: Buffer): ProviderRu
       maxOutputTokens: VISION_INPUT_PROBE_MAX_OUTPUT_TOKENS,
       maxTokens: VISION_INPUT_PROBE_MAX_OUTPUT_TOKENS,
       max_output_tokens: VISION_INPUT_PROBE_MAX_OUTPUT_TOKENS,
-      ...(responsesAdapter ? { reasoning: { effort: "none", summary: "none" } } : {}),
+      ...(responsesAdapter ? { reasoning: { effort: lowestConfiguredReasoningEffort(snapshot.model, snapshot.providerFamily), summary: "none" } } : {}),
       store: false,
       stream: false
     },

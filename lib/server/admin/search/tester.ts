@@ -119,7 +119,7 @@ export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester
       if (!role.authority) throw new Error("search_provider_model_not_available");
       return role.authority;
     },
-    async test({ draft, userId }) {
+    async test({ draft, userId, signal: parentSignal }) {
       if (draft.adapterKind === "answer_provider_hosted") {
         throw new Error("search_configuration_invalid");
       }
@@ -138,7 +138,8 @@ export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester
         secret,
         snapshot: role.snapshot
       });
-      const signal = AbortSignal.timeout(draft.timeoutMs);
+      const deadline = AbortSignal.timeout(draft.timeoutMs);
+      const signal = parentSignal ? AbortSignal.any([parentSignal, deadline]) : deadline;
       if (!runtime.searchAdapter) throw new Error("search_adapter_not_available");
       const validatedQuery = validateSearchToolArguments(
         { query: connectivityQuery },

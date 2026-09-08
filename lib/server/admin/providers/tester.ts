@@ -37,6 +37,7 @@ import {
 import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 import { createProviderVisionInputProbe } from "../../providers/visionInputProbe";
 import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
+import { lowestConfiguredReasoningEffort } from "../../providers/providerModelCapabilities";
 import {
   ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION,
   unsupportedAdminProviderCompatibilityEvidence
@@ -125,7 +126,7 @@ function generationRequest(
       maxOutputTokens,
       max_output_tokens: maxOutputTokens,
       ...(responsesAdapter
-        ? { reasoning: { effort: "none", summary: "none" } }
+        ? { reasoning: { effort: lowestConfiguredReasoningEffort(input.model, input.providerFamily), summary: "none" } }
         : {}),
       store: false,
       stream: streaming
@@ -200,6 +201,10 @@ async function runStructuredOutputProbe(
   if (!adapter) throw new Error("structured_output_adapter_unsupported");
   const output = await adapter.execute({
     maxOutputTokens: 128,
+    ...(input.model.adapterKind === "openai_responses_native" ||
+      input.model.adapterKind === "openai_responses_compatible" ||
+      input.model.adapterKind === "deepseek_responses_native"
+      ? { reasoningEffort: lowestConfiguredReasoningEffort(input.model, input.providerFamily) } : {}),
     name: "aiqsa_structured_output_probe",
     schema: structuredOutputProbeSchema,
     systemPrompt: "Return only the object required by the supplied strict JSON Schema.",
@@ -246,8 +251,8 @@ async function runForcedToolCallProbe(
       ...(input.model.adapterKind === "openrouter_chat_completions"
         ? { reasoning: { enabled: false, exclude: true } }
         : {}),
-      maxOutputTokens: 128,
-      max_output_tokens: 128
+      maxOutputTokens: lowestConfiguredReasoningEffort(input.model, input.providerFamily) === "none" ? 128 : 1_024,
+      max_output_tokens: lowestConfiguredReasoningEffort(input.model, input.providerFamily) === "none" ? 128 : 1_024
     },
     prompt: {
       developer: null,

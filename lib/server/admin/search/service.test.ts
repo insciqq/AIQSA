@@ -738,7 +738,7 @@ describe("admin Search service", () => {
     expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
   });
 
-  it("completes a hosted-only custom parent with its canonical client route", async () => {
+  it.each([false, true])("completes a hosted-only parent with its canonical client route (bootstrap=%s)", async (bootstrap) => {
     const existing = option([child(hostedDraft)], {
       displayName: "Compatible gateway Search",
       id: "custom-web-search-option:connection-1",
@@ -768,7 +768,8 @@ describe("admin Search service", () => {
       searchOption: {
         create: optionCreate,
         findMany: vi.fn(async () => [existing]),
-        findUnique: vi.fn(async () => completed)
+        findUnique: vi.fn(async () => completed),
+        update: vi.fn(async () => undefined)
       },
       searchStrategy: {
         create: strategyCreate,
@@ -780,9 +781,15 @@ describe("admin Search service", () => {
       $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx),
       providerModel: { findFirst: vi.fn(async () => providerModel()) }
     } as unknown as PrismaClient;
-    const service = createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test: vi.fn() } });
+    const service = createAdminSearchService({ prisma, tester: {
+      currentBinding: currentProbeBinding,
+      test: vi.fn(async () => ({ method: "provider_search" as const, normalizedSourceCount: 1,
+        probeBinding: PROBE_BINDING, protocol: draft.protocol, status: "available" as const }))
+    } });
 
     await service.createDraft({
+      bootstrap,
+      check: bootstrap,
       description: "Ignored in favor of the existing logical source.",
       displayName: "Duplicate Search",
       draft,
@@ -800,6 +807,19 @@ describe("admin Search service", () => {
         strategyId: "custom-web-search-client:connection-1"
       })
     });
+    if (bootstrap) {
+      expect(revisions.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+        validationEvidence: expect.objectContaining({ method: "provider_search", normalizedSourceCount: 1 })
+      }) });
+      const retry = () => service.createDraft({ bootstrap: true, check: true,
+        description: "Web evidence", displayName: "Search", draft, userId: "admin-1" });
+      existing.enabled = false;
+      await expect(retry()).rejects.toMatchObject({ code: "search_draft_stale" });
+      existing.enabled = true;
+      existing.strategies.push(child(draft));
+      await expect(retry()).rejects.toMatchObject({ code: "search_draft_stale" });
+      expect(strategyCreate).toHaveBeenCalledTimes(1);
+    }
   });
 
   it("reuses and unarchives the stable parent identity instead of creating a replacement", async () => {
@@ -985,7 +1005,7 @@ describe("admin Search service", () => {
       data: expect.objectContaining({
         configuration: replacementDraft,
         searchStrategyId: "strategy-1",
-        validationEvidence: expect.objectContaining({ method: "configuration" })
+        validationEvidence: expect.objectContaining({ method: "provider_search", normalizedSourceCount: 3, probeBinding: expect.objectContaining({ providerModelId: "technical-2" }) })
       })
     });
     expect(strategyPublish).toHaveBeenCalledWith({

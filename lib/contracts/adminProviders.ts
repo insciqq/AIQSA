@@ -244,6 +244,12 @@ export type AdminProviderCheckRunState = "cancelled" | "completed" | "interrupte
 /** Why a background capability check started; the banner copy depends on it. */
 export type AdminProviderCheckRunReason = "credential" | "model" | "requested" | "setup";
 
+export type AdminProviderBootstrapResult = {
+  defaults: string[];
+  search: "ready" | "failed" | "skipped";
+  state: "completed" | "partial";
+};
+
 /**
  * Progress of one background capability check over a connection's models
  * with one key (PRD B3). Content-free: model ids, counts and states only.
@@ -251,6 +257,8 @@ export type AdminProviderCheckRunReason = "credential" | "model" | "requested" |
  * failure, so a row can offer Retry even before any evidence exists.
  */
 export type AdminProviderCheckRun = {
+  setup?: AdminProviderBootstrapResult | { state: "running" };
+  skipped?: string[];
   credentialId: string;
   /** First model being checked right now, when any. */
   current: string | null;

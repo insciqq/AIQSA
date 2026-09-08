@@ -1740,6 +1740,7 @@ export function createPrismaMcpRepository(input: {
     },
 
     updateServer: async ({
+      tool,
       expectedUpdatedAt,
       description,
       draft,
@@ -1758,6 +1759,61 @@ export function createPrismaMcpRepository(input: {
         }
         if (enabled === true && !existing.activeRevisionId) return { kind: "revision_required" as const };
         const storedDraft = draftFrom(existing.draft);
+        if (tool) {
+          if (!expectedUpdatedAt || draft || sharedValues || name !== undefined || description !== undefined || enabled !== undefined) {
+            return { kind: "draft_changed" as const };
+          }
+          const active = existing.activeRevisionId
+            ? await tx.mcpRevision.findUnique({ where: { id: existing.activeRevisionId } })
+            : null;
+          if (!active) return { kind: "revision_required" as const };
+          const validation = validationEvidenceFrom(active.validationEvidence, active.createdAt);
+          if (!validation.toolInventory.some(({ name }) => name === tool.name)) {
+            return { kind: "draft_validation_failed" as const, issues: [{ code: "tool_not_available", path: "tool.name" }] };
+          }
+          const changeTool = (configuration: McpDraftConfiguration): McpDraftConfiguration => {
+            const disabled = new Set(configuration.disabledToolNames ?? []);
+            if (tool.enabled) disabled.delete(tool.name);
+            else disabled.add(tool.name);
+            return { ...configuration, disabledToolNames: [...disabled].sort() };
+          };
+          const configuration = changeTool(draftFrom(active.configuration));
+          const draftHash = hashCanonicalMcpValue(configuration);
+          const resolvedArtifact = active.resolvedArtifact === null ? null : jsonObjectFrom(active.resolvedArtifact);
+          const identityHash = revisionIdentityHash({
+            draftHash, evidence: validation.evidence, resolvedArtifact, toolInventory: validation.toolInventory
+          });
+          let revision = await tx.mcpRevision.findUnique({ where: { serverId_identityHash: { serverId, identityHash } } });
+          if (!revision) {
+            const latest = await tx.mcpRevision.aggregate({ _max: { revisionNumber: true }, where: { serverId } });
+            revision = await tx.mcpRevision.create({ data: {
+              configuration: configuration as Prisma.InputJsonValue,
+              draftHash,
+              identityHash,
+              resolvedArtifact: resolvedArtifact ? resolvedArtifact as Prisma.InputJsonValue : Prisma.DbNull,
+              revisionNumber: (latest._max.revisionNumber ?? 0) + 1,
+              serverId,
+              validationEvidence: validation as Prisma.InputJsonValue
+            } });
+          }
+          const nextDraft = changeTool(storedDraft);
+          const nextDraftHash = hashCanonicalMcpValue(nextDraft);
+          const previousTest = draftTestFrom(existing.draftTestEvidence, existing.testedDraftHash);
+          const canReuseDraftTest = previousTest && existing.testedDraftHash === hashCanonicalMcpValue(storedDraft);
+          await tx.mcpServer.update({ data: {
+            activeRevisionId: revision.id,
+            draft: nextDraft as Prisma.InputJsonValue,
+            ...(canReuseDraftTest ? {
+              draftTestEvidence: { ...previousTest, draftHash: nextDraftHash } as Prisma.InputJsonValue,
+              testedDraftHash: nextDraftHash
+            } : {})
+          }, where: { id: serverId } });
+          await tx.mcpActivationJob.deleteMany({ where: { serverId } });
+          await tx.mcpUserServer.updateMany({
+            data: { desiredRuntimeGenerationId: null }, where: { enabled: true, serverId }
+          });
+          return adminResult(tx, serverId, key, input.oauthValidationRedirectUri);
+        }
         const effectiveDraft = draft ?? storedDraft;
         if (sharedValues) {
           const issues = valueIssues(effectiveDraft.slots, sharedValues, (slot) => slot.policy.kind === "shared");

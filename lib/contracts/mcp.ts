@@ -294,6 +294,7 @@ export type AdminMcpCreateRequest = {
 };
 
 export type AdminMcpUpdateRequest = {
+  tool?: { enabled: boolean; name: string };
   expectedUpdatedAt?: string;
   description?: string;
   draft?: McpDraftConfiguration;

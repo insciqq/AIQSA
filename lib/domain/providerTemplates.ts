@@ -9,6 +9,7 @@ export const providerTemplateIds = Object.freeze({
 });
 
 export const providerModelTemplateIds = Object.freeze({
+  "anthropic:claude-fable-5-1": "00000000-0000-4000-8000-000000001224",
   "anthropic:claude-opus-5": "00000000-0000-4000-8000-000000001211",
   "anthropic:claude-opus-4-8": "00000000-0000-4000-8000-000000001206",
   "anthropic:claude-sonnet-5": "00000000-0000-4000-8000-000000001212",
@@ -20,11 +21,18 @@ export const providerModelTemplateIds = Object.freeze({
   "gemini:gemini-3.5-flash": "00000000-0000-4000-8000-000000001214",
   "gemini:gemini-3.5-flash-lite": "00000000-0000-4000-8000-000000001215",
   "gemini:gemini-3.6-flash": "00000000-0000-4000-8000-000000001213",
+  "gemini:gemini-3.8-flash": "00000000-0000-4000-8000-000000001225",
+  "openai:gpt-6-astra": "00000000-0000-4000-8000-000000001223",
   "openai:gpt-5.5": "00000000-0000-4000-8000-000000001202",
   "openai:gpt-5.6-luna": "00000000-0000-4000-8000-000000001205",
   "openai:gpt-5.6-sol": "00000000-0000-4000-8000-000000001203",
   "openai:gpt-5.6-terra": "00000000-0000-4000-8000-000000001204",
   "openrouter:anthropic/claude-opus-4.8": "00000000-0000-4000-8000-000000001207",
+  "openrouter:deepseek/deepseek-v4-pro-0813": "00000000-0000-4000-8000-000000001226",
+  "openrouter:anthropic/claude-opus-5": "00000000-0000-4000-8000-000000001227",
+  "openrouter:anthropic/claude-fable-5.1": "00000000-0000-4000-8000-000000001228",
+  "openrouter:google/gemini-3.8-flash": "00000000-0000-4000-8000-000000001229",
+  "openrouter:openai/gpt-6-astra": "00000000-0000-4000-8000-000000001230",
   "openrouter:cohere/rerank-4-pro": "00000000-0000-4000-8000-000000001218",
   "openrouter:google/gemini-3.5-flash": "00000000-0000-4000-8000-000000001208",
   "openrouter:perplexity/sonar-pro-search": "00000000-0000-4000-8000-000000001210",

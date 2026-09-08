@@ -274,8 +274,8 @@ function buildReasoning(params: OpenAIResponsesParams): OpenAIResponsesRequestBo
   };
 }
 
-function usesGpt56PromptCacheOptions(modelId: string): boolean {
-  return modelId === "gpt-5.6" || modelId.startsWith("gpt-5.6-");
+function usesPromptCacheOptions(modelId: string): boolean {
+  return modelId === "gpt-6-astra" || modelId === "gpt-5.6" || modelId.startsWith("gpt-5.6-");
 }
 
 export function usesHostedOpenAIWebSearch(request: ProviderRunRequest): boolean {
@@ -325,7 +325,7 @@ function buildOpenAIResponsesBody(
     },
     model,
     prompt_cache_key: providerPromptCacheKey(request.chatId),
-    ...(usesGpt56PromptCacheOptions(model)
+    ...(usesPromptCacheOptions(model)
       ? { prompt_cache_options: { ttl: "30m" } }
       : { prompt_cache_retention: "24h" }),
     store: background ? true : params.store,

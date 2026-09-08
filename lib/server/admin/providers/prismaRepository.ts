@@ -1661,12 +1661,27 @@ export function createPrismaAdminProviderRepository(
             connection.activeVersion === 0 && connection.draftVersion !== input.expectedConnectionDraftVersion) {
             return "stale" as const;
           }
+          if (input.bootstrap) {
+            if (connection.activeVersion !== 0) return "stale" as const;
+            const models = await tx.providerModel.findMany({
+              select: { activeVersion: true, draftVersion: true, enabled: true, id: true },
+              where: { connectionId: input.connectionId }
+            });
+            if (!sameStrings(models.map(({ id }) => id), input.bootstrap.models.map(({ id }) => id)) ||
+              !input.bootstrap.models.every((expected) => models.some((current) =>
+                current.id === expected.id && current.activeVersion === 0 &&
+                current.draftVersion === expected.draftVersion && current.enabled === expected.expectedEnabled))) {
+              return "stale" as const;
+            }
+          }
           for (const check of input.modelChecks) {
             const model = await tx.providerModel.findFirst({
-              select: { activeVersion: true },
+              select: { activeVersion: true, draftVersion: true },
               where: { connectionId: input.connectionId, id: check.providerModelId }
             });
-            if (model?.activeVersion !== check.modelVersion) return "stale" as const;
+            const addition = input.catalogAdditions?.find(({ id }) => id === check.providerModelId);
+            if (addition ? model !== null || check.modelVersion !== 1
+              : (input.bootstrap ? model?.draftVersion : model?.activeVersion) !== check.modelVersion) return "stale" as const;
           }
 
           let version: number;
@@ -1718,11 +1733,43 @@ export function createPrismaAdminProviderRepository(
           });
           if (updated.count !== 1) throw new ProviderActivationStaleError();
 
+          for (const model of input.catalogAdditions ?? []) {
+            await tx.providerModel.create({ data: {
+              ...modelColumns(model.configuration),
+              id: model.id, connectionId: connection.id, provider: connection.family, displayName: model.displayName,
+              inputTokenPriceMicros: model.inputTokenPriceMicros, outputTokenPriceMicros: model.outputTokenPriceMicros,
+              templateKey: model.templateKey, draftConfig: json(model.configuration), draftVersion: 1,
+              activeConfig: json(model.configuration), activeVersion: 1, activatedAt: input.now, enabled: true
+            } });
+          }
+          if (input.bootstrap) {
+            await tx.providerConnection.update({
+              data: {
+                activatedAt: input.now,
+                activeConfig: json(input.bootstrap.configuration),
+                activeVersion: connection.draftVersion,
+                enabled: true
+              },
+              where: { id: connection.id }
+            });
+            for (const model of input.bootstrap.models) {
+              await tx.providerModel.update({
+                data: {
+                  ...modelColumns(model.configuration),
+                  activatedAt: input.now,
+                  activeConfig: json(model.configuration),
+                  activeVersion: model.draftVersion,
+                  enabled: model.enabled
+                },
+                where: { id: model.id }
+              });
+            }
+          }
           for (const check of input.modelChecks) {
             await tx.providerModelCredentialCheck.create({ data: {
               checkedAt: input.checkedAt,
               connectionId: input.connectionId,
-              connectionVersion: connection.activeVersion,
+              connectionVersion: input.bootstrap ? connection.draftVersion : connection.activeVersion,
               credentialId: input.credential.id,
               credentialVersionId: input.versionId,
               evidence: json(check.evidence),
@@ -1732,7 +1779,7 @@ export function createPrismaAdminProviderRepository(
             } });
           }
 
-          if (!connection.defaultCredentialId) {
+          if (input.bootstrap || !connection.defaultCredentialId) {
             await tx.providerConnection.update({
               data: { defaultCredentialId: input.credential.id },
               where: { id: input.connectionId }

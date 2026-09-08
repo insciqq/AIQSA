@@ -245,6 +245,7 @@ export function useAdminMcpController({
       ...body, expectedUpdatedAt: body.expectedUpdatedAt ?? servers.find((server) => server.id === serverId)?.updatedAt
     } : body, fetcher), typeof body.enabled === "boolean"
       ? body.enabled ? "MCP server enabled." : "MCP server disabled."
+      : body.tool ? `Tool ${body.tool.enabled ? "enabled" : "disabled"}.`
       : body.draft ? null : "MCP settings updated."),
   [booleanMutation, fetcher, servers]);
 

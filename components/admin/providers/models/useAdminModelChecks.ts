@@ -62,7 +62,13 @@ export function useAdminModelChecks(input: Readonly<{
     if (run && run.id === tracked.id) {
       if (run.reason === "model") return;
       if (run.state === "completed") {
-        noticeRef.current(run.failed.length
+        noticeRef.current(run.total === 0
+          ? "No enabled models were available to check. Add a supported model or check your key’s access."
+          : run.setup?.state === "partial"
+          ? "Models checked. Some automatic setup steps need a retry."
+          : run.skipped?.length
+          ? `${run.skipped.length} models changed during checking. Run Check models again.`
+          : run.failed.length
           ? `Checked ${run.total} ${run.total === 1 ? "model" : "models"} · ${run.failed.length} hit a temporary failure — use Retry.`
           : `All ${run.total} ${run.total === 1 ? "model" : "models"} checked.`);
       } else if (run.state === "cancelled") {
@@ -105,12 +111,12 @@ export function useAdminModelChecks(input: Readonly<{
   }, [connection.id, controller.actions, run]);
 
   const restart = useCallback(async () => {
-    const credentialId = interrupted?.credentialId ?? connection.defaultCredentialId;
+    const credentialId = interrupted?.credentialId ?? run?.credentialId ?? connection.defaultCredentialId;
     if (!credentialId) return false;
     setLost(null);
     const result = await controller.actions.startModelChecks(connection.id, credentialId);
     return result.ok;
-  }, [connection.defaultCredentialId, connection.id, controller.actions, interrupted]);
+  }, [connection.defaultCredentialId, connection.id, controller.actions, interrupted, run?.credentialId]);
 
   return {
     dismissInterrupted: () => setLost(null),

@@ -327,8 +327,21 @@ test("administrator adds a server from a pasted configuration, watches the setup
 
     if (method === "PATCH" && path === `/api/admin/mcp/${encodeURIComponent(serverId)}`) {
       const update = body as AdminMcpUpdateRequest;
+      const disabledToolNames = new Set(current.activeRevision?.disabledToolNames ?? []);
+      if (update.tool) {
+        if (update.tool.enabled) disabledToolNames.delete(update.tool.name);
+        else disabledToolNames.add(update.tool.name);
+      }
+      const active = update.tool && current.activeRevision ? {
+        ...current.activeRevision, id: `tool-revision-${requests.length}`,
+        disabledToolNames: [...disabledToolNames], revisionNumber: current.activeRevision.revisionNumber + 1
+      } : null;
       const updated = replace({
         ...current,
+        ...(active ? {
+          activeRevision: active, revisions: [active, ...current.revisions],
+          draft: { ...current.draft, disabledToolNames: [...disabledToolNames] }
+        } : {}),
         ...(typeof update.enabled === "boolean" ? { enabled: update.enabled } : {}),
         ...(update.draft ? { draft: update.draft, draftTested: false } : {}),
         ...(update.name ? { name: update.name } : {}),
@@ -450,21 +463,28 @@ test("administrator adds a server from a pasted configuration, watches the setup
   }
   await page.setViewportSize({ height: 900, width: 1440 });
 
-  // Tools: one switch per tool; the change is staged until Test & Save applies it.
+  // A tool switch publishes immediately and survives a reload.
   const writeTool = section.getByRole("switch", { name: "Use fixture_write" });
   await expect(writeTool).toBeChecked();
   await writeTool.click();
   await expect(writeTool).not.toBeChecked();
-  await expect(section.getByTestId("mcp-server-page-status")).toContainText("Changes not applied");
-  await expect(section.getByTestId("mcp-tools-pending")).toContainText("apply after Test & Save");
+  await expect(page.getByTestId("admin-feedback")).toContainText("Tool disabled.");
+  await expect(section.getByTestId("mcp-server-page-status")).toContainText("Working · 1 of 2 tools on");
+  await page.reload();
+  await expect(writeTool).not.toBeChecked();
 
+  // Connection edits still require a successful check and retain failed input.
+  await page.getByTestId("mcp-open-settings").click();
+  const checkedSettings = page.getByRole("dialog", { name: "Settings" });
+  const description = checkedSettings.getByRole("textbox", { name: /^Description Shown to people/ });
+  await description.fill("Updated fixture description");
   failNextCheck = true;
-  await section.getByTestId("mcp-test-save").click();
-  await expect(page.getByTestId("admin-feedback")).toContainText("Your changes were not applied");
-  await expect(section.getByTestId("mcp-server-page-status")).toContainText("Changes not applied");
-  await page.getByRole("button", { name: "Dismiss error" }).click();
+  await checkedSettings.getByRole("button", { name: "Test & Save" }).click();
+  await expect(checkedSettings).toContainText("Your changes were not applied");
+  await expect(description).toHaveValue("Updated fixture description");
 
-  await section.getByTestId("mcp-test-save").click();
+  await checkedSettings.getByRole("button", { name: "Test & Save" }).click();
+  await expect(checkedSettings).toHaveCount(0);
   await expect(page.getByTestId("admin-feedback")).toContainText("Settings checked and applied.");
   await expect(section.getByTestId("mcp-server-page-status")).toContainText("Working · 1 of 2 tools on");
   await expect(section.getByRole("switch", { name: "Use fixture_write" })).not.toBeChecked();
@@ -540,9 +560,14 @@ test("administrator adds a server from a pasted configuration, watches the setup
       path: "/api/admin/mcp"
     }),
     expect.objectContaining({
-      body: expect.objectContaining({ draft: expect.objectContaining({ disabledToolNames: ["fixture_write"] }) }),
+      body: expect.objectContaining({ tool: { enabled: false, name: "fixture_write" } }),
       method: "PATCH",
       path: "/api/admin/mcp/browser-mcp"
+    }),
+    expect.objectContaining({
+      body: expect.objectContaining({ draft: expect.objectContaining({ disabledToolNames: ["fixture_write"] }), publish: true }),
+      method: "POST",
+      path: "/api/admin/mcp/browser-mcp/test"
     }),
     expect.objectContaining({ body: { canUse: true, groupId: "group-operators" }, method: "PUT", path: "/api/admin/mcp/browser-mcp/grants" }),
     expect.objectContaining({ body: { canUse: true, personalSlotKeys: [], userId: "user-alice" }, method: "PUT", path: "/api/admin/mcp/browser-mcp/grants" }),

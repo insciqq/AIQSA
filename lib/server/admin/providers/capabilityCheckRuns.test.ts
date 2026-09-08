@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CAPABILITY_CHECK_CANCELLED,
   createCapabilityCheckRunner,
@@ -17,6 +17,36 @@ async function settle(): Promise<void> {
 }
 
 describe("capability check runner", () => {
+  it("keeps setup visible and cancellable after models finish, and never completes setup for an empty inventory", async () => {
+    const runner = createCapabilityCheckRunner({ check: async () => "stored" });
+    const started = deferred<AbortSignal>();
+    const completeSetup = vi.fn(async (signal: AbortSignal) => {
+      started.resolve(signal);
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      return { defaults: [], search: "ready" as const, state: "completed" as const };
+    });
+    const empty = runner.start({ connectionId: "empty", credentialId: "key", modelIds: [], reason: "setup", completeSetup });
+    await empty.settled;
+    expect(completeSetup).not.toHaveBeenCalled();
+    const run = runner.start({ connectionId: "connection", credentialId: "key", modelIds: ["model"], reason: "setup", completeSetup });
+    const signal = await started.promise;
+    expect(runner.get(run.id)).toMatchObject({ state: "running", done: 1, total: 1, setup: { state: "running" } });
+    expect(runner.cancel(run.id)).toBe(true);
+    expect(signal.aborted).toBe(true);
+    await run.settled;
+    expect(runner.get(run.id)?.state).toBe("cancelled");
+    expect(runner.get(run.id)?.setup).not.toHaveProperty("search", "ready");
+  });
+
+  it("reports skipped models and partial automatic setup without losing completed model results", async () => {
+    const runner = createCapabilityCheckRunner({ check: async ({ providerModelId }) => providerModelId === "stale" ? "skipped" : "stored" });
+    const run = runner.start({ connectionId: "connection", credentialId: "key", modelIds: ["ready", "stale"], reason: "setup",
+      completeSetup: async () => ({ defaults: ["Chat: Ready"], search: "failed", state: "partial" }) });
+    await run.settled;
+    expect(runner.get(run.id)).toMatchObject({ state: "completed", done: 2, skipped: ["stale"],
+      setup: { defaults: ["Chat: Ready"], search: "failed", state: "partial" } });
+  });
+
   it("runs at most three checks per connection at once and reports progress content-free", async () => {
     const gates = new Map<string, ReturnType<typeof deferred<CapabilityCheckOutcome>>>();
     let peak = 0;

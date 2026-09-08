@@ -177,12 +177,13 @@ function SettingsSheetBody({
               aria-errormessage={error ? errorId : undefined}
               aria-invalid={error ? true : undefined}
               autoComplete="off"
-              className={`${inputClass} font-mono`}
+              autoCapitalize="none"
+              className={`${inputClass} font-mono [-webkit-text-security:disc]`}
               disabled={busy}
               onChange={(event) => update({ secrets: { ...form.secrets, [credential.id]: event.currentTarget.value } })}
               placeholder="sk-…"
               spellCheck={false}
-              type="password"
+              type="text"
               value={form.secrets[credential.id] ?? ""}
             />
             <span className={helpText}>

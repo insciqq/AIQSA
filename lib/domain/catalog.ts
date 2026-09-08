@@ -24,6 +24,7 @@ export type CatalogAdapterKind =
 
 export type ProviderModelCatalogEntry = {
   adapterKind: CatalogAdapterKind;
+  answerSelectable?: boolean;
   provider: string;
   providerDisplayName: string;
   providerFamily: string;
@@ -129,7 +130,7 @@ const deepSeekResponsesParams = defaultDeepSeekResponsesParams();
 const geminiInteractionsParams = defaultGeminiInteractionsParams();
 const openRouterParams = defaultOpenRouterParams();
 
-function openAIGpt56Model(modelId: string, displayName: string): ProviderModelTemplate {
+function openAIReasoningModel(modelId: string, displayName: string): ProviderModelTemplate {
   return {
     provider: "openai",
     modelId,
@@ -167,7 +168,9 @@ function openAIGpt56Model(modelId: string, displayName: string): ProviderModelTe
       },
       reasoningEffort: {
         defaultValue: "medium",
-        options: ["none", "low", "medium", "high", "xhigh", "max"],
+        options: modelId === "gpt-6-astra"
+          ? ["low", "medium", "high", "xhigh", "max"]
+          : ["none", "low", "medium", "high", "xhigh", "max"],
         supported: true
       },
       reasoningMode: {
@@ -347,6 +350,41 @@ function deepSeekModel(input: Readonly<{
   };
 }
 
+function openRouterModel(
+  source: ProviderModelTemplate,
+  modelId: string,
+  prices: readonly [number, number] = [0, 0]
+): ProviderModelTemplate {
+  return {
+    ...source,
+    provider: "openrouter",
+    modelId,
+    inputTokenPriceMicros: prices[0],
+    outputTokenPriceMicros: prices[1],
+    capabilities: {
+      ...source.capabilities,
+      backgroundStreaming: false,
+      nativeBackground: false,
+      nativeSearch: false
+    },
+    defaultParams: {
+      ...openRouterParams,
+      maxTokens: source.parameterControls.maxOutputTokens.defaultValue,
+      reasoning: {
+        ...openRouterParams.reasoning,
+        enabled: true,
+        effort: source.parameterControls.reasoningEffort.defaultValue
+      }
+    },
+    parameterControls: controls({
+      maxOutputTokens: source.parameterControls.maxOutputTokens,
+      reasoningEffort: source.parameterControls.reasoningEffort,
+      stream: { defaultValue: true, supported: true },
+      temperature: source.parameterControls.temperature
+    })
+  };
+}
+
 const defaultProviderModelTemplates: ProviderModelTemplate[] = [
   {
     provider: "fake",
@@ -436,9 +474,11 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
       }
     })
   },
-  openAIGpt56Model("gpt-5.6-sol", "GPT-5.6 Sol"),
-  openAIGpt56Model("gpt-5.6-terra", "GPT-5.6 Terra"),
-  openAIGpt56Model("gpt-5.6-luna", "GPT-5.6 Luna"),
+  openAIReasoningModel("gpt-6-astra", "GPT-6 Astra"),
+  openAIReasoningModel("gpt-5.6-sol", "GPT-5.6 Sol"),
+  openAIReasoningModel("gpt-5.6-terra", "GPT-5.6 Terra"),
+  openAIReasoningModel("gpt-5.6-luna", "GPT-5.6 Luna"),
+  anthropicClaude5Model("claude-fable-5-1", "Claude Fable 5.1"),
   anthropicClaude5Model("claude-opus-5", "Claude Opus 5"),
   anthropicClaude5Model("claude-sonnet-5", "Claude Sonnet 5"),
   {
@@ -484,6 +524,11 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     })
   },
   geminiModel({
+    displayName: "Gemini 3.8 Flash",
+    effort: "medium",
+    modelId: "gemini-3.8-flash"
+  }),
+  geminiModel({
     displayName: "Gemini 3.6 Flash",
     effort: "medium",
     modelId: "gemini-3.6-flash"
@@ -517,6 +562,17 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     modelId: "deepseek-v4-flash-vision-exp",
     vision: true
   }),
+  openRouterModel(
+    deepSeekModel({ displayName: "DeepSeek V4 Pro 0813", modelId: "deepseek-v4-pro" }),
+    "deepseek/deepseek-v4-pro-0813"
+  ),
+  openRouterModel(anthropicClaude5Model("claude-opus-5", "Claude Opus 5"), "anthropic/claude-opus-5", [5, 25]),
+  openRouterModel(anthropicClaude5Model("claude-fable-5-1", "Claude Fable 5.1"), "anthropic/claude-fable-5.1", [10, 50]),
+  openRouterModel(
+    geminiModel({ displayName: "Gemini 3.8 Flash", effort: "medium", modelId: "gemini-3.8-flash" }),
+    "google/gemini-3.8-flash"
+  ),
+  openRouterModel(openAIReasoningModel("gpt-6-astra", "GPT-6 Astra"), "openai/gpt-6-astra", [10, 50]),
   {
     provider: "openrouter",
     modelId: "anthropic/claude-opus-4.8",
@@ -676,6 +732,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
   {
     provider: "openrouter",
     modelId: "perplexity/sonar-pro-search",
+    answerSelectable: false,
     displayName: "Perplexity Sonar Pro Search",
     contextWindow: 200000,
     inputTokenPriceMicros: 3,

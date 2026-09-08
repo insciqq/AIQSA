@@ -205,6 +205,16 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
     const [body, bodyError] = await readJsonRecord(request);
     if (bodyError) return bodyError;
     if (!body) return errorJson("invalid_draft", 400);
+    let tool: { enabled: boolean; name: string } | undefined;
+    if (body.tool !== undefined) {
+      if (!isRecord(body.tool) || typeof body.tool.name !== "string" ||
+        !body.tool.name.trim() || body.tool.name.length > 256 || typeof body.tool.enabled !== "boolean" ||
+        typeof body.expectedUpdatedAt !== "string" ||
+        ["draft", "sharedValues", "name", "description", "enabled"].some((field) => body[field] !== undefined)) {
+        return errorJson("invalid_draft", 400);
+      }
+      tool = { enabled: body.tool.enabled, name: body.tool.name };
+    }
     const name = optionalText(body.name, 120);
     const description = optionalDescriptionText(body.description, 4_000);
     if (name === null || description === null ||
@@ -222,11 +232,12 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
     const sharedValues = typeof body.sharedValues === "undefined" ? undefined : slotValues(body.sharedValues);
     if (sharedValues === null) return errorJson("invalid_mcp_values", 400);
     if (typeof name === "undefined" && typeof description === "undefined" &&
-      typeof body.enabled === "undefined" && !draft && typeof sharedValues === "undefined") {
+      typeof body.enabled === "undefined" && !draft && typeof sharedValues === "undefined" && !tool) {
       return errorJson("invalid_draft", 400);
     }
     const { serverId } = await context.params;
     const result = await safely(() => deps.repository.updateServer({
+      ...(tool ? { tool } : {}),
       ...(typeof body.expectedUpdatedAt === "string" ? { expectedUpdatedAt: body.expectedUpdatedAt } : {}),
       ...(description !== undefined ? { description } : {}),
       ...(draft ? { draft } : {}),

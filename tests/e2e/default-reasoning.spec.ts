@@ -80,11 +80,13 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     const savedNotice = page.getByTestId("admin-feedback").getByText("Chat defaults saved for new chats");
     await expect(model).toHaveValue(reasoningModel.id);
     await expect(save).toBeDisabled();
+    await defaults.locator("summary").click();
     await effort.selectOption("high");
     await save.click();
     await expect(savedNotice).toBeVisible();
     expect(saved).toEqual([{ expectedVersion: 1, providerModelId: reasoningModel.id, reasoningEffort: "high" }]);
     await page.reload();
+    await defaults.locator("summary").click();
     await expect(effort).toHaveValue("high");
     await expect(save).toBeDisabled();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -100,6 +102,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     await expectRunSummary(page, { model: "GPT-5.5", reasoning: "low" });
 
     await page.goto("/admin?section=roles");
+    await defaults.locator("summary").click();
     await effort.selectOption("");
     await save.click();
     await expect(save).toBeDisabled();

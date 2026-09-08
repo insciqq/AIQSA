@@ -61,6 +61,36 @@ async function fixture() {
 }
 
 describe("MCP Test & Save persistence", () => {
+  it("applies tool switches without another check, preserving the pending endpoint, keys and immutable revisions", async () => {
+    const { repository, server, serverId, validate } = await fixture();
+    const original = await prisma.mcpServer.findUniqueOrThrow({ where: { id: serverId } });
+    const pending = { ...draft, source: { kind: "remote" as const, url: "https://pending.example.test/mcp" } };
+    const staged = await repository.updateServer({ draft: pending, serverId });
+    if (staged.kind !== "ok") throw new Error(staged.kind);
+    const input = { serverId, expectedUpdatedAt: staged.value.updatedAt, tool: { name: "write", enabled: false } };
+    const applied = await repository.updateServer(input);
+    if (applied.kind !== "ok") throw new Error(applied.kind);
+    expect(applied.value.activeRevision?.disabledToolNames).toEqual(["write"]);
+    expect(applied.value.draft).toMatchObject({ ...pending, disabledToolNames: ["write"] });
+    expect(applied.value.draftTested).toBe(false);
+    const active = await prisma.mcpRevision.findUniqueOrThrow({ where: { id: applied.value.activeRevision!.id } });
+    expect(active.configuration).toMatchObject({ ...draft, disabledToolNames: ["write"] });
+    const after = await prisma.mcpServer.findUniqueOrThrow({ where: { id: serverId } });
+    expect(after.sharedConfigEnvelope).toBe(original.sharedConfigEnvelope);
+    expect(after.sharedConfigVersion).toBe(original.sharedConfigVersion);
+    expect(after.enabled).toBe(original.enabled);
+    expect(await repository.updateServer(input)).toEqual({ kind: "draft_changed" });
+    expect(await repository.updateServer({ ...input, expectedUpdatedAt: applied.value.updatedAt, tool: { name: "unknown", enabled: true } }))
+      .toMatchObject({ kind: "draft_validation_failed" });
+    expect(await prisma.mcpServer.findUniqueOrThrow({ where: { id: serverId } })).toEqual(after);
+    const restored = await repository.updateServer({ ...input, expectedUpdatedAt: applied.value.updatedAt, tool: { name: "write", enabled: true } });
+    if (restored.kind !== "ok") throw new Error(restored.kind);
+    expect(restored.value.activeRevision?.disabledToolNames ?? []).toEqual([]);
+    expect(restored.value.draft.source).toEqual(pending.source);
+    expect(validate).toHaveBeenCalledTimes(1);
+    expect((await prisma.mcpRevision.findUniqueOrThrow({ where: { id: server.activeRevision!.id } })).configuration).toEqual(draft);
+  });
+
   it("publishes identity and candidate settings only after their successful check", async () => {
     const { repository, server, serverId, userId, validate } = await fixture();
     const before = await prisma.mcpServer.findUniqueOrThrow({ where: { id: serverId } });

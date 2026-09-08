@@ -352,6 +352,7 @@ test.describe("system model policy", () => {
     await expect(picker).toHaveCount(0);
 
     const reasoning = page.getByRole("combobox", { name: "Memory reasoning" });
+    await page.getByTestId("admin-role-memory").locator("summary").click();
     await reasoning.selectOption("xhigh");
     await expect(reasoning).toHaveValue("xhigh");
 

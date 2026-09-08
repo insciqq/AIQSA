@@ -22,8 +22,8 @@ const repository = createPrismaAdminProviderQuickSetupRepository(prisma, {
 
 export const adminProviderQuickSetupService = createAdminProviderQuickSetupService({
   credentialTester: createAdminProviderCredentialTester(),
-  onCompleted: (completion) => {
-    void adminProviderService.startCheckRun({ ...completion, reason: "setup" }).catch(() => undefined);
+  onCompleted: async (completion) => {
+    await adminProviderService.startCheckRun({ ...completion, reason: "setup" }).catch(() => undefined);
   },
   pdfInputProbe: createProviderPdfInputProbe(),
   rerankerTester: createAdminProviderDraftTester(),

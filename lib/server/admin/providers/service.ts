@@ -10,6 +10,7 @@ import type {
   AdminProviderDeleteResult,
   AdminProviderFamily,
   AdminProviderModelConfiguration,
+  AdminProviderModel,
   AdminProviderTestEvidence,
   AdminProviderUnassignedPolicy
 } from "../../../contracts/adminProviders";
@@ -23,9 +24,12 @@ import {
   encryptProviderCredentialSecret
 } from "../../providers/credentialSecrets";
 import {
+  adminProviderModelConfiguration,
   normalizeAdminProviderConnectionConfiguration,
   normalizeAdminProviderModelConfiguration
 } from "./adminConfiguration";
+import { ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS, type AdminProviderQuickSetupProviderId } from "../../../contracts/adminProviderQuickSetup";
+import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 import {
   effectiveProviderResponseTimeoutMs,
   normalizeProviderConnectionConfiguration,
@@ -189,7 +193,7 @@ function canonicalJson(value: unknown): string {
 }
 
 function catalogAccessChecks(
-  connection: AdminProviderConnection,
+  connection: { models: readonly Pick<AdminProviderModel, "activeConfig" | "activeVersion" | "id">[] },
   outcome: AdminProviderCredentialTestOutcome
 ): ProviderCatalogAccessCheck[] {
   return connection.models.flatMap((model) => {
@@ -326,6 +330,9 @@ type ActiveCheckResult =
   | { kind: "cancelled" | "failed" | "stale" };
 
 export function createAdminProviderService(input: Readonly<{
+  completeSetup?(input: {
+    connectionId: string; credentialId: string; signal: AbortSignal; userId: string;
+  }): Promise<import("../../../contracts/adminProviders").AdminProviderBootstrapResult>;
   /** Parallel background checks per connection (PRD decision: 3). */
   checkConcurrency?: number;
   checkRunIdFactory?: () => string;
@@ -449,12 +456,14 @@ export function createAdminProviderService(input: Readonly<{
    * credential. A rejected key writes nothing.
    */
   async function activateCredentialSecret(value: {
+    userId?: string;
     connectionId: string;
     credential:
       | { kind: "new"; label: string }
       | { credentialId: string; expectedDraftVersion: number; kind: "rotate" };
     secret: string;
     signal?: AbortSignal;
+    startChecks?: boolean;
   }): Promise<{ credentialId: string; versionId: string }> {
     const connection = (await input.repository.listConnections())
       .find(({ id }) => id === value.connectionId);
@@ -472,8 +481,9 @@ export function createAdminProviderService(input: Readonly<{
         throw new AdminProviderServiceError("provider_draft_stale");
       }
     }
+    const initialSetup = connection.activeVersion === 0;
     const modelClasses = [...new Set(connection.models
-      .filter((model) => model.enabled)
+      .filter((model) => initialSetup || model.enabled)
       .map((model) => model.modelClass ?? model.draftConfig.modelClass))];
     const outcome = await testCredentialCatalog({
       connection: connection.activeConfig ?? connection.draftConfig,
@@ -484,7 +494,46 @@ export function createAdminProviderService(input: Readonly<{
     });
     const credentialId = value.credential.kind === "new" ? idFactory() : value.credential.credentialId;
     const versionId = idFactory();
+    const models = initialSetup ? connection.models.map((model) => {
+      const configuration = normalizeAdminProviderModelConfiguration(model.draftConfig);
+      validateFamily(connection.family, configuration);
+      return {
+        configuration,
+        draftVersion: model.draftVersion,
+        enabled: (outcome.modelIdsByClass?.[configuration.modelClass] ?? outcome.modelIds)
+          .includes(configuration.upstreamModelId),
+        expectedEnabled: model.enabled,
+        id: model.id
+      };
+    }) : [];
+    const setupPolicy = ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.includes(connection.family as AdminProviderQuickSetupProviderId)
+      ? adminProviderQuickSetupPolicy(connection.family as AdminProviderQuickSetupProviderId) : null;
+    const additions = setupPolicy?.candidates.filter((candidate) =>
+      outcome.modelIds.includes(candidate.configuration.upstreamModelId) && !connection.models.some((model) =>
+        model.draftConfig.upstreamModelId === candidate.configuration.upstreamModelId))
+      .map((candidate) => ({
+        configuration: candidate.configuration,
+        displayName: candidate.displayName,
+        id: connection.id === setupPolicy.connection.id ? candidate.modelId : idFactory(),
+        inputTokenPriceMicros: candidate.model.inputTokenPriceMicros,
+        outputTokenPriceMicros: candidate.model.outputTokenPriceMicros,
+        templateKey: connection.id === setupPolicy.connection.id ? candidate.templateKey : null
+      })) ?? [];
+    const checkedConnection = {
+      models: [...connection.models.map((model) => initialSetup ? ({
+        ...model,
+        activeConfig: model.draftConfig,
+        activeVersion: model.draftVersion
+      }) : model), ...additions.map((model) => ({
+        id: model.id, activeConfig: adminProviderModelConfiguration(model.configuration), activeVersion: 1
+      }))]
+    };
     const result = await input.repository.activateCredentialCas({
+      catalogAdditions: additions,
+      ...(initialSetup ? { bootstrap: {
+        configuration: normalizeAdminProviderConnectionConfiguration(connection.draftConfig),
+        models
+      } } : {}),
       checkedAt: now(),
       connectionId: connection.id,
       expectedConnectionDraftVersion: connection.draftVersion,
@@ -497,7 +546,7 @@ export function createAdminProviderService(input: Readonly<{
             kind: "rotate"
           },
       now: now(),
-      modelChecks: catalogAccessChecks(connection, outcome),
+      modelChecks: catalogAccessChecks(checkedConnection, outcome),
       testEvidence: {
         method: outcome.method,
         modelCount: outcome.modelIds.length,
@@ -521,7 +570,9 @@ export function createAdminProviderService(input: Readonly<{
       throw new AdminProviderServiceError("provider_credential_label_taken");
     }
     if (result === "stale") throw new AdminProviderServiceError("provider_draft_stale");
-    startBackgroundChecks({ connectionId: connection.id, credentialId, reason: "credential" });
+    if (value.startChecks !== false) {
+      await startBackgroundChecks({ connectionId: connection.id, credentialId, reason: "credential", userId: value.userId });
+    }
     return { credentialId, versionId };
   }
 
@@ -666,20 +717,46 @@ export function createAdminProviderService(input: Readonly<{
   }
 
   async function startCheckRun(value: {
+    userId?: string;
     connectionId: string;
     credentialId: string;
     modelIds?: readonly string[];
     reason: AdminProviderCheckRunReason;
   }): Promise<AdminProviderCheckRun> {
-    const connection = (await input.repository.listConnections())
+    let connection = (await input.repository.listConnections())
       .find(({ id }) => id === value.connectionId);
     if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
-    if (!usableCredential(connection, value.credentialId)) {
+    const credential = usableCredential(connection, value.credentialId);
+    if (!credential) {
       throw new AdminProviderServiceError("provider_credential_not_found");
+    }
+    if (connection.activeVersion === 0 && value.reason === "requested") {
+      // Recover only the unchanged first-setup endpoint. A changed draft
+      // needs a fresh explicit key through Test & Save before external I/O.
+      const initialPolicy = ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.includes(connection.family as AdminProviderQuickSetupProviderId)
+        ? adminProviderQuickSetupPolicy(connection.family as AdminProviderQuickSetupProviderId) : null;
+      if (connection.draftVersion !== 1 || !initialPolicy ||
+        connection.draftConfig.apiRoot !== initialPolicy.connection.configuration.apiRoot) {
+        throw new AdminProviderServiceError("provider_endpoint_keys_required");
+      }
+      const secret = await activeCredentialSecret(credential.id, credential.activeVersion!.id);
+      await activateCredentialSecret({
+        connectionId: connection.id,
+        credential: { credentialId: credential.id, expectedDraftVersion: credential.draftVersion, kind: "rotate" },
+        secret,
+        startChecks: false
+      });
+      connection = (await input.repository.listConnections()).find(({ id }) => id === value.connectionId);
+      if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
     }
     const running = checkRuns.running(connection.id, value.credentialId);
     if (running) return running;
     const run = checkRuns.start({
+      ...(value.userId && input.completeSetup ? {
+        completeSetup: (signal: AbortSignal) => input.completeSetup!({
+          connectionId: value.connectionId, credentialId: value.credentialId, userId: value.userId!, signal
+        })
+      } : {}),
       connectionId: connection.id,
       credentialId: value.credentialId,
       modelIds: checkableModelIds(connection, value.modelIds),
@@ -688,13 +765,14 @@ export function createAdminProviderService(input: Readonly<{
     return checkRuns.get(run.id)!;
   }
 
-  /** Fire-and-forget trigger after a key or setup succeeded; never fails the caller. */
-  function startBackgroundChecks(value: {
+  /** Return once progress exists; the probes continue in the background. */
+  async function startBackgroundChecks(value: {
+    userId?: string;
     connectionId: string;
     credentialId: string;
     reason: AdminProviderCheckRunReason;
-  }): void {
-    void startCheckRun(value).catch(() => undefined);
+  }): Promise<void> {
+    await startCheckRun(value).catch(() => undefined);
   }
 
   return {
@@ -771,7 +849,7 @@ export function createAdminProviderService(input: Readonly<{
       });
       requireUpdated(result);
       if (connection.defaultCredentialId) {
-        startBackgroundChecks({ connectionId: connection.id, credentialId: connection.defaultCredentialId, reason: "requested" });
+        await startBackgroundChecks({ connectionId: connection.id, credentialId: connection.defaultCredentialId, reason: "requested" });
       }
     },
 
@@ -848,11 +926,13 @@ export function createAdminProviderService(input: Readonly<{
     },
 
     activateNewCredential: (value: {
+      userId?: string;
       connectionId: string;
       label: string;
       secret: string;
       signal?: AbortSignal;
     }) => activateCredentialSecret({
+      userId: value.userId,
       connectionId: value.connectionId,
       credential: { kind: "new", label: value.label },
       secret: value.secret,
@@ -860,12 +940,14 @@ export function createAdminProviderService(input: Readonly<{
     }),
 
     activateRotatedCredential: (value: {
+      userId?: string;
       connectionId: string;
       credentialId: string;
       expectedDraftVersion: number;
       secret: string;
       signal?: AbortSignal;
     }) => activateCredentialSecret({
+      userId: value.userId,
       connectionId: value.connectionId,
       credential: {
         credentialId: value.credentialId,

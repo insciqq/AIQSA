@@ -638,7 +638,7 @@ function customConnectionFixture(input: {
   };
 }
 
-test("administrator adds OpenAI through the Add provider sheet, retries a rejected key, chooses a model, and chats with it", async ({ page }) => {
+test("administrator adds OpenAI through the Add provider sheet, retries a rejected key without another model-selection step, and chats with it", async ({ page }) => {
   const upstream = await startLocalResponsesServer();
   const enabledMcpPreferences = await prisma.mcpUserServer.findMany({
     select: { id: true },
@@ -660,9 +660,9 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
   });
   const quickRequests: Array<{ body: Record<string, unknown>; method: string }> = [];
   const messageRequests: Record<string, unknown>[] = [];
-  let releasePickerRetry!: () => void;
-  const pickerRetryCanFinish = new Promise<void>((resolve) => {
-    releasePickerRetry = resolve;
+  let releaseKeyRetry!: () => void;
+  const keyRetryCanFinish = new Promise<void>((resolve) => {
+    releaseKeyRetry = resolve;
   });
 
   try {
@@ -684,40 +684,15 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
     const body = request.postDataJSON() as Record<string, unknown>;
     quickRequests.push({ body, method: request.method() });
     const postNumber = quickRequests.filter(({ method }) => method === "POST").length;
-    if (postNumber === 1) {
-      expect(body).toEqual({
-        connectionDisplayName: "OpenAI",
-        expectedState: "state-openai-fresh",
-        provider: "openai",
-        secret: "e2e-quick-write-only-key"
-      });
-      await route.fulfill({
-        contentType: "application/json",
-        json: {
-          candidates: [
-            { candidateId: "p2-o2", displayName: "GPT-5.6 Luna" },
-            { candidateId: "p2-o3", displayName: "GPT-5.6 Sol" }
-          ],
-          checkedAt: now,
-          expectedState: "state-openai-picker",
-          outcome: "selection_required",
-          policyVersion: 3,
-          provider: "openai",
-          providerDisplayName: "OpenAI"
-        }
-      });
-      return;
-    }
-    expect(postNumber).toBeLessThanOrEqual(3);
+    expect(postNumber).toBeLessThanOrEqual(2);
     expect(body).toEqual({
       connectionDisplayName: "OpenAI",
-      expectedState: "state-openai-picker",
+      expectedState: "state-openai-fresh",
       provider: "openai",
-      secret: "e2e-quick-write-only-key",
-      selectedModel: { candidateId: "p2-o3", policyVersion: 3 }
+      secret: "e2e-quick-write-only-key"
     });
-    if (postNumber === 2) {
-      await pickerRetryCanFinish;
+    if (postNumber === 1) {
+      await keyRetryCanFinish;
       await route.fulfill({
         contentType: "application/json",
         json: { error: "provider_credential_test_failed" },
@@ -762,29 +737,23 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
   await expect(sheet.getByRole("button", { name: "OpenAI", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(sheet.getByTestId("provider-add-summary")).toContainText("GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol");
   await expect(sheet.getByLabel("Name")).toHaveValue("OpenAI");
-  await expect(sheet.getByText("Runs a few small paid requests")).toBeVisible();
+  await expect(sheet.getByText("Enables supported models, checks models and Search, and fills suitable empty defaults. Uses small paid requests.")).toBeVisible();
   const keyField = sheet.getByLabel("API key");
-  await expect(keyField).toHaveAttribute("type", "password");
+  await expect(keyField).toHaveAttribute("type", "text");
   await keyField.fill("e2e-quick-write-only-key");
   await expectNoPageOverflow(page);
   await sheet.getByRole("button", { name: "Test & Save" }).click();
 
-  const picker = sheet.getByTestId("provider-add-selection");
-  await expect(picker).toContainText("Choose a model available to this key");
-  await expect(keyField).toHaveValue("e2e-quick-write-only-key");
-  await expect(sheet.getByRole("button", { name: "Test & Save" })).toBeDisabled();
-  await picker.getByLabel("GPT-5.6 Sol").check();
-  await sheet.getByRole("button", { name: "Test & Save" }).click();
+  await expect(sheet.getByTestId("provider-add-selection")).toHaveCount(0);
   await expect(sheet.getByRole("button", { name: "Test & Save" })).toBeDisabled();
   await expect(keyField).toBeDisabled();
   await expectNoPageOverflow(page);
-  releasePickerRetry();
+  releaseKeyRetry();
   await expect(sheet.getByTestId("provider-add-error")).toHaveText(
     "The provider rejected the key or its account catalog could not be reached."
   );
   await expect(keyField).toHaveAttribute("aria-invalid", "true");
   await expect(keyField).toHaveValue("e2e-quick-write-only-key");
-  await expect(picker.getByLabel("GPT-5.6 Sol")).toBeChecked();
   await expect(sheet.getByRole("button", { name: "Test & Save" })).toBeEnabled();
 
   await sheet.getByRole("button", { name: "Test & Save" }).click();
@@ -798,7 +767,7 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
   await expect(primaryKey).toContainText("Primary");
   await expect(primaryKey).toContainText("Default key");
   await expect(section.getByText("e2e-quick-write-only-key")).toHaveCount(0);
-  expect(quickRequests.filter(({ method }) => method === "POST")).toHaveLength(3);
+  expect(quickRequests.filter(({ method }) => method === "POST")).toHaveLength(2);
   expect(quickRequests.filter(({ method }) => method === "GET").length).toBeGreaterThanOrEqual(1);
 
   for (const viewport of [
@@ -967,7 +936,7 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
     providerModelId: installedFixture.modelId
   });
   } finally {
-    releasePickerRetry();
+    releaseKeyRetry();
     try {
       if (fixtureState.current) {
         await cleanupQuickChatFixture(fixtureState.current, trackedChatIds, trackedRunIds);
@@ -1075,9 +1044,9 @@ test("administrator discovers and configures a Custom compatible provider throug
     await sheet.getByRole("button", { name: /^Custom/ }).click();
     await expect(sheet.getByLabel("Base URL")).toBeVisible();
     await expect(sheet.getByLabel("API style")).toHaveValue("chat_completions");
-    await expect(sheet.getByLabel("API key")).toHaveAttribute("type", "password");
+    await expect(sheet.getByLabel("API key")).toHaveAttribute("type", "text");
     await expect(sheet.getByRole("button", { name: "Test & Save" })).toBeDisabled();
-    await expect(sheet.getByText("A few small paid requests per model")).toBeVisible();
+    await expect(sheet.getByText("Enables supported models, checks models and Search, and fills suitable empty defaults. Uses small paid requests.")).toBeVisible();
     await expectNoPageOverflow(page);
 
     const key = `e2e-custom-write-only-key-${viewport.width}`;
@@ -1470,7 +1439,7 @@ test("administrator saves a rejected and then a working OpenRouter key with one 
   const form = section.getByTestId("provider-key-form");
   await form.getByLabel("Label").fill("Primary");
   await form.getByLabel("API key").fill("e2e-rejected-key");
-  await expect(form).toContainText("Sends one small request to the provider");
+  await expect(form).toContainText("checks models and Search with small paid requests");
   await form.getByRole("button", { name: "Test & Save" }).click();
   await expect(form.getByRole("alert")).toHaveText("The provider rejected this key. Check the key and try again.");
   await expect(form.getByLabel("API key")).toHaveAttribute("aria-invalid", "true");
@@ -1752,8 +1721,8 @@ test("administrator adds a model with one Test & Save, follows the background ch
   await expect(added.getByTestId("model-chip-tools")).toHaveText("Tools");
   await expect(models).toContainText("Chat models · 3");
 
-  // Re-check all: the banner tracks the background run and Stop checking ends it.
-  await models.getByRole("button", { name: "Re-check all" }).click();
+  // Check models: the banner tracks the background run and Stop checking ends it.
+  await models.getByRole("button", { name: "Check models" }).click();
   const banner = section.getByTestId("provider-check-banner");
   await expect(banner).toContainText("Checking what each model can do with key Primary — 1 of 3 done.");
   await expect(section.getByRole("progressbar", { name: "Models checked" })).toHaveAttribute("aria-valuenow", "1");
@@ -1763,7 +1732,7 @@ test("administrator adds a model with one Test & Save, follows the background ch
   await expect(models.getByTestId("provider-model-model-terra-works-with")).toHaveAttribute("data-works-with", "checked");
 
   polls = -10;
-  await models.getByRole("button", { name: "Re-check all" }).click();
+  await models.getByRole("button", { name: "Check models" }).click();
   await expect(section.getByTestId("provider-check-banner")).toBeVisible();
   await section.getByRole("button", { name: "Stop checking" }).click();
   await expect(section.getByTestId("provider-check-banner")).toHaveCount(0);

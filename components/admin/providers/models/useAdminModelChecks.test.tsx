@@ -79,6 +79,22 @@ describe("useAdminModelChecks", () => {
 });
 
 describe("AdminProviderCheckBanner", () => {
+  it("shows a retry for empty checks and partial Search setup, and reports the chosen defaults", () => {
+    const restart = vi.fn(async () => true);
+    const checks = { dismissInterrupted: vi.fn(), interrupted: null, restart, stop: vi.fn(async () => true),
+      run: fixtureCheckRun({ id: "run", credentialId: "cred-primary", state: "completed", total: 0 }) };
+    const view = render(<AdminProviderCheckBanner checks={checks} connection={workingConnection()} disabled={false} />);
+    expect(screen.getByText("No models were checked.")).toBeVisible();
+    expect(screen.queryByText(/all.*checked/iu)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry setup" }));
+    expect(restart).toHaveBeenCalledOnce();
+    view.rerender(<AdminProviderCheckBanner checks={{ ...checks, run: { ...checks.run, done: 2, total: 2,
+      setup: { state: "partial", search: "failed", defaults: ["Chat: GPT-6 Astra"] } } }} connection={workingConnection()} disabled={false} />);
+    expect(screen.getByText(/Search could not be verified/u)).toBeVisible();
+    expect(screen.getByText(/Chat: GPT-6 Astra/u)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Retry setup" })).toBeEnabled();
+  });
+
   it("shows the KeyVerifying progress with Stop checking, and the interrupted state with Restart", async () => {
     const stop = vi.fn(async () => true);
     const restart = vi.fn(async () => true);
@@ -93,7 +109,7 @@ describe("AdminProviderCheckBanner", () => {
       />
     );
     const banner = screen.getByTestId("provider-check-banner");
-    expect(banner).toHaveTextContent("Key Primary saved and working. Checking what each model can do — 3 of 4 done.");
+    expect(banner).toHaveTextContent("Key Primary saved. Checking what each model can do — 3 of 4 done.");
     expect(banner).toHaveTextContent("About 6 small requests per model. You can leave this page.");
     expect(screen.getByRole("progressbar", { name: "Models checked" })).toHaveAttribute("aria-valuenow", "3");
     fireEvent.click(screen.getByRole("button", { name: "Stop checking" }));

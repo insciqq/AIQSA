@@ -98,7 +98,7 @@ describe("AdminProviderAddSheet", () => {
     expect(summary).toHaveTextContent("Verifies the key and turns on GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol");
     expect(summary).toHaveTextContent("Makes this key the default for everyone on this connection");
     expect(within(dialog).getByRole("button", { name: "Test & Save" })).toBeInTheDocument();
-    expect(within(dialog).getByText("Runs a few small paid requests")).toBeInTheDocument();
+    expect(within(dialog).getByText("Enables supported models, checks models and Search, and fills suitable empty defaults. Uses small paid requests.")).toBeInTheDocument();
     expect(within(dialog).getByText("Advanced · endpoint, timeout, private network")).toBeInTheDocument();
     expect(within(dialog).getByLabelText("Endpoint")).toHaveValue("https://api.openai.com/v1");
     expect(dialog.textContent).not.toMatch(forbiddenWords);
@@ -274,7 +274,7 @@ describe("AdminProviderAddSheet", () => {
     const dialog = await sheet();
     fireEvent.click(within(dialog).getByRole("button", { name: /^Custom/ }));
     expect(within(dialog).getByRole("button", { name: "Test & Save" })).toBeDisabled();
-    expect(within(dialog).getByText("A few small paid requests per model")).toBeInTheDocument();
+    expect(within(dialog).getByText("Enables supported models, checks models and Search, and fills suitable empty defaults. Uses small paid requests.")).toBeInTheDocument();
     expect(within(dialog).getByText("Advanced · timeout, private network, reasoning mapping")).toBeInTheDocument();
 
     fireEvent.change(within(dialog).getByLabelText("Base URL"), { target: { value: "https://codex-lb.example.test/v1" } });

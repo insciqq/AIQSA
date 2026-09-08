@@ -418,7 +418,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
           </UiV2Button>
           <UiV2Button disabled={busy} onClick={requestClose} tone="ghost" type="button">Cancel</UiV2Button>
           <span className="min-w-0 text-xs leading-5 text-ink-muted sm:ml-auto sm:text-right">
-            {family === "custom" ? "A few small paid requests per model" : "Runs a few small paid requests"}
+            Enables supported models, checks models and Search, and fills suitable empty defaults. Uses small paid requests.
           </span>
         </>
       )}
@@ -564,13 +564,14 @@ function BuiltInFields({
           <input
             aria-invalid={error?.field === "secret" || undefined}
             autoComplete="off"
-            className={`${inputClass} font-mono`}
+            autoCapitalize="none"
+            className={`${inputClass} font-mono [-webkit-text-security:disc]`}
             disabled={busy}
             id={id}
             onChange={(event) => update({ secret: event.currentTarget.value })}
             placeholder="sk-…"
             spellCheck={false}
-            type="password"
+            type="text"
             value={form.secret}
           />
         )}
@@ -727,13 +728,14 @@ function CustomFields({
             <input
               aria-invalid={error?.field === "secret" || undefined}
               autoComplete="off"
-              className={`${inputClass} font-mono`}
+              className={`${inputClass} font-mono [-webkit-text-security:disc]`}
               disabled={busy || form.noKey}
               id={id}
               onChange={(event) => update({ secret: event.currentTarget.value })}
               placeholder="sk-…"
               spellCheck={false}
-              type="password"
+              autoCapitalize="none"
+              type="text"
               value={form.secret}
             />
           )}

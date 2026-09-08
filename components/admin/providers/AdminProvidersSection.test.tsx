@@ -488,18 +488,18 @@ describe("AdminProvidersSection", () => {
     const { feedback } = renderSection("conn-openai");
 
     const banner = await screen.findByTestId("provider-check-banner");
-    expect(banner).toHaveTextContent("Key Primary saved and working. Checking what each model can do — 1 of 2 done.");
+    expect(banner).toHaveTextContent("Key Primary saved. Checking what each model can do — 1 of 2 done.");
     expect(screen.getByRole("progressbar", { name: "Models checked" })).toHaveAttribute("aria-valuenow", "1");
     expect(screen.getByTestId("provider-page-status")).toHaveTextContent("All keys working · 2 models on · checking models");
     expect(screen.getByTestId("provider-model-model-luna-works-with")).toHaveAttribute("data-works-with", "checking");
-    expect(screen.getByRole("button", { name: "Re-check all" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Check models" })).toBeDisabled();
 
     fireEvent.click(within(banner).getByRole("button", { name: "Stop checking" }));
     await waitFor(() => expect(screen.queryByTestId("provider-check-banner")).not.toBeInTheDocument());
     expect(calls.find(({ body }) => body?.action === "cancel_check")?.body).toEqual({ action: "cancel_check", runId: "run-7" });
     expect(feedback.reportNotice).toHaveBeenCalledWith("Checking stopped.");
     expect(screen.getByTestId("provider-model-model-luna-works-with")).toHaveAttribute("data-works-with", "not_checked");
-    expect(screen.getByRole("button", { name: "Re-check all" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Check models" })).toBeEnabled();
   });
 
   it("turns the provider off from the topbar switch and opens the Add provider sheet behind the primary action", async () => {
@@ -606,7 +606,7 @@ describe("AdminProvidersSection", () => {
       </TopbarHarness>
     );
     const banner = await screen.findByTestId("provider-check-banner");
-    expect(banner).toHaveTextContent("Key Primary saved and working. Checking what each model can do — 0 of 1 done.");
+    expect(banner).toHaveTextContent("Key Primary saved. Checking what each model can do — 0 of 1 done.");
     expect(screen.getByTestId("provider-key-cred-new")).toHaveTextContent("Primary");
     expect(document.body.textContent).not.toContain("sk-ant");
   });

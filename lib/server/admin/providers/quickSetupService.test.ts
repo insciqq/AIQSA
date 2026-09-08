@@ -1,11 +1,5 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import {
-  ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
-  DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID,
-  GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
-  OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
-} from "../../../domain/search";
 import type { AdminProviderQuickSetupProviderId } from "../../../contracts/adminProviderQuickSetup";
 import { decryptProviderCredentialSecret } from "../../providers/credentialSecrets";
 import { ProviderConfigurationError } from "../../providers/providerConfiguration";
@@ -201,8 +195,8 @@ describe("provider Quick setup service", () => {
   it.each([
     ["openai", "gpt-5.6-terra", "p2-o1"],
     ["anthropic", "claude-opus-5", "p2-a1"],
-    ["gemini", "gemini-3.6-flash", "p2-g1"],
-    ["openrouter", "anthropic/claude-opus-4.8", "p1-r1"]
+    ["gemini", "gemini-3.8-flash", "p2-g1"],
+    ["openrouter", "anthropic/claude-opus-5", "p1-r1"]
   ] as const)("tests and commits one %s recommendation", async (provider, upstream, candidateId) => {
     const value = fixture({ modelIds: ["remote-first", upstream] });
     const result = await value.service.setup({
@@ -229,7 +223,7 @@ describe("provider Quick setup service", () => {
 
   it("probes and commits the complete approved OpenRouter reranker route", async () => {
     const value = fixture({
-      modelIds: ["anthropic/claude-opus-4.8"],
+      modelIds: ["anthropic/claude-opus-5"],
       rerankerOutcomes: {
         "cohere/rerank-4-pro": "available",
         "qwen/qwen3-reranker-8b": "unavailable",
@@ -308,7 +302,8 @@ describe("provider Quick setup service", () => {
     expect(value.onCompleted).toHaveBeenCalledOnce();
     expect(value.onCompleted).toHaveBeenCalledWith({
       connectionId: expect.any(String),
-      credentialId: plan.credential.id
+      credentialId: plan.credential.id,
+      userId: actor.userId
     });
     expect(JSON.stringify(value.onCompleted.mock.calls[0])).not.toContain("sk-current-catalog");
   });
@@ -319,7 +314,7 @@ describe("provider Quick setup service", () => {
         "gemini-3.1-pro-preview",
         "remote-unknown",
         "gemini-3.5-flash-lite",
-        "gemini-3.6-flash",
+        "gemini-3.8-flash",
         "gemini-3.5-flash"
       ]
     });
@@ -337,7 +332,7 @@ describe("provider Quick setup service", () => {
       candidateId,
       upstreamModelId: configuration.upstreamModelId
     }))).toEqual([
-      { candidateId: "p2-g1", upstreamModelId: "gemini-3.6-flash" },
+      { candidateId: "p2-g1", upstreamModelId: "gemini-3.8-flash" },
       { candidateId: "p2-g2", upstreamModelId: "gemini-3.5-flash" },
       { candidateId: "p2-g3", upstreamModelId: "gemini-3.5-flash-lite" },
       { candidateId: "p2-g4", upstreamModelId: "gemini-3.1-pro-preview" }
@@ -349,9 +344,9 @@ describe("provider Quick setup service", () => {
       configuration.capabilities.nativePdfInput)).toBe(true);
     expect(value.pdfInputProbe).toHaveBeenCalledTimes(4);
     expect(result).toMatchObject({
-      model: { displayName: "Gemini 3.6 Flash" },
+      model: { displayName: "Gemini 3.8 Flash" },
       models: [
-        { displayName: "Gemini 3.6 Flash" },
+        { displayName: "Gemini 3.8 Flash" },
         { displayName: "Gemini 3.5 Flash" },
         { displayName: "Gemini 3.5 Flash-Lite" },
         { displayName: "Gemini 3.1 Pro Preview" }
@@ -359,21 +354,9 @@ describe("provider Quick setup service", () => {
       outcome: "ready",
       provider: "gemini"
     });
-    expect(plan.search).toMatchObject({
-      draft: {
-        adapterKind: "provider_model_client",
-        protocol: "gemini_google_search",
-        providerModelId: plan.candidate.modelId
-      },
-      evidence: {
-        method: "configuration",
-        normalizedSourceCount: 0,
-        status: "available"
-      },
-      integrationId: GEMINI_PROVIDER_SEARCH_INTEGRATION_ID
-    });
+    expect(plan.search).toBeUndefined();
     expect(result).toMatchObject({
-      search: { displayName: "Google Search", status: "ready" }
+      search: null
     });
   });
 
@@ -410,17 +393,7 @@ describe("provider Quick setup service", () => {
       }
     ]);
     expect(value.pdfInputProbe).not.toHaveBeenCalled();
-    expect(plan.search).toMatchObject({
-      draft: {
-        protocol: "deepseek_responses_web_search",
-        providerModelId: plan.candidate.modelId
-      },
-      evidence: {
-        normalizedSourceCount: 0,
-        status: "available"
-      },
-      integrationId: DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID
-    });
+    expect(plan.search).toBeUndefined();
     expect(result).toMatchObject({
       model: { displayName: "DeepSeek V4 Pro" },
       models: [
@@ -430,121 +403,22 @@ describe("provider Quick setup service", () => {
       ],
       outcome: "ready",
       provider: "deepseek",
-      search: { displayName: "DeepSeek Search", status: "ready" }
+      search: null
     });
     expect(JSON.stringify(plan)).not.toContain("deepseek-one-use");
   });
 
-  it("plans OpenAI Search from declared capability without a Search probe", async () => {
-    const value = fixture({
-      modelIds: ["gpt-5.6-terra"],
-      searchOutcome: { normalizedSourceCount: 3, status: "available" }
-    });
-    const result = await value.service.setup({
-      actor,
-      request: {
-        expectedState: await expectedState(value.service, "openai"),
-        provider: "openai",
-        secret: "sk-provider-neutral-search"
-      }
-    });
-
-    expect(value.searchTest).not.toHaveBeenCalled();
-    expect(value.order).toEqual(["network", "pdf", "commit"]);
-    expect(value.commit.mock.calls[0][0].search).toMatchObject({
-      draft: {
-        adapterKind: "provider_model_client",
-        credentialMode: "provider_model",
-        protocol: "openai_responses_web_search",
-        providerModelId: value.commit.mock.calls[0][0].candidate.modelId
-      },
-      evidence: {
-        method: "configuration",
-        normalizedSourceCount: 0,
-        status: "available"
-      },
-      integrationId: OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
-    });
-    expect(result).toMatchObject({
-      outcome: "ready",
-      search: {
-        displayName: "OpenAI Search",
-        status: "ready"
-      }
-    });
-    expect(JSON.stringify(value.commit.mock.calls[0][0])).not.toContain(
-      "sk-provider-neutral-search"
-    );
-  });
-
-  it("publishes exact Anthropic Search from configuration without a paid Search probe", async () => {
-    const value = fixture({
-      modelIds: ["claude-opus-5"],
-      searchOutcome: { normalizedSourceCount: 3, status: "available" }
-    });
-    const result = await value.service.setup({
-      actor,
-      request: {
-        expectedState: await expectedState(value.service, "anthropic"),
-        provider: "anthropic",
-        secret: "sk-anthropic-provider-search"
-      }
-    });
-
+  it.each(["openai", "anthropic", "gemini", "deepseek"] as const)("defers %s Search to the shared verified bootstrap", async (provider) => {
+    const models = { openai: "gpt-5.6-terra", anthropic: "claude-opus-5", gemini: "gemini-3.8-flash", deepseek: "deepseek-v4-pro" };
+    const value = fixture({ modelIds: [models[provider]] });
+    const result = await value.service.setup({ actor, request: {
+      provider, secret: "bootstrap-fixture", expectedState: await expectedState(value.service, provider)
+    } });
     const plan = value.commit.mock.calls[0][0];
-    expect(value.searchTest).not.toHaveBeenCalled();
-    expect(value.order).toEqual(["network", "pdf", "commit"]);
-    expect(plan.search).toMatchObject({
-      draft: {
-        adapterKind: "provider_model_client",
-        credentialMode: "provider_model",
-        protocol: "anthropic_web_search",
-        providerModelId: plan.candidate.modelId
-      },
-      evidence: {
-        method: "configuration",
-        normalizedSourceCount: 0,
-        protocol: "anthropic_web_search",
-        status: "available"
-      },
-      integrationId: ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID
-    });
-    expect(result).toMatchObject({
-      outcome: "ready",
-      provider: "anthropic",
-      search: {
-        displayName: "Anthropic Search",
-        status: "ready"
-      }
-    });
-    expect(JSON.stringify(plan)).not.toContain("sk-anthropic-provider-search");
-  });
-
-  it("does not let an optional Search diagnostic gate OpenAI Search readiness", async () => {
-    const value = fixture({
-      modelIds: ["gpt-5.6-terra"],
-      searchThrows: true
-    });
-    const result = await value.service.setup({
-      actor,
-      request: {
-        expectedState: await expectedState(value.service, "openai"),
-        provider: "openai",
-        secret: "sk-provider-only"
-      }
-    });
-
-    expect(value.commit).toHaveBeenCalledOnce();
-    expect(value.searchTest).not.toHaveBeenCalled();
-    expect(value.commit.mock.calls[0][0].search?.evidence).toMatchObject({
-      normalizedSourceCount: 0,
-      status: "available"
-    });
-    expect(result).toMatchObject({
-      outcome: "ready",
-      provider: "openai",
-      search: { status: "ready" }
-    });
+    expect(plan.search).toBeUndefined();
+    expect(result).toMatchObject({ outcome: "ready", search: null });
+    expect(value.onCompleted).toHaveBeenCalledWith({ connectionId: expect.any(String),
+      credentialId: plan.credential.id, userId: actor.userId });
   });
 
   it("tests and encrypts the same canonical secret", async () => {
@@ -567,7 +441,7 @@ describe("provider Quick setup service", () => {
     })).toBe("sk-canonical");
   });
 
-  it("returns selection_required without any durable write", async () => {
+  it("enables supported models and chooses a default without another selection step", async () => {
     const value = fixture({ modelIds: ["gpt-5.6-sol", "gpt-5.6-luna"] });
     const result = await value.service.setup({
       actor,
@@ -577,16 +451,10 @@ describe("provider Quick setup service", () => {
         secret: "sk-picker"
       }
     });
-    expect(result).toMatchObject({
-      candidates: [
-        { candidateId: "p2-o2" },
-        { candidateId: "p2-o3" }
-      ],
-      outcome: "selection_required",
-      policyVersion: 6
-    });
+    expect(result).toMatchObject({ outcome: "ready", model: { displayName: "GPT-5.6 Luna" } });
     expect(value.test).toHaveBeenCalledTimes(1);
-    expect(value.commit).not.toHaveBeenCalled();
+    expect(value.commit).toHaveBeenCalledOnce();
+    expect(value.commit.mock.calls[0][0].candidates).toHaveLength(2);
     expect(JSON.stringify(result)).not.toContain("sk-picker");
   });
 
@@ -599,7 +467,7 @@ describe("provider Quick setup service", () => {
         expectedState: state,
         provider: "openai",
         secret: "sk-picker",
-        selectedModel: { candidateId: "p2-o2", policyVersion: 6 }
+        selectedModel: { candidateId: "p2-o2", policyVersion: 7 }
       }
     });
     expect(result.outcome).toBe("ready");
@@ -940,7 +808,8 @@ describe("provider Quick setup service", () => {
     });
     expect(value.onCompleted).toHaveBeenCalledWith({
       connectionId: plan.connection.id,
-      credentialId: plan.credential.id
+      credentialId: plan.credential.id,
+      userId: actor.userId
     });
     expect(JSON.stringify(result)).not.toContain("sk-second-account");
   });
@@ -1035,7 +904,7 @@ describe("provider Quick setup service", () => {
         expectedState: await expectedState(value.service, "openai"),
         provider: "openai",
         secret: "sk-second-account",
-        selectedModel: { candidateId: "p2-o2", policyVersion: 6 }
+        selectedModel: { candidateId: "p2-o2", policyVersion: 7 }
       }
     })).rejects.toMatchObject({ code: "provider_quick_setup_selection_invalid" });
     expect(value.order).toEqual([]);
@@ -1046,9 +915,11 @@ describe("provider Quick setup service", () => {
     const snapshot = await value.service.getSnapshot(actor);
     expect(snapshot.providers.find(({ provider }) => provider === "openai")).toMatchObject({
       candidateModels: [
+        { displayName: "GPT-6 Astra" },
         { displayName: "GPT-5.6 Terra" },
         { displayName: "GPT-5.6 Luna" },
-        { displayName: "GPT-5.6 Sol" }
+        { displayName: "GPT-5.6 Sol" },
+        { displayName: "GPT-5.5" }
       ]
     });
     expect(JSON.stringify(snapshot)).not.toContain("quickSetupAssigned");

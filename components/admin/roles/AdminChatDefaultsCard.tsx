@@ -197,6 +197,16 @@ export function AdminChatDefaultsCard({
                 <option key={item.id} value={item.id}>{label(item)}</option>
               ))}
             </select>
+          </div>
+          {catalog && reachable.length === 0 ? (
+            <p className="text-xs leading-5 text-caution xl:col-span-2" role="status">{NO_REACHABLE_DEFAULT_COPY}</p>
+          ) : null}
+        </div>
+        <details className="border-t border-trace-subtle">
+          <summary className="cursor-pointer px-5 py-3 text-sm font-medium text-ink-secondary outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus">
+            Advanced <span className="ml-2 text-xs font-normal text-ink-muted">Reasoning and tool limits</span>
+          </summary>
+          <div className="px-5 pb-4">
             <select
               aria-label="Reasoning"
               className={`${compactSelectClass} xl:w-[11rem]`}
@@ -214,27 +224,24 @@ export function AdminChatDefaultsCard({
               {efforts.map((effort) => <option key={effort} value={effort}>Reasoning: {effort}</option>)}
             </select>
           </div>
-          {catalog && reachable.length === 0 ? (
-            <p className="text-xs leading-5 text-caution xl:col-span-2" role="status">{NO_REACHABLE_DEFAULT_COPY}</p>
-          ) : null}
-        </div>
-        <div className="grid gap-3 border-t border-trace-subtle px-5 py-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-ink">Tool limits per answer</p>
-            <p className="mt-0.5 text-xs leading-5 text-ink-muted">Apply to new answers only</p>
+          <div className="grid gap-3 border-t border-trace-subtle px-5 py-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-ink">Tool limits per answer</p>
+              <p className="mt-0.5 text-xs leading-5 text-ink-muted">Apply to new answers only</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              {limitField("rounds", "Rounds", { width: "w-16" })}
+              {limitField("calls", "Calls", { width: "w-16" })}
+              {limitField("mcpTools", "MCP Auto tools", { max: MCP_RUN_PLAN_LIMITS.maxTools, width: "w-16" })}
+              {limitField("timeout", "Auto timeout", {
+                max: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds,
+                min: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds,
+                suffix: "s",
+                width: "w-[4.5rem]"
+              })}
+            </div>
           </div>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            {limitField("rounds", "Rounds", { width: "w-16" })}
-            {limitField("calls", "Calls", { width: "w-16" })}
-            {limitField("mcpTools", "MCP Auto tools", { max: MCP_RUN_PLAN_LIMITS.maxTools, width: "w-16" })}
-            {limitField("timeout", "Auto timeout", {
-              max: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds,
-              min: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds,
-              suffix: "s",
-              width: "w-[4.5rem]"
-            })}
-          </div>
-        </div>
+        </details>
         <div className="flex flex-wrap items-center gap-2 rounded-b-[12px] border-t border-trace-subtle bg-workspace-rail/40 px-5 py-3">
           <p className="mr-auto min-w-0 text-xs text-ink-muted" role="status">
             {error ?? (loading && !catalog
