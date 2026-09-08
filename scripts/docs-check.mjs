@@ -117,8 +117,11 @@ function localLinkErrors(root, files) {
   return errors;
 }
 
-function nonEmptyLines(filename) {
-  return readFileSync(filename, "utf8").split(/\r?\n/u).filter((line) => line.trim()).length;
+function textSize(body) {
+  return {
+    nonEmptyLines: body.split(/\r?\n/u).filter((line) => line.trim()).length,
+    words: body.match(/\S+/gu)?.length ?? 0
+  };
 }
 
 function documentationBudgetErrors(root, files) {
@@ -136,15 +139,23 @@ function documentationBudgetErrors(root, files) {
     errors.push(`agent_docs: ${handwritten.length} handwritten files exceed the ${AGENT_DOC_BUDGETS.files}-file budget`);
   }
   let total = 0;
+  let totalWords = 0;
   for (const filename of handwritten) {
-    const lines = nonEmptyLines(path.join(root, filename));
+    const { nonEmptyLines: lines, words } = textSize(readFileSync(path.join(root, filename), "utf8"));
     total += lines;
+    totalWords += words;
     if (lines > AGENT_DOC_BUDGETS.nonEmptyLinesPerFile) {
       errors.push(`${filename}: ${lines} nonempty lines exceed the ${AGENT_DOC_BUDGETS.nonEmptyLinesPerFile}-line file budget`);
+    }
+    if (words > AGENT_DOC_BUDGETS.wordsPerFile) {
+      errors.push(`${filename}: ${words} words exceed the ${AGENT_DOC_BUDGETS.wordsPerFile}-word file budget`);
     }
   }
   if (total > AGENT_DOC_BUDGETS.nonEmptyLines) {
     errors.push(`agent_docs: ${total} nonempty lines exceed the ${AGENT_DOC_BUDGETS.nonEmptyLines}-line budget`);
+  }
+  if (totalWords > AGENT_DOC_BUDGETS.words) {
+    errors.push(`agent_docs: ${totalWords} words exceed the ${AGENT_DOC_BUDGETS.words}-word budget`);
   }
   return errors;
 }
@@ -152,16 +163,19 @@ function documentationBudgetErrors(root, files) {
 function instructionBudgetErrors(root) {
   const errors = [];
   const budgets = [
-    ["AGENTS.md", 200],
-    ["CLAUDE.md", 80],
-    ...NESTED_AGENT_INSTRUCTIONS.map((filename) => [filename, 40]),
-    ...NESTED_CLAUDE_INSTRUCTIONS.map((filename) => [filename, 10])
+    ["AGENTS.md", 200, 800],
+    ["CLAUDE.md", 80, 100],
+    ...NESTED_AGENT_INSTRUCTIONS.map((filename) => [filename, 40, 300]),
+    ...NESTED_CLAUDE_INSTRUCTIONS.map((filename) => [filename, 10, 100])
   ];
-  for (const [filename, maximum] of budgets) {
+  for (const [filename, maximum, maximumWords] of budgets) {
     const target = path.join(root, filename);
     if (!existsSync(target)) continue;
-    const lines = readFileSync(target, "utf8").split(/\r?\n/u).length;
+    const body = readFileSync(target, "utf8");
+    const lines = body.split(/\r?\n/u).length;
     if (lines > maximum) errors.push(`${filename}: ${lines} lines exceed the ${maximum}-line instruction budget`);
+    const { words } = textSize(body);
+    if (words > maximumWords) errors.push(`${filename}: ${words} words exceed the ${maximumWords}-word instruction budget`);
   }
   return errors;
 }
