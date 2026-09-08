@@ -201,10 +201,7 @@ async function runStructuredOutputProbe(
   if (!adapter) throw new Error("structured_output_adapter_unsupported");
   const output = await adapter.execute({
     maxOutputTokens: 128,
-    ...(input.model.adapterKind === "openai_responses_native" ||
-      input.model.adapterKind === "openai_responses_compatible" ||
-      input.model.adapterKind === "deepseek_responses_native"
-      ? { reasoningEffort: lowestConfiguredReasoningEffort(input.model, input.providerFamily) } : {}),
+    reasoningEffort: lowestConfiguredReasoningEffort(input.model, input.providerFamily),
     name: "aiqsa_structured_output_probe",
     schema: structuredOutputProbeSchema,
     systemPrompt: "Return only the object required by the supplied strict JSON Schema.",
@@ -386,6 +383,57 @@ async function testForcedToolCall(
   } catch (error) {
     preserveTestWideFailure(input, error);
     return { evidence: null, status: "not_supported" };
+  }
+}
+
+async function testToolCalling(
+  input: AdminProviderDraftTesterInput,
+  options: TesterOptions
+): Promise<AdminProviderCompatibilityStatus> {
+  if (input.model.modelClass !== "answer" || input.model.capabilities.toolCalling !== true) {
+    return "not_supported";
+  }
+  try {
+    const runtime = providerRuntime(input, options);
+    if (!runtime.toolBridge) return "not_supported";
+    const request = generationRequest(input, false);
+    const effort = lowestConfiguredReasoningEffort(input.model, input.providerFamily);
+    const maxOutputTokens = effort === "none" ? 128 : 1_024;
+    const stream = runtime.adapter.stream({
+      ...request,
+      content: { blocks: [{ text: "Use the supplied weather lookup function for Oslo.", type: "text" }] },
+      params: {
+        ...request.params,
+        maxOutputTokens,
+        max_output_tokens: maxOutputTokens,
+        ...(input.model.adapterKind === "openrouter_chat_completions"
+          ? { reasoning: { enabled: effort !== "none", effort, exclude: true } }
+          : {})
+      },
+      toolChoice: "auto",
+      tools: [{
+        capability: "mcp",
+        description: "Look up the current weather in a city.",
+        inputSchema: {
+          additionalProperties: false,
+          properties: { city: { type: "string" } },
+          required: ["city"],
+          type: "object"
+        },
+        name: "aiqsa_tool_call_probe",
+        strict: false
+      }]
+    }, { signal: input.signal });
+    let next = await stream.next();
+    while (!next.done) next = await stream.next();
+    const calls = next.value.toolCalls;
+    const call = calls?.[0];
+    return calls?.length === 1 && call?.name === "aiqsa_tool_call_probe" &&
+      Object.keys(call.arguments).length === 1 && call.arguments.city === "Oslo"
+      ? "verified" : "not_supported";
+  } catch (error) {
+    preserveTestWideFailure(input, error);
+    return "not_supported";
   }
 }
 
@@ -580,6 +628,7 @@ async function testAnswerModel(
 ): Promise<AdminProviderDraftTestOutcome> {
   const access = await runGenerationProbe(input, options, false);
   const structuredOutput = await testStructuredOutput(input, options);
+  const toolCalling = await testToolCalling(input, options);
   const forcedToolCall = await testForcedToolCall(input, options);
   const pdfInput = await testPdfInput(input, options);
   const visionInput = await testVisionInput(input, options);
@@ -589,6 +638,7 @@ async function testAnswerModel(
     evidence: {
       compatibility: {
         directPdf: pdfInput.status,
+        ...(input.model.capabilities.toolCalling === true ? { toolCalling } : {}),
         ...(input.model.capabilities.vision === true
           ? { vision: visionInput ? "verified" as const : "not_supported" as const } : {}),
         ...(input.model.capabilities.toolCalling === true &&

@@ -99,6 +99,26 @@ function activeRerankerModel(overrides: Record<string, unknown> = {}) {
 }
 
 describe("administrator system model policy service", () => {
+  it("projects usable OpenRouter reasoning controls when the stored capabilities omit the effort list", async () => {
+    const target = activeModel({ activeConfig: { ...activeConfiguration, adapterKind: "openrouter_chat_completions",
+      openRouterRouting: { mode: "automatic", providers: [] },
+      capabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: true },
+      defaultParams: { reasoning: { effort: "high" } }, upstreamModelId: "google/gemini-3.8-flash"
+    } });
+    const prisma = {
+      providerModel: { findMany: vi.fn().mockResolvedValueOnce([target]).mockResolvedValueOnce([]) },
+      systemModelPolicy: { findUnique: vi.fn().mockResolvedValue({ providerModel: target, providerModelId: target.id,
+        chatPdfProviderModel: target, chatPdfProviderModelId: target.id, updatedAt: NOW, updatedBy: null, version: 1 }) }
+    } as unknown as PrismaClient;
+    const absent = vi.fn().mockResolvedValue({ ok: false, code: "system_model_absent" });
+    const catalog = await createAdminSystemModelPolicyService(prisma, {
+      resolveRole: absent, resolveChatPdfRole: absent, resolveRerankerRole: absent
+    }).list();
+    for (const model of [catalog.policy.systemModel, catalog.policy.chatPdfModel]) {
+      expect(model).toMatchObject({ reasoningEfforts: ["none", "low", "medium", "high"], defaultReasoningEffort: "high" });
+    }
+  });
+
   it("projects and retains the independently selected dedicated reranker", async () => {
     const answer = activeModel();
     const reranker = activeRerankerModel();
@@ -190,7 +210,6 @@ describe("administrator system model policy service", () => {
       documentCandidates: [],
       verificationCandidates: [ { id: "model-1" }, { id: "technical-model" } ],
       policy: {
-        chatPdfPreparationAllowed: false,
         reasoningEffort: "xhigh",
         rerankerModel: null,
         rerankerRoute: {
@@ -486,24 +505,6 @@ describe("administrator system model policy service", () => {
         version: { increment: 1 }
       },
       where: { id: "installation" }
-    });
-  });
-
-  it("saves the PDF egress permission independently without changing either model role", async () => {
-    const update = vi.fn();
-    const tx = {
-      $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]),
-      systemModelPolicy: { update },
-      user: { findFirst: vi.fn().mockResolvedValue({ id: "admin-1" }) }
-    };
-    const prisma = { $transaction: async (operation: (store: typeof tx) => Promise<void>) =>
-      operation(tx) } as unknown as PrismaClient;
-    await createAdminSystemModelPolicyService(prisma).update({
-      chatPdfPreparationAllowed: true, expectedVersion: 3, userId: "admin-1"
-    });
-    expect(update).toHaveBeenCalledWith({
-      data: { chatPdfPreparationAllowed: true, updatedByUserId: "admin-1",
-        version: { increment: 1 } }, where: { id: "installation" }
     });
   });
 

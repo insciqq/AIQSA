@@ -3,6 +3,7 @@ import {
   type AdmissionPrisma, loadInstallationAnswerProviderRole, ProviderAdmissionError
 } from "./admission";
 import { systemModelRoleEligible } from "./systemModelCapabilities";
+import { supportsConfiguredReasoningEffort } from "../providers/providerModelCapabilities";
 import {
   SYSTEM_MODEL_ABSENT, SYSTEM_MODEL_UNAVAILABLE, type SystemModelRoleResolution
 } from "./systemModelRole";
@@ -22,8 +23,7 @@ export function createChatPdfModelRoleResolver(
         const role = await loadRole(db, { providerModelId: policy.chatPdfProviderModelId });
         const effort = policy.chatPdfReasoningEffort;
         if (!systemModelRoleEligible(role, "vision") || effort !== null &&
-          (role.snapshot.model.capabilities.reasoning !== true ||
-            !role.snapshot.model.capabilities.reasoningEfforts?.includes(effort))) {
+          !supportsConfiguredReasoningEffort(role.snapshot.model, role.snapshot.providerFamily, effort)) {
           return { ok: false, code: SYSTEM_MODEL_UNAVAILABLE };
         }
         return { ok: true, credentialScope: "installation", policyVersion: policy.version,

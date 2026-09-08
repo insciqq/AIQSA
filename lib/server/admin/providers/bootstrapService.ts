@@ -5,14 +5,18 @@ import type { createAdminSearchService } from "../search/service";
 import type { createAdminModelPolicyService } from "./modelPolicyService";
 import type { createAdminSystemModelPolicyService } from "./systemModelPolicyService";
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
+import type { createAdminKnowledgeProfileService } from "../knowledge/profileService";
+import { embeddingPresetsForFamily } from "../../../domain/embeddingModels";
+import { rerankerPresetsForFamily } from "../../../domain/rerankerModels";
 
-/** Finish setup through the ordinary, version-fenced owners. Never change an
- * existing destination, grant file-processing permission, or move stored data. */
+/** Finish setup through the ordinary, version-fenced owners. Existing
+ * destinations stay operator-owned; an empty Knowledge profile adopts vision. */
 export function createAdminProviderBootstrap(input: {
   providers: { listConnections(): Promise<AdminProviderConnection[]> };
   chat: Pick<ReturnType<typeof createAdminModelPolicyService>, "list" | "update">;
   roles: Pick<ReturnType<typeof createAdminSystemModelPolicyService>, "list" | "update">;
   search: Pick<ReturnType<typeof createAdminSearchService>, "list" | "createDraft" | "saveAndCheck">;
+  knowledge: Pick<ReturnType<typeof createAdminKnowledgeProfileService>, "list" | "activate">;
 }) {
   return async function complete(value: {
     connectionId: string; credentialId: string; signal: AbortSignal; userId: string;
@@ -57,13 +61,41 @@ export function createAdminProviderBootstrap(input: {
       const memory = !roles.policy.systemModel ? pick(roles.candidates) : null;
       const pdf = !roles.policy.chatPdfModel
         ? pick(roles.documentCandidates.filter((model) => model.visionInput === "verified")) : null;
-      if (memory || pdf) {
+      const rerankerUpstream = rerankerPresetsForFamily(connection.family).find((preset) => preset.default)?.upstreamModelId;
+      const rerankerId = connection.models.find((model) => model.activeConfig?.upstreamModelId === rerankerUpstream)?.id;
+      const reranker = !roles.policy.rerankerModel
+        ? pick(roles.rerankerCandidates.filter((model) => model.id === rerankerId)) : null;
+      if (connection.family === "openrouter" && !roles.policy.rerankerModel && !reranker) result.state = "partial";
+      if (memory || pdf || reranker) {
         value.signal.throwIfAborted();
         await input.roles.update({ expectedVersion: roles.policy.version, userId: value.userId,
           ...(memory ? { providerModelId: memory.id, reasoningEffort: null } : {}),
-          ...(pdf ? { chatPdfProviderModelId: pdf.id, chatPdfReasoningEffort: null } : {}) });
-        if (memory) result.defaults.push(`Memory: ${memory.displayName}`);
-        if (pdf) result.defaults.push(`Chat PDF: ${pdf.displayName}`);
+          ...(pdf ? { chatPdfProviderModelId: pdf.id, chatPdfReasoningEffort: null } : {}),
+          ...(reranker ? { rerankerProviderModelId: reranker.id } : {}) });
+        if (memory) result.defaults.push(`System model: ${memory.displayName}`);
+        if (pdf) result.defaults.push(`PDF reading in chats: ${pdf.displayName}`);
+        if (reranker) result.defaults.push(`Reranking: ${reranker.displayName}`);
+      }
+    } catch {
+      value.signal.throwIfAborted();
+      result.state = "partial";
+    }
+    try {
+      value.signal.throwIfAborted();
+      const knowledge = await input.knowledge.list();
+      if (!knowledge.activeRevision) {
+        const preferredEmbedding = embeddingPresetsForFamily(connection.family).find((preset) => preset.default)?.upstreamModelId;
+        const embeddingId = connection.models.find((model) => model.activeConfig?.upstreamModelId === preferredEmbedding)?.id;
+        const embeddings = knowledge.availableDestinations.filter((model) => eligible.has(model.deploymentId));
+        const embedding = embeddings.find((model) => model.deploymentId === embeddingId) ?? embeddings[0];
+        const document = knowledge.availablePdfDestinations.find((model) => model.vision && eligible.has(model.deploymentId));
+        if (embedding && document) {
+          value.signal.throwIfAborted();
+          await input.knowledge.activate({ deploymentId: embedding.deploymentId,
+            documentDeploymentId: document.deploymentId, pdfProcessingMode: "system_model_vision",
+            expectedVersion: knowledge.version, signal: value.signal, userId: value.userId });
+          result.defaults.push(`Knowledge: ${embedding.modelDisplayName} · ${document.modelDisplayName}`);
+        } else if (connection.family === "openrouter") result.state = "partial";
       }
     } catch {
       value.signal.throwIfAborted();

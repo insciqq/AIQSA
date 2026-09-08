@@ -301,7 +301,7 @@ test.describe("system model policy", () => {
     });
     await signInWithLocalToken(page);
     await page.goto("/admin?section=roles");
-    const trigger = page.getByRole("button", { name: "Memory & structured helpers deployment" });
+    const trigger = page.getByRole("button", { name: "System model deployment" });
     await expect(trigger).toBeVisible();
     await expect(page.getByTestId("admin-role-memory-status")).toHaveText("Not assigned");
 
@@ -341,7 +341,7 @@ test.describe("system model policy", () => {
     });
 
     await trigger.click();
-    const picker = page.getByRole("dialog", { name: "Memory & structured helpers deployment" });
+    const picker = page.getByRole("dialog", { name: "System model deployment" });
     // Without role evidence the fixture is not selectable; it offers one Check instead.
     await expect(picker.getByRole("option", { name: fixtureLabel })).toHaveCount(0);
     await expect(picker.getByText("System roles always use the provider's default key")).toBeVisible();
@@ -351,7 +351,7 @@ test.describe("system model policy", () => {
     await expect(page.getByTestId("admin-feedback")).toContainText("Saved for future work");
     await expect(picker).toHaveCount(0);
 
-    const reasoning = page.getByRole("combobox", { name: "Memory reasoning" });
+    const reasoning = page.getByRole("combobox", { name: "System model reasoning" });
     await page.getByTestId("admin-role-memory").locator("summary").click();
     await reasoning.selectOption("xhigh");
     await expect(reasoning).toHaveValue("xhigh");
@@ -367,7 +367,7 @@ test.describe("system model policy", () => {
       }
     });
 
-    await page.getByRole("button", { name: "Memory & structured helpers actions" }).click();
+    await page.getByRole("button", { name: "System model actions" }).click();
     await page.getByRole("menuitem", { name: "Clear assignment" }).click();
     await expect(trigger).toHaveText("Not assigned");
     await expect(page.getByTestId("admin-role-memory-status")).toHaveText("Not assigned");

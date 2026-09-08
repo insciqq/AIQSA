@@ -13,6 +13,15 @@ type ProviderModelCapabilityResolution = Readonly<{
   upstreamModelId: string;
 }>;
 
+export function supportsConfiguredReasoningEffort(
+  configuration: Parameters<typeof configuredModelParameterControls>[0],
+  providerFamily: string,
+  effort: string
+): boolean {
+  const control = configuredModelParameterControls(configuration, providerFamily).reasoningEffort;
+  return control.supported && control.options.includes(effort);
+}
+
 /** Cheap probes still have to use a reasoning level the deployment supports. */
 export function lowestConfiguredReasoningEffort(
   configuration: ProviderModelConfiguration,

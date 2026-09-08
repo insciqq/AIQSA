@@ -30,9 +30,11 @@ import { useState } from "react";
 function draftFor(profile: AdminKnowledgeProfileSettings | null): AdminKnowledgeDraft {
   const active = profile?.activeRevision ?? null;
   return {
-    documentDeploymentId: active?.pdfProcessing.destination?.deploymentId ?? null,
-    embeddingDeploymentId: active?.destination.deploymentId ?? "",
-    mode: active?.pdfProcessing.mode ?? "local"
+    documentDeploymentId: active
+      ? active.pdfProcessing.destination?.deploymentId ?? null
+      : profile?.availablePdfDestinations.find((model) => model.vision)?.deploymentId ?? null,
+    embeddingDeploymentId: active?.destination.deploymentId ?? profile?.availableDestinations[0]?.deploymentId ?? "",
+    mode: active?.pdfProcessing.mode ?? "system_model_vision"
   };
 }
 
@@ -85,7 +87,7 @@ export function AdminKnowledgeProcessingRows({
     );
   }
 
-  const dirty = !sameDraft(draft, current);
+  const dirty = !sameDraft(draft, current) || !profile.activeRevision && Boolean(draft.embeddingDeploymentId);
   const state = knowledgeProcessingState(profile);
   const rowStatus = nestedStatus(profile);
   const modelMode: KnowledgeModelMode | null = draft.mode === "local" ? null : draft.mode;
@@ -188,7 +190,9 @@ export function AdminKnowledgeProcessingRows({
               const mode = event.currentTarget.value as AdminKnowledgePdfProcessingMode;
               setEdits((previous) => ({
                 ...previous,
-                documentDeploymentId: mode === current.mode ? current.documentDeploymentId : null,
+                documentDeploymentId: mode === "local" ? null
+                  : profile.availablePdfDestinations.find((model) =>
+                      mode === "system_model_vision" ? model.vision : model.directPdf)?.deploymentId ?? null,
                 mode
               }));
             }}

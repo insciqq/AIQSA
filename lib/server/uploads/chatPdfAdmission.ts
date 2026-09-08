@@ -27,14 +27,13 @@ export type ChatPdfAttachmentAdmission = ChatPdfRouteAdmission & Readonly<{
 export function resolveChatPdfRoute(input: Readonly<{
   answer: ProviderAdmissionRole;
   system: SystemModelRoleResolution | null;
-  systemAllowed: boolean;
 }>): ChatPdfRouteAdmission {
   const answer = input.answer;
   if (answer.snapshot.model.capabilities.nativePdfInput) return {
     authority: answer.authority ?? null, policyVersion: null,
     route: "direct_pdf", snapshot: answer.snapshot
   };
-  if (input.systemAllowed && input.system?.ok && input.system.role.verifiedVisionInput === true) {
+  if (input.system?.ok && input.system.role.verifiedVisionInput === true) {
     return {
       authority: input.system.role.authority ?? null,
       policyVersion: input.system.policyVersion,
@@ -65,18 +64,17 @@ export function createChatPdfRouteResolver(db: Prisma.TransactionClient) {
   return {
     async resolve(answer: ProviderAdmissionRole): Promise<ChatPdfRouteAdmission> {
       if (answer.snapshot.model.capabilities.nativePdfInput) {
-        return resolveChatPdfRoute({ answer, system: null, systemAllowed: false });
+        return resolveChatPdfRoute({ answer, system: null });
       }
       const policy = await db.systemModelPolicy.findUnique({
-        select: { chatPdfPreparationAllowed: true, version: true },
+        select: { version: true },
         where: { id: "installation" }
       });
-      const resolved = policy?.chatPdfPreparationAllowed ? await system.resolve() : null;
+      const resolved = await system.resolve();
       // The installation save is optimistic and affects future admissions.
       // Re-read under the admission transaction before freezing this result.
       return resolveChatPdfRoute({ answer, system: resolved?.ok &&
-        resolved.policyVersion === policy?.version ? resolved : null,
-        systemAllowed: policy?.chatPdfPreparationAllowed === true });
+        resolved.policyVersion === policy?.version ? resolved : null });
     }
   };
 }

@@ -260,6 +260,14 @@ export type ProviderCredentialActivationResult =
   | "updated";
 
 export type AdminProviderRepository = Readonly<{
+  addSetupModelsCas(input: {
+    connectionId: string;
+    connectionVersion: number;
+    credentialId: string;
+    credentialVersionId: string;
+    models: NonNullable<ProviderCredentialActivationWrite["catalogAdditions"]>;
+    now: Date;
+  }): Promise<ProviderDraftMutationResult>;
   activateConnectionCas(input: ProviderActivationWrite): Promise<ProviderDraftMutationResult>;
   activateCredentialCas(
     input: ProviderCredentialActivationWrite

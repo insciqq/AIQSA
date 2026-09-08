@@ -7,6 +7,7 @@ import {
 } from "./admission";
 import { systemModelRoleEligible } from "./systemModelCapabilities";
 import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
+import { supportsConfiguredReasoningEffort } from "../providers/providerModelCapabilities";
 
 export const SYSTEM_MODEL_ABSENT = "system_model_absent" as const;
 export const SYSTEM_MODEL_UNAVAILABLE = "system_model_unavailable" as const;
@@ -85,9 +86,7 @@ export function createSystemModelRoleResolver(
           return { code: SYSTEM_MODEL_UNAVAILABLE, ok: false };
         }
         if (policy.reasoningEffort !== null) {
-          const capabilities = role.snapshot.model.capabilities;
-          if (capabilities.reasoning !== true ||
-            !capabilities.reasoningEfforts?.includes(policy.reasoningEffort)) {
+          if (!supportsConfiguredReasoningEffort(role.snapshot.model, role.snapshot.providerFamily, policy.reasoningEffort)) {
             return { code: SYSTEM_MODEL_UNAVAILABLE, ok: false };
           }
         }

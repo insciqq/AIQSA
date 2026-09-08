@@ -101,8 +101,7 @@ test("one key save activates models, fills empty defaults and retries failed Sea
     } });
     await prisma.modelPolicy.update({ where: { id: "installation" }, data: { defaultProviderModelId: null, reasoningEffort: null } });
     await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: {
-      providerModelId: null, reasoningEffort: null, chatPdfProviderModelId: null, chatPdfReasoningEffort: null,
-      chatPdfPreparationAllowed: false
+      providerModelId: null, reasoningEffort: null, chatPdfProviderModelId: null, chatPdfReasoningEffort: null
     } });
     await prisma.providerConnection.create({ data: {
       id: connectionId, displayName: "Bootstrap OpenAI", family: "openai", enabled: false,
@@ -156,7 +155,7 @@ test("one key save activates models, fills empty defaults and retries failed Sea
     expect(searchCalls).toBeGreaterThanOrEqual(2);
     expect(await prisma.modelPolicy.findUnique({ where: { id: "installation" } })).toMatchObject({ defaultProviderModelId: modelId });
     expect(await prisma.systemModelPolicy.findUnique({ where: { id: "installation" } })).toMatchObject({
-      providerModelId: modelId, chatPdfProviderModelId: modelId, chatPdfPreparationAllowed: false
+      providerModelId: modelId, chatPdfProviderModelId: modelId
     });
     const search = await prisma.searchOption.findFirstOrThrow({ where: { sourceConnectionId: connectionId },
       include: { strategies: { include: { activeRevision: true } } } });

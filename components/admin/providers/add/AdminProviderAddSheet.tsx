@@ -418,7 +418,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
           </UiV2Button>
           <UiV2Button disabled={busy} onClick={requestClose} tone="ghost" type="button">Cancel</UiV2Button>
           <span className="min-w-0 text-xs leading-5 text-ink-muted sm:ml-auto sm:text-right">
-            Enables supported models, checks models and Search, and fills suitable empty defaults. Uses small paid requests.
+            Checks supported models and Search, then fills empty roles, including Knowledge. Assigned PDF readers receive page images and text. Uses small paid requests.
           </span>
         </>
       )}

@@ -165,7 +165,6 @@ function roles(overrides: Partial<AdminSystemModelPolicyCatalog["policy"]> = {})
     ineligible: { direct_pdf: [], memory: [], vision: [] },
     policy: {
       chatPdfModel: null,
-      chatPdfPreparationAllowed: false,
       chatPdfReasoningEffort: null,
       reasoningEffort: null,
       rerankerModel: { ...roleCandidate, available: true },
@@ -410,15 +409,14 @@ describe("deriveAdminAttentionItems", () => {
   it("names unassigned and unavailable system roles with a jump to the role row", () => {
     const result = items({
       systemRoles: roles({
-        chatPdfModel: null,
-        chatPdfPreparationAllowed: true,
+        chatPdfModel: { ...roleCandidate, available: false },
         rerankerModel: { ...roleCandidate, available: false },
         systemModel: null
       })
     });
     expect(result.map((item) => [item.code, item.id, item.severity])).toEqual([
       ["system_role_not_assigned", "system_role_not_assigned:memory", "warn"],
-      ["system_role_not_assigned", "system_role_not_assigned:chat_pdf", "warn"],
+      ["system_role_unavailable", "system_role_unavailable:chat_pdf", "bad"],
       ["system_role_unavailable", "system_role_unavailable:reranker", "bad"]
     ]);
     expect(result[2]).toMatchObject({

@@ -202,6 +202,7 @@ function providerConnections() {
           compatibility: {
             directPdf: "verified",
             forcedToolCall: "verified",
+            toolCalling: "verified",
             modelAccess: "verified",
             probeVersion: 1,
             streaming: "verified",

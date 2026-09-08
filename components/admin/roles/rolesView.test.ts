@@ -36,7 +36,6 @@ function catalog(overrides: Partial<AdminSystemModelPolicyCatalog["policy"]> = {
     },
     policy: {
       chatPdfModel: null,
-      chatPdfPreparationAllowed: false,
       chatPdfReasoningEffort: null,
       reasoningEffort: null,
       rerankerModel: { ...reranker, available: true },

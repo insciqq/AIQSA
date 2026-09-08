@@ -1049,7 +1049,6 @@ model ModelPolicy {
 
 model SystemModelPolicy {
   id                      String         @id
-  chatPdfPreparationAllowed Boolean       @default(false)
   chatPdfProviderModelId   String?
   chatPdfReasoningEffort   String?        @db.VarChar(32)
   /// Memory semantic/action work and its shared structured utilities.
@@ -2626,7 +2625,7 @@ model Chat {
 
 model WorkspacePolicy {
   id              String   @id
-  enabled         Boolean  @default(false)
+  enabled         Boolean  @default(true)
   internetEnabled Boolean  @default(true)
   version         Int      @default(1)
   updatedByUserId String?

@@ -43,7 +43,6 @@ export function getAdminSystemModelPolicy(fetcher: Fetcher = fetch) {
 }
 
 export function updateAdminSystemModelPolicy(input: Readonly<{
-  chatPdfPreparationAllowed?: boolean;
   chatPdfProviderModelId?: string | null;
   chatPdfReasoningEffort?: string | null;
   expectedVersion: number;

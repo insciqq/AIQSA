@@ -5,8 +5,10 @@ import {
   buildOpenRouterStructuredOutputRequest,
   createOpenAIResponsesStructuredOutputAdapter,
   createOpenRouterStructuredOutputAdapter,
+  STRUCTURED_OUTPUT_LIMITS,
   supportsStructuredOutputAdapter
 } from "./structuredOutput";
+import { hasVerifiedStructuredOutput, structuredOutputVerificationEvidence } from "./structuredOutputEvidence";
 
 const schema = {
   additionalProperties: false,
@@ -93,6 +95,32 @@ const openRouterModel: ProviderModelConfiguration = {
 };
 
 describe("provider structured output", () => {
+  it("requires a new OpenRouter JSON receipt instead of accepting the former tool-call proof", () => {
+    expect(hasVerifiedStructuredOutput({ structuredOutput: {
+      adapterKind: openRouterModel.adapterKind, probeVersion: 4,
+      upstreamModelId: openRouterModel.upstreamModelId, verified: true
+    } }, openRouterModel)).toBe(false);
+    const structuredOutput = structuredOutputVerificationEvidence(openRouterModel.adapterKind, openRouterModel.upstreamModelId);
+    expect(hasVerifiedStructuredOutput({ structuredOutput }, openRouterModel)).toBe(true);
+    expect(hasVerifiedStructuredOutput({ structuredOutput }, { ...openRouterModel, upstreamModelId: "other/model" })).toBe(false);
+  });
+
+  it.each([
+    { choices: [{ finish_reason: "length", message: { content: '{"ok":true}' } }] },
+    { choices: [{ finish_reason: "content_filter", message: { content: '{"ok":true}' } }] },
+    { choices: [{ message: { content: '{"ok":true}' } }] },
+    { choices: [{ finish_reason: "stop", message: { content: '{"ok":true}', refusal: "Refused" } }] },
+    { choices: [{ finish_reason: "stop", message: { content: '{"ok":true}', tool_calls: [{ id: "call-1" }] } }] },
+    { choices: [{ finish_reason: "stop", message: { content: "[]" } }] },
+    { choices: [{ finish_reason: "stop", message: { content: '{"ok":' } }] },
+    { choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ text: "x".repeat(STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters) }) } }] }
+  ])("rejects incomplete, ambiguous or invalid OpenRouter JSON (%#)", async (response) => {
+    const adapter = createOpenRouterStructuredOutputAdapter({
+      client: { createChatCompletion: vi.fn(async () => response) }, model: openRouterModel
+    });
+    await expect(adapter.execute(request)).rejects.toThrow();
+  });
+
   it("admits only the three adapter paths with implemented strict-schema transports", () => {
     expect([
       "openai_responses_native",
@@ -145,16 +173,15 @@ describe("provider structured output", () => {
       }
     });
     expect(openRouter).toMatchObject({
-      tools: [{
-        function: {
-          parameters: {
+      response_format: {
+        json_schema: {
+          schema: {
             properties: {
               tool_ids: { maxItems: 2, type: "array" }
             }
           }
-        },
-        type: "function"
-      }]
+        }
+      }
     });
     expect(JSON.stringify(responses)).not.toContain("uniqueItems");
     expect(JSON.stringify(openRouter)).not.toContain("uniqueItems");
@@ -195,17 +222,16 @@ describe("provider structured output", () => {
       }
     });
     expect(openRouter).toMatchObject({
-      tools: [{
-        function: {
-          parameters: {
+      response_format: {
+        json_schema: {
+          schema: {
             properties: {
               result: { anyOf: rootUnionSchema.oneOf }
             },
             type: "object"
           }
-        },
-        type: "function"
-      }]
+        }
+      }
     });
     expect(JSON.stringify(responses)).not.toContain("oneOf");
     expect(JSON.stringify(openRouter)).not.toContain("oneOf");
@@ -233,10 +259,7 @@ describe("provider structured output", () => {
       openRouterModel,
       rootUnionRequest
     )).toMatchObject({
-      tools: [{
-        function: { parameters: expectedWireSchema },
-        type: "function"
-      }]
+      response_format: { json_schema: { schema: expectedWireSchema } }
     });
     expect(JSON.stringify(rootUnionRequest.schema)).toBe(canonicalBefore);
   });
@@ -289,7 +312,7 @@ describe("provider structured output", () => {
       compositeUnion.oneOf
     );
     expect(openRouter).toHaveProperty(
-      "tools.0.function.parameters.properties.__aiqsa_payload.anyOf",
+      "response_format.json_schema.schema.properties.__aiqsa_payload.anyOf",
       compositeUnion.oneOf
     );
   });
@@ -380,7 +403,7 @@ describe("provider structured output", () => {
     }
   );
 
-  it("preserves OpenRouter routing while forcing one schema-bound tool call", () => {
+  it("preserves OpenRouter routing while requesting native strict JSON Schema", () => {
     expect(buildOpenRouterStructuredOutputRequest(openRouterModel, request)).toMatchObject({
       max_tokens: 64,
       model: "vendor/model",
@@ -394,36 +417,38 @@ describe("provider structured output", () => {
         zdr: true
       },
       stream: false,
-      tool_choice: "required",
-      tools: [{
-        function: {
+      response_format: {
+        json_schema: {
           name: "strict_result",
-          parameters: schema,
+          schema,
           strict: true
         },
-        type: "function"
-      }]
+        type: "json_schema"
+      }
     });
     expect(buildOpenRouterStructuredOutputRequest(openRouterModel, request))
       .not.toHaveProperty("parallel_tool_calls");
   });
 
-  it("uses an endpoint-declared automatic tool choice when required is unsupported", () => {
+  it("does not constrain JSON routing by answer temperature or the retired function choice", () => {
     const body = buildOpenRouterStructuredOutputRequest({
       ...openRouterModel,
       defaultParams: {
         ...openRouterModel.defaultParams,
+        temperature: 1,
         provider: {
           ...openRouterProviderDefaults,
           structuredOutputToolChoice: "auto"
         }
       }
     }, request);
-    expect(body.tool_choice).toBe("auto");
-    expect(body.tools).toHaveLength(1);
+    expect(body).not.toHaveProperty("tool_choice");
+    expect(body).not.toHaveProperty("tools");
+    expect(body).not.toHaveProperty("temperature");
+    expect(body).toHaveProperty("response_format.type", "json_schema");
   });
 
-  it("reserves enough OpenRouter completion budget for reasoning before a strict tool call", () => {
+  it("reserves enough OpenRouter completion budget for reasoning before strict JSON", () => {
     const reasoningModel: ProviderModelConfiguration = {
       ...openRouterModel,
       capabilities: {
@@ -537,17 +562,12 @@ describe("provider structured output", () => {
       .rejects.toThrow("structured_output_invalid");
   });
 
-  it("parses one OpenRouter schema tool call and rejects free-form output", async () => {
+  it("parses native OpenRouter JSON and rejects free-form output", async () => {
     const createChatCompletion = vi.fn(async () => ({
       choices: [{
-        finish_reason: "tool_calls",
+        finish_reason: "stop",
         message: {
-          content: null as string | null,
-          tool_calls: [{
-            function: { arguments: JSON.stringify({ ok: true }), name: "strict_result" },
-            id: "call-1",
-            type: "function"
-          }]
+          content: JSON.stringify({ ok: true })
         }
       }],
       id: "openrouter-response-1",
@@ -571,7 +591,7 @@ describe("provider structured output", () => {
     createChatCompletion.mockResolvedValueOnce({
       choices: [{
         finish_reason: "stop",
-        message: { content: "not json", tool_calls: [] }
+        message: { content: "not json" }
       }],
       id: "openrouter-response-invalid",
       usage: { completion_tokens: 0, prompt_tokens: 0, total_tokens: 0 }
@@ -580,19 +600,11 @@ describe("provider structured output", () => {
   });
 
   it("unwraps only the exact transport wrapper from OpenRouter root unions", async () => {
-    const response = (argumentsValue: Record<string, unknown>) => ({
+    const response = (value: Record<string, unknown>) => ({
       choices: [{
-        finish_reason: "tool_calls",
+        finish_reason: "stop",
         message: {
-          content: null as string | null,
-          tool_calls: [{
-            function: {
-              arguments: JSON.stringify(argumentsValue),
-              name: "strict_result"
-            },
-            id: "call-root-union",
-            type: "function"
-          }]
+          content: JSON.stringify(value)
         }
       }],
       id: "openrouter-root-union"

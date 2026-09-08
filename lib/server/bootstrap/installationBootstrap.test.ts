@@ -399,7 +399,7 @@ describe("installation bootstrap", () => {
     });
     expect(fixture.spies.workspacePolicyUpsert).toHaveBeenCalledWith({
       create: {
-        enabled: false,
+        enabled: true,
         id: "installation",
         internetEnabled: true
       },

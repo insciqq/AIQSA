@@ -39,6 +39,9 @@ describe("forced strict tool-call evidence", () => {
       verified: true
     })).toBeNull();
     expect(forcedToolCallVerificationStatus({}, model)).toBe("not_verified");
+    expect(forcedToolCallVerificationStatus({ compatibility: {
+      toolCalling: "verified", structuredOutput: "verified"
+    } }, model)).toBe("not_verified");
     expect(forcedToolCallVerificationStatus({
       compatibility: { forcedToolCall: "not_supported" }
     }, model)).toBe("unsupported");

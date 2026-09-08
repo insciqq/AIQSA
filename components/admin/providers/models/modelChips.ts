@@ -82,17 +82,20 @@ export function modelChipsFromEvidence(
     return evidence.reranking ? [{ key: "reranking", label: "Reranking", tone: "ok" }] : [];
   }
   const compatibility = evidence.compatibility;
+  // Earlier OpenRouter checks used a forced tool call for JSON. Neither a
+  // pass nor a rejection of that transport proves native JSON Schema support.
+  const nativeJsonChecked = configuration.adapterKind !== "openrouter_chat_completions" ||
+    compatibility?.probeVersion === 2 || evidence.structuredOutput?.probeVersion === 5;
   const chips = compatibility
     ? [
-        chip("tools", "Tools", compatibility.forcedToolCall),
-        chip("json", "JSON", compatibility.structuredOutput),
+        chip("tools", "Tools", compatibility.toolCalling),
+        chip("json", "JSON", nativeJsonChecked ? compatibility.structuredOutput : null),
         chip("pdf", "PDF", compatibility.directPdf),
         chip("images", "Images", compatibility.vision),
         chip("stream", "Stream", compatibility.streaming)
       ]
     : [
-        chip("tools", "Tools", legacyStatus(evidence.forcedToolCall, configuration)),
-        chip("json", "JSON", legacyStatus(evidence.structuredOutput, configuration)),
+        chip("json", "JSON", nativeJsonChecked ? legacyStatus(evidence.structuredOutput, configuration) : null),
         chip("pdf", "PDF", legacyStatus(evidence.pdfInput, configuration)),
         chip("images", "Images", legacyStatus(evidence.visionInput, configuration))
       ];

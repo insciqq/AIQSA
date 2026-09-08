@@ -161,7 +161,7 @@ describe("Memory run utility provider runtime", () => {
         expect(JSON.stringify(body)).not.toContain("SENSITIVE");
         if (adapterKind === "openrouter_chat_completions") {
           expect(new Headers(init?.headers).get("x-anthropic-beta"))
-            .toContain("structured-outputs-2025-11-13");
+            .toBeNull();
           expect(body).toMatchObject({ reasoning: { exclude: true } });
           expect((body as Record<string, unknown>).reasoning)
             .not.toHaveProperty("enabled");
@@ -172,11 +172,10 @@ describe("Memory run utility provider runtime", () => {
           ? {
               max_tokens: 4_096,
               provider: { require_parameters: true },
-              tool_choice: "required",
-              tools: [{
-                function: { name: MEMORY_RERANK_TOOL_NAME, strict: true },
-                type: "function"
-              }]
+              response_format: {
+                json_schema: { name: MEMORY_RERANK_TOOL_NAME, strict: true },
+                type: "json_schema"
+              }
             }
           : {
               max_output_tokens: 4_096,
@@ -186,18 +185,10 @@ describe("Memory run utility provider runtime", () => {
           adapterKind === "openrouter_chat_completions"
             ? {
                 choices: [{
-                  finish_reason: "tool_calls",
+                  finish_reason: "stop",
                   message: {
-                    content: null,
-                    role: "assistant",
-                    tool_calls: [{
-                      function: {
-                        arguments: decision,
-                        name: MEMORY_RERANK_TOOL_NAME
-                      },
-                      id: "call-1",
-                      type: "function"
-                    }]
+                    content: decision,
+                    role: "assistant"
                   }
                 }],
                 id: "response-1",

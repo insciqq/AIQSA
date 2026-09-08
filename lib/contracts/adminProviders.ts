@@ -93,13 +93,15 @@ export type AdminProviderCompatibilityStatus = "not_supported" | "verified";
 
 export type AdminProviderCompatibilityEvidence = {
   directPdf: AdminProviderCompatibilityStatus;
+  /** Ordinary automatic function calling, independent of strict Memory calls. */
+  toolCalling?: AdminProviderCompatibilityStatus;
   /** Exact forced, strict function-call contract used by Memory action roles.
    * Omitted by pre-v1-extension evidence and therefore not verified. */
   forcedToolCall?: AdminProviderCompatibilityStatus;
   /** Missing in legacy checks: image input has not been verified. */
   vision?: AdminProviderCompatibilityStatus;
   modelAccess: AdminProviderCompatibilityStatus;
-  probeVersion: 1;
+  probeVersion: 1 | 2;
   streaming: AdminProviderCompatibilityStatus;
   structuredOutput: AdminProviderCompatibilityStatus;
   usage: AdminProviderCompatibilityStatus;
@@ -148,7 +150,7 @@ export type AdminProviderTestEvidence = {
       | "openai_responses_compatible"
       | "openai_responses_native"
       | "openrouter_chat_completions";
-    probeVersion: 2 | 3 | 4;
+    probeVersion: 2 | 3 | 4 | 5;
     upstreamModelId: string;
     verified: true;
   };

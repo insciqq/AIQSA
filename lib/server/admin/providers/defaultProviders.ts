@@ -7,6 +7,7 @@ import { createAdminProviderBootstrap } from "./bootstrapService";
 import { createAdminModelPolicyService } from "./modelPolicyService";
 import { createAdminSystemModelPolicyService } from "./systemModelPolicyService";
 import { adminSearchService } from "../search/defaultService";
+import { createAdminKnowledgeProfileService } from "../knowledge/profileService";
 
 export const adminProviderService = createAdminProviderService({
   completeSetup: (input) => completeSetup(input),
@@ -19,5 +20,6 @@ const completeSetup = createAdminProviderBootstrap({
   providers: adminProviderService,
   chat: createAdminModelPolicyService(prisma),
   roles: createAdminSystemModelPolicyService(prisma),
-  search: adminSearchService
+  search: adminSearchService,
+  knowledge: createAdminKnowledgeProfileService(prisma)
 });

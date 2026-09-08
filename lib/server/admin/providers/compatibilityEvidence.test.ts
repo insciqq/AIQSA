@@ -22,7 +22,7 @@ describe("administrator provider compatibility evidence", () => {
     })).toBeNull();
     expect(decodeAdminProviderCompatibilityEvidence({
       ...verified,
-      probeVersion: 2
+      probeVersion: 3
     })).toBeNull();
     expect(decodeAdminProviderCompatibilityEvidence({
       ...verified,
@@ -34,7 +34,7 @@ describe("administrator provider compatibility evidence", () => {
     expect(unsupportedAdminProviderCompatibilityEvidence()).toEqual({
       directPdf: "not_supported",
       modelAccess: "not_supported",
-      probeVersion: 1,
+      probeVersion: 2,
       streaming: "not_supported",
       structuredOutput: "not_supported",
       usage: "not_supported"
@@ -46,5 +46,13 @@ describe("administrator provider compatibility evidence", () => {
     expect(decodeAdminProviderCompatibilityEvidence({ ...verified, vision: "verified" }))
       .toEqual({ ...verified, vision: "verified" });
     expect(decodeAdminProviderCompatibilityEvidence({ ...verified, vision: true })).toBeNull();
+  });
+
+  it("retains independent ordinary and forced tool results without inferring either", () => {
+    expect(decodeAdminProviderCompatibilityEvidence({ ...verified, forcedToolCall: "verified" }))
+      .not.toHaveProperty("toolCalling");
+    const current = { ...verified, probeVersion: 2, toolCalling: "verified", forcedToolCall: "not_supported" };
+    expect(decodeAdminProviderCompatibilityEvidence(current)).toEqual(current);
+    expect(decodeAdminProviderCompatibilityEvidence({ ...current, toolCalling: true })).toBeNull();
   });
 });

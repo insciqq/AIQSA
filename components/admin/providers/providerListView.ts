@@ -272,7 +272,7 @@ export function providerSubtitle(
 
 const ROLE_TAGS = new Set([
   "Default chat",
-  "Memory",
+  "System model",
   "Chat PDF",
   "Reranker",
   "Knowledge docs",
@@ -310,7 +310,7 @@ export function deriveProviderUsage(
 
   add(sources.modelPolicy?.policy.defaultModel?.connectionId, "Default chat");
   const roles = sources.systemModelPolicy?.policy;
-  add(roles?.systemModel?.connectionId, "Memory");
+  add(roles?.systemModel?.connectionId, "System model");
   add(roles?.chatPdfModel?.connectionId, "Chat PDF");
   add(roles?.rerankerModel?.connectionId, "Reranker");
   for (const entry of roles?.rerankerRoute?.entries ?? []) add(entry.connectionId, "Reranker");

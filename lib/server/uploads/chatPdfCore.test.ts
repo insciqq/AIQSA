@@ -37,7 +37,7 @@ async function source() {
 }
 
 function admission(bytes: Buffer, local = false): ChatPdfAttachmentAdmission {
-  return { ...resolveChatPdfRoute({ answer: role(!local), system: null, systemAllowed: false }),
+  return { ...resolveChatPdfRoute({ answer: role(!local), system: null }),
     attachmentId: "attachment", byteSize: bytes.length, pageCount: null,
     sourceChecksum: createHash("sha256").update(bytes).digest("hex") };
 }
@@ -50,13 +50,13 @@ describe("chat PDF admission and artifacts", () => {
   it("chooses exact verified routes in priority order and keeps the answer binding separate", () => {
     const system = { credentialScope: "installation" as const, ok: true as const,
       policyVersion: 2, providerModelId: "model", reasoningEffort: null, role: role(true) };
-    expect(resolveChatPdfRoute({ answer: role(true, true), system, systemAllowed: true }).route).toBe("direct_pdf");
-    expect(resolveChatPdfRoute({ answer: role(true), system, systemAllowed: true }).route).toBe("system_vision");
-    expect(resolveChatPdfRoute({ answer: role(true), system, systemAllowed: false }).route).toBe("selected_model_vision");
-    expect(resolveChatPdfRoute({ answer: role(), system: { ...system, role: role() }, systemAllowed: true }).route)
+    expect(resolveChatPdfRoute({ answer: role(true, true), system }).route).toBe("direct_pdf");
+    expect(resolveChatPdfRoute({ answer: role(true), system }).route).toBe("system_vision");
+    expect(resolveChatPdfRoute({ answer: role(true), system: null }).route).toBe("selected_model_vision");
+    expect(resolveChatPdfRoute({ answer: role(), system: { ...system, role: role() } }).route)
       .toBe("local_text");
     const selected = role(true);
-    expect(resolveChatPdfRoute({ answer: selected, system: null, systemAllowed: false }).snapshot)
+    expect(resolveChatPdfRoute({ answer: selected, system: null }).snapshot)
       .toBe(selected.snapshot);
   });
 

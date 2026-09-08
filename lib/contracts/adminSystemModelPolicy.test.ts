@@ -18,7 +18,6 @@ const response = {
     ineligible: { direct_pdf: [], memory: [], vision: [] },
     rerankerCandidates: [],
     policy: {
-      chatPdfPreparationAllowed: false,
       chatPdfModel: null,
       chatPdfReasoningEffort: null,
       reasoningEffort: null,

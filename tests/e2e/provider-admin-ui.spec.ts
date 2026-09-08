@@ -1556,8 +1556,9 @@ test("administrator adds a model with one Test & Save, follows the background ch
       compatibility: {
         directPdf,
         forcedToolCall: "verified" as const,
+        toolCalling: "verified" as const,
         modelAccess: "verified" as const,
-        probeVersion: 1 as const,
+        probeVersion: 2 as const,
         streaming: "verified" as const,
         structuredOutput: "verified" as const,
         usage: "verified" as const

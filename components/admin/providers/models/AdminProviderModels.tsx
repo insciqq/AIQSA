@@ -32,7 +32,7 @@ import {
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import type { AdminProviderConnection, AdminProviderModel } from "@/lib/contracts/adminProviders";
-import { embeddingPresetsForFamily, type EmbeddingModelPreset } from "@/lib/domain/embeddingModels";
+import { embeddingModelConfiguration, embeddingPresetsForFamily } from "@/lib/domain/embeddingModels";
 import { adminRerankerModelConfiguration, rerankerPresetsForFamily } from "@/lib/domain/rerankerModels";
 import { useId, useMemo, useState, type MouseEvent } from "react";
 
@@ -47,11 +47,17 @@ const chipTone: Record<ModelChip["tone"], string> = {
 };
 
 function Chip({ chip }: Readonly<{ chip: ModelChip }>) {
+  const description = chip.key === "tools"
+    ? "Ordinary function calling. Strict Memory calls are checked separately in Defaults & roles."
+    : chip.key === "json" ? "Structured responses using a strict JSON Schema." : undefined;
+  const help = description ? `${chip.label}: ${chip.tone === "ok" ? "verified" : "not supported on this connection"}. ${description}` : undefined;
   return (
     <span
+      aria-label={help}
       className={`inline-flex h-[22px] shrink-0 items-center gap-1 whitespace-nowrap rounded-[6px] border px-1.5 text-metadata font-medium ${chipTone[chip.tone]}`}
       data-chip-tone={chip.tone}
       data-testid={`model-chip-${chip.key}`}
+      title={help}
     >
       {chip.tone === "ok" ? <UiV2Icon className="size-3" name="check" /> : null}
       {chip.label}
@@ -66,40 +72,6 @@ export type AdminProviderModelsProps = Readonly<{
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
   usageSources: ProviderUsageSources;
 }>;
-
-function embeddingPresetConfiguration(preset: EmbeddingModelPreset) {
-  return {
-    adapterKind: "openai_embeddings_compatible" as const,
-    answerSelectable: false,
-    capabilities: {
-      contextWindow: preset.contextWindow,
-      nativePdfInput: false,
-      nativeSearch: false,
-      pdf: false,
-      reasoning: false,
-      streaming: false,
-      toolCalling: false,
-      vision: false
-    },
-    defaultParams: {},
-    embedding: {
-      nativeDimension: preset.nativeDimension,
-      providerFamily: preset.providerFamily,
-      queryInstructionTemplate: preset.queryInstructionTemplate,
-      supportsMrl: preset.supportsMrl,
-      targetDimension: preset.targetDimension
-    },
-    modelClass: "embedding" as const,
-    ...(preset.providerFamily === "openrouter"
-      ? {
-          openRouterRouting: preset.openRouterProviderTags?.length
-            ? { mode: "only_selected" as const, providers: [...preset.openRouterProviderTags] }
-            : { mode: "automatic" as const, providers: [] as [] }
-        }
-      : {}),
-    upstreamModelId: preset.upstreamModelId
-  };
-}
 
 function AddModelMenu({
   actions,
@@ -260,7 +232,7 @@ export function AdminProviderModels({
           submenu: embeddingPresets.length
             ? embeddingPresets.map((preset) => ({
                 label: embeddingModelLabel(preset.displayName, preset.targetDimension),
-                onSelect: () => addPreset(preset.displayName, embeddingPresetConfiguration(preset))
+                onSelect: () => addPreset(preset.displayName, embeddingModelConfiguration(preset))
               }))
             : [{ label: "Every preset is already added", onSelect: () => undefined }]
         }]

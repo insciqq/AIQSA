@@ -30,6 +30,7 @@ import {
 } from "./adminConfiguration";
 import { ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS, type AdminProviderQuickSetupProviderId } from "../../../contracts/adminProviderQuickSetup";
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
+import { providerSetupModels } from "./setupModels";
 import {
   effectiveProviderResponseTimeoutMs,
   normalizeProviderConnectionConfiguration,
@@ -269,10 +270,12 @@ function validateEvidence(
       (compatibility.forcedToolCall === "verified") !== Boolean(forcedToolCall) ||
       (compatibility.structuredOutput === "verified") !== Boolean(structuredOutput) ||
       (outcome.status === "unavailable" && (
-        compatibility.streaming === "verified" || compatibility.usage === "verified"
+        compatibility.streaming === "verified" || compatibility.usage === "verified" ||
+        compatibility.toolCalling === "verified"
       )) ||
       (model.modelClass !== "answer" && (
         compatibility.directPdf === "verified" ||
+        compatibility.toolCalling === "verified" ||
         compatibility.forcedToolCall === "verified" ||
         compatibility.streaming === "verified" ||
         compatibility.structuredOutput === "verified"
@@ -484,10 +487,11 @@ export function createAdminProviderService(input: Readonly<{
     const initialSetup = connection.activeVersion === 0;
     const setupPolicy = ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.includes(connection.family as AdminProviderQuickSetupProviderId)
       ? adminProviderQuickSetupPolicy(connection.family as AdminProviderQuickSetupProviderId) : null;
+    const setupModels = providerSetupModels(connection.family);
     const modelClasses = [...new Set([
       ...connection.models.filter((model) => initialSetup || model.enabled)
         .map((model) => model.modelClass ?? model.draftConfig.modelClass),
-      ...(setupPolicy?.candidates.map((candidate) => candidate.configuration.modelClass) ?? [])
+      ...setupModels.map((candidate) => candidate.configuration.modelClass)
     ])];
     const outcome = await testCredentialCatalog({
       connection: connection.activeConfig ?? connection.draftConfig,
@@ -510,18 +514,18 @@ export function createAdminProviderService(input: Readonly<{
         id: model.id
       };
     }) : [];
-    const additions = setupPolicy?.candidates.filter((candidate) =>
+    const additions = setupModels.filter((candidate) =>
       (outcome.modelIdsByClass?.[candidate.configuration.modelClass] ?? outcome.modelIds)
         .includes(candidate.configuration.upstreamModelId) && !connection.models.some((model) =>
         model.draftConfig.upstreamModelId === candidate.configuration.upstreamModelId))
       .map((candidate) => ({
         configuration: candidate.configuration,
         displayName: candidate.displayName,
-        id: connection.id === setupPolicy.connection.id ? candidate.modelId : idFactory(),
-        inputTokenPriceMicros: candidate.model.inputTokenPriceMicros,
-        outputTokenPriceMicros: candidate.model.outputTokenPriceMicros,
-        templateKey: connection.id === setupPolicy.connection.id ? candidate.templateKey : null
-      })) ?? [];
+        id: connection.id === setupPolicy?.connection.id ? candidate.modelId : idFactory(),
+        inputTokenPriceMicros: candidate.inputTokenPriceMicros,
+        outputTokenPriceMicros: candidate.outputTokenPriceMicros,
+        templateKey: connection.id === setupPolicy?.connection.id ? candidate.templateKey : null
+      }));
     const checkedConnection = {
       models: [...connection.models.map((model) => initialSetup ? ({
         ...model,
@@ -754,6 +758,34 @@ export function createAdminProviderService(input: Readonly<{
     }
     const running = checkRuns.running(connection.id, value.credentialId);
     if (running) return running;
+    if ((value.reason === "requested" || value.reason === "setup") && !value.modelIds && connection.enabled &&
+      connection.activeConfig && connection.defaultCredentialId === credential.id) {
+      const missing = providerSetupModels(connection.family).filter((candidate) =>
+        !connection!.models.some((model) => [model.draftConfig, model.activeConfig].some((config) =>
+          config?.upstreamModelId === candidate.configuration.upstreamModelId)));
+      if (missing.length) {
+        const outcome = await testCredentialCatalog({
+          connection: connection.activeConfig, family: connection.family,
+          modelClasses: [...new Set(missing.map((model) => model.configuration.modelClass))],
+          secret: () => activeCredentialSecret(credential.id, credential.activeVersion!.id)
+        });
+        const policy = adminProviderQuickSetupPolicy(connection.family as AdminProviderQuickSetupProviderId);
+        const additions = missing.filter((candidate) =>
+          (outcome.modelIdsByClass?.[candidate.configuration.modelClass] ?? outcome.modelIds)
+            .includes(candidate.configuration.upstreamModelId)).map((candidate) => ({
+          configuration: candidate.configuration, displayName: candidate.displayName,
+          id: connection!.id === policy.connection.id ? candidate.modelId : idFactory(),
+          inputTokenPriceMicros: candidate.inputTokenPriceMicros, outputTokenPriceMicros: candidate.outputTokenPriceMicros,
+          templateKey: connection!.id === policy.connection.id ? candidate.templateKey : null
+        }));
+        if (additions.length && await input.repository.addSetupModelsCas({
+          connectionId: connection.id, connectionVersion: connection.activeVersion,
+          credentialId: credential.id, credentialVersionId: credential.activeVersion!.id, models: additions, now: now()
+        }) !== "updated") throw new AdminProviderServiceError("provider_draft_stale");
+        connection = (await input.repository.listConnections()).find(({ id }) => id === value.connectionId);
+        if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
+      }
+    }
     const run = checkRuns.start({
       ...(value.userId && input.completeSetup ? {
         completeSetup: (signal: AbortSignal) => input.completeSetup!({

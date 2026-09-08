@@ -337,7 +337,8 @@ export function createAdminKnowledgeProfileService(
 
   async function processingPreflight(
     mode: AdminKnowledgePdfProcessingMode,
-    deploymentId: string | null
+    deploymentId: string | null,
+    signal?: AbortSignal
   ): Promise<SystemModelPin | null> {
     if (mode === "local") return null;
     const pin = deploymentId ? await resolveDocumentModel(prisma, deploymentId) : null;
@@ -348,7 +349,7 @@ export function createAdminKnowledgeProfileService(
     if (mode === "system_model_vision") {
       let verified = false;
       try {
-        verified = await probeVision(pin.snapshot);
+        verified = await probeVision(pin.snapshot, signal);
       } catch {
         verified = false;
       }
@@ -396,6 +397,7 @@ export function createAdminKnowledgeProfileService(
       now?: Date;
       pdfProcessingMode: AdminKnowledgePdfProcessingMode;
       documentDeploymentId: string | null;
+      signal?: AbortSignal;
       userId: string;
     }>): Promise<void> {
       if ((input.pdfProcessingMode === "local") !== (input.documentDeploymentId === null)) {
@@ -410,8 +412,9 @@ export function createAdminKnowledgeProfileService(
         if (!before || before.version !== input.expectedVersion) {
           throw new AdminKnowledgeProfileServiceError("knowledge_profile_stale");
         }
-        processingPin = await processingPreflight(input.pdfProcessingMode, input.documentDeploymentId);
+        processingPin = await processingPreflight(input.pdfProcessingMode, input.documentDeploymentId, input.signal);
       }
+      input.signal?.throwIfAborted();
       const now = input.now ?? new Date();
       await serializable(() => prisma.$transaction(async (tx) => {
         const profile = await tx.knowledgeIndexProfile.findUnique({
@@ -436,6 +439,7 @@ export function createAdminKnowledgeProfileService(
           }
         }
         const processingProviderModelId = processingPin?.snapshot.providerModelId ?? null;
+        input.signal?.throwIfAborted();
         const lastRevision = await tx.knowledgeIndexProfileRevision.findFirst({
           orderBy: { revisionNumber: "desc" },
           select: { revisionNumber: true },

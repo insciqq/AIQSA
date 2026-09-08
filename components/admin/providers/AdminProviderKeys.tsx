@@ -188,7 +188,7 @@ function KeyFormRow({
           <UiV2Button disabled={busy} onClick={onCancel} tone="ghost" type="button">Cancel</UiV2Button>
         </div>
       </form>
-      <p className="mt-2 text-xs leading-5 text-ink-muted">Checks the key, enables available supported models on first setup, then checks models and Search with small paid requests. Suitable empty defaults and roles are filled automatically.</p>
+      <p className="mt-2 text-xs leading-5 text-ink-muted">Checks the key and supported models with small paid requests, then fills empty defaults and roles. OpenRouter also sets up embeddings, reranking and Knowledge. Assigned PDF readers receive page images and text.</p>
       {error ? (
         <p className="mt-2 text-xs text-critical" id={errorId} role="alert">{error}</p>
       ) : null}

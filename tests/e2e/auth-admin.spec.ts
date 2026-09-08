@@ -1490,12 +1490,12 @@ test("Control Center role labels and pickers fit the available viewport", async 
     await page.setViewportSize(viewport);
     await page.goto("/admin?section=roles");
     const role = page.getByTestId("admin-role-memory");
-    const label = role.getByText("Memory & structured helpers", { exact: true });
+    const label = role.getByText("System model", { exact: true });
     await expect(label).toBeVisible();
     expect((await label.boundingBox())!.width).toBeGreaterThanOrEqual(140);
     const opener = page.getByTestId("admin-memory-picker");
     await opener.click();
-    const picker = page.getByRole("dialog", { name: "Memory & structured helpers deployment" });
+    const picker = page.getByRole("dialog", { name: "System model deployment" });
     await expect(picker).toBeVisible();
     await expect.poll(async () => {
       const box = await picker.boundingBox();

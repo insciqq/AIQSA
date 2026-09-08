@@ -227,17 +227,17 @@ function systemRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminAttention
   return [
     roleItem(
       "memory",
-      "Memory & structured helpers",
+      "System model",
       policy.systemModel,
       "Memory and structured helpers stay off until a checked model is assigned",
       "warn"
     ),
-    policy.chatPdfPreparationAllowed
+    policy.chatPdfModel
       ? roleItem(
           "chat_pdf",
-          "Chat PDF preparation",
+          "PDF reading in chats",
           policy.chatPdfModel,
-          "page preparation is on but has no model to read pages",
+          "the assigned model cannot read PDF pages",
           "warn"
         )
       : null,

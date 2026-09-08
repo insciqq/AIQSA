@@ -37,6 +37,7 @@ export const providerModelTemplateIds = Object.freeze({
   "openrouter:google/gemini-3.5-flash": "00000000-0000-4000-8000-000000001208",
   "openrouter:perplexity/sonar-pro-search": "00000000-0000-4000-8000-000000001210",
   "openrouter:qwen/qwen3-reranker-8b": "00000000-0000-4000-8000-000000001219",
+  "openrouter:qwen/qwen3-embedding-8b": "00000000-0000-4000-8000-000000001231",
   "openrouter:voyageai/rerank-2.5": "00000000-0000-4000-8000-000000001217",
   "openrouter:~google/gemini-pro-latest": "00000000-0000-4000-8000-000000001209"
 } as const);

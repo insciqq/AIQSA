@@ -74,32 +74,27 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
       const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", "rerankerProviderModelId",
-        "chatPdfPreparationAllowed", "chatPdfProviderModelId", "chatPdfReasoningEffort"];
+        "chatPdfProviderModelId", "chatPdfReasoningEffort"];
       const textOrNull = (entry: unknown, limit: number) => entry === null ||
         typeof entry === "string" && entry.trim() === entry && entry.length > 0 && entry.length <= limit &&
         !/[\u0000-\u001f\u007f]/u.test(entry);
       const hasUtilityUpdate = record(value) && Object.hasOwn(value, "providerModelId");
       const hasRerankerUpdate = record(value) && Object.hasOwn(value, "rerankerProviderModelId");
-      const hasPdfPolicyUpdate = record(value) && Object.hasOwn(value, "chatPdfPreparationAllowed");
       const hasPdfModelUpdate = record(value) && Object.hasOwn(value, "chatPdfProviderModelId");
       if (!record(value) || Object.keys(value).some((key) => !allowed.includes(key)) ||
         !Number.isSafeInteger(value.expectedVersion) || Number(value.expectedVersion) < 1 ||
-        !hasUtilityUpdate && !hasRerankerUpdate && !hasPdfPolicyUpdate && !hasPdfModelUpdate ||
+        !hasUtilityUpdate && !hasRerankerUpdate && !hasPdfModelUpdate ||
         hasUtilityUpdate !== Object.hasOwn(value, "reasoningEffort") ||
         hasPdfModelUpdate !== Object.hasOwn(value, "chatPdfReasoningEffort") ||
         hasUtilityUpdate && (!textOrNull(value.providerModelId, 256) || !textOrNull(value.reasoningEffort, 32)) ||
         hasPdfModelUpdate && (!textOrNull(value.chatPdfProviderModelId, 256) || !textOrNull(value.chatPdfReasoningEffort, 32)) ||
         hasRerankerUpdate && !textOrNull(value.rerankerProviderModelId, 256) ||
-        hasPdfPolicyUpdate && typeof value.chatPdfPreparationAllowed !== "boolean" ||
         value.providerModelId === null && value.reasoningEffort !== null ||
         value.chatPdfProviderModelId === null && value.chatPdfReasoningEffort !== null) {
         return Response.json({ error: "system_model_policy_update_invalid" }, { status: 400 });
       }
       try {
         await input.service.update({
-          ...(hasPdfPolicyUpdate ? {
-            chatPdfPreparationAllowed: value.chatPdfPreparationAllowed as boolean
-          } : {}),
           ...(hasPdfModelUpdate ? {
             chatPdfProviderModelId: value.chatPdfProviderModelId as string | null,
             chatPdfReasoningEffort: value.chatPdfReasoningEffort as string | null

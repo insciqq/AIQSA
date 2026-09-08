@@ -1,5 +1,5 @@
 import { GEMINI_GROUNDING_MIGRATION, geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql } from "./gemini-grounding-adoption";
-import { SYSTEM_MODEL_ROLES_MIGRATION, systemModelRolesAdoptionFixtureSql, systemModelRolesAdoptionProofSql } from "./system-model-roles-adoption";
+import { CHAT_PDF_ASSIGNMENT_MIGRATION, chatPdfAssignmentAdoptionFixtureSql, SYSTEM_MODEL_ROLES_MIGRATION, systemModelRolesAdoptionFixtureSql, systemModelRolesAdoptionProofSql } from "./system-model-roles-adoption";
 import { ASSISTANT_LIVE_MIGRATION, assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql } from "./assistant-live-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -542,6 +542,11 @@ function bootstrapFoundationDigest(database: string): string {
 }
 
 function runBootstrapProof(database: string): void {
+  assert.equal(
+    psqlScalar(database, `SELECT enabled FROM "WorkspacePolicy" WHERE id = 'installation';`),
+    "t",
+    "fresh migration history must permit Workspace before bootstrap",
+  );
   const bootstrapEnvironment = {
     AIQSA_INITIAL_ADMIN_DISPLAY_NAME: "Baseline Administrator",
     AIQSA_INITIAL_ADMIN_EMAIL: "baseline-admin@example.invalid",
@@ -557,6 +562,14 @@ function runBootstrapProof(database: string): void {
     bootstrapFoundationDigest(database),
     freshDigest,
     "adopted bootstrap changed the settled fresh-install foundation",
+  );
+  psqlScalar(database, `UPDATE "WorkspacePolicy" SET enabled = false, version = version + 1 WHERE id = 'installation';`);
+  const disabledDigest = bootstrapFoundationDigest(database);
+  app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
+  assert.equal(
+    bootstrapFoundationDigest(database),
+    disabledDigest,
+    "bootstrap adoption must preserve an administrator's saved Workspace Off",
   );
   assert.equal(
     psqlScalar(
@@ -7337,6 +7350,15 @@ function main(
     runForwardAdoptionProof(shadowDatabase, migrations, SYSTEM_MODEL_ROLES_MIGRATION,
       systemModelRolesAdoptionFixtureSql(pdfAllowed), systemModelRolesAdoptionProofSql(pdfAllowed));
   }
+  runForwardAdoptionProof(shadowDatabase, migrations, CHAT_PDF_ASSIGNMENT_MIGRATION,
+    chatPdfAssignmentAdoptionFixtureSql(), systemModelRolesAdoptionProofSql(true));
+  runForwardAdoptionProof(shadowDatabase, migrations, "20260908172000_workspace_enabled_default",
+    `UPDATE "WorkspacePolicy" SET enabled = false, "internetEnabled" = false, version = 7 WHERE id = 'installation';`,
+    `DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM "WorkspacePolicy"
+        WHERE id = 'installation' AND NOT enabled AND NOT "internetEnabled" AND version = 7)
+      THEN RAISE EXCEPTION 'Workspace default migration changed a saved administrator policy'; END IF;
+    END $$;`);
 
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);

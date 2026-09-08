@@ -110,7 +110,7 @@ describe("AdminProviderCheckBanner", () => {
     );
     const banner = screen.getByTestId("provider-check-banner");
     expect(banner).toHaveTextContent("Key Primary saved. Checking what each model can do — 3 of 4 done.");
-    expect(banner).toHaveTextContent("About 6 small requests per model. You can leave this page.");
+    expect(banner).toHaveTextContent("Checks supported capabilities, including tools, JSON, PDF, embeddings and reranking. You can leave this page.");
     expect(screen.getByRole("progressbar", { name: "Models checked" })).toHaveAttribute("aria-valuenow", "3");
     fireEvent.click(screen.getByRole("button", { name: "Stop checking" }));
     await waitFor(() => expect(stop).toHaveBeenCalledOnce());
