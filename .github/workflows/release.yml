@@ -369,7 +369,12 @@ jobs:
         run: |
           set -euo pipefail
           notes="Docker image: ${IMAGE}:${VERSION}"$'\n'"Immutable digest: ${IMAGE}@${DIGEST}"$'\n\n'"Postgres image: ${POSTGRES_IMAGE}:${POSTGRES_COMPONENT_TAG}-${VERSION}"$'\n'"Immutable Postgres digest: ${POSTGRES_IMAGE}@${POSTGRES_DIGEST}"
-          release_flags=(--verify-tag --generate-notes --title "AIQSA ${TAG}" --notes "${notes}")
+          if [[ "${VERSION}" == "0.2.0" || "${VERSION}" == "0.2.0-"* ]]; then
+            notes="Breaking change: v0.2.0 requires a fresh database. There is no upgrade path from v0.1.x (including v0.1.24). Remove the old database before installing v0.2.0; this discards existing data. Do not restore a v0.1.x database into v0.2.0."$'\n\n'"${notes}"
+          fi
+          notes_file="${RUNNER_TEMP}/release-notes.md"
+          printf '%s\n' "${notes}" > "${notes_file}"
+          release_flags=(--verify-tag --generate-notes --title "AIQSA ${TAG}" --notes-file "${notes_file}")
           if [[ "${TAG}" == *-* ]]; then
             release_flags+=(--prerelease)
           else
