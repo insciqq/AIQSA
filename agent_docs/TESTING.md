@@ -43,6 +43,8 @@ Serialize stateful/container/browser-reset checks. Reusable-server specs may ove
 | Memory/Knowledge/recovery | Focused policy/handler tests, then disposable PostgreSQL/pgvector for persistence/concurrency and isolated OpenSearch for retrieval/projection changes. Integrity/rebuild output is content-free. |
 | Publication | `npm run release:privacy:check`, inspected-tree release build and image inspection. Tags, pushes and publication still require explicit operator authority. |
 
+The release workflow also runs `node scripts/production-smoke.mjs --disposable <image-map.json>` against the built production images. It owns a fresh project and synthetic data, verifies initialization and image replacement with a forward migration, checks that credentials/settings/a chat survive repeated updates, and proves that a failed migration blocks the new app. Never substitute an existing installation for this target. Changes to production installation/release wiring run this pipeline on `main` without updating stable image tags or creating a release; publication still requires a release tag.
+
 Knowledge tests prove the changed scope, evidence-delivery, citation, egress, degradation or immutability contract with tiny fixtures. Keep ordinary co-located tests free of scored corpora, relevance labels, expected-answer collections and large question sets. Optional manual document inspection is not an implementation gate.
 
 `docs:check` owns required documents, orphan/link checks, and text budgets through [docs-manifest](../scripts/docs-manifest.mjs). It neither inventories implementation nor validates task state. Task-ledger changes separately run `npm run task:check` and focused ledger/privacy tests.

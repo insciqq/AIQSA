@@ -5,7 +5,7 @@ Scope: Environment ownership, secret rotation, and Compose selection.
 
 ## Canonical Sources
 
-[`.env.example`](../.env.example) owns optional local overrides; [development Compose](../docker-compose.dev.yml) and subsystem parsers/tests own keys, defaults, validation, and ceilings. Production templates, provisioning, and wiring belong to the separate infrastructure workspace. Update parser, relevant Compose pass-through, examples, and tests for key changes; update prose only for a changed operator/security contract. Malformed security settings fail closed. Pre-production aliases need an explicit external-installation compatibility decision.
+[`.env.example`](../.env.example), [production Compose](../compose.yaml), [development Compose](../docker-compose.dev.yml), and subsystem parsers/tests own keys, defaults, validation, and ceilings. [Configure](../scripts/configure.sh) creates installation secrets once and refuses to replace an existing `.env`. Update parser, relevant Compose pass-through, examples, and tests for key changes; update prose only for a changed operator/security contract. Malformed security settings fail closed. Site-specific provisioning belongs to the infrastructure operator.
 
 Mutable provider/Search credentials and configuration belong in encrypted database records, not general environment keys. Environment supplies installation wiring and bounded policy/recovery inputs. Each role receives only what it consumes: parsers have no database/object/provider credentials; Workspace runner has only its internal token and bounded runtime policy; maintenance has database/runner access without object/provider credentials; restore review has no provider credentials and cannot start ordinary work.
 

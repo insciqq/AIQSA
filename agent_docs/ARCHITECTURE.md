@@ -19,7 +19,7 @@ Enforcement: [ESLint](../eslint.config.mjs), [boundary checker](../scripts/eslin
 
 ## Supported Deployment Shape
 
-Application code, images, committed migrations, bootstrap, and disposable development belong here. Production Compose, proxies, deployment, secrets, schedules, and backup/restore orchestration belong to the separate infrastructure workspace; do not reintroduce them as application-repository tooling. Infrastructure runs migrations/bootstrap before dependent roles.
+Application code, published images, production [Compose](../compose.yaml), committed migrations, and installation bootstrap belong here. The production stack uses prebuilt images and keeps data in persistent volumes; migrations/bootstrap gate every dependent application role. Ordinary stable updates must work with `docker compose pull && docker compose up -d` without replacing installation secrets or data. Site-specific proxies, deployment automation, schedules, and backup/restore orchestration remain infrastructure concerns.
 
 [`docker-compose.dev.yml`](../docker-compose.dev.yml) is disposable and must never share persistent-installation state. The application is the public application boundary; data services, parsers, controllers, and sibling workloads stay private. Publication and proxy rules belong to [Environment](ENV_VARIABLES.md) and [Security](SECURITY.md).
 
