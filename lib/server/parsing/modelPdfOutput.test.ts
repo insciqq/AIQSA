@@ -26,6 +26,70 @@ function output(): string {
 }
 
 describe("model PDF transcription contract", () => {
+  it("keeps a delimited multiline formula atomic only when requested", () => {
+    const formula = String.raw`\[
+u = \frac{m+4}{n}
+\quad \text{with } m>0
+\]`;
+    const input = {
+      maxBlocks: 100, maxCharacters: 10_000,
+      mode: "system_model_vision" as const, pageCount: 1,
+      pages: [{ page: 1, text: `Before\n${formula}\nAfter` }]
+    };
+    expect(modelPdfPagesToDocument(input).blocks).toHaveLength(6);
+    const current = modelPdfPagesToDocument({ ...input, preserveDisplayMath: true });
+    expect(current.blocks.map(block => block.text)).toEqual(["Before", formula, "After"]);
+    expect(current.blocks[1]).toMatchObject({ type: "paragraph", page: 1, pageEnd: 1 });
+  });
+
+  it("preserves dollars, tabs and matrix rows inside display math", () => {
+    const formula = "$$\nA = [p\tq]\n[r\ts]\n$$";
+    const document = modelPdfPagesToDocument({
+      maxBlocks: 5, maxCharacters: 10_000, preserveDisplayMath: true,
+      mode: "system_model_vision", pageCount: 1,
+      pages: [{ page: 1, text: formula + "\nName\tValue\nSensor\t18" }]
+    });
+    expect(document.blocks[0]?.text).toBe(formula);
+    expect(document.blocks[0]?.isTable).toBe(false);
+    expect(document.blocks[1]?.table?.rowCount).toBe(2);
+  });
+
+  it("keeps an explicitly bracketed Unicode piecewise expression together", () => {
+    const formula = "g(x) = ⎧ 3 if x > 4\n       ⎨ 2 if x = 4\n       ⎩ 0 otherwise";
+    const document = modelPdfPagesToDocument({
+      maxBlocks: 5, maxCharacters: 1_000, preserveDisplayMath: true,
+      mode: "system_model_vision", pageCount: 1,
+      pages: [{ page: 1, text: `Before\n${formula}\nAfter` }]
+    });
+    expect(document.blocks.map(block => block.text)).toEqual(["Before", formula, "After"]);
+  });
+
+  it("does not consume another page or a following table for an unclosed formula", () => {
+    const document = modelPdfPagesToDocument({
+      maxBlocks: 10, maxCharacters: 10_000, preserveDisplayMath: true,
+      mode: "system_model_vision", pageCount: 2,
+      pages: [{ page: 1, text: "\\[\nu = 4\nName\tValue\nSensor\t18" }, { page: 2, text: "\\]" }]
+    });
+    expect(document.blocks.filter(block => block.isTable)).toHaveLength(1);
+    expect(document.blocks.at(-1)).toMatchObject({ page: 2, text: "\\]" });
+  });
+
+  it("preserves numbered display formulas and does not reuse a later closing delimiter", () => {
+    const first = "\\[\na = 7\n\\] (1)";
+    const second = "\\[\nb = 9\n\\] (A.2)";
+    const dollars = "$$\nc = 11\n$$ (3)";
+    const document = modelPdfPagesToDocument({
+      maxBlocks: 20, maxCharacters: 10_000, preserveDisplayMath: true,
+      mode: "system_model_vision", pageCount: 1,
+      pages: [{ page: 1, text: ["\\[", "Unclosed fragment", "Name\tValue", "Sensor\t18",
+        first, "Between", second, dollars, "After"].join("\n") }]
+    });
+    expect(document.blocks.map(block => block.text)).toEqual([
+      "\\[", "Unclosed fragment", "Name\tValue\nSensor\t18", first, "Between", second, dollars, "After"
+    ]);
+    expect(document.blocks.filter(block => block.isTable)).toHaveLength(1);
+  });
+
   it("uses deterministic page markers and preserves TSV and Markdown table cells", () => {
     const prompt = modelPdfTranscriptionPrompt({
       mode: "system_model_direct_pdf",

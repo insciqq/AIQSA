@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ingestionConcurrency, IngestionWorkPool, mapIngestionWork } from "./ingestionConcurrency";
 import {
   createDocumentParserBoundary,
   getDocumentParserConfig,
@@ -221,6 +222,7 @@ async function readExactObject(input: Readonly<{
 
 export function createKnowledgeIngestionProcessor(input: Readonly<{
   config?: KnowledgeExtractionConfig;
+  embeddingConcurrency?: number;
   embeddingRuntime: KnowledgeEmbeddingRuntime;
   now?: () => Date;
   modelPdfParser?: KnowledgeModelPdfParser;
@@ -241,6 +243,8 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
     }
   });
   const now = input.now ?? (() => new Date());
+  const embeddingConcurrency = ingestionConcurrency(input.embeddingConcurrency, 1, 32);
+  const embeddingPool = new IngestionWorkPool(input.embeddingConcurrency ?? 64);
 
   async function normalizedDocument(
     claim: KnowledgeWorkClaim,
@@ -354,9 +358,16 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
     ).filter(
       (batch) => !completed.has(batch.batchIndex)
     );
-    let binding: EmbeddingRuntimeBinding | null = null;
+    let bindingPromise: Promise<EmbeddingRuntimeBinding> | null = null;
+    const leaseLost = Symbol("knowledge_embedding_lease_lost");
+    let batchFailure: { error: unknown } | null = null;
+    const checkBatchAdmission = () => {
+      if (batchFailure) throw batchFailure.error;
+      if (signal?.aborted) throw signal.reason;
+    };
 
-    for (const batch of pending) {
+    const processBatch = async (batch: typeof pending[number]) => {
+      checkBatchAdmission();
       const reused = new Set(await input.repository.reuseEmbeddingChunks({
         ...knowledgeWorkIdentity(claim),
         chunks: batch.chunks,
@@ -364,8 +375,10 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
         targetDimension: claim.artifact.targetDimension
       }));
       const remaining = batch.chunks.filter((chunk) => !reused.has(chunk.index));
-      if (remaining.length === 0) continue;
-      binding ??= await resolveEmbedding(claim);
+      if (remaining.length === 0) return;
+      bindingPromise ??= resolveEmbedding(claim);
+      const binding = await bindingPromise;
+      checkBatchAdmission();
       let result: Awaited<ReturnType<EmbeddingRuntimeBinding["adapter"]["embed"]>>;
       try {
         result = await binding.adapter.embed({
@@ -402,7 +415,22 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
         ownerUserId: claim.ownerUserId,
         targetDimension: claim.artifact.targetDimension
       });
-      if (!accepted) return;
+      if (!accepted) throw leaseLost;
+    };
+    try {
+      await mapIngestionWork(pending, embeddingConcurrency, async (batch) => {
+        return embeddingPool.run(async () => {
+          try {
+            return await processBatch(batch);
+          } catch (error) {
+            batchFailure ??= { error };
+            throw error;
+          }
+        }, signal);
+      });
+    } catch (error) {
+      if (error === leaseLost) return;
+      throw error;
     }
 
     await input.repository.activateSourceVersion({
