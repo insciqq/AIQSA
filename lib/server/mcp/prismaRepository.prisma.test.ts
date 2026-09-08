@@ -61,6 +61,35 @@ async function fixture() {
 }
 
 describe("MCP Test & Save persistence", () => {
+  it("publishes identity and candidate settings only after their successful check", async () => {
+    const { repository, server, serverId, userId, validate } = await fixture();
+    const before = await prisma.mcpServer.findUniqueOrThrow({ where: { id: serverId } });
+    const candidate = {
+      description: "Candidate description",
+      draft: { ...draft, disabledToolNames: ["write"] },
+      expectedUpdatedAt: server.updatedAt,
+      name: "Candidate name",
+      oneTimeValues: {},
+      publish: true,
+      serverId,
+      sharedValues: { api_key: "fixture-candidate-secret" },
+      validationUserId: userId
+    };
+    validate.mockResolvedValueOnce({ kind: "invalid", issues: [{ code: "mcp_list_tools_failed", path: "source" }] });
+    expect(await repository.testDraft(candidate)).toMatchObject({ kind: "draft_validation_failed" });
+    expect(await prisma.mcpServer.findUniqueOrThrow({ where: { id: serverId } })).toEqual(before);
+
+    const applied = await repository.testDraft(candidate);
+    expect(applied.kind).toBe("ok");
+    if (applied.kind !== "ok") return;
+    expect(applied.value).toMatchObject({ description: candidate.description, name: candidate.name });
+    expect(applied.value.activeRevision?.disabledToolNames).toEqual(["write"]);
+    expect(validate).toHaveBeenLastCalledWith(expect.objectContaining({
+      draft: candidate.draft, values: { api_key: "fixture-candidate-secret" }
+    }));
+    expect(JSON.stringify(applied.value)).not.toContain("fixture-candidate-secret");
+  });
+
   it("publishes the validated tool selection and shared values together, preserving disabled availability", async () => {
     const { repository, save, server, serverId, validate } = await fixture();
     const staged = await repository.updateServer({

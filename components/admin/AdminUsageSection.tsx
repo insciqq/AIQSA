@@ -1,4 +1,8 @@
+"use client";
+
 import { AdminTableRegion } from "@/components/admin/adminPrimitives";
+import { useAdminSectionTopbar } from "@/components/admin/AdminShell";
+import { cardClass, sectionHeadingClass } from "@/components/admin/roles/rolesControls";
 import {
   formatDate,
   formatNumber,
@@ -12,6 +16,8 @@ import type {
 } from "@/lib/contracts/admin";
 
 type AdminUsageCatalog = Pick<AdminCatalog, "models" | "providers">;
+
+const topbar = { title: "Usage" };
 
 export type AdminUsageSectionProps = Readonly<{
   catalog: AdminUsageCatalog;
@@ -39,8 +45,8 @@ function hasReportedUsage(usage: AdminUsageTokenTotals): boolean {
 
 function UsageFact({ label, value }: Readonly<{ label: string; value: string }>) {
   return (
-    <div className="min-w-0 bg-answer-paper px-3 py-3 sm:px-4">
-      <dt className="text-xs font-medium uppercase tracking-[0.08em] text-ink-muted">{label}</dt>
+    <div className="min-w-0 px-3 py-3 sm:px-4">
+      <dt className="text-xs font-medium text-ink-muted">{label}</dt>
       <dd className="mt-1 break-words font-mono text-sm font-medium tabular-nums text-ink [overflow-wrap:anywhere]">
         {value}
       </dd>
@@ -66,22 +72,23 @@ function MobileUsageFacts({
 }
 
 export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
+  useAdminSectionTopbar(topbar);
   const usersWithUsage = usage.byUser.filter(hasReportedUsage);
   const groupsWithUsage = usage.byGroup.filter(hasReportedUsage);
 
   return (
-    <div className="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+    <div className="max-w-[1440px] min-w-0 px-4 py-6 sm:px-6 lg:px-8">
       <section
         aria-label="Usage summary"
-        className="min-w-0 border-y border-trace-subtle"
+        className={`${cardClass} min-w-0 p-5`}
       >
         <div className="grid min-w-0 lg:grid-cols-[minmax(15rem,0.78fr)_minmax(0,2.22fr)]">
           <div className="min-w-0 border-b border-trace-subtle py-5 lg:border-b-0 lg:border-r lg:px-1 lg:pr-8">
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-muted">
+            <p className={sectionHeadingClass}>
               Provider-reported · all recorded usage
             </p>
             <p
-              className="mt-2 break-words font-mono text-3xl font-semibold tracking-[-0.035em] tabular-nums text-ink [overflow-wrap:anywhere]"
+              className="mt-2 break-words font-mono text-2xl font-semibold tabular-nums text-ink [overflow-wrap:anywhere]"
               data-testid="usage-total-tokens"
             >
               {formatNumber(usage.totals.totalTokens)}
@@ -93,7 +100,7 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
             </p>
           </div>
 
-          <dl className="grid min-w-0 grid-cols-2 gap-px bg-trace-subtle sm:grid-cols-3">
+          <dl className="grid min-w-0 grid-cols-2 sm:grid-cols-3">
             <UsageFact label="Input tokens" value={formatNumber(usage.totals.inputTokens)} />
             <UsageFact label="Cached input" value={formatNumber(usage.totals.cachedInputTokens)} />
             <UsageFact label="Cache write" value={formatNumber(usage.totals.cacheWriteInputTokens)} />
@@ -107,7 +114,7 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
         </div>
       </section>
 
-      <div className="mt-4 max-w-5xl border-l border-trace-strong pl-3 text-xs leading-5 text-ink-muted">
+      <div className="mt-4 max-w-5xl text-xs leading-5 text-ink-muted">
         <p className="font-medium text-ink-secondary">How to read these numbers</p>
         <p className="mt-1">
           This view uses provider-reported usage rows. Failed or cancelled runs appear only when the provider reported
@@ -121,7 +128,7 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
         <section className="min-w-0" data-testid="admin-usage-groups">
           <div className="flex min-w-0 flex-col gap-1 border-b border-trace-subtle pb-3 sm:flex-row sm:items-end sm:justify-between">
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-ink">Group attribution</h3>
+              <h3 className={sectionHeadingClass}>Group attribution</h3>
               <p className="mt-1 text-xs leading-5 text-ink-muted">
                 Current memberships with provider-reported token totals.
               </p>
@@ -153,10 +160,10 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
               <p className="py-7 text-sm text-ink-muted">No groups in this installation</p>
             )}
           </div>
-          <div className="hidden lg:block">
+          <div className={`${cardClass} mt-3 hidden lg:block`}>
             <AdminTableRegion label="Group usage table">
               <table className="w-full min-w-[680px] border-collapse text-left text-xs">
-              <thead className="bg-workspace-rail/70 text-ink-muted">
+              <thead className="bg-control-surface/45 text-ink-muted">
                 <tr className="border-b border-trace-subtle">
                   <th className="px-3 py-2 font-medium">Group</th>
                   <th className="px-3 py-2 font-medium">Users</th>
@@ -198,7 +205,7 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
         <section className="min-w-0" data-testid="admin-usage-users">
           <div className="flex min-w-0 flex-col gap-1 border-b border-trace-subtle pb-3 sm:flex-row sm:items-end sm:justify-between">
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-ink">Usage by user</h3>
+              <h3 className={sectionHeadingClass}>Usage by user</h3>
               <p className="mt-1 text-xs leading-5 text-ink-muted">
                 Retained runs with reported usage, ordered by total tokens.
               </p>
@@ -242,10 +249,10 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
               <p className="py-7 text-sm text-ink-muted">No users in this installation</p>
             )}
           </div>
-          <div className="hidden lg:block">
+          <div className={`${cardClass} mt-3 hidden lg:block`}>
             <AdminTableRegion label="User usage table">
               <table className="w-full min-w-[820px] border-collapse text-left text-xs">
-              <thead className="bg-workspace-rail/70 text-ink-muted">
+              <thead className="bg-control-surface/45 text-ink-muted">
                 <tr className="border-b border-trace-subtle">
                   <th className="px-3 py-2 font-medium">User</th>
                   <th className="px-3 py-2 font-medium">Groups</th>

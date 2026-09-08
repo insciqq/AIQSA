@@ -48,8 +48,8 @@ test("uses the current workspace as the authenticated renderer", async ({ page }
     // The header keeps Share plus one "⋯" menu; Branches lives inside it.
     await expect(page.getByRole("button", { name: "Share" })).toBeVisible();
     await page.getByTestId("header-more-trigger").click();
-    await page.getByRole("menuitem", { name: "Export" }).click();
-    await expect(page.getByLabel("Export").getByRole("menuitem")).toHaveText([
+    await page.getByRole("menuitem", { name: "Export", exact: true }).click();
+    await expect(page.getByLabel("Export", { exact: true }).getByRole("menuitem")).toHaveText([
       "Markdown",
       "JSON",
       "Copy entire thread"

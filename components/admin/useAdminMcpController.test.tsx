@@ -41,6 +41,19 @@ function feedback() {
 }
 
 describe("useAdminMcpController", () => {
+  it("finishes an initial failed load and lets the user retry", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({ error: "mcp_storage_unavailable" }, 503))
+      .mockResolvedValueOnce(response({ servers: [mcpServer()] }));
+    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    expect(result.current.state.loading).toBe(false);
+    expect(result.current.state.error).toContain("temporarily unavailable");
+    await act(async () => { await result.current.actions.refresh(); });
+    expect(result.current.state.servers).toHaveLength(1);
+    expect(result.current.state.error).toBeNull();
+  });
+
   it("refreshes connection problems when returning to the MCP section", async () => {
     const original = mcpServer();
     const failed = mcpServer({ runtimeProblem: "unavailable" });
@@ -78,7 +91,6 @@ describe("useAdminMcpController", () => {
     const applied = { ...candidate, enabled: true, updatedAt: "2026-07-22T02:00:00.000Z" };
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response({ servers: [original] }))
-      .mockResolvedValueOnce(response({ server: candidate }))
       .mockResolvedValueOnce(response({ server: applied }));
     const { onError, onNotice } = feedback();
     const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher, onError, onNotice }));
@@ -89,36 +101,35 @@ describe("useAdminMcpController", () => {
       })).toEqual({ applied: true, updatedAt: applied.updatedAt });
     });
     expect(JSON.parse(fetcher.mock.calls[1][1].body)).toEqual({
-      draft: candidate.draft, name: "Changed", expectedUpdatedAt: original.updatedAt
+      draft: candidate.draft, name: "Changed", expectedUpdatedAt: original.updatedAt,
+      publish: true, sharedValues: { key: "fixture-secret" }
     });
-    expect(fetcher.mock.calls[2][0]).toBe("/api/admin/mcp/server-1/test");
-    expect(JSON.parse(fetcher.mock.calls[2][1].body)).toEqual({
-      expectedUpdatedAt: candidate.updatedAt, publish: true, sharedValues: { key: "fixture-secret" }
-    });
+    expect(fetcher.mock.calls[1][0]).toBe("/api/admin/mcp/server-1/test");
+    expect(fetcher).toHaveBeenCalledTimes(2);
     expect(result.current.state.servers[0]).toEqual(applied);
     expect(onNotice).toHaveBeenCalledWith("Settings checked and applied.");
     expect(onError).not.toHaveBeenCalled();
   });
 
-  it("returns a failed check to the form, keeps the candidate for retry and never reports it as applied", async () => {
+  it("returns a failed check to the form and preserves the entire previous catalog", async () => {
     const original = mcpServer();
     const candidate = mcpServer({ name: "Changed", updatedAt: "2026-07-22T01:00:00.000Z" });
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response({ servers: [original] }))
-      .mockResolvedValueOnce(response({ server: candidate }))
       .mockResolvedValueOnce(response({ error: "mcp_draft_test_failed", issues: [{ code: "mcp_oauth_validation_deferred", path: "auth.mode" }] }, 400));
     const { onError, onNotice } = feedback();
     const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher, onError, onNotice }));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
     await act(async () => {
       const saved = await result.current.actions.save(original.id, { name: candidate.name });
-      expect(saved).toMatchObject({ applied: false, updatedAt: candidate.updatedAt });
+      expect(saved).toMatchObject({ applied: false });
+      expect(saved.updatedAt).toBeUndefined();
       expect(saved.message).toContain("Connect your administrator account");
     });
     expect(onNotice).not.toHaveBeenCalled();
     expect(onError).not.toHaveBeenCalled();
     expect(result.current.state.servers[0].activeRevision).toEqual(original.activeRevision);
-    expect(result.current.state.servers[0].name).toBe("Changed");
+    expect(result.current.state.servers[0]).toEqual(original);
   });
 
   it("loads lazily only when an MCP-owning admin section becomes active", async () => {

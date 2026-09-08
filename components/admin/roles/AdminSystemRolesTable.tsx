@@ -20,7 +20,7 @@ import { UiV2Switch, type UiV2MenuAction } from "@/components/ui-v2";
 import type { AdminSystemModelCandidate } from "@/lib/contracts/adminSystemModelPolicy";
 import type { ReactNode } from "react";
 
-const rowGrid = "grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_8.5rem_2.5rem] md:items-start md:gap-4";
+const rowGrid = "grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-3 px-4 py-3 xl:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_8.5rem_2.5rem] xl:items-start xl:gap-4";
 
 function RoleRow({
   children,
@@ -38,16 +38,16 @@ function RoleRow({
   title: string;
 }>) {
   return (
-    <div className={`${rowGrid} border-t border-trace-subtle first:border-t-0`} data-testid={testId}>
+    <div className={`${rowGrid} border-t border-trace-subtle first:border-t-0`} data-testid={testId} id={testId} tabIndex={-1}>
       <div className="order-1 min-w-0">
         <p className="text-sm font-medium text-ink">{title}</p>
         <p className="mt-0.5 text-xs leading-5 text-ink-muted">{description}</p>
       </div>
-      <div className="order-2 md:order-4 md:justify-self-end">
+      <div className="order-2 xl:order-4 xl:justify-self-end">
         <AdminTopbarMenu actions={menu} label={`${title} actions`} />
       </div>
-      <div className="order-3 col-span-2 grid gap-1.5 md:order-2 md:col-span-1">{children}</div>
-      <div className="order-4 col-span-2 md:order-3 md:col-span-1 md:pt-1.5">
+      <div className="order-3 col-span-2 grid gap-1.5 xl:order-2 xl:col-span-1">{children}</div>
+      <div className="order-4 col-span-2 xl:order-3 xl:col-span-1 xl:pt-1.5">
         <AdminStatusPill label={ADMIN_ROLE_STATUS_LABEL[status]} status={status} testId={`${testId}-status`} />
       </div>
     </div>
@@ -72,7 +72,7 @@ function ReasoningSelect({
   return (
     <select
       aria-label={label}
-      className={`${compactSelectClass} md:w-[11.5rem]`}
+      className={`${compactSelectClass} xl:w-[11.5rem]`}
       disabled={disabled || !model || (efforts.length === 0 && value === null)}
       onChange={(event) => onChange(event.currentTarget.value || null)}
       value={value ?? ""}
@@ -116,7 +116,7 @@ export function AdminSystemRolesTable({
 
   return (
     <div className={cardClass} data-testid="admin-system-roles">
-      <div className="hidden border-b border-trace-subtle px-4 py-2 text-metadata font-semibold uppercase tracking-[0.08em] text-ink-muted md:grid md:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_8.5rem_2.5rem] md:gap-4">
+      <div className="hidden border-b border-trace-subtle px-4 py-2 text-metadata font-semibold uppercase tracking-[0.08em] text-ink-muted xl:grid xl:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_8.5rem_2.5rem] xl:gap-4">
         <span>Role</span>
         <span>Deployment</span>
         <span>Status</span>

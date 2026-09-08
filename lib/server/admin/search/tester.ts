@@ -171,6 +171,7 @@ export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester
         normalizedSourceCount,
         probeBinding: role.authority,
         protocol: draft.protocol,
+        ...(providerSourcesUnavailable ? { sourceAttribution: "provider_unavailable" as const } : {}),
         status: normalizedSourceCount > 0 || providerSourcesUnavailable
           ? "available"
           : "unavailable"

@@ -107,7 +107,6 @@ describe("AdminUsageSection", () => {
 
     const summary = screen.getByRole("region", { name: "Usage summary" });
     expect(within(summary).getByText("Provider-reported · all recorded usage")).toBeVisible();
-    expect(summary).toHaveClass("min-w-0", "border-y", "border-trace-subtle");
     expect(within(summary).getByTestId("usage-total-tokens")).toHaveTextContent(
       new Intl.NumberFormat(undefined).format(1000)
     );

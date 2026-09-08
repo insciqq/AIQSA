@@ -71,7 +71,7 @@ export function AdminSearchSection({
     onMutationCommitted,
     onNotice: feedback.reportNotice
   });
-  const { busy, catalog, loaded } = controller.state;
+  const { busy, catalog, error, loaded, loading } = controller.state;
   const source = useMemo(
     () => (resource && catalog ? catalog.integrations.find(({ id }) => id === resource) ?? null : null),
     [catalog, resource]
@@ -161,8 +161,9 @@ export function AdminSearchSection({
         <div className="px-4 py-12 text-center sm:px-6" data-testid="admin-search-section" role={loaded ? "alert" : "status"}>
           {loaded ? (
             <>
-              <p className="text-sm font-semibold text-ink-secondary">This Search source no longer exists.</p>
-              <UiV2Button className="mt-4" onClick={backToList} tone="ghost" type="button">Back to Search</UiV2Button>
+              <p className="text-sm font-semibold text-ink-secondary">{error ?? "This Search source no longer exists."}</p>
+              {error ? <UiV2Button className="mt-4" disabled={loading} onClick={() => void controller.actions.refresh()} tone="ghost" type="button">Try again</UiV2Button>
+                : <UiV2Button className="mt-4" onClick={backToList} tone="ghost" type="button">Back to Search</UiV2Button>}
             </>
           ) : (
             <p className="text-sm text-ink-muted">Loading Search source…</p>
@@ -181,7 +182,7 @@ export function AdminSearchSection({
           <AdminSearchSourceSheet
             catalog={catalog}
             controller={controller}
-            key={`${source.id}:${source.draftVersion}`}
+            key={source.id}
             mode={{ kind: "configure", source }}
             onClose={() => setConfigureOpenFor(null)}
             onSaved={() => setConfigureOpenFor(null)}

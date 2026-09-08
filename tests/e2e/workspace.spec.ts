@@ -235,7 +235,7 @@ test("administrator enables a ready Workspace with public internet", async ({ pa
   const internet = policy.getByLabel("Allow public internet in new workspaces");
   if (!(await internet.isChecked())) await internet.click();
   await expect(internet).toBeChecked();
-  await expect(policy.getByRole("status")).toContainText("Workspace policy updated.");
+  await expect(page.getByTestId("admin-feedback")).toContainText("Workspace policy updated.");
 });
 
 test("personal Workspace runs tools, preserves state, exports bytes, stops, resets, and rejects forged admission", async ({ browser }) => {

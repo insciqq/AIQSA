@@ -21,6 +21,7 @@ const fullAccess: AdminGroup = {
 const dashboard: Pick<AdminDashboard, "groups" | "users"> = {
   groups: [archived, operators, reviewers, fullAccess],
   users: [{
+    directGrants: [],
     displayName: "Ada Operator",
     effectiveEntitlements: { models: [], providers: [], searchStrategies: [] },
     email: "ada@example.com",
@@ -117,7 +118,7 @@ describe("useAdminGroupsController", () => {
       await expect(result.current.actions.setMembership(reviewers, "user-ada", true)).resolves.toBe(true);
     });
     expect(deps.runAction).toHaveBeenLastCalledWith(
-      { action: "set_user_groups", groupIds: [operators.id, reviewers.id], userId: "user-ada" },
+      { action: "set_user_groups", expectedGroupIds: [operators.id], groupIds: [operators.id, reviewers.id], userId: "user-ada" },
       "Member added."
     );
 
@@ -125,7 +126,7 @@ describe("useAdminGroupsController", () => {
       await expect(result.current.actions.setMembership(operators, "user-ada", false)).resolves.toBe(true);
     });
     expect(deps.runAction).toHaveBeenLastCalledWith(
-      { action: "set_user_groups", groupIds: [], userId: "user-ada" },
+      { action: "set_user_groups", expectedGroupIds: [operators.id], groupIds: [], userId: "user-ada" },
       "Member removed."
     );
 

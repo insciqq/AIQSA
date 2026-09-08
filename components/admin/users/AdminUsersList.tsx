@@ -26,7 +26,7 @@ const compactSelect = `${inputClass} h-8 min-h-0 py-0 pr-8 text-[13px]`;
 
 /** One set of tracks for the header and every row (PRD 5.8). */
 const gridTracks =
-  "md:grid-cols-[2rem_minmax(0,1fr)_13rem_9rem_6.5rem_9.5rem] lg:grid-cols-[2rem_minmax(0,1fr)_16.25rem_10.5rem_7.5rem_11rem]";
+  "xl:grid-cols-[2rem_minmax(12rem,1fr)_minmax(8rem,12rem)_5rem_4rem_9rem]";
 
 function currentHref(): string {
   return typeof window === "undefined" ? "/admin" : window.location.href;
@@ -90,7 +90,7 @@ function GroupSelect({
   return (
     <select
       aria-label={label}
-      className={`${compactSelect} w-full md:max-w-[15rem]`}
+      className={`${compactSelect} w-full xl:max-w-[15rem]`}
       disabled={disabled}
       id={id}
       onChange={(event) => onChange(event.currentTarget.value)}
@@ -120,11 +120,13 @@ function UserRow({
   users: AdminUsersController;
 }>) {
   const [groupId, setGroupId] = useState("");
+  const [expectedGroupIds, setExpectedGroupIds] = useState<string[] | null>(null);
   const [addingGroup, setAddingGroup] = useState(false);
   const [busy, setBusy] = useState(false);
   const isSelf = user.id === users.adminUserId;
   const pending = user.status === "pending";
-  const canAddToGroup = user.status === "active" && activeGroupIdsForUser(user, groups).length === 0;
+  const currentGroupIds = activeGroupIdsForUser(user, groups);
+  const canAddToGroup = user.status === "active" && currentGroupIds.length === 0;
   const access = userAccessSummary(user, groups);
   const lastSeen = formatLastSeen(user.lastSessionAt, new Date(nowMs));
   const disabled = users.actionsDisabled || busy;
@@ -132,6 +134,10 @@ function UserRow({
   const identity = [user.email ?? "no email", isSelf ? "you" : null, user.role === "admin" ? "admin" : null]
     .filter((part): part is string => part !== null)
     .join(" · ");
+  const selectGroup = (next: string) => {
+    setExpectedGroupIds((previous) => previous ?? currentGroupIds);
+    setGroupId(next);
+  };
 
   const run = async (action: () => Promise<boolean>) => {
     setBusy(true);
@@ -145,7 +151,7 @@ function UserRow({
   return (
     <li
       className={[
-        "relative grid grid-cols-[2rem_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-2 px-4 py-3 sm:px-5 md:min-h-14 md:items-center md:gap-x-4 md:py-2.5",
+        "relative grid grid-cols-[2rem_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-2 px-4 py-3 sm:px-5 xl:min-h-14 xl:items-center xl:gap-x-4 xl:py-2.5",
         gridTracks,
         pending ? "bg-caution/5" : user.status === "disabled" ? "opacity-65" : ""
       ].join(" ")}
@@ -167,17 +173,17 @@ function UserRow({
           {user.displayName}
         </a>
         <p className="break-words text-xs text-ink-muted [overflow-wrap:anywhere]">{identity}</p>
-        <p className={`mt-0.5 text-xs md:hidden ${accessTone[access.tone]}`}>
+        <p className={`mt-0.5 text-xs xl:hidden ${accessTone[access.tone]}`}>
           {access.label} · <span className="text-ink-muted">{lastSeen}</span>
         </p>
       </div>
-      <div className="relative z-[1] col-start-2 flex min-w-0 flex-wrap items-center gap-1 md:col-start-auto">
+      <div className="relative z-[1] col-start-2 flex min-w-0 flex-wrap items-center gap-1 xl:col-start-auto">
         {pending ? (
           <GroupSelect
             disabled={disabled}
             groups={groups}
             label={`Group for ${user.displayName}`}
-            onChange={setGroupId}
+            onChange={selectGroup}
             value={groupId}
           />
         ) : addingGroup ? (
@@ -185,22 +191,22 @@ function UserRow({
             disabled={disabled}
             groups={groups}
             label={`Group for ${user.displayName}`}
-            onChange={setGroupId}
+            onChange={selectGroup}
             value={groupId}
           />
         ) : (
           <GroupTags user={user} />
         )}
       </div>
-      <span className={`hidden truncate text-sm md:block ${accessTone[access.tone]}`}>{access.label}</span>
-      <span className="hidden truncate text-sm text-ink-muted md:block">{lastSeen}</span>
-      <div className="relative z-[1] col-start-3 row-start-1 flex shrink-0 items-center justify-end gap-1.5 md:col-start-auto md:row-start-auto">
+      <span className={`hidden truncate text-sm xl:block ${accessTone[access.tone]}`}>{access.label}</span>
+      <span className="hidden truncate text-sm text-ink-muted xl:block">{lastSeen}</span>
+      <div className="relative z-[1] col-start-3 row-start-1 flex shrink-0 items-center justify-end gap-1.5 xl:col-start-auto xl:row-start-auto">
         {pending ? (
           <>
             <UiV2Button
               busy={busy}
               disabled={disabled || !user.hasVerifiedIdentity}
-              onClick={() => void run(() => users.actions.approve(user, groupId ? [groupId] : []))}
+              onClick={() => void run(() => users.actions.approve(user, groupId ? [groupId] : [], expectedGroupIds ?? currentGroupIds))}
               title={user.hasVerifiedIdentity ? undefined : "The email is not verified yet"}
               tone="primary"
               type="button"
@@ -217,8 +223,8 @@ function UserRow({
               busy={busy}
               disabled={disabled || !groupId}
               onClick={() => void run(async () => {
-                const ok = await users.actions.saveGroups(user, [groupId]);
-                if (ok) setAddingGroup(false);
+                const ok = await users.actions.saveGroups(user, [groupId], expectedGroupIds ?? currentGroupIds);
+                if (ok) { setAddingGroup(false); setExpectedGroupIds(null); }
                 return ok;
               })}
               tone="primary"
@@ -226,12 +232,12 @@ function UserRow({
             >
               Add
             </UiV2Button>
-            <UiV2Button disabled={busy} onClick={() => setAddingGroup(false)} tone="ghost" type="button">Cancel</UiV2Button>
+            <UiV2Button disabled={busy} onClick={() => { setAddingGroup(false); setExpectedGroupIds(null); }} tone="ghost" type="button">Cancel</UiV2Button>
           </>
         ) : canAddToGroup ? (
           <UiV2Button
             disabled={disabled}
-            onClick={() => setAddingGroup(true)}
+            onClick={() => { setAddingGroup(true); setExpectedGroupIds(currentGroupIds); }}
             tone="ghost"
             type="button"
           >
@@ -300,7 +306,7 @@ export function AdminUsersList({
             <>
               <div
                 aria-hidden="true"
-                className={`hidden items-center gap-x-4 border-b border-trace-subtle px-5 py-2 text-metadata font-semibold uppercase tracking-[0.06em] text-ink-muted md:grid ${gridTracks}`}
+                className={`hidden items-center gap-x-4 border-b border-trace-subtle px-5 py-2 text-metadata font-semibold uppercase tracking-[0.06em] text-ink-muted xl:grid ${gridTracks}`}
               >
                 <span />
                 <span>User</span>

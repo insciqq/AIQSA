@@ -72,7 +72,7 @@ export function AdminGroupsSection({
   const [filter, setFilter] = useState<AdminGroupStatusFilter>("active");
   // Keyed by the open page so a page change never carries a sheet along.
   const [openSheet, setOpenSheet] = useState<OpenSheet | null>(null);
-  const [leaveDeletedPage, setLeaveDeletedPage] = useState(false);
+  const [pendingNavigation, setPendingNavigation] = useState<{ resource: string | null } | null>(null);
   const providers = useAdminProvidersController(resource !== null);
   const group = useMemo(
     () => (resource ? dashboard.groups.find(({ id }) => id === resource) ?? null : null),
@@ -84,17 +84,16 @@ export function AdminGroupsSection({
   );
   const counts = useMemo(() => adminGroupFilterCounts(dashboard.groups), [dashboard.groups]);
   const backToList = useCallback(() => onSelectResource(null), [onSelectResource]);
-  // A confirmed delete settles while the panel still counts the action as
-  // running; the return to the list waits for the next idle commit so the
-  // navigation guard sees the finished state.
+  // Mutation promises settle before the panel commits its idle state. Wait
+  // for that commit before opening the created group or leaving a deleted one.
   useEffect(() => {
-    if (!leaveDeletedPage || groups.actionsDisabled) return;
+    if (!pendingNavigation || groups.actionsDisabled) return;
     const timer = window.setTimeout(() => {
-      setLeaveDeletedPage(false);
-      onSelectResource(null);
+      setPendingNavigation(null);
+      onSelectResource(pendingNavigation.resource);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [groups.actionsDisabled, leaveDeletedPage, onSelectResource]);
+  }, [groups.actionsDisabled, onSelectResource, pendingNavigation]);
 
   const { requestArchive, requestDelete } = groups.actions;
   const actionsDisabled = groups.actionsDisabled;
@@ -131,7 +130,7 @@ export function AdminGroupsSection({
                 disabled: actionsDisabled || !deletion.canDelete,
                 icon: "trash",
                 label: "Delete",
-                onSelect: () => requestDelete(group, () => setLeaveDeletedPage(true)),
+                onSelect: () => requestDelete(group, () => setPendingNavigation({ resource: null })),
                 separatorBefore: archived,
                 tone: "destructive"
               }
@@ -171,7 +170,7 @@ export function AdminGroupsSection({
       onClose={() => setOpenSheet(null)}
       onSaved={(groupId) => {
         setOpenSheet(null);
-        if (sheetMode.kind === "create" && groupId) onSelectResource(groupId);
+        if (sheetMode.kind === "create" && groupId) setPendingNavigation({ resource: groupId });
       }}
       open
     />

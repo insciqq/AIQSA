@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useAdminEmailController } from "./useAdminEmailController";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useState, type ReactNode } from "react";
 import { AdminSectionTopbarProvider, type AdminShellTopbar } from "@/components/admin/AdminShell";
@@ -121,6 +122,26 @@ async function openMenu() {
 describe("AdminEmailSection", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("keeps a successful Email mutation when an older refresh finishes afterward", async () => {
+    const previous = activeState();
+    const next = { ...previous, active: { ...previous.active, enabled: false } };
+    let finish!: (value: Response) => void;
+    const delayed = new Promise<Response>((resolve) => { finish = resolve; });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ email: previous }))
+      .mockReturnValueOnce(delayed)
+      .mockResolvedValueOnce(Response.json({ email: next }));
+    const { result } = renderHook(() => useAdminEmailController({
+      active: true, onError: vi.fn(), onNotice: vi.fn()
+    }));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    let refreshing!: Promise<void>;
+    act(() => { refreshing = result.current.actions.refresh(); });
+    await act(async () => { await result.current.actions.setEnabled(false); });
+    await act(async () => { finish(Response.json({ email: previous })); await refreshing; });
+    expect(result.current.state.email?.active.enabled).toBe(false);
   });
 
   it("renders one form from the stored settings with the delivery state on top and never the password", async () => {

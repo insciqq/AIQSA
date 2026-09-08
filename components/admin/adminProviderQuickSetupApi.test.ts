@@ -8,52 +8,38 @@ const checkedAt = "2026-07-26T03:00:00.000Z";
 
 function snapshot() {
   return {
-    configuredConnections: [{
-      activeModelCount: 8,
-      displayName: "Compatible gateway",
-      enabled: true,
-      family: "openai_compatible",
-      id: "connection-compatible"
-    }],
     providers: [
       {
         candidateModels: [{ displayName: "GPT-5.6 Terra" }, { displayName: "GPT-5.6 Luna" }],
         provider: "openai",
         providerDisplayName: "OpenAI",
-        state: "not_configured",
         stateToken: "state-openai"
       },
       {
         candidateModels: [{ displayName: "Claude Opus 5" }],
-        model: { displayName: "Claude Opus 5" },
         provider: "anthropic",
         providerDisplayName: "Anthropic",
-        state: "ready",
         stateToken: "state-anthropic"
       },
       {
         candidateModels: [{ displayName: "DeepSeek V4 Pro" }],
         provider: "deepseek",
         providerDisplayName: "DeepSeek",
-        state: "not_configured",
         stateToken: "state-deepseek"
       },
       {
         candidateModels: [{ displayName: "Gemini 3.6 Flash" }],
         provider: "gemini",
         providerDisplayName: "Gemini",
-        state: "disabled",
         stateToken: "state-gemini"
       },
       {
         candidateModels: [{ displayName: "Claude Opus 4.8" }],
         provider: "openrouter",
         providerDisplayName: "OpenRouter",
-        state: "needs_attention",
         stateToken: "state-openrouter"
       }
-    ],
-    suggestedProvider: "anthropic"
+    ]
   };
 }
 
@@ -169,13 +155,12 @@ describe("admin provider Quick setup API", () => {
 
   it.each([
     { ...snapshot(), extra: true },
-    { providers: snapshot().providers.slice(0, 2), suggestedProvider: null },
-    { providers: [...snapshot().providers, snapshot().providers[0]], suggestedProvider: null },
+    { providers: snapshot().providers.slice(0, 2) },
+    { providers: [...snapshot().providers, snapshot().providers[0]] },
     {
       providers: snapshot().providers.map((provider) => provider.provider === "anthropic"
-        ? { ...provider, model: undefined }
-        : provider),
-      suggestedProvider: "anthropic"
+        ? { ...provider, state: "ready" }
+        : provider)
     },
     { providers: snapshot().providers, suggestedProvider: "fake" },
     {

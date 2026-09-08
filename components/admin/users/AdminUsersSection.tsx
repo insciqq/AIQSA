@@ -183,7 +183,8 @@ export function AdminUsersSection({
           providers={{
             connections: providers.state.connections,
             error: providers.state.error,
-            loaded: providers.state.loaded
+            loaded: providers.state.loaded,
+            refresh: providers.actions.refresh
           }}
           user={user}
           users={users}

@@ -39,26 +39,6 @@ export type ProviderDiscoveryCandidate = Readonly<{
   };
 }>;
 
-export type ProviderDraftTestCandidate = Readonly<{
-  connection: {
-    configuration: unknown;
-    displayName: string;
-    draftVersion: number;
-    family: string;
-    id: string;
-  };
-  credential: {
-    id: string;
-    source: ProviderCredentialSecretSource;
-  };
-  model: {
-    configuration: unknown;
-    displayName: string;
-    draftVersion: number;
-    id: string;
-  };
-}>;
-
 export type ProviderActiveRefreshCandidate = Readonly<{
   connection: {
     configuration: unknown;
@@ -68,7 +48,8 @@ export type ProviderActiveRefreshCandidate = Readonly<{
     version: number;
   };
   credential: {
-    envelope: string;
+    /** Null only for an explicitly configured no-auth compatible endpoint. */
+    envelope: string | null;
     id: string;
     versionId: string;
   };
@@ -102,6 +83,7 @@ export type StoredProviderDraftCheck = Readonly<{
 
 export type ProviderActivationCandidate = Readonly<{
   connection: {
+    activeConfiguration: unknown | null;
     configuration: unknown;
     displayName: string;
     draftVersion: number;
@@ -213,6 +195,10 @@ export type ProviderModelActivationWrite = Readonly<{
 export type ProviderCredentialActivationWrite = Readonly<{
   checkedAt: Date;
   connectionId: string;
+  expectedConnectionVersion: number;
+  expectedConnectionDraftVersion: number;
+  /** Catalog access is published with the key; capability checks follow separately. */
+  modelChecks: readonly ProviderCatalogAccessCheck[];
   credential:
     | { id: string; kind: "new"; label: string }
     | { expectedDraftVersion: number; id: string; kind: "rotate" };
@@ -220,6 +206,32 @@ export type ProviderCredentialActivationWrite = Readonly<{
   testEvidence: Record<string, unknown>;
   versionEnvelope: string;
   versionId: string;
+}>;
+
+export type ProviderCatalogAccessCheck = Readonly<{
+  evidence: AdminProviderTestEvidence;
+  modelVersion: number;
+  providerModelId: string;
+  status: AdminProviderCheckStatus;
+}>;
+
+export type ProviderConnectionSettingsWrite = Readonly<{
+  configuration: ProviderConnectionConfiguration;
+  connectionId: string;
+  displayName: string;
+  expectedActiveVersion: number;
+  expectedDraftVersion: number;
+  /** Every current non-revoked credential is fenced, including disabled keys. */
+  credentials: readonly Readonly<{
+    credentialId: string;
+    expectedDraftVersion: number;
+    expectedVersionId: string;
+    modelChecks: readonly ProviderCatalogAccessCheck[];
+    replacement: { envelope: string; versionId: string } | null;
+    testEvidence: Record<string, unknown>;
+  }>[];
+  now: Date;
+  unassignedPolicy: AdminProviderUnassignedPolicy;
 }>;
 
 export type ProviderCredentialActivationResult =
@@ -235,6 +247,7 @@ export type AdminProviderRepository = Readonly<{
     input: ProviderCredentialActivationWrite
   ): Promise<ProviderCredentialActivationResult>;
   activateModelCas(input: ProviderModelActivationWrite): Promise<ProviderDraftMutationResult>;
+  saveConnectionSettingsCas(input: ProviderConnectionSettingsWrite): Promise<ProviderDraftMutationResult>;
   assignGroupCredential(input: {
     connectionId: string;
     credentialId: string;
@@ -270,11 +283,6 @@ export type AdminProviderRepository = Readonly<{
     connectionId: string;
     credentialId: string;
   }): Promise<ProviderDiscoveryCandidate | null>;
-  loadDraftTestCandidate(input: {
-    connectionId: string;
-    credentialId: string;
-    providerModelId: string;
-  }): Promise<ProviderDraftTestCandidate | null>;
   loadModelActivationCandidate(input: {
     connectionId: string;
     modelId: string;
@@ -301,10 +309,6 @@ export type AdminProviderRepository = Readonly<{
     connectionId: string;
     credentialId: string | null;
   }): Promise<"credential_not_found" | "not_found" | "updated">;
-  storeDraftCheckCas(
-    candidate: ProviderDraftTestCandidate,
-    check: StoredProviderDraftCheck
-  ): Promise<"stale" | "stored">;
   storeActiveRefreshCas(input: {
     capabilityRole?: SystemModelVerificationRole;
     candidate: ProviderActiveRefreshCandidate;
@@ -312,18 +316,6 @@ export type AdminProviderRepository = Readonly<{
     evidence: AdminProviderTestEvidence;
     status: AdminProviderCheckStatus;
   }): Promise<"stale" | "stored">;
-  updateConnectionDraft(input: {
-    configuration: ProviderConnectionConfiguration;
-    connectionId: string;
-    displayName: string;
-    expectedDraftVersion: number;
-    unassignedPolicy: AdminProviderUnassignedPolicy;
-  }): Promise<ProviderDraftMutationResult>;
-  updateCredentialDraft(input: {
-    credentialId: string;
-    draftSecretEnvelope: string | null;
-    expectedDraftVersion: number;
-  }): Promise<ProviderDraftMutationResult>;
   updateModelDraft(input: {
     configuration: ProviderModelConfiguration;
     displayName: string;

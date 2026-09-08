@@ -96,6 +96,55 @@ describe("providerListStatus", () => {
     }));
     expect(providerListStatus(connection)).toMatchObject({ kind: "working" });
   });
+
+  it("requires every key used by an active group or user to work", () => {
+    const connection = workingConnection();
+    const groupKey = fixtureCredential({ enabled: false, id: "cred-group", label: "Research" });
+    connection.credentials.push(groupKey);
+    connection.assignments = [{
+      connectionId: connection.id, credentialId: groupKey.id,
+      group: { archivedAt: null, id: "group-1", name: "Research" }, updatedAt: NOW.toISOString()
+    }];
+    expect(providerListStatus(connection)).toMatchObject({ kind: "not_checked" });
+    connection.credentials[1] = { ...groupKey, activeVersion: null, enabled: true };
+    expect(providerListStatus(connection)).toMatchObject({ kind: "not_checked" });
+    connection.credentials.pop();
+    expect(providerListStatus(connection)).toMatchObject({ kind: "not_checked" });
+    connection.assignments[0]!.group.archivedAt = NOW.toISOString();
+    expect(providerListStatus(connection)).toMatchObject({ kind: "working" });
+    connection.userAssignments = [{
+      connectionId: connection.id, credentialId: groupKey.id, updatedAt: NOW.toISOString(),
+      user: { displayName: "Research user", email: null, id: "user-1", status: "active" }
+    }];
+    expect(providerListStatus(connection)).toMatchObject({ kind: "not_checked" });
+    connection.userAssignments[0]!.user.status = "disabled";
+    expect(providerListStatus(connection)).toMatchObject({ kind: "working" });
+  });
+
+  it("ignores checks for old or removed model configurations", () => {
+    const connection = workingConnection();
+    connection.models[0]!.activeVersion = 2;
+    connection.activeChecks = [
+      fixtureCheck({ credentialId: "cred-primary", providerModelId: "model-terra", status: "unavailable" }),
+      fixtureCheck({ credentialId: "cred-primary", providerModelId: "removed-model", status: "unavailable" })
+    ];
+    expect(providerListStatus(connection)).toMatchObject({ kind: "working" });
+    expect(providerKeyState(connection, connection.credentials[0]!, NOW)).toMatchObject({ kind: "working" });
+    connection.activeChecks = [fixtureCheck({ credentialId: "cred-primary", modelVersion: 2, providerModelId: "model-terra", status: "unavailable" })];
+    expect(providerListStatus(connection)).toMatchObject({ kind: "key_rejected" });
+  });
+
+  it("shows a current refresh warning without discarding earlier successful checks", () => {
+    const connection = workingConnection();
+    const failedCheck = fixtureCheck({ credentialId: "cred-primary", providerModelId: "model-terra", refreshFailedAt: NOW.toISOString() });
+    connection.activeChecks = [failedCheck];
+    expect(providerListStatus(connection)).toMatchObject({ kind: "not_checked", tone: "warn" });
+    expect(providerHeaderStatus(connection, NOW)).toContain("1 key needs a re-check");
+    expect(connection.activeChecks).toEqual([failedCheck]);
+    connection.models[0]!.activeVersion = 2;
+    expect(providerListStatus(connection)).toMatchObject({ kind: "working" });
+    expect(providerHeaderStatus(connection, NOW)).toContain("All keys working");
+  });
 });
 
 describe("providerKeyState", () => {

@@ -310,7 +310,10 @@ export type AdminMcpGrantRequest = {
 };
 
 export type AdminMcpDraftTestRequest = {
+  description?: string;
+  draft?: McpDraftConfiguration;
   expectedUpdatedAt?: string;
+  name?: string;
   oneTimeValues?: Record<string, McpSlotValue>;
   publish?: boolean;
   sharedValues?: Record<string, McpSlotValue | null>;

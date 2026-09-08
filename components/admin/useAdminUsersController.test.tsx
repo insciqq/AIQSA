@@ -33,16 +33,16 @@ describe("useAdminUsersController", () => {
     const { view } = harness(runAction);
 
     await act(async () => {
-      expect(await view.result.current.actions.approve(target, ["group-active", "group-archived"])).toBe(true);
+      expect(await view.result.current.actions.approve(target, ["group-active", "group-archived"], [])).toBe(true);
     });
     expect(calls).toEqual([
-      [{ action: "set_user_groups", groupIds: ["group-active"], userId: "pat" }, "User groups saved.", { reload: false, successNotice: false }],
+      [{ action: "set_user_groups", expectedGroupIds: [], groupIds: ["group-active"], userId: "pat" }, "User groups saved.", { reload: false, successNotice: false }],
       [{ action: "approve_user", groupIds: ["group-active"], userId: "pat" }, "User approved and added to the group."]
     ]);
 
     calls.length = 0;
     await act(async () => {
-      await view.result.current.actions.approve(target, []);
+      await view.result.current.actions.approve(target, [], []);
     });
     expect(calls).toEqual([[{ action: "approve_user", groupIds: [], userId: "pat" }, "User approved."]]);
   });
@@ -53,14 +53,14 @@ describe("useAdminUsersController", () => {
     const { view } = harness(runAction);
 
     await act(async () => {
-      expect(await view.result.current.actions.approve(target, ["group-active"])).toBe(false);
+      expect(await view.result.current.actions.approve(target, ["group-active"], [])).toBe(false);
     });
     expect(runAction).toHaveBeenCalledTimes(1);
     await act(async () => {
-      expect(await view.result.current.actions.saveGroups(target, ["group-active"])).toBe(false);
+      expect(await view.result.current.actions.saveGroups(target, ["group-active"], ["group-before-edit"])).toBe(false);
     });
     expect(runAction).toHaveBeenLastCalledWith(
-      { action: "set_user_groups", groupIds: ["group-active"], userId: "pat" },
+      { action: "set_user_groups", expectedGroupIds: ["group-before-edit"], groupIds: ["group-active"], userId: "pat" },
       "User groups saved."
     );
   });

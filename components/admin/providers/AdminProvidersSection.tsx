@@ -84,7 +84,7 @@ export function AdminProvidersSection({
     onMutationCommitted,
     onNotice: feedback.reportNotice
   });
-  const { connections, loaded } = controller.state;
+  const { connections, error, loaded } = controller.state;
   const usageSources = useAdminProviderUsage(active, connections);
   const usage = useMemo(() => deriveProviderUsage(connections, usageSources), [connections, usageSources]);
   const connection = useMemo(
@@ -113,31 +113,18 @@ export function AdminProvidersSection({
     const name = target.displayName;
     requestConfirmation({
       body: isCustomProvider(target)
-        ? "The provider is turned off and removed with its keys, models, overrides and defaults. Chats already running finish, and history keeps its records."
-        : "The provider is turned off and removed with its keys and models. Chats already running finish, and history keeps its records.",
+        ? "The provider is removed with its keys, models, overrides and defaults. Chats already running finish, and history keeps its records."
+        : "The server checks dependencies before deleting this provider. If deletion is blocked, its current availability is preserved.",
       confirmLabel: "Delete provider",
       dialogLabel: `Delete ${name}`,
       icon: "trash",
       onConfirm: async () => {
-        let turnedOff = false;
-        if (target.enabled) {
-          turnedOff = await controller.actions.connectionAction(
-            target.id,
-            { action: "disable" },
-            "Provider turned off.",
-            { quiet: true }
-          );
-          if (!turnedOff) {
-            feedback.reportError(`“${name}” could not be turned off, so it was not deleted.`);
-            return;
-          }
-        }
         const result = await controller.actions.deleteConnection(target.id);
         if (result.ok) {
           onSelectResource(null);
           return;
         }
-        feedback.reportError(`“${name}” was ${turnedOff ? "turned off but " : ""}not deleted. ${
+        feedback.reportError(`“${name}” was not deleted. ${
           result.error.blockers.length ? describeDeleteBlockers(result.error.blockers, "provider") : result.message
         }`);
       },
@@ -213,7 +200,8 @@ export function AdminProvidersSection({
         <div className="px-4 py-12 text-center sm:px-6" role={loaded ? "alert" : "status"}>
           {loaded ? (
             <>
-              <p className="text-sm font-semibold text-ink-secondary">This provider no longer exists.</p>
+              <p className="text-sm font-semibold text-ink-secondary">{error ?? "This provider no longer exists."}</p>
+              {error ? <UiV2Button className="mt-4" onClick={() => void refresh()} tone="ghost" type="button">Try again</UiV2Button> : null}
               <UiV2Button className="mt-4" onClick={backToList} tone="ghost" type="button">Back to providers</UiV2Button>
             </>
           ) : (

@@ -111,6 +111,7 @@ const groups: AdminGroup[] = [
 const users: AdminUserRecord[] = [
   {
     displayName: "Alice",
+    directGrants: [],
     effectiveEntitlements: { models: [], providers: [], searchStrategies: [] },
     email: "alice@example.com",
     groups: [],
@@ -197,10 +198,15 @@ function fakeApi(state: ApiState) {
         state.failNextCheck = false;
         return json({ error: "mcp_draft_test_failed", issues: [{ code: "mcp_remote_validation_failed", path: "source" }] }, 400);
       }
-      const active = configuration("configuration-next", (current.activeRevision?.revisionNumber ?? 0) + 1, "identity-next", "not_applicable", current.draft.disabledToolNames);
+      const update = body as AdminMcpUpdateRequest;
+      const nextDraft = update.draft ?? current.draft;
+      const active = configuration("configuration-next", (current.activeRevision?.revisionNumber ?? 0) + 1, "identity-next", "not_applicable", nextDraft.disabledToolNames);
       return json({ server: replace({
         ...current,
         activeRevision: active,
+        draft: nextDraft,
+        ...(update.name ? { name: update.name } : {}),
+        ...(update.description !== undefined ? { description: update.description } : {}),
         draftTest: testedDraft("identity-next"),
         draftTested: true,
         enabled: true,
@@ -519,9 +525,8 @@ describe("AdminMcpSection", () => {
 
     fireEvent.click(within(reopened).getByRole("button", { name: "Test & Save" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    const patch = calls.find((call) => call.method === "PATCH");
-    expect(patch?.body).toMatchObject({ expectedUpdatedAt: NOW, name: "Renamed Tools" });
-    expect(calls.at(-1)).toMatchObject({ body: { expectedUpdatedAt: "2026-09-07T10:05:00.000Z", publish: true }, url: "/api/admin/mcp/server-1/test" });
+    expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+    expect(calls.at(-1)).toMatchObject({ body: { expectedUpdatedAt: NOW, name: "Renamed Tools", publish: true }, url: "/api/admin/mcp/server-1/test" });
     await waitFor(() => expect(screen.getByTestId("topbar-title")).toHaveTextContent("Renamed Tools"));
   });
 
@@ -538,11 +543,12 @@ describe("AdminMcpSection", () => {
     const alert = await within(sheet).findByRole("alert");
     expect(alert).toHaveTextContent("Your changes were not applied");
     expect(within(sheet).getByLabelText("Name")).toHaveValue("Broken Tools");
-    // The fields are staged for the next check; nothing was applied.
-    expect(screen.getByTestId("mcp-server-page-status")).toHaveTextContent("Changes not applied");
+    expect(state.servers[0].name).toBe("Working Tools");
     fireEvent.keyDown(sheet, { key: "Escape" });
+    const discard = await screen.findByTestId("mcp-settings-discard");
+    fireEvent.click(within(discard).getByRole("button", { name: "Confirm discard changes" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(screen.getByTestId("topbar-title")).toHaveTextContent("Broken Tools");
+    expect(screen.getByTestId("topbar-title")).toHaveTextContent("Working Tools");
   });
 
   it("the ⋯ menu checks for updates, disables, restores an earlier configuration and deletes through the shared confirmation", async () => {

@@ -1,9 +1,10 @@
 "use client";
 
 import { activeDraftGroupIds } from "@/components/admin/adminDraftGroups";
+import { adminActionErrorMessage } from "@/components/admin/adminApi";
 import type { AdminRunAction } from "@/components/admin/useAdminActionRunner";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
-import type { AdminDashboard, AdminUserRecord } from "@/lib/contracts/admin";
+import type { AdminActionRequest, AdminDashboard, AdminGroupGrantChange, AdminUserRecord } from "@/lib/contracts/admin";
 import { useCallback, useMemo } from "react";
 
 export type UseAdminUsersControllerOptions = Readonly<{
@@ -15,17 +16,20 @@ export type UseAdminUsersControllerOptions = Readonly<{
 }>;
 
 export type AdminUserActionTarget = Pick<AdminUserRecord, "displayName" | "email" | "id">;
+export type AdminUserAccessResult = { ok: true } | { message: string; ok: false };
 
 export type AdminUsersController = Readonly<{
   actions: Readonly<{
     /** Approve with groups in one client action: `set_user_groups` (when any) then `approve_user`. */
-    approve(user: AdminUserActionTarget, groupIds: readonly string[]): Promise<boolean>;
+    approve(user: AdminUserActionTarget, groupIds: readonly string[], expectedGroupIds: readonly string[]): Promise<boolean>;
     requestDelete(user: AdminUserActionTarget, onSuccess?: () => void): void;
     requestDisable(user: AdminUserActionTarget): void;
     requestReject(user: AdminUserActionTarget): void;
     requestRevokeAllSessions(): void;
     requestRevokeSessions(user: AdminUserActionTarget): void;
-    saveGroups(user: AdminUserActionTarget, groupIds: readonly string[]): Promise<boolean>;
+    saveGroups(user: AdminUserActionTarget, groupIds: readonly string[], expectedGroupIds: readonly string[]): Promise<boolean>;
+    saveGrants(user: Pick<AdminUserRecord, "id" | "directGrants">, changes: readonly AdminGroupGrantChange[]): Promise<AdminUserAccessResult>;
+    saveCredential(user: AdminUserActionTarget, input: Omit<Extract<AdminActionRequest, { action: "set_user_credential" }>, "action" | "userId">): Promise<AdminUserAccessResult>;
   }>;
   actionsDisabled: boolean;
   adminUserId: string;
@@ -50,11 +54,11 @@ export function useAdminUsersController({
 }: UseAdminUsersControllerOptions): AdminUsersController {
   const groups = dashboard?.groups;
 
-  const approve = useCallback(async (user: AdminUserActionTarget, groupIds: readonly string[]) => {
+  const approve = useCallback(async (user: AdminUserActionTarget, groupIds: readonly string[], expectedGroupIds: readonly string[]) => {
     const activeIds = activeDraftGroupIds(groups ?? [], groupIds);
     if (activeIds.length) {
       const memberships = await runAction(
-        { action: "set_user_groups", groupIds: activeIds, userId: user.id },
+        { action: "set_user_groups", expectedGroupIds: [...expectedGroupIds], groupIds: activeIds, userId: user.id },
         "User groups saved.",
         { reload: false, successNotice: false }
       );
@@ -67,9 +71,9 @@ export function useAdminUsersController({
     return !result.error;
   }, [groups, runAction]);
 
-  const saveGroups = useCallback(async (user: AdminUserActionTarget, groupIds: readonly string[]) => {
+  const saveGroups = useCallback(async (user: AdminUserActionTarget, groupIds: readonly string[], expectedGroupIds: readonly string[]) => {
     const result = await runAction(
-      { action: "set_user_groups", groupIds: activeDraftGroupIds(groups ?? [], groupIds), userId: user.id },
+      { action: "set_user_groups", expectedGroupIds: [...expectedGroupIds], groupIds: activeDraftGroupIds(groups ?? [], groupIds), userId: user.id },
       "User groups saved."
     );
     return !result.error;
@@ -88,6 +92,21 @@ export function useAdminUsersController({
       title: "Delete stale user?"
     });
   }, [requestConfirmedAction]);
+
+  const saveGrants = useCallback<AdminUsersController["actions"]["saveGrants"]>(async (user, changes) => {
+    const result = await runAction({
+      action: "set_user_grants",
+      changes: [...changes],
+      expectedGrantIds: user.directGrants.map(({ id }) => id),
+      userId: user.id
+    }, "Direct access updated. Group access is unchanged.");
+    return result.error ? { message: adminActionErrorMessage(result.error), ok: false } : { ok: true };
+  }, [runAction]);
+
+  const saveCredential = useCallback<AdminUsersController["actions"]["saveCredential"]>(async (user, input) => {
+    const result = await runAction({ action: "set_user_credential", ...input, userId: user.id }, "Direct provider key updated.");
+    return result.error ? { message: adminActionErrorMessage(result.error), ok: false } : { ok: true };
+  }, [runAction]);
 
   const requestReject = useCallback((user: AdminUserActionTarget) => {
     requestConfirmedAction({
@@ -149,6 +168,8 @@ export function useAdminUsersController({
       requestReject,
       requestRevokeAllSessions,
       requestRevokeSessions,
+      saveCredential,
+      saveGrants,
       saveGroups
     },
     actionsDisabled,
@@ -162,6 +183,8 @@ export function useAdminUsersController({
     requestReject,
     requestRevokeAllSessions,
     requestRevokeSessions,
+    saveCredential,
+    saveGrants,
     saveGroups
   ]);
 }

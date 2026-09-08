@@ -13,35 +13,16 @@ export type AdminProviderQuickSetupModelDisplay = Readonly<{
   displayName: string;
 }>;
 
-export type AdminProviderQuickSetupState =
-  | "advanced_required"
-  | "disabled"
-  | "needs_attention"
-  | "not_configured"
-  | "ready";
-
 export type AdminProviderQuickSetupProviderSnapshot = Readonly<{
   /** The code-owned models a setup turns on when the key's catalog has them, in policy order. */
   candidateModels: AdminProviderQuickSetupModelDisplay[];
-  model?: AdminProviderQuickSetupModelDisplay;
   provider: AdminProviderQuickSetupProviderId;
   providerDisplayName: string;
-  state: AdminProviderQuickSetupState;
   stateToken: string;
 }>;
 
-export type AdminProviderQuickSetupConnectionSummary = Readonly<{
-  activeModelCount: number;
-  displayName: string;
-  enabled: boolean;
-  family: string;
-  id: string;
-}>;
-
 export type AdminProviderQuickSetupSnapshot = Readonly<{
-  configuredConnections: AdminProviderQuickSetupConnectionSummary[];
   providers: AdminProviderQuickSetupProviderSnapshot[];
-  suggestedProvider: AdminProviderQuickSetupProviderId | null;
 }>;
 
 export type AdminProviderQuickSetupSelection = Readonly<{

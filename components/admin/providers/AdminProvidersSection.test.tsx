@@ -75,19 +75,16 @@ function quickSetupSnapshot() {
     candidateModels: models.map((displayName) => ({ displayName })),
     provider: id,
     providerDisplayName: label,
-    state: "not_configured",
     stateToken: `state-${id}`
   });
   return {
-    configuredConnections: [],
     providers: [
       provider("openai", "OpenAI", ["GPT-5.6 Terra"]),
       provider("anthropic", "Anthropic", ["Claude Opus 5"]),
       provider("gemini", "Gemini", ["Gemini 3.6 Flash"]),
       provider("deepseek", "DeepSeek", ["DeepSeek V4 Pro"]),
       provider("openrouter", "OpenRouter", ["Claude Opus 4.8"])
-    ],
-    suggestedProvider: null
+    ]
   };
 }
 
@@ -328,10 +325,10 @@ describe("AdminProvidersSection", () => {
     expect(confirmations).toHaveLength(2);
     expect(confirmations[1]).toMatchObject({ confirmLabel: "Delete provider", title: "Delete “OpenAI”?" });
     await act(async () => { await confirmations[1]!.onConfirm(); });
-    expect(calls.some(({ body }) => body?.action === "disable")).toBe(true);
+    expect(calls.some(({ body }) => body?.action === "disable")).toBe(false);
     expect(calls.some(({ method }) => method === "DELETE")).toBe(true);
     expect(feedback.reportError).toHaveBeenCalledWith(
-      "“OpenAI” was turned off but not deleted. Used by 2 Assistants and a system role — reassign first."
+      "“OpenAI” was not deleted. Used by 2 Assistants and a system role — reassign first."
     );
     expect(onSelectResource).not.toHaveBeenCalled();
   });
@@ -343,6 +340,7 @@ describe("AdminProvidersSection", () => {
           ? {
               ...connection,
               displayName: String(body?.displayName),
+              activeConfig: body?.configuration as AdminProviderConnection["draftConfig"],
               draftConfig: body?.configuration as AdminProviderConnection["draftConfig"],
               draftVersion: connection.draftVersion + 1
             }
@@ -369,17 +367,15 @@ describe("AdminProvidersSection", () => {
     fireEvent.click(within(sheet).getByRole("button", { name: "Test & Save" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Connection settings" })).not.toBeInTheDocument());
     expect(calls.filter(({ method }) => method !== "GET").map(({ body, method, url }) => ({ action: body?.action, method, url }))).toEqual([
-      { action: undefined, method: "PATCH", url: "/api/admin/providers/conn-openai" },
-      { action: "activate", method: "POST", url: "/api/admin/providers/conn-openai/actions" }
+      { action: undefined, method: "PATCH", url: "/api/admin/providers/conn-openai" }
     ]);
     expect(calls.find(({ method }) => method === "PATCH")?.body).toMatchObject({
       configuration: { responseTimeoutSeconds: 120 },
       expectedDraftVersion: 1
     });
-    expect(calls.find(({ body }) => body?.action === "activate")?.body).toEqual({
-      action: "activate",
-      confirmUnavailable: true,
-      enableConnection: true
+    expect(calls.find(({ method }) => method === "PATCH")?.body).toMatchObject({
+      activate: true,
+      credentialSecrets: []
     });
     expect(feedback.reportNotice).toHaveBeenCalledWith("Connection settings saved.");
     calls.length = 0;
@@ -395,9 +391,7 @@ describe("AdminProvidersSection", () => {
     fireEvent.click(within(reopened).getByRole("button", { name: "Test & Save" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Connection settings" })).not.toBeInTheDocument());
     expect(calls.filter(({ method }) => method !== "GET").map(({ body, method }) => ({ action: body?.action, activate: body?.activate, method }))).toEqual([
-      { action: undefined, activate: undefined, method: "PATCH" },
-      { action: "rotate", activate: undefined, method: "PATCH" },
-      { action: "activate", activate: undefined, method: "POST" }
+      { action: undefined, activate: true, method: "PATCH" }
     ]);
     expect(document.body.textContent).not.toContain("re-entered-key");
 
@@ -412,6 +406,64 @@ describe("AdminProvidersSection", () => {
     fireEvent.click(within(await screen.findByRole("dialog", { name: "Discard unsaved connection settings" }))
       .getByRole("button", { name: "Confirm discard changes" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("requires every saved key at a new endpoint and retains the entire form after a rejected save", async () => {
+    connections.current = connections.current.map((connection) => connection.id === "conn-openai" ? {
+      ...connection,
+      credentials: [...connection.credentials, { ...connection.credentials[0]!, enabled: false, id: "group-key", label: "Group key" }]
+    } : connection);
+    const calls = mockFetch(connections, ({ method, url }) => method === "PATCH" && url === "/api/admin/providers/conn-openai"
+      ? Response.json({ error: "provider_credential_test_failed" }, { status: 422 }) : null);
+    renderSection("conn-openai");
+    fireEvent.click(await screen.findByRole("button", { name: "Connection settings" }));
+    const sheet = await screen.findByRole("dialog", { name: "Connection settings" });
+    fireEvent.change(within(sheet).getByLabelText(/^Endpoint/), { target: { value: "https://new.example.test/v1" } });
+    fireEvent.change(within(sheet).getByLabelText(/^API key for Primary/), { target: { value: "new-primary" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Test & Save" }));
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent("Group key");
+    expect(calls.filter(({ method }) => method !== "GET")).toHaveLength(0);
+    fireEvent.change(within(sheet).getByLabelText(/^API key for Group key/), { target: { value: "new-group" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Test & Save" }));
+    await waitFor(() => expect(calls.filter(({ method }) => method !== "GET")).toHaveLength(1));
+    await waitFor(() => expect(within(sheet).getByRole("button", { name: "Test & Save" })).not.toBeDisabled());
+    expect(within(sheet).getByLabelText(/^Endpoint/)).toHaveValue("https://new.example.test/v1");
+    expect(within(sheet).getByLabelText(/^API key for Primary/)).toHaveValue("new-primary");
+    expect(within(sheet).getByLabelText(/^API key for Group key/)).toHaveValue("new-group");
+    expect(calls.find(({ method }) => method === "PATCH")?.body).toMatchObject({
+      activate: true,
+      credentialSecrets: [{ credentialId: "cred-primary", secret: "new-primary" }, { credentialId: "group-key", secret: "new-group" }]
+    });
+  });
+
+  it("keeps the settings edit version when background refresh observes another administrator's change", async () => {
+    const calls = mockFetch(connections, ({ method }) => method === "PATCH"
+      ? Response.json({ error: "provider_draft_stale" }, { status: 409 }) : null);
+    renderSection("conn-openai");
+    fireEvent.click(await screen.findByRole("button", { name: "Connection settings" }));
+    const sheet = await screen.findByRole("dialog", { name: "Connection settings" });
+    fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "My provider name" } });
+    connections.current = connections.current.map((connection) => connection.id === "conn-openai"
+      ? { ...connection, displayName: "Another administrator's name", draftVersion: 2 }
+      : connection);
+    fireEvent.focus(window);
+    await waitFor(() => expect(screen.getByTestId("topbar-title")).toHaveTextContent("Another administrator's name"));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Test & Save" }));
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent("changed in another window");
+    expect(calls.find(({ method }) => method === "PATCH")?.body).toMatchObject({ expectedDraftVersion: 1 });
+    expect(within(sheet).getByLabelText("Name")).toHaveValue("My provider name");
+  });
+
+  it("offers retry after a failed resource read without claiming the provider was deleted", async () => {
+    let failed = true;
+    mockFetch(connections, ({ url }) => failed && url === "/api/admin/providers"
+      ? Response.json({ error: "provider_admin_action_failed" }, { status: 503 }) : null);
+    renderSection("conn-openai");
+    const alert = await screen.findByRole("alert");
+    expect(alert).not.toHaveTextContent("no longer exists");
+    failed = false;
+    fireEvent.click(within(alert).getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(screen.getByTestId("topbar-title")).toHaveTextContent("OpenAI"));
   });
 
   it("shows the check in progress from the catalog when the page opens, and stops it in one request", async () => {

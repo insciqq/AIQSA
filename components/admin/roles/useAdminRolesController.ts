@@ -100,6 +100,19 @@ export function useAdminRolesController({
   const modelPolicyRef = useRef<AdminModelPolicyCatalog | null>(null);
   const knowledgeRef = useRef<AdminKnowledgeSettings | null>(null);
   const assignRef = useRef<AdminRolesController["assign"] | null>(null);
+  const readEpoch = useRef(0);
+  const readSequence = useRef({ knowledge: 0, model: 0, policy: 0 });
+  const actionPending = useRef(false);
+  const invalidateReads = useCallback(() => {
+    readEpoch.current += 1;
+    setLoading(false);
+    setKnowledgeLoading(false);
+  }, []);
+  const setMutationBusy = useCallback((pending: boolean) => {
+    invalidateReads();
+    actionPending.current = pending;
+    setBusy(pending);
+  }, [invalidateReads]);
 
   const setPolicy = useCallback((next: AdminSystemModelPolicyCatalog) => {
     policyRef.current = next;
@@ -118,7 +131,11 @@ export function useAdminRolesController({
   }, [onMutationCommitted]);
 
   const refreshPolicy = useCallback(async () => {
+    if (actionPending.current) return;
+    const epoch = readEpoch.current;
+    const sequence = ++readSequence.current.policy;
     const result = await getAdminSystemModelPolicy();
+    if (epoch !== readEpoch.current || sequence !== readSequence.current.policy) return;
     if (result.ok) {
       setPolicy(result.data);
       setError(null);
@@ -127,7 +144,11 @@ export function useAdminRolesController({
     }
   }, [setPolicy]);
   const refreshModelPolicy = useCallback(async () => {
+    if (actionPending.current) return;
+    const epoch = readEpoch.current;
+    const sequence = ++readSequence.current.model;
     const result = await getAdminModelPolicy();
+    if (epoch !== readEpoch.current || sequence !== readSequence.current.model) return;
     if (result.ok) {
       setModelPolicy(result.data);
       setModelPolicyError(null);
@@ -136,8 +157,12 @@ export function useAdminRolesController({
     }
   }, [setModelPolicy]);
   const refreshKnowledge = useCallback(async () => {
+    if (actionPending.current) return;
+    const epoch = readEpoch.current;
+    const sequence = ++readSequence.current.knowledge;
     setKnowledgeLoading(true);
     const result = await getAdminKnowledgeSettings();
+    if (epoch !== readEpoch.current || sequence !== readSequence.current.knowledge) return;
     setKnowledgeLoading(false);
     if (result.ok) {
       setKnowledge(result.data);
@@ -147,9 +172,11 @@ export function useAdminRolesController({
     }
   }, [setKnowledge]);
   const refresh = useCallback(async () => {
+    if (actionPending.current) return;
+    const epoch = readEpoch.current;
     setLoading(true);
     await Promise.all([refreshPolicy(), refreshModelPolicy(), refreshKnowledge()]);
-    setLoading(false);
+    if (epoch === readEpoch.current) setLoading(false);
   }, [refreshKnowledge, refreshModelPolicy, refreshPolicy]);
 
   useEffect(() => {
@@ -157,17 +184,27 @@ export function useAdminRolesController({
     queueMicrotask(() => {
       if (!disposed) void refresh();
     });
+    const refreshVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    const timer = window.setInterval(refreshVisible, 30_000);
+    window.addEventListener("focus", refreshVisible);
+    document.addEventListener("visibilitychange", refreshVisible);
     return () => {
       disposed = true;
+      readEpoch.current += 1;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshVisible);
+      document.removeEventListener("visibilitychange", refreshVisible);
     };
   }, [refresh]);
 
   const assign = useCallback(async (patch: AdminRolePatch, undo: AdminRolePatch | null): Promise<boolean> => {
     const current = policyRef.current;
     if (!current) return false;
-    setBusy(true);
+    setMutationBusy(true);
     const result = await updateAdminSystemModelPolicy({ expectedVersion: current.policy.version, ...patch });
-    setBusy(false);
+    setMutationBusy(false);
     if (!result.ok) {
       reportError(adminSystemModelPolicyErrorMessage(result.error));
       if (result.error === "system_model_policy_stale") void refreshPolicy();
@@ -186,14 +223,18 @@ export function useAdminRolesController({
     }
     commit();
     return true;
-  }, [commit, refreshPolicy, reportError, reportNotice, setPolicy]);
+  }, [commit, refreshPolicy, reportError, reportNotice, setMutationBusy, setPolicy]);
   useEffect(() => {
     assignRef.current = assign;
   }, [assign]);
 
   const check = useCallback(async (role: AdminSystemModelEligibilityRole, id: string): Promise<boolean> => {
+    invalidateReads();
+    actionPending.current = true;
     setChecking({ id, role });
     const result = await verifyAdminSystemModelRole(id, role);
+    invalidateReads();
+    actionPending.current = false;
     setChecking(null);
     if (!result.ok) {
       reportError(adminSystemModelPolicyErrorMessage(result.error));
@@ -201,7 +242,7 @@ export function useAdminRolesController({
     }
     setPolicy(result.data);
     return true;
-  }, [reportError, setPolicy]);
+  }, [invalidateReads, reportError, setPolicy]);
 
   const checkAndAssign = useCallback(async (role: "memory" | "vision", id: string): Promise<boolean> => {
     const previous = policyRef.current?.policy;
@@ -236,9 +277,9 @@ export function useAdminRolesController({
   ): Promise<string | null> => {
     const current = modelPolicyRef.current;
     if (!current) return "Chat defaults are still loading.";
-    setBusy(true);
+    setMutationBusy(true);
     const result = await updateAdminModelPolicy({ expectedVersion: current.policy.version, ...input });
-    setBusy(false);
+    setMutationBusy(false);
     if (!result.ok) {
       if (result.error === "model_policy_stale") void refreshModelPolicy();
       return adminModelPolicyErrorMessage(result.error);
@@ -247,7 +288,7 @@ export function useAdminRolesController({
     reportNotice("Chat defaults saved for new chats");
     commit();
     return null;
-  }, [commit, refreshModelPolicy, reportNotice, setModelPolicy]);
+  }, [commit, refreshModelPolicy, reportNotice, setModelPolicy, setMutationBusy]);
 
   const settleKnowledge = useCallback((next: AdminKnowledgeSettings, verb: string) => {
     setKnowledge(next);
@@ -258,14 +299,14 @@ export function useAdminRolesController({
   const applyKnowledge = useCallback(async (draft: AdminKnowledgeDraft): Promise<boolean> => {
     const current = knowledgeRef.current;
     if (!current) return false;
-    setBusy(true);
+    setMutationBusy(true);
     const result = await activateAdminKnowledgeProfile({
       deploymentId: draft.embeddingDeploymentId,
       documentDeploymentId: draft.mode === "local" ? null : draft.documentDeploymentId,
       expectedVersion: current.profile.version,
       pdfProcessingMode: draft.mode
     });
-    setBusy(false);
+    setMutationBusy(false);
     if (!result.ok) {
       reportError(adminKnowledgeErrorMessage(result.error));
       if (result.error === "knowledge_profile_stale") void refreshKnowledge();
@@ -273,14 +314,14 @@ export function useAdminRolesController({
     }
     settleKnowledge(result.data, "Knowledge processing applied");
     return true;
-  }, [refreshKnowledge, reportError, settleKnowledge]);
+  }, [refreshKnowledge, reportError, setMutationBusy, settleKnowledge]);
 
   const restoreKnowledge = useCallback(async (revisionId: string): Promise<boolean> => {
     const current = knowledgeRef.current;
     if (!current) return false;
-    setBusy(true);
+    setMutationBusy(true);
     const result = await rollbackAdminKnowledgeProfile({ expectedVersion: current.profile.version, revisionId });
-    setBusy(false);
+    setMutationBusy(false);
     if (!result.ok) {
       reportError(adminKnowledgeErrorMessage(result.error));
       if (result.error === "knowledge_profile_stale") void refreshKnowledge();
@@ -288,7 +329,7 @@ export function useAdminRolesController({
     }
     settleKnowledge(result.data, "Earlier configuration restored");
     return true;
-  }, [refreshKnowledge, reportError, settleKnowledge]);
+  }, [refreshKnowledge, reportError, setMutationBusy, settleKnowledge]);
 
   return useMemo(() => ({
     applyKnowledge,

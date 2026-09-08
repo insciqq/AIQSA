@@ -14,9 +14,9 @@ import {
   UiV2IconButton,
   UiV2IconSprite,
   UiV2MenuActions,
-  UiV2MenuSurface,
   type UiV2MenuAction
 } from "@/components/ui-v2";
+import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { AccountMenuV2 } from "@/features/navigation-v2/AccountMenuV2";
 import type { AdminReleaseStatus } from "@/lib/contracts/adminRelease";
@@ -37,6 +37,9 @@ const touchTarget =
   "[@media(hover:none)]:!min-h-touch [@media(pointer:coarse)]:!min-h-touch";
 
 const DRAWER_QUERY = "(max-width: 1023px)";
+const subscribeToBrowser = () => () => undefined;
+const browserSnapshot = () => true;
+const serverSnapshot = () => false;
 
 function subscribeDrawerComposition(onChange: () => void) {
   if (typeof window === "undefined" || !window.matchMedia) return () => undefined;
@@ -99,7 +102,7 @@ export function AdminTopbarMenu({
   label?: string;
 }>) {
   const [open, setOpen] = useState(false);
-  const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: () => setOpen(false), open });
+  const { closeForAction, menuRef, triggerRef } = useMenuDismissalV2({ onClose: () => setOpen(false), open });
 
   return (
     <div className="relative">
@@ -113,9 +116,9 @@ export function AdminTopbarMenu({
         tooltip={label}
       />
       {open ? (
-        <UiV2MenuSurface className="absolute right-0 top-[calc(100%+0.375rem)] z-40" label={label} ref={menuRef}>
-          <UiV2MenuActions actions={actions} onClose={() => setOpen(false)} />
-        </UiV2MenuSurface>
+        <UiV2ResponsiveMenu anchorRef={triggerRef} label={label} menuRef={menuRef} onClose={() => setOpen(false)}>
+          <UiV2MenuActions actions={actions} onClose={closeForAction} />
+        </UiV2ResponsiveMenu>
       ) : null}
     </div>
   );
@@ -155,9 +158,8 @@ function SectionLink({
   section: (typeof adminSections)[number];
 }>) {
   const Icon = section.Icon;
-  const href = typeof window === "undefined"
-    ? adminSectionPath("/admin", section.id)
-    : adminSectionPath(window.location.href, section.id);
+  const browserReady = useSyncExternalStore(subscribeToBrowser, browserSnapshot, serverSnapshot);
+  const href = adminSectionPath(browserReady ? window.location.href : "/admin", section.id);
   const countId = `admin-nav-${section.id}-count`;
   return (
     <a

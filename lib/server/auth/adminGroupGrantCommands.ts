@@ -41,9 +41,8 @@ const activeProviderConnection = {
 } as const;
 
 /**
- * Resolves one change to the exact grant row it addresses, or null when the
- * target is not grantable: an unknown or disabled Search option, a model that
- * is not active on an active connection, or a provider without any such model.
+ * Resolves the exact principal and target. Additions require an available
+ * resource; removal also accepts disabled or archived targets.
  */
 async function resolveGrantTarget(
   tx: GrantTransaction,
@@ -53,6 +52,22 @@ async function resolveGrantTarget(
   const searchStrategy = change.searchStrategy?.trim() || null;
   const provider = change.provider?.trim() || null;
   const modelId = change.modelId?.trim() || null;
+
+  if (!change.enabled) {
+    const where: GrantWhere = {
+      groupId,
+      providerConnectionId: modelId ? null : provider,
+      providerModelId: modelId,
+      searchStrategy,
+      userId: null
+    };
+    const existing = await tx.accessGrant.findFirst({
+      select: { providerModel: { select: { connectionId: true } } },
+      where
+    });
+    if (existing && modelId && existing.providerModel?.connectionId !== provider) return null;
+    return where;
+  }
 
   if (searchStrategy) {
     if (searchStrategy === "search-disabled" || provider || modelId) return null;
@@ -281,104 +296,113 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
     },
     async setUserGroups(input) {
       const groupIds = [...new Set(input.groupIds)];
-      return prisma.$transaction(async (tx) => {
-        const user = await tx.user.findUnique({
-          select: {
-            id: true
-          },
-          where: {
-            id: input.userId
-          }
-        });
-
-        if (!user) {
-          return false;
-        }
-
-        const activeGroups = await tx.group.findMany({
-          select: {
-            id: true
-          },
-          where: {
-            archivedAt: null,
-            id: {
-              in: groupIds
-            }
-          }
-        });
-        const activeGroupIds = new Set(activeGroups.map((group) => group.id));
-        const currentMemberships = await tx.userGroup.findMany({
-          select: { groupId: true },
-          where: { group: { archivedAt: null }, userId: input.userId }
-        });
-        const currentGroupIds = new Set(
-          currentMemberships.map((membership) => membership.groupId)
-        );
-        const removedGroupIds = [...currentGroupIds].filter(
-          (groupId) => !activeGroupIds.has(groupId)
-        );
-        const addedGroupIds = [...activeGroupIds].filter(
-          (groupId) => !currentGroupIds.has(groupId)
-        );
-        const affectedGroupIds = [...new Set([
-          ...currentMemberships.map((membership) => membership.groupId),
-          ...activeGroupIds
-        ])];
-        const affectedMcpServers = affectedGroupIds.length
-          ? await tx.mcpGrant.findMany({
-              distinct: ["serverId"],
-              select: { serverId: true },
-              where: { canUse: true, groupId: { in: affectedGroupIds } }
-            })
-          : [];
-
-        if (removedGroupIds.length) {
-          await tx.userGroup.deleteMany({
+      try {
+        return await prisma.$transaction(async (tx) => {
+          const user = await tx.user.findUnique({
+            select: {
+              id: true
+            },
             where: {
-              groupId: { in: removedGroupIds },
-              userId: input.userId
+              id: input.userId
             }
           });
-        }
 
-        for (const groupId of addedGroupIds) {
-          await tx.userGroup.create({
-            data: {
-              groupId,
-              role: "member",
-              userId: input.userId
+          if (!user) {
+            return "user_not_found" as const;
+          }
+
+          const activeGroups = await tx.group.findMany({
+            select: {
+              id: true
+            },
+            where: {
+              archivedAt: null,
+              id: {
+                in: groupIds
+              }
             }
           });
-        }
-
-        const affectedServerIds = affectedMcpServers.map((grant) => grant.serverId);
-        if (affectedServerIds.length) {
-          await tx.mcpUserServer.updateMany({
-            data: { desiredRuntimeGenerationId: null },
-            where: { serverId: { in: affectedServerIds }, userId: input.userId }
+          const activeGroupIds = new Set(activeGroups.map((group) => group.id));
+          const currentMemberships = await tx.userGroup.findMany({
+            select: { groupId: true },
+            where: { group: { archivedAt: null }, userId: input.userId }
           });
-          for (const serverId of affectedServerIds) {
-            const canStillUse = await tx.mcpGrant.count({
+          const currentGroupIds = new Set(
+            currentMemberships.map((membership) => membership.groupId)
+          );
+          const expectedGroupIds = [...new Set(input.expectedGroupIds)].sort();
+          if (JSON.stringify([...currentGroupIds].sort()) !== JSON.stringify(expectedGroupIds)) {
+            return "user_access_stale" as const;
+          }
+          const removedGroupIds = [...currentGroupIds].filter(
+            (groupId) => !activeGroupIds.has(groupId)
+          );
+          const addedGroupIds = [...activeGroupIds].filter(
+            (groupId) => !currentGroupIds.has(groupId)
+          );
+          const affectedGroupIds = [...new Set([
+            ...currentMemberships.map((membership) => membership.groupId),
+            ...activeGroupIds
+          ])];
+          const affectedMcpServers = affectedGroupIds.length
+            ? await tx.mcpGrant.findMany({
+                distinct: ["serverId"],
+                select: { serverId: true },
+                where: { canUse: true, groupId: { in: affectedGroupIds } }
+              })
+            : [];
+
+          if (removedGroupIds.length) {
+            await tx.userGroup.deleteMany({
               where: {
-                canUse: true,
-                serverId,
-                OR: [
-                  { userId: input.userId },
-                  ...(activeGroupIds.size ? [{ groupId: { in: [...activeGroupIds] } }] : [])
-                ]
+                groupId: { in: removedGroupIds },
+                userId: input.userId
               }
             });
-            if (!canStillUse) {
-              await tx.mcpUserServer.updateMany({
-                data: { enabled: false },
-                where: { serverId, userId: input.userId }
+          }
+
+          for (const groupId of addedGroupIds) {
+            await tx.userGroup.create({
+              data: {
+                groupId,
+                role: "member",
+                userId: input.userId
+              }
+            });
+          }
+
+          const affectedServerIds = affectedMcpServers.map((grant) => grant.serverId);
+          if (affectedServerIds.length) {
+            await tx.mcpUserServer.updateMany({
+              data: { desiredRuntimeGenerationId: null },
+              where: { serverId: { in: affectedServerIds }, userId: input.userId }
+            });
+            for (const serverId of affectedServerIds) {
+              const canStillUse = await tx.mcpGrant.count({
+                where: {
+                  canUse: true,
+                  serverId,
+                  OR: [
+                    { userId: input.userId },
+                    ...(activeGroupIds.size ? [{ groupId: { in: [...activeGroupIds] } }] : [])
+                  ]
+                }
               });
+              if (!canStillUse) {
+                await tx.mcpUserServer.updateMany({
+                  data: { enabled: false },
+                  where: { serverId, userId: input.userId }
+                });
+              }
             }
           }
-        }
 
-        return true;
-      });
+          return "applied" as const;
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") return "user_access_stale";
+        throw error;
+      }
     }
   };
 }

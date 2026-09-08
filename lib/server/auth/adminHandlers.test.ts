@@ -149,7 +149,9 @@ function createRepository(
     revokeInvite: async () => true,
     revokeUserSessions: async () => 2,
     setGroupGrants: async () => ({ kind: "applied" }),
-    setUserGroups: async () => true,
+    setUserCredential: async () => "applied",
+    setUserGrants: async () => "applied",
+    setUserGroups: async () => "applied",
     ...overrides
   };
 }
@@ -698,7 +700,7 @@ describe("admin route handlers", () => {
         },
         setUserGroups: async (input) => {
           calls.push({ input, type: "membership" });
-          return true;
+          return "applied";
         }
       }),
       resolveAuth: admin.resolveAuth
@@ -720,6 +722,7 @@ describe("admin route handlers", () => {
     await POST(
       jsonRequest({
         action: "set_user_groups",
+        expectedGroupIds: ["group-1"],
         groupIds: ["group-1", "group-1", "group-2"],
         userId: "user-1"
       })
@@ -754,6 +757,7 @@ describe("admin route handlers", () => {
       },
       {
         input: {
+          expectedGroupIds: ["group-1"],
           groupIds: ["group-1", "group-2"],
           userId: "user-1"
         },
@@ -771,6 +775,86 @@ describe("admin route handlers", () => {
         type: "archive"
       }
     ]);
+  });
+
+  it("requires a membership baseline and returns a conflict when it is stale", async () => {
+    const setUserGroups = vi.fn<AdminRepository["setUserGroups"]>(async () => "user_access_stale");
+    const POST = createAdminActionHandler({
+      getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
+      mailer: createNoopAuthMailer(),
+      repository: createRepository({ setUserGroups }),
+      resolveAuth: admin.resolveAuth
+    });
+    const body = { action: "set_user_groups", groupIds: ["group-new"], userId: "person" };
+    for (const invalid of [body, { ...body, expectedGroupIds: [null] }]) {
+      const response = await POST(jsonRequest(invalid));
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "user_groups_required" });
+    }
+    expect(setUserGroups).not.toHaveBeenCalled();
+    const response = await POST(jsonRequest({ ...body, expectedGroupIds: ["group-original"] }));
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "user_access_stale" });
+    expect(setUserGroups).toHaveBeenCalledWith({ expectedGroupIds: ["group-original"], groupIds: ["group-new"], userId: "person" });
+  });
+
+  it("assigns and revokes direct user access with the supplied concurrency baseline", async () => {
+    const setUserGrants = vi.fn<AdminRepository["setUserGrants"]>(async () => "applied");
+    const setUserCredential = vi.fn<AdminRepository["setUserCredential"]>(async () => "applied");
+    const POST = createAdminActionHandler({
+      getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
+      mailer: createNoopAuthMailer(),
+      repository: createRepository({ setUserCredential, setUserGrants }),
+      resolveAuth: admin.resolveAuth
+    });
+    const grant = { changes: [{ enabled: false, modelId: "model-1", provider: "provider-1" }], expectedGrantIds: ["grant-1"], userId: "user-1" };
+    expect((await POST(jsonRequest({ action: "set_user_grants", ...grant }))).status).toBe(200);
+    expect(setUserGrants).toHaveBeenCalledWith(grant);
+    const key = { connectionId: "provider-1", credentialId: null, expectedCredentialId: "key-1", expectedUpdatedAt: "2026-09-08T12:00:00.000Z", userId: "user-1" };
+    expect((await POST(jsonRequest({ action: "set_user_credential", ...key }))).status).toBe(200);
+    expect(setUserCredential).toHaveBeenCalledWith(key);
+  });
+
+  it("rejects malformed direct access changes and missing baselines before repository writes", async () => {
+    const setUserGrants = vi.fn<AdminRepository["setUserGrants"]>(async () => "applied");
+    const setUserCredential = vi.fn<AdminRepository["setUserCredential"]>(async () => "applied");
+    const POST = createAdminActionHandler({
+      getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
+      mailer: createNoopAuthMailer(),
+      repository: createRepository({ setUserCredential, setUserGrants }),
+      resolveAuth: admin.resolveAuth
+    });
+    for (const body of [
+      { action: "set_user_grants", changes: [{ enabled: true, provider: "provider-1" }], userId: "user-1" },
+      { action: "set_user_grants", changes: [{ enabled: true, modelId: "model-1", searchStrategy: "web" }], expectedGrantIds: [], userId: "user-1" },
+      { action: "set_user_grants", changes: [{ enabled: false, provider: "provider-1" }], expectedGrantIds: [12], userId: "user-1" },
+      { action: "set_user_credential", connectionId: "provider-1", credentialId: "key-1", userId: "user-1" },
+      { action: "set_user_credential", connectionId: "provider-1", credentialId: null, expectedCredentialId: "key-1", expectedUpdatedAt: null, userId: "user-1" }
+    ]) expect((await POST(jsonRequest(body))).status).toBe(400);
+    expect(setUserCredential).not.toHaveBeenCalled();
+    expect(setUserGrants).not.toHaveBeenCalled();
+  });
+
+  it("returns conflicts for stale direct access and requires admin authentication for both writes", async () => {
+    const setUserGrants = vi.fn<AdminRepository["setUserGrants"]>(async () => "user_access_stale");
+    const setUserCredential = vi.fn<AdminRepository["setUserCredential"]>(async () => "user_access_stale");
+    const POST = createAdminActionHandler({
+      getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
+      mailer: createNoopAuthMailer(),
+      repository: createRepository({ setUserCredential, setUserGrants }),
+      resolveAuth: admin.resolveAuth
+    });
+    for (const body of [
+      { action: "set_user_grants", changes: [{ enabled: true, provider: "provider-1" }], expectedGrantIds: [], userId: "user-1" },
+      { action: "set_user_credential", connectionId: "provider-1", credentialId: "key-1", expectedCredentialId: null, expectedUpdatedAt: null, userId: "user-1" }
+    ]) {
+      const response = await POST(jsonRequest(body));
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({ error: "user_access_stale" });
+      expect((await POST(jsonRequest(body, ""))).status).toBe(401);
+    }
+    expect(setUserGrants).toHaveBeenCalledTimes(1);
+    expect(setUserCredential).toHaveBeenCalledTimes(1);
   });
 
   it("creates invite links without handing raw tokens to the repository", async () => {

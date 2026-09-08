@@ -66,6 +66,7 @@ const fullAccess: AdminGroup = {
 
 function user(overrides: Partial<AdminUserRecord> & { displayName: string; id: string }): AdminUserRecord {
   return {
+    directGrants: [],
     effectiveEntitlements: { models: [], providers: [], searchStrategies: [] },
     email: `${overrides.id}@profile.aiqsa.test`,
     groups: [],
@@ -244,7 +245,11 @@ function TopbarHarness({ children }: Readonly<{ children: ReactNode }>) {
   );
 }
 
-function renderSection({ actionsDisabled = false, resource = null }: Readonly<{ actionsDisabled?: boolean; resource?: string | null }> = {}): Harness {
+function renderSection({ actionsDisabled = false, initialDashboard, resource = null }: Readonly<{
+  actionsDisabled?: boolean;
+  initialDashboard?: ReturnType<typeof dashboardFixture>;
+  resource?: string | null;
+}> = {}): Harness {
   const posts: AdminActionRequest[] = [];
   const confirmations: AdminConfirmedActionRequest[] = [];
   const onSelectResource = vi.fn();
@@ -255,7 +260,7 @@ function renderSection({ actionsDisabled = false, resource = null }: Readonly<{ 
   };
 
   function Section() {
-    const dashboard = dashboardFixture();
+    const dashboard = initialDashboard ?? dashboardFixture();
     const controller = useAdminGroupsController({
       actionsDisabled,
       dashboard,
@@ -343,7 +348,7 @@ describe("AdminGroupsSection", () => {
     fireEvent.click(within(sheet).getByRole("button", { name: "Create" }));
     await waitFor(() => expect(posts).toEqual([{ action: "create_group", name: "Profile · Design" }]));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "New group" })).not.toBeInTheDocument());
-    expect(onSelectResource).toHaveBeenCalledWith("group-new");
+    await waitFor(() => expect(onSelectResource).toHaveBeenCalledWith("group-new"));
   });
 
   it("shows the page with crumbs, summary, members and the add-a-person picker", async () => {
@@ -363,7 +368,7 @@ describe("AdminGroupsSection", () => {
       expect.stringContaining("Camila Collaborator")
     ]);
     fireEvent.click(members.getAllByRole("button", { name: "Remove" })[0]!);
-    await waitFor(() => expect(posts).toContainEqual({ action: "set_user_groups", groupIds: ["group-old"].filter(() => false), userId: "ada" }));
+    await waitFor(() => expect(posts).toContainEqual({ action: "set_user_groups", expectedGroupIds: ["group-research"], groupIds: [], userId: "ada" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Add a person" }));
     const search = await screen.findByRole("combobox", { name: "Search people" });
@@ -373,7 +378,7 @@ describe("AdminGroupsSection", () => {
     ]);
     fireEvent.change(search, { target: { value: "grace" } });
     fireEvent.click(screen.getByRole("option", { name: /Grace Reviewer/u }));
-    await waitFor(() => expect(posts).toContainEqual({ action: "set_user_groups", groupIds: ["group-research"], userId: "grace" }));
+    await waitFor(() => expect(posts).toContainEqual({ action: "set_user_groups", expectedGroupIds: [], groupIds: ["group-research"], userId: "grace" }));
   });
 
   it("switches a provider between all models and a checklist, shows the key line and capability chips", async () => {
@@ -465,6 +470,22 @@ describe("AdminGroupsSection", () => {
     expect(mcp.getByText("Needs personal values from each member")).toBeInTheDocument();
     fireEvent.click(mcp.getByRole("switch", { name: "AntV Chart Studio for Profile · Research" }));
     expect(mcpGrant).toHaveBeenCalledWith("server-antv", { canUse: true, groupId: "group-research" });
+  });
+
+  it("keeps grants to unavailable resources visible and removable without adding them to the catalog", async () => {
+    const disabledModel = grant({ groupId: research.id, id: "disabled-model-grant", modelId: "disabled-model", provider: "disabled-provider", resourceDisplayName: "Retired provider / Retired model" });
+    const archivedSearch = grant({ groupId: research.id, id: "archived-search-grant", resourceDisplayName: "Retired Search", searchStrategy: "archived-search" });
+    const dashboard = dashboardFixture();
+    const { posts } = renderSection({ initialDashboard: { ...dashboard, groups: [{ ...research, accessGrants: [...research.accessGrants, disabledModel, archivedSearch] }] }, resource: research.id });
+    const list = await screen.findByRole("list", { name: "Unavailable grants" });
+    expect(list).toHaveTextContent("Retired provider / Retired model");
+    expect(list).toHaveTextContent("Retired Search");
+    for (const button of within(list).getAllByRole("button", { name: "Remove grant" })) fireEvent.click(button);
+    await waitFor(() => expect(posts).toEqual([
+      { action: "set_group_grants", changes: [{ enabled: false, modelId: "disabled-model", provider: "disabled-provider", searchStrategy: null }], groupId: research.id },
+      { action: "set_group_grants", changes: [{ enabled: false, modelId: null, provider: null, searchStrategy: "archived-search" }], groupId: research.id }
+    ]));
+    expect(screen.queryByTestId("admin-group-provider-disabled-provider")).not.toBeInTheDocument();
   });
 
   it("renames from the header and the menu, and archives or deletes through the shared confirmation", async () => {

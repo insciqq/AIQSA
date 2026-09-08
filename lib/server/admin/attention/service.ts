@@ -106,8 +106,10 @@ function providerItems(connections: readonly AdminProviderConnection[]): AdminAt
     if (!connection.enabled) continue;
     const referenced = new Set<string>([
       ...(connection.defaultCredentialId ? [connection.defaultCredentialId] : []),
-      ...connection.assignments.map((assignment) => assignment.credentialId),
-      ...connection.userAssignments.map((assignment) => assignment.credentialId)
+      ...connection.assignments.filter((assignment) => assignment.group.archivedAt === null)
+        .map((assignment) => assignment.credentialId),
+      ...connection.userAssignments.filter((assignment) => assignment.user.status === "active")
+        .map((assignment) => assignment.credentialId)
     ]);
     const rejected: string[] = [];
     const failed: string[] = [];
@@ -118,7 +120,9 @@ function providerItems(connections: readonly AdminProviderConnection[]): AdminAt
       const checks = connection.activeChecks.filter((check) =>
         check.credentialId === credential.id &&
         check.credentialVersionId === activeVersion.id &&
-        check.connectionVersion === connection.activeVersion
+        check.connectionVersion === connection.activeVersion &&
+        connection.models.some((model) => model.id === check.providerModelId &&
+          model.activeConfig !== null && model.activeVersion > 0 && model.activeVersion === check.modelVersion)
       );
       if (checks.length === 0) continue;
       if (checks.every((check) => check.status === "unavailable")) {

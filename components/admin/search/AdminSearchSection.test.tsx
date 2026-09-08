@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useAdminSearchController } from "./useAdminSearchController";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState, type ReactNode } from "react";
 import { AdminSectionTopbarProvider, type AdminShellTopbar } from "@/components/admin/AdminShell";
@@ -200,12 +201,46 @@ describe("AdminSearchSection", () => {
   const state = { current: catalog() };
 
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(NOW));
     state.current = catalog();
     window.history.replaceState(null, "", "/admin?section=search");
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it("shows the real catalog failure and retries a resource URL without claiming it is missing", async () => {
+    let failed = true;
+    mockFetch(state, () => failed ? Response.json({ error: "search_admin_action_failed" }, { status: 500 }) : null);
+    renderSection("source-openai");
+    const alert = await screen.findByRole("alert");
+    expect(alert).not.toHaveTextContent("no longer exists");
+    failed = false;
+    fireEvent.click(within(alert).getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(screen.getByTestId("topbar-title")).toHaveTextContent("OpenAI Search"));
+  });
+
+  it("keeps a successful Search policy mutation when an older refresh finishes afterward", async () => {
+    const previous = structuredClone(state.current);
+    const next = { ...state.current, policy: { ...state.current.policy, version: previous.policy.version + 1 } };
+    let finish!: (value: Response) => void;
+    const delayed = new Promise<Response>((resolve) => { finish = resolve; });
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ search: previous }))
+      .mockReturnValueOnce(delayed)
+      .mockResolvedValueOnce(Response.json({ search: next }));
+    const { result } = renderHook(() => useAdminSearchController(true, {
+      onError: vi.fn(), onNotice: vi.fn()
+    }));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    let refreshing!: Promise<void>;
+    act(() => { refreshing = result.current.actions.refresh(); });
+    await act(async () => { await result.current.actions.savePolicy(previous.policy.defaultPlan, previous.policy.version); });
+    await act(async () => { finish(Response.json({ search: previous })); await refreshing; });
+    expect(result.current.state.catalog?.policy.version).toBe(previous.policy.version + 1);
   });
 
   it("shows the plan and the source list on one page with one status word per source", async () => {

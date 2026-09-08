@@ -52,9 +52,6 @@ function inspection(
 }
 
 function fixture(input: {
-  configuredConnections?: Awaited<ReturnType<NonNullable<
-    AdminProviderQuickSetupRepository["listConfiguredConnections"]
-  >>>;
   inspections?: Partial<Record<AdminProviderQuickSetupProviderId, AdminProviderQuickSetupInspection>>;
   modelIds?: string[];
   pdfProbeResults?: Record<string, "failed" | "throw" | "verified">;
@@ -94,8 +91,7 @@ function fixture(input: {
     commitAdditional,
     inspect: vi.fn(async (
       value: Parameters<AdminProviderQuickSetupRepository["inspect"]>[0]
-    ) => inspections[value.provider]),
-    listConfiguredConnections: vi.fn(async () => input.configuredConnections ?? [])
+    ) => inspections[value.provider])
   };
   const test = vi.fn(async () => {
     order.push("network");
@@ -174,25 +170,6 @@ async function expectedState(
 }
 
 describe("provider Quick setup service", () => {
-  it("returns only the repository's sanitized configured-connection summaries", async () => {
-    const configuredConnections = [{
-      activeModelCount: 8,
-      displayName: "Compatible gateway",
-      enabled: true,
-      family: "openai_compatible",
-      id: "connection-compatible"
-    }];
-    const value = fixture({ configuredConnections });
-
-    await expect(value.service.getSnapshot(actor)).resolves.toMatchObject({
-      configuredConnections
-    });
-    expect(value.repository.listConfiguredConnections).toHaveBeenCalledWith({
-      ...actor,
-      now: checkedAt
-    });
-  });
-
   it("derives a deterministic domain-separated state-token key", () => {
     const derived = deriveAdminProviderQuickSetupStateTokenKey(sessionSecret);
     const otherDomain = createHmac("sha256", Buffer.from(sessionSecret, "utf8"))
@@ -869,23 +846,6 @@ describe("provider Quick setup service", () => {
     await expect(promise).rejects.toBeInstanceOf(AdminProviderQuickSetupServiceError);
     await expect(promise).rejects.toMatchObject({ code: "provider_draft_stale" });
     expect(value.test).toHaveBeenCalledTimes(1);
-  });
-
-  it("suggests a unique ready default, then a unique simple configured provider", async () => {
-    const ready = inspection("anthropic", {
-      actingUserDefault: true,
-      configured: true,
-      mode: "replacement",
-      model: {
-        checkedAt,
-        displayName: "Claude Opus 5",
-        id: "00000000-0000-4000-8000-000000001211",
-        templateKey: "anthropic:claude-opus-5"
-      },
-      state: "ready"
-    });
-    const value = fixture({ inspections: { anthropic: ready } });
-    expect((await value.service.getSnapshot(actor)).suggestedProvider).toBe("anthropic");
   });
 
   it("names a fresh canonical connection and reports the template connection id", async () => {

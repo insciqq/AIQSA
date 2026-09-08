@@ -1,7 +1,5 @@
 import type {
-  AdminProviderQuickSetupConnectionSummary,
-  AdminProviderQuickSetupProviderId,
-  AdminProviderQuickSetupState
+  AdminProviderQuickSetupProviderId
 } from "../../../contracts/adminProviderQuickSetup";
 import type {
   AdminSearchDraft,
@@ -14,6 +12,13 @@ import type { AdminProviderQuickSetupPolicyCandidate } from "./quickSetupPolicy"
 
 /** The first key of a connection created by a setup is `Primary` (PRD 5.4); rotated keys keep the label the admin typed. */
 export const ADMIN_PROVIDER_SETUP_CREDENTIAL_LABEL = "Primary";
+
+type AdminProviderQuickSetupState =
+  | "advanced_required"
+  | "disabled"
+  | "needs_attention"
+  | "not_configured"
+  | "ready";
 
 export type AdminProviderQuickSetupActor = Readonly<{
   sessionId: string;
@@ -150,7 +155,4 @@ export type AdminProviderQuickSetupRepository = Readonly<{
     now: Date;
     provider: AdminProviderQuickSetupProviderId;
   }>): Promise<AdminProviderQuickSetupInspection>;
-  listConfiguredConnections(input: AdminProviderQuickSetupActor & Readonly<{
-    now: Date;
-  }>): Promise<AdminProviderQuickSetupConnectionSummary[]>;
 }>;

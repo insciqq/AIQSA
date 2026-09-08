@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AdminProviderTestEvidence } from "@/lib/contracts/adminProviders";
-import { fixtureCheck, fixtureConnection, fixtureModel } from "@/components/admin/providers/providerFixtures";
-import { groupModelChips } from "./groupModelChips";
+import { fixtureCheck, fixtureConnection, fixtureCredential, fixtureModel } from "@/components/admin/providers/providerFixtures";
+import { modelCapabilityLabels } from "./modelChips";
 
 const opus = fixtureModel({ connectionId: "conn-anthropic", displayName: "Claude Opus 5", id: "opus-5" });
 const capableOpus = {
@@ -24,7 +24,7 @@ function evidence(overrides: Partial<AdminProviderTestEvidence> = {}): AdminProv
   };
 }
 
-describe("groupModelChips", () => {
+describe("modelCapabilityLabels", () => {
   it("shows only the capabilities the current check verified for this model and key", () => {
     const connection = fixtureConnection({
       activeChecks: [
@@ -45,7 +45,7 @@ describe("groupModelChips", () => {
           providerModelId: "opus-5"
         })
       ],
-      credentials: [],
+      credentials: [fixtureCredential({ id: "cred-primary", label: "Primary" }), fixtureCredential({ id: "cred-research", label: "Research" })],
       defaultCredentialId: "cred-primary",
       displayName: "Anthropic",
       family: "anthropic",
@@ -53,7 +53,15 @@ describe("groupModelChips", () => {
       models: [capableOpus]
     });
 
-    expect(groupModelChips({ connection, credentialId: null, modelId: "opus-5" })).toEqual(["Tools", "PDF", "Images"]);
+    expect(modelCapabilityLabels({ connection, credentialId: null, modelId: "opus-5" })).toEqual(["Tools", "PDF", "Images", "Stream"]);
+    for (const stale of [
+      { ...connection, activeVersion: 2 },
+      { ...connection, models: [{ ...capableOpus, activeVersion: 2 }] },
+      { ...connection, credentials: [fixtureCredential({ id: "cred-primary", label: "Primary", enabled: false })] },
+      { ...connection, activeChecks: [{ ...connection.activeChecks[0]!, credentialVersionId: "old-key-version" }] }
+    ]) {
+      expect(modelCapabilityLabels({ connection: stale, credentialId: null, modelId: "opus-5" })).toEqual([]);
+    }
   });
 
   it("prefers the group's own key, accepts legacy per-capability evidence and hides unknown or failed checks", () => {
@@ -76,7 +84,7 @@ describe("groupModelChips", () => {
         }),
         fixtureCheck({ credentialId: "cred-primary", evidence: evidence(), providerModelId: "sonnet-5", status: "unavailable" })
       ],
-      credentials: [],
+      credentials: [fixtureCredential({ id: "cred-primary", label: "Primary" }), fixtureCredential({ id: "cred-research", label: "Research" })],
       defaultCredentialId: "cred-primary",
       displayName: "Anthropic",
       family: "anthropic",
@@ -85,11 +93,12 @@ describe("groupModelChips", () => {
     });
 
     // Default key: Direct PDF matches this adapter; the JSON evidence belongs to another adapter.
-    expect(groupModelChips({ connection, credentialId: null, modelId: "opus-5" })).toEqual(["PDF"]);
+    expect(modelCapabilityLabels({ connection, credentialId: null, modelId: "opus-5" })).toEqual(["PDF"]);
+    expect(modelCapabilityLabels({ connection, credentialId: "cred-unchecked", modelId: "opus-5" })).toEqual([]);
     // Group override key: its own check speaks for the model.
-    expect(groupModelChips({ connection, credentialId: "cred-research", modelId: "opus-5" })).toEqual(["Tools"]);
-    expect(groupModelChips({ connection, credentialId: null, modelId: "sonnet-5" })).toEqual([]);
-    expect(groupModelChips({ connection, credentialId: null, modelId: "missing" })).toEqual([]);
-    expect(groupModelChips({ connection: null, credentialId: null, modelId: "opus-5" })).toEqual([]);
+    expect(modelCapabilityLabels({ connection, credentialId: "cred-research", modelId: "opus-5" })).toEqual(["Tools"]);
+    expect(modelCapabilityLabels({ connection, credentialId: null, modelId: "sonnet-5" })).toEqual([]);
+    expect(modelCapabilityLabels({ connection, credentialId: null, modelId: "missing" })).toEqual([]);
+    expect(modelCapabilityLabels({ connection: null, credentialId: null, modelId: "opus-5" })).toEqual([]);
   });
 });

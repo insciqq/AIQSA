@@ -211,7 +211,7 @@ test("creates an assistant through the Library editor", async ({ page }) => {
 
   const editor = library.getByTestId("assistant-editor");
   await expect(editor).toBeVisible();
-  await expect(editor.getByText("Draft", { exact: true })).toBeVisible();
+  await expect(editor.getByRole("heading", { name: "New assistant", exact: true })).toBeVisible();
   const save = editor.getByTestId("assistant-editor-save");
   await expect(save).toHaveText("Create assistant");
   await expect(save).toBeDisabled();
@@ -430,7 +430,7 @@ test("keeps the Library one-task and reachable at 390x844", async ({ page }) => 
   await expect(library).toBeVisible();
   await expect(library.getByRole("heading", { name: "Assistants" })).toBeVisible();
   await expect(library.getByRole("button", { name: "Back to chat" })).toBeInViewport();
-  await expect(library.getByRole("button", { name: "New Assistant" })).toBeInViewport();
+  await expect(library.getByRole("button", { name: "New assistant", exact: true }).first()).toBeInViewport();
   await expectWithinViewport(page, library);
   await expectNoHorizontalOverflow(page);
 

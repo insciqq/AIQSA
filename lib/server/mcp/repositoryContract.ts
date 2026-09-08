@@ -61,8 +61,11 @@ export type McpRepository = {
     userId: string | null;
   }): Promise<McpRepositoryResult<AdminMcpServer>>;
   testDraft(input: {
+    description?: string;
+    draft?: McpDraftConfiguration;
     expectedDraftHash?: string;
     expectedUpdatedAt?: string;
+    name?: string;
     oneTimeValues: Record<string, McpSlotValue>;
     publish?: boolean;
     serverId: string;

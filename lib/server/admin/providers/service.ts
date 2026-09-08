@@ -8,7 +8,6 @@ import type {
   AdminProviderConnection,
   AdminProviderConnectionConfiguration,
   AdminProviderDeleteResult,
-  AdminProviderDraftCheck,
   AdminProviderFamily,
   AdminProviderModelConfiguration,
   AdminProviderTestEvidence,
@@ -49,10 +48,11 @@ import type {
   ProviderActivationCandidate,
   ProviderActivationWrite,
   ProviderActiveRefreshCandidate,
+  ProviderCatalogAccessCheck,
+  ProviderConnectionSettingsWrite,
   ProviderCredentialSecretSource,
   ProviderDisableTarget,
   ProviderDraftMutationResult,
-  ProviderDraftTestCandidate,
   StoredProviderDraftCheck
 } from "./repositoryContract";
 import type {
@@ -77,6 +77,7 @@ export type AdminProviderServiceErrorCode =
   | "provider_activation_unavailable_confirmation_required"
   | "provider_check_run_not_found"
   | "provider_connection_not_found"
+  | "provider_endpoint_keys_required"
   | "provider_credential_label_taken"
   | "provider_credential_not_found"
   | "provider_credential_test_failed"
@@ -187,18 +188,27 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function fingerprint(candidate: ProviderDraftTestCandidate): string {
-  const source = candidate.credential.source;
-  return createHash("sha256").update(canonicalJson({
-    connectionDraftVersion: candidate.connection.draftVersion,
-    connectionId: candidate.connection.id,
-    credentialDraftVersion: source.kind === "draft" ? source.draftVersion : null,
-    credentialId: candidate.credential.id,
-    credentialVersionId: source.kind === "active" ? source.versionId : null,
-    modelDraftVersion: candidate.model.draftVersion,
-    providerModelId: candidate.model.id,
-    version: 1
-  }), "utf8").digest("hex");
+function catalogAccessChecks(
+  connection: AdminProviderConnection,
+  outcome: AdminProviderCredentialTestOutcome
+): ProviderCatalogAccessCheck[] {
+  return connection.models.flatMap((model) => {
+    if (!model.activeConfig || model.activeVersion < 1) return [];
+    const configuration = model.activeConfig;
+    const available = (outcome.modelIdsByClass?.[configuration.modelClass] ?? outcome.modelIds)
+      .includes(configuration.upstreamModelId);
+    return [{
+      evidence: {
+        detail: available ? "ok" as const : "model_missing" as const,
+        method: "models_catalog" as const,
+        selectedProviders: configuration.openRouterRouting?.providers ?? [],
+        upstreamModelId: configuration.upstreamModelId
+      },
+      modelVersion: model.activeVersion,
+      providerModelId: model.id,
+      status: available ? "available" as const : "unavailable" as const
+    }];
+  });
 }
 
 export function providerCredentialDraftValueId(version: number): string {
@@ -477,6 +487,8 @@ export function createAdminProviderService(input: Readonly<{
     const result = await input.repository.activateCredentialCas({
       checkedAt: now(),
       connectionId: connection.id,
+      expectedConnectionDraftVersion: connection.draftVersion,
+      expectedConnectionVersion: connection.activeVersion,
       credential: value.credential.kind === "new"
         ? { id: credentialId, kind: "new", label: label! }
         : {
@@ -485,6 +497,7 @@ export function createAdminProviderService(input: Readonly<{
             kind: "rotate"
           },
       now: now(),
+      modelChecks: catalogAccessChecks(connection, outcome),
       testEvidence: {
         method: outcome.method,
         modelCount: outcome.modelIds.length,
@@ -527,7 +540,11 @@ export function createAdminProviderService(input: Readonly<{
     const connection = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
     const model = normalizeProviderModelConfiguration(candidate.model.configuration);
     validateFamily(candidate.connection.family, model);
-    const secret = credentialSecretSource(candidate.credential.id, {
+    const keyless = connection.authenticationMode === "none" && candidate.connection.family === "openai_compatible";
+    if ((candidate.credential.envelope === null) !== keyless) {
+      throw new AdminProviderServiceError("provider_active_tuple_not_found");
+    }
+    const secret = candidate.credential.envelope === null ? null : credentialSecretSource(candidate.credential.id, {
       envelope: candidate.credential.envelope,
       kind: "active",
       versionId: candidate.credential.versionId
@@ -681,6 +698,83 @@ export function createAdminProviderService(input: Readonly<{
   }
 
   return {
+    /** Test the complete settings change before publishing any of it. */
+    async saveConnectionSettings(value: {
+      configuration: AdminProviderConnectionConfiguration;
+      connectionId: string;
+      credentialSecrets: readonly { credentialId: string; secret: string }[];
+      displayName: string;
+      expectedDraftVersion: number;
+      signal?: AbortSignal;
+      unassignedPolicy: AdminProviderUnassignedPolicy;
+    }) {
+      const connection = (await input.repository.listConnections()).find(({ id }) => id === value.connectionId);
+      if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
+      if (connection.draftVersion !== value.expectedDraftVersion) throw new AdminProviderServiceError("provider_draft_stale");
+      const displayName = name(value.displayName);
+      const configuration = normalizeAdminProviderConnectionConfiguration(value.configuration);
+      const previous = normalizeAdminProviderConnectionConfiguration(connection.activeConfig ?? connection.draftConfig);
+      const endpointChanged = configuration.apiRoot !== previous.apiRoot;
+      const keyless = configuration.authenticationMode === "none" && connection.family === "openai_compatible";
+      // Authentication mode is owned by the setup flow; this form changes only its listed settings.
+      if (configuration.authenticationMode !== previous.authenticationMode) {
+        throw new AdminProviderServiceError("provider_family_adapter_mismatch");
+      }
+      const credentials = connection.credentials.filter((credential) =>
+        credential.activeVersion !== null && credential.activeVersion.revokedAt === null);
+      const secrets = new Map(value.credentialSecrets.map((entry) => [entry.credentialId, entry.secret]));
+      if (secrets.size !== value.credentialSecrets.length || [...secrets.keys()].some((id) =>
+        !credentials.some((credential) => credential.id === id)) ||
+        keyless && secrets.size > 0 || !endpointChanged && secrets.size > 0 ||
+        endpointChanged && !keyless && credentials.some((credential) => !secrets.get(credential.id)?.trim())) {
+        throw new AdminProviderServiceError("provider_endpoint_keys_required");
+      }
+      const writes: ProviderConnectionSettingsWrite["credentials"][number][] = [];
+      const modelClasses = [...new Set(connection.models.map((model) =>
+        (model.activeConfig ?? model.draftConfig).modelClass))];
+      for (const credential of credentials) {
+        const replacementSecret = endpointChanged && !keyless ? secrets.get(credential.id)! : null;
+        const secret: ProviderCredentialSource | null = keyless ? null : replacementSecret ??
+          (() => activeCredentialSecret(credential.id, credential.activeVersion!.id));
+        const outcome = await testCredentialCatalog({
+          connection: configuration,
+          family: connection.family,
+          modelClasses: modelClasses.length ? modelClasses : ["answer"],
+          secret,
+          signal: value.signal
+        });
+        const versionId = replacementSecret === null ? null : idFactory();
+        writes.push({
+          credentialId: credential.id,
+          expectedDraftVersion: credential.draftVersion,
+          expectedVersionId: credential.activeVersion!.id,
+          modelChecks: catalogAccessChecks(connection, outcome),
+          replacement: replacementSecret === null ? null : {
+            envelope: encryptProviderCredentialSecret({
+              credentialId: credential.id, key: encryptionKey(), secret: replacementSecret, valueId: versionId!
+            }),
+            versionId: versionId!
+          },
+          testEvidence: { method: outcome.method, modelCount: outcome.modelIds.length, version: 1 }
+        });
+      }
+      if (value.signal?.aborted) throw new AdminProviderServiceError("provider_credential_test_failed");
+      const result = await input.repository.saveConnectionSettingsCas({
+        configuration,
+        connectionId: connection.id,
+        credentials: writes,
+        displayName,
+        expectedActiveVersion: connection.activeVersion,
+        expectedDraftVersion: value.expectedDraftVersion,
+        now: now(),
+        unassignedPolicy: value.unassignedPolicy
+      });
+      requireUpdated(result);
+      if (connection.defaultCredentialId) {
+        startBackgroundChecks({ connectionId: connection.id, credentialId: connection.defaultCredentialId, reason: "requested" });
+      }
+    },
+
     listConnections: async () => (await input.repository.listConnections()).map((connection) => ({
       ...connection,
       checkRun: checkRuns.latest(connection.id)
@@ -896,24 +990,6 @@ export function createAdminProviderService(input: Readonly<{
       return { id };
     },
 
-    async updateConnectionDraft(value: {
-      configuration: AdminProviderConnectionConfiguration;
-      connectionId: string;
-      displayName: string;
-      expectedDraftVersion: number;
-      unassignedPolicy: AdminProviderUnassignedPolicy;
-    }) {
-      const result = await input.repository.updateConnectionDraft({
-        configuration: normalizeAdminProviderConnectionConfiguration(value.configuration),
-        connectionId: value.connectionId,
-        displayName: name(value.displayName),
-        expectedDraftVersion: value.expectedDraftVersion,
-        unassignedPolicy: value.unassignedPolicy
-      });
-      requireUpdated(result);
-      return { draftVersion: value.expectedDraftVersion + 1 };
-    },
-
     async createModelDraft(value: {
       configuration: AdminProviderModelConfiguration;
       connectionId: string;
@@ -972,109 +1048,6 @@ export function createAdminProviderService(input: Readonly<{
       }
     },
 
-    async rotateCredential(value: {
-      credentialId: string;
-      expectedDraftVersion: number;
-      secret: string;
-    }) {
-      const nextVersion = value.expectedDraftVersion + 1;
-      const result = await input.repository.updateCredentialDraft({
-        credentialId: value.credentialId,
-        draftSecretEnvelope: encryptProviderCredentialSecret({
-          credentialId: value.credentialId,
-          key: encryptionKey(),
-          secret: value.secret,
-          valueId: providerCredentialDraftValueId(nextVersion)
-        }),
-        expectedDraftVersion: value.expectedDraftVersion
-      });
-      if (result === "stale") throw new AdminProviderServiceError("provider_draft_stale");
-      if (result === "not_found") throw new AdminProviderServiceError("provider_credential_not_found");
-      return { draftVersion: nextVersion };
-    },
-
-    async clearCredentialDraft(value: {
-      confirmed: boolean;
-      credentialId: string;
-      expectedDraftVersion: number;
-    }) {
-      if (!value.confirmed) {
-        throw new AdminProviderServiceError("provider_revoke_confirmation_required");
-      }
-      const result = await input.repository.updateCredentialDraft({
-        credentialId: value.credentialId,
-        draftSecretEnvelope: null,
-        expectedDraftVersion: value.expectedDraftVersion
-      });
-      if (result === "stale") throw new AdminProviderServiceError("provider_draft_stale");
-      if (result === "not_found") throw new AdminProviderServiceError("provider_credential_not_found");
-      return { draftVersion: value.expectedDraftVersion + 1 };
-    },
-
-    async testDraft(value: {
-      confirmPaidRequest?: boolean;
-      connectionId: string;
-      credentialId: string;
-      mode: AdminProviderDraftTestMode;
-      providerModelId: string;
-      signal?: AbortSignal;
-    }): Promise<AdminProviderDraftCheck> {
-      if (value.confirmPaidRequest !== true) {
-        throw new AdminProviderServiceError("provider_paid_test_confirmation_required");
-      }
-      const candidate = await input.repository.loadDraftTestCandidate(value);
-      if (!candidate) {
-        throw new AdminProviderServiceError("provider_credential_not_found");
-      }
-      const connection = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
-      const model = normalizeProviderModelConfiguration(candidate.model.configuration);
-      validateFamily(candidate.connection.family, model);
-      if (value.mode === "account_catalog" && candidate.connection.family !== "openrouter") {
-        throw new AdminProviderServiceError("provider_test_mode_invalid");
-      }
-      const source = candidate.credential.source;
-      const secret = credentialSecretSource(candidate.credential.id, source);
-      let outcome: AdminProviderDraftTestOutcome;
-      try {
-        outcome = await input.tester.test({
-          connection,
-          connectionDisplayName: candidate.connection.displayName,
-          connectionId: candidate.connection.id,
-          credentialId: candidate.credential.id,
-          credentialVersionIdentity: secretValueId(source),
-          mode: value.mode,
-          model,
-          modelDisplayName: candidate.model.displayName,
-          providerFamily: candidate.connection.family,
-          providerModelId: candidate.model.id,
-          secret,
-          signal: value.signal
-        });
-      } catch {
-        throw new AdminProviderServiceError("provider_draft_test_failed");
-      }
-      const checkedAt = now();
-      const check: StoredProviderDraftCheck = {
-        checkedAt,
-        connectionDraftVersion: candidate.connection.draftVersion,
-        credentialDraftVersion: source.kind === "draft" ? source.draftVersion : null,
-        credentialId: candidate.credential.id,
-        credentialVersionId: source.kind === "active" ? source.versionId : null,
-        evidence: validateEvidence(outcome, value.mode, model),
-        fingerprint: fingerprint(candidate),
-        modelDraftVersion: candidate.model.draftVersion,
-        providerModelId: candidate.model.id,
-        status: outcome.status
-      };
-      if (await input.repository.storeDraftCheckCas(candidate, check) === "stale") {
-        throw new AdminProviderServiceError("provider_draft_stale");
-      }
-      return {
-        ...check,
-        checkedAt: check.checkedAt.toISOString()
-      };
-    },
-
     async activateConnection(value: {
       confirmUnavailable: boolean;
       connectionId: string;
@@ -1089,6 +1062,11 @@ export function createAdminProviderService(input: Readonly<{
         throw new AdminProviderServiceError("provider_activation_empty");
       }
       const connection = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
+      if (candidate.connection.activeConfiguration &&
+        normalizeProviderConnectionConfiguration(candidate.connection.activeConfiguration).apiRoot !== connection.apiRoot) {
+        // Only the atomic settings operation can collect replacements for every saved key.
+        throw new AdminProviderServiceError("provider_endpoint_keys_required");
+      }
       const models = candidate.models.map((model) => {
         const configuration = normalizeProviderModelConfiguration(model.configuration);
         validateFamily(candidate.connection.family, configuration);

@@ -1,7 +1,8 @@
 "use client";
 
 import { AdminSearchablePicker, type AdminSearchablePickerItem } from "@/components/admin/AdminSearchablePicker";
-import { groupModelChips } from "@/components/admin/groups/groupModelChips";
+import { providerDisplayName, providerModelDisplayName, searchStrategyDisplayName } from "@/components/admin/adminViewUtils";
+import { modelCapabilityLabels } from "@/components/admin/providers/models/modelChips";
 import {
   catalogModelsForProvider,
   groupDeletionInfo,
@@ -162,7 +163,7 @@ function ProviderModels({ access, catalog, connection, controller, disabled, gro
     <>
       <ul aria-label={`${provider.name} models`} className="divide-y divide-trace-subtle">
         {models.map((model) => {
-          const chips = groupModelChips({ connection, credentialId: overrideCredentialId, modelId: model.modelId });
+          const chips = modelCapabilityLabels({ connection, credentialId: overrideCredentialId, modelId: model.modelId });
           const checked = granted.has(model.modelId);
           return (
             <li
@@ -347,6 +348,42 @@ function SearchSection({ catalog, controller, disabled, group }: Readonly<{
   );
 }
 
+function UnavailableGrants({ catalog, controller, disabled, group }: Readonly<{
+  catalog: AdminCatalog;
+  controller: AdminGroupsController;
+  disabled: boolean;
+  group: AdminGroup;
+}>) {
+  const grants = group.accessGrants.filter((grant) => !grant.enabled || (grant.searchStrategy
+    ? !catalog.searchStrategies.some((source) => source.strategyId === grant.searchStrategy)
+    : grant.modelId
+      ? !catalog.models.some((model) => model.modelId === grant.modelId && model.provider === grant.provider)
+      : !catalog.providers.some((provider) => provider.id === grant.provider)));
+  if (!grants.length) return null;
+  return (
+    <Section heading="Unavailable access" testId="admin-group-unavailable-grants">
+      <p className={helpClass}>Saved grants remain visible when resources are disabled or archived.</p>
+      <ul aria-label="Unavailable grants" className={`${cardClass} divide-y divide-trace-subtle`}>
+        {grants.map((grant) => {
+          const label = grant.resourceDisplayName ?? (grant.searchStrategy
+            ? searchStrategyDisplayName(catalog, grant.searchStrategy)
+            : grant.modelId && grant.provider
+              ? providerModelDisplayName(catalog, { modelId: grant.modelId, provider: grant.provider })
+              : providerDisplayName(catalog, grant.provider ?? ""));
+          return (
+            <li className={rowClass} key={grant.id}>
+              <p className="min-w-0 flex-1 break-words text-sm text-ink [overflow-wrap:anywhere]">{label}{grant.enabled ? "" : " · Disabled grant"}</p>
+              <UiV2Button disabled={disabled} onClick={() => void controller.actions.applyGrants(group, [{
+                enabled: false, modelId: grant.modelId, provider: grant.provider, searchStrategy: grant.searchStrategy
+              }], "Saved grant removed.")} tone="ghost" type="button">Remove grant</UiV2Button>
+            </li>
+          );
+        })}
+      </ul>
+    </Section>
+  );
+}
+
 /**
  * One group's page (PRD 5.9): members with a searchable add, the models per
  * provider behind a provider-wide switch or a checklist with capability
@@ -429,6 +466,7 @@ export function AdminGroupPage({
               <AdminMcpGroupAccessPanel controller={mcp} group={group} />
             </Section>
           </div>
+          <UnavailableGrants catalog={catalog} controller={controller} disabled={disabled} group={group} />
           {deletion.canDelete ? null : (
             <p className={helpClass} data-testid="admin-group-deletion">Delete is unavailable: {deletion.summary}</p>
           )}

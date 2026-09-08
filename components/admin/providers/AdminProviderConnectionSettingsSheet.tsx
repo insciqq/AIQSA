@@ -22,18 +22,26 @@ type SettingsForm = Readonly<{
   apiRoot: string;
   displayName: string;
   responseTimeoutSeconds: string;
-  secret: string;
+  secrets: Readonly<Record<string, string>>;
 }>;
+
+function normalizedEndpoint(value: string): string {
+  try {
+    return new URL(value.trim()).href.replace(/\/+$/u, "");
+  } catch {
+    return value.trim();
+  }
+}
 
 function initialForm(connection: AdminProviderConnection): SettingsForm {
   return {
-    allowPrivateNetwork: connection.draftConfig.allowPrivateNetwork,
-    apiRoot: connection.draftConfig.apiRoot,
+    allowPrivateNetwork: (connection.activeConfig ?? connection.draftConfig).allowPrivateNetwork,
+    apiRoot: effectiveEndpoint(connection),
     displayName: connection.displayName,
     responseTimeoutSeconds: String(
-      connection.draftConfig.responseTimeoutSeconds ?? ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS
+      (connection.activeConfig ?? connection.draftConfig).responseTimeoutSeconds ?? ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS
     ),
-    secret: ""
+    secrets: {}
   };
 }
 
@@ -48,20 +56,22 @@ function SettingsSheetBody({
 }>) {
   const [form, setForm] = useState(() => initialForm(connection));
   const [baseline] = useState(form);
+  const [expectedDraftVersion] = useState(connection.draftVersion);
   const [error, setError] = useState<string | null>(null);
   const [discarding, setDiscarding] = useState(false);
   const formId = useId();
   const errorId = useId();
   const busy = controller.state.busy;
   const live = connection.activeConfig !== null;
-  const endpointChanged = form.apiRoot.trim() !== effectiveEndpoint(connection).trim();
-  const defaultKey = connection.credentials.find(({ id }) => id === connection.defaultCredentialId) ?? null;
-  const keyRequired = live && endpointChanged && defaultKey !== null;
+  const endpointChanged = normalizedEndpoint(form.apiRoot) !== normalizedEndpoint(effectiveEndpoint(connection));
+  const keyless = (connection.activeConfig ?? connection.draftConfig).authenticationMode === "none";
+  const requiredKeys = endpointChanged && !keyless ? connection.credentials.filter((credential) =>
+    credential.activeVersion !== null && credential.activeVersion.revokedAt === null) : [];
   const dirty = form.allowPrivateNetwork !== baseline.allowPrivateNetwork ||
     form.apiRoot !== baseline.apiRoot ||
     form.displayName !== baseline.displayName ||
     form.responseTimeoutSeconds !== baseline.responseTimeoutSeconds ||
-    form.secret !== "";
+    Object.values(form.secrets).some(Boolean);
   const update = (patch: Partial<SettingsForm>) => setForm((current) => ({ ...current, ...patch }));
 
   const requestClose = () => {
@@ -75,19 +85,24 @@ function SettingsSheetBody({
 
   const submit = async () => {
     setError(null);
-    if (keyRequired && !form.secret.trim()) {
-      setError(`Enter the key for “${defaultKey!.label}” again so it is only sent to the new endpoint.`);
+    const missing = requiredKeys.find((credential) => !form.secrets[credential.id]?.trim());
+    if (missing) {
+      setError(`Enter the key for “${missing.label}” again so it is only sent to the new endpoint.`);
       return;
     }
     const result = await controller.actions.saveConnectionSettings(connection.id, {
       configuration: {
         allowPrivateNetwork: form.allowPrivateNetwork,
         apiRoot: form.apiRoot.trim(),
-        authenticationMode: connection.draftConfig.authenticationMode,
+        authenticationMode: (connection.activeConfig ?? connection.draftConfig).authenticationMode,
         responseTimeoutSeconds: Number(form.responseTimeoutSeconds)
       },
       displayName: form.displayName.trim(),
-      secret: keyRequired ? form.secret.trim() : null
+      expectedDraftVersion,
+      credentialSecrets: requiredKeys.map((credential) => ({
+        credentialId: credential.id,
+        secret: form.secrets[credential.id]!.trim()
+      }))
     });
     if (result.ok) {
       onClose();
@@ -155,26 +170,26 @@ function SettingsSheetBody({
               : "Leave the vendor endpoint unless you route through a gateway."}
           </span>
         </label>
-        {keyRequired ? (
-          <label>
-            <span className={fieldLabel}>API key for {defaultKey!.label}</span>
+        {requiredKeys.map((credential) => (
+          <label key={credential.id}>
+            <span className={fieldLabel}>API key for {credential.label}</span>
             <input
               aria-errormessage={error ? errorId : undefined}
               aria-invalid={error ? true : undefined}
               autoComplete="off"
               className={`${inputClass} font-mono`}
               disabled={busy}
-              onChange={(event) => update({ secret: event.currentTarget.value })}
+              onChange={(event) => update({ secrets: { ...form.secrets, [credential.id]: event.currentTarget.value } })}
               placeholder="sk-…"
               spellCheck={false}
               type="password"
-              value={form.secret}
+              value={form.secrets[credential.id] ?? ""}
             />
             <span className={helpText}>
-              The endpoint changed, so the key is entered again and only ever sent to the new endpoint.
+              Re-enter this key for the new endpoint. Saved keys are never forwarded there.
             </span>
           </label>
-        ) : null}
+        ))}
         <label>
           <span className={fieldLabel}>Response timeout (seconds)</span>
           <input
@@ -232,8 +247,8 @@ function SettingsSheetBody({
 
 /**
  * Connection settings sheet (PRD 5.4): name, endpoint, timeout and private
- * network behind one `Test & Save`. A changed endpoint asks for the default
- * key again so a stored key is never sent to an endpoint it was not saved for.
+ * network behind one `Test & Save`. A changed endpoint asks for each saved
+ * key again so old secrets never travel to a new endpoint.
  * The dialog for unsaved edits lives inside the sheet because the page behind
  * an open sheet is inert.
  */

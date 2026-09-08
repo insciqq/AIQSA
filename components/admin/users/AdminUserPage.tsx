@@ -11,13 +11,13 @@ import type { AdminMcpController } from "@/components/admin/useAdminMcpControlle
 import type { AdminUsersController } from "@/components/admin/useAdminUsersController";
 import {
   activeGroupIdsForUser,
-  directUserGrants,
   hasModelAccess,
   isFullAccessMember,
   userDeletionInfo,
   userInitials
 } from "@/components/admin/users/usersView";
 import { UserAvatar, UserStatusPill, sectionHeadingClass } from "@/components/admin/users/usersPrimitives";
+import { AdminUserDirectGrants, AdminUserDirectKeys } from "@/components/admin/users/AdminUserDirectAccess";
 import { UiV2Button } from "@/components/ui-v2";
 import type { AdminDashboard, AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
@@ -27,6 +27,7 @@ export type AdminUserPageProviders = Readonly<{
   connections: readonly AdminProviderConnection[];
   error: string | null;
   loaded: boolean;
+  refresh(): Promise<boolean>;
 }>;
 
 export type AdminUserPageProps = Readonly<{
@@ -100,73 +101,22 @@ function EffectiveAccess({ catalog, groups, user }: Readonly<{
   );
 }
 
-function DirectKeys({ providers, user }: Readonly<{ providers: AdminUserPageProviders; user: AdminUserRecord }>) {
-  if (!providers.loaded) {
-    return providers.error
-      ? <p className="text-xs leading-5 text-caution" role="alert">Provider keys could not be loaded. {providers.error}</p>
-      : <p className={helpClass} role="status">Loading provider keys…</p>;
-  }
-  const rows = providers.connections.flatMap((connection) =>
-    connection.userAssignments
-      .filter((assignment) => assignment.user.id === user.id)
-      .map((assignment) => ({
-        connection: connection.displayName,
-        id: `${connection.id}:${assignment.credentialId}`,
-        key: connection.credentials.find((credential) => credential.id === assignment.credentialId)?.label ?? "Removed key"
-      }))
-  );
-  if (!rows.length) {
-    return <p className={helpClass}>None. Each provider uses its default key or the group override for this user.</p>;
-  }
-  return (
-    <ul aria-label="Direct provider keys" className="divide-y divide-trace-subtle rounded-[10px] border border-trace-subtle">
-      {rows.map((row) => (
-        <li className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-sm" key={row.id}>
-          <span className="font-medium text-ink">{row.connection}</span>
-          <span className="text-ink-muted">Key: {row.key}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function DirectGrants({ catalog, groups, user }: Readonly<{
-  catalog: AdminDashboard["catalog"];
-  groups: readonly AdminGroup[];
-  user: AdminUserRecord;
-}>) {
-  const direct = directUserGrants(user, groups);
-  const items = [
-    ...direct.providers.map((provider) => ({ id: `provider:${provider}`, label: `${providerDisplayName(catalog, provider)} · all models` })),
-    ...direct.models.map((model) => ({ id: `model:${model.provider}:${model.modelId}`, label: providerModelDisplayName(catalog, model) })),
-    ...direct.searchStrategies.map((strategy) => ({ id: `search:${strategy}`, label: `${searchStrategyDisplayName(catalog, strategy)} · Search` }))
-  ];
-  if (!items.length) {
-    return <p className={helpClass}>None. Access comes from groups; manage it in Groups.</p>;
-  }
-  return (
-    <ul aria-label="Direct grants" className="divide-y divide-trace-subtle rounded-[10px] border border-trace-subtle">
-      {items.map((item) => (
-        <li className="break-words px-4 py-2.5 text-sm text-ink [overflow-wrap:anywhere]" key={item.id}>{item.label}</li>
-      ))}
-    </ul>
-  );
-}
-
 /**
  * One user's page (PRD 5.8): groups with Save, read-only effective access,
- * the direct provider keys and grants the dashboard already projects, MCP
+ * direct provider key and grant management, MCP
  * access and the account actions with their confirmations.
  */
 export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user, users }: AdminUserPageProps) {
   const articleRef = useRef<HTMLElement>(null);
-  const [draftGroupIds, setDraftGroupIds] = useState<string[] | null>(null);
+  const [groupDraft, setGroupDraft] = useState<{ expectedGroupIds: string[]; groupIds: string[] } | null>(null);
   const [saving, setSaving] = useState(false);
   const isSelf = user.id === users.adminUserId;
   const pending = user.status === "pending";
   const active = user.status === "active";
-  const savedGroupIds = pending ? [] : activeGroupIdsForUser(user, groups);
-  const groupIds = draftGroupIds ?? savedGroupIds;
+  const currentGroupIds = activeGroupIdsForUser(user, groups);
+  const savedGroupIds = pending ? [] : currentGroupIds;
+  const groupIds = groupDraft?.groupIds ?? savedGroupIds;
+  const expectedGroupIds = groupDraft?.expectedGroupIds ?? currentGroupIds;
   const dirty = !sameIds(groupIds, savedGroupIds);
   const editable = pending || (active && !isSelf);
   const deletion = userDeletionInfo(user, users.adminUserId);
@@ -187,7 +137,7 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
     setSaving(true);
     try {
       const ok = await action();
-      if (ok) setDraftGroupIds(null);
+      if (ok) setGroupDraft(null);
       return ok;
     } finally {
       setSaving(false);
@@ -215,12 +165,14 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
         <h3 className={sectionHeadingClass} id="admin-user-groups-heading">Groups</h3>
         {editable ? (
           <>
-            <AdminGroupOptions
-              groups={[...groups]}
-              label={pending ? "Groups applied on approval" : "Group memberships"}
-              onChange={setDraftGroupIds}
-              selected={groupIds}
-            />
+            <fieldset className="min-w-0" disabled={busy}>
+              <AdminGroupOptions
+                groups={[...groups]}
+                label={pending ? "Groups applied on approval" : "Group memberships"}
+                onChange={(next) => setGroupDraft((previous) => ({ expectedGroupIds: previous?.expectedGroupIds ?? currentGroupIds, groupIds: next }))}
+                selected={groupIds}
+              />
+            </fieldset>
             {pending ? (
               <p className={helpClass}>These groups are applied when the user is approved.</p>
             ) : (
@@ -228,7 +180,7 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
                 <UiV2Button
                   busy={saving}
                   disabled={busy || !dirty}
-                  onClick={() => void run(() => users.actions.saveGroups(user, groupIds))}
+                  onClick={() => void run(() => users.actions.saveGroups(user, groupIds, expectedGroupIds))}
                   tone="primary"
                   type="button"
                 >
@@ -259,12 +211,12 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
 
       <section aria-labelledby="admin-user-keys-heading" className={blockClass} data-testid="admin-user-direct-keys">
         <h3 className={sectionHeadingClass} id="admin-user-keys-heading">Direct provider keys</h3>
-        <DirectKeys providers={providers} user={user} />
+        <AdminUserDirectKeys providers={providers} user={user} users={users} />
       </section>
 
       <section aria-labelledby="admin-user-grants-heading" className={blockClass} data-testid="admin-user-direct-grants">
         <h3 className={sectionHeadingClass} id="admin-user-grants-heading">Direct grants</h3>
-        <DirectGrants catalog={catalog} groups={groups} user={user} />
+        <AdminUserDirectGrants catalog={catalog} user={user} users={users} />
       </section>
 
       <div className="border-t border-trace-subtle">
@@ -279,7 +231,7 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
               <UiV2Button
                 busy={saving}
                 disabled={busy || !user.hasVerifiedIdentity}
-                onClick={() => void run(() => users.actions.approve(user, groupIds))}
+                onClick={() => void run(() => users.actions.approve(user, groupIds, expectedGroupIds))}
                 tone="primary"
                 type="button"
               >

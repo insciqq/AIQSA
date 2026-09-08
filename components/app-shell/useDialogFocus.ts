@@ -115,7 +115,9 @@ export function useDialogFocus<T extends HTMLElement>({
     }
 
     const dialog = dialogRef.current;
-    const firstFocusable = dialog?.querySelector<HTMLElement>(focusableSelector);
+    const firstFocusable = dialog
+      ? Array.from(dialog.querySelectorAll<HTMLElement>(focusableSelector)).find(isRestorableFocusTarget)
+      : null;
     const focusTimer = autoFocus
       ? window.setTimeout(() => {
           (firstFocusable ?? dialog)?.focus();
@@ -153,7 +155,8 @@ export function useDialogFocus<T extends HTMLElement>({
           return;
         }
 
-        const focusable = Array.from(currentDialog.querySelectorAll<HTMLElement>(focusableSelector));
+        const focusable = Array.from(currentDialog.querySelectorAll<HTMLElement>(focusableSelector))
+          .filter(isRestorableFocusTarget);
         if (focusable.length === 0) {
           event.preventDefault();
           currentDialog.focus();

@@ -4,9 +4,9 @@ import { touchTarget } from "@/components/admin/adminPrimitives";
 import {
   UiV2IconButton,
   UiV2MenuActions,
-  UiV2MenuSurface,
   type UiV2MenuAction
 } from "@/components/ui-v2";
+import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { useState, type ReactNode } from "react";
 
@@ -115,7 +115,7 @@ export function UsersRowMenu({
   label
 }: Readonly<{ actions: readonly UiV2MenuAction[]; label: string }>) {
   const [open, setOpen] = useState(false);
-  const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: () => setOpen(false), open });
+  const { closeForAction, menuRef, triggerRef } = useMenuDismissalV2({ onClose: () => setOpen(false), open });
   return (
     <div className="relative">
       <UiV2IconButton
@@ -128,9 +128,9 @@ export function UsersRowMenu({
         tooltip="More"
       />
       {open ? (
-        <UiV2MenuSurface className="absolute right-0 top-[calc(100%+0.375rem)] z-30" label={label} ref={menuRef}>
-          <UiV2MenuActions actions={actions} onClose={() => setOpen(false)} />
-        </UiV2MenuSurface>
+        <UiV2ResponsiveMenu anchorRef={triggerRef} label={label} menuRef={menuRef} onClose={() => setOpen(false)}>
+          <UiV2MenuActions actions={actions} onClose={closeForAction} />
+        </UiV2ResponsiveMenu>
       ) : null}
     </div>
   );

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AdminSearchDraft } from "../../../contracts/adminSearch";
 import { searchDraftHash } from "../../search/configuration";
 import type { SearchProbeBinding } from "../../search/probeBinding";
-import { createAdminSearchService } from "./service";
+import { createAdminSearchService, type AdminSearchTester } from "./service";
 
 const NOW = new Date("2026-07-29T12:00:00.000Z");
 const draft: AdminSearchDraft = {
@@ -33,6 +33,10 @@ const PROBE_BINDING = {
   modelVersion: 1,
   providerModelId: "technical-1"
 } as const;
+
+async function currentProbeBinding({ providerModelId }: Parameters<AdminSearchTester["currentBinding"]>[0]): Promise<SearchProbeBinding> {
+  return { ...PROBE_BINDING, providerModelId };
+}
 
 function providerModel(input: Readonly<{
   adapterKind?:
@@ -222,7 +226,7 @@ describe("admin Search service", () => {
       },
       searchPolicy: { findUnique: vi.fn(async () => policyRow()) }
     } as unknown as PrismaClient;
-    const service = createAdminSearchService({ prisma, tester: { test: vi.fn() } });
+    const service = createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test: vi.fn() } });
 
     const catalog = await service.list();
 
@@ -277,7 +281,7 @@ describe("admin Search service", () => {
       searchOption: { findMany: vi.fn(async () => [option([staged])]) },
       searchPolicy: { findUnique: vi.fn(async () => policyRow()) }
     } as unknown as PrismaClient;
-    const service = createAdminSearchService({ prisma, tester: { test: vi.fn() } });
+    const service = createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test: vi.fn() } });
 
     const catalog = await service.list();
 
@@ -352,7 +356,7 @@ describe("admin Search service", () => {
       searchOption: { findMany: vi.fn(async () => [option(strategies)]) },
       searchPolicy: { findUnique: vi.fn(async () => policyRow()) }
     } as unknown as PrismaClient;
-    const service = createAdminSearchService({ prisma, tester: { test: vi.fn() } });
+    const service = createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test: vi.fn() } });
 
     const catalog = await service.list();
 
@@ -465,7 +469,7 @@ describe("admin Search service", () => {
     const service = createAdminSearchService({
       idFactory: () => ids.shift()!,
       prisma,
-      tester: { test: vi.fn() }
+      tester: { currentBinding: currentProbeBinding, test: vi.fn() }
     });
 
     const created = await service.createDraft({
@@ -567,7 +571,7 @@ describe("admin Search service", () => {
       idFactory: () => ids.shift()!,
       now: () => NOW,
       prisma,
-      tester: { test }
+      tester: { currentBinding: currentProbeBinding, test }
     });
 
     await service.createDraft({
@@ -601,7 +605,7 @@ describe("admin Search service", () => {
     const test = vi.fn(async () => {
       throw new Error("provider_unreachable");
     });
-    const service = createAdminSearchService({ prisma, tester: { test } });
+    const service = createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test } });
 
     await expect(service.createDraft({
       check: true,
@@ -656,7 +660,7 @@ describe("admin Search service", () => {
     const service = createAdminSearchService({
       idFactory: () => ids.shift()!,
       prisma,
-      tester: { test: vi.fn() }
+      tester: { currentBinding: currentProbeBinding, test: vi.fn() }
     });
 
     await service.createDraft({
@@ -718,7 +722,7 @@ describe("admin Search service", () => {
       $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx),
       providerModel: { findFirst: vi.fn(async () => providerModel()) }
     } as unknown as PrismaClient;
-    const service = createAdminSearchService({ prisma, tester: { test: vi.fn() } });
+    const service = createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test: vi.fn() } });
 
     const reused = await service.createDraft({
       description: "A duplicate form must not create another source.",
@@ -776,7 +780,7 @@ describe("admin Search service", () => {
       $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx),
       providerModel: { findFirst: vi.fn(async () => providerModel()) }
     } as unknown as PrismaClient;
-    const service = createAdminSearchService({ prisma, tester: { test: vi.fn() } });
+    const service = createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test: vi.fn() } });
 
     await service.createDraft({
       description: "Ignored in favor of the existing logical source.",
@@ -852,7 +856,7 @@ describe("admin Search service", () => {
       $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx),
       providerModel: { findFirst: vi.fn(async () => providerModel({ id: "technical-2" })) }
     } as unknown as PrismaClient;
-    const service = createAdminSearchService({ prisma, tester: { test: vi.fn() } });
+    const service = createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test: vi.fn() } });
 
     await service.createDraft({
       description: "Restore the prior source.",
@@ -900,7 +904,7 @@ describe("admin Search service", () => {
       ...tx,
       $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)
     } as unknown as PrismaClient;
-    const service = createAdminSearchService({ prisma, tester: { test } });
+    const service = createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test } });
 
     await expect(service.saveAndCheck({
       description: "Web evidence",
@@ -949,7 +953,7 @@ describe("admin Search service", () => {
       protocol: draft.protocol,
       status: "available" as const
     }));
-    const service = createAdminSearchService({ now: () => NOW, prisma, tester: { test } });
+    const service = createAdminSearchService({ now: () => NOW, prisma, tester: { currentBinding: currentProbeBinding, test } });
 
     await service.saveAndCheck({
       description: "Web evidence",
@@ -1019,7 +1023,7 @@ describe("admin Search service", () => {
       searchStrategy: { update: strategyPublish, updateMany: strategyUpdateMany }
     } as unknown as PrismaClient;
     const test = vi.fn();
-    const service = createAdminSearchService({ now: () => NOW, prisma, tester: { test } });
+    const service = createAdminSearchService({ now: () => NOW, prisma, tester: { currentBinding: currentProbeBinding, test } });
     const save = () => service.saveAndCheck({
       description: "Web evidence",
       displayName: "OpenAI Search",
@@ -1066,7 +1070,7 @@ describe("admin Search service", () => {
       providerModel: { findFirst: vi.fn(async () => providerModel()) },
       searchOption: { findUnique: vi.fn(async () => option([child(draft)])) }
     } as unknown as PrismaClient;
-    const service = createAdminSearchService({ prisma, tester: { test } });
+    const service = createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test } });
 
     await expect(service.saveAndCheck({
       description: "Web evidence",
@@ -1111,7 +1115,7 @@ describe("admin Search service", () => {
     const service = createAdminSearchService({
       prisma,
       tester: {
-        test: vi.fn(async () => ({
+        currentBinding: currentProbeBinding, test: vi.fn(async () => ({
           method: "provider_search" as const,
           normalizedSourceCount: 2,
           probeBinding: PROBE_BINDING,
@@ -1175,7 +1179,7 @@ describe("admin Search service", () => {
     const service = createAdminSearchService({
       prisma,
       tester: {
-        test: vi.fn(async () => ({
+        currentBinding: currentProbeBinding, test: vi.fn(async () => ({
           method: "provider_search" as const,
           normalizedSourceCount: 0,
           probeBinding: PROBE_BINDING,
@@ -1348,7 +1352,7 @@ describe("admin Search service", () => {
       },
       searchPolicy: { findUnique: vi.fn(async () => policyRow()) }
     } as unknown as PrismaClient;
-    const service = createAdminSearchService({ prisma, tester: { test: vi.fn() } });
+    const service = createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test: vi.fn() } });
 
     await expect(service.setEnabled({
       enabled: true,
@@ -1431,5 +1435,103 @@ describe("admin Search service", () => {
       expectedVersion: 3,
       userId: "admin-1"
     });
+  });
+});
+
+describe.each(["create", "save"] as const)("Search %s publication binding", (operation) => {
+  function fixture(protocol: AdminSearchDraft["protocol"] = draft.protocol) {
+    const proposed = { ...draft, protocol };
+    const hosted = { ...hostedDraft, protocol };
+    const technical = providerModel();
+    const model = protocol === "deepseek_responses_web_search" ? {
+      ...technical,
+      activeConfig: { ...technical.activeConfig, adapterKind: "deepseek_responses_native" },
+      connection: { ...technical.connection, family: "deepseek" }
+    } : technical;
+    const write = vi.fn(async () => ({ count: 1 }));
+    const revisions = revisionRepository();
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      providerModel: { findFirst: vi.fn(async () => model) },
+      searchIntegrationRevision: revisions,
+      searchOption: {
+        create: write, findMany: vi.fn(async () => []), update: write,
+        findUnique: vi.fn(async () => option([
+          child(proposed), child(hosted, { id: "strategy-hosted", strategyId: "physical-hosted" })
+        ]))
+      },
+      searchStrategy: { create: write, findUnique: vi.fn(async () => null), update: write, updateMany: write }
+    };
+    const transaction = vi.fn(async (callback: (store: typeof tx) => Promise<unknown>) => callback(tx));
+    const prisma = { ...tx, $transaction: transaction } as unknown as PrismaClient;
+    const currentBinding = vi.fn<AdminSearchTester["currentBinding"]>(async () => PROBE_BINDING);
+    const test = vi.fn<AdminSearchTester["test"]>(async () => ({
+      method: "provider_search", normalizedSourceCount: 2, probeBinding: PROBE_BINDING, protocol, status: "available"
+    }));
+    const tester = { currentBinding, test };
+    const service = createAdminSearchService({ prisma, tester });
+    const save = () => operation === "create"
+      ? service.createDraft({ check: true, description: "Web evidence", displayName: "Source", draft: proposed, userId: "admin-1" })
+      : service.saveAndCheck({ description: "Web evidence", displayName: "Source", draft: proposed, expectedDraftVersion: 1, id: "source-1", userId: "admin-1" });
+    return { currentBinding, revisions, save, test, tester, transaction, tx, write };
+  }
+
+  it("rechecks the exact binding inside a serializable transaction before publishing", async () => {
+    const state = fixture();
+    await state.save();
+    expect(state.currentBinding).toHaveBeenCalledWith({ providerModelId: "technical-1", store: state.tx, userId: "admin-1" });
+    expect(state.transaction).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ isolationLevel: "Serializable" }));
+    expect(state.currentBinding.mock.invocationCallOrder[0]).toBeLessThan(state.write.mock.invocationCallOrder[0]!);
+    expect(state.test).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["credential", { credentialId: "another-key" }],
+    ["credential version", { credentialVersionId: "new-key-version" }],
+    ["connection", { connectionId: "another-connection" }],
+    ["connection version", { connectionVersion: 2 }],
+    ["model", { providerModelId: "another-model" }],
+    ["model version", { modelVersion: 2 }]
+  ] satisfies Array<[string, Partial<SearchProbeBinding>]>)("rejects a changed %s without writing", async (_name, changed) => {
+    const state = fixture();
+    state.currentBinding.mockResolvedValueOnce({ ...PROBE_BINDING, ...changed });
+    await expect(state.save()).rejects.toMatchObject({ code: "search_draft_stale" });
+    expect(state.test).toHaveBeenCalledOnce();
+    expect(state.write).not.toHaveBeenCalled();
+    expect(state.revisions.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects available results with no sources before opening a publication transaction", async () => {
+    const state = fixture();
+    state.test.mockResolvedValueOnce({
+      method: "provider_search", normalizedSourceCount: 0, probeBinding: PROBE_BINDING,
+      protocol: draft.protocol, sourceAttribution: "provider_unavailable", status: "available"
+    });
+    await expect(state.save()).rejects.toMatchObject({ code: "search_test_failed" });
+    expect(state.transaction).not.toHaveBeenCalled();
+    expect(state.write).not.toHaveBeenCalled();
+  });
+
+  it("preserves only the explicit native DeepSeek source-attribution exception", async () => {
+    const state = fixture("deepseek_responses_web_search");
+    const outcome = {
+      method: "provider_search" as const, normalizedSourceCount: 0, probeBinding: PROBE_BINDING,
+      protocol: "deepseek_responses_web_search" as const, status: "available" as const
+    };
+    state.test.mockResolvedValueOnce(outcome);
+    await expect(state.save()).rejects.toMatchObject({ code: "search_test_failed" });
+    expect(state.write).not.toHaveBeenCalled();
+    state.test.mockResolvedValueOnce({ ...outcome, sourceAttribution: "provider_unavailable" });
+    await state.save();
+    expect(state.currentBinding).toHaveBeenCalledOnce();
+    expect(state.write).toHaveBeenCalled();
+  });
+
+  it("fails closed before a provider request when current authority cannot be read", async () => {
+    const state = fixture();
+    state.tester.currentBinding = undefined as unknown as typeof state.currentBinding;
+    await expect(state.save()).rejects.toMatchObject({ code: "search_test_failed" });
+    expect(state.test).not.toHaveBeenCalled();
+    expect(state.transaction).not.toHaveBeenCalled();
   });
 });

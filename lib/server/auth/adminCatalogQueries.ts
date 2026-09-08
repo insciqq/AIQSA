@@ -19,7 +19,7 @@ function isAnswerSelectableModel(value: unknown): boolean {
     configuration.answerSelectable === true;
 }
 
-export async function loadAdminGrantableCatalog(prisma: PrismaClient): Promise<AdminCatalog> {
+export async function loadAdminGrantableCatalog(prisma: Pick<PrismaClient, "providerModel" | "searchOption">): Promise<AdminCatalog> {
   const [providerModels, searchOptions] = await Promise.all([
     prisma.providerModel.findMany({
       orderBy: [

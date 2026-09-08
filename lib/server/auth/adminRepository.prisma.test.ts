@@ -1061,10 +1061,11 @@ describe("Prisma-backed admin repository", () => {
       expect(renamed?.name).toBe(`admin-test-renamed-${domain}`);
       await expect(
         repository.setUserGroups({
+          expectedGroupIds: [],
           groupIds: [groupId, group!.id],
           userId: user.id
         })
-      ).resolves.toBe(true);
+      ).resolves.toBe("applied");
       await expect(
         repository.setGroupGrants({
           changes: [
@@ -1445,6 +1446,7 @@ describe("Prisma-backed admin repository", () => {
       });
 
       await repository.setUserGroups({
+        expectedGroupIds: [],
         groupIds: [withMember!.id],
         userId: user.id
       });

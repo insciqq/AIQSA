@@ -185,6 +185,7 @@ function repository(overrides: Partial<AdminProviderRepository> = {}): AdminProv
     async activateConnectionCas() { return "updated"; },
     async activateCredentialCas() { return "updated"; },
     async activateModelCas() { return "updated"; },
+    async saveConnectionSettingsCas() { return "updated"; },
     async assignGroupCredential() { return "assigned"; },
     async createConnection() {},
     async createModel() { return "created"; },
@@ -202,17 +203,13 @@ function repository(overrides: Partial<AdminProviderRepository> = {}): AdminProv
         : null;
     },
     async loadDiscoveryCandidate() { return null; },
-    async loadDraftTestCandidate() { return null; },
     async loadModelActivationCandidate() { return activationCandidate(); },
     async renameCredential() { return "updated"; },
     async recordActiveRefreshFailureCas() { return "stored"; },
     async revokeCredentialVersion() { return "revoked"; },
     async revokeGroupCredential() { return "revoked"; },
     async setDefaultCredential() { return "updated"; },
-    async storeDraftCheckCas() { return "stored"; },
     async storeActiveRefreshCas() { return "stored"; },
-    async updateConnectionDraft() { return "updated"; },
-    async updateCredentialDraft() { return "updated"; },
     async updateModelDraft() { return "updated"; },
     async withLockedCredential(_credentialId, _versionId, consume) {
       return consume({
@@ -518,5 +515,27 @@ describe("background capability checks (B3)", () => {
     await waitFor(() => test.mock.calls.length === 3);
     const [catalog] = await rotated.listConnections();
     expect(catalog?.checkRun).toMatchObject({ credentialId: "cred-primary", reason: "credential", total: 3 });
+  });
+});
+
+describe("no-auth background checks", () => {
+  it("checks an explicit no-auth endpoint with a null secret and publishes the result", async () => {
+    const active = refreshCandidate("model-sol", "sol");
+    const noAuth = { ...storedConnectionConfiguration, allowPrivateNetwork: true, apiRoot: "http://127.0.0.1:9000/v1", authenticationMode: "none" as const };
+    const candidate: ProviderActiveRefreshCandidate = {
+      ...active,
+      connection: { ...active.connection, configuration: noAuth, family: "openai_compatible" },
+      credential: { ...active.credential, envelope: null },
+      model: { ...active.model, configuration: { ...modelConfiguration("sol"), adapterKind: "openai_responses_compatible" } }
+    };
+    const storeActiveRefreshCas = vi.fn<AdminProviderRepository["storeActiveRefreshCas"]>(async () => "stored");
+    const test = vi.fn<AdminProviderDraftTester["test"]>(async () => ({
+      evidence: { detail: "ok", method: "tiny_generation", selectedProviders: [], upstreamModelId: "sol" }, status: "available"
+    }));
+    const providers = service(repository({ loadActiveRefreshCandidate: async () => candidate, storeActiveRefreshCas }), { test });
+    const run = await providers.startCheckRun({ connectionId: "conn-openai", credentialId: "cred-primary", modelIds: ["model-sol"], reason: "requested" });
+    await vi.waitFor(() => expect(providers.checkRun({ connectionId: "conn-openai", runId: run.id }).state).toBe("completed"));
+    expect(test).toHaveBeenCalledWith(expect.objectContaining({ secret: null }));
+    expect(storeActiveRefreshCas).toHaveBeenCalledOnce();
   });
 });

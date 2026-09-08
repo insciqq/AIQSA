@@ -113,13 +113,17 @@ export function useAdminSearchController(
     operation: Promise<AdminSearchApiResult>,
     options: Readonly<{ notice?: string; toastError: boolean }>
   ): Promise<AdminSearchMutationResult> => {
+    ++generationRef.current;
     setBusy(true);
     const result = await operation;
     if (!mountedRef.current) return { message: "", ok: false };
+    ++generationRef.current;
+    setLoading(false);
     setBusy(false);
     if (!result.ok) {
       const message = adminSearchErrorMessage(result.error);
       if (options.toastError) onError(message);
+      if (result.error === "search_draft_stale" || result.error === "search_policy_stale") await refresh();
       return { message, ok: false };
     }
     setError(null);
@@ -130,7 +134,7 @@ export function useAdminSearchController(
       ok: true,
       ...(result.selectedIntegrationId ? { selectedIntegrationId: result.selectedIntegrationId } : {})
     };
-  }, [onError, onMutationCommitted, onNotice]);
+  }, [onError, onMutationCommitted, onNotice, refresh]);
 
   const actions = useMemo<AdminSearchController["actions"]>(() => ({
     async archive(id) {

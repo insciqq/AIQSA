@@ -129,7 +129,7 @@ describe("admin provider browser API", () => {
   it("identifies a missing provider action route instead of showing a generic provider error", async () => {
     const result = await runAdminProviderConnectionAction(
       "connection-1",
-      { action: "refresh_active" },
+      { action: "check_models", credentialId: "credential-1" },
       vi.fn(async () => new Response("<!doctype html><title>Not Found</title>", {
         headers: { "content-type": "text/html" },
         status: 404

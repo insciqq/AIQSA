@@ -134,9 +134,9 @@ export function useAdminMcpController({
       try {
         const result = await requestAdminMcpCatalog(fetcher);
         if (epoch !== mutationEpochRef.current) return;
+        setLoaded(true);
         if (result.ok) {
           setServers(sortServers(result.data.servers));
-          setLoaded(true);
           if (!silent) setError(null);
         } else if (!silent) {
           setError(adminMcpErrorMessage(result.error));
@@ -259,25 +259,13 @@ export function useAdminMcpController({
     mutationEpochRef.current += 1;
     setBusy(true);
     try {
-      const { oneTimeValues, sharedValues, publish: _publish, ...patch } = body;
-      let candidate = current;
-      if (patch.draft !== undefined || patch.name !== undefined || patch.description !== undefined) {
-        const staged = await updateAdminMcpServer(serverId, {
-          ...patch,
-          expectedUpdatedAt: patch.expectedUpdatedAt ?? current.updatedAt
-        }, fetcher);
-        if (!staged.ok) return { applied: false, message: adminMcpErrorMessage(staged.error) };
-        candidate = staged.data;
-        replaceServer(candidate);
-      }
       const saved = await testAdminMcpDraft(serverId, {
-        expectedUpdatedAt: candidate.updatedAt,
-        oneTimeValues,
-        publish: true,
-        ...(sharedValues ? { sharedValues } : {})
+        ...body,
+        expectedUpdatedAt: body.expectedUpdatedAt ?? current.updatedAt,
+        publish: true
       }, fetcher);
       if (!saved.ok) {
-        return { applied: false, message: adminMcpErrorMessage(saved.error), updatedAt: candidate.updatedAt };
+        return { applied: false, message: adminMcpErrorMessage(saved.error) };
       }
       replaceServer(saved.data);
       onNotice?.(isAdminMcpActivationPending(saved.data.activation)
@@ -286,6 +274,7 @@ export function useAdminMcpController({
       notifyMutationCommitted(onMutationCommitted);
       return { applied: true, updatedAt: saved.data.updatedAt };
     } finally {
+      mutationEpochRef.current += 1;
       busyRef.current = false;
       setBusy(false);
     }

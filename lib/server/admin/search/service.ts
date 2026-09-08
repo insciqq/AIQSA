@@ -36,12 +36,13 @@ import {
   searchDraftHash
 } from "../../search/configuration";
 import {
+  searchProbeBinding,
   searchValidationFingerprint,
   type SearchProbeBinding
 } from "../../search/probeBinding";
 
 export type AdminSearchTester = Readonly<{
-  currentBinding?(input: Readonly<{
+  currentBinding(input: Readonly<{
     providerModelId: string;
     store: PrismaClient | Prisma.TransactionClient;
     userId: string;
@@ -51,6 +52,8 @@ export type AdminSearchTester = Readonly<{
     userId: string;
   }>): Promise<Omit<AdminSearchTestEvidence, "checkedAt"> & Readonly<{
     probeBinding: SearchProbeBinding;
+    /** Only native DeepSeek may explicitly report that source URLs are unavailable. */
+    sourceAttribution?: "provider_unavailable";
   }>>;
 }>;
 
@@ -826,6 +829,43 @@ export function createAdminSearchService(input: Readonly<{
     hash: string;
   }>;
 
+  async function publicationTransaction<Value>(
+    operation: (tx: Prisma.TransactionClient) => Promise<Value>
+  ): Promise<Value> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await input.prisma.$transaction(operation, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10_000,
+          timeout: 30_000
+        });
+      } catch (error) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2034") throw error;
+        if (attempt === 2) throw new AdminSearchServiceError("search_draft_stale");
+      }
+    }
+    throw new AdminSearchServiceError("search_draft_stale");
+  }
+
+  async function requireCurrentBinding(
+    tx: Prisma.TransactionClient,
+    draft: AdminSearchDraft,
+    userId: string,
+    check: LiveCheck
+  ): Promise<void> {
+    let current: SearchProbeBinding | null;
+    try {
+      current = searchProbeBinding(await input.tester.currentBinding({
+        providerModelId: draft.providerModelId!, store: tx, userId
+      }));
+    } catch {
+      throw new AdminSearchServiceError("search_draft_stale");
+    }
+    if (!current || searchValidationFingerprint(current) !== searchValidationFingerprint(check.evidence.probeBinding)) {
+      throw new AdminSearchServiceError("search_draft_stale");
+    }
+  }
+
   /** Live check of a configuration that is not stored yet. A thrown check, a
    * check bound to another model or connection, and a check that found no
    * source all fail the whole save, so nothing is written. */
@@ -834,16 +874,26 @@ export function createAdminSearchService(input: Readonly<{
     sourceConnectionId: string,
     userId: string
   ): Promise<LiveCheck> {
+    if (typeof input.tester.currentBinding !== "function") {
+      throw new AdminSearchServiceError("search_test_failed");
+    }
     let outcome: Awaited<ReturnType<AdminSearchTester["test"]>>;
     try {
       outcome = await input.tester.test({ draft, userId });
     } catch {
       throw new AdminSearchServiceError("search_test_failed");
     }
+    const binding = searchProbeBinding(outcome.probeBinding);
+    const sourceUrlsUnavailable = draft.protocol === "deepseek_responses_web_search" &&
+      outcome.sourceAttribution === "provider_unavailable";
     if (
       outcome.status !== "available" ||
-      outcome.probeBinding.providerModelId !== draft.providerModelId ||
-      outcome.probeBinding.connectionId !== sourceConnectionId
+      outcome.method !== "provider_search" || outcome.protocol !== draft.protocol ||
+      !Number.isSafeInteger(outcome.normalizedSourceCount) || outcome.normalizedSourceCount < 0 ||
+      outcome.normalizedSourceCount > draft.maxResults ||
+      outcome.normalizedSourceCount === 0 && !sourceUrlsUnavailable ||
+      binding?.providerModelId !== draft.providerModelId ||
+      binding?.connectionId !== sourceConnectionId
     ) {
       throw new AdminSearchServiceError("search_test_failed");
     }
@@ -870,11 +920,10 @@ export function createAdminSearchService(input: Readonly<{
     const optionRowId = idFactory();
     const strategyRowId = idFactory();
     const optionId = `${slug(displayName)}-${optionRowId.slice(0, 8)}`;
-    return input.prisma.$transaction(async (tx) => {
+    return publicationTransaction(async (tx) => {
       const kind = draftKind(draft);
-      // Keep the same lock order as provider Quick setup. The second read after
-      // the connection lock also sees a parent created by a concurrent admin
-      // request that initially found no row to lock.
+      // Follow provider Quick setup's lock order. Serializable retries re-read
+      // a parent added by a concurrent request that initially had no row to lock.
       await tx.$queryRaw(Prisma.sql`
         SELECT "id" FROM "SearchOption"
         WHERE "sourceConnectionId" = ${technical.model.connectionId}
@@ -887,6 +936,7 @@ export function createAdminSearchService(input: Readonly<{
         WHERE "id" = ${technical.model.connectionId}
         FOR UPDATE
       `);
+      if (check) await requireCurrentBinding(tx, draft, args.userId, check);
       const matchingOptions = await tx.searchOption.findMany({
         include: {
           strategies: {
@@ -1123,12 +1173,13 @@ export function createAdminSearchService(input: Readonly<{
       }
     }
     const check = await liveCheck(draft, current.sourceConnectionId, args.userId);
-    await input.prisma.$transaction(async (tx) => {
+    await publicationTransaction(async (tx) => {
       const option = await loadOption(tx, args.id);
       const target = editableChild(option);
       if (!target || target.child.id !== editable.child.id) {
         throw new AdminSearchServiceError("search_configuration_unavailable");
       }
+      await requireCurrentBinding(tx, draft, args.userId, check);
       const updated = await tx.searchStrategy.updateMany({
         data: {
           description,

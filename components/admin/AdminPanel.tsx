@@ -2,11 +2,6 @@
 
 import { AdminConfirmationHost } from "@/components/admin/AdminConfirmationHost";
 import { AdminDashboardUnavailable } from "@/components/admin/AdminDashboardUnavailable";
-import {
-  AdminDraftProtectionProvider,
-  useAdminDraftRegistry,
-  type AdminDraftOwner
-} from "@/components/admin/AdminDraftProtection";
 import { AdminEmailSection } from "@/components/admin/email/AdminEmailSection";
 import { AdminFeedbackHost } from "@/components/admin/AdminFeedbackHost";
 import { AdminGroupsSection } from "@/components/admin/groups/AdminGroupsSection";
@@ -41,11 +36,9 @@ import { useAdminMcpController, type AdminMcpController } from "@/components/adm
 import { useAdminReleaseStatus } from "@/components/admin/useAdminReleaseStatus";
 import {
   useAdminSectionNavigation,
-  type AdminBlockedNavigation,
   type AdminSectionNavigation
 } from "@/components/admin/useAdminSectionNavigation";
 import { useAdminUsersController, type AdminUsersController } from "@/components/admin/useAdminUsersController";
-import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 import type { AdminDashboard } from "@/lib/contracts/admin";
 import type { AdminAttentionTarget } from "@/lib/contracts/adminAttention";
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
@@ -135,6 +128,7 @@ function AdminSectionContent({
       return (
         <AdminRolesSection
           groups={dashboard.groups}
+          resource={navigation.activeResource}
           onMutationCommitted={onMutationCommitted}
           reportError={reportError}
           reportNotice={reportNotice}
@@ -198,7 +192,7 @@ function AdminSectionContent({
         />
       );
     case "workspace":
-      return <AdminWorkspaceSection />;
+      return <AdminWorkspaceSection reportNotice={reportNotice} />;
     case "email":
       return (
         <AdminEmailSection
@@ -217,23 +211,15 @@ function AdminSectionContent({
 }
 
 export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
-  const drafts = useAdminDraftRegistry();
   const navigationBlockedRef = useRef(false);
-  const requestNavigationConfirmationRef = useRef<(
-    (navigation: AdminBlockedNavigation) => void
-  ) | null>(null);
   const canSelectSection = useCallback(() => !navigationBlockedRef.current, []);
   const canExitAdmin = useCallback(() => !navigationBlockedRef.current, []);
   const canToggleSectionIndex = useCallback(() => !navigationBlockedRef.current, []);
-  const onNavigationBlocked = useCallback((navigation: AdminBlockedNavigation) => {
-    requestNavigationConfirmationRef.current?.(navigation);
-  }, []);
   const feedback = useAdminFeedback();
   const navigation = useAdminSectionNavigation({
     canExitAdmin,
     canSelectSection,
-    canToggleSectionIndex,
-    onNavigationBlocked
+    canToggleSectionIndex
   });
   const resource = useAdminDashboardResource({ feedback });
   const lastLoadedMs = resource.lastLoadedAt?.getTime() ?? null;
@@ -246,7 +232,7 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   const confirmation = useAdminConfirmationController({ runAction: actionRunner.runAction });
   const nowMs = lastLoadedMs ?? 0;
   const actionsDisabled = Boolean(actionRunner.submitting);
-  const navigationLocked = actionsDisabled || drafts.pending;
+  const navigationLocked = actionsDisabled;
   const allowReturnToChatRef = useRef(false);
   const returnToChatLinkRef = useRef<HTMLAnchorElement | null>(null);
   const attention = useAdminAttention({
@@ -255,49 +241,13 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   });
 
   useEffect(() => {
-    navigationBlockedRef.current = navigationLocked || drafts.dirty;
-  }, [drafts.dirty, navigationLocked]);
-  useBeforeUnloadGuard(drafts.dirty, drafts.hasDirty);
+    navigationBlockedRef.current = navigationLocked;
+  }, [navigationLocked]);
 
   const documentTitle = `${navigation.activeSectionConfig.label} · Control Center · AIQSA`;
   useEffect(() => {
     document.title = documentTitle;
   }, [documentTitle]);
-
-  const requestDiscardAction = useCallback((
-    action: () => void,
-    owners?: readonly AdminDraftOwner[]
-  ) => {
-    if (actionsDisabled || drafts.hasPending(owners)) return false;
-    if (!drafts.hasDirty(owners)) {
-      action();
-      return true;
-    }
-
-    confirmation.requestConfirmation({
-      body: "Unsaved edits in this Control Center form will be lost.",
-      confirmLabel: "Discard changes",
-      dialogLabel: "Discard unsaved changes",
-      icon: "x",
-      onConfirm: () => {
-        drafts.discard(owners);
-        action();
-      },
-      testId: "admin-discard-unsaved-confirmation",
-      title: "Discard unsaved changes?",
-      tone: "warning"
-    });
-    return false;
-  }, [actionsDisabled, confirmation, drafts]);
-
-  useEffect(() => {
-    requestNavigationConfirmationRef.current = (blockedNavigation) => {
-      requestDiscardAction(blockedNavigation.proceed);
-    };
-    return () => {
-      requestNavigationConfirmationRef.current = null;
-    };
-  }, [requestDiscardAction]);
 
   const requestReturnToChat = useCallback((event: MouseEvent<HTMLAnchorElement>) => {
     if (allowReturnToChatRef.current) {
@@ -354,9 +304,9 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   });
   const { selectSection } = navigation;
   const jumpToTarget = useCallback((target: AdminAttentionTarget) => {
-    // Providers, Search, Users, Groups and MCP servers have resource pages; Users also pre-selects a filter pill.
+    // Resource pages and role rows preserve the attention item's exact target.
     const hasResourcePages = target.section === "providers" || target.section === "search" ||
-      target.section === "users" || target.section === "groups" || target.section === "mcp";
+      target.section === "users" || target.section === "groups" || target.section === "mcp" || target.section === "roles";
     selectSection(
       target.section,
       hasResourcePages ? target.resource ?? null : null,
@@ -373,7 +323,6 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   const isBusy = resource.loading || navigationLocked;
 
   return (
-    <AdminDraftProtectionProvider registry={drafts} requestDiscardAction={requestDiscardAction}>
     <main
       aria-busy={isBusy}
       className="min-h-[100dvh] overflow-x-hidden bg-app-canvas pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-ink"
@@ -438,6 +387,5 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
       <AdminFeedbackHost feedback={feedback} />
       <AdminConfirmationHost controller={confirmation} onClosed={navigation.restoreFocusAfterMutation} />
     </main>
-    </AdminDraftProtectionProvider>
   );
 }

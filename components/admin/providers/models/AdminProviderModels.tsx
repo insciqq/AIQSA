@@ -26,10 +26,10 @@ import {
   UiV2Button,
   UiV2Icon,
   UiV2MenuActions,
-  UiV2MenuSurface,
   UiV2Switch,
   type UiV2MenuAction
 } from "@/components/ui-v2";
+import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import type { AdminProviderConnection, AdminProviderModel } from "@/lib/contracts/adminProviders";
 import { embeddingPresetsForFamily, type EmbeddingModelPreset } from "@/lib/domain/embeddingModels";
@@ -111,7 +111,7 @@ function AddModelMenu({
   onChatModel(): void;
 }>) {
   const [open, setOpen] = useState(false);
-  const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: () => setOpen(false), open });
+  const { closeForAction, menuRef, triggerRef } = useMenuDismissalV2({ onClose: () => setOpen(false), open });
   if (!actions.length) {
     return (
       <UiV2Button data-testid="provider-add-model" disabled={disabled} icon="plus" onClick={onChatModel} tone="primary" type="button">
@@ -134,15 +134,15 @@ function AddModelMenu({
         type="button"
       >
         Add model
-        <UiV2Icon className="ml-1 size-3.5" name="chevron-down" />
+        <UiV2Icon className="ml-1 inline-block size-3.5 align-middle" name="chevron-down" />
       </UiV2Button>
       {open ? (
-        <UiV2MenuSurface className="absolute right-0 top-[calc(100%+0.375rem)] z-30 min-w-[14rem]" label="Add model" ref={menuRef}>
+        <UiV2ResponsiveMenu anchorRef={triggerRef} className="min-w-[14rem]" label="Add model" menuRef={menuRef} onClose={() => setOpen(false)}>
           <UiV2MenuActions
             actions={[{ icon: "chat", label: "Chat model", onSelect: onChatModel }, ...actions]}
-            onClose={() => setOpen(false)}
+            onClose={closeForAction}
           />
-        </UiV2MenuSurface>
+        </UiV2ResponsiveMenu>
       ) : null}
     </div>
   );
@@ -161,7 +161,7 @@ export function AdminProviderModels({
   requestConfirmation,
   usageSources
 }: AdminProviderModelsProps) {
-  const [sheet, setSheet] = useState<Readonly<{ kind: "add" } | { kind: "edit"; modelId: string }> | null>(null);
+  const [sheet, setSheet] = useState<Readonly<{ kind: "add" } | { kind: "edit"; model: AdminProviderModel }> | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const discovery = useAdminOpenRouterDiscovery({
     loadCompatibleModels: controller.actions.discoverCompatibleModels,
@@ -176,7 +176,8 @@ export function AdminProviderModels({
   const checkKey = defaultCredential && checkable.some(({ id }) => id === defaultCredential.id) ? defaultCredential : null;
   const run = connection.checkRun ?? null;
   const running = run?.state === "running";
-  const editing = sheet?.kind === "edit" ? connection.models.find(({ id }) => id === sheet.modelId) ?? null : null;
+  // Keep the edit baseline so a catalog refresh cannot replace fields or advance its CAS version.
+  const editing = sheet?.kind === "edit" ? sheet.model : null;
   const hasCheckableModels = connection.models.some((model) => model.enabled && model.activeConfig !== null);
 
   const startChecks = (credentialId: string, modelIds?: readonly string[]) =>
@@ -343,7 +344,7 @@ export function AdminProviderModels({
                     const summaries = expanded ? modelCheckSummaries(connection, model) : [];
                     const canCheck = Boolean(checkKey) && model.enabled && model.activeConfig !== null && !running;
                     const menu: UiV2MenuAction[] = [
-                      { icon: "edit", label: "Edit", onSelect: () => setSheet({ kind: "edit", modelId: model.id }) },
+                      { icon: "edit", label: "Edit", onSelect: () => setSheet({ kind: "edit", model }) },
                       {
                         disabled: !checkable.length || !model.enabled || model.activeConfig === null,
                         icon: "regenerate",
@@ -461,7 +462,7 @@ export function AdminProviderModels({
                                 >
                                   Re-check
                                 </UiV2Button>
-                                <UiV2Button icon="edit" onClick={() => setSheet({ kind: "edit", modelId: model.id })} tone="ghost" type="button">
+                                <UiV2Button icon="edit" onClick={() => setSheet({ kind: "edit", model })} tone="ghost" type="button">
                                   Edit
                                 </UiV2Button>
                               </div>
@@ -487,7 +488,7 @@ export function AdminProviderModels({
         connection={connection}
         controller={controller}
         discovery={discovery}
-        key={sheet ? `${sheet.kind}:${sheet.kind === "edit" ? `${sheet.modelId}:${editing?.draftVersion ?? 0}` : "new"}` : "closed"}
+        key={sheet ? `${sheet.kind}:${editing?.id ?? "new"}` : "closed"}
         model={editing}
         onClose={() => setSheet(null)}
         onSaved={() => setSheet(null)}
