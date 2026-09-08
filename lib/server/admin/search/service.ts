@@ -49,6 +49,7 @@ export type AdminSearchTester = Readonly<{
   }>): Promise<SearchProbeBinding>;
   test(input: Readonly<{
     draft: AdminSearchDraft;
+    signal?: AbortSignal;
     userId: string;
   }>): Promise<Omit<AdminSearchTestEvidence, "checkedAt"> & Readonly<{
     probeBinding: SearchProbeBinding;
@@ -570,16 +571,17 @@ export function createAdminSearchService(input: Readonly<{
     tx: Prisma.TransactionClient,
     child: SearchChild,
     draft: AdminSearchDraft,
-    technical: Awaited<ReturnType<typeof providerModelForDraft>>
+    technical: Awaited<ReturnType<typeof providerModelForDraft>>,
+    checkedEvidence?: AdminSearchTestEvidence
   ): Promise<void> {
-    const evidence = configurationEvidence(draft);
+    const evidence = checkedEvidence ?? configurationEvidence(draft);
     const draftHash = searchDraftHash(draft);
     const validationFingerprint = searchValidationFingerprint(evidence);
     const activeDraft = child.activeRevision
       ? optionalDraft(child.activeRevision.configuration)
       : null;
     const activeIsConfigurationRevision = Boolean(
-      child.activeRevision && activeDraft &&
+      !checkedEvidence && child.activeRevision && activeDraft &&
       child.activeRevision.id === child.activeRevisionId &&
       child.activeRevision.draftHash === draftHash &&
       searchDraftHash(activeDraft) === draftHash &&
@@ -631,7 +633,8 @@ export function createAdminSearchService(input: Readonly<{
 
   async function publishLogicalOption(
     tx: Prisma.TransactionClient,
-    option: SearchOptionRow
+    option: SearchOptionRow,
+    checkedEvidence?: AdminSearchTestEvidence
   ): Promise<void> {
     const editable = editableChild(option);
     if (!editable) throw new AdminSearchServiceError("search_configuration_unavailable");
@@ -645,7 +648,7 @@ export function createAdminSearchService(input: Readonly<{
         throw new AdminSearchServiceError("search_integration_material_identity_changed");
       }
     }
-    await publishChild(tx, editable.child, editable.draft, technical);
+    await publishChild(tx, editable.child, editable.draft, technical, checkedEvidence);
 
     const hostedDraft = hostedDraftFor(editable.draft);
     if (!hostedDraft) return;
@@ -872,14 +875,15 @@ export function createAdminSearchService(input: Readonly<{
   async function liveCheck(
     draft: AdminSearchDraft,
     sourceConnectionId: string,
-    userId: string
+    userId: string,
+    signal?: AbortSignal
   ): Promise<LiveCheck> {
     if (typeof input.tester.currentBinding !== "function") {
       throw new AdminSearchServiceError("search_test_failed");
     }
     let outcome: Awaited<ReturnType<AdminSearchTester["test"]>>;
     try {
-      outcome = await input.tester.test({ draft, userId });
+      outcome = await input.tester.test({ draft, userId, ...(signal ? { signal } : {}) });
     } catch {
       throw new AdminSearchServiceError("search_test_failed");
     }
@@ -904,10 +908,12 @@ export function createAdminSearchService(input: Readonly<{
   }
 
   async function createDraft(args: Readonly<{
+    bootstrap?: boolean;
     check?: boolean;
     description: string;
     displayName: string;
     draft: unknown;
+    signal?: AbortSignal;
     userId: string;
   }>): Promise<Readonly<{ created: boolean; id: string }>> {
     const displayName = text(args.displayName, 160);
@@ -915,7 +921,7 @@ export function createAdminSearchService(input: Readonly<{
     const draft = normalizedDraft(args.draft);
     const technical = await providerModelForDraft(draft);
     const check = args.check
-      ? await liveCheck(draft, technical.model.connectionId, args.userId)
+      ? await liveCheck(draft, technical.model.connectionId, args.userId, args.signal)
       : null;
     const optionRowId = idFactory();
     const strategyRowId = idFactory();
@@ -955,6 +961,11 @@ export function createAdminSearchService(input: Readonly<{
       }) as SearchOptionRow[];
       if (matchingOptions.length > 1) {
         throw new AdminSearchServiceError("search_configuration_unavailable");
+      }
+      if (args.signal?.aborted || args.bootstrap && (!check || matchingOptions.some((option) =>
+        option.archivedAt || !option.enabled || option.strategies.some((child) =>
+          child.adapterKind === "provider_model_client" && (child.activeRevisionId || child.archivedAt))))) {
+        throw new AdminSearchServiceError("search_draft_stale");
       }
       async function availableRoute(
         candidates: readonly Readonly<{ id: string; strategyId: string }>[]
@@ -996,16 +1007,20 @@ export function createAdminSearchService(input: Readonly<{
       }
       async function publishOption(optionId: string): Promise<void> {
         const refreshed = await loadOption(tx, optionId);
-        await publishLogicalOption(tx, refreshed);
-        if (!check) return;
         // The check proved the exact configuration that was just published;
         // a reused parent that kept an older configuration records nothing.
         const published = editableChild(refreshed);
-        if (published && searchDraftHash(published.draft) === check.hash) {
+        const exactCheck = check && published && searchDraftHash(published.draft) === check.hash ? check : null;
+        if (args.bootstrap && !exactCheck) throw new AdminSearchServiceError("search_draft_stale");
+        await publishLogicalOption(tx, refreshed, exactCheck?.evidence);
+        if (args.bootstrap) {
+          await tx.searchOption.update({ data: { enabled: true }, where: { id: optionId } });
+        }
+        if (published && exactCheck) {
           await tx.searchStrategy.update({
             data: {
-              draftTestEvidence: json(check.evidence),
-              testedDraftHash: check.hash
+              draftTestEvidence: json(exactCheck.evidence),
+              testedDraftHash: exactCheck.hash
             },
             where: { id: published.child.id }
           });
@@ -1042,6 +1057,12 @@ export function createAdminSearchService(input: Readonly<{
           child.adapterKind === "provider_model_client"
         );
         const currentEditable = editableChild(existingOption);
+        if (args.bootstrap && currentEditable) {
+          if (currentEditable.child.draftVersion > 1) throw new AdminSearchServiceError("search_draft_stale");
+          await tx.searchStrategy.update({ data: {
+            draft: json(draft), draftVersion: { increment: 1 }, draftTestEvidence: Prisma.DbNull, testedDraftHash: null
+          }, where: { id: currentEditable.child.id } });
+        }
         if (!currentEditable) {
           const archivedEditable = clientChildren.filter((child) =>
             child.archivedAt !== null && optionalDraft(child.draft)?.adapterKind ===
@@ -1149,6 +1170,7 @@ export function createAdminSearchService(input: Readonly<{
     draft: unknown;
     expectedDraftVersion: number;
     id: string;
+    signal?: AbortSignal;
     userId: string;
   }>): Promise<void> {
     const displayName = text(args.displayName, 160);
@@ -1172,8 +1194,9 @@ export function createAdminSearchService(input: Readonly<{
         throw new AdminSearchServiceError("search_integration_material_identity_changed");
       }
     }
-    const check = await liveCheck(draft, current.sourceConnectionId, args.userId);
+    const check = await liveCheck(draft, current.sourceConnectionId, args.userId, args.signal);
     await publicationTransaction(async (tx) => {
+      if (args.signal?.aborted) throw new AdminSearchServiceError("search_draft_stale");
       const option = await loadOption(tx, args.id);
       const target = editableChild(option);
       if (!target || target.child.id !== editable.child.id) {
@@ -1200,7 +1223,7 @@ export function createAdminSearchService(input: Readonly<{
         data: { description, displayName },
         where: { id: option.id }
       });
-      await publishLogicalOption(tx, option);
+      await publishLogicalOption(tx, option, check.evidence);
     });
   }
 

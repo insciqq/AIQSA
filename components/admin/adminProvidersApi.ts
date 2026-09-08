@@ -85,6 +85,11 @@ function isCheckRun(value: unknown): value is AdminProviderCheckRun {
     Number.isSafeInteger(value.done) && Number.isSafeInteger(value.total) &&
     (value.current === null || typeof value.current === "string") &&
     stringArray(value.inFlight) && stringArray(value.failed) &&
+    (value.skipped === undefined || stringArray(value.skipped)) &&
+    (value.setup === undefined || record(value.setup) && (
+      value.setup.state === "running" ||
+      ["completed", "partial"].includes(String(value.setup.state)) && stringArray(value.setup.defaults) &&
+        ["ready", "failed", "skipped"].includes(String(value.setup.search)))) &&
     typeof value.startedAt === "string" &&
     (value.finishedAt === null || typeof value.finishedAt === "string");
 }

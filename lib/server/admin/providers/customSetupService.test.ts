@@ -134,7 +134,7 @@ describe("custom OpenAI-compatible provider setup service", () => {
       pdf: true,
       toolCalling: false
     });
-    expect(onCompleted).toHaveBeenCalledWith({ connectionId: "connection-1", credentialId: "credential-1" });
+    expect(onCompleted).toHaveBeenCalledWith({ connectionId: "connection-1", credentialId: "credential-1", userId: "admin-1" });
   });
 
   it("accepts an explicit keyless HTTP private setup without creating ciphertext", async () => {

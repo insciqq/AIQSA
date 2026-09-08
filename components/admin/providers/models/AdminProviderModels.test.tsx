@@ -232,7 +232,7 @@ describe("AdminProviderModels", () => {
 
     const sonar = screen.getByTestId("provider-model-model-sonar");
     expect(sonar).toHaveTextContent("not checked yet");
-    expect(within(sonar).getByRole("button", { name: "Check" })).toBeDisabled();
+    expect(within(sonar).getByRole("button", { name: "Check model" })).toBeDisabled();
     expect(within(sonar).getByRole("switch", { name: "Perplexity Sonar Pro Search on" })).not.toBeChecked();
 
     const cohere = screen.getByTestId("provider-model-model-cohere");
@@ -271,7 +271,7 @@ describe("AdminProviderModels", () => {
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Research team" }));
     expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-research", ["model-opus"]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Re-check all" }));
+    fireEvent.click(screen.getByRole("button", { name: "Check models" }));
     expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-primary", undefined);
   });
 
@@ -343,14 +343,14 @@ describe("AdminProviderModels", () => {
     expect(await screen.findByRole("dialog", { name: "Add model" })).toBeInTheDocument();
   });
 
-  it("spins on rows being checked, disables Re-check all during a run and offers a plain Add model without presets", () => {
+  it("spins on rows being checked, disables Check models during a run and offers a plain Add model without presets", () => {
     const connection = openRouter();
     connection.checkRun = fixtureCheckRun({ credentialId: "cred-primary", current: "model-opus", done: 1, id: "run-1", inFlight: ["model-opus", "model-gemini"], total: 5 });
     const running = harness(connection);
     expect(within(screen.getByTestId("provider-model-model-opus")).getByRole("status")).toHaveTextContent("Checking tools, JSON, PDF, images and streaming…");
     expect(screen.getByTestId("provider-model-model-opus-works-with")).toHaveAttribute("data-works-with", "checking");
     expect(screen.getByTestId("provider-model-model-voyage-works-with")).toHaveAttribute("data-works-with", "checked");
-    expect(screen.getByRole("button", { name: "Re-check all" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Check models" })).toBeDisabled();
     expect(screen.getByTestId("provider-models")).toHaveTextContent("Models are usable in chat as soon as the key works.");
     running.view.unmount();
 
@@ -358,6 +358,6 @@ describe("AdminProviderModels", () => {
     harness(custom);
     expect(screen.getByRole("status")).toHaveTextContent("No models yet.");
     expect(screen.getByTestId("provider-add-model")).not.toHaveAttribute("aria-haspopup");
-    expect(screen.queryByRole("button", { name: "Re-check all" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Check models" })).not.toBeInTheDocument();
   });
 });

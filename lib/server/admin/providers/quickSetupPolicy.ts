@@ -19,7 +19,7 @@ import {
 } from "../../providers/providerConfiguration";
 import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 
-export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 6;
+export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 7;
 
 type QuickSetupCandidateDefinition = Readonly<{
   candidateId: string;
@@ -53,6 +53,11 @@ const candidateDefinitions: Readonly<Record<
 >> = Object.freeze({
   anthropic: Object.freeze([
     Object.freeze({
+      candidateId: "p7-a3",
+      recommended: false,
+      templateKey: "anthropic:claude-fable-5-1"
+    }),
+    Object.freeze({
       candidateId: "p2-a1",
       recommended: true,
       templateKey: "anthropic:claude-opus-5"
@@ -61,6 +66,11 @@ const candidateDefinitions: Readonly<Record<
       candidateId: "p2-a2",
       recommended: false,
       templateKey: "anthropic:claude-sonnet-5"
+    }),
+    Object.freeze({
+      candidateId: "p7-a4",
+      recommended: false,
+      templateKey: "anthropic:claude-opus-4-8"
     })
   ]),
   deepseek: Object.freeze([
@@ -84,7 +94,7 @@ const candidateDefinitions: Readonly<Record<
     Object.freeze({
       candidateId: "p2-g1",
       recommended: true,
-      templateKey: "gemini:gemini-3.6-flash"
+      templateKey: "gemini:gemini-3.8-flash"
     }),
     Object.freeze({
       candidateId: "p2-g2",
@@ -100,9 +110,19 @@ const candidateDefinitions: Readonly<Record<
       candidateId: "p2-g4",
       recommended: false,
       templateKey: "gemini:gemini-3.1-pro-preview"
+    }),
+    Object.freeze({
+      candidateId: "p7-g5",
+      recommended: false,
+      templateKey: "gemini:gemini-3.6-flash"
     })
   ]),
   openai: Object.freeze([
+    Object.freeze({
+      candidateId: "p7-o4",
+      recommended: false,
+      templateKey: "openai:gpt-6-astra"
+    }),
     Object.freeze({
       candidateId: "p2-o1",
       recommended: true,
@@ -117,23 +137,43 @@ const candidateDefinitions: Readonly<Record<
       candidateId: "p2-o3",
       recommended: false,
       templateKey: "openai:gpt-5.6-sol"
+    }),
+    Object.freeze({
+      candidateId: "p7-o5",
+      recommended: false,
+      templateKey: "openai:gpt-5.5"
     })
   ]),
   openrouter: Object.freeze([
     Object.freeze({
       candidateId: "p1-r1",
       recommended: true,
-      templateKey: "openrouter:anthropic/claude-opus-4.8"
+      templateKey: "openrouter:anthropic/claude-opus-5"
     }),
     Object.freeze({
       candidateId: "p1-r2",
       recommended: false,
-      templateKey: "openrouter:google/gemini-3.5-flash"
+      templateKey: "openrouter:google/gemini-3.8-flash"
     }),
     Object.freeze({
       candidateId: "p1-r3",
       recommended: false,
-      templateKey: "openrouter:~google/gemini-pro-latest"
+      templateKey: "openrouter:deepseek/deepseek-v4-pro-0813"
+    }),
+    Object.freeze({
+      candidateId: "p7-r4",
+      recommended: false,
+      templateKey: "openrouter:anthropic/claude-fable-5.1"
+    }),
+    Object.freeze({
+      candidateId: "p7-r5",
+      recommended: false,
+      templateKey: "openrouter:openai/gpt-6-astra"
+    }),
+    Object.freeze({
+      candidateId: "p7-r-search",
+      recommended: false,
+      templateKey: "openrouter:perplexity/sonar-pro-search"
     })
   ])
 });
@@ -167,12 +207,12 @@ export function providerModelConfigurationFromCatalogEntry(
 
   return {
     adapterKind: model.adapterKind,
-    answerSelectable: true,
+    answerSelectable: model.answerSelectable !== false,
     capabilities: {
       ...model.capabilities,
       // Quick setup owns this declaration for its code-owned candidates, then
       // probes every exact deployment before direct input becomes effective.
-      nativePdfInput: supportsPdfInputAdapter(model.adapterKind),
+      nativePdfInput: model.answerSelectable !== false && supportsPdfInputAdapter(model.adapterKind),
       ...(model.contextWindow === null ? {} : { contextWindow: model.contextWindow })
     },
     defaultParams: model.defaultParams,
@@ -255,7 +295,7 @@ export function decideAdminProviderQuickSetupModel(input: Readonly<{
           (entry) => entry.candidateId === input.selectedModel?.candidateId
         )
       : null;
-    if (!candidate || !observed.has(candidate.configuration.upstreamModelId)) {
+    if (!candidate || !candidate.configuration.answerSelectable || !observed.has(candidate.configuration.upstreamModelId)) {
       return { kind: "selection_invalid" };
     }
     return { candidate, kind: "selected" };
@@ -266,10 +306,8 @@ export function decideAdminProviderQuickSetupModel(input: Readonly<{
   );
   if (recommendation) return { candidate: recommendation, kind: "selected" };
 
-  const candidates = input.policy.candidates
-    .filter((candidate) => !candidate.recommended && observed.has(candidate.configuration.upstreamModelId))
-    .map(({ candidateId, displayName }) => ({ candidateId, displayName }));
-  return candidates.length > 0
-    ? { candidates, kind: "selection_required" }
+  const candidate = input.policy.candidates.find((entry) => entry.configuration.answerSelectable && observed.has(entry.configuration.upstreamModelId));
+  return candidate
+    ? { candidate, kind: "selected" }
     : { kind: "unsupported_catalog" };
 }

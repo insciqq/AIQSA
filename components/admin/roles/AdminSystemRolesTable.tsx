@@ -146,16 +146,21 @@ export function AdminSystemRolesTable({
           selectedLabel={policy.systemModel ? label(policy.systemModel) : null}
           testId="admin-memory-picker"
         />
-        <ReasoningSelect
-          disabled={busy}
-          label="Memory reasoning"
-          model={policy.systemModel}
-          onChange={(effort) => void controller.assign(
-            { providerModelId: policy.systemModel?.id ?? null, reasoningEffort: effort },
-            memoryUndo
-          )}
-          value={policy.reasoningEffort}
-        />
+        <details>
+          <summary className="cursor-pointer text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">Advanced</summary>
+          <div className="pt-2">
+            <ReasoningSelect
+              disabled={busy}
+              label="Memory reasoning"
+              model={policy.systemModel}
+              onChange={(effort) => void controller.assign(
+                { providerModelId: policy.systemModel?.id ?? null, reasoningEffort: effort },
+                memoryUndo
+              )}
+              value={policy.reasoningEffort}
+            />
+          </div>
+        </details>
       </RoleRow>
 
       <RoleRow
@@ -188,16 +193,21 @@ export function AdminSystemRolesTable({
           testId="admin-chat-pdf-picker"
         />
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <ReasoningSelect
-            disabled={busy}
-            label="Chat PDF reasoning"
-            model={policy.chatPdfModel}
-            onChange={(effort) => void controller.assign(
-              { chatPdfProviderModelId: policy.chatPdfModel?.id ?? null, chatPdfReasoningEffort: effort },
-              pdfUndo
-            )}
-            value={policy.chatPdfReasoningEffort}
-          />
+          <details>
+            <summary className="cursor-pointer text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">Advanced</summary>
+            <div className="pt-2">
+              <ReasoningSelect
+                disabled={busy}
+                label="Chat PDF reasoning"
+                model={policy.chatPdfModel}
+                onChange={(effort) => void controller.assign(
+                  { chatPdfProviderModelId: policy.chatPdfModel?.id ?? null, chatPdfReasoningEffort: effort },
+                  pdfUndo
+                )}
+                value={policy.chatPdfReasoningEffort}
+              />
+            </div>
+          </details>
           <span className="inline-flex items-center gap-1.5 text-xs text-ink-secondary">
             <UiV2Switch
               checked={policy.chatPdfPreparationAllowed}

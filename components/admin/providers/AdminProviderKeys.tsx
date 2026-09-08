@@ -145,7 +145,7 @@ function KeyFormRow({
   };
   return (
     <li className="bg-control-surface/50 px-4 py-4 sm:px-5" data-testid="provider-key-form">
-      <form className="flex min-w-0 flex-col gap-3 md:flex-row md:items-end" onSubmit={submit}>
+      <form autoComplete="off" className="flex min-w-0 flex-col gap-3 md:flex-row md:items-end" onSubmit={submit}>
         {kind === "add" ? (
           <label className="min-w-0 md:w-52">
             <span className={fieldLabel}>Label</span>
@@ -167,14 +167,15 @@ function KeyFormRow({
             aria-errormessage={error ? errorId : undefined}
             aria-invalid={error ? true : undefined}
             autoComplete="off"
+            autoCapitalize="none"
             autoFocus={kind === "rotate"}
-            className={`${inputClass} font-mono`}
+            className={`${inputClass} font-mono [-webkit-text-security:disc]`}
             disabled={busy}
             onChange={(event) => setSecret(event.currentTarget.value)}
             placeholder="sk-…"
             required
             spellCheck={false}
-            type="password"
+            type="text"
             value={secret}
           />
         </label>
@@ -185,7 +186,7 @@ function KeyFormRow({
           <UiV2Button disabled={busy} onClick={onCancel} tone="ghost" type="button">Cancel</UiV2Button>
         </div>
       </form>
-      <p className="mt-2 text-xs text-ink-muted">Sends one small request to the provider to check the key before saving it.</p>
+      <p className="mt-2 text-xs leading-5 text-ink-muted">Checks the key, enables available supported models on first setup, then checks models and Search with small paid requests. Suitable empty defaults and roles are filled automatically.</p>
       {error ? (
         <p className="mt-2 text-xs text-critical" id={errorId} role="alert">{error}</p>
       ) : null}

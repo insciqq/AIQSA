@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  AdminProviderBootstrapResult,
   AdminProviderCheckRun,
   AdminProviderCheckRunReason
 } from "../../../contracts/adminProviders";
@@ -23,6 +24,7 @@ export type CapabilityCheckRequest = Readonly<{
 }>;
 
 export type CapabilityCheckRunStart = Readonly<{
+  completeSetup?(signal: AbortSignal): Promise<AdminProviderBootstrapResult>;
   connectionId: string;
   credentialId: string;
   modelIds: readonly string[];
@@ -48,6 +50,9 @@ export type CapabilityCheckRunner = Readonly<{
 export const CAPABILITY_CHECK_CANCELLED = "capability_check_cancelled";
 
 type Run = {
+  setup?: AdminProviderCheckRun["setup"];
+  setupController: AbortController;
+  skipped: string[];
   connectionId: string;
   controllers: Map<string, AbortController>;
   credentialId: string;
@@ -97,6 +102,8 @@ export function createCapabilityCheckRunner(input: Readonly<{
 
   function project(run: Run): AdminProviderCheckRun {
     return {
+      ...(run.setup ? { setup: run.setup } : {}),
+      ...(run.skipped.length ? { skipped: [...run.skipped] } : {}),
       credentialId: run.credentialId,
       current: run.inFlight[0] ?? null,
       done: run.done,
@@ -158,6 +165,7 @@ export function createCapabilityCheckRunner(input: Readonly<{
     const key = failureKey(run.connectionId, run.credentialId, modelId);
     if (outcome === "failed") failures.add(key);
     else if (outcome === "stored") failures.delete(key);
+    else if (outcome === "skipped") run.skipped.push(modelId);
   }
 
   async function worker(run: Run, queue: string[]): Promise<void> {
@@ -184,6 +192,7 @@ export function createCapabilityCheckRunner(input: Readonly<{
       const run = runs.get(runId);
       if (!run || run.state !== "running") return false;
       run.state = "cancelled";
+      run.setupController.abort(CAPABILITY_CHECK_CANCELLED);
       for (const controller of run.controllers.values()) controller.abort(CAPABILITY_CHECK_CANCELLED);
       return true;
     },
@@ -236,6 +245,8 @@ export function createCapabilityCheckRunner(input: Readonly<{
     start(value) {
       const modelIds = [...new Set(value.modelIds)];
       const run: Run = {
+        setupController: new AbortController(),
+        skipped: [],
         connectionId: value.connectionId,
         controllers: new Map(),
         credentialId: value.credentialId,
@@ -256,7 +267,19 @@ export function createCapabilityCheckRunner(input: Readonly<{
         { length: Math.min(concurrency, Math.max(queue.length, 1)) },
         () => worker(run, queue)
       );
-      const settled = Promise.all(workers).then(() => finish(run), () => finish(run));
+      const settled = Promise.all(workers).then(async () => {
+        if (value.completeSetup && run.total > 0 && run.state === "running") {
+          run.setup = { state: "running" };
+          try {
+            const result = await value.completeSetup(run.setupController.signal);
+            if (!run.setupController.signal.aborted) run.setup = result;
+          } catch {
+            if (!run.setupController.signal.aborted) {
+              run.setup = { defaults: [], search: "failed", state: "partial" };
+            }
+          }
+        }
+      }).then(() => finish(run), () => finish(run));
       return { id: run.id, settled };
     }
   };

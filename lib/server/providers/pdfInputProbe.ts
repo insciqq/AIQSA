@@ -1,6 +1,7 @@
 import { deflateSync } from "node:zlib";
 import type { ProviderModelConfiguration } from "./providerConfiguration";
 import type { ProviderCredentialSource } from "./providerCredentialSource";
+import { lowestConfiguredReasoningEffort } from "./providerModelCapabilities";
 import { createProviderSafeFetch } from "./providerSafeFetch";
 import {
   createProviderRuntimeBinding,
@@ -247,7 +248,7 @@ function probeRequest(input: ProviderPdfInputProbeInput): ProviderRunRequest {
       maxTokens: PDF_INPUT_PROBE_MAX_OUTPUT_TOKENS,
       max_output_tokens: PDF_INPUT_PROBE_MAX_OUTPUT_TOKENS,
       ...(responsesAdapter
-        ? { reasoning: { effort: "none", summary: "none" } }
+        ? { reasoning: { effort: lowestConfiguredReasoningEffort(input.model, input.providerFamily), summary: "none" } }
         : {}),
       store: false,
       stream: false

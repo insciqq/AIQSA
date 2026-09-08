@@ -11,18 +11,7 @@ import {
   type AdminProviderQuickSetupResult,
   type AdminProviderQuickSetupSnapshot
 } from "../../../contracts/adminProviderQuickSetup";
-import {
-  adminSearchExecutionDefaults,
-  type AdminSearchDraft,
-  type AdminSearchTestEvidence
-} from "../../../contracts/adminSearch";
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
-import {
-  ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
-  DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID,
-  GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
-  OPENAI_PROVIDER_SEARCH_INTEGRATION_ID
-} from "../../../domain/search";
 import {
   encryptProviderCredentialSecret,
   normalizeProviderCredentialSecret
@@ -47,7 +36,6 @@ import {
   type AdminProviderQuickSetupRepository
 } from "./quickSetupRepositoryContract";
 import type { AdminProviderQuickSetupSearchTester } from "./quickSetupSearchTester";
-import { searchDraftHash } from "../../search/configuration";
 import type { ProviderPdfInputProbe } from "../../providers/pdfInputProbe";
 import type { AdminProviderDraftTester } from "./tester";
 import { approvedRerankerDeployments } from "./approvedRerankers";
@@ -118,6 +106,7 @@ function sameName(left: string, right: string): boolean {
 }
 
 export type AdminProviderSetupCompletion = Readonly<{
+  userId: string;
   connectionId: string;
   credentialId: string;
 }>;
@@ -128,7 +117,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
   idFactory?: () => string;
   now?: () => Date;
   /** Runs after a committed setup (PRD B3 trigger); its failures never reach the caller. */
-  onCompleted?(completion: AdminProviderSetupCompletion): void;
+  onCompleted?(completion: AdminProviderSetupCompletion): void | Promise<void>;
   pdfInputProbe: ProviderPdfInputProbe;
   rerankerTester?: AdminProviderDraftTester;
   searchTester?: AdminProviderQuickSetupSearchTester;
@@ -310,7 +299,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       throw new AdminProviderQuickSetupServiceError("provider_quick_setup_unsupported_catalog");
     }
     try {
-      input.onCompleted?.({ connectionId, credentialId });
+      await input.onCompleted?.({ connectionId, credentialId, userId: inputValue.actor.userId });
     } catch {
       // Background checks are best effort; the setup itself is complete.
     }
@@ -539,53 +528,6 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           }
         }
       }
-      let search: AdminProviderQuickSetupCommitPlan["search"];
-      if ((policy.provider === "anthropic" || policy.provider === "deepseek" || policy.provider === "openai" ||
-        policy.provider === "gemini") &&
-        candidate.configuration.capabilities.nativeSearch) {
-        const anthropic = policy.provider === "anthropic";
-        const deepseek = policy.provider === "deepseek";
-        const gemini = policy.provider === "gemini";
-        const draft: AdminSearchDraft = {
-          adapterKind: "provider_model_client",
-          credentialMode: "provider_model",
-          maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
-          maxResults: 8,
-          maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
-          protocol: anthropic
-            ? "anthropic_web_search"
-            : deepseek
-              ? "deepseek_responses_web_search"
-            : gemini
-              ? "gemini_google_search"
-              : "openai_responses_web_search",
-          providerModelId: candidate.modelId,
-          queryMaxCharacters: 500,
-          reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
-          timeoutMs: 300_000
-        };
-        const searchEvidence: AdminSearchTestEvidence = {
-          checkedAt: checkedAt.toISOString(),
-          method: "configuration",
-          normalizedSourceCount: 0,
-          protocol: draft.protocol,
-          status: "available"
-        };
-        search = {
-          draft,
-          draftHash: searchDraftHash(draft),
-          evidence: searchEvidence,
-          grantId: idFactory(),
-          integrationId: anthropic
-            ? ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID
-            : deepseek
-              ? DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID
-            : gemini
-              ? GEMINI_PROVIDER_SEARCH_INTEGRATION_ID
-              : OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
-          revisionId: idFactory()
-        };
-      }
       const commit = await input.repository.commit({
         actor: inputValue.actor,
         candidate,
@@ -616,8 +558,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         now: now(),
         preservedModels: inspection.preservedModels,
         provider: policy.provider,
-        rerankerChecks,
-        ...(search ? { search } : {})
+        rerankerChecks
       });
       if (commit === "stale") {
         throw new AdminProviderQuickSetupServiceError("provider_draft_stale");
@@ -633,7 +574,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         );
       }
       try {
-        input.onCompleted?.({ connectionId: policy.connection.id, credentialId });
+        await input.onCompleted?.({ connectionId: policy.connection.id, credentialId, userId: inputValue.actor.userId });
       } catch {
         // Background checks are best effort; the setup itself is complete.
       }

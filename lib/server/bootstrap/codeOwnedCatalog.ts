@@ -138,10 +138,10 @@ export function codeOwnedProviderModelDraftConfig(
 
   return {
     adapterKind,
-    answerSelectable: true,
+    answerSelectable: model.answerSelectable !== false,
     capabilities: {
       ...model.capabilities,
-      nativePdfInput: supportsPdfInputAdapter(adapterKind),
+      nativePdfInput: model.answerSelectable !== false && supportsPdfInputAdapter(adapterKind),
       contextWindow: model.contextWindow
     },
     defaultParams: model.defaultParams,

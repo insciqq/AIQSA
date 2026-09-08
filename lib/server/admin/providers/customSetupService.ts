@@ -251,7 +251,7 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
   idFactory?: () => string;
   now?: () => Date;
   /** Runs after a committed setup (PRD B3 trigger); its failures never reach the caller. */
-  onCompleted?(completion: Readonly<{ connectionId: string; credentialId: string }>): void;
+  onCompleted?(completion: Readonly<{ connectionId: string; credentialId: string; userId: string }>): void | Promise<void>;
   repository: AdminProviderCustomSetupRepository;
   searchTester?: AdminProviderQuickSetupSearchTester;
   tester: AdminProviderCustomSetupTester;
@@ -441,7 +441,7 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
         );
       }
       try {
-        input.onCompleted?.({ connectionId, credentialId });
+        await input.onCompleted?.({ connectionId, credentialId, userId: inputValue.actor.userId });
       } catch {
         // Background checks are best effort; the setup itself is complete.
       }

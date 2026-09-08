@@ -516,6 +516,39 @@ describe("background capability checks (B3)", () => {
     const [catalog] = await rotated.listConnections();
     expect(catalog?.checkRun).toMatchObject({ credentialId: "cred-primary", reason: "credential", total: 3 });
   });
+
+  it("recovers a saved first key at the unchanged endpoint and starts checks without asking for the secret", async () => {
+    let catalog = connection({ activeConfig: null, activeVersion: 0, enabled: false });
+    catalog.models = catalog.models.slice(0, 3).map((model) => ({ ...model, activeConfig: null, activeVersion: 0, enabled: false }));
+    const activateCredentialCas = vi.fn<AdminProviderRepository["activateCredentialCas"]>(async (write) => {
+      expect(write.bootstrap).toBeDefined();
+      catalog = { ...catalog, activeConfig: catalog.draftConfig, activeVersion: 1, enabled: true,
+        models: catalog.models.map((model) => ({ ...model, activeConfig: model.draftConfig, activeVersion: 1, enabled: true })) };
+      return "updated";
+    });
+    const test = vi.fn(async (input: AdminProviderDraftTesterInput) => okOutcome(input));
+    const providers = service(repository({ activateCredentialCas, async listConnections() { return [catalog]; } }), { test });
+    const run = await providers.startCheckRun({ connectionId: catalog.id, credentialId: "cred-primary", reason: "requested" });
+    await waitFor(() => providers.checkRun({ connectionId: catalog.id, runId: run.id }).state === "completed");
+    expect(activateCredentialCas).toHaveBeenCalledOnce();
+    expect(run.total).toBe(3);
+    expect(test).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    { draftVersion: 2 },
+    { draftConfig: { ...connectionConfiguration, apiRoot: "https://changed.example.test/v1" } },
+    { family: "openai_compatible" as const }
+  ])("refuses saved-key recovery after endpoint or setup changes: %j", async (change) => {
+    const catalog = connection({ activeConfig: null, activeVersion: 0, ...change });
+    const activateCredentialCas = vi.fn<AdminProviderRepository["activateCredentialCas"]>();
+    const test = vi.fn<AdminProviderDraftTester["test"]>();
+    const providers = service(repository({ activateCredentialCas, async listConnections() { return [catalog]; } }), { test });
+    await expect(providers.startCheckRun({ connectionId: catalog.id, credentialId: "cred-primary", reason: "requested" }))
+      .rejects.toMatchObject({ code: "provider_endpoint_keys_required" });
+    expect(activateCredentialCas).not.toHaveBeenCalled();
+    expect(test).not.toHaveBeenCalled();
+  });
 });
 
 describe("no-auth background checks", () => {

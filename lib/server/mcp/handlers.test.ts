@@ -635,6 +635,22 @@ describe("MCP handler input validation", () => {
     });
   });
 
+  it("requires admin authority and a version for an isolated immediate tool switch", async () => {
+    const repository = new MemoryMcpRepository();
+    const update = createAdminMcpUpdateHandler(deps(repository));
+    const tool = { enabled: false, name: "semantic_code_search" };
+    const expectedUpdatedAt = "2026-09-08T12:00:00.000Z";
+    const send = (body: object, user = "admin") => update(request({ body, user, contentType: "application/json", method: "PATCH" }), routeContext);
+    expect((await send({ tool, expectedUpdatedAt }, "user-1")).status).toBe(403);
+    expect((await send({ tool })).status).toBe(400);
+    expect((await send({ tool, expectedUpdatedAt: "invalid" })).status).toBe(400);
+    expect((await send({ tool, expectedUpdatedAt, draft })).status).toBe(400);
+    expect((await send({ tool: { ...tool, enabled: "false" }, expectedUpdatedAt })).status).toBe(400);
+    expect(repository.updateCalls).toEqual([]);
+    expect((await send({ tool, expectedUpdatedAt })).status).toBe(200);
+    expect(repository.updateCalls).toEqual([{ tool, expectedUpdatedAt, serverId: SERVER_ID }]);
+  });
+
   it("accepts shared and personal secrets without returning either plaintext value", async () => {
     const repository = new MemoryMcpRepository();
     const create = createAdminMcpCreateHandler(deps(repository));

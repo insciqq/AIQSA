@@ -394,6 +394,46 @@ describe("admin provider service", () => {
     expect(createModel).toHaveBeenCalledWith(expect.objectContaining({ connectionId: "connection-new", id: "model-new" }));
   });
 
+  it("publishes first-setup models with the tested key and enables only catalog-accessible models", async () => {
+    const connection: AdminProviderConnection = {
+      ...adminConnection(),
+      models: ["vendor/model", "vendor/unavailable"].map((upstreamModelId, index) => ({
+        activatedAt: null,
+        activeConfig: null,
+        activeVersion: 0,
+        connectionId: "connection-1",
+        createdAt: NOW.toISOString(),
+        displayName: `Model ${index}`,
+        draftConfig: { ...modelConfiguration, upstreamModelId },
+        draftVersion: 2,
+        enabled: false,
+        id: `model-${index}`,
+        modelClass: "answer" as const,
+        updatedAt: NOW.toISOString()
+      }))
+    };
+    const activateCredentialCas = vi.fn<AdminProviderRepository["activateCredentialCas"]>(async () => "updated");
+    const providers = service(repository({
+      activateCredentialCas,
+      async listConnections() { return [connection]; }
+    }), tester(), ["credential-new", "version-new"], credentialTester(async () => ({
+      method: "models_catalog", modelIds: ["vendor/model"]
+    })));
+
+    await providers.activateNewCredential({ connectionId: connection.id, label: "Primary", secret: "candidate-secret" });
+
+    const write = activateCredentialCas.mock.calls[0]![0];
+    expect(write.bootstrap?.models.map(({ enabled, id }) => ({ enabled, id }))).toEqual([
+      { enabled: true, id: "model-0" }, { enabled: false, id: "model-1" }
+    ]);
+    expect(write.modelChecks).toEqual([
+      expect.objectContaining({ providerModelId: "model-0", modelVersion: 2, status: "available" }),
+      expect.objectContaining({ providerModelId: "model-1", modelVersion: 2, status: "unavailable" })
+    ]);
+    expect(write.modelChecks.every(({ evidence }) => evidence.compatibility === undefined)).toBe(true);
+    expect(JSON.stringify(write)).not.toContain("candidate-secret");
+  });
+
   it("saves a new key in one step against the active configuration and writes nothing when the provider rejects it", async () => {
     const activateCredentialCas = vi.fn<AdminProviderRepository["activateCredentialCas"]>(async () => "updated");
     const activeConnection: AdminProviderConnection = {
@@ -437,6 +477,7 @@ describe("admin provider service", () => {
       secret: "candidate-secret"
     });
     const write = activateCredentialCas.mock.calls[0]?.[0];
+    expect(write?.bootstrap).toBeUndefined();
     expect(write).toMatchObject({
       checkedAt: NOW,
       connectionId: "connection-1",

@@ -3,6 +3,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../../prisma";
 import { createPrismaAdminProviderRepository } from "./prismaRepository";
+import { normalizeProviderConnectionConfiguration, normalizeProviderModelConfiguration } from "../../providers/providerConfiguration";
 
 afterAll(() => prisma.$disconnect());
 
@@ -59,7 +60,7 @@ async function fixture(run: (input: {
           draftConfig: {
             adapterKind: "openai_responses_compatible",
             answerSelectable: true,
-            capabilities: {},
+            capabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
             defaultParams: {},
             modelClass: "answer",
             upstreamModelId: "fixture/model"
@@ -81,6 +82,72 @@ async function fixture(run: (input: {
 }
 
 describe("scoped credential activation CAS", () => {
+  it("makes a fresh connection and its accessible model usable in the same transaction as the first key", async () => {
+    await fixture(async ({ connectionId, db, repository }) => {
+      await db.providerConnection.update({
+        data: { activeConfig: Prisma.DbNull, activeVersion: 0, activatedAt: null, enabled: false },
+        where: { id: connectionId }
+      });
+      const model = await db.providerModel.findFirstOrThrow({ where: { connectionId } });
+      await db.providerModel.update({ data: { enabled: false }, where: { id: model.id } });
+      const credentialId = randomUUID();
+      const versionId = randomUUID();
+      const latestId = randomUUID();
+      const latestConfiguration = {
+        ...normalizeProviderModelConfiguration(model.draftConfig), upstreamModelId: "fixture/latest"
+      };
+      const write = {
+        catalogAdditions: [{
+          configuration: latestConfiguration, displayName: "Latest fixture model", id: latestId,
+          inputTokenPriceMicros: 0, outputTokenPriceMicros: 0, templateKey: null
+        }],
+        bootstrap: {
+          configuration: normalizeProviderConnectionConfiguration(connectionConfiguration),
+          models: [{
+            configuration: normalizeProviderModelConfiguration(model.draftConfig),
+            draftVersion: model.draftVersion,
+            enabled: true,
+            expectedEnabled: false,
+            id: model.id
+          }]
+        },
+        checkedAt: NOW,
+        connectionId,
+        expectedConnectionDraftVersion: 1,
+        expectedConnectionVersion: 0,
+        modelChecks: [{
+          evidence: { detail: "ok" as const, method: "models_catalog" as const, selectedProviders: [], upstreamModelId: "fixture/model" },
+          modelVersion: model.draftVersion,
+          providerModelId: model.id,
+          status: "available" as const
+        }, {
+          evidence: { detail: "ok" as const, method: "models_catalog" as const, selectedProviders: [], upstreamModelId: "fixture/latest" },
+          modelVersion: 1, providerModelId: latestId, status: "available" as const
+        }],
+        credential: { id: credentialId, kind: "new" as const, label: "Primary" },
+        now: NOW,
+        testEvidence: { method: "models_catalog", modelCount: 1, version: 1 },
+        versionEnvelope: "synthetic-envelope-not-dispatched",
+        versionId
+      };
+      // A concurrent model edit must reject the whole key/bootstrap write.
+      await expect(repository.activateCredentialCas({ ...write, bootstrap: {
+        ...write.bootstrap, models: [{ ...write.bootstrap.models[0]!, draftVersion: model.draftVersion + 1 }]
+      } })).resolves.toBe("stale");
+      expect(await db.providerCredential.count({ where: { connectionId } })).toBe(0);
+      await expect(repository.activateCredentialCas(write)).resolves.toBe("updated");
+      const [connection] = (await repository.listConnections()).filter(({ id }) => id === connectionId);
+      expect(connection).toMatchObject({ enabled: true, activeVersion: 1, defaultCredentialId: credentialId });
+      expect(connection!.models.find(({ id }) => id === model.id)).toMatchObject({ enabled: true, activeVersion: model.draftVersion });
+      expect(connection!.activeChecks.find(({ providerModelId }) => providerModelId === model.id)).toMatchObject({
+        connectionVersion: 1, credentialVersionId: versionId, modelVersion: model.draftVersion, status: "available"
+      });
+      expect(await repository.loadActiveRefreshCandidate({ connectionId, credentialId, providerModelId: model.id })).not.toBeNull();
+      expect(connection!.models.find(({ id }) => id === latestId)).toMatchObject({ enabled: true, activeVersion: 1 });
+      expect(await repository.loadActiveRefreshCandidate({ connectionId, credentialId, providerModelId: latestId })).not.toBeNull();
+    });
+  });
+
   it("creates an enabled credential with one active version and adopts it as the connection default", async () => {
     await fixture(async ({ connectionId, db, repository }) => {
       const credentialId = randomUUID();

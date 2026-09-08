@@ -24,10 +24,10 @@ export function AdminProviderCheckBanner({ checks, connection, disabled }: Admin
     connection.credentials.find(({ id }) => id === credentialId)?.label ?? "the key";
 
   if (run?.state === "running" && run.reason !== "model") {
-    const progress = run.total === 0 ? 100 : Math.round((run.done / run.total) * 100);
-    const title = run.reason === "requested"
+    const progress = run.total === 0 ? 0 : Math.round((run.done / run.total) * 100);
+    const title = run.setup?.state === "running" ? "Models checked. Setting up Search and suitable empty defaults…" : run.reason === "requested"
       ? `Checking what each model can do with key ${keyLabel(run.credentialId)} — ${run.done} of ${run.total} done.`
-      : `Key ${keyLabel(run.credentialId)} saved and working. Checking what each model can do — ${run.done} of ${run.total} done.`;
+      : `Key ${keyLabel(run.credentialId)} saved. Checking what each model can do — ${run.done} of ${run.total} done.`;
     return (
       <section
         aria-live="polite"
@@ -40,7 +40,9 @@ export function AdminProviderCheckBanner({ checks, connection, disabled }: Admin
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium text-ink" data-testid="provider-check-progress">{title}</p>
             <p className="mt-0.5 text-xs leading-5 text-ink-muted">
-              Tools, JSON output, PDF and image input, streaming. About 6 small requests per model. You can leave this page.
+              {run.setup?.state === "running"
+                ? "Search uses one small real query. Existing default models and role assignments are kept."
+                : "Tools, JSON output, PDF and image input, streaming. About 6 small requests per model. You can leave this page."}
             </p>
           </div>
           <UiV2Button
@@ -58,7 +60,7 @@ export function AdminProviderCheckBanner({ checks, connection, disabled }: Admin
         </div>
         <div
           aria-label="Models checked"
-          aria-valuemax={run.total}
+          aria-valuemax={Math.max(1, run.total)}
           aria-valuemin={0}
           aria-valuenow={run.done}
           className="h-1 overflow-hidden rounded-pill bg-trace-strong"
@@ -66,6 +68,27 @@ export function AdminProviderCheckBanner({ checks, connection, disabled }: Admin
         >
           <span className="block h-full rounded-pill bg-proof transition-[width]" style={{ width: `${progress}%` }} />
         </div>
+      </section>
+    );
+  }
+
+  if (run?.state === "completed" && (run.total === 0 || run.setup || run.skipped?.length)) {
+    const setup = run.setup && run.setup.state !== "running" ? run.setup : null;
+    const retry = run.total === 0 || setup?.state === "partial" || run.failed.length > 0 || Boolean(run.skipped?.length);
+    return (
+      <section className="rounded-[12px] border border-trace-subtle bg-answer-paper px-4 py-3.5 sm:px-5" role="status">
+        <p className="text-sm font-medium text-ink">{run.total === 0
+          ? "No models were checked."
+          : retry ? "Some setup steps need another check." : "Automatic setup finished."}</p>
+        <p className="mt-1 text-xs leading-5 text-ink-muted">{run.total === 0
+          ? "Add a supported model or check which models this key can access."
+          : setup?.search === "failed" ? "Search could not be verified. Your saved key and model results are kept."
+          : run.failed.length ? `${run.failed.length} models hit a temporary failure. Results already stored are kept.`
+          : setup?.state === "partial" ? "Some default assignments could not be saved. Retry setup to finish."
+          : setup?.search === "ready" ? "Search checked and ready."
+          : run.skipped?.length ? "Some models changed during checking. Recheck to use their current settings." : "Model results are shown below."}</p>
+        {setup?.defaults.length ? <p className="mt-1 text-xs leading-5 text-ink-muted">Defaults set — {setup.defaults.join("; ")}.</p> : null}
+        {retry ? <UiV2Button className="mt-2" disabled={disabled} onClick={() => void checks.restart()} tone="ghost" type="button">Retry setup</UiV2Button> : null}
       </section>
     );
   }

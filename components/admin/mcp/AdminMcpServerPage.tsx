@@ -8,11 +8,7 @@ import {
 } from "@/components/admin/mcp/adminMcpActivation";
 import {
   activeInventory,
-  diffMcpToolInventory,
   draftInventory,
-  enabledMcpToolInventory,
-  staleDisabledMcpToolNames,
-  withMcpToolEnabled
 } from "@/components/admin/mcp/adminMcpDraft";
 import {
   AdminMcpServerGroupAccessPanel,
@@ -26,7 +22,6 @@ import {
 import { cardClass, McpNote, McpServerTile, McpStatusPill, sectionHeadingClass } from "@/components/admin/mcp/mcpPrimitives";
 import {
   mcpAuthorizationState,
-  mcpHasUnappliedCheck,
   mcpHeaderStatus,
   mcpOAuthOutcomeCopy,
   mcpSourceLabel,
@@ -38,7 +33,7 @@ import { UiV2Button, UiV2IconButton, UiV2Switch } from "@/components/ui-v2";
 import type { AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
 import type { AdminMcpServer } from "@/lib/contracts/mcp";
 import { CircleAlert, LoaderCircle } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 const linkButton = "v2-button v2-focusable";
 
@@ -202,90 +197,87 @@ function AuthorizationCard({ controller, server }: Readonly<{ controller: AdminM
 }
 
 function ToolsSection({ controller, server }: Readonly<{ controller: AdminMcpController; server: AdminMcpServer }>) {
-  const candidate = draftInventory(server);
-  const active = activeInventory(server);
-  const disabledNames = new Set(server.draft.disabledToolNames ?? []);
-  const enabledCount = enabledMcpToolInventory(candidate, server.draft.disabledToolNames).length;
-  const staleCheck = !server.draftTested && Boolean(server.draftTest);
-  const diff = server.draftTest && server.activeRevision ? diffMcpToolInventory(active, candidate) : null;
-  const diffParts = diff ? [
-    diff.added.length ? `${diff.added.length} new` : null,
-    diff.changed.length ? `${diff.changed.length} changed` : null,
-    diff.removed.length ? `${diff.removed.length} removed` : null
-  ].filter((part): part is string => part !== null) : [];
-  const staleDisabled = staleDisabledMcpToolNames(server.draft, candidate);
-  const locked = controller.state.busy || Boolean(server.archivedAt);
-  const pendingChanges = !server.archivedAt && (!server.draftTested || mcpHasUnappliedCheck(server));
-  const setTool = (name: string, enabled: boolean) => void controller.actions.update(server.id, {
-    draft: withMcpToolEnabled(server.draft, name, enabled)
-  });
+  const [query, setQuery] = useState("");
+  const [onlyEnabled, setOnlyEnabled] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const tools = server.activeRevision ? activeInventory(server) : draftInventory(server);
+  const disabledNames = new Set((server.activeRevision
+    ? server.activeRevision.disabledToolNames : server.draft.disabledToolNames) ?? []);
+  const enabledCount = tools.filter(({ name }) => !disabledNames.has(name)).length;
+  const search = query.trim().toLocaleLowerCase();
+  const filtered = tools.filter((tool) =>
+    (!onlyEnabled || !disabledNames.has(tool.name)) &&
+    (!search || `${tool.name} ${tool.description ?? ""}`.toLocaleLowerCase().includes(search)));
+  const shown = expanded ? filtered : filtered.slice(0, 6);
+  const locked = controller.state.busy || Boolean(server.archivedAt) || !server.activeRevision;
+  const setTool = async (name: string, enabled: boolean) => {
+    const saved = await controller.actions.update(server.id, {
+      expectedUpdatedAt: server.updatedAt,
+      tool: { enabled, name }
+    });
+    if (saved && onlyEnabled && !enabled) searchRef.current?.focus();
+  };
 
   return (
     <section aria-labelledby="mcp-tools-heading" className="grid grid-cols-[minmax(0,1fr)] gap-2.5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h3 className={sectionHeadingClass} id="mcp-tools-heading">Tools</h3>
         <span className="text-xs text-ink-muted" data-testid="mcp-tools-summary">
-          {candidate.length ? `${enabledCount} of ${candidate.length} on` : "None yet"}
-          {diffParts.length ? ` · ${diffParts.join(" · ")} since the current configuration` : ""}
+          {tools.length ? `${enabledCount} of ${tools.length} on` : "None yet"}
         </span>
       </div>
       <McpNote tone="warn">
         Tools that are on can act and change data without a per-call confirmation; newly discovered tools are on until turned off.
         {server.draft.source.kind !== "remote" ? " Local servers run in an isolated runtime with unrestricted outbound network access." : ""}
       </McpNote>
-      {pendingChanges && candidate.length ? (
-        <p className="text-xs leading-5 text-caution" data-testid="mcp-tools-pending">
-          Changes to the tools apply after Test & Save.
-        </p>
+      {tools.length ? (
+        <>
+          <p className="text-xs text-ink-muted">{server.activeRevision
+            ? "Tool switches apply immediately to new requests."
+            : "Use Test & Save before changing which tools are on."}</p>
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <input
+              aria-label="Search tools"
+              className="min-w-0 flex-1 rounded-[8px] border border-trace-subtle bg-control-surface px-3 py-2 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-focus"
+              onChange={(event) => setQuery(event.currentTarget.value)}
+              placeholder="Search tools…"
+              ref={searchRef}
+              type="search"
+              value={query}
+            />
+            <label className="flex items-center gap-2 text-xs text-ink-secondary">
+              <input checked={onlyEnabled} className="size-4 accent-proof" onChange={(event) => setOnlyEnabled(event.currentTarget.checked)} type="checkbox" />
+              Only enabled
+            </label>
+            {filtered.length > 6 ? (
+              <UiV2Button aria-expanded={expanded} onClick={() => setExpanded((value) => !value)} tone="ghost" type="button">
+                {expanded ? "Show fewer" : `Show all ${filtered.length}`}
+              </UiV2Button>
+            ) : null}
+          </div>
+        </>
       ) : null}
       <div className={cardClass}>
-        {candidate.length ? (
-          <ul aria-label={`Tools of ${server.name}`} className="divide-y divide-trace-subtle">
-            {candidate.map((tool) => {
-              const enabled = !disabledNames.has(tool.name);
-              return (
-                <li className="flex min-w-0 items-start justify-between gap-4 px-4 py-3 sm:px-5" data-testid={`mcp-tool-${tool.name}`} key={tool.name}>
-                  <div className="min-w-0 flex-1">
-                    <p className="break-words font-mono text-xs font-medium text-ink [overflow-wrap:anywhere]">{tool.name}</p>
-                    {tool.description ? (
-                      <p className="mt-0.5 break-words text-xs leading-5 text-ink-muted [overflow-wrap:anywhere]">{tool.description}</p>
-                    ) : null}
-                  </div>
-                  <UiV2Switch
-                    checked={enabled}
-                    disabled={locked}
-                    label={`Use ${tool.name}`}
-                    onChange={(next) => setTool(tool.name, next)}
-                  />
-                </li>
-              );
-            })}
-          </ul>
-        ) : (
-          <p className="px-5 py-6 text-sm text-ink-muted" role="status">
-            {server.draftTested
-              ? "This server exposes no tools."
-              : staleCheck
-                ? "The last check found no tools. Use Test & Save to check again."
-                : "Use Test & Save to discover this server's tools."}
-          </p>
-        )}
-      </div>
-      {staleDisabled.length ? (
-        <div className="grid gap-2" data-testid="mcp-stale-disabled-tools">
-          <p className="text-xs leading-5 text-ink-muted">
-            Turned off but not offered by the server right now: they stay off if they come back. Remove a name to turn it on when it returns.
-          </p>
-          <ul className="flex flex-wrap gap-2">
-            {staleDisabled.map((name) => (
-              <li className="inline-flex items-center gap-1 rounded-control bg-control-surface py-0.5 pl-2.5 pr-1 font-mono text-xs text-ink-secondary" key={name}>
-                {name}
-                <UiV2IconButton disabled={locked} icon="close" label={`Remove ${name}`} onClick={() => setTool(name, true)} />
+        {shown.length ? (
+          <ul aria-label={`Tools of ${server.name}`} className="max-h-[32rem] divide-y divide-trace-subtle overflow-y-auto">
+            {shown.map((tool) => (
+              <li className="flex min-w-0 items-start justify-between gap-4 px-4 py-3 sm:px-5" data-testid={`mcp-tool-${tool.name}`} key={tool.name}>
+                <div className="min-w-0 flex-1">
+                  <p className="break-words font-mono text-xs font-medium text-ink [overflow-wrap:anywhere]">{tool.name}</p>
+                  {tool.description ? <p className="mt-0.5 break-words text-xs leading-5 text-ink-muted [overflow-wrap:anywhere]">{tool.description}</p> : null}
+                </div>
+                <UiV2Switch checked={!disabledNames.has(tool.name)} disabled={locked} label={`Use ${tool.name}`} onChange={(next) => void setTool(tool.name, next)} />
               </li>
             ))}
           </ul>
-        </div>
-      ) : null}
+        ) : (
+          <div className="px-5 py-6 text-sm text-ink-muted" role="status">
+            {tools.length ? "No tools match your filters." : server.activeRevision ? "This server exposes no tools." : "Use Test & Save to discover this server’s tools."}
+            {tools.length ? <UiV2Button onClick={() => { setQuery(""); setOnlyEnabled(false); searchRef.current?.focus(); }} tone="ghost" type="button">Clear filters</UiV2Button> : null}
+          </div>
+        )}
+      </div>
     </section>
   );
 }

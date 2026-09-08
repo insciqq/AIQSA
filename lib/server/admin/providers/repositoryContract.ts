@@ -189,10 +189,28 @@ export type ProviderModelActivationWrite = Readonly<{
  * One tested key becomes the active version of exactly one credential. A
  * `new` credential row is created enabled; a `rotate` write replaces the
  * active version of an existing credential only while its draft version is
- * still the expected one. Connection and model drafts are never touched, and
- * the credential becomes the connection default only when none is set.
+ * still the expected one. Initial setup publishes the tested connection and
+ * its catalog models together. Established connections retain their choices.
  */
 export type ProviderCredentialActivationWrite = Readonly<{
+  catalogAdditions?: readonly Readonly<{
+    configuration: ProviderModelConfiguration;
+    displayName: string;
+    id: string;
+    inputTokenPriceMicros: number;
+    outputTokenPriceMicros: number;
+    templateKey: string | null;
+  }>[];
+  bootstrap?: Readonly<{
+    configuration: ProviderConnectionConfiguration;
+    models: readonly Readonly<{
+      configuration: ProviderModelConfiguration;
+      draftVersion: number;
+      enabled: boolean;
+      expectedEnabled: boolean;
+      id: string;
+    }>[];
+  }>;
   checkedAt: Date;
   connectionId: string;
   expectedConnectionVersion: number;

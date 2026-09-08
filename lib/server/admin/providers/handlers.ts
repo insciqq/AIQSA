@@ -96,6 +96,15 @@ async function requireAdmin(request: Request, deps: AdminProviderHandlerDeps): P
   return null;
 }
 
+async function setupActor(request: Request, deps: AdminProviderHandlerDeps) {
+  const session = await deps.resolveAuth(request);
+  if (!session) return { response: errorJson("unauthorized", 401), userId: null };
+  if (session.user.status !== "active" || session.user.role !== "admin") {
+    return { response: errorJson("forbidden", 403), userId: null };
+  }
+  return { response: null, userId: session.userId };
+}
+
 function serviceError(error: AdminProviderServiceError): Response {
   const notFound = new Set([
     "provider_active_tuple_not_found",
@@ -271,8 +280,8 @@ export function createAdminProviderConnectionDeleteHandler(deps: AdminProviderHa
 export function createAdminProviderConnectionActionHandler(deps: AdminProviderHandlerDeps) {
   return async function POST(request: Request, context: ConnectionContext): Promise<Response> {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
-    const authError = await requireAdmin(request, deps);
-    if (authError) return authError;
+    const auth = await setupActor(request, deps);
+    if (auth.response || !auth.userId) return auth.response!;
     const [body, bodyError] = await readBody(request);
     if (bodyError) return bodyError;
     const action = text(body?.action, 64);
@@ -362,6 +371,7 @@ export function createAdminProviderConnectionActionHandler(deps: AdminProviderHa
         const modelIds = optionalIdList(body.modelIds);
         if (!credentialId || modelIds === null) return errorJson("provider_action_invalid", 400);
         await deps.service.startCheckRun({
+          userId: auth.userId,
           connectionId,
           credentialId,
           ...(modelIds ? { modelIds } : {}),
@@ -400,8 +410,8 @@ export function createAdminProviderCheckRunHandler(deps: AdminProviderHandlerDep
 export function createAdminProviderCredentialCreateHandler(deps: AdminProviderHandlerDeps) {
   return async function POST(request: Request, context: ConnectionContext): Promise<Response> {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
-    const authError = await requireAdmin(request, deps);
-    if (authError) return authError;
+    const auth = await setupActor(request, deps);
+    if (auth.response || !auth.userId) return auth.response!;
     const [body, bodyError] = await readBody(request);
     if (bodyError) return bodyError;
     const label = text(body?.label, 160);
@@ -413,6 +423,7 @@ export function createAdminProviderCredentialCreateHandler(deps: AdminProviderHa
     const { connectionId } = await context.params;
     return safely(async () => {
       await deps.service.activateNewCredential({
+        userId: auth.userId,
         connectionId,
         label,
         secret,
@@ -426,8 +437,8 @@ export function createAdminProviderCredentialCreateHandler(deps: AdminProviderHa
 export function createAdminProviderCredentialUpdateHandler(deps: AdminProviderHandlerDeps) {
   return async function PATCH(request: Request, context: CredentialContext): Promise<Response> {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
-    const authError = await requireAdmin(request, deps);
-    if (authError) return authError;
+    const auth = await setupActor(request, deps);
+    if (auth.response || !auth.userId) return auth.response!;
     const [body, bodyError] = await readBody(request);
     if (bodyError) return bodyError;
     const action = text(body?.action, 64);
@@ -448,6 +459,7 @@ export function createAdminProviderCredentialUpdateHandler(deps: AdminProviderHa
           return errorJson("provider_configuration_invalid", 400);
         }
         await deps.service.activateRotatedCredential({
+          userId: auth.userId,
           connectionId,
           credentialId,
           expectedDraftVersion,

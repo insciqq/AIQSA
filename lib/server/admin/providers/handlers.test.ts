@@ -185,6 +185,7 @@ describe("admin provider HTTP handlers", () => {
     const body = await response.text();
     expect(response.status).toBe(201);
     expect(activateNewCredential).toHaveBeenCalledWith({
+      userId: "admin-1",
       connectionId: "connection-1",
       label: "Primary",
       secret: "never-return-this-key",
@@ -267,6 +268,7 @@ describe("admin provider HTTP handlers", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).not.toContain("rotated-key");
     expect(activateRotatedCredential).toHaveBeenCalledWith({
+      userId: "admin-1",
       connectionId: "connection-1",
       credentialId: "credential-1",
       expectedDraftVersion: 1,
@@ -415,6 +417,7 @@ describe("admin provider HTTP handlers", () => {
     expect(started.status).toBe(200);
     expect(await started.json()).toEqual({ connections: expect.any(Array) });
     expect(providerService.startCheckRun).toHaveBeenCalledWith({
+      userId: "admin-1",
       connectionId: "connection-1",
       credentialId: "credential-1",
       modelIds: ["model-1"],

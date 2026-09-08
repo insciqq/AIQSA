@@ -180,12 +180,19 @@ function fakeApi(state: ApiState) {
     };
     if (method === "PATCH" && !action) {
       const update = body as AdminMcpUpdateRequest;
+      const disabledToolNames = new Set(current.activeRevision?.disabledToolNames ?? []);
+      if (update.tool?.enabled) disabledToolNames.delete(update.tool.name);
+      else if (update.tool) disabledToolNames.add(update.tool.name);
       return json({ server: replace({
         ...current,
         ...(typeof update.enabled === "boolean" ? { enabled: update.enabled } : {}),
         ...(update.draft ? { draft: update.draft, draftTested: false } : {}),
         ...(update.name ? { name: update.name } : {}),
         ...(update.description !== undefined ? { description: update.description } : {}),
+        ...(update.tool && current.activeRevision ? {
+          activeRevision: { ...current.activeRevision, disabledToolNames: [...disabledToolNames] },
+          draft: { ...current.draft, disabledToolNames: [...disabledToolNames] }
+        } : {}),
         updatedAt: "2026-09-07T10:05:00.000Z"
       }) });
     }
@@ -383,7 +390,7 @@ describe("AdminMcpSection", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("shows the server page with the state line, tools switches that stage changes and access switches that grant", async () => {
+  it("shows the server page with immediate tool and access switches", async () => {
     const { calls, view } = renderSection(state, "server-1");
 
     const page = await screen.findByTestId("mcp-server-page");
@@ -400,12 +407,12 @@ describe("AdminMcpSection", () => {
     fireEvent.click(remember);
     await waitFor(() => expect(within(page).getByRole("switch", { name: "Use remember" })).not.toBeChecked());
     expect(calls.at(-1)).toMatchObject({
-      body: { draft: expect.objectContaining({ disabledToolNames: ["remember"] }), expectedUpdatedAt: NOW },
+      body: { tool: { enabled: false, name: "remember" }, expectedUpdatedAt: NOW },
       method: "PATCH",
       url: "/api/admin/mcp/server-1"
     });
-    expect(screen.getByTestId("mcp-server-page-status")).toHaveTextContent("Changes not applied");
-    expect(within(page).getByTestId("mcp-tools-pending")).toHaveTextContent("apply after Test & Save");
+    expect(within(page).getByTestId("mcp-tools-summary")).toHaveTextContent("1 of 2 on");
+    expect(within(page).queryByTestId("mcp-tools-pending")).not.toBeInTheDocument();
 
     const groupsList = within(page).getByRole("list", { name: "Groups with access to Working Tools" });
     expect(within(groupsList).getByTestId("system-mcp-grant-group-full")).toHaveTextContent("Included");
@@ -417,6 +424,33 @@ describe("AdminMcpSection", () => {
     fireEvent.click(within(usersList).getByRole("switch", { name: "Working Tools for Alice" }));
     await waitFor(() => expect(within(usersList).getByRole("switch", { name: "Working Tools for Alice" })).toBeChecked());
     expect(calls.at(-1)).toMatchObject({ body: { canUse: true, personalSlotKeys: [], userId: "user-1" }, method: "PUT" });
+  });
+
+  it("searches and collapses a long inventory, filters enabled tools and keeps focus after disabling a filtered tool", async () => {
+    const inventory = Array.from({ length: 12 }, (_, index) => ({ name: `tool_${index + 1}`, description: `Action ${index + 1}` }));
+    const server = workingServer();
+    state.servers = [{ ...server, activeRevision: { ...server.activeRevision!,
+      validationEvidence: { ...server.activeRevision!.validationEvidence, toolInventory: inventory } } }];
+    const { calls } = renderSection(state, "server-1");
+    const page = await screen.findByTestId("mcp-server-page");
+    const list = within(page).getByRole("list", { name: "Tools of Working Tools" });
+    expect(within(list).getAllByRole("switch")).toHaveLength(6);
+    fireEvent.click(within(page).getByRole("button", { name: "Show all 12" }));
+    expect(within(list).getAllByRole("switch")).toHaveLength(12);
+    fireEvent.click(within(page).getByRole("button", { name: "Show fewer" }));
+    expect(within(list).getAllByRole("switch")).toHaveLength(6);
+    const search = within(page).getByRole("searchbox", { name: "Search tools" });
+    fireEvent.change(search, { target: { value: "Action 12" } });
+    expect(within(list).getAllByRole("switch")).toHaveLength(1);
+    fireEvent.click(within(page).getByRole("checkbox", { name: "Only enabled" }));
+    const tool = within(list).getByRole("switch", { name: "Use tool_12" });
+    tool.focus();
+    fireEvent.click(tool);
+    await waitFor(() => expect(search).toHaveFocus());
+    expect(within(page).getByText("No tools match your filters.")).toBeVisible();
+    expect(calls.at(-1)).toMatchObject({ body: { tool: { name: "tool_12", enabled: false }, expectedUpdatedAt: NOW } });
+    fireEvent.click(within(page).getByRole("button", { name: "Clear filters" }));
+    expect(within(page).getByTestId("mcp-tools-summary")).toHaveTextContent("11 of 12 on");
   });
 
   it("Test & Save on the page sends the values for this check, clears them on success and reports a failed check", async () => {
@@ -564,7 +598,7 @@ describe("AdminMcpSection", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Check for update" }));
     await waitFor(() => expect(calls.at(-1)?.url).toBe("/api/admin/mcp/server-1/check-update"));
     await waitFor(() => expect(screen.getByTestId("mcp-server-page-status")).toHaveTextContent("Update ready"));
-    expect(screen.getByTestId("mcp-tools-summary")).toHaveTextContent("3 of 3 on · 1 new since the current configuration");
+    expect(screen.getByTestId("mcp-tools-summary")).toHaveTextContent("2 of 2 on");
 
     fireEvent.click(menu());
     fireEvent.click(screen.getByRole("menuitem", { name: "Disable" }));

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveProviderModelCapabilities } from "./providerModelCapabilities";
+import { lowestConfiguredReasoningEffort, resolveProviderModelCapabilities } from "./providerModelCapabilities";
 
 const capabilities = {
   nativePdfInput: false,
@@ -10,6 +10,15 @@ const capabilities = {
 };
 
 describe("provider model capability resolution", () => {
+  it.each([
+    ["gpt-6-astra", "low"], ["gpt-5.6-terra", "none"]
+  ])("uses the lowest supported effort for %s probes", (upstreamModelId, expected) => {
+    expect(lowestConfiguredReasoningEffort({
+      adapterKind: "openai_responses_native", answerSelectable: true,
+      capabilities, defaultParams: {}, modelClass: "answer", upstreamModelId
+    }, "openai")).toBe(expected);
+  });
+
   it("enables AIQSA local PDF extraction without inventing Direct PDF support", () => {
     const resolved = resolveProviderModelCapabilities({
       adapterKind: "openai_responses_compatible",

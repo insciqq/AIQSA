@@ -34,7 +34,7 @@ import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import type { AdminProviderConnection, AdminProviderModel } from "@/lib/contracts/adminProviders";
 import { embeddingPresetsForFamily, type EmbeddingModelPreset } from "@/lib/domain/embeddingModels";
 import { adminRerankerModelConfiguration, rerankerPresetsForFamily } from "@/lib/domain/rerankerModels";
-import { useMemo, useState, type MouseEvent } from "react";
+import { useId, useMemo, useState, type MouseEvent } from "react";
 
 const focusRing =
   "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper";
@@ -178,7 +178,13 @@ export function AdminProviderModels({
   const running = run?.state === "running";
   // Keep the edit baseline so a catalog refresh cannot replace fields or advance its CAS version.
   const editing = sheet?.kind === "edit" ? sheet.model : null;
-  const hasCheckableModels = connection.models.some((model) => model.enabled && model.activeConfig !== null);
+  const initialSetup = connection.activeVersion === 0;
+  const checkHelpId = useId();
+  const hasCheckableModels = connection.models.some((model) => initialSetup || model.enabled && model.activeConfig !== null);
+  const checkHelp = !checkKey ? "Add a working default API key first."
+    : !hasCheckableModels ? "Add or turn on a model first."
+      : running ? "Model checks are already running."
+        : "Sends small requests to verify model access, tools, JSON output, PDF and image input, and streaming.";
 
   const startChecks = (credentialId: string, modelIds?: readonly string[]) =>
     void controller.actions.startModelChecks(connection.id, credentialId, modelIds);
@@ -286,19 +292,22 @@ export function AdminProviderModels({
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           {connection.models.length ? (
             <UiV2Button
+              aria-describedby={checkHelpId}
               disabled={busy || running || !checkKey || !hasCheckableModels}
               icon="regenerate"
               onClick={() => checkKey && startChecks(checkKey.id)}
-              title={checkKey ? undefined : "Add a working default key first"}
+              title={checkHelp}
               tone="ghost"
               type="button"
             >
-              Re-check all
+              Check models
             </UiV2Button>
           ) : null}
           <AddModelMenu actions={presetActions} disabled={busy} onChatModel={() => setSheet({ kind: "add" })} />
         </div>
       </div>
+
+      <p className="text-xs leading-5 text-ink-muted" id={checkHelpId}>{checkHelp}</p>
 
       <div className="overflow-hidden rounded-[12px] border border-trace-subtle bg-answer-paper">
         {groups.length === 0 ? (
@@ -306,9 +315,9 @@ export function AdminProviderModels({
             No models yet. Add one to make this provider usable in chat.
           </p>
         ) : (
-          <div className="overflow-x-auto">
-            <table aria-label="Models" className="w-full min-w-[42rem] border-collapse text-sm">
-              <thead>
+          <div className="xl:overflow-x-auto">
+            <table aria-label="Models" className="block w-full border-collapse text-sm xl:table xl:min-w-[42rem]">
+              <thead className="sr-only xl:not-sr-only xl:table-header-group">
                 <tr className="border-b border-trace-subtle text-left text-metadata font-semibold uppercase tracking-[0.06em] text-ink-muted">
                   <th className="px-4 py-2.5 font-semibold sm:px-5" scope="col">Model</th>
                   <th className="px-3 py-2.5 font-semibold" scope="col">Works with</th>
@@ -318,10 +327,10 @@ export function AdminProviderModels({
                 </tr>
               </thead>
               {groups.map((group) => (
-                <tbody data-testid={`provider-models-${group.modelClass}`} key={group.modelClass}>
-                  <tr className="border-b border-trace-subtle bg-control-surface/40">
+                <tbody className="block xl:table-row-group" data-testid={`provider-models-${group.modelClass}`} key={group.modelClass}>
+                  <tr className="block border-b border-trace-subtle bg-control-surface/40 xl:table-row">
                     <th
-                      className="px-4 py-1.5 text-left text-metadata font-semibold uppercase tracking-[0.06em] text-ink-muted sm:px-5"
+                      className="block px-4 py-1.5 text-left text-metadata font-semibold uppercase tracking-[0.06em] text-ink-muted xl:table-cell sm:px-5"
                       colSpan={5}
                       scope="rowgroup"
                     >
@@ -342,7 +351,7 @@ export function AdminProviderModels({
                     const route = modelRouteLabel(connection, model);
                     const expanded = expandedId === model.id;
                     const summaries = expanded ? modelCheckSummaries(connection, model) : [];
-                    const canCheck = Boolean(checkKey) && model.enabled && model.activeConfig !== null && !running;
+                    const canCheck = Boolean(checkKey) && (initialSetup || model.enabled && model.activeConfig !== null) && !running;
                     const menu: UiV2MenuAction[] = [
                       { icon: "edit", label: "Edit", onSelect: () => setSheet({ kind: "edit", model }) },
                       {
@@ -366,13 +375,13 @@ export function AdminProviderModels({
                     return [
                       <tr
                         aria-expanded={expanded}
-                        className={`border-b border-trace-subtle align-top ${model.enabled ? "" : "opacity-70"} ${expanded ? "bg-control-surface/30" : ""}`}
+                        className={`grid grid-cols-[minmax(0,1fr)_auto_auto] border-b border-trace-subtle align-top xl:table-row ${model.enabled ? "" : "opacity-70"} ${expanded ? "bg-control-surface/30" : ""}`}
                         data-model-enabled={model.enabled}
                         data-testid={`provider-model-${model.id}`}
                         key={model.id}
                         onClick={(event) => rowClick(event, model.id)}
                       >
-                        <td className="min-w-0 max-w-[18rem] px-4 py-3 sm:px-5">
+                        <td className="col-start-1 row-start-1 min-w-0 px-4 py-3 sm:max-w-[18rem] sm:px-5">
                           <button
                             aria-expanded={expanded}
                             className={`block min-w-0 max-w-full text-left ${focusRing} rounded-[4px]`}
@@ -387,7 +396,7 @@ export function AdminProviderModels({
                             {worksWith.kind === "not_checked" ? " · not checked yet" : ""}
                           </p>
                         </td>
-                        <td className="px-3 py-3" data-testid={`provider-model-${model.id}-works-with`} data-works-with={worksWith.kind}>
+                        <td className="col-span-3 row-start-2 min-w-0 px-4 pb-3 sm:px-3 sm:py-3" data-testid={`provider-model-${model.id}-works-with`} data-works-with={worksWith.kind}>
                           {worksWith.kind === "checking" ? (
                             <span className="inline-flex items-center gap-2 text-xs text-ink-secondary" role="status">
                               <span aria-hidden="true" className="v2-spinner" />
@@ -396,9 +405,10 @@ export function AdminProviderModels({
                           ) : worksWith.kind === "not_checked" ? (
                             <span className="inline-flex flex-wrap items-center gap-2 text-xs text-ink-muted">
                               not checked yet
-                              <UiV2Button disabled={!canCheck} onClick={() => checkKey && startChecks(checkKey.id, [model.id])} tone="ghost" type="button">
-                                Check
+                              <UiV2Button aria-describedby={checkHelpId} disabled={!canCheck} onClick={() => checkKey && startChecks(checkKey.id, [model.id])} title={checkHelp} tone="ghost" type="button">
+                                Check model
                               </UiV2Button>
+                              {!model.enabled && !initialSetup ? <span>Turn this model on to check it.</span> : null}
                             </span>
                           ) : (
                             <span className="flex flex-wrap items-center gap-1.5">
@@ -406,7 +416,7 @@ export function AdminProviderModels({
                               {worksWith.kind === "failed" ? (
                                 <span className="inline-flex items-center gap-2 text-xs text-caution">
                                   Check failed
-                                  <UiV2Button disabled={!canCheck} onClick={() => checkKey && startChecks(checkKey.id, [model.id])} tone="ghost" type="button">
+                                  <UiV2Button aria-describedby={checkHelpId} disabled={!canCheck} onClick={() => checkKey && startChecks(checkKey.id, [model.id])} title={checkHelp} tone="ghost" type="button">
                                     Retry
                                   </UiV2Button>
                                 </span>
@@ -414,13 +424,13 @@ export function AdminProviderModels({
                             </span>
                           )}
                         </td>
-                        <td className="px-3 py-3">
+                        <td className={`col-span-3 row-start-3 min-w-0 px-4 pb-3 sm:px-3 sm:py-3 ${tags.length ? "" : "hidden xl:table-cell"}`}>
                           <span className="flex flex-wrap items-center gap-1">
                             {tags.slice(0, USED_AS_LIMIT).map((tag) => <ProviderTag key={tag}>{tag}</ProviderTag>)}
                             {tags.length > USED_AS_LIMIT ? <ProviderTag>+{tags.length - USED_AS_LIMIT}</ProviderTag> : null}
                           </span>
                         </td>
-                        <td className="px-3 py-2.5">
+                        <td className="col-start-2 row-start-1 px-2 py-2.5 sm:px-3">
                           <UiV2Switch
                             checked={model.enabled}
                             disabled={busy}
@@ -428,13 +438,13 @@ export function AdminProviderModels({
                             onChange={(next) => setEnabled(model, next)}
                           />
                         </td>
-                        <td className="px-3 py-2.5 text-right">
+                        <td className="col-start-3 row-start-1 px-3 py-2.5 text-right">
                           <ProviderRowMenu actions={menu} label={`More actions for ${model.displayName}`} />
                         </td>
                       </tr>,
                       expanded ? (
-                        <tr className="border-b border-trace-subtle" data-testid={`provider-model-${model.id}-details`} key={`${model.id}-details`}>
-                          <td className="px-4 pb-3.5 sm:px-5" colSpan={5}>
+                        <tr className="block border-b border-trace-subtle xl:table-row" data-testid={`provider-model-${model.id}-details`} key={`${model.id}-details`}>
+                          <td className="block px-4 pb-3.5 xl:table-cell sm:px-5" colSpan={5}>
                             <div className="flex min-w-0 flex-col gap-3 rounded-[10px] bg-control-surface/60 px-3.5 py-3 sm:flex-row sm:items-center">
                               <div className="min-w-0 flex-1 text-xs leading-5 text-ink-secondary">
                                 {summaries.length ? summaries.map((summary) => (
