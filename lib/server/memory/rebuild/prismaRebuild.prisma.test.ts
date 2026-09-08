@@ -2373,9 +2373,9 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         chunkOrdinal
       }));
       const contentHash = memorySha256(text);
-      // Bulk fixture seeding can exceed Prisma's default timeout under container load.
-      await prisma.$transaction(async (tx) => {
-        await tx.memoryRecallChunk.createMany({
+      // Both inserts use precomputed IDs; a batch avoids an interactive fixture timeout.
+      await prisma.$transaction([
+        prisma.memoryRecallChunk.createMany({
           data: chunks.map((chunk) => ({
             branchGeneration: 0,
             chatId: chat.id,
@@ -2395,8 +2395,8 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
             sourceRevisionAtCreation: 0,
             userId
           }))
-        });
-        await tx.memoryRecallChunkMessage.createMany({
+        }),
+        prisma.memoryRecallChunkMessage.createMany({
           data: chunks.map((chunk) => ({
             chatId: chat.id,
             chunkId: chunk.id,
@@ -2410,8 +2410,8 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
             startOffset: 0,
             userId
           }))
-        });
-      }, { timeout: 30_000 });
+        })
+      ]);
 
       provider = await configureEmbeddingProvider(userId, "hybrid-large-set");
       const before = await prisma.userMemorySettings.findUniqueOrThrow({
