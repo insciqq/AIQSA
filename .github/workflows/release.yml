@@ -557,7 +557,7 @@ jobs:
             printf '%s image: %s\nImmutable digest: %s@%s\n\n' "${component}" "${release_ref}" "${IMAGE}" "${manifest_digest}" >> "${notes_file}"
           done
 
-      - name: Create GitHub Release
+      - name: Create or update GitHub Release
         env:
           DIGEST: ${{ steps.manifest.outputs.digest }}
           GH_TOKEN: ${{ github.token }}
@@ -572,10 +572,17 @@ jobs:
           printf '%s\n' "${notes}" > "${notes_file}"
           printf '\n' >> "${notes_file}"
           cat "${RUNNER_TEMP}/component-images.md" >> "${notes_file}"
-          release_flags=(--verify-tag --generate-notes --title "AIQSA ${TAG}" --notes-file "${notes_file}")
+          printf '\n' >> "${notes_file}"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f "tag_name=${TAG}" --jq '.body' >> "${notes_file}"
+          release_flags=(--verify-tag --title "AIQSA ${TAG}" --notes-file "${notes_file}")
           if [[ "${TAG}" == *-* ]]; then
             release_flags+=(--prerelease)
           else
             release_flags+=(--latest)
           fi
-          gh release create "${TAG}" "${release_flags[@]}"
+          if gh release view "${TAG}" > /dev/null 2>&1; then
+            gh release edit "${TAG}" "${release_flags[@]}"
+          else
+            gh release create "${TAG}" "${release_flags[@]}"
+          fi
