@@ -188,7 +188,8 @@ describe("AdminProvidersSection", () => {
     expect(screen.getByRole("switch", { name: "Gemini enabled" })).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Add key" }));
     const form = screen.getByTestId("provider-key-form");
-    fireEvent.change(within(form).getByLabelText("Label"), { target: { value: "Primary" } });
+    expect(within(form).getByLabelText("Label")).toHaveValue("Main");
+    expect(within(form).getByLabelText("API key")).toHaveFocus();
     fireEvent.change(within(form).getByLabelText("API key"), { target: { value: "bad-key" } });
     fireEvent.click(within(form).getByRole("button", { name: "Test & Save" }));
 
@@ -200,14 +201,14 @@ describe("AdminProvidersSection", () => {
     expect(feedback.reportError).not.toHaveBeenCalled();
     expect(calls.filter(({ method }) => method === "POST").at(-1)?.body).toEqual({
       activate: true,
-      label: "Primary",
+      label: "Main",
       secret: "bad-key"
     });
 
     fireEvent.change(within(form).getByLabelText("API key"), { target: { value: "good-key" } });
     fireEvent.click(within(form).getByRole("button", { name: "Test & Save" }));
     const row = await screen.findByTestId("provider-key-cred-new");
-    expect(row).toHaveTextContent("Primary");
+    expect(row).toHaveTextContent("Main");
     expect(row).toHaveTextContent("Default key");
     expect(within(row).getByTestId("provider-key-detail")).toHaveTextContent("Working · added Sep 7");
     expect(screen.queryByTestId("provider-key-form")).not.toBeInTheDocument();
@@ -215,6 +216,12 @@ describe("AdminProvidersSection", () => {
     expect(confirmations).toHaveLength(0);
     expect(document.body.textContent).not.toContain("good-key");
     expect(screen.getByTestId("provider-page-status")).toHaveTextContent("All keys working");
+    fireEvent.click(screen.getByRole("button", { name: "Add key" }));
+    const additionalKey = screen.getByTestId("provider-key-form");
+    expect(within(additionalKey).getByLabelText("Label")).toHaveValue("");
+    expect(within(additionalKey).getByLabelText("Label")).toHaveFocus();
+    fireEvent.change(within(additionalKey).getByLabelText("API key"), { target: { value: "another-key" } });
+    expect(within(additionalKey).getByRole("button", { name: "Test & Save" })).toBeDisabled();
   });
 
   it("rotates a key in one step and changes the default key and group overrides without confirmation", async () => {

@@ -121,17 +121,17 @@ export function AdminKnowledgeProcessingRows({
   return (
     <>
       <div
-        className="flex flex-wrap items-center gap-3 border-t border-trace-subtle bg-workspace-rail/40 px-4 py-3"
+        className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 border-t border-trace-subtle bg-workspace-rail/40 px-4 py-3 xl:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_8.5rem_2.5rem] xl:gap-4"
         data-testid="admin-role-knowledge"
       >
-        <div className="min-w-0 flex-1 basis-[16rem]">
+        <div className="min-w-0 xl:col-span-2">
           <p className="text-sm font-medium text-ink">Knowledge processing</p>
           <p className="mt-0.5 text-xs leading-5 text-ink-muted">
             Documents and embeddings change together. Changing either reprocesses all documents — you confirm before it starts.
           </p>
         </div>
         {dirty ? (
-          <div className="flex items-center gap-2">
+          <div className="col-span-2 row-start-3 flex flex-wrap items-center gap-2 xl:row-start-2">
             <UiV2Button disabled={busy} onClick={() => setEdits({})} tone="ghost">Discard</UiV2Button>
             <UiV2Button
               busy={controller.busy}
@@ -153,18 +153,22 @@ export function AdminKnowledgeProcessingRows({
             </UiV2Button>
           </div>
         ) : null}
-        <AdminStatusPill label={state.label} status={state.status} testId="admin-knowledge-state" />
-        <AdminTopbarMenu
-          actions={[{
-            disabled: earlier.length === 0 || busy,
-            icon: "history",
-            label: "Earlier configurations",
-            onSelect: () => setEarlierOpen(true)
-          }]}
-          label="Knowledge processing actions"
-        />
+        <div className="col-start-1 row-start-2 min-w-0 xl:col-start-3 xl:row-start-1 xl:pt-1.5">
+          <AdminStatusPill label={state.label} status={state.status} testId="admin-knowledge-state" />
+        </div>
+        <div className="col-start-2 row-start-1 justify-self-end xl:col-start-4">
+          <AdminTopbarMenu
+            actions={[{
+              disabled: earlier.length === 0 || busy,
+              icon: "history",
+              label: "Earlier configurations",
+              onSelect: () => setEarlierOpen(true)
+            }]}
+            label="Knowledge processing actions"
+          />
+        </div>
         {profile.health.code === "knowledge_profile_legacy_authority" ? (
-          <p className="basis-full text-xs leading-5 text-caution" role="status">
+          <p className="col-span-full text-xs leading-5 text-caution" role="status">
             Some existing bases still process with their owners&apos; keys. Apply a configuration to move future work to the provider&apos;s default key; nothing already indexed changes.
           </p>
         ) : null}

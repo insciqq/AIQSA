@@ -396,6 +396,17 @@ describe("deriveAdminAttentionItems", () => {
     ]);
   });
 
+  it("ignores an unused built-in Search placeholder but keeps configured and custom failures", () => {
+    const provider = connection({ id: "conn-openrouter", enabled: false, activeVersion: 0, credentials: [] });
+    const source = integration({ configurationActive: false, providerModel: null });
+    expect(items({ providers: [provider], search: searchCatalog([source]) })).toEqual([]);
+    expect(items({ providers: [provider], search: searchCatalog([{ ...source, system: false }]) }))
+      .toEqual([expect.objectContaining({ code: "search_source_model_off" })]);
+    provider.activeVersion = 1;
+    expect(items({ providers: [provider], search: searchCatalog([source]) }))
+      .toEqual([expect.objectContaining({ code: "search_source_model_off" })]);
+  });
+
   it("names unassigned and unavailable system roles with a jump to the role row", () => {
     const result = items({
       systemRoles: roles({

@@ -805,6 +805,27 @@ export function createAdminSearchService(input: Readonly<{
     if (updated.count !== 1) throw new AdminSearchServiceError("search_policy_stale");
   }
 
+  async function initializeDefault(
+    tx: Prisma.TransactionClient,
+    optionId: string,
+    userId: string,
+    mode: SearchPlan["mode"] = "all_selected"
+  ): Promise<void> {
+    // Only the untouched installation default is eligible. Concurrent first
+    // connections compete for this row; a later save, including Off, wins.
+    await tx.searchPolicy.updateMany({
+      data: {
+        defaultPlan: json({ mode, optionIds: [optionId] }),
+        updatedByUserId: userId,
+        version: { increment: 1 }
+      },
+      where: {
+        id: "installation", version: 1, updatedByUserId: null,
+        defaultPlan: { equals: json({ mode: "all_selected", optionIds: [] }) }
+      }
+    });
+  }
+
   async function loadOption(
     store: PrismaClient | Prisma.TransactionClient,
     id: string
@@ -1024,6 +1045,9 @@ export function createAdminSearchService(input: Readonly<{
             },
             where: { id: published.child.id }
           });
+          if (!refreshed.archivedAt && (args.bootstrap || refreshed.enabled)) {
+            await initializeDefault(tx, refreshed.optionId, args.userId);
+          }
         }
       }
       async function ensureHostedRoute(
@@ -1224,6 +1248,9 @@ export function createAdminSearchService(input: Readonly<{
         where: { id: option.id }
       });
       await publishLogicalOption(tx, option, check.evidence);
+      if (option.enabled && !option.archivedAt) {
+        await initializeDefault(tx, option.optionId, args.userId);
+      }
     });
   }
 
@@ -1276,9 +1303,15 @@ export function createAdminSearchService(input: Readonly<{
     if (args.enabled && (!source.ready || source.archivedAt)) {
       throw new AdminSearchServiceError("search_source_not_ready");
     }
-    await input.prisma.searchOption.update({
-      data: { enabled: args.enabled },
-      where: { id: args.id }
+    await publicationTransaction(async (tx) => {
+      await tx.searchOption.update({
+        data: { enabled: args.enabled },
+        where: { id: args.id }
+      });
+      if (args.enabled) {
+        await initializeDefault(tx, source.strategyId, args.userId,
+          source.executionModes.includes("all_selected") ? "all_selected" : "model_choice");
+      }
     });
   }
 

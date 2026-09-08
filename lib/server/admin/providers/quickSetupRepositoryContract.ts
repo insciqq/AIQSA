@@ -10,8 +10,8 @@ import type { AdminProviderTestEvidence } from "../../../contracts/adminProvider
 import type { ProviderConnectionConfiguration } from "../../providers/providerConfiguration";
 import type { AdminProviderQuickSetupPolicyCandidate } from "./quickSetupPolicy";
 
-/** The first key of a connection created by a setup is `Primary` (PRD 5.4); rotated keys keep the label the admin typed. */
-export const ADMIN_PROVIDER_SETUP_CREDENTIAL_LABEL = "Primary";
+/** Setup names the first key Main; rotations keep the operator's label. */
+export const ADMIN_PROVIDER_SETUP_CREDENTIAL_LABEL = "Main";
 
 type AdminProviderQuickSetupState =
   | "advanced_required"

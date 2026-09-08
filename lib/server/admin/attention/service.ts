@@ -159,8 +159,15 @@ function providerItems(connections: readonly AdminProviderConnection[]): AdminAt
   return items;
 }
 
-function searchItems(catalog: AdminSearchCatalog): AdminAttentionItem[] {
+function searchItems(catalog: AdminSearchCatalog, providers?: readonly AdminProviderConnection[] | null): AdminAttentionItem[] {
   return catalog.integrations
+    .filter((integration) => {
+      const connection = providers?.find(({ id }) => id === integration.sourceConnectionId);
+      const unusedTemplate = integration.system && !integration.configuration && !integration.draftTestEvidence &&
+        !integration.providerModel && connection && !connection.enabled &&
+        connection.activeVersion === 0 && connection.credentials.length === 0;
+      return !unusedTemplate;
+    })
     .filter((integration) =>
       !integration.archivedAt && integration.enabled && integration.readiness === "source_unavailable")
     .map((integration) => ({
@@ -394,7 +401,7 @@ export function deriveAdminAttentionItems(inputs: AdminAttentionInputs): AdminAt
   return [
     ...(inputs.dashboard ? dashboardItems(inputs.dashboard, inputs.actingAdminUserId) : []),
     ...(inputs.providers ? providerItems(inputs.providers) : []),
-    ...(inputs.search ? searchItems(inputs.search) : []),
+    ...(inputs.search ? searchItems(inputs.search, inputs.providers) : []),
     ...(inputs.systemRoles ? systemRoleItems(inputs.systemRoles) : []),
     ...(inputs.knowledge ? knowledgeItems(inputs.knowledge) : []),
     ...(inputs.memory ? memoryItems(inputs.memory) : []),
