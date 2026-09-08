@@ -1,4 +1,5 @@
 import { Worker, type WorkerOptions } from "node:worker_threads";
+import { dirname, join, sep } from "node:path";
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
 import { PDF_WORKER_RESOURCE_LIMITS } from "../uploads/pdfConfig";
 import { withPdfWorkerAdmission } from "../uploads/pdfWorkerAdmission";
@@ -8,6 +9,10 @@ import type { DocumentParserEngine } from "./types";
 const PDF_LIB_MODULE_PATH = resolveRuntimeModulePath("pdf-lib");
 const UNPDF_MODULE_PATH = resolveRuntimeModulePath("unpdf");
 const CANVAS_MODULE_PATH = resolveRuntimeModulePath("@napi-rs/canvas");
+// Use the distribution's font assets; unpdf still owns the rendering engine.
+const STANDARD_FONT_DATA_PATH = join(
+  dirname(resolveRuntimeModulePath("pdfjs-dist/package.json")), "standard_fonts"
+) + sep;
 
 export const PDF_MODEL_BATCH_PAGE_COUNT = 2;
 export const PDF_MODEL_VISION_BATCH_PAGE_COUNT = 1;
@@ -58,6 +63,7 @@ type PreparationWorkerOptions = Readonly<{
   createWorker?: (source: string, options: WorkerOptions) => Worker;
   maxImageBytes?: number;
   maxPages: number;
+  standardFonts?: boolean;
   timeoutMs?: number;
   visionQuality?:
     | "adaptive_high_fidelity"
@@ -159,7 +165,14 @@ function workerSource(): string {
       try {
         const canvasImport = async () => require(workerData.canvasModulePath);
         const CanvasFactory = await unpdf.createIsomorphicCanvasFactory(canvasImport);
-        document = await unpdf.getDocumentProxy(workerData.bytes, { CanvasFactory });
+        document = await unpdf.getDocumentProxy(workerData.bytes, {
+          CanvasFactory,
+          ...(workerData.standardFontDataPath ? {
+            disableFontFace: true,
+            useSystemFonts: false,
+            standardFontDataUrl: workerData.standardFontDataPath
+          } : {})
+        });
         const pageCount = document.numPages;
         if (!boundedPageCount(pageCount)) fail("parser_output_too_large");
         if (workerData.pageStart < 1 || workerData.pageEnd < workerData.pageStart ||
@@ -359,6 +372,7 @@ function runPreparationWorker(
           pageEnd: input.pageEnd,
           pageStart: input.pageStart,
           pdfLibModulePath: PDF_LIB_MODULE_PATH,
+          standardFontDataPath: options.standardFonts ? STANDARD_FONT_DATA_PATH : undefined,
           unpdfModulePath: UNPDF_MODULE_PATH
         }
       });

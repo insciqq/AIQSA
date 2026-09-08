@@ -8,6 +8,7 @@ import type { ParsedDocument } from "./types";
 export function assembleAdaptivePdfPages(input: Readonly<{
   deduplicateNativeProseRows?: boolean;
   deduplicateNativeText?: boolean;
+  deduplicateNativeFragments?: boolean;
   docling: ParsedDocument | null;
   geometry: NativePdfGeometry;
   legacyTableInference?: boolean;
@@ -28,6 +29,7 @@ export function assembleAdaptivePdfPages(input: Readonly<{
         pageCount: input.geometry.pageCount,
         pages,
         preserveDisplayMath: input.deduplicateNativeText,
+        preserveTextStructure: input.deduplicateNativeFragments,
         tableContinuationMarkers: true
       })
     : null;

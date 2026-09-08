@@ -9,15 +9,17 @@ import { KNOWLEDGE_PDF_PARSER_PROFILE_VERSION } from "../knowledge/knowledgeProf
 import { normalizeProviderExecutionSnapshot, type ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import type { ProviderRunRequest } from "../providers/types";
 import type { ChatPdfAttachmentAdmission } from "../uploads/chatPdfAdmission";
-import { CHAT_PDF_PARSER_VERSION, createChatPdfCore } from "../uploads/chatPdfCore";
+import { CHAT_PDF_PARSER_VERSION, chatPdfCompatibilityKey, createChatPdfCore } from "../uploads/chatPdfCore";
 import { finalizeParsedDocument } from "./assessment";
 import { modelPdfPageEndMarker, modelPdfPageStartMarker } from "./modelPdfOutput";
 import type { NativePdfGeometry } from "./nativePdf";
+import { pdfOcrImageLimits, preparePdfOcrPage } from "./pdfOcrPipeline";
 import type { ParsedDocumentBlock } from "./types";
 
 function geometry(): NativePdfGeometry {
   const blocks: ParsedDocumentBlock[] = [
-    "The radius is q i ≤ 7 s i.", "Calibration completed on 2043-05-06."
+    "The radius is q i ≤ 7 s i.", "Calibration completed on 2043-05-06.",
+    "Figure B4: Sections of 64 3 cells."
   ].map((text, index) => ({ text, index, readingOrder: index, page: 1, pageEnd: 1,
     type: "paragraph", table: null, isTable: false, assetIds: [], headingPath: [], languageHints: [],
     boundingBoxes: [{ page: 1, coordinateOrigin: "bottom_left", left: 20, right: 180,
@@ -48,8 +50,31 @@ function snapshot(): ProviderExecutionSnapshot {
 }
 
 describe("attachment and Knowledge OCR parity", () => {
-  it.each(["no_native", "native", "layout", "math_native_layer"] as const)(
-    "keeps the same images, prompt, math, table columns and native omissions with %s", async route => {
+  it("bounds the complete base64 request before dispatch, including tighter model limits", async () => {
+    const binding = snapshot();
+    const limits = pdfOcrImageLimits(binding.model.capabilities);
+    const image = Buffer.alloc(limits.imageBytes, 0);
+    const prepare = async () => ({ kind: "images" as const, pageStart: 1, pageEnd: 1,
+      images: [{ bytes: image, width: 200, height: 200, sourceWidth: 200, sourceHeight: 200,
+        page: 1, mimeType: "image/png" as const }] });
+    const input = { bytes: Buffer.from("%PDF-neutral-request-bound"),
+      local: { geometry: null, docling: null, plan: null }, maxPages: 1, page: 1, snapshot: binding };
+    const page = await preparePdfOcrPage(input, prepare);
+    const serializedBytes = Buffer.byteLength(JSON.stringify(page.request));
+    expect(serializedBytes).toBeGreaterThan(image.length);
+    expect(serializedBytes).toBeLessThan(14 * 1024 * 1024);
+    const tighter = { ...binding, model: { ...binding.model, capabilities: {
+      ...binding.model.capabilities, imageInputLimits: { ...limits, payloadBytes: image.length + 1024 }
+    } } };
+    await expect(preparePdfOcrPage({ ...input, snapshot: tighter }, prepare))
+      .rejects.toThrow("parser_output_too_large");
+    expect(pdfOcrImageLimits(binding.model.capabilities, 19))
+      .toMatchObject({ imageBytes: 16 * 1024 * 1024, payloadBytes: 32 * 1024 * 1024 });
+  });
+
+  const routes = ["no_native", "native", "layout", "math_native_layer"] as const;
+  it.each([19, 20].flatMap(parserVersion => routes.map(route => ({ parserVersion, route }))))(
+    "keeps images, prompt and assembly equal with $route and accepted profile $parserVersion", async ({ parserVersion, route }) => {
       const bytes = Buffer.from("%PDF-neutral-parity-source");
       const image = await sharp({ create: { width: 200, height: 200, channels: 3, background: "white" } })
         .png().toBuffer();
@@ -78,9 +103,14 @@ describe("attachment and Knowledge OCR parity", () => {
       };
       const formula = "\\[\nr=\\frac{a+5}{b}\n\\]";
       const modelText = [modelPdfPageStartMarker(1), String.raw`The radius is \(q_i\leq\sqrt{7}\,s_i\).`,
-        formula, "Region\tMeasure\tValue", "West\tA\t7", "\tB\t11", modelPdfPageEndMarker(1)].join("\n");
+        formula, "Region\tMeasure\tValue", "West\tA\t7", "\tB\t11",
+        "Figure B4: Sections of 64³ cells.", modelPdfPageEndMarker(1)].join("\n");
       const core = createChatPdfCore({ inspect, extractGeometry, parseDocling, prepare });
-      const planned = await core.plan({ admission: admitted, bytes, onPageCount: async () => undefined });
+      const acceptedCompatibilityKey = chatPdfCompatibilityKey(admitted, {
+        parserVersion, promptVersion: 8, renderVersion: parserVersion === 19 ? 1 : 2
+      });
+      const planned = await core.plan({ admission: admitted, bytes, acceptedCompatibilityKey, onPageCount: async () => undefined });
+      expect(planned.plan.parserVersion).toBe(parserVersion);
       const chatPage = await core.page({ admission: admitted, bytes, ...planned, page: 1 });
       const chat = core.assemble({ admission: admitted, ...planned, results: [{ page: 1, text: modelText }] });
       const execute = vi.fn(async (_snapshot: ProviderExecutionSnapshot, request: ProviderRunRequest) => {
@@ -99,13 +129,14 @@ describe("attachment and Knowledge OCR parity", () => {
       const knowledge = await parser.parse({ artifactId: "artifact", bytes, ownerUserId: "owner",
         maxBlocks: planned.plan.maxBlocks, maxCharacters: planned.plan.maxCharacters,
         maxPages: PDF_PROCESSING_MAX_PAGES, mode: "system_model_vision",
-        parserProfileVersion: KNOWLEDGE_PDF_PARSER_PROFILE_VERSION, processingGeneration: 0,
+        parserProfileVersion: parserVersion, processingGeneration: 0,
         profileRevisionId: "profile", sourceVersionId: "source-version", systemModelPolicyVersion: 3,
         systemModelSnapshot: binding });
       expect(CHAT_PDF_PARSER_VERSION).toBe(KNOWLEDGE_PDF_PARSER_PROFILE_VERSION);
       expect(execute).toHaveBeenCalledOnce();
       expect({ ...chatPage.request, chatId: "knowledge-pdf-transcription" }).toEqual(execute.mock.calls[0]![1]);
       expect(prepare.mock.calls).toHaveLength(2);
+      expect(prepare.mock.calls[0]).toEqual(prepare.mock.calls[1]);
       expect(chat).toEqual(knowledge);
       expect(chat.blocks.some(block => block.text === formula)).toBe(true);
       expect(chat.blocks.find(block => block.table)?.table?.cells)
@@ -113,6 +144,9 @@ describe("attachment and Knowledge OCR parity", () => {
       expect(chat.text).not.toContain("The radius is q i ≤ 7 s i.");
       expect(chat.text.includes("Calibration completed on 2043-05-06."))
         .toBe(route !== "no_native");
+      expect(chat.text.includes("Figure B4: Sections of 64 3 cells."))
+        .toBe(parserVersion === 19 && route !== "no_native");
+      expect(chat.text).toContain("Figure B4: Sections of 64³ cells.");
     }
   );
 });

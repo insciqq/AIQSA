@@ -10,7 +10,8 @@ import { digestPreparedPdfBatch, modelPdfProviderRequest } from "../parsing/mode
 import { extractNativePdfGeometry, type NativePdfGeometry } from "../parsing/nativePdf";
 import { inspectPdfForModelProcessing, preparePdfModelBatch } from "../parsing/pdfPreparation";
 import {
-  assemblePdfOcrDocument, decodePdfOcrPage, PDF_OCR_IMAGE_LIMITS, PDF_OCR_PARSER_VERSION,
+  assemblePdfOcrDocument, decodePdfOcrPage, isSharedPdfOcrParserVersion,
+  PDF_OCR_IMAGE_LIMITS, PDF_OCR_INITIAL_PARSER_VERSION, PDF_OCR_PARSER_VERSION,
   PDF_OCR_PROMPT_VERSION, pdfOcrImageLimits, planPdfOcrSource, preparePdfOcrPage
 } from "../parsing/pdfOcrPipeline";
 import type { ParsedBoundingBox, ParsedDocument } from "../parsing/types";
@@ -20,7 +21,7 @@ import { type ChatPdfAttachmentAdmission, chatPdfFingerprint } from "./chatPdfAd
 import { getPdfExtractionConfig } from "./pdfConfig";
 
 export const CHAT_PDF_PARSER_VERSION = PDF_OCR_PARSER_VERSION;
-export const CHAT_PDF_RENDER_VERSION = 1;
+export const CHAT_PDF_RENDER_VERSION = 2;
 export const CHAT_PDF_PROMPT_VERSION = PDF_OCR_PROMPT_VERSION;
 export const CHAT_PDF_ARTIFACT_MAX_BYTES = 32 * 1024 * 1024;
 export const CHAT_PDF_PAGE_OUTPUT_MAX_CHARACTERS = 500_000;
@@ -39,8 +40,8 @@ const LEGACY_CHAT_PDF_IMAGE_LIMITS: NonNullable<ProviderModelCapabilities["image
 export function chatPdfImageLimits(
   admission: ChatPdfAttachmentAdmission, parserVersion: number = CHAT_PDF_PARSER_VERSION
 ): typeof CHAT_PDF_IMAGE_LIMITS {
-  if (parserVersion === PDF_OCR_PARSER_VERSION) {
-    return admission.snapshot ? pdfOcrImageLimits(admission.snapshot.model.capabilities) : PDF_OCR_IMAGE_LIMITS;
+  if (isSharedPdfOcrParserVersion(parserVersion)) {
+    return pdfOcrImageLimits(admission.snapshot?.model.capabilities, parserVersion);
   }
   const declared = admission.snapshot?.model.capabilities.imageInputLimits;
   return { imageBytes: Math.min(declared?.imageBytes ?? Infinity, LEGACY_CHAT_PDF_IMAGE_LIMITS.imageBytes),
@@ -92,11 +93,14 @@ const CURRENT_VERSIONS: ChatPdfVersions = Object.freeze({ parserVersion: CHAT_PD
   promptVersion: CHAT_PDF_PROMPT_VERSION, renderVersion: CHAT_PDF_RENDER_VERSION });
 const LEGACY_VERSIONS: ChatPdfVersions = Object.freeze({ parserVersion: MODEL_PDF_VISUAL_DATA_PROJECTION_PROFILE_VERSION,
   promptVersion: 6, renderVersion: 1 });
+const SUPPORTED_VERSIONS = Object.freeze([CURRENT_VERSIONS,
+  Object.freeze({ parserVersion: PDF_OCR_INITIAL_PARSER_VERSION, promptVersion: 8, renderVersion: 1 }),
+  LEGACY_VERSIONS]);
 
 export function chatPdfCompatibilityKey(
   admission: ChatPdfAttachmentAdmission, versions: ChatPdfVersions = CURRENT_VERSIONS
 ): string {
-  if (![CURRENT_VERSIONS, LEGACY_VERSIONS].some(supported =>
+  if (!SUPPORTED_VERSIONS.some(supported =>
     supported.parserVersion === versions.parserVersion && supported.promptVersion === versions.promptVersion &&
     supported.renderVersion === versions.renderVersion)) throw new ChatPdfPreparationError("pdf_preparation_invalid");
   return chatPdfFingerprint({
@@ -176,16 +180,16 @@ export function createChatPdfCore(options: Readonly<{
       const maxBlocks = 100_000;
       const maxCharacters = Math.min(ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS, config.extractedTextMaxChars);
       const versions = input.acceptedCompatibilityKey
-        ? [CURRENT_VERSIONS, LEGACY_VERSIONS].find(candidate =>
+        ? SUPPORTED_VERSIONS.find(candidate =>
           chatPdfCompatibilityKey(input.admission, candidate) === input.acceptedCompatibilityKey)
         : CURRENT_VERSIONS;
       if (!versions) throw new ChatPdfPreparationError("pdf_preparation_invalid");
       let geometry: NativePdfGeometry | null = null;
       let docling: ParsedDocument | null = null;
       let adaptive: AdaptivePdfPlan | null = null;
-      if (input.admission.route !== "local_text" && versions.parserVersion === PDF_OCR_PARSER_VERSION) {
+      if (input.admission.route !== "local_text" && isSharedPdfOcrParserVersion(versions.parserVersion)) {
         const local = await planPdfOcrSource({ bytes: input.bytes, maxBlocks, maxCharacters, maxPages,
-          pageCount, signal: input.signal }, { extractGeometry, parseDocling });
+          pageCount, parserVersion: versions.parserVersion, signal: input.signal }, { extractGeometry, parseDocling });
         geometry = local.geometry;
         docling = local.docling;
         adaptive = local.plan;
@@ -238,10 +242,11 @@ export function createChatPdfCore(options: Readonly<{
         !unit || unit.page !== input.page || unit.route !== "vision_required") {
         throw new ChatPdfPreparationError("pdf_preparation_invalid");
       }
-      if (input.plan.parserVersion === PDF_OCR_PARSER_VERSION) {
+      if (isSharedPdfOcrParserVersion(input.plan.parserVersion)) {
         const prepared = await preparePdfOcrPage({ bytes: input.bytes,
           local: { ...input.local, plan: input.plan.adaptive }, maxPages: PDF_PROCESSING_MAX_PAGES,
-          page: input.page, signal: input.signal, snapshot }, prepare).catch(error => {
+          page: input.page, parserVersion: input.plan.parserVersion,
+          signal: input.signal, snapshot }, prepare).catch(error => {
           aborted(input.signal);
           if (error instanceof Error && error.message === "parser_output_too_large") {
             throw new ChatPdfPreparationError("pdf_preparation_invalid");
@@ -317,7 +322,8 @@ export function createChatPdfCore(options: Readonly<{
       }
       const pages = [...input.results].sort((a, b) => a.page - b.page).flatMap(({ page, text }) =>
         decodeChatPdfPage(page, text, input.plan.parserVersion));
-      if (input.plan.parserVersion === PDF_OCR_PARSER_VERSION) return assemblePdfOcrDocument({
+      if (isSharedPdfOcrParserVersion(input.plan.parserVersion)) return assemblePdfOcrDocument({
+        parserVersion: input.plan.parserVersion,
         local: { ...input.local, plan: input.plan.adaptive }, maxBlocks: input.plan.maxBlocks,
         maxCharacters: input.plan.maxCharacters, pageCount: input.plan.pageCount, pages
       });
@@ -333,7 +339,7 @@ export function createChatPdfCore(options: Readonly<{
 }
 
 export function decodeChatPdfPage(page: number, text: string, parserVersion: number = CHAT_PDF_PARSER_VERSION) {
-  if (parserVersion === PDF_OCR_PARSER_VERSION) return decodePdfOcrPage(page, text);
+  if (isSharedPdfOcrParserVersion(parserVersion)) return decodePdfOcrPage(page, text);
   if (text.length > CHAT_PDF_PAGE_OUTPUT_MAX_CHARACTERS) {
     throw new ChatPdfPreparationError("pdf_preparation_invalid", true);
   }

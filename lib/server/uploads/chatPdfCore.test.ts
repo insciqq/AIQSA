@@ -136,7 +136,7 @@ describe("chat PDF adaptive preparation", () => {
       } } } } };
     const core = createChatPdfCore({ parseDocling: null });
     const planned = await core.plan({ admission: admitted, bytes, onPageCount: async () => undefined });
-    expect(planned.plan.limits).toMatchObject({ imageBytes: 9000000, imageCount: 1, imagePixels: 1 });
+    expect(planned.plan.limits).toMatchObject({ imageBytes: 6 * 1024 * 1024, imageCount: 1, imagePixels: 1 });
     await expect(core.page({ admission: admitted, bytes, ...planned, page: 1 }))
       .rejects.toThrow("pdf_preparation_invalid");
   }, 20000);

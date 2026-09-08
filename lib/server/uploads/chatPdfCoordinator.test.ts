@@ -72,7 +72,7 @@ function harness(workspace = false) {
 }
 
 describe("durable PDF coordinator", () => {
-  it.each([[14, 120_000], [19, 300_000]])(
+  it.each([[14, 120_000], [19, 300_000], [20, 300_000]])(
     "uses the accepted timeout policy for parser %s", async (parserVersion, timeoutMs) => {
       const h = harness();
       Object.assign(h.row.workPlan, { parserVersion });

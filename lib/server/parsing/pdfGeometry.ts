@@ -10,7 +10,8 @@ import {
   NATIVE_PDF_MULTI_GROUP_MIN_ROWS
 } from "./nativePdf";
 import { finalizeParsedDocument } from "./assessment";
-import { createNativeTextCoverage } from "./pdfTextCoverage";
+import { createNativeTextCoverage, nativeTextIsProse } from "./pdfTextCoverage";
+export { nativeTextIsProse } from "./pdfTextCoverage";
 
 const MAX_GEOMETRY_BOXES_PER_BLOCK = 256;
 const MAX_PARSER_ATTEMPTS = 4;
@@ -40,6 +41,7 @@ type ModelPdfNativeTextMergeOptions = Readonly<{
   allowTextCorrections: boolean;
   deduplicateNativeProseRows?: boolean;
   deduplicateNativeText?: boolean;
+  deduplicateNativeFragments?: boolean;
   maxBlocks: number;
   maxCharacters: number;
 }>;
@@ -298,17 +300,6 @@ function safeNativePage(geometry: NativePdfGeometry, page: number): boolean {
     metrics.invalidCharacterCount === 0 && metrics.invisibleText === false;
 }
 
-/** The native glyph stream cannot establish missing fraction bars, scripts,
- * radicals or cross-column table relationships. Only readable prose may fill
- * a Vision omission; mathematical structure stays with the model. */
-export function nativeTextIsProse(text: string): boolean {
-  if (/[\\{}^=<>|∂∫∑∏√≤≥≠≈±×÷⊕⊖⊗⊙∥↦↔→←⎧⎨⎩\uE000-\uF8FF]/u.test(text)) return false;
-  const words = text.normalize("NFKC").match(/[\p{L}\p{M}]+/gu) ?? [];
-  const wordLengths = words.map(word => [...word].length).filter(length => length >= 2);
-  return words.some(word => [...word].length >= 4) ||
-    wordLengths.length >= 2 && wordLengths.reduce((total, length) => total + length, 0) >= 6;
-}
-
 function ambiguousNativeWideRow(block: ParsedDocumentBlock, geometry: NativePdfGeometry): boolean {
   const page = geometry.quality.pages[block.page - 1];
   if (!page || page.multiGroupRowCount < NATIVE_PDF_MULTI_GROUP_MIN_ROWS ||
@@ -496,7 +487,8 @@ export function mergeModelPdfWithNativeText(
     ? correctedDocument
     : Object.freeze({ ...correctedDocument, blocks: plan.blocks });
   const evidenceByPage = modelPageEvidence(plan.blocks);
-  const alreadyRepresented = options.deduplicateNativeText ? createNativeTextCoverage(plan.blocks) : null;
+  const alreadyRepresented = options.deduplicateNativeText
+    ? createNativeTextCoverage(plan.blocks, { layoutAware: options.deduplicateNativeFragments }) : null;
   const additions = geometry.blocks.flatMap((nativeBlock, geometryIndex) => {
     const separatedCells = options.deduplicateNativeText && nativeBlock.table !== null;
     if (plan.consumedGeometryIndexes.has(geometryIndex) && !separatedCells ||
