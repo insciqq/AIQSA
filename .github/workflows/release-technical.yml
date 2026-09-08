@@ -72,7 +72,7 @@ jobs:
       - name: Start fresh disposable dependencies without application writers
         run: >-
           docker compose -f docker-compose.dev.yml up -d --wait --wait-timeout 300
-          postgres minio
+          postgres minio opensearch
 
       - name: Initialize fresh disposable object storage
         run: >-
