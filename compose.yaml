@@ -1,0 +1,593 @@
+name: aiqsa
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-file: "${AIQSA_LOG_MAX_FILES:-5}"
+    max-size: "${AIQSA_LOG_MAX_SIZE:-10m}"
+
+services:
+  app:
+    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
+    environment:
+      AIQSA_APP_BASE_URL: ${AIQSA_APP_BASE_URL:-http://localhost:3000}
+      AIQSA_AUTH_SESSION_SECRET: ${AIQSA_AUTH_SESSION_SECRET:?Set AIQSA_AUTH_SESSION_SECRET in .env}
+      AIQSA_BIND_ADDRESS: ${AIQSA_BIND_ADDRESS:-127.0.0.1}
+      AIQSA_BOOTSTRAP_AUTH_TOKEN: ${AIQSA_BOOTSTRAP_AUTH_TOKEN:-}
+      AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256: ${AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256:-}
+      AIQSA_BOOTSTRAP_LOGIN_ENABLED: ${AIQSA_BOOTSTRAP_LOGIN_ENABLED:-}
+      AIQSA_BOOTSTRAP_USER_ID: ${AIQSA_BOOTSTRAP_USER_ID:-}
+      AIQSA_COOKIE_SECURE: ${AIQSA_COOKIE_SECURE:-}
+      AIQSA_ENCRYPTION_KEY: ${AIQSA_ENCRYPTION_KEY:?Set AIQSA_ENCRYPTION_KEY in .env}
+      AIQSA_MEMORY_EGRESS_CONSENT_MODE: ${AIQSA_MEMORY_EGRESS_CONSENT_MODE:-ADMIN}
+      AIQSA_MEMORY_EMBEDDING_BATCH_SIZE: ${AIQSA_MEMORY_EMBEDDING_BATCH_SIZE:-16}
+      AIQSA_MEMORY_IDENTITY_WRITE_PROFILE: ${AIQSA_MEMORY_IDENTITY_WRITE_PROFILE:-LEGACY_V1}
+      AIQSA_MEMORY_FINGERPRINT_KEYRING: ${AIQSA_MEMORY_FINGERPRINT_KEYRING:?Set AIQSA_MEMORY_FINGERPRINT_KEYRING in .env}
+      AIQSA_MEMORY_LEXICAL_BACKEND: ${AIQSA_MEMORY_LEXICAL_BACKEND:-POSTGRES}
+      AIQSA_MEMORY_OPENSEARCH_CANARY_PERCENT: ${AIQSA_MEMORY_OPENSEARCH_CANARY_PERCENT:-1}
+      AIQSA_MEMORY_OPENSEARCH_CIRCUIT_FAILURE_THRESHOLD: ${AIQSA_MEMORY_OPENSEARCH_CIRCUIT_FAILURE_THRESHOLD:-5}
+      AIQSA_MEMORY_OPENSEARCH_CIRCUIT_COOLDOWN_MS: ${AIQSA_MEMORY_OPENSEARCH_CIRCUIT_COOLDOWN_MS:-30000}
+      AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: ${AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY:?Set AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY in .env}
+      AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY_ID: ${AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY_ID:-v1}
+      AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID: ${AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID:-20260831a}
+      AIQSA_MEMORY_OPENSEARCH_READ_ALIAS: ${AIQSA_MEMORY_OPENSEARCH_READ_ALIAS:-aiqsa-memory-lexical-read}
+      AIQSA_MEMORY_OPENSEARCH_WRITE_ALIAS: ${AIQSA_MEMORY_OPENSEARCH_WRITE_ALIAS:-aiqsa-memory-lexical-write}
+      AIQSA_MEMORY_OPENSEARCH_SEARCH_TIMEOUT_MS: ${AIQSA_MEMORY_OPENSEARCH_SEARCH_TIMEOUT_MS:-3000}
+      AIQSA_MEMORY_OPENSEARCH_MAX_RESPONSE_BYTES: ${AIQSA_MEMORY_OPENSEARCH_MAX_RESPONSE_BYTES:-4194304}
+      AIQSA_MEMORY_OPENSEARCH_SHARDS: ${AIQSA_MEMORY_OPENSEARCH_SHARDS:-1}
+      AIQSA_MEMORY_OPENSEARCH_REPLICAS: ${AIQSA_MEMORY_OPENSEARCH_REPLICAS:-0}
+      AIQSA_MEMORY_OPENSEARCH_SHADOW_MAX_CONCURRENCY: ${AIQSA_MEMORY_OPENSEARCH_SHADOW_MAX_CONCURRENCY:-2}
+      AIQSA_MEMORY_OPENSEARCH_SHADOW_TIMEOUT_MS: ${AIQSA_MEMORY_OPENSEARCH_SHADOW_TIMEOUT_MS:-1200}
+      AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: ${AIQSA_MEMORY_COORDINATOR_INTERVAL_MS:-1000}
+      AIQSA_MEMORY_COORDINATOR_LEASE_MS: ${AIQSA_MEMORY_COORDINATOR_LEASE_MS:-30000}
+      AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS: ${AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS:-64}
+      AIQSA_MEMORY_DELETION_PARALLELISM: ${AIQSA_MEMORY_DELETION_PARALLELISM:-1}
+      AIQSA_MEMORY_JOB_CLAIMS_PER_PASS: ${AIQSA_MEMORY_JOB_CLAIMS_PER_PASS:-16}
+      AIQSA_MEMORY_JOB_PARALLELISM: ${AIQSA_MEMORY_JOB_PARALLELISM:-2}
+      AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: ${AIQSA_MEMORY_JOB_PER_USER_PARALLELISM:-1}
+      AIQSA_GOOGLE_OAUTH_CLIENT_ID: ${AIQSA_GOOGLE_OAUTH_CLIENT_ID:-}
+      AIQSA_GOOGLE_OAUTH_CLIENT_SECRET: ${AIQSA_GOOGLE_OAUTH_CLIENT_SECRET:-}
+      # OpenAI background polling has a separate lifecycle window; each HTTP
+      # exchange still uses the response deadline configured in Admin.
+      AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS: ${AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS:-660000}
+      AIQSA_PROVIDER_RESPONSE_MAX_BYTES: ${AIQSA_PROVIDER_RESPONSE_MAX_BYTES:-}
+      AIQSA_PROVIDER_STREAM_MAX_EVENT_BYTES: ${AIQSA_PROVIDER_STREAM_MAX_EVENT_BYTES:-}
+      AIQSA_PROVIDER_STREAM_MAX_BYTES: ${AIQSA_PROVIDER_STREAM_MAX_BYTES:-}
+      AIQSA_PROVIDER_STREAM_MAX_OUTPUT_CHARS: ${AIQSA_PROVIDER_STREAM_MAX_OUTPUT_CHARS:-}
+      AIQSA_MCP_INITIALIZE_RESPONSE_MAX_BYTES: ${AIQSA_MCP_INITIALIZE_RESPONSE_MAX_BYTES:-1048576}
+      AIQSA_MCP_LIST_TOOLS_RESPONSE_MAX_BYTES: ${AIQSA_MCP_LIST_TOOLS_RESPONSE_MAX_BYTES:-16777216}
+      AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES: ${AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES:-524288}
+      AIQSA_MCP_UNKNOWN_RESPONSE_MAX_BYTES: ${AIQSA_MCP_UNKNOWN_RESPONSE_MAX_BYTES:-1048576}
+      AIQSA_MCP_SSE_EVENT_MAX_BYTES: ${AIQSA_MCP_SSE_EVENT_MAX_BYTES:-16777216}
+      AIQSA_SMTP_COMMAND_TIMEOUT_MS: ${AIQSA_SMTP_COMMAND_TIMEOUT_MS:-15000}
+      AIQSA_SMTP_CONNECT_TIMEOUT_MS: ${AIQSA_SMTP_CONNECT_TIMEOUT_MS:-10000}
+      AIQSA_SMTP_TOTAL_TIMEOUT_MS: ${AIQSA_SMTP_TOTAL_TIMEOUT_MS:-60000}
+      AIQSA_TRUST_PROXY_HEADERS: ${AIQSA_TRUST_PROXY_HEADERS:-}
+      AIQSA_TRUSTED_PROXY_COUNT: ${AIQSA_TRUSTED_PROXY_COUNT:-}
+      AIQSA_TOOLHIVE_URL: http://toolhive-runtime:8080
+      AIQSA_AUTH_REQUEST_BODY_MAX_BYTES: ${AIQSA_AUTH_REQUEST_BODY_MAX_BYTES:-65536}
+      AIQSA_JSON_REQUEST_BODY_MAX_BYTES: ${AIQSA_JSON_REQUEST_BODY_MAX_BYTES:-1048576}
+      AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS: ${AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS:-1000000}
+      AIQSA_KNOWLEDGE_MAX_FILE_BYTES: ${AIQSA_KNOWLEDGE_MAX_FILE_BYTES:-50000000}
+      AIQSA_KNOWLEDGE_MAX_BATCH_FILES: ${AIQSA_KNOWLEDGE_MAX_BATCH_FILES:-100}
+      AIQSA_KNOWLEDGE_MAX_PAGES: ${AIQSA_KNOWLEDGE_MAX_PAGES:-2000}
+      AIQSA_KNOWLEDGE_MAX_NORMALIZED_CHARS: ${AIQSA_KNOWLEDGE_MAX_NORMALIZED_CHARS:-5000000}
+      AIQSA_KNOWLEDGE_MAX_CHUNKS_PER_DOCUMENT: ${AIQSA_KNOWLEDGE_MAX_CHUNKS_PER_DOCUMENT:-10000}
+      AIQSA_OPENSEARCH_URL: http://opensearch:9200
+      AIQSA_PDF_EXTRACTION_TIMEOUT_MS: ${AIQSA_PDF_EXTRACTION_TIMEOUT_MS:-20000}
+      AIQSA_PDF_MAX_PAGES: ${AIQSA_PDF_MAX_PAGES:-500}
+      AIQSA_DOCLING_REQUEST_MAX_BYTES: ${AIQSA_DOCLING_REQUEST_MAX_BYTES:-}
+      AIQSA_DOCLING_RESPONSE_MAX_BYTES: ${AIQSA_DOCLING_RESPONSE_MAX_BYTES:-33554432}
+      AIQSA_DOCLING_TIMEOUT_MS: ${AIQSA_DOCLING_TIMEOUT_MS:-300000}
+      AIQSA_DOCLING_URL: http://docling:5001
+      AIQSA_TIKA_REQUEST_MAX_BYTES: ${AIQSA_TIKA_REQUEST_MAX_BYTES:-}
+      AIQSA_TIKA_RESPONSE_MAX_BYTES: ${AIQSA_TIKA_RESPONSE_MAX_BYTES:-16777216}
+      AIQSA_TIKA_TIMEOUT_MS: ${AIQSA_TIKA_TIMEOUT_MS:-120000}
+      AIQSA_TIKA_URL: http://tika:9998
+      AIQSA_RUN_ATTACHMENT_MAX_COUNT: ${AIQSA_RUN_ATTACHMENT_MAX_COUNT:-20}
+      AIQSA_RUN_ATTACHMENT_MAX_ENCODED_BYTES: ${AIQSA_RUN_ATTACHMENT_MAX_ENCODED_BYTES:-100663296}
+      AIQSA_RUN_ATTACHMENT_MAX_MATERIALIZED_BYTES: ${AIQSA_RUN_ATTACHMENT_MAX_MATERIALIZED_BYTES:-67108864}
+      AIQSA_RUN_ATTACHMENT_READ_CONCURRENCY: ${AIQSA_RUN_ATTACHMENT_READ_CONCURRENCY:-2}
+      AIQSA_UPLOAD_MAX_BYTES: ${AIQSA_UPLOAD_MAX_BYTES:-25000000}
+      AIQSA_UPLOAD_MAX_CONCURRENCY: ${AIQSA_UPLOAD_MAX_CONCURRENCY:-4}
+      AIQSA_UPLOAD_MULTIPART_OVERHEAD_BYTES: ${AIQSA_UPLOAD_MULTIPART_OVERHEAD_BYTES:-1048576}
+      AIQSA_UPLOAD_STORAGE_DIR: ${AIQSA_UPLOAD_STORAGE_DIR:-}
+      AIQSA_WORKSPACE_CPUS: ${AIQSA_WORKSPACE_CPUS:-2}
+      AIQSA_WORKSPACE_DISK_MIB: ${AIQSA_WORKSPACE_DISK_MIB:-10240}
+      AIQSA_WORKSPACE_IDLE_TTL_SECONDS: ${AIQSA_WORKSPACE_IDLE_TTL_SECONDS:-1800}
+      AIQSA_WORKSPACE_IMAGE: ${AIQSA_WORKSPACE_IMAGE:-aiqsa-workspace:0.1.25}
+      AIQSA_WORKSPACE_MAX_TOOL_CALLS: ${AIQSA_WORKSPACE_MAX_TOOL_CALLS:-80}
+      AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: ${AIQSA_WORKSPACE_MAX_TOOL_ROUNDS:-40}
+      AIQSA_WORKSPACE_MCP_VERSION: ${AIQSA_WORKSPACE_MCP_VERSION:-0.6.16}
+      AIQSA_WORKSPACE_MEMORY_MIB: ${AIQSA_WORKSPACE_MEMORY_MIB:-4096}
+      AIQSA_WORKSPACE_OUTPUT_FILE_MAX_BYTES: ${AIQSA_WORKSPACE_OUTPUT_FILE_MAX_BYTES:-268435456}
+      AIQSA_WORKSPACE_OUTPUT_MAX_FILES: ${AIQSA_WORKSPACE_OUTPUT_MAX_FILES:-25}
+      AIQSA_WORKSPACE_OUTPUT_TOTAL_MAX_BYTES: ${AIQSA_WORKSPACE_OUTPUT_TOTAL_MAX_BYTES:-536870912}
+      AIQSA_WORKSPACE_RETENTION_SECONDS: ${AIQSA_WORKSPACE_RETENTION_SECONDS:-86400}
+      AIQSA_WORKSPACE_RUNNER_TOKEN: ${AIQSA_WORKSPACE_RUNNER_TOKEN:-}
+      AIQSA_WORKSPACE_RUNNER_URL: ${AIQSA_WORKSPACE_RUNNER_URL:-}
+      AIQSA_WORKSPACE_SYNC_TOOL_TIMEOUT_SECONDS: ${AIQSA_WORKSPACE_SYNC_TOOL_TIMEOUT_SECONDS:-120}
+      AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES: ${AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES:-131072}
+      AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: ${AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS:-1800}
+      AIQSA_YANDEX_OAUTH_CLIENT_ID: ${AIQSA_YANDEX_OAUTH_CLIENT_ID:-}
+      AIQSA_YANDEX_OAUTH_CLIENT_SECRET: ${AIQSA_YANDEX_OAUTH_CLIENT_SECRET:-}
+      DATABASE_URL: postgresql://${AIQSA_POSTGRES_USER:-aiqsa}:${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}@postgres:5432/${AIQSA_POSTGRES_DB:-aiqsa}?schema=public
+      HOSTNAME: 0.0.0.0
+      NEXT_TELEMETRY_DISABLED: "1"
+      S3_ACCESS_KEY_ID: ${AIQSA_S3_ACCESS_KEY_ID:-aiqsa}
+      S3_BUCKET: ${AIQSA_S3_BUCKET:-aiqsa-uploads}
+      S3_ENDPOINT: ${AIQSA_S3_ENDPOINT:-http://minio:9000}
+      S3_PUBLIC_ENDPOINT: ${AIQSA_S3_PUBLIC_ENDPOINT:-}
+      S3_REGION: ${AIQSA_S3_REGION:-us-east-1}
+      S3_SECRET_ACCESS_KEY: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
+    cpus: ${AIQSA_APP_CPU_LIMIT:-2.0}
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health/ready').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    init: true
+    logging: *default-logging
+    mem_limit: ${AIQSA_APP_MEMORY_LIMIT:-2g}
+    networks:
+      - default
+      - mcp-control
+      - parser-control
+      - search-control
+      - workspace-control
+    ports:
+      - "${AIQSA_BIND_ADDRESS:-127.0.0.1}:${AIQSA_PORT:-3000}:3000"
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      migrate-bootstrap:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+
+  memory-worker:
+    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
+    command: ["npm", "run", "memory:coordinator"]
+    environment:
+      AIQSA_ENCRYPTION_KEY: ${AIQSA_ENCRYPTION_KEY:?Set AIQSA_ENCRYPTION_KEY in .env}
+      AIQSA_MEMORY_EGRESS_CONSENT_MODE: ${AIQSA_MEMORY_EGRESS_CONSENT_MODE:-ADMIN}
+      AIQSA_MEMORY_EMBEDDING_BATCH_SIZE: ${AIQSA_MEMORY_EMBEDDING_BATCH_SIZE:-16}
+      AIQSA_MEMORY_IDENTITY_WRITE_PROFILE: ${AIQSA_MEMORY_IDENTITY_WRITE_PROFILE:-LEGACY_V1}
+      AIQSA_MEMORY_FINGERPRINT_KEYRING: ${AIQSA_MEMORY_FINGERPRINT_KEYRING:?Set AIQSA_MEMORY_FINGERPRINT_KEYRING in .env}
+      AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: ${AIQSA_MEMORY_COORDINATOR_INTERVAL_MS:-1000}
+      AIQSA_MEMORY_COORDINATOR_LEASE_MS: ${AIQSA_MEMORY_COORDINATOR_LEASE_MS:-30000}
+      AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS: ${AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS:-64}
+      AIQSA_MEMORY_DELETION_PARALLELISM: ${AIQSA_MEMORY_DELETION_PARALLELISM:-1}
+      AIQSA_MEMORY_JOB_CLAIMS_PER_PASS: ${AIQSA_MEMORY_JOB_CLAIMS_PER_PASS:-16}
+      AIQSA_MEMORY_JOB_PARALLELISM: ${AIQSA_MEMORY_JOB_PARALLELISM:-2}
+      AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: ${AIQSA_MEMORY_JOB_PER_USER_PARALLELISM:-1}
+      DATABASE_URL: postgresql://${AIQSA_POSTGRES_USER:-aiqsa}:${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}@postgres:5432/${AIQSA_POSTGRES_DB:-aiqsa}?schema=public
+      NEXT_TELEMETRY_DISABLED: "1"
+      NODE_ENV: production
+      S3_ACCESS_KEY_ID: ${AIQSA_S3_ACCESS_KEY_ID:-aiqsa}
+      S3_BUCKET: ${AIQSA_S3_BUCKET:-aiqsa-uploads}
+      S3_ENDPOINT: ${AIQSA_S3_ENDPOINT:-http://minio:9000}
+      S3_REGION: ${AIQSA_S3_REGION:-us-east-1}
+      S3_SECRET_ACCESS_KEY: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
+    cpus: ${AIQSA_MEMORY_WORKER_CPU_LIMIT:-1.0}
+    init: true
+    logging: *default-logging
+    mem_limit: ${AIQSA_MEMORY_WORKER_MEMORY_LIMIT:-1g}
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      migrate-bootstrap:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  memory-search-worker:
+    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
+    command: ["npm", "run", "memory:search:worker"]
+    environment:
+      AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: ${AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY:?Set AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY in .env}
+      AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY_ID: ${AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY_ID:-v1}
+      AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID: ${AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID:-20260831a}
+      AIQSA_MEMORY_OPENSEARCH_READ_ALIAS: ${AIQSA_MEMORY_OPENSEARCH_READ_ALIAS:-aiqsa-memory-lexical-read}
+      AIQSA_MEMORY_OPENSEARCH_WRITE_ALIAS: ${AIQSA_MEMORY_OPENSEARCH_WRITE_ALIAS:-aiqsa-memory-lexical-write}
+      AIQSA_MEMORY_OPENSEARCH_SEARCH_TIMEOUT_MS: ${AIQSA_MEMORY_OPENSEARCH_SEARCH_TIMEOUT_MS:-3000}
+      AIQSA_MEMORY_OPENSEARCH_BULK_TIMEOUT_MS: ${AIQSA_MEMORY_OPENSEARCH_BULK_TIMEOUT_MS:-30000}
+      AIQSA_MEMORY_OPENSEARCH_BULK_MAX_DOCUMENTS: ${AIQSA_MEMORY_OPENSEARCH_BULK_MAX_DOCUMENTS:-100}
+      AIQSA_MEMORY_OPENSEARCH_BULK_MAX_BYTES: ${AIQSA_MEMORY_OPENSEARCH_BULK_MAX_BYTES:-2097152}
+      AIQSA_MEMORY_OPENSEARCH_MAX_RESPONSE_BYTES: ${AIQSA_MEMORY_OPENSEARCH_MAX_RESPONSE_BYTES:-4194304}
+      AIQSA_MEMORY_OPENSEARCH_SHARDS: ${AIQSA_MEMORY_OPENSEARCH_SHARDS:-1}
+      AIQSA_MEMORY_OPENSEARCH_REPLICAS: ${AIQSA_MEMORY_OPENSEARCH_REPLICAS:-0}
+      AIQSA_MEMORY_OPENSEARCH_PROJECTION_BATCH: ${AIQSA_MEMORY_OPENSEARCH_PROJECTION_BATCH:-16}
+      AIQSA_MEMORY_OPENSEARCH_PROJECTION_INTERVAL_MS: ${AIQSA_MEMORY_OPENSEARCH_PROJECTION_INTERVAL_MS:-2000}
+      AIQSA_MEMORY_OPENSEARCH_PROJECTION_LEASE_MS: ${AIQSA_MEMORY_OPENSEARCH_PROJECTION_LEASE_MS:-120000}
+      AIQSA_MEMORY_OPENSEARCH_PROJECTION_MAX_ATTEMPTS: ${AIQSA_MEMORY_OPENSEARCH_PROJECTION_MAX_ATTEMPTS:-8}
+      AIQSA_MEMORY_OPENSEARCH_VERIFICATION_BATCH: ${AIQSA_MEMORY_OPENSEARCH_VERIFICATION_BATCH:-4}
+      AIQSA_OPENSEARCH_URL: http://opensearch:9200
+      DATABASE_URL: postgresql://${AIQSA_POSTGRES_USER:-aiqsa}:${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}@postgres:5432/${AIQSA_POSTGRES_DB:-aiqsa}?schema=public
+      NEXT_TELEMETRY_DISABLED: "1"
+      NODE_ENV: production
+    cpus: ${AIQSA_MEMORY_SEARCH_WORKER_CPU_LIMIT:-0.5}
+    depends_on:
+      migrate-bootstrap:
+        condition: service_completed_successfully
+      opensearch:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    init: true
+    logging: *default-logging
+    mem_limit: ${AIQSA_MEMORY_SEARCH_WORKER_MEMORY_LIMIT:-512m}
+    networks:
+      - default
+      - search-control
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  knowledge-search-worker:
+    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
+    command: ["npm", "run", "knowledge:search:worker"]
+    environment:
+      AIQSA_KNOWLEDGE_SEARCH_PROJECTION_BATCH: ${AIQSA_KNOWLEDGE_SEARCH_PROJECTION_BATCH:-1}
+      AIQSA_KNOWLEDGE_SEARCH_PROJECTION_INTERVAL_MS: ${AIQSA_KNOWLEDGE_SEARCH_PROJECTION_INTERVAL_MS:-2000}
+      AIQSA_OPENSEARCH_URL: http://opensearch:9200
+      DATABASE_URL: postgresql://${AIQSA_POSTGRES_USER:-aiqsa}:${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}@postgres:5432/${AIQSA_POSTGRES_DB:-aiqsa}?schema=public
+      NEXT_TELEMETRY_DISABLED: "1"
+      NODE_ENV: production
+    cpus: ${AIQSA_KNOWLEDGE_SEARCH_WORKER_CPU_LIMIT:-0.5}
+    depends_on:
+      migrate-bootstrap:
+        condition: service_completed_successfully
+      opensearch:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    init: true
+    logging: *default-logging
+    mem_limit: ${AIQSA_KNOWLEDGE_SEARCH_WORKER_MEMORY_LIMIT:-512m}
+    networks:
+      - default
+      - search-control
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  docling:
+    image: ${AIQSA_DOCLING_IMAGE:-ghcr.io/insciqq/aiqsa:docling}
+    cap_drop:
+      - ALL
+    cpus: ${AIQSA_DOCLING_CPU_LIMIT:-2.0}
+    environment:
+      DOCLING_NUM_THREADS: "2"
+      DOCLING_SERVE_ENABLE_UI: "false"
+      DOCLING_SERVE_ENG_LOC_NUM_WORKERS: "1"
+      DOCLING_SERVE_LAYOUT_BATCH_SIZE: "4"
+      DOCLING_SERVE_LOAD_MODELS_AT_BOOT: "false"
+      DOCLING_SERVE_MAX_SYNC_WAIT: "290"
+      DOCLING_SERVE_OCR_BATCH_SIZE: "4"
+      DOCLING_SERVE_OPTIONS_CACHE_SIZE: "1"
+      DOCLING_SERVE_QUEUE_MAX_SIZE: "4"
+      DOCLING_SERVE_TABLE_BATCH_SIZE: "4"
+      HF_HUB_OFFLINE: "1"
+      OMP_NUM_THREADS: "2"
+      TRANSFORMERS_OFFLINE: "1"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/health', timeout=3).read(1024)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+    init: true
+    logging: *default-logging
+    mem_limit: ${AIQSA_DOCLING_MEMORY_LIMIT:-10g}
+    networks:
+      - parser-control
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=1g
+
+  tika:
+    image: ${AIQSA_TIKA_IMAGE:-ghcr.io/insciqq/aiqsa:tika}
+    cap_drop:
+      - ALL
+    cpus: ${AIQSA_TIKA_CPU_LIMIT:-1.0}
+    environment:
+      JAVA_TOOL_OPTIONS: -Xms128m -Xmx768m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9998/tika"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    init: true
+    logging: *default-logging
+    mem_limit: ${AIQSA_TIKA_MEMORY_LIMIT:-1g}
+    networks:
+      - parser-control
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=512m
+
+  toolhive-runtime:
+    image: ghcr.io/stacklok/toolhive:v0.40.1@sha256:677dff9d73b33681f3d2c9b3c0b187e3210dc5ca3b8b326590d8db975f155578
+    command: ["serve", "--host", "0.0.0.0", "--port", "8080"]
+    cap_drop:
+      - ALL
+    environment:
+      HOME: /var/lib/toolhive
+      XDG_CACHE_HOME: /var/lib/toolhive/cache
+      XDG_CONFIG_HOME: /var/lib/toolhive/config
+      XDG_DATA_HOME: /var/lib/toolhive/data
+      XDG_STATE_HOME: /var/lib/toolhive/state
+    init: true
+    logging: *default-logging
+    networks:
+      - mcp-control
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=256m
+    user: "0:0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - toolhive_data:/var/lib/toolhive
+
+  migrate-bootstrap:
+    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
+    environment:
+      AIQSA_ENCRYPTION_KEY: ${AIQSA_ENCRYPTION_KEY:?Set AIQSA_ENCRYPTION_KEY in .env}
+      AIQSA_MEMORY_FINGERPRINT_KEYRING: ${AIQSA_MEMORY_FINGERPRINT_KEYRING:?Set AIQSA_MEMORY_FINGERPRINT_KEYRING in .env}
+      AIQSA_INITIAL_ADMIN_DISPLAY_NAME: ${AIQSA_INITIAL_ADMIN_DISPLAY_NAME:-Administrator}
+      AIQSA_INITIAL_ADMIN_EMAIL: ${AIQSA_INITIAL_ADMIN_EMAIL:?Set AIQSA_INITIAL_ADMIN_EMAIL in .env}
+      AIQSA_INITIAL_ADMIN_PASSWORD: ${AIQSA_INITIAL_ADMIN_PASSWORD:-}
+      AIQSA_INITIAL_ADMIN_USER_ID: ${AIQSA_INITIAL_ADMIN_USER_ID:-}
+      DATABASE_URL: postgresql://${AIQSA_POSTGRES_USER:-aiqsa}:${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}@postgres:5432/${AIQSA_POSTGRES_DB:-aiqsa}?schema=public
+      NEXT_TELEMETRY_DISABLED: "1"
+      NODE_ENV: production
+      S3_ACCESS_KEY_ID: ${AIQSA_S3_ACCESS_KEY_ID:-aiqsa}
+      S3_BUCKET: ${AIQSA_S3_BUCKET:-aiqsa-uploads}
+      S3_ENDPOINT: ${AIQSA_S3_ENDPOINT:-http://minio:9000}
+      S3_REGION: ${AIQSA_S3_REGION:-us-east-1}
+      S3_SECRET_ACCESS_KEY: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
+    command: ["sh", "-c", "npm run db:migrate:deploy && npm run db:bootstrap"]
+    cpus: ${AIQSA_TOOLS_CPU_LIMIT:-1.0}
+    depends_on:
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    logging: *default-logging
+    mem_limit: ${AIQSA_TOOLS_MEMORY_LIMIT:-1g}
+    restart: "no"
+
+  mcp-maintenance:
+    profiles:
+      - maintenance
+    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
+    entrypoint: ["npm", "run", "mcp:cleanup", "--"]
+    command: []
+    environment:
+      AIQSA_ENCRYPTION_KEY: ${AIQSA_ENCRYPTION_KEY:?Set AIQSA_ENCRYPTION_KEY in .env}
+      AIQSA_TOOLHIVE_URL: http://toolhive-runtime:8080
+    depends_on:
+      - toolhive-runtime
+    init: true
+    networks:
+      - mcp-control
+    restart: "no"
+
+  workspace-runner:
+    profiles:
+      - workspace
+    image: ${AIQSA_WORKSPACE_RUNNER_IMAGE:-ghcr.io/insciqq/aiqsa:workspace-runner}
+    cap_drop:
+      - ALL
+    cpus: ${AIQSA_WORKSPACE_RUNNER_CPU_LIMIT:-4.0}
+    devices:
+      - /dev/kvm:/dev/kvm
+    environment:
+      AIQSA_WORKSPACE_CPUS: ${AIQSA_WORKSPACE_CPUS:-2}
+      AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "0"
+      AIQSA_WORKSPACE_DISK_MIB: ${AIQSA_WORKSPACE_DISK_MIB:-10240}
+      AIQSA_WORKSPACE_IDLE_TTL_SECONDS: ${AIQSA_WORKSPACE_IDLE_TTL_SECONDS:-1800}
+      AIQSA_WORKSPACE_IMAGE: ${AIQSA_WORKSPACE_IMAGE:-aiqsa-workspace:0.1.25}
+      AIQSA_WORKSPACE_MAX_TOOL_CALLS: ${AIQSA_WORKSPACE_MAX_TOOL_CALLS:-80}
+      AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: ${AIQSA_WORKSPACE_MAX_TOOL_ROUNDS:-40}
+      AIQSA_WORKSPACE_MCP_VERSION: ${AIQSA_WORKSPACE_MCP_VERSION:-0.6.16}
+      AIQSA_WORKSPACE_MEMORY_MIB: ${AIQSA_WORKSPACE_MEMORY_MIB:-4096}
+      AIQSA_WORKSPACE_OUTPUT_FILE_MAX_BYTES: ${AIQSA_WORKSPACE_OUTPUT_FILE_MAX_BYTES:-268435456}
+      AIQSA_WORKSPACE_OUTPUT_MAX_FILES: ${AIQSA_WORKSPACE_OUTPUT_MAX_FILES:-25}
+      AIQSA_WORKSPACE_OUTPUT_TOTAL_MAX_BYTES: ${AIQSA_WORKSPACE_OUTPUT_TOTAL_MAX_BYTES:-536870912}
+      AIQSA_WORKSPACE_RETENTION_SECONDS: ${AIQSA_WORKSPACE_RETENTION_SECONDS:-86400}
+      AIQSA_WORKSPACE_RUNNER_TOKEN: ${AIQSA_WORKSPACE_RUNNER_TOKEN:-}
+      AIQSA_WORKSPACE_SYNC_TOOL_TIMEOUT_SECONDS: ${AIQSA_WORKSPACE_SYNC_TOOL_TIMEOUT_SECONDS:-120}
+      AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES: ${AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES:-131072}
+      AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: ${AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS:-1800}
+    group_add:
+      - ${AIQSA_KVM_GID:-993}
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4310/health',{headers:{authorization:'Bearer '+process.env.AIQSA_WORKSPACE_RUNNER_TOKEN}}).then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    init: true
+    logging: *default-logging
+    mem_limit: ${AIQSA_WORKSPACE_RUNNER_MEMORY_LIMIT:-8g}
+    networks:
+      - workspace-control
+      - workspace-egress
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m
+    volumes:
+      - workspace_runtime_data:/var/lib/microsandbox
+
+  workspace-maintenance:
+    profiles:
+      - workspace
+    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
+    command: ["npm", "run", "workspace:maintenance"]
+    cpus: ${AIQSA_WORKSPACE_MAINTENANCE_CPU_LIMIT:-0.5}
+    environment:
+      AIQSA_WORKSPACE_CPUS: ${AIQSA_WORKSPACE_CPUS:-2}
+      AIQSA_WORKSPACE_DISK_MIB: ${AIQSA_WORKSPACE_DISK_MIB:-10240}
+      AIQSA_WORKSPACE_IDLE_TTL_SECONDS: ${AIQSA_WORKSPACE_IDLE_TTL_SECONDS:-1800}
+      AIQSA_WORKSPACE_IMAGE: ${AIQSA_WORKSPACE_IMAGE:-aiqsa-workspace:0.1.25}
+      AIQSA_WORKSPACE_MAX_TOOL_CALLS: ${AIQSA_WORKSPACE_MAX_TOOL_CALLS:-80}
+      AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: ${AIQSA_WORKSPACE_MAX_TOOL_ROUNDS:-40}
+      AIQSA_WORKSPACE_MCP_VERSION: ${AIQSA_WORKSPACE_MCP_VERSION:-0.6.16}
+      AIQSA_WORKSPACE_MEMORY_MIB: ${AIQSA_WORKSPACE_MEMORY_MIB:-4096}
+      AIQSA_WORKSPACE_OUTPUT_FILE_MAX_BYTES: ${AIQSA_WORKSPACE_OUTPUT_FILE_MAX_BYTES:-268435456}
+      AIQSA_WORKSPACE_OUTPUT_MAX_FILES: ${AIQSA_WORKSPACE_OUTPUT_MAX_FILES:-25}
+      AIQSA_WORKSPACE_OUTPUT_TOTAL_MAX_BYTES: ${AIQSA_WORKSPACE_OUTPUT_TOTAL_MAX_BYTES:-536870912}
+      AIQSA_WORKSPACE_RETENTION_SECONDS: ${AIQSA_WORKSPACE_RETENTION_SECONDS:-86400}
+      AIQSA_WORKSPACE_RUNNER_TOKEN: ${AIQSA_WORKSPACE_RUNNER_TOKEN:-}
+      AIQSA_WORKSPACE_RUNNER_URL: ${AIQSA_WORKSPACE_RUNNER_URL:-http://workspace-runner:4310}
+      AIQSA_WORKSPACE_SYNC_TOOL_TIMEOUT_SECONDS: ${AIQSA_WORKSPACE_SYNC_TOOL_TIMEOUT_SECONDS:-120}
+      AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES: ${AIQSA_WORKSPACE_TOOL_OUTPUT_MAX_BYTES:-131072}
+      AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: ${AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS:-1800}
+      DATABASE_URL: postgresql://${AIQSA_POSTGRES_USER:-aiqsa}:${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}@postgres:5432/${AIQSA_POSTGRES_DB:-aiqsa}?schema=public
+      NEXT_TELEMETRY_DISABLED: "1"
+      NODE_ENV: production
+    depends_on:
+      migrate-bootstrap:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      workspace-runner:
+        condition: service_healthy
+    init: true
+    logging: *default-logging
+    mem_limit: ${AIQSA_WORKSPACE_MAINTENANCE_MEMORY_LIMIT:-512m}
+    networks:
+      - default
+      - workspace-control
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  postgres:
+    image: ${AIQSA_POSTGRES_IMAGE:-ghcr.io/insciqq/aiqsa-postgres:18}
+    environment:
+      POSTGRES_DB: ${AIQSA_POSTGRES_DB:-aiqsa}
+      POSTGRES_PASSWORD: ${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}
+      POSTGRES_USER: ${AIQSA_POSTGRES_USER:-aiqsa}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    cpus: ${AIQSA_POSTGRES_CPU_LIMIT:-1.0}
+    logging: *default-logging
+    mem_limit: ${AIQSA_POSTGRES_MEMORY_LIMIT:-1g}
+    restart: unless-stopped
+    stop_grace_period: 60s
+    volumes:
+      - postgres18_data:/var/lib/postgresql
+
+  opensearch:
+    image: ${AIQSA_OPENSEARCH_IMAGE:-ghcr.io/insciqq/aiqsa:opensearch}
+    environment:
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: ${AIQSA_OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
+      bootstrap.memory_lock: "true"
+      discovery.type: single-node
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=2s' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    cpus: ${AIQSA_OPENSEARCH_CPU_LIMIT:-1.0}
+    logging: *default-logging
+    mem_limit: ${AIQSA_OPENSEARCH_MEMORY_LIMIT:-1536m}
+    networks:
+      - search-control
+    restart: unless-stopped
+    stop_grace_period: 60s
+    ulimits:
+      memlock:
+        hard: -1
+        soft: -1
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_PASSWORD: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
+      MINIO_ROOT_USER: ${AIQSA_S3_ACCESS_KEY_ID:-aiqsa}
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    cpus: ${AIQSA_MINIO_CPU_LIMIT:-1.0}
+    logging: *default-logging
+    mem_limit: ${AIQSA_MINIO_MEMORY_LIMIT:-1g}
+    restart: unless-stopped
+    stop_grace_period: 30s
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        mc alias set local http://minio:9000 "$${S3_ACCESS_KEY_ID}" "$${S3_SECRET_ACCESS_KEY}" >/dev/null
+        mc mb --ignore-existing "local/$${S3_BUCKET}" >/dev/null
+        mc anonymous set private "local/$${S3_BUCKET}" >/dev/null
+    environment:
+      S3_ACCESS_KEY_ID: ${AIQSA_S3_ACCESS_KEY_ID:-aiqsa}
+      S3_BUCKET: ${AIQSA_S3_BUCKET:-aiqsa-uploads}
+      S3_ENDPOINT: ${AIQSA_S3_ENDPOINT:-http://minio:9000}
+      S3_SECRET_ACCESS_KEY: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
+    logging: *default-logging
+    restart: "no"
+
+networks:
+  mcp-control:
+    internal: true
+  parser-control:
+    internal: true
+  search-control:
+    internal: true
+  workspace-control:
+    internal: true
+  workspace-egress: {}
+
+volumes:
+  minio_data:
+  opensearch_data:
+  postgres18_data:
+  toolhive_data:
+  workspace_runtime_data:

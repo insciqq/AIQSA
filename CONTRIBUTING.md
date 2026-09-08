@@ -4,7 +4,7 @@ Thanks for helping improve AIQSA. For a substantial product or architecture chan
 
 ## Development setup
 
-AIQSA includes a disposable development stack in `docker-compose.dev.yml`; production deployment is maintained separately by the installation operator. Follow [README.md](README.md#development) and [Environment](agent_docs/ENV_VARIABLES.md) to select the intended topology while preserving checkout-specific configuration and data.
+AIQSA includes a disposable development stack in `docker-compose.dev.yml`. The default `compose.yaml` is a persistent installation and must not be used for tests. Follow [README.md](README.md#development) and [Environment](agent_docs/ENV_VARIABLES.md) to preserve checkout-specific configuration and data.
 
 Before opening a pull request:
 

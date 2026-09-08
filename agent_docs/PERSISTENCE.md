@@ -29,7 +29,7 @@ Published outputs require verified size/checksum and atomic relational settlemen
 
 ## Migrations And Bootstrap
 
-v0.2.0 requires a clean database. Compatibility with v0.1.x, including v0.1.24, is intentionally unsupported: the installation operator must remove the old database and initialize an empty one. Do not restore the old migration chain, adopt its baseline, or add an upgrade bridge to preserve that data. This release boundary does not authorize resetting operator data during development or verification.
+v0.2.0 is the first supported persistent-installation baseline; earlier development databases need no upgrade bridge. From this baseline, stable updates preserve operator data, credentials, and configuration through forward migrations. Migrations must tolerate the previous release's writers during the short Compose replacement window. A destructive or incompatible upgrade requires a separately declared operator procedure, never an ordinary `pull`/`up` update. This policy never authorizes resetting operator data during verification.
 
 `20260815000000_baseline` is the immutable first migration anchor, including custom PostgreSQL DDL that Prisma cannot reconstruct. Changes are append-only migrations. Persistent installations use `prisma migrate deploy`, never `prisma db push`.
 

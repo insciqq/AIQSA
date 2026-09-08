@@ -2,6 +2,12 @@ name: Release
 
 on:
   push:
+    branches: [main]
+    paths:
+      - compose.yaml
+      - .github/workflows/release.yml
+      - scripts/configure.sh
+      - scripts/production-smoke.mjs
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"
 
@@ -38,11 +44,16 @@ jobs:
         id: release
         env:
           TAG: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
         shell: bash
         run: |
           set -euo pipefail
           version="${TAG#v}"
           package_version="$(node -p "require('./package.json').version")"
+          if [[ "${REF_TYPE}" != "tag" ]]; then
+            echo "version=${package_version}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
           if [[ "${version}" != "${package_version}" && "${version}" != "${package_version}-"* ]]; then
             echo "Tag ${TAG} does not match package version ${package_version}." >&2
             exit 1
@@ -175,12 +186,148 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+  build-components:
+    name: Build ${{ matrix.component.name }} (${{ matrix.platform.name }})
+    needs: [prepare, quality]
+    runs-on: ${{ matrix.platform.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - id: amd64
+            name: linux/amd64
+            runner: ubuntu-24.04
+          - id: arm64
+            name: linux/arm64
+            runner: ubuntu-24.04-arm
+        component:
+          - name: docling
+            context: ops/docling
+            file: ops/docling/Dockerfile
+            target: ""
+          - name: tika
+            context: ops/tika
+            file: ops/tika/Dockerfile
+            target: ""
+          - name: opensearch
+            context: ops/opensearch
+            file: ops/opensearch/Dockerfile
+            target: ""
+          - name: workspace-runner
+            context: .
+            file: Dockerfile
+            target: workspace-runner
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.2
+
+      - name: Free hosted runner disk for component images
+        if: runner.environment == 'github-hosted'
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Sign in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build component by digest
+        id: image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ${{ matrix.component.context }}
+          file: ${{ matrix.component.file }}
+          target: ${{ matrix.component.target }}
+          platforms: ${{ matrix.platform.name }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/insciqq/AIQSA
+            org.opencontainers.image.title=AIQSA ${{ matrix.component.name }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.component.name }}-${{ matrix.platform.id }}
+          cache-to: type=gha,mode=min,ignore-error=true,scope=${{ matrix.component.name }}-${{ matrix.platform.id }}
+
+      - name: Export component digest
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          COMPONENT: ${{ matrix.component.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p "${RUNNER_TEMP}/component-digests/${COMPONENT}"
+          touch "${RUNNER_TEMP}/component-digests/${COMPONENT}/${DIGEST#sha256:}"
+
+      - name: Upload component digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: component-digests-${{ matrix.component.name }}-${{ matrix.platform.id }}
+          path: ${{ runner.temp }}/component-digests
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  production-smoke:
+    name: Production installation and update
+    needs: [build, build-components]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.2
+
+      - name: Free hosted runner disk for the full production stack
+        if: runner.environment == 'github-hosted'
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Download native image digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: "*-amd64"
+          path: ${{ runner.temp }}/smoke-digests
+
+      - name: Prepare exact image references
+        shell: python
+        run: |
+          import json, os, pathlib, re
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          images = {}
+          for component in ["app", "postgres", "docling", "tika", "opensearch"]:
+              artifact = {"app": "digests-amd64", "postgres": "postgres-digests-amd64"}.get(component, f"component-digests-{component}-amd64")
+              files = [p for p in (root / "smoke-digests" / artifact).rglob("*") if p.is_file()]
+              assert len(files) == 1 and re.fullmatch(r"[0-9a-f]{64}", files[0].name)
+              repository = os.environ["POSTGRES_IMAGE"] if component == "postgres" else os.environ["IMAGE"]
+              images[component] = f"{repository}@sha256:{files[0].name}"
+          (root / "production-images.json").write_text(json.dumps(images))
+
+      - name: Verify fresh installation and ordinary image updates
+        run: node scripts/production-smoke.mjs --disposable "${RUNNER_TEMP}/production-images.json"
+
   publish:
     name: Publish multi-platform images and GitHub Release
+    if: github.ref_type == 'tag'
     needs:
       - prepare
       - quality
       - build
+      - build-components
+      - production-smoke
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -205,6 +352,13 @@ jobs:
         with:
           pattern: postgres-digests-*
           path: ${{ runner.temp }}/postgres-digests
+          merge-multiple: true
+
+      - name: Download component platform digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: component-digests-*
+          path: ${{ runner.temp }}/component-digests
           merge-multiple: true
 
       - name: Set up Docker Buildx
@@ -328,10 +482,12 @@ jobs:
 
           component_ref="${POSTGRES_IMAGE}:${POSTGRES_COMPONENT_TAG}"
           release_ref="${POSTGRES_IMAGE}:${POSTGRES_COMPONENT_TAG}-${VERSION}"
-          docker buildx imagetools create \
-            --tag "${component_ref}" \
-            --tag "${release_ref}" \
-            "${sources[@]}"
+          postgres_tags=(--tag "${component_ref}" --tag "${release_ref}")
+          major_ref="${POSTGRES_IMAGE}:${POSTGRES_COMPONENT_TAG%%.*}"
+          if [[ "${VERSION}" != *-* ]]; then
+            postgres_tags+=(--tag "${major_ref}")
+          fi
+          docker buildx imagetools create "${postgres_tags[@]}" "${sources[@]}"
 
           manifest_json="$(docker buildx imagetools inspect --raw "${release_ref}")"
           manifest_digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${release_ref}" | jq -er '.digest')"
@@ -344,6 +500,10 @@ jobs:
           if [[ "${component_digest}" != "${manifest_digest}" ]]; then
             echo "Published Postgres tags do not resolve to one manifest digest." >&2
             exit 1
+          fi
+          if [[ "${VERSION}" != *-* ]]; then
+            major_digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${major_ref}" | jq -er '.digest')"
+            [[ "${major_digest}" == "${manifest_digest}" ]]
           fi
 
           mapfile -t platforms < <(
@@ -358,6 +518,45 @@ jobs:
 
           echo "digest=${manifest_digest}" >> "${GITHUB_OUTPUT}"
 
+      - name: Publish and verify component manifests
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          notes_file="${RUNNER_TEMP}/component-images.md"
+          : > "${notes_file}"
+          for component in docling tika opensearch workspace-runner; do
+            digest_files=("${RUNNER_TEMP}/component-digests/${component}"/*)
+            if (( ${#digest_files[@]} != 2 )); then
+              echo "Expected two platform digests for ${component}." >&2
+              exit 1
+            fi
+            sources=()
+            for digest_file in "${digest_files[@]}"; do
+              digest="${digest_file##*/}"
+              [[ "${digest}" =~ ^[0-9a-f]{64}$ ]]
+              sources+=("${IMAGE}@sha256:${digest}")
+            done
+            release_ref="${IMAGE}:${component}-${VERSION}"
+            tags=(--tag "${release_ref}")
+            if [[ "${VERSION}" != *-* ]]; then
+              tags+=(--tag "${IMAGE}:${component}")
+            fi
+            docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+            manifest_json="$(docker buildx imagetools inspect --raw "${release_ref}")"
+            manifest_digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${release_ref}" | jq -er '.digest')"
+            [[ "${manifest_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+            platforms="$(jq -r '.manifests[] | select(.platform.os != "unknown") | "\(.platform.os)/\(.platform.architecture)"' <<< "${manifest_json}" | sort)"
+            [[ "${platforms}" == $'linux/amd64\nlinux/arm64' ]]
+            if [[ "${VERSION}" != *-* ]]; then
+              stable_digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${IMAGE}:${component}" | jq -er '.digest')"
+              [[ "${stable_digest}" == "${manifest_digest}" ]]
+            fi
+            printf '%s image: %s\nImmutable digest: %s@%s\n\n' "${component}" "${release_ref}" "${IMAGE}" "${manifest_digest}" >> "${notes_file}"
+          done
+
       - name: Create GitHub Release
         env:
           DIGEST: ${{ steps.manifest.outputs.digest }}
@@ -369,11 +568,10 @@ jobs:
         run: |
           set -euo pipefail
           notes="Docker image: ${IMAGE}:${VERSION}"$'\n'"Immutable digest: ${IMAGE}@${DIGEST}"$'\n\n'"Postgres image: ${POSTGRES_IMAGE}:${POSTGRES_COMPONENT_TAG}-${VERSION}"$'\n'"Immutable Postgres digest: ${POSTGRES_IMAGE}@${POSTGRES_DIGEST}"
-          if [[ "${VERSION}" == "0.2.0" || "${VERSION}" == "0.2.0-"* ]]; then
-            notes="Breaking change: v0.2.0 requires a fresh database. There is no upgrade path from v0.1.x (including v0.1.24). Remove the old database before installing v0.2.0; this discards existing data. Do not restore a v0.1.x database into v0.2.0."$'\n\n'"${notes}"
-          fi
           notes_file="${RUNNER_TEMP}/release-notes.md"
           printf '%s\n' "${notes}" > "${notes_file}"
+          printf '\n' >> "${notes_file}"
+          cat "${RUNNER_TEMP}/component-images.md" >> "${notes_file}"
           release_flags=(--verify-tag --generate-notes --title "AIQSA ${TAG}" --notes-file "${notes_file}")
           if [[ "${TAG}" == *-* ]]; then
             release_flags+=(--prerelease)
