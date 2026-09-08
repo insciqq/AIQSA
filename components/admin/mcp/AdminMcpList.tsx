@@ -1,6 +1,6 @@
 "use client";
 
-import { inputClass } from "@/components/admin/adminPrimitives";
+import { inputClass, touchTarget } from "@/components/admin/adminPrimitives";
 import { adminSectionPath } from "@/components/admin/adminSections";
 import { sourceDisplay } from "@/components/admin/mcp/adminMcpDraft";
 import { McpServerTile, McpStatusPill } from "@/components/admin/mcp/mcpPrimitives";
@@ -13,10 +13,10 @@ import { useId, useMemo, useState, type MouseEvent } from "react";
 const focusRing =
   "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper";
 const attentionLink =
-  `inline-flex min-h-control-sm items-center rounded-control px-2 text-xs font-medium text-caution hover:bg-caution/10 ${focusRing}`;
+  `inline-flex min-h-control-sm items-center rounded-control px-2 text-xs font-medium text-caution hover:bg-caution/10 ${focusRing} ${touchTarget}`;
 
-/** One set of tracks for the header and every row; the grid stacks below `md`. */
-const gridTracks = "md:grid-cols-[2rem_minmax(0,1fr)_8.5rem_9rem_9.5rem_1rem]";
+/** One set of tracks for the header and every row; the grid stacks below `xl`. */
+const gridTracks = "xl:grid-cols-[2rem_minmax(12rem,1fr)_7rem_8rem_8rem_1rem]";
 
 function currentHref(): string {
   return typeof window === "undefined" ? "/admin" : window.location.href;
@@ -43,7 +43,7 @@ function ServerRow({ onOpen, server }: Readonly<{ onOpen(serverId: string): void
   return (
     <li
       className={[
-        "relative grid grid-cols-[2rem_minmax(0,1fr)_auto_1rem] items-center gap-x-3 px-4 py-3 hover:bg-control-hover sm:px-5 md:min-h-14 md:gap-x-4 md:py-2.5",
+        "relative grid grid-cols-[2rem_minmax(0,1fr)_auto_1rem] items-center gap-x-3 px-4 py-3 hover:bg-control-hover sm:px-5 xl:min-h-14 xl:gap-x-4 xl:py-2.5",
         gridTracks,
         status.kind === "disabled" || status.kind === "archived" ? "opacity-65" : ""
       ].join(" ")}
@@ -65,7 +65,7 @@ function ServerRow({ onOpen, server }: Readonly<{ onOpen(serverId: string): void
           {server.name}
         </a>
         <p className="truncate text-xs text-ink-muted">{server.description || sourceDisplay(server.draft.source)}</p>
-        <p className="mt-0.5 truncate text-xs text-ink-muted md:hidden">{tools} · {access}</p>
+        <p className="mt-0.5 truncate text-xs text-ink-muted xl:hidden">{tools} · {access}</p>
         {attention ? (
           <span className="relative z-[1] mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1 text-xs text-caution">
             <CircleAlert aria-hidden="true" className="size-3 shrink-0" />
@@ -78,8 +78,8 @@ function ServerRow({ onOpen, server }: Readonly<{ onOpen(serverId: string): void
           </span>
         ) : null}
       </div>
-      <span className="hidden truncate text-sm text-ink-secondary md:block">{tools}</span>
-      <span className="hidden truncate text-sm text-ink-secondary md:block">{access}</span>
+      <span className="hidden truncate text-sm text-ink-secondary xl:block">{tools}</span>
+      <span className="hidden truncate text-sm text-ink-secondary xl:block">{access}</span>
       <span className="justify-self-start">
         <McpStatusPill label={status.label} tone={status.tone} />
       </span>
@@ -152,7 +152,7 @@ export function AdminMcpList({
           <>
             <div
               aria-hidden="true"
-              className={`hidden items-center gap-x-4 border-b border-trace-subtle px-5 py-2 text-metadata font-semibold uppercase tracking-[0.06em] text-ink-muted md:grid ${gridTracks}`}
+              className={`hidden items-center gap-x-4 border-b border-trace-subtle px-5 py-2 text-metadata font-semibold uppercase tracking-[0.06em] text-ink-muted xl:grid ${gridTracks}`}
             >
               <span />
               <span>Server</span>

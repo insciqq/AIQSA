@@ -159,7 +159,7 @@ test.beforeAll(async ({ browser }) => {
     const policy = page.getByRole("region", { name: "Workspace policy" });
     await expect(policy.getByText("Ready", { exact: true })).toBeVisible({ timeout: 30_000 });
     const enabled = policy.getByLabel("Enable Workspace");
-    if (!(await enabled.isChecked())) { await enabled.click(); await expect(policy.getByRole("status")).toContainText("Workspace policy updated."); }
+    if (!(await enabled.isChecked())) { await enabled.click(); await expect(page.getByTestId("admin-feedback")).toContainText("Workspace policy updated."); }
   } finally { await context.close(); }
 });
 

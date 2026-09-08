@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { adminKnowledgeProfileFixture, adminKnowledgeSettingsFixture } from "@/tests/support/knowledgeProfile";
 import type { AdminGroup } from "@/lib/contracts/admin";
 import type { AdminKnowledgeSettings } from "@/lib/contracts/adminKnowledge";
@@ -161,7 +161,7 @@ function server() {
   return calls;
 }
 
-function renderSection(groupList: AdminGroup[] = groups) {
+function renderSection(groupList: AdminGroup[] = groups, resource: string | null = null) {
   const reportNotice = vi.fn<(message: string, action?: AdminFeedbackNoticeAction) => void>();
   const reportError = vi.fn();
   const requestConfirmation = vi.fn<(config: AdminConfirmationRequest) => void>();
@@ -169,6 +169,7 @@ function renderSection(groupList: AdminGroup[] = groups) {
   render(
     <AdminRolesSection
       groups={groupList}
+      resource={resource}
       onMutationCommitted={onMutationCommitted}
       reportError={reportError}
       reportNotice={reportNotice}
@@ -183,6 +184,52 @@ const patchesTo = (calls: Call[], url: string) => calls.filter((call) => call.ur
 afterEach(() => vi.unstubAllGlobals());
 
 describe("AdminRolesSection", () => {
+  it("focuses the exact system role from an Overview target", async () => {
+    server();
+    renderSection(groups, "reranker");
+    await waitFor(() => expect(screen.getByTestId("admin-role-reranker")).toHaveFocus());
+  });
+
+  it("preserves edited defaults and Knowledge fields across a background refresh", async () => {
+    const calls = server();
+    renderSection();
+    const rounds = await screen.findByRole("spinbutton", { name: "Rounds" });
+    const documents = await screen.findByRole("combobox", { name: "Documents mode" });
+    fireEvent.change(rounds, { target: { value: "11" } });
+    fireEvent.change(documents, { target: { value: "system_model_vision" } });
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(calls.filter((call) => call.method === "GET")).toHaveLength(6));
+    expect(rounds).toHaveValue(11);
+    expect(documents).toHaveValue("system_model_vision");
+  });
+
+  it("keeps a committed role when an older background read settles afterward", async () => {
+    server();
+    renderSection();
+    const trigger = await screen.findByRole("button", { name: "Reranking deployment" });
+    const original = globalThis.fetch;
+    let finishRead!: (response: Response) => void;
+    const delayed = new Promise<Response>((resolve) => { finishRead = resolve; });
+    let previous!: Response;
+    let captured = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await original(input, init);
+      if (!captured && String(input) === "/api/admin/providers/system-model-policy" && (init?.method ?? "GET") === "GET") {
+        captured = true;
+        previous = response;
+        return delayed;
+      }
+      return response;
+    }));
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(captured).toBe(true));
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("option", { name: /Cohere 4 Pro/ }));
+    await waitFor(() => expect(trigger).toHaveTextContent("Cohere 4 Pro"));
+    await act(async () => { finishRead(previous); await delayed; });
+    expect(trigger).toHaveTextContent("Cohere 4 Pro");
+  });
+
   it("lists Ready, Check first and Not eligible groups and assigns through Check in one flow", async () => {
     const calls = server();
     const { reportNotice } = renderSection();

@@ -298,6 +298,7 @@ const dashboard: AdminDashboard = {
         summary: "Disable this user before deletion can be considered."
       },
       displayName: "Admin User",
+      directGrants: [],
       effectiveEntitlements: {
         models: [],
         providers: [],
@@ -318,6 +319,7 @@ const dashboard: AdminDashboard = {
         summary: "No app-owned records detected; auth request data can be removed."
       },
       displayName: "Pending User",
+      directGrants: [],
       effectiveEntitlements: {
         models: [],
         providers: [],
@@ -338,6 +340,7 @@ const dashboard: AdminDashboard = {
         summary: "Disable this user before deletion can be considered."
       },
       displayName: "Active User",
+      directGrants: [],
       effectiveEntitlements: {
         models: [
           {
@@ -870,7 +873,7 @@ describe("AdminPanel", () => {
     expect(await within(providers).findByRole("alert")).toHaveTextContent("Providers could not be loaded");
   });
 
-  it("guards dirty section and drawer navigation while cancel preserves exact state and focus", async () => {
+  it("keeps the email unload guard local while drawer navigation stays available", async () => {
     stubCompactViewport();
     mockAdminFetch();
     window.history.replaceState(null, "", "/admin?section=email");
@@ -878,37 +881,17 @@ describe("AdminPanel", () => {
 
     const emailSection = await screen.findByTestId("admin-section-email");
     const form = await within(emailSection).findByRole("form", { name: "Email settings" });
-    const name = within(form).getByLabelText("Host");
-    fireEvent.change(name, { target: { value: "draft-secret" } });
-    name.focus();
-    const originalPath = `${window.location.pathname}${window.location.search}`;
-    const originalHistoryState = structuredClone(window.history.state);
-
+    const host = within(form).getByLabelText("Host");
+    fireEvent.change(host, { target: { value: "mail.example.com" } });
     const unload = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(unload);
     expect(unload.defaultPrevented).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Sections" }));
-    expect(screen.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
-    expect(window.location.pathname + window.location.search).toBe(originalPath);
-    expect(window.history.state).toEqual(originalHistoryState);
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(name).toHaveFocus());
-    expect(name).toHaveValue("draft-secret");
-    expect(screen.getByTestId("admin-section-email")).toBeVisible();
-
-    const returnToChat = screen.getAllByRole("link", { name: "Chats" })[0]!;
-    returnToChat.focus();
-    fireEvent.click(returnToChat);
-    expect(screen.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
-    expect(window.location.pathname + window.location.search).toBe(originalPath);
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(returnToChat).toHaveFocus());
-    expect(name).toHaveValue("draft-secret");
-
+    expect(screen.getByRole("dialog", { name: "Control Center sections" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Discard unsaved changes?" })).not.toBeInTheDocument();
+    expect(host).toHaveValue("mail.example.com");
     fireEvent.click(screen.getByRole("link", { name: "Usage" }));
-    expect(screen.getByTestId("admin-section-email")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
     await screen.findByTestId("admin-section-usage");
     expect(window.location.search).toBe("?section=usage");
     const cleanUnload = new Event("beforeunload", { cancelable: true });
@@ -937,33 +920,7 @@ describe("AdminPanel", () => {
     fireEvent.click(within(await screen.findByTestId("admin-signup-rules-discard")).getByRole("button", { name: "Confirm discard changes" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sign-up rules" })).not.toBeInTheDocument());
   });
-  it("guards unsaved section edits before leaving the section", async () => {
-    mockAdminFetch();
-    render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
-
-    await screen.findByTestId("admin-section-users");
-    fireEvent.click(screen.getByRole("link", { name: "Email" }));
-    const emailSection = await screen.findByTestId("admin-section-email");
-    const form = await within(emailSection).findByRole("form", { name: "Email settings" });
-    const secret = within(form).getByLabelText("Host");
-    fireEvent.change(secret, { target: { value: "provider-secret-draft" } });
-
-    fireEvent.click(screen.getByRole("link", { name: "Usage" }));
-    expect(screen.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
-    expect(secret).toHaveValue("provider-secret-draft");
-    expect(screen.getByTestId("admin-section-email")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(secret).toHaveValue("provider-secret-draft");
-
-    fireEvent.click(screen.getByRole("link", { name: "Usage" }));
-    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
-    await screen.findByTestId("admin-section-usage");
-    const unload = new Event("beforeunload", { cancelable: true });
-    window.dispatchEvent(unload);
-    expect(unload.defaultPrevented).toBe(false);
-  });
-
-  it("rolls back dirty browser history and replays it once after discard", async () => {
+  it("allows browser history to leave edited email without a global form dialog", async () => {
     mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
@@ -976,15 +933,6 @@ describe("AdminPanel", () => {
     });
 
     act(() => window.history.back());
-    await screen.findByRole("heading", { name: "Discard unsaved changes?" });
-    expect(window.location.search).toBe("?section=email");
-    expect(within(form).getByLabelText("Host")).toHaveValue("history-secret");
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(window.location.search).toBe("?section=email");
-
-    act(() => window.history.back());
-    await screen.findByRole("heading", { name: "Discard unsaved changes?" });
-    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
     await screen.findByTestId("admin-section-users");
     expect(window.location.search).toBe("?section=users");
   });
@@ -1136,7 +1084,7 @@ describe("AdminPanel", () => {
 
     await waitFor(() => {
       expect(posts).toEqual([
-        { action: "set_user_groups", groupIds: ["group-1"], userId: "pending-1" },
+        { action: "set_user_groups", expectedGroupIds: [], groupIds: ["group-1"], userId: "pending-1" },
         { action: "approve_user", groupIds: ["group-1"], userId: "pending-1" }
       ]);
     });
@@ -1157,6 +1105,7 @@ describe("AdminPanel", () => {
     await waitFor(() => {
       expect(posts).toContainEqual({
         action: "set_user_groups",
+        expectedGroupIds: ["group-1"],
         groupIds: ["group-1", "group-2"],
         userId: "active-1"
       });

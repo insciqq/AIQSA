@@ -6,6 +6,7 @@ import type { AdminRepository } from "./adminRepositoryContract";
 import type { AccountKnowledgeDeletionHook } from "../knowledge/accountDeletion";
 import type { AccountMemoryDeletionHook } from "../memory/accountDeletion/integration";
 import { createAdminUserSessionCommands } from "./adminUserSessionCommands";
+import { createAdminUserAccessCommands } from "./adminUserAccessCommands";
 
 export type {
   AdminAccessGrantRecord,
@@ -54,6 +55,7 @@ export function createPrismaAdminRepository(
 ): AdminRepository {
   return {
     ...createAdminUserSessionCommands(prisma, options),
+    ...createAdminUserAccessCommands(prisma),
     ...createAdminGroupGrantCommands(prisma),
     ...createAdminInviteRuleCommands(prisma),
     async findAdminUser(userId) {

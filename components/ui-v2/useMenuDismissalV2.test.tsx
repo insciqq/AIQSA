@@ -6,7 +6,7 @@ import { useMenuDismissalV2 } from "./useMenuDismissalV2";
 
 function MenuHarness({ onAction }: { onAction?(): void }) {
   const [open, setOpen] = useState(false);
-  const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: () => setOpen(false), open });
+  const { closeForAction, menuRef, triggerRef } = useMenuDismissalV2({ onClose: () => setOpen(false), open });
 
   return (
     <div>
@@ -20,7 +20,7 @@ function MenuHarness({ onAction }: { onAction?(): void }) {
       </button>
       {open ? (
         <UiV2MenuSurface label="Test menu" ref={menuRef}>
-          <UiV2MenuItem onClick={() => { setOpen(false); onAction?.(); }}>
+          <UiV2MenuItem onClick={() => { closeForAction(); onAction?.(); }}>
             First item
           </UiV2MenuItem>
         </UiV2MenuSurface>
@@ -79,11 +79,16 @@ describe("useMenuDismissalV2", () => {
   });
 
   it("keeps the trigger a plain toggle and closes through item activation", () => {
-    const onAction = vi.fn();
+    const onAction = vi.fn(() => {
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Open menu" })).toHaveFocus();
+    });
     render(<MenuHarness onAction={onAction} />);
     const menu = openMenu();
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "First item" }));
+    const item = screen.getByRole("menuitem", { name: "First item" });
+    item.focus();
+    fireEvent.click(item);
 
     expect(onAction).toHaveBeenCalledOnce();
     expect(menu).not.toBeInTheDocument();

@@ -2,6 +2,7 @@ import type {
   AdminProviderActiveCheck,
   AdminProviderCheckRun,
   AdminProviderCompatibilityStatus,
+  AdminProviderConnection,
   AdminProviderModelClass,
   AdminProviderModelConfiguration,
   AdminProviderTestEvidence
@@ -46,8 +47,14 @@ function chip(key: ModelChipKey, label: string, status: AdminProviderCompatibili
   return null;
 }
 
-function legacyStatus(block: { verified: true } | undefined): AdminProviderCompatibilityStatus | null {
-  return block?.verified ? "verified" : null;
+type ChipConfiguration = Pick<AdminProviderModelConfiguration, "adapterKind" | "modelClass" | "upstreamModelId">;
+
+function legacyStatus(
+  block: { adapterKind: string; upstreamModelId: string; verified: true } | undefined,
+  configuration: ChipConfiguration
+): AdminProviderCompatibilityStatus | null {
+  return block?.verified && block.adapterKind === configuration.adapterKind &&
+    block.upstreamModelId === configuration.upstreamModelId ? "verified" : null;
 }
 
 /** The evidence of a check only counts for the upstream id it was made for. */
@@ -60,7 +67,7 @@ export function matchingEvidence(
 }
 
 export function modelChipsFromEvidence(
-  configuration: Pick<AdminProviderModelConfiguration, "modelClass" | "upstreamModelId">,
+  configuration: ChipConfiguration,
   check: AdminProviderActiveCheck | null
 ): readonly ModelChip[] {
   const evidence = matchingEvidence(check, configuration);
@@ -84,12 +91,32 @@ export function modelChipsFromEvidence(
         chip("stream", "Stream", compatibility.streaming)
       ]
     : [
-        chip("tools", "Tools", legacyStatus(evidence.forcedToolCall)),
-        chip("json", "JSON", legacyStatus(evidence.structuredOutput)),
-        chip("pdf", "PDF", legacyStatus(evidence.pdfInput)),
-        chip("images", "Images", legacyStatus(evidence.visionInput))
+        chip("tools", "Tools", legacyStatus(evidence.forcedToolCall, configuration)),
+        chip("json", "JSON", legacyStatus(evidence.structuredOutput, configuration)),
+        chip("pdf", "PDF", legacyStatus(evidence.pdfInput, configuration)),
+        chip("images", "Images", legacyStatus(evidence.visionInput, configuration))
       ];
   return chips.filter((entry): entry is ModelChip => entry !== null);
+}
+
+/** Compact verified capabilities use the same evidence semantics on the group page. */
+export function modelCapabilityLabels(input: Readonly<{
+  connection: Pick<AdminProviderConnection, "activeChecks" | "activeVersion" | "credentials" | "defaultCredentialId" | "models"> | null;
+  credentialId: string | null;
+  modelId: string;
+}>): string[] {
+  const connection = input.connection;
+  const model = connection?.models.find(({ id }) => id === input.modelId);
+  const configuration = model?.activeConfig;
+  const credentialId = input.credentialId ?? connection?.defaultCredentialId;
+  const credential = connection?.credentials.find(({ id }) => id === credentialId);
+  if (!connection || !model || !configuration || !credential?.enabled || !credential.activeVersion ||
+    credential.activeVersion.revokedAt) return [];
+  const check = connection.activeChecks.find((entry) => entry.providerModelId === input.modelId &&
+    entry.credentialId === credentialId && entry.connectionVersion === connection.activeVersion &&
+    entry.modelVersion === model.activeVersion && entry.credentialVersionId === credential.activeVersion?.id);
+  if (!check || check.status !== "available") return [];
+  return modelChipsFromEvidence(configuration, check).filter(({ tone }) => tone === "ok").map(({ label }) => label);
 }
 
 /** Whether the last check saw no provider usage report (a Details warning, not a chip). */
@@ -115,7 +142,7 @@ export function checkingLabel(modelClass: AdminProviderModelClass): string {
 export function modelWorksWith(input: Readonly<{
   check: AdminProviderActiveCheck | null;
   checkRun: AdminProviderCheckRun | null | undefined;
-  configuration: Pick<AdminProviderModelConfiguration, "modelClass" | "upstreamModelId">;
+  configuration: ChipConfiguration;
   defaultCredentialId: string | null;
   modelId: string;
 }>): ModelWorksWith {

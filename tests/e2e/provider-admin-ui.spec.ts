@@ -431,6 +431,12 @@ async function cleanupQuickChatFixture(
       await tx.memoryJob.deleteMany({
         where: { chatId: { in: chatIds }, userId: fixture.userId }
       });
+      await tx.memoryRetrievalAttempt.deleteMany({
+        where: { chatId: { in: chatIds }, userId: fixture.userId }
+      });
+      await tx.memoryRecallChunk.deleteMany({
+        where: { chatId: { in: chatIds }, userId: fixture.userId }
+      });
       await tx.chat.deleteMany({ where: { id: { in: chatIds }, userId: fixture.userId } });
     }
     await tx.accessGrant.deleteMany({
@@ -528,24 +534,19 @@ function quickSetupSnapshot(configured: boolean) {
     candidateModels: models.map((displayName) => ({ displayName })),
     provider: id,
     providerDisplayName: label,
-    state: "not_configured",
     stateToken: `state-${id}`
   });
   return {
-    configuredConnections: [],
     providers: [
       {
         ...provider("openai", "OpenAI", ["GPT-5.6 Terra", "GPT-5.6 Luna", "GPT-5.6 Sol"]),
-        ...(configured ? { model: { displayName: "GPT-5.6 Sol" } } : {}),
-        state: configured ? "ready" : "not_configured",
         stateToken: configured ? "state-openai-ready" : "state-openai-fresh"
       },
       provider("anthropic", "Anthropic", ["Claude Opus 5", "Claude Sonnet 5"]),
       provider("gemini", "Gemini", ["Gemini 3.6 Flash"]),
       provider("deepseek", "DeepSeek", ["DeepSeek V4 Pro"]),
       provider("openrouter", "OpenRouter", ["Claude Opus 4.8"])
-    ],
-    suggestedProvider: null
+    ]
   };
 }
 
@@ -653,6 +654,10 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
   const trackedChatIds: string[] = [];
   const trackedRunIds: string[] = [];
   let configured = false;
+  await page.route("**/api/admin/providers", async (route) => {
+    if (configured) await route.continue();
+    else await route.fulfill({ json: { connections: [] } });
+  });
   const quickRequests: Array<{ body: Record<string, unknown>; method: string }> = [];
   const messageRequests: Record<string, unknown>[] = [];
   let releasePickerRetry!: () => void;
@@ -748,13 +753,13 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
   await page.goto("/admin?section=providers");
   const section = page.getByTestId("admin-section-providers");
   await expect(page.getByTestId("admin-topbar-title")).toHaveText("Providers");
-  await expect(section.getByRole("list", { name: "Providers" })).toBeVisible();
+  await expect(section.getByText("No providers yet", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Add provider" }).click();
   const sheet = page.getByRole("dialog", { name: "Add provider" });
   await expect(sheet).toBeVisible();
   await expect(page.getByTestId("admin-topbar-title")).toHaveText("Providers");
   await expect(sheet.getByTestId("provider-add-tiles").getByRole("button")).toHaveCount(6);
-  await expect(sheet.getByRole("button", { name: "OpenAI" })).toHaveAttribute("aria-pressed", "true");
+  await expect(sheet.getByRole("button", { name: "OpenAI", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(sheet.getByTestId("provider-add-summary")).toContainText("GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol");
   await expect(sheet.getByLabel("Name")).toHaveValue("OpenAI");
   await expect(sheet.getByText("Runs a few small paid requests")).toBeVisible();
@@ -809,6 +814,14 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
   }
   await page.getByTestId("admin-topbar-title").getByRole("link", { name: "Providers" }).click();
   await expect(section.getByRole("list", { name: "Providers" })).toBeVisible();
+  for (const width of [768, 1024, 1280, 1440]) {
+    await page.setViewportSize({ height: 900, width });
+    const providerName = section.getByTestId(`provider-row-${installedFixture.connectionId}`)
+      .getByText("OpenAI", { exact: true });
+    await expect(providerName).toBeVisible();
+    expect((await providerName.boundingBox())!.width).toBeGreaterThanOrEqual(120);
+    await expectNoPageOverflow(page);
+  }
   for (const viewport of [{ height: 900, width: 1440 }, { height: 844, width: 390 }]) {
     await page.setViewportSize(viewport);
     await page.getByRole("button", { name: "Add provider" }).click();
@@ -1051,7 +1064,11 @@ test("administrator discovers and configures a Custom compatible provider throug
     { height: 844, width: 390 }
   ].entries()) {
     await page.setViewportSize(viewport);
-    await expect(section.getByRole("list", { name: "Providers" })).toBeVisible();
+    if (index === 0) {
+      await expect(section.getByText("No providers yet", { exact: true })).toBeVisible();
+    } else {
+      await expect(section.getByRole("list", { name: "Providers" })).toBeVisible();
+    }
     await page.getByRole("button", { name: "Add provider" }).click();
     const sheet = page.getByRole("dialog", { name: "Add provider" });
     await expect(sheet.getByTestId("provider-add-tiles").getByRole("button")).toHaveCount(6);
@@ -1078,7 +1095,7 @@ test("administrator discovers and configures a Custom compatible provider throug
     await expect(sheet.getByRole("button", { name: "Look again" })).toBeVisible();
 
     await sheet.getByText("Advanced · timeout, private network, reasoning mapping").click();
-    await expect(sheet.getByLabel("Reasoning")).toHaveValue("automatic");
+    await expect(sheet.getByRole("combobox", { name: "Reasoning", exact: true })).toHaveValue("automatic");
     await expect(sheet.getByText(/Effort: none, low, medium, high, xhigh, max; default medium/)).toBeVisible();
     await expect(sheet.getByLabel("Reasoning effort field")).toHaveValue("reasoning.effort");
     await expect(sheet.getByLabel("Reasoning mode field (optional)")).toHaveValue("reasoning.mode");
@@ -1310,11 +1327,11 @@ test("administrator rotates a Custom provider key in one step and deletes the pr
   await page.getByRole("button", { name: "More actions for Lifecycle Custom" }).click();
   await page.getByRole("menuitem", { name: "Delete provider" }).click();
   const confirmation = page.getByTestId("admin-confirm-delete-provider-connection");
-  await expect(confirmation).toContainText("turned off and removed with its keys, models, overrides and defaults");
+  await expect(confirmation).toContainText("removed with its keys, models, overrides and defaults");
   await confirmation.getByRole("button", { name: "Delete provider" }).click();
   await expect(section.getByText("No providers yet")).toBeVisible();
   await expect(page).not.toHaveURL(/resource=/u);
-  expect(actionBodies).toEqual([{ action: "disable" }]);
+  expect(actionBodies).toEqual([]);
   expect(deletionBodies).toEqual([{ confirmed: true }]);
 });
 
@@ -1425,22 +1442,12 @@ test("administrator saves a rejected and then a working OpenRouter key with one 
       settingsBodies.push({ body, method, path });
       connection = {
         ...connection,
+        activeConfig: body.configuration as typeof configuration,
+        activeVersion: connection.activeVersion + 1,
         displayName: String(body.displayName),
         draftConfig: body.configuration as typeof configuration,
         draftVersion: connection.draftVersion + 1
       };
-      await route.fulfill({ contentType: "application/json", json: { connections: [connection] } });
-      return;
-    }
-    if (method === "POST" && path === "/api/admin/providers/provider-e2e/actions") {
-      settingsBodies.push({ body, method, path });
-      if (body.action === "activate") {
-        connection = {
-          ...connection,
-          activeConfig: connection.draftConfig,
-          activeVersion: connection.draftVersion
-        };
-      }
       await route.fulfill({ contentType: "application/json", json: { connections: [connection] } });
       return;
     }
@@ -1508,11 +1515,10 @@ test("administrator saves a rejected and then a working OpenRouter key with one 
   await page.setViewportSize({ height: 900, width: 1440 });
   await sheet.getByRole("button", { name: "Test & Save" }).click();
   await expect(sheet).toHaveCount(0);
-  expect(settingsBodies.map(({ body, method }) => ({ action: body.action, method }))).toEqual([
-    { action: undefined, method: "PATCH" },
-    { action: "activate", method: "POST" }
-  ]);
+  expect(settingsBodies.map(({ method }) => method)).toEqual(["PATCH"]);
   expect(settingsBodies[0]?.body).toMatchObject({
+    activate: true,
+    credentialSecrets: [],
     configuration: { responseTimeoutSeconds: 500 },
     expectedDraftVersion: 1
   });
@@ -1756,15 +1762,15 @@ test("administrator adds a model with one Test & Save, follows the background ch
   expect(polls).toBeGreaterThanOrEqual(2);
   await expect(models.getByTestId("provider-model-model-terra-works-with")).toHaveAttribute("data-works-with", "checked");
 
+  polls = -10;
   await models.getByRole("button", { name: "Re-check all" }).click();
   await expect(section.getByTestId("provider-check-banner")).toBeVisible();
-  polls = -10;
   await section.getByRole("button", { name: "Stop checking" }).click();
   await expect(section.getByTestId("provider-check-banner")).toHaveCount(0);
   expect(requests.filter(({ body }) => body.action === "cancel_check")).toHaveLength(1);
 
   // Row expansion shows the last check; the On switch turns an unused model off without a dialog.
-  await sol.getByRole("button", { name: "GPT-5.6 Sol" }).click();
+  await sol.getByRole("button", { name: "GPT-5.6 Sol", exact: true }).click();
   const details = models.getByTestId("provider-model-model-sol-details");
   await expect(details).toContainText("with key Primary · works without PDF input");
   await expect(details.getByRole("button", { name: "Re-check" })).toBeVisible();
@@ -1785,6 +1791,7 @@ test("administrator adds a model with one Test & Save, follows the background ch
 });
 
 test("administrator saves a versioned Search recommendation that grants no access", async ({ page }) => {
+  await page.clock.setFixedTime(new Date(now));
   let search: AdminSearchCatalog = {
     integrations: [{
       archivedAt: null,
@@ -1803,7 +1810,7 @@ test("administrator saves a versioned Search recommendation that grants no acces
         timeoutMs: 300_000
       },
       configurationActive: true,
-      description: "Query-only web evidence",
+      description: "Search the public web",
       displayName: "Company Search",
       draftDirty: false,
       draftTestEvidence: {

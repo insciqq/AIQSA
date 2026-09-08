@@ -22,7 +22,7 @@ const focusRing =
 
 /** One set of tracks for the header and every row (PRD 5.2). */
 const gridTracks =
-  "md:grid-cols-[2rem_minmax(0,1fr)_4.5rem_8.5rem_15rem_8rem_1rem] lg:grid-cols-[2rem_minmax(0,1fr)_4.5rem_9.5rem_16.25rem_8.5rem_1rem]";
+  "xl:grid-cols-[2rem_minmax(12rem,1fr)_3rem_7rem_minmax(6rem,11rem)_7.5rem_1rem]";
 
 function currentHref(): string {
   return typeof window === "undefined" ? "/admin" : window.location.href;
@@ -96,7 +96,7 @@ export function AdminProvidersList({
         <div className="overflow-hidden rounded-[12px] border border-trace-subtle bg-answer-paper">
           <div
             aria-hidden="true"
-            className={`hidden items-center gap-x-4 border-b border-trace-subtle px-5 py-2 text-metadata font-semibold uppercase tracking-[0.06em] text-ink-muted md:grid ${gridTracks}`}
+            className={`hidden items-center gap-x-4 border-b border-trace-subtle px-5 py-2 text-metadata font-semibold uppercase tracking-[0.06em] text-ink-muted xl:grid ${gridTracks}`}
           >
             <span />
             <span>Provider</span>
@@ -118,7 +118,7 @@ export function AdminProvidersList({
                   <a
                     aria-label={`Open ${connection.displayName} · ${status.label}`}
                     className={[
-                      "grid min-h-14 grid-cols-[2rem_minmax(0,1fr)_auto_1rem] items-center gap-x-3 px-4 py-3 hover:bg-control-hover sm:px-5 md:gap-x-4",
+                      "grid min-h-14 grid-cols-[2rem_minmax(0,1fr)_auto_1rem] items-center gap-x-3 px-4 py-3 hover:bg-control-hover sm:px-5 xl:gap-x-4",
                       gridTracks,
                       focusRing,
                       connection.enabled ? "" : "opacity-65"
@@ -136,14 +136,14 @@ export function AdminProvidersList({
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-medium text-ink">{connection.displayName}</span>
                       <span className="block truncate text-xs text-ink-muted">{subtitle}</span>
-                      <span className="mt-0.5 block truncate text-xs text-ink-muted md:hidden">
+                      <span className="mt-0.5 block truncate text-xs text-ink-muted xl:hidden">
                         {keys} {keys === 1 ? "key" : "keys"} · {models}
                         {tags.shown.length ? ` · ${tags.shown.join(", ")}${tags.hidden ? ` +${tags.hidden}` : ""}` : ""}
                       </span>
                     </span>
-                    <span className="hidden whitespace-nowrap text-sm text-ink-secondary md:block">{keys}</span>
-                    <span className="hidden whitespace-nowrap text-sm text-ink-secondary md:block">{models}</span>
-                    <span className="hidden min-w-0 items-center gap-1 overflow-hidden md:flex">
+                    <span className="hidden whitespace-nowrap text-sm text-ink-secondary xl:block">{keys}</span>
+                    <span className="hidden whitespace-nowrap text-sm text-ink-secondary xl:block">{models}</span>
+                    <span className="hidden min-w-0 items-center gap-1 overflow-hidden xl:flex">
                       {tags.shown.map((tag) => (
                         <ProviderTag accent={tag === "Default chat"} key={tag}>{tag}</ProviderTag>
                       ))}

@@ -3,7 +3,6 @@ import type { AdminGroup, AdminInviteRecord, AdminUserRecord } from "@/lib/contr
 import {
   adminUserFilterCounts,
   deriveAdminUserRows,
-  directUserGrants,
   formatLastSeen,
   inviteDeletionInfo,
   inviteDeliveryLabel,
@@ -39,6 +38,7 @@ const groups = [operators, archived, fullAccess];
 
 function user(overrides: Partial<AdminUserRecord>): AdminUserRecord {
   return {
+    directGrants: [],
     displayName: "Ada Analyst",
     effectiveEntitlements: { models: [], providers: [], searchStrategies: [] },
     email: "ada@example.com",
@@ -117,24 +117,6 @@ describe("usersView", () => {
     expect(parseAdminUserListFilter("no-model-access")).toBe("no-model-access");
     expect(parseAdminUserListFilter("nonsense")).toBe("all");
     expect(parseAdminUserListFilter(null)).toBe("all");
-  });
-
-  it("lists only grants that no current group explains as direct", () => {
-    const member = user({
-      effectiveEntitlements: {
-        models: [{ modelId: "gpt-5.5", provider: "openai" }, { modelId: "gpt-mini", provider: "openai" }],
-        providers: ["anthropic"],
-        searchStrategies: ["web", "news"]
-      },
-      groups: [{ groupId: "group-ops", name: "operators", role: "member" }, { groupId: "group-old", name: "old", role: "member" }]
-    });
-    expect(directUserGrants(member, groups)).toEqual({
-      models: [{ modelId: "gpt-mini", provider: "openai" }],
-      providers: ["anthropic"],
-      searchStrategies: ["news"]
-    });
-    expect(directUserGrants(user({ ...member, groups: [{ groupId: "group-full", name: "Full access", role: "owner" }] }), groups))
-      .toEqual({ models: [], providers: [], searchStrategies: [] });
   });
 
   it("keeps deletion safety fallbacks and the status row treatment", () => {

@@ -218,8 +218,9 @@ export function AdminMcpSection({
         <div className="px-4 py-12 text-center sm:px-6" data-testid="admin-mcp-section" role={loaded ? "alert" : "status"}>
           {loaded ? (
             <>
-              <p className="text-sm font-semibold text-ink-secondary">This MCP server no longer exists.</p>
-              <UiV2Button className="mt-4" onClick={backToList} tone="ghost" type="button">Back to MCP servers</UiV2Button>
+              <p className="text-sm font-semibold text-ink-secondary">{error ?? "This MCP server no longer exists."}</p>
+              {error ? <UiV2Button className="mt-4" disabled={loading} onClick={() => void controller.actions.refresh()} tone="ghost" type="button">Try again</UiV2Button>
+                : <UiV2Button className="mt-4" onClick={backToList} tone="ghost" type="button">Back to MCP servers</UiV2Button>}
             </>
           ) : (
             <p className="text-sm text-ink-muted">Loading MCP server…</p>

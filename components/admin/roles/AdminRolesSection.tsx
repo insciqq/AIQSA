@@ -8,6 +8,7 @@ import type { AdminConfirmationController } from "@/components/admin/useAdminCon
 import type { AdminFeedbackController } from "@/components/admin/useAdminFeedback";
 import { UiV2Button } from "@/components/ui-v2";
 import type { AdminGroup } from "@/lib/contracts/admin";
+import { useEffect, useRef } from "react";
 
 export const ADMIN_ROLES_FOOTNOTE =
   "Only deployments that can do the job are listed. One that has not been checked for a role yet shows a Check action inside the picker; nothing else can be assigned. Personal Memory keeps each owner’s existing embedding space.";
@@ -18,15 +19,32 @@ export function AdminRolesSection({
   onMutationCommitted,
   reportError,
   reportNotice,
-  requestConfirmation
+  requestConfirmation,
+  resource = null
 }: Readonly<{
   groups: readonly AdminGroup[];
   onMutationCommitted?(): void | Promise<unknown>;
   reportError: AdminFeedbackController["reportError"];
   reportNotice: AdminFeedbackController["reportNotice"];
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
+  resource?: string | null;
 }>) {
   const controller = useAdminRolesController({ onMutationCommitted, reportError, reportNotice });
+  const focusedResource = useRef<string | null>(null);
+  useEffect(() => {
+    if (!resource) {
+      focusedResource.current = null;
+      return;
+    }
+    if (!controller.policy || focusedResource.current === resource) return;
+    const id = ({ memory: "memory", chat_pdf: "chat-pdf", reranker: "reranker" } as Record<string, string>)[resource];
+    const row = id ? document.getElementById(`admin-role-${id}`) : null;
+    if (row) {
+      row.focus({ preventScroll: true });
+      row.scrollIntoView?.({ block: "center" });
+      focusedResource.current = resource;
+    }
+  }, [controller.policy, resource]);
 
   return (
     <div className="flex max-w-[1120px] flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">

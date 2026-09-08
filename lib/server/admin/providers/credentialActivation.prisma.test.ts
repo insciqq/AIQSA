@@ -88,6 +88,9 @@ describe("scoped credential activation CAS", () => {
       await expect(repository.activateCredentialCas({
         checkedAt: NOW,
         connectionId,
+        expectedConnectionDraftVersion: 1,
+        expectedConnectionVersion: 1,
+        modelChecks: [],
         credential: { id: credentialId, kind: "new", label: "Primary" },
         now: NOW,
         testEvidence: { method: "models_catalog", modelCount: 2, version: 1 },
@@ -133,6 +136,9 @@ describe("scoped credential activation CAS", () => {
       await repository.activateCredentialCas({
         checkedAt: NOW,
         connectionId,
+        expectedConnectionDraftVersion: 1,
+        expectedConnectionVersion: 1,
+        modelChecks: [],
         credential: { id: first, kind: "new", label: "Primary" },
         now: NOW,
         testEvidence: { method: "models_catalog", modelCount: 1, version: 1 },
@@ -142,6 +148,9 @@ describe("scoped credential activation CAS", () => {
       await repository.activateCredentialCas({
         checkedAt: NOW,
         connectionId,
+        expectedConnectionDraftVersion: 1,
+        expectedConnectionVersion: 1,
+        modelChecks: [],
         credential: { id: second, kind: "new", label: "Research team" },
         now: NOW,
         testEvidence: { method: "models_catalog", modelCount: 1, version: 1 },
@@ -152,6 +161,9 @@ describe("scoped credential activation CAS", () => {
       await expect(repository.activateCredentialCas({
         checkedAt: NOW,
         connectionId,
+        expectedConnectionDraftVersion: 1,
+        expectedConnectionVersion: 1,
+        modelChecks: [],
         credential: { expectedDraftVersion: 7, id: second, kind: "rotate" },
         now: NOW,
         testEvidence: { method: "models_catalog", modelCount: 1, version: 1 },
@@ -164,6 +176,9 @@ describe("scoped credential activation CAS", () => {
       await expect(repository.activateCredentialCas({
         checkedAt: NOW,
         connectionId,
+        expectedConnectionDraftVersion: 1,
+        expectedConnectionVersion: 1,
+        modelChecks: [],
         credential: { expectedDraftVersion: 1, id: second, kind: "rotate" },
         now: NOW,
         testEvidence: { method: "models_catalog", modelCount: 1, version: 1 },
@@ -187,6 +202,9 @@ describe("scoped credential activation CAS", () => {
       await expect(repository.activateCredentialCas({
         checkedAt: NOW,
         connectionId,
+        expectedConnectionDraftVersion: 1,
+        expectedConnectionVersion: 1,
+        modelChecks: [],
         credential: { expectedDraftVersion: 1, id: randomUUID(), kind: "rotate" },
         now: NOW,
         testEvidence: {},
@@ -201,6 +219,9 @@ describe("scoped credential activation CAS", () => {
       await repository.activateCredentialCas({
         checkedAt: NOW,
         connectionId,
+        expectedConnectionDraftVersion: 1,
+        expectedConnectionVersion: 1,
+        modelChecks: [],
         credential: { id: randomUUID(), kind: "new", label: "Primary" },
         now: NOW,
         testEvidence: { method: "models_catalog", modelCount: 1, version: 1 },
@@ -211,12 +232,83 @@ describe("scoped credential activation CAS", () => {
       await expect(repository.activateCredentialCas({
         checkedAt: NOW,
         connectionId,
+        expectedConnectionDraftVersion: 1,
+        expectedConnectionVersion: 1,
+        modelChecks: [],
         credential: { id: randomUUID(), kind: "new", label: "Primary" },
         now: NOW,
         testEvidence: { method: "models_catalog", modelCount: 1, version: 1 },
         versionEnvelope: "duplicate-envelope",
         versionId: randomUUID()
       })).resolves.toBe("label_taken");
+    });
+  });
+});
+
+describe("credential publication preserves immediate answer access", () => {
+  it("publishes catalog access with the key and refuses a changed connection or model", async () => {
+    await fixture(async ({ connectionId, db, repository }) => {
+      const model = await db.providerModel.findFirstOrThrow({ where: { connectionId } });
+      await db.providerModel.update({ data: { activatedAt: NOW, activeConfig: model.draftConfig as Prisma.InputJsonValue, activeVersion: 3 }, where: { id: model.id } });
+      const credentialId = randomUUID();
+      const versionId = randomUUID();
+      const write = {
+        checkedAt: NOW,
+        connectionId,
+        expectedConnectionDraftVersion: 1,
+        expectedConnectionVersion: 1,
+        credential: { id: credentialId, kind: "new" as const, label: "Catalog access" },
+        modelChecks: [{
+          evidence: { detail: "ok" as const, method: "models_catalog" as const, selectedProviders: [], upstreamModelId: "fixture/model" },
+          modelVersion: 3,
+          providerModelId: model.id,
+          status: "available" as const
+        }],
+        now: NOW,
+        testEvidence: { method: "models_catalog", modelCount: 1, version: 1 },
+        versionEnvelope: "synthetic-envelope-not-dispatched",
+        versionId
+      };
+      await expect(repository.activateCredentialCas({ ...write, expectedConnectionVersion: 2 })).resolves.toBe("stale");
+      await expect(repository.activateCredentialCas({ ...write, modelChecks: [{ ...write.modelChecks[0]!, modelVersion: 2 }] })).resolves.toBe("stale");
+      await expect(db.providerCredential.count({ where: { connectionId } })).resolves.toBe(0);
+      await expect(repository.activateCredentialCas(write)).resolves.toBe("updated");
+      const check = await db.providerModelCredentialCheck.findFirstOrThrow({ where: { credentialVersionId: versionId } });
+      expect(check).toMatchObject({ connectionVersion: 1, credentialId, modelVersion: 3, providerModelId: model.id, status: "available" });
+      expect(check.evidence).toEqual(write.modelChecks[0]!.evidence);
+    });
+  });
+
+  it("commits endpoint and all replacement keys together, and a stale key leaves the prior settings intact", async () => {
+    await fixture(async ({ connectionId, db, repository }) => {
+      const ids = [randomUUID(), randomUUID()];
+      for (const [index, id] of ids.entries()) {
+        await repository.activateCredentialCas({
+          checkedAt: NOW, connectionId, expectedConnectionDraftVersion: 1, expectedConnectionVersion: 1,
+          credential: { id, kind: "new", label: `Settings key ${index}` }, modelChecks: [], now: NOW,
+          testEvidence: {}, versionEnvelope: `old-${index}`, versionId: randomUUID()
+        });
+      }
+      await db.providerCredential.update({ data: { enabled: false }, where: { id: ids[1] } });
+      const credentials = await db.providerCredential.findMany({ where: { connectionId }, orderBy: { label: "asc" } });
+      const replacementWrites = credentials.map((credential, index) => ({
+        credentialId: credential.id, expectedDraftVersion: credential.draftVersion, expectedVersionId: credential.activeVersionId!,
+        modelChecks: [], replacement: { envelope: `new-${index}`, versionId: randomUUID() }, testEvidence: {}
+      }));
+      const write = {
+        configuration: { ...connectionConfiguration, authenticationMode: "bearer" as const, apiRoot: "https://new.example.test/v1" },
+        connectionId, credentials: replacementWrites, displayName: "Changed", expectedActiveVersion: 1,
+        expectedDraftVersion: 1, now: NOW, unassignedPolicy: "use_default" as const
+      };
+      await expect(repository.saveConnectionSettingsCas({ ...write, credentials: replacementWrites.map((entry, index) =>
+        index === 1 ? { ...entry, expectedDraftVersion: 99 } : entry) })).resolves.toBe("stale");
+      expect((await db.providerConnection.findUniqueOrThrow({ where: { id: connectionId } })).activeConfig).toEqual(connectionConfiguration);
+      expect(await db.providerCredentialVersion.count({ where: { credentialId: { in: ids } } })).toBe(2);
+      await expect(repository.saveConnectionSettingsCas(write)).resolves.toBe("updated");
+      const changed = await db.providerConnection.findUniqueOrThrow({ where: { id: connectionId } });
+      expect(changed).toMatchObject({ activeConfig: write.configuration, activeVersion: 2, displayName: "Changed" });
+      expect(await db.providerCredentialVersion.count({ where: { credentialId: { in: ids } } })).toBe(4);
+      expect((await db.providerCredential.findUniqueOrThrow({ where: { id: ids[1] } })).enabled).toBe(false);
     });
   });
 });

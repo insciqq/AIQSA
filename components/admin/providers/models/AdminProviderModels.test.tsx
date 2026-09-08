@@ -161,10 +161,41 @@ function harness(connection = openRouter(), busy = false) {
       usageSources={usageSources()}
     />
   );
-  return { actions, confirmations, onError, view };
+  const rerender = (next: AdminProviderConnection) => view.rerender(
+    <AdminProviderModels
+      connection={next}
+      controller={controller}
+      onError={onError}
+      requestConfirmation={(config) => { confirmations.push(config); }}
+      usageSources={usageSources()}
+    />
+  );
+  return { actions, confirmations, onError, rerender, view };
 }
 
 describe("AdminProviderModels", () => {
+  it.each(["changed", "removed"])("preserves an open model edit when a background catalog reports it %s", async (change) => {
+    const connection = openRouter();
+    const { actions, rerender } = harness(connection);
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Claude Opus 4.8" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Edit$/ }));
+    const sheet = await screen.findByRole("dialog", { name: "Edit model" });
+    fireEvent.change(within(sheet).getByLabelText("Display name"), { target: { value: "My edited model" } });
+    rerender({
+      ...connection,
+      models: change === "removed"
+        ? connection.models.filter(({ id }) => id !== "model-opus")
+        : connection.models.map((model) => model.id === "model-opus"
+          ? { ...model, displayName: "Another administrator's model", draftVersion: model.draftVersion + 1 }
+          : model)
+    });
+    expect(within(sheet).getByLabelText("Display name")).toHaveValue("My edited model");
+    await act(async () => { fireEvent.click(within(sheet).getByRole("button", { name: "Test & Save" })); });
+    expect(actions.saveModel).toHaveBeenCalledWith("conn-or", "model-opus", expect.objectContaining({
+      displayName: "My edited model", expectedDraftVersion: 1
+    }));
+  });
+
   // The fixtures are checked at FIXTURE_NOW; "Checked today" must not depend on the wall clock.
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });

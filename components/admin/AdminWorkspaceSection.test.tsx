@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminWorkspaceSection } from "./AdminWorkspaceSection";
 
@@ -6,6 +6,8 @@ const workspaceApi = vi.hoisted(() => ({
   get: vi.fn(),
   update: vi.fn()
 }));
+
+const reportNotice = vi.fn();
 
 vi.mock("./adminWorkspaceApi", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./adminWorkspaceApi")>();
@@ -33,6 +35,7 @@ describe("AdminWorkspaceSection", () => {
   beforeEach(() => {
     workspaceApi.get.mockReset().mockResolvedValue({ data: readyPolicy, ok: true });
     workspaceApi.update.mockReset();
+    reportNotice.mockReset();
   });
 
   it("shows content-free readiness and persists both installation controls", async () => {
@@ -45,12 +48,12 @@ describe("AdminWorkspaceSection", () => {
         data: { ...readyPolicy, enabled: true, internetEnabled: false, version: 4 },
         ok: true
       });
-    render(<AdminWorkspaceSection />);
+    render(<AdminWorkspaceSection reportNotice={reportNotice} />);
 
     expect(await screen.findByText("Ready")).toBeVisible();
     expect(screen.getByText("Runtime 0.6.16 · MCP 0.6.16")).toBeVisible();
-    const enabled = screen.getByRole("checkbox", { name: "Enable Workspace" });
-    const internet = screen.getByRole("checkbox", {
+    const enabled = screen.getByRole("switch", { name: "Enable Workspace" });
+    const internet = screen.getByRole("switch", {
       name: "Allow public internet in new workspaces"
     });
     expect(enabled).not.toBeChecked();
@@ -65,7 +68,8 @@ describe("AdminWorkspaceSection", () => {
     await waitFor(() => expect(workspaceApi.update).toHaveBeenNthCalledWith(2, 3, {
       internetEnabled: false
     }));
-    expect(await screen.findByRole("status")).toHaveTextContent("Workspace policy updated.");
+    await waitFor(() => expect(internet).not.toBeChecked());
+    expect(reportNotice).toHaveBeenCalledWith("Workspace policy updated.");
   });
 
   it("keeps policy controls visible while explaining unavailable virtualization", async () => {
@@ -81,10 +85,27 @@ describe("AdminWorkspaceSection", () => {
       },
       ok: true
     });
-    render(<AdminWorkspaceSection />);
+    render(<AdminWorkspaceSection reportNotice={reportNotice} />);
 
     expect(await screen.findByText("Unavailable")).toBeVisible();
     expect(screen.getByText("Hardware virtualization is unavailable to the runner.")).toBeVisible();
-    expect(screen.getByRole("checkbox", { name: "Enable Workspace" })).toBeEnabled();
+    expect(screen.getByRole("switch", { name: "Enable Workspace" })).toBeEnabled();
+  });
+
+  it("refreshes on focus without allowing an older read to replace a saved policy", async () => {
+    let finishRead!: (value: unknown) => void;
+    render(<AdminWorkspaceSection reportNotice={reportNotice} />);
+    const enabled = await screen.findByRole("switch", { name: "Enable Workspace" });
+    workspaceApi.get.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    fireEvent.focus(window);
+    workspaceApi.update.mockResolvedValue({ data: { ...readyPolicy, enabled: true, version: 3 }, ok: true });
+    fireEvent.click(enabled);
+    await waitFor(() => expect(enabled).toBeChecked());
+    await act(async () => finishRead({ data: readyPolicy, ok: true }));
+    expect(enabled).toBeChecked();
+
+    workspaceApi.get.mockResolvedValue({ data: { ...readyPolicy, version: 4 }, ok: true });
+    fireEvent.focus(window);
+    await waitFor(() => expect(enabled).not.toBeChecked());
   });
 });

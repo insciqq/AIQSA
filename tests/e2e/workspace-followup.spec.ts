@@ -42,7 +42,7 @@ async function enableWorkspacePolicy(page: Page): Promise<void> {
   const enabled = policy.getByLabel("Enable Workspace");
   if (!(await enabled.isChecked())) {
     await enabled.click();
-    await expect(policy.getByRole("status")).toContainText("Workspace policy updated.");
+    await expect(page.getByTestId("admin-feedback")).toContainText("Workspace policy updated.");
   }
   await expect(enabled).toBeChecked();
 }

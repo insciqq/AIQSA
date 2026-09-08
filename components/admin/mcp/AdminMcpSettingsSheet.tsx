@@ -41,7 +41,7 @@ function SheetBody({
   const [imported, setImported] = useState(false);
   const [form, setForm] = useState<AdminMcpServerForm>(() =>
     mode.kind === "edit" ? editableMcpServerForm(mode.server) : blankMcpServerForm());
-  const [baseline, setBaseline] = useState(() => JSON.stringify(form));
+  const [baseline] = useState(() => JSON.stringify(form));
   const [error, setError] = useState<string | null>(null);
   const [discarding, setDiscarding] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -123,13 +123,6 @@ function SheetBody({
       if (result.applied) {
         onSaved(mode.server.id);
         return;
-      }
-      if (result.updatedAt) {
-        // The fields were staged but the check failed: keep them, and let the
-        // sheet close without asking about edits that are already saved.
-        const staged = { ...form, expectedUpdatedAt: result.updatedAt };
-        setForm(staged);
-        setBaseline(JSON.stringify(staged));
       }
       setError(result.message ?? "The settings could not be applied.");
     } finally {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
+import type { AdminSystemModelCandidate, AdminSystemModelPolicyResponse } from "../../lib/contracts/adminSystemModelPolicy";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
 import { hashPassword } from "../../lib/server/auth/password";
@@ -57,14 +58,8 @@ async function openAdminSection(page: Page, section: AdminSection): Promise<void
     await expect(page.getByRole("dialog", { name: "Control Center sections" })).toBeVisible();
   }
 
-  const link = page.getByRole("link", { exact: true, name: section.label });
+  const link = page.getByTestId("admin-section-index").getByRole("link", { exact: true, name: section.label });
   await link.click();
-  const discardConfirmation = page.getByTestId("admin-discard-unsaved-confirmation");
-  if (await discardConfirmation.isVisible().catch(() => false)) {
-    await discardConfirmation
-      .getByRole("button", { name: /confirm discard changes/i })
-      .click();
-  }
   await expect(current).toBeVisible();
 }
 
@@ -387,25 +382,24 @@ test("admin creates and deletes an installation-owned MCP draft", async ({ page 
     const section = page.getByTestId("admin-section-mcp");
     await expect(section).toBeVisible();
 
-    await section.getByRole("button", { name: "New server" }).click();
-    await expect(section.getByRole("heading", { name: "Add an MCP server" })).toBeVisible();
-    await section.getByRole("button", { name: "Configure manually" }).click();
-    await section.getByLabel("Display name").fill(serverName);
-    await section.getByLabel("MCP endpoint URL").fill("https://mcp.example.com/mcp");
-    await section.getByLabel("Mode").selectOption("oauth");
-    await section.getByLabel("Allowed authorization server origins").fill("https://auth.example.com");
-    await section.getByRole("button", { name: "Continue to authorization" }).click();
+    await page.getByTestId("mcp-new-server").click();
+    const form = page.getByRole("dialog", { name: "New server", exact: true });
+    await expect(form).toBeVisible();
+    await form.getByRole("button", { name: "Configure manually" }).click();
+    await form.getByLabel("Name", { exact: true }).fill(serverName);
+    await form.getByLabel("MCP endpoint URL").fill("https://mcp.example.com/mcp");
+    await form.getByLabel("Mode").selectOption("oauth");
+    await form.getByLabel("Allowed authorization server origins").fill("https://auth.example.com");
+    await form.getByRole("button", { name: "Save and continue" }).click();
+    await expect(form).toBeHidden();
 
     await expect(section.getByRole("heading", { name: serverName })).toBeVisible();
-    await expect(
-      section.getByText(
-        "MCP server draft created. Connect OAuth; AIQSA will then test and activate it automatically."
-      )
-    ).toBeVisible();
-    await section.getByRole("button", { name: /Delete Irreversible removal/u }).click();
-    await section.getByRole("button", { name: "Delete…" }).click();
-    await section.getByRole("button", { name: "Delete server" }).click();
-    await expect(section.getByText("MCP server deleted.")).toBeVisible();
+    await expect(page.getByTestId("admin-feedback"))
+      .toContainText("Settings saved. Connect your account to check and apply them.");
+    await page.getByRole("button", { name: `More actions for ${serverName}` }).click();
+    await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+    await confirmAdminDialog(page, "admin-confirm-delete-mcp-server", /confirm delete server/i);
+    await expect(page.getByTestId("admin-feedback")).toContainText("MCP server deleted.");
     await expect(section.getByRole("heading", { name: serverName })).toHaveCount(0);
   } finally {
     await prisma.mcpServer.deleteMany({ where: { displayName: serverName } });
@@ -645,7 +639,8 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     const activeUserDetail = page.getByTestId("admin-user-page");
     await expect(page).toHaveURL(/section=users&resource=/);
     await expect(activeUserDetail.getByText("Disable this user before deletion can be considered.")).toBeVisible();
-    await expect(activeUserDetail.getByRole("button", { name: "Save" })).toBeDisabled();
+    await expect(activeUserDetail.getByTestId("admin-user-groups")
+      .getByRole("button", { name: "Save", exact: true })).toBeDisabled();
     await activeUserDetail.getByRole("button", { name: "Revoke sessions" }).click();
     await confirmAdminDialog(page, "admin-confirm-revoke-user-sessions", /confirm revoke sessions/i);
     await expect.poll(
@@ -790,13 +785,14 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await page.setViewportSize({ height: 500, width: 1_440 });
     await page.goto("/admin?section=search");
     const searchSection = page.getByTestId("admin-section-search");
-    const searchCatalog = searchSection.getByRole("list", { name: "Search source catalog" });
+    const searchCatalog = searchSection.getByRole("list", { name: "Search sources" });
     await expect(searchCatalog).toBeVisible();
-    await searchCatalog.getByRole("button").first().click();
-    const searchOverview = searchSection.getByRole("region", { name: "Search overview" });
-    await expect(searchOverview.getByText("One Search source", { exact: true })).toBeVisible();
-    await expect(searchOverview.getByText("Compatible answer models", { exact: true })).toBeVisible();
-    await expect(searchOverview.getByText("Availability", { exact: true })).toBeVisible();
+    await searchCatalog.getByRole("link").first().click();
+    const searchPage = searchSection.getByTestId("search-source-page");
+    await expect(searchPage.getByRole("region", { name: "Check", exact: true })).toBeVisible();
+    await expect(searchPage.getByRole("region", { name: "Details", exact: true })).toBeVisible();
+    await expect(searchPage.getByText("Chat models", { exact: true })).toBeVisible();
+    await expect(searchPage.getByTestId("search-source-page-status")).toBeVisible();
     await expectNoPageOverflow(page);
     await page.setViewportSize({ height: 900, width: 1_440 });
 
@@ -960,7 +956,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     const createdInviteRow = inviteRow(openInvites, inviteEmail);
     await expect(createdInviteRow).toContainText(renamedGroupName);
     await createdInviteRow.getByRole("button", { name: `Copy link for ${inviteEmail}` }).click();
-    await expect(createdInviteRow.getByRole("button", { name: "Copied" })).toBeVisible();
+    await expect(createdInviteRow.getByRole("button", { name: `Copy link for ${inviteEmail}` })).toHaveText("Copied");
     await createdInviteRow.getByRole("button", { name: `More actions for ${inviteEmail}` }).click();
     await page.getByRole("menuitem", { name: "Revoke" }).click();
     await confirmAdminDialog(page, "admin-confirm-revoke-invite", /confirm revoke invite/i);
@@ -1046,7 +1042,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await expect(groupRow(accessAfterDelete, renamedGroupName)).toHaveCount(0);
     await accessAfterDelete.getByRole("button", { name: /^Archived · / }).click();
     await expect(groupRow(accessAfterDelete, renamedGroupName)).toBeVisible();
-    await expect(groupRow(accessAfterDelete, renamedGroupName).getByText(/^Archived /)).toBeVisible();
+    await expect(groupRow(accessAfterDelete, renamedGroupName).getByText("Archived · grants no longer apply", { exact: true })).toBeVisible();
 
     await page.setViewportSize({
       height: 844,
@@ -1425,6 +1421,16 @@ test("Control Center uses the compact section-index task model at tablet width",
     await expect(page.getByRole("link", { exact: true, name: "Providers" })).toBeVisible();
     await expect(page.getByRole("link", { exact: true, name: "Usage" })).toBeVisible();
 
+    const drawer = page.getByRole("dialog", { name: "Control Center sections" });
+    for (let index = 0; index < 15; index += 1) {
+      await page.keyboard.press("Tab");
+      await expect.poll(() => drawer.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+    }
+    await page.keyboard.press("Escape");
+    await expect(drawer).toBeHidden();
+    await expect(page.getByRole("button", { name: "Sections" })).toBeFocused();
+    await page.getByRole("button", { name: "Sections" }).click();
+
     await page.getByRole("link", { exact: true, name: "Usage" }).click();
     await expect(page.getByTestId("admin-section-column")).toBeHidden();
     const usage = page.getByTestId("admin-section-usage");
@@ -1435,5 +1441,81 @@ test("Control Center uses the compact section-index task model at tablet width",
     await expectNoPageOverflow(page);
   } finally {
     await context.close();
+  }
+});
+
+test("Control Center role labels and pickers fit the available viewport", async ({ page }) => {
+  await bootstrapAdmin(page);
+  const response = await page.request.get("/api/admin/providers/system-model-policy");
+  expect(response.ok()).toBe(true);
+  const { systemModelPolicy }: AdminSystemModelPolicyResponse = await response.json();
+  const ready: AdminSystemModelCandidate = {
+    connectionDisplayName: "Research gateway for document processing",
+    connectionId: "geometry-provider",
+    defaultReasoningEffort: null,
+    displayName: "Research assistant with reasoning and long context",
+    forcedToolCall: "verified",
+    id: "geometry-ready",
+    reasoningEfforts: [],
+    structuredOutput: "verified"
+  };
+  const unchecked: AdminSystemModelCandidate = {
+    ...ready,
+    displayName: "New research model with a long deployment name",
+    forcedToolCall: "not_verified",
+    id: "geometry-unchecked",
+    structuredOutput: "not_verified"
+  };
+  systemModelPolicy.candidates = [ready];
+  systemModelPolicy.verificationCandidates = [ready, unchecked];
+  systemModelPolicy.ineligible.memory = [
+    { ...unchecked, reason: "not_checked" },
+    { ...ready, displayName: "Disabled research deployment", id: "geometry-disabled", reason: "model_disabled" }
+  ];
+  systemModelPolicy.policy = {
+    ...systemModelPolicy.policy,
+    reasoningEffort: null,
+    systemModel: { ...ready, available: true }
+  };
+  await page.route("**/api/admin/providers/system-model-policy", (route) => route.fulfill({
+    json: { systemModelPolicy }
+  }));
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 1024, height: 768 },
+    { width: 768, height: 1024 },
+    { width: 390, height: 844 },
+    { width: 844, height: 390 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/admin?section=roles");
+    const role = page.getByTestId("admin-role-memory");
+    const label = role.getByText("Memory & structured helpers", { exact: true });
+    await expect(label).toBeVisible();
+    expect((await label.boundingBox())!.width).toBeGreaterThanOrEqual(140);
+    const opener = page.getByTestId("admin-memory-picker");
+    await opener.click();
+    const picker = page.getByRole("dialog", { name: "Memory & structured helpers deployment" });
+    await expect(picker).toBeVisible();
+    await expect.poll(async () => {
+      const box = await picker.boundingBox();
+      return Boolean(box && box.x >= 0 && box.y >= 0 &&
+        box.x + box.width <= viewport.width + 1 && box.y + box.height <= viewport.height + 1);
+    }).toBe(true);
+    await expect(picker.getByRole("button", {
+      name: `Check ${unchecked.connectionDisplayName} / ${unchecked.displayName}`
+    })).toBeVisible();
+    await expect.poll(() => picker.evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      return element.scrollWidth <= element.clientWidth + 1 &&
+        Array.from(element.querySelectorAll("button, [role=option]")).every((control) => {
+          const box = control.getBoundingClientRect();
+          return box.left >= bounds.left && box.right <= bounds.right;
+        });
+    })).toBe(true);
+    await page.keyboard.press("Escape");
+    await expect(picker).toBeHidden();
+    await expect(opener).toBeFocused();
+    await expectNoPageOverflow(page);
   }
 });

@@ -43,6 +43,9 @@ export function reachableDefaultCandidates(
   catalog: AdminModelPolicyCatalog,
   groups: readonly AdminGroup[]
 ): AdminDefaultAnswerModelCandidate[] {
+  if (groups.some((group) => !group.archivedAt && group.systemRole === "full_access")) {
+    return [...catalog.candidates];
+  }
   const grants = groups
     .filter((group) => !group.archivedAt)
     .flatMap((group) => group.accessGrants)
@@ -73,15 +76,10 @@ export function AdminChatDefaultsCard({
   loading: boolean;
   onSave(input: Omit<AdminModelPolicyUpdateInput, "expectedVersion">): Promise<string | null>;
 }>) {
-  const [syncedCatalog, setSyncedCatalog] = useState(catalog);
-  const [draft, setDraft] = useState<Draft>(() => draftFor(catalog));
+  const [edits, setEdits] = useState<Partial<Draft>>({});
   const [formError, setFormError] = useState<string | null>(null);
-  if (syncedCatalog !== catalog) {
-    setSyncedCatalog(catalog);
-    setDraft(draftFor(catalog));
-    setFormError(null);
-  }
   const current = draftFor(catalog);
+  const draft = { ...current, ...edits };
   const reachable = useMemo(
     () => (catalog ? reachableDefaultCandidates(catalog, groups) : []),
     [catalog, groups]
@@ -130,6 +128,7 @@ export function AdminChatDefaultsCard({
       } : {})
     });
     if (message) setFormError(message);
+    else setEdits({});
   };
 
   const limitField = (
@@ -156,7 +155,7 @@ export function AdminChatDefaultsCard({
         min={options.min ?? 1}
         onChange={(event) => {
           const value = event.currentTarget.value;
-          setDraft((previous) => ({ ...previous, [key]: value }));
+          setEdits((previous) => ({ ...previous, [key]: value }));
         }}
         step={1}
         type="number"
@@ -170,21 +169,21 @@ export function AdminChatDefaultsCard({
     <section aria-labelledby="admin-chat-defaults-heading" className="grid gap-2.5" data-testid="admin-chat-defaults">
       <h2 className={sectionHeadingClass} id="admin-chat-defaults-heading">Chat defaults</h2>
       <div className={cardClass}>
-        <div className="grid gap-3 px-5 py-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+        <div className="grid gap-3 px-5 py-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
           <div className="min-w-0">
             <p className="text-sm font-medium text-ink">Default chat model</p>
             <p className="mt-0.5 text-xs leading-5 text-ink-muted">
               New chats start here when a person has no personal default and has access to it
             </p>
           </div>
-          <div className="flex min-w-0 flex-wrap gap-2 md:justify-end">
+          <div className="flex min-w-0 flex-wrap gap-2 xl:justify-end">
             <select
               aria-label="Default chat model"
-              className={`${compactSelectClass} md:w-[19rem]`}
+              className={`${compactSelectClass} xl:w-[19rem]`}
               disabled={!catalog || busy}
               onChange={(event) => {
                 const modelId = event.currentTarget.value;
-                setDraft((previous) => ({ ...previous, effort: "", modelId }));
+                setEdits((previous) => ({ ...previous, effort: "", modelId }));
               }}
               value={draft.modelId}
             >
@@ -200,11 +199,11 @@ export function AdminChatDefaultsCard({
             </select>
             <select
               aria-label="Reasoning"
-              className={`${compactSelectClass} md:w-[11rem]`}
+              className={`${compactSelectClass} xl:w-[11rem]`}
               disabled={!catalog || busy || !draft.modelId || (efforts.length === 0 && !draft.effort)}
               onChange={(event) => {
                 const effort = event.currentTarget.value;
-                setDraft((previous) => ({ ...previous, effort }));
+                setEdits((previous) => ({ ...previous, effort }));
               }}
               value={draft.effort}
             >
@@ -216,10 +215,10 @@ export function AdminChatDefaultsCard({
             </select>
           </div>
           {catalog && reachable.length === 0 ? (
-            <p className="text-xs leading-5 text-caution md:col-span-2" role="status">{NO_REACHABLE_DEFAULT_COPY}</p>
+            <p className="text-xs leading-5 text-caution xl:col-span-2" role="status">{NO_REACHABLE_DEFAULT_COPY}</p>
           ) : null}
         </div>
-        <div className="grid gap-3 border-t border-trace-subtle px-5 py-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+        <div className="grid gap-3 border-t border-trace-subtle px-5 py-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
           <div className="min-w-0">
             <p className="text-sm font-medium text-ink">Tool limits per answer</p>
             <p className="mt-0.5 text-xs leading-5 text-ink-muted">Apply to new answers only</p>
@@ -248,7 +247,7 @@ export function AdminChatDefaultsCard({
           <UiV2Button
             disabled={changed === 0 || busy}
             onClick={() => {
-              setDraft(current);
+              setEdits({});
               setFormError(null);
             }}
             tone="ghost"

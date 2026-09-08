@@ -214,12 +214,27 @@ export function useAdminProvidersController(
    */
   const refreshQuietly = useCallback(async () => {
     if (busyRef.current) return false;
-    const generation = catalogGenerationRef.current;
+    const generation = ++catalogGenerationRef.current;
     const result = await getAdminProviderConnections();
     if (generation !== catalogGenerationRef.current || busyRef.current || !result.ok) return false;
     applyConnections(result.data);
     return true;
   }, [applyConnections]);
+
+  useEffect(() => {
+    if (!active || !loaded) return;
+    const onFocus = () => {
+      if (document.visibilityState !== "hidden") void refreshQuietly();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    const timer = window.setInterval(onFocus, 30_000);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+      window.clearInterval(timer);
+    };
+  }, [active, loaded, refreshQuietly]);
 
   const runScopedDiscovery = useCallback(async <T,>(
     operation: () => Promise<AdminProviderClientResult<T>>
@@ -228,91 +243,24 @@ export function useAdminProvidersController(
     return result.ok ? result.data : null;
   }, []);
 
-  /**
-   * Connection settings save as one visible action. A changed endpoint is
-   * only ever validated with the key the administrator re-entered, so the
-   * stored key is never sent to an endpoint it was not saved for. Any
-   * failure restores the previous settings before reporting.
-   */
+  /** The server tests and publishes settings and any re-entered keys in one CAS. */
   const saveConnectionSettings = useCallback(async (
     connectionId: string,
     input: Readonly<{
       configuration: AdminProviderConnectionConfiguration;
+      credentialSecrets: readonly { credentialId: string; secret: string }[];
       displayName: string;
-      /** Re-entered default key, required only when the endpoint changes. */
-      secret: string | null;
+      expectedDraftVersion: number;
     }>
   ): Promise<AdminProviderOperationResult> => {
-    if (busyRef.current) {
-      return failure({ blockers: [], code: "provider_admin_busy", resourceIds: [] });
-    }
     const connection = connectionsRef.current.find(({ id }) => id === connectionId);
-    if (!connection) {
-      return failure({ blockers: [], code: "provider_connection_not_found", resourceIds: [] });
-    }
-    const generation = ++catalogGenerationRef.current;
-    beginRun();
-    const quiet = { quiet: true, scope: connectionId };
-    const previous = {
-      configuration: connection.draftConfig,
-      displayName: connection.displayName,
+    if (!connection) return failure({ blockers: [], code: "provider_connection_not_found", resourceIds: [] });
+    return runCatalogResult(() => updateAdminProviderConnection(connectionId, {
+      ...input,
+      activate: true,
       unassignedPolicy: connection.unassignedPolicy
-    };
-    const draft = await updateAdminProviderConnection(connectionId, {
-      configuration: input.configuration,
-      displayName: input.displayName,
-      expectedDraftVersion: connection.draftVersion,
-      unassignedPolicy: connection.unassignedPolicy
-    });
-    if (generation !== catalogGenerationRef.current) {
-      busyRef.current = false;
-      setBusy(false);
-      return failure({ blockers: [], code: "provider_admin_superseded", resourceIds: [] });
-    }
-    if (!draft.ok) return finishFailure(draft.error, quiet);
-    if (!connection.activeConfig) {
-      // Nothing is live yet: the saved settings are what the first key check will use.
-      return finishSuccess(draft.data, "Connection settings saved.", { scope: connectionId });
-    }
-
-    const revertDraft = () => updateAdminProviderConnection(connectionId, {
-      ...previous,
-      expectedDraftVersion: connection.draftVersion + 1
-    });
-    const defaultCredential = connection.credentials.find(({ id }) => id === connection.defaultCredentialId);
-    let rotatedDraft: { credentialId: string; draftVersion: number } | null = null;
-    if (input.secret !== null && defaultCredential) {
-      const rotated = await updateAdminProviderCredential(connectionId, defaultCredential.id, {
-        action: "rotate",
-        expectedDraftVersion: defaultCredential.draftVersion,
-        secret: input.secret
-      });
-      if (!rotated.ok) {
-        await revertDraft();
-        return finishFailure(rotated.error, quiet);
-      }
-      rotatedDraft = { credentialId: defaultCredential.id, draftVersion: defaultCredential.draftVersion + 1 };
-    }
-    const activated = await runAdminProviderConnectionAction(connectionId, {
-      action: "activate",
-      confirmUnavailable: true,
-      enableConnection: connection.enabled
-    });
-    if (!activated.ok) {
-      if (rotatedDraft) {
-        await updateAdminProviderCredential(connectionId, rotatedDraft.credentialId, {
-          action: "clear_draft",
-          confirmed: true,
-          expectedDraftVersion: rotatedDraft.draftVersion
-        });
-      }
-      await revertDraft();
-      const latest = await getAdminProviderConnections();
-      if (latest.ok) applyConnections(latest.data);
-      return finishFailure(activated.error, quiet);
-    }
-    return finishSuccess(activated.data, "Connection settings saved.", { scope: connectionId });
-  }, [applyConnections, beginRun, finishFailure, finishSuccess]);
+    }), "Connection settings saved.", { quiet: true, reconcileFailure: true, scope: connectionId });
+  }, [runCatalogResult]);
 
   const actions = useMemo(() => ({
     /** `Stop checking`: the run ends where it is; results already stored stay. */

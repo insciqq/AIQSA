@@ -55,6 +55,7 @@ const fullAccess = group({ id: "group-full", name: "Full access", systemRole: "f
 function user(overrides: Partial<AdminUserRecord> & { id: string }): AdminUserRecord {
   return {
     displayName: overrides.id,
+    directGrants: [],
     effectiveEntitlements: { models: [], providers: [], searchStrategies: [] },
     email: `${overrides.id}@example.com`,
     groups: [],

@@ -12,19 +12,16 @@ function snapshot() {
     candidateModels: models.map((displayName) => ({ displayName })),
     provider: id,
     providerDisplayName: label,
-    state: "not_configured",
     stateToken: `state-${id}`
   });
   return {
-    configuredConnections: [],
     providers: [
       provider("openai", "OpenAI", ["GPT-5.6 Terra", "GPT-5.6 Luna", "GPT-5.6 Sol"]),
       provider("anthropic", "Anthropic", ["Claude Opus 5", "Claude Sonnet 5"]),
       provider("gemini", "Gemini", ["Gemini 3.6 Flash"]),
       provider("deepseek", "DeepSeek", ["DeepSeek V4 Pro"]),
       provider("openrouter", "OpenRouter", ["Claude Opus 4.8"])
-    ],
-    suggestedProvider: null
+    ]
   };
 }
 

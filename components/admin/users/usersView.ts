@@ -9,7 +9,7 @@ import type {
 
 /**
  * Presentation rules for the Users page (PRD 5.8): table rows, filter pills,
- * access summaries, open invites and the read-only direct-grant listing.
+ * access summaries, open invites and invite lifecycle states.
  * Everything derives from the dashboard; the browser adds no state of its own.
  */
 
@@ -249,37 +249,6 @@ export function userDeletionInfo(user: AdminUserRecord, adminUserId: string): Ad
           : "No app-owned records detected; auth request data can be removed."
     }
   );
-}
-
-/**
- * Grants that no current group explains: effective access minus the union of
- * the user's active groups' enabled grants. Full access members hold
- * everything through the group, so nothing is direct.
- */
-export function directUserGrants(
-  user: AdminUserRecord,
-  groups: readonly AdminGroup[]
-): AdminEntitlementSummary {
-  if (isFullAccessMember(user, groups)) return { models: [], providers: [], searchStrategies: [] };
-  const memberOf = new Set(activeGroupIdsForUser(user, groups));
-  const groupModels = new Set<string>();
-  const groupProviders = new Set<string>();
-  const groupSearch = new Set<string>();
-  for (const group of groups) {
-    if (!memberOf.has(group.id)) continue;
-    for (const grant of group.accessGrants) {
-      if (!grant.enabled) continue;
-      if (grant.provider && grant.modelId) groupModels.add(`${grant.provider}:${grant.modelId}`);
-      else if (grant.provider) groupProviders.add(grant.provider);
-      if (grant.searchStrategy) groupSearch.add(grant.searchStrategy);
-    }
-  }
-  const { models, providers, searchStrategies } = user.effectiveEntitlements;
-  return {
-    models: models.filter((model) => !groupModels.has(`${model.provider}:${model.modelId}`)),
-    providers: providers.filter((provider) => !groupProviders.has(provider)),
-    searchStrategies: searchStrategies.filter((strategy) => !groupSearch.has(strategy))
-  };
 }
 
 // Invites

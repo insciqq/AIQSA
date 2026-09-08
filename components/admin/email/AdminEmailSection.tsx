@@ -1,7 +1,7 @@
 "use client";
 
 import { inputClass } from "@/components/admin/adminPrimitives";
-import { useAdminDraftProtection } from "@/components/admin/AdminDraftProtection";
+import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 import { AdminTopbarMenu, useAdminSectionTopbar, type AdminShellTopbar } from "@/components/admin/AdminShell";
 import {
   emailDeliveryStatus,
@@ -192,7 +192,7 @@ function EmailSettingsForm({
     setErrors({});
     setFailure(null);
   }, []);
-  useAdminDraftProtection({ dirty, onDiscard: discard, owner: "email-form", pending: dirty && busy });
+  useBeforeUnloadGuard(dirty);
 
   const submit = async () => {
     if (busy) return;

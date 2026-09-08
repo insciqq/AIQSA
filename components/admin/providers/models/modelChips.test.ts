@@ -3,7 +3,7 @@ import type { AdminProviderCheckRun, AdminProviderTestEvidence } from "@/lib/con
 import { fixtureCheck } from "@/components/admin/providers/providerFixtures";
 import { modelChipsFromEvidence, modelUsageMissing, modelWorksWith } from "./modelChips";
 
-const answer = { modelClass: "answer" as const, upstreamModelId: "gpt-5.6-sol" };
+const answer = { adapterKind: "openai_responses_native" as const, modelClass: "answer" as const, upstreamModelId: "gpt-5.6-sol" };
 
 function evidence(overrides: Partial<AdminProviderTestEvidence> = {}): AdminProviderTestEvidence {
   return {
@@ -86,14 +86,14 @@ describe("modelChipsFromEvidence", () => {
       evidence: evidence({ embedding: { dimensions: 1_536, document: true, probeVersion: 1, query: true } }),
       providerModelId: "e"
     });
-    expect(modelChipsFromEvidence({ modelClass: "embedding", upstreamModelId: "gpt-5.6-sol" }, embedding))
+    expect(modelChipsFromEvidence({ adapterKind: "openai_embeddings_compatible", modelClass: "embedding", upstreamModelId: "gpt-5.6-sol" }, embedding))
       .toEqual([{ key: "embeddings", label: "Embeddings", tone: "ok" }]);
     const reranker = fixtureCheck({
       credentialId: "cred-primary",
       evidence: evidence({ reranking: { completeScores: true, probeVersion: 1 } }),
       providerModelId: "r"
     });
-    expect(modelChipsFromEvidence({ modelClass: "reranker", upstreamModelId: "gpt-5.6-sol" }, reranker))
+    expect(modelChipsFromEvidence({ adapterKind: "openrouter_rerank", modelClass: "reranker", upstreamModelId: "gpt-5.6-sol" }, reranker))
       .toEqual([{ key: "reranking", label: "Reranking", tone: "ok" }]);
     const unavailable = fixtureCheck({
       credentialId: "cred-primary",
@@ -128,7 +128,7 @@ describe("modelWorksWith", () => {
       .toEqual({ chips: [], kind: "failed", usageMissing: false });
     expect(modelWorksWith({ check: null, checkRun: { ...failedRun, credentialId: "cred-other" }, configuration: answer, defaultCredentialId: "cred-primary", modelId: "m" }))
       .toEqual({ kind: "not_checked" });
-    expect(modelWorksWith({ check: null, checkRun: undefined, configuration: { modelClass: "reranker", upstreamModelId: "x" }, defaultCredentialId: null, modelId: "m" }))
+    expect(modelWorksWith({ check: null, checkRun: undefined, configuration: { adapterKind: "openrouter_rerank", modelClass: "reranker", upstreamModelId: "x" }, defaultCredentialId: null, modelId: "m" }))
       .toEqual({ kind: "not_checked" });
   });
 });

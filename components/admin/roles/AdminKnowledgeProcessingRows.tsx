@@ -68,13 +68,10 @@ export function AdminKnowledgeProcessingRows({
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
 }>) {
   const profile = controller.knowledge?.profile ?? null;
-  const [syncedProfile, setSyncedProfile] = useState(profile);
-  const [draft, setDraft] = useState<AdminKnowledgeDraft>(() => draftFor(profile));
+  const [edits, setEdits] = useState<Partial<AdminKnowledgeDraft>>({});
+  const current = draftFor(profile);
+  const draft = { ...current, ...edits };
   const [earlierOpen, setEarlierOpen] = useState(false);
-  if (syncedProfile !== profile) {
-    setSyncedProfile(profile);
-    setDraft(draftFor(profile));
-  }
   const busy = controller.busy || controller.checking !== null;
 
   if (!profile) {
@@ -88,7 +85,6 @@ export function AdminKnowledgeProcessingRows({
     );
   }
 
-  const current = draftFor(profile);
   const dirty = !sameDraft(draft, current);
   const state = knowledgeProcessingState(profile);
   const rowStatus = nestedStatus(profile);
@@ -136,7 +132,7 @@ export function AdminKnowledgeProcessingRows({
         </div>
         {dirty ? (
           <div className="flex items-center gap-2">
-            <UiV2Button disabled={busy} onClick={() => setDraft(current)} tone="ghost">Discard</UiV2Button>
+            <UiV2Button disabled={busy} onClick={() => setEdits({})} tone="ghost">Discard</UiV2Button>
             <UiV2Button
               busy={controller.busy}
               disabled={!canApply}
@@ -145,7 +141,11 @@ export function AdminKnowledgeProcessingRows({
                 "Reprocess all Knowledge documents?",
                 "Apply",
                 "admin-knowledge-apply-confirmation",
-                () => controller.applyKnowledge(draft)
+                async () => {
+                  const applied = await controller.applyKnowledge(draft);
+                  if (applied) setEdits({});
+                  return applied;
+                }
               )}
               tone="primary"
             >
@@ -170,19 +170,19 @@ export function AdminKnowledgeProcessingRows({
         ) : null}
       </div>
 
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-3 border-t border-trace-subtle px-4 py-3 md:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_8.5rem_2.5rem] md:gap-4 md:pl-9" data-testid="admin-role-documents">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-3 border-t border-trace-subtle px-4 py-3 xl:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_8.5rem_2.5rem] xl:gap-4 xl:pl-9" data-testid="admin-role-documents">
         <div className="min-w-0">
           <p className="text-sm font-medium text-ink">Documents</p>
           <p className="mt-0.5 text-xs leading-5 text-ink-muted">How PDFs become text</p>
         </div>
-        <div className="col-span-2 grid gap-1.5 md:col-span-1">
+        <div className="col-span-2 grid gap-1.5 xl:col-span-1">
           <select
             aria-label="Documents mode"
             className={compactSelectClass}
             disabled={busy}
             onChange={(event) => {
               const mode = event.currentTarget.value as AdminKnowledgePdfProcessingMode;
-              setDraft((previous) => ({
+              setEdits((previous) => ({
                 ...previous,
                 documentDeploymentId: mode === current.mode ? current.documentDeploymentId : null,
                 mode
@@ -202,10 +202,10 @@ export function AdminKnowledgeProcessingRows({
               label="Documents model"
               onCheck={async (id) => {
                 const ready = await controller.checkDocument(modelMode, id);
-                if (ready) setDraft((previous) => ({ ...previous, documentDeploymentId: id }));
+                if (ready) setEdits((previous) => ({ ...previous, documentDeploymentId: id }));
                 return ready;
               }}
-              onSelect={(id) => setDraft((previous) => ({ ...previous, documentDeploymentId: id }))}
+              onSelect={(id) => setEdits((previous) => ({ ...previous, documentDeploymentId: id }))}
               placeholder="Choose a model"
               roleName="Documents"
               selectedId={draft.documentDeploymentId}
@@ -216,23 +216,23 @@ export function AdminKnowledgeProcessingRows({
             />
           ) : null}
         </div>
-        <div className="col-span-2 md:col-span-1">
+        <div className="col-span-2 xl:col-span-1">
           <AdminStatusPill label={ADMIN_ROLE_STATUS_LABEL[rowStatus]} status={rowStatus} />
         </div>
-        <span aria-hidden="true" className="hidden md:block" />
+        <span aria-hidden="true" className="hidden xl:block" />
       </div>
 
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-3 border-t border-trace-subtle px-4 py-3 md:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_8.5rem_2.5rem] md:gap-4 md:pl-9" data-testid="admin-role-embeddings">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-3 border-t border-trace-subtle px-4 py-3 xl:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_8.5rem_2.5rem] xl:gap-4 xl:pl-9" data-testid="admin-role-embeddings">
         <div className="min-w-0">
           <p className="text-sm font-medium text-ink">Embeddings</p>
           <p className="mt-0.5 text-xs leading-5 text-ink-muted">Vector space for Knowledge search</p>
         </div>
-        <div className="col-span-2 md:col-span-1">
+        <div className="col-span-2 xl:col-span-1">
           <AdminRolePicker
             busy={busy}
             items={embeddingItems(profile.availableDestinations)}
             label="Embeddings model"
-            onSelect={(id) => setDraft((previous) => ({ ...previous, embeddingDeploymentId: id }))}
+            onSelect={(id) => setEdits((previous) => ({ ...previous, embeddingDeploymentId: id }))}
             placeholder="Choose an embedding model"
             roleName="Embeddings"
             selectedId={draft.embeddingDeploymentId || null}
@@ -242,10 +242,10 @@ export function AdminKnowledgeProcessingRows({
             testId="admin-embeddings-picker"
           />
         </div>
-        <div className="col-span-2 md:col-span-1">
+        <div className="col-span-2 xl:col-span-1">
           <AdminStatusPill label={ADMIN_ROLE_STATUS_LABEL[rowStatus]} status={rowStatus} />
         </div>
-        <span aria-hidden="true" className="hidden md:block" />
+        <span aria-hidden="true" className="hidden xl:block" />
       </div>
 
       <AdminSheet
@@ -276,7 +276,10 @@ export function AdminKnowledgeProcessingRows({
                     "admin-knowledge-restore-confirmation",
                     async () => {
                       const restored = await controller.restoreKnowledge(revision.id);
-                      if (restored) setEarlierOpen(false);
+                      if (restored) {
+                        setEdits({});
+                        setEarlierOpen(false);
+                      }
                       return restored;
                     }
                   )}

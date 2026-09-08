@@ -54,6 +54,7 @@ const group: AdminGroup = {
 
 const user: AdminUserRecord = {
   displayName: "Alice",
+  directGrants: [],
   effectiveEntitlements: { models: [], providers: [], searchStrategies: [] },
   email: "alice@example.com",
   groups: [],

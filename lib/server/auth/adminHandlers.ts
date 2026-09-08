@@ -345,17 +345,59 @@ export function createAdminActionHandler(deps: AdminActionHandlerDeps) {
 
     if (action.action === "set_user_groups") {
       const userId = stringField(action.userId);
+      const expectedGroupIds = action.expectedGroupIds;
 
       if (!userId) {
         return json({ error: "user_required" }, { status: 400 });
       }
+      if (!Array.isArray(expectedGroupIds) || expectedGroupIds.length > 10_000 ||
+        expectedGroupIds.some((id) => typeof id !== "string" || !id.trim() || id.length > 200)) {
+        return json({ error: "user_groups_required" }, { status: 400 });
+      }
 
-      return (await deps.repository.setUserGroups({
+      const result = await deps.repository.setUserGroups({
+        expectedGroupIds: groupIds(expectedGroupIds),
         groupIds: groupIds(action.groupIds),
         userId
-      }))
+      });
+      return result === "applied"
         ? json({ ok: true })
-        : json({ error: "user_not_found" }, { status: 404 });
+        : json({ error: result }, { status: result === "user_access_stale" ? 409 : 404 });
+    }
+
+    if (action.action === "set_user_grants") {
+      const userId = stringField(action.userId);
+      const changes = parseAdminGroupGrantChanges(action.changes);
+      const expectedGrantIds = action.expectedGrantIds;
+      if (!userId || !changes || !Array.isArray(expectedGrantIds) || expectedGrantIds.length > 10_000 ||
+        expectedGrantIds.some((id) => typeof id !== "string" || !id.trim() || id.length > 200)) {
+        return json({ error: "user_grant_required" }, { status: 400 });
+      }
+      const result = await deps.repository.setUserGrants({ changes, expectedGrantIds, userId });
+      return result === "applied"
+        ? json({ ok: true })
+        : json({ error: result }, { status: result === "user_not_found" ? 404 : result === "user_access_stale" ? 409 : 400 });
+    }
+
+    if (action.action === "set_user_credential") {
+      const userId = stringField(action.userId);
+      const connectionId = stringField(action.connectionId);
+      const credentialId = action.credentialId === null ? null : stringField(action.credentialId);
+      const expectedCredentialId = action.expectedCredentialId === null ? null : stringField(action.expectedCredentialId);
+      const expectedUpdatedAt = action.expectedUpdatedAt;
+      if (!userId || !connectionId ||
+        (credentialId === null && action.credentialId !== null) ||
+        (expectedCredentialId === null && action.expectedCredentialId !== null) ||
+        (expectedUpdatedAt !== null && (typeof expectedUpdatedAt !== "string" || !Number.isFinite(Date.parse(expectedUpdatedAt)))) ||
+        (expectedCredentialId === null) !== (expectedUpdatedAt === null)) {
+        return json({ error: "user_credential_invalid" }, { status: 400 });
+      }
+      const result = await deps.repository.setUserCredential({
+        connectionId, credentialId, expectedCredentialId, expectedUpdatedAt, userId
+      });
+      return result === "applied"
+        ? json({ ok: true })
+        : json({ error: result }, { status: result === "user_not_found" ? 404 : result === "user_access_stale" ? 409 : 400 });
     }
 
     if (action.action === "set_group_grants") {

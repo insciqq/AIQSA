@@ -82,7 +82,7 @@ export function AdminProviderPage({
       <AdminProviderConnectionSettingsSheet
         connection={connection}
         controller={controller}
-        key={`${connection.id}:${connection.draftVersion}`}
+        key={connection.id}
         onClose={onCloseSettings}
         open={settingsOpen}
       />

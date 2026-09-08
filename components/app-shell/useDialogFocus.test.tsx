@@ -101,6 +101,28 @@ describe("useDialogFocus", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  it("keeps Tab between visible controls when responsive navigation hides its footer", async () => {
+    function ResponsiveNavigation() {
+      const dialogRef = useDialogFocus<HTMLDivElement>({ onClose: vi.fn() });
+      return (
+        <div ref={dialogRef} role="dialog" aria-label="Navigation">
+          <div style={{ display: "none" }}><button type="button">Hidden first</button></div>
+          <button type="button">Close navigation</button>
+          <a href="#usage">Usage</a>
+          <div style={{ display: "none" }}><button type="button">Hidden footer</button></div>
+        </div>
+      );
+    }
+    render(<ResponsiveNavigation />);
+    const first = screen.getByRole("button", { name: "Close navigation" });
+    const last = screen.getByRole("link", { name: "Usage" });
+    await waitFor(() => expect(first).toHaveFocus());
+    fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
+    expect(last).toHaveFocus();
+    fireEvent.keyDown(last, { key: "Tab" });
+    expect(first).toHaveFocus();
+  });
+
   it("does not close when an inner control already owns Escape", async () => {
     const onClose = vi.fn();
 

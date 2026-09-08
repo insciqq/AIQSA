@@ -424,6 +424,7 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     provider_discovery_failed: "Model discovery failed. Check the credential, endpoint, and account access.",
     provider_discovery_unsupported: "Remote model discovery is available only for OpenRouter and Custom compatible connections.",
     provider_draft_stale: "This provider changed in another window. Refresh and try again.",
+    provider_endpoint_keys_required: "Enter every saved key again for the new endpoint. The previous settings and keys were kept.",
     provider_draft_test_failed: "The check could not be completed. Earlier results were kept.",
     provider_family_adapter_mismatch: "The selected protocol does not match this provider family.",
     provider_group_not_found: "This group no longer exists.",

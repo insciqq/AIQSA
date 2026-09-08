@@ -164,7 +164,7 @@ async function setAdminPolicy(
   if ((await internet.isChecked()) !== input.internetEnabled) await internet.click();
   if (input.internetEnabled) await expect(internet).toBeChecked();
   else await expect(internet).not.toBeChecked();
-  await expect(policy.getByRole("status")).toContainText("Workspace policy updated.");
+  await expect(page.getByTestId("admin-feedback")).toContainText("Workspace policy updated.");
 }
 
 async function generatedArchive(page: Page, chatId: string): Promise<Readonly<{

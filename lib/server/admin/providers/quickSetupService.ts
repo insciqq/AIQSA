@@ -95,12 +95,8 @@ function providerSnapshot(
   const policy = adminProviderQuickSetupPolicy(inspection.provider);
   return {
     candidateModels: policy.candidates.map(({ displayName }) => ({ displayName })),
-    ...(inspection.state === "ready" && inspection.model
-      ? { model: { displayName: inspection.model.displayName } }
-      : {}),
     provider: inspection.provider,
     providerDisplayName: policy.connection.displayName,
-    state: inspection.state,
     stateToken: stateToken(key, inspection)
   };
 }
@@ -338,25 +334,9 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       const inspections = await Promise.all(ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.map((provider) =>
         input.repository.inspect({ ...actor, now: inspectedAt, provider })
       ));
-      const configuredConnections = inspections.every((inspection) => inspection.authorized)
-        ? await input.repository.listConfiguredConnections({ ...actor, now: inspectedAt })
-        : [];
       const key = stateTokenKey();
-      const readyDefaults = inspections.filter(
-        (inspection) => inspection.state === "ready" && inspection.actingUserDefault
-      );
-      const simpleConfigured = inspections.filter(
-        (inspection) => inspection.configured && inspection.state !== "advanced_required"
-      );
-      const suggestedProvider = readyDefaults.length === 1
-        ? readyDefaults[0].provider
-        : simpleConfigured.length === 1
-          ? simpleConfigured[0].provider
-          : null;
       return {
-        configuredConnections,
-        providers: inspections.map((inspection) => providerSnapshot(inspection, key)),
-        suggestedProvider
+        providers: inspections.map((inspection) => providerSnapshot(inspection, key))
       };
     },
 

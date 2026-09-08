@@ -1590,8 +1590,11 @@ export function createPrismaMcpRepository(input: {
       });
     },
 
-    testDraft: async ({ expectedDraftHash, expectedUpdatedAt, oneTimeValues, publish, serverId, sharedValues, validationUserId }) => {
+    testDraft: async ({ description, draft: candidateDraft, expectedDraftHash, expectedUpdatedAt, name, oneTimeValues, publish, serverId, sharedValues, validationUserId }) => {
       const key = encryptionKey();
+      if (!publish && (candidateDraft !== undefined || name !== undefined || description !== undefined)) {
+        return { kind: "invalid_values" as const, issues: [{ code: "publication_required", path: "draft" }] };
+      }
       if (publish && (!expectedUpdatedAt || !validationUserId || !await client.user.findFirst({
         select: { id: true },
         where: { id: validationUserId, role: "admin", status: "active" }
@@ -1613,7 +1616,8 @@ export function createPrismaMcpRepository(input: {
       if (expectedUpdatedAt && server.updatedAt.toISOString() !== expectedUpdatedAt) {
         return { kind: "draft_changed" as const };
       }
-      const draft = draftFrom(server.draft);
+      const storedDraftHash = hashCanonicalMcpValue(draftFrom(server.draft));
+      const draft = candidateDraft ?? draftFrom(server.draft);
       const draftHash = hashCanonicalMcpValue(draft);
       if (expectedDraftHash && draftHash !== expectedDraftHash) {
         return { kind: "draft_changed" as const };
@@ -1692,7 +1696,7 @@ export function createPrismaMcpRepository(input: {
           where: { id: serverId }
         });
         if (!current || current.archivedAt) return { kind: "not_found" as const };
-        if (hashCanonicalMcpValue(draftFrom(current.draft)) !== draftHash ||
+        if (hashCanonicalMcpValue(draftFrom(current.draft)) !== storedDraftHash ||
           current.sharedConfigVersion !== server.sharedConfigVersion ||
           (publish && current.updatedAt.getTime() !== server.updatedAt.getTime())) {
           return { kind: "draft_changed" as const };
@@ -1715,12 +1719,16 @@ export function createPrismaMcpRepository(input: {
         await tx.mcpServer.update({
           data: {
             ...sharedPatch,
+            ...(candidateDraft ? { draft: candidateDraft as Prisma.InputJsonValue } : {}),
+            ...(name !== undefined ? { displayName: name } : {}),
+            ...(description !== undefined ? { description } : {}),
             draftTestEvidence: draftTestEvidence as Prisma.InputJsonValue,
             testedDraftHash: draftHash
           },
           where: { id: serverId }
         });
         if (publish) {
+          await tx.mcpActivationJob.deleteMany({ where: { serverId } });
           const activated = await activateDraftLocked(tx, serverId, key);
           // All expected conflicts were checked under this lock. An unexpected
           // publication failure must also roll back the credential/evidence write.

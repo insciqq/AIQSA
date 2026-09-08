@@ -220,18 +220,29 @@ export function createAdminProviderConnectionUpdateHandler(deps: AdminProviderHa
     const expectedDraftVersion = version(body?.expectedDraftVersion);
     const unassignedPolicy = policy(body?.unassignedPolicy);
     if (!body || !displayName || expectedDraftVersion === null || !unassignedPolicy ||
-      !isRecord(body.configuration)) {
+      !isRecord(body.configuration) || body.activate !== true) {
       return errorJson("provider_configuration_invalid", 400);
+    }
+    const credentialSecrets: { credentialId: string; secret: string }[] = [];
+    if (!Array.isArray(body.credentialSecrets) || body.credentialSecrets.length > 100) {
+      return errorJson("provider_configuration_invalid", 400);
+    }
+    for (const entry of body.credentialSecrets) {
+      if (!isRecord(entry) || !text(entry.credentialId, 128) || !text(entry.secret, 16_384)) {
+        return errorJson("provider_configuration_invalid", 400);
+      }
+      credentialSecrets.push({ credentialId: entry.credentialId as string, secret: entry.secret as string });
     }
     const { connectionId } = await context.params;
     return safely(async () => {
-      await deps.service.updateConnectionDraft({
+      const settings = {
         configuration: body.configuration as AdminProviderConnectionConfiguration,
         connectionId,
         displayName,
         expectedDraftVersion,
         unassignedPolicy
-      });
+      };
+      await deps.service.saveConnectionSettings({ ...settings, credentialSecrets, signal: request.signal });
       return catalog(deps.service);
     });
   };
@@ -342,22 +353,7 @@ export function createAdminProviderConnectionActionHandler(deps: AdminProviderHa
         });
         return Response.json({ endpoints });
       }
-      if (action === "refresh_active") {
-        const credentialId = text(body.credentialId, 128);
-        const providerModelId = text(body.providerModelId, 128);
-        if (!credentialId || !providerModelId ||
-          (body.confirmPaidRequest !== undefined && typeof body.confirmPaidRequest !== "boolean")) {
-          return errorJson("provider_action_invalid", 400);
-        }
-        await deps.service.refreshActive({
-          confirmPaidRequest: body.confirmPaidRequest === true,
-          connectionId,
-          credentialId,
-          providerModelId,
-          signal: request.signal
-        });
-        return catalog(deps.service);
-      }
+
       if (action === "check_models") {
         // Background capability checks (PRD B3): the response is the catalog
         // with the run in progress; progress arrives through the catalog or
@@ -448,33 +444,15 @@ export function createAdminProviderCredentialUpdateHandler(deps: AdminProviderHa
       } else if (action === "rotate") {
         const expectedDraftVersion = version(body.expectedDraftVersion);
         const secret = text(body.secret, 16_384);
-        if (expectedDraftVersion === null || !secret ||
-          (body.activate !== undefined && typeof body.activate !== "boolean")) {
+        if (expectedDraftVersion === null || !secret || body.activate !== true) {
           return errorJson("provider_configuration_invalid", 400);
         }
-        if (body.activate === true) {
-          // One-step rotation: test, write the immutable version, switch the key.
-          await deps.service.activateRotatedCredential({
-            connectionId,
-            credentialId,
-            expectedDraftVersion,
-            secret,
-            signal: request.signal
-          });
-        } else {
-          // Draft rotation remains for the connection-settings flow, where a
-          // changed endpoint is validated with the re-entered key at activation.
-          await deps.service.rotateCredential({ credentialId, expectedDraftVersion, secret });
-        }
-      } else if (action === "clear_draft") {
-        const expectedDraftVersion = version(body.expectedDraftVersion);
-        if (expectedDraftVersion === null || body.confirmed !== true) {
-          return errorJson("provider_revoke_confirmation_required", 409);
-        }
-        await deps.service.clearCredentialDraft({
-          confirmed: true,
+        await deps.service.activateRotatedCredential({
+          connectionId,
           credentialId,
-          expectedDraftVersion
+          expectedDraftVersion,
+          secret,
+          signal: request.signal
         });
       } else if (action === "enable" || action === "disable") {
         await deps.service[action]("credential", credentialId);
@@ -606,40 +584,6 @@ export function createAdminProviderModelDeleteHandler(deps: AdminProviderHandler
         return errorJson("provider_delete_conflict", 409, { blockers: result.blockers });
       }
       return catalog(deps.service);
-    });
-  };
-}
-
-export function createAdminProviderDraftTestHandler(deps: AdminProviderHandlerDeps) {
-  return async function POST(request: Request, context: ModelContext): Promise<Response> {
-    if (!hasJsonContentType(request)) return errorJson("json_required", 415);
-    const authError = await requireAdmin(request, deps);
-    if (authError) return authError;
-    const [body, bodyError] = await readBody(request);
-    if (bodyError) return bodyError;
-    const credentialId = text(body?.credentialId, 128);
-    const mode = body?.mode === "account_catalog" || body?.mode === "tiny_generation"
-      ? body.mode
-      : null;
-    if (!body || !credentialId || !mode ||
-      (body.confirmPaidRequest !== undefined && typeof body.confirmPaidRequest !== "boolean")) {
-      return errorJson("provider_action_invalid", 400);
-    }
-    const { connectionId, modelId } = await context.params;
-    return safely(async () => {
-      if (!await modelBelongs(deps.service, connectionId, modelId) ||
-        !await credentialBelongs(deps.service, connectionId, credentialId)) {
-        return errorJson("provider_model_not_found", 404);
-      }
-      const check = await deps.service.testDraft({
-        confirmPaidRequest: body.confirmPaidRequest === true,
-        connectionId,
-        credentialId,
-        mode,
-        providerModelId: modelId,
-        signal: request.signal
-      });
-      return Response.json({ check });
     });
   };
 }

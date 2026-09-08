@@ -826,7 +826,7 @@ describe("MCP handler input validation", () => {
     const catalog = vi.spyOn(repository, "listAdminServers");
     const onRuntimeChanged = vi.fn();
     const handler = createAdminMcpDraftTestHandler({ ...deps(repository), onRuntimeChanged });
-    const body = { expectedUpdatedAt: "2026-07-22T00:00:00.000Z", publish: true, sharedValues: { key: "fixture-shared-value" } };
+    const body = { description: "Candidate description", draft: draft, name: "Candidate name", expectedUpdatedAt: "2026-07-22T00:00:00.000Z", publish: true, sharedValues: { key: "fixture-shared-value" } };
     const response = await handler(request({ body, contentType: "application/json", user: "admin" }), routeContext);
     expect(response.status).toBe(200);
     expect(repository.testDraftCalls).toEqual([{ ...body, oneTimeValues: {}, serverId: SERVER_ID, validationUserId: "admin" }]);
@@ -839,7 +839,10 @@ describe("MCP handler input validation", () => {
     { publish: true },
     { publish: "true", expectedUpdatedAt: "2026-07-22T00:00:00.000Z" },
     { publish: true, expectedUpdatedAt: "invalid" },
-    { sharedValues: { key: "fixture-value" } }
+    { sharedValues: { key: "fixture-value" } },
+    { name: "Candidate" },
+    { description: "Candidate" },
+    { publish: true, expectedUpdatedAt: "2026-07-22T00:00:00.000Z", draft: { unknown: true } }
   ])("rejects invalid Test & Save input before contacting MCP: %j", async (body) => {
     const repository = new MemoryMcpRepository();
     const handler = createAdminMcpDraftTestHandler(deps(repository));

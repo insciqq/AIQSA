@@ -77,6 +77,10 @@ export function useModalLayerV2({
   }, [portalReady]);
 
   const onDialogKeyDown = useCallback((event: KeyboardEvent<HTMLElement>) => {
+    if (event.defaultPrevented) return;
+    // A nested confirmation owns its Escape and Tab before the enclosing sheet.
+    const owner = event.target instanceof Element ? event.target.closest("[role='dialog']") : null;
+    if (owner && owner !== dialogRef.current) return;
     if (event.key === "Escape") {
       if (closeBlocked) return;
       event.preventDefault();

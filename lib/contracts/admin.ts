@@ -18,6 +18,7 @@ export type AdminAccessGrantRecord = {
   id: string;
   modelId: string | null;
   provider: string | null;
+  resourceDisplayName?: string;
   searchStrategy: string | null;
   userId: string | null;
 };
@@ -58,6 +59,7 @@ export type AdminGroup = {
 
 export type AdminUserRecord = {
   deletion?: AdminDeletionInfo;
+  directGrants: AdminAccessGrantRecord[];
   displayName: string;
   email: string | null;
   effectiveEntitlements: AdminEntitlementSummary;
@@ -247,7 +249,23 @@ export type AdminActionRequest =
     }
   | {
       action: "set_user_groups";
+      /** Active memberships shown when editing began; archived memberships are preserved. */
+      expectedGroupIds: string[];
       groupIds: string[];
+      userId: string;
+    }
+  | {
+      action: "set_user_grants";
+      changes: AdminGroupGrantChange[];
+      expectedGrantIds: string[];
+      userId: string;
+    }
+  | {
+      action: "set_user_credential";
+      connectionId: string;
+      credentialId: string | null;
+      expectedCredentialId: string | null;
+      expectedUpdatedAt: string | null;
       userId: string;
     };
 
@@ -268,6 +286,8 @@ export const adminActionNames = [
   "revoke_user_sessions",
   "rename_group",
   "set_group_grants",
+  "set_user_credential",
+  "set_user_grants",
   "set_user_groups"
 ] as const satisfies readonly AdminActionRequest["action"][];
 
@@ -300,6 +320,11 @@ type AdminActionDomainErrorCode =
   | "self_disable_forbidden"
   | "self_delete_forbidden"
   | "user_active"
+  | "user_access_stale"
+  | "user_credential_invalid"
+  | "user_grant_invalid"
+  | "user_grant_required"
+  | "user_groups_required"
   | "user_has_owned_data"
   | "user_not_found"
   | "user_not_verified"

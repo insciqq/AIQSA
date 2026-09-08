@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { expect, test } from "@playwright/test";
 import { createAdminSystemModelPolicyService } from "../../lib/server/admin/providers/systemModelPolicyService";
+import { forcedToolCallVerificationEvidence } from "../../lib/server/providers/forcedToolCallEvidence";
+import { structuredOutputVerificationEvidence } from "../../lib/server/providers/structuredOutputEvidence";
 import {
   createSystemModelRoleResolver,
   SYSTEM_MODEL_ABSENT,
@@ -206,8 +208,22 @@ test.describe("system model policy", () => {
     const service = createAdminSystemModelPolicyService(prisma);
     const resolver = createSystemModelRoleResolver(prisma);
     const initial = await service.list();
-    expect(initial.candidates).toContainEqual(expect.objectContaining({ id: fixture.modelId }));
+    expect(initial.candidates).not.toContainEqual(expect.objectContaining({ id: fixture.modelId }));
+    expect(initial.verificationCandidates).toContainEqual(expect.objectContaining({ id: fixture.modelId }));
+    expect(initial.ineligible.memory).toContainEqual(expect.objectContaining({ id: fixture.modelId, reason: "not_checked" }));
     await expect(resolver.resolve()).resolves.toEqual({ code: SYSTEM_MODEL_ABSENT, ok: false });
+
+    await prisma.providerModelCredentialCheck.update({
+      data: {
+        evidence: {
+          forcedToolCall: forcedToolCallVerificationEvidence(modelConfiguration.adapterKind, modelConfiguration.upstreamModelId),
+          method: "system_policy_fixture",
+          structuredOutput: structuredOutputVerificationEvidence(modelConfiguration.adapterKind, modelConfiguration.upstreamModelId)
+        }
+      },
+      where: { id: fixture.checkId }
+    });
+    expect((await service.list()).candidates).toContainEqual(expect.objectContaining({ id: fixture.modelId }));
 
     await service.update({
       expectedVersion: initial.policy.version,
@@ -279,6 +295,10 @@ test.describe("system model policy", () => {
   });
 
   test("checks and assigns the exact role through the Defaults & roles picker", async ({ page }) => {
+    await prisma.providerModelCredentialCheck.update({
+      data: { evidence: { method: "system_policy_fixture" } },
+      where: { id: fixture.checkId }
+    });
     await signInWithLocalToken(page);
     await page.goto("/admin?section=roles");
     const trigger = page.getByRole("button", { name: "Memory & structured helpers deployment" });

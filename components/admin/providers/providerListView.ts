@@ -98,8 +98,14 @@ function keyChecks(connection: AdminProviderConnection, credential: AdminProvide
   return connection.activeChecks.filter((check) =>
     check.credentialId === credential.id &&
     check.credentialVersionId === version.id &&
-    check.connectionVersion === connection.activeVersion
+    check.connectionVersion === connection.activeVersion &&
+    connection.models.some((model) => model.id === check.providerModelId &&
+      model.activeConfig !== null && model.activeVersion > 0 && model.activeVersion === check.modelVersion)
   );
+}
+
+function credentialCheckFailed(connection: AdminProviderConnection, credential: AdminProviderCredential): boolean {
+  return keyChecks(connection, credential).some((check) => check.refreshFailedAt !== null);
 }
 
 /** A live key whose every model check with the current configuration failed. */
@@ -201,7 +207,7 @@ export function providerKeyState(
 /**
  * Status word for the list (PRD 5.2): Disabled when the connection is off;
  * Key rejected when a key someone resolves to is rejected or revoked;
- * Not checked when no resolved key has ever been saved and tested;
+ * Not checked when a resolved key is missing, disabled or needs a re-check;
  * Working otherwise.
  */
 export function providerListStatus(connection: AdminProviderConnection): ProviderListStatus {
@@ -215,8 +221,10 @@ export function providerListStatus(connection: AdminProviderConnection): Provide
     credentialRejected(connection, credential)
   );
   if (broken) return { kind: "key_rejected", label: "Key rejected", tone: "warn" };
-  if (!keys.some((credential) => credentialWorking(connection, credential))) {
-    return { kind: "not_checked", label: "Not checked", tone: "neutral" };
+  const checkFailed = keys.some((credential) => credentialCheckFailed(connection, credential));
+  if (referenced.size === 0 || keys.length !== referenced.size ||
+    !keys.every((credential) => credentialWorking(connection, credential)) || checkFailed) {
+    return { kind: "not_checked", label: "Not checked", tone: checkFailed ? "warn" : "neutral" };
   }
   return { kind: "working", label: "Working", tone: "ok" };
 }
@@ -333,10 +341,13 @@ export function providerHeaderStatus(connection: AdminProviderConnection, now = 
       providerKeyState(connection, credential, now).kind === "disabled").length;
     const missing = connection.credentials.filter((credential) =>
       providerKeyState(connection, credential, now).kind === "missing").length;
+    const failed = connection.credentials.filter((credential) =>
+      credentialWorking(connection, credential) && credentialCheckFailed(connection, credential)).length;
     if (rejected) problems.push(count(rejected, "rejected"));
     if (revoked) problems.push(count(revoked, "revoked"));
     if (off) problems.push(count(off, "off"));
     if (missing) problems.push(count(missing, "without a value"));
+    if (failed) problems.push(`${failed} ${failed === 1 ? "key needs" : "keys need"} a re-check`);
     parts.push(problems.length ? problems.join(", ") : "All keys working");
   }
   const on = connection.models.filter((model) => model.enabled).length;
@@ -346,7 +357,7 @@ export function providerHeaderStatus(connection: AdminProviderConnection, now = 
     return parts.join(" · ");
   }
   const checked = [
-    ...connection.activeChecks.map((check) => check.checkedAt),
+    ...connection.credentials.flatMap((credential) => keyChecks(connection, credential).map((check) => check.checkedAt)),
     ...connection.credentials.flatMap((credential) =>
       credential.activeVersion ? [credential.activeVersion.testedAt] : [])
   ].filter((iso) => Number.isFinite(Date.parse(iso))).sort().at(-1);

@@ -351,7 +351,7 @@ test("a rejected test message keeps the current delivery and shows the cause in 
   expect(email.active.configuration?.host).toBe("smtp.example.test");
 });
 
-test("guards a dirty Control Center form across section navigation and native reload", async ({ page }) => {
+test("protects unsaved email fields on native reload and allows section navigation", async ({ page }) => {
   const email = emptyEmailState();
   await mockDashboard(page);
   await page.route("**/api/admin/email", async (route) => {
@@ -372,15 +372,6 @@ test("guards a dirty Control Center form across section navigation and native re
   await host.fill(dirtyHost);
   const originalUrl = page.url();
 
-  const usageLink = page.getByRole("link", { exact: true, name: "Usage" });
-  await usageLink.click();
-  const discard = page.getByTestId("admin-discard-unsaved-confirmation");
-  await expect(discard.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
-  await expect(page).toHaveURL(originalUrl);
-  await discard.getByRole("button", { name: "Cancel" }).click();
-  await expect(host).toHaveValue(dirtyHost);
-  await expect(section).toBeVisible();
-
   const nativeDialogPromise = page.waitForEvent("dialog");
   const reloadPromise = page.reload({ timeout: 1_000, waitUntil: "domcontentloaded" }).catch(() => null);
   const nativeDialog = await nativeDialogPromise;
@@ -390,11 +381,13 @@ test("guards a dirty Control Center form across section navigation and native re
   await expect(page).toHaveURL(originalUrl);
   await expect(host).toHaveValue(dirtyHost);
 
-  await usageLink.click();
-  await expect(discard.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
-  await discard.getByRole("button", { name: /confirm discard changes/i }).click();
+  await page.getByRole("link", { exact: true, name: "Usage" }).click();
   await expect(page.getByTestId("admin-section-usage")).toBeVisible();
   await expect(page).toHaveURL(/\/admin\?section=usage$/);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("link", { exact: true, name: "Email" }).click();
+  await expect(section).toBeVisible();
+  await expect(host).toHaveValue("");
 });
 
 test("ordinary user receives real active-admin denial for email configuration", async ({ page }) => {

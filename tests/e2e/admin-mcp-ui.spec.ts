@@ -13,6 +13,8 @@ import {
 } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 
+test.use({ hasTouch: true });
+
 const fixedTime = "2026-07-26T08:00:00.000Z";
 const bannedWords = /\bdraft\b|revision|pending|probe|evidence|adapter|fingerprint|\bversion\b|\bCAS\b|tuple/iu;
 
@@ -60,6 +62,7 @@ function adminDashboard(): AdminDashboard {
       }
     },
     users: [{
+      directGrants: [],
       displayName: "Alice Operator",
       effectiveEntitlements: { models: [], providers: [], searchStrategies: [] },
       email: "alice@example.test",
@@ -276,9 +279,14 @@ test("administrator adds a server from a pasted configuration, watches the setup
         await route.fulfill({ status: 400, json: { error: "mcp_draft_test_failed", issues: [{ code: "mcp_remote_validation_failed", path: "source" }] } });
         return;
       }
-      const active = { ...revision("saved-revision", 3, "tested-identity", "available"), disabledToolNames: current.draft.disabledToolNames };
+      const update = body as AdminMcpUpdateRequest;
+      const candidateDraft = update.draft ?? current.draft;
+      const active = { ...revision("saved-revision", 3, "tested-identity", "available"), disabledToolNames: candidateDraft.disabledToolNames };
       const tested = replace({
         ...current,
+        draft: candidateDraft,
+        ...(update.name ? { name: update.name } : {}),
+        ...(update.description !== undefined ? { description: update.description } : {}),
         draftTest: testedDraft("tested-identity"),
         draftTested: true,
         ...(body?.publish ? { activeRevision: active, revisions: [active, ...current.revisions.filter((candidate) => candidate.id !== active.id)] } : {})
@@ -557,6 +565,10 @@ test("administrator adds a server from a pasted configuration, watches the setup
 });
 
 test("MCP list exposes authorization and runtime problems without opening each server", async ({ page }) => {
+  const hydrationErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" && /hydrat/iu.test(message.text())) hydrationErrors.push(message.text());
+  });
   const oauth: AdminMcpServer = {
     ...existingServer(), id: "oauth-tools", name: "Workspace tools",
     draft: { ...existingServer().draft, auth: { mode: "oauth", scopes: [], allowedAuthorizationServerOrigins: ["https://auth.example.test"] } },
@@ -590,4 +602,5 @@ test("MCP list exposes authorization and runtime problems without opening each s
   await expect(section.getByTestId("mcp-authorization-state")).toHaveText("Reconnect needed");
   await expect(section.getByRole("link", { name: "Reconnect" })).toHaveAttribute("href", "/api/admin/mcp/oauth-tools/oauth/validation/reconnect");
   await expect(section).not.toContainText(bannedWords);
+  expect(hydrationErrors).toEqual([]);
 });

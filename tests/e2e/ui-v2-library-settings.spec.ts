@@ -223,7 +223,7 @@ for (const theme of ["dark", "light"] as const) {
       await page.goto("/admin");
       const root = page.locator("main");
       await expect(root).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Control Center" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Overview", level: 1 })).toBeVisible();
       const colors = await root.evaluate((element) => {
         const toSrgbBytes = (color: string) => {
           const canvas = document.createElement("canvas");

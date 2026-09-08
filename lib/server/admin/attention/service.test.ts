@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AdminDashboard } from "../../../contracts/admin";
 import type { AdminMemoryStatus } from "../../../contracts/adminMemory";
-import type { AdminProviderConnection } from "../../../contracts/adminProviders";
+import type { AdminProviderConnection, AdminProviderModel } from "../../../contracts/adminProviders";
 import type { AdminSearchCatalog, AdminSearchIntegration } from "../../../contracts/adminSearch";
 import type { AdminSystemModelPolicyCatalog } from "../../../contracts/adminSystemModelPolicy";
 import type { AdminEmailState } from "../../../contracts/email";
@@ -22,6 +22,7 @@ const at = "2026-09-07T12:00:00.000Z";
 
 function user(overrides: Partial<AdminDashboard["users"][number]>): AdminDashboard["users"][number] {
   return {
+    directGrants: [],
     displayName: "Someone",
     effectiveEntitlements: { models: [], providers: [], searchStrategies: [] },
     email: null,
@@ -69,11 +70,25 @@ function connection(overrides: Partial<AdminProviderConnection> = {}): AdminProv
     enabled: true,
     family: "deepseek",
     id: "conn-deepseek",
-    models: [],
+    models: [model("model-1", overrides.id), model("model-2", overrides.id)],
     unassignedPolicy: "use_default",
     updatedAt: at,
     userAssignments: [],
     ...overrides
+  };
+}
+
+function model(id: string, connectionId = "conn-deepseek"): AdminProviderModel {
+  const config = {
+    adapterKind: "deepseek_responses_native" as const,
+    answerSelectable: true,
+    capabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
+    defaultParams: {}, modelClass: "answer" as const, upstreamModelId: id
+  };
+  return {
+    activatedAt: at, activeConfig: config, activeVersion: 1, connectionId,
+    createdAt: at, displayName: id, draftConfig: config, draftVersion: 1, enabled: true,
+    id, modelClass: "answer", updatedAt: at
   };
 }
 
@@ -323,6 +338,41 @@ describe("deriveAdminAttentionItems", () => {
         severity: "warn"
       })
     ]);
+  });
+
+  it("ignores failed checks belonging to an older or removed model configuration", () => {
+    const provider = connection({
+      models: [{ ...model("model-1"), activeVersion: 2 }],
+      activeChecks: [
+        check({ status: "unavailable" }),
+        check({ providerModelId: "removed-model", refreshFailedAt: at })
+      ]
+    });
+    expect(items({ providers: [provider] })).toEqual([]);
+    provider.activeChecks = [check({ modelVersion: 2, status: "unavailable" })];
+    expect(items({ providers: [provider] })).toEqual([expect.objectContaining({ code: "provider_key_rejected" })]);
+    provider.activeChecks = [check({ modelVersion: 2, refreshFailedAt: at })];
+    expect(items({ providers: [provider] })).toEqual([expect.objectContaining({ code: "provider_key_check_failed" })]);
+  });
+
+  it("counts group and user overrides only while someone can resolve to that key", () => {
+    const provider = connection({
+      activeChecks: [check({ status: "unavailable" })], defaultCredentialId: null,
+      assignments: [{
+        connectionId: "conn-deepseek", credentialId: "cred-1", updatedAt: at,
+        group: { archivedAt: at, id: "group-1", name: "Research" }
+      }],
+      userAssignments: [{
+        connectionId: "conn-deepseek", credentialId: "cred-1", updatedAt: at,
+        user: { displayName: "Research user", email: null, id: "user-1", status: "disabled" }
+      }]
+    });
+    expect(items({ providers: [provider] })).toEqual([]);
+    provider.assignments[0]!.group.archivedAt = null;
+    expect(items({ providers: [provider] })).toEqual([expect.objectContaining({ code: "provider_key_rejected", count: 1 })]);
+    provider.assignments[0]!.group.archivedAt = at;
+    provider.userAssignments[0]!.user.status = "active";
+    expect(items({ providers: [provider] })).toEqual([expect.objectContaining({ code: "provider_key_rejected", count: 1 })]);
   });
 
   it("flags an enabled Search source whose model is no longer usable", () => {

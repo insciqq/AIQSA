@@ -125,6 +125,7 @@ export type AdminSetGroupGrantsResult =
   | { change: number; kind: "invalid_change" };
 
 export type AdminSetUserGroupsInput = {
+  expectedGroupIds: string[];
   groupIds: string[];
   userId: string;
 };
@@ -155,5 +156,18 @@ export type AdminRepository = {
   revokeUserSessions(input: AdminRevokeUserSessionsInput): Promise<number>;
   /** Applies every change in one transaction; a rejected change rolls the whole batch back. */
   setGroupGrants(input: AdminSetGroupGrantsInput): Promise<AdminSetGroupGrantsResult>;
-  setUserGroups(input: AdminSetUserGroupsInput): Promise<boolean>;
+  setUserGrants(input: {
+    changes: readonly AdminGroupGrantChange[];
+    expectedGrantIds: readonly string[];
+    userId: string;
+  }): Promise<"applied" | "user_not_found" | "user_access_stale" | "user_grant_invalid">;
+  setUserCredential(input: {
+    connectionId: string;
+    credentialId: string | null;
+    expectedCredentialId: string | null;
+    expectedUpdatedAt: string | null;
+    userId: string;
+  }): Promise<"applied" | "user_not_found" | "user_access_stale" | "user_credential_invalid">;
+  /** Compares active memberships and replaces them atomically, preserving unchanged roles and archived rows. */
+  setUserGroups(input: AdminSetUserGroupsInput): Promise<"applied" | "user_not_found" | "user_access_stale">;
 };

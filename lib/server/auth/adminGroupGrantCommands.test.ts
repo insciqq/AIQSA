@@ -38,7 +38,7 @@ function grantTransaction(overrides: {
     create,
     deleteMany,
     transaction: {
-      accessGrant: { create, deleteMany },
+      accessGrant: { create, deleteMany, findFirst: vi.fn(async () => null) },
       group: {
         findUnique: vi.fn(async () =>
           overrides.group === undefined
@@ -175,10 +175,11 @@ describe("Full access admin group guards", () => {
 
     await expect(
       commands.setUserGroups({
+        expectedGroupIds: [ownerMembership.groupId],
         groupIds: [ownerMembership.groupId, ownerMembership.groupId],
         userId: ownerMembership.userId
       })
-    ).resolves.toBe(true);
+    ).resolves.toBe("applied");
 
     expect(deleteMany).not.toHaveBeenCalled();
     expect(create).not.toHaveBeenCalled();
@@ -187,6 +188,26 @@ describe("Full access admin group guards", () => {
       role: "owner",
       userId: "admin-1"
     });
+  });
+
+  it("rejects a stale membership baseline before changing memberships or MCP state", async () => {
+    const create = vi.fn();
+    const deleteMany = vi.fn();
+    const mcpFindMany = vi.fn();
+    const transaction = {
+      group: { findMany: vi.fn(async () => [{ id: "full-access" }]) },
+      mcpGrant: { findMany: mcpFindMany },
+      user: { findUnique: vi.fn(async () => ({ id: "person" })) },
+      userGroup: {
+        create, deleteMany,
+        findMany: vi.fn(async () => [{ groupId: "full-access" }, { groupId: "new-membership" }])
+      }
+    };
+    const commands = createAdminGroupGrantCommands(transactionalClient(transaction));
+    await expect(commands.setUserGroups({ expectedGroupIds: ["full-access"], groupIds: ["full-access"], userId: "person" })).resolves.toBe("user_access_stale");
+    expect(create).not.toHaveBeenCalled();
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(mcpFindMany).not.toHaveBeenCalled();
   });
 
   it("adds and removes only unrelated active groups while preserving owner and archived rows", async () => {
@@ -233,10 +254,11 @@ describe("Full access admin group guards", () => {
 
     await expect(
       commands.setUserGroups({
+        expectedGroupIds: ["full-access", "remove-group"],
         groupIds: ["full-access", "add-group", "archived-group"],
         userId
       })
-    ).resolves.toBe(true);
+    ).resolves.toBe("applied");
 
     expect(deleteMany).toHaveBeenCalledWith({
       where: {
@@ -329,9 +351,7 @@ describe("Batched group grants", () => {
       { data: { enabled: true, ...providerWide } },
       { data: { enabled: true, ...search } }
     ]);
-    expect(grants.transaction.providerModel.findFirst).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ connectionId: "conn-openai", enabled: true, id: "model-mini" })
-    }));
+    expect(grants.transaction.providerModel.findFirst).not.toHaveBeenCalled();
   });
 
   it("rolls the whole batch back and names the first change that is not grantable", async () => {
@@ -356,6 +376,25 @@ describe("Batched group grants", () => {
     });
     expect(outcomes).toEqual(["rolled_back"]);
     expect(grants.transaction.providerModel.findFirst).toHaveBeenCalledTimes(2);
+  });
+
+  it("can remove grants after their provider, model or Search source becomes unavailable", async () => {
+    const grants = grantTransaction({ modelLookup: () => null, providerModelCount: 0, searchLookup: () => null });
+    const commands = createAdminGroupGrantCommands(transactionalClient(grants.transaction));
+    await expect(commands.setGroupGrants({ changes: [
+      { enabled: false, provider: "disabled-provider" },
+      { enabled: false, modelId: "disabled-model", provider: "disabled-provider" },
+      { enabled: false, searchStrategy: "archived-search" }
+    ], groupId: "group-1" })).resolves.toEqual({ kind: "applied" });
+    expect(grants.deleteMany.mock.calls.map(([input]) => input.where)).toEqual([
+      { groupId: "group-1", providerConnectionId: "disabled-provider", providerModelId: null, searchStrategy: null, userId: null },
+      { groupId: "group-1", providerConnectionId: null, providerModelId: "disabled-model", searchStrategy: null, userId: null },
+      { groupId: "group-1", providerConnectionId: null, providerModelId: null, searchStrategy: "archived-search", userId: null }
+    ]);
+    expect(grants.transaction.providerModel.findFirst).not.toHaveBeenCalled();
+    expect(grants.transaction.providerModel.count).not.toHaveBeenCalled();
+    expect(grants.transaction.searchOption.findFirst).not.toHaveBeenCalled();
+    expect(grants.create).not.toHaveBeenCalled();
   });
 
   it("rejects a provider without active models, a disabled Search option and a missing or archived group before any write", async () => {

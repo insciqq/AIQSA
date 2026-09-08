@@ -31,6 +31,7 @@ const groups: AdminGroup[] = [
 
 function user(overrides: Partial<AdminUserRecord> & { id: string }): AdminUserRecord {
   return {
+    directGrants: [],
     displayName: "User",
     effectiveEntitlements: { models: [], providers: [], searchStrategies: [] },
     email: `${overrides.id}@example.com`,
@@ -46,6 +47,7 @@ function user(overrides: Partial<AdminUserRecord> & { id: string }): AdminUserRe
 const users: AdminUserRecord[] = [
   user({ displayName: "Local Operator", groups: [{ groupId: "group-full", name: "Full access", role: "owner" }], id: "admin-1", lastSessionAt: "2026-09-07T11:59:40.000Z", role: "admin" }),
   user({
+    directGrants: [{ enabled: true, groupId: null, id: "direct-mini", modelId: "gpt-mini", provider: "openai", searchStrategy: null, userId: "ada" }],
     displayName: "Ada Analyst",
     effectiveEntitlements: { models: [{ modelId: "gpt-5.5", provider: "openai" }, { modelId: "gpt-mini", provider: "openai" }], providers: [], searchStrategies: ["web"] },
     groups: [{ groupId: "group-ops", name: "operators", role: "member" }],
@@ -127,6 +129,7 @@ const mcp: AdminMcpController = {
 type HarnessProps = Readonly<{
   filter?: string | null;
   initialDashboard?: AdminDashboard;
+  rejectMembership?: boolean;
   resource?: string | null;
 }>;
 
@@ -154,7 +157,7 @@ function TopbarHarness({ children }: Readonly<{ children: ReactNode }>) {
   );
 }
 
-function renderSection({ filter = null, initialDashboard = dashboardFixture(), resource = null }: HarnessProps = {}): Harness {
+function renderSection({ filter = null, initialDashboard = dashboardFixture(), rejectMembership = false, resource = null }: HarnessProps = {}): Harness {
   const posts: AdminActionRequest[] = [];
   const confirmations: AdminConfirmedActionRequest[] = [];
   const feedback = { clearAll: vi.fn(), reportError: vi.fn(), reportNotice: vi.fn() };
@@ -163,6 +166,7 @@ function renderSection({ filter = null, initialDashboard = dashboardFixture(), r
   const writeText = vi.fn(async () => undefined);
   const runAction: AdminRunAction = async (body) => {
     posts.push(body);
+    if (body.action === "set_user_groups" && rejectMembership) return { error: "user_access_stale" };
     if (body.action === "create_invite") {
       return { emailDelivery: "sent", invite: { id: "invite-new" }, inviteUrl: "https://aiqsa.local/login?invite=test-token" };
     }
@@ -299,7 +303,7 @@ describe("AdminUsersSection", () => {
     fireEvent.change(within(row).getByRole("combobox", { name: "Group for Pending Person" }), { target: { value: "group-research" } });
     fireEvent.click(within(row).getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(posts).toEqual([
-      { action: "set_user_groups", groupIds: ["group-research"], userId: "pending-1" },
+      { action: "set_user_groups", expectedGroupIds: [], groupIds: ["group-research"], userId: "pending-1" },
       { action: "approve_user", groupIds: ["group-research"], userId: "pending-1" }
     ]));
 
@@ -316,7 +320,7 @@ describe("AdminUsersSection", () => {
     expect(within(row).getByRole("button", { name: "Add" })).toBeDisabled();
     fireEvent.change(select, { target: { value: "group-ops" } });
     fireEvent.click(within(row).getByRole("button", { name: "Add" }));
-    await waitFor(() => expect(posts).toEqual([{ action: "set_user_groups", groupIds: ["group-ops"], userId: "shadow" }]));
+    await waitFor(() => expect(posts).toEqual([{ action: "set_user_groups", expectedGroupIds: [], groupIds: ["group-ops"], userId: "shadow" }]));
   });
 
   it("shows the Invited filter as the full open-invites list and pre-selects a URL filter", () => {
@@ -338,7 +342,7 @@ describe("AdminUsersSection", () => {
     expect(within(page).getByText("Active")).toHaveAttribute("data-user-status", "active");
     expect(within(page).getByText("OpenAI / GPT 5.5, OpenAI / GPT Mini")).toBeInTheDocument();
     expect(within(page).getByText("OpenAI web search")).toBeInTheDocument();
-    expect(await within(page).findByText("Key: Research team")).toBeInTheDocument();
+    expect(await within(page).findByRole("combobox", { name: "Key for OpenAI" })).toHaveDisplayValue("Research team");
     expect(within(screen.getByRole("list", { name: "Direct grants" })).getByText("OpenAI / GPT Mini")).toBeInTheDocument();
     expect(within(page).getByTestId("admin-user-mcp-access")).toBeInTheDocument();
     expect(within(page).queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
@@ -348,7 +352,7 @@ describe("AdminUsersSection", () => {
     fireEvent.click(within(page).getByRole("checkbox", { name: "research" }));
     expect(within(page).getByRole("status")).toHaveTextContent("Unsaved group changes.");
     fireEvent.click(save);
-    await waitFor(() => expect(posts).toEqual([{ action: "set_user_groups", groupIds: ["group-ops", "group-research"], userId: "ada" }]));
+    await waitFor(() => expect(posts).toEqual([{ action: "set_user_groups", expectedGroupIds: ["group-ops"], groupIds: ["group-ops", "group-research"], userId: "ada" }]));
     await waitFor(() => expect(within(page).getByRole("button", { name: "Save" })).toBeDisabled());
 
     fireEvent.click(within(page).getByRole("button", { name: "Revoke sessions" }));
@@ -359,6 +363,43 @@ describe("AdminUsersSection", () => {
     expect(page).toHaveTextContent("Disable this user before deletion can be considered.");
 
     fireEvent.click(screen.getByRole("link", { name: "Users" }));
+  });
+
+  it("retains a dirty membership draft and its original baseline after a background membership change", async () => {
+    const { posts } = renderSection({ rejectMembership: true, resource: "ada" });
+    const page = await screen.findByTestId("admin-user-page");
+    fireEvent.click(within(page).getByRole("checkbox", { name: "research" }));
+    act(() => {
+      const dashboard = dashboardFixture();
+      updateDashboard?.({ ...dashboard, users: dashboard.users.map((candidate) => candidate.id === "ada" ? {
+        ...candidate, groups: [...candidate.groups, { groupId: "group-full", name: "Full access", role: "member" }]
+      } : candidate) });
+    });
+    fireEvent.click(within(page).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(posts).toEqual([{
+      action: "set_user_groups", expectedGroupIds: ["group-ops"], groupIds: ["group-ops", "group-research"], userId: "ada"
+    }]));
+    expect(within(page).getByRole("checkbox", { name: "research" })).toBeChecked();
+    expect(within(page).getByRole("checkbox", { name: "Full access" })).not.toBeChecked();
+    await waitFor(() => expect(within(page).getByRole("button", { name: "Save" })).toBeEnabled());
+  });
+
+  it("keeps a pending row selection bound to its original memberships and stops approval on conflict", async () => {
+    const { posts } = renderSection({ rejectMembership: true });
+    const row = rowFor("Pending Person");
+    fireEvent.change(within(row).getByRole("combobox", { name: "Group for Pending Person" }), { target: { value: "group-research" } });
+    act(() => {
+      const dashboard = dashboardFixture();
+      updateDashboard?.({ ...dashboard, users: dashboard.users.map((candidate) => candidate.id === "pending-1" ? {
+        ...candidate, groups: [{ groupId: "group-ops", name: "operators", role: "member" }]
+      } : candidate) });
+    });
+    fireEvent.click(within(row).getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(posts).toEqual([{
+      action: "set_user_groups", expectedGroupIds: [], groupIds: ["group-research"], userId: "pending-1"
+    }]));
+    expect(within(row).getByRole("combobox", { name: "Group for Pending Person" })).toHaveValue("group-research");
+    await waitFor(() => expect(within(row).getByRole("button", { name: "Approve" })).toBeEnabled());
   });
 
   it("keeps self-protection, approval from the page and stale deletion with its confirmation", async () => {
@@ -376,7 +417,7 @@ describe("AdminUsersSection", () => {
     fireEvent.click(within(pendingPage).getByRole("checkbox", { name: "operators" }));
     fireEvent.click(within(pendingPage).getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(pending.posts).toEqual([
-      { action: "set_user_groups", groupIds: ["group-ops"], userId: "pending-1" },
+      { action: "set_user_groups", expectedGroupIds: [], groupIds: ["group-ops"], userId: "pending-1" },
       { action: "approve_user", groupIds: ["group-ops"], userId: "pending-1" }
     ]));
     fireEvent.click(within(pendingPage).getByRole("button", { name: "Delete stale" }));
@@ -434,7 +475,8 @@ describe("AdminUsersSection", () => {
     fireEvent.change(within(sheet).getByLabelText("Email"), { target: { value: "typed@example.com" } });
     fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
     const discard = await screen.findByTestId("admin-invite-discard");
-    fireEvent.click(within(discard).getByRole("button", { name: "Cancel" }));
+    fireEvent.keyDown(within(discard).getByRole("button", { name: "Cancel" }), { key: "Escape" });
+    await waitFor(() => expect(discard).not.toBeInTheDocument());
     expect(screen.getByRole("dialog", { name: "Invite" })).toBeInTheDocument();
     expect(within(sheet).getByLabelText("Email")).toHaveValue("typed@example.com");
     fireEvent.keyDown(sheet, { key: "Escape" });

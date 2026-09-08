@@ -10,6 +10,7 @@ import { adminGroupRecordInclude } from "./adminPrismaRecords";
 import type { AdminDashboard, AdminDashboardNavigation } from "./adminRepositoryContract";
 import {
   serializeAdminEntitlements,
+  serializeAdminGrant,
   serializeAdminGroup,
   serializeAdminInvite,
   serializeAdminLastSession,
@@ -218,16 +219,14 @@ export async function listAdminDashboard(
         enabled: true,
         groupId: true,
         id: true,
+        providerConnection: { select: { displayName: true } },
         providerConnectionId: true,
         providerModel: {
-          select: { connectionId: true }
+          select: { connection: { select: { displayName: true } }, connectionId: true, displayName: true }
         },
         providerModelId: true,
         searchStrategy: true,
         userId: true
-      },
-      where: {
-        enabled: true
       }
     }),
     loadAdminUsageQueryRows(prisma),
@@ -274,7 +273,22 @@ export async function listAdminDashboard(
     users
   });
   const serializedAccessRules = accessRules.map((rule) => serializeAdminRule(rule, groupNamesById));
-  const serializedGroups = groups.map(serializeAdminGroup);
+  const searchIds = [...new Set(grants.flatMap((grant) => grant.searchStrategy ? [grant.searchStrategy] : []))];
+  const searchNames = new Map((searchIds.length ? await prisma.searchOption.findMany({
+    select: { displayName: true, optionId: true }, where: { optionId: { in: searchIds } }
+  }) : []).map((source) => [source.optionId, source.displayName]));
+  const resourceNames = new Map(grants.map((grant) => [grant.id,
+    grant.searchStrategy ? searchNames.get(grant.searchStrategy)
+      : grant.providerModel ? `${grant.providerModel.connection.displayName} / ${grant.providerModel.displayName}`
+        : grant.providerConnection ? `${grant.providerConnection.displayName} · all models` : undefined
+  ]));
+  const visibleGrant = (grant: Parameters<typeof serializeAdminGrant>[0]) => {
+    const resourceDisplayName = resourceNames.get(grant.id);
+    return { ...serializeAdminGrant(grant), ...(resourceDisplayName ? { resourceDisplayName } : {}) };
+  };
+  const serializedGroups = groups.map((group) => ({
+    ...serializeAdminGroup(group), accessGrants: group.accessGrants.map(visibleGrant)
+  }));
   const serializedInvites = invites.map((invite) => serializeAdminInvite(invite, groupNamesById, now));
   const serializedUsers = users.map((user) => {
     const activeMemberships = user.groups.filter(
@@ -300,6 +314,7 @@ export async function listAdminDashboard(
         purgeableOwnedDataCount: knowledgeOwnedCount + memoryOwnedCount,
         status: user.status
       }),
+      directGrants: grants.filter((grant) => grant.userId === user.id && grant.groupId === null).map(visibleGrant),
       displayName: user.displayName,
       effectiveEntitlements: serializeAdminEntitlements({
         catalog,

@@ -73,9 +73,10 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     expect(livePolicy.status()).toBe(200);
     expect(Boolean(decodeAdminModelPolicyResponse(await livePolicy.json()))).toBe(true);
     await page.goto("/admin?section=roles");
-    const model = page.getByRole("combobox", { name: "Default chat model" });
-    const effort = page.getByRole("combobox", { name: "Reasoning" });
-    const save = page.getByTestId("admin-chat-defaults").getByRole("button", { name: "Save" });
+    const defaults = page.getByTestId("admin-chat-defaults");
+    const model = defaults.getByRole("combobox", { name: "Default chat model", exact: true });
+    const effort = defaults.getByRole("combobox", { name: "Reasoning", exact: true });
+    const save = defaults.getByRole("button", { name: "Save", exact: true });
     const savedNotice = page.getByTestId("admin-feedback").getByText("Chat defaults saved for new chats");
     await expect(model).toHaveValue(reasoningModel.id);
     await expect(save).toBeDisabled();

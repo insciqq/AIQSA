@@ -8,6 +8,8 @@ import {
 } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 
+test.use({ hasTouch: true });
+
 function emptyAdminDashboard(): AdminDashboard {
   return {
     accessRules: [],

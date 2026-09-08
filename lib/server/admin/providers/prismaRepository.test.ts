@@ -6,7 +6,6 @@ import { createAdminProviderService } from "./service";
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
 import type {
   ProviderActiveRefreshCandidate,
-  ProviderDraftTestCandidate,
   ProviderModelActivationWrite,
   StoredProviderDraftCheck
 } from "./repositoryContract";
@@ -76,7 +75,7 @@ function candidate() {
       draftVersion: 4,
       id: "model-1"
     }
-  } satisfies ProviderDraftTestCandidate;
+  } as const;
 }
 
 function storedCheck(): StoredProviderDraftCheck {
@@ -217,48 +216,6 @@ describe("Prisma admin provider repository", () => {
     }]);
     expect(JSON.stringify(result)).not.toContain("private-draft-ciphertext");
     expect(JSON.stringify(result)).not.toContain("secretEnvelope");
-  });
-
-  it("CAS-stores candidate evidence only while every draft source is exact", async () => {
-    const draft = candidate();
-    const upsert = vi.fn(async () => ({}));
-    const update = vi.fn(async () => ({}));
-    const db = transactional({
-      providerConnection: {
-        findUnique: vi.fn(async () => ({ draftVersion: 2 }))
-      },
-      providerCredential: {
-        findFirst: vi.fn(async () => ({
-          activeVersion: null,
-          activeVersionId: null,
-          draftSecretEnvelope: draft.credential.source.envelope,
-          draftVersion: 3
-        })),
-        update
-      },
-      providerDraftCheck: { upsert },
-      providerModel: {
-        findFirst: vi.fn(async () => ({ draftVersion: 4 }))
-      }
-    });
-    const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
-
-    await expect(repository.storeDraftCheckCas(draft, storedCheck())).resolves.toBe("stored");
-    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
-      create: expect.objectContaining({
-        credentialDraftVersion: 3,
-        credentialVersionId: null,
-        fingerprint: "fingerprint-1"
-      })
-    }));
-    expect(update).toHaveBeenCalledWith({
-      data: { testedAt: NOW },
-      where: { id: "credential-1" }
-    });
-
-    db.providerModel.findFirst.mockResolvedValueOnce({ draftVersion: 5 });
-    await expect(repository.storeDraftCheckCas(draft, storedCheck())).resolves.toBe("stale");
-    expect(upsert).toHaveBeenCalledTimes(1);
   });
 
   it("returns actionable model deletion conflicts and never silently cascades references", async () => {
@@ -1315,5 +1272,53 @@ describe("Prisma admin provider repository", () => {
       where: { sourceConnectionId: "connection-1" }
     });
     expect(deleteConnection).not.toHaveBeenCalled();
+  });
+});
+
+describe("no-auth provider capability checks", () => {
+  it("discovers only with the saved active endpoint and key, ignoring unrelated drafts", async () => {
+    const configuration = activeCandidate().connection.configuration;
+    const activeVersion = { id: "version-1", revokedAt: null, secretEnvelope: "saved-active-envelope" };
+    const db = transactional({
+      providerConnection: { findUnique: vi.fn(async () => ({
+        activeConfig: configuration,
+        draftConfig: { ...configuration, apiRoot: "https://other.example.test/v1" },
+        family: "openai_compatible", id: "connection-1"
+      })) },
+      providerCredential: { findFirst: vi.fn(async () => ({
+        activeVersion: activeVersion as typeof activeVersion | null,
+        draftSecretEnvelope: "unrelated-draft-envelope", draftVersion: 8, id: "credential-1"
+      })) }
+    });
+    const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
+    await expect(repository.loadDiscoveryCandidate({ connectionId: "connection-1", credentialId: "credential-1" })).resolves.toEqual({
+      connection: { configuration, family: "openai_compatible", id: "connection-1" },
+      credential: { id: "credential-1", source: { envelope: "saved-active-envelope", kind: "active", versionId: "version-1" } }
+    });
+    db.providerCredential.findFirst.mockResolvedValueOnce({
+      activeVersion: null, draftSecretEnvelope: "unrelated-draft-envelope", draftVersion: 8, id: "credential-1"
+    });
+    await expect(repository.loadDiscoveryCandidate({ connectionId: "connection-1", credentialId: "credential-1" })).resolves.toBeNull();
+  });
+
+  it("loads and stores exact no-auth checks and accepts that credential for model activation", async () => {
+    const configuration = { ...activeCandidate().connection.configuration, allowPrivateNetwork: true, apiRoot: "http://127.0.0.1:9000/v1", authenticationMode: "none" as "none" | "bearer" };
+    const credential = { activeVersionId: "version-1", activeVersion: { id: "version-1", revokedAt: null, secretEnvelope: null }, enabled: true, id: "credential-1" };
+    const connection = { activeConfig: configuration, activeVersion: 2, defaultCredential: credential, draftConfig: configuration, draftVersion: 2, family: "openai_compatible", id: "connection-1" };
+    const model = { activeConfig: candidate().model.configuration, activeVersion: 4, draftConfig: candidate().model.configuration, draftVersion: 4, id: "model-1" };
+    const db = transactional({
+      providerConnection: { findUnique: vi.fn(async () => connection) },
+      providerModel: { findFirst: vi.fn(async () => model) },
+      providerCredential: { findFirst: vi.fn(async () => credential) },
+      providerModelCredentialCheck: { upsert: vi.fn(), updateMany: vi.fn() }
+    });
+    const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
+    const loaded = await repository.loadActiveRefreshCandidate({ connectionId: "connection-1", credentialId: "credential-1", providerModelId: "model-1" });
+    expect(loaded?.credential).toEqual({ envelope: null, id: "credential-1", versionId: "version-1" });
+    expect((await repository.loadModelActivationCandidate({ connectionId: "connection-1", modelId: "model-1" }))?.connection.defaultCredential?.usable).toBe(true);
+    await expect(repository.storeActiveRefreshCas({ candidate: loaded!, checkedAt: NOW, evidence: storedCheck().evidence, status: "available" })).resolves.toBe("stored");
+    await expect(repository.recordActiveRefreshFailureCas({ candidate: loaded!, failedAt: NOW })).resolves.toBe("stored");
+    connection.activeConfig = { ...configuration, authenticationMode: "bearer" };
+    await expect(repository.loadActiveRefreshCandidate({ connectionId: "connection-1", credentialId: "credential-1", providerModelId: "model-1" })).resolves.toBeNull();
   });
 });

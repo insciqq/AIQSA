@@ -27,7 +27,6 @@ import { searchValidationFingerprint } from "../../search/probeBinding";
 import type {
   AdminProviderRepository,
   ProviderActivationWrite,
-  ProviderDraftTestCandidate,
   StoredProviderDraftCheck
 } from "./repositoryContract";
 import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
@@ -53,6 +52,15 @@ function sameStrings(left: string[], right: string[]): boolean {
   const a = [...new Set(left)].sort();
   const b = [...new Set(right)].sort();
   return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function noAuthConnection(configuration: unknown, family: string): boolean {
+  try {
+    return family === "openai_compatible" &&
+      normalizeProviderConnectionConfiguration(configuration).authenticationMode === "none";
+  } catch {
+    return false;
+  }
 }
 
 function date(value: Date | null): string | null {
@@ -329,30 +337,6 @@ async function serializable<Value>(
     }
   }
   throw new Error("provider_transaction_conflict");
-}
-
-function sourceMatches(
-  candidate: ProviderDraftTestCandidate,
-  credential: {
-    activeVersion: null | { id: string; revokedAt: Date | null; secretEnvelope: string | null };
-    activeVersionId: string | null;
-    draftSecretEnvelope: string | null;
-    draftVersion: number;
-  }
-): boolean {
-  const source = candidate.credential.source;
-  if (source.kind === "draft") {
-    return (
-      credential.draftVersion === source.draftVersion &&
-      credential.draftSecretEnvelope === source.envelope
-    );
-  }
-  return (
-    credential.activeVersionId === source.versionId &&
-    credential.activeVersion?.id === source.versionId &&
-    credential.activeVersion.revokedAt === null &&
-    credential.activeVersion.secretEnvelope === source.envelope
-  );
 }
 
 async function currentReferencedCredentialIds(
@@ -916,28 +900,6 @@ export function createPrismaAdminProviderRepository(
       });
     },
 
-    async updateConnectionDraft(input) {
-      const existing = await prisma.providerConnection.findUnique({
-        select: { id: true },
-        where: { id: input.connectionId }
-      });
-      if (!existing) return "not_found";
-      const updated = await prisma.providerConnection.updateMany({
-        data: {
-          displayName: input.displayName,
-          draftConfig: json(input.configuration),
-          draftVersion: { increment: 1 },
-          unassignedPolicy: input.unassignedPolicy
-        },
-        where: {
-          draftVersion: input.expectedDraftVersion,
-          family: { not: "fake" },
-          id: input.connectionId
-        }
-      });
-      return updated.count === 1 ? "updated" : "stale";
-    },
-
     async createModel(input) {
       const connection = await prisma.providerConnection.findUnique({
         select: { family: true },
@@ -989,77 +951,6 @@ export function createPrismaAdminProviderRepository(
       return updated.count === 1 ? "updated" : "not_found";
     },
 
-    async updateCredentialDraft(input) {
-      const existing = await prisma.providerCredential.findUnique({
-        select: { id: true },
-        where: { id: input.credentialId }
-      });
-      if (!existing) return "not_found";
-      const updated = await prisma.providerCredential.updateMany({
-        data: {
-          draftSecretEnvelope: input.draftSecretEnvelope,
-          draftVersion: { increment: 1 }
-        },
-        where: {
-          draftVersion: input.expectedDraftVersion,
-          id: input.credentialId
-        }
-      });
-      return updated.count === 1 ? "updated" : "stale";
-    },
-
-    async loadDraftTestCandidate(input) {
-      const [model, credential] = await Promise.all([
-        prisma.providerModel.findFirst({
-          include: { connection: true },
-          where: {
-            connection: { family: { not: "fake" } },
-            connectionId: input.connectionId,
-            id: input.providerModelId
-          }
-        }),
-        prisma.providerCredential.findFirst({
-          include: {
-            activeVersion: {
-              select: { id: true, revokedAt: true, secretEnvelope: true }
-            }
-          },
-          where: { connectionId: input.connectionId, id: input.credentialId }
-        })
-      ]);
-      if (!model || !credential) return null;
-      const source = credential.draftSecretEnvelope
-        ? {
-            draftVersion: credential.draftVersion,
-            envelope: credential.draftSecretEnvelope,
-            kind: "draft" as const
-          }
-        : credential.activeVersion?.secretEnvelope && !credential.activeVersion.revokedAt
-          ? {
-              envelope: credential.activeVersion.secretEnvelope,
-              kind: "active" as const,
-              versionId: credential.activeVersion.id
-            }
-          : null;
-      if (!source) return null;
-      return {
-        connection: {
-          configuration: model.connection.draftConfig,
-          displayName: model.connection.displayName,
-          draftVersion: model.connection.draftVersion,
-          family: model.connection.family,
-          id: model.connection.id
-        },
-        credential: { id: credential.id, source },
-        model: {
-          configuration: model.draftConfig,
-          displayName: model.displayName,
-          draftVersion: model.draftVersion,
-          id: model.id
-        }
-      };
-    },
-
     async loadModelActivationCandidate(input) {
       const [connection, model] = await Promise.all([
         prisma.providerConnection.findUnique({
@@ -1089,7 +980,8 @@ export function createPrismaAdminProviderRepository(
                   credential.activeVersionId !== null &&
                   credential.activeVersion?.id === credential.activeVersionId &&
                   credential.activeVersion.revokedAt === null &&
-                  credential.activeVersion.secretEnvelope !== null
+                  (credential.activeVersion.secretEnvelope !== null ||
+                    noAuthConnection(connection.activeConfig ?? connection.draftConfig, connection.family))
               }
             : null,
           draftConfiguration: connection.draftConfig,
@@ -1186,84 +1078,10 @@ export function createPrismaAdminProviderRepository(
       }
     },
 
-    async storeDraftCheckCas(candidate, check) {
-      const source = candidate.credential.source;
-      if (
-        check.connectionDraftVersion !== candidate.connection.draftVersion ||
-        check.modelDraftVersion !== candidate.model.draftVersion ||
-        check.providerModelId !== candidate.model.id ||
-        check.credentialId !== candidate.credential.id ||
-        (source.kind === "draft"
-          ? check.credentialDraftVersion !== source.draftVersion || check.credentialVersionId !== null
-          : check.credentialDraftVersion !== null || check.credentialVersionId !== source.versionId)
-      ) {
-        return "stale";
-      }
-      return repeatableRead(prisma, async (tx) => {
-        const [connection, model, credential] = await Promise.all([
-          tx.providerConnection.findUnique({
-            select: { draftVersion: true },
-            where: { id: candidate.connection.id }
-          }),
-          tx.providerModel.findFirst({
-            select: { draftVersion: true },
-            where: {
-              connectionId: candidate.connection.id,
-              id: candidate.model.id
-            }
-          }),
-          tx.providerCredential.findFirst({
-            include: {
-              activeVersion: {
-                select: { id: true, revokedAt: true, secretEnvelope: true }
-              }
-            },
-            where: {
-              connectionId: candidate.connection.id,
-              id: candidate.credential.id
-            }
-          })
-        ]);
-        if (
-          connection?.draftVersion !== candidate.connection.draftVersion ||
-          model?.draftVersion !== candidate.model.draftVersion ||
-          !credential ||
-          !sourceMatches(candidate, credential)
-        ) {
-          return "stale" as const;
-        }
-        await tx.providerDraftCheck.upsert({
-          create: {
-            checkedAt: check.checkedAt,
-            connectionDraftVersion: check.connectionDraftVersion,
-            connectionId: candidate.connection.id,
-            credentialDraftVersion: check.credentialDraftVersion,
-            credentialId: check.credentialId,
-            credentialVersionId: check.credentialVersionId,
-            evidence: json(check.evidence),
-            fingerprint: check.fingerprint,
-            modelDraftVersion: check.modelDraftVersion,
-            providerModelId: check.providerModelId,
-            status: check.status
-          },
-          update: {
-            checkedAt: check.checkedAt,
-            evidence: json(check.evidence),
-            status: check.status
-          },
-          where: { fingerprint: check.fingerprint }
-        });
-        await tx.providerCredential.update({
-          data: { testedAt: check.checkedAt },
-          where: { id: check.credentialId }
-        });
-        return "stored" as const;
-      });
-    },
-
     async loadActivationCandidate(connectionId) {
       const connection = await prisma.providerConnection.findUnique({
         select: {
+          activeConfig: true,
           displayName: true,
           draftConfig: true,
           draftVersion: true,
@@ -1336,6 +1154,7 @@ export function createPrismaAdminProviderRepository(
         : [];
       return {
         connection: {
+          activeConfiguration: connection.activeConfig,
           configuration: connection.draftConfig,
           displayName: connection.displayName,
           draftVersion: connection.draftVersion,
@@ -1404,7 +1223,8 @@ export function createPrismaAdminProviderRepository(
         !connection?.activeConfig || connection.activeVersion < 1 || connection.family === "fake" ||
         !model?.activeConfig || model.activeVersion < 1 ||
         !credential?.activeVersionId || credential.activeVersionId !== credential.activeVersion?.id ||
-        credential.activeVersion.revokedAt || !credential.activeVersion.secretEnvelope
+        credential.activeVersion.revokedAt ||
+        (credential.activeVersion.secretEnvelope === null && !noAuthConnection(connection.activeConfig, connection.family))
       ) {
         return null;
       }
@@ -1456,7 +1276,9 @@ export function createPrismaAdminProviderRepository(
           connection?.activeVersion !== input.candidate.connection.version ||
           model?.activeVersion !== input.candidate.model.version ||
           credential?.activeVersionId !== input.candidate.credential.versionId ||
-          credential.activeVersion?.revokedAt || !credential.activeVersion?.secretEnvelope
+          !credential.activeVersion || credential.activeVersion.revokedAt ||
+          (credential.activeVersion.secretEnvelope === null &&
+            !noAuthConnection(input.candidate.connection.configuration, input.candidate.connection.family))
         ) return "stale" as const;
         await tx.providerModelCredentialCheck.updateMany({
           data: {
@@ -1502,7 +1324,9 @@ export function createPrismaAdminProviderRepository(
           connection?.activeVersion !== input.candidate.connection.version ||
           model?.activeVersion !== input.candidate.model.version ||
           credential?.activeVersionId !== input.candidate.credential.versionId ||
-          credential.activeVersion?.revokedAt || !credential.activeVersion?.secretEnvelope
+          !credential.activeVersion || credential.activeVersion.revokedAt ||
+          (credential.activeVersion.secretEnvelope === null &&
+            !noAuthConnection(input.candidate.connection.configuration, input.candidate.connection.family))
         ) return "stale" as const;
         const existing = input.capabilityRole ? await tx.providerModelCredentialCheck.findUnique({
           where: { providerModelId_credentialVersionId_connectionVersion_modelVersion: {
@@ -1551,10 +1375,10 @@ export function createPrismaAdminProviderRepository(
 
     async loadDiscoveryCandidate(input) {
       const connection = await prisma.providerConnection.findUnique({
-        select: { draftConfig: true, family: true, id: true },
+        select: { activeConfig: true, family: true, id: true },
         where: { id: input.connectionId }
       });
-      if (!connection || connection.family === "fake") return null;
+      if (!connection?.activeConfig || connection.family === "fake") return null;
       const credential = await prisma.providerCredential.findFirst({
         include: {
           activeVersion: {
@@ -1564,24 +1388,20 @@ export function createPrismaAdminProviderRepository(
         where: { connectionId: input.connectionId, id: input.credentialId }
       });
       if (!credential) return null;
+      const configuration = connection.activeConfig;
       let keyless = false;
       try {
         keyless = normalizeProviderConnectionConfiguration(
-          connection.draftConfig
+          configuration
         ).authenticationMode === "none";
       } catch {
         return null;
       }
-      const activeNoAuth = keyless && Boolean(
-        credential.activeVersion && !credential.activeVersion.revokedAt
+      const activeNoAuth = keyless && connection.family === "openai_compatible" && Boolean(
+        credential.activeVersion && !credential.activeVersion.revokedAt &&
+        credential.activeVersion.secretEnvelope === null
       );
-      const source = credential.draftSecretEnvelope
-        ? {
-            draftVersion: credential.draftVersion,
-            envelope: credential.draftSecretEnvelope,
-            kind: "draft" as const
-          }
-        : credential.activeVersion?.secretEnvelope && !credential.activeVersion.revokedAt
+      const source = credential.activeVersion?.secretEnvelope && !credential.activeVersion.revokedAt
           ? {
               envelope: credential.activeVersion.secretEnvelope,
               kind: "active" as const,
@@ -1591,7 +1411,7 @@ export function createPrismaAdminProviderRepository(
       if (!source && !activeNoAuth) return null;
       return {
         connection: {
-          configuration: connection.draftConfig,
+          configuration,
           family: connection.family,
           id: connection.id
         },
@@ -1831,12 +1651,23 @@ export function createPrismaAdminProviderRepository(
 
     async activateCredentialCas(input) {
       try {
-        return await repeatableRead(prisma, async (tx) => {
+        return await serializable(prisma, async (tx) => {
           const connection = await tx.providerConnection.findUnique({
-            select: { defaultCredentialId: true, family: true, id: true },
+            select: { activeVersion: true, draftVersion: true, defaultCredentialId: true, family: true, id: true },
             where: { id: input.connectionId }
           });
           if (!connection || connection.family === "fake") return "connection_not_found" as const;
+          if (connection.activeVersion !== input.expectedConnectionVersion ||
+            connection.activeVersion === 0 && connection.draftVersion !== input.expectedConnectionDraftVersion) {
+            return "stale" as const;
+          }
+          for (const check of input.modelChecks) {
+            const model = await tx.providerModel.findFirst({
+              select: { activeVersion: true },
+              where: { connectionId: input.connectionId, id: check.providerModelId }
+            });
+            if (model?.activeVersion !== check.modelVersion) return "stale" as const;
+          }
 
           let version: number;
           let expectedDraftVersion: number;
@@ -1887,6 +1718,20 @@ export function createPrismaAdminProviderRepository(
           });
           if (updated.count !== 1) throw new ProviderActivationStaleError();
 
+          for (const check of input.modelChecks) {
+            await tx.providerModelCredentialCheck.create({ data: {
+              checkedAt: input.checkedAt,
+              connectionId: input.connectionId,
+              connectionVersion: connection.activeVersion,
+              credentialId: input.credential.id,
+              credentialVersionId: input.versionId,
+              evidence: json(check.evidence),
+              modelVersion: check.modelVersion,
+              providerModelId: check.providerModelId,
+              status: check.status
+            } });
+          }
+
           if (!connection.defaultCredentialId) {
             await tx.providerConnection.update({
               data: { defaultCredentialId: input.credential.id },
@@ -1900,6 +1745,95 @@ export function createPrismaAdminProviderRepository(
         if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
           return input.credential.kind === "new" ? "label_taken" : "stale";
         }
+        throw error;
+      }
+    },
+
+    async saveConnectionSettingsCas(input) {
+      try {
+        return await serializable(prisma, async (tx) => {
+          const connection = await tx.providerConnection.findUnique({
+            select: { activeConfig: true, activeVersion: true, draftVersion: true, family: true },
+            where: { id: input.connectionId }
+          });
+          if (!connection || connection.family === "fake") return "not_found" as const;
+          if (connection.activeVersion !== input.expectedActiveVersion ||
+            connection.draftVersion !== input.expectedDraftVersion) return "stale" as const;
+          const credentials = await tx.providerCredential.findMany({
+            include: { activeVersion: { select: { id: true, revokedAt: true } } },
+            where: { connectionId: input.connectionId }
+          });
+          const live = credentials.filter((credential) => credential.activeVersion && !credential.activeVersion.revokedAt);
+          if (!sameStrings(live.map(({ id }) => id), input.credentials.map(({ credentialId }) => credentialId)) ||
+            input.credentials.some((write) => !live.some((credential) => credential.id === write.credentialId &&
+              credential.draftVersion === write.expectedDraftVersion &&
+              credential.activeVersionId === write.expectedVersionId))) return "stale" as const;
+          for (const check of input.credentials[0]?.modelChecks ?? []) {
+            const model = await tx.providerModel.findFirst({
+              select: { activeVersion: true },
+              where: { connectionId: input.connectionId, id: check.providerModelId }
+            });
+            if (model?.activeVersion !== check.modelVersion) return "stale" as const;
+          }
+          const configurationChanged = connection.activeConfig !== null &&
+            JSON.stringify(normalizeProviderConnectionConfiguration(connection.activeConfig)) !== JSON.stringify(input.configuration);
+          const nextDraftVersion = Math.max(connection.activeVersion, connection.draftVersion) + 1;
+          const activeVersion = configurationChanged ? nextDraftVersion : connection.activeVersion;
+          const updated = await tx.providerConnection.updateMany({
+            data: {
+              displayName: input.displayName,
+              draftConfig: json(input.configuration),
+              draftVersion: nextDraftVersion,
+              unassignedPolicy: input.unassignedPolicy,
+              ...(connection.activeVersion > 0 ? {
+                activeConfig: json(input.configuration),
+                activeVersion,
+                ...(configurationChanged ? { activatedAt: input.now } : {})
+              } : {})
+            },
+            where: { activeVersion: input.expectedActiveVersion, draftVersion: input.expectedDraftVersion, id: input.connectionId }
+          });
+          if (updated.count !== 1) throw new ProviderActivationStaleError();
+          for (const credential of input.credentials) {
+            const replacement = credential.replacement;
+            if (replacement) {
+              await tx.providerCredentialVersion.create({ data: {
+                activatedAt: input.now,
+                credentialId: credential.credentialId,
+                id: replacement.versionId,
+                secretEnvelope: replacement.envelope,
+                testEvidence: json(credential.testEvidence),
+                testedAt: input.now,
+                version: credential.expectedDraftVersion + 1
+              } });
+              await tx.providerCredential.update({
+                data: {
+                  activatedAt: input.now, activeVersionId: replacement.versionId,
+                  draftSecretEnvelope: null, draftVersion: credential.expectedDraftVersion + 1, testedAt: input.now
+                },
+                where: { id: credential.credentialId }
+              });
+            }
+            // A rename does not invalidate or overwrite existing capability proof.
+            if (!configurationChanged && !replacement) continue;
+            for (const check of credential.modelChecks) {
+              await tx.providerModelCredentialCheck.create({ data: {
+                checkedAt: input.now,
+                connectionId: input.connectionId,
+                connectionVersion: activeVersion,
+                credentialId: credential.credentialId,
+                credentialVersionId: replacement?.versionId ?? credential.expectedVersionId,
+                evidence: json(check.evidence),
+                modelVersion: check.modelVersion,
+                providerModelId: check.providerModelId,
+                status: check.status
+              } });
+            }
+          }
+          return "updated" as const;
+        });
+      } catch (error) {
+        if (error instanceof ProviderActivationStaleError) return "stale";
         throw error;
       }
     },

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { flushSync } from "react-dom";
 
 /**
  * Shared dismissal contract for anchored `UiV2MenuSurface` menus:
@@ -61,5 +62,11 @@ export function useMenuDismissalV2<
     };
   }, [open]);
 
-  return { menuRef, triggerRef };
+  const closeForAction = useCallback(() => {
+    // Remove a mobile menu's modal layer before the next action captures its opener.
+    flushSync(() => onCloseRef.current());
+    triggerRef.current?.focus();
+  }, []);
+
+  return { closeForAction, menuRef, triggerRef };
 }

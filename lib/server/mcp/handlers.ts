@@ -268,16 +268,28 @@ export function createAdminMcpDraftTestHandler(deps: McpHandlerDeps) {
       return errorJson("invalid_mcp_values", 400);
     }
     const publish = body.publish === true;
+    const name = optionalText(body.name, 120);
+    const description = optionalDescriptionText(body.description, 4_000);
+    let draft: McpDraftConfiguration | undefined;
+    if (body.draft !== undefined) {
+      const validated = validateMcpDraft(body.draft);
+      if (!validated.ok) return errorJson("invalid_draft", 400, validated.issues);
+      draft = validated.value;
+    }
     const sharedValues = body.sharedValues === undefined ? undefined : slotValues(body.sharedValues);
     if ((body.publish !== undefined && typeof body.publish !== "boolean") ||
       (body.expectedUpdatedAt !== undefined && (typeof body.expectedUpdatedAt !== "string" ||
         !Number.isFinite(Date.parse(body.expectedUpdatedAt)))) ||
       (publish && typeof body.expectedUpdatedAt !== "string") ||
-      sharedValues === null || (!publish && sharedValues !== undefined)) {
+      name === null || description === null || sharedValues === null ||
+      (!publish && (sharedValues !== undefined || draft !== undefined || name !== undefined || description !== undefined))) {
       return errorJson("invalid_mcp_values", 400);
     }
     const { serverId } = await context.params;
     const result = await safely(() => deps.repository.testDraft({
+      ...(description !== undefined ? { description } : {}),
+      ...(draft ? { draft } : {}),
+      ...(name !== undefined ? { name } : {}),
       ...(typeof body.expectedUpdatedAt === "string" ? { expectedUpdatedAt: body.expectedUpdatedAt } : {}),
       oneTimeValues: parsedValues as Record<string, McpSlotValue>,
       ...(publish ? { publish: true } : {}),

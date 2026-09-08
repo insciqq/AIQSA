@@ -128,7 +128,7 @@ export function useAdminGroupsController({
       ? [...new Set([...currentGroupIds, group.id])]
       : currentGroupIds.filter((groupId) => groupId !== group.id);
     const result = await runAction(
-      { action: "set_user_groups", groupIds: nextGroupIds, userId },
+      { action: "set_user_groups", expectedGroupIds: currentGroupIds, groupIds: nextGroupIds, userId },
       enabled ? "Member added." : "Member removed."
     );
     return !result.error;

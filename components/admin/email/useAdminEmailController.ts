@@ -116,6 +116,8 @@ export function useAdminEmailController({
   const guard = useCallback(async <T,>(operation: () => Promise<T>, idle: T): Promise<T> => {
     if (busyRef.current) return idle;
     busyRef.current = true;
+    ++generationRef.current;
+    setLoading(false);
     setBusy(true);
     try {
       return await operation();
@@ -135,6 +137,7 @@ export function useAdminEmailController({
         expectedDraftVersion: current.draft.version
       });
       if (!mountedRef.current) return false;
+      ++generationRef.current;
       if (!result.ok) {
         onError(adminEmailErrorMessage(result.error));
         return false;
@@ -155,6 +158,7 @@ export function useAdminEmailController({
         expectedActiveVersion: current.active.version
       });
       if (!mountedRef.current) return false;
+      ++generationRef.current;
       if (!result.ok) {
         onError(adminEmailErrorMessage(result.error));
         return false;
@@ -175,6 +179,7 @@ export function useAdminEmailController({
         testRecipient
       });
       if (!mountedRef.current) return { message: "", ok: false };
+      ++generationRef.current;
       if (result.ok) {
         replace(result.data.email);
         onNotice(`Test message sent to ${testRecipient}. Email delivery is active.`);
