@@ -1,3 +1,4 @@
+import { providerResponseFailure } from "./responseFailure";
 import { safeExternalHref } from "../../domain/links";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage } from "../../domain/usage";
@@ -577,14 +578,14 @@ export async function* parseOpenAIResponsesSse(
 
     const errorCode = streamErrorCode(eventType, parsed);
     if (errorCode) {
-      throw new Error(errorCode);
+      throw providerResponseFailure(errorCode, response ?? parsed);
     }
 
     if (isCompletedEvent) {
       const status = response ? stringValue(response.status) : undefined;
       if (status !== "completed") {
         if (status === "failed" || status === "incomplete" || status === "cancelled") {
-          throw new Error(`openai_response_${status}`);
+          throw providerResponseFailure(`openai_response_${status}`, response!);
         }
 
         throw new Error("openai_stream_truncated");
@@ -642,7 +643,7 @@ export async function* parseOpenAIResponsesSse(
     }
 
     if (failureStatus) {
-      throw new Error(`openai_response_${failureStatus}`);
+      throw providerResponseFailure(`openai_response_${failureStatus}`, response ?? parsed);
     }
   }
 

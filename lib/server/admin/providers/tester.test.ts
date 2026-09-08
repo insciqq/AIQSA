@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import * as visionProbe from "../../providers/visionInputProbe";
 import type { OpenRouterDiscoveryClient } from "../../providers/openRouterDiscovery";
 import {
   createAdminProviderDraftTester,
@@ -76,7 +77,7 @@ describe("image input compatibility", () => {
       return structuredChatResponse();
     });
     const base = input();
-    const outcome = await createAdminProviderDraftTester({ createFetch: () => fetchFn }).test({
+    const outcome = await createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn }).test({
       ...base, capabilityRole, mode: "tiny_generation",
       model: { ...base.model, capabilities: { ...base.model.capabilities, vision: true, nativePdfInput: true, toolCalling: true } }
     });
@@ -101,7 +102,7 @@ describe("image input compatibility", () => {
       return body.stream ? streamedChatResponse() : structuredChatResponse();
     });
     const base = input();
-    const outcome = await createAdminProviderDraftTester({ createFetch: () => fetchFn }).test({
+    const outcome = await createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn }).test({
       ...base,
       mode: "tiny_generation",
       model: { ...base.model, capabilities: { ...base.model.capabilities, vision: true } }
@@ -184,7 +185,7 @@ describe("admin provider draft tester", () => {
         mode: "tiny_generation",
         model: { ...input().model, capabilities: { ...input().model.capabilities, toolCalling: true } }
       });
-      const outcome = await createAdminProviderDraftTester({ createFetch: () => fetchFn }).test(configured);
+      const outcome = await createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn }).test(configured);
       expect(outcome).toMatchObject({
         evidence: {
           compatibility: {
@@ -221,7 +222,7 @@ describe("admin provider draft tester", () => {
       }
       return body.stream ? streamedChatResponse() : structuredChatResponse();
     });
-    const outcome = await createAdminProviderDraftTester({ createFetch: () => fetchFn }).test(input({
+    const outcome = await createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn }).test(input({
       mode: "tiny_generation",
       model: { ...input().model, capabilities: { ...input().model.capabilities, toolCalling: true } }
     }));
@@ -234,7 +235,7 @@ describe("admin provider draft tester", () => {
       return body.tools?.[0]?.function?.name === "aiqsa_tool_call_probe"
         ? Response.json({ error: { code: status } }, { status }) : structuredChatResponse();
     });
-    await expect(createAdminProviderDraftTester({ createFetch: () => fetchFn }).test(input({
+    await expect(createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn }).test(input({
       mode: "tiny_generation",
       model: { ...input().model, capabilities: { ...input().model.capabilities, toolCalling: true } }
     }))).rejects.toThrow();
@@ -247,7 +248,7 @@ describe("admin provider draft tester", () => {
         ? streamedChatResponse()
         : structuredChatResponse();
     });
-    const providerTester = createAdminProviderDraftTester({
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {},
       createDiscoveryClient: () => discovery(),
       createFetch: () => fetchFn,
       pdfInputProbe: {
@@ -288,7 +289,7 @@ describe("admin provider draft tester", () => {
 
   it("runs the PDF probe even when Direct PDF input is not preconfigured", async () => {
     const probe = vi.fn(async () => null);
-    const providerTester = createAdminProviderDraftTester({
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {},
       createDiscoveryClient: () => discovery(),
       createFetch: () => async () => structuredChatResponse(),
       pdfInputProbe: { probe }
@@ -308,7 +309,7 @@ describe("admin provider draft tester", () => {
       upstreamModelId: "vendor/model",
       verified: true as const
     }));
-    const providerTester = createAdminProviderDraftTester({
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {},
       createDiscoveryClient: () => discovery(),
       createFetch: () => async () => structuredChatResponse(),
       pdfInputProbe: { probe }
@@ -339,7 +340,7 @@ describe("admin provider draft tester", () => {
   });
 
   it("keeps ordinary model availability when the PDF probe fails", async () => {
-    const providerTester = createAdminProviderDraftTester({
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {},
       createDiscoveryClient: () => discovery(),
       createFetch: () => async () => structuredChatResponse(),
       pdfInputProbe: {
@@ -361,7 +362,7 @@ describe("admin provider draft tester", () => {
   });
 
   it("does not convert a transient capability failure into Not supported", async () => {
-    const providerTester = createAdminProviderDraftTester({
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {},
       createDiscoveryClient: () => discovery(),
       createFetch: () => async () => structuredChatResponse(),
       pdfInputProbe: {
@@ -391,7 +392,7 @@ describe("admin provider draft tester", () => {
       model: "qwen/qwen3-embedding-8b",
       usage: { prompt_tokens: 4, total_tokens: 4 }
     }), { headers: { "content-type": "application/json" }, status: 200 }));
-    const tester = createAdminProviderDraftTester({
+    const tester = createAdminProviderDraftTester({ retrySleep: async () => {},
       createDiscoveryClient: () => discovery({ listEmbeddingModels, listModels }),
       createFetch
     });
@@ -462,7 +463,7 @@ describe("admin provider draft tester", () => {
       usage: { prompt_tokens: 9, total_tokens: 9 }
     }), { headers: { "content-type": "application/json" }, status: 200 }));
     const createFetch = vi.fn(() => fetchFn);
-    const tester = createAdminProviderDraftTester({
+    const tester = createAdminProviderDraftTester({ retrySleep: async () => {},
       createDiscoveryClient: () => discovery({ listModels, listRerankModels }),
       createFetch
     });
@@ -520,7 +521,7 @@ describe("admin provider draft tester", () => {
   it("uses the credential-specific OpenRouter account catalog", async () => {
     const listModels = vi.fn<OpenRouterDiscoveryClient["listModels"]>(async () => []);
     const createDiscoveryClient = vi.fn(() => discovery({ listModels }));
-    const providerTester = createAdminProviderDraftTester({ createDiscoveryClient });
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {}, createDiscoveryClient });
 
     await expect(providerTester.test(input())).resolves.toEqual({
       evidence: {
@@ -558,7 +559,7 @@ describe("admin provider draft tester", () => {
       supportedParameters: [],
       tag: "provider-a"
     }]);
-    const providerTester = createAdminProviderDraftTester({
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {},
       createDiscoveryClient: () => discovery({ listModelEndpoints })
     });
     const selected = input({
@@ -584,7 +585,7 @@ describe("admin provider draft tester", () => {
   });
 
   it("matches OpenRouter route tags case-insensitively without changing evidence", async () => {
-    const providerTester = createAdminProviderDraftTester({
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {},
       createDiscoveryClient: () => discovery({
         async listModelEndpoints() {
           return [{
@@ -639,7 +640,7 @@ describe("admin provider draft tester", () => {
         message: { content: "ordinary free-form reply", role: "assistant" }
       }]
     }), { headers: { "content-type": "application/json" }, status: 200 }));
-    const providerTester = createAdminProviderDraftTester({
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {},
       createDiscoveryClient: () => discovery(),
       createFetch: () => fetchFn
     });
@@ -675,7 +676,7 @@ describe("admin provider draft tester", () => {
         message: { content: "ordinary free-form reply", role: "assistant" }
       }]
     }), { headers: { "content-type": "application/json" }, status: 200 }));
-    const providerTester = createAdminProviderDraftTester({
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {},
       createDiscoveryClient: () => discovery(),
       createFetch: () => fetchFn,
       pdfInputProbe: {
@@ -714,7 +715,7 @@ describe("admin provider draft tester", () => {
         message: { content: "ordinary free-form reply", role: "assistant" }
       }]
     }), { headers: { "content-type": "application/json" }, status: 200 }));
-    const providerTester = createAdminProviderDraftTester({ createFetch: () => fetchFn });
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn });
 
     const outcome = await providerTester.test(input({ mode: "tiny_generation" }));
 
@@ -754,7 +755,7 @@ describe("admin provider draft tester", () => {
       headers: { "content-type": "application/json" },
       status: 200
     }));
-    const providerTester = createAdminProviderDraftTester({
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {},
       createFetch: () => fetchFn
     });
     const compatible = input({
@@ -810,7 +811,7 @@ describe("admin provider draft tester", () => {
         usage: { completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 }
       }));
     });
-    const providerTester = createAdminProviderDraftTester({ createFetch: () => fetchFn });
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn });
 
     await expect(providerTester.test(input({
       connection: {
@@ -835,7 +836,7 @@ describe("admin provider draft tester", () => {
   });
 
   it("does not allow no-auth to enter the OpenRouter account-catalog path", async () => {
-    const providerTester = createAdminProviderDraftTester({
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {},
       createDiscoveryClient: () => discovery()
     });
     await expect(providerTester.test(input({ secret: null })))
@@ -844,7 +845,7 @@ describe("admin provider draft tester", () => {
 
   it("gives an OpenRouter reasoning diagnostic the standard output budget", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => structuredChatResponse());
-    const providerTester = createAdminProviderDraftTester({ createFetch: () => fetchFn });
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn });
     const openRouter = input({
       mode: "tiny_generation",
       model: {
@@ -903,7 +904,7 @@ describe("admin provider draft tester", () => {
       headers: { "content-type": "application/json" },
       status: 200
     }));
-    const providerTester = createAdminProviderDraftTester({ createFetch: () => fetchFn });
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn });
     const responses = input({
       connection: {
         allowPrivateNetwork: false,
@@ -961,7 +962,7 @@ describe("admin provider draft tester", () => {
       headers: { "content-type": "text/event-stream" },
       status: 200
     }));
-    const providerTester = createAdminProviderDraftTester({ createFetch: () => fetchFn });
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn });
     const anthropic = input({
       connection: {
         allowPrivateNetwork: false,
@@ -988,5 +989,124 @@ describe("admin provider draft tester", () => {
       max_tokens: 1_000,
       stream: true
     });
+  });
+});
+
+function completedResponsesResponse(text = "OK") {
+  return Response.json({
+    id: "synthetic-response", status: "completed",
+    output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }],
+    usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 }
+  });
+}
+
+function responsesInput(capabilityRole?: AdminProviderDraftTesterInput["capabilityRole"]) {
+  const base = input();
+  return input({
+    capabilityRole, mode: "tiny_generation", providerFamily: "openai_compatible",
+    model: { ...base.model, adapterKind: "openai_responses_compatible", openRouterRouting: undefined }
+  });
+}
+
+describe("Responses capability terminals", () => {
+  it.each([
+    ["memory", "incomplete"], ["memory", "failed"],
+    ["direct_pdf", "incomplete"], ["direct_pdf", "failed"]
+  ] as const)("fails %s on %s without publishing incompatibility", async (role, status) => {
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(completedResponsesResponse())
+      .mockImplementation(async () => Response.json({
+        id: "synthetic-response", status, output: [],
+        ...(status === "failed"
+          ? { error: { code: "server_error", message: "Synthetic failure" } }
+          : { incomplete_details: { reason: "max_output_tokens" },
+            usage: { input_tokens: 4, output_tokens: 512, total_tokens: 516 } })
+      }));
+    await expect(createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn })
+      .test(responsesInput(role))).rejects.toThrow(role === "memory"
+        ? "structured_output_provider_incomplete" : `compatible_response_${status}`);
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe("capability check failure boundaries", () => {
+  it.each(["memory", "direct_pdf"] as const)("keeps completed and rejected %s probes distinct", async (role) => {
+    for (const result of ["verified", "wrong_answer", "unsupported"] as const) {
+      const fetchFn = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(completedResponsesResponse())
+        .mockResolvedValueOnce(result === "unsupported"
+          ? Response.json({ error: { message: "Unsupported input" } }, { status: 400 })
+          : completedResponsesResponse(result === "wrong_answer" ? "WRONG" : role === "memory"
+            ? JSON.stringify({ count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] })
+            : "Q7K4P9"));
+      const outcome = await createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn }).test(responsesInput(role));
+      expect(outcome.status).toBe("available");
+      expect(outcome.evidence.compatibility?.modelAccess).toBe("verified");
+      expect(outcome.evidence.compatibility?.[role === "memory" ? "structuredOutput" : "directPdf"])
+        .toBe(result === "verified" ? "verified" : "not_supported");
+      expect(Boolean(outcome.evidence[role === "memory" ? "structuredOutput" : "pdfInput"]))
+        .toBe(result === "verified");
+    }
+  });
+
+  it.each(["structured", "pdf"] as const)("fails a full model check on an incomplete %s response", async (capability) => {
+    const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
+      const body = JSON.parse(String(request?.body));
+      const isTarget = capability === "structured" ? Boolean(body.text?.format) : JSON.stringify(body.input).includes("input_file");
+      return isTarget
+        ? Response.json({ id: "synthetic-response", status: "incomplete", output: [], incomplete_details: { reason: "max_output_tokens" } })
+        : completedResponsesResponse(body.text?.format
+          ? JSON.stringify({ count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] }) : "OK");
+    });
+    await expect(createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn }).test(responsesInput()))
+      .rejects.toThrow(capability === "structured" ? "structured_output_provider_incomplete" : "compatible_response_incomplete");
+    expect(fetchFn).toHaveBeenCalledTimes(capability === "structured" ? 4 : 5);
+  });
+
+  it.each([
+    new TypeError("fetch failed"),
+    new DOMException("cancelled", "AbortError"),
+    Object.assign(new Error("provider_run_aborted"), { name: "AbortError" }),
+    Object.assign(new Error("timeout"), { code: "provider_request_timed_out" }),
+    Object.assign(new Error("limit"), { code: "provider_response_too_large" }),
+    new Error("compatible_response_cancelled"),
+    new Error("compatible_response_not_completed"),
+    new Error("openai_response_failed"),
+    new Error("openai_response_incomplete"),
+    new Error("openai_response_cancelled"),
+    new Error("openai_response_not_completed")
+  ])("preserves a represented transport/cancellation failure: %s", async (failure) => {
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {},
+      createFetch: () => async () => completedResponsesResponse(),
+      pdfInputProbe: { async probe() { throw failure; } }
+    });
+    await expect(providerTester.test(responsesInput("direct_pdf"))).rejects.toBe(failure);
+  });
+
+  it("preserves the caller cancellation reason during a capability probe", async () => {
+    const controller = new AbortController();
+    const providerTester = createAdminProviderDraftTester({ retrySleep: async () => {},
+      createFetch: () => async () => completedResponsesResponse(),
+      pdfInputProbe: { async probe() { controller.abort("capability_check_cancelled"); throw new Error("ignored"); } }
+    });
+    await expect(providerTester.test({ ...responsesInput("direct_pdf"), signal: controller.signal }))
+      .rejects.toBe("capability_check_cancelled");
+  });
+
+  it.each([undefined, "vision"] as const)("fails the %s check when the local vision fixture is unavailable", async (capabilityRole) => {
+    const probe = vi.spyOn(visionProbe, "createProviderVisionInputProbe").mockReturnValue({
+      async probe() { throw new Error("vision_input_fixture_unavailable"); }
+    });
+    try {
+      const base = input();
+      await expect(createAdminProviderDraftTester({ retrySleep: async () => {},
+        createFetch: () => async () => structuredChatResponse(),
+        pdfInputProbe: { async probe() { return null; } }
+      }).test({ ...base, capabilityRole, mode: "tiny_generation",
+        model: { ...base.model, capabilities: { ...base.model.capabilities, vision: true } }
+      })).rejects.toThrow("vision_input_fixture_unavailable");
+    } finally {
+      probe.mockRestore();
+    }
   });
 });

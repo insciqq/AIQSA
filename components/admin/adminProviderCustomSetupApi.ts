@@ -1,3 +1,5 @@
+import { ADMIN_PROVIDER_SETUP_STREAM_TYPE, type AdminProviderSetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
+import { readAdminProviderSetupResponse } from "./adminProviderSetupStream";
 import type {
   AdminProviderCustomDiscoveryRequest,
   AdminProviderCustomDiscoveryResult,
@@ -227,18 +229,19 @@ export async function discoverAdminProviderCustomModels(
 export async function submitAdminProviderCustomSetup(
   body: AdminProviderCustomSetupRequest,
   fetcher: Fetcher = fetch,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onProgress?: (value: AdminProviderSetupProgress) => void
 ): Promise<AdminProviderCustomSetupClientResult> {
   try {
     const response = await fetcher("/api/admin/providers/custom-setup", {
       body: JSON.stringify(body),
       credentials: "same-origin",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(onProgress ? { accept: ADMIN_PROVIDER_SETUP_STREAM_TYPE } : {}) },
       method: "POST",
       signal
     });
-    const value = await response.json().catch(() => null);
-    if (!response.ok) {
+    const { ok, value } = await readAdminProviderSetupResponse(response, onProgress);
+    if (!ok) {
       return {
         error: {
           code: record(value) && typeof value.error === "string"

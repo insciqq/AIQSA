@@ -434,7 +434,9 @@ export function createOpenRouterRerankAdapter(input: Readonly<{
           timeout.signal.aborted && isProviderDeadlineExceededError(timeout.signal.reason)) {
           throw new RerankAdapterError("rerank_request_timed_out");
         }
-        throw new RerankAdapterError("rerank_provider_request_failed");
+        throw Object.assign(new RerankAdapterError("rerank_provider_request_failed"), {
+          retryableNetworkFailure: isRetryableProviderNetworkError(error)
+        });
       } finally {
         timeout.clear();
       }

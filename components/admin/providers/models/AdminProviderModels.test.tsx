@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import type { AdminConfirmationRequest } from "@/components/admin/useAdminConfirmationController";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import type { ProviderUsageSources } from "@/components/admin/providers/providerListView";
@@ -13,6 +14,7 @@ import {
 } from "@/components/admin/providers/providerFixtures";
 import type { AdminProviderConnection, AdminProviderTestEvidence } from "@/lib/contracts/adminProviders";
 import { AdminProviderModels } from "./AdminProviderModels";
+import { initialDiagnosticCredentialId } from "./modelListView";
 
 function evidence(upstreamModelId: string, overrides: Partial<NonNullable<AdminProviderTestEvidence["compatibility"]>> = {}): AdminProviderTestEvidence {
   return {
@@ -152,28 +154,104 @@ function harness(connection = openRouter(), busy = false) {
   const controller = { actions, state: { busy } } as unknown as AdminProvidersController;
   const confirmations: AdminConfirmationRequest[] = [];
   const onError = vi.fn();
-  const view = render(
-    <AdminProviderModels
-      connection={connection}
-      controller={controller}
-      onError={onError}
-      requestConfirmation={(config) => { confirmations.push(config); }}
-      usageSources={usageSources()}
-    />
-  );
-  const rerender = (next: AdminProviderConnection) => view.rerender(
-    <AdminProviderModels
-      connection={next}
-      controller={controller}
-      onError={onError}
-      requestConfirmation={(config) => { confirmations.push(config); }}
-      usageSources={usageSources()}
-    />
-  );
+  function Harness({ value }: { value: AdminProviderConnection }) {
+    const [selection, setSelection] = useState<string | null>(initialDiagnosticCredentialId(value));
+    return (
+      <AdminProviderModels
+        connection={value}
+        controller={controller}
+        diagnosticCredentialId={selection}
+        onDiagnosticCredentialChange={setSelection}
+        onError={onError}
+        requestConfirmation={(config) => { confirmations.push(config); }}
+        usageSources={usageSources()}
+      />
+    );
+  }
+  const view = render(<Harness value={connection} />);
+  const rerender = (next: AdminProviderConnection) => view.rerender(<Harness value={next} />);
   return { actions, confirmations, onError, rerender, view };
 }
 
 describe("AdminProviderModels", () => {
+  it("shows saved personal-key checks without an installation default", () => {
+    const connection = openRouter();
+    connection.defaultCredentialId = null;
+    connection.unassignedPolicy = "require_assignment";
+    connection.credentials = connection.credentials.slice(0, 1);
+    const { actions } = harness(connection);
+    expect(screen.getByTestId("provider-model-model-opus-works-with")).toHaveAttribute("data-works-with", "checked");
+    expect(screen.getByRole("combobox", { name: "Check results for key" })).toHaveValue("cred-primary");
+    fireEvent.click(screen.getByRole("button", { name: "Check models" }));
+    expect(actions.startModelChecks).toHaveBeenCalledWith("conn-or", "cred-primary", undefined);
+    expect(connection.defaultCredentialId).toBeNull();
+    expect(connection.unassignedPolicy).toBe("require_assignment");
+  });
+
+  it("requires an explicit choice among multiple keys and keeps rows, details and actions on that key", () => {
+    const connection = openRouter();
+    connection.defaultCredentialId = null;
+    const before = structuredClone(connection);
+    const { actions } = harness(connection);
+    const picker = screen.getByRole("combobox", { name: "Check results for key" });
+    expect(picker).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Check models" })).toBeDisabled();
+    fireEvent.change(picker, { target: { value: "cred-primary" } });
+    expect(screen.getByTestId("provider-model-model-opus-works-with")).toHaveAttribute("data-works-with", "checked");
+    fireEvent.click(screen.getByRole("button", { name: "Claude Opus 4.8" }));
+    const details = screen.getByTestId("provider-model-model-opus-details");
+    expect(details).toHaveTextContent("with key Primary");
+    fireEvent.change(picker, { target: { value: "cred-research" } });
+    expect(screen.getByTestId("provider-model-model-opus-works-with")).toHaveAttribute("data-works-with", "not_checked");
+    expect(details).toHaveTextContent("Not checked yet with key Research team.");
+    expect(details).not.toHaveTextContent("with key Primary");
+    expect(Object.values(actions).every((action) => action.mock.calls.length === 0)).toBe(true);
+    expect(connection).toEqual(before);
+    fireEvent.click(within(details).getByRole("button", { name: "Re-check" }));
+    expect(actions.startModelChecks).toHaveBeenCalledWith("conn-or", "cred-research", ["model-opus"]);
+  });
+
+  it.each(["disabled", "revoked", "removed", "rotated", "model changed", "connection changed"])(
+    "does not inherit old evidence or switch keys when the selected key is %s",
+    (change) => {
+      const connection = openRouter();
+      const { rerender } = harness(connection);
+      const next = structuredClone(connection);
+      const key = next.credentials[0]!;
+      if (change === "disabled") key.enabled = false;
+      if (change === "revoked") key.activeVersion!.revokedAt = FIXTURE_NOW;
+      if (change === "removed") next.credentials = next.credentials.slice(1);
+      if (change === "rotated") key.activeVersion!.id = "replacement-version";
+      if (change === "model changed") next.models.find(({ id }) => id === "model-opus")!.activeVersion += 1;
+      if (change === "connection changed") next.activeVersion += 1;
+      rerender(next);
+      expect(screen.getByRole("combobox", { name: "Check results for key" })).toHaveValue("cred-primary");
+      expect(screen.getByTestId("provider-model-model-opus-works-with")).toHaveAttribute("data-works-with", "not_checked");
+      if (["disabled", "revoked", "removed"].includes(change)) {
+        expect(screen.getByRole("button", { name: "Check models" })).toBeDisabled();
+        expect(screen.getByTestId("provider-models")).toHaveTextContent("This key is unavailable.");
+      }
+    }
+  );
+
+  it("initially follows the named run key and keeps another key's activity out of the selected results", () => {
+    const connection = openRouter();
+    connection.checkRun = fixtureCheckRun({ credentialId: "cred-research", id: "research-run", inFlight: ["model-opus"], total: 1 });
+    const { actions, rerender } = harness(connection);
+    const picker = screen.getByRole("combobox", { name: "Check results for key" });
+    expect(picker).toHaveValue("cred-research");
+    expect(screen.getByTestId("provider-model-model-opus-works-with")).toHaveAttribute("data-works-with", "checking");
+    fireEvent.change(picker, { target: { value: "cred-primary" } });
+    expect(screen.getByTestId("provider-model-model-opus-works-with")).toHaveAttribute("data-works-with", "checked");
+    expect(screen.getByRole("button", { name: "Check models" })).toBeDisabled();
+    expect(actions.startModelChecks).not.toHaveBeenCalled();
+    rerender({ ...connection, checkRun: { ...connection.checkRun, failed: ["model-opus"], inFlight: [], state: "completed" } });
+    expect(picker).toHaveValue("cred-primary");
+    expect(screen.getByTestId("provider-model-model-opus-works-with")).toHaveAttribute("data-works-with", "checked");
+    fireEvent.change(picker, { target: { value: "cred-research" } });
+    expect(screen.getByTestId("provider-model-model-opus-works-with")).toHaveAttribute("data-works-with", "failed");
+  });
+
   it.each(["changed", "removed"])("preserves an open model edit when a background catalog reports it %s", async (change) => {
     const connection = openRouter();
     const { actions, rerender } = harness(connection);
@@ -274,7 +352,7 @@ describe("AdminProviderModels", () => {
     expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-research", ["model-opus"]);
 
     fireEvent.click(screen.getByRole("button", { name: "Check models" }));
-    expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-primary", undefined);
+    expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-research", undefined);
   });
 
   it("asks before turning off a model a role uses, names the successor, and turns off unused models directly", async () => {

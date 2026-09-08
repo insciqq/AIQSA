@@ -24,6 +24,8 @@ export type CapabilityCheckRequest = Readonly<{
 }>;
 
 export type CapabilityCheckRunStart = Readonly<{
+  /** Already verified on the same active tuple by this setup operation. */
+  completedModelIds?: readonly string[];
   completeSetup?(signal: AbortSignal): Promise<AdminProviderBootstrapResult>;
   connectionId: string;
   credentialId: string;
@@ -244,13 +246,14 @@ export function createCapabilityCheckRunner(input: Readonly<{
 
     start(value) {
       const modelIds = [...new Set(value.modelIds)];
+      const completed = new Set((value.completedModelIds ?? []).filter((id) => modelIds.includes(id)));
       const run: Run = {
         setupController: new AbortController(),
         skipped: [],
         connectionId: value.connectionId,
         controllers: new Map(),
         credentialId: value.credentialId,
-        done: 0,
+        done: completed.size,
         finishedAt: null,
         id: idFactory(),
         inFlight: [],
@@ -262,7 +265,8 @@ export function createCapabilityCheckRunner(input: Readonly<{
         total: modelIds.length
       };
       runs.set(run.id, run);
-      const queue = [...modelIds];
+      for (const id of completed) failures.delete(failureKey(value.connectionId, value.credentialId, id));
+      const queue = modelIds.filter((id) => !completed.has(id));
       const workers = Array.from(
         { length: Math.min(concurrency, Math.max(queue.length, 1)) },
         () => worker(run, queue)

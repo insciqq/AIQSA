@@ -4,11 +4,15 @@ on:
   push:
     branches: [main]
     paths:
+      - Dockerfile
+      - next.config.mjs
       - compose.yaml
       - .github/workflows/release.yml
       - scripts/configure.sh
       - scripts/production-smoke.mjs
       - scripts/release-plan.mjs
+      - scripts/verify-release-vision.cjs
+      - scripts/vision-probe-image-oracle.ts
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"
 
@@ -126,6 +130,13 @@ jobs:
             type=gha,scope=release-${{ matrix.id }}
             type=gha
           cache-to: type=gha,mode=max,scope=release-${{ matrix.id }}
+
+      - name: Verify native vision rendering in the published image
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          docker run --rm --network none --read-only --user node \
+            --entrypoint node "${IMAGE}@${DIGEST}" scripts/verify-release-vision.cjs
 
       - name: Export platform digest
         env:

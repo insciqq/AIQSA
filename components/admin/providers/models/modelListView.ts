@@ -170,7 +170,7 @@ export function turnOffConsequence(input: Readonly<{
 }
 
 function liveVersion(credential: AdminProviderCredential | null | undefined) {
-  return credential?.activeVersion && credential.activeVersion.revokedAt === null
+  return credential?.enabled && credential.activeVersion && credential.activeVersion.revokedAt === null
     ? credential.activeVersion
     : null;
 }
@@ -196,6 +196,26 @@ export function activeModelCheck(
 
 export function defaultCredentialOf(connection: AdminProviderConnection): AdminProviderCredential | null {
   return connection.credentials.find(({ id }) => id === connection.defaultCredentialId) ?? null;
+}
+
+/** Initial diagnostic context only; this never changes credential assignments. */
+export function initialDiagnosticCredentialId(connection: AdminProviderConnection): string | null {
+  const credentials = checkableCredentials(connection);
+  const runKey = credentials.find(({ id }) => id === connection.checkRun?.credentialId);
+  if (runKey) return runKey.id;
+  const defaultKey = credentials.find(({ id }) => id === connection.defaultCredentialId);
+  return defaultKey?.id ?? (credentials.length === 1 ? credentials[0]!.id : null);
+}
+
+/** A replaced key or endpoint cannot inherit the preceding run's status. */
+export function diagnosticCheckRun(connection: AdminProviderConnection, credentialId: string | null) {
+  const run = connection.checkRun;
+  const credential = connection.credentials.find(({ id }) => id === credentialId);
+  const version = liveVersion(credential);
+  if (!run || run.credentialId !== credentialId || !version) return null;
+  const startedAt = Date.parse(run.startedAt);
+  if ([connection.activatedAt, version.activatedAt].some((at) => at && Date.parse(at) > startedAt)) return null;
+  return run;
 }
 
 /** Keys that can run a check right now: on, with a working saved value. */
@@ -228,27 +248,22 @@ function describeChips(chips: readonly ModelChip[], modelClass: AdminProviderMod
   return `works without ${joinNames(labels)}${tools && json ? "; tools and JSON output are fine." : "."}`;
 }
 
-/** `Checked today 12:51 with key Primary · everything works, including …` per key with a result. */
+/** Describe only the selected key's exact current result. */
 export function modelCheckSummaries(
   connection: AdminProviderConnection,
   model: AdminProviderModel,
+  credential: AdminProviderCredential | null | undefined,
   now = new Date()
 ): readonly ModelCheckSummary[] {
   const configuration = liveConfiguration(model);
   const modelClass = modelClassOf(model);
-  const ordered = [
-    ...connection.credentials.filter(({ id }) => id === connection.defaultCredentialId),
-    ...connection.credentials.filter(({ id }) => id !== connection.defaultCredentialId)
-  ];
-  return ordered.flatMap((credential) => {
-    const check = activeModelCheck(connection, model, credential);
-    const chips = modelChipsFromEvidence(configuration, check);
-    if (!check || chips.length === 0) return [];
-    return [{
-      chips,
-      credentialLabel: credential.label,
-      sentence: `Checked ${formatCheckedAt(check.checkedAt, now)} with key ${credential.label} · ${describeChips(chips, modelClass)}`,
-      usageMissing: modelUsageMissing(configuration, check)
-    }];
-  });
+  const check = activeModelCheck(connection, model, credential);
+  const chips = modelChipsFromEvidence(configuration, check);
+  if (!credential || !check || chips.length === 0) return [];
+  return [{
+    chips,
+    credentialLabel: credential.label,
+    sentence: `Checked ${formatCheckedAt(check.checkedAt, now)} with key ${credential.label} · ${describeChips(chips, modelClass)}`,
+    usageMissing: modelUsageMissing(configuration, check)
+  }];
 }

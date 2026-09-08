@@ -1,3 +1,4 @@
+import { providerResponseFailure } from "./responseFailure";
 import {
   ProviderResponseTooLargeError,
   providerHttpErrorMessage,
@@ -68,19 +69,27 @@ async function parseOpenAIJsonResponse(
 
 async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Promise<never> {
   const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
+  let failureCode: string | undefined;
   try {
-    await readBoundedResponseText(response, { signal });
+    const text = await readBoundedResponseText(response, { signal });
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        const failure = providerResponseFailure("provider_response_failed", parsed as Record<string, unknown>);
+        failureCode = "code" in failure && typeof failure.code === "string" ? failure.code : undefined;
+      }
+    } catch { /* An undecodable error body never changes the HTTP classification. */ }
   } catch (error) {
     if (!(error instanceof ProviderResponseTooLargeError)) {
       throw error;
     }
   }
 
-  throw new OpenAIHttpError(
+  throw Object.assign(new OpenAIHttpError(
     providerHttpErrorMessage("OpenAI", response.status),
     response.status,
     retryAfterMs
-  );
+  ), failureCode && response.status !== 401 && response.status !== 403 ? { code: failureCode } : {});
 }
 
 function initialRequestRetryDecision(

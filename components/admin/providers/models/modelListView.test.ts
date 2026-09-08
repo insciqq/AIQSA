@@ -3,6 +3,7 @@ import type { ProviderUsageSources } from "@/components/admin/providers/provider
 import {
   FIXTURE_NOW,
   fixtureCheck,
+  fixtureCheckRun,
   fixtureCredential,
   fixtureModel,
   workingConnection
@@ -11,8 +12,10 @@ import type { AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemM
 import {
   activeModelCheck,
   checkableCredentials,
+  diagnosticCheckRun,
   deriveModelUsage,
   groupProviderModels,
+  initialDiagnosticCredentialId,
   modelCheckSummaries,
   modelRouteLabel,
   modelSuccessor,
@@ -134,7 +137,36 @@ describe("deriveModelUsage and successors", () => {
 });
 
 describe("check summaries", () => {
-  it("finds the check of the exact live pair and describes it per key, default key first", () => {
+  it("selects a live named run, default, or sole key without changing any authority", () => {
+    const connection = workingConnection();
+    connection.defaultCredentialId = null;
+    expect(initialDiagnosticCredentialId(connection)).toBe("cred-primary");
+    connection.credentials.push(fixtureCredential({ id: "cred-other", label: "Other" }));
+    expect(initialDiagnosticCredentialId(connection)).toBeNull();
+    connection.defaultCredentialId = "cred-primary";
+    expect(initialDiagnosticCredentialId(connection)).toBe("cred-primary");
+    connection.checkRun = fixtureCheckRun({ credentialId: "cred-other", id: "run-other" });
+    expect(initialDiagnosticCredentialId(connection)).toBe("cred-other");
+    connection.credentials[1]!.enabled = false;
+    expect(initialDiagnosticCredentialId(connection)).toBe("cred-primary");
+    expect(connection.defaultCredentialId).toBe("cred-primary");
+    expect(connection.userAssignments).toEqual([]);
+  });
+
+  it("rejects another key's run and runs preceding key or connection replacement", () => {
+    const connection = workingConnection();
+    connection.checkRun = fixtureCheckRun({ credentialId: "cred-primary", id: "run-primary" });
+    expect(diagnosticCheckRun(connection, "cred-primary")).toBe(connection.checkRun);
+    expect(diagnosticCheckRun(connection, "cred-other")).toBeNull();
+    expect(diagnosticCheckRun(connection, null)).toBeNull();
+    connection.credentials[0]!.activeVersion!.activatedAt = "2026-09-08T00:00:00.000Z";
+    expect(diagnosticCheckRun(connection, "cred-primary")).toBeNull();
+    connection.credentials[0]!.activeVersion!.activatedAt = FIXTURE_NOW;
+    connection.activatedAt = "2026-09-08T00:00:00.000Z";
+    expect(diagnosticCheckRun(connection, "cred-primary")).toBeNull();
+  });
+
+  it("finds and describes only the exact live pair selected for diagnostics", () => {
     const connection = workingConnection();
     connection.credentials.push(fixtureCredential({ id: "cred-research", label: "Research team" }));
     const model = connection.models[0]!;
@@ -168,13 +200,14 @@ describe("check summaries", () => {
     expect(activeModelCheck(connection, model, connection.credentials[0])?.checkedAt).toBe("2026-09-07T12:51:00.000Z");
     expect(activeModelCheck(connection, model, null)).toBeNull();
     expect(checkableCredentials(connection).map(({ id }) => id)).toEqual(["cred-primary", "cred-research"]);
-    const summaries = modelCheckSummaries(connection, model, NOW);
+    const summaries = connection.credentials.flatMap((credential) => modelCheckSummaries(connection, model, credential, NOW));
     // Local clock formatting: the hour depends on the test machine's time zone.
     expect(summaries.map((summary) => summary.sentence.replace(/\d{2}:\d{2}/u, "HH:MM"))).toEqual([
       "Checked today HH:MM with key Primary · tools, JSON and the other checked capabilities work.",
       "Checked Sep 6 HH:MM with key Research team · works without PDF input; tools and JSON output are fine."
     ]);
     expect(summaries.map((summary) => summary.usageMissing)).toEqual([false, true]);
-    expect(modelCheckSummaries(connection, connection.models[1]!, NOW)).toEqual([]);
+    expect(modelCheckSummaries(connection, model, null, NOW)).toEqual([]);
+    expect(modelCheckSummaries(connection, connection.models[1]!, connection.credentials[0], NOW)).toEqual([]);
   });
 });

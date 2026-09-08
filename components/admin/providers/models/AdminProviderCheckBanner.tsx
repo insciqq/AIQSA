@@ -9,23 +9,24 @@ export type AdminProviderCheckBannerProps = Readonly<{
   checks: AdminModelCheckState;
   connection: AdminProviderConnection;
   disabled: boolean;
+  selectedCredentialId?: string | null;
 }>;
 
 /**
  * The `KeyVerifying` state (PRD 5.4): while the background check runs the
  * page shows one banner with the count, a bar and `Stop checking`; a run
- * lost to a restart shows the same slot with `Restart`. Single-model checks
- * only spin inside their row.
+ * lost to a restart shows the same slot with `Restart`. Single-model checks share the same progress and terminal feedback.
  */
-export function AdminProviderCheckBanner({ checks, connection, disabled }: AdminProviderCheckBannerProps) {
+export function AdminProviderCheckBanner({ checks, connection, disabled, selectedCredentialId }: AdminProviderCheckBannerProps) {
   const [stopping, setStopping] = useState(false);
-  const { interrupted, run } = checks;
+  const run = selectedCredentialId === undefined || checks.run?.credentialId === selectedCredentialId ? checks.run : null;
+  const interrupted = selectedCredentialId === undefined || checks.interrupted?.credentialId === selectedCredentialId ? checks.interrupted : null;
   const keyLabel = (credentialId: string) =>
     connection.credentials.find(({ id }) => id === credentialId)?.label ?? "the key";
 
-  if (run?.state === "running" && run.reason !== "model") {
+  if (run?.state === "running") {
     const progress = run.total === 0 ? 0 : Math.round((run.done / run.total) * 100);
-    const title = run.setup?.state === "running" ? "Models checked. Setting up Search, roles and Knowledge…" : run.reason === "requested"
+    const title = run.setup?.state === "running" ? "Models checked. Setting up Search, roles and Knowledge…" : run.reason === "requested" || run.reason === "model"
       ? `Checking what each model can do with key ${keyLabel(run.credentialId)} — ${run.done} of ${run.total} done.`
       : `Key ${keyLabel(run.credentialId)} saved. Checking what each model can do — ${run.done} of ${run.total} done.`;
     return (
@@ -62,33 +63,43 @@ export function AdminProviderCheckBanner({ checks, connection, disabled }: Admin
           aria-label="Models checked"
           aria-valuemax={Math.max(1, run.total)}
           aria-valuemin={0}
-          aria-valuenow={run.done}
+          aria-valuenow={run.setup?.state === "running" ? undefined : run.done}
           className="h-1 overflow-hidden rounded-pill bg-trace-strong"
           role="progressbar"
         >
-          <span className="block h-full rounded-pill bg-proof transition-[width]" style={{ width: `${progress}%` }} />
+          <span className="block h-full rounded-pill bg-proof transition-[width] motion-reduce:transition-none" style={{ width: `${progress}%` }} />
         </div>
       </section>
     );
   }
 
-  if (run?.state === "completed" && (run.total === 0 || run.setup || run.skipped?.length)) {
+  if (run?.state === "completed") {
     const setup = run.setup && run.setup.state !== "running" ? run.setup : null;
     const retry = run.total === 0 || setup?.state === "partial" || run.failed.length > 0 || Boolean(run.skipped?.length);
     return (
       <section className="rounded-[12px] border border-trace-subtle bg-answer-paper px-4 py-3.5 sm:px-5" role="status">
         <p className="text-sm font-medium text-ink">{run.total === 0
           ? "No models were checked."
-          : retry ? "Some setup steps need another check." : "Automatic setup finished."}</p>
+          : retry ? "Some checks need another attempt." : run.reason === "setup" ? "Automatic setup finished." : "Model checks finished."}</p>
         <p className="mt-1 text-xs leading-5 text-ink-muted">{run.total === 0
           ? "Add a supported model or check which models this key can access."
           : setup?.search === "failed" ? "Search could not be verified. Your saved key and model results are kept."
           : run.failed.length ? `${run.failed.length} models hit a temporary failure. Results already stored are kept.`
           : setup?.state === "partial" ? "Some default assignments could not be saved. Retry setup to finish."
           : setup?.search === "ready" ? "Search checked and ready."
-          : run.skipped?.length ? "Some models changed during checking. Recheck to use their current settings." : "Model results are shown below."}</p>
+          : run.skipped?.length ? "Some models changed during checking. Recheck to use their current settings." : `Model results for key ${keyLabel(run.credentialId)} are shown below.`}</p>
         {setup?.defaults.length ? <p className="mt-1 text-xs leading-5 text-ink-muted">Defaults set — {setup.defaults.join("; ")}.</p> : null}
-        {retry ? <UiV2Button className="mt-2" disabled={disabled} onClick={() => void checks.restart()} tone="ghost" type="button">Retry setup</UiV2Button> : null}
+        {retry ? <UiV2Button className="mt-2" disabled={disabled} onClick={() => void checks.restart()} tone="ghost" type="button">Retry checks</UiV2Button> : null}
+      </section>
+    );
+  }
+
+  if (run?.state === "cancelled") {
+    return (
+      <section className="rounded-[12px] border border-trace-subtle bg-answer-paper px-4 py-3.5 sm:px-5" role="status">
+        <p className="text-sm font-medium text-ink">Checks stopped for key {keyLabel(run.credentialId)}.</p>
+        <p className="mt-1 text-xs leading-5 text-ink-muted">{run.done} of {run.total} models finished. Saved results are kept.</p>
+        <UiV2Button className="mt-2" disabled={disabled} onClick={() => void checks.restart()} tone="ghost" type="button">Restart checks</UiV2Button>
       </section>
     );
   }

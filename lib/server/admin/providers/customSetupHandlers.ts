@@ -1,3 +1,4 @@
+import { setupProgressResponse } from "./setupProgressResponse";
 import {
   ADMIN_PROVIDER_CUSTOM_AUTHENTICATION_MODES,
   ADMIN_PROVIDER_CUSTOM_PROTOCOLS,
@@ -234,10 +235,12 @@ export function createAdminProviderCustomSetupHandler(
       responseTimeoutSeconds,
       ...(secret === undefined ? {} : { secret })
     };
-    return safely(async () => Response.json(await deps.service.setup({
-      actor: auth.actor,
-      request: setupRequest,
-      signal: request.signal
-    })));
+    return setupProgressResponse(request, (signal, onProgress) => safely(async () =>
+      Response.json(await deps.service.setup({
+        actor: auth.actor,
+        onProgress,
+        request: setupRequest,
+        signal
+      }))));
   };
 }

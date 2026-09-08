@@ -1,3 +1,5 @@
+import { ADMIN_PROVIDER_SETUP_STREAM_TYPE, type AdminProviderSetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
+import { readAdminProviderSetupResponse } from "./adminProviderSetupStream";
 import {
   ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS,
   type AdminProviderQuickSetupCandidate,
@@ -213,18 +215,19 @@ function errorCode(value: unknown, fallback: string): string {
 async function request<T>(
   init: RequestInit,
   decode: (value: unknown) => T | null,
-  fetcher: Fetcher
+  fetcher: Fetcher,
+  onProgress?: (value: AdminProviderSetupProgress) => void
 ): Promise<AdminProviderQuickSetupClientResult<T>> {
   try {
     const response = await fetcher("/api/admin/providers/quick-setup", {
       credentials: "same-origin",
       ...init
     });
-    const value = await response.json().catch(() => null);
+    const { ok, value } = await readAdminProviderSetupResponse(response, onProgress);
     if (containsForbiddenMaterial(value)) {
       return { error: { code: "provider_quick_setup_response_invalid" }, ok: false };
     }
-    if (!response.ok) {
+    if (!ok) {
       return { error: { code: errorCode(value, "provider_admin_action_failed") }, ok: false };
     }
     const data = decode(value);
@@ -246,14 +249,15 @@ export function getAdminProviderQuickSetup(
 export function submitAdminProviderQuickSetup(
   body: AdminProviderQuickSetupSubmit,
   fetcher: Fetcher = fetch,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onProgress?: (value: AdminProviderSetupProgress) => void
 ) {
   return request({
     body: JSON.stringify(body),
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...(onProgress ? { accept: ADMIN_PROVIDER_SETUP_STREAM_TYPE } : {}) },
     method: "POST",
     signal
-  }, result, fetcher);
+  }, result, fetcher, onProgress);
 }
 
 export function adminProviderQuickSetupErrorMessage(

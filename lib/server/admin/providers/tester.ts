@@ -1,3 +1,4 @@
+import { isRetryableProviderNetworkError } from "../../providers/providerRetry";
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import type {
   AdminProviderCheckStatus,
@@ -71,6 +72,7 @@ export type AdminProviderDraftTester = Readonly<{
 }>;
 
 type TesterOptions = Readonly<{
+  retrySleep?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
   createDiscoveryClient?: (input: {
     connection: ProviderConnectionConfiguration;
     secret: ProviderCredentialSource;
@@ -186,7 +188,7 @@ function providerRuntime(
     configuration: input.connection
   });
   return createProviderRuntimeBinding({
-    options: { allowFake: false, fetchFn },
+    options: { allowFake: false, disableRequestRetries: true, fetchFn },
     secret: input.secret,
     snapshot: executionSnapshot(input)
   });
@@ -300,12 +302,22 @@ type GenerationProbeResult = Readonly<{
 // model is unknown. The later streaming request still guards route liveness.
 const deterministicCapabilityHttpStatuses = new Set([400, 404, 405, 415, 422]);
 const testWideErrorCodes = new Set([
+  "compatible_response_cancelled",
+  "compatible_response_failed",
+  "compatible_response_incomplete",
+  "compatible_response_not_completed",
+  "openai_response_cancelled",
+  "openai_response_failed",
+  "openai_response_incomplete",
+  "openai_response_not_completed",
   "provider_request_timed_out",
   "provider_response_too_large",
   "provider_stream_deadline_exceeded",
   "provider_stream_event_too_large",
   "provider_stream_timeout",
-  "provider_stream_too_large"
+  "provider_stream_too_large",
+  "structured_output_provider_incomplete",
+  "vision_input_fixture_unavailable"
 ]);
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -317,13 +329,17 @@ function record(value: unknown): Record<string, unknown> | null {
 function providerHttpStatus(error: unknown): number | null {
   const candidate = record(error);
   if (Number.isSafeInteger(candidate?.status)) return Number(candidate?.status);
+  if (Number.isSafeInteger(candidate?.httpStatus)) return Number(candidate?.httpStatus);
   const message = error instanceof Error ? error.message : "";
   const match = /request failed with status (\d{3})$/u.exec(message);
   return match ? Number(match[1]) : null;
 }
 
 function isTestWideCapabilityFailure(error: unknown): boolean {
-  if (error instanceof TypeError || error instanceof DOMException && error.name === "AbortError") {
+  if (record(error)?.code === "provider_capability_unsupported") return false;
+  if (record(error)?.code === "provider_response_cancelled" || record(error)?.code === "provider_response_not_retryable") return true;
+  if (error instanceof TypeError ||
+    (error instanceof Error || error instanceof DOMException) && error.name === "AbortError") {
     return true;
   }
   const candidate = record(error);
@@ -331,6 +347,9 @@ function isTestWideCapabilityFailure(error: unknown): boolean {
   if (code?.startsWith("provider_http_") || code && testWideErrorCodes.has(code)) {
     return true;
   }
+  // Adapters also emit bounded logical-terminal codes as Error messages.
+  // A reachable route with an incomplete response has proved no incompatibility.
+  if (error instanceof Error && testWideErrorCodes.has(error.message)) return true;
   const status = providerHttpStatus(error);
   return status !== null && !deterministicCapabilityHttpStatuses.has(status);
 }
@@ -343,6 +362,52 @@ function preserveTestWideFailure(
     throw input.signal.reason ?? error;
   }
   if (isTestWideCapabilityFailure(error)) throw error;
+}
+
+const capabilityRetryDelays = [2_000, 3_000] as const;
+const retryableCapabilityCodes = new Set([
+  "compatible_response_failed", "compatible_response_incomplete", "compatible_response_not_completed",
+  "openai_response_failed", "openai_response_incomplete", "openai_response_not_completed",
+  "structured_output_provider_incomplete", "provider_request_timed_out",
+  "embedding_request_timed_out", "rerank_request_timed_out"
+]);
+
+function retryableCapabilityFailure(error: unknown): boolean {
+  const candidate = record(error);
+  if (candidate?.code === "provider_capability_unsupported" || candidate?.code === "provider_response_cancelled" ||
+    candidate?.code === "provider_response_not_retryable" || candidate?.name === "AbortError") return false;
+  const status = providerHttpStatus(error);
+  if (status !== null) return status === 429 || status >= 500 && status <= 599;
+  return candidate?.retryableNetworkFailure === true || isRetryableProviderNetworkError(error) ||
+    typeof candidate?.code === "string" && retryableCapabilityCodes.has(candidate.code) ||
+    error instanceof Error && retryableCapabilityCodes.has(error.message);
+}
+
+async function sleepBeforeCapabilityRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); reject(signal!.reason); };
+    const timer = setTimeout(() => { signal?.removeEventListener("abort", abort); resolve(); }, delayMs);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+async function withCapabilityRetries<T>(
+  input: AdminProviderDraftTesterInput,
+  options: TesterOptions,
+  operation: () => Promise<T>
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    input.signal?.throwIfAborted();
+    try {
+      return await operation();
+    } catch (error) {
+      input.signal?.throwIfAborted();
+      const delayMs = capabilityRetryDelays[attempt];
+      if (delayMs === undefined || !retryableCapabilityFailure(error)) throw error;
+      await (options.retrySleep ?? sleepBeforeCapabilityRetry)(delayMs, input.signal);
+    }
+  }
 }
 
 async function testStructuredOutput(
@@ -514,15 +579,16 @@ async function testEmbedding(
   const adapter = createOpenAICompatibleEmbeddingAdapter({
     connection: input.connection,
     model: input.model,
-    network: { fetchFn },
+    network: { fetchFn, retry: { maxAttempts: 1 } },
     secret: input.secret
   });
-  const result = await adapter.embed({
+  const result = await withCapabilityRetries(input, options, () => adapter.embed({
+    latencyClass: "background",
     mode: "document",
     signal: input.signal,
     texts: ["AIQSA provider compatibility check"]
-  });
-  await adapter.embed({ mode: "query", signal: input.signal, texts: ["AIQSA provider compatibility query"] });
+  }));
+  await withCapabilityRetries(input, options, () => adapter.embed({ latencyClass: "background", mode: "query", signal: input.signal, texts: ["AIQSA provider compatibility query"] }));
   const usage = result.usage.inputTokens !== null || result.usage.totalTokens !== null
     ? "verified"
     : "not_supported";
@@ -556,10 +622,10 @@ async function testReranker(
   const fetchFn = options.createFetch?.(input.connection) ?? createProviderSafeFetch({
     configuration: input.connection
   });
-  const result = await createOpenRouterRerankAdapter({
+  const result = await withCapabilityRetries(input, options, () => createOpenRouterRerankAdapter({
     connection: input.connection,
     model: input.model,
-    network: { fetchFn },
+    network: { fetchFn, retry: { maxAttempts: 1 } },
     secret: input.secret ?? (() => Promise.reject(new Error("provider_credential_missing")))
   }).rerank({
     documents: [
@@ -568,7 +634,7 @@ async function testReranker(
     ],
     query: "AIQSA reranker compatibility check",
     signal: input.signal
-  });
+  }));
   const usage = result.usage.inputTokens !== null ||
     result.usage.totalTokens !== null || result.usage.searchUnits !== null
     ? "verified"
@@ -626,13 +692,13 @@ async function testAnswerModel(
   method: AdminProviderTestEvidence["method"],
   selectedProviders: string[]
 ): Promise<AdminProviderDraftTestOutcome> {
-  const access = await runGenerationProbe(input, options, false);
-  const structuredOutput = await testStructuredOutput(input, options);
-  const toolCalling = await testToolCalling(input, options);
-  const forcedToolCall = await testForcedToolCall(input, options);
-  const pdfInput = await testPdfInput(input, options);
-  const visionInput = await testVisionInput(input, options);
-  const streaming = await runGenerationProbe(input, options, true);
+  const access = await withCapabilityRetries(input, options, () => runGenerationProbe(input, options, false));
+  const structuredOutput = await withCapabilityRetries(input, options, () => testStructuredOutput(input, options));
+  const toolCalling = await withCapabilityRetries(input, options, () => testToolCalling(input, options));
+  const forcedToolCall = await withCapabilityRetries(input, options, () => testForcedToolCall(input, options));
+  const pdfInput = await withCapabilityRetries(input, options, () => testPdfInput(input, options));
+  const visionInput = await withCapabilityRetries(input, options, () => testVisionInput(input, options));
+  const streaming = await withCapabilityRetries(input, options, () => runGenerationProbe(input, options, true));
 
   return {
     evidence: {
@@ -674,11 +740,11 @@ async function testSystemRole(
 ): Promise<AdminProviderDraftTestOutcome> {
   if (input.capabilityRole === "embedding") return testEmbedding(input, options, "tiny_generation", input.model.openRouterRouting?.providers ?? []);
   if (input.capabilityRole === "reranker") return testReranker(input, options, "tiny_generation", input.model.openRouterRouting?.providers ?? []);
-  const access = await runGenerationProbe(input, options, false);
-  const structured = input.capabilityRole === "memory" ? await testStructuredOutput(input, options) : null;
-  const forced = input.capabilityRole === "memory" ? await testForcedToolCall(input, options) : null;
-  const pdf = input.capabilityRole === "direct_pdf" ? await testPdfInput(input, options) : null;
-  const vision = input.capabilityRole === "vision" ? await testVisionInput(input, options) : undefined;
+  const access = await withCapabilityRetries(input, options, () => runGenerationProbe(input, options, false));
+  const structured = input.capabilityRole === "memory" ? await withCapabilityRetries(input, options, () => testStructuredOutput(input, options)) : null;
+  const forced = input.capabilityRole === "memory" ? await withCapabilityRetries(input, options, () => testForcedToolCall(input, options)) : null;
+  const pdf = input.capabilityRole === "direct_pdf" ? await withCapabilityRetries(input, options, () => testPdfInput(input, options)) : null;
+  const vision = input.capabilityRole === "vision" ? await withCapabilityRetries(input, options, () => testVisionInput(input, options)) : undefined;
   return { status: "available", evidence: {
     compatibility: {
       probeVersion: ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION,
@@ -785,6 +851,7 @@ export function createAdminProviderDraftTester(
   const resolvedOptions: ResolvedTesterOptions = {
     ...options,
     pdfInputProbe: options.pdfInputProbe ?? createProviderPdfInputProbe({
+      disableRequestRetries: true,
       ...(options.createFetch ? { createFetch: options.createFetch } : {})
     })
   };

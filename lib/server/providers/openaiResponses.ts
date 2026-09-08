@@ -1,3 +1,4 @@
+import { providerResponseFailure } from "./responseFailure";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { createOpenAIResponsesLifecycle } from "./openaiResponsesLifecycle";
 import {
@@ -198,7 +199,7 @@ export function createOpenAIResponsesAdapter(options: OpenAIResponsesAdapterOpti
       if (isFailedOpenAIResponse(response)) {
         if (terminalSummary) yield terminalSummary;
         if (usageEvent) yield usageEvent;
-        throw new Error(`openai_response_${openAIResponseStatus(response)}`);
+        throw providerResponseFailure(`openai_response_${openAIResponseStatus(response)}`, response);
       }
       if (openAIResponseStatus(response) !== "completed") {
         if (terminalSummary) yield terminalSummary;

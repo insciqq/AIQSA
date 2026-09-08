@@ -86,13 +86,13 @@ describe("AdminProviderCheckBanner", () => {
     const view = render(<AdminProviderCheckBanner checks={checks} connection={workingConnection()} disabled={false} />);
     expect(screen.getByText("No models were checked.")).toBeVisible();
     expect(screen.queryByText(/all.*checked/iu)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Retry setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry checks" }));
     expect(restart).toHaveBeenCalledOnce();
     view.rerender(<AdminProviderCheckBanner checks={{ ...checks, run: { ...checks.run, done: 2, total: 2,
       setup: { state: "partial", search: "failed", defaults: ["Chat: GPT-6 Astra"] } } }} connection={workingConnection()} disabled={false} />);
     expect(screen.getByText(/Search could not be verified/u)).toBeVisible();
     expect(screen.getByText(/Chat: GPT-6 Astra/u)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Retry setup" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Retry checks" })).toBeEnabled();
   });
 
   it("shows the KeyVerifying progress with Stop checking, and the interrupted state with Restart", async () => {
@@ -126,12 +126,13 @@ describe("AdminProviderCheckBanner", () => {
 
     view.rerender(
       <AdminProviderCheckBanner
-        checks={{ dismissInterrupted, interrupted: null, restart, run: { ...run, reason: "model", total: 1 }, stop }}
+        checks={{ dismissInterrupted, interrupted: null, restart, run: { ...run, reason: "model", done: 0, total: 1 }, stop }}
         connection={connection}
         disabled={false}
       />
     );
-    expect(screen.queryByTestId("provider-check-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("provider-check-banner")).toHaveTextContent("Checking what each model can do with key Primary — 0 of 1 done.");
+    expect(screen.getByRole("button", { name: "Stop checking" })).toBeEnabled();
 
     view.rerender(
       <AdminProviderCheckBanner

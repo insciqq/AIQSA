@@ -1,3 +1,4 @@
+import type { AdminProviderSetupProgress } from "../../../contracts/adminProviderSetupProgress";
 import {
   createHmac,
   randomUUID,
@@ -141,8 +142,11 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
     connection: ProviderConnectionConfiguration;
     provider: AdminProviderQuickSetupRequest["provider"];
     secret: string;
+    onProgress?(value: AdminProviderSetupProgress): void;
     signal?: AbortSignal;
   }>): Promise<string[]> {
+    value.signal?.throwIfAborted();
+    value.onProgress?.({ phase: "discovering", completed: 0, total: null });
     try {
       const outcome = await input.credentialTester.test({
         connection: value.connection,
@@ -167,10 +171,13 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
     modelIdOf(candidate: AdminProviderQuickSetupPolicyCandidate): string;
     provider: AdminProviderQuickSetupRequest["provider"];
     secret: string;
+    onProgress?(value: AdminProviderSetupProgress): void;
     signal?: AbortSignal;
   }>): Promise<Map<string, AdminProviderTestEvidence>> {
     const evidence = new Map<string, AdminProviderTestEvidence>();
-    for (const candidate of value.candidates) {
+    for (const [index, candidate] of value.candidates.entries()) {
+      value.signal?.throwIfAborted();
+      value.onProgress?.({ phase: "checking", completed: index, total: value.candidates.length });
       let pdfInput = null;
       if (candidate.configuration.capabilities.nativePdfInput) {
         try {
@@ -204,6 +211,8 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         upstreamModelId: candidate.configuration.upstreamModelId
       });
     }
+    value.signal?.throwIfAborted();
+    if (value.candidates.length) value.onProgress?.({ phase: "checking", completed: value.candidates.length, total: value.candidates.length });
     return evidence;
   }
 
@@ -212,6 +221,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
     actor: AdminProviderQuickSetupActor;
     inspection: AdminProviderQuickSetupInspection;
     request: AdminProviderQuickSetupRequest;
+    onProgress?(value: AdminProviderSetupProgress): void;
     signal?: AbortSignal;
   }>): Promise<AdminProviderQuickSetupReadyResult> {
     const { inspection, request } = inputValue;
@@ -238,6 +248,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       connection,
       provider: policy.provider,
       secret,
+      onProgress: inputValue.onProgress,
       signal: inputValue.signal
     });
     const checkedAt = now();
@@ -262,8 +273,11 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       modelIdOf: (candidate) => modelIdByCandidate.get(candidate.candidateId)!,
       provider: policy.provider,
       secret,
+      onProgress: inputValue.onProgress,
       signal: inputValue.signal
     });
+    inputValue.signal?.throwIfAborted();
+    inputValue.onProgress?.({ phase: "saving", completed: 0, total: null });
     const commit = await input.repository.commitAdditional({
       actor: inputValue.actor,
       checkedAt,
@@ -298,6 +312,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
     if (commit === "catalog_unavailable") {
       throw new AdminProviderQuickSetupServiceError("provider_quick_setup_unsupported_catalog");
     }
+    inputValue.onProgress?.({ phase: "finishing", completed: 0, total: null });
     try {
       await input.onCompleted?.({ connectionId, credentialId, userId: inputValue.actor.userId });
     } catch {
@@ -332,8 +347,11 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
     async setup(inputValue: Readonly<{
       actor: AdminProviderQuickSetupActor;
       request: AdminProviderQuickSetupRequest;
+      onProgress?(value: AdminProviderSetupProgress): void;
       signal?: AbortSignal;
     }>): Promise<AdminProviderQuickSetupResult> {
+      inputValue.signal?.throwIfAborted();
+      inputValue.onProgress?.({ phase: "validating", completed: 0, total: null });
       const policy = adminProviderQuickSetupPolicy(inputValue.request.provider);
       const inspectedAt = now();
       const inspection = await input.repository.inspect({
@@ -363,6 +381,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           actor: inputValue.actor,
           inspection,
           request: inputValue.request,
+          onProgress: inputValue.onProgress,
           signal: inputValue.signal
         });
       }
@@ -404,6 +423,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         connection: policy.connection.configuration,
         provider: policy.provider,
         secret,
+        onProgress: inputValue.onProgress,
         signal: inputValue.signal
       });
       const checkedAt = now();
@@ -477,6 +497,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         modelIdOf: ({ modelId }) => modelId,
         provider: policy.provider,
         secret,
+        onProgress: inputValue.onProgress,
         signal: inputValue.signal
       });
       const modelChecks: Array<AdminProviderQuickSetupCommitPlan["modelChecks"][number]> =
@@ -488,6 +509,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         AdminProviderQuickSetupCommitPlan["rerankerChecks"][number]
       > = [];
       if (policy.provider === "openrouter" && input.rerankerTester) {
+        inputValue.onProgress?.({ phase: "checking", completed: 0, total: null });
         for (const deployment of approvedRerankerDeployments) {
           try {
             const outcome = await input.rerankerTester.test({
@@ -528,6 +550,8 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           }
         }
       }
+      inputValue.signal?.throwIfAborted();
+      inputValue.onProgress?.({ phase: "saving", completed: 0, total: null });
       const commit = await input.repository.commit({
         actor: inputValue.actor,
         candidate,
@@ -573,6 +597,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           "provider_quick_setup_unsupported_catalog"
         );
       }
+      inputValue.onProgress?.({ phase: "finishing", completed: 0, total: null });
       try {
         await input.onCompleted?.({ connectionId: policy.connection.id, credentialId, userId: inputValue.actor.userId });
       } catch {

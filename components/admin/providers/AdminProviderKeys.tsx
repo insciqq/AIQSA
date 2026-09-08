@@ -1,5 +1,7 @@
 "use client";
 
+import { AdminProviderSetupProgress } from "./add/AdminProviderSetupProgress";
+
 import { inputClass } from "@/components/admin/adminPrimitives";
 import { AdminSearchablePicker } from "@/components/admin/AdminSearchablePicker";
 import { describeDeleteBlockers } from "@/components/admin/providers/providerBlockers";
@@ -188,6 +190,7 @@ function KeyFormRow({
           <UiV2Button disabled={busy} onClick={onCancel} tone="ghost" type="button">Cancel</UiV2Button>
         </div>
       </form>
+      {busy ? <div className="mt-3"><AdminProviderSetupProgress progress={{ phase: "validating", completed: 0, total: null }} /></div> : null}
       <p className="mt-2 text-xs leading-5 text-ink-muted">Checks the key and supported models with small paid requests, then fills empty defaults and roles. OpenRouter also sets up embeddings, reranking and Knowledge. Assigned PDF readers receive page images and text.</p>
       {error ? (
         <p className="mt-2 text-xs text-critical" id={errorId} role="alert">{error}</p>
@@ -425,7 +428,7 @@ export function AdminProviderKeys({
         {connection.credentials.length ? (
           <div className="flex flex-col gap-3 border-t border-trace-subtle px-4 py-3 sm:px-5 lg:flex-row lg:flex-wrap lg:items-center lg:gap-x-6">
             <label className="flex min-w-0 flex-wrap items-center gap-2 text-[13px] text-ink-secondary">
-              <span>Users without a group key use</span>
+              <span>Installation default key</span>
               <select
                 aria-label="Default key"
                 className={`${compactInput} w-auto min-w-[8rem]`}
@@ -499,6 +502,10 @@ export function AdminProviderKeys({
       <p className="text-xs leading-5 text-ink-muted">
         <UiV2Icon className="mr-1 inline-block size-3.5 align-[-2px]" name="lock" />
         Keys are stored encrypted and never shown again. System roles always use the default key.
+        {" "}{connection.unassignedPolicy === "require_assignment"
+          ? "Chat access requires a personal or group key assignment. Choosing an installation default does not change that policy."
+          : "Personal and group key assignments take priority; users without an assignment can use the installation default."}
+        {" "}Key labels such as Main do not select an installation default.
       </p>
     </section>
   );

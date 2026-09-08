@@ -2,6 +2,7 @@ import sharp from "sharp";
 import type { ProviderExecutionSnapshot } from "./runtimeFactory";
 import type { ProviderRunRequest, ProviderRunResult } from "./types";
 import { lowestConfiguredReasoningEffort } from "./providerModelCapabilities";
+import { visionInputProbeSvg } from "./visionInputProbeFixture";
 
 export const VISION_INPUT_PROBE_CODE = "V4K8M2";
 
@@ -16,16 +17,15 @@ const VISION_INPUT_PROBE_PROMPT = [
 let fixturePromise: Promise<Buffer> | null = null;
 
 function fixture(): Promise<Buffer> {
-  fixturePromise ??= sharp(Buffer.from(`
-    <svg width="640" height="240" xmlns="http://www.w3.org/2000/svg">
-      <rect width="640" height="240" fill="white" />
-      <path d="M20 20H620V220H20ZM20 120H620M300 20V220" fill="none" stroke="black" stroke-width="4" />
-      <text x="70" y="83" font-family="sans-serif" font-size="38" fill="black">ALPHA</text>
-      <text x="390" y="83" font-family="sans-serif" font-size="38" fill="black">17</text>
-      <text x="75" y="184" font-family="sans-serif" font-size="38" fill="black">BETA</text>
-      <text x="345" y="184" font-family="monospace" font-size="42" font-weight="bold" fill="black">${VISION_INPUT_PROBE_CODE}</text>
-    </svg>
-  `, "utf8")).png({ compressionLevel: 9 }).toBuffer();
+  fixturePromise ??= Promise.resolve().then(() =>
+    sharp(Buffer.from(visionInputProbeSvg(VISION_INPUT_PROBE_CODE), "utf8"))
+      .png({ compressionLevel: 9 }).toBuffer()
+  ).catch(() => {
+    // A process-local rendering failure must be retryable and must not become
+    // negative provider evidence. Do not retain or disclose the raw exception.
+    fixturePromise = null;
+    throw new Error("vision_input_fixture_unavailable");
+  });
   return fixturePromise;
 }
 
