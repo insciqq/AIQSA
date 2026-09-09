@@ -147,9 +147,9 @@ test("one key save activates models, fills empty defaults and retries failed Sea
       defaultPlan: { mode: "all_selected", optionIds: [] }, version: 1, updatedByUserId: null
     });
     expect(checked.models.map(({ activeConfig }) => activeConfig?.upstreamModelId)).toContain("gpt-6-astra");
-    await expect(page.getByRole("button", { name: "Retry setup" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Retry checks" })).toBeVisible();
     failSearch = false;
-    await page.getByRole("button", { name: "Retry setup" }).click();
+    await page.getByRole("button", { name: "Retry checks" }).click();
     await expect.poll(async () => (await read()).checkRun?.setup, { timeout: 60_000 })
       .toMatchObject({ search: "ready", state: "completed" });
     expect(searchCalls).toBeGreaterThanOrEqual(2);
@@ -177,7 +177,7 @@ test("one key save activates models, fills empty defaults and retries failed Sea
     });
     await page.reload();
     await expect(page.getByTestId("provider-page-status")).not.toContainText("Disabled");
-    await expect(page.getByText("Automatic setup finished.", { exact: true })).toBeVisible();
+    await expect(page.getByText("Search checked and ready.", { exact: true })).toBeVisible();
     expect((await read()).credentials).toHaveLength(1);
     for (const theme of ["light", "dark"] as const) {
       await context.addCookies([{ name: "aiqsa.theme", value: theme, url: "http://127.0.0.1:3000" }]);
