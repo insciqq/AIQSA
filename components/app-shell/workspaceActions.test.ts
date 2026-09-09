@@ -2296,6 +2296,67 @@ describe("workspace actions", () => {
     expect(state.setNotice).not.toHaveBeenCalled();
   });
 
+  it("does not replace a newer chat selection when an older workspace refresh finishes", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "Draft in A" });
+    let settle!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { settle = resolve; })));
+
+    const refresh = state.actions.refreshWorkspace();
+    await state.actions.activateChat(state.chatB);
+    useComposerSessionStore.getState().setDraft("Draft in B");
+    settle(Response.json({ chats: [apiChatSummary(state.chatA), apiChatSummary(state.chatB)], contentMatches: [], folders: [] }));
+    await refresh;
+
+    expect(useWorkspaceStore.getState().activeChatId).toBe(state.chatB.id);
+    expect(selectActiveComposerSession(useComposerSessionStore.getState()).draft).toBe("Draft in B");
+  });
+
+  it("preserves a chat created during an older list refresh and its unsent draft", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const created = chat({ id: "new-chat", title: "New chat" });
+    let settle!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(async (_input, init) => init?.method === "POST"
+      ? Response.json({ chat: apiChatSummary(created) })
+      : new Promise<Response>((resolve) => { settle = resolve; })));
+
+    const refresh = state.actions.refreshWorkspace();
+    await state.actions.createChat();
+    useComposerSessionStore.getState().setDraft("New unsent work");
+    settle(Response.json({ chats: [apiChatSummary(state.chatA), apiChatSummary(state.chatB)], contentMatches: [], folders: [] }));
+    await refresh;
+
+    expect(useWorkspaceStore.getState().activeChatId).toBe(created.id);
+    expect(state.chats()).toContainEqual(expect.objectContaining({ id: created.id }));
+    expect(selectComposerSession(useComposerSessionStore.getState(), composerSessionKey(created.id)).draft)
+      .toBe("New unsent work");
+  });
+
+  it("preserves committed renames and removals against an older workspace response", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "Keep this draft" });
+    let settle!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { settle = resolve; })));
+    const refresh = state.actions.refreshWorkspace();
+    useWorkspaceStore.getState().updateChats((chats) => chats
+      .filter((chat) => chat.id !== state.chatB.id)
+      .map((chat) => chat.id === state.chatA.id ? { ...chat, title: "Saved new title" } : chat));
+    settle(Response.json({ chats: [apiChatSummary(state.chatA), apiChatSummary(state.chatB)], contentMatches: [], folders: [] }));
+    await refresh;
+
+    expect(state.chats()).toEqual([expect.objectContaining({ id: state.chatA.id, title: "Saved new title" })]);
+    expect(state.draft()).toBe("Keep this draft");
+  });
+
+  it("still removes a chat absent from a fresh authoritative list", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    vi.stubGlobal("fetch", vi.fn(async (input) => String(input) === "/api/chats"
+      ? Response.json({ chats: [], contentMatches: [], folders: [] })
+      : Response.json({ error: "not_found" }, { status: 404 })));
+    await state.actions.refreshWorkspace();
+
+    expect(state.chats()).toEqual([]);
+    expect(useWorkspaceStore.getState().activeChatId).toBeNull();
+  });
+
   it("recovers the exact remembered Temporary chat without exposing it or pruning its draft", async () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "Temporary draft" });
     const temporary = {

@@ -179,7 +179,9 @@ export function createThreadActions({
           updatedAt: chat.updatedAt
         });
       }
-      activateChat(chat);
+      if (useWorkspaceStore.getState().activeChatId === activeChatId) {
+        activateChat(chat);
+      }
       setNotice({
         kind: "success",
         text: `Branched chat: ${chat.title}`

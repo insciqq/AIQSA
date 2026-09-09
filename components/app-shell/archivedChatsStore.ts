@@ -44,6 +44,7 @@ export const useArchivedChatsStore = create<ArchivedChatsStore>(() => initialSta
 let listGeneration = 0;
 let detailGeneration = 0;
 let restoreGeneration = 0;
+let previewChatId: string | null = null;
 
 function errorName(error: unknown): string {
   return error instanceof Error ? error.message : "chat_lifecycle_failed";
@@ -91,6 +92,7 @@ export async function refreshArchivedChats(append = false): Promise<void> {
 
 export async function openArchivedChatPreview(chatId: string): Promise<void> {
   const generation = ++detailGeneration;
+  previewChatId = chatId;
   useArchivedChatsStore.setState({
     detail: null,
     detailError: null,
@@ -116,6 +118,7 @@ export async function openArchivedChatPreview(chatId: string): Promise<void> {
 
 export function showArchivedChatList(): void {
   detailGeneration += 1;
+  previewChatId = null;
   useArchivedChatsStore.setState({
     detail: null,
     detailError: null,
@@ -123,15 +126,23 @@ export function showArchivedChatList(): void {
   });
 }
 
-export function removePermanentlyDeletedArchivedChat(chatId: string): void {
-  detailGeneration += 1;
+function removeArchivedChat(chatId: string): void {
+  // Reads dispatched before the mutation cannot restore the removed entry.
+  listGeneration += 1;
+  const removesPreview = previewChatId === chatId || useArchivedChatsStore.getState().detail?.id === chatId;
+  if (removesPreview) {
+    detailGeneration += 1;
+    previewChatId = null;
+  }
   useArchivedChatsStore.setState((state) => ({
-    detail: state.detail?.id === chatId ? null : state.detail,
-    detailError: null,
-    detailLoadState: state.detail?.id === chatId ? "idle" : state.detailLoadState,
-    restoring: false,
+    ...(removesPreview ? { detail: null, detailError: null, detailLoadState: "idle" as const } : {}),
+    listLoadState: state.listLoadState === "loading" ? "ready" : state.listLoadState,
     summaries: state.summaries.filter((chat) => chat.id !== chatId)
   }));
+}
+
+export function removePermanentlyDeletedArchivedChat(chatId: string): void {
+  removeArchivedChat(chatId);
 }
 
 export async function loadEarlierArchivedMessages(): Promise<void> {
@@ -179,10 +190,8 @@ export async function restoreArchivedChatSummary(
   try {
     const response = await restoreChat(chat.id, chat.sourceRevision);
     if (generation !== restoreGeneration) return null;
-    useArchivedChatsStore.setState((state) => ({
-      restoring: false,
-      summaries: state.summaries.filter((item) => item.id !== chat.id)
-    }));
+    removeArchivedChat(chat.id);
+    useArchivedChatsStore.setState({ restoring: false });
     return response.chat.id;
   } catch (error) {
     if (generation !== restoreGeneration) return null;
@@ -196,20 +205,22 @@ export async function restoreArchivedChat(): Promise<string | null> {
   const detail = current.detail;
   if (!detail || current.restoring) return null;
   const generation = ++restoreGeneration;
+  const sourceDetailGeneration = detailGeneration;
   useArchivedChatsStore.setState({ detailError: null, restoring: true });
   try {
     const response = await restoreChat(detail.id, detail.sourceRevision);
     if (generation !== restoreGeneration) return null;
-    useArchivedChatsStore.setState((state) => ({
-      detail: null,
-      detailLoadState: "idle",
-      restoring: false,
-      summaries: state.summaries.filter((chat) => chat.id !== detail.id)
-    }));
+    removeArchivedChat(detail.id);
+    useArchivedChatsStore.setState({ restoring: false });
     return response.chat.id;
   } catch (error) {
     if (generation !== restoreGeneration) return null;
-    useArchivedChatsStore.setState({ detailError: errorName(error), restoring: false });
+    useArchivedChatsStore.setState({
+      ...(sourceDetailGeneration === detailGeneration
+        ? { detailError: errorName(error) }
+        : { listError: errorName(error) }),
+      restoring: false
+    });
     throw error;
   }
 }
@@ -218,5 +229,6 @@ export function deactivateArchivedChats(): void {
   listGeneration += 1;
   detailGeneration += 1;
   restoreGeneration += 1;
+  previewChatId = null;
   useArchivedChatsStore.setState(initialState, true);
 }
