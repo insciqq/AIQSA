@@ -258,6 +258,7 @@ export type ShellComposerView = {
   selectedModelId: string;
   selectedProvider: string;
   selectedSearchOptionIds: string[];
+  sending: boolean;
   /** Composer keyboard contract: Enter sends, or Ctrl/⌘+Enter when off. */
   sendWithEnter: boolean;
   setSendWithEnter(value: boolean): void;
