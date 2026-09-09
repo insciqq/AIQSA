@@ -6,7 +6,7 @@ Use this loop for queued, dependent, parallel, or multi-session work. Concrete s
 
 1. Inspect Git state, the operator's scope, relevant code, and the owners in [INDEX](INDEX.md).
 2. Reconcile existing `in_progress` queue tasks before claiming more. Select dependency-free `ready` tasks in natural filename order; drafts are outside selection. Do not implement `backlog` or `blocked` work without its required transition/input.
-3. Mark selected tasks `in_progress` before implementation. Record a concrete checkpoint, then implement the smallest complete slice and verify it through [Testing](TESTING.md).
+3. Mark selected tasks `in_progress` before implementation. Record the slice's verification scope and executor using [Testing](TESTING.md), then implement the smallest complete slice.
 4. Keep task-local progress, decisions, exact evidence, and blockers in that task. Move only durable non-derivable rationale to its document owner; otherwise record `none`.
 5. Perform root [final review](../AGENTS.md#before-final-response), then complete verified work directly. Required-but-unavailable evidence leaves the task blocked. Archive through the ledger; never prune archives automatically.
 
@@ -16,6 +16,6 @@ One integrating agent owns queue state, review, conflicts, verification, and int
 
 Select at most five independent tasks after checking dirty paths, shared schema/generated files, dependencies, and stateful environments. Parallel reads and hermetic checks are easier to isolate than writes. Stateful/container checks remain serialized.
 
-Inspect every worker result and complete diff. Resolve conflicts against both contracts without discarding unrelated work, add a regression when an interaction warrants one, and rerun affected checks after integration. Failed integration is not completion.
+Workers run focused checks; the integrating agent owns one combined slice qualification. Inspect every worker result and complete diff. Resolve conflicts against both contracts without discarding unrelated work, add a regression when an interaction warrants one, and rerun affected checks after integration. Failed integration is not completion.
 
 Report outcomes, material decisions, exact checks, omitted evidence and reasons, and preserved user changes. Continue beyond the current task only under broad implementation permission with another concrete unblocked task or wave. Stop only at the authority, safety, missing-input/service, or uncovered product-decision boundaries in root AGENTS.

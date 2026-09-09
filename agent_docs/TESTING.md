@@ -4,16 +4,30 @@ Owns verification selection, target safety, external-call permission, and test a
 
 ## Core Lanes
 
-Install with `npm ci`. Iterate with `npm test -- <test-files>`, `npx eslint <changed-paths>`, and `npx tsc --noEmit` as applicable.
+Install dependencies when needed with `npm ci`. During a task, run focused regressions and lint changed files. Select tests by affected behavior and consumers, not merely by changed test filenames. Cosmetic changes can use an existing browser check; do not create tests that only mirror an implementation.
 
 | Change | Completion evidence |
 | --- | --- |
 | Documentation only | `npm run docs:check` |
-| Deterministic code | `npm run check:hermetic` (Prisma generation, docs, lint, types, deterministic tests; no database/provider keys) |
-| Database, concurrency, process/service boundary | Disposable container parity below |
+| Deterministic task | Focused tests and changed-file lint |
+| Integrated product-code slice | One `npm run check:hermetic` on the chosen local, remote, or CI executor; includes Prisma generation, docs, lint, types and deterministic tests |
+| Verification/docs tooling | Focused tooling regressions and docs check; application tests only when their behavior is affected |
+| Database, concurrency, process/service boundary | Affected disposable stateful/integration tests below |
 | Browser/server routing, auth/session, streaming, geometry/input/focus | Focused components plus affected Playwright states |
 
-Cold full checks may exceed Node's default heap; use `NODE_OPTIONS=--max-old-space-size=8192 npm run check:hermetic`, matching [CI](../.github/workflows/ci.yml). Stale generated `.next` types can reference deleted routes; verify in a clean checkout rather than changing source to satisfy old generated files.
+The integrating agent owns the combined check; workers run focused checks only. Do not repeat a passing full suite on another executor or after a narrow correction: rerun the affected checks. Reuse evidence only while its source, dependencies, configuration and relevant generated inputs remain valid. Expand coverage for shared-boundary changes or a diagnosed failure, not for extra reassurance. Record a check's scope and result once in the task.
+
+Run standalone types once at slice integration when the selected full check or imminent build does not already cover them. Preserve valid incremental caches. Stale generated `.next` types require fresh route types or a clean snapshot, not source changes to satisfy deleted routes. Full Hermetic remains available locally; [CI](../.github/workflows/ci.yml) runs it for PRs, explicit dispatch and stable release callers, without repeating it on every main push.
+
+## Execution Target And Resources
+
+Before heavy work, read root `DEV_SERVER.md` if it exists. It contains private operator-provided connection details and limits, never a public dependency. Prefer its server after a short noninteractive SSH/capacity preflight using the specified identity and verified host key. If absent, unreachable or missing required capacity/tools, report the reason briefly and use bounded local execution without another approval request.
+
+A test failure is not executor unavailability. If an SSH connection is lost after work starts, check its owned job/status before retrying elsewhere; never duplicate an ambiguously running check. Export only an inspected Git commit/tree, including reviewed pending changes when applicable. Never copy the working directory, `.env`, SSH keys, `DEV_SERVER.md`, private tasks, profiles or production data. Use owned workspaces, unique disposable projects and synthetic state. Retain dependencies and valid compiler/build caches between slices; clean disposable test state and obsolete owned outputs, not reusable workspaces.
+
+Run one heavy local process at a time. On the measured 16 GiB workstation, use a 6 GiB Node heap, 8 GiB process-group/container cap, four CPUs and no swap; require headroom for the host and stop if available RAM falls below 3 GiB. A Node heap flag alone is not a total memory limit. Keep build/browser/full-test work sequential and use one browser/stateful worker. Remote limits come from its private file; increasing resources never broadens verification scope.
+
+Reuse one prepared disposable browser stand for the slice. After a repeated identical infrastructure failure, stop broad reruns, retain diagnostics and narrow the investigation. Unavailable required evidence remains explicit; a failed stand is not a passing check.
 
 Read [Environment](ENV_VARIABLES.md) first. Preserve the checkout's configuration and operator profile; use a unique acknowledged disposable project for stateful work. Never target the persistent installation. Commands for the disposable topology:
 
@@ -23,7 +37,7 @@ npm run check:container
 docker compose -f docker-compose.dev.yml run --rm -T app npm run test:e2e
 ```
 
-Select only the needed commands. Container parity deploys committed migrations and runs deterministic plus stateful tests. `*.prisma.test.*` and `*.integration.test.*` are excluded from the hermetic project. `test:full:inner` runs only inside the acknowledged disposable app container; an already migrated stand may run a focused file there.
+Full container parity deploys migrations and repeats deterministic plus stateful tests; reserve it for a full parity/release run or a change requiring that scope. Inside an already prepared acknowledged disposable app container, `npm run test:full:inner -- --project stateful <test-files>` selects only stateful tests; omit files for the complete stateful set. This avoids repeating Hermetic. `*.prisma.test.*` and `*.integration.test.*` are excluded from ordinary Hermetic.
 
 Serialize stateful/container/browser-reset checks. Reusable-server specs may overlap only when they own no reset/global mutation. Use a fresh `/tmp` directory for task-owned browser output when necessary; never delete another process's artifacts.
 
@@ -41,11 +55,13 @@ Serialize stateful/container/browser-reset checks. Reusable-server specs may ove
 | Workspace/KVM | Policy/protocol/output tests, disposable database race checks, release/runner/guest image builds and reproducible guest identity, isolated browser flows, then opt-in real KVM evidence. Cover execution loss, Stop without delayed side effects, runner restart, export/recovery, file integrity, network modes and cleanup. A fake runtime is never live evidence. |
 | Upload/parser sidecars | Deterministic routing/bounds/decoders, then disposable parser smoke; stopped parsers degrade locally without breaking core readiness. |
 | Memory/Knowledge/recovery | Focused policy/handler tests, then disposable PostgreSQL/pgvector for persistence/concurrency and isolated OpenSearch for retrieval/projection changes. Integrity/rebuild output is content-free. |
-| Publication | `npm run release:privacy:check`, inspected-tree release build and image inspection. Tags, pushes and publication still require explicit operator authority. |
+| Publication | `npm run release:privacy:check`, an inspected-tree release build and image inspection on the selected local/remote/CI executor. Publication still needs explicit authority. |
 
 The release workflow also runs `node scripts/production-smoke.mjs --disposable <image-map.json>` against the built production images. It owns a fresh project and synthetic data, verifies initialization and image replacement with a forward migration, checks that credentials/settings/a chat survive repeated updates, and proves that a failed migration blocks the new app. Never substitute an existing installation for this target. Changes to production installation/release wiring run this pipeline on `main` without updating stable image tags or creating a release; publication still requires a release tag.
 
-Numbered release candidates (`vX.Y.Z-rc.N`) use a fast publication lane: run the applicable local verification above, the privacy check, and an inspected-tree release build before tagging. CI then builds/publishes without repeating the technical gates or installation smoke. A successful RC workflow proves publication, not a full CI qualification. Stable releases retain all gates. RCs update only their versioned images and the separate `rc` image channel; unchanged infrastructure may reuse a published stable image by digest. Never replace stable tags with candidate images.
+Numbered candidates (`vX.Y.Z-rc.N`) use a fast lane: reuse applicable slice evidence, run the privacy check, then let CI build, inspect and publish the reviewed tree. A duplicate local release build, another full Hermetic/container/E2E run and installation smoke are not RC prerequisites. Build or installation changes still need their affected boundary checks. CI retains TypeScript, native image rendering, privacy and manifest checks; its successful RC workflow proves publication rather than full regression. Stable releases retain their gates. RCs update versioned images and the separate `rc` channel only; unchanged infrastructure may reuse stable digests.
+
+A request to verify ordinary work means its affected scope. Run the complete browser catalog or a broad theme/viewport matrix only for a change requiring that coverage or an explicitly selected full regression. Unrelated failures are recorded separately and do not silently expand the current slice.
 
 Knowledge tests prove the changed scope, evidence-delivery, citation, egress, degradation or immutability contract with tiny fixtures. Keep ordinary co-located tests free of scored corpora, relevance labels, expected-answer collections and large question sets. Optional manual document inspection is not an implementation gate.
 
