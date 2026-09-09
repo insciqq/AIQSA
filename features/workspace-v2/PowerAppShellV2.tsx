@@ -65,11 +65,8 @@ import {
   useSkillLibraryStore
 } from "@/components/app-shell/skillLibraryStore";
 import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
-import {
-  consumeMcpOAuthReturn,
-  deactivateMcpSettings,
-  refreshMcpSettings
-} from "@/components/app-shell/mcpSettingsStore";
+import { deactivateMcpSettings } from "@/components/app-shell/mcpSettingsStore";
+import { useMcpOAuthReturn } from "./useMcpOAuthReturn";
 import { deactivateMemoryManager } from "@/components/app-shell/memoryManagerStore";
 import { useRunControlsActions } from "@/components/app-shell/runControlsActions";
 import {
@@ -457,15 +454,7 @@ export function PowerAppShellV2({
   const { notificationSoundEnabled, notifyAnswerReady, primeAnswerSound, toggleNotificationSound } =
     useAnswerNotification();
 
-  useEffect(() => {
-    const url = new URL(window.location.href);
-    const shouldOpenMcp = url.searchParams.get("settings") === "mcp";
-    consumeMcpOAuthReturn(url);
-    if (shouldOpenMcp) {
-      openMcpSettings();
-      void refreshMcpSettings(true).catch(() => undefined);
-    }
-  }, [openMcpSettings]);
+  useMcpOAuthReturn(accountId, openMcpSettings);
 
   useEffect(() => {
     let current = true;
@@ -1848,6 +1837,7 @@ export function PowerAppShellV2({
     currentModel: effectiveCurrentModel,
     currentParameterControls: effectiveParameterControls,
     draft,
+    sending: Boolean(composerSession.pendingSend),
     knowledge: {
       bases: projectContext
         ? activeProject?.composer?.knowledgeBases ?? []

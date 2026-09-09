@@ -5,6 +5,26 @@ import { signInWithLocalToken as signIn } from "./support/localAuth";
 
 test.use({ hasTouch: true });
 
+for (const [kind, notice] of [
+  ["connected", "External account connected and MCP enabled."],
+  ["cancelled", "Authorization was cancelled."],
+  ["failed", "Authorization or automatic MCP enablement failed. Try connecting again."]
+] as const) {
+  test(`preserves the ${kind} MCP return notice after opening Settings`, async ({ page }, testInfo) => {
+    await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));
+    await signIn(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/?settings=mcp&oauth=${kind}&server=fixture-server`);
+    const settings = page.getByTestId("settings-v2");
+    await expect(settings.getByText(notice, { exact: true })).toBeVisible();
+    await expect(page).not.toHaveURL(/oauth=|settings=mcp|server=fixture-server/u);
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: testInfo.outputPath(`mcp-return-${kind}.png`) });
+    await settings.getByRole("button", { name: "Dismiss", exact: true }).click();
+    await expect(settings.getByText(notice, { exact: true })).toHaveCount(0);
+  });
+}
+
 type FakeMcpServer = {
   accountLabel: string | null;
   description: string;

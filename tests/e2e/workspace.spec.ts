@@ -224,6 +224,11 @@ test("administrator enables a ready Workspace with public internet", async ({ pa
     select: { enabled: true, internetEnabled: true },
     where: { id: "installation" }
   });
+  // Exercise enablement even when the installation defaults are already on.
+  await prisma.workspacePolicy.update({
+    data: { enabled: false, internetEnabled: false },
+    where: { id: "installation" }
+  });
   await signInWithLocalToken(page);
   await page.goto("/admin?section=workspace");
   const policy = page.getByRole("region", { name: "Workspace policy" });
@@ -238,7 +243,7 @@ test("administrator enables a ready Workspace with public internet", async ({ pa
   await expect(page.getByTestId("admin-feedback")).toContainText("Workspace policy updated.");
 });
 
-test("personal Workspace runs tools, preserves state, exports bytes, stops, resets, and rejects forged admission", async ({ browser }) => {
+test("personal Workspace runs tools, preserves state, exports bytes, stops, resets, and rejects forged admission", async ({ browser }, testInfo) => {
   const context = await browser.newContext({ acceptDownloads: true });
   const page = await context.newPage();
   let chatId: string | null = null;
@@ -246,6 +251,7 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     activeConfig: Prisma.JsonValue;
     capabilities: Prisma.JsonValue;
   }> | null = null;
+  let releaseTerminalRead = () => {};
   let latestMessageBody: Record<string, unknown> | null = null;
   page.on("request", (request) => {
     if (request.method() !== "POST" || !/\/api\/chats\/[^/]+\/messages$/u.test(request.url())) return;
@@ -322,13 +328,42 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     const stop = page.getByRole("button", { name: "Stop answer" });
     await expect(stop).toBeEnabled({ timeout: 15_000 });
     await expect(page.locator(".v2-composer-workspace-state")).toContainText("Running a command");
+    const terminalReadReleased = new Promise<void>((resolve) => { releaseTerminalRead = resolve; });
+    let terminalReadWaiting = false;
+    await page.route(/\/api\/model-runs\/[^/]+$/u, async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      const response = await route.fetch();
+      const body = await response.json() as { run?: { status?: string } };
+      if (body.run?.status === "cancelled") {
+        terminalReadWaiting = true;
+        await terminalReadReleased;
+      }
+      await route.fulfill({ response });
+    });
+    await page.route(/\/api\/model-runs\/[^/]+\/cancel$/u, async (route) => {
+      const response = await route.fetch();
+      // Deliver Stop after the stream has entered terminal reconciliation.
+      await expect.poll(() => terminalReadWaiting, { timeout: 15_000 }).toBe(true);
+      await route.fulfill({ response });
+    });
     await stop.click();
     await expect(stop).toHaveCount(0, { timeout: 30_000 });
     await expect(page.locator('article[data-role="assistant"]').last()).toContainText("Stopped");
 
+    const nextDraft = "[AIQSA_WORKSPACE_E2E:state_probe]";
+    await composer.fill(nextDraft);
+    const send = page.getByRole("button", { name: "Send message" });
+    await expect(send).toBeDisabled();
+    await expect(composer).toBeEnabled();
+    await composer.press("Enter");
+    await expect(composer).toHaveValue(nextDraft);
+    await page.screenshot({ path: testInfo.outputPath("pending-send-reconciliation.png") });
+    releaseTerminalRead();
+    await expect(send).toBeEnabled({ timeout: 30_000 });
+    await expect(composer).toHaveValue(nextDraft);
     await sendAndExpect(
       page,
-      "[AIQSA_WORKSPACE_E2E:state_probe]",
+      nextDraft,
       "Workspace state persisted."
     );
 
@@ -413,6 +448,7 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     expect(forged.status()).toBe(400);
     await expect(forged.json()).resolves.toEqual({ error: "workspace_model_tools_required" });
   } finally {
+    releaseTerminalRead();
     if (modelSnapshot?.activeConfig) {
       await prisma.providerModel.update({
         data: {

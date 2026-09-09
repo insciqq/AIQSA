@@ -682,6 +682,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       selectedProvider={composer.selectedProvider}
       selectedSearchOptionIds={composer.selectedSearchOptionIds}
       sendWithEnter={composer.sendWithEnter}
+      sending={composer.sending}
       selectedSkillIds={selectedSkills.map((skill) => skill.id)}
       selectedSkills={selectedSkills.map(({ id, name }) => ({ id, name }))}
       sharedProject={projectContext}
