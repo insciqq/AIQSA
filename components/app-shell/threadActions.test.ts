@@ -497,6 +497,26 @@ describe("thread actions", () => {
     ]);
   });
 
+  it("keeps a completed fork discoverable without replacing a newer chat selection", async () => {
+    let resolveFork!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => {
+      resolveFork = resolve;
+    })));
+    const { actions, activateChat, chats } = createActionsForTest();
+    useWorkspaceStore.setState({ navigationReady: true });
+
+    const fork = actions.branchChatFromMessage("message-1");
+    useWorkspaceStore.getState().setActiveChatId("chat-c");
+    resolveFork(Response.json({ chat: apiChat({ id: "chat-fork", title: "Saved fork" }) }));
+    await fork;
+
+    expect(activateChat).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().activeChatId).toBe("chat-c");
+    expect(chats()).toContainEqual(expect.objectContaining({ id: "chat-fork" }));
+    expect(useWorkspaceStore.getState().navigationChats)
+      .toContainEqual(expect.objectContaining({ id: "chat-fork" }));
+  });
+
   it("restores composer focus after the confirmed message row is removed", async () => {
     const composer = document.createElement("textarea");
     composer.id = "composer";

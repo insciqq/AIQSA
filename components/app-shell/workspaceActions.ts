@@ -89,6 +89,26 @@ export type ChatExportFormat = "json" | "markdown";
 /** The per-chat Markdown export document is shared with the server-side archive export. */
 export { chatExportMarkdown };
 
+/** A read cannot undo a successful local mutation that settled after dispatch. */
+function preserveChangesDuringRead<T extends { id: string }>(
+  before: readonly T[],
+  current: readonly T[],
+  incoming: readonly T[]
+): T[] {
+  const beforeById = new Map(before.map((item) => [item.id, item]));
+  const currentById = new Map(current.map((item) => [item.id, item]));
+  const incomingIds = new Set(incoming.map((item) => item.id));
+  return [
+    ...incoming.flatMap((item) => {
+      const previous = beforeById.get(item.id);
+      const latest = currentById.get(item.id);
+      if (previous && !latest) return [];
+      return [latest && latest !== previous ? latest : item];
+    }),
+    ...current.filter((item) => !incomingIds.has(item.id) && item !== beforeById.get(item.id))
+  ];
+}
+
 type WorkspaceActionsInput = {
   activeChatIdRef: MutableRef<string | null>;
   applyModelControlDefaults(model?: CatalogModel | null, controlValues?: Record<string, unknown>): void;
@@ -808,7 +828,9 @@ export function useWorkspaceActions({
       return workspaceRefreshPromiseRef.current;
     }
 
-    const wasReady = useWorkspaceStore.getState().workspaceReady;
+    const before = useWorkspaceStore.getState();
+    const sourceSessionKey = useComposerSessionStore.getState().activeSessionKey;
+    const wasReady = before.workspaceReady;
     const request = (async () => {
       useWorkspaceStore.getState().setWorkspaceLoading(true);
       try {
@@ -855,14 +877,18 @@ export function useWorkspaceActions({
         const ownedChats = recoveredTemporarySummary
           ? [...nextChats, recoveredTemporarySummary]
           : nextChats;
+        const current = useWorkspaceStore.getState();
+        const selectionChanged = current.activeChatId !== before.activeChatId ||
+          useComposerSessionStore.getState().activeSessionKey !== sourceSessionKey;
         const mergedChats = mergeWorkspaceProjectDrafts({
-          currentChats: useWorkspaceStore.getState().chats,
-          incomingChats: ownedChats
+          currentChats: current.chats,
+          incomingChats: preserveChangesDuringRead(before.chats, current.chats, ownedChats)
         }).chats;
-        useWorkspaceStore.getState().setFolders(body.folders);
+        const mergedFolders = preserveChangesDuringRead(before.folders, current.folders, body.folders);
+        useWorkspaceStore.getState().setFolders(mergedFolders);
         useWorkspaceStore.getState().setChats(mergedChats);
         const nextChatIds = new Set(mergedChats.map((chat) => chat.id));
-        const nextFolderIds = new Set(body.folders.map((folder) => folder.id));
+        const nextFolderIds = new Set(mergedFolders.map((folder) => folder.id));
         const composerSessionKeys = Object.keys(
           useComposerSessionStore.getState().sessionsByKey
         ) as ComposerSessionKey[];
@@ -894,10 +920,12 @@ export function useWorkspaceActions({
         useWorkspaceStore.getState().setWorkspaceError(null);
         useWorkspaceStore.getState().setWorkspaceReady(true);
 
+        if (selectionChanged) return null;
+
         const activationCatalog = options.catalogOverride ?? useWorkspaceStore.getState().catalog;
 
         if (targetActiveChatId) {
-          const nextActive = ownedChats.find((chat) => chat.id === targetActiveChatId);
+          const nextActive = mergedChats.find((chat) => chat.id === targetActiveChatId);
           if (nextActive) {
             if (recoveredTemporaryDetail?.id === nextActive.id) {
               cacheChatDetail(recoveredTemporaryDetail);

@@ -100,6 +100,46 @@ async function installArchiveRoutes(page: Page) {
   return { restoreRequests: () => restoreRequests };
 }
 
+test("a late restore preserves the other archived chat that is now being read", async ({ page }, testInfo) => {
+  const other = { ...archivedSummary, id: "archive-other", title: "Another archived conversation" };
+  let release!: () => void;
+  let captured!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const requested = new Promise<void>((resolve) => { captured = resolve; });
+  await page.route("**/api/chats/archived", (route) => route.fulfill({ json: { chats: [archivedSummary, other], nextCursor: null } }));
+  await page.route("**/api/chats/*/archive", (route) => route.fulfill({ json: {
+    chat: route.request().url().includes("archive-other")
+      ? { ...archivedDetail, ...other, lastMessageAt: undefined } : archivedDetail
+  } }));
+  await page.route("**/api/chats/archive-fixture/restore", async (route) => {
+    captured();
+    await held;
+    await route.fulfill({ json: { chat: {
+      archived: false, id: archivedSummary.id, memoryMode: "NORMAL", sourceRevision: 8, updatedAt: timestamp
+    } } });
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/ui-v2-fixture?fixture=settings&state=archived");
+  const settings = page.getByRole("dialog", { name: "Settings" });
+  await settings.getByRole("button", { name: "Manage" }).click();
+  const archive = settings.getByTestId("settings-archived-panel");
+  await archive.getByRole("button", { name: `Open preview: ${archivedSummary.title}` }).click();
+  await archive.getByRole("button", { name: `Restore ${archivedSummary.title}` }).click();
+  await requested;
+  try {
+    await archive.getByRole("button", { name: "Archived chats", exact: true }).click();
+    await archive.getByRole("button", { name: `Open preview: ${other.title}` }).click();
+    await expect(archive.getByRole("heading", { name: other.title })).toBeVisible();
+  } finally {
+    release();
+  }
+  await expect(archive.getByRole("button", { name: `Restore ${other.title}` })).toBeEnabled();
+  await expect(archive.getByRole("heading", { name: other.title })).toBeVisible();
+  await expect(archive.getByRole("button", { name: "Archived chats", exact: true })).toBeFocused();
+  await expectNoHorizontalOverflow(page);
+  await page.screenshot({ path: testInfo.outputPath("late-restore-preview-mobile.png") });
+});
+
 test("Archived chats is a focus-safe Data task with list, preview, and restore", async ({ context, page }) => {
   const requests = await installArchiveRoutes(page);
   await context.addCookies([{

@@ -129,6 +129,41 @@ test.afterEach(async ({ page }) => {
   await cleanupUnmockedChats(page);
 });
 
+test("a late fork response preserves the new-chat draft selected while it was pending", async ({ page }, testInfo) => {
+  await prepareFakeBlankChat(page);
+  const prompt = `${testTitlePrefix} delayed fork`;
+  await page.getByRole("textbox", { name: "Message" }).fill(prompt);
+  await page.getByRole("textbox", { name: "Message" }).press("Enter");
+  await expect(page.getByTestId("conversation-thread")).toContainText(`Fake answer: ${prompt}`);
+  await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0);
+
+  let release!: () => void;
+  let captured!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const requested = new Promise<void>((resolve) => { captured = resolve; });
+  await page.route("**/api/messages/*/branch-chat", async (route) => {
+    const response = await route.fetch();
+    captured();
+    await held;
+    await route.fulfill({ response });
+  });
+  const answer = page.locator('article[data-role="assistant"]').last();
+  await answer.getByRole("button", { name: "More answer actions" }).click();
+  await page.getByRole("menuitem", { name: "Branch from here" }).click();
+  await requested;
+  try {
+    await page.getByRole("complementary", { name: "Chat navigation" })
+      .getByRole("button", { name: "New chat", exact: true }).click();
+    await page.getByRole("textbox", { name: "Message" }).fill("Keep this new unsent draft");
+  } finally {
+    release();
+  }
+  await expect(page.getByRole("status").filter({ hasText: "Branched chat:" })).toBeVisible();
+  await expect(page.getByTestId("conversation-empty")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("Keep this new unsent draft");
+  await page.screenshot({ path: testInfo.outputPath("late-fork-draft.png") });
+});
+
 test("runs a fake-provider chat through real routes, Prisma, SSE, and answer outputs", async ({ page }) => {
   const titlePrefix = `${testTitlePrefix} happy path ${Date.now()}`;
   const prompt = titlePrefix;
