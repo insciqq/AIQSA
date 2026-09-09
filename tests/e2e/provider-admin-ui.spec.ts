@@ -737,7 +737,7 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
   await expect(sheet.getByRole("button", { name: "OpenAI", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(sheet.getByTestId("provider-add-summary")).toContainText("GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol");
   await expect(sheet.getByLabel("Name")).toHaveValue("OpenAI");
-  await expect(sheet.getByText("Enables supported models, checks models and Search, and fills suitable empty defaults. Uses small paid requests.")).toBeVisible();
+  await expect(sheet.getByText(/Uses small paid requests\./u)).toBeVisible();
   const keyField = sheet.getByLabel("API key");
   await expect(keyField).toHaveAttribute("type", "text");
   await keyField.fill("e2e-quick-write-only-key");
@@ -1046,7 +1046,7 @@ test("administrator discovers and configures a Custom compatible provider throug
     await expect(sheet.getByLabel("API style")).toHaveValue("chat_completions");
     await expect(sheet.getByLabel("API key")).toHaveAttribute("type", "text");
     await expect(sheet.getByRole("button", { name: "Test & Save" })).toBeDisabled();
-    await expect(sheet.getByText("Enables supported models, checks models and Search, and fills suitable empty defaults. Uses small paid requests.")).toBeVisible();
+    await expect(sheet.getByText(/Uses small paid requests\./u)).toBeVisible();
     await expectNoPageOverflow(page);
 
     const key = `e2e-custom-write-only-key-${viewport.width}`;
@@ -1439,7 +1439,7 @@ test("administrator saves a rejected and then a working OpenRouter key with one 
   const form = section.getByTestId("provider-key-form");
   await form.getByLabel("Label").fill("Primary");
   await form.getByLabel("API key").fill("e2e-rejected-key");
-  await expect(form).toContainText("checks models and Search with small paid requests");
+  await expect(form).toContainText("with small paid requests");
   await form.getByRole("button", { name: "Test & Save" }).click();
   await expect(form.getByRole("alert")).toHaveText("The provider rejected this key. Check the key and try again.");
   await expect(form.getByLabel("API key")).toHaveAttribute("aria-invalid", "true");

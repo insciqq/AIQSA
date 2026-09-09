@@ -40,6 +40,7 @@ let collections = 0;
 let releases = 0;
 const transfers = [0, 0, 0];
 const reused: number[] = [];
+let originalAttachmentId: string | null = null;
 let mutationCount = 0;
 let corruptTransfer = true;
 
@@ -102,12 +103,15 @@ test.beforeAll(async ({ browser }) => {
         const runAdmission = path.endsWith("/stage/list") && parseWorkspaceOperation(body.operation).owner.startsWith("run:");
         if (runAdmission) {
           listings += 1;
+          const entries = body.attachments as Array<{ attachmentId: string; sandboxPath: string; checksum: string }>;
+          // Prior generated outputs can also be staged on subsequent turns.
+          const originals = entries.filter((entry) => entry.checksum === sha(inputBytes));
+          expect(originals).toHaveLength(1);
+          originalAttachmentId ??= originals[0]!.attachmentId;
+          expect(originals[0]!.attachmentId).toBe(originalAttachmentId);
           if (listings === 2) {
-            const entries = body.attachments as Array<{ sandboxPath: string; checksum: string }>;
-            expect(entries).toHaveLength(1);
-            expect(entries[0]!.checksum === sha(inputBytes)).toBe(true);
             const changed = Buffer.from(inputBytes); changed[0] ^= 1;
-            await mutate(body, sessionId, entries[0]!.sandboxPath, changed);
+            await mutate(body, sessionId, originals[0]!.sandboxPath, changed);
           }
         }
         if (path.endsWith("/outputs/list")) {
@@ -122,7 +126,10 @@ test.beforeAll(async ({ browser }) => {
         const bytes = Buffer.from(await reply.arrayBuffer());
         expect(bytes.length).toBeLessThanOrEqual(2 * 1024 * 1024);
         expect(reply.status).toBe(200);
-        if (runAdmission) reused.push((JSON.parse(bytes.toString()) as { staged: unknown[] }).staged.length);
+        if (runAdmission) {
+          const staged = (JSON.parse(bytes.toString()) as { staged: Array<{ attachmentId: string }> }).staged;
+          reused.push(staged.filter((entry) => entry.attachmentId === originalAttachmentId).length);
+        }
         if (path.endsWith("/outputs/list") && collections === 1) {
           const changed = Buffer.from(resultBytes); changed[0] ^= 1;
           await mutate(body, sessionId, `${body.outputDirectory}/result.zip`, changed);
@@ -141,7 +148,13 @@ test.beforeAll(async ({ browser }) => {
         response.writeHead(200, { "content-type": reply.headers.get("content-type")!, "content-length": bytes.length });
         response.end(bytes); return;
       }
-      if (request.method === "POST" && path.endsWith("/stage")) transfers[listings - 1]! += 1;
+      if (request.method === "POST" && path.endsWith("/stage")) {
+        const operation = request.headers["x-aiqsa-workspace-operation"];
+        if (request.headers["x-aiqsa-attachment-id"] === originalAttachmentId &&
+          typeof operation === "string" && parseWorkspaceOperation(JSON.parse(operation)).owner.startsWith("run:")) {
+          transfers[listings - 1]! += 1;
+        }
+      }
       const forwarded = httpRequest(new URL(path, upstream), { method: request.method, headers: { ...request.headers, host: upstream.host } }, (reply) => {
         response.writeHead(reply.statusCode ?? 502, reply.headers);
         void pipeline(reply, response).catch(() => forwarded.destroy());
