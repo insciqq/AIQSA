@@ -1,4 +1,4 @@
-import type { McpReadiness, UserMcpServer } from "@/lib/contracts/mcp";
+import { mcpRuntimeErrorMessage, type McpReadiness, type UserMcpServer } from "@/lib/contracts/mcp";
 
 export type McpReadinessPresentation = Readonly<{
   kind: "attention" | "disabled" | "failed" | "progress" | "ready";
@@ -16,10 +16,11 @@ const presentations: Record<McpReadiness, McpReadinessPresentation> = {
   reauthorization_required: { kind: "attention", label: "Reconnect required" },
   restarting: { kind: "progress", label: "Restarting" },
   starting: { kind: "progress", label: "Starting runtime" },
-  unavailable: { kind: "failed", label: "Activation failed" }
+  unavailable: { kind: "failed", label: "Runtime unavailable" }
 };
 
-export function mcpReadinessPresentation(readiness: McpReadiness): McpReadinessPresentation {
+export function mcpReadinessPresentation(readiness: McpReadiness, runtimeErrorCode?: string | null): McpReadinessPresentation {
+  if (readiness === "unavailable" && runtimeErrorCode) return { kind: "failed", label: mcpRuntimeErrorMessage(runtimeErrorCode) };
   return presentations[readiness];
 }
 

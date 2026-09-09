@@ -31,7 +31,7 @@ const groupHeading = "px-2 pb-1 pt-2 text-metadata font-semibold uppercase track
 /**
  * Eligibility-driven deployment picker (PRD 5.5): only deployments that can
  * do the job are listed, in three groups. `Check` inside the picker runs the
- * one small paid request for a `Check first` deployment and assigns it.
+ * required paid capability checks for a `Check first` deployment and assigns it.
  */
 export function AdminRolePicker({
   busy = false,
@@ -170,12 +170,16 @@ export function AdminRolePicker({
           )}
           {check.length > 0 ? (
             <>
-              <p className={groupHeading}>Check first · one small paid request</p>
+              <p className={groupHeading}>Check first · small paid requests</p>
               <ul aria-label="Check first" className="grid min-w-0 grid-cols-1 gap-0.5">
                 {check.map((item) => (
                   <li className="flex min-h-[2.125rem] min-w-0 items-center gap-2 px-2 text-sm text-ink" key={item.id}>
                     <span aria-hidden="true" className="w-4 shrink-0" />
-                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                    <span className="min-w-0 flex-1 py-1">
+                      <span className="block break-words">{item.label}</span>
+                      <span className="block text-xs leading-5 text-ink-muted">{item.note}</span>
+                      {item.configurationHref ? <a aria-label={`Model settings for ${item.label}`} className={`text-xs text-proof underline underline-offset-2 ${focusRing}`} href={item.configurationHref}>Model settings</a> : null}
+                    </span>
                     <UiV2Button
                       aria-label={`Check ${item.label}`}
                       busy={checkingId === item.id}
@@ -201,12 +205,12 @@ export function AdminRolePicker({
               <ul aria-label="Not eligible" className="grid min-w-0 grid-cols-1 gap-0.5">
                 {ineligible.map((item) => (
                   <li
-                    className="grid min-h-[2.125rem] min-w-0 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-2 px-2 text-sm text-ink-muted"
+                    className="min-h-[2.125rem] min-w-0 px-2 py-1.5 text-sm text-ink-muted"
                     key={item.id}
                   >
-                    <span aria-hidden="true" />
-                    <span className="min-w-0 truncate">{item.label}</span>
-                    <span className="max-w-[11rem] text-right text-xs leading-4">{item.note}</span>
+                    <span className="block break-words">{item.label}</span>
+                    <span className="block text-xs leading-5">{item.note}</span>
+                    {item.configurationHref ? <a aria-label={`Model settings for ${item.label}`} className={`text-xs text-proof underline underline-offset-2 ${focusRing}`} href={item.configurationHref}>Model settings</a> : null}
                   </li>
                 ))}
               </ul>

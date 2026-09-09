@@ -1,9 +1,66 @@
 import { expect, test } from "@playwright/test";
+import type { UserMcpServer } from "../../lib/contracts/mcp";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken as signIn } from "./support/localAuth";
 
 test.use({ hasTouch: true });
+
+test("explains MCP health failures and timeouts and refreshes their status explicitly", async ({ page }) => {
+  await installMatrixCatalogFixture(page);
+  const failures = [
+    { id: "health-failed", name: "Health fixture", code: "mcp_health_check_failed",
+      message: "The MCP health check failed. Check the server and try again." },
+    { id: "health-timeout", name: "Timeout fixture", code: "mcp_timeout",
+      message: "The MCP server timed out. Check the server and try again." }
+  ] as const;
+  const failedServers: UserMcpServer[] = failures.map(({ id, name, code }) => ({
+    accountLabel: null, description: "Synthetic MCP status fixture", enabled: true, fields: [],
+    id, knownToolCount: 1, name, oauthAvailable: false, oauthState: null,
+    operationalStatus: "inactive", readiness: "unavailable", runtimeErrorCode: code, tools: []
+  }));
+  let healthy = false;
+  let catalogReads = 0;
+  const requestMethods: string[] = [];
+  await page.route("**/api/me/mcp**", async (route) => {
+    const request = route.request();
+    requestMethods.push(request.method());
+    if (request.method() !== "GET" || new URL(request.url()).pathname !== "/api/me/mcp") {
+      await route.fulfill({ json: { error: "unexpected_mcp_e2e_request" }, status: 400 });
+      return;
+    }
+    catalogReads += 1;
+    const servers: UserMcpServer[] = healthy ? failedServers.map((server) => ({
+      ...server, operationalStatus: "active", readiness: "ready", runtimeErrorCode: null,
+      tools: [{ description: "Synthetic tool inventory", name: `${server.id}_tool` }]
+    })) : failedServers;
+    await route.fulfill({ json: { servers } });
+  });
+  await signIn(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?settings=mcp");
+  const settings = page.getByTestId("settings-v2");
+  for (const failure of failures) {
+    const row = settings.getByRole("article", { name: failure.name, exact: true });
+    await expect(row.getByRole("status")).toContainText(failure.message);
+    await expect(row.getByText("Inactive", { exact: true })).toBeVisible();
+    await expect(row.getByRole("switch")).toHaveAttribute("aria-checked", "true");
+  }
+  const refresh = settings.getByRole("button", { name: "Refresh status", exact: true });
+  await expect(refresh).toBeEnabled();
+  await expectTouchSafe(refresh);
+  await expectNoHorizontalOverflow(page);
+  const readsBeforeRefresh = catalogReads;
+  healthy = true;
+  await refresh.click();
+  await expect.poll(() => catalogReads).toBeGreaterThan(readsBeforeRefresh);
+  for (const failure of failures) {
+    const row = settings.getByRole("article", { name: failure.name, exact: true });
+    await expect(row.getByText("Active", { exact: true })).toBeVisible();
+    await expect(row.getByText(failure.message, { exact: true })).toHaveCount(0);
+  }
+  expect(requestMethods.every((method) => method === "GET")).toBe(true);
+});
 
 for (const [kind, notice] of [
   ["connected", "External account connected and MCP enabled."],

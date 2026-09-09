@@ -69,8 +69,8 @@ describe("useAdminProvidersController", () => {
       activate: true,
       configuration: { upstreamModelId: "m" },
       displayName: "M"
-    });
-    expect(onNotice).toHaveBeenCalledWith("Model saved and turned on.");
+    }, fetch, undefined, undefined);
+    expect(onNotice).not.toHaveBeenCalled();
 
     await act(async () => {
       await expect(result.current.actions.startModelChecks(original.id, "credential-1", ["model-1"]))
@@ -81,7 +81,7 @@ describe("useAdminProvidersController", () => {
       credentialId: "credential-1",
       modelIds: ["model-1"]
     });
-    expect(onNotice).toHaveBeenCalledOnce();
+    expect(onNotice).not.toHaveBeenCalled();
     expect(result.current.state.connections[0]?.displayName).toBe("checking");
     expect(result.current.state.busy).toBe(false);
   });

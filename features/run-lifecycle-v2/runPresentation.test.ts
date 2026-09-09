@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RunEventView } from "@/lib/contracts/runs";
+import { TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
+import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import {
   answerProcessLabelV2,
   describeToolCallV2,
@@ -7,6 +9,7 @@ import {
   presentRunLifecycleV2,
   presentToolActivityV2,
   stepDurationSumV2,
+  toolActivityOriginV2,
   type RunLifecycleStateV2,
   type RunLifecycleStatusV2
 } from "./runPresentation";
@@ -28,6 +31,18 @@ function summary(payload: Record<string, unknown>): RunEventView {
 }
 
 describe("run lifecycle v2 presentation", () => {
+  it("shows a safe live tool budget and a synthesis failure without blaming request parameters", () => {
+    const event: RunEventView = { type: "artifact", data: { artifactType: "tool_budget", payload: { kind: "rounds", limit: 8 } } };
+    expect(presentRunLifecycleV2(state({ events: [event] })).activity).toMatchObject({
+      kind: "synthesis", label: "Tool round limit (8) reached. Finishing the answer…"
+    });
+    expect(presentToolActivityV2([event])).toEqual({ calls: [], warning: { kind: "rounds", limit: 8 } });
+    expect(presentRunLifecycleV2(state({ content: "Partial answer", events: [event,
+      { type: "error", data: { code: TOOL_SYNTHESIS_FAILURE.code, message: "unexposed provider diagnostic" } }
+    ] }))).toMatchObject({ kind: "terminal_error", failure: { ...TOOL_SYNTHESIS_FAILURE, recovery: "regenerate" } });
+    expect(presentToolActivityV2([{ type: "artifact", data: { artifactType: "tool_budget", payload: { kind: "rounds", limit: -1 } } }])).toBeNull();
+  });
+
   it("stays silent without explicit lifecycle state", () => {
     expect(presentRunLifecycleV2(state({ content: "A finished-looking sentence." }))).toEqual({
       kind: "idle",
@@ -145,6 +160,57 @@ describe("run lifecycle v2 presentation", () => {
     }])).toBeNull();
   });
 
+  it.each(["complete", "error", "cancelled"] as const)(
+    "keeps MCP search origin when live activity reconciles with %s history",
+    (status) => {
+      const event: RunEventView = {
+        type: "artifact",
+        data: { artifactType: "tool_call", payload: {
+          arguments: { query: "unexposed query" },
+          error: "unexposed diagnostic",
+          name: "search",
+          origin: "mcp",
+          round: 2,
+          serverName: "Repository Tools",
+          status: "requested"
+        } }
+      };
+      const persisted: ThreadToolActivity = { calls: [{
+        durationMs: 120,
+        origin: "mcp",
+        round: 2,
+        serverName: "Repository Tools",
+        status,
+        toolName: "search"
+      }] };
+      const live = presentToolActivityV2([event]);
+
+      expect(live?.calls[0]).toMatchObject({ origin: "mcp", status: "running" });
+      expect(describeToolCallV2(live!.calls[0]!, "running")).toBe("Using Repository Tools: search");
+      expect(presentRunLifecycleV2(state({ events: [event] })).activity?.label)
+        .toBe("Using Repository Tools: search…");
+      expect(presentToolActivityV2([event], persisted)).toEqual(persisted);
+      expect(presentToolActivityV2([], persisted)).toEqual(persisted);
+      expect(JSON.stringify(live)).not.toContain("unexposed");
+    }
+  );
+
+  it("keeps different explicit origins distinct while reconciling identical display names", () => {
+    const persisted: ThreadToolActivity = { calls: [{
+      origin: "web_search", round: 1, serverName: "Web search", status: "complete", toolName: "search"
+    }] };
+    const activity = presentToolActivityV2([{
+      type: "artifact",
+      data: { artifactType: "tool_call", payload: {
+        name: "search", origin: "mcp", round: 1, serverName: "Web search", status: "requested"
+      } }
+    }], persisted);
+
+    expect(activity?.calls.map((call) => [call.origin, call.status])).toEqual([
+      ["web_search", "complete"], ["mcp", "running"]
+    ]);
+  });
+
   it("keeps ambiguous EOF distinct until terminal server truth arrives", () => {
     const partial = state({
       connectionLost: true,
@@ -260,6 +326,61 @@ describe("answer process label", () => {
   it("names the built-in engine search as a web search", () => {
     expect(describeToolCallV2({ toolName: "search_selected_engines" }, "settled")).toBe("Searched the web");
     expect(describeToolCallV2({ toolName: "search_selected_engines" }, "running")).toBe("Searching the web");
+  });
+
+  it.each([
+    ["Repository Tools", "search", "search"],
+    ["Document Tools", "search_knowledge", "search knowledge"],
+    ["Knowledge", "retrieve_knowledge", "retrieve knowledge"],
+    ["Auto tools", "find_tools", "find tools"],
+    ["Web search", "web_search", "web search"],
+    ["Workspace", "search", "search"]
+  ])("keeps MCP %s / %s distinct from built-ins in every phase", (serverName, toolName, operation) => {
+    const call = { origin: "mcp", serverName, toolName };
+    expect(describeToolCallV2(call, "running")).toBe(`Using ${serverName}: ${operation}`);
+    expect(describeToolCallV2(call, "settled")).toBe(`Used ${serverName}: ${operation}`);
+    expect(describeToolCallV2(call, "failed")).toBe(`${serverName}: ${operation} failed`);
+    expect(describeToolCallV2(call, "cancelled")).toBe(`${serverName}: ${operation} stopped`);
+  });
+
+  it.each(["search", "search_knowledge", "find_tools"])(
+    "retains the server for a %s call without explicit origin",
+    (toolName) => {
+      expect(toolActivityOriginV2({ serverName: "Repository Tools", toolName })).toBe("mcp");
+      expect(describeToolCallV2({ serverName: "Repository Tools", toolName }, "settled"))
+        .toContain("Used Repository Tools:");
+    }
+  );
+
+  it.each([
+    ["web_search", "Searching the web", "Searched the web", "Web search failed", "Web search stopped"],
+    ["knowledge", "Searching Knowledge", "Searched Knowledge", "Knowledge search unavailable", "Knowledge search stopped"],
+    ["discovery", "Finding relevant tools", "Found relevant tools", "Tool discovery failed", "Tool discovery stopped"],
+    ["workspace", "Working in Workspace", "Worked in Workspace", "Workspace step failed", "Workspace step stopped"]
+  ])("preserves explicit built-in %s regardless of its display names", (origin, running, settled, failed, cancelled) => {
+    const call = { origin, serverName: "Catalog Search", toolName: "search" };
+    expect(describeToolCallV2(call, "running")).toBe(running);
+    expect(describeToolCallV2(call, "settled")).toBe(settled);
+    expect(describeToolCallV2(call, "failed")).toBe(failed);
+    expect(describeToolCallV2(call, "cancelled")).toBe(cancelled);
+  });
+
+  it("does not infer a built-in from a tool with explicitly generic origin", () => {
+    expect(describeToolCallV2({ origin: "tool", toolName: "search" }, "settled")).toBe("Ran search");
+  });
+
+  it("bounds names and withholds namespaces, endpoints, and control characters from labels", () => {
+    for (const call of [
+      { serverName: "https://example.test/mcp", toolName: "mcp_repository_search_fixture" },
+      { serverName: "mcp_repository_fixture", toolName: "https://example.test/search" },
+      { serverName: "Repository\u0000 Tools", toolName: "search\u0000diagnostic" }
+    ]) {
+      const label = describeToolCallV2({ ...call, origin: "mcp" }, "failed");
+      expect(label).toBe("MCP server failed");
+      expect(label).not.toMatch(/https|example|mcp_|diagnostic|\u0000/iu);
+    }
+    expect(describeToolCallV2({ origin: "mcp", serverName: "S".repeat(200), toolName: "t".repeat(100) }, "running"))
+      .toBe(`Using ${"S".repeat(160)}: ${"t".repeat(80)}`);
   });
 
   it("distinguishes Knowledge retrieval progress, success, and technical failure", () => {

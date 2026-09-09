@@ -10,7 +10,9 @@ import {
   groupHeaderSummary,
   groupMemberCandidates,
   groupMembers,
+  groupModelChanges,
   groupProviderKey,
+  groupSearchChanges,
   providerAccess,
   providerAccessLabel,
   providerModelChanges
@@ -148,5 +150,59 @@ describe("groupsView", () => {
       { enabled: true, modelId: "sonnet-5", provider: "conn-anthropic" }
     ]);
     expect(providerModelChanges(catalog, "conn-none", false)).toEqual([]);
+  });
+
+  it("grants only missing current identities across providers without narrowing future-model grants", () => {
+    const duplicateCatalog = {
+      ...catalog,
+      models: [...catalog.models, catalog.models[3]],
+      providers: [...catalog.providers, catalog.providers[0]],
+      searchStrategies: [...catalog.searchStrategies, catalog.searchStrategies[0], { displayName: "More Search", strategyId: "more-search" }]
+    };
+    expect(groupModelChanges(research, duplicateCatalog, true)).toEqual([
+      { enabled: true, modelId: "sonnet-5", provider: "conn-anthropic" }
+    ]);
+    expect(groupModelChanges(empty, duplicateCatalog, true)).toHaveLength(4);
+    expect(groupSearchChanges(research, duplicateCatalog, true)).toEqual([{ enabled: true, searchStrategy: "more-search" }]);
+    expect(groupAccessCounts(research, duplicateCatalog)).toEqual({ models: 3, providers: 2, search: 1 });
+  });
+
+  it("clears current selections and their provider-wide grants while preserving unavailable grants and other sections", () => {
+    const withExplicitAndUnavailable = {
+      ...research,
+      accessGrants: [...research.accessGrants,
+        grant({ id: "explicit-under-wide", modelId: "gpt-5.5", provider: "conn-openai" }),
+        grant({ id: "unavailable-provider", provider: "retired-provider" })]
+    };
+    expect(groupModelChanges(withExplicitAndUnavailable, catalog, false)).toEqual([
+      { enabled: false, provider: "conn-openai" },
+      { enabled: false, modelId: "gpt-5.5", provider: "conn-openai" },
+      { enabled: false, modelId: "opus-5", provider: "conn-anthropic" }
+    ]);
+    expect(groupSearchChanges(withExplicitAndUnavailable, catalog, false)).toEqual([{ enabled: false, searchStrategy: "openai-search" }]);
+    expect(groupModelChanges(research, { ...catalog, models: [] }, false)).toEqual([]);
+  });
+
+  it("does not grant later models, providers or Search sources after a one-time bulk selection", () => {
+    const currentOnly = {
+      ...empty,
+      accessGrants: [
+        ...groupModelChanges(empty, catalog, true),
+        ...groupSearchChanges(empty, catalog, true)
+      ].map((change, index) => grant({ ...change, id: `new-${index}` }))
+    };
+    const later = {
+      ...catalog,
+      models: [...catalog.models, { displayName: "Later model", modelId: "later", provider: "conn-openai" }, { displayName: "Other model", modelId: "other", provider: "other-provider" }],
+      providers: [...catalog.providers, { id: "other-provider", name: "Other provider" }],
+      searchStrategies: [...catalog.searchStrategies, { displayName: "Later Search", strategyId: "later-search" }]
+    };
+    expect(groupAccessCounts(currentOnly, later)).toEqual({ models: 4, providers: 2, search: 1 });
+    expect(providerAccess(currentOnly, "conn-openai")).toEqual({ kind: "some", modelIds: ["gpt-5.5", "gpt-mini"] });
+    expect(groupModelChanges(currentOnly, later, true)).toEqual([
+      { enabled: true, modelId: "later", provider: "conn-openai" },
+      { enabled: true, modelId: "other", provider: "other-provider" }
+    ]);
+    expect(groupSearchChanges(currentOnly, later, true)).toEqual([{ enabled: true, searchStrategy: "later-search" }]);
   });
 });

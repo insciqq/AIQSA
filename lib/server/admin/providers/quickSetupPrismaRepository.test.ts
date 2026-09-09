@@ -299,6 +299,19 @@ describe("Prisma provider Quick setup repository transaction boundary", () => {
 });
 
 describe("Prisma provider Quick setup eligibility", () => {
+  it("requires explicit reconfiguration for an existing Gemini v1 connection", async () => {
+    const gemini = adminProviderQuickSetupPolicy("gemini");
+    const configuration = { ...gemini.connection.configuration, apiRoot: "https://generativelanguage.googleapis.com/v1" };
+    const { repository } = inspectionRepository({ connections: [canonicalConnection({
+      activeConfig: configuration, activeVersion: 1, activatedAt: now,
+      draftConfig: configuration, enabled: true, family: "gemini",
+      id: gemini.connection.id, templateKey: "gemini"
+    })] });
+    await expect(repository.inspect({
+      now, provider: "gemini", sessionId: "session-admin", userId: "admin"
+    })).resolves.toMatchObject({ mode: null, state: "advanced_required" });
+  });
+
   it("keeps an additional same-family connection nonblocking", async () => {
     const customConnection = canonicalConnection({
       displayName: "Custom OpenAI",

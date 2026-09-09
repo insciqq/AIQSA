@@ -137,6 +137,52 @@ function harness(input: {
 describe("MCP runtime coordinator", () => {
   afterEach(() => vi.useRealTimers());
 
+  it("renews unsupported-ping sessions with bounded protocol inventory and never publishes newly returned tools", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const test = harness({ now: () => new Date() });
+    await test.coordinator.reconcileNow();
+    const original = await test.session.listTools();
+    test.setInventory([...original, { ...original[0], name: "new-tool", definitionHash: "new-hash" }]);
+    vi.mocked(test.session.ping).mockRejectedValue(new McpClientSessionError({ code: "mcp_ping_unsupported", operation: "ping" }));
+    for (let index = 0; index < 3; index += 1) {
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(test.coordinator.operationalStatus("generation-1")).toBe("checking");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(test.coordinator.operationalStatus("generation-1")).toBe("active");
+      await expect(test.coordinator.callTool({ generationId: "generation-1", name: "echo", arguments: {}, inputSchema: { type: "object" } }))
+        .resolves.toMatchObject({ isError: false });
+    }
+    expect(test.session.ping).toHaveBeenCalledOnce();
+    expect(test.createSession).toHaveBeenCalledOnce();
+    expect(test.repository.markReady).toHaveBeenCalledOnce();
+    expect(test.repository.markFailed).not.toHaveBeenCalled();
+    expect(test.session.callTool).toHaveBeenCalledTimes(3);
+    await expect(test.coordinator.callTool({ generationId: "generation-1", name: "new-tool", arguments: {}, inputSchema: { type: "object" } }))
+      .rejects.toMatchObject({ code: "mcp_tool_not_available" });
+    await test.coordinator.stop();
+  });
+
+  it.each(["changed", "secret", "timeout"])("fails closed if the compatibility inventory is %s", async (failure) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const test = harness({ now: () => new Date(), dynamicSecrets: ["PRIVATE_SECRET"] });
+    await test.coordinator.reconcileNow();
+    vi.mocked(test.session.ping).mockRejectedValue(new McpClientSessionError({ code: "mcp_ping_unsupported", operation: "ping" }));
+    if (failure === "timeout") vi.mocked(test.session.listTools).mockImplementation(() => new Promise(() => {}));
+    else test.setInventory([{ name: "echo", definitionHash: "changed", inputSchema: { type: "object" },
+      description: failure === "secret" ? "PRIVATE_SECRET" : null }]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    test.coordinator.operationalStatus("generation-1");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(test.coordinator.operationalStatus("generation-1")).toBe("inactive");
+    expect(test.repository.markFailed).toHaveBeenCalledWith(expect.objectContaining({
+      errorCode: failure === "timeout" ? "mcp_timeout" : failure === "secret" ? "mcp_inventory_invalid" : "mcp_inventory_changed"
+    }));
+    expect(test.session.callTool).not.toHaveBeenCalled();
+    await test.coordinator.stop();
+  });
+
   it("requires fresh protocol proof and deduplicates non-blocking health renewal", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(now);
@@ -631,7 +677,7 @@ describe("MCP runtime coordinator", () => {
 
     expect(test.repository.markFailed).toHaveBeenCalledOnce();
     expect(test.repository.markFailed).toHaveBeenCalledWith({
-      errorCode: "mcp_connect_failed",
+      errorCode: "mcp_session_closed",
       fingerprint: "fingerprint-1",
       generationId: "generation-1",
       now
@@ -675,7 +721,7 @@ describe("MCP runtime coordinator", () => {
 
     expect(dispose).toHaveBeenCalledOnce();
     expect(test.repository.markFailed).toHaveBeenCalledWith({
-      errorCode: "mcp_connect_failed",
+      errorCode: "mcp_session_closed",
       fingerprint: "fingerprint-1",
       generationId: "generation-1",
       now
@@ -905,7 +951,7 @@ describe("MCP runtime coordinator", () => {
     releaseLateReady.resolve(true);
 
     await vi.waitFor(() => expect(test.repository.markFailed).toHaveBeenCalledWith({
-      errorCode: "mcp_connect_failed",
+      errorCode: "mcp_session_closed",
       fingerprint: "fingerprint-1",
       generationId: "generation-1",
       now

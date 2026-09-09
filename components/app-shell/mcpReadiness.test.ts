@@ -22,7 +22,8 @@ describe("MCP readiness presentation", () => {
     expect(mcpReadinessPresentation("queued")).toEqual({ kind: "progress", label: "Activating" });
     expect(mcpReadinessPresentation("starting")).toEqual({ kind: "progress", label: "Starting runtime" });
     expect(mcpReadinessPresentation("needs_setup")).toEqual({ kind: "attention", label: "Needs setup" });
-    expect(mcpReadinessPresentation("unavailable")).toEqual({ kind: "failed", label: "Activation failed" });
+    expect(mcpReadinessPresentation("unavailable")).toEqual({ kind: "failed", label: "Runtime unavailable" });
+    expect(mcpReadinessPresentation("unavailable", "mcp_health_check_failed")).toMatchObject({ kind: "failed", label: expect.stringContaining("health check failed") });
     expect(mcpReadinessPresentation("ready")).toEqual({ kind: "ready", label: "Ready" });
     expect(mcpReadinessPresentation("idle")).toEqual({ kind: "ready", label: "Available on demand" });
   });

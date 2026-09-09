@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { fixtureCheck, fixtureCheckRun, fixtureConnection, fixtureCredential, fixtureModel, FIXTURE_NOW } from "../../components/admin/providers/providerFixtures";
 import { signInWithLocalToken } from "./support/localAuth";
 
-test("personal-key results, details and checks share an explicit context without changing access", async ({ page }) => {
+test("personal-key results, Edit and checks share an explicit context without changing access", async ({ page }) => {
   test.setTimeout(90_000);
   const model = fixtureModel({ connectionId: "diagnostic-provider", displayName: "Diagnostic model", id: "diagnostic-model" });
   model.draftConfig = { ...model.draftConfig, adapterKind: "openai_responses_compatible" };
@@ -43,6 +43,10 @@ test("personal-key results, details and checks share an explicit context without
       return;
     }
     const body = route.request().postDataJSON() as Record<string, unknown>;
+    if (body.action === "discover_compatible_models") {
+      await route.fulfill({ json: { models: [] } });
+      return;
+    }
     actions.push(body);
     if (body.action !== "check_models") {
       await route.fulfill({ json: { error: "unexpected_mutation" }, status: 400 });
@@ -66,9 +70,12 @@ test("personal-key results, details and checks share an explicit context without
   await expect(row).toHaveAttribute("data-works-with", "checked");
   await expect(page.getByTestId("provider-default-key")).toHaveValue("");
   await expect(page.getByText("Automatic setup finished.", { exact: true })).toBeVisible();
-  await models.getByRole("button", { name: "Diagnostic model", exact: true }).click();
-  const details = models.getByTestId("provider-model-diagnostic-model-details");
-  await expect(details).toContainText("with key Main");
+  await models.getByRole("button", { name: "More actions for Diagnostic model" }).click();
+  await expect(page.getByRole("menuitem", { name: "Details" })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: "Edit" }).click();
+  const sheet = page.getByRole("dialog", { name: "Edit model" });
+  await expect(sheet).toContainText("with key Main");
+  await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
 
   await picker.focus();
   await page.keyboard.press("ArrowDown");
@@ -76,11 +83,15 @@ test("personal-key results, details and checks share an explicit context without
   await expect(picker).toHaveValue("other-key");
   await expect(picker).toBeFocused();
   await expect(row).toHaveAttribute("data-works-with", "not_checked");
-  await expect(details).toContainText("Not checked yet with key Research.");
+  await models.getByRole("button", { name: "More actions for Diagnostic model" }).click();
+  await page.getByRole("menuitem", { name: "Edit" }).click();
+  await expect(sheet).toContainText("Not checked yet with key Research.");
+  await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(page.getByText("Automatic setup finished.", { exact: true })).toHaveCount(0);
   expect(actions).toEqual([]);
   await expect(picker.locator('option[value="disabled-key"]')).toHaveJSProperty("disabled", true);
   await expect(picker.locator('option[value="unsaved-key"]')).toHaveJSProperty("disabled", true);
+  await picker.focus();
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await expect(picker).toHaveValue("other-key");
@@ -91,7 +102,7 @@ test("personal-key results, details and checks share an explicit context without
       await page.setViewportSize(viewport);
       await picker.scrollIntoViewIfNeeded();
       await expect(picker).toBeInViewport();
-      await expect(details.getByRole("button", { name: "Re-check" })).toBeVisible();
+      await expect(models.getByRole("button", { name: "Check model", exact: true })).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
       const box = await picker.boundingBox();
       expect(box).not.toBeNull();

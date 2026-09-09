@@ -6,6 +6,7 @@ import {
   Layers,
   Mail,
   Search,
+  ShieldCheck,
   Sparkles,
   SquareTerminal,
   Users,
@@ -14,6 +15,7 @@ import {
 } from "lucide-react";
 
 export type AdminSectionId =
+  | "access-rules"
   | "email"
   | "groups"
   | "mcp"
@@ -51,6 +53,7 @@ export const adminSections = [
   { Icon: BookOpenText, group: "models", id: "retrieval", label: "Knowledge & Memory" },
   { Icon: Users, group: "people", id: "users", label: "Users" },
   { Icon: Layers, group: "people", id: "groups", label: "Groups" },
+  { Icon: ShieldCheck, group: "people", id: "access-rules", label: "Sign-up rules" },
   { Icon: Wrench, group: "platform", id: "mcp", label: "MCP servers" },
   { Icon: SquareTerminal, group: "platform", id: "workspace", label: "Workspace" },
   { Icon: Mail, group: "platform", id: "email", label: "Email" },
@@ -60,7 +63,6 @@ export const adminSections = [
 /** Section ids that existed before the Control Center redesign; links from chat and bookmarks still use them. */
 const legacyAdminSections: Readonly<Record<string, AdminSectionId>> = {
   access: "groups",
-  "access-rules": "users",
   invites: "users",
   knowledge: "retrieval",
   memory: "retrieval",
@@ -94,11 +96,13 @@ function boundedQueryValue(value: string | null, maxLength: number): string | nu
 
 /** The resource opened inside a section (`?resource=<id>`), e.g. one provider page. */
 export function parseAdminSectionResource(search: string): string | null {
+  if (parseAdminSection(search) === "access-rules") return null;
   return boundedQueryValue(new URLSearchParams(search).get("resource"), MAX_RESOURCE_LENGTH);
 }
 
 /** The list filter selected inside a section (`?filter=<value>`), e.g. `pending` on Users. */
 export function parseAdminSectionFilter(search: string): string | null {
+  if (parseAdminSection(search) === "access-rules") return null;
   return boundedQueryValue(new URLSearchParams(search).get("filter"), MAX_FILTER_LENGTH);
 }
 
@@ -106,6 +110,8 @@ export function parseAdminSectionFilter(search: string): string | null {
 export function normalizeAdminSectionPath(currentHref: string): string {
   const url = new URL(currentHref, "http://localhost");
   const rawSection = url.searchParams.get("section");
+
+  if (rawSection === "access-rules") return adminSectionPath(currentHref, "access-rules");
 
   if (rawSection === null || isAdminSectionId(rawSection)) {
     return `${url.pathname}${url.search}${url.hash}`;
@@ -137,12 +143,12 @@ export function adminSectionPath(
   } else {
     url.searchParams.set("section", section);
   }
-  if (resource) {
+  if (resource && section !== "access-rules") {
     url.searchParams.set("resource", resource);
   } else {
     url.searchParams.delete("resource");
   }
-  if (filter) {
+  if (filter && section !== "access-rules") {
     url.searchParams.set("filter", filter);
   } else {
     url.searchParams.delete("filter");

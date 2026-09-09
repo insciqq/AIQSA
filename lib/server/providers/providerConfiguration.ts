@@ -384,6 +384,7 @@ function normalizeEmbeddingModelConfiguration(
 function nonAnswerCapabilitiesAreInert(capabilities: ProviderModelCapabilities): boolean {
   return !capabilities.imageInputLimits && !capabilities.backgroundStreaming &&
     !capabilities.defaultMaxOutputTokens &&
+    !capabilities.maxOutputTokens &&
     !capabilities.nativeBackground &&
     !capabilities.nativeImageGeneration &&
     !capabilities.nativePdfInput &&
@@ -442,6 +443,11 @@ export function normalizeProviderModelCapabilities(value: unknown): ProviderMode
   ) {
     throw new ProviderConfigurationError("provider_model_capabilities_invalid");
   }
+  if (value.maxOutputTokens !== undefined &&
+    (!Number.isSafeInteger(value.maxOutputTokens) || Number(value.maxOutputTokens) <= 0 ||
+      typeof value.defaultMaxOutputTokens === "number" && value.defaultMaxOutputTokens > Number(value.maxOutputTokens))) {
+    throw new ProviderConfigurationError("provider_model_capabilities_invalid");
+  }
   const reasoningEfforts = optionalReasoningControls(value.reasoningEfforts);
   const reasoningModes = optionalReasoningControls(value.reasoningModes);
   const defaultReasoningEffort = value.defaultReasoningEffort === undefined
@@ -477,6 +483,7 @@ export function normalizeProviderModelCapabilities(value: unknown): ProviderMode
     ...(typeof value.defaultMaxOutputTokens === "number"
       ? { defaultMaxOutputTokens: value.defaultMaxOutputTokens }
       : {}),
+    ...(typeof value.maxOutputTokens === "number" ? { maxOutputTokens: value.maxOutputTokens } : {}),
     nativePdfInput: value.nativePdfInput as boolean,
     ...(typeof value.nativeBackground === "boolean" ? { nativeBackground: value.nativeBackground } : {}),
     ...(typeof value.nativeImageGeneration === "boolean"

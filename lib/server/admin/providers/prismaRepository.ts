@@ -1,4 +1,6 @@
 import { mergeSystemRoleEvidence } from "./systemRoleEvidence";
+import { decodeCapabilitySetupEvidence, pendingInitialCapabilityEvidence } from "./initialCapabilitySetup";
+import { decodeParallelToolCallVerificationEvidence } from "../../providers/parallelToolCallEvidence";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
@@ -89,6 +91,8 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
   const pdfInput = decodePdfInputVerificationEvidence(value.pdfInput);
   const visionInput = decodeVisionInputVerificationEvidence(value.visionInput);
   const compatibility = decodeAdminProviderCompatibilityEvidence(value.compatibility);
+  const capabilitySetup = decodeCapabilitySetupEvidence(value.capabilitySetup);
+  const parallelToolCalls = decodeParallelToolCallVerificationEvidence(value.parallelToolCalls);
   const dedicatedProbe = value.detail === "ok" && value.method !== "models_catalog";
   const embedding = dedicatedProbe && isRecord(value.embedding) &&
     value.embedding.probeVersion === 1 && value.embedding.document === true && value.embedding.query === true &&
@@ -99,6 +103,8 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
     value.reranking.probeVersion === 1 && value.reranking.completeScores === true
     ? { probeVersion: 1 as const, completeScores: true as const } : null;
   return {
+    ...(capabilitySetup ? { capabilitySetup } : {}),
+    ...(parallelToolCalls ? { parallelToolCalls } : {}),
     ...(compatibility ? { compatibility } : {}),
     ...(embedding ? { embedding } : {}),
     ...(reranking ? { reranking } : {}),
@@ -935,6 +941,12 @@ export function createPrismaAdminProviderRepository(
             templateKey: model.templateKey, draftConfig: json(model.configuration), draftVersion: 1,
             activeConfig: json(model.configuration), activeVersion: 1, activatedAt: input.now, enabled: true
           } });
+          await tx.providerModelCredentialCheck.create({ data: {
+            checkedAt: input.now, connectionId: connection.id, connectionVersion: connection.activeVersion,
+            credentialId: credential.id, credentialVersionId: credential.activeVersion.id,
+            modelVersion: 1, providerModelId: model.id, status: "unavailable",
+            evidence: json(pendingInitialCapabilityEvidence(model.configuration))
+          } });
         }
         return "updated" as const;
       });
@@ -1004,7 +1016,7 @@ export function createPrismaAdminProviderRepository(
           where: { id: input.connectionId }
         }),
         prisma.providerModel.findFirst({
-          select: { displayName: true, draftConfig: true, draftVersion: true, id: true },
+          select: { activeVersion: true, displayName: true, draftConfig: true, draftVersion: true, id: true },
           where: { connectionId: input.connectionId, id: input.modelId }
         })
       ]);
@@ -1031,6 +1043,7 @@ export function createPrismaAdminProviderRepository(
         },
         model: {
           configuration: model.draftConfig,
+          activeVersion: model.activeVersion,
           displayName: model.displayName,
           draftVersion: model.draftVersion,
           id: model.id
@@ -1041,6 +1054,7 @@ export function createPrismaAdminProviderRepository(
     async activateModelCas(input) {
       try {
         return await repeatableRead(prisma, async (tx) => {
+          input.signal?.throwIfAborted();
           const connection = await tx.providerConnection.findUnique({
             select: {
               activeVersion: true,
@@ -1048,7 +1062,8 @@ export function createPrismaAdminProviderRepository(
               draftVersion: true,
               family: true,
               id: true,
-              templateKey: true
+              templateKey: true,
+              defaultCredential: { include: { activeVersion: true } }
             },
             where: { id: input.connection.id }
           });
@@ -1084,6 +1099,7 @@ export function createPrismaAdminProviderRepository(
             data: {
               activatedAt: input.now,
               activeConfig: json(input.model.configuration),
+              ...(input.initialSetup ? { draftConfig: json(input.model.configuration) } : {}),
               activeVersion: input.model.draftVersion,
               ...(input.enable ? { enabled: true } : {}),
               ...modelColumns(input.model.configuration)
@@ -1091,6 +1107,18 @@ export function createPrismaAdminProviderRepository(
             where: { draftVersion: input.model.draftVersion, id: input.model.id }
           });
           if (updated.count !== 1) throw new ProviderActivationStaleError();
+          if (input.initialSetup) {
+            const credential = connection.defaultCredential;
+            if (credential?.enabled && credential.activeVersion && !credential.activeVersion.revokedAt) {
+              await tx.providerModelCredentialCheck.create({ data: {
+                checkedAt: input.now, connectionId: connection.id,
+                connectionVersion: input.connection.activateDraft?.draftVersion ?? connection.activeVersion,
+                credentialId: credential.id, credentialVersionId: credential.activeVersion.id,
+                modelVersion: input.model.draftVersion, providerModelId: input.model.id, status: "unavailable",
+                evidence: json(pendingInitialCapabilityEvidence(input.model.configuration))
+              } });
+            }
+          }
           const liveModels = await tx.providerModel.findMany({
             select: { activeConfig: true, id: true },
             where: { activeVersion: { gte: 1 }, connectionId: input.connection.id, enabled: true }
@@ -1242,6 +1270,7 @@ export function createPrismaAdminProviderRepository(
         }),
         prisma.providerModel.findFirst({
           select: {
+            draftVersion: true,
             activeConfig: true,
             activeVersion: true,
             connectionId: true,
@@ -1283,6 +1312,7 @@ export function createPrismaAdminProviderRepository(
         },
         model: {
           configuration: model.activeConfig,
+          draftVersion: model.draftVersion,
           displayName: model.displayName,
           id: model.id,
           version: model.activeVersion
@@ -1340,6 +1370,7 @@ export function createPrismaAdminProviderRepository(
 
     async storeActiveRefreshCas(input) {
       return repeatableRead(prisma, async (tx) => {
+        input.signal?.throwIfAborted();
         const [connection, model, credential] = await Promise.all([
           tx.providerConnection.findUnique({
             select: { activeVersion: true },
@@ -1368,11 +1399,23 @@ export function createPrismaAdminProviderRepository(
           (credential.activeVersion.secretEnvelope === null &&
             !noAuthConnection(input.candidate.connection.configuration, input.candidate.connection.family))
         ) return "stale" as const;
+        let modelVersion = input.candidate.model.version;
+        if (input.activatedConfiguration) {
+          const expectedDraftVersion = input.candidate.model.draftVersion ?? modelVersion;
+          if (expectedDraftVersion !== modelVersion) return "stale" as const;
+          const changed = await tx.providerModel.updateMany({
+            where: { id: input.candidate.model.id, activeVersion: modelVersion, draftVersion: expectedDraftVersion },
+            data: { ...modelColumns(input.activatedConfiguration), activeConfig: json(input.activatedConfiguration),
+              draftConfig: json(input.activatedConfiguration), activeVersion: modelVersion + 1, draftVersion: modelVersion + 1 }
+          });
+          if (changed.count !== 1) return "stale" as const;
+          modelVersion += 1;
+        }
         const existing = input.capabilityRole ? await tx.providerModelCredentialCheck.findUnique({
           where: { providerModelId_credentialVersionId_connectionVersion_modelVersion: {
             connectionVersion: input.candidate.connection.version,
             credentialVersionId: input.candidate.credential.versionId,
-            modelVersion: input.candidate.model.version,
+            modelVersion,
             providerModelId: input.candidate.model.id
           } }
         }) : null;
@@ -1389,7 +1432,7 @@ export function createPrismaAdminProviderRepository(
             credentialId: input.candidate.credential.id,
             credentialVersionId: input.candidate.credential.versionId,
             evidence: json(evidence),
-            modelVersion: input.candidate.model.version,
+            modelVersion,
             providerModelId: input.candidate.model.id,
             status: input.status
           },
@@ -1404,11 +1447,12 @@ export function createPrismaAdminProviderRepository(
             providerModelId_credentialVersionId_connectionVersion_modelVersion: {
               connectionVersion: input.candidate.connection.version,
               credentialVersionId: input.candidate.credential.versionId,
-              modelVersion: input.candidate.model.version,
+              modelVersion,
               providerModelId: input.candidate.model.id
             }
           }
         });
+        input.signal?.throwIfAborted();
         return "stored" as const;
       });
     },

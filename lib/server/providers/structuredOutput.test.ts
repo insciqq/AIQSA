@@ -3,6 +3,7 @@ import type { ProviderModelConfiguration } from "./providerConfiguration";
 import {
   buildOpenAIResponsesStructuredOutputRequest,
   buildOpenRouterStructuredOutputRequest,
+  createDeepSeekResponsesStructuredOutputAdapter,
   createOpenAIResponsesStructuredOutputAdapter,
   createOpenRouterStructuredOutputAdapter,
   STRUCTURED_OUTPUT_LIMITS,
@@ -95,6 +96,70 @@ const openRouterModel: ProviderModelConfiguration = {
 };
 
 describe("provider structured output", () => {
+  it.each([8_192, 32_768, 65_536])("preserves the explicit %s token allowance in Responses and OpenRouter requests", (maxOutputTokens) => {
+    for (const adapterKind of ["openai_responses_native", "openai_responses_compatible"] as const) {
+      expect(buildOpenAIResponsesStructuredOutputRequest(responsesModel(adapterKind), { ...request, maxOutputTokens }))
+        .toHaveProperty("max_output_tokens", maxOutputTokens);
+    }
+    expect(buildOpenRouterStructuredOutputRequest(openRouterModel, { ...request, maxOutputTokens }))
+      .toHaveProperty("max_tokens", maxOutputTokens);
+    expect(STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters).toBe(65_536);
+  });
+
+  it.each(["openai_responses_native", "openai_responses_compatible", "deepseek_responses_native"] as const)(
+    "retains incurred %s accounting and distinguishes proven token exhaustion", async (adapterKind) => {
+      const response = {
+        id: "bounded-response-1", status: "incomplete", incomplete_details: { reason: "max_output_tokens" },
+        output_text: '{"ok":true}', usage: { input_tokens: 10, output_tokens: 64, total_tokens: 74,
+          input_tokens_details: { cached_tokens: 3 }, output_tokens_details: { reasoning_tokens: 60 } }
+      };
+      const create = vi.fn(async () => response);
+      const adapter = adapterKind === "deepseek_responses_native"
+        ? createDeepSeekResponsesStructuredOutputAdapter({ client: { create, stream: vi.fn() },
+          model: { adapterKind, upstreamModelId: "deepseek-structured" } })
+        : createOpenAIResponsesStructuredOutputAdapter({ client: { create, cancel: vi.fn(), retrieve: vi.fn() },
+          model: responsesModel(adapterKind) });
+      const onUsage = vi.fn();
+      const onProviderResponseId = vi.fn();
+      await expect(adapter.execute(request, { onUsage, onProviderResponseId })).rejects.toMatchObject({
+        code: "structured_output_output_limit_exceeded"
+      });
+      expect(onUsage).toHaveBeenCalledExactlyOnceWith({ cacheWriteInputTokens: 0, inputTokens: 10, cachedInputTokens: 3,
+        outputTokens: 64, reasoningTokens: 60, totalTokens: 74 });
+      expect(onProviderResponseId).toHaveBeenCalledExactlyOnceWith("bounded-response-1");
+      expect(create).toHaveBeenCalledOnce();
+    }
+  );
+
+  it.each(["length", "content_filter", "stop"])("retains once-only OpenRouter accounting on a %s failure", async (finishReason) => {
+    const onUsage = vi.fn();
+    const onProviderResponseId = vi.fn();
+    const adapter = createOpenRouterStructuredOutputAdapter({ model: openRouterModel, client: {
+      createChatCompletion: vi.fn(async () => ({
+        id: "router-response-1", choices: [{ finish_reason: finishReason, message: { content: "invalid json" } }],
+        usage: { completion_tokens: 64, prompt_tokens: 10, total_tokens: 74,
+          prompt_tokens_details: { cached_tokens: 3 }, completion_tokens_details: { reasoning_tokens: 60 } }
+      }))
+    } });
+    await expect(adapter.execute(request, { onUsage, onProviderResponseId })).rejects.toThrow(
+      finishReason === "length" ? "structured_output_output_limit_exceeded"
+        : finishReason === "stop" ? "structured_output_invalid" : "structured_output_provider_incomplete"
+    );
+    expect(onUsage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ inputTokens: 10,
+      cachedInputTokens: 3, outputTokens: 64, reasoningTokens: 60, totalTokens: 74 }));
+    expect(onProviderResponseId).toHaveBeenCalledExactlyOnceWith("router-response-1");
+  });
+
+  it.each([undefined, "content_filter", "unknown"])("does not infer token exhaustion from an ambiguous incomplete reason (%s)", async (reason) => {
+    const adapter = createOpenAIResponsesStructuredOutputAdapter({
+      model: responsesModel("openai_responses_native"),
+      client: { cancel: vi.fn(), retrieve: vi.fn(), create: vi.fn(async () => ({
+        status: "incomplete", incomplete_details: { reason }, output_text: '{"ok":true}'
+      })) }
+    });
+    await expect(adapter.execute(request)).rejects.toThrow("structured_output_provider_incomplete");
+  });
+
   it("requires a new OpenRouter JSON receipt instead of accepting the former tool-call proof", () => {
     expect(hasVerifiedStructuredOutput({ structuredOutput: {
       adapterKind: openRouterModel.adapterKind, probeVersion: 4,
@@ -121,16 +186,17 @@ describe("provider structured output", () => {
     await expect(adapter.execute(request)).rejects.toThrow();
   });
 
-  it("admits only the three adapter paths with implemented strict-schema transports", () => {
+  it("admits only adapter paths with implemented strict-schema transports", () => {
     expect([
+      "deepseek_responses_native",
+      "gemini_interactions_native",
       "openai_responses_native",
       "openai_responses_compatible",
       "openrouter_chat_completions"
     ].every(supportsStructuredOutputAdapter)).toBe(true);
     expect([
       "openai_chat_completions_compatible",
-      "anthropic_messages",
-      "gemini_interactions_native"
+      "anthropic_messages"
     ].some(supportsStructuredOutputAdapter)).toBe(false);
   });
 
@@ -626,7 +692,7 @@ describe("provider structured output", () => {
       .rejects.toThrow("structured_output_invalid");
   });
 
-  it("reports absent usage honestly instead of manufacturing zero tokens", async () => {
+  it.each([undefined, {}, { input_tokens: "10" }, { output_tokens: -1 }])("reports absent usage honestly instead of manufacturing zero tokens (%#)", async (usage) => {
     const adapter = createOpenAIResponsesStructuredOutputAdapter({
       client: {
         async cancel() { return {}; },
@@ -634,7 +700,8 @@ describe("provider structured output", () => {
           return {
             id: "response-without-usage",
             output_text: JSON.stringify({ ok: true }),
-            status: "completed"
+            status: "completed",
+            usage
           };
         },
         async retrieve() { return {}; }

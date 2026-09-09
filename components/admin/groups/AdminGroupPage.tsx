@@ -3,13 +3,18 @@
 import { AdminSearchablePicker, type AdminSearchablePickerItem } from "@/components/admin/AdminSearchablePicker";
 import { providerDisplayName, providerModelDisplayName, searchStrategyDisplayName } from "@/components/admin/adminViewUtils";
 import { modelCapabilityLabels } from "@/components/admin/providers/models/modelChips";
+import { AdminGroupBulkGrantActions } from "@/components/admin/groups/AdminGroupBulkGrantActions";
 import {
   catalogModelsForProvider,
+  catalogSearchSources,
+  groupAccessCounts,
   groupDeletionInfo,
   groupHeaderSummary,
   groupMemberCandidates,
   groupMembers,
+  groupModelChanges,
   groupProviderKey,
+  groupSearchChanges,
   isFullAccessGroup,
   providerAccess,
   providerAccessLabel,
@@ -47,18 +52,17 @@ export type AdminGroupPageProps = Readonly<{
 const helpClass = "text-xs leading-5 text-ink-muted";
 const rowClass = "flex min-h-14 min-w-0 items-center gap-3 px-4 py-2.5 sm:px-5";
 
-function Section({ actions, children, heading, note, testId }: Readonly<{
+function Section({ actions, children, heading, testId }: Readonly<{
   actions?: ReactNode;
   children: ReactNode;
   heading: string;
-  note?: ReactNode;
   testId: string;
 }>) {
   return (
     <section aria-label={heading} className="flex min-w-0 flex-col gap-3" data-testid={testId}>
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <h3 className={sectionHeadingClass}>{heading}</h3>
-        {actions ?? (note ? <span className={helpClass}>{note}</span> : null)}
+        {actions}
       </div>
       {children}
     </section>
@@ -236,13 +240,27 @@ function ModelsSection({ catalog, controller, disabled, group, providers }: Read
   group: AdminGroup;
   providers: AdminGroupPageProviders;
 }>) {
-  const sortedProviders = [...catalog.providers].sort((left, right) => left.name.localeCompare(right.name));
+  const sortedProviders = [...new Map(catalog.providers.map((provider) => [provider.id, provider])).values()]
+    .sort((left, right) => left.name.localeCompare(right.name));
+  const total = sortedProviders.reduce((count, provider) => count + catalogModelsForProvider(catalog, provider.id).length, 0);
   return (
     <Section
+      actions={<AdminGroupBulkGrantActions
+        disabled={disabled}
+        groupName={group.name}
+        onClear={() => void controller.actions.applyGrants(group, groupModelChanges(group, catalog, false), "Current model access cleared.")}
+        onGrant={() => void controller.actions.applyGrants(group, groupModelChanges(group, catalog, true), "All current models granted.")}
+        resourceLabel="models"
+        selected={groupAccessCounts(group, catalog).models}
+        total={total}
+      />}
       heading="Models"
-      note={providers.error ? "Provider keys could not be loaded" : "Changes apply to new chats right away"}
       testId="admin-group-models"
     >
+      <p className={helpClass}>
+        Grant all covers current models only. Existing grants for future models stay enabled. Clear also removes provider-wide grants for these models.
+        {providers.error ? " Provider keys could not be loaded." : null}
+      </p>
       <div className={cardClass}>
         {sortedProviders.length ? (
           <ul aria-label="Providers" className="divide-y divide-trace-subtle">
@@ -319,12 +337,26 @@ function SearchSection({ catalog, controller, disabled, group }: Readonly<{
   const granted = new Set(
     group.accessGrants.filter((grant) => grant.enabled && grant.searchStrategy).map((grant) => grant.searchStrategy)
   );
+  const sources = catalogSearchSources(catalog);
   return (
-    <Section heading="Search sources" testId="admin-group-search">
+    <Section
+      actions={<AdminGroupBulkGrantActions
+        disabled={disabled}
+        groupName={group.name}
+        onClear={() => void controller.actions.applyGrants(group, groupSearchChanges(group, catalog, false), "Current Search source access cleared.")}
+        onGrant={() => void controller.actions.applyGrants(group, groupSearchChanges(group, catalog, true), "All current Search sources granted.")}
+        resourceLabel="Search sources"
+        selected={sources.filter((source) => granted.has(source.strategyId)).length}
+        total={sources.length}
+      />}
+      heading="Search sources"
+      testId="admin-group-search"
+    >
+      <p className={helpClass}>Current Search sources only. Sources added later need a new grant.</p>
       <div className={cardClass}>
-        {catalog.searchStrategies.length ? (
+        {sources.length ? (
           <ul aria-label="Search sources" className="divide-y divide-trace-subtle">
-            {catalog.searchStrategies.map((source) => (
+            {sources.map((source) => (
               <li className={rowClass} key={source.strategyId}>
                 <p className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">{source.displayName}</p>
                 <UiV2Switch
@@ -406,11 +438,11 @@ export function AdminGroupPage({
   const editable = !archived;
   const disabled = controller.actionsDisabled || archived;
   const deletion = groupDeletionInfo(group);
-  const mcpServerCount = fullAccess || !mcp.state.loaded
+  const mcpServerCount = fullAccess || !mcp.state.loaded || mcp.state.error
     ? null
-    : mcp.state.servers.filter((server) =>
+    : new Set(mcp.state.servers.filter((server) =>
         !server.archivedAt && server.grants.some((grant) => grant.groupId === group.id && grant.canUse)
-      ).length;
+      ).map((server) => server.id)).size;
 
   useEffect(() => {
     articleRef.current?.focus({ preventScroll: true });
@@ -443,6 +475,12 @@ export function AdminGroupPage({
       {archived ? (
         <p className="border-l-2 border-caution bg-caution/5 px-3 py-2 text-xs leading-5 text-caution" role="status">
           This group is archived. Its grants no longer apply, and access can no longer be changed.
+        </p>
+      ) : null}
+
+      {controller.grantProgress?.groupId === group.id ? (
+        <p className={helpClass} role="status">
+          Updating access for {group.name}: {controller.grantProgress.completed} of {controller.grantProgress.total} changes saved…
         </p>
       ) : null}
 

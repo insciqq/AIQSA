@@ -1,3 +1,4 @@
+import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
 import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1 } from "../knowledge/evidenceAnswerExecutionV1";
 import { knowledgeRefinementUsageAfter, refineKnowledgeEvidence } from "./knowledgeEvidenceRefinement";
 import { decodeKnowledgeEvidenceAnswerSnapshot } from "../knowledge/evidenceAnswerSnapshot";
@@ -201,6 +202,7 @@ import {
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
+import { TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import {
   projectRunOutputArtifactEvent,
   runOutputArtifactEvents
@@ -950,45 +952,25 @@ async function currentRecoverySearchDispatchAllowed(
     }).ok);
 }
 
-async function currentRecoveryMcpDispatchAllowed(
+async function currentRecoveryMcpDispatchFailure(
   context: RecoveryToolContext,
   callName: string,
   generationId: string
-): Promise<boolean> {
+): Promise<McpDispatchFailureCode | null> {
   if (context.run.project && !(await currentProjectRecoveryAuthorityAllowed(
-    context.deps,
-    context.run.project,
-    context.run.userId
-  ))) return false;
-  if (!context.deps.mcp) return process.env.NODE_ENV !== "production";
+    context.deps, context.run.project, context.run.userId
+  ))) return "memory_egress_destination_revoked";
+  if (!context.deps.mcp) return process.env.NODE_ENV !== "production" ? null : "mcp_runtime_unavailable";
   const route = resolveMcpRunTool(context.activeMcpSnapshot, callName);
-  if (!route) return false;
+  if (!route) return "mcp_accepted_generation_changed";
   try {
     const current = context.run.project
       ? context.deps.mcp.prepareProject
-        ? await context.deps.mcp.prepareProject([route.serverId])
-        : null
-      : await context.deps.mcp.prepare(context.run.userId, {
-          allowedServerIds: [route.serverId]
-        });
-    if (!current) return false;
-    if (!current.ok) return false;
-    const binding = current.bindings.find((candidate) =>
-      candidate.serverId === route.serverId);
-    const server = current.snapshot.servers.find((candidate) =>
-      candidate.serverId === route.serverId);
-    const tool = current.snapshot.tools.find((candidate) =>
-      candidate.serverId === route.serverId &&
-      candidate.namespacedName === callName &&
-      candidate.originalName === route.originalName);
-    return Boolean(
-      binding && server && tool &&
-      binding.fingerprint === route.fingerprint &&
-      server.fingerprint === route.fingerprint &&
-      binding.runtimeGenerationId === generationId
-    );
+        ? await context.deps.mcp.prepareProject([route.serverId]) : null
+      : await context.deps.mcp.prepare(context.run.userId, { allowedServerIds: [route.serverId] });
+    return currentMcpDispatchFailure(current, route, generationId);
   } catch {
-    return false;
+    return "mcp_runtime_unavailable";
   }
 }
 
@@ -1098,6 +1080,8 @@ async function executeRecoveredMcpDiscovery(
       materialize,
       maxResults: toolRunBudgetsForRequest(context.run.normalizedRequest)
         .maxMcpToolsPerDiscovery,
+      maxOutputTokens: toolRunBudgetsForRequest(context.run.normalizedRequest)
+        .mcpAutoDiscoveryMaxOutputTokens,
       modelRunToolCallId: persisted.id,
       onUsage(attribution) {
         context.usageAttributions.push(attribution);
@@ -1163,6 +1147,7 @@ function registerRecoveredMcpDiscoveryBatch(
             calls: discoveryCalls,
             materialize,
             maxResults: budgets.maxMcpToolsPerDiscovery,
+            maxOutputTokens: budgets.mcpAutoDiscoveryMaxOutputTokens,
             onUsage(attribution) {
               context.usageAttributions.push(attribution);
             },
@@ -1390,6 +1375,7 @@ async function executePersistedToolCall(
               version: 1
             };
       const generationId = claim.call.mcpBinding?.runtimeGenerationId;
+      let mcpFailure: McpDispatchFailureCode | null = null;
       const allowed = isRecoveredKnowledgeCall(context, call.name)
           ? (await currentFocusedKnowledgeRecoveryAuthorization(context.deps, {
               ...(context.run.project ? { project: context.run.project } : {}),
@@ -1401,13 +1387,20 @@ async function executePersistedToolCall(
           : isRecoveredWorkspaceCall(context, call.name)
             ? claim.call.workspaceBindingId === context.run.id
           : generationId
-            ? await currentRecoveryMcpDispatchAllowed(context, call.name, generationId)
+            ? await currentRecoveryMcpDispatchFailure(context, call.name, generationId).then(async (failure) => {
+                try {
+                  mcpFailure = failure ?? (await context.runtime().ensureAcceptedGeneration(generationId)
+                    ? null : "mcp_runtime_unavailable");
+                } catch { mcpFailure = "mcp_runtime_unavailable"; }
+                return mcpFailure === null;
+              })
             : false;
       if (!allowed) {
+        const failureCode: McpDispatchFailureCode = mcpFailure ?? "memory_egress_destination_revoked";
         await context.deps.memoryEgress?.recordBlockedDispatch({
           destinationKind: String(destinationSnapshot.kind),
           destinationSnapshot,
-          errorCode: "memory_egress_destination_revoked",
+          errorCode: failureCode,
           mode: "TOOL_CALL",
           modelRunToolCallId: claim.call.id,
           requestEvidence: memoryEgressRequestEvidence(context.providerRequest),
@@ -1424,7 +1417,7 @@ async function executePersistedToolCall(
             "Knowledge access changed before retrieval."
           );
         }
-        throw new Error("memory_egress_destination_revoked");
+        throw mcpDispatchError(failureCode);
       }
       externalReceipt = context.deps.memoryEgress
         ? await context.deps.memoryEgress.beginDispatch({
@@ -1506,9 +1499,6 @@ async function executePersistedToolCall(
         throw new Error("mcp_run_binding_unavailable");
       }
       const runtime = context.runtime();
-      if (!(await runtime.ensureAcceptedGeneration(generationId))) {
-        throw new Error("mcp_runtime_not_ready");
-      }
       result = mcpToolExecutionResult(call, await runtime.callTool({
         arguments: call.arguments,
         generationId,
@@ -2378,19 +2368,19 @@ async function recoverCheckpointedToolLoop(
         })
       ];
       const completedToolRounds = Math.max(0, round - 1);
-      const priorToolCalls = run.calls.length;
-      return prepareRecoveredProviderRequest({
+      const priorToolCalls = run.calls.filter((call) => call.roundIndex > 0).length;
+      const toolChoice = completedToolRounds >= toolBudgets.maxToolRounds ||
+        priorToolCalls >= toolBudgets.maxToolCalls || providerRequest.toolChoice === "none"
+        ? "none"
+        : completedToolRounds === 0 && providerRequest.toolChoice === "required" ? "required" : "auto";
+      const prepared = await prepareRecoveredProviderRequest({
         ...providerRequest,
         parallelToolCalls: run.normalizedRequest.modelCapabilities.parallelToolCalls === true,
         providerToolMessages,
-        toolChoice: completedToolRounds >= toolBudgets.maxToolRounds ||
-          priorToolCalls >= toolBudgets.maxToolCalls
-          ? "none"
-          : completedToolRounds === 0 && providerRequest.toolChoice === "required"
-            ? "required"
-            : "auto",
+        toolChoice,
         tools
       }, round);
+      return toolChoice === "none" ? { ...prepared, toolChoice } : prepared;
     }
 
     let continuation = parseProviderToolLoopContinuation(run.checkpoint.providerContinuation);
@@ -2460,6 +2450,16 @@ async function recoverCheckpointedToolLoop(
         "terminal",
         run.checkpoint.roundIndex
       );
+      if (roundRequest.toolChoice === "none" && (refreshed.result.toolCalls?.length ?? 0) > 0) {
+        // A refreshed final provider round has the same authority as the live
+        // round. Preserve its available text without replaying token deltas or
+        // persisting/dispatching the forbidden tool batch.
+        const priorText = run.assistantText ?? "";
+        if (!recoveredKnowledgeEnabled && refreshed.result.finalText.startsWith(priorText)) {
+          await tokenBuffer.push(refreshed.result.finalText.slice(priorText.length));
+        }
+        throw new ToolLoopRecoveryError(TOOL_SYNTHESIS_FAILURE.code, TOOL_SYNTHESIS_FAILURE.message);
+      }
       if ((refreshed.result.toolCalls?.length ?? 0) === 0) {
         if (recoveredKnowledgeEnabled) {
           await finalizeRecoveredKnowledgeToolLoop();
@@ -2684,7 +2684,7 @@ async function recoverCheckpointedToolLoop(
         previousToolResults,
         progress: {
           providerRounds: run.checkpoint.roundIndex,
-          toolCalls: run.calls.length +
+          toolCalls: run.calls.filter((call) => call.roundIndex > 0).length +
             (run.checkpoint.phase === "provider_running" ? currentCalls.length : 0),
           toolRounds: run.checkpoint.roundIndex
         },

@@ -193,6 +193,38 @@ describe("answer outputs v2", () => {
     expect(document.body.textContent).not.toContain("search_knowledge");
   });
 
+  it.each([
+    ["running", "Using Repository Tools: search"],
+    ["complete", "Used Repository Tools: search"],
+    ["error", "Repository Tools: search failed"],
+    ["cancelled", "Repository Tools: search stopped"]
+  ] as const)("renders a %s MCP search with its source and actual status", (status, label) => {
+    render(<AnswerProcessV2 toolActivity={{ calls: [{
+      origin: "mcp", round: 2, serverName: "Repository Tools", status, toolName: "search"
+    }] }} />);
+    openProcess();
+
+    expect(screen.getByText(label)).toBeVisible();
+    expect(screen.getByRole("listitem")).toHaveAttribute("data-status", status);
+    if (status === "error") expect(screen.getByText("Failed · round 2")).toBeVisible();
+    if (status === "cancelled") expect(screen.getByText("Stopped · round 2")).toBeVisible();
+    expect(document.body.textContent).not.toMatch(/Searched the web|Searching the web/iu);
+  });
+
+  it("leaves a server named Workspace in MCP steps and keeps actual Workspace owned by its timeline", () => {
+    render(<AnswerProcessV2 toolActivity={{ calls: [
+      { origin: "mcp", round: 1, serverName: "Workspace", status: "complete", toolName: "find_tools" },
+      { origin: "workspace", round: 2, serverName: "Execution tools", status: "complete", toolName: "sandbox_fs_read" },
+      { origin: "web_search", round: 3, serverName: "Catalog Search", status: "error", toolName: "search" }
+    ] }} />);
+    openProcess();
+
+    expect(screen.getByText("Used Workspace: find tools")).toBeVisible();
+    expect(screen.getByText("Web search failed")).toBeVisible();
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    expect(document.body.textContent).not.toMatch(/sandbox_fs_read|Execution tools|Searched the web/iu);
+  });
+
   it("renders a quiet Memory source row without refs, scores, or technical metadata", () => {
     shellFetch.mockReset();
     render(<AnswerProcessV2 memorySources={[memorySource()]} />);

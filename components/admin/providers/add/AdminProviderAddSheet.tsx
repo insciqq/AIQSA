@@ -1,6 +1,8 @@
 "use client";
 
 import { AdminProviderSetupProgress } from "./AdminProviderSetupProgress";
+import { AdminProviderSetupResults } from "./AdminProviderSetupResults";
+import { adminProviderErrorMessage, getAdminProviderCheckRun, getAdminProviderConnections, runAdminProviderConnectionAction } from "@/components/admin/adminProvidersApi";
 import type { AdminProviderSetupProgress as SetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 import { inputClass } from "@/components/admin/adminPrimitives";
 import {
@@ -45,7 +47,8 @@ import type { AdminProviderQuickSetupProviderId } from "@/lib/contracts/adminPro
 import {
   ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
   ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS,
-  type AdminProviderConnection
+  type AdminProviderConnection,
+  type AdminProviderCheckRun
 } from "@/lib/contracts/adminProviders";
 import { compatibleReasoningRequestMappingDefault } from "@/lib/contracts/providerReasoningRequestMapping";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
@@ -72,6 +75,12 @@ type DiscoveryState = Readonly<{
 }>;
 
 type FormError = Readonly<{ field: string | null; message: string }>;
+type SavedSetup = Readonly<{
+  connectionId: string;
+  credentialId: string;
+  run: AdminProviderCheckRun | null;
+  models: ReadonlyArray<{ id: string; displayName: string }>;
+}>;
 
 export type AdminProviderAddSheetProps = Readonly<{
   connections: readonly AdminProviderConnection[];
@@ -206,14 +215,47 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
   const [submitting, setSubmitting] = useState(false);
   const [progress, setProgress] = useState<SetupProgress | null>(null);
   const [interrupted, setInterrupted] = useState(false);
+  const [savedSetup, setSavedSetup] = useState<SavedSetup | null>(null);
   const [error, setError] = useState<FormError | null>(null);
   const [discarding, setDiscarding] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const progressRef = useRef<SetupProgress | null>(null);
   const formId = useId();
   const errorId = useId();
-  const busy = submitting || discovery.loading;
+  const busy = submitting || discovery.loading || savedSetup?.run?.state === "running";
+  const savedConnectionId = savedSetup?.connectionId;
+  const savedRunId = savedSetup?.run?.id;
+  const savedRunState = savedSetup?.run?.state;
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  useEffect(() => {
+    if (!savedConnectionId || !savedRunId || savedRunState !== "running") return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const connectionId = savedConnectionId;
+    const runId = savedRunId;
+    const poll = async () => {
+      const result = await getAdminProviderCheckRun(connectionId, runId);
+      if (disposed) return;
+      if (!result.ok) {
+        setError({ field: null, message: "Could not refresh check progress. Saved models are kept; open the provider to review them." });
+        timer = setTimeout(() => void poll(), 2_000);
+        return;
+      }
+      setError(null);
+      setSavedSetup((current) => current?.run?.id === runId ? { ...current, run: result.data } : current);
+      if (result.data.state === "running") timer = setTimeout(() => void poll(), 1_200);
+      else {
+        const catalog = await getAdminProviderConnections();
+        if (catalog.ok) setSavedSetup((current) => current?.run?.id === runId
+          ? { ...current, models: catalog.data.find((connection) => connection.id === connectionId)?.models ?? current.models }
+          : current);
+      }
+    };
+    timer = setTimeout(() => void poll(), 1_200);
+    return () => { disposed = true; clearTimeout(timer); };
+  }, [savedConnectionId, savedRunId, savedRunState]);
 
   useEffect(() => {
     const abort = new AbortController();
@@ -280,18 +322,72 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
     }
   };
 
-  const stopSetup = () => {
+  const refreshSavedSetup = async (base: SavedSetup, runId?: string) => {
+    setSavedSetup(base);
+    const [catalog, checked] = await Promise.all([
+      getAdminProviderConnections(),
+      runId ? getAdminProviderCheckRun(base.connectionId, runId) : Promise.resolve(null)
+    ]);
+    const connection = catalog.ok ? catalog.data.find(({ id }) => id === base.connectionId) : null;
+    setSavedSetup((current) => current?.connectionId === base.connectionId && current.run?.id === base.run?.id ? {
+      ...current,
+      models: connection?.models ?? current.models,
+      run: checked?.ok ? checked.data : connection?.checkRun ?? current.run,
+      credentialId: current.credentialId || connection?.defaultCredentialId || ""
+    } : current);
+  };
+
+  const showInterruptedSetup = async (message: string) => {
+    setSubmitting(false);
+    setProgress(null);
+    setInterrupted(true);
+    setError({ field: null, message });
+    const saved = progressRef.current;
+    if (saved?.connectionId) await refreshSavedSetup({
+      connectionId: saved.connectionId, credentialId: saved.credentialId ?? "", models: [], run: null
+    }, saved.runId);
+  };
+
+  const stopSetup = async () => {
     abortRef.current?.abort();
     abortRef.current = null;
     if (discovery.loading && !submitting) {
       setDiscovery((current) => ({ ...current, loading: false, error: "Model discovery stopped. You can try again." }));
       return;
     }
+    setDiscovery((current) => ({ ...current, loading: false }));
+    if (savedSetup?.run?.state === "running") {
+      setSubmitting(true);
+      const result = await runAdminProviderConnectionAction(savedSetup.connectionId, { action: "cancel_check", runId: savedSetup.run.id });
+      setSubmitting(false);
+      if (!result.ok) setError({ field: null, message: adminProviderErrorMessage(result.error) });
+      await refreshSavedSetup(savedSetup, savedSetup.run.id);
+      return;
+    }
+    await showInterruptedSetup(progressRef.current?.connectionId
+      ? "Checking stopped. Saved models are kept; unfinished checks can be retried."
+      : "Setup stopped before its saved state was received. Close this sheet and check the provider list before trying again.");
+  };
+
+  const retrySetup = async () => {
+    if (!savedSetup || !savedSetup.credentialId || busy) return;
+    setSubmitting(true);
+    setError(null);
+    const result = await runAdminProviderConnectionAction(savedSetup.connectionId, {
+      action: "check_models", credentialId: savedSetup.credentialId, retryUnresolved: true
+    });
+    setSubmitting(false);
+    if (!result.ok) { setError({ field: null, message: adminProviderErrorMessage(result.error) }); return; }
+    const connection = result.data.find(({ id }) => id === savedSetup.connectionId);
+    setSavedSetup({ ...savedSetup, models: connection?.models ?? savedSetup.models, run: connection?.checkRun ?? null });
+  };
+
+  const finishSetup = async (result: { connectionId: string; outcome: "ready" | "partial" | "cancelled"; checkRun?: AdminProviderCheckRun }) => {
+    if (result.outcome === "ready") { onCreated(result.connectionId); return; }
     setSubmitting(false);
     setProgress(null);
     setInterrupted(true);
-    setDiscovery((current) => ({ ...current, loading: false }));
-    setError({ field: null, message: "Setup stopped. A save already in progress may finish. Close this sheet and check the provider list before trying again." });
+    await refreshSavedSetup({ connectionId: result.connectionId, credentialId: result.checkRun?.credentialId ?? "", models: [], run: result.checkRun ?? null });
   };
 
   const requestClose = () => {
@@ -360,19 +456,26 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
     abortRef.current?.abort();
     abortRef.current = abort;
     setSubmitting(true);
-    setProgress({ phase: "validating", completed: 0, total: null });
+    progressRef.current = { phase: "validating", completed: 0, total: null };
+    setProgress(progressRef.current);
     setError(null);
     const result = await submitAdminProviderQuickSetup(validation.body, fetch, abort.signal, (value) => {
-      if (abortRef.current === abort && !abort.signal.aborted) setProgress(value);
+      if (abortRef.current === abort && !abort.signal.aborted) {
+        progressRef.current = { ...progressRef.current, ...value };
+        setProgress(progressRef.current);
+      }
     });
     if (abort.signal.aborted) return;
     abortRef.current = null;
     if (!result.ok) {
       setSubmitting(false);
       setProgress(null);
+      if (progressRef.current?.connectionId) {
+        await showInterruptedSetup(adminProviderQuickSetupErrorMessage(result.error));
+        return;
+      }
       if (["network_error", "provider_setup_interrupted"].includes(result.error.code) || result.error.code.endsWith("response_invalid")) {
-        setInterrupted(true);
-        setError({ field: null, message: "The setup connection was interrupted. A save may have completed. Close this sheet and check the provider list before trying again." });
+        await showInterruptedSetup("The setup connection was interrupted. Saved results are kept; review them before continuing.");
         return;
       }
       setError({
@@ -394,8 +497,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
       setSelectedCandidateId(null);
       return;
     }
-    // Stay locked until the caller unmounts the sheet on the new provider page.
-    onCreated(result.data.connectionId);
+    await finishSetup(result.data);
   };
 
   const submitCustom = async () => {
@@ -408,19 +510,26 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
     abortRef.current?.abort();
     abortRef.current = abort;
     setSubmitting(true);
-    setProgress({ phase: "validating", completed: 0, total: null });
+    progressRef.current = { phase: "validating", completed: 0, total: null };
+    setProgress(progressRef.current);
     setError(null);
     const result = await submitAdminProviderCustomSetup(validation.body, fetch, abort.signal, (value) => {
-      if (abortRef.current === abort && !abort.signal.aborted) setProgress(value);
+      if (abortRef.current === abort && !abort.signal.aborted) {
+        progressRef.current = { ...progressRef.current, ...value };
+        setProgress(progressRef.current);
+      }
     });
     if (abort.signal.aborted) return;
     abortRef.current = null;
     if (!result.ok) {
       setSubmitting(false);
       setProgress(null);
+      if (progressRef.current?.connectionId) {
+        await showInterruptedSetup(adminProviderCustomSetupErrorMessage(result.error));
+        return;
+      }
       if (["network_error", "provider_setup_interrupted"].includes(result.error.code) || result.error.code.endsWith("response_invalid")) {
-        setInterrupted(true);
-        setError({ field: null, message: "The setup connection was interrupted. A save may have completed. Close this sheet and check the provider list before trying again." });
+        await showInterruptedSetup("The setup connection was interrupted. Saved results are kept; review them before continuing.");
         return;
       }
       setError({
@@ -429,7 +538,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
       });
       return;
     }
-    onCreated(result.data.connectionId);
+    await finishSetup(result.data);
   };
 
   const customModelCount = discovery.models?.length
@@ -441,20 +550,24 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
   const canSave = family === "custom"
     ? customModelCount > 0
     : provider !== null && (!selection || selectedCandidateId !== null);
-  const selectedReasoning = reasoningForChoice(
-    custom.reasoningChoice,
-    (discovery.models ?? []).filter(({ id }) => custom.selectedModelIds.includes(id))
-  );
+  const selectedReasoning = custom.reasoningChoice === "automatic"
+    ? { reasoning: (discovery.models ?? []).some((model) =>
+      custom.selectedModelIds.includes(model.id) && model.capabilities.reasoning === true) }
+    : reasoningForChoice(custom.reasoningChoice, []);
+  const unfinished = !savedSetup?.run || savedSetup.run.state !== "completed" ||
+    savedSetup.run.failed.length > 0 || Boolean(savedSetup.run.skipped?.length) || savedSetup.run.setup?.state === "partial" ||
+    Boolean(savedSetup.run.results?.some((result) => result.state !== "saved"));
+  const fieldsLocked = busy || interrupted || Boolean(savedSetup);
 
   return (
     <AdminSheet
       closeBlocked={busy}
       footer={(
         <>
-          <UiV2Button busy={submitting} disabled={busy || interrupted || !canSave} form={formId} tone="primary" type="submit">
+          {savedSetup ? unfinished ? <UiV2Button busy={submitting} disabled={busy || !savedSetup.credentialId} onClick={() => void retrySetup()} tone="primary" type="button">Retry unfinished checks</UiV2Button> : null : <UiV2Button busy={submitting} disabled={busy || interrupted || !canSave} form={formId} tone="primary" type="submit">
             {saveLabel}
-          </UiV2Button>
-          <UiV2Button onClick={busy ? stopSetup : requestClose} tone="ghost" type="button">{busy ? "Stop" : interrupted ? "Close and review providers" : "Cancel"}</UiV2Button>
+          </UiV2Button>}
+          <UiV2Button disabled={Boolean(savedSetup) && submitting} onClick={busy ? () => void stopSetup() : savedSetup ? () => onCreated(savedSetup.connectionId) : requestClose} tone={savedSetup && !unfinished ? "primary" : "ghost"} type="button">{busy ? "Stop" : savedSetup ? "View provider" : interrupted ? "Close and review providers" : "Cancel"}</UiV2Button>
           <span className="min-w-0 text-xs leading-5 text-ink-muted sm:ml-auto sm:text-right">
             Checks supported models and Search, then fills empty roles, including Knowledge. Assigned PDF readers receive page images and text. Uses small paid requests.
           </span>
@@ -478,7 +591,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
       >
         <div>
           <span className={fieldLabel}>Provider</span>
-          <ProviderTiles disabled={busy} onSelect={selectFamily} selected={family} />
+          <ProviderTiles disabled={fieldsLocked} onSelect={selectFamily} selected={family} />
           {builtInFamily && existing.length > 0 ? (
             <p className={helpText} data-testid="provider-add-second-hint">
               {providerFamilyLabel(builtInFamily)} is already connected. This adds a second {providerFamilyLabel(builtInFamily)} connection, for example for another account.
@@ -488,7 +601,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
 
         {builtInFamily ? (
           <BuiltInFields
-            busy={busy}
+            busy={fieldsLocked}
             error={error}
             family={builtInFamily}
             form={builtIn}
@@ -509,7 +622,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
           />
         ) : (
           <CustomFields
-            busy={busy}
+            busy={fieldsLocked}
             discovery={discovery}
             error={error}
             form={custom}
@@ -523,6 +636,18 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
 
         {submitting && progress ? <AdminProviderSetupProgress progress={progress} /> : discovery.loading
           ? <AdminProviderSetupProgress progress={{ phase: "discovering", completed: 0, total: null }} /> : null}
+        {savedSetup ? <section aria-label="Saved setup" className="min-w-0 rounded-[10px] border border-trace-subtle px-4 py-3">
+          <h3 className="text-sm font-medium text-ink">{savedSetup.run?.state === "running" ? "Checking unfinished work…"
+            : savedSetup.run?.state === "cancelled" ? "Setup stopped"
+            : unfinished ? "Some setup steps need attention" : "Setup finished"}</h3>
+          <p className="mt-1 text-xs leading-5 text-ink-muted">Saved models are kept. Retry uses their current successful checks and completes only unfinished work.</p>
+          {savedSetup.run?.state === "running" ? <AdminProviderSetupProgress progress={{
+            phase: savedSetup.run.setup?.state === "running" ? "finishing" : "checking",
+            completed: savedSetup.run.done, total: savedSetup.run.total || null,
+            ...(savedSetup.run.capabilityProgress ? { capability: savedSetup.run.capabilityProgress.capability } : {})
+          }} /> : null}
+          {savedSetup.run ? <AdminProviderSetupResults models={savedSetup.models} run={savedSetup.run} /> : null}
+        </section> : null}
 
         {error ? (
           <p className="text-xs leading-5 text-critical" data-testid="provider-add-error" id={errorId} role="alert">
@@ -840,7 +965,7 @@ function CustomFields({
               const checked = form.selectedModelIds.includes(model.id);
               return (
                 <label
-                  className={`grid min-h-touch grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-trace-subtle px-3 py-2 last:border-b-0 ${supported ? "" : "opacity-60"}`}
+                  className={`grid min-h-touch grid-cols-[auto_minmax(0,1fr)] items-center gap-3 border-b border-trace-subtle px-3 py-2 last:border-b-0 ${supported ? "" : "opacity-60"}`}
                   key={model.id}
                 >
                   <input
@@ -850,8 +975,10 @@ function CustomFields({
                     onChange={(event) => toggleModel(model.id, event.currentTarget.checked)}
                     type="checkbox"
                   />
-                  <span className="min-w-0 truncate font-mono text-[13px] text-ink">{model.id}</span>
-                  <span className="shrink-0 text-xs text-ink-muted">{hint}</span>
+                  <span className="min-w-0">
+                    <span className="block break-all font-mono text-[13px] text-ink">{model.id}</span>
+                    <span className="block text-xs leading-5 text-ink-muted">Reported: {hint}</span>
+                  </span>
                 </label>
               );
             })}
@@ -864,7 +991,7 @@ function CustomFields({
           <p className="mt-2 text-xs leading-5 text-caution" role="status">The endpoint reported no models.</p>
         ) : null}
         <p className={helpText}>
-          The list comes from the endpoint itself. Each selected model gets one small test request and a capability check before it is turned on.
+          The endpoint reports these hints. Setup checks each model with small paid requests and enables verified capabilities, including PDF. Successful models are kept if another check fails.
         </p>
         {showManual ? (
           <Field
@@ -902,7 +1029,9 @@ function CustomFields({
         />
         <Field
           className="sm:max-w-xs"
-          help={reasoningCapabilitiesSummary(selectedReasoning)}
+          help={form.reasoningChoice === "automatic"
+            ? "Keep each model's reported reasoning settings. Models without hints use conservative defaults."
+            : reasoningCapabilitiesSummary(selectedReasoning)}
           label="Reasoning"
           render={(id) => (
             <select

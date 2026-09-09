@@ -1716,6 +1716,7 @@ export async function prepareRun(
     },
     toolBudgets: {
       mcpAutoDiscoveryTimeoutSeconds: toolBudgets.mcpAutoDiscoveryTimeoutSeconds,
+      mcpAutoDiscoveryMaxOutputTokens: toolBudgets.mcpAutoDiscoveryMaxOutputTokens ?? undefined,
       maxMcpToolsPerDiscovery: toolBudgets.maxMcpToolsPerDiscovery,
       maxToolCalls: workspaceEnabled
         ? Math.max(

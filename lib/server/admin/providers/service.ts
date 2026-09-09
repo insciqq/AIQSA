@@ -1,4 +1,10 @@
 import { hasVerifiedDedicatedProtocol } from "../../providers/systemRoleEvidence";
+import type { AdminProviderSetupProgress } from "../../../contracts/adminProviderSetupProgress";
+import { withTimeoutSignal } from "../../providers/network";
+import { decodeParallelToolCallVerificationEvidence } from "../../providers/parallelToolCallEvidence";
+import { capabilitySetupIncomplete, decodeCapabilitySetupEvidence, initiallyVerifiedModelConfiguration,
+  initialModelConfiguration,
+  INITIAL_CAPABILITY_BATCH_TIMEOUT_MS, reusableCapabilitySetupEvidence } from "./initialCapabilitySetup";
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import { createHash, randomUUID } from "node:crypto";
 import type {
@@ -15,9 +21,10 @@ import type {
   AdminProviderUnassignedPolicy
 } from "../../../contracts/adminProviders";
 import {
-  CAPABILITY_CHECK_CANCELLED,
   createCapabilityCheckRunner,
-  type CapabilityCheckOutcome
+  type CapabilityCheckOutcome,
+  type CapabilityCheckRequest,
+  type InitialCapabilityCheck
 } from "./capabilityCheckRuns";
 import {
   decryptProviderCredentialSecret,
@@ -249,6 +256,8 @@ function validateEvidence(
   const visionInput = decodeVisionInputVerificationEvidence(evidence.visionInput);
   const hasPdfInput = Object.prototype.hasOwnProperty.call(evidence, "pdfInput");
   const compatibility = decodeAdminProviderCompatibilityEvidence(evidence.compatibility);
+  const capabilitySetup = decodeCapabilitySetupEvidence(evidence.capabilitySetup);
+  const parallelToolCalls = decodeParallelToolCallVerificationEvidence(evidence.parallelToolCalls);
   const hasCompatibility = Object.prototype.hasOwnProperty.call(evidence, "compatibility");
   if (
     evidence.method !== expectedMethod ||
@@ -261,6 +270,9 @@ function validateEvidence(
     ((evidence.embedding !== undefined || evidence.reranking !== undefined) &&
       !hasVerifiedDedicatedProtocol(evidence, model)) ||
     (hasCompatibility && !compatibility) ||
+    (evidence.capabilitySetup !== undefined && !capabilitySetup) ||
+    (evidence.parallelToolCalls !== undefined && (!parallelToolCalls ||
+      parallelToolCalls.adapterKind !== model.adapterKind || parallelToolCalls.upstreamModelId !== model.upstreamModelId)) ||
     (compatibility && (
       compatibility.modelAccess !== (outcome.status === "available"
         ? "verified"
@@ -298,6 +310,8 @@ function validateEvidence(
     throw new AdminProviderServiceError("provider_test_evidence_invalid");
   }
   return {
+    ...(capabilitySetup ? { capabilitySetup } : {}),
+    ...(parallelToolCalls ? { parallelToolCalls } : {}),
     ...(compatibility ? { compatibility } : {}),
     ...(evidence.embedding && hasVerifiedDedicatedProtocol(evidence, model) ? { embedding: {
       probeVersion: 1 as const, document: true as const, query: true as const, dimensions: evidence.embedding.dimensions
@@ -330,7 +344,7 @@ function activationFingerprint(input: {
 
 type ActiveCheckResult =
   | { check: AdminProviderActiveCheck; kind: "stored" }
-  | { kind: "cancelled" | "failed" | "stale" };
+  | { kind: "cancelled" | "failed" | "save_failed" | "stale" };
 
 export function createAdminProviderService(input: Readonly<{
   completeSetup?(input: {
@@ -355,6 +369,7 @@ export function createAdminProviderService(input: Readonly<{
   const encryptionKey = input.encryptionKey ?? getSecretEncryptionKey;
   const idFactory = input.idFactory ?? randomUUID;
   const now = input.now ?? (() => new Date());
+  const pendingSetupChecks = new Map<string, { complete: boolean; expiresAt: number; outcome: AdminProviderDraftTestOutcome }>();
   const checkRuns = createCapabilityCheckRunner({
     check: (request) => checkActiveModel(request),
     concurrency: input.checkConcurrency,
@@ -593,10 +608,20 @@ export function createAdminProviderService(input: Readonly<{
     capabilityRole?: SystemModelVerificationRole;
     mode: AdminProviderDraftTestMode;
     signal?: AbortSignal;
+    initialSetup?: InitialCapabilityCheck;
+    onCapabilityProgress?: CapabilityCheckRequest["onCapabilityProgress"];
   }): Promise<ActiveCheckResult> {
     const { candidate } = value;
     const connection = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
     const model = normalizeProviderModelConfiguration(candidate.model.configuration);
+    const initialSetup = value.initialSetup && value.initialSetup.connectionVersion === candidate.connection.version &&
+      value.initialSetup.modelVersion === candidate.model.version &&
+      value.initialSetup.credentialVersionId === candidate.credential.versionId;
+    const cacheKey = createHash("sha256").update(canonicalJson({
+      connection: candidate.connection, model: candidate.model, credentialId: candidate.credential.id,
+      credentialVersionId: candidate.credential.versionId, policyVersion: 1
+    })).digest("hex");
+    for (const [key, cached] of pendingSetupChecks) if (cached.expiresAt <= Date.now()) pendingSetupChecks.delete(key);
     validateFamily(candidate.connection.family, model);
     const keyless = connection.authenticationMode === "none" && candidate.connection.family === "openai_compatible";
     if ((candidate.credential.envelope === null) !== keyless) {
@@ -609,7 +634,16 @@ export function createAdminProviderService(input: Readonly<{
     }, "provider_active_tuple_not_found");
     let outcome: AdminProviderDraftTestOutcome;
     try {
-      outcome = await input.tester.test({
+      outcome = initialSetup && pendingSetupChecks.get(cacheKey)?.complete ? pendingSetupChecks.get(cacheKey)!.outcome : await input.tester.test({
+        ...(initialSetup ? { initialSetup: true,
+          reuseSetupEvidence: pendingSetupChecks.get(cacheKey)?.outcome.evidence ?? value.initialSetup?.reuseEvidence,
+          onCapabilityProgress: value.onCapabilityProgress,
+          onSetupCheckpoint: (checkpoint: AdminProviderDraftTestOutcome) => {
+            if (value.signal?.aborted) return;
+            if (pendingSetupChecks.size >= 256) pendingSetupChecks.delete(pendingSetupChecks.keys().next().value!);
+            pendingSetupChecks.set(cacheKey, { complete: false,
+              expiresAt: Date.now() + INITIAL_CAPABILITY_BATCH_TIMEOUT_MS, outcome: checkpoint });
+          } } : {}),
         ...(value.capabilityRole ? { capabilityRole: value.capabilityRole } : {}),
         connection,
         connectionDisplayName: candidate.connection.displayName,
@@ -625,7 +659,7 @@ export function createAdminProviderService(input: Readonly<{
         signal: value.signal
       });
     } catch {
-      if (value.signal?.aborted && value.signal.reason === CAPABILITY_CHECK_CANCELLED) {
+      if (value.signal?.aborted) {
         return { kind: "cancelled" };
       }
       const failedAt = now();
@@ -634,16 +668,30 @@ export function createAdminProviderService(input: Readonly<{
       }
       return { kind: "failed" };
     }
+    if (value.signal?.aborted) return { kind: "cancelled" };
     const checkedAt = now();
-    const evidence = validateEvidence(outcome, value.mode, model);
-    const stored = await input.repository.storeActiveRefreshCas({
+    const activatedModel = initialSetup ? initiallyVerifiedModelConfiguration(model, outcome.evidence) : model;
+    const activatedConfiguration = canonicalJson(activatedModel) !== canonicalJson(model) ? activatedModel : undefined;
+    const evidence = validateEvidence(outcome, value.mode, activatedModel);
+    if (initialSetup) {
+      if (pendingSetupChecks.size >= 256) pendingSetupChecks.delete(pendingSetupChecks.keys().next().value!);
+      pendingSetupChecks.set(cacheKey, { complete: true, expiresAt: Date.now() + INITIAL_CAPABILITY_BATCH_TIMEOUT_MS,
+        outcome: { evidence, status: outcome.status } });
+    }
+    let stored: "stored" | "stale";
+    try { stored = await input.repository.storeActiveRefreshCas({
+      ...(activatedConfiguration ? { activatedConfiguration } : {}),
       candidate,
       capabilityRole: value.capabilityRole,
       checkedAt,
       evidence,
-      status: outcome.status
-    });
+      status: outcome.status,
+      signal: value.signal
+    }); } catch {
+      return { kind: value.signal?.aborted ? "cancelled" : "save_failed" };
+    }
     if (stored === "stale") return { kind: "stale" };
+    pendingSetupChecks.delete(cacheKey);
     return {
       check: {
         checkedAt: checkedAt.toISOString(),
@@ -652,7 +700,7 @@ export function createAdminProviderService(input: Readonly<{
         credentialVersionId: candidate.credential.versionId,
         evidence,
         latestRefreshError: null,
-        modelVersion: candidate.model.version,
+        modelVersion: candidate.model.version + (activatedConfiguration ? 1 : 0),
         providerModelId: candidate.model.id,
         refreshFailedAt: null,
         status: outcome.status
@@ -667,12 +715,7 @@ export function createAdminProviderService(input: Readonly<{
    * models and the rerank probe for rerankers, bounded by the model's own
    * response deadline. Never throws for provider outcomes.
    */
-  async function checkActiveModel(value: {
-    connectionId: string;
-    credentialId: string;
-    providerModelId: string;
-    signal?: AbortSignal;
-  }): Promise<CapabilityCheckOutcome> {
+  async function checkActiveModel(value: Omit<CapabilityCheckRequest, "signal"> & { signal?: AbortSignal }): Promise<CapabilityCheckOutcome> {
     const candidate = await input.repository.loadActiveRefreshCandidate(value);
     if (!candidate) return "skipped";
     const connection = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
@@ -688,12 +731,24 @@ export function createAdminProviderService(input: Readonly<{
     try {
       const result = await executeActiveCheck({
         candidate,
+        initialSetup: value.initialSetup,
+        onCapabilityProgress: value.onCapabilityProgress,
         mode: "tiny_generation",
         signal: controller.signal
       });
-      if (result.kind === "stored") return "stored";
+      if (result.kind === "stored") {
+        const complete = result.check.status === "available" &&
+          (!value.initialSetup || !capabilitySetupIncomplete(result.check.evidence!));
+        value.onResult?.({ providerModelId: value.providerModelId,
+          state: result.check.status !== "available" ? "unavailable" : complete ? "saved" : "partial",
+          checks: result.check.evidence?.capabilitySetup?.checks });
+        return complete ? "stored" : "failed";
+      }
+      value.onResult?.({ providerModelId: value.providerModelId,
+        state: result.kind === "failed" ? "check_failed" : result.kind === "save_failed" ? "save_failed"
+          : result.kind === "cancelled" ? "cancelled" : "stale" });
       if (result.kind === "stale") return "skipped";
-      return result.kind;
+      return result.kind === "save_failed" ? "failed" : result.kind;
     } finally {
       clearTimeout(deadline);
       value.signal?.removeEventListener("abort", forward);
@@ -726,12 +781,17 @@ export function createAdminProviderService(input: Readonly<{
   async function startCheckRun(value: {
     /** Internal setup continuation; explicit rechecks always probe again. */
     reuseCurrentChecks?: boolean;
+    retryUnresolved?: boolean;
+    initialModelIds?: readonly string[];
+    onProgress?(value: AdminProviderCheckRun): void;
+    signal?: AbortSignal;
     userId?: string;
     connectionId: string;
     credentialId: string;
     modelIds?: readonly string[];
     reason: AdminProviderCheckRunReason;
   }): Promise<AdminProviderCheckRun> {
+    value.signal?.throwIfAborted();
     let connection = (await input.repository.listConnections())
       .find(({ id }) => id === value.connectionId);
     if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
@@ -769,13 +829,14 @@ export function createAdminProviderService(input: Readonly<{
         const outcome = await testCredentialCatalog({
           connection: connection.activeConfig, family: connection.family,
           modelClasses: [...new Set(missing.map((model) => model.configuration.modelClass))],
-          secret: () => activeCredentialSecret(credential.id, credential.activeVersion!.id)
+          secret: () => activeCredentialSecret(credential.id, credential.activeVersion!.id),
+          signal: value.signal
         });
         const policy = adminProviderQuickSetupPolicy(connection.family as AdminProviderQuickSetupProviderId);
         const additions = missing.filter((candidate) =>
           (outcome.modelIdsByClass?.[candidate.configuration.modelClass] ?? outcome.modelIds)
             .includes(candidate.configuration.upstreamModelId)).map((candidate) => ({
-          configuration: candidate.configuration, displayName: candidate.displayName,
+          configuration: initialModelConfiguration(candidate.configuration), displayName: candidate.displayName,
           id: connection!.id === policy.connection.id ? candidate.modelId : idFactory(),
           inputTokenPriceMicros: candidate.inputTokenPriceMicros, outputTokenPriceMicros: candidate.outputTokenPriceMicros,
           templateKey: connection!.id === policy.connection.id ? candidate.templateKey : null
@@ -789,7 +850,29 @@ export function createAdminProviderService(input: Readonly<{
       }
     }
     const modelIds = checkableModelIds(connection, value.modelIds);
-    const completedModelIds = value.reason === "setup" && value.reuseCurrentChecks
+    const initialSetup: Record<string, InitialCapabilityCheck> = {};
+    for (const id of modelIds) {
+      const model = connection.models.find((candidate) => candidate.id === id)!;
+      const current = connection.activeChecks.find((check) => check.providerModelId === id &&
+        check.connectionVersion === connection!.activeVersion && check.modelVersion === model.activeVersion &&
+        check.credentialId === credential.id && check.credentialVersionId === credential.activeVersion!.id);
+      // A changed key/endpoint invalidates all reusable proof, but does not
+      // turn an unfinished initial model into an administrator override.
+      // Model revisions still fence the initial activation authority.
+      const marked = decodeCapabilitySetupEvidence(current?.evidence?.capabilitySetup) || value.retryUnresolved &&
+        connection.activeChecks.some((check) => check.providerModelId === id && check.modelVersion === model.activeVersion &&
+          decodeCapabilitySetupEvidence(check.evidence?.capabilitySetup));
+      if (value.initialModelIds?.includes(id) || marked && model.draftVersion === model.activeVersion &&
+        (value.reason === "setup" || value.retryUnresolved)) {
+        initialSetup[id] = { connectionVersion: connection.activeVersion,
+          credentialVersionId: credential.activeVersion!.id, modelVersion: model.activeVersion,
+          ...(value.reuseCurrentChecks || value.retryUnresolved ? {
+            reuseEvidence: reusableCapabilitySetupEvidence(current?.evidence ?? undefined,
+              normalizeProviderModelConfiguration(model.activeConfig))
+          } : {}) };
+      }
+    }
+    const completedModelIds = (value.reason === "setup" && value.reuseCurrentChecks || value.retryUnresolved)
       ? modelIds.filter((id) => {
           const model = connection!.models.find((candidate) => candidate.id === id)!;
           return connection!.activeChecks.some((check) =>
@@ -798,10 +881,14 @@ export function createAdminProviderService(input: Readonly<{
             check.credentialVersionId === credential.activeVersion!.id &&
             check.status === "available" && check.latestRefreshError === null &&
             check.evidence?.method === "tiny_generation" && check.evidence.detail === "ok" &&
-            check.evidence.compatibility?.modelAccess === "verified");
+            check.evidence.compatibility?.modelAccess === "verified" &&
+            (!initialSetup[id] || !capabilitySetupIncomplete(check.evidence)));
         })
       : [];
     const run = checkRuns.start({
+      signal: value.signal,
+      initialSetup,
+      onProgress: value.onProgress,
       completedModelIds,
       ...(value.userId && input.completeSetup ? {
         completeSetup: (signal: AbortSignal) => input.completeSetup!({
@@ -824,6 +911,28 @@ export function createAdminProviderService(input: Readonly<{
     reason: AdminProviderCheckRunReason;
   }): Promise<void> {
     await startCheckRun(value).catch(() => undefined);
+  }
+
+  async function finishInitialSetup(value: { connectionId: string; credentialId: string; userId?: string;
+    modelIds?: readonly string[]; signal?: AbortSignal; onProgress?(value: AdminProviderSetupProgress): void }): Promise<AdminProviderCheckRun> {
+    const timeout = withTimeoutSignal(value.signal, INITIAL_CAPABILITY_BATCH_TIMEOUT_MS);
+    let runId: string | undefined;
+    const cancel = () => { if (runId) checkRuns.cancel(runId); };
+    timeout.signal.addEventListener("abort", cancel, { once: true });
+    try {
+      const run = await startCheckRun({ ...value, reason: "setup", reuseCurrentChecks: true,
+        signal: timeout.signal,
+        onProgress: (current) => value.onProgress?.({ phase: "checking", completed: current.done,
+          total: current.total || null, connectionId: value.connectionId, credentialId: value.credentialId,
+          runId: current.id, ...(current.capabilityProgress ? { capability: current.capabilityProgress.capability } : {}) }) });
+      runId = run.id;
+      if (timeout.signal.aborted) cancel();
+      await checkRuns.settled(run.id);
+      return checkRuns.get(run.id)!;
+    } finally {
+      timeout.signal.removeEventListener("abort", cancel);
+      timeout.clear();
+    }
   }
 
   return {
@@ -918,6 +1027,7 @@ export function createAdminProviderService(input: Readonly<{
     },
 
     startCheckRun,
+    finishInitialSetup,
 
     cancelCheckRun(value: { connectionId: string; runId: string }): AdminProviderCheckRun {
       if (checkRuns.connectionOf(value.runId) !== value.connectionId) {
@@ -936,12 +1046,21 @@ export function createAdminProviderService(input: Readonly<{
     async activateModel(value: {
       connectionId: string;
       modelId: string;
+      signal?: AbortSignal;
+      onProgress?(value: AdminProviderSetupProgress): void;
     }): Promise<{ check: "checked" | "failed" | "skipped" }> {
       const candidate = await input.repository.loadModelActivationCandidate(value);
       if (!candidate) throw new AdminProviderServiceError("provider_model_not_found");
-      const model = normalizeProviderModelConfiguration(candidate.model.configuration);
+      let model = normalizeProviderModelConfiguration(candidate.model.configuration);
+      const initial = candidate.model.activeVersion === 0;
+      if (initial && model.modelClass === "answer") model = { ...model, capabilities: {
+        ...model.capabilities, toolCalling: false, parallelToolCalls: false, vision: false,
+        nativePdfInput: false, streaming: false
+      } };
       validateFamily(candidate.connection.family, model);
       const result = await input.repository.activateModelCas({
+        initialSetup: initial,
+        signal: value.signal,
         connection: {
           activateDraft: candidate.connection.activeVersion === 0
             ? {
@@ -965,15 +1084,26 @@ export function createAdminProviderService(input: Readonly<{
       if (result === "not_found") throw new AdminProviderServiceError("provider_model_not_found");
       const credential = candidate.connection.defaultCredential;
       if (!credential?.usable) return { check: "skipped" };
-      const run = checkRuns.start({
+      const run = await startCheckRun({
+        signal: value.signal,
+        ...(initial ? { initialModelIds: [candidate.model.id] } : {}),
+        onProgress: (current) => value.onProgress?.({ phase: "checking", completed: current.done,
+          total: current.total || null, connectionId: candidate.connection.id, credentialId: credential.id,
+          runId: current.id, ...(current.capabilityProgress ? { capability: current.capabilityProgress.capability } : {}) }),
         connectionId: candidate.connection.id,
         credentialId: credential.id,
         modelIds: [candidate.model.id],
         reason: "model"
       });
-      await run.settled;
+      const cancel = () => checkRuns.cancel(run.id);
+      value.signal?.addEventListener("abort", cancel, { once: true });
+      if (value.signal?.aborted) cancel();
+      value.onProgress?.({ phase: "checking", completed: 0, total: 1,
+        connectionId: candidate.connection.id, credentialId: credential.id, runId: run.id });
+      try { await checkRuns.settled(run.id); }
+      finally { value.signal?.removeEventListener("abort", cancel); }
       const failed = checkRuns.get(run.id)?.failed.includes(candidate.model.id) ?? false;
-      return { check: failed ? "failed" : "checked" };
+      return { check: failed || checkRuns.get(run.id)?.state === "cancelled" ? "failed" : "checked" };
     },
 
     activateNewCredential: (value: {

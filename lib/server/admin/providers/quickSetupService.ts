@@ -1,4 +1,5 @@
 import type { AdminProviderSetupProgress } from "../../../contracts/adminProviderSetupProgress";
+import type { AdminProviderCheckRun } from "../../../contracts/adminProviders";
 import {
   createHmac,
   randomUUID,
@@ -117,6 +118,8 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
   encryptionKey?: () => Buffer;
   idFactory?: () => string;
   now?: () => Date;
+  finishInitialSetup?(value: { connectionId: string; credentialId: string; userId: string;
+    signal?: AbortSignal; onProgress?(value: AdminProviderSetupProgress): void }): Promise<AdminProviderCheckRun>;
   /** Runs after a committed setup (PRD B3 trigger); its failures never reach the caller. */
   onCompleted?(completion: AdminProviderSetupCompletion): void | Promise<void>;
   pdfInputProbe: ProviderPdfInputProbe;
@@ -163,6 +166,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
   /** Catalog evidence per candidate, with the direct-PDF probe where the model declares it. */
   async function modelEvidence(value: Readonly<{
     candidates: readonly AdminProviderQuickSetupPolicyCandidate[];
+    activateInitialCapabilities?: boolean;
     connection: ProviderConnectionConfiguration;
     connectionDisplayName: string;
     connectionId: string;
@@ -178,6 +182,13 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
     for (const [index, candidate] of value.candidates.entries()) {
       value.signal?.throwIfAborted();
       value.onProgress?.({ phase: "checking", completed: index, total: value.candidates.length });
+      if (input.finishInitialSetup) {
+        evidence.set(candidate.candidateId, { detail: "ok", method: "models_catalog",
+          selectedProviders: candidate.configuration.openRouterRouting?.providers ?? [],
+          upstreamModelId: candidate.configuration.upstreamModelId,
+          ...(value.activateInitialCapabilities ? { capabilitySetup: { policyVersion: 1 as const, checks: { modelAccess: "not_checked" as const } } } : {}) });
+        continue;
+      }
       let pdfInput = null;
       if (candidate.configuration.capabilities.nativePdfInput) {
         try {
@@ -264,6 +275,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
     const versionId = idFactory();
     const modelIdByCandidate = new Map(candidates.map((candidate) => [candidate.candidateId, idFactory()]));
     const evidence = await modelEvidence({
+      activateInitialCapabilities: true,
       candidates,
       connection,
       connectionDisplayName: displayName,
@@ -279,6 +291,8 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
     inputValue.signal?.throwIfAborted();
     inputValue.onProgress?.({ phase: "saving", completed: 0, total: null });
     const commit = await input.repository.commitAdditional({
+      pendingCapabilityChecks: Boolean(input.finishInitialSetup),
+      signal: inputValue.signal,
       actor: inputValue.actor,
       checkedAt,
       connection: { configuration: connection, displayName, id: connectionId },
@@ -313,7 +327,12 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       throw new AdminProviderQuickSetupServiceError("provider_quick_setup_unsupported_catalog");
     }
     inputValue.onProgress?.({ phase: "finishing", completed: 0, total: null });
+    const checkRun = input.finishInitialSetup ? await input.finishInitialSetup({
+      connectionId, credentialId, userId: inputValue.actor.userId,
+      signal: inputValue.signal, onProgress: inputValue.onProgress
+    }) : undefined;
     try {
+      if (!input.finishInitialSetup)
       await input.onCompleted?.({ connectionId, credentialId, userId: inputValue.actor.userId });
     } catch {
       // Background checks are best effort; the setup itself is complete.
@@ -325,7 +344,9 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       defaultChanged: false,
       model: { displayName: candidates[0]!.displayName },
       models: candidates.map(({ displayName: modelName }) => ({ displayName: modelName })),
-      outcome: "ready",
+      outcome: checkRun?.state === "cancelled" ? "cancelled" : checkRun &&
+        (checkRun.failed.length || checkRun.skipped?.length || checkRun.setup?.state === "partial") ? "partial" : "ready",
+      ...(checkRun ? { checkRun } : {}),
       provider: policy.provider,
       providerDisplayName: policy.connection.displayName,
       search: null
@@ -488,6 +509,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       }
       const versionId = idFactory();
       const evidence = await modelEvidence({
+        activateInitialCapabilities: mode === "initial",
         candidates: availableCandidates,
         connection: policy.connection.configuration,
         connectionDisplayName: policy.connection.displayName,
@@ -508,7 +530,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       const rerankerChecks: Array<
         AdminProviderQuickSetupCommitPlan["rerankerChecks"][number]
       > = [];
-      if (policy.provider === "openrouter" && input.rerankerTester) {
+      if (policy.provider === "openrouter" && input.rerankerTester && !input.finishInitialSetup) {
         inputValue.onProgress?.({ phase: "checking", completed: 0, total: null });
         for (const deployment of approvedRerankerDeployments) {
           try {
@@ -553,6 +575,8 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       inputValue.signal?.throwIfAborted();
       inputValue.onProgress?.({ phase: "saving", completed: 0, total: null });
       const commit = await input.repository.commit({
+        pendingCapabilityChecks: Boolean(input.finishInitialSetup),
+        signal: inputValue.signal,
         actor: inputValue.actor,
         candidate,
         candidates: availableCandidates,
@@ -598,7 +622,12 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         );
       }
       inputValue.onProgress?.({ phase: "finishing", completed: 0, total: null });
+      const checkRun = input.finishInitialSetup ? await input.finishInitialSetup({
+        connectionId: policy.connection.id, credentialId, userId: inputValue.actor.userId,
+        signal: inputValue.signal, onProgress: inputValue.onProgress
+      }) : undefined;
       try {
+        if (!input.finishInitialSetup)
         await input.onCompleted?.({ connectionId: policy.connection.id, credentialId, userId: inputValue.actor.userId });
       } catch {
         // Background checks are best effort; the setup itself is complete.
@@ -610,7 +639,9 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         defaultChanged: commit.defaultChanged,
         model: { displayName: candidate.displayName },
         models: availableCandidates.map(({ displayName }) => ({ displayName })),
-        outcome: "ready",
+        outcome: checkRun?.state === "cancelled" ? "cancelled" : checkRun &&
+          (checkRun.failed.length || checkRun.skipped?.length || checkRun.setup?.state === "partial") ? "partial" : "ready",
+        ...(checkRun ? { checkRun } : {}),
         provider: policy.provider,
         providerDisplayName: policy.connection.displayName,
         search: commit.search

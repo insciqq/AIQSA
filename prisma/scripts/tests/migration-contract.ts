@@ -555,9 +555,12 @@ function runBootstrapProof(database: string): void {
   };
   const first = app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.match(first, /installation bootstrap created:/u);
+  assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "8192");
+  psqlScalar(database, `UPDATE "ModelPolicy" SET "mcpAutoDiscoveryMaxOutputTokens" = 4096 WHERE id = 'installation';`);
   const freshDigest = bootstrapFoundationDigest(database);
   const repeat = app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.match(repeat, /installation bootstrap already_adopted:/u);
+  assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "4096", "bootstrap must retain the operator's MCP output allowance");
   assert.equal(
     bootstrapFoundationDigest(database),
     freshDigest,

@@ -818,6 +818,62 @@ describe("administrator system model policy service", () => {
     }
   });
 
+  it("explains disabled verified capabilities and identifies the missing forced-tool requirement", async () => {
+    const proof = { adapterKind: "openai_responses_compatible", probeVersion: 1,
+      upstreamModelId: "vendor/answer", verified: true };
+    const checked = (id: string, capabilities: Record<string, boolean>, extraEvidence: Record<string, unknown>) => verifiableModel({
+      id,
+      activeConfig: { ...activeConfiguration, capabilities: { ...activeConfiguration.capabilities, ...capabilities } },
+      activeCredentialChecks: [{
+        connectionVersion: 1, credentialId: "credential-1", credentialVersionId: "credential-version-1",
+        evidence: { structuredOutput: { ...proof, probeVersion: 2 }, ...extraEvidence },
+        modelVersion: 1, status: "available"
+      }]
+    });
+    const disabled = checked("verified-disabled", { nativePdfInput: false, toolCalling: false, vision: false }, {
+      capabilitySetup: { policyVersion: 1, checks: { directPdf: "verified", toolCalling: "verified", vision: "verified" } },
+      compatibility: { directPdf: "verified", toolCalling: "verified", vision: "verified" },
+      forcedToolCall: proof, pdfInput: proof, visionInput: proof
+    });
+    const missingForced = checked("forced-not-checked", { toolCalling: true }, {
+      capabilitySetup: { policyVersion: 1, checks: { forcedToolCall: "not_checked", structuredOutput: "verified", toolCalling: "verified" } },
+      compatibility: { structuredOutput: "verified", toolCalling: "verified" }
+    });
+    const rejectedForced = checked("forced-rejected", { toolCalling: true }, {
+      capabilitySetup: { policyVersion: 1, checks: { forcedToolCall: "rejected", structuredOutput: "verified", toolCalling: "verified" } },
+      compatibility: { forcedToolCall: "not_supported", structuredOutput: "verified", toolCalling: "verified" }
+    });
+    const rejectedImage = checked("image-rejected", { vision: false }, {
+      capabilitySetup: { policyVersion: 1, checks: { vision: "rejected" } },
+      compatibility: { vision: "not_supported" }
+    });
+    const incompleteImage = checked("image-incomplete", { vision: false }, {
+      capabilitySetup: { policyVersion: 1, checks: { vision: "incomplete" } },
+      compatibility: { vision: "not_supported" }
+    });
+    const prisma = {
+      providerModel: { findMany: vi.fn().mockResolvedValueOnce([disabled, missingForced, rejectedForced, rejectedImage, incompleteImage])
+        .mockResolvedValueOnce([]) },
+      systemModelPolicy: { findUnique: vi.fn().mockResolvedValue({ providerModel: null, providerModelId: null,
+        reasoningEffort: null, updatedAt: NOW, updatedBy: null, version: 1 }) }
+    } as unknown as PrismaClient;
+    const absent = vi.fn().mockResolvedValue({ code: "system_model_not_configured", ok: false });
+    const catalog = await createAdminSystemModelPolicyService(prisma, {
+      resolveRole: absent, resolveChatPdfRole: absent, resolveRerankerRole: absent
+    }).list();
+    const reason = (role: "direct_pdf" | "memory" | "vision", id: string) =>
+      catalog.ineligible[role].find((entry) => entry.id === id);
+    expect(reason("memory", disabled.id)).toMatchObject({ reason: "capability_disabled", requirement: "tool_calling", structuredOutput: "verified" });
+    expect(reason("vision", disabled.id)).toMatchObject({ reason: "capability_disabled", requirement: "vision" });
+    expect(reason("direct_pdf", disabled.id)).toMatchObject({ reason: "capability_disabled", requirement: "direct_pdf" });
+    expect(reason("memory", missingForced.id)).toMatchObject({ reason: "not_checked", requirement: "forced_tool_call" });
+    expect(reason("memory", rejectedForced.id)).toMatchObject({ reason: "probe_rejected", requirement: "forced_tool_call" });
+    expect(reason("vision", rejectedImage.id)).toMatchObject({ reason: "probe_rejected", requirement: "vision" });
+    expect(reason("vision", incompleteImage.id)).toMatchObject({ reason: "not_checked", requirement: "vision" });
+    expect(catalog.candidates).toEqual([]);
+    expect(catalog.documentCandidates).toEqual([]);
+  });
+
   it("explains why each answer deployment is not ready for a role without exposing evidence", async () => {
     const base = activeModel();
     const visionConfiguration = {
@@ -908,19 +964,19 @@ describe("administrator system model policy service", () => {
       "model-unchecked": "not_checked"
     });
     expect(reasons("vision")).toEqual({
-      "model-anthropic": "adapter_unsupported",
+      "model-anthropic": "no_default_credential",
       "model-disabled": "model_disabled",
       "model-no-key": "no_default_credential",
-      "model-revoked-key": "adapter_unsupported",
+      "model-revoked-key": "no_default_credential",
       "model-unchecked": "not_checked"
     });
     expect(reasons("direct_pdf")).toEqual({
-      "model-anthropic": "adapter_unsupported",
+      "model-anthropic": "no_default_credential",
       "model-disabled": "model_disabled",
-      "model-no-key": "adapter_unsupported",
-      "model-ready": "adapter_unsupported",
-      "model-revoked-key": "adapter_unsupported",
-      "model-unchecked": "adapter_unsupported"
+      "model-no-key": "no_default_credential",
+      "model-ready": "capability_disabled",
+      "model-revoked-key": "no_default_credential",
+      "model-unchecked": "capability_disabled"
     });
     for (const entry of Object.values(catalog.ineligible).flat()) {
       expect(Object.keys(entry)).not.toContain("evidence");

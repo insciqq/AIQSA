@@ -1,3 +1,4 @@
+import { mcpAutoDiscoveryFailure, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import { createKnowledgeEvidenceAnswerSnapshotV1 } from "../knowledge/evidenceAnswerSnapshotV1";
 import { createKnowledgeEvidenceAnswerSnapshotV2 } from "../knowledge/evidenceAnswerSnapshotV2";
 import { knowledgeEvidenceAnswerDraftPromptV1 } from "../knowledge/evidenceAnswerV1";
@@ -4864,6 +4865,61 @@ describe("run recovery", () => {
     expect(harness.state.completed).not.toBeNull();
   });
 
+  it("rejects a refreshed ninth tool batch and preserves partial text, settled work, and usage once", async () => {
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      events: [{ type: "token", data: { delta: "Available partial answer" } }],
+      providerResponseId: "synthetic-final-response", status: "completed", terminal: true,
+      result: { finalProviderResponsePreview: {}, finalText: "Available partial answer",
+        toolCalls: [{ id: "forbidden-call", name: recoveryToolName, arguments: {} }],
+        usage: { inputTokens: 3, outputTokens: 2, reasoningTokens: 0 } }
+    }));
+    const adapter = providerWithRefresh(refresh);
+    const stream = vi.spyOn(adapter, "stream");
+    const runtimeCall = vi.fn();
+    const harness = createHarness({
+      controls: [control({ providerResponseId: "synthetic-final-response" })],
+      providers: { openai: adapter },
+      mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true }
+    });
+    const calls = Array.from({ length: 8 }, (_, index): PersistedToolLoopCall => ({
+      ...persistedRecoveryCall("complete"), id: `settled-${index + 1}`, providerCallId: `call-${index + 1}`, roundIndex: index + 1,
+      usageAccountedAt: "2026-07-12T09:02:00.000Z",
+      result: snapshotToolExecutionResult({ callId: `call-${index + 1}`, name: recoveryToolName,
+        content: [{ type: "text", text: `settled result ${index + 1}` }], status: "complete" }, toolLoopPersistenceLimits.resultBytes)
+    }));
+    const answerRoundUsage: PersistedAnswerRoundUsage[] = Array.from({ length: 8 }, (_, index) => ({
+      completeness: "terminal", roundIndex: index + 1, usage: {
+        cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2
+      }
+    }));
+    const installed = installCheckpointState(harness, {
+      ...checkpointedRun({ answerRoundUsage, calls, phase: "provider_running", providerResponseId: "synthetic-final-response", roundIndex: 9 }),
+      assistantText: "Available ",
+      normalizedRequest: { ...normalizedToolRequest(), toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } }
+    }, [{
+      modelId: "gpt-test", provider: "openai", recordedAt: "2026-07-12T09:00:00.000Z",
+      usage: { inputTokens: 8, outputTokens: 8, reasoningTokens: 0 }
+    }]);
+    harness.repository.getRunControlForUser = async () => control(harness.state.run);
+    const persistBatch = vi.spyOn(harness.repository, "persistToolLoopCallBatch");
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(stream).not.toHaveBeenCalled();
+    expect(runtimeCall).not.toHaveBeenCalled();
+    expect(persistBatch).not.toHaveBeenCalled();
+    expect(installed.calls()).toEqual(calls);
+    expect(harness.state.assistantTexts).toEqual(["Available partial answer"]);
+    expect(harness.state.completed).toBeNull();
+    expect(harness.state.recoveredErrors).toHaveLength(1);
+    expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
+    expect(harness.state.recoveredErrors[0]).toMatchObject({ error: TOOL_SYNTHESIS_FAILURE,
+      usageAttributions: [expect.objectContaining({ usage: expect.objectContaining({ inputTokens: 11, outputTokens: 10 }) })] });
+    expect(installed.checkpoint().answerRoundUsage.filter((entry) => entry.roundIndex === 9)).toHaveLength(1);
+  });
+
   it("continues a checkpointed OpenAI background tool round from its response id", async () => {
     const requests: ProviderRunRequest[] = [];
     const egress = createRecoveryMemoryEgressRecorder();
@@ -6728,6 +6784,33 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
+  it.each(["mcp_health_check_failed", "mcp_timeout", "mcp_authorization_required", "mcp_server_unavailable"])(
+    "blocks recovered MCP dispatch with its current %s cause", async (code) => {
+      const egress = createRecoveryMemoryEgressRecorder();
+      const callTool = vi.fn();
+      const harness = createHarness({
+        memoryEgress: egress.service,
+        mcp: { prepare: async () => ({ ok: false, code: "mcp_not_ready", issues: [{
+          errorCode: code, name: "Synthetic server", readiness: "unavailable"
+        }] }) },
+        mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
+        providers: { openai: { buildRequestPreview: () => ({}), async *stream() {
+          return { ...providerResult, finalText: "The tool could not run." };
+        } } }
+      });
+      const state = installCheckpointState(harness,
+        checkpointedRun({ calls: [persistedRecoveryCall()], phase: "tools_pending" }));
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(callTool).not.toHaveBeenCalled();
+      expect(egress.blocked).toEqual([expect.objectContaining({
+        destinationKind: "mcp", mode: "TOOL_CALL",
+        errorCode: code === "mcp_server_unavailable" ? "memory_egress_destination_revoked" : code
+      })]);
+      expect(egress.began.filter((entry) => entry.mode === "TOOL_CALL")).toEqual([]);
+      expect(state.calls()[0]).toMatchObject({ state: "error" });
+    }
+  );
+
   it("continues an ordinary recovered tool loop through a second tool round", async () => {
     const requests: ProviderRunRequest[] = [];
     const runtimeCall = vi.fn(async () => ({
@@ -7141,7 +7224,7 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
-  it.each(["unexpected", "reported", "cancelled"] as const)(
+  it.each(["unexpected", "reported", "cancelled", "output_limit"] as const)(
     "settles recovered discovery %s with safe errors and cumulative usage", async (outcome) => {
     const rawFailure = "PRIVATE_RECOVERY_ROUTER_FAILURE";
     const recoveryRegistry = registry();
@@ -7149,7 +7232,7 @@ describe("run recovery", () => {
       if (outcome === "unexpected") throw new Error(rawFailure);
       if (outcome === "cancelled") expect(recoveryRegistry.abort(runId)).toBe(true);
       throw new McpSemanticRouterError(
-        outcome === "cancelled" ? "mcp_router_cancelled" : "mcp_router_request_failed",
+        outcome === "cancelled" ? "mcp_router_cancelled" : outcome === "output_limit" ? "mcp_router_output_limit" : "mcp_router_request_failed",
         { modelId: "router-model", provider: "openai", usage: { inputTokens: 12, outputTokens: 3, reasoningTokens: 0 } }
       );
     });
@@ -7203,6 +7286,7 @@ describe("run recovery", () => {
       ...durable,
       normalizedRequest: {
         ...durable.normalizedRequest,
+        ...(outcome === "output_limit" ? { toolBudgets: { mcpAutoDiscoveryMaxOutputTokens: 32768, maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8 } } : {}),
         mcp: { servers: [], tools: [], version: 1 },
         mcpDiscovery: {
           catalog: { servers: [], version: 1 },
@@ -7225,8 +7309,7 @@ describe("run recovery", () => {
 
     if (outcome !== "cancelled") expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
       error: {
-        code: "mcp_auto_discovery_unavailable",
-        message: "Automatic tool discovery is unavailable."
+        ...mcpAutoDiscoveryFailure(outcome === "output_limit" ? "mcp_router_output_limit" : "mcp_router_request_failed")
       }
     })]);
     expect(JSON.stringify(harness.state.recoveredErrors)).not.toContain(rawFailure);
@@ -7246,7 +7329,7 @@ describe("run recovery", () => {
       })
     ]);
     if (outcome === "cancelled") expect(harness.state.recoveredErrors).toEqual([]);
-    expect(route).toHaveBeenCalledOnce();
+    expect(route).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ maxOutputTokens: outcome === "output_limit" ? 32768 : null }));
     expect(materialize).not.toHaveBeenCalled();
     expect(appendEpoch).not.toHaveBeenCalled();
   });

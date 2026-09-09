@@ -9,7 +9,7 @@ describe("administrator model policy contract", () => {
         policy: {
           defaultModel: null,
           reasoningEffort: null,
-          mcpAutoDiscoveryTimeoutSeconds: 60,
+          mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192,
           maxMcpToolsPerDiscovery: 10,
           maxToolCalls: 200,
           maxToolRounds: 200,
@@ -19,11 +19,19 @@ describe("administrator model policy contract", () => {
         }
       }
     })?.modelPolicy.policy).toMatchObject({
-      mcpAutoDiscoveryTimeoutSeconds: 60,
+      mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192,
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 200
     });
+  });
+
+  it.each([undefined, null, 0, 1023, 65537, 4096.5, "8192"])("rejects invalid MCP output allowance %s", (mcpAutoDiscoveryMaxOutputTokens) => {
+    expect(decodeAdminModelPolicyResponse({ modelPolicy: { candidates: [], policy: {
+      defaultModel: null, reasoningEffort: null, mcpAutoDiscoveryTimeoutSeconds: 60,
+      mcpAutoDiscoveryMaxOutputTokens, maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8,
+      updatedAt: "2026-09-09T00:00:00.000Z", updatedBy: null, version: 1
+    } } })).toBeNull();
   });
 
   it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
@@ -35,7 +43,7 @@ describe("administrator model policy contract", () => {
           policy: {
             defaultModel: null,
             reasoningEffort: null,
-            mcpAutoDiscoveryTimeoutSeconds: 60,
+            mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192,
             maxMcpToolsPerDiscovery: 10,
             maxToolCalls,
             maxToolRounds: 8,

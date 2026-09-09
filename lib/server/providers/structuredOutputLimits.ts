@@ -1,7 +1,7 @@
 export const STRUCTURED_OUTPUT_LIMITS = Object.freeze({
   maxNameCharacters: 64,
   maxOutputCharacters: 65_536,
-  maxOutputTokens: 8_192,
+  maxOutputTokens: 65_536,
   maxPromptBytes: 256_000,
   maxPromptCharacters: 256_000,
   maxSchemaBytes: 32 * 1024,

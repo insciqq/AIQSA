@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fixtureConnection, fixtureModel } from "@/components/admin/providers/providerFixtures";
 import {
   applyCatalogHint,
+  applyCompatibleModel,
   applyOpenRouterModel,
   blankModelForm,
   catalogHintsFor,
@@ -138,5 +139,17 @@ describe("model sheet form", () => {
     expect(withDataCollection({ provider: { dataCollection: "allow", order: ["x"] }, temperature: 1 }, false))
       .toEqual({ provider: { order: ["x"] }, temperature: 1 });
     expect(withDataCollection({ provider: { data_collection: "allow" } }, false)).toEqual({});
+  });
+
+  it("imports bounded compatible hints for a new model without resetting an existing override", () => {
+    const blank = blankModelForm({ family: "openai_compatible" });
+    const model = { id: "first", capabilities: { contextWindow: 272_000, maxOutputTokens: 65_536, defaultMaxOutputTokens: 2_048, toolCalling: true, vision: true, parallelToolCalls: true } };
+    const imported = applyCompatibleModel(blank, model, model.id);
+    expect(imported.capabilities).toMatchObject(model.capabilities);
+    const reviewed = { ...imported, capabilities: { ...imported.capabilities, vision: false, nativePdfInput: false } };
+    expect(applyCompatibleModel(reviewed, model, model.id)).toEqual(reviewed);
+    const different = applyCompatibleModel(imported, { id: "unknown", capabilities: {} }, "unknown");
+    expect(different.capabilities).not.toHaveProperty("maxOutputTokens");
+    expect(different.capabilities.reasoning).toBe(false);
   });
 });

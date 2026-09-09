@@ -1,5 +1,6 @@
 import {
   MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS,
+  isMcpAutoDiscoveryOutputTokens,
   MCP_RUN_PLAN_LIMITS
 } from "./mcp";
 
@@ -21,6 +22,7 @@ export type AdminModelPolicyCatalog = {
     defaultModel: (AdminDefaultAnswerModelCandidate & { available: boolean }) | null;
     reasoningEffort: string | null;
     mcpAutoDiscoveryTimeoutSeconds: number;
+    mcpAutoDiscoveryMaxOutputTokens: number;
     maxMcpToolsPerDiscovery: number;
     maxToolCalls: number;
     maxToolRounds: number;
@@ -71,6 +73,7 @@ export function decodeAdminModelPolicyResponse(
     (defaultModel === null && policy.reasoningEffort !== null) ||
     (updatedBy !== null && (!record(updatedBy) || !boundedText(updatedBy.displayName, 160) ||
       !boundedText(updatedBy.id, 256))) ||
+    !isMcpAutoDiscoveryOutputTokens(policy.mcpAutoDiscoveryMaxOutputTokens) ||
     !Number.isSafeInteger(policy.mcpAutoDiscoveryTimeoutSeconds) ||
     Number(policy.mcpAutoDiscoveryTimeoutSeconds) <
       MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds ||
@@ -92,6 +95,7 @@ export function decodeAdminModelPolicyResponse(
         defaultModel: defaultModel as AdminModelPolicyCatalog["policy"]["defaultModel"],
         reasoningEffort: policy.reasoningEffort as string | null,
         mcpAutoDiscoveryTimeoutSeconds: Number(policy.mcpAutoDiscoveryTimeoutSeconds),
+        mcpAutoDiscoveryMaxOutputTokens: Number(policy.mcpAutoDiscoveryMaxOutputTokens),
         maxMcpToolsPerDiscovery: Number(policy.maxMcpToolsPerDiscovery),
         maxToolCalls: Number(policy.maxToolCalls),
         maxToolRounds: Number(policy.maxToolRounds),

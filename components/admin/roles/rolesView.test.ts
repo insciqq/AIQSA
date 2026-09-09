@@ -69,10 +69,10 @@ describe("embeddingDestinationLabel", () => {
 
 describe("rolesView", () => {
   it("groups Memory candidates from the server's eligibility lists without client guesses", () => {
-    expect(generativeRoleItems(catalog(), "memory")).toEqual([
+    expect(generativeRoleItems(catalog(), "memory")).toMatchObject([
       { group: "ready", id: "luna", label: "OpenAI / GPT Luna" },
       { group: "check", id: "terra", label: "OpenAI / GPT Terra" },
-      { group: "ineligible", id: "claude", label: "Anthropic / Claude", note: "no strict JSON on this route" }
+      { group: "ineligible", id: "claude", label: "Anthropic / Claude", note: "required capability unsupported on this route" }
     ]);
     expect(generativeRoleItems(catalog(), "vision").map(({ group, id }) => `${group}:${id}`))
       .toEqual(["check:luna", "ineligible:claude"]);
@@ -91,11 +91,30 @@ describe("rolesView", () => {
       connectionDisplayName: "OpenAI", deploymentId: "luna", directPdf: false,
       modelDisplayName: "GPT Luna", provider: "openai", upstreamModelId: "luna", vision: true
     }];
-    expect(knowledgeDocumentItems(destinations, "system_model_vision", catalog())).toEqual([
+    expect(knowledgeDocumentItems(destinations, "system_model_vision", catalog())).toMatchObject([
       { group: "ready", id: "luna", label: "OpenAI / GPT Luna" },
-      { group: "ineligible", id: "claude", label: "Anthropic / Claude", note: "no image input on this route" }
+      { group: "ineligible", id: "claude", label: "Anthropic / Claude", note: "image input unsupported on this route" }
     ]);
     expect(knowledgeDocumentItems(destinations, "system_model_direct_pdf", null)).toEqual([]);
+  });
+
+  it("explains the actual tools blocker independently of verified JSON and links to its model", () => {
+    const value = catalog();
+    value.candidates = [];
+    value.ineligible.memory = [
+      { ...ready, reason: "capability_disabled", requirement: "tool_calling" },
+      { ...ready, id: "forced", reason: "not_checked", requirement: "forced_tool_call" },
+      { ...ready, id: "rejected", reason: "probe_rejected", requirement: "forced_tool_call" }
+    ];
+    expect(generativeRoleItems(value, "memory")).toMatchObject([
+      { group: "ineligible", note: "tools disabled in model settings", configurationHref: "/admin?section=providers&resource=openai#provider-model-luna" },
+      { group: "check", note: "forced tool calls verification required", configurationHref: "/admin?section=providers&resource=openai#provider-model-forced" },
+      { group: "check", note: "forced tool calls check was rejected" }
+    ]);
+    value.ineligible.direct_pdf = [{ ...ready, pdfInput: "verified", reason: "capability_disabled", requirement: "direct_pdf" }];
+    expect(knowledgeDocumentItems([], "system_model_direct_pdf", value)[0]).toMatchObject({
+      group: "ineligible", note: "direct PDF input disabled in model settings"
+    });
   });
 
   it("reports Reindexing N of M bases while bases rebuild and Ready afterwards", () => {

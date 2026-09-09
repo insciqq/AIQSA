@@ -370,6 +370,16 @@ describe("McpSettingsSection", () => {
     expect(container).not.toHaveTextContent(/mcp_artifact_missing|private-image|ToolHive|rebuild|container/i);
   });
 
+  it("shows a runtime health failure beside valid OAuth without asking for reconnection", async () => {
+    const server = { ...userServer("health", "Health server"), enabled: true, oauthAvailable: true,
+      oauthState: "ready" as const, readiness: "unavailable" as const, runtimeErrorCode: "mcp_health_check_failed" as const };
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [server] })));
+    render(<McpSettingsSection />);
+    expect(await screen.findByText(/MCP health check failed/)).toBeVisible();
+    expect(screen.queryByText("Activation failed")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Reconnect/ })).not.toBeInTheDocument();
+  });
+
   it("keeps enabled availability visible beside authorization readiness", async () => {
     const notion = {
       ...userServer("notion", "Notion"),

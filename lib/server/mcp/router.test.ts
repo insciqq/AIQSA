@@ -157,6 +157,83 @@ function resolution(structuredOutput = true) {
 }
 
 describe("semantic MCP router", () => {
+  it.each([false, true])("gives a 114-tool catalog the configured reasoning/JSON allowance (reasoning=%s)", async (reasoning) => {
+    const largeCatalog: McpCapabilityCatalog = { ...catalog, servers: [{ ...catalog.servers[0]!,
+      tools: Array.from({ length: 114 }, (_, index) => ({ description: "Read synthetic data", namespacedName: `mcp_test_${index}`, originalName: `test_${index}` }))
+    }] };
+    const executeStructuredOutput = vi.fn(async (_role, structured, options) => {
+      options?.onUsage?.({ inputTokens: 100, outputTokens: structured.maxOutputTokens === 1024 ? 1024 : 3242 });
+      if (structured.maxOutputTokens === 1024) throw new Error("structured_output_output_limit_exceeded");
+      expect(structured.reasoningEffort).toBe(reasoning ? "high" : null);
+      return { mcp_needed: true, requirements: [{ outcome: "Read data", status: "covered", tool_ids: ["mcp_test_0"] }] };
+    });
+    const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => ({
+      ...resolution(), reasoningEffort: reasoning ? "high" : null
+    }) });
+    const input = { activeToolNames: new Set<string>(), catalog: largeCatalog, goals: ["Read data"], limit: 10, request: request() };
+    await expect(router.route({ ...input, maxOutputTokens: null })).rejects.toMatchObject({
+      code: "mcp_router_output_limit", usageAttribution: { usage: { outputTokens: 1024 } }
+    });
+    await expect(router.route(input)).resolves.toMatchObject({ toolNames: ["mcp_test_0"] });
+    await expect(router.route({ ...input, maxOutputTokens: 4096 })).resolves.toMatchObject({ toolNames: ["mcp_test_0"] });
+    expect(executeStructuredOutput.mock.calls.map((call) => call[1].maxOutputTokens)).toEqual([1024, 8192, 4096]);
+  });
+
+  it.each(["saved", "catalog"])("rejects the %s model ceiling before I/O without reducing the requested cap", async (source) => {
+    const executeStructuredOutput = vi.fn();
+    let resolved = resolution();
+    if (source === "saved") {
+      resolved.role.modelConfiguration.capabilities.maxOutputTokens = 8192;
+    } else {
+      resolved = { ...resolved, role: {
+        ...resolved.role,
+        modelConfiguration: { ...resolved.role.modelConfiguration, adapterKind: "openrouter_chat_completions" },
+        snapshot: { ...resolved.role.snapshot, providerFamily: "openrouter", model: {
+          ...resolved.role.snapshot.model, adapterKind: "openrouter_chat_completions",
+          answerSelectable: true, modelClass: "answer",
+          upstreamModelId: "perplexity/sonar-pro-search"
+        } }
+      } };
+    }
+    const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => resolved });
+    await expect(router.route({ activeToolNames: new Set(), catalog, goals: ["Read data"], limit: 10,
+      maxOutputTokens: 32768, request: request() })).rejects.toMatchObject({ code: "mcp_router_model_output_limit" });
+    expect(executeStructuredOutput).not.toHaveBeenCalled();
+  });
+
+  it("shares the frozen cap and remaining deadline with refinement", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const executeStructuredOutput = vi.fn(async (_role, _request, options) => {
+      if (executeStructuredOutput.mock.calls.length === 1) {
+        expect(options?.timeoutMs).toBe(20_000);
+        now.mockReturnValue(16_000);
+        return { mcp_needed: true, requirements: [{ outcome: "Read data", status: "uncovered", tool_ids: [] }] };
+      }
+      expect(options?.timeoutMs).toBe(5_000);
+      return { mcp_needed: true, requirements: [{ outcome: "Read data", status: "covered", tool_ids: [jiraTool] }] };
+    });
+    try {
+      const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => resolution() });
+      await expect(router.route({ activeToolNames: new Set(), catalog, goals: ["Read data"], limit: 10,
+        maxOutputTokens: 4096, timeoutMs: 20_000, request: request() })).resolves.toMatchObject({ toolNames: [jiraTool] });
+      expect(executeStructuredOutput.mock.calls.map((call) => call[1].maxOutputTokens)).toEqual([4096, 4096]);
+    } finally { now.mockRestore(); }
+  });
+
+  it("does not start refinement once the accepted deadline is exhausted", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const executeStructuredOutput = vi.fn(async () => {
+      now.mockReturnValue(21_001);
+      return { mcp_needed: true, requirements: [{ outcome: "Read data", status: "uncovered", tool_ids: [] }] };
+    });
+    try {
+      const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => resolution() });
+      await expect(router.route({ activeToolNames: new Set(), catalog, goals: ["Read data"], limit: 10,
+        maxOutputTokens: 4096, timeoutMs: 20_000, request: request() })).rejects.toMatchObject({ code: "mcp_router_timeout" });
+      expect(executeStructuredOutput).toHaveBeenCalledOnce();
+    } finally { now.mockRestore(); }
+  });
+
   it.each([false, true])("corrects a global selection overflow once, repeated overflow: %s", async (repeatOverflow) => {
     const prompts: Record<string, unknown>[] = [];
     const executeStructuredOutput = vi.fn(async (_role, structuredRequest, options) => {

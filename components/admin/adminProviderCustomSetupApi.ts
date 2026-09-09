@@ -1,5 +1,6 @@
 import { ADMIN_PROVIDER_SETUP_STREAM_TYPE, type AdminProviderSetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 import { readAdminProviderSetupResponse } from "./adminProviderSetupStream";
+import { isAdminProviderCheckRun } from "./adminProvidersApi";
 import type {
   AdminProviderCustomDiscoveryRequest,
   AdminProviderCustomDiscoveryResult,
@@ -93,7 +94,8 @@ function ready(value: unknown): AdminProviderCustomSetupReadyResult | null {
       "models",
       "outcome",
       "providerModelId",
-      "search"
+      "search",
+      ...(value.checkRun === undefined ? [] : ["checkRun"])
     ]) ||
     (value.authenticationMode !== "bearer" && value.authenticationMode !== "none") ||
     !timestamp(value.checkedAt) ||
@@ -110,10 +112,20 @@ function ready(value: unknown): AdminProviderCustomSetupReadyResult | null {
       !safeText(model.modelDisplayName, 160) ||
       !safeText(model.providerModelId, 128)
     ) ||
+    new Set(value.models.map((model) => (model as { providerModelId: string }).providerModelId)).size !== value.models.length ||
     !record(value.models[0]) ||
     value.models[0].modelDisplayName !== value.modelDisplayName ||
     value.models[0].providerModelId !== value.providerModelId ||
-    value.outcome !== "ready" ||
+    !["ready", "partial", "cancelled"].includes(String(value.outcome)) ||
+    (value.checkRun !== undefined && (!isAdminProviderCheckRun(value.checkRun) ||
+      !value.checkRun.credentialId || value.checkRun.state === "running" ||
+      (value.outcome === "cancelled") !== (value.checkRun.state === "cancelled") || value.outcome === "ready" &&
+      (value.checkRun.state !== "completed" || value.checkRun.failed.length > 0 ||
+        value.checkRun.done !== value.checkRun.total || Boolean(value.checkRun.skipped?.length) ||
+        value.checkRun.setup?.state === "partial" || value.checkRun.setup?.state === "running"))) ||
+    (value.outcome === "ready" && isAdminProviderCheckRun(value.checkRun) &&
+      value.checkRun.results?.some((result) => result.state !== "saved")) ||
+    (value.outcome !== "ready" && value.checkRun === undefined) ||
     !safeText(value.providerModelId, 128) ||
     !searchReceipt(value.search)
   ) {
@@ -127,6 +139,10 @@ function discoveredCapabilities(value: unknown): boolean {
   const allowed = new Set([
     "contextWindow",
     "defaultMaxOutputTokens",
+    "maxOutputTokens",
+    "toolCalling",
+    "vision",
+    "parallelToolCalls",
     "defaultReasoningEffort",
     "defaultReasoningMode",
     "reasoning",
@@ -148,6 +164,11 @@ function discoveredCapabilities(value: unknown): boolean {
       (Number.isInteger(value.defaultMaxOutputTokens) &&
         Number(value.defaultMaxOutputTokens) > 0 &&
         Number(value.defaultMaxOutputTokens) <= 10_000_000)) &&
+    (value.maxOutputTokens === undefined ||
+      (Number.isInteger(value.maxOutputTokens) && Number(value.maxOutputTokens) > 0 &&
+        Number(value.maxOutputTokens) <= 10_000_000)) &&
+    ["toolCalling", "vision", "parallelToolCalls"].every((key) =>
+      value[key] === undefined || typeof value[key] === "boolean") &&
     (value.reasoning === undefined || typeof value.reasoning === "boolean") &&
     (!hasReasoningDetails || value.reasoning === true) &&
     (value.reasoningEfforts === undefined || controls(value.reasoningEfforts)) &&

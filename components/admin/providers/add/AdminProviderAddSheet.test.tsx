@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AdminProviderAddSheet } from "./AdminProviderAddSheet";
 import { fixtureConnection, workingConnection } from "../providerFixtures";
-import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
+import type { AdminProviderCheckRun, AdminProviderConnection } from "@/lib/contracts/adminProviders";
 
 const checkedAt = "2026-09-07T12:51:00.000Z";
 const forbiddenWords = /\b(version|revision|draft|pending|probe|evidence|fingerprint|adapter|CAS)\b/iu;
@@ -138,6 +138,83 @@ describe("AdminProviderAddSheet", () => {
     // The sheet stays locked until the caller opens the new page.
     expect(within(dialog).getByRole("button", { name: "Test & Save" })).toBeDisabled();
     expect(dialog.textContent).not.toContain("sk-new-key");
+  });
+
+  it("keeps per-model partial results and retries the existing setup without creating another provider", async () => {
+    const connection = workingConnection();
+    const run: AdminProviderCheckRun = {
+      credentialId: connection.defaultCredentialId!, current: null, done: 2, failed: ["model-luna"], finishedAt: checkedAt,
+      id: "run-partial", inFlight: [], reason: "setup", startedAt: checkedAt, state: "completed", total: 2,
+      results: [
+        { providerModelId: connection.models[0]!.id, state: "saved", checks: { structuredOutput: "verified", forcedToolCall: "verified" } },
+        { providerModelId: "model-luna", state: "partial", checks: { structuredOutput: "verified", forcedToolCall: "rejected" } }
+      ]
+    };
+    const calls = mockFetch(({ url, method, body }) => {
+      if (url === "/api/admin/providers/quick-setup" && method === "POST") return Response.json({ ...ready(connection.id), outcome: "partial", checkRun: run });
+      if (url === "/api/admin/providers") return Response.json({ connections: [{ ...connection, checkRun: run }] });
+      if (url === `/api/admin/providers/${connection.id}/actions` && body?.retryUnresolved === true) return Response.json({ connections: [{
+        ...connection, checkRun: { ...run, id: "run-retry", failed: [], results: run.results?.map((result) => ({ ...result, state: "saved", checks: { structuredOutput: "verified", forcedToolCall: "verified" } })) }
+      }] });
+      return null;
+    });
+    const { onCreated } = renderSheet();
+    const dialog = await sheet();
+    await within(dialog).findByText(/GPT-5.6 Terra, GPT-5.6 Luna/);
+    fireEvent.change(within(dialog).getByLabelText("API key"), { target: { value: "test-key" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Test & Save" }));
+    const results = await within(dialog).findByRole("list", { name: "Model setup results" });
+    expect(results).toHaveTextContent("Strict JSON: verified");
+    expect(results).toHaveTextContent("Forced tool calls: check rejected");
+    expect(onCreated).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Retry unfinished checks" }));
+    await within(dialog).findByText("Setup finished");
+    expect(calls.filter((call) => call.method === "POST")).toEqual([
+      expect.objectContaining({ url: "/api/admin/providers/quick-setup" }),
+      expect.objectContaining({ url: `/api/admin/providers/${connection.id}/actions`, body: { action: "check_models", credentialId: connection.defaultCredentialId, retryUnresolved: true } })
+    ]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "View provider" }));
+    expect(onCreated).toHaveBeenCalledWith(connection.id);
+  });
+
+  it("stops the setup stream and recovers saved ids for retry instead of submitting Add again", async () => {
+    const connection = workingConnection();
+    const run: AdminProviderCheckRun = {
+      credentialId: connection.defaultCredentialId!, current: null, done: 0, failed: [], finishedAt: checkedAt,
+      id: "stopped-run", inFlight: [], reason: "setup", startedAt: checkedAt, state: "cancelled", total: 1,
+      results: [{ providerModelId: connection.models[0]!.id, state: "cancelled", checks: { structuredOutput: "verified", forcedToolCall: "incomplete" } }]
+    };
+    let setupSignal: AbortSignal | null | undefined;
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/admin/providers/quick-setup" && init?.method === "GET") return Response.json(snapshot());
+      if (url === "/api/admin/providers/quick-setup" && init?.method === "POST") {
+        setupSignal = init.signal;
+        return new Response(new ReadableStream({ start(controller) {
+          controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ type: "progress", progress: {
+            phase: "checking", completed: 0, total: 1, connectionId: connection.id,
+            credentialId: connection.defaultCredentialId, runId: run.id, capability: "forcedToolCall"
+          } })}\n`));
+          init.signal?.addEventListener("abort", () => controller.error(new DOMException("Stopped", "AbortError")), { once: true });
+        } }), { headers: { "content-type": "application/x-ndjson" } });
+      }
+      if (url === "/api/admin/providers") return Response.json({ connections: [{ ...connection, checkRun: run }] });
+      if (url.includes("?run=")) return Response.json({ run });
+      return Response.json({ error: "unexpected_request" }, { status: 500 });
+    });
+    const { onCreated } = renderSheet();
+    const dialog = await sheet();
+    await within(dialog).findByText(/GPT-5.6 Terra, GPT-5.6 Luna/);
+    fireEvent.change(within(dialog).getByLabelText("API key"), { target: { value: "test-key" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Test & Save" }));
+    await within(dialog).findByText("Checking Forced tool calls…");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Stop" }));
+    await within(dialog).findByText("Setup stopped");
+    expect(setupSignal?.aborted).toBe(true);
+    expect(within(dialog).getByRole("button", { name: "Retry unfinished checks" })).toBeEnabled();
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(fetcher.mock.calls.filter(([input, init]) => String(input).endsWith("/quick-setup") && init?.method === "POST")).toHaveLength(1);
+    expect(dialog).not.toHaveTextContent("Setup finished");
   });
 
   it("requires a distinct name for a second connection of the family and sends endpoint overrides", async () => {

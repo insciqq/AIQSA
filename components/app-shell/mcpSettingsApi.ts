@@ -1,4 +1,5 @@
 import { shellFetch } from "@/components/app-shell/shellApi";
+import { mcpRuntimeErrorCode } from "@/lib/contracts/mcp";
 import type {
   McpReadiness,
   McpOperationalStatus,
@@ -94,6 +95,9 @@ function userServer(value: unknown): UserMcpServer | null {
     oauthState: value.oauthState as UserMcpServer["oauthState"],
     operationalStatus: value.operationalStatus as McpOperationalStatus,
     readiness: value.readiness as McpReadiness,
+    ...(value.runtimeErrorCode !== undefined ? {
+      runtimeErrorCode: value.runtimeErrorCode === null ? null : mcpRuntimeErrorCode(value.runtimeErrorCode)
+    } : {}),
     tools
   };
 }

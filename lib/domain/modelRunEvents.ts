@@ -97,6 +97,7 @@ export type ModelRunSseEvent =
           | "reasoning"
           | "search"
           | "summary"
+          | "tool_budget"
           | "tool_call"
           | "tool_result"
           | "workspace_activity";

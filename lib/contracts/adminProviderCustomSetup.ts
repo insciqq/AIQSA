@@ -1,5 +1,6 @@
 import type {
   AdminCompatibleDiscoveredModel,
+  AdminProviderCheckRun,
   AdminProviderModelCapabilities
 } from "./adminProviders";
 import type { ProviderReasoningRequestMapping } from "./providerReasoningRequestMapping";
@@ -47,6 +48,8 @@ export type AdminProviderCustomSetupRequest = Readonly<{
   modelId?: string;
   /** Explicit ids selected from discovery, in default-preference order. */
   modelIds?: string[];
+  /** Bounded hints/overrides belonging to each selected id; never capability proof. */
+  perModelCapabilities?: Record<string, AdminCompatibleDiscoveredModel["capabilities"]>;
   protocol: AdminProviderCustomProtocol;
   reasoningRequestMapping?: ProviderReasoningRequestMapping;
   responseTimeoutSeconds: number;
@@ -82,7 +85,8 @@ export type AdminProviderCustomSetupReadyResult = Readonly<{
     modelDisplayName: string;
     providerModelId: string;
   }>>;
-  outcome: "ready";
+  outcome: "ready" | "partial" | "cancelled";
+  checkRun?: AdminProviderCheckRun;
   providerModelId: string;
   search: null | Readonly<{
     displayName: string;

@@ -57,6 +57,8 @@ export type AdminProviderQuickSetupInspection = Readonly<{
 }>;
 
 export type AdminProviderQuickSetupCommitPlan = Readonly<{
+  pendingCapabilityChecks?: boolean;
+  signal?: AbortSignal;
   actor: AdminProviderQuickSetupActor;
   candidate: AdminProviderQuickSetupPolicyCandidate;
   candidates: readonly AdminProviderQuickSetupPolicyCandidate[];
@@ -116,6 +118,8 @@ export type AdminProviderQuickSetupCommitResult =
  * canonical-only and never part of this plan.
  */
 export type AdminProviderQuickSetupAdditionalPlan = Readonly<{
+  pendingCapabilityChecks?: boolean;
+  signal?: AbortSignal;
   actor: AdminProviderQuickSetupActor;
   checkedAt: Date;
   connection: Readonly<{

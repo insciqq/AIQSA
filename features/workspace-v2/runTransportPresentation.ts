@@ -2,7 +2,7 @@ import type {
   RunLifecycleStateV2,
   RunLifecycleStatusV2
 } from "@/features/run-lifecycle-v2/runPresentation";
-import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE } from "@/lib/contracts/runs";
+import { isToolSynthesisFailure, mcpAutoDiscoveryFailureForMessage, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
 
 /**
  * The run-lifecycle store's record of a stream whose transport failed without
@@ -61,15 +61,12 @@ export function runTransportStateV2(input: Readonly<{
     };
   }
 
+  const discoveryFailure = mcpAutoDiscoveryFailureForMessage(input.message.errorMessage);
+  const failure = discoveryFailure ? { ...discoveryFailure, recovery: "retry" as const }
+    : isToolSynthesisFailure(null, input.message.errorMessage)
+      ? { ...TOOL_SYNTHESIS_FAILURE, recovery: "regenerate" as const } : null;
   return {
-    ...(input.message.status === "error" &&
-      input.message.errorMessage === MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE ? {
-        failure: {
-          code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
-          message: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE,
-          recovery: "retry" as const
-        }
-      } : {}),
+    ...(input.message.status === "error" && failure ? { failure } : {}),
     authoritativeMessageStatus:
       input.message.status === "streaming" ? null : input.message.status,
     connectionLost:

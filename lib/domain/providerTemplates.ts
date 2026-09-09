@@ -90,7 +90,7 @@ export const providerConnectionTemplates = Object.freeze([
   Object.freeze({
     config: Object.freeze({
       allowPrivateNetwork: false,
-      apiRoot: "https://generativelanguage.googleapis.com/v1",
+      apiRoot: "https://generativelanguage.googleapis.com/v1beta",
       authenticationMode: "bearer" as const,
       responseTimeoutMs: 300_000
     }),

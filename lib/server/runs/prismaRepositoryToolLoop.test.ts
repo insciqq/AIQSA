@@ -473,6 +473,21 @@ describe("provider dispatch recovery request loading", () => {
     else await expect(loaded).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
   });
 
+  it.each([undefined, 1024, 32768, 65536, null, 1023, 65537, "8192"])("loads only valid frozen MCP output budgets: %s", async (tokens) => {
+    const request = { ...normalizedRequest, toolBudgets: {
+      maxToolCalls: 20, maxToolRounds: 8,
+      ...(tokens === undefined ? {} : { mcpAutoDiscoveryMaxOutputTokens: tokens })
+    } };
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: async () => ({
+      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      normalizedRequest: request, provider: "provider-one"
+    }) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    const loaded = operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
+    if (tokens === undefined || typeof tokens === "number" && tokens >= 1024 && tokens <= 65536) {
+      await expect(loaded).resolves.toEqual(request);
+    } else await expect(loaded).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
+
   it("selects only the accepted request and ownership fields", async () => {
     const findUnique = vi.fn(async () => ({
       chat: { projectId: null, userId: "owner-one" },

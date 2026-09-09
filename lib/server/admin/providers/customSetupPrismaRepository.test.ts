@@ -198,7 +198,7 @@ function harness(options: Readonly<{
         userId: commitPlan.actor.userId
       }))
     },
-    providerConnection: { create: vi.fn(async () => undefined) },
+    providerConnection: { create: vi.fn(async () => undefined), update: vi.fn(async () => undefined) },
     providerCredential: {
       create: vi.fn(async () => undefined),
       update: vi.fn(async () => undefined)
@@ -250,6 +250,10 @@ describe("Prisma custom provider setup repository", () => {
     });
 
     expect(transaction).toHaveBeenCalledOnce();
+    expect(tx.providerConnection.update).toHaveBeenCalledWith({
+      where: { id: commitPlan.connection.id },
+      data: { defaultCredentialId: commitPlan.credential.id, unassignedPolicy: "use_default" }
+    });
     expect(transaction.mock.calls[0]?.[1]).toMatchObject({
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable
     });

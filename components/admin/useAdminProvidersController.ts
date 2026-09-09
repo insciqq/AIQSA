@@ -25,6 +25,7 @@ import type {
   AdminProviderConnection,
   AdminProviderConnectionConfiguration
 } from "@/lib/contracts/adminProviders";
+import type { AdminProviderSetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type CatalogOperation = () => Promise<AdminProviderClientResult<AdminProviderConnection[]>>;
@@ -350,13 +351,14 @@ export function useAdminProvidersController(
     saveModel: (
       connectionId: string,
       modelId: string | null,
-      body: Readonly<{ configuration: unknown; displayName: string; expectedDraftVersion?: number }>
+      body: Readonly<{ configuration: unknown; displayName: string; expectedDraftVersion?: number }>,
+      setupOptions?: Readonly<{ signal?: AbortSignal; onProgress?(value: AdminProviderSetupProgress): void }>
     ) => runCatalogResult(
       () => modelId === null
-        ? createAdminProviderModel(connectionId, { ...body, activate: true })
-        : updateAdminProviderModel(connectionId, modelId, { ...body, action: "update", activate: true }),
-      "Model saved and turned on.",
-      { quiet: true, scope: connectionId }
+        ? createAdminProviderModel(connectionId, { ...body, activate: true }, fetch, setupOptions?.signal, setupOptions?.onProgress)
+        : updateAdminProviderModel(connectionId, modelId, { ...body, action: "update", activate: true }, fetch, setupOptions?.signal, setupOptions?.onProgress),
+      null,
+      { quiet: true, reconcileFailure: true, scope: connectionId }
     ),
     /** One-step add: the key is tested and becomes the default when none is set. */
     saveCredential: (
@@ -379,11 +381,13 @@ export function useAdminProvidersController(
     startModelChecks: (
       connectionId: string,
       credentialId: string,
-      modelIds?: readonly string[]
+      modelIds?: readonly string[],
+      retryUnresolved?: boolean
     ) => runCatalogResult(
       () => runAdminProviderConnectionAction(connectionId, {
         action: "check_models",
         credentialId,
+        ...(retryUnresolved ? { retryUnresolved: true } : {}),
         ...(modelIds ? { modelIds: [...modelIds] } : {})
       }),
       null,

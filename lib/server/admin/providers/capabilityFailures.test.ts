@@ -27,15 +27,23 @@ const previous: AdminProviderTestEvidence = {
   visionInput: { adapterKind: model.adapterKind, upstreamModelId: model.upstreamModelId, probeVersion: 1, verified: true }
 };
 
-function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "failed" | "incomplete") {
+function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "failed" | "incomplete", nativeGemini = false) {
+  const selectedModel = nativeGemini ? { ...model, adapterKind: "gemini_interactions_native" as const } : model;
+  const family = nativeGemini ? "gemini" : "openai_compatible";
+  const previousEvidence: AdminProviderTestEvidence = nativeGemini ? {
+    ...previous,
+    structuredOutput: { ...previous.structuredOutput!, adapterKind: "gemini_interactions_native" },
+    pdfInput: { ...previous.pdfInput!, adapterKind: "gemini_interactions_native" },
+    visionInput: { ...previous.visionInput!, adapterKind: "gemini_interactions_native" }
+  } : previous;
   const envelope = encryptProviderCredentialSecret({ credentialId: request.credentialId, key: KEY,
     secret: "synthetic-secret", valueId: "version" });
   const candidate = {
-    connection: { configuration, displayName: "Synthetic", family: "openai_compatible", id: request.connectionId, version: 3 },
+    connection: { configuration, displayName: "Synthetic", family, id: request.connectionId, version: 3 },
     credential: { envelope, id: request.credentialId, versionId: "version" },
-    model: { configuration: model, displayName: "Synthetic", id: request.providerModelId, version: 4 }
+    model: { configuration: selectedModel, displayName: "Synthetic", id: request.providerModelId, version: 4 }
   };
-  let row: Record<string, unknown> | null = prior ? { status: "available", evidence: previous } : null;
+  let row: Record<string, unknown> | null = prior ? { status: "available", evidence: previousEvidence } : null;
   const active = { connection: 3, model: 4, credential: "version", revokedAt: null as Date | null };
   const updateMany = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
     if (row) Object.assign(row, data);
@@ -64,26 +72,36 @@ function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "fai
   const connection: AdminProviderConnection = {
     activatedAt: timestamp, activeChecks: [], activeConfig: adminConfig, activeVersion: 3, assignments: [],
     createdAt: timestamp, defaultCredentialId: request.credentialId, displayName: "Synthetic", draftChecks: [],
-    draftConfig: adminConfig, draftVersion: 3, enabled: true, family: "openai_compatible", id: request.connectionId,
+    draftConfig: adminConfig, draftVersion: 3, enabled: true, family, id: request.connectionId,
     unassignedPolicy: "use_default", updatedAt: timestamp, userAssignments: [],
     credentials: [{ activatedAt: timestamp, activeVersion: { activatedAt: timestamp, id: "version",
       revokedAt: null, testedAt: timestamp, version: 1 }, createdAt: timestamp, draftSecretConfigured: false,
       draftVersion: 1, enabled: true, id: request.credentialId, label: "Synthetic", testedAt: timestamp, updatedAt: timestamp }],
-    models: [{ activatedAt: timestamp, activeConfig: model, activeVersion: 4, connectionId: request.connectionId,
-      createdAt: timestamp, displayName: "Synthetic", draftConfig: model, draftVersion: 4, enabled: true,
+    models: [{ activatedAt: timestamp, activeConfig: selectedModel, activeVersion: 4, connectionId: request.connectionId,
+      createdAt: timestamp, displayName: "Synthetic", draftConfig: selectedModel, draftVersion: 4, enabled: true,
       id: request.providerModelId, updatedAt: timestamp }]
   };
   vi.spyOn(repository, "listConnections").mockResolvedValue([connection]);
   let fail = true;
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const body = JSON.parse(String(init?.body));
-    const structured = Boolean(body.text?.format);
+    const structured = Boolean(body.text?.format || body.response_format);
     const pdf = JSON.stringify(body.input).includes("input_file");
     if (fail && (target === "memory" ? structured : pdf)) return Response.json({
       id: "synthetic-response", status: terminal, output: [],
       error: { code: "server_error", message: "PRIVATE_SYNTHETIC_UPSTREAM_DETAIL" },
       incomplete_details: { reason: "max_output_tokens" }
     });
+    if (nativeGemini) {
+      const response = { id: "synthetic-response", status: "completed", steps: [{ type: "model_output", content: [{ type: "text", text: structured
+        ? JSON.stringify({ count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] }) : "OK" }] }],
+        usage: { total_input_tokens: 4, total_output_tokens: 1, total_tokens: 5 } };
+      return body.stream ? new Response([
+        `event: interaction.created\ndata: ${JSON.stringify({ event_type: "interaction.created", interaction: { id: "synthetic-response", status: "in_progress" } })}\n\n`,
+        `event: interaction.completed\ndata: ${JSON.stringify({ event_type: "interaction.completed", interaction: response })}\n\n`,
+        "event: done\ndata: [DONE]\n\n"
+      ].join(""), { headers: { "content-type": "text/event-stream" } }) : Response.json(response);
+    }
     const response = { id: "synthetic-response", status: "completed", output: [{ type: "message", role: "assistant",
       content: [{ type: "output_text", text: structured
         ? JSON.stringify({ count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] }) : pdf ? "Q7K4P9" : "OK" }] }],
@@ -94,11 +112,37 @@ function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "fai
   const service = createAdminProviderService({ repository, now: () => NOW, encryptionKey: () => KEY,
     credentialTester: { async test() { throw new Error("unexpected_credential_test"); } },
     tester: createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn }) });
-  return { active, candidate, fetchFn, repository, service, updateMany, upsert,
+  return { active, candidate, fetchFn, previousEvidence, repository, service, updateMany, upsert,
     row: () => row, succeed: () => { fail = false; } };
 }
 
 describe("failed capability response publication", () => {
+  it.each(["failed", "incomplete"] as const)("preserves Gemini evidence on %s and publishes the matching native JSON recheck", async (terminal) => {
+    const f = fixture(true, "memory", terminal, true);
+    await expect(f.service.refreshActive({ ...request, capabilityRole: "memory" })).rejects.toMatchObject({ code: "provider_refresh_failed" });
+    expect(f.upsert).not.toHaveBeenCalled();
+    expect(f.row()?.evidence).toEqual(f.previousEvidence);
+    expect(JSON.stringify(f.row())).not.toContain("PRIVATE_SYNTHETIC_UPSTREAM_DETAIL");
+    f.succeed();
+    await expect(f.service.refreshActive({ ...request, capabilityRole: "memory" })).resolves.toMatchObject({
+      status: "available", connectionVersion: 3, modelVersion: 4, credentialVersionId: "version",
+      evidence: { structuredOutput: { adapterKind: "gemini_interactions_native", probeVersion: 2, verified: true,
+        upstreamModelId: "synthetic-model" } }
+    });
+    expect(f.upsert).toHaveBeenCalledOnce();
+  });
+
+  it.each(["connection", "model", "credential", "revokedAt"] as const)("fences successful Gemini JSON evidence from a changed %s revision", async (changed) => {
+    const f = fixture(true, "memory", "incomplete", true);
+    f.succeed();
+    if (changed === "credential") f.active.credential = "new-version";
+    else if (changed === "revokedAt") f.active.revokedAt = NOW;
+    else f.active[changed] += 1;
+    await expect(f.service.refreshActive({ ...request, capabilityRole: "memory" })).rejects.toMatchObject({ code: "provider_draft_stale" });
+    expect(f.upsert).not.toHaveBeenCalled();
+    expect(f.row()).toEqual({ status: "available", evidence: f.previousEvidence });
+  });
+
   it.each([
     ["memory", "failed"], ["memory", "incomplete"], ["direct_pdf", "failed"], ["direct_pdf", "incomplete"]
   ] as const)("preserves prior or absent evidence on %s/%s and permits an ordinary recheck", async (target, terminal) => {

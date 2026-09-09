@@ -164,7 +164,8 @@ describe("durable MCP discovery", () => {
     }
   });
 
-  it.each([false, true])("reports failed routing usage once, including cancellation=%s", async (cancelled) => {
+  it.each(["failure", "cancelled", "output_limit"] as const)("reports failed routing usage once: %s", async (outcome) => {
+    const cancelled = outcome === "cancelled";
     const state = harness();
     const controller = new AbortController();
     const usageAttribution = {
@@ -174,7 +175,7 @@ describe("durable MCP discovery", () => {
     };
     const onUsage = vi.fn();
     const failure = new McpSemanticRouterError(
-      cancelled ? "mcp_router_cancelled" : "mcp_router_request_failed",
+      cancelled ? "mcp_router_cancelled" : outcome === "output_limit" ? "mcp_router_output_limit" : "mcp_router_request_failed",
       usageAttribution
     );
 
@@ -195,7 +196,7 @@ describe("durable MCP discovery", () => {
       signal: controller.signal,
       userId: "user-1"
     })).rejects.toMatchObject({
-      code: cancelled ? "mcp_router_cancelled" : "mcp_auto_discovery_unavailable"
+      code: cancelled ? "mcp_router_cancelled" : outcome === "output_limit" ? "mcp_auto_discovery_output_limit" : "mcp_auto_discovery_unavailable"
     });
     expect(onUsage).toHaveBeenCalledExactlyOnceWith(usageAttribution);
     expect(state.appendEpoch).not.toHaveBeenCalled();
@@ -386,9 +387,9 @@ describe("durable MCP discovery", () => {
       runId: "run-1",
       userId: "user-1"
     })).rejects.toMatchObject({
-      code: "mcp_auto_discovery_unavailable",
+      code: "mcp_auto_discovery_materialization_failed",
       internalReason: "mcp_materialization_mcp_not_ready",
-      message: "Automatic tool discovery is unavailable."
+      message: expect.stringContaining("could not activate")
     } satisfies Partial<McpAutoDiscoveryUnavailableError>);
 
     expect(materialize).toHaveBeenCalledOnce();
@@ -422,9 +423,9 @@ describe("durable MCP discovery", () => {
     }
 
     expect(failure).toMatchObject({
-      code: "mcp_auto_discovery_unavailable",
+      code: "mcp_auto_discovery_materialization_failed",
       internalReason: "mcp_materialization_failed",
-      message: "Automatic tool discovery is unavailable."
+      message: expect.stringContaining("could not activate")
     } satisfies Partial<McpAutoDiscoveryUnavailableError>);
     expect(`${String(failure)} ${JSON.stringify(failure)}`).not.toContain(rawFailure);
     expect(state.appendEpoch).not.toHaveBeenCalled();

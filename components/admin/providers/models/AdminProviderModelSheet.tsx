@@ -5,12 +5,13 @@ import {
   reasoningCapabilitiesEqual,
   reasoningCapabilitiesSummary,
   reasoningForChoice,
+  discoveredReasoning,
   applyReasoningCapabilities,
   type AdminProviderReasoningChoice
 } from "@/components/admin/adminProviderReasoning";
 import { AdminSearchablePicker } from "@/components/admin/AdminSearchablePicker";
 import { AdminSheet } from "@/components/admin/AdminSheet";
-import { defaultCredentialOf } from "@/components/admin/providers/models/modelListView";
+import { defaultCredentialOf, modelEditorCheck, modelRouteLabel } from "@/components/admin/providers/models/modelListView";
 import {
   applyCatalogHint,
   applyCompatibleModel,
@@ -31,6 +32,9 @@ import {
   openRouterModelDiscoveryIdentity,
   type AdminOpenRouterDiscoverySession
 } from "@/components/admin/providers/models/useAdminOpenRouterDiscovery";
+import { ModelJsonDialog } from "@/components/admin/providers/models/ModelJsonDialog";
+import { AdminProviderSetupProgress } from "@/components/admin/providers/add/AdminProviderSetupProgress";
+import type { AdminProviderSetupProgress as SetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 import { providerFamilyLabel } from "@/components/admin/providers/providerListView";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
@@ -55,6 +59,7 @@ export type AdminProviderModelSheetProps = Readonly<{
   connection: AdminProviderConnection;
   controller: Pick<AdminProvidersController, "actions" | "state">;
   discovery: AdminOpenRouterDiscoverySession;
+  diagnosticCredentialId?: string | null;
   /** Null adds a chat model. */
   model: AdminProviderModel | null;
   onClose(): void;
@@ -163,8 +168,8 @@ function RoutingField({
                   <li className="flex min-w-0 items-center gap-3 px-3 py-2" key={tag}>
                     <span className="w-4 shrink-0 font-mono text-xs text-ink-muted">{index + 1}</span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[13px] font-medium text-ink">{endpoint ? endpointLabel(endpoint) : tag}</span>
-                      {endpoint ? <span className="block truncate font-mono text-metadata text-ink-muted">{endpointDetail(endpoint)}</span> : null}
+                      <span className="block break-words text-[13px] font-medium text-ink [overflow-wrap:anywhere]">{endpoint ? endpointLabel(endpoint) : tag}</span>
+                      {endpoint ? <span className="block break-all font-mono text-metadata text-ink-muted">{endpointDetail(endpoint)}</span> : null}
                     </span>
                     <UiV2IconButton
                       disabled={disabled || index === 0}
@@ -236,8 +241,8 @@ function RoutingField({
                           }}
                           type="button"
                         >
-                          <span className="truncate text-[13px] text-ink">{endpointLabel(endpoint)}</span>
-                          <span className="shrink-0 font-mono text-metadata text-ink-muted">{endpointDetail(endpoint)}</span>
+                          <span className="min-w-0 break-words text-[13px] text-ink [overflow-wrap:anywhere]">{endpointLabel(endpoint)}</span>
+                          <span className="min-w-0 max-w-[45%] break-all font-mono text-metadata text-ink-muted">{endpointDetail(endpoint)}</span>
                         </button>
                       </li>
                     ))}
@@ -256,6 +261,7 @@ function SheetBody({
   connection,
   controller,
   discovery,
+  diagnosticCredentialId,
   model,
   onClose,
   onSaved
@@ -264,16 +270,26 @@ function SheetBody({
   const [baseline] = useState(form);
   const [error, setError] = useState<string | null>(null);
   const [discarding, setDiscarding] = useState(false);
-  const advancedRef = useRef<HTMLDetailsElement>(null);
+  const [jsonEditing, setJsonEditing] = useState(false);
+  const [errorField, setErrorField] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [progress, setProgress] = useState<SetupProgress | null>(null);
+  const [interrupted, setInterrupted] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const jsonTriggerRef = useRef<HTMLButtonElement>(null);
+  const timeoutRef = useRef<HTMLInputElement>(null);
   const formId = useId();
   const errorId = useId();
   const hintsId = useId();
-  const busy = controller.state.busy;
+  const busy = controller.state.busy || saving;
   const family = connection.family;
   const openRouter = family === "openrouter";
   const compatible = family === "openai_compatible";
   const answer = form.modelClass === "answer";
+  const currentModel = model ? connection.models.find(({ id }) => id === model.id) ?? null : null;
   const defaultCredential = defaultCredentialOf(connection);
+  const check = modelEditorCheck(connection, currentModel, diagnosticCredentialId === undefined ? connection.defaultCredentialId : diagnosticCredentialId);
+  const savedRoute = currentModel ? modelRouteLabel(connection, currentModel) : null;
   const checkKeyLabel = defaultCredential && defaultCredential.enabled && defaultCredential.activeVersion &&
     defaultCredential.activeVersion.revokedAt === null
     ? defaultCredential.label
@@ -293,6 +309,8 @@ function SheetBody({
   const hints = useMemo(() => openRouter || compatible ? [] : catalogHintsFor(family), [compatible, family, openRouter]);
   const dirty = !modelFormsEqual(form, baseline);
 
+  useEffect(() => () => abortRef.current?.abort(), []);
+
   useEffect(() => {
     if (!answer || !modelIdentity) return;
     if (openRouter) void discovery.models.load(modelIdentity);
@@ -302,6 +320,7 @@ function SheetBody({
   const update = (patch: Partial<ModelForm>) => {
     setForm({ ...form, ...patch });
     setError(null);
+    setErrorField(null);
   };
   const updateCapability = (key: keyof AdminProviderModelCapabilities, value: boolean | number | undefined) => {
     const capabilities = { ...form.capabilities };
@@ -322,7 +341,7 @@ function SheetBody({
     );
     update({ adapterKind, capabilities, reasoningEffortPath: mapping.effortPath, reasoningModePath: mapping.modePath ?? "" });
   };
-  const automaticReasoning = reasoningForChoice("automatic", selectedCompatibleModel ? [selectedCompatibleModel] : []);
+  const automaticReasoning = discoveredReasoning(selectedCompatibleModel ?? undefined) ?? { reasoning: false };
   const reasoningChoice: AdminProviderReasoningChoice | "custom" = !form.capabilities.reasoning
     ? "disabled"
     : reasoningCapabilitiesEqual(form.capabilities, automaticReasoning)
@@ -332,7 +351,7 @@ function SheetBody({
         : "custom";
 
   const requestClose = () => {
-    if (busy) return;
+    if (busy || jsonEditing || discarding) return;
     if (dirty) {
       setDiscarding(true);
       return;
@@ -341,24 +360,37 @@ function SheetBody({
   };
 
   const submit = async () => {
+    if (busy || interrupted || jsonEditing || discarding) return;
     const result = modelFormBody(form, connection, model);
     if (!result.ok) {
-      if ((result.field === "defaultParams" || result.field === "timeout") && advancedRef.current) {
-        advancedRef.current.open = true;
-      }
+      setErrorField(result.field);
+      if (result.field === "defaultParams") jsonTriggerRef.current?.focus();
+      if (result.field === "timeout") timeoutRef.current?.focus();
       setError(result.error);
       return;
     }
     setError(null);
-    const saved = await controller.actions.saveModel(connection.id, model?.id ?? null, result.body);
+    const abort = new AbortController();
+    abortRef.current = abort;
+    setSaving(true);
+    setProgress({ phase: "validating", completed: 0, total: null });
+    const saved = await controller.actions.saveModel(connection.id, model?.id ?? null, result.body, {
+      signal: abort.signal,
+      onProgress: (value) => { if (!abort.signal.aborted) setProgress(value); }
+    });
+    abortRef.current = null;
+    setSaving(false);
+    setProgress(null);
     if (saved.ok) {
       onSaved();
       return;
     }
     setError(saved.message);
+    if (abort.signal.aborted || ["network_error", "provider_admin_response_invalid"].includes(saved.error.code)) setInterrupted(true);
+    setErrorField(saved.error?.code === "provider_configuration_invalid" ? "configuration" : null);
   };
 
-  const canSave = !busy && form.upstreamModelId.trim() !== "" && (model === null || dirty);
+  const canSave = !busy && !interrupted && !jsonEditing && !discarding && form.upstreamModelId.trim() !== "" && (model === null || dirty);
   const capabilityRows: ReadonlyArray<[keyof AdminProviderModelCapabilities, string, string?]> = compatible
     ? [
         ["toolCalling", "Tools", "Function calling for Search, MCP and Memory."],
@@ -379,17 +411,19 @@ function SheetBody({
 
   return (
     <AdminSheet
-      closeBlocked={busy}
-      description={`${providerFamilyLabel(family)} · ${checkKeyLabel ? `checked with key ${checkKeyLabel}` : "no default key yet"}`}
+      closeBlocked={busy || jsonEditing || discarding}
+      description={providerFamilyLabel(family)}
       footer={(
         <>
-          <UiV2Button busy={busy} disabled={!canSave} form={formId} tone="primary" type="submit">
+          {interrupted ? <UiV2Button onClick={onSaved} tone="primary" type="button">View model results</UiV2Button> : <UiV2Button busy={busy} disabled={!canSave} form={formId} tone="primary" type="submit">
             Test &amp; Save
-          </UiV2Button>
-          <UiV2Button disabled={busy} onClick={requestClose} tone="ghost" type="button">Cancel</UiV2Button>
-          <span className="min-w-0 text-xs leading-5 text-ink-muted sm:ml-auto sm:text-right">
+          </UiV2Button>}
+          {saving ? <UiV2Button onClick={() => abortRef.current?.abort()} tone="ghost" type="button">Stop checking</UiV2Button>
+            : <UiV2Button disabled={busy || jsonEditing || discarding} onClick={requestClose} tone="ghost" type="button">Cancel</UiV2Button>}
+          <span className="min-w-0 break-words text-xs leading-5 text-ink-muted [overflow-wrap:anywhere] sm:ml-auto sm:text-right">
             {checkKeyLabel
-              ? `Checks the model with key ${checkKeyLabel}, then turns it on`
+              ? model ? `Checks the model with key ${checkKeyLabel} and preserves your capability choices`
+                : `Checks supported capabilities with key ${checkKeyLabel} and enables verified features, including PDF`
               : "Turns the model on without a check — add a key first to check it"}
           </span>
         </>
@@ -409,258 +443,250 @@ function SheetBody({
           void submit();
         }}
       >
-        <div className="min-w-0">
-          {/* The pickers render their own visible label; keep this one for the read-only id and aria-labelledby. */}
-          <span className={answer ? "sr-only" : fieldLabel} id={`${formId}-model-label`}>Model</span>
-          {!answer ? (
-            <p className="flex min-h-control items-center rounded-control border border-trace-subtle bg-control-surface/60 px-3 font-mono text-xs text-ink-secondary">
-              {form.upstreamModelId}
-            </p>
-          ) : openRouter ? (
-            <>
-              <AdminSearchablePicker
-                disabled={!modelIdentity || busy}
-                emptyDescription="This key returned an empty catalog. Refresh it or review the OpenRouter account policy."
-                emptyTitle="No models available to this key"
-                error={catalog.error}
-                items={catalog.items.map((entry) => ({
-                  id: entry.id,
-                  keywords: [entry.id.split("/")[0] ?? "", ...entry.inputModalities, ...entry.supportedParameters],
-                  label: entry.name,
-                  secondaryText: entry.id
-                }))}
-                label="Model"
-                loading={catalog.status === "loading"}
-                noun={{ plural: "models", singular: "model" }}
-                onRetry={() => void discovery.models.retry(modelIdentity)}
-                onSelect={(item) => {
-                  const entry = catalog.items.find(({ id }) => id === item.id);
-                  if (entry) {
-                    setForm(applyOpenRouterModel(form, entry));
+        {progress ? <AdminProviderSetupProgress progress={progress} /> : null}
+        {model ? (
+          <section aria-label="Last model check" className="min-w-0 border-b border-trace-subtle pb-4 text-xs leading-5 [overflow-wrap:anywhere]">
+            <h3 className="mb-1 font-semibold text-ink">Last check · {check.status}</h3>
+            {check.message ? <p className={check.status === "Check failed" ? "text-caution" : "text-ink-secondary"} role="status">{check.message}</p> : null}
+            {check.summary ? <p className="text-ink-secondary">{check.summary}</p> : null}
+            {check.usageMissing ? <p className="text-caution">No usage reporting — cost accounting for this model will be empty.</p> : null}
+            <p className="mt-1 text-ink-muted">{checkKeyLabel ? `Test & Save uses key ${checkKeyLabel}.` : "Test & Save has no working default key; it saves without a check."}</p>
+          </section>
+        ) : null}
+        <section aria-label="Model identity and routing" className="flex min-w-0 flex-col gap-4">
+          <h3 className="text-sm font-semibold text-ink">Model and routing</h3>
+          <div className="min-w-0">
+            {/* The pickers render their own visible label; keep this one for the read-only id and aria-labelledby. */}
+            <span className={answer ? "sr-only" : fieldLabel} id={`${formId}-model-label`}>Model</span>
+            {!answer ? (
+              <p className="flex min-h-control items-center break-all rounded-control border border-trace-subtle bg-control-surface/60 px-3 font-mono text-xs text-ink-secondary">
+                {form.upstreamModelId}
+              </p>
+            ) : openRouter ? (
+              <>
+                <AdminSearchablePicker
+                  disabled={!modelIdentity || busy}
+                  emptyDescription="This key returned an empty catalog. Refresh it or review the OpenRouter account policy."
+                  emptyTitle="No models available to this key"
+                  error={catalog.error}
+                  items={catalog.items.map((entry) => ({
+                    id: entry.id,
+                    keywords: [entry.id.split("/")[0] ?? "", ...entry.inputModalities, ...entry.supportedParameters],
+                    label: entry.name,
+                    secondaryText: entry.id
+                  }))}
+                  label="Model"
+                  loading={catalog.status === "loading"}
+                  noun={{ plural: "models", singular: "model" }}
+                  onRetry={() => void discovery.models.retry(modelIdentity)}
+                  onSelect={(item) => {
+                    const entry = catalog.items.find(({ id }) => id === item.id);
+                    if (entry) {
+                      setForm(applyOpenRouterModel(form, entry));
+                      setError(null);
+                    }
+                  }}
+                  placeholder="Search the catalog"
+                  searchPlaceholder="Search name, provider, capability or model id"
+                  selectedFallbackLabel={form.displayName || "Configured model"}
+                  selectedId={form.upstreamModelId || null}
+                />
+                <span className={helpText}>
+                  {selectedCatalogModel
+                    ? `Searches the catalog available to this key. ${describeOpenRouterModel(selectedCatalogModel)}`
+                    : modelIdentity
+                      ? "Searches the catalog available to this key."
+                      : "Add a working key first to search the catalog."}
+                </span>
+              </>
+            ) : compatible ? (
+              <div className="flex flex-col gap-2">
+                <AdminSearchablePicker
+                  disabled={!modelIdentity || busy}
+                  emptyDescription="The endpoint reported no model ids. Enter the exact id below."
+                  emptyTitle="No models reported"
+                  error={compatibleCatalog.error}
+                  items={compatibleCatalog.items.map((entry) => ({ id: entry.id, label: entry.id, secondaryText: "Reported by the endpoint" }))}
+                  label="Model"
+                  loading={compatibleCatalog.status === "loading"}
+                  noun={{ plural: "models", singular: "model" }}
+                  onRetry={() => void discovery.compatibleModels.retry(modelIdentity)}
+                  onSelect={(item) => {
+                    setForm(applyCompatibleModel(form, compatibleCatalog.items.find(({ id }) => id === item.id) ?? null, item.id));
                     setError(null);
-                  }
-                }}
-                placeholder="Search the catalog"
-                searchPlaceholder="Search name, provider, capability or model id"
-                selectedFallbackLabel={form.displayName || "Configured model"}
-                selectedId={form.upstreamModelId || null}
-              />
-              <span className={helpText}>
-                {selectedCatalogModel
-                  ? `Searches the catalog available to this key. ${describeOpenRouterModel(selectedCatalogModel)}`
-                  : modelIdentity
-                    ? "Searches the catalog available to this key."
-                    : "Add a working key first to search the catalog."}
-              </span>
-            </>
-          ) : compatible ? (
-            <div className="flex flex-col gap-2">
-              <AdminSearchablePicker
-                disabled={!modelIdentity || busy}
-                emptyDescription="The endpoint reported no model ids. Enter the exact id below."
-                emptyTitle="No models reported"
-                error={compatibleCatalog.error}
-                items={compatibleCatalog.items.map((entry) => ({ id: entry.id, label: entry.id, secondaryText: "Reported by the endpoint" }))}
-                label="Model"
-                loading={compatibleCatalog.status === "loading"}
-                noun={{ plural: "models", singular: "model" }}
-                onRetry={() => void discovery.compatibleModels.retry(modelIdentity)}
-                onSelect={(item) => {
-                  setForm(applyCompatibleModel(form, compatibleCatalog.items.find(({ id }) => id === item.id) ?? null, item.id));
-                  setError(null);
-                }}
-                placeholder="Choose a reported model"
-                searchPlaceholder="Search model ids"
-                selectedFallbackLabel={form.upstreamModelId || "Configured model"}
-                selectedId={form.upstreamModelId || null}
-              />
-              <label className="block min-w-0">
-                <span className={fieldLabel}>Upstream model id</span>
+                  }}
+                  placeholder="Choose a reported model"
+                  searchPlaceholder="Search model ids"
+                  selectedFallbackLabel={form.upstreamModelId || "Configured model"}
+                  selectedId={form.upstreamModelId || null}
+                />
+                <label className="block min-w-0">
+                  <span className={fieldLabel}>Upstream model id</span>
+                  <input
+                    className={`${inputClass} font-mono text-xs`}
+                    disabled={busy}
+                    maxLength={256}
+                    onChange={(event) => update({ upstreamModelId: event.currentTarget.value })}
+                    required
+                    spellCheck={false}
+                    value={form.upstreamModelId}
+                  />
+                </label>
+                <label className="block min-w-0">
+                  <span className={fieldLabel}>Protocol</span>
+                  <select
+                    className={inputClass}
+                    disabled={busy}
+                    onChange={(event) => changeAdapter(event.currentTarget.value as AdminProviderAdapterKind)}
+                    value={form.adapterKind}
+                  >
+                    <option value="openai_responses_compatible">Responses</option>
+                    <option value="openai_chat_completions_compatible">Chat Completions</option>
+                  </select>
+                </label>
+              </div>
+            ) : (
+              <>
                 <input
+                  aria-labelledby={`${formId}-model-label`}
                   className={`${inputClass} font-mono text-xs`}
                   disabled={busy}
+                  list={hintsId}
                   maxLength={256}
-                  onChange={(event) => update({ upstreamModelId: event.currentTarget.value })}
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    const hint = hints.find((entry) => entry.upstreamModelId === value);
+                    setForm(hint ? applyCatalogHint(form, hint) : { ...form, upstreamModelId: value });
+                    setError(null);
+                  }}
+                  placeholder={hints[0]?.upstreamModelId ?? "model id"}
                   required
                   spellCheck={false}
                   value={form.upstreamModelId}
                 />
-              </label>
-              <label className="block min-w-0">
-                <span className={fieldLabel}>Protocol</span>
-                <select
-                  className={inputClass}
-                  disabled={busy}
-                  onChange={(event) => changeAdapter(event.currentTarget.value as AdminProviderAdapterKind)}
-                  value={form.adapterKind}
-                >
-                  <option value="openai_responses_compatible">Responses</option>
-                  <option value="openai_chat_completions_compatible">Chat Completions</option>
-                </select>
-              </label>
-            </div>
-          ) : (
-            <>
-              <input
-                aria-labelledby={`${formId}-model-label`}
-                className={`${inputClass} font-mono text-xs`}
-                disabled={busy}
-                list={hintsId}
-                maxLength={256}
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  const hint = hints.find((entry) => entry.upstreamModelId === value);
-                  setForm(hint ? applyCatalogHint(form, hint) : { ...form, upstreamModelId: value });
-                  setError(null);
-                }}
-                placeholder={hints[0]?.upstreamModelId ?? "model id"}
-                required
-                spellCheck={false}
-                value={form.upstreamModelId}
-              />
-              <datalist id={hintsId}>
-                {hints.map((hint) => <option key={hint.upstreamModelId} label={hint.displayName} value={hint.upstreamModelId} />)}
-              </datalist>
-              <span className={helpText}>The exact id the provider expects; known models fill the rest in.</span>
-            </>
-          )}
-        </div>
-
-        <label className="block min-w-0">
-          <span className={fieldLabel}>Display name</span>
-          <input
-            className={inputClass}
-            disabled={busy}
-            maxLength={160}
-            onChange={(event) => update({ displayName: event.currentTarget.value })}
-            placeholder={form.upstreamModelId || "Shown in chat"}
-            value={form.displayName}
-          />
-        </label>
-
-        {openRouter ? (
-          <RoutingField
-            connection={connection}
-            credentialId={discoveryCredential?.id ?? null}
-            disabled={busy || !form.upstreamModelId}
-            discovery={discovery}
-            form={form}
-            setForm={(next) => { setForm(next); setError(null); }}
-          />
-        ) : null}
-
-        {answer ? (
-          <div className="border-y border-trace-subtle">
-            <SettingRow
-              checked={form.answerSelectable}
-              detail="Off keeps it for internal roles and Search only"
-              disabled={busy}
-              label="Available in chat"
-              onChange={(next) => update({ answerSelectable: next })}
-            />
+                <datalist id={hintsId}>
+                  {hints.map((hint) => <option key={hint.upstreamModelId} label={hint.displayName} value={hint.upstreamModelId} />)}
+                </datalist>
+                <span className={helpText}>The exact id the provider expects; known models fill the rest in.</span>
+              </>
+            )}
           </div>
-        ) : null}
 
-        <details className="group rounded-[10px] border border-trace-subtle bg-control-surface/45 px-3" ref={advancedRef}>
-          <summary className={`flex min-h-touch cursor-pointer list-none items-center gap-2 py-2.5 text-[13px] text-ink-secondary ${focusRing}`}>
-            <UiV2Icon className="size-3.5 shrink-0 text-ink-muted transition-transform group-open:rotate-90" name="chevron-right" />
-            <span>
-              Advanced · timeout{answer ? ", capabilities, default parameters" : ""}
-              {compatible && answer ? ", reasoning mapping" : ""}
-              {openRouter ? ", data collection" : ""}
-            </span>
-          </summary>
-          <div className="flex flex-col gap-4 border-t border-trace-subtle py-4">
-            <div className="min-w-0 sm:max-w-xs">
-              <label className="block min-w-0">
-                <span className={fieldLabel}>Response timeout (seconds)</span>
-                <input
-                  className={inputClass}
-                  disabled={busy}
-                  inputMode="numeric"
-                  onChange={(event) => update({ responseTimeoutSeconds: event.currentTarget.value })}
-                  placeholder={`Inherit ${connection.draftConfig.responseTimeoutSeconds ?? ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS}`}
-                  value={form.responseTimeoutSeconds}
-                />
-              </label>
-              <span className={helpText}>Blank inherits the provider timeout. 5 to 900 seconds.</span>
+          <label className="block min-w-0">
+            <span className={fieldLabel}>Display name</span>
+            <input
+              className={inputClass}
+              disabled={busy}
+              maxLength={160}
+              onChange={(event) => update({ displayName: event.currentTarget.value })}
+              placeholder={form.upstreamModelId || "Shown in chat"}
+              value={form.displayName}
+            />
+          </label>
+
+          {openRouter ? (
+            <div className="min-w-0">
+              {savedRoute ? <p className="mb-2 break-words text-xs text-ink-muted [overflow-wrap:anywhere]">Saved route: {savedRoute}.</p> : null}
+              <RoutingField
+                connection={connection}
+                credentialId={discoveryCredential?.id ?? null}
+                disabled={busy || !form.upstreamModelId}
+                discovery={discovery}
+                form={form}
+                setForm={(next) => { setForm(next); setError(null); }}
+              />
             </div>
-            {answer ? (
-              <fieldset className="min-w-0">
-                <legend className={fieldLabel}>Capabilities</legend>
-                <div className="divide-y divide-trace-subtle">
-                  {capabilityRows.map(([key, label, detail]) => (
+          ) : null}
+
+          {answer ? (
+            <div className="border-y border-trace-subtle">
+              <SettingRow
+                checked={form.answerSelectable}
+                detail="Off keeps it for internal roles and Search only"
+                disabled={busy}
+                label="Available in chat"
+                onChange={(next) => update({ answerSelectable: next })}
+              />
+            </div>
+          ) : null}
+
+        </section>
+        {answer ? (
+          <section aria-label="Capabilities and reasoning" className="min-w-0 border-t border-trace-subtle pt-4">
+            <fieldset className="min-w-0">
+              <legend className={fieldLabel}>Capabilities and reasoning</legend>
+              <div className="divide-y divide-trace-subtle">
+                {capabilityRows.map(([key, label, detail]) => (
+                  <SettingRow
+                    checked={form.capabilities[key] === true}
+                    detail={detail}
+                    disabled={busy}
+                    key={key}
+                    label={label}
+                    onChange={(next) => {
+                      if (key === "nativeSearch" && compatible) return;
+                      updateCapability(key, next);
+                    }}
+                  />
+                ))}
+                {compatible ? (
+                  <>
+                    <div className="py-2">
+                      <label className="block">
+                      <span className={fieldLabel}>Reasoning</span>
+                      <select
+                        className={inputClass}
+                        disabled={busy}
+                        onChange={(event) => update({
+                          capabilities: applyReasoningCapabilities(
+                            form.capabilities,
+                            event.currentTarget.value === "automatic" ? automaticReasoning : reasoningForChoice(
+                              event.currentTarget.value as AdminProviderReasoningChoice,
+                              selectedCompatibleModel ? [selectedCompatibleModel] : []
+                            )
+                          )
+                        })}
+                        value={reasoningChoice}
+                      >
+                        {reasoningChoice === "custom" ? <option disabled value="custom">Current custom settings</option> : null}
+                        <option value="automatic">As reported by the endpoint</option>
+                        <option value="openai_gpt_5_6_sol">OpenAI GPT-5.6 Sol profile</option>
+                        <option value="disabled">Off</option>
+                      </select>
+                      </label>
+                      <span className={helpText}>{reasoningCapabilitiesSummary(form.capabilities)}</span>
+                    </div>
                     <SettingRow
-                      checked={form.capabilities[key] === true}
-                      detail={detail}
+                      checked={form.capabilities.nativeSearch === true}
+                      detail="Uses the Responses protocol so AIQSA can read its citations."
                       disabled={busy}
-                      key={key}
-                      label={label}
+                      label="Hosted web search"
                       onChange={(next) => {
-                        if (key === "nativeSearch" && compatible) return;
-                        updateCapability(key, next);
+                        const capabilities = { ...form.capabilities, nativeSearch: next };
+                        if (next) delete capabilities.streamUsage;
+                        update({
+                          adapterKind: next ? "openai_responses_compatible" : form.adapterKind,
+                          capabilities,
+                          ...(next && form.adapterKind !== "openai_responses_compatible"
+                            ? { reasoningEffortPath: "reasoning.effort", reasoningModePath: "reasoning.mode" }
+                            : {})
+                        });
                       }}
                     />
-                  ))}
-                  {compatible ? (
-                    <>
-                      <div className="py-2">
-                        <label className="block">
-                        <span className={fieldLabel}>Reasoning</span>
-                        <select
-                          className={inputClass}
-                          disabled={busy}
-                          onChange={(event) => update({
-                            capabilities: applyReasoningCapabilities(
-                              form.capabilities,
-                              reasoningForChoice(
-                                event.currentTarget.value as AdminProviderReasoningChoice,
-                                selectedCompatibleModel ? [selectedCompatibleModel] : []
-                              )
-                            )
-                          })}
-                          value={reasoningChoice}
-                        >
-                          {reasoningChoice === "custom" ? <option disabled value="custom">Current custom settings</option> : null}
-                          <option value="automatic">As reported by the endpoint</option>
-                          <option value="openai_gpt_5_6_sol">OpenAI GPT-5.6 Sol profile</option>
-                          <option value="disabled">Not supported</option>
-                        </select>
-                        </label>
-                        <span className={helpText}>{reasoningCapabilitiesSummary(form.capabilities)}</span>
-                      </div>
+                    {form.adapterKind === "openai_chat_completions_compatible" ? (
                       <SettingRow
-                        checked={form.capabilities.nativeSearch === true}
-                        detail="Uses the Responses protocol so AIQSA can read its citations."
+                        checked={form.capabilities.streamUsage === true}
+                        detail="Sends stream_options.include_usage; only when the endpoint supports it."
                         disabled={busy}
-                        label="Hosted web search"
-                        onChange={(next) => {
-                          const capabilities = { ...form.capabilities, nativeSearch: next };
-                          if (next) delete capabilities.streamUsage;
-                          update({
-                            adapterKind: next ? "openai_responses_compatible" : form.adapterKind,
-                            capabilities,
-                            ...(next && form.adapterKind !== "openai_responses_compatible"
-                              ? { reasoningEffortPath: "reasoning.effort", reasoningModePath: "reasoning.mode" }
-                              : {})
-                          });
-                        }}
+                        label="Streaming usage totals"
+                        onChange={(next) => updateCapability("streamUsage", next || undefined)}
                       />
-                      {form.adapterKind === "openai_chat_completions_compatible" ? (
-                        <SettingRow
-                          checked={form.capabilities.streamUsage === true}
-                          detail="Sends stream_options.include_usage; only when the endpoint supports it."
-                          disabled={busy}
-                          label="Streaming usage totals"
-                          onChange={(next) => updateCapability("streamUsage", next || undefined)}
-                        />
-                      ) : null}
-                    </>
-                  ) : null}
-                </div>
-              </fieldset>
-            ) : null}
-            {compatible && answer && form.capabilities.reasoning ? (
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            </fieldset>
+            {compatible && form.capabilities.reasoning ? (
               <div className="grid gap-3 grid-cols-[minmax(0,1fr)] sm:grid-cols-2">
                 <label className="block min-w-0">
                   <span className={fieldLabel}>Reasoning effort field</span>
@@ -686,38 +712,81 @@ function SheetBody({
                 </label>
               </div>
             ) : null}
-            {answer ? (
-              <label className="block min-w-0">
-                <span className={fieldLabel}>Default parameters (JSON)</span>
-                <textarea
-                  className={`${inputClass} min-h-24 py-2 font-mono text-xs`}
-                  disabled={busy}
-                  onChange={(event) => update({ defaultParamsText: event.currentTarget.value })}
-                  spellCheck={false}
-                  value={form.defaultParamsText}
-                />
-              </label>
-            ) : null}
-            {openRouter ? (
-              <div className="border-t border-trace-subtle">
-                <SettingRow
-                  checked={form.dataCollectionAllowed}
-                  detail="Only when a chosen provider requires it; off keeps prompts out of provider training."
-                  disabled={busy}
-                  label="Allow OpenRouter data collection"
-                  onChange={(next) => update({ dataCollectionAllowed: next })}
-                />
-              </div>
-            ) : null}
+          </section>
+        ) : null}
+        <section aria-label="Request settings" className="flex min-w-0 flex-col gap-3 border-t border-trace-subtle pt-4">
+          <h3 className="text-sm font-semibold text-ink">Request settings</h3>
+          <div className="min-w-0 sm:max-w-xs">
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Response timeout (seconds)</span>
+              <input
+                aria-describedby={errorField === "timeout" ? errorId : undefined}
+                aria-invalid={errorField === "timeout"}
+                className={inputClass}
+                disabled={busy}
+                ref={timeoutRef}
+                inputMode="numeric"
+                onChange={(event) => update({ responseTimeoutSeconds: event.currentTarget.value })}
+                placeholder={`Inherit ${connection.draftConfig.responseTimeoutSeconds ?? ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS}`}
+                value={form.responseTimeoutSeconds}
+              />
+            </label>
+            <span className={helpText}>Blank inherits the provider timeout. 5 to 900 seconds.</span>
           </div>
-        </details>
+          {openRouter ? (
+            <div className="border-t border-trace-subtle">
+              <SettingRow
+                checked={form.dataCollectionAllowed}
+                detail="Only when a chosen provider requires it; off keeps prompts out of provider training."
+                disabled={busy}
+                label="Allow OpenRouter data collection"
+                onChange={(next) => update({ dataCollectionAllowed: next })}
+              />
+            </div>
+          ) : null}
+        </section>
+        {answer ? (
+          <section aria-label="Default parameters" className="min-w-0 border-t border-trace-subtle pt-4">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-ink">Default parameters</h3>
+              <UiV2Button
+                aria-describedby={errorField === "defaultParams" ? errorId : undefined}
+                disabled={busy}
+                onClick={() => setJsonEditing(true)}
+                ref={jsonTriggerRef}
+                tone="ghost"
+                type="button"
+              >Edit JSON</UiV2Button>
+            </div>
+            {/^\{\s*\}$/u.test(form.defaultParamsText.trim()) ? (
+              <p className="text-xs text-ink-muted">No custom parameters. Uses provider defaults.</p>
+            ) : (
+              <pre className="line-clamp-4 max-h-28 whitespace-pre-wrap break-all rounded-control bg-control-surface/60 p-3 font-mono text-xs leading-5 text-ink-secondary" data-testid="model-parameters-preview">
+                {form.defaultParamsText.slice(0, 800)}{form.defaultParamsText.length > 800 ? "…" : ""}
+              </pre>
+            )}
+            <p className={helpText}>Edit JSON to read the full configuration. Apply updates this form; Test &amp; Save publishes it.</p>
+          </section>
+        ) : null}
 
         {error ? (
-          <p className="rounded-[10px] border border-critical/25 bg-critical/5 px-3 py-2 text-xs leading-5 text-critical" id={errorId} role="alert">
-            {error}
-          </p>
+          <div className="rounded-[10px] border border-critical/25 bg-critical/5 px-3 py-2 text-xs leading-5 text-critical">
+            <p id={errorId} role="alert">{error}</p>
+            {answer && errorField === "configuration" ? (
+              <UiV2Button disabled={busy} onClick={() => setJsonEditing(true)} tone="ghost" type="button">Review default parameters</UiV2Button>
+            ) : null}
+          </div>
         ) : null}
       </form>
+      {jsonEditing ? (
+        <ModelJsonDialog
+          modelLabel={form.displayName || form.upstreamModelId}
+          onApply={(text) => { update({ defaultParamsText: text }); setJsonEditing(false); }}
+          onClose={() => setJsonEditing(false)}
+          providerLabel={connection.displayName}
+          value={form.defaultParamsText}
+        />
+      ) : null}
       {discarding ? (
         <ConfirmationDialog
           confirmLabel="Discard changes"

@@ -114,8 +114,25 @@ export type ThreadToolActivity = {
   warning?: ThreadToolBudgetWarning;
 };
 
+export type ThreadToolActivityOrigin =
+  | "discovery"
+  | "knowledge"
+  | "mcp"
+  | "memory"
+  | "session"
+  | "tool"
+  | "web_search"
+  | "workspace";
+
+export function isThreadToolActivityOrigin(value: unknown): value is ThreadToolActivityOrigin {
+  return value === "discovery" || value === "knowledge" || value === "mcp" ||
+    value === "memory" || value === "session" || value === "tool" ||
+    value === "web_search" || value === "workspace";
+}
+
 export type ThreadToolActivityCall = {
   durationMs?: number;
+  origin?: ThreadToolActivityOrigin;
   round: number;
   serverName?: string;
   status: "cancelled" | "complete" | "error" | "running";
@@ -126,6 +143,12 @@ export type ThreadToolBudgetWarning = {
   kind: "calls" | "rounds";
   limit: number;
 };
+
+export function decodeThreadToolBudgetWarning(value: unknown): ThreadToolBudgetWarning | null {
+  if (!isRecord(value) || (value.kind !== "calls" && value.kind !== "rounds") ||
+    !Number.isSafeInteger(value.limit) || Number(value.limit) < 1) return null;
+  return { kind: value.kind, limit: Number(value.limit) };
+}
 
 export type ThreadKnowledgeCitation =
   | {
@@ -819,6 +842,7 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
   const calls: ThreadToolActivityCall[] = [];
   for (const candidate of value.calls) {
     if (!isRecord(candidate)) return null;
+    if (candidate.origin !== undefined && !isThreadToolActivityOrigin(candidate.origin)) return null;
     const toolName = boundedRequiredString(candidate.toolName, 160);
     const serverName = candidate.serverName === undefined
       ? undefined
@@ -836,6 +860,7 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
       (candidate.durationMs !== undefined && durationMs === null)) return null;
     calls.push({
       ...(typeof durationMs === "number" ? { durationMs } : {}),
+      ...(candidate.origin !== undefined ? { origin: candidate.origin } : {}),
       round,
       ...(serverName ? { serverName } : {}),
       status,
@@ -845,15 +870,9 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
 
   let warning: ThreadToolBudgetWarning | undefined;
   if (value.warning !== undefined) {
-    if (!isRecord(value.warning) ||
-      (value.warning.kind !== "calls" && value.warning.kind !== "rounds") ||
-      nonNegativeInteger(value.warning.limit) === null || Number(value.warning.limit) < 1) {
-      return null;
-    }
-    warning = {
-      kind: value.warning.kind,
-      limit: Number(value.warning.limit)
-    };
+    const decoded = decodeThreadToolBudgetWarning(value.warning);
+    if (!decoded) return null;
+    warning = decoded;
   }
   return { calls, ...(warning ? { warning } : {}) };
 }

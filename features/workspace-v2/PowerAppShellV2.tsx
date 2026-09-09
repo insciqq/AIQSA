@@ -1,5 +1,6 @@
 "use client";
 
+import { toolActivityOriginV2 } from "@/features/run-lifecycle-v2/runPresentation";
 import {
   attachmentPolicyForModel,
   unsupportedAttachmentMessage
@@ -208,7 +209,11 @@ export function workspaceCommandRunning(events: readonly RunEventView[]): boolea
     if (
       data?.artifactType === "tool_call" &&
       payload?.status === "requested" &&
-      payload?.serverName === "Workspace"
+      toolActivityOriginV2({
+        origin: payload.origin,
+        serverName: payload.serverName,
+        toolName: payload.name ?? payload.toolName
+      }) === "workspace"
     ) return true;
   }
   return false;

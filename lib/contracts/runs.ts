@@ -1,10 +1,77 @@
 import { decodeChatPdfPreparations, type ChatPdfPreparationWire } from "./chatPdfPreparation";
 import type { ErrorResponse, SessionErrorCode } from "./http";
 
+export const TOOL_SYNTHESIS_FAILURE = {
+  code: "synthesis_tool_call_forbidden",
+  message: "The model requested another tool after tool use was disabled, so the answer could not be completed. Completed steps and any partial answer are kept. Regenerate to try again."
+} as const;
+
+export function isToolSynthesisFailure(code: string | null | undefined, message?: string | null): boolean {
+  return code === TOOL_SYNTHESIS_FAILURE.code || message === TOOL_SYNTHESIS_FAILURE.message ||
+    message === "Provider returned a tool call from a no-tool synthesis request.";
+}
+
 export const MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE =
   "mcp_auto_discovery_unavailable" as const;
 export const MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE =
   "Automatic tool discovery is unavailable." as const;
+
+const mcpAutoDiscoveryFailures = {
+  mcp_router_output_limit: {
+    code: "mcp_auto_discovery_output_limit",
+    message: "Automatic tool discovery reached its output-token limit before completing the JSON selection. Retry in Auto, use Load all, or ask an administrator to review MCP Auto output tokens."
+  },
+  mcp_router_model_output_limit: {
+    code: "mcp_auto_discovery_model_output_limit",
+    message: "The MCP Auto output-token allowance exceeds the System Model’s declared output limit. Ask an administrator to lower the allowance or select a model with a larger limit."
+  },
+  mcp_router_timeout: {
+    code: "mcp_auto_discovery_timeout",
+    message: "Automatic tool discovery exceeded its time limit. Retry in Auto or use Load all."
+  },
+  mcp_router_output_invalid: {
+    code: "mcp_auto_discovery_output_invalid",
+    message: "Automatic tool discovery returned an invalid selection. Retry in Auto or use Load all."
+  },
+  mcp_router_credential_unavailable: {
+    code: "mcp_auto_discovery_credential_unavailable",
+    message: "Automatic tool discovery could not use the System Model credential. Ask an administrator to check it, or use Load all."
+  },
+  mcp_router_system_model_unavailable: {
+    code: "mcp_auto_discovery_model_unavailable",
+    message: "Automatic tool discovery needs an available, verified System Model. Ask an administrator to check Defaults & roles, or use Load all."
+  },
+  mcp_materialization_failed: {
+    code: "mcp_auto_discovery_materialization_failed",
+    message: "Automatic tool discovery could not activate the selected MCP tools. Review MCP settings, retry in Auto, or use Load all."
+  }
+} as const;
+
+const genericMcpAutoDiscoveryFailure = {
+  code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
+  message: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE
+} as const;
+
+/** Only fixed, content-free causes may reach stored failures and the browser. */
+export function mcpAutoDiscoveryFailure(reason: string): Readonly<{ code: string; message: string }> {
+  const key = reason === "mcp_router_system_model_absent" || reason === "mcp_router_structured_output_unverified"
+    ? "mcp_router_system_model_unavailable"
+    : reason === "mcp_materialization_mcp_not_ready" || reason === "mcp_materialization_mcp_plan_too_large" ||
+        reason === "mcp_materialization_mismatch" ? "mcp_materialization_failed" : reason;
+  return Object.hasOwn(mcpAutoDiscoveryFailures, key)
+    ? mcpAutoDiscoveryFailures[key as keyof typeof mcpAutoDiscoveryFailures]
+    : genericMcpAutoDiscoveryFailure;
+}
+
+export function isMcpAutoDiscoveryFailureCode(code: string | null | undefined): boolean {
+  return code === MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE ||
+    Object.values(mcpAutoDiscoveryFailures).some((failure) => failure.code === code);
+}
+
+export function mcpAutoDiscoveryFailureForMessage(message: string | null | undefined) {
+  return message === MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE ? genericMcpAutoDiscoveryFailure
+    : Object.values(mcpAutoDiscoveryFailures).find((failure) => failure.message === message) ?? null;
+}
 
 export type RunEventView = {
   data: unknown;

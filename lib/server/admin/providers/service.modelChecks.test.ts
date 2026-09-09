@@ -293,8 +293,10 @@ describe("model Test & Save (B2)", () => {
     expect(activateModelCas).toHaveBeenCalledWith({
       connection: { activateDraft: null, id: "conn-openai" },
       enable: true,
+      initialSetup: false,
       model: expect.objectContaining({ draftVersion: 2, id: "model-sol" }),
-      now: NOW
+      now: NOW,
+      signal: undefined
     });
     expect(test).toHaveBeenCalledOnce();
     expect(test.mock.calls[0]![0]).toMatchObject({
@@ -472,6 +474,67 @@ describe("background capability checks (B3)", () => {
     });
     const [catalog] = await providers.listConnections();
     expect(catalog?.checkRun?.id).toBe(run.id);
+  });
+
+  it.each([
+    { label: "an explicit recheck of current initial evidence", modelVersion: 1, retryUnresolved: false },
+    { label: "a setup retry after a later model override", modelVersion: 2, retryUnresolved: true }
+  ])("preserves disabled features on $label", async ({ modelVersion, retryUnresolved }) => {
+    const target = model("model-sol", "gpt-5.6-sol", { activeVersion: modelVersion, draftVersion: modelVersion });
+    const catalog = connection({ models: [target], activeChecks: [{
+      checkedAt: NOW.toISOString(), connectionVersion: 1, credentialId: "cred-primary", credentialVersionId: "version-primary",
+      evidence: { detail: "model_missing", method: "tiny_generation", selectedProviders: [], upstreamModelId: "gpt-5.6-sol",
+        capabilitySetup: { policyVersion: 1, checks: { modelAccess: "incomplete", directPdf: "verified", vision: "verified" } } },
+      latestRefreshError: null, refreshFailedAt: null, modelVersion: 1, providerModelId: target.id, status: "unavailable"
+    }] });
+    const test = vi.fn<AdminProviderDraftTester["test"]>(async (input) => okOutcome(input));
+    const store = vi.fn<AdminProviderRepository["storeActiveRefreshCas"]>(async () => "stored");
+    const providers = service(repository({ listConnections: async () => [catalog], storeActiveRefreshCas: store,
+      loadActiveRefreshCandidate: async () => ({ ...refreshCandidate(target.id, "gpt-5.6-sol"),
+        model: { ...refreshCandidate(target.id, "gpt-5.6-sol").model, version: modelVersion, draftVersion: modelVersion } })
+    }), { test });
+    const run = await providers.startCheckRun({ connectionId: catalog.id, credentialId: "cred-primary",
+      modelIds: [target.id], reason: "requested", retryUnresolved });
+    await waitFor(() => providers.checkRun({ connectionId: catalog.id, runId: run.id }).state === "completed");
+    expect(test).toHaveBeenCalledOnce();
+    expect(test.mock.calls[0]![0].initialSetup).not.toBe(true);
+    expect(test.mock.calls[0]![0].model.capabilities).toMatchObject({ nativePdfInput: false, vision: false });
+    expect(store).toHaveBeenCalledOnce();
+    expect(store.mock.calls[0]![0].activatedConfiguration).toBeUndefined();
+  });
+
+  it.each(["credential", "endpoint"] as const)("rechecks all initial capabilities after a changed %s without reusing old proof", async (changed) => {
+    const target = model("model-sol", "gpt-5.6-sol");
+    const catalog = connection({ models: [target], activeChecks: [{
+      checkedAt: NOW.toISOString(), connectionVersion: 1, credentialId: "cred-primary", credentialVersionId: "version-primary",
+      evidence: { detail: "ok", method: "tiny_generation", selectedProviders: [], upstreamModelId: "gpt-5.6-sol",
+        compatibility: { modelAccess: "verified", probeVersion: 1, directPdf: "not_supported", structuredOutput: "not_supported", streaming: "not_supported", usage: "verified" },
+        capabilitySetup: { policyVersion: 1, checks: { modelAccess: "verified", directPdf: "incomplete" } } },
+      latestRefreshError: null, refreshFailedAt: null, modelVersion: 1, providerModelId: target.id, status: "available"
+    }] });
+    const originalCandidate = refreshCandidate(target.id, "gpt-5.6-sol");
+    const candidate: ProviderActiveRefreshCandidate = {
+      ...originalCandidate,
+      ...(changed === "credential" ? { credential: { ...originalCandidate.credential, versionId: "version-replaced" } }
+        : { connection: { ...originalCandidate.connection,
+          configuration: { ...storedConnectionConfiguration, apiRoot: "https://replacement.example/v1" }, version: 2 } })
+    };
+    if (changed === "credential") {
+      catalog.credentials[0]!.activeVersion!.id = "version-replaced";
+    } else {
+      catalog.activeVersion = 2;
+      catalog.activeConfig = { ...connectionConfiguration, apiRoot: "https://replacement.example/v1" };
+    }
+    const test = vi.fn<AdminProviderDraftTester["test"]>(async (input) => okOutcome(input));
+    const providers = service(repository({ listConnections: async () => [catalog],
+      loadActiveRefreshCandidate: async () => candidate
+    }), { test });
+    const run = await providers.startCheckRun({ connectionId: catalog.id, credentialId: "cred-primary",
+      modelIds: [target.id], reason: "requested", retryUnresolved: true });
+    await waitFor(() => providers.checkRun({ connectionId: catalog.id, runId: run.id }).state === "completed");
+    expect(test).toHaveBeenCalledOnce();
+    expect(test.mock.calls[0]![0].initialSetup).toBe(true);
+    expect(test.mock.calls[0]![0].reuseSetupEvidence).toBeUndefined();
   });
 
   it("classifies a transient failure without touching prior evidence and lets Retry clear it", async () => {

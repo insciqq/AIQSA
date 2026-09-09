@@ -9,7 +9,7 @@ import {
   settledRunPresentationV2,
   type RunPresentationV2
 } from "./runPresentation";
-import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE } from "@/lib/contracts/runs";
+import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
 
 function presentation(
   overrides: Partial<RunPresentationV2> = {}
@@ -22,6 +22,26 @@ function presentation(
 }
 
 describe("Run lifecycle v2", () => {
+  it("prioritizes final synthesis over stale running steps and keeps partial work after its failure", () => {
+    const onRegenerate = vi.fn();
+    const toolActivity = { calls: [{ origin: "mcp" as const, round: 8, serverName: "Repository Tools", status: "running" as const, toolName: "search" }],
+      warning: { kind: "rounds" as const, limit: 8 } };
+    const { rerender } = render(<RunAnswerV2 content="" toolActivity={toolActivity}
+      presentation={presentation({ kind: "activity", activity: { kind: "synthesis", label: "Tool round limit (8) reached. Finishing the answer…" } })} />);
+    expect(screen.getByText("Tool round limit (8) reached. Finishing the answer…")).toBeVisible();
+    rerender(<RunAnswerV2 content="Available partial answer" onRegenerate={onRegenerate}
+      toolActivity={{ ...toolActivity, calls: [{ ...toolActivity.calls[0]!, status: "complete" }] }}
+      presentation={presentation({ kind: "terminal_error", failure: { ...TOOL_SYNTHESIS_FAILURE, recovery: "regenerate" } })} />);
+    expect(screen.getByRole("heading", { name: "Final answer not completed" })).toBeVisible();
+    expect(screen.getByText("Available partial answer")).toBeVisible();
+    expect(screen.getByText("Tool round limit (8) stopped further tool use.")).toBeVisible();
+    expect(screen.getByText(TOOL_SYNTHESIS_FAILURE.message)).toBeVisible();
+    expect(document.body.textContent).not.toContain("Change the request parameters");
+    expect(onRegenerate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
+    expect(onRegenerate).toHaveBeenCalledOnce();
+  });
+
   it("settles the answer chrome only on authoritative terminal presentations", () => {
     for (const kind of ["cancelled", "complete", "recoverable_error", "terminal_error"] as const) {
       expect(settledRunPresentationV2(presentation({ kind }))).toBe(true);
@@ -250,7 +270,7 @@ describe("Run lifecycle v2", () => {
     expect(regenerate).toHaveBeenCalledOnce();
   });
 
-  it("offers only Auto retry and an explicit Load all fallback for discovery failure", () => {
+  it.each([MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, "mcp_auto_discovery_output_limit", "mcp_auto_discovery_timeout"])("offers Auto retry and Load all for %s", (code) => {
     const retry = vi.fn();
     const useLoadAll = vi.fn();
     render(
@@ -262,7 +282,7 @@ describe("Run lifecycle v2", () => {
         onUseLoadAll={useLoadAll}
         presentation={presentation({
           failure: {
-            code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
+            code,
             message: "Automatic tool discovery is unavailable.",
             recovery: "change_parameters"
           },

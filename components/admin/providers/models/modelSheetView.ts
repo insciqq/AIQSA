@@ -1,7 +1,3 @@
-import {
-  applyReasoningCapabilities,
-  reasoningForChoice
-} from "@/components/admin/adminProviderReasoning";
 import type {
   AdminCompatibleDiscoveredModel,
   AdminOpenRouterDiscoveredEndpoint,
@@ -67,11 +63,11 @@ function initialCapabilities(family: AdminProviderConnection["family"]): AdminPr
     nativeBackground: family === "openai",
     nativePdfInput: family === "openai",
     nativeSearch: family === "openai" || family === "deepseek" || family === "gemini",
-    parallelToolCalls: family !== "gemini",
+    parallelToolCalls: family !== "gemini" && family !== "openai_compatible",
     pdf: true,
     reasoning: family === "deepseek" || family === "gemini",
     streaming: true,
-    toolCalling: true,
+    toolCalling: family !== "openai_compatible",
     vision: family === "gemini"
   };
 }
@@ -160,7 +156,7 @@ export function capabilitiesFromOpenRouter(model: AdminOpenRouterDiscoveredModel
     ...(model.contextLength ? { contextWindow: model.contextLength } : {}),
     nativePdfInput: false,
     nativeSearch: false,
-    parallelToolCalls: parameters.has("tools"),
+    parallelToolCalls: parameters.has("parallel_tool_calls"),
     pdf: true,
     reasoning: parameters.has("reasoning"),
     streaming: true,
@@ -198,16 +194,15 @@ export function applyOpenRouterModel(form: ModelForm, model: AdminOpenRouterDisc
 }
 
 export function applyCompatibleModel(form: ModelForm, model: AdminCompatibleDiscoveredModel | null, id: string): ModelForm {
-  const capabilities = applyReasoningCapabilities(
-    form.capabilities,
-    reasoningForChoice("automatic", model ? [model] : [])
-  );
+  // Choosing the same id after rediscovery must keep reviewed overrides.
+  if (form.upstreamModelId === id) return form;
   return {
     ...form,
     capabilities: {
-      ...capabilities,
-      ...(model?.capabilities.contextWindow ? { contextWindow: model.capabilities.contextWindow } : {}),
-      ...(model?.capabilities.defaultMaxOutputTokens ? { defaultMaxOutputTokens: model.capabilities.defaultMaxOutputTokens } : {})
+      ...initialCapabilities("openai_compatible"),
+      ...model?.capabilities,
+      nativeSearch: form.capabilities.nativeSearch,
+      ...(form.capabilities.nativeImageGeneration === undefined ? {} : { nativeImageGeneration: form.capabilities.nativeImageGeneration })
     },
     displayName: form.displayName.trim() ? form.displayName : id,
     upstreamModelId: id

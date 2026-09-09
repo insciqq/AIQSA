@@ -48,6 +48,28 @@ function response(value: unknown, status = 200): Response {
 }
 
 describe("admin provider Quick setup API", () => {
+  it("accepts bounded partial and cancelled receipts without accepting unfinished work as ready", async () => {
+    const checkRun = {
+      credentialId: "credential-1", current: null, done: 1, failed: ["model-1"], finishedAt: checkedAt,
+      id: "run-1", inFlight: [], reason: "setup", startedAt: checkedAt, state: "completed", total: 1,
+      results: [{ providerModelId: "model-1", state: "partial", checks: { structuredOutput: "verified", forcedToolCall: "rejected" } }]
+    };
+    const base = {
+      checkedAt, connectionId: "connection-1", defaultCredentialChanged: true, defaultChanged: false,
+      model: { displayName: "Model" }, models: [{ displayName: "Model" }], provider: "openai", providerDisplayName: "OpenAI", checkRun
+    };
+    const request = { expectedState: "state-openai", provider: "openai" as const, secret: "test-key" };
+    for (const outcome of ["partial", "cancelled"]) {
+      const body = { ...base, outcome, checkRun: { ...checkRun, state: outcome === "cancelled" ? "cancelled" : "completed" } };
+      await expect(submitAdminProviderQuickSetup(request, vi.fn(async () => response(body))))
+        .resolves.toEqual({ data: body, ok: true });
+    }
+    await expect(submitAdminProviderQuickSetup(request, vi.fn(async () => response({ ...base, outcome: "ready" }))))
+      .resolves.toMatchObject({ ok: false, error: { code: "provider_quick_setup_response_invalid" } });
+    await expect(submitAdminProviderQuickSetup(request, vi.fn(async () => response({
+      ...base, outcome: "partial", checkRun: { ...checkRun, credentialVersionId: "private-id" }
+    })))).resolves.toMatchObject({ ok: false, error: { code: "provider_quick_setup_response_invalid" } });
+  });
   it("decodes the exact provider snapshot and sends same-origin GET", async () => {
     const fetcher = vi.fn(async () => response(snapshot()));
     await expect(getAdminProviderQuickSetup(fetcher)).resolves.toEqual({

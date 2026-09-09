@@ -1024,8 +1024,9 @@ describe("Responses capability terminals", () => {
       }));
     await expect(createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn })
       .test(responsesInput(role))).rejects.toThrow(role === "memory"
-        ? "structured_output_provider_incomplete" : `compatible_response_${status}`);
-    expect(fetchFn).toHaveBeenCalledTimes(4);
+        ? status === "incomplete" ? "structured_output_output_limit_exceeded" : "structured_output_provider_incomplete"
+        : `compatible_response_${status}`);
+    expect(fetchFn).toHaveBeenCalledTimes(role === "memory" && status === "incomplete" ? 2 : 4);
   });
 });
 
@@ -1059,8 +1060,8 @@ describe("capability check failure boundaries", () => {
           ? JSON.stringify({ count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] }) : "OK");
     });
     await expect(createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn }).test(responsesInput()))
-      .rejects.toThrow(capability === "structured" ? "structured_output_provider_incomplete" : "compatible_response_incomplete");
-    expect(fetchFn).toHaveBeenCalledTimes(capability === "structured" ? 4 : 5);
+      .rejects.toThrow(capability === "structured" ? "structured_output_output_limit_exceeded" : "compatible_response_incomplete");
+    expect(fetchFn).toHaveBeenCalledTimes(capability === "structured" ? 2 : 5);
   });
 
   it.each([

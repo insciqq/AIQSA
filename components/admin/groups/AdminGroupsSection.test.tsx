@@ -141,12 +141,15 @@ const antv: AdminMcpServer = {
   namespace: "antv"
 };
 
-function mcpController(): { controller: AdminMcpController; grant: ReturnType<typeof vi.fn> } {
+function mcpController(): { bulkGrantGroup: ReturnType<typeof vi.fn>; controller: AdminMcpController; grant: ReturnType<typeof vi.fn> } {
   const grantMock = vi.fn(async () => true);
+  const bulkGrantGroup = vi.fn(async () => true);
   return {
+    bulkGrantGroup,
     controller: {
       actions: {
         activate: vi.fn(async () => false),
+        bulkGrantGroup,
         checkUpdate: vi.fn(async () => false),
         create: vi.fn(async () => ({ message: "unavailable", ok: false as const })),
         delete: vi.fn(async () => false),
@@ -228,6 +231,7 @@ function providerConnections() {
 
 type Harness = Readonly<{
   confirmations: AdminConfirmedActionRequest[];
+  mcpBulkGrant: ReturnType<typeof vi.fn>;
   mcpGrant: ReturnType<typeof vi.fn>;
   onSelectResource: ReturnType<typeof vi.fn>;
   posts: AdminActionRequest[];
@@ -246,25 +250,52 @@ function TopbarHarness({ children }: Readonly<{ children: ReactNode }>) {
   );
 }
 
-function renderSection({ actionsDisabled = false, initialDashboard, resource = null }: Readonly<{
+function renderSection({ actionsDisabled = false, followResourceChanges = false, initialDashboard, persistGrants = false, resource = null }: Readonly<{
   actionsDisabled?: boolean;
+  followResourceChanges?: boolean;
   initialDashboard?: ReturnType<typeof dashboardFixture>;
+  persistGrants?: boolean;
   resource?: string | null;
 }> = {}): Harness {
   const posts: AdminActionRequest[] = [];
   const confirmations: AdminConfirmedActionRequest[] = [];
   const onSelectResource = vi.fn();
   const mcp = mcpController();
+  let savedDashboard = initialDashboard ?? dashboardFixture();
   const runAction: AdminRunAction = async (body) => {
     posts.push(body);
+    if (persistGrants && body.action === "create_group") {
+      savedDashboard = { ...savedDashboard, groups: [...savedDashboard.groups, {
+        accessGrants: [], archivedAt: null, id: "group-new", name: body.name, systemRole: null, userCount: 0
+      }] };
+    }
+    if (persistGrants && body.action === "set_group_grants") {
+      savedDashboard = { ...savedDashboard, groups: savedDashboard.groups.map((group) => {
+        if (group.id !== body.groupId) return group;
+        let accessGrants = [...group.accessGrants];
+        for (const change of body.changes) {
+          accessGrants = accessGrants.filter((entry) => (entry.provider ?? null) !== (change.provider ?? null) ||
+            (entry.modelId ?? null) !== (change.modelId ?? null) || (entry.searchStrategy ?? null) !== (change.searchStrategy ?? null));
+          if (change.enabled) accessGrants.push(grant({ ...change, groupId: group.id, id: `saved-${change.provider ?? "search"}-${change.modelId ?? change.searchStrategy ?? "all"}` }));
+        }
+        return { ...group, accessGrants };
+      }) };
+    }
     return body.action === "create_group" ? { group: { id: "group-new" } } : { ok: true };
   };
 
   function Section() {
-    const dashboard = initialDashboard ?? dashboardFixture();
+    const [dashboard, setDashboard] = useState(savedDashboard);
+    const [selectedResource, setSelectedResource] = useState(resource);
     const controller = useAdminGroupsController({
       actionsDisabled,
       dashboard,
+      onError: vi.fn(),
+      onNotice: vi.fn(),
+      refreshDashboard: async () => {
+        if (persistGrants) setDashboard(savedDashboard);
+        return { dashboard: savedDashboard as AdminDashboard, ok: true };
+      },
       requestConfirmedAction: (config) => { confirmations.push(config); },
       runAction
     });
@@ -274,14 +305,20 @@ function renderSection({ actionsDisabled = false, initialDashboard, resource = n
         groups={controller}
         mcp={mcp.controller}
         nowMs={NOW}
-        onSelectResource={onSelectResource}
-        resource={resource}
+        onSelectResource={(groupId) => {
+          onSelectResource(groupId);
+          if (followResourceChanges) {
+            setDashboard(savedDashboard);
+            setSelectedResource(groupId);
+          }
+        }}
+        resource={selectedResource}
       />
     );
   }
 
   render(<TopbarHarness><Section /></TopbarHarness>);
-  return { confirmations, mcpGrant: mcp.grant, onSelectResource, posts };
+  return { confirmations, mcpBulkGrant: mcp.bulkGrantGroup, mcpGrant: mcp.grant, onSelectResource, posts };
 }
 
 function providerRow(providerId: string): HTMLElement {
@@ -350,6 +387,23 @@ describe("AdminGroupsSection", () => {
     await waitFor(() => expect(posts).toEqual([{ action: "create_group", name: "Profile · Design" }]));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "New group" })).not.toBeInTheDocument());
     await waitFor(() => expect(onSelectResource).toHaveBeenCalledWith("group-new"));
+  });
+
+  it("offers all three bulk actions immediately after the created group opens", async () => {
+    const { mcpBulkGrant, posts } = renderSection({ followResourceChanges: true, persistGrants: true });
+    fireEvent.click(await screen.findByRole("button", { name: "New group" }));
+    const sheet = await screen.findByRole("dialog", { name: "New group" });
+    fireEvent.change(within(sheet).getByLabelText("Group name"), { target: { value: "New access group" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Create" }));
+    const page = within(await screen.findByTestId("admin-group-page"));
+    expect(page.getByRole("heading", { name: "New access group" })).toBeInTheDocument();
+    fireEvent.click(page.getByRole("button", { name: "Grant all current models to New access group" }));
+    await waitFor(() => expect(page.getByText("4 of 4 models granted · All")).toBeInTheDocument());
+    fireEvent.click(page.getByRole("button", { name: "Grant all current Search sources to New access group" }));
+    await waitFor(() => expect(page.getByText("2 of 2 Search sources granted · All")).toBeInTheDocument());
+    fireEvent.click(page.getByRole("button", { name: "Grant all current MCP servers to New access group" }));
+    expect(mcpBulkGrant).toHaveBeenCalledWith(expect.objectContaining({ id: "group-new", name: "New access group" }), true);
+    expect(posts.filter((post) => post.action === "set_group_grants").map((post) => post.groupId)).toEqual(["group-new", "group-new"]);
   });
 
   it("shows the page with crumbs, summary, members and the add-a-person picker", async () => {
@@ -473,6 +527,79 @@ describe("AdminGroupsSection", () => {
     expect(mcpGrant).toHaveBeenCalledWith("server-antv", { canUse: true, groupId: "group-research" });
   });
 
+  it("grants all current models across providers and Search sources, then clears each section from saved state", async () => {
+    const { posts } = renderSection({ persistGrants: true, resource: empty.id });
+    const page = await screen.findByTestId("admin-group-page");
+    const models = within(page).getByTestId("admin-group-models");
+    const search = within(page).getByTestId("admin-group-search");
+    expect(within(models).getByText("0 of 4 models granted · None")).toBeInTheDocument();
+    expect(within(search).getByText("0 of 2 Search sources granted · None")).toBeInTheDocument();
+    const grantModels = within(models).getByRole("button", { name: "Grant all current models to Interns" });
+    grantModels.focus();
+    expect(grantModels).toHaveFocus();
+    fireEvent.click(grantModels);
+    await waitFor(() => expect(within(models).getByText("4 of 4 models granted · All")).toBeInTheDocument());
+    expect(grantModels).toBeDisabled();
+    expect(within(models).getAllByRole("checkbox").every((checkbox) => (checkbox as HTMLInputElement).checked)).toBe(true);
+    expect(within(models).getAllByRole("switch").every((toggle) => toggle.getAttribute("aria-checked") === "false")).toBe(true);
+    expect(posts[0]).toEqual({ action: "set_group_grants", groupId: empty.id, changes: [
+      { enabled: true, modelId: "gpt-5.5", provider: "conn-openai" },
+      { enabled: true, modelId: "gpt-mini", provider: "conn-openai" },
+      { enabled: true, modelId: "opus-5", provider: "conn-anthropic" },
+      { enabled: true, modelId: "sonnet-5", provider: "conn-anthropic" }
+    ] });
+    fireEvent.click(within(search).getByRole("button", { name: "Grant all current Search sources to Interns" }));
+    await waitFor(() => expect(within(search).getByText("2 of 2 Search sources granted · All")).toBeInTheDocument());
+    fireEvent.click(within(models).getByRole("button", { name: "Clear current models for Interns" }));
+    await waitFor(() => expect(within(models).getByText("0 of 4 models granted · None")).toBeInTheDocument());
+    expect(within(search).getByText("2 of 2 Search sources granted · All")).toBeInTheDocument();
+    fireEvent.click(within(search).getByRole("button", { name: "Clear current Search sources for Interns" }));
+    await waitFor(() => expect(within(search).getByText("0 of 2 Search sources granted · None")).toBeInTheDocument());
+    expect(posts.every((post) => post.action === "set_group_grants")).toBe(true);
+  });
+
+  it("preserves provider-wide access on Grant all and clears it explicitly without deleting unavailable grants or members", async () => {
+    const snapshot = dashboardFixture();
+    const unavailable = grant({ groupId: research.id, id: "retired", modelId: "retired", provider: "retired-provider", resourceDisplayName: "Retired model" });
+    const { posts } = renderSection({
+      initialDashboard: { ...snapshot, groups: [{ ...research, accessGrants: [...research.accessGrants, unavailable] }] },
+      persistGrants: true,
+      resource: research.id
+    });
+    const models = within(await screen.findByTestId("admin-group-models"));
+    expect(models.getByText("3 of 4 models granted · Partial")).toBeInTheDocument();
+    fireEvent.click(models.getByRole("button", { name: "Grant all current models to Profile · Research" }));
+    await waitFor(() => expect(models.getByText("4 of 4 models granted · All")).toBeInTheDocument());
+    expect(models.getByRole("switch", { name: "All OpenAI models, including ones added later" })).toHaveAttribute("aria-checked", "true");
+    expect(posts[0]).toEqual({ action: "set_group_grants", changes: [{ enabled: true, modelId: "sonnet-5", provider: "conn-anthropic" }], groupId: research.id });
+    fireEvent.click(models.getByRole("button", { name: "Clear current models for Profile · Research" }));
+    await waitFor(() => expect(models.getByText("0 of 4 models granted · None")).toBeInTheDocument());
+    expect(screen.getByRole("list", { name: "Unavailable grants" })).toHaveTextContent("Retired model");
+    expect(screen.getAllByTestId("admin-group-member")).toHaveLength(2);
+    expect(within(screen.getByTestId("admin-group-search")).getByText("1 of 2 Search sources granted · Partial")).toBeInTheDocument();
+  });
+
+  it("keeps section actions disabled for empty catalogs", async () => {
+    renderSection({ initialDashboard: { ...dashboardFixture(), catalog: { models: [], providers: [], searchStrategies: [] } }, resource: empty.id });
+    for (const testId of ["admin-group-models", "admin-group-search"]) {
+      const section = within(await screen.findByTestId(testId));
+      expect(section.getByRole("button", { name: /Grant all current/ })).toBeDisabled();
+      expect(section.getByRole("button", { name: /Clear current/ })).toBeDisabled();
+    }
+  });
+
+  it("disables Models and Search bulk controls while the dashboard owner is busy or loading", async () => {
+    const { posts } = renderSection({ actionsDisabled: true, resource: research.id });
+    for (const testId of ["admin-group-models", "admin-group-search"]) {
+      const section = within(await screen.findByTestId(testId));
+      for (const button of section.getAllByRole("button", { name: /Grant all current|Clear current/ })) {
+        expect(button).toBeDisabled();
+        fireEvent.click(button);
+      }
+    }
+    expect(posts).toEqual([]);
+  });
+
   it("keeps grants to unavailable resources visible and removable without adding them to the catalog", async () => {
     const disabledModel = grant({ groupId: research.id, id: "disabled-model-grant", modelId: "disabled-model", provider: "disabled-provider", resourceDisplayName: "Retired provider / Retired model" });
     const archivedSearch = grant({ groupId: research.id, id: "archived-search-grant", resourceDisplayName: "Retired Search", searchStrategy: "archived-search" });
@@ -481,7 +608,10 @@ describe("AdminGroupsSection", () => {
     const list = await screen.findByRole("list", { name: "Unavailable grants" });
     expect(list).toHaveTextContent("Retired provider / Retired model");
     expect(list).toHaveTextContent("Retired Search");
-    for (const button of within(list).getAllByRole("button", { name: "Remove grant" })) fireEvent.click(button);
+    for (const button of within(list).getAllByRole("button", { name: "Remove grant" })) {
+      await waitFor(() => expect(button).toBeEnabled());
+      fireEvent.click(button);
+    }
     await waitFor(() => expect(posts).toEqual([
       { action: "set_group_grants", changes: [{ enabled: false, modelId: "disabled-model", provider: "disabled-provider", searchStrategy: null }], groupId: research.id },
       { action: "set_group_grants", changes: [{ enabled: false, modelId: null, provider: null, searchStrategy: "archived-search" }], groupId: research.id }
@@ -547,12 +677,13 @@ describe("AdminGroupsSection", () => {
     renderSection({ resource: "group-old" });
     const page = await screen.findByTestId("admin-group-page");
 
-    expect(within(page).getByRole("status")).toHaveTextContent(/archived/iu);
+    expect(within(page).getByText(/This group is archived/u)).toHaveAttribute("role", "status");
     expect(within(page).getByText("Archived Jul 1")).toBeInTheDocument();
     expect(within(page).queryByRole("button", { name: "Add a person" })).not.toBeInTheDocument();
     expect(within(page).queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
     expect(within(page).queryByRole("button", { name: "Rename" })).not.toBeInTheDocument();
     for (const control of within(page).getAllByRole("switch")) expect(control).toBeDisabled();
+    for (const control of within(page).getAllByRole("button", { name: /Grant all current|Clear current/ })) expect(control).toBeDisabled();
 
     await openMenu("Former operators");
     expect(screen.getByRole("menuitem", { name: "Rename" })).toBeDisabled();

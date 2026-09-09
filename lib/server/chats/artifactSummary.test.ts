@@ -352,6 +352,7 @@ describe("summarizeMessageRunToolActivity", () => {
     })).toEqual({
       calls: [{
         durationMs: 120,
+        origin: "knowledge",
         round: 1,
         serverName: "Knowledge",
         status: "complete",
@@ -398,6 +399,7 @@ describe("summarizeMessageRunToolActivity", () => {
       calls: [
         {
           durationMs: 120,
+          origin: "discovery",
           round: 1,
           serverName: "Auto tools",
           status: "complete",
@@ -405,6 +407,7 @@ describe("summarizeMessageRunToolActivity", () => {
         },
         {
           durationMs: 300,
+          origin: "mcp",
           round: 1,
           serverName: "AWS Documentation",
           status: "error",
@@ -426,6 +429,64 @@ describe("summarizeMessageRunToolActivity", () => {
       calls: [],
       warning: { kind: "calls", limit: 20 }
     });
+  });
+
+  it.each(["error", "cancelled", "streaming", "complete"])("keeps the accepted round limit visible for %s synthesis", (status) => {
+    expect(summarizeMessageRunToolActivity({
+      errorPayload: { code: "synthesis_tool_call_forbidden" },
+      normalizedRequest: { toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } }, status,
+      toolCalls: Array.from({ length: 8 }, (_, index) => ({ completedAt: null, startedAt: null,
+        ordinal: 0, roundIndex: index + 1, state: index >= 6 ? "error" : "complete", toolName: "search" }))
+    })?.warning).toEqual({ kind: "rounds", limit: 8 });
+  });
+
+  it("excludes automatic Knowledge preflight from provider tool call and round limits", () => {
+    expect(summarizeMessageRunToolActivity({
+      errorPayload: null,
+      normalizedRequest: { toolBudgets: { maxToolCalls: 2, maxToolRounds: 2 } }, status: "streaming",
+      toolCalls: [0, 1].map((roundIndex) => ({ completedAt: null, startedAt: null, ordinal: 0,
+        roundIndex, state: "complete", toolName: roundIndex === 0 ? "search_knowledge" : "search" }))
+    })?.warning).toBeUndefined();
+  });
+
+  it("preserves accepted MCP origin through colliding names and every persisted outcome", () => {
+    const activity = summarizeMessageRunToolActivity({
+      errorPayload: { message: "unexposed diagnostic" },
+      normalizedRequest: {
+        mcp: { tools: [{
+          namespacedName: "mcp_repository_search_fixture",
+          originalName: "search",
+          serverName: "Repository Tools"
+        }] },
+        mcpDiscovery: { catalog: { servers: [{
+          serverName: "Workspace",
+          tools: [{ namespacedName: "mcp_catalog_discovery_fixture", originalName: "find_tools" }]
+        }] } },
+        searchPlan: { options: [{ displayName: "Catalog Search" }] }
+      },
+      status: "error",
+      toolCalls: [
+        ...["running", "complete", "error", "cancelled"].map((state, index) => ({
+          completedAt: null,
+          ordinal: 0,
+          roundIndex: index + 1,
+          startedAt: null,
+          state,
+          toolName: "mcp_repository_search_fixture"
+        })),
+        { completedAt: null, ordinal: 0, roundIndex: 5, startedAt: null, state: "error", toolName: "mcp_catalog_discovery_fixture" },
+        { completedAt: null, ordinal: 0, roundIndex: 6, startedAt: null, state: "complete", toolName: "search_engine_1" }
+      ]
+    });
+
+    expect(activity?.calls).toEqual([
+      ...["running", "complete", "error", "cancelled"].map((status, index) => ({
+        origin: "mcp", round: index + 1, serverName: "Repository Tools", status, toolName: "search"
+      })),
+      { origin: "mcp", round: 5, serverName: "Workspace", status: "error", toolName: "find_tools" },
+      { origin: "web_search", round: 6, serverName: "Catalog Search", status: "complete", toolName: "search" }
+    ]);
+    expect(JSON.stringify(activity)).not.toMatch(/unexposed|mcp_repository|mcp_catalog|arguments|result/iu);
   });
 
   it("never falls back to an internal MCP namespace", () => {
@@ -458,6 +519,7 @@ describe("summarizeMessageRunToolActivity", () => {
         toolName: namespacedWorkspaceToolName("sandbox_fs_read")
       }]
     })?.calls[0]).toMatchObject({
+      origin: "workspace",
       serverName: "Workspace",
       toolName: "sandbox_fs_read"
     });

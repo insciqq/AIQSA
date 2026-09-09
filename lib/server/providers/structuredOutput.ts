@@ -5,6 +5,9 @@ import { normalizeOpenRouterParams } from "../../domain/providerParams";
 import { applyProviderReasoningRequestMapping } from "./reasoningRequestMapping";
 import type { OpenAIResponsesClient } from "./openaiResponsesTransport";
 import type { DeepSeekResponsesClient } from "./deepSeekResponsesTransport";
+import type { GeminiInteractionsClient } from "./geminiInteractionsTransport";
+import { extractGeminiInteractionsUsage } from "./geminiInteractionsResponse";
+import { BoundedTextAccumulator } from "./boundedText";
 import { extractOpenAIUsage } from "./openaiResponsesResponse";
 import {
   extractOpenRouterText,
@@ -21,6 +24,7 @@ export { STRUCTURED_OUTPUT_LIMITS } from "./structuredOutputLimits";
 
 export const STRUCTURED_OUTPUT_SUPPORTED_ADAPTERS = [
   "deepseek_responses_native",
+  "gemini_interactions_native",
   "openai_responses_native",
   "openai_responses_compatible",
   "openrouter_chat_completions"
@@ -91,6 +95,14 @@ const SCHEMA_CHILD_ARRAY_KEYS = new Set(["allOf", "anyOf", "prefixItems"]);
 
 const PROVIDER_ROOT_WRAPPER_KEY = "__aiqsa_payload";
 
+const GEMINI_SCHEMA_KEYS = new Set([
+  "additionalProperties", "anyOf", "const", "description", "enum", "format",
+  "items", "maximum", "maxItems", "maxLength", "minimum", "minItems", "minLength",
+  "oneOf", "pattern", "prefixItems", "properties", "required", "title", "type", "uniqueItems"
+]);
+const GEMINI_SERVER_VALIDATED_SCHEMA_KEYS = new Set(["maxLength", "minLength", "pattern"]);
+const GEMINI_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high"]);
+
 type ProviderSchemaProjection = Readonly<{
   rootWrapped: boolean;
   schema: Record<string, unknown>;
@@ -142,32 +154,62 @@ function hasExclusiveConstDiscriminator(branches: readonly unknown[]): boolean {
  * exclusivity and `uniqueItems`; the provider wire subset supports `anyOf`
  * but requires an object root. */
 function schemaForProvider(
-  value: Readonly<Record<string, unknown>>
+  value: Readonly<Record<string, unknown>>,
+  provider: "portable" | "gemini" = "portable"
 ): ProviderSchemaProjection {
-  const visit = (node: unknown): unknown => {
+  const visit = (node: unknown, depth = 0): unknown => {
+    if (provider === "gemini" && (!isRecord(node) || depth > 64)) {
+      throw new Error("structured_output_schema_unsupported");
+    }
     if (!isRecord(node)) return node;
+    if (provider === "gemini" && Object.keys(node).some((key) => !GEMINI_SCHEMA_KEYS.has(key))) {
+      throw new Error("structured_output_schema_unsupported");
+    }
+    const visitChild = (child: unknown) => visit(child, depth + 1);
     const mapped: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(node)) {
       if (key === "uniqueItems") continue;
+      if (provider === "gemini") {
+        // Gemini's documented subset omits these constraints. Existing
+        // consumers still validate the unmodified canonical schema/value.
+        if (GEMINI_SERVER_VALIDATED_SCHEMA_KEYS.has(key)) continue;
+        if (key === "const") {
+          if (scalarConstKey(child) === null ||
+            Object.hasOwn(node, "enum") &&
+              (!Array.isArray(node.enum) || !node.enum.includes(child))) {
+            throw new Error("structured_output_schema_unsupported");
+          }
+          mapped.enum = [child];
+          continue;
+        }
+        if (key === "enum" && Object.hasOwn(node, "const")) continue;
+        if ((key === "properties" && !isRecord(child)) ||
+          (key === "items" && !isRecord(child)) ||
+          (key === "additionalProperties" && typeof child !== "boolean" && !isRecord(child)) ||
+          ((key === "anyOf" || key === "prefixItems") &&
+            (!Array.isArray(child) || child.length === 0))) {
+          throw new Error("structured_output_schema_unsupported");
+        }
+      }
       if (key === "oneOf") {
         if (!Array.isArray(child) || Object.hasOwn(node, "anyOf") ||
           !hasExclusiveConstDiscriminator(child)) {
           throw new Error("structured_output_schema_unsupported");
         }
-        mapped.anyOf = child.map(visit);
+        mapped.anyOf = child.map(visitChild);
         continue;
       }
       if (key === "properties" && isRecord(child)) {
         mapped[key] = Object.fromEntries(
           Object.entries(child).map(([propertyName, propertySchema]) => [
             propertyName,
-            visit(propertySchema)
+            visitChild(propertySchema)
           ])
         );
       } else if (SCHEMA_CHILD_KEYS.has(key) && isRecord(child)) {
-        mapped[key] = visit(child);
+        mapped[key] = visitChild(child);
       } else if (SCHEMA_CHILD_ARRAY_KEYS.has(key) && Array.isArray(child)) {
-        mapped[key] = child.map(visit);
+        mapped[key] = child.map(visitChild);
       } else {
         mapped[key] = child;
       }
@@ -194,9 +236,10 @@ function schemaForProvider(
 
 function decodeProviderStructuredOutput(
   request: ProviderStructuredOutputRequest,
-  output: Record<string, unknown>
+  output: Record<string, unknown>,
+  provider: "portable" | "gemini" = "portable"
 ): Record<string, unknown> {
-  if (!schemaForProvider(request.schema).rootWrapped) return output;
+  if (!schemaForProvider(request.schema, provider).rootWrapped) return output;
   if (Object.keys(output).length !== 1 ||
     !Object.hasOwn(output, PROVIDER_ROOT_WRAPPER_KEY) ||
     !isRecord(output[PROVIDER_ROOT_WRAPPER_KEY])) {
@@ -266,8 +309,22 @@ function boundedProviderResponseId(value: unknown): string | null {
     : null;
 }
 
+function hasReportedTokenUsage(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
+  return isRecord(value) && fields.some((field) =>
+    typeof value[field] === "number" && Number.isFinite(value[field]) && Number(value[field]) >= 0);
+}
+
+function structuredOutputTokenLimitFailure(): Error {
+  const code = "structured_output_output_limit_exceeded";
+  return Object.assign(new Error(code), { code });
+}
+
 function openAIResponseText(response: Record<string, unknown>): string {
   if (response.status !== undefined && response.status !== "completed") {
+    if (response.status === "incomplete" && isRecord(response.incomplete_details) &&
+      response.incomplete_details.reason === "max_output_tokens" && !response.error) {
+      throw structuredOutputTokenLimitFailure();
+    }
     throw providerResponseFailure("structured_output_provider_incomplete", response);
   }
   if (typeof response.output_text === "string") return response.output_text;
@@ -369,6 +426,118 @@ export function buildDeepSeekResponsesStructuredOutputRequest(
   };
 }
 
+export function buildGeminiInteractionsStructuredOutputRequest(
+  model: Pick<ProviderModelConfiguration, "adapterKind" | "capabilities" | "defaultParams" | "upstreamModelId">,
+  request: ProviderStructuredOutputRequest
+): Record<string, unknown> {
+  if (model.adapterKind !== "gemini_interactions_native") {
+    throw new Error("structured_output_adapter_unsupported");
+  }
+  const normalized = normalizeRequest(request);
+  const reasoning = isRecord(model.defaultParams.reasoning) ? model.defaultParams.reasoning : {};
+  const effort = normalized.reasoningEffort ?? reasoning.effort ?? model.capabilities.defaultReasoningEffort;
+  if (effort !== undefined && effort !== null && (
+    model.capabilities.reasoning
+      ? typeof effort !== "string" || !GEMINI_THINKING_LEVELS.has(effort) ||
+        model.capabilities.reasoningEfforts && !model.capabilities.reasoningEfforts.includes(effort)
+      : effort !== "none"
+  )) throw new Error("structured_output_request_invalid");
+  return {
+    generation_config: {
+      // The accepted bound includes thought tokens. The caller must admit
+      // enough tokens for reasoning; an adapter cannot enlarge that budget.
+      max_output_tokens: normalized.maxOutputTokens,
+      ...(model.capabilities.reasoning && effort ? { thinking_level: effort } : {}),
+      thinking_summaries: "none"
+    },
+    input: [{
+      content: [{ text: normalized.userPrompt, type: "text" }],
+      type: "user_input"
+    }],
+    model: model.upstreamModelId,
+    response_format: {
+      mime_type: "application/json",
+      schema: schemaForProvider(normalized.schema, "gemini").schema,
+      type: "text"
+    },
+    store: false,
+    stream: false,
+    system_instruction: normalized.systemPrompt
+  };
+}
+
+function geminiStructuredOutputText(response: Record<string, unknown>): string {
+  if (response.status !== "completed") {
+    throw providerResponseFailure("structured_output_provider_incomplete", response);
+  }
+  const refusal = (value: Record<string, unknown>) =>
+    value.refusal !== undefined && value.refusal !== null && value.refusal !== false && value.refusal !== "";
+  const refused = () => Object.assign(new Error("structured_output_provider_incomplete"), {
+    code: "provider_response_not_retryable"
+  });
+  if (refusal(response) || response.error ||
+    response.errors !== undefined && response.errors !== null &&
+      (!Array.isArray(response.errors) || response.errors.length > 0)) {
+    throw refused();
+  }
+  if (!Array.isArray(response.steps) || response.steps.length === 0 || response.steps.length > 10_000) {
+    throw new Error("structured_output_invalid");
+  }
+  let finalText: string | null = null;
+  for (const step of response.steps) {
+    if (!isRecord(step)) throw new Error("structured_output_invalid");
+    if (refusal(step) || step.type === "refusal") throw refused();
+    // Thought summaries and signatures are protocol state, never JSON text.
+    // This stateless utility has no continuation consumer, so retain neither.
+    if (step.type === "thought") continue;
+    if (step.type !== "model_output" || !Array.isArray(step.content) ||
+      step.content.length === 0 || step.content.length > 10_000) {
+      throw new Error("structured_output_invalid");
+    }
+    const text = new BoundedTextAccumulator({
+      maxChars: STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters,
+      retainedTextKind: "visible_output"
+    });
+    for (const content of step.content) {
+      if (!isRecord(content)) throw new Error("structured_output_invalid");
+      if (refusal(content) || content.type === "refusal") throw refused();
+      if (content.type !== "text" || typeof content.text !== "string" || content.thought === true) {
+        throw new Error("structured_output_invalid");
+      }
+      text.append(content.text);
+    }
+    finalText = text.value();
+  }
+  const finalStep: unknown = response.steps.at(-1);
+  if (finalText === null || !isRecord(finalStep) || finalStep.type !== "model_output") {
+    throw new Error("structured_output_invalid");
+  }
+  return finalText;
+}
+
+export function createGeminiInteractionsStructuredOutputAdapter(input: Readonly<{
+  client: GeminiInteractionsClient;
+  model: Pick<ProviderModelConfiguration, "adapterKind" | "capabilities" | "defaultParams" | "upstreamModelId">;
+}>): ProviderStructuredOutputAdapter {
+  return {
+    async execute(request, options) {
+      options?.signal?.throwIfAborted();
+      const response = await input.client.createInteraction(
+        buildGeminiInteractionsStructuredOutputRequest(input.model, request), options
+      );
+      // Report incurred accounting even when a terminal/schema check fails.
+      options?.onProviderResponseId?.(boundedProviderResponseId(response.id));
+      if (hasReportedTokenUsage(response.usage, ["total_input_tokens", "total_output_tokens", "total_thought_tokens", "total_tokens", "total_cached_tokens"])) {
+        options?.onUsage?.(extractGeminiInteractionsUsage(response.usage));
+      }
+      options?.signal?.throwIfAborted();
+      return decodeProviderStructuredOutput(
+        request, parseProviderStructuredOutputObject(geminiStructuredOutputText(response)), "gemini"
+      );
+    }
+  };
+}
+
 function openRouterProviderRouting(
   model: Pick<ProviderModelConfiguration, "defaultParams" | "openRouterRouting">
 ): Record<string, unknown> {
@@ -450,11 +619,11 @@ export function createOpenAIResponsesStructuredOutputAdapter(input: Readonly<{
         buildOpenAIResponsesStructuredOutputRequest(input.model, request),
         options
       );
-      const responseText = openAIResponseText(response);
       options?.onProviderResponseId?.(boundedProviderResponseId(response.id));
-      if (isRecord(response.usage)) {
+      if (hasReportedTokenUsage(response.usage, ["input_tokens", "output_tokens", "total_tokens"])) {
         options?.onUsage?.(extractOpenAIUsage(response));
       }
+      const responseText = openAIResponseText(response);
       return decodeProviderStructuredOutput(
         request,
         parseProviderStructuredOutputObject(responseText)
@@ -473,11 +642,11 @@ export function createDeepSeekResponsesStructuredOutputAdapter(input: Readonly<{
         buildDeepSeekResponsesStructuredOutputRequest(input.model, request),
         options
       );
-      const responseText = openAIResponseText(response);
       options?.onProviderResponseId?.(boundedProviderResponseId(response.id));
-      if (isRecord(response.usage)) {
+      if (hasReportedTokenUsage(response.usage, ["input_tokens", "output_tokens", "total_tokens"])) {
         options?.onUsage?.(extractOpenAIUsage(response));
       }
+      const responseText = openAIResponseText(response);
       return decodeProviderStructuredOutput(
         request,
         parseProviderStructuredOutputObject(responseText)
@@ -497,17 +666,21 @@ export function createOpenRouterStructuredOutputAdapter(input: Readonly<{
         buildOpenRouterStructuredOutputRequest(input.model, request),
         options
       );
+      options?.onProviderResponseId?.(boundedProviderResponseId(response.id));
+      if (hasReportedTokenUsage(response.usage, ["prompt_tokens", "completion_tokens", "total_tokens"])) {
+        options?.onUsage?.(extractOpenRouterUsage(response));
+      }
       const choices = response.choices;
       const choice = Array.isArray(choices) && choices.length === 1 ? choices[0] : null;
       const message = isRecord(choice) && isRecord(choice.message) ? choice.message : null;
+      if (isRecord(choice) && choice.finish_reason === "length" &&
+        !response.error && !choice.error && !message?.error && !message?.refusal) {
+        throw structuredOutputTokenLimitFailure();
+      }
       if (!isRecord(choice) || choice.finish_reason !== "stop" || !message ||
         (message.tool_calls !== undefined && (!Array.isArray(message.tool_calls) || message.tool_calls.length > 0)) ||
         message.refusal || response.error || choice.error || message.error) {
         throw providerResponseFailure("structured_output_provider_incomplete", response);
-      }
-      options?.onProviderResponseId?.(boundedProviderResponseId(response.id));
-      if (isRecord(response.usage)) {
-        options?.onUsage?.(extractOpenRouterUsage(response));
       }
       return decodeProviderStructuredOutput(
         request,

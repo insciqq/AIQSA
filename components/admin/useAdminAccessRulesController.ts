@@ -30,14 +30,14 @@ export type UseAdminAccessRulesControllerOptions = Readonly<{
 export type AdminAccessRulesController = Readonly<{
   actions: Readonly<{
     createRule(input: AdminAccessRuleCreateInput): Promise<AdminAccessRuleCreateResult>;
-    /** The Sign-up rules sheet confirms first; the page behind an open sheet is inert. */
+    /** The Sign-up rules section confirms before deletion. */
     deleteRule(rule: AdminAccessRuleActionTarget): Promise<boolean>;
   }>;
   actionsDisabled: boolean;
   rules: AdminAccessRuleRecord[];
 }>;
 
-/** Sign-up rules of the Users page: creation and deletion from the Sign-up rules sheet. */
+/** One mutation owner for the Sign-up rules section and its add-rule sheet. */
 export function useAdminAccessRulesController({
   actionsDisabled,
   dashboard,

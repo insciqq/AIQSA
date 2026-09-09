@@ -2,17 +2,22 @@ import type { NormalizedRunRequest } from "../providers/types";
 import { prisma } from "../prisma";
 import {
   MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS,
+  MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS,
+  isMcpAutoDiscoveryOutputTokens,
   MCP_RUN_PLAN_LIMITS
 } from "../../contracts/mcp";
 
 export type ToolRunBudgets = Readonly<{
   mcpAutoDiscoveryTimeoutSeconds: number;
+  /** Null means pre-field checkpoints derive the old cap from each routing limit. */
+  mcpAutoDiscoveryMaxOutputTokens: number | null;
   maxMcpToolsPerDiscovery: number;
   maxToolCalls: number;
   maxToolRounds: number;
 }>;
 
 export const DEFAULT_TOOL_RUN_BUDGETS: ToolRunBudgets = Object.freeze({
+  mcpAutoDiscoveryMaxOutputTokens: MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.defaultTokens,
   mcpAutoDiscoveryTimeoutSeconds: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.defaultSeconds,
   maxMcpToolsPerDiscovery: 10,
   maxToolCalls: 20,
@@ -20,6 +25,7 @@ export const DEFAULT_TOOL_RUN_BUDGETS: ToolRunBudgets = Object.freeze({
 });
 
 const LEGACY_TOOL_RUN_BUDGETS: ToolRunBudgets = Object.freeze({
+  mcpAutoDiscoveryMaxOutputTokens: null,
   mcpAutoDiscoveryTimeoutSeconds: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.defaultSeconds,
   maxMcpToolsPerDiscovery: 5,
   maxToolCalls: 16,
@@ -42,6 +48,7 @@ function validToolLoopBudgets(value: unknown): value is Readonly<{
 
 function valid(value: unknown): value is ToolRunBudgets {
   return validToolLoopBudgets(value) &&
+    isMcpAutoDiscoveryOutputTokens((value as Record<string, unknown>).mcpAutoDiscoveryMaxOutputTokens) &&
     positiveSafeInteger((value as Record<string, unknown>).mcpAutoDiscoveryTimeoutSeconds) &&
     Number((value as Record<string, unknown>).mcpAutoDiscoveryTimeoutSeconds) <=
       MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds &&
@@ -65,9 +72,17 @@ export function toolRunBudgetsForRequest(
 ): ToolRunBudgets {
   if (valid(request.toolBudgets)) return request.toolBudgets;
   if (validToolLoopBudgets(request.toolBudgets)) {
+    const candidate = request.toolBudgets as Record<string, unknown>;
+    if (candidate.mcpAutoDiscoveryMaxOutputTokens !== undefined &&
+      !isMcpAutoDiscoveryOutputTokens(candidate.mcpAutoDiscoveryMaxOutputTokens)) {
+      throw new Error("accepted_tool_budgets_invalid");
+    }
     return {
-      mcpAutoDiscoveryTimeoutSeconds: LEGACY_TOOL_RUN_BUDGETS
-        .mcpAutoDiscoveryTimeoutSeconds,
+      mcpAutoDiscoveryMaxOutputTokens: (candidate.mcpAutoDiscoveryMaxOutputTokens as number | undefined) ?? null,
+      mcpAutoDiscoveryTimeoutSeconds: positiveSafeInteger(candidate.mcpAutoDiscoveryTimeoutSeconds) &&
+        candidate.mcpAutoDiscoveryTimeoutSeconds <= MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds
+        ? candidate.mcpAutoDiscoveryTimeoutSeconds
+        : LEGACY_TOOL_RUN_BUDGETS.mcpAutoDiscoveryTimeoutSeconds,
       maxMcpToolsPerDiscovery: validDiscoveryResultBudget(request.toolBudgets)
         ? request.toolBudgets.maxMcpToolsPerDiscovery
         : LEGACY_TOOL_RUN_BUDGETS.maxMcpToolsPerDiscovery,
@@ -83,6 +98,7 @@ export const installationToolBudgetPolicy = {
     const policy = await prisma.modelPolicy.findUnique({
       select: {
         mcpAutoDiscoveryTimeoutSeconds: true,
+        mcpAutoDiscoveryMaxOutputTokens: true,
         maxMcpToolsPerDiscovery: true,
         maxToolCalls: true,
         maxToolRounds: true
@@ -92,6 +108,7 @@ export const installationToolBudgetPolicy = {
     if (!policy) throw new Error("installation_model_policy_missing");
     const budgets = {
       mcpAutoDiscoveryTimeoutSeconds: Number(policy.mcpAutoDiscoveryTimeoutSeconds),
+      mcpAutoDiscoveryMaxOutputTokens: Number(policy.mcpAutoDiscoveryMaxOutputTokens),
       maxMcpToolsPerDiscovery: Number(policy.maxMcpToolsPerDiscovery),
       maxToolCalls: Number(policy.maxToolCalls),
       maxToolRounds: Number(policy.maxToolRounds)

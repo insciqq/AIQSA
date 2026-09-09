@@ -1065,6 +1065,8 @@ test("administrator discovers and configures a Custom compatible provider throug
 
     await sheet.getByText("Advanced · timeout, private network, reasoning mapping").click();
     await expect(sheet.getByRole("combobox", { name: "Reasoning", exact: true })).toHaveValue("automatic");
+    await expect(sheet.getByText("Keep each model's reported reasoning settings. Models without hints use conservative defaults.")).toBeVisible();
+    await sheet.getByRole("combobox", { name: "Reasoning", exact: true }).selectOption("openai_gpt_5_6_sol");
     await expect(sheet.getByText(/Effort: none, low, medium, high, xhigh, max; default medium/)).toBeVisible();
     await expect(sheet.getByLabel("Reasoning effort field")).toHaveValue("reasoning.effort");
     await expect(sheet.getByLabel("Reasoning mode field (optional)")).toHaveValue("reasoning.mode");
@@ -1709,7 +1711,7 @@ test("administrator adds a model with one Test & Save, follows the background ch
   await models.getByTestId("provider-add-model").click();
   await page.getByRole("menuitem", { name: "Chat model" }).click();
   const sheet = page.getByRole("dialog", { name: "Add model" });
-  await expect(sheet).toContainText("Checks the model with key Primary, then turns it on");
+  await expect(sheet).toContainText("Checks supported capabilities with key Primary and enables verified features, including PDF");
   await sheet.getByRole("combobox", { name: "Model" }).fill("gpt-5.6-luna");
   await expect(sheet.getByLabel("Display name")).toHaveValue("GPT-5.6 Luna");
   await sheet.getByRole("button", { name: "Test & Save" }).click();
@@ -1739,11 +1741,16 @@ test("administrator adds a model with one Test & Save, follows the background ch
   await expect(section.getByTestId("provider-check-banner")).toHaveCount(0);
   expect(requests.filter(({ body }) => body.action === "cancel_check")).toHaveLength(1);
 
-  // Row expansion shows the last check; the On switch turns an unused model off without a dialog.
-  await sol.getByRole("button", { name: "GPT-5.6 Sol", exact: true }).click();
-  const details = models.getByTestId("provider-model-model-sol-details");
-  await expect(details).toContainText("with key Primary · works without PDF input");
-  await expect(details.getByRole("button", { name: "Re-check" })).toBeVisible();
+  // Edit owns the last check; the model list has no duplicate details row.
+  await sol.getByText("GPT-5.6 Sol", { exact: true }).click();
+  await expect(models.getByTestId("provider-model-model-sol-details")).toHaveCount(0);
+  await sol.getByRole("button", { name: "More actions for GPT-5.6 Sol" }).click();
+  await expect(page.getByRole("menuitem", { name: "Details" })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: "Edit" }).click();
+  const editSheet = page.getByRole("dialog", { name: "Edit model" });
+  await expect(editSheet).toContainText("with key Primary · works without PDF input");
+  await expect(editSheet.getByRole("button", { name: "Edit JSON" })).toBeVisible();
+  await editSheet.getByRole("button", { name: "Cancel", exact: true }).click();
   await sol.getByRole("switch", { name: "GPT-5.6 Sol on" }).click();
   await expect(sol.getByRole("switch", { name: "GPT-5.6 Sol on" })).not.toBeChecked();
   expect(requests.filter(({ path }) => path.endsWith("/models/model-sol")).map(({ body }) => body)).toEqual([{ action: "disable" }]);

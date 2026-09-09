@@ -91,11 +91,16 @@ describe("persisted independent System Model roles", () => {
       expect(await repository.addSetupModelsCas({ ...write, credentialVersionId: randomUUID() })).toBe("stale");
       expect(await db.providerModel.count({ where: { id } })).toBe(0);
       expect(await repository.addSetupModelsCas(write)).toBe("updated");
+      const pendingChecks = await db.providerModelCredentialCheck.findMany({ where: { providerModelId: id } });
+      expect(pendingChecks).toMatchObject([{
+        credentialId: key.id, credentialVersionId: key.activeVersionId, status: "unavailable",
+        evidence: { capabilitySetup: { checks: { modelAccess: "not_checked" } } }
+      }]);
       await db.providerModel.update({ where: { id }, data: { enabled: false } });
       expect(await repository.addSetupModelsCas({ ...write, models: [{ ...write.models[0]!, id: randomUUID() }] })).toBe("updated");
       expect(await db.providerModel.count({ where: { connectionId: target.connectionId, modelClass: "embedding" } })).toBe(1);
       expect((await db.providerModel.findUniqueOrThrow({ where: { id } })).enabled).toBe(false);
-      expect(await db.providerModelCredentialCheck.count({ where: { providerModelId: id } })).toBe(0);
+      expect(await db.providerModelCredentialCheck.findMany({ where: { providerModelId: id } })).toEqual(pendingChecks);
     });
   });
 

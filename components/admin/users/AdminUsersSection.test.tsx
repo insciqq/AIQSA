@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEffect, useState, type ReactNode } from "react";
 import { AdminSectionTopbarProvider, type AdminShellTopbar } from "@/components/admin/AdminShell";
 import type { AdminRunAction } from "@/components/admin/useAdminActionRunner";
+import { AdminSignupRulesSection } from "./AdminSignupRulesSection";
 import { useAdminAccessRulesController } from "@/components/admin/useAdminAccessRulesController";
 import type { AdminConfirmedActionRequest } from "@/components/admin/useAdminConfirmationController";
 import { useAdminInvitesController } from "@/components/admin/useAdminInvitesController";
@@ -111,6 +112,7 @@ function dashboardFixture(): AdminDashboard {
 
 const mcp: AdminMcpController = {
   actions: {
+    bulkGrantGroup: vi.fn().mockResolvedValue(true),
     activate: vi.fn(async () => false),
     checkUpdate: vi.fn(async () => false),
     create: vi.fn(async () => ({ message: "unavailable", ok: false as const })),
@@ -127,6 +129,7 @@ const mcp: AdminMcpController = {
 };
 
 type HarnessProps = Readonly<{
+  signupRules?: boolean;
   filter?: string | null;
   initialDashboard?: AdminDashboard;
   rejectMembership?: boolean;
@@ -157,7 +160,7 @@ function TopbarHarness({ children }: Readonly<{ children: ReactNode }>) {
   );
 }
 
-function renderSection({ filter = null, initialDashboard = dashboardFixture(), rejectMembership = false, resource = null }: HarnessProps = {}): Harness {
+function renderSection({ signupRules = false, filter = null, initialDashboard = dashboardFixture(), rejectMembership = false, resource = null }: HarnessProps = {}): Harness {
   const posts: AdminActionRequest[] = [];
   const confirmations: AdminConfirmedActionRequest[] = [];
   const feedback = { clearAll: vi.fn(), reportError: vi.fn(), reportNotice: vi.fn() };
@@ -195,9 +198,9 @@ function renderSection({ filter = null, initialDashboard = dashboardFixture(), r
       writeText
     });
     const rulesController = useAdminAccessRulesController({ actionsDisabled: false, dashboard, runAction });
+    if (signupRules) return <AdminSignupRulesSection controller={rulesController} groups={dashboard.groups} />;
     return (
       <AdminUsersSection
-        accessRules={rulesController}
         dashboard={dashboard}
         filter={filter}
         invites={invitesController}
@@ -288,7 +291,7 @@ describe("AdminUsersSection", () => {
     expect(onSelectResource).toHaveBeenCalledWith("ada");
 
     expect(screen.getByTestId("topbar-title")).toHaveTextContent("Users");
-    expect(screen.getByRole("button", { name: "Sign-up rules" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign-up rules" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Invite" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "More actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Revoke all sessions" }));
@@ -513,15 +516,15 @@ describe("AdminUsersSection", () => {
     expect(confirmations.at(-1)).toMatchObject({ body: { action: "delete_invite", inviteId: "revoked-1" }, testId: "admin-confirm-delete-invite" });
   });
 
-  it("manages sign-up rules in the sheet with a normalized preview, add, delete with confirmation and a discard guard", async () => {
-    const { posts } = renderSection();
+  it("manages sign-up rules on their own page with a normalized add form and confirmed deletion", async () => {
+    const { posts } = renderSection({ signupRules: true });
 
-    fireEvent.click(screen.getByRole("button", { name: "Sign-up rules" }));
-    const sheet = await screen.findByRole("dialog", { name: "Sign-up rules" });
-    const rules = within(sheet).getByRole("list", { name: "Sign-up rules" });
+    const rules = screen.getByRole("list", { name: "Sign-up rules" });
     expect(within(rules).getAllByTestId("admin-signup-rule")).toHaveLength(1);
     expect(rules).toHaveTextContent("allowed@example.com");
     expect(rules).toHaveTextContent("Email · operators");
+    fireEvent.click(screen.getByRole("button", { name: "Add rule" }));
+    const sheet = await screen.findByRole("dialog", { name: "Add sign-up rule" });
 
     fireEvent.click(within(sheet).getByRole("button", { name: "Add rule" }));
     expect(await within(sheet).findByRole("alert")).toHaveTextContent("Enter an email address.");
@@ -539,17 +542,21 @@ describe("AdminUsersSection", () => {
     await waitFor(() => expect(within(sheet).getByLabelText("Value")).toHaveValue(""));
     expect(within(sheet).getByLabelText("Kind")).toHaveValue("email");
 
-    fireEvent.click(within(sheet).getByRole("button", { name: "Delete rule allowed@example.com" }));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add sign-up rule" })).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Delete rule allowed@example.com" }));
     const confirmation = await screen.findByTestId("admin-confirm-delete-access-rule");
     fireEvent.click(within(confirmation).getByRole("button", { name: "Confirm delete rule" }));
     await waitFor(() => expect(posts.at(-1)).toEqual({ action: "delete_access_rule", ruleId: "rule-1" }));
     await waitFor(() => expect(screen.queryByTestId("admin-confirm-delete-access-rule")).not.toBeInTheDocument());
-    await waitFor(() => expect(within(sheet).getByLabelText("Value")).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add rule" })).toHaveFocus());
 
-    fireEvent.change(within(sheet).getByLabelText("Value"), { target: { value: "unsaved@example.com" } });
-    fireEvent.click(within(sheet).getByRole("button", { name: "Done" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add rule" }));
+    const newSheet = await screen.findByRole("dialog", { name: "Add sign-up rule" });
+    fireEvent.change(within(newSheet).getByLabelText("Value"), { target: { value: "unsaved@example.com" } });
+    fireEvent.click(within(newSheet).getByRole("button", { name: "Done" }));
     const discard = await screen.findByTestId("admin-signup-rules-discard");
     fireEvent.click(within(discard).getByRole("button", { name: "Confirm discard changes" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sign-up rules" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add sign-up rule" })).not.toBeInTheDocument());
   });
 });

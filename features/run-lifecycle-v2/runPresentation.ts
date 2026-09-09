@@ -1,9 +1,17 @@
 import type { ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
-import type {
-  ModelRunStatus,
-  RunEventView
+import {
+  isToolSynthesisFailure,
+  TOOL_SYNTHESIS_FAILURE,
+  type ModelRunStatus,
+  type RunEventView
 } from "@/lib/contracts/runs";
-import type { ThreadToolActivity } from "@/lib/contracts/chats";
+import {
+  isThreadToolActivityOrigin,
+  decodeThreadToolBudgetWarning,
+  type ThreadToolActivity,
+  type ThreadToolActivityOrigin,
+  type ThreadToolBudgetWarning
+} from "@/lib/contracts/chats";
 import { formatMemoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 
 export type RunLifecycleStatusV2 = ModelRunStatus | "preparing";
@@ -11,7 +19,7 @@ export type RunLifecycleStatusV2 = ModelRunStatus | "preparing";
 export type RunFailureV2 = Readonly<{
   code?: string | null;
   message?: string | null;
-  recovery?: "change_parameters" | "retry";
+  recovery?: "change_parameters" | "regenerate" | "retry";
 }>;
 
 export type RunLifecycleStateV2 = Readonly<{
@@ -32,19 +40,22 @@ export type RunActivityKindV2 =
   | "provider"
   | "queued"
   | "search"
+  | "synthesis"
   | "tool";
 
 export type RunPresentationV2 = Readonly<{
   activity?: Readonly<{
     kind: RunActivityKindV2;
     label: string;
+    budget?: ThreadToolBudgetWarning;
+    origin?: ThreadToolActivityOrigin;
     serverName?: string;
     toolName?: string;
   }>;
   failure?: Readonly<{
     code: string | null;
     message: string;
-    recovery: "change_parameters" | "retry";
+    recovery: "change_parameters" | "regenerate" | "retry";
   }>;
   kind:
     | "activity"
@@ -63,11 +74,14 @@ type TerminalSignal = "cancelled" | "complete" | "error";
 type ActivitySignal = Readonly<{
   index: number;
   kind: Exclude<RunActivityKindV2, "preparing" | "queued">;
+  budget?: ThreadToolBudgetWarning;
+  origin?: ThreadToolActivityOrigin;
   serverName?: string;
   toolName?: string;
 }>;
 
 const safeToolNamePattern = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,79}$/u;
+const privateActivityNamePattern = /[\u0000-\u001f\u007f]|\bmcp_|[a-z][a-z0-9+.-]*:\/\/|(?:^|\s)www\./iu;
 const safeErrorCodePattern = /^[a-z0-9][a-z0-9_.:-]{0,79}$/u;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -81,13 +95,24 @@ function boundedText(value: unknown, limit: number): string | null {
 }
 
 function safeToolName(value: unknown): string | null {
+  if (typeof value !== "string" || privateActivityNamePattern.test(value)) return null;
   const name = boundedText(value, 80);
-  return name && !name.startsWith("mcp_") && safeToolNamePattern.test(name) ? name : null;
+  return name && safeToolNamePattern.test(name) ? name : null;
 }
 
 function safeServerName(value: unknown): string | null {
-  const name = boundedText(value, 160);
-  return name && !/[\u0000-\u001f\u007f]/u.test(name) ? name : null;
+  if (typeof value !== "string" || privateActivityNamePattern.test(value)) return null;
+  return boundedText(value, 160);
+}
+
+function toolActivityMetadata(payload: Record<string, unknown>) {
+  const toolName = safeToolName(payload.name ?? payload.toolName);
+  const serverName = safeServerName(payload.serverName);
+  return {
+    ...(isThreadToolActivityOrigin(payload.origin) ? { origin: payload.origin } : {}),
+    ...(serverName ? { serverName } : {}),
+    ...(toolName ? { toolName } : {})
+  };
 }
 
 function safeErrorCode(value: unknown): string | null {
@@ -117,12 +142,13 @@ function activityFromEvent(event: RunEventView, index: number): ActivitySignal |
 
   if (!payload) return null;
 
+  if (artifactType === "tool_budget") {
+    const budget = decodeThreadToolBudgetWarning(payload);
+    return budget ? { index, kind: "synthesis", budget } : null;
+  }
+
   if (artifactType === "tool_call" && payload.status === "requested") {
-    const toolName = safeToolName(payload.name ?? payload.toolName);
-    const serverName = safeServerName(payload.serverName);
-    return toolName
-      ? { index, kind: "tool", ...(serverName ? { serverName } : {}), toolName }
-      : { index, kind: "tool" };
+    return { index, kind: "tool", ...toolActivityMetadata(payload) };
   }
 
   if (artifactType !== "summary") return null;
@@ -132,10 +158,7 @@ function activityFromEvent(event: RunEventView, index: number): ActivitySignal |
   }
 
   if (payload.stage === "tools" && payload.status === "running") {
-    const toolName = safeToolName(payload.name ?? payload.toolName);
-    return toolName
-      ? { index, kind: "tool", toolName }
-      : { index, kind: "tool" };
+    return { index, kind: "tool", ...toolActivityMetadata(payload) };
   }
 
   if (payload.stage === "compute" && payload.status === "running") {
@@ -167,6 +190,29 @@ function humanizeToolName(toolName: string): string {
   return toolName.replace(/[_-]+/gu, " ").replace(/\s+/gu, " ").trim();
 }
 
+type ToolActivityIdentity = Readonly<{
+  origin?: unknown;
+  serverName?: unknown;
+  toolName?: unknown;
+}>;
+
+/** Accepted tool origin wins over names, including reserved display names.
+ * Name fallbacks keep activities without explicit origin readable. */
+export function toolActivityOriginV2(call: ToolActivityIdentity): ThreadToolActivityOrigin {
+  if (isThreadToolActivityOrigin(call.origin)) return call.origin;
+  const serverName = safeServerName(call.serverName);
+  const toolName = safeToolName(call.toolName) ?? "";
+  if (serverName === "Workspace") return "workspace";
+  if ((!call.serverName || serverName === "Auto tools") && toolName === "find_tools") {
+    return "discovery";
+  }
+  if ((!call.serverName || serverName === "Knowledge") &&
+    (toolName === "search_knowledge" || toolName === "retrieve_knowledge")) return "knowledge";
+  if ((!call.serverName || serverName === "Web search") &&
+    webSearchToolNames.has(toolName.toLowerCase())) return "web_search";
+  return call.serverName ? "mcp" : "tool";
+}
+
 /**
  * User-legible label for one tool call (FRONTEND contract: only user-legible
  * server/tool names). Built-in tools get a plain-language verb; MCP tools
@@ -174,29 +220,40 @@ function humanizeToolName(toolName: string): string {
  * `search_knowledge` never reach the thread.
  */
 export function describeToolCallV2(
-  call: Readonly<{ serverName?: string; toolName?: string }>,
-  phase: "failed" | "running" | "settled"
+  call: ToolActivityIdentity,
+  phase: "cancelled" | "failed" | "running" | "settled"
 ): string {
   const running = phase === "running";
-  const toolName = call.toolName ?? "";
-  if (toolName === "find_tools") return running ? "Finding relevant tools" : "Found relevant tools";
-  if (toolName === "search_knowledge" || toolName === "retrieve_knowledge") {
+  const origin = toolActivityOriginV2(call);
+  if (origin === "discovery") {
+    if (phase === "failed") return "Tool discovery failed";
+    if (phase === "cancelled") return "Tool discovery stopped";
+    return running ? "Finding relevant tools" : "Found relevant tools";
+  }
+  if (origin === "knowledge") {
     if (phase === "failed") return "Knowledge search unavailable";
+    if (phase === "cancelled") return "Knowledge search stopped";
     return running ? "Searching Knowledge" : "Searched Knowledge";
   }
-  if (webSearchToolNames.has(toolName.toLowerCase())) {
+  if (origin === "web_search") {
+    if (phase === "failed") return "Web search failed";
+    if (phase === "cancelled") return "Web search stopped";
     return running ? "Searching the web" : "Searched the web";
   }
   // Workspace steps are owned by the activity timeline; the generic row must
   // never expose a raw sandbox tool identifier.
-  if (call.serverName === "Workspace") {
-    return phase === "failed"
-      ? "Workspace step failed"
-      : running ? "Working in Workspace" : "Worked in Workspace";
+  if (origin === "workspace") {
+    if (phase === "failed") return "Workspace step failed";
+    if (phase === "cancelled") return "Workspace step stopped";
+    return running ? "Working in Workspace" : "Worked in Workspace";
   }
-  const human = humanizeToolName(toolName);
-  if (call.serverName && human) {
-    return `${running ? "Using" : "Used"} ${call.serverName}: ${human}`;
+  const human = humanizeToolName(safeToolName(call.toolName) ?? "");
+  const serverName = safeServerName(call.serverName) ?? (origin === "mcp" ? "MCP server" : null);
+  const operation = serverName ? `${serverName}${human ? `: ${human}` : ""}` : human;
+  if (phase === "failed") return operation ? `${operation} failed` : "Tool failed";
+  if (phase === "cancelled") return operation ? `${operation} stopped` : "Tool stopped";
+  if (serverName) {
+    return `${running ? "Using" : "Used"} ${operation}`;
   }
   if (human) return `${running ? "Running" : "Ran"} ${human}`;
   return running ? "Running tools" : "Used tools";
@@ -259,6 +316,10 @@ export function answerProcessLabelV2(facts: AnswerProcessFactsV2): string | null
 
 function activityLabel(signal: Omit<ActivitySignal, "index">): string {
   switch (signal.kind) {
+    case "synthesis":
+      return signal.budget
+        ? `Tool ${signal.budget.kind === "calls" ? "call" : "round"} limit (${signal.budget.limit}) reached. Finishing the answer…`
+        : "Finishing the answer…";
     case "search":
       return "Searching the web…";
     case "tool":
@@ -278,33 +339,40 @@ export function presentToolActivityV2(
   persisted: ThreadToolActivity | null = null
 ): ThreadToolActivity | null {
   const calls = [...(persisted?.calls ?? [])];
+  let warning = persisted?.warning;
   const matched = new Set<number>();
   for (const event of events) {
     const payload = eventPayload(event);
+    if (event.type === "artifact" && isRecord(event.data) && event.data.artifactType === "tool_budget") {
+      warning = decodeThreadToolBudgetWarning(payload) ?? warning;
+      continue;
+    }
     if (event.type !== "artifact" || !isRecord(event.data) ||
       event.data.artifactType !== "tool_call" || payload?.status !== "requested") continue;
-    const toolName = safeToolName(payload.name ?? payload.toolName);
-    const serverName = safeServerName(payload.serverName);
+    const metadata = toolActivityMetadata(payload);
+    const { origin, toolName, serverName } = metadata;
     const round = Number.isSafeInteger(payload.round) && Number(payload.round) > 0
       ? Number(payload.round)
       : null;
     if (!toolName || round === null) continue;
     const existing = calls.findIndex((call, index) =>
-      !matched.has(index) && call.round === round && call.toolName === toolName &&
-      (call.serverName ?? null) === serverName);
+      !matched.has(index) && call.round === round && safeToolName(call.toolName) === toolName &&
+      safeServerName(call.serverName) === (serverName ?? null) &&
+      (!call.origin || !origin || call.origin === origin));
     if (existing >= 0) {
+      if (origin && !calls[existing]!.origin) calls[existing] = { ...calls[existing]!, origin };
       matched.add(existing);
       continue;
     }
     calls.push({
+      ...metadata,
       round,
-      ...(serverName ? { serverName } : {}),
       status: "running",
       toolName
     });
   }
-  return calls.length > 0 || persisted?.warning
-    ? { calls, ...(persisted?.warning ? { warning: persisted.warning } : {}) }
+  return calls.length > 0 || warning
+    ? { calls, ...(warning ? { warning } : {}) }
     : null;
 }
 
@@ -326,6 +394,9 @@ function failureFromState(
   eventFailure: RunFailureV2 | null
 ): NonNullable<RunPresentationV2["failure"]> {
   const failure = state.failure ?? eventFailure ?? {};
+  if (isToolSynthesisFailure(failure.code, failure.message)) {
+    return { ...TOOL_SYNTHESIS_FAILURE, recovery: "regenerate" };
+  }
   const recovery = failure.recovery === "retry" ? "retry" : "change_parameters";
   const partial = state.content.trim().length > 0;
   const fallback = partial && recovery === "retry"

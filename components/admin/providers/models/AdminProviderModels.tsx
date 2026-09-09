@@ -11,7 +11,6 @@ import {
   embeddingModelLabel,
   groupProviderModels,
   liveConfiguration,
-  modelCheckSummaries,
   modelRouteLabel,
   modelSuccessor,
   modelTitle,
@@ -35,10 +34,10 @@ import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import type { AdminProviderConnection, AdminProviderModel } from "@/lib/contracts/adminProviders";
 import { embeddingModelConfiguration, embeddingPresetsForFamily } from "@/lib/domain/embeddingModels";
 import { adminRerankerModelConfiguration, rerankerPresetsForFamily } from "@/lib/domain/rerankerModels";
-import { useId, useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { AdminProviderSetupProgress } from "@/components/admin/providers/add/AdminProviderSetupProgress";
+import type { AdminProviderSetupProgress as SetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 
-const focusRing =
-  "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper";
 const USED_AS_LIMIT = 2;
 
 const chipTone: Record<ModelChip["tone"], string> = {
@@ -127,7 +126,7 @@ function AddModelMenu({
  * Models block of a provider page (PRD 5.4): one table grouped by class,
  * `Works with` chips from the last check with the selected key, `Used as`
  * tags, the On switch with its consequence dialog, the `⋯` actions, one
- * expandable row, `Re-check all` and `Add model ▾`.
+ * model editor, `Re-check all` and `Add model ▾`.
  */
 export function AdminProviderModels({
   connection,
@@ -139,13 +138,15 @@ export function AdminProviderModels({
   usageSources
 }: AdminProviderModelsProps) {
   const [sheet, setSheet] = useState<Readonly<{ kind: "add" } | { kind: "edit"; model: AdminProviderModel }> | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [presetProgress, setPresetProgress] = useState<SetupProgress | null>(null);
+  const presetAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => presetAbortRef.current?.abort(), []);
   const discovery = useAdminOpenRouterDiscovery({
     loadCompatibleModels: controller.actions.discoverCompatibleModels,
     loadEndpoints: controller.actions.discoverEndpoints,
     loadModels: controller.actions.discoverModels
   });
-  const busy = controller.state.busy;
+  const busy = controller.state.busy || presetProgress !== null;
   const usage = useMemo(() => deriveModelUsage(usageSources), [usageSources]);
   const groups = useMemo(() => groupProviderModels(connection.models), [connection.models]);
   const checkable = checkableCredentials(connection);
@@ -165,9 +166,10 @@ export function AdminProviderModels({
       : running ? "Model checks are already running."
         : "Sends small requests to verify model access, tools, JSON output, PDF and image input, and streaming.";
 
-  const startChecks = (credentialId: string, modelIds?: readonly string[]) => {
+  const startChecks = (credentialId: string, modelIds?: readonly string[], retryUnresolved?: boolean) => {
     onDiagnosticCredentialChange(credentialId);
-    void controller.actions.startModelChecks(connection.id, credentialId, modelIds);
+    if (retryUnresolved) void controller.actions.startModelChecks(connection.id, credentialId, modelIds, true);
+    else void controller.actions.startModelChecks(connection.id, credentialId, modelIds);
   };
 
   const setEnabled = (model: AdminProviderModel, enabled: boolean) => {
@@ -224,8 +226,17 @@ export function AdminProviderModels({
   };
 
   const addPreset = (displayName: string, configuration: unknown) => {
-    void controller.actions.saveModel(connection.id, null, { configuration, displayName }).then((result) => {
-      if (!result.ok) onError(`“${displayName}” was not added. ${result.message}`);
+    if (presetAbortRef.current) return;
+    const abort = new AbortController();
+    presetAbortRef.current = abort;
+    setPresetProgress({ phase: "validating", completed: 0, total: null });
+    void controller.actions.saveModel(connection.id, null, { configuration, displayName }, {
+      signal: abort.signal,
+      onProgress: (progress) => { if (!abort.signal.aborted) setPresetProgress(progress); }
+    }).then((result) => {
+      presetAbortRef.current = null;
+      setPresetProgress(null);
+      if (!result.ok) onError(`Setup for “${displayName}” did not finish. ${result.message}`);
     });
   };
   const presentUpstreamIds = new Set(connection.models.map((model) => liveConfiguration(model).upstreamModelId));
@@ -260,14 +271,12 @@ export function AdminProviderModels({
       : [])
   ];
 
-  const rowClick = (event: MouseEvent<HTMLTableRowElement>, modelId: string) => {
-    const target = event.target as HTMLElement;
-    if (target.closest("button, a, input, select, [role='menu'], [role='dialog']")) return;
-    setExpandedId((current) => current === modelId ? null : modelId);
-  };
-
   return (
     <section aria-labelledby="provider-models-heading" className="flex min-w-0 flex-col gap-2.5" data-testid="provider-models">
+      {presetProgress ? <div>
+        <AdminProviderSetupProgress progress={presetProgress} />
+        <UiV2Button className="mt-2" onClick={() => presetAbortRef.current?.abort()} tone="ghost" type="button">Stop checking</UiV2Button>
+      </div> : null}
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
         <h3 className="text-base font-semibold text-ink" id="provider-models-heading">Models</h3>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -348,8 +357,6 @@ export function AdminProviderModels({
                     });
                     const tags = usage.get(model.id) ?? [];
                     const route = modelRouteLabel(connection, model);
-                    const expanded = expandedId === model.id;
-                    const summaries = expanded ? modelCheckSummaries(connection, model, checkKey) : [];
                     const canCheck = !busy && Boolean(checkKey) && (initialSetup || model.enabled && model.activeConfig !== null) && !running;
                     const menu: UiV2MenuAction[] = [
                       { icon: "edit", label: "Edit", onSelect: () => setSheet({ kind: "edit", model }) },
@@ -362,7 +369,6 @@ export function AdminProviderModels({
                           onSelect: () => startChecks(credential.id, [model.id])
                         }))
                       },
-                      { icon: "search", label: "Details", onSelect: () => setExpandedId(model.id) },
                       {
                         icon: "stop",
                         label: model.enabled ? "Turn off" : "Turn on",
@@ -371,24 +377,16 @@ export function AdminProviderModels({
                       },
                       { icon: "trash", label: "Remove from AIQSA", onSelect: () => requestRemove(model), tone: "destructive" }
                     ];
-                    return [
+                    return (
                       <tr
-                        aria-expanded={expanded}
-                        className={`grid grid-cols-[minmax(0,1fr)_auto_auto] border-b border-trace-subtle align-top xl:table-row ${model.enabled ? "" : "opacity-70"} ${expanded ? "bg-control-surface/30" : ""}`}
+                        className={`grid grid-cols-[minmax(0,1fr)_auto_auto] border-b border-trace-subtle align-top xl:table-row ${model.enabled ? "" : "opacity-70"}`}
                         data-model-enabled={model.enabled}
                         data-testid={`provider-model-${model.id}`}
+                        id={`provider-model-${model.id}`}
                         key={model.id}
-                        onClick={(event) => rowClick(event, model.id)}
                       >
                         <td className="col-start-1 row-start-1 min-w-0 px-4 py-3 sm:max-w-[18rem] sm:px-5">
-                          <button
-                            aria-expanded={expanded}
-                            className={`block min-w-0 max-w-full text-left ${focusRing} rounded-[4px]`}
-                            onClick={() => setExpandedId((current) => current === model.id ? null : model.id)}
-                            type="button"
-                          >
-                            <span className="block truncate text-sm font-medium text-ink">{modelTitle(model)}</span>
-                          </button>
+                          <span className="block truncate text-sm font-medium text-ink" data-testid="provider-model-name">{modelTitle(model)}</span>
                           <p className="mt-0.5 truncate text-xs text-ink-muted">
                             <span className="font-mono">{configuration.upstreamModelId}</span>
                             {route ? ` · ${route}` : ""}
@@ -415,7 +413,7 @@ export function AdminProviderModels({
                               {worksWith.kind === "failed" ? (
                                 <span className="inline-flex items-center gap-2 text-xs text-caution">
                                   Check failed
-                                  <UiV2Button aria-describedby={checkHelpId} disabled={!canCheck} onClick={() => checkKey && startChecks(checkKey.id, [model.id])} title={checkHelp} tone="ghost" type="button">
+                                  <UiV2Button aria-describedby={checkHelpId} disabled={!canCheck} onClick={() => checkKey && startChecks(checkKey.id, [model.id], true)} title={checkHelp} tone="ghost" type="button">
                                     Retry
                                   </UiV2Button>
                                 </span>
@@ -440,44 +438,8 @@ export function AdminProviderModels({
                         <td className="col-start-3 row-start-1 px-3 py-2.5 text-right">
                           <ProviderRowMenu actions={menu} label={`More actions for ${model.displayName}`} />
                         </td>
-                      </tr>,
-                      expanded ? (
-                        <tr className="block border-b border-trace-subtle xl:table-row" data-testid={`provider-model-${model.id}-details`} key={`${model.id}-details`}>
-                          <td className="block px-4 pb-3.5 xl:table-cell sm:px-5" colSpan={5}>
-                            <div className="flex min-w-0 flex-col gap-3 rounded-[10px] bg-control-surface/60 px-3.5 py-3 sm:flex-row sm:items-center">
-                              <div className="min-w-0 flex-1 text-xs leading-5 text-ink-secondary">
-                                {worksWith.kind === "checking" ? <p>Checking with key {checkKey?.label}…</p> : null}
-                                {worksWith.kind === "failed" ? <p>The last check with key {checkKey?.label} hit a temporary provider failure; earlier results were kept.</p> : null}
-                                {summaries.length ? summaries.map((summary) => (
-                                  <p key={summary.credentialLabel}>
-                                    {summary.sentence}
-                                    {summary.usageMissing ? (
-                                      <span className="block text-caution">No usage reporting — cost accounting for this model will be empty.</span>
-                                    ) : null}
-                                  </p>
-                                )) : worksWith.kind === "checking" || worksWith.kind === "failed" ? null : (
-                                  <p>{checkKey ? `Not checked yet with key ${checkKey.label}.` : "Choose a working key to check this model."}</p>
-                                )}
-                                {route ? <p className="text-ink-muted">Route: {route}.</p> : null}
-                              </div>
-                              <div className="flex shrink-0 items-center gap-2">
-                                <UiV2Button
-                                  disabled={!canCheck}
-                                  onClick={() => checkKey && startChecks(checkKey.id, [model.id])}
-                                  tone="ghost"
-                                  type="button"
-                                >
-                                  Re-check
-                                </UiV2Button>
-                                <UiV2Button icon="edit" onClick={() => setSheet({ kind: "edit", model })} tone="ghost" type="button">
-                                  Edit
-                                </UiV2Button>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      ) : null
-                    ];
+                      </tr>
+                    );
                   })}
                 </tbody>
               ))}
@@ -495,6 +457,7 @@ export function AdminProviderModels({
         connection={connection}
         controller={controller}
         discovery={discovery}
+        diagnosticCredentialId={diagnosticCredentialId}
         key={sheet ? `${sheet.kind}:${editing?.id ?? "new"}` : "closed"}
         model={editing}
         onClose={() => setSheet(null)}

@@ -73,7 +73,7 @@ describe("useAdminModelChecks", () => {
     expect(api.getCheckRun).toHaveBeenCalledWith("conn-openai", "run-1");
 
     await act(async () => { await result.current.restart(); });
-    expect(actions.startModelChecks).toHaveBeenCalledWith("conn-openai", "cred-primary");
+    expect(actions.startModelChecks).toHaveBeenCalledWith("conn-openai", "cred-primary", undefined, true);
     expect(result.current.interrupted).toBeNull();
   });
 });

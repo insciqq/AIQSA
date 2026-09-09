@@ -69,6 +69,21 @@ describe("useAdminSectionNavigation", () => {
     window.history.replaceState(null, "", "/");
   });
 
+  it.each([1440, 900, 390])("keeps Sign-up rules reachable and addressable at width %s", async (width) => {
+    stubViewport(width);
+    window.history.replaceState(null, "", "/admin?section=access-rules&resource=old-user&filter=pending");
+    const current = renderNavigation();
+    await waitFor(() => expect(current.navigation.activeSection).toBe("access-rules"));
+    expect(current.navigation.activeResource).toBeNull();
+    expect(current.navigation.activeFilter).toBeNull();
+    expect(window.location.search).toBe("?section=access-rules");
+    if (width < 1024) fireEvent.click(screen.getByRole("button", { name: "Sections" }));
+    expect(screen.getByRole("link", { name: "Sign-up rules" })).toHaveAttribute("aria-current", "page");
+    fireEvent.click(screen.getByRole("link", { name: "Users" }));
+    act(() => window.history.back());
+    await waitFor(() => expect(current.navigation.activeSection).toBe("access-rules"));
+  });
+
   it("restores deep links, pushes section history, and preserves unrelated URL and state", async () => {
     window.history.replaceState(
       { nextRouter: { marker: "keep" } },

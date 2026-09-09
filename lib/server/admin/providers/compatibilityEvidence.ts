@@ -35,10 +35,12 @@ export function decodeAdminProviderCompatibilityEvidence(
   }
   if (value.vision !== undefined && !status(value.vision)) return null;
   if (value.toolCalling !== undefined && !status(value.toolCalling)) return null;
+  if (value.parallelToolCalls !== undefined && !status(value.parallelToolCalls)) return null;
 
   return {
     directPdf: value.directPdf,
     ...(value.toolCalling === undefined ? {} : { toolCalling: value.toolCalling }),
+    ...(value.parallelToolCalls === undefined ? {} : { parallelToolCalls: value.parallelToolCalls }),
     ...(value.vision === undefined ? {} : { vision: value.vision }),
     ...(value.forcedToolCall === undefined
       ? {}

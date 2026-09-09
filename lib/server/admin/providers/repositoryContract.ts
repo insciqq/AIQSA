@@ -58,6 +58,7 @@ export type ProviderActiveRefreshCandidate = Readonly<{
     displayName: string;
     id: string;
     version: number;
+    draftVersion?: number;
   };
 }>;
 
@@ -158,6 +159,7 @@ export type ProviderModelActivationCandidate = Readonly<{
     id: string;
   };
   model: {
+    activeVersion?: number;
     configuration: unknown;
     displayName: string;
     draftVersion: number;
@@ -172,6 +174,8 @@ export type ProviderModelActivationCandidate = Readonly<{
  * configuration live at the same time so the model can be checked and used.
  */
 export type ProviderModelActivationWrite = Readonly<{
+  initialSetup?: boolean;
+  signal?: AbortSignal;
   connection: {
     activateDraft: { configuration: ProviderConnectionConfiguration; draftVersion: number } | null;
     id: string;
@@ -336,6 +340,8 @@ export type AdminProviderRepository = Readonly<{
     credentialId: string | null;
   }): Promise<"credential_not_found" | "not_found" | "updated">;
   storeActiveRefreshCas(input: {
+    activatedConfiguration?: ProviderModelConfiguration;
+    signal?: AbortSignal;
     capabilityRole?: SystemModelVerificationRole;
     candidate: ProviderActiveRefreshCandidate;
     checkedAt: Date;

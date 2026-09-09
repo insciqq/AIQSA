@@ -95,6 +95,8 @@ export type McpRuntimeLifecycle = {
 };
 
 type LiveRuntime = {
+  healthUsesToolList: boolean;
+  toolDefinitionHashes: ReadonlyMap<string, string>;
   disabledToolNames: ReadonlySet<string>;
   enabledToolNames: ReadonlySet<string>;
   evictionErrorCode: string | null;
@@ -183,6 +185,15 @@ function stableRuntimeError(error: unknown): string {
   if (error instanceof McpClientSessionError && RESPONSE_LIMIT_ERROR_CODES.has(error.code)) {
     return error.code;
   }
+  if (error instanceof McpClientSessionError) {
+    if (error.code === "mcp_request_timeout" || error.code === "mcp_request_cancelled") return "mcp_timeout";
+    if (error.code === "mcp_authorization_required") return "mcp_authorization_required";
+    if (error.code === "mcp_session_closed") return error.code;
+    if (error.code.startsWith("mcp_inventory_")) return "mcp_inventory_invalid";
+    if (error.operation === "ping") return "mcp_health_check_failed";
+  }
+  if (error instanceof Error && error.message === "mcp_inventory_changed") return "mcp_inventory_changed";
+  if (error instanceof Error && error.message === "mcp_session_closed") return "mcp_session_closed";
   if (error instanceof Error) {
     if (error.name === "AbortError" || /timed?\s*out|timeout/iu.test(error.message)) return "mcp_timeout";
     if (/unauthori[sz]ed|authorization|required|\b401\b|\b403\b/iu.test(error.message)) {
@@ -211,7 +222,7 @@ function fatalResponseErrorCode(session: McpRuntimeSession): McpFatalResponseErr
 }
 
 function closedSessionErrorCode(session: McpRuntimeSession): string {
-  return fatalResponseErrorCode(session) ?? "mcp_connect_failed";
+  return fatalResponseErrorCode(session) ?? "mcp_session_closed";
 }
 
 function isNonresponsiveLocalCall(error: unknown, signal: AbortSignal | undefined): boolean {
@@ -368,7 +379,7 @@ export class McpRuntimeCoordinator {
       if (fatalErrorCode) {
         await this.#evictFailedRuntime(input.generationId, runtime, fatalErrorCode);
       } else if (isClosedSession(runtime.session)) {
-        await this.#evictFailedRuntime(input.generationId, runtime, "mcp_connect_failed");
+        await this.#evictFailedRuntime(input.generationId, runtime, "mcp_session_closed");
       } else if (runtime.local && isNonresponsiveLocalCall(error, input.signal) &&
         this.#live.get(input.generationId) === runtime) {
         await this.#evictFailedRuntime(input.generationId, runtime, "mcp_timeout");
@@ -459,9 +470,26 @@ export class McpRuntimeCoordinator {
     });
     try {
       await Promise.race([
-        Promise.resolve().then(() => runtime.session.ping({
-          signal: controller.signal, timeoutMs: MCP_HEALTH_DEADLINE_MS
-        })),
+        Promise.resolve().then(async () => {
+          if (!runtime.healthUsesToolList) {
+            try {
+              await runtime.session.ping({ signal: controller.signal, timeoutMs: MCP_HEALTH_DEADLINE_MS });
+              return;
+            } catch (error) {
+              if (!(error instanceof McpClientSessionError) || error.code !== "mcp_ping_unsupported") throw error;
+              runtime.healthUsesToolList = true;
+            }
+          }
+          controller.signal.throwIfAborted();
+          const tools = await runtime.session.listTools(controller.signal);
+          controller.signal.throwIfAborted();
+          assertInventoryDoesNotExposeCredentials(tools, runtime.redactionValues, runtime.session);
+          const hashes = new Map(tools.map((tool) => [tool.name, tool.definitionHash]));
+          for (const [name, hash] of runtime.toolDefinitionHashes) {
+            if (hashes.get(name) !== hash) throw new Error("mcp_inventory_changed");
+          }
+          // A health response renews liveness only; it never publishes new tools.
+        }),
         cancelled
       ]);
       if (this.#live.get(generationId) !== runtime || this.#healthProbes.get(generationId) !== probe) return;
@@ -627,6 +655,8 @@ export class McpRuntimeCoordinator {
       }
       if (isClosedSession(session)) throw new Error("mcp_session_closed");
       this.#live.set(launch.generationId, {
+        healthUsesToolList: false,
+        toolDefinitionHashes: new Map(effectiveTools.map((tool) => [tool.name, tool.definitionHash])),
         disabledToolNames,
         enabledToolNames: new Set(effectiveTools.map((tool) => tool.name)),
         evictionErrorCode: null,
@@ -715,7 +745,7 @@ export class McpRuntimeCoordinator {
       if (this.#live.get(generationId) !== live) {
         if (live.evictionErrorCode !== null) return false;
         await this.#repository.markFailed({
-          errorCode: "mcp_connect_failed",
+          errorCode: "mcp_session_closed",
           fingerprint,
           generationId,
           now: this.#now()
@@ -749,7 +779,7 @@ export class McpRuntimeCoordinator {
       if (this.#live.get(generationId) !== live) {
         if (live.evictionErrorCode !== null) return false;
         await this.#repository.markFailed({
-          errorCode: "mcp_connect_failed",
+          errorCode: "mcp_session_closed",
           fingerprint,
           generationId,
           now: this.#now()
@@ -758,6 +788,7 @@ export class McpRuntimeCoordinator {
       }
       if (isClosedSession(live.session)) throw new Error("mcp_session_closed");
       live.enabledToolNames = new Set(effectiveTools.map((tool) => tool.name));
+      live.toolDefinitionHashes = new Map(effectiveTools.map((tool) => [tool.name, tool.definitionHash]));
       live.lastProtocolSuccessAt = protocolSuccessAt;
       this.#scheduleHealthCheck();
       return true;

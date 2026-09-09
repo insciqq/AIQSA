@@ -1,7 +1,11 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   Client,
+  ProtocolError,
+  ProtocolErrorCode,
   SdkError,
   SdkErrorCode,
+  SdkHttpError,
   StreamableHTTPClientTransport,
   type FetchLike,
   type Implementation,
@@ -43,6 +47,8 @@ export type McpClientSessionErrorCode =
   | "mcp_inventory_response_too_large"
   | "mcp_list_tools_failed"
   | "mcp_ping_failed"
+  | "mcp_ping_unsupported"
+  | "mcp_authorization_required"
   | "mcp_response_too_large"
   | "mcp_request_cancelled"
   | "mcp_request_timeout"
@@ -76,6 +82,8 @@ const ERROR_MESSAGES: Record<McpClientSessionErrorCode, string> = {
   mcp_inventory_response_too_large: "The MCP tool inventory response exceeds the configured byte limit.",
   mcp_list_tools_failed: "The MCP tool inventory could not be loaded.",
   mcp_ping_failed: "The MCP server did not respond.",
+  mcp_ping_unsupported: "The MCP server does not support the ping health method.",
+  mcp_authorization_required: "The MCP server requires renewed authorization.",
   mcp_response_too_large: "The MCP response exceeds the configured byte limit.",
   mcp_request_cancelled: "The MCP request was cancelled.",
   mcp_request_timeout: "The MCP request timed out.",
@@ -240,6 +248,11 @@ function requestFailure(
   }
   if (SdkError.isInstance(error) && error.code === SdkErrorCode.RequestTimeout) {
     return sessionError("mcp_request_timeout", operation, true);
+  }
+  if (SdkHttpError.isInstance(error) && (error.data.status === 401 || error.data.status === 403) ||
+    SdkError.isInstance(error) && [SdkErrorCode.ClientHttpAuthentication, SdkErrorCode.ClientHttpForbidden].includes(error.code) ||
+    error instanceof Error && error.name === "UnauthorizedError") {
+    return sessionError("mcp_authorization_required", operation);
   }
   return sessionError(fallbackCode, operation, true);
 }
@@ -539,6 +552,7 @@ function normalizeCallResult(
 }
 
 export class McpClientSession {
+  private readonly pingContext = new AsyncLocalStorage<{ requestId?: string | number }>();
   private readonly client: Client;
   private readonly defaultRequestTimeoutMs: number;
   private initializePromise: Promise<void> | null = null;
@@ -560,9 +574,20 @@ export class McpClientSession {
       options.responseLimits ? { limits: options.responseLimits } : {}
     );
     const staticHeaders = new Headers(options.headers);
+    const guardedFetch = this.responseGuard.wrapFetch(options.fetch);
     const transport = new StreamableHTTPClientTransport(new URL(options.url.toString()), {
       ...(options.authProvider ? { authProvider: options.authProvider } : {}),
-      fetch: this.responseGuard.wrapFetch(options.fetch),
+      fetch: (url, init) => {
+        const context = this.pingContext.getStore();
+        if (context && typeof init?.body === "string") {
+          try {
+            const request: unknown = JSON.parse(init.body);
+            if (isRecord(request) && request.method === "ping" &&
+              (typeof request.id === "string" || typeof request.id === "number")) context.requestId = request.id;
+          } catch { /* OAuth transport may send form data during the same request. */ }
+        }
+        return guardedFetch(url, init);
+      },
       requestInit: { headers: staticHeaders }
     });
     this.client = new Client(
@@ -726,12 +751,30 @@ export class McpClientSession {
   async ping(options?: McpClientRequestOptions): Promise<void> {
     this.requireReady("ping");
     const sdkOptions = requestOptions("ping", this.defaultRequestTimeoutMs, options);
-    try {
-      await this.guardedRequest("ping", sdkOptions.timeout,
-        () => this.client.request({ method: "ping" }, sdkOptions));
-    } catch (error) {
-      throw requestFailure(error, "ping", options?.signal, "mcp_ping_failed");
-    }
+    const context: { requestId?: string | number } = {};
+    await this.pingContext.run(context, async () => {
+      try {
+        await this.guardedRequest("ping", sdkOptions.timeout,
+          () => this.client.request({ method: "ping" }, sdkOptions));
+      } catch (error) {
+        let unsupported = ProtocolError.isInstance(error) && error.code === ProtocolErrorCode.MethodNotFound;
+        // The pinned SDK exposes non-success HTTP bodies as SdkHttpError.data.
+        // Inspect only the already wire-bounded body, correlated to this ping.
+        if (!unsupported && SdkHttpError.isInstance(error) && error.data.status === 404 &&
+          typeof error.data.text === "string" && context.requestId !== undefined) {
+          try {
+            const body: unknown = JSON.parse(error.data.text);
+            unsupported = isRecord(body) && body.jsonrpc === "2.0" && body.id === context.requestId &&
+              body.result === undefined && isRecord(body.error) && body.error.code === -32601 &&
+              typeof body.error.message === "string";
+          } catch { /* A generic HTTP 404 is not unsupported-ping evidence. */ }
+        }
+        if (unsupported && !options?.signal?.aborted && this.state === "ready") {
+          throw sessionError("mcp_ping_unsupported", "ping");
+        }
+        throw requestFailure(error, "ping", options?.signal, "mcp_ping_failed");
+      }
+    });
   }
 
   async listAllTools(options?: McpClientRequestOptions): Promise<readonly AiqsaMcpToolDefinition[]> {

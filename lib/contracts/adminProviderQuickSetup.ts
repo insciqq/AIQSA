@@ -1,3 +1,5 @@
+import type { AdminProviderCheckRun } from "./adminProviders";
+
 export const ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS = [
   "openai",
   "anthropic",
@@ -69,7 +71,8 @@ export type AdminProviderQuickSetupReadyResult = Readonly<{
   defaultChanged: boolean;
   model: AdminProviderQuickSetupModelDisplay;
   models: AdminProviderQuickSetupModelDisplay[];
-  outcome: "ready";
+  outcome: "ready" | "partial" | "cancelled";
+  checkRun?: AdminProviderCheckRun;
   provider: AdminProviderQuickSetupProviderId;
   providerDisplayName: string;
   search?: null | Readonly<{

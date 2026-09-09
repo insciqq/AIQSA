@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { presentRunLifecycleV2 } from "@/features/run-lifecycle-v2/runPresentation";
-import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE } from "@/lib/contracts/runs";
+import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE, mcpAutoDiscoveryFailure } from "@/lib/contracts/runs";
+import { TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
 import {
   runTransportStateV2,
   transportLostForMessageV2
@@ -25,6 +26,22 @@ function present(
 }
 
 describe("Run transport presentation v2", () => {
+  it.each([TOOL_SYNTHESIS_FAILURE.message, "Provider returned a tool call from a no-tool synthesis request."])(
+    "restores a safe final synthesis failure from its persisted message", (errorMessage) => {
+      const slice = runTransportStateV2({ activeChatStreaming: false, interruptedRun: null,
+        message: { ...streamingMessage, errorMessage, status: "error" }, persistedRunStatus: "error" });
+      expect(present(slice)).toMatchObject({ kind: "terminal_error",
+        failure: { ...TOOL_SYNTHESIS_FAILURE, recovery: "regenerate" } });
+    }
+  );
+
+  it.each(["mcp_router_output_limit", "mcp_router_timeout", "mcp_router_output_invalid"])("restores the exact safe %s cause after reload", (reason) => {
+    const failure = mcpAutoDiscoveryFailure(reason);
+    const slice = runTransportStateV2({ activeChatStreaming: false, interruptedRun: null,
+      message: { ...streamingMessage, errorMessage: failure.message, status: "error" }, persistedRunStatus: "error" });
+    expect(slice.failure).toEqual({ ...failure, recovery: "retry" });
+  });
+
   it("restores Auto recovery from the exact persisted discovery failure after reload", () => {
     const slice = runTransportStateV2({
       activeChatStreaming: false,

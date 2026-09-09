@@ -1,3 +1,36 @@
+const MCP_RUNTIME_ERROR_MESSAGES = {
+  mcp_accepted_generation_changed: "The MCP configuration or tool changed. Start a new request to use the current configuration.",
+  mcp_authorization_required: "MCP authorization is no longer valid. Reconnect in MCP settings.",
+  mcp_connect_failed: "The MCP connection failed. Check the server and try again.",
+  mcp_health_check_failed: "The MCP health check failed. Check the server and try again.",
+  mcp_inventory_invalid: "The MCP server returned an invalid tool inventory. Ask an administrator to check the server.",
+  mcp_inventory_changed: "The MCP tool inventory changed. Refresh the connection before trying again.",
+  mcp_response_too_large: "The MCP server response exceeded its size limit. Ask an administrator to check the server.",
+  mcp_runtime_unavailable: "The MCP runtime is unavailable. Check MCP settings and try again.",
+  mcp_session_closed: "The MCP session closed. Try again to reconnect the runtime.",
+  mcp_timeout: "The MCP server timed out. Check the server and try again."
+} as const;
+
+export type McpRuntimeErrorCode = keyof typeof MCP_RUNTIME_ERROR_MESSAGES;
+
+/** Only bounded diagnostic categories cross the catalog and tool-result boundary. */
+export function mcpRuntimeErrorCode(value: unknown): McpRuntimeErrorCode {
+  if (typeof value === "string" && Object.hasOwn(MCP_RUNTIME_ERROR_MESSAGES, value)) {
+    return value as McpRuntimeErrorCode;
+  }
+  if (value === "mcp_request_timeout") return "mcp_timeout";
+  if (value === "mcp_ping_failed" || value === "mcp_ping_unsupported") return "mcp_health_check_failed";
+  if (value === "mcp_oauth_reauthorization_required" || value === "oauth_reauthorization_required") return "mcp_authorization_required";
+  if (typeof value === "string" && /^mcp_(?:initialize|inventory|call_result)_response_too_large$/.test(value)) return "mcp_response_too_large";
+  if (value === "mcp_call_result_too_large" || value === "mcp_initialize_response_too_large") return "mcp_response_too_large";
+  if (typeof value === "string" && value.startsWith("mcp_inventory_")) return "mcp_inventory_invalid";
+  return "mcp_runtime_unavailable";
+}
+
+export function mcpRuntimeErrorMessage(code: unknown): string {
+  return MCP_RUNTIME_ERROR_MESSAGES[mcpRuntimeErrorCode(code)];
+}
+
 export type McpSource =
   | {
       allowPrivateNetwork?: boolean;
@@ -159,6 +192,7 @@ export type AdminMcpPersonalSlotSummary = {
 };
 
 export type AdminMcpServer = {
+  runtimeErrorCode?: McpRuntimeErrorCode | null;
   runtimeProblem?: "reauthorization_required" | "unavailable" | null;
   activation: AdminMcpActivationSummary | null;
   activePersonalSlots: AdminMcpPersonalSlotSummary[];
@@ -232,6 +266,7 @@ export type UserMcpConfigurationField = {
 export type McpOperationalStatus = "active" | "checking" | "inactive";
 
 export type UserMcpServer = {
+  runtimeErrorCode?: McpRuntimeErrorCode | null;
   accountLabel: string | null;
   description: string;
   enabled: boolean;
@@ -334,6 +369,19 @@ export const MCP_RUN_PLAN_LIMITS = Object.freeze({
   maxTools: 128
 });
 
+/** Provider completion allowance includes reasoning and the strict JSON selection. */
+export const MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS = Object.freeze({
+  defaultTokens: 8_192,
+  maxTokens: 65_536,
+  minTokens: 1_024
+});
+
+export function isMcpAutoDiscoveryOutputTokens(value: unknown): value is number {
+  return Number.isSafeInteger(value) &&
+    Number(value) >= MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.minTokens &&
+    Number(value) <= MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.maxTokens;
+}
+
 export const MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS = Object.freeze({
   defaultSeconds: 60,
   maxSeconds: 120,
@@ -373,7 +421,7 @@ export function adminMcpAttention(server: AdminMcpServer): AdminMcpAttention | n
     return {
       action: "Review connection", href: null,
       label: server.runtimeProblem === "reauthorization_required"
-        ? "A user connection needs reconnecting" : "MCP runtime unavailable",
+        ? "A user connection needs reconnecting" : mcpRuntimeErrorMessage(server.runtimeErrorCode),
       task: "runtime"
     };
   }

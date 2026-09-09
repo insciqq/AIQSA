@@ -13,17 +13,19 @@ export type AdminSystemModelCandidate = AdminModelDefaultCandidate & {
 
 export type AdminRerankerModelCandidate = AdminModelDefaultCandidate;
 
-/** Why an answer deployment cannot serve a generative system role right now.
- * `not_checked` is the only recoverable reason: the deployment can be checked
- * for that role from the picker. */
+/** Configuration and missing/rejected proof are separate, actionable states. */
 export type AdminSystemModelIneligibilityReason =
   | "adapter_unsupported"
+  | "capability_disabled"
+  | "probe_rejected"
   | "model_disabled"
   | "no_default_credential"
   | "not_checked";
 
 export const ADMIN_SYSTEM_MODEL_INELIGIBILITY_REASONS: readonly AdminSystemModelIneligibilityReason[] = [
   "adapter_unsupported",
+  "capability_disabled",
+  "probe_rejected",
   "model_disabled",
   "no_default_credential",
   "not_checked"
@@ -39,6 +41,7 @@ export const ADMIN_SYSTEM_MODEL_ELIGIBILITY_ROLES: readonly AdminSystemModelElig
 
 export type AdminSystemModelIneligibleCandidate = AdminSystemModelCandidate & {
   reason: AdminSystemModelIneligibilityReason;
+  requirement?: "structured_output" | "tool_calling" | "forced_tool_call" | "vision" | "direct_pdf";
 };
 
 export type AdminRerankerRouteEntry = AdminRerankerModelCandidate & {
@@ -112,6 +115,8 @@ function candidate(value: unknown): value is AdminSystemModelCandidate {
 
 function ineligibleCandidate(value: unknown): value is AdminSystemModelIneligibleCandidate {
   return candidate(value) &&
+    ((value as Record<string, unknown>).requirement === undefined ||
+      ["structured_output", "tool_calling", "forced_tool_call", "vision", "direct_pdf"].includes(String((value as Record<string, unknown>).requirement))) &&
     ADMIN_SYSTEM_MODEL_INELIGIBILITY_REASONS.includes(
       (value as Record<string, unknown>).reason as AdminSystemModelIneligibilityReason
     );

@@ -132,7 +132,7 @@ export function adminActionErrorMessage(code: AdminActionClientErrorCode | (stri
     email_required: "Enter the invited email address.",
     forbidden: "Your account no longer has permission to perform this admin action.",
     group_archived: "This group is archived. Its grants no longer apply and cannot be changed.",
-    group_grant_invalid: "Nothing changed: one of the chosen models or Search sources can't be granted right now. Refresh and try again.",
+    group_grant_invalid: "One of the chosen models or Search sources can't be granted right now. Refresh and try again.",
     group_grant_required: "Choose a group and at least one grant before saving.",
     group_has_grants: "Remove active grants before deleting this group.",
     group_has_members: "Remove members before deleting this group.",

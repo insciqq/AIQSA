@@ -221,6 +221,47 @@ describe("MCP tool argument schema validation", () => {
 });
 
 describe("McpClientSession", () => {
+  it.each([200, 404])("recognizes a correlated unsupported ping over HTTP %s without closing a working session", async (status) => {
+    const fixture = await startFixture();
+    const session = createSession(fixture, { async fetch(url, init) {
+      const request = new Request(url, init);
+      const body = request.method === "POST" ? await request.clone().json() : null;
+      if (body?.method === "ping") return Response.json({ jsonrpc: "2.0", id: body.id,
+        error: { code: -32601, message: "PRIVATE_UPSTREAM_DETAIL" } }, { status });
+      return fetch(request);
+    } });
+    try {
+      await session.initialize();
+      for (let index = 0; index < 3; index += 1) {
+        await expect(session.callTool("echo", {})).resolves.toMatchObject({ isError: false });
+        await expect(session.ping()).rejects.toMatchObject({ code: "mcp_ping_unsupported", operation: "ping" });
+        expect(session.isClosed()).toBe(false);
+        expect(await session.listAllTools()).toHaveLength(1);
+      }
+    } finally { await session.close(); }
+  });
+
+  it.each(["generic", "wrong-id", "wrong-code", "malformed", "unauthorized", "forbidden"])("does not treat a %s HTTP failure as unsupported ping", async (failure) => {
+    const fixture = await startFixture();
+    const session = createSession(fixture, { async fetch(url, init) {
+      const request = new Request(url, init);
+      const body = request.method === "POST" ? await request.clone().json() : null;
+      if (body?.method !== "ping") return fetch(request);
+      const status = failure === "unauthorized" ? 401 : failure === "forbidden" ? 403 : 404;
+      return new Response(failure === "generic" ? "not found" : failure === "malformed" ? "{" : JSON.stringify({
+        jsonrpc: "2.0", id: failure === "wrong-id" ? "unrelated" : body.id,
+        error: { code: failure === "wrong-code" ? -32000 : -32601, message: "PRIVATE_UPSTREAM_DETAIL" }
+      }), { status });
+    } });
+    try {
+      await session.initialize();
+      const error = await session.ping().catch((value: unknown) => value);
+      expect(error).toMatchObject({ code: ["unauthorized", "forbidden"].includes(failure)
+        ? "mcp_authorization_required" : "mcp_ping_failed", operation: "ping" });
+      expect(JSON.stringify(error)).not.toContain("PRIVATE_UPSTREAM_DETAIL");
+    } finally { await session.close(); }
+  });
+
   it("preserves an empty server version through initialize, discovery, and a read call", async () => {
     const fixture = await startFixture({ serverVersion: "" });
     const session = createSession(fixture);

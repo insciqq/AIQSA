@@ -374,7 +374,8 @@ describe("admin provider HTTP handlers", () => {
     );
     expect(checked.status).toBe(201);
     expect(providerService.createModelDraft).toHaveBeenCalledTimes(2);
-    expect(providerService.activateModel).toHaveBeenCalledWith({ connectionId: "connection-1", modelId: "model-new" });
+    expect(providerService.activateModel).toHaveBeenCalledWith({ connectionId: "connection-1", modelId: "model-new",
+      signal: expect.any(AbortSignal), onProgress: undefined });
     expect((await create(
       jsonRequest("http://localhost/models", { ...body, activate: "yes" }),
       { params: { connectionId: "connection-1" } }
@@ -387,7 +388,8 @@ describe("admin provider HTTP handlers", () => {
     );
     expect(updated.status).toBe(200);
     expect(providerService.updateModelDraft).toHaveBeenCalledWith(expect.objectContaining({ expectedDraftVersion: 1, modelId: "model-1" }));
-    expect(providerService.activateModel).toHaveBeenLastCalledWith({ connectionId: "connection-1", modelId: "model-1" });
+    expect(providerService.activateModel).toHaveBeenLastCalledWith({ connectionId: "connection-1", modelId: "model-1",
+      signal: expect.any(AbortSignal), onProgress: undefined });
   });
 
   it("starts, reads and cancels background checks without exposing anything but progress", async () => {
