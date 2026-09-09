@@ -7,7 +7,8 @@ import type { MemoryAnswerSource } from "@/lib/contracts/memoryClient";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
 import {
   answerProcessLabelV2,
-  describeToolCallV2
+  describeToolCallV2,
+  toolActivityOriginV2
 } from "@/features/run-lifecycle-v2/runPresentation";
 import { WorkspaceActivityTimelineV2 } from "@/features/run-lifecycle-v2/WorkspaceActivityTimelineV2";
 import {
@@ -79,7 +80,7 @@ export function AnswerProcessV2({
   const reasoning = reasoningTexts.map((text) => text.trim()).filter(Boolean).join("\n\n");
   // Workspace steps are rendered by the timeline; the generic list keeps only
   // other tools so no raw sandbox identifier can reach the thread.
-  const calls = (toolActivity?.calls ?? []).filter((call) => call.serverName !== "Workspace");
+  const calls = (toolActivity?.calls ?? []).filter((call) => toolActivityOriginV2(call) !== "workspace");
   const timeline = workspaceActivity && workspaceActivity.entries.length > 0 ? workspaceActivity : null;
   const workspaceFailed = workspaceActivityHasFailureV2(timeline);
   const warning = toolActivity?.warning ? (
@@ -156,7 +157,8 @@ export function AnswerProcessV2({
                           call,
                           call.status === "running"
                             ? "running"
-                            : call.status === "error" ? "failed" : "settled"
+                            : call.status === "error" ? "failed"
+                            : call.status === "cancelled" ? "cancelled" : "settled"
                         )}
                       </span>
                       <span className="v2-answer-process-step-meta">{toolMeta(call)}</span>

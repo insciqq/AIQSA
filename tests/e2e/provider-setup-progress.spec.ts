@@ -1,7 +1,7 @@
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, test, type Page } from "@playwright/test";
-import { fixtureCheck, fixtureConnection, fixtureCredential, fixtureModel, FIXTURE_NOW } from "../../components/admin/providers/providerFixtures";
+import { fixtureCheck, fixtureCheckRun, fixtureConnection, fixtureCredential, fixtureModel, FIXTURE_NOW, workingConnection } from "../../components/admin/providers/providerFixtures";
 import type { AdminProviderConnection } from "../../lib/contracts/adminProviders";
 import { ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS } from "../../lib/contracts/adminProviderQuickSetup";
 import { signInWithLocalToken } from "./support/localAuth";
@@ -93,7 +93,7 @@ for (const kind of ["custom", "native"] as const) {
       fixture.send(1, { type: "progress", progress: { phase: "checking", completed: 2, total: 4 } });
       await expect(progress()).toContainText("2 of 4 models checked.");
       await sheet.getByRole("button", { name: "Stop", exact: true }).click();
-      await expect(sheet.getByRole("alert")).toContainText("Setup stopped.");
+      await expect(sheet.getByRole("alert")).toContainText("Setup stopped before its saved state was received.");
       await expect(progress()).toHaveCount(0);
       await expect(save()).toBeDisabled();
       await expect.poll(() => fixture.channels[1]!.destroyed).toBe(true);
@@ -184,10 +184,100 @@ test("a truncated setup stream leaves a review action and cannot be resubmitted 
     fixture.send(0, { type: "progress", progress: { phase: "checking", completed: 2, total: 4 } });
     await expect(sheet.getByTestId("provider-setup-progress")).toContainText("2 of 4 models checked.");
     fixture.channels[0]!.end();
-    await expect(sheet.getByRole("alert")).toContainText("A save may have completed.");
+    await expect(sheet.getByRole("alert")).toContainText("The setup connection was interrupted. Saved results are kept; review them before continuing.");
     await expect(sheet.getByRole("button", { name: "Test & Save", exact: true })).toBeDisabled();
     await expect(sheet.getByRole("button", { name: "Close and review providers" })).toBeEnabled();
     expect(fixture.channels).toHaveLength(1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("partial setup keeps saved models and retries unfinished capabilities on the existing provider", async ({ page }) => {
+  const fixture = await streamFixture();
+  const connection = workingConnection();
+  const savedModel = connection.models[0]!;
+  const partialModel = connection.models[1]!;
+  const credentialId = connection.defaultCredentialId!;
+  let persisted = false;
+  let run = fixtureCheckRun({
+    credentialId, done: 2, failed: [partialModel.id], finishedAt: FIXTURE_NOW, id: "partial-run", reason: "setup",
+    state: "completed", total: 2,
+    results: [
+      { providerModelId: savedModel.id, state: "saved", checks: { structuredOutput: "verified", forcedToolCall: "verified" } },
+      { providerModelId: partialModel.id, state: "partial", checks: { structuredOutput: "verified", forcedToolCall: "rejected" } }
+    ]
+  });
+  const catalog = () => ({ connections: persisted ? [{ ...connection, checkRun: run }] : [] });
+  const actions: unknown[] = [];
+  await page.route("**/api/admin/providers", (route) => route.fulfill({ json: catalog() }));
+  await page.route("**/api/admin/providers/quick-setup", (route) => route.request().method() === "GET"
+    ? route.fulfill({ json: snapshot }) : route.continue({ url: fixture.url }));
+  await page.route(`**/api/admin/providers/${connection.id}/actions**`, (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: { run } });
+    actions.push(route.request().postDataJSON());
+    run = {
+      ...run, current: partialModel.id, done: 1, failed: [], finishedAt: null, id: "retry-run",
+      inFlight: [partialModel.id], reason: "requested", state: "running",
+      capabilityProgress: { capability: "forcedToolCall", completed: 1, total: 2, providerModelId: partialModel.id }
+    };
+    return route.fulfill({ json: catalog() });
+  });
+  try {
+    await signInWithLocalToken(page);
+    await page.goto("/admin?section=providers");
+    const sheet = await openSetup(page, "native");
+    await sheet.getByRole("button", { name: "Test & Save", exact: true }).click();
+    await expect.poll(() => fixture.channels.length).toBe(1);
+    fixture.send(0, { type: "progress", progress: {
+      phase: "checking", completed: 1, total: 2, connectionId: connection.id,
+      credentialId, runId: run.id, capability: "forcedToolCall"
+    } });
+    await expect(sheet.getByTestId("provider-setup-progress")).toContainText("Checking Forced tool calls…");
+    persisted = true;
+    fixture.send(0, { type: "result", status: 200, data: {
+      checkedAt: FIXTURE_NOW, checkRun: run, connectionId: connection.id,
+      defaultCredentialChanged: true, defaultChanged: false,
+      model: { displayName: savedModel.displayName }, models: connection.models.map(({ displayName }) => ({ displayName })),
+      outcome: "partial", provider: "openai", providerDisplayName: "OpenAI", search: null
+    } });
+    fixture.channels[0]!.end();
+
+    const results = sheet.getByRole("list", { name: "Model setup results" });
+    const savedResult = results.getByRole("listitem").filter({ hasText: savedModel.displayName });
+    const partialResult = results.getByRole("listitem").filter({ hasText: partialModel.displayName });
+    await expect(sheet.getByRole("heading", { name: "Some setup steps need attention" })).toBeVisible();
+    await expect(savedResult).toContainText(" · Saved");
+    await expect(savedResult).toContainText("Forced tool calls: verified");
+    await expect(partialResult).toContainText("Saved · some capabilities need attention");
+    await expect(partialResult).toContainText("Strict JSON: verified");
+    await expect(partialResult).toContainText("Forced tool calls: check rejected");
+    await expect(sheet.getByRole("button", { name: "Test & Save", exact: true })).toHaveCount(0);
+
+    const retry = sheet.getByRole("button", { name: "Retry unfinished checks" });
+    await retry.click();
+    await expect(sheet.getByRole("heading", { name: "Checking unfinished work…" })).toBeVisible();
+    await expect(retry).toBeDisabled();
+    await expect(sheet.getByTestId("provider-setup-progress")).toContainText("Checking Forced tool calls…");
+    await expect(savedResult).toContainText("Forced tool calls: verified");
+    expect(actions).toEqual([{ action: "check_models", credentialId, retryUnresolved: true }]);
+
+    run = fixtureCheckRun({
+      credentialId, done: 2, finishedAt: FIXTURE_NOW, id: "retry-run", reason: "requested", state: "completed", total: 2,
+      results: connection.models.map((model) => ({
+        providerModelId: model.id, state: "saved", checks: { structuredOutput: "verified", forcedToolCall: "verified" }
+      }))
+    });
+    await expect(sheet.getByRole("heading", { name: "Setup finished" })).toBeVisible();
+    await expect(partialResult).toContainText("Forced tool calls: verified");
+    await expect(results).not.toContainText("check rejected");
+    await expect(retry).toHaveCount(0);
+    await sheet.getByRole("button", { name: "View provider" }).click();
+    await expect(sheet).toHaveCount(0);
+    await expect(page).toHaveURL(new RegExp(`resource=${connection.id}`));
+    await expect(page.getByTestId("provider-models")).toContainText("Chat models · 2");
+    expect(fixture.channels).toHaveLength(1);
+    expect(actions).toHaveLength(1);
   } finally {
     await fixture.close();
   }

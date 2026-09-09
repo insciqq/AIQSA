@@ -6,6 +6,7 @@ import {
   inputClass,
   touchTarget
 } from "@/components/admin/adminPrimitives";
+import { AdminGroupBulkGrantActions } from "@/components/admin/groups/AdminGroupBulkGrantActions";
 import { cardClass } from "@/components/admin/mcp/mcpPrimitives";
 import type { AdminMcpController } from "@/components/admin/useAdminMcpController";
 import { UiV2Button, UiV2Switch } from "@/components/ui-v2";
@@ -180,6 +181,12 @@ function PersonalFieldGrants({
 }
 
 function CatalogState({ controller }: { controller: AdminMcpController }) {
+  if (controller.state.error) {
+    return <div className="flex flex-wrap items-center gap-3">
+      <p className="text-xs leading-5 text-caution" role="alert">{controller.state.error}</p>
+      <UiV2Button disabled={controller.state.loading || controller.state.busy} onClick={() => void controller.actions.refresh()} tone="ghost" type="button">Retry MCP servers</UiV2Button>
+    </div>;
+  }
   if (controller.state.loading && !controller.state.loaded) {
     return <p className="text-xs text-ink-muted" role="status">Loading MCP servers…</p>;
   }
@@ -202,14 +209,34 @@ export function AdminMcpGroupAccessPanel({
   group: AdminGroup;
 }>) {
   const [expanded, setExpanded] = useState(false);
-  const servers = controller.state.servers.filter((server) => !server.archivedAt);
+  const servers = [...new Map(controller.state.servers.filter((server) => !server.archivedAt).map((server) => [server.id, server])).values()];
   const systemFullAccess = group.systemRole === "full_access";
-  const disabled = controller.state.busy || Boolean(group.archivedAt);
+  const disabled = controller.state.busy || controller.state.loading || !controller.state.loaded || Boolean(controller.state.error) || Boolean(group.archivedAt);
   const shown = expanded ? servers : servers.slice(0, MCP_ACCESS_PAGE_SIZE);
   const hidden = servers.length - shown.length;
+  const selected = servers.filter((server) => grantForGroup(server, group.id)?.canUse).length;
   return (
     <div className={cardClass} data-testid="admin-group-mcp-access">
-      {!controller.state.loaded ? (
+      {controller.state.loaded && !controller.state.error && !systemFullAccess ? (
+        <div className="grid gap-2 border-b border-trace-subtle px-4 py-3 sm:px-5">
+          <AdminGroupBulkGrantActions
+            disabled={disabled}
+            groupName={group.name}
+            onClear={() => void controller.actions.bulkGrantGroup(group, false)}
+            onGrant={() => void controller.actions.bulkGrantGroup(group, true)}
+            resourceLabel="MCP servers"
+            selected={selected}
+            total={servers.length}
+          />
+          <p className="text-xs leading-5 text-ink-muted">All current servers, including hidden rows. Personal field permissions stay separate.</p>
+        </div>
+      ) : null}
+      {controller.state.bulkGrantProgress?.groupId === group.id ? (
+        <p className="px-4 py-2 text-xs leading-5 text-ink-muted sm:px-5" role="status">
+          Updating MCP access: {controller.state.bulkGrantProgress.completed} of {controller.state.bulkGrantProgress.total} changes saved…
+        </p>
+      ) : null}
+      {!controller.state.loaded || controller.state.error ? (
         <div className="px-5 py-6"><CatalogState controller={controller} /></div>
       ) : !servers.length ? (
         <p className="px-5 py-6 text-sm text-ink-muted" role="status">No MCP servers yet. Set one up in MCP servers.</p>

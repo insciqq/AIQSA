@@ -1189,6 +1189,7 @@ describe("run preparation", () => {
     const harness = createHarness();
     const load = vi.fn().mockResolvedValue({
       mcpAutoDiscoveryTimeoutSeconds: 60,
+      mcpAutoDiscoveryMaxOutputTokens: 4096,
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 17
@@ -1201,12 +1202,14 @@ describe("run preparation", () => {
     expect(load).toHaveBeenCalledOnce();
     expect(prepared.normalizedRequest.toolBudgets).toEqual({
       mcpAutoDiscoveryTimeoutSeconds: 60,
+      mcpAutoDiscoveryMaxOutputTokens: 4096,
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 17
     });
     expect(prepared.providerRequest.toolBudgets).toEqual({
       mcpAutoDiscoveryTimeoutSeconds: 60,
+      mcpAutoDiscoveryMaxOutputTokens: 4096,
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 17

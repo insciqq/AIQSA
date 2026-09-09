@@ -834,8 +834,8 @@ describe("AdminPanel", () => {
     expect(screen.getByRole("link", { name: "Users" })).toHaveAttribute("aria-current", "page");
     expect(screen.queryByRole("link", { name: "Invites" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Safety" })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: /^(Overview|Providers|Defaults & roles|Search|Knowledge & Memory|Users|Groups|MCP servers|Workspace|Email|Usage)$/ }))
-      .toHaveLength(11);
+    expect(screen.getAllByRole("link", { name: /^(Overview|Providers|Defaults & roles|Search|Knowledge & Memory|Users|Groups|Sign-up rules|MCP servers|Workspace|Email|Usage)$/ }))
+      .toHaveLength(12);
 
     window.history.pushState(null, "", "/admin?section=system-models");
     fireEvent.popState(window);
@@ -903,8 +903,9 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(await screen.findByRole("button", { name: "Sign-up rules" }));
-    const sheet = await screen.findByRole("dialog", { name: "Sign-up rules" });
+    fireEvent.click(await screen.findByRole("link", { name: "Sign-up rules" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add rule" }));
+    const sheet = await screen.findByRole("dialog", { name: "Add sign-up rule" });
     const value = within(sheet).getByLabelText("Value");
     fireEvent.change(value, { target: { value: "cancel@example.com" } });
     fireEvent.click(within(sheet).getByRole("button", { name: "Done" }));
@@ -914,11 +915,11 @@ describe("AdminPanel", () => {
     expect(value).toHaveValue("cancel@example.com");
     fireEvent.click(within(discard).getByRole("button", { name: "Cancel" }));
     expect(value).toHaveValue("cancel@example.com");
-    expect(screen.getByRole("dialog", { name: "Sign-up rules" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Add sign-up rule" })).toBeInTheDocument();
 
     fireEvent.click(within(sheet).getByRole("button", { name: "Done" }));
     fireEvent.click(within(await screen.findByTestId("admin-signup-rules-discard")).getByRole("button", { name: "Confirm discard changes" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sign-up rules" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add sign-up rule" })).not.toBeInTheDocument());
   });
   it("allows browser history to leave edited email without a global form dialog", async () => {
     mockAdminFetch();
@@ -1520,15 +1521,16 @@ describe("AdminPanel", () => {
     fireEvent.click(within(inviteSheet).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Invite" })).not.toBeInTheDocument());
 
-    fireEvent.click(await screen.findByRole("button", { name: "Sign-up rules" }));
-    const rulesSheet = await screen.findByRole("dialog", { name: "Sign-up rules" });
+    fireEvent.click(await screen.findByRole("link", { name: "Sign-up rules" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add rule" }));
+    const rulesSheet = await screen.findByRole("dialog", { name: "Add sign-up rule" });
     fireEvent.click(within(rulesSheet).getByRole("button", { name: "Add rule" }));
     const ruleValue = within(rulesSheet).getByLabelText("Value");
     expect(ruleValue).toHaveAttribute("aria-invalid", "true");
     expect(ruleValue).toHaveAccessibleDescription(/email address/i);
     await waitFor(() => expect(ruleValue).toHaveFocus());
     fireEvent.click(within(rulesSheet).getByRole("button", { name: "Done" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sign-up rules" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add sign-up rule" })).not.toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("link", { name: "Groups" }));
     const access = await screen.findByTestId("admin-section-groups");
@@ -1566,15 +1568,16 @@ describe("AdminPanel", () => {
     expect(within(users).queryByRole("list", { name: "Users" })).not.toBeInTheDocument();
     expect(within(within(users).getByTestId("admin-open-invites")).getAllByTestId("admin-invite-row")).toHaveLength(1);
   });
-  it("creates sign-up rules with a normalized preview and confirms deletion inside the sheet", async () => {
+  it("creates sign-up rules with a normalized preview and confirms deletion on the rules page", async () => {
     const { posts } = mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(await screen.findByRole("button", { name: "Sign-up rules" }));
-    const sheet = await screen.findByRole("dialog", { name: "Sign-up rules" });
+    fireEvent.click(await screen.findByRole("link", { name: "Sign-up rules" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add rule" }));
+    const sheet = await screen.findByRole("dialog", { name: "Add sign-up rule" });
     expect(within(sheet).getByRole("group", { name: "Groups" })).toBeInTheDocument();
-    expect(within(sheet).getByRole("list", { name: "Sign-up rules" })).toHaveTextContent("allowed@example.com");
+    expect(within(screen.getByTestId("admin-section-access-rules")).getByRole("list", { name: "Sign-up rules", hidden: true })).toHaveTextContent("allowed@example.com");
     fireEvent.change(within(sheet).getByLabelText("Value"), {
       target: {
         value: " PERSON@Example.COM "
@@ -1593,7 +1596,9 @@ describe("AdminPanel", () => {
     });
     await waitFor(() => expect(within(sheet).getByLabelText("Value")).toHaveValue(""));
 
-    fireEvent.click(within(sheet).getByRole("button", { name: "Delete rule allowed@example.com" }));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add sign-up rule" })).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Delete rule allowed@example.com" }));
     const confirmation = await screen.findByTestId("admin-confirm-delete-access-rule");
     fireEvent.click(within(confirmation).getByRole("button", { name: /confirm delete rule/i }));
 
@@ -1712,7 +1717,7 @@ describe("AdminPanel", () => {
     await waitFor(() => expect(screen.getByTestId("admin-nav-users")).toHaveFocus());
   });
 
-  it("keeps focus inside the Sign-up rules sheet when a deleted rule removes its opener", async () => {
+  it("focuses Add rule when deletion removes the rule and its opener", async () => {
     const afterDelete = structuredClone(dashboard);
     afterDelete.accessRules = [];
     let dashboardRequests = 0;
@@ -1734,17 +1739,17 @@ describe("AdminPanel", () => {
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
-    fireEvent.click(await screen.findByRole("button", { name: "Sign-up rules" }));
-    const sheet = await screen.findByRole("dialog", { name: "Sign-up rules" });
+    fireEvent.click(await screen.findByRole("link", { name: "Sign-up rules" }));
+    const sheet = await screen.findByTestId("admin-section-access-rules");
     const opener = within(sheet).getByRole("button", { name: "Delete rule allowed@example.com" });
     opener.focus();
     fireEvent.click(opener);
     const confirmation = await screen.findByTestId("admin-confirm-delete-access-rule");
     fireEvent.click(within(confirmation).getByRole("button", { name: /confirm delete rule/i }));
 
-    await within(sheet).findByText("No rules yet. Every sign-up waits for approval.");
-    await waitFor(() => expect(within(sheet).getByLabelText("Value")).toHaveFocus());
-    expect(screen.getByRole("dialog", { name: "Sign-up rules" })).toBeInTheDocument();
+    await within(sheet).findByText(/No rules yet/);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add rule" })).toHaveFocus());
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
   it("confirms stale user, empty group, and stale invite deletion actions", async () => {
     const { posts } = mockAdminFetch();

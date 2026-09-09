@@ -3,8 +3,7 @@ import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import {
-  MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
-  MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE
+  mcpAutoDiscoveryFailure
 } from "../../contracts/runs";
 import {
   LEGACY_MCP_DISCOVERY_MAX_RESULTS,
@@ -25,10 +24,12 @@ import type {
 } from "./runPlan";
 
 export class McpAutoDiscoveryUnavailableError extends Error {
-  readonly code = MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE;
+  readonly code: string;
 
   constructor(readonly internalReason: string) {
-    super(MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE);
+    const failure = mcpAutoDiscoveryFailure(internalReason);
+    super(failure.message);
+    this.code = failure.code;
     this.name = "McpAutoDiscoveryUnavailableError";
   }
 }
@@ -92,6 +93,7 @@ type ExecuteDurableMcpDiscoveryInput = Readonly<{
     }>[]
   ): Promise<McpRunPlanResult>;
   maxResults?: number;
+  maxOutputTokens?: number | null;
   modelRunToolCallId: string;
   onUsage?(attribution: McpRouterUsageAttribution): void;
   request: Pick<ProviderRunRequest, "content" | "context">;
@@ -154,6 +156,7 @@ export async function executeDurableMcpDiscovery(
       catalog: input.activeDiscovery.catalog,
       goals: input.routingGoals ?? [parsed.goal],
       limit: routeLimit,
+      maxOutputTokens: input.maxOutputTokens,
       request: input.request,
       ...(input.signal ? { signal: input.signal } : {}),
       ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {})

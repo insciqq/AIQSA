@@ -3,7 +3,7 @@
 import { CHAT_PDF_LOCAL_TEXT_MULTIPLE_NOTICE, CHAT_PDF_LOCAL_TEXT_NOTICE, CHAT_PDF_LONG_DOCUMENT_NOTICE,
   type ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
-import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE } from "@/lib/contracts/runs";
+import { isMcpAutoDiscoveryFailureCode, isToolSynthesisFailure } from "@/lib/contracts/runs";
 import type { ThreadArtifactSummary, ThreadToolActivity } from "@/lib/contracts/chats";
 import type { MarkdownCitationRenderer, MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
@@ -116,9 +116,10 @@ function RunErrorV2({
   }
 
   const recoverable = presentation.kind === "recoverable_error";
+  const synthesisFailed = isToolSynthesisFailure(presentation.failure.code);
   const pdfFailed = pdfPreparation?.some((item) => item.phase === "failed");
   const autoDiscoveryUnavailable =
-    presentation.failure.code === MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE;
+    isMcpAutoDiscoveryFailureCode(presentation.failure.code);
   // The card is a neutral surface: an alert glyph plus a plain-language
   // heading and explanation; the primary recovery action comes first and the
   // safe error code sits quietly on the right as the support reference.
@@ -128,12 +129,14 @@ function RunErrorV2({
       data-kind={presentation.kind}
       aria-label={autoDiscoveryUnavailable
         ? "Automatic tool discovery is unavailable"
+        : synthesisFailed ? "Final answer not completed"
         : recoverable ? "Answer interrupted by an error" : "Run failed"}
     >
       <div className="v2-run-error-heading">
         <UiV2Icon name="alert" />
         <h2>{autoDiscoveryUnavailable
           ? "Automatic tool discovery is unavailable"
+          : synthesisFailed ? "Final answer not completed"
           : pdfFailed ? "Document preparation stopped" : recoverable ? "Answer interrupted by a provider error" : "Request not completed"}</h2>
       </div>
       <p>{presentation.failure.message}</p>
@@ -150,7 +153,7 @@ function RunErrorV2({
         {!autoDiscoveryUnavailable && !recoverable && onRegenerate ? (
           <UiV2Button icon="regenerate" tone="primary" onClick={onRegenerate}>Regenerate</UiV2Button>
         ) : null}
-        {!pdfFailed && !autoDiscoveryUnavailable && !recoverable && onSelectModel ? (
+        {!pdfFailed && !autoDiscoveryUnavailable && !synthesisFailed && !recoverable && onSelectModel ? (
           <UiV2Button onClick={onSelectModel}>Choose model…</UiV2Button>
         ) : null}
         {presentation.failure.code ? (
@@ -230,7 +233,8 @@ export function RunAnswerV2({
   // token; from then on the same line is the fold with whatever settled facts
   // exist (steps, then reasoning and memory once the artifact summary lands).
   const liveLabel = presentation.kind === "activity"
-    ? workspaceLiveLabelV2(workspaceActivity) ??
+    ? presentation.activity?.kind === "synthesis" ? presentation.activity.label
+      : workspaceLiveLabelV2(workspaceActivity) ??
       (toolActivity ? runningToolLabel(toolActivity) : null) ??
       presentation.activity?.label ?? "Thinking…"
     : null;

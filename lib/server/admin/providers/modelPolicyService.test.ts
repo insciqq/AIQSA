@@ -100,7 +100,7 @@ describe("administrator model policy service", () => {
         findUnique: vi.fn().mockResolvedValue({
           defaultProviderModel: unavailableTarget,
           reasoningEffort: null,
-          mcpAutoDiscoveryTimeoutSeconds: 60n,
+          mcpAutoDiscoveryTimeoutSeconds: 60n, mcpAutoDiscoveryMaxOutputTokens: 8192n,
           maxMcpToolsPerDiscovery: 10n,
           maxToolCalls: 20n,
           maxToolRounds: 8n,
@@ -141,7 +141,7 @@ describe("administrator model policy service", () => {
           reasoningEfforts: []
         },
         reasoningEffort: null,
-        mcpAutoDiscoveryTimeoutSeconds: 60,
+        mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192,
         maxMcpToolsPerDiscovery: 10,
         maxToolCalls: 20,
         maxToolRounds: 8,
@@ -252,7 +252,7 @@ describe("administrator model policy service", () => {
 
     await createAdminModelPolicyService(prisma).update({
       expectedVersion: 5,
-      mcpAutoDiscoveryTimeoutSeconds: 60,
+      mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192,
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 200,
@@ -261,7 +261,7 @@ describe("administrator model policy service", () => {
 
     expect(update).toHaveBeenCalledWith({
       data: {
-        mcpAutoDiscoveryTimeoutSeconds: 60n,
+        mcpAutoDiscoveryTimeoutSeconds: 60n, mcpAutoDiscoveryMaxOutputTokens: 8192n,
         maxMcpToolsPerDiscovery: 10n,
         maxToolCalls: 200n,
         maxToolRounds: 200n,
@@ -292,7 +292,7 @@ describe("administrator model policy service", () => {
       maxMcpToolsPerDiscovery: 12,
       maxToolCalls: 24,
       maxToolRounds: 8,
-      mcpAutoDiscoveryTimeoutSeconds: 20,
+      mcpAutoDiscoveryTimeoutSeconds: 20, mcpAutoDiscoveryMaxOutputTokens: 8192,
       providerModelId: "model-1",
       reasoningEffort: "high",
       userId: "admin-1"
@@ -306,7 +306,7 @@ describe("administrator model policy service", () => {
         maxMcpToolsPerDiscovery: 12n,
         maxToolCalls: 24n,
         maxToolRounds: 8n,
-        mcpAutoDiscoveryTimeoutSeconds: 20n,
+        mcpAutoDiscoveryTimeoutSeconds: 20n, mcpAutoDiscoveryMaxOutputTokens: 8192n,
         reasoningEffort: "high",
         updatedByUserId: "admin-1",
         version: { increment: 1 }

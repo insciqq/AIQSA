@@ -5,7 +5,10 @@ import type {
   AdminProviderCheckRun,
   AdminProviderConnection
 } from "@/lib/contracts/adminProviders";
+import { ADMIN_PROVIDER_SETUP_STREAM_TYPE, type AdminProviderSetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
+import { readAdminProviderSetupResponse } from "./adminProviderSetupStream";
 import {
+  ADMIN_PROVIDER_CAPABILITY_CHECKS,
   ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
   ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS
 } from "@/lib/contracts/adminProviders";
@@ -78,25 +81,50 @@ function isModel(value: unknown): boolean {
 const checkRunStates = new Set(["cancelled", "completed", "interrupted", "running"]);
 const checkRunReasons = new Set(["credential", "model", "requested", "setup"]);
 
-function isCheckRun(value: unknown): value is AdminProviderCheckRun {
-  return record(value) && typeof value.id === "string" && typeof value.credentialId === "string" &&
+export function isAdminProviderCheckRun(value: unknown): value is AdminProviderCheckRun {
+  const text = (entry: unknown, maxLength = 256) => typeof entry === "string" && entry.length > 0 &&
+    entry.length <= maxLength && !/[\u0000-\u001f\u007f]/u.test(entry);
+  const ids = (entry: unknown) => Array.isArray(entry) && entry.length <= 1_000 && entry.every((id) => text(id));
+  return record(value) && Object.keys(value).every((key) => [
+    "capabilityProgress", "setup", "skipped", "credentialId", "current", "done", "failed",
+    "finishedAt", "id", "inFlight", "reason", "startedAt", "state", "total", "results"
+  ].includes(key)) && text(value.id) && (text(value.credentialId) ||
+    value.state === "interrupted" && value.credentialId === "" && value.total === 0 && value.done === 0) &&
     typeof value.state === "string" && checkRunStates.has(value.state) &&
     typeof value.reason === "string" && checkRunReasons.has(value.reason) &&
-    Number.isSafeInteger(value.done) && Number.isSafeInteger(value.total) &&
-    (value.current === null || typeof value.current === "string") &&
-    stringArray(value.inFlight) && stringArray(value.failed) &&
-    (value.skipped === undefined || stringArray(value.skipped)) &&
+    Number.isSafeInteger(value.done) && Number(value.done) >= 0 &&
+    Number.isSafeInteger(value.total) && Number(value.total) >= Number(value.done) && Number(value.total) <= 1_000 &&
+    (value.current === null || text(value.current)) &&
+    ids(value.inFlight) && ids(value.failed) &&
+    (value.skipped === undefined || ids(value.skipped)) &&
+    (value.results === undefined || Array.isArray(value.results) && value.results.length <= 1_000 &&
+      new Set(value.results.map((entry) => record(entry) ? entry.providerModelId : null)).size === value.results.length &&
+      value.results.every((entry) => record(entry) && Object.keys(entry).every((key) => ["providerModelId", "state", "checks"].includes(key)) &&
+        text(entry.providerModelId) && ["saved", "partial", "unavailable", "save_failed", "check_failed", "cancelled", "stale"].includes(String(entry.state)) &&
+        (entry.checks === undefined || record(entry.checks) && Object.entries(entry.checks).every(([key, state]) =>
+          ADMIN_PROVIDER_CAPABILITY_CHECKS.includes(key as typeof ADMIN_PROVIDER_CAPABILITY_CHECKS[number]) &&
+          ["verified", "rejected", "unsupported", "incomplete", "not_checked"].includes(String(state)))))) &&
+    (value.capabilityProgress === undefined || record(value.capabilityProgress) &&
+      Object.keys(value.capabilityProgress).sort().join(",") === "capability,completed,providerModelId,total" &&
+      ADMIN_PROVIDER_CAPABILITY_CHECKS.includes(value.capabilityProgress.capability as typeof ADMIN_PROVIDER_CAPABILITY_CHECKS[number]) &&
+      text(value.capabilityProgress.providerModelId) &&
+      Number.isSafeInteger(value.capabilityProgress.completed) && Number(value.capabilityProgress.completed) >= 0 &&
+      Number.isSafeInteger(value.capabilityProgress.total) && Number(value.capabilityProgress.total) > 0 &&
+      Number(value.capabilityProgress.total) <= ADMIN_PROVIDER_CAPABILITY_CHECKS.length &&
+      Number(value.capabilityProgress.completed) <= Number(value.capabilityProgress.total)) &&
     (value.setup === undefined || record(value.setup) && (
-      value.setup.state === "running" ||
-      ["completed", "partial"].includes(String(value.setup.state)) && stringArray(value.setup.defaults) &&
+      value.setup.state === "running" && Object.keys(value.setup).join(",") === "state" ||
+      Object.keys(value.setup).sort().join(",") === "defaults,search,state" &&
+      ["completed", "partial"].includes(String(value.setup.state)) && Array.isArray(value.setup.defaults) &&
+        value.setup.defaults.length <= 16 && value.setup.defaults.every((label) => text(label, 512)) &&
         ["ready", "failed", "skipped"].includes(String(value.setup.search)))) &&
-    typeof value.startedAt === "string" &&
-    (value.finishedAt === null || typeof value.finishedAt === "string");
+    text(value.startedAt) &&
+    (value.finishedAt === null || text(value.finishedAt));
 }
 
 function isConnection(value: unknown): value is AdminProviderConnection {
   return record(value) && typeof value.id === "string" && typeof value.displayName === "string" &&
-    (value.checkRun === undefined || value.checkRun === null || isCheckRun(value.checkRun)) &&
+    (value.checkRun === undefined || value.checkRun === null || isAdminProviderCheckRun(value.checkRun)) &&
     typeof value.family === "string" && typeof value.enabled === "boolean" &&
     typeof value.draftVersion === "number" && record(value.draftConfig) &&
     (value.draftConfig.authenticationMode === "bearer" ||
@@ -121,6 +149,10 @@ function isCompatibleDiscoveredModel(value: unknown): value is AdminCompatibleDi
   const allowed = new Set([
     "contextWindow",
     "defaultMaxOutputTokens",
+    "maxOutputTokens",
+    "toolCalling",
+    "vision",
+    "parallelToolCalls",
     "defaultReasoningEffort",
     "defaultReasoningMode",
     "reasoning",
@@ -143,6 +175,11 @@ function isCompatibleDiscoveredModel(value: unknown): value is AdminCompatibleDi
       (Number.isInteger(capabilities.defaultMaxOutputTokens) &&
         Number(capabilities.defaultMaxOutputTokens) > 0 &&
         Number(capabilities.defaultMaxOutputTokens) <= 10_000_000)) &&
+    (capabilities.maxOutputTokens === undefined ||
+      (Number.isInteger(capabilities.maxOutputTokens) && Number(capabilities.maxOutputTokens) > 0 &&
+        Number(capabilities.maxOutputTokens) <= 10_000_000)) &&
+    ["toolCalling", "vision", "parallelToolCalls"].every((key) =>
+      capabilities[key] === undefined || typeof capabilities[key] === "boolean") &&
     (capabilities.reasoning === undefined || typeof capabilities.reasoning === "boolean") &&
     (!hasReasoningDetails || capabilities.reasoning === true) &&
     (capabilities.reasoningEfforts === undefined || controls(capabilities.reasoningEfforts)) &&
@@ -355,13 +392,14 @@ export function deleteAdminProviderCredential(
 export function createAdminProviderModel(
   connectionId: string,
   body: unknown,
-  fetcher: Fetcher = fetch
+  fetcher: Fetcher = fetch,
+  signal?: AbortSignal,
+  onProgress?: (value: AdminProviderSetupProgress) => void
 ) {
-  return request(
+  return modelSetupRequest(
     `/api/admin/providers/${encoded(connectionId)}/models`,
     json("POST", body),
-    catalog,
-    fetcher
+    fetcher, signal, onProgress
   );
 }
 
@@ -369,14 +407,39 @@ export function updateAdminProviderModel(
   connectionId: string,
   modelId: string,
   body: unknown,
-  fetcher: Fetcher = fetch
+  fetcher: Fetcher = fetch,
+  signal?: AbortSignal,
+  onProgress?: (value: AdminProviderSetupProgress) => void
 ) {
-  return request(
+  return modelSetupRequest(
     `/api/admin/providers/${encoded(connectionId)}/models/${encoded(modelId)}`,
     json("PATCH", body),
-    catalog,
-    fetcher
+    fetcher, signal, onProgress
   );
+}
+
+async function modelSetupRequest(
+  url: string,
+  init: RequestInit,
+  fetcher: Fetcher,
+  signal?: AbortSignal,
+  onProgress?: (value: AdminProviderSetupProgress) => void
+): Promise<AdminProviderClientResult<AdminProviderConnection[]>> {
+  if (!onProgress && !signal) return request(url, init, catalog, fetcher);
+  try {
+    const headers = new Headers(init.headers);
+    if (onProgress) headers.set("accept", ADMIN_PROVIDER_SETUP_STREAM_TYPE);
+    const response = await fetcher(url, {
+      ...init, credentials: "same-origin", signal,
+      headers
+    });
+    const result = await readAdminProviderSetupResponse(response, onProgress);
+    if (!result.ok) return { ok: false, error: clientError(result.value, "provider_admin_action_failed") };
+    const data = catalog(result.value);
+    return data ? { ok: true, data } : { ok: false, error: clientError(null, "provider_admin_response_invalid") };
+  } catch {
+    return { ok: false, error: clientError(null, signal?.aborted ? "request_aborted" : "network_error") };
+  }
 }
 
 export function deleteAdminProviderModel(
@@ -401,7 +464,7 @@ export function getAdminProviderCheckRun(
   return request(
     `/api/admin/providers/${encoded(connectionId)}/actions?run=${encoded(runId)}`,
     { method: "GET" },
-    (value) => record(value) && isCheckRun(value.run) ? value.run : null,
+    (value) => record(value) && isAdminProviderCheckRun(value.run) ? value.run : null,
     fetcher,
     "provider_admin_route_unavailable"
   );
@@ -412,6 +475,7 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     forbidden: "Your account no longer has permission to manage providers.",
     json_required: "The provider request format was not accepted. Refresh and try again.",
     network_error: "Could not reach the provider administration API.",
+    request_aborted: "Checking stopped. Saved results are kept; retry unfinished checks from the model list.",
     provider_activation_empty: "Add at least one enabled model and referenced credential before activation.",
     provider_activation_evidence_missing: "Every default or group key must be turned on and working before the change can be applied.",
     provider_activation_unavailable_confirmation_required: "A configured model ID is absent from one or more referenced key catalogs. Review the setup or confirm the override.",

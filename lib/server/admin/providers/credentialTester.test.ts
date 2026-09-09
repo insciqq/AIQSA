@@ -53,6 +53,25 @@ afterEach(() => {
 });
 
 describe("admin provider credential tester", () => {
+  it("keeps only bounded per-model tool/image/parallel hints and distinct output ceilings", async () => {
+    const tester = createAdminProviderCredentialTester({ network: { lookupHostname: publicLookup,
+      dispatch: async () => Response.json({ data: [
+        { id: "terra", capabilities: { supports_tool_use: true, supports_images: true, supports_vision: true,
+          input_modalities: ["text", "image"], context_length: 272_000, max_output_tokens: 65_536 },
+          metadata: { supports_parallel_tool_calls: true, secret_extra: "PRIVATE_METADATA" } },
+        { id: "astra", capabilities: { supports_tool_use: false, supports_images: "true", context_length: 128_000 },
+          metadata: { supports_tool_use: true, supports_parallel_tool_calls: false } },
+        { id: "unknown", capabilities: { supports_tool_use: {}, supports_vision: "true" }, metadata: { arbitrary: { supports_parallel_tool_calls: true } } }
+      ] }) } });
+    const outcome = await tester.test(input("openai_compatible"));
+    expect(outcome.models).toEqual([
+      { id: "terra", capabilities: { toolCalling: true, vision: true, parallelToolCalls: true, contextWindow: 272_000, maxOutputTokens: 65_536 } },
+      { id: "astra", capabilities: { toolCalling: false, parallelToolCalls: false, contextWindow: 128_000 } },
+      { id: "unknown", capabilities: {} }
+    ]);
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_METADATA");
+  });
+
   it("keeps OpenRouter answer, embedding, and reranker catalogs class-specific", async () => {
     const requests: McpPinnedHttpRequest[] = [];
     const tester = createAdminProviderCredentialTester({

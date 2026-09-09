@@ -236,7 +236,12 @@ export function discoveredModelHint(model: AdminProviderCustomDiscoveredModel): 
   }
   const parts: string[] = [];
   if (model.capabilities.reasoning) parts.push("reasoning");
+  if (model.capabilities.toolCalling !== undefined) parts.push(model.capabilities.toolCalling ? "tools" : "tools off");
+  if (model.capabilities.vision !== undefined) parts.push(model.capabilities.vision ? "images" : "images off");
+  if (model.capabilities.parallelToolCalls !== undefined) parts.push(model.capabilities.parallelToolCalls ? "parallel calls" : "parallel calls off");
   if (model.capabilities.contextWindow) parts.push(`${Math.round(model.capabilities.contextWindow / 1000)}k context`);
+  if (model.capabilities.maxOutputTokens) parts.push(`${model.capabilities.maxOutputTokens.toLocaleString("en-US")} max output`);
+  if (model.capabilities.defaultMaxOutputTokens) parts.push(`${model.capabilities.defaultMaxOutputTokens.toLocaleString("en-US")} default output`);
   return { hint: parts.length ? parts.join(" · ") : "chat", supported: true };
 }
 
@@ -311,11 +316,25 @@ export function customRequest(input: Readonly<{
     return { field: "models", message: `Choose at most ${MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS} models.`, ok: false };
   }
   const selected = (discovered ?? []).filter(({ id }) => modelIds.includes(id));
-  const reasoning = reasoningForChoice(form.reasoningChoice, selected);
-  if (reasoning.reasoning && !form.reasoningEffortPath.trim()) {
+  const reasoning = form.reasoningChoice === "automatic"
+    ? { reasoning: false }
+    : reasoningForChoice(form.reasoningChoice, []);
+  const perModelCapabilities = Object.fromEntries(selected.map((model) => {
+    const capabilities = { ...model.capabilities };
+    if (form.reasoningChoice !== "automatic") {
+      delete capabilities.defaultReasoningEffort;
+      delete capabilities.defaultReasoningMode;
+      delete capabilities.reasoningEfforts;
+      delete capabilities.reasoningModes;
+      Object.assign(capabilities, reasoning);
+    }
+    return [model.id, capabilities] as const;
+  }));
+  const usesReasoning = reasoning.reasoning ||
+    Object.values(perModelCapabilities).some((capabilities) => capabilities.reasoning === true);
+  if (usesReasoning && !form.reasoningEffortPath.trim()) {
     return { field: "reasoning", message: "Enter the reasoning effort field, or turn reasoning off.", ok: false };
   }
-  const single = selected.length === 1 ? selected[0] : null;
   return {
     body: {
       allowPrivateNetwork: form.allowPrivateNetwork,
@@ -323,17 +342,13 @@ export function customRequest(input: Readonly<{
       authenticationMode: form.noKey ? "none" : "bearer",
       capabilities: {
         ...ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
-        ...(single?.capabilities.contextWindow ? { contextWindow: single.capabilities.contextWindow } : {}),
-        ...(single?.capabilities.defaultMaxOutputTokens
-          ? { defaultMaxOutputTokens: single.capabilities.defaultMaxOutputTokens }
-          : {}),
         ...reasoning
       },
       confirmPaidRequest: true,
       connectionDisplayName: name,
-      ...(usesDiscovered ? { modelIds } : { modelId: manualModelId }),
+      ...(usesDiscovered ? { modelIds, perModelCapabilities } : { modelId: manualModelId }),
       protocol: form.protocol,
-      ...(reasoning.reasoning
+      ...(usesReasoning
         ? {
             reasoningRequestMapping: {
               effortPath: form.reasoningEffortPath.trim(),

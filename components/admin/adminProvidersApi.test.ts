@@ -151,6 +151,7 @@ describe("admin provider browser API", () => {
         {
           capabilities: {
             defaultReasoningEffort: "medium",
+            toolCalling: true, vision: false, parallelToolCalls: true, maxOutputTokens: 65_536, contextWindow: 272_000,
             reasoning: true,
             reasoningEfforts: ["low", "medium", "high"]
           },
@@ -168,6 +169,7 @@ describe("admin provider browser API", () => {
         {
           capabilities: {
             defaultReasoningEffort: "medium",
+            toolCalling: true, vision: false, parallelToolCalls: true, maxOutputTokens: 65_536, contextWindow: 272_000,
             reasoning: true,
             reasoningEfforts: ["low", "medium", "high"]
           },

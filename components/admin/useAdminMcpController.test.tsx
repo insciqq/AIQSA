@@ -1,4 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
+import type { AdminGroup } from "@/lib/contracts/admin";
 import type { AdminMcpServer } from "@/lib/contracts/mcp";
 import { describe, expect, it, vi } from "vitest";
 import { useAdminMcpController } from "./useAdminMcpController";
@@ -40,7 +41,132 @@ function feedback() {
   return { onError: vi.fn(), onNotice: vi.fn() };
 }
 
+const group: AdminGroup = { accessGrants: [], archivedAt: null, id: "group-bulk", name: "Research", systemRole: null, userCount: 2 };
+
+function withGroupGrant(server: AdminMcpServer, canUse = true): AdminMcpServer {
+  return { ...server, grants: [
+    ...server.grants.filter((grant) => grant.groupId !== group.id),
+    ...(canUse ? [{ canUse, groupId: group.id, groupName: group.name, id: `grant-${server.id}`, personalSlotKeys: [], userId: null, userName: null }] : [])
+  ] };
+}
+
 describe("useAdminMcpController", () => {
+  it("grants the complete current group catalog one server at a time, skipping duplicates and existing or archived grants", async () => {
+    const personalGrant = { canUse: false, groupId: null, groupName: null, id: "personal-grant", personalSlotKeys: ["api_key"], userId: "user-1", userName: "Alice" };
+    let saved = Array.from({ length: 10 }, (_, index) => mcpServer({
+      grants: [personalGrant], id: `server-${index}`, name: `Server ${index}`
+    }));
+    saved[0] = withGroupGrant(saved[0]);
+    const archivedServer = mcpServer({ archivedAt: "2026-09-01T00:00:00Z", id: "archived" });
+    let finishFirst!: () => void;
+    const firstPending = new Promise<void>((resolve) => { finishFirst = resolve; });
+    const changed: string[] = [];
+    const fetcher = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "GET") return response({ servers: [...saved, saved[1], archivedServer] });
+      const id = String(url).split("/").at(-2)!;
+      changed.push(id);
+      if (changed.length === 1) await firstPending;
+      expect(init?.method).toBe("PUT");
+      const body = JSON.parse(String(init?.body));
+      expect(body).toEqual({ canUse: true, groupId: group.id });
+      saved = saved.map((server) => server.id === id ? withGroupGrant(server) : server);
+      return response({ server: saved.find((server) => server.id === id) });
+    });
+    const onMutationCommitted = vi.fn();
+    const notices = feedback();
+    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher, onMutationCommitted, ...notices }));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    let pending!: Promise<boolean>;
+    act(() => { pending = result.current.actions.bulkGrantGroup(group, true); });
+    expect(changed).toEqual(["server-1"]);
+    expect(result.current.state.bulkGrantProgress).toEqual({ completed: 0, groupId: group.id, total: 9 });
+    await expect(result.current.actions.bulkGrantGroup(group, true)).resolves.toBe(false);
+    await expect(result.current.actions.grant("server-9", { canUse: true, groupId: group.id })).resolves.toBe(false);
+    await act(async () => { finishFirst(); await expect(pending).resolves.toBe(true); });
+    expect(changed).toEqual(Array.from({ length: 9 }, (_, index) => `server-${index + 1}`));
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "GET")).toHaveLength(2);
+    expect(onMutationCommitted).toHaveBeenCalledOnce();
+    expect(notices.onNotice).toHaveBeenCalledWith("Research: All current MCP servers granted.");
+    expect(notices.onError).not.toHaveBeenCalled();
+    expect(result.current.state.busy).toBe(false);
+    for (const server of result.current.state.servers.filter((server) => !server.archivedAt)) {
+      expect(server.grants.filter((grant) => grant.groupId === group.id)).toHaveLength(1);
+      expect(server.grants.find((grant) => grant.userId === "user-1")).toEqual(personalGrant);
+    }
+    saved.push(mcpServer({ id: "server-later", name: "Added later" }));
+    await act(async () => { await result.current.actions.refresh(); });
+    expect(result.current.state.servers.find((server) => server.id === "server-later")!.grants).toEqual([]);
+  });
+
+  it("stops a partial MCP failure, reloads the catalog and never claims all servers are granted", async () => {
+    const servers = Array.from({ length: 3 }, (_, index) => mcpServer({ id: `server-${index}` }));
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({ servers }))
+      .mockResolvedValueOnce(response({ server: withGroupGrant(servers[0]) }))
+      .mockResolvedValueOnce(response({ error: "mcp_not_found" }, 404))
+      .mockResolvedValueOnce(response({ servers: [withGroupGrant(servers[0]), servers[2]] }));
+    const notices = feedback();
+    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher, ...notices }));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    await act(async () => { await expect(result.current.actions.bulkGrantGroup(group, true)).resolves.toBe(false); });
+    expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(2);
+    expect(notices.onNotice).not.toHaveBeenCalled();
+    expect(notices.onError).toHaveBeenCalledWith(expect.stringContaining("1 of 3 MCP access changes confirmed"));
+    expect(notices.onError).toHaveBeenCalledWith(expect.stringContaining("This MCP server no longer exists"));
+    expect(result.current.state.servers).toEqual([withGroupGrant(servers[0]), servers[2]]);
+    expect(result.current.state.busy).toBe(false);
+  });
+
+  it("clears only group server-use grants and preserves personal permissions, unrelated groups and archived servers", async () => {
+    const personal = { canUse: true, groupId: null, groupName: null, id: "personal", personalSlotKeys: ["api_key"], userId: "user-1", userName: "Alice" };
+    const otherGroup = { canUse: true, groupId: "other-group", groupName: "Other", id: "other", personalSlotKeys: [], userId: null, userName: null };
+    const original = withGroupGrant(mcpServer({ grants: [personal, otherGroup] }));
+    const archivedServer = withGroupGrant(mcpServer({ archivedAt: "2026-09-01T00:00:00Z", id: "archived" }));
+    const cleared = withGroupGrant(original, false);
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({ servers: [original, archivedServer, mcpServer({ id: "ungranted" })] }))
+      .mockResolvedValueOnce(response({ server: cleared }))
+      .mockResolvedValueOnce(response({ servers: [cleared, archivedServer, mcpServer({ id: "ungranted" })] }));
+    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher }));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    await act(async () => { await expect(result.current.actions.bulkGrantGroup(group, false)).resolves.toBe(true); });
+    expect(JSON.parse(fetcher.mock.calls[1][1].body)).toEqual({ canUse: false, groupId: group.id });
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(result.current.state.servers.find((server) => server.id === original.id)!.grants).toEqual([personal, otherGroup]);
+    expect(result.current.state.servers.find((server) => server.id === "archived")).toEqual(archivedServer);
+  });
+
+  it("keeps confirmed mutation replies visible but reports a failed final refresh without a success notice", async () => {
+    const original = mcpServer();
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({ servers: [original] }))
+      .mockResolvedValueOnce(response({ server: withGroupGrant(original) }))
+      .mockRejectedValueOnce(new Error("offline"));
+    const notices = feedback();
+    const { result } = renderHook(() => useAdminMcpController({ active: true, fetcher, ...notices }));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    await act(async () => { await expect(result.current.actions.bulkGrantGroup(group, true)).resolves.toBe(false); });
+    expect(result.current.state.servers).toEqual([withGroupGrant(original)]);
+    expect(notices.onNotice).not.toHaveBeenCalled();
+    expect(notices.onError).toHaveBeenCalledWith(expect.stringContaining("1 of 1 MCP access changes saved, but current grants could not be reloaded"));
+    expect(result.current.state.error).not.toBeNull();
+    await expect(result.current.actions.bulkGrantGroup(group, false)).resolves.toBe(false);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it("rejects Full access, archived groups and unloaded or empty catalogs before dispatch", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ servers: [] }));
+    const { result } = renderHook(() => useAdminMcpController({ active: false, fetcher }));
+    await expect(result.current.actions.bulkGrantGroup(group, true)).resolves.toBe(false);
+    expect(fetcher).not.toHaveBeenCalled();
+    await act(async () => { await result.current.actions.refresh(); });
+    await expect(result.current.actions.bulkGrantGroup(group, true)).resolves.toBe(false);
+    await expect(result.current.actions.bulkGrantGroup({ ...group, systemRole: "full_access" }, true)).resolves.toBe(false);
+    await expect(result.current.actions.bulkGrantGroup({ ...group, archivedAt: "2026-09-01T00:00:00Z" }, false)).resolves.toBe(false);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("finishes an initial failed load and lets the user retry", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response({ error: "mcp_storage_unavailable" }, 503))

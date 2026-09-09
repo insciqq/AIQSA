@@ -1,3 +1,4 @@
+import { mcpAutoDiscoveryFailure, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
@@ -522,6 +523,7 @@ function preparedData(input: Readonly<{
   provider?: string;
   searchPlan?: NormalizedRunRequest["searchPlan"];
   toolMode?: "auto" | "none";
+  toolBudgets?: NormalizedRunRequest["toolBudgets"];
   toolCalling?: boolean;
 }> = {}): MaterializedPreparedRunData {
   const provider = input.provider ?? "fake";
@@ -569,6 +571,7 @@ function preparedData(input: Readonly<{
       ? { knowledgeFocusedRequest: input.knowledgeFocusedRequest }
       : {}),
     toolMode: input.toolMode ?? "auto",
+    ...(input.toolBudgets ? { toolBudgets: input.toolBudgets } : {}),
     ...(input.memoryActions
       ? { memoryActionTools: { version: "model-driven-v2" as const } }
       : {}),
@@ -4441,7 +4444,7 @@ describe("run execution", () => {
     expect(repository.failedRuns).toEqual([]);
   });
 
-  it.each(["unexpected", "reported", "cancelled"] as const)(
+  it.each(["unexpected", "reported", "cancelled", "output_limit"] as const)(
     "settles Auto discovery %s with safe errors and reported usage", async (outcome) => {
     const discovery: McpDiscoveryState = {
       catalog: { servers: [], version: 1 },
@@ -4453,7 +4456,7 @@ describe("run execution", () => {
       if (outcome === "unexpected") throw new Error(rawFailure);
       if (outcome === "cancelled") expect(activeRunControllerRegistry.abort("run-1")).toBe(true);
       throw new McpSemanticRouterError(
-        outcome === "cancelled" ? "mcp_router_cancelled" : "mcp_router_request_failed",
+        outcome === "cancelled" ? "mcp_router_cancelled" : outcome === "output_limit" ? "mcp_router_output_limit" : "mcp_router_request_failed",
         { modelId: "gpt-router", provider: "openai", usage: { inputTokens: 12, outputTokens: 3, reasoningTokens: 0 } }
       );
     });
@@ -4479,6 +4482,7 @@ describe("run execution", () => {
       mcp: { materialize, prepare: materialize, router: { route } },
       prepared: preparedData({
         mcpDiscovery: discovery,
+        ...(outcome === "output_limit" ? { toolBudgets: { mcpAutoDiscoveryMaxOutputTokens: 32768, maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8 } } : {}),
         modelId: "gpt-tool-model",
         provider: "openai"
       }),
@@ -4487,8 +4491,7 @@ describe("run execution", () => {
 
     if (outcome !== "cancelled") expect(repository.failedRuns).toEqual([expect.objectContaining({
       error: {
-        code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
-        message: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE
+        ...mcpAutoDiscoveryFailure(outcome === "output_limit" ? "mcp_router_output_limit" : "mcp_router_request_failed")
       }
     })]);
     expect(JSON.stringify(repository.failedRuns)).not.toContain(rawFailure);
@@ -4503,7 +4506,7 @@ describe("run execution", () => {
         usage: expect.objectContaining({ inputTokens: 12, outputTokens: 3, reasoningTokens: 0 })
       })]);
     }
-    expect(route).toHaveBeenCalledOnce();
+    expect(route).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ maxOutputTokens: outcome === "output_limit" ? 32768 : null }));
     expect(materialize).not.toHaveBeenCalled();
     expect(appendMcpDiscoveryEpoch).not.toHaveBeenCalled();
     expect(repository.completeRuns).toEqual([]);
@@ -4574,10 +4577,7 @@ describe("run execution", () => {
     expect(materialize).toHaveBeenCalledOnce();
     expect(appendMcpDiscoveryEpoch).not.toHaveBeenCalled();
     expect(repository.failedRuns).toEqual([expect.objectContaining({
-      error: {
-        code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
-        message: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE
-      }
+      error: mcpAutoDiscoveryFailure("mcp_materialization_mcp_not_ready")
     })]);
     expect(JSON.stringify(repository.failedRuns)).not.toContain(rawFailure);
     expect(repository.completeRuns).toEqual([]);
@@ -4790,16 +4790,21 @@ describe("run execution", () => {
     {
       arguments: { password: "hunter2-secret-egress" },
       label: "structured argument",
-      revoked: false
+      runtimeErrorCode: null, expectedErrorCode: null, revoked: false
     },
     {
       arguments: { value: "harmless-revocation-value" },
       label: "destination revocation",
+      runtimeErrorCode: null, expectedErrorCode: "mcp_accepted_generation_changed", revoked: true
+    },
+    ...["mcp_health_check_failed", "mcp_timeout", "mcp_authorization_required", "mcp_server_unavailable"].map((code) => ({
+      arguments: { value: "safe-runtime-fixture" }, label: `MCP ${code}`,
+      runtimeErrorCode: code, expectedErrorCode: code === "mcp_server_unavailable" ? "memory_egress_destination_revoked" : code,
       revoked: true
-    }
+    }))
   ])("uses admin trust for $label while retaining immediate destination drift checks", async ({
     arguments: toolArguments,
-    revoked
+    revoked, runtimeErrorCode, expectedErrorCode
   }) => {
     const namespacedName = "mcp_external_submit_blocked";
     const fingerprint = "fingerprint-blocked";
@@ -4844,6 +4849,9 @@ describe("run execution", () => {
       return providerResult({ finalText: "Dispatch stayed blocked" });
     });
     const prepare = vi.fn<NonNullable<RunExecutionInput["mcp"]>["prepare"]>(async () => {
+      if (runtimeErrorCode) return { ok: false, code: "mcp_not_ready", issues: [{
+        errorCode: runtimeErrorCode, name: "Synthetic server", readiness: "unavailable"
+      }] };
       const liveFingerprint = revoked ? "changed-fingerprint" : fingerprint;
       return {
         bindings: [{
@@ -4885,7 +4893,7 @@ describe("run execution", () => {
     expect(egress.blocked).toEqual(revoked
       ? [expect.objectContaining({
           destinationKind: "mcp",
-          errorCode: "memory_egress_destination_revoked",
+          errorCode: expectedErrorCode,
           mode: "TOOL_CALL",
           modelRunToolCallId: "persisted-tool-call-1"
         })]
@@ -4905,6 +4913,47 @@ describe("run execution", () => {
       state: revoked ? "error" : "complete"
     });
     expect(events.some((event) => event.type === "done")).toBe(true);
+  });
+
+  it("publishes the reached budget and terminalizes a forbidden synthesis without losing text or work", async () => {
+    const name = "mcp_synthetic_search";
+    const mcp: McpRunPlanSnapshot = {
+      version: 1,
+      servers: [{ fingerprint: "synthetic-fingerprint", revisionId: "synthetic-revision", serverId: "synthetic-server", serverName: "Repository Tools" }],
+      tools: [{ definitionHash: "a".repeat(64), description: "Search records", inputSchema: { type: "object" },
+        name: "search", namespacedName: name, originalName: "search", serverId: "synthetic-server", serverName: "Repository Tools" }]
+    };
+    const repository = createRepository();
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return providerResult({
+        finalText: requests.length === 1 ? "" : "Available partial answer",
+        providerResponseId: `synthetic-response-${requests.length}`,
+        toolCalls: [{ arguments: {}, id: `synthetic-call-${requests.length}`, name }],
+        usage: usage(2, 1, 0)
+      });
+    });
+    const callTool = vi.fn(async () => ({ isError: false, structuredContent: null, text: ["[]"], unsupportedContentTypes: [] }));
+    const events = parseSse(await createRunExecutionResponse(executionInput({
+      adapter,
+      mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
+      prepared: preparedData({ mcp, modelId: "synthetic-model", provider: "openai", toolBudgets: { maxToolCalls: 1, maxToolRounds: 8 } }),
+      repository: repository.repository
+    })).text());
+
+    expect(requests.map((request) => request.toolChoice)).toEqual(["auto", "none"]);
+    expect(callTool).toHaveBeenCalledOnce();
+    expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ state: "complete" })]);
+    expect(repository.assistantTexts.at(-1)).toBe("Available partial answer");
+    expect(repository.completeRuns).toEqual([]);
+    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: TOOL_SYNTHESIS_FAILURE, options: { recoveryTerminal: true } })]);
+    expect(events).toContainEqual(expect.objectContaining({ type: "artifact", data: {
+      artifactType: "tool_budget", payload: { kind: "calls", limit: 1 }
+    } }));
+    expect(events).toContainEqual(expect.objectContaining({ type: "error", data: TOOL_SYNTHESIS_FAILURE }));
+    expect(repository.recordedRunUsageEvents.filter((entry) => entry.answerRoundUsage?.roundIndex === 2 &&
+      entry.answerRoundUsage.completeness === "terminal")).toHaveLength(1);
   });
 
   it("routes tools from several MCP servers and executes one provider batch in parallel", async () => {
@@ -5052,6 +5101,7 @@ describe("run execution", () => {
       data: {
         payload: {
           name: "lookup",
+          origin: "mcp",
           round: 1,
           serverName: "Memory",
           status: "requested"

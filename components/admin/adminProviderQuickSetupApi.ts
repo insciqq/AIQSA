@@ -1,5 +1,6 @@
 import { ADMIN_PROVIDER_SETUP_STREAM_TYPE, type AdminProviderSetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 import { readAdminProviderSetupResponse } from "./adminProviderSetupStream";
+import { isAdminProviderCheckRun } from "./adminProvidersApi";
 import {
   ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS,
   type AdminProviderQuickSetupCandidate,
@@ -167,8 +168,16 @@ function choice(value: unknown): value is AdminProviderQuickSetupChoice {
 }
 
 function result(value: unknown): AdminProviderQuickSetupResult | null {
-  if (!record(value) || containsForbiddenMaterial(value) || typeof value.outcome !== "string") return null;
-  if (value.outcome === "ready" && exactKeys(value, [
+  if (!record(value) || typeof value.outcome !== "string") return null;
+  const { checkRun, ...receipt } = value;
+  if (containsForbiddenMaterial(receipt) || checkRun !== undefined && (!isAdminProviderCheckRun(checkRun) ||
+    !checkRun.credentialId || checkRun.state === "running" ||
+    (value.outcome === "cancelled") !== (checkRun.state === "cancelled") || value.outcome === "ready" && (checkRun.state !== "completed" ||
+      checkRun.done !== checkRun.total || checkRun.failed.length > 0 || Boolean(checkRun.skipped?.length) ||
+      checkRun.setup?.state === "partial" || checkRun.setup?.state === "running" ||
+      checkRun.results?.some((entry) => entry.state !== "saved")))) return null;
+  if (["ready", "partial", "cancelled"].includes(value.outcome) &&
+    (value.outcome === "ready" || checkRun !== undefined) && exactKeys(value, [
     "checkedAt",
     "connectionId",
     "defaultCredentialChanged",
@@ -178,6 +187,7 @@ function result(value: unknown): AdminProviderQuickSetupResult | null {
     "outcome",
     "provider",
     "providerDisplayName",
+    ...(value.checkRun === undefined ? [] : ["checkRun"]),
     ...(value.search === undefined ? [] : ["search"])
   ]) && timestamp(value.checkedAt) && safeText(value.connectionId, 128) &&
     typeof value.defaultCredentialChanged === "boolean" &&
@@ -224,10 +234,8 @@ async function request<T>(
       ...init
     });
     const { ok, value } = await readAdminProviderSetupResponse(response, onProgress);
-    if (containsForbiddenMaterial(value)) {
-      return { error: { code: "provider_quick_setup_response_invalid" }, ok: false };
-    }
     if (!ok) {
+      if (containsForbiddenMaterial(value)) return { error: { code: "provider_quick_setup_response_invalid" }, ok: false };
       return { error: { code: errorCode(value, "provider_admin_action_failed") }, ok: false };
     }
     const data = decode(value);
@@ -266,7 +274,7 @@ export function adminProviderQuickSetupErrorMessage(
   const messages: Record<string, string> = {
     forbidden: "Your account no longer has permission to manage providers.",
     network_error: "Could not reach the provider setup API. Try again.",
-    provider_admin_action_failed: "The provider could not be added. Nothing was changed.",
+    provider_admin_action_failed: "The provider setup could not be completed. Review its saved results before continuing.",
     provider_configuration_invalid: "Review the name, endpoint and timeout, then try again.",
     provider_credential_test_failed: "The provider rejected the key or its account catalog could not be reached.",
     provider_draft_stale: "Providers changed in another window. Close this sheet and try again.",

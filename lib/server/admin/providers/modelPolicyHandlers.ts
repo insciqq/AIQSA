@@ -2,6 +2,7 @@ import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
 import {
   MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS,
+  isMcpAutoDiscoveryOutputTokens,
   MCP_RUN_PLAN_LIMITS
 } from "../../../contracts/mcp";
 import {
@@ -64,7 +65,8 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
       const limitKeys = [
-        "maxToolCalls", "maxToolRounds", "maxMcpToolsPerDiscovery", "mcpAutoDiscoveryTimeoutSeconds"
+        "maxToolCalls", "maxToolRounds", "maxMcpToolsPerDiscovery", "mcpAutoDiscoveryTimeoutSeconds",
+        "mcpAutoDiscoveryMaxOutputTokens"
       ] as const;
       const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", ...limitKeys];
       const textOrNull = (entry: unknown, limit: number) => entry === null ||
@@ -80,6 +82,7 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
           !textOrNull(value.providerModelId, 256) || !textOrNull(value.reasoningEffort, 32) ||
           value.providerModelId === null && value.reasoningEffort !== null) ||
         presentLimits.length > 0 && (presentLimits.length !== limitKeys.length ||
+          !isMcpAutoDiscoveryOutputTokens(value.mcpAutoDiscoveryMaxOutputTokens) ||
           !Number.isSafeInteger(value.mcpAutoDiscoveryTimeoutSeconds) ||
           Number(value.mcpAutoDiscoveryTimeoutSeconds) < MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds ||
           Number(value.mcpAutoDiscoveryTimeoutSeconds) > MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds ||
@@ -101,7 +104,8 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
             maxMcpToolsPerDiscovery: Number(value.maxMcpToolsPerDiscovery),
             maxToolCalls: Number(value.maxToolCalls),
             maxToolRounds: Number(value.maxToolRounds),
-            mcpAutoDiscoveryTimeoutSeconds: Number(value.mcpAutoDiscoveryTimeoutSeconds)
+            mcpAutoDiscoveryTimeoutSeconds: Number(value.mcpAutoDiscoveryTimeoutSeconds),
+            mcpAutoDiscoveryMaxOutputTokens: Number(value.mcpAutoDiscoveryMaxOutputTokens)
           } : {}),
           userId: auth.session.userId
         });

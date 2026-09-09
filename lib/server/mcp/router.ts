@@ -1,8 +1,12 @@
+import { declaredModelOutputTokenLimit } from "../providers/providerModelCapabilities";
+import { isProviderDeadlineExceededError } from "../providers/network";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { sumTokenUsage } from "../../domain/usage";
 import {
   MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS,
+  MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS,
+  isMcpAutoDiscoveryOutputTokens,
   MCP_RUN_PLAN_LIMITS
 } from "../../contracts/mcp";
 import type { ProviderRunRequest } from "../providers/types";
@@ -24,6 +28,10 @@ const MAX_REQUIREMENT_CHARACTERS = 160;
 
 export type McpSemanticRouterErrorCode =
   | "mcp_router_cancelled"
+  | "mcp_router_output_limit"
+  | "mcp_router_model_output_limit"
+  | "mcp_router_timeout"
+  | "mcp_router_credential_unavailable"
   | "mcp_router_output_invalid"
   | "mcp_router_request_failed"
   | "mcp_router_structured_output_unverified"
@@ -57,6 +65,7 @@ export type McpSemanticRouter = Readonly<{
     catalog: McpCapabilityCatalog;
     goals: readonly string[];
     limit: number;
+    maxOutputTokens?: number | null;
     request: Pick<ProviderRunRequest, "content" | "context">;
     signal?: AbortSignal;
     timeoutMs?: number;
@@ -262,6 +271,7 @@ type McpRouterStructuredRequest = Readonly<{
 }>;
 
 function buildMcpRouterStructuredRequest(input: Readonly<{
+  maxOutputTokens?: number | null;
   activeToolNames: ReadonlySet<string>;
   catalog: McpCapabilityCatalog;
   goals: readonly string[];
@@ -269,6 +279,11 @@ function buildMcpRouterStructuredRequest(input: Readonly<{
   previousAttempt?: McpRouterSelection;
   request: Pick<ProviderRunRequest, "content" | "context">;
 }>): McpRouterStructuredRequest | null {
+  const maxOutputTokens = input.maxOutputTokens === undefined
+    ? MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.defaultTokens : input.maxOutputTokens;
+  if (maxOutputTokens !== null && !isMcpAutoDiscoveryOutputTokens(maxOutputTokens)) {
+    throw new McpSemanticRouterError("mcp_router_request_failed");
+  }
   const goals = routingGoals(input.goals);
   const limit = Math.min(
     MCP_RUN_PLAN_LIMITS.maxTools,
@@ -283,7 +298,7 @@ function buildMcpRouterStructuredRequest(input: Readonly<{
     candidateIds,
     limit,
     request: {
-      maxOutputTokens: Math.min(4_096, Math.max(1_024, 256 + limit * 32)),
+      maxOutputTokens: maxOutputTokens ?? Math.min(4_096, Math.max(1_024, 256 + limit * 32)),
       name: input.previousAttempt ? "mcp_tool_routing_retry" : "mcp_tool_routing",
       schema: {
         additionalProperties: false,
@@ -339,6 +354,7 @@ export function createMcpSemanticRouter(dependencies: Readonly<{
       if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
         throw new McpSemanticRouterError("mcp_router_request_failed");
       }
+      const deadline = Date.now() + timeoutMs;
       const structured = buildMcpRouterStructuredRequest(input);
       if (!structured) {
         return { toolNames: [], usageAttribution: null };
@@ -359,9 +375,15 @@ export function createMcpSemanticRouter(dependencies: Readonly<{
       if (resolution.role.modelConfiguration.capabilities.structuredOutput !== true) {
         throw new McpSemanticRouterError("mcp_router_structured_output_unverified");
       }
+      const modelOutputLimit = declaredModelOutputTokenLimit({
+        ...resolution.role.modelConfiguration,
+        upstreamModelId: resolution.role.snapshot.model.upstreamModelId
+      }, resolution.role.snapshot.providerFamily);
+      if (modelOutputLimit !== null && structured.request.maxOutputTokens! > modelOutputLimit) {
+        throw new McpSemanticRouterError("mcp_router_model_output_limit");
+      }
       const allowed = new Set(structured.candidateIds);
       const usages: ModelRunUsage[] = [];
-      const deadline = Date.now() + timeoutMs;
       const usageAttribution = (): McpRouterUsageAttribution | null => {
         const usage = usages.length === 1
           ? usages[0]!
@@ -378,7 +400,7 @@ export function createMcpSemanticRouter(dependencies: Readonly<{
         ): Promise<McpRouterSelection> => {
           const timeoutMs = deadline - Date.now();
           if (timeoutMs < 1) {
-            throw new McpSemanticRouterError("mcp_router_request_failed");
+            throw new McpSemanticRouterError("mcp_router_timeout");
           }
           const output = await dependencies.executeStructuredOutput(
             resolution.role,
@@ -414,7 +436,14 @@ export function createMcpSemanticRouter(dependencies: Readonly<{
       } catch (error) {
         throw new McpSemanticRouterError(
           input.signal?.aborted ? "mcp_router_cancelled"
-            : error instanceof McpSemanticRouterError ? error.code : "mcp_router_request_failed",
+            : error instanceof McpSemanticRouterError ? error.code
+            : isProviderDeadlineExceededError(error) ? "mcp_router_timeout"
+            : error instanceof Error && error.message === "structured_output_output_limit_exceeded"
+              ? "mcp_router_output_limit"
+            : error instanceof Error && ["credential_revoked", "provider_credential_missing"].includes(error.message)
+              ? "mcp_router_credential_unavailable"
+            : error instanceof Error && ["structured_output_provider_incomplete", "structured_output_invalid", "structured_output_response_invalid"].includes(error.message)
+              ? "mcp_router_output_invalid" : "mcp_router_request_failed",
           usageAttribution()
         );
       }

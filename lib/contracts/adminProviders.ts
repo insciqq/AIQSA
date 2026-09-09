@@ -38,6 +38,8 @@ export type AdminProviderModelCapabilities = {
   backgroundStreaming?: boolean;
   contextWindow?: number;
   defaultMaxOutputTokens?: number;
+  /** Declared output ceiling; independent of the default generation value. */
+  maxOutputTokens?: number;
   nativeBackground?: boolean;
   /** Administrator-declared support for OpenAI-compatible image generation.
    * AIQSA records this for future image workflows; the current run pipeline
@@ -91,10 +93,20 @@ export type AdminProviderReasoningRequestMapping = ProviderReasoningRequestMappi
 
 export type AdminProviderCompatibilityStatus = "not_supported" | "verified";
 
+export const ADMIN_PROVIDER_CAPABILITY_CHECKS = ["modelAccess", "structuredOutput", "toolCalling",
+  "forcedToolCall", "parallelToolCalls", "vision", "directPdf", "streaming", "embedding", "reranking"] as const;
+export type AdminProviderCapabilityCheck = (typeof ADMIN_PROVIDER_CAPABILITY_CHECKS)[number];
+export type AdminProviderCapabilityCheckStatus = "verified" | "rejected" | "unsupported" | "incomplete" | "not_checked";
+export type AdminProviderCapabilitySetupEvidence = {
+  policyVersion: 1;
+  checks: Partial<Record<AdminProviderCapabilityCheck, AdminProviderCapabilityCheckStatus>>;
+};
+
 export type AdminProviderCompatibilityEvidence = {
   directPdf: AdminProviderCompatibilityStatus;
   /** Ordinary automatic function calling, independent of strict Memory calls. */
   toolCalling?: AdminProviderCompatibilityStatus;
+  parallelToolCalls?: AdminProviderCompatibilityStatus;
   /** Exact forced, strict function-call contract used by Memory action roles.
    * Omitted by pre-v1-extension evidence and therefore not verified. */
   forcedToolCall?: AdminProviderCompatibilityStatus;
@@ -108,6 +120,14 @@ export type AdminProviderCompatibilityEvidence = {
 };
 
 export type AdminProviderTestEvidence = {
+  /** Initial setup/retry results; stored under the same exact tuple as the proofs. */
+  capabilitySetup?: AdminProviderCapabilitySetupEvidence;
+  parallelToolCalls?: {
+    adapterKind: AdminProviderAdapterKind;
+    probeVersion: 1;
+    upstreamModelId: string;
+    verified: true;
+  };
   embedding?: { probeVersion: 1; document: true; query: true; dimensions: number };
   reranking?: { probeVersion: 1; completeScores: true };
   compatibility?: AdminProviderCompatibilityEvidence;
@@ -147,6 +167,7 @@ export type AdminProviderTestEvidence = {
   structuredOutput?: {
     adapterKind:
       | "deepseek_responses_native"
+      | "gemini_interactions_native"
       | "openai_responses_compatible"
       | "openai_responses_native"
       | "openrouter_chat_completions";
@@ -259,6 +280,9 @@ export type AdminProviderBootstrapResult = {
  * failure, so a row can offer Retry even before any evidence exists.
  */
 export type AdminProviderCheckRun = {
+  results?: Array<{ providerModelId: string; state: "saved" | "partial" | "unavailable" | "save_failed" | "check_failed" | "cancelled" | "stale";
+    checks?: AdminProviderCapabilitySetupEvidence["checks"] }>;
+  capabilityProgress?: { capability: AdminProviderCapabilityCheck; completed: number; total: number; providerModelId: string };
   setup?: AdminProviderBootstrapResult | { state: "running" };
   skipped?: string[];
   credentialId: string;
@@ -340,6 +364,10 @@ export type AdminOpenRouterDiscoveredModel = {
 export type AdminCompatibleDiscoveredCapabilities = {
   contextWindow?: number;
   defaultMaxOutputTokens?: number;
+  maxOutputTokens?: number;
+  toolCalling?: boolean;
+  vision?: boolean;
+  parallelToolCalls?: boolean;
   defaultReasoningEffort?: string;
   defaultReasoningMode?: string;
   reasoning?: boolean;

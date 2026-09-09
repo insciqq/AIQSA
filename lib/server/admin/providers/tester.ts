@@ -2,6 +2,8 @@ import { isRetryableProviderNetworkError } from "../../providers/providerRetry";
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import type {
   AdminProviderCheckStatus,
+  AdminProviderCapabilityCheck,
+  AdminProviderCapabilityCheckStatus,
   AdminProviderCompatibilityStatus,
   AdminProviderTestEvidence
 } from "../../../contracts/adminProviders";
@@ -38,7 +40,11 @@ import {
 import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 import { createProviderVisionInputProbe } from "../../providers/visionInputProbe";
 import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
-import { lowestConfiguredReasoningEffort } from "../../providers/providerModelCapabilities";
+import { declaredModelOutputTokenLimit, lowestConfiguredReasoningEffort } from "../../providers/providerModelCapabilities";
+import { withTimeoutSignal } from "../../providers/network";
+import { decodeParallelToolCallVerificationEvidence } from "../../providers/parallelToolCallEvidence";
+import { INITIAL_CAPABILITY_MODEL_TIMEOUT_MS, INITIAL_CAPABILITY_SETUP_POLICY_VERSION,
+  reusableCapabilitySetupEvidence } from "./initialCapabilitySetup";
 import {
   ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION,
   unsupportedAdminProviderCompatibilityEvidence
@@ -54,6 +60,12 @@ export type AdminProviderDraftTesterInput = Readonly<{
   credentialVersionIdentity: string;
   mode: AdminProviderDraftTestMode;
   capabilityRole?: SystemModelVerificationRole;
+  /** Initial setup authorizes probing and enabling implemented capabilities. */
+  initialSetup?: boolean;
+  /** Internal only: caller already fenced all exact-current tuple revisions. */
+  reuseSetupEvidence?: AdminProviderTestEvidence;
+  onCapabilityProgress?(value: { capability: AdminProviderCapabilityCheck; completed: number; total: number }): void;
+  onSetupCheckpoint?(value: AdminProviderDraftTestOutcome): void;
   model: ProviderModelConfiguration;
   modelDisplayName: string;
   providerFamily: string;
@@ -107,7 +119,7 @@ function generationRequest(
   const responsesAdapter = input.model.adapterKind === "openai_responses_native" ||
     input.model.adapterKind === "openai_responses_compatible" ||
     input.model.adapterKind === "deepseek_responses_native";
-  const maxOutputTokens = 1_000;
+  const maxOutputTokens = probeOutputTokens(input, 1_000);
 
   return {
     attachmentIds: [],
@@ -140,6 +152,10 @@ function generationRequest(
     provider: input.providerFamily,
     searchPlan: { mode: "all_selected", options: [] }
   };
+}
+
+function probeOutputTokens(input: AdminProviderDraftTesterInput, desired: number): number {
+  return Math.min(desired, declaredModelOutputTokenLimit(input.model, input.providerFamily) ?? desired);
 }
 
 const structuredOutputProbeSchema = Object.freeze({
@@ -202,7 +218,7 @@ async function runStructuredOutputProbe(
     providerRuntime(input, options).structuredOutputAdapter;
   if (!adapter) throw new Error("structured_output_adapter_unsupported");
   const output = await adapter.execute({
-    maxOutputTokens: 128,
+    maxOutputTokens: probeOutputTokens(input, input.model.capabilities.reasoning ? 1_024 : 128),
     reasoningEffort: lowestConfiguredReasoningEffort(input.model, input.providerFamily),
     name: "aiqsa_structured_output_probe",
     schema: structuredOutputProbeSchema,
@@ -250,8 +266,8 @@ async function runForcedToolCallProbe(
       ...(input.model.adapterKind === "openrouter_chat_completions"
         ? { reasoning: { enabled: false, exclude: true } }
         : {}),
-      maxOutputTokens: lowestConfiguredReasoningEffort(input.model, input.providerFamily) === "none" ? 128 : 1_024,
-      max_output_tokens: lowestConfiguredReasoningEffort(input.model, input.providerFamily) === "none" ? 128 : 1_024
+      maxOutputTokens: probeOutputTokens(input, lowestConfiguredReasoningEffort(input.model, input.providerFamily) === "none" ? 128 : 1_024),
+      max_output_tokens: probeOutputTokens(input, lowestConfiguredReasoningEffort(input.model, input.providerFamily) === "none" ? 128 : 1_024)
     },
     prompt: {
       developer: null,
@@ -312,11 +328,13 @@ const testWideErrorCodes = new Set([
   "openai_response_not_completed",
   "provider_request_timed_out",
   "provider_response_too_large",
+  "provider_output_too_large",
   "provider_stream_deadline_exceeded",
   "provider_stream_event_too_large",
   "provider_stream_timeout",
   "provider_stream_too_large",
   "structured_output_provider_incomplete",
+  "structured_output_output_limit_exceeded",
   "vision_input_fixture_unavailable"
 ]);
 
@@ -463,7 +481,7 @@ async function testToolCalling(
     if (!runtime.toolBridge) return "not_supported";
     const request = generationRequest(input, false);
     const effort = lowestConfiguredReasoningEffort(input.model, input.providerFamily);
-    const maxOutputTokens = effort === "none" ? 128 : 1_024;
+    const maxOutputTokens = probeOutputTokens(input, effort === "none" ? 128 : 1_024);
     const stream = runtime.adapter.stream({
       ...request,
       content: { blocks: [{ text: "Use the supplied weather lookup function for Oslo.", type: "text" }] },
@@ -734,6 +752,136 @@ async function testAnswerModel(
   };
 }
 
+async function testParallelToolCalls(input: AdminProviderDraftTesterInput, options: TesterOptions) {
+  const runtime = providerRuntime(input, options);
+  if (!runtime.toolBridge || !supportsForcedToolCallProbe(input.model.adapterKind)) return null;
+  const request = generationRequest(input, false);
+  const cap = probeOutputTokens(input, input.model.capabilities.reasoning ? 1_024 : 256);
+  const stream = runtime.adapter.stream({
+    ...request,
+    content: { blocks: [{ type: "text", text: "Call aiqsa_parallel_probe exactly twice in this response: once for Oslo and once for Rome. Both calls are independent; emit both before waiting for results." }] },
+    modelCapabilities: { ...request.modelCapabilities, parallelToolCalls: true, toolCalling: true },
+    parallelToolCalls: true,
+    params: { ...request.params, maxOutputTokens: cap, max_output_tokens: cap, parallel_tool_calls: true },
+    toolChoice: "auto",
+    tools: [{ capability: "mcp", name: "aiqsa_parallel_probe", description: "Look up a city independently.", strict: false,
+      inputSchema: { type: "object", additionalProperties: false, required: ["city"],
+        properties: { city: { type: "string", enum: ["Oslo", "Rome"] } } } }]
+  }, { signal: input.signal });
+  let next = await stream.next();
+  while (!next.done) next = await stream.next();
+  const calls = next.value.toolCalls ?? [];
+  if (calls.length !== 2 || calls.some((call) => call.name !== "aiqsa_parallel_probe" ||
+    Object.keys(call.arguments).length !== 1) ||
+    new Set(calls.map((call) => call.id)).size !== 2 ||
+    calls.map((call) => call.arguments.city).sort().join(",") !== "Oslo,Rome") return null;
+  return decodeParallelToolCallVerificationEvidence({ adapterKind: input.model.adapterKind,
+    probeVersion: 1, upstreamModelId: input.model.upstreamModelId, verified: true });
+}
+
+/** Eight independent answer checks, at most three attempts each, serial within
+ * one model deadline. A failing capability cannot discard successful access. */
+async function testInitialAnswerModel(original: AdminProviderDraftTesterInput, options: ResolvedTesterOptions): Promise<AdminProviderDraftTestOutcome> {
+  const timeout = withTimeoutSignal(original.signal, Math.min(INITIAL_CAPABILITY_MODEL_TIMEOUT_MS,
+    original.model.responseTimeoutMs ?? original.connection.responseTimeoutMs));
+  const input: AdminProviderDraftTesterInput = { ...original, signal: timeout.signal, model: {
+    ...original.model, capabilities: { ...original.model.capabilities,
+      toolCalling: true, parallelToolCalls: true, vision: true, nativePdfInput: true, streaming: true }
+  } };
+  const previous = reusableCapabilitySetupEvidence(original.reuseSetupEvidence, original.model);
+  const applicable = ["modelAccess", "structuredOutput", "toolCalling", "forcedToolCall", "parallelToolCalls",
+    "vision", "directPdf", "streaming"] as const;
+  const checks = { ...Object.fromEntries(applicable.map((key) => [key, "not_checked"])) as
+    Partial<Record<AdminProviderCapabilityCheck, AdminProviderCapabilityCheckStatus>>, ...previous?.capabilitySetup?.checks };
+  const compatibility = { ...unsupportedAdminProviderCompatibilityEvidence(), ...previous?.compatibility,
+    toolCalling: previous?.compatibility?.toolCalling ?? "not_supported" as const,
+    parallelToolCalls: previous?.compatibility?.parallelToolCalls ?? "not_supported" as const,
+    forcedToolCall: previous?.compatibility?.forcedToolCall ?? "not_supported" as const,
+    vision: previous?.compatibility?.vision ?? "not_supported" as const };
+  const evidence: AdminProviderTestEvidence = { ...previous, compatibility,
+    detail: "model_missing", method: "tiny_generation", selectedProviders: input.model.openRouterRouting?.providers ?? [],
+    upstreamModelId: input.model.upstreamModelId,
+    capabilitySetup: { policyVersion: INITIAL_CAPABILITY_SETUP_POLICY_VERSION, checks } };
+  let completed = 0;
+  async function check(key: typeof applicable[number], supported: boolean,
+    operation: () => Promise<AdminProviderCapabilityCheckStatus>) {
+    original.signal?.throwIfAborted();
+    original.onCapabilityProgress?.({ capability: key, completed, total: applicable.length });
+    if (checks[key] !== "verified") {
+      if (!supported) checks[key] = "unsupported";
+      else if (timeout.signal.aborted || key !== "modelAccess" && checks.modelAccess !== "verified") checks[key] = "not_checked";
+      else {
+        try { checks[key] = await withCapabilityRetries(input, options, operation); }
+        catch {
+          original.signal?.throwIfAborted();
+          checks[key] = "incomplete";
+        }
+      }
+    }
+    completed += 1;
+    if (!original.signal?.aborted && checks.modelAccess === "verified") {
+      evidence.detail = "ok";
+      original.onSetupCheckpoint?.({ status: "available", evidence: structuredClone(evidence) });
+    }
+    original.onCapabilityProgress?.({ capability: key, completed, total: applicable.length });
+  }
+  try {
+    await check("modelAccess", true, async () => {
+      const access = await runGenerationProbe(input, options, false);
+      compatibility.modelAccess = access.status;
+      if (access.usageSeen) compatibility.usage = "verified";
+      return "verified";
+    });
+    await check("structuredOutput", supportsStructuredOutputAdapter(input.model.adapterKind), async () => {
+      const result = await testStructuredOutput(input, options);
+      compatibility.structuredOutput = result.status;
+      if (result.evidence) evidence.structuredOutput = result.evidence;
+      return result.evidence ? "verified" : "rejected";
+    });
+    const supportsTools = supportsForcedToolCallProbe(input.model.adapterKind);
+    await check("toolCalling", supportsTools, async () => {
+      compatibility.toolCalling = await testToolCalling(input, options);
+      return compatibility.toolCalling === "verified" ? "verified" : "rejected";
+    });
+    await check("forcedToolCall", supportsTools, async () => {
+      const result = await testForcedToolCall(input, options);
+      compatibility.forcedToolCall = result.status;
+      if (result.evidence) evidence.forcedToolCall = result.evidence;
+      return result.evidence ? "verified" : "rejected";
+    });
+    await check("parallelToolCalls", supportsTools, async () => {
+      const proof = await testParallelToolCalls(input, options);
+      compatibility.parallelToolCalls = proof ? "verified" : "not_supported";
+      if (proof) evidence.parallelToolCalls = proof;
+      return proof ? "verified" : "rejected";
+    });
+    await check("vision", supportsTools, async () => {
+      const proof = await testVisionInput(input, options);
+      compatibility.vision = proof ? "verified" : "not_supported";
+      if (proof) evidence.visionInput = proof;
+      return proof ? "verified" : "rejected";
+    });
+    await check("directPdf", supportsPdfInputAdapter(input.model.adapterKind), async () => {
+      const result = await testPdfInput(input, options);
+      compatibility.directPdf = result.status;
+      if (result.evidence) evidence.pdfInput = result.evidence;
+      return result.evidence ? "verified" : "rejected";
+    });
+    await check("streaming", true, async () => {
+      const result = await runGenerationProbe(input, options, true);
+      compatibility.streaming = result.status;
+      if (result.usageSeen) compatibility.usage = "verified";
+      return result.status === "verified" ? "verified" : "rejected";
+    });
+    original.signal?.throwIfAborted();
+    const available = checks.modelAccess === "verified";
+    evidence.detail = available ? "ok" : "model_missing";
+    return { evidence, status: available ? "available" : "unavailable" };
+  } finally {
+    timeout.clear();
+  }
+}
+
 async function testSystemRole(
   input: AdminProviderDraftTesterInput,
   options: ResolvedTesterOptions
@@ -857,6 +1005,29 @@ export function createAdminProviderDraftTester(
   };
   return {
     async test(input) {
+      if (input.initialSetup && input.model.modelClass === "answer") return testInitialAnswerModel(input, resolvedOptions);
+      if (input.initialSetup && input.model.modelClass !== "answer") {
+        const previous = reusableCapabilitySetupEvidence(input.reuseSetupEvidence, input.model);
+        const capability = input.model.modelClass === "embedding" ? "embedding" : "reranking";
+        if (previous?.capabilitySetup?.checks[capability] === "verified") return { evidence: previous, status: "available" };
+        const timeout = withTimeoutSignal(input.signal, Math.min(INITIAL_CAPABILITY_MODEL_TIMEOUT_MS,
+          input.model.responseTimeoutMs ?? input.connection.responseTimeoutMs));
+        input.onCapabilityProgress?.({ capability, completed: 0, total: 1 });
+        try {
+          const outcome = await runTinyGeneration({ ...input, signal: timeout.signal }, resolvedOptions);
+          input.signal?.throwIfAborted();
+          return { ...outcome, evidence: { ...outcome.evidence,
+            capabilitySetup: { policyVersion: 1, checks: { modelAccess: "verified", [capability]: "verified" } } } };
+        } catch {
+          input.signal?.throwIfAborted();
+          return { status: "unavailable", evidence: { detail: "model_missing", method: "tiny_generation",
+            selectedProviders: input.model.openRouterRouting?.providers ?? [], upstreamModelId: input.model.upstreamModelId,
+            capabilitySetup: { policyVersion: 1, checks: { modelAccess: "incomplete", [capability]: "incomplete" } } } };
+        } finally {
+          timeout.clear();
+          input.onCapabilityProgress?.({ capability, completed: 1, total: 1 });
+        }
+      }
       if (input.capabilityRole) return testSystemRole(input, resolvedOptions);
       return input.mode === "account_catalog"
         ? testOpenRouterCatalog(input, resolvedOptions)

@@ -223,7 +223,7 @@ function ServerRow({
   const connected = server.oauthState === "ready" || server.oauthState === "reauthorization_required";
   const needsOAuth = server.oauthAvailable && server.oauthState !== "ready";
   const missingPersonalField = server.fields.find((field) => field.source === "missing");
-  const readiness = mcpReadinessPresentation(server.readiness);
+  const readiness = mcpReadinessPresentation(server.readiness, server.runtimeErrorCode);
   const operational = mcpOperationalPresentation(server);
   // The catalog count is informational: tool names appear once the runtime
   // reported them, so the fold below lists the exact tools only then.
@@ -280,7 +280,7 @@ function ServerRow({
                 : operational.kind === "progress" ? <Spinner /> : null}
               {operational.label}
             </span>
-            {readiness.kind === "attention" ? (
+            {readiness.kind === "attention" || readiness.kind === "failed" ? (
               <>
                 <span aria-hidden="true"> · </span>
                 <span className="v2-settings-server-readiness" data-tone={readinessTone(readiness.kind)}>

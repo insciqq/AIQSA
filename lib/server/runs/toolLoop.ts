@@ -82,6 +82,15 @@ export type ToolLoopProgress = Readonly<{
   toolRounds: number;
 }>;
 
+export function reachedToolLoopBudget(
+  progress: Pick<ToolLoopProgress, "toolCalls" | "toolRounds">,
+  budgets: Pick<ToolLoopBudgets, "maxToolCalls" | "maxToolRounds">
+): Readonly<{ kind: "calls" | "rounds"; limit: number }> | null {
+  if (progress.toolCalls >= budgets.maxToolCalls) return { kind: "calls", limit: budgets.maxToolCalls };
+  if (progress.toolRounds >= budgets.maxToolRounds) return { kind: "rounds", limit: budgets.maxToolRounds };
+  return null;
+}
+
 export type ToolLoopOutcome<FinalValue> =
   | (ToolLoopProgress &
       Readonly<{

@@ -32,6 +32,7 @@ const adminSections = [
   { id: "retrieval", label: "Knowledge & Memory" },
   { id: "users", label: "Users" },
   { id: "groups", label: "Groups" },
+  { id: "access-rules", label: "Sign-up rules" },
   { id: "mcp", label: "MCP servers" },
   { id: "workspace", label: "Workspace" },
   { id: "email", label: "Email" },
@@ -473,14 +474,16 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     await confirmAdminDialog(page, "admin-confirm-reject-user", /confirm reject user/i);
     await expect(rejectedRow).toHaveAttribute("data-user-status", "denied");
 
-    await page.getByRole("button", { name: "Sign-up rules" }).click();
+    await openAdminSection(page, adminSection("access-rules"));
+    await page.getByRole("button", { exact: true, name: "Add rule" }).click();
     const rulesSheet = page.getByTestId("admin-signup-rules-sheet");
     await rulesSheet.getByLabel("Value").fill(ruleEmail);
     await rulesSheet.getByLabel(group.name).check();
     await rulesSheet.getByRole("button", { name: "Add rule" }).click();
-    await expect(signupRule(rulesSheet, ruleEmail)).toContainText(`Email · ${group.name}`);
+    await expect(signupRule(page.getByTestId("admin-section-access-rules"), ruleEmail)).toContainText(`Email · ${group.name}`);
     await rulesSheet.getByRole("button", { exact: true, name: "Done" }).click();
     await expect(rulesSheet).toHaveCount(0);
+    await openUsersList(page);
 
     await page.getByRole("button", { exact: true, name: "Invite" }).click();
     const inviteSheet = page.getByTestId("admin-invite-sheet");
@@ -811,7 +814,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
       ["system-models", "roles"],
       ["access", "groups"],
       ["invites", "users"],
-      ["access-rules", "users"],
+      ["access-rules", "access-rules"],
       ["safety", "users"],
       ["knowledge", "retrieval"],
       ["memory", "retrieval"]
@@ -930,17 +933,19 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await expect(groupDetail.getByRole("button", { name: `Grant all Fake QSA models to ${renamedGroupName}` })).toHaveCount(0);
 
     await openUsersList(page);
-    await page.getByRole("button", { name: "Sign-up rules" }).click();
+    await openAdminSection(page, adminSection("access-rules"));
+    await page.getByRole("button", { exact: true, name: "Add rule" }).click();
     const rulesSheet = page.getByTestId("admin-signup-rules-sheet");
     await rulesSheet.getByLabel("Kind").selectOption("domain");
     await rulesSheet.getByLabel("Value").fill(` ${domain.toUpperCase()} `);
     await expect(rulesSheet.getByTestId("admin-signup-rule-preview")).toContainText(domain);
     await rulesSheet.getByLabel(renamedGroupName).check();
     await rulesSheet.getByRole("button", { name: "Add rule" }).click();
-    await expect(signupRule(rulesSheet, domain)).toContainText(`Domain · ${renamedGroupName}`);
+    await expect(signupRule(page.getByTestId("admin-section-access-rules"), domain)).toContainText(`Domain · ${renamedGroupName}`);
     await expect(rulesSheet.getByLabel("Value")).toHaveValue("");
     await rulesSheet.getByRole("button", { exact: true, name: "Done" }).click();
     await expect(rulesSheet).toHaveCount(0);
+    await openUsersList(page);
 
     await page.getByRole("button", { exact: true, name: "Invite" }).click();
     const inviteSheet = page.getByTestId("admin-invite-sheet");
@@ -994,14 +999,12 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await expect(page).toHaveURL(/section=users$/);
     await expect(staleUserRow).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Sign-up rules" }).click();
-    const rulesSheetAgain = page.getByTestId("admin-signup-rules-sheet");
+    await openAdminSection(page, adminSection("access-rules"));
+    const rulesSheetAgain = page.getByTestId("admin-section-access-rules");
     await rulesSheetAgain.getByRole("button", { name: `Delete rule ${domain}` }).click();
     await confirmAdminDialog(page, "admin-confirm-delete-access-rule", /confirm delete rule/i);
     await expect(signupRule(rulesSheetAgain, domain)).toHaveCount(0);
-    await expect(rulesSheetAgain.getByLabel("Value")).toBeFocused();
-    await rulesSheetAgain.getByRole("button", { exact: true, name: "Done" }).click();
-    await expect(rulesSheetAgain).toHaveCount(0);
+    await expect(page.getByRole("button", { exact: true, name: "Add rule" })).toBeFocused();
 
     await openAdminSection(page, adminSection("groups"));
     const accessAfterDelete = page.getByTestId("admin-section-groups");
@@ -1226,7 +1229,8 @@ test("admin console keeps every section touch-operable in the documented compact
     await expect(inviteSheet).toHaveCount(0);
     await expect(invite).toBeFocused();
 
-    const signupRules = page.getByRole("button", { exact: true, name: "Sign-up rules" });
+    await openAdminSection(page, adminSection("access-rules"));
+    const signupRules = page.getByRole("button", { exact: true, name: "Add rule" });
     await expectTouchTarget(signupRules);
     await signupRules.click();
     const rulesSheet = page.getByTestId("admin-signup-rules-sheet");
@@ -1249,6 +1253,7 @@ test("admin console keeps every section touch-operable in the documented compact
     await page.keyboard.press("Escape");
     await expect(rulesSheet).toHaveCount(0);
     await expect(signupRules).toBeFocused();
+    await openUsersList(page);
 
     const moreActions = page.getByRole("button", { exact: true, name: "More actions" });
     await expectTouchTarget(moreActions);

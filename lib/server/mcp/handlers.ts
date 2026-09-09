@@ -1,3 +1,4 @@
+import { mcpRuntimeErrorCode } from "@/lib/contracts/mcp";
 import type {
   AdminMcpCatalogResponse,
   AdminMcpServer,
@@ -453,6 +454,7 @@ function userServerProjection(server: McpUserServerState, deps: McpHandlerDeps):
     oauthState: server.oauthState,
     operationalStatus,
     readiness: server.readiness,
+    runtimeErrorCode: server.readiness === "unavailable" ? mcpRuntimeErrorCode(server.errorCode) : null,
     tools: server.tools
   };
 }

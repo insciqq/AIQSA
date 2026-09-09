@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { mcpRuntimeErrorCode } from "@/lib/contracts/mcp";
 import type {
   AdminMcpActivationSummary,
   AdminMcpServer,
@@ -492,6 +493,8 @@ function serializeAdminServer(
     name: record.displayName,
     namespace: record.namespace,
     revisions: record.revisions.map(serializeRevision),
+    runtimeErrorCode: record.activeRevision?.runtimeGenerations[0]?.state === "failed"
+      ? mcpRuntimeErrorCode(record.activeRevision.runtimeGenerations[0].errorCode) : null,
     runtimeProblem: record.activeRevision?.runtimeGenerations[0]?.state === "failed"
       ? record.activeRevision.runtimeGenerations[0].errorCode === "mcp_oauth_reauthorization_required"
         ? "reauthorization_required"
@@ -1548,10 +1551,13 @@ export function createPrismaMcpRepository(input: {
           if (!user) return { issues: [{ code: "user_not_found", path: "userId" }], kind: "invalid_grant" as const };
         } else if (groupId) {
           const group = await tx.group.findUnique({
-            select: { id: true, systemRole: true },
+            select: { archivedAt: true, id: true, systemRole: true },
             where: { id: groupId }
           });
           if (!group) return { issues: [{ code: "group_not_found", path: "groupId" }], kind: "invalid_grant" as const };
+          if (group.archivedAt) {
+            return { issues: [{ code: "group_archived", path: "groupId" }], kind: "invalid_grant" as const };
+          }
           if (group.systemRole === "full_access") {
             return {
               issues: [{ code: "system_group_grant_immutable", path: "groupId" }],

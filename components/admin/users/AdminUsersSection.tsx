@@ -2,14 +2,12 @@
 
 import { adminSectionPath } from "@/components/admin/adminSections";
 import { AdminTopbarMenu, useAdminSectionTopbar, type AdminShellTopbar } from "@/components/admin/AdminShell";
-import type { AdminAccessRulesController } from "@/components/admin/useAdminAccessRulesController";
 import type { AdminInvitesController } from "@/components/admin/useAdminInvitesController";
 import type { AdminMcpController } from "@/components/admin/useAdminMcpController";
 import { useAdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import type { AdminUsersController } from "@/components/admin/useAdminUsersController";
 import { AdminInviteSheet } from "@/components/admin/users/AdminInviteSheet";
 import { AdminOpenInvites } from "@/components/admin/users/AdminOpenInvites";
-import { AdminSignupRulesSheet } from "@/components/admin/users/AdminSignupRulesSheet";
 import { AdminUserPage } from "@/components/admin/users/AdminUserPage";
 import { AdminUsersList } from "@/components/admin/users/AdminUsersList";
 import {
@@ -26,7 +24,6 @@ const crumbLink =
   "rounded-[6px] font-medium text-ink-muted outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-focus";
 
 export type AdminUsersSectionProps = Readonly<{
-  accessRules: AdminAccessRulesController;
   dashboard: Pick<AdminDashboard, "catalog" | "groups" | "users">;
   /** The raw `?filter=` value; unknown values fall back to All. */
   filter: string | null;
@@ -62,12 +59,10 @@ function Crumbs({ current, onBack }: Readonly<{ current: string; onBack(): void 
 
 /**
  * Users section (PRD 5.8): the table with search and filter pills, the open
- * invites under it, one user page per `?resource=`, and the Invite and
- * Sign-up rules sheets. The section owns the topbar; the panel owns the
+ * invites under it, one user page per `?resource=`, and the Invite sheet. The section owns the topbar; the panel owns the
  * controllers so the one-time invite link survives a section switch.
  */
 export function AdminUsersSection({
-  accessRules,
   dashboard,
   filter,
   invites,
@@ -79,7 +74,6 @@ export function AdminUsersSection({
 }: AdminUsersSectionProps) {
   const [query, setQuery] = useState("");
   const [inviteOpen, setInviteOpen] = useState(false);
-  const [rulesOpen, setRulesOpen] = useState(false);
   const [leaveDeletedPage, setLeaveDeletedPage] = useState(false);
   const listFilter = parseAdminUserListFilter(filter);
   const providers = useAdminProvidersController(resource !== null);
@@ -122,9 +116,6 @@ export function AdminUsersSection({
     return {
       actions: (
         <>
-          <UiV2Button data-testid="users-signup-rules" onClick={() => setRulesOpen(true)} tone="ghost" type="button">
-            Sign-up rules
-          </UiV2Button>
           <UiV2Button data-testid="users-invite" icon="plus" onClick={() => setInviteOpen(true)} tone="primary" type="button">
             Invite
           </UiV2Button>
@@ -153,12 +144,6 @@ export function AdminUsersSection({
         groups={dashboard.groups}
         onClose={() => setInviteOpen(false)}
         open={inviteOpen}
-      />
-      <AdminSignupRulesSheet
-        controller={accessRules}
-        groups={dashboard.groups}
-        onClose={() => setRulesOpen(false)}
-        open={rulesOpen}
       />
     </>
   );

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import type { AdminModelPolicyUpdateInput } from "../../components/admin/adminModelPolicyApi";
 import { decodeAdminModelPolicyResponse, type AdminModelPolicyCatalog } from "../../lib/contracts/adminModelPolicy";
 import { defaultProviderModels } from "../../lib/domain/catalog";
 import { buildCurrentUserCatalog, type CatalogData } from "../../lib/server/catalog/currentUserCatalog";
@@ -24,7 +25,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       candidates: [reasoningModel, plainModel],
       policy: {
         defaultModel: { ...reasoningModel, available: true }, reasoningEffort: null,
-        mcpAutoDiscoveryTimeoutSeconds: 60, maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8,
+        mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192, maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8,
         updatedAt: "2026-09-07T00:00:00.000Z", updatedBy: null, version: 1
       }
     };
@@ -37,19 +38,26 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         showCitations: true, showReasoningBlocks: false
       }
     };
-    const saved: unknown[] = [];
+    const saved: AdminModelPolicyUpdateInput[] = [];
     await installMatrixCatalogFixture(page);
     await page.route("**/api/me/catalog", (route) => route.fulfill({ json: { catalog: buildCurrentUserCatalog(data) } }));
     await page.route("**/api/admin/providers/model-policy", async (route) => {
       if (route.request().method() === "PATCH") {
-        const body = route.request().postDataJSON();
+        const body: AdminModelPolicyUpdateInput = route.request().postDataJSON();
         saved.push(body);
         expect(body.expectedVersion).toBe(policy.policy.version);
-        const selected = policy.candidates.find((candidate) => candidate.id === body.providerModelId);
-        policy.policy.defaultModel = selected ? { ...selected, available: true } : null;
-        policy.policy.reasoningEffort = body.reasoningEffort;
+        if (body.providerModelId !== undefined) {
+          const selected = policy.candidates.find((candidate) => candidate.id === body.providerModelId);
+          policy.policy.defaultModel = selected ? { ...selected, available: true } : null;
+          policy.policy.reasoningEffort = body.reasoningEffort ?? null;
+          data.modelPolicy = { defaultProviderModelId: body.providerModelId, reasoningEffort: body.reasoningEffort ?? null };
+        }
+        for (const key of ["maxMcpToolsPerDiscovery", "maxToolCalls", "maxToolRounds",
+          "mcpAutoDiscoveryTimeoutSeconds", "mcpAutoDiscoveryMaxOutputTokens"] as const) {
+          const value = body[key];
+          if (value !== undefined) policy.policy[key] = value;
+        }
         policy.policy.version += 1;
-        data.modelPolicy = { defaultProviderModelId: body.providerModelId, reasoningEffort: body.reasoningEffort };
       }
       await route.fulfill({ json: { modelPolicy: policy } });
     });
@@ -85,9 +93,21 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     await save.click();
     await expect(savedNotice).toBeVisible();
     expect(saved).toEqual([{ expectedVersion: 1, providerModelId: reasoningModel.id, reasoningEffort: "high" }]);
+    const outputTokens = defaults.getByRole("spinbutton", { name: "MCP Auto output tokens", exact: true });
+    await expect(outputTokens).toHaveValue("8192");
+    await outputTokens.fill("32768");
+    await expect(save).toBeEnabled();
+    await save.click();
+    await expect(defaults.getByRole("status")).toHaveText("No unsaved changes");
+    expect(saved.at(-1)).toEqual({
+      expectedVersion: 2, maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8,
+      mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 32768
+    });
     await page.reload();
     await defaults.locator("summary").click();
     await expect(effort).toHaveValue("high");
+    await expect(outputTokens).toHaveValue("32768");
+    await expect(model).toHaveValue(reasoningModel.id);
     await expect(save).toBeDisabled();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     const box = await effort.boundingBox();

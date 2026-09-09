@@ -272,6 +272,7 @@ async function applyCustomSetupPlan(
   plan: AdminProviderCustomSetupCommitPlan,
   exposeFake: boolean
 ): Promise<Exclude<AdminProviderCustomSetupCommitResult, "catalog_unavailable">> {
+  plan.signal?.throwIfAborted();
   await lockActorState(tx, plan);
   validateSearchPlan(plan);
   if (plan.models.length === 0) throw new CustomSetupCatalogUnavailableError();
@@ -363,6 +364,8 @@ async function applyCustomSetupPlan(
     data: { activeVersionId: plan.credential.versionId },
     where: { id: plan.credential.id }
   });
+  await tx.providerConnection.update({ where: { id: plan.connection.id },
+    data: { defaultCredentialId: plan.credential.id, unassignedPolicy: "use_default" } });
   await tx.providerUserCredentialAssignment.create({
     data: {
       connectionId: plan.connection.id,
@@ -381,7 +384,7 @@ async function applyCustomSetupPlan(
         evidence: json(model.evidence),
         modelVersion: 1,
         providerModelId: model.id,
-        status: "available"
+        status: model.status ?? "available"
       }
     });
     await tx.accessGrant.create({
@@ -403,9 +406,10 @@ async function applyCustomSetupPlan(
     plan.actor.userId,
     exposeFake
   );
-  if (plan.models.some((model) => !eligibleModelIds.has(model.id))) {
+  if (plan.models.some((model) => model.status !== "unavailable" && !eligibleModelIds.has(model.id))) {
     throw new CustomSetupCatalogUnavailableError();
   }
+  plan.signal?.throwIfAborted();
   return {
     defaultChanged: false,
     ...(plan.search ? { search } : {}),

@@ -12,7 +12,7 @@ import type {
 /**
  * Presentation rules for the Models table (PRD 5.4): grouping, the route
  * line, `Used as` tags per model, the consequence of turning a used model
- * off, and the sentence of the expanded row. Pure; tested on its own.
+ * off, and the last-check sentence used in the model editor. Pure.
  */
 
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
@@ -266,4 +266,37 @@ export function modelCheckSummaries(
     sentence: `Checked ${formatCheckedAt(check.checkedAt, now)} with key ${credential.label} · ${describeChips(chips, modelClass)}`,
     usageMissing: modelUsageMissing(configuration, check)
   }];
+}
+
+/** Current diagnostics are independent of the frozen version/draft being edited. */
+export function modelEditorCheck(
+  connection: AdminProviderConnection,
+  model: AdminProviderModel | null,
+  credentialId: string | null,
+  now = new Date()
+) {
+  const credential = connection.credentials.find(({ id }) => id === credentialId) ?? null;
+  const check = model ? activeModelCheck(connection, model, credential) : null;
+  const candidateRun = diagnosticCheckRun(connection, credentialId);
+  const run = model && candidateRun && (!model.activatedAt || Date.parse(model.activatedAt) <= Date.parse(candidateRun.startedAt))
+    ? candidateRun : null;
+  const summaries = model ? modelCheckSummaries(connection, model, credential, now) : [];
+  const summary = summaries[0]?.sentence ?? (check && credential
+    ? `Checked ${formatCheckedAt(check.checkedAt, now)} with key ${credential.label} · ${check.status === "unavailable" ? "the model is unavailable." : "model access checked; capability checks are incomplete."}`
+    : null);
+  const retained = check !== null;
+  const status = !model ? "Model removed"
+    : run?.state === "running" && run.inFlight.includes(model.id) ? "Checking"
+      : check?.latestRefreshError || run?.failed.includes(model.id) ? "Check failed"
+        : !check ? "Not checked"
+          : check.status === "unavailable" ? "Model unavailable"
+            : summaries[0]?.chips.length === (modelClassOf(model) === "answer" ? 5 : 1) ? "Check complete" : "Check incomplete";
+  const message = !model ? "This model is no longer in the provider. Your unsaved changes are kept."
+    : status === "Checking" ? `Checking with key ${credential?.label}…`
+      : status === "Check failed" ? `The last check with key ${credential?.label}${check?.refreshFailedAt ? ` ${formatCheckedAt(check.refreshFailedAt, now)}` : ""} could not finish. ${retained ? "Earlier results were kept." : "No earlier result is available."}`
+        : check ? null
+          : !credentialId ? "Choose a diagnostic key in the model list to see its checks."
+            : !liveVersion(credential) ? "The selected diagnostic key is unavailable. No current check is available."
+              : `Not checked yet with key ${credential!.label}.`;
+  return { message, status, summary, usageMissing: model ? modelUsageMissing(liveConfiguration(model), check) : false };
 }

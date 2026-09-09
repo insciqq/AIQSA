@@ -1,6 +1,6 @@
 import type { AssistantSummary } from "./assistants";
 import type { Catalog } from "./catalog";
-import type { McpReadiness } from "./mcp";
+import type { McpReadiness, McpRuntimeErrorCode } from "./mcp";
 import type { SkillSummary } from "./skills";
 
 export type ComposerConfigKnowledgeBase = Readonly<{
@@ -25,6 +25,7 @@ export type ComposerConfigKnowledgeSource = Readonly<{
 }>;
 
 export type ComposerConfigMcpServer = Readonly<{
+  runtimeErrorCode?: McpRuntimeErrorCode | null;
   attention?: "needs_setup" | "needs_authorization" | "reauthorization_required" | "unavailable" | null;
   description: string;
   enabled: boolean;

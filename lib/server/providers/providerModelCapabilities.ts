@@ -50,6 +50,7 @@ export function configuredModelParameterControls(
   return resolveProviderModelParameterControls({
     adapterKind,
     defaultMaxOutputTokens: capabilities.defaultMaxOutputTokens,
+    maxOutputTokens: capabilities.maxOutputTokens,
     defaultReasoningEffort: capabilities.defaultReasoningEffort,
     defaultReasoningMode: capabilities.defaultReasoningMode,
     defaultParams: configuration.defaultParams,
@@ -86,4 +87,17 @@ export function resolveProviderModelCapabilities(
     pdf: true,
     ...(contextWindow === undefined ? {} : { contextWindow })
   };
+}
+
+/** A saved exact-model ceiling or a reviewed template ceiling; defaults are not limits. */
+export function declaredModelOutputTokenLimit(
+  configuration: Pick<ProviderModelConfiguration, "capabilities" | "upstreamModelId"> & {
+    adapterKind: ProviderModelConfiguration["adapterKind"] | "fake";
+  },
+  providerFamily: string
+): number | null {
+  return configuration.capabilities.maxOutputTokens ?? defaultProviderModels.find((model) =>
+    model.adapterKind === configuration.adapterKind && model.providerFamily === providerFamily &&
+    model.upstreamModelId === configuration.upstreamModelId
+  )?.parameterControls.maxOutputTokens.maxValue ?? null;
 }

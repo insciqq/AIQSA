@@ -5,7 +5,7 @@ import { cardClass, compactInputClass, compactSelectClass, sectionHeadingClass }
 import { UiV2Button } from "@/components/ui-v2";
 import type { AdminGroup } from "@/lib/contracts/admin";
 import type { AdminDefaultAnswerModelCandidate, AdminModelPolicyCatalog } from "@/lib/contracts/adminModelPolicy";
-import { MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS, MCP_RUN_PLAN_LIMITS } from "@/lib/contracts/mcp";
+import { MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS, MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS, isMcpAutoDiscoveryOutputTokens, MCP_RUN_PLAN_LIMITS } from "@/lib/contracts/mcp";
 import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnectionLabels";
 import { useMemo, useState } from "react";
 
@@ -13,12 +13,13 @@ type Draft = Readonly<{
   calls: string;
   effort: string;
   mcpTools: string;
+  outputTokens: string;
   modelId: string;
   rounds: string;
   timeout: string;
 }>;
 
-const emptyDraft: Draft = { calls: "", effort: "", mcpTools: "", modelId: "", rounds: "", timeout: "" };
+const emptyDraft: Draft = { calls: "", effort: "", mcpTools: "", outputTokens: "", modelId: "", rounds: "", timeout: "" };
 
 function draftFor(catalog: AdminModelPolicyCatalog | null): Draft {
   if (!catalog) return emptyDraft;
@@ -26,6 +27,7 @@ function draftFor(catalog: AdminModelPolicyCatalog | null): Draft {
     calls: String(catalog.policy.maxToolCalls),
     effort: catalog.policy.reasoningEffort ?? "",
     mcpTools: String(catalog.policy.maxMcpToolsPerDiscovery),
+    outputTokens: String(catalog.policy.mcpAutoDiscoveryMaxOutputTokens),
     modelId: catalog.policy.defaultModel?.id ?? "",
     rounds: String(catalog.policy.maxToolRounds),
     timeout: String(catalog.policy.mcpAutoDiscoveryTimeoutSeconds)
@@ -97,15 +99,17 @@ export function AdminChatDefaultsCard({
   const parsed = {
     calls: positiveSafeInteger(draft.calls),
     mcpTools: positiveSafeInteger(draft.mcpTools),
+    outputTokens: positiveSafeInteger(draft.outputTokens),
     rounds: positiveSafeInteger(draft.rounds),
     timeout: positiveSafeInteger(draft.timeout)
   };
   const limitsValid = parsed.calls !== null && parsed.rounds !== null &&
+    isMcpAutoDiscoveryOutputTokens(parsed.outputTokens) &&
     parsed.mcpTools !== null && parsed.mcpTools <= MCP_RUN_PLAN_LIMITS.maxTools &&
     parsed.timeout !== null && parsed.timeout >= MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds &&
     parsed.timeout <= MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds;
   const modelChanged = draft.modelId !== current.modelId || draft.effort !== current.effort;
-  const limitsChanged = (["calls", "mcpTools", "rounds", "timeout"] as const)
+  const limitsChanged = (["calls", "mcpTools", "outputTokens", "rounds", "timeout"] as const)
     .filter((key) => draft[key] !== current[key]).length;
   const changed = (modelChanged ? 1 : 0) + limitsChanged;
   const canSave = Boolean(catalog) && changed > 0 && effortValid && limitsValid && !busy;
@@ -124,7 +128,8 @@ export function AdminChatDefaultsCard({
         maxMcpToolsPerDiscovery: parsed.mcpTools!,
         maxToolCalls: parsed.calls!,
         maxToolRounds: parsed.rounds!,
-        mcpAutoDiscoveryTimeoutSeconds: parsed.timeout!
+        mcpAutoDiscoveryTimeoutSeconds: parsed.timeout!,
+        mcpAutoDiscoveryMaxOutputTokens: parsed.outputTokens!
       } : {})
     });
     if (message) setFormError(message);
@@ -132,7 +137,7 @@ export function AdminChatDefaultsCard({
   };
 
   const limitField = (
-    key: "calls" | "mcpTools" | "rounds" | "timeout",
+    key: "calls" | "mcpTools" | "outputTokens" | "rounds" | "timeout",
     name: string,
     options: Readonly<{ max?: number; min?: number; suffix?: string; width: string }>
   ) => (
@@ -142,6 +147,8 @@ export function AdminChatDefaultsCard({
         aria-invalid={draft[key] !== "" && (
           key === "calls" || key === "rounds"
             ? parsed[key] === null
+            : key === "outputTokens"
+              ? !isMcpAutoDiscoveryOutputTokens(parsed.outputTokens)
             : key === "mcpTools"
               ? parsed.mcpTools === null || parsed.mcpTools > MCP_RUN_PLAN_LIMITS.maxTools
               : parsed.timeout === null || parsed.timeout < MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds ||
@@ -204,7 +211,7 @@ export function AdminChatDefaultsCard({
         </div>
         <details className="border-t border-trace-subtle">
           <summary className="cursor-pointer px-5 py-3 text-sm font-medium text-ink-secondary outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus">
-            Advanced <span className="ml-2 text-xs font-normal text-ink-muted">Reasoning and tool limits</span>
+            Reasoning
           </summary>
           <div className="px-5 pb-4">
             <select
@@ -224,7 +231,8 @@ export function AdminChatDefaultsCard({
               {efforts.map((effort) => <option key={effort} value={effort}>Reasoning: {effort}</option>)}
             </select>
           </div>
-          <div className="grid gap-3 border-t border-trace-subtle px-5 py-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+        </details>
+          <div className="grid gap-3 border-t border-trace-subtle px-5 py-4">
             <div className="min-w-0">
               <p className="text-sm font-medium text-ink">Tool limits per answer</p>
               <p className="mt-0.5 text-xs leading-5 text-ink-muted">Apply to new answers only</p>
@@ -233,6 +241,11 @@ export function AdminChatDefaultsCard({
               {limitField("rounds", "Rounds", { width: "w-16" })}
               {limitField("calls", "Calls", { width: "w-16" })}
               {limitField("mcpTools", "MCP Auto tools", { max: MCP_RUN_PLAN_LIMITS.maxTools, width: "w-16" })}
+              {limitField("outputTokens", "MCP Auto output tokens", {
+                max: MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.maxTokens,
+                min: MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.minTokens,
+                width: "w-24"
+              })}
               {limitField("timeout", "Auto timeout", {
                 max: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds,
                 min: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds,
@@ -240,8 +253,11 @@ export function AdminChatDefaultsCard({
                 width: "w-[4.5rem]"
               })}
             </div>
+            <p className="text-xs leading-5 text-ink-muted">
+              MCP Auto output tokens (1024–65,536, default 8192) cover the System Model’s hidden reasoning and JSON tool selection.
+              Larger allowances can increase request time and cost. This does not change the chat answer limit.
+            </p>
           </div>
-        </details>
         <div className="flex flex-wrap items-center gap-2 rounded-b-[12px] border-t border-trace-subtle bg-workspace-rail/40 px-5 py-3">
           <p className="mr-auto min-w-0 text-xs text-ink-muted" role="status">
             {error ?? (loading && !catalog

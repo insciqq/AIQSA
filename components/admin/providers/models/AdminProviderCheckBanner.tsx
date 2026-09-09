@@ -2,6 +2,7 @@
 
 import type { AdminModelCheckState } from "@/components/admin/providers/models/useAdminModelChecks";
 import { UiV2Button } from "@/components/ui-v2";
+import { AdminProviderSetupResults, CAPABILITY_LABELS } from "@/components/admin/providers/add/AdminProviderSetupResults";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
 import { useState } from "react";
 
@@ -45,6 +46,9 @@ export function AdminProviderCheckBanner({ checks, connection, disabled, selecte
                 ? "Uses small verification requests. Existing models, role assignments and Knowledge configurations are kept."
                 : "Checks supported capabilities, including tools, JSON, PDF, embeddings and reranking. You can leave this page."}
             </p>
+            {run.capabilityProgress ? <p className="mt-1 break-words text-xs text-ink-secondary">
+              {connection.models.find((model) => model.id === run.capabilityProgress?.providerModelId)?.displayName ?? "Current model"}: {CAPABILITY_LABELS[run.capabilityProgress.capability]} · {run.capabilityProgress.completed} of {run.capabilityProgress.total} checks finished
+            </p> : null}
           </div>
           <UiV2Button
             busy={stopping}
@@ -69,13 +73,14 @@ export function AdminProviderCheckBanner({ checks, connection, disabled, selecte
         >
           <span className="block h-full rounded-pill bg-proof transition-[width] motion-reduce:transition-none" style={{ width: `${progress}%` }} />
         </div>
+        <AdminProviderSetupResults models={connection.models} run={run} />
       </section>
     );
   }
 
   if (run?.state === "completed") {
     const setup = run.setup && run.setup.state !== "running" ? run.setup : null;
-    const retry = run.total === 0 || setup?.state === "partial" || run.failed.length > 0 || Boolean(run.skipped?.length);
+    const retry = run.total === 0 || setup?.state === "partial" || run.failed.length > 0 || Boolean(run.skipped?.length) || Boolean(run.results?.some((result) => result.state !== "saved"));
     return (
       <section className="rounded-[12px] border border-trace-subtle bg-answer-paper px-4 py-3.5 sm:px-5" role="status">
         <p className="text-sm font-medium text-ink">{run.total === 0
@@ -89,6 +94,7 @@ export function AdminProviderCheckBanner({ checks, connection, disabled, selecte
           : setup?.search === "ready" ? "Search checked and ready."
           : run.skipped?.length ? "Some models changed during checking. Recheck to use their current settings." : `Model results for key ${keyLabel(run.credentialId)} are shown below.`}</p>
         {setup?.defaults.length ? <p className="mt-1 text-xs leading-5 text-ink-muted">Defaults set — {setup.defaults.join("; ")}.</p> : null}
+        <AdminProviderSetupResults models={connection.models} run={run} />
         {retry ? <UiV2Button className="mt-2" disabled={disabled} onClick={() => void checks.restart()} tone="ghost" type="button">Retry checks</UiV2Button> : null}
       </section>
     );
@@ -99,7 +105,8 @@ export function AdminProviderCheckBanner({ checks, connection, disabled, selecte
       <section className="rounded-[12px] border border-trace-subtle bg-answer-paper px-4 py-3.5 sm:px-5" role="status">
         <p className="text-sm font-medium text-ink">Checks stopped for key {keyLabel(run.credentialId)}.</p>
         <p className="mt-1 text-xs leading-5 text-ink-muted">{run.done} of {run.total} models finished. Saved results are kept.</p>
-        <UiV2Button className="mt-2" disabled={disabled} onClick={() => void checks.restart()} tone="ghost" type="button">Restart checks</UiV2Button>
+        <AdminProviderSetupResults models={connection.models} run={run} />
+        <UiV2Button className="mt-2" disabled={disabled} onClick={() => void checks.restart()} tone="ghost" type="button">Retry unfinished checks</UiV2Button>
       </section>
     );
   }

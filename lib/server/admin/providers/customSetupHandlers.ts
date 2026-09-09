@@ -145,6 +145,7 @@ export function createAdminProviderCustomSetupHandler(
       "modelDisplayName",
       "modelId",
       "modelIds",
+      "perModelCapabilities",
       "protocol",
       "reasoningRequestMapping",
       "responseTimeoutSeconds",
@@ -187,6 +188,11 @@ export function createAdminProviderCustomSetupHandler(
           Number(body.responseTimeoutSeconds) <= ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS
         ? Number(body.responseTimeoutSeconds)
         : null;
+    const perModelKeys = new Set(["contextWindow", "defaultMaxOutputTokens", "maxOutputTokens",
+      "defaultReasoningEffort", "defaultReasoningMode", "reasoning", "reasoningEfforts", "reasoningModes",
+      "toolCalling", "vision", "parallelToolCalls"]);
+    const selectedIds = normalizedModelIds ?? (modelId ? [modelId] : []);
+    const perModelCapabilities = body.perModelCapabilities;
     if (
       !mode ||
       !selectedProtocol ||
@@ -203,6 +209,10 @@ export function createAdminProviderCustomSetupHandler(
         normalizedModelIds.length > 1 && modelDisplayName !== undefined) ||
       secret === null ||
       (body.capabilities !== undefined && !isRecord(body.capabilities)) ||
+      (perModelCapabilities !== undefined && (!isRecord(perModelCapabilities) ||
+        Object.keys(perModelCapabilities).length > MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS ||
+        Object.entries(perModelCapabilities).some(([id, hints]) => !selectedIds.includes(id) ||
+          !isRecord(hints) || Object.keys(hints).some((key) => !perModelKeys.has(key))))) ||
       (body.defaultParams !== undefined && !isRecord(body.defaultParams)) ||
       (body.reasoningRequestMapping !== undefined && !isRecord(body.reasoningRequestMapping)) ||
       (mode === "bearer" && secret === undefined) ||
@@ -225,6 +235,9 @@ export function createAdminProviderCustomSetupHandler(
       ...(modelDisplayName === undefined ? {} : { modelDisplayName }),
       ...(modelId === undefined ? {} : { modelId }),
       ...(normalizedModelIds === undefined ? {} : { modelIds: normalizedModelIds }),
+      ...(perModelCapabilities === undefined ? {} : {
+        perModelCapabilities: perModelCapabilities as AdminProviderCustomSetupRequest["perModelCapabilities"]
+      }),
       protocol: selectedProtocol,
       ...(body.reasoningRequestMapping === undefined
         ? {}

@@ -53,7 +53,7 @@ function modelCatalog(): AdminModelPolicyCatalog {
     candidates: [candidate, { ...candidate, displayName: "GPT Terra", id: "terra" }],
     policy: {
       defaultModel: { ...candidate, available: true }, maxMcpToolsPerDiscovery: 12, maxToolCalls: 24, maxToolRounds: 8,
-      mcpAutoDiscoveryTimeoutSeconds: 20, reasoningEffort: "medium", updatedAt: "2026-09-07T00:00:00.000Z", updatedBy: null, version: 4
+      mcpAutoDiscoveryTimeoutSeconds: 20, mcpAutoDiscoveryMaxOutputTokens: 8192, reasoningEffort: "medium", updatedAt: "2026-09-07T00:00:00.000Z", updatedBy: null, version: 4
     }
   };
 }
@@ -137,7 +137,8 @@ function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSetti
           } : {}),
           ...(Object.hasOwn(body, "maxToolRounds") ? {
             maxMcpToolsPerDiscovery: Number(body.maxMcpToolsPerDiscovery), maxToolCalls: Number(body.maxToolCalls),
-            maxToolRounds: Number(body.maxToolRounds), mcpAutoDiscoveryTimeoutSeconds: Number(body.mcpAutoDiscoveryTimeoutSeconds)
+            maxToolRounds: Number(body.maxToolRounds), mcpAutoDiscoveryTimeoutSeconds: Number(body.mcpAutoDiscoveryTimeoutSeconds),
+            mcpAutoDiscoveryMaxOutputTokens: Number(body.mcpAutoDiscoveryMaxOutputTokens)
           } : {})
         } };
       }
@@ -200,8 +201,9 @@ describe("AdminRolesSection", () => {
     const documents = await screen.findByRole("combobox", { name: "Documents mode" });
     fireEvent.change(rounds, { target: { value: "11" } });
     fireEvent.change(documents, { target: { value: "system_model_vision" } });
+    const previousGetCount = calls.filter((call) => call.method === "GET").length;
     fireEvent(window, new Event("focus"));
-    await waitFor(() => expect(calls.filter((call) => call.method === "GET")).toHaveLength(6));
+    await waitFor(() => expect(calls.filter((call) => call.method === "GET")).toHaveLength(previousGetCount + 3));
     expect(rounds).toHaveValue(11);
     expect(documents).toHaveValue("system_model_vision");
   });
@@ -244,9 +246,9 @@ describe("AdminRolesSection", () => {
     const dialog = screen.getByRole("dialog", { name: "System model deployment" });
     expect(within(dialog).getByText("Ready for System model")).toBeInTheDocument();
     expect(within(dialog).getByRole("option", { name: /GPT Luna/ })).toHaveAttribute("aria-selected", "true");
-    expect(within(dialog).getByText("Check first · one small paid request")).toBeInTheDocument();
+    expect(within(dialog).getByText("Check first · small paid requests")).toBeInTheDocument();
     expect(within(dialog).getByText("Not eligible")).toBeInTheDocument();
-    expect(within(dialog).getByText("no strict JSON on this route")).toBeInTheDocument();
+    expect(within(dialog).getByText("required capability unsupported on this route")).toBeInTheDocument();
     expect(within(dialog).queryByRole("option", { name: /Claude|GPT Terra/ })).not.toBeInTheDocument();
     expect(within(dialog).getByText("System roles always use the provider's default key")).toBeInTheDocument();
 
@@ -324,6 +326,37 @@ describe("AdminRolesSection", () => {
     expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([]);
   });
 
+  it("exposes the MCP allowance, validates its range, preserves failed edits and saves on retry", async () => {
+    const calls = server();
+    renderSection();
+    const tokens = await screen.findByRole("spinbutton", { name: "MCP Auto output tokens" });
+    expect(tokens).toHaveValue(8192);
+    expect(tokens.closest("details")).toBeNull();
+    expect(screen.getByText(/hidden reasoning and JSON tool selection/)).toBeVisible();
+    const save = screen.getByRole("button", { name: "Save" });
+    for (const value of ["", "0", "1023", "65537", "4096.5"]) {
+      fireEvent.change(tokens, { target: { value } });
+      expect(save).toBeDisabled();
+    }
+    fireEvent.change(tokens, { target: { value: "32768" } });
+    const original = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input) === "/api/admin/providers/model-policy" && init?.method === "PATCH"
+        ? Response.json({ error: "model_policy_stale" }, { status: 409 }) : original(input, init)));
+    fireEvent.click(save);
+    await screen.findByRole("alert");
+    expect(tokens).toHaveValue(32768);
+    expect(save).toBeEnabled();
+    vi.stubGlobal("fetch", original);
+    fireEvent.click(save);
+    await waitFor(() => expect(screen.getByText("No unsaved changes")).toBeInTheDocument());
+    expect(patchesTo(calls, "/api/admin/providers/model-policy").at(-1)).toMatchObject({ mcpAutoDiscoveryMaxOutputTokens: 32768 });
+    const previousGetCount = calls.filter((call) => call.method === "GET").length;
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(calls.filter((call) => call.method === "GET")).toHaveLength(previousGetCount + 3));
+    expect(tokens).toHaveValue(32768);
+  });
+
   it("saves the default chat model and tool limits with one request", async () => {
     const calls = server();
     const { reportNotice } = renderSection();
@@ -338,7 +371,7 @@ describe("AdminRolesSection", () => {
     await waitFor(() => expect(reportNotice).toHaveBeenCalledWith("Chat defaults saved for new chats"));
     expect(patchesTo(calls, "/api/admin/providers/model-policy")).toEqual([{
       expectedVersion: 4, maxMcpToolsPerDiscovery: 12, maxToolCalls: 24, maxToolRounds: 10,
-      mcpAutoDiscoveryTimeoutSeconds: 20, providerModelId: "terra", reasoningEffort: null
+      mcpAutoDiscoveryTimeoutSeconds: 20, mcpAutoDiscoveryMaxOutputTokens: 8192, providerModelId: "terra", reasoningEffort: null
     }]);
     expect(screen.getByText("No unsaved changes")).toBeInTheDocument();
   });

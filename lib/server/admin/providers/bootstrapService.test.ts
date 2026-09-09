@@ -23,7 +23,8 @@ function fixture() {
   }));
   const chat: AdminModelPolicyCatalog = { candidates, policy: {
     defaultModel: null, reasoningEffort: null, version: 1, updatedAt: "2026-09-08T12:00:00Z", updatedBy: null,
-    maxMcpToolsPerDiscovery: 8, maxToolCalls: 12, maxToolRounds: 8, mcpAutoDiscoveryTimeoutSeconds: 10
+    maxMcpToolsPerDiscovery: 8, maxToolCalls: 12, maxToolRounds: 8,
+    mcpAutoDiscoveryMaxOutputTokens: 8_192, mcpAutoDiscoveryTimeoutSeconds: 10
   } };
   const roles: AdminSystemModelPolicyCatalog = { candidates, documentCandidates: candidates, verificationCandidates: candidates,
     ineligible: { memory: [], vision: [], direct_pdf: [] }, rerankerCandidates: [], policy: {

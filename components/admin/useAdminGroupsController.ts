@@ -3,13 +3,18 @@
 import { adminActionErrorMessage } from "@/components/admin/adminApi";
 import type { AdminRunAction } from "@/components/admin/useAdminActionRunner";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
+import type { AdminDashboardRefresh } from "@/components/admin/useAdminDashboardResource";
 import { activeGroupIdsForUser } from "@/components/admin/users/usersView";
 import type { AdminDashboard, AdminGroup, AdminGroupGrantChange } from "@/lib/contracts/admin";
-import { useCallback, useMemo } from "react";
+import { ADMIN_GROUP_GRANT_CHANGES_MAX } from "@/lib/contracts/admin";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 export type UseAdminGroupsControllerOptions = Readonly<{
   actionsDisabled: boolean;
   dashboard: Pick<AdminDashboard, "groups" | "users"> | null;
+  onError(message: string): void;
+  onNotice(message: string): void;
+  refreshDashboard: AdminDashboardRefresh;
   requestConfirmedAction: AdminConfirmationController["requestConfirmedAction"];
   runAction: AdminRunAction;
 }>;
@@ -23,8 +28,8 @@ export type AdminGroupMutationResult =
 export type AdminGroupsController = Readonly<{
   actions: Readonly<{
     /**
-     * Applies one batch of grant changes as a single request (`set_group_grants`);
-     * a rejected change leaves the group untouched and reports through the toast.
+     * Applies bounded atomic batches sequentially, then reloads saved grants.
+     * A failure stops later batches and reports confirmed progress.
      */
     applyGrants(group: AdminGroupActionTarget, changes: readonly AdminGroupGrantChange[], notice?: string): Promise<boolean>;
     /** The failure message goes back to the sheet, not to a toast. */
@@ -35,6 +40,7 @@ export type AdminGroupsController = Readonly<{
     setMembership(group: AdminGroupActionTarget, userId: string, enabled: boolean): Promise<boolean>;
   }>;
   actionsDisabled: boolean;
+  grantProgress?: Readonly<{ completed: number; groupId: string; total: number }> | null;
 }>;
 
 function createdGroupId(value: unknown): string | null {
@@ -57,11 +63,16 @@ function builtIn(group: Pick<AdminGroup, "systemRole">): boolean {
 export function useAdminGroupsController({
   actionsDisabled,
   dashboard,
+  onError,
+  onNotice,
+  refreshDashboard,
   requestConfirmedAction,
   runAction
 }: UseAdminGroupsControllerOptions): AdminGroupsController {
   const groups = dashboard?.groups;
   const users = dashboard?.users;
+  const grantBusyRef = useRef(false);
+  const [grantProgress, setGrantProgress] = useState<AdminGroupsController["grantProgress"]>(null);
 
   const create = useCallback(async (name: string): Promise<AdminGroupMutationResult> => {
     const trimmed = name.trim();
@@ -115,10 +126,54 @@ export function useAdminGroupsController({
     changes: readonly AdminGroupGrantChange[],
     notice = "Access updated."
   ) => {
-    if (builtIn(group) || group.archivedAt || !changes.length) return false;
-    const result = await runAction({ action: "set_group_grants", changes: [...changes], groupId: group.id }, notice);
-    return !result.error;
-  }, [runAction]);
+    if (actionsDisabled || grantBusyRef.current || builtIn(group) || group.archivedAt || !changes.length) return false;
+    // Last intent wins if the same identity appears more than once in a catalog-derived selection.
+    const uniqueChanges = [...new Map(changes.map((change) => [
+      JSON.stringify([change.provider ?? null, change.modelId ?? null, change.searchStrategy ?? null]), change
+    ])).values()];
+    grantBusyRef.current = true;
+    const total = uniqueChanges.length;
+    let completed = 0;
+    let failure: string | null = null;
+    setGrantProgress({ completed, groupId: group.id, total });
+    try {
+      for (let offset = 0; offset < total; offset += ADMIN_GROUP_GRANT_CHANGES_MAX) {
+        const batch = uniqueChanges.slice(offset, offset + ADMIN_GROUP_GRANT_CHANGES_MAX);
+        try {
+          const result = await runAction(
+            { action: "set_group_grants", changes: batch, groupId: group.id },
+            notice,
+            { reload: false, successNotice: false }
+          );
+          if (result.error) {
+            failure = adminActionErrorMessage(result.error);
+            break;
+          }
+          completed += batch.length;
+          setGrantProgress({ completed, groupId: group.id, total });
+        } catch {
+          failure = adminActionErrorMessage("network_error");
+          break;
+        }
+      }
+      const refreshed = await refreshDashboard().catch(() => ({ ok: false as const }));
+      if (failure) {
+        onError(`${group.name}: ${completed} of ${total} access changes confirmed before the operation stopped. ${failure} ${refreshed.ok
+          ? "Review the saved grants before retrying."
+          : "Current grants could not be reloaded. Refresh before retrying."}`);
+        return false;
+      }
+      if (!refreshed.ok) {
+        onError(`${group.name}: ${completed} of ${total} access changes saved, but current grants could not be reloaded. Refresh to review them.`);
+        return false;
+      }
+      onNotice(`${group.name}: ${notice}`);
+      return true;
+    } finally {
+      grantBusyRef.current = false;
+      setGrantProgress(null);
+    }
+  }, [actionsDisabled, onError, onNotice, refreshDashboard, runAction]);
 
   const setMembership = useCallback(async (group: AdminGroupActionTarget, userId: string, enabled: boolean) => {
     const user = users?.find((candidate) => candidate.id === userId);
@@ -136,6 +191,7 @@ export function useAdminGroupsController({
 
   return useMemo(() => ({
     actions: { applyGrants, create, rename, requestArchive, requestDelete, setMembership },
-    actionsDisabled
-  }), [actionsDisabled, applyGrants, create, rename, requestArchive, requestDelete, setMembership]);
+    actionsDisabled: actionsDisabled || grantProgress !== null,
+    grantProgress
+  }), [actionsDisabled, applyGrants, create, grantProgress, rename, requestArchive, requestDelete, setMembership]);
 }

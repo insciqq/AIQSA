@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import type {
   AdminProviderBootstrapResult,
   AdminProviderCheckRun,
-  AdminProviderCheckRunReason
+  AdminProviderCheckRunReason,
+  AdminProviderTestEvidence
 } from "../../../contracts/adminProviders";
 
 /**
@@ -16,16 +17,29 @@ import type {
 
 export type CapabilityCheckOutcome = "cancelled" | "failed" | "skipped" | "stored";
 
+export type InitialCapabilityCheck = Readonly<{
+  connectionVersion: number;
+  credentialVersionId: string;
+  modelVersion: number;
+  reuseEvidence?: AdminProviderTestEvidence;
+}>;
+
 export type CapabilityCheckRequest = Readonly<{
   connectionId: string;
   credentialId: string;
   providerModelId: string;
+  initialSetup?: InitialCapabilityCheck;
+  onCapabilityProgress?(value: Omit<NonNullable<AdminProviderCheckRun["capabilityProgress"]>, "providerModelId">): void;
+  onResult?(value: NonNullable<AdminProviderCheckRun["results"]>[number]): void;
   signal: AbortSignal;
 }>;
 
 export type CapabilityCheckRunStart = Readonly<{
+  signal?: AbortSignal;
   /** Already verified on the same active tuple by this setup operation. */
   completedModelIds?: readonly string[];
+  initialSetup?: Readonly<Record<string, InitialCapabilityCheck>>;
+  onProgress?(value: AdminProviderCheckRun): void;
   completeSetup?(signal: AbortSignal): Promise<AdminProviderBootstrapResult>;
   connectionId: string;
   credentialId: string;
@@ -47,11 +61,18 @@ export type CapabilityCheckRunner = Readonly<{
   /** A running run of the connection with this key, when there is one. */
   running(connectionId: string, credentialId: string): AdminProviderCheckRun | null;
   start(input: CapabilityCheckRunStart): { id: string; settled: Promise<void> };
+  settled(runId: string): Promise<void> | null;
 }>;
 
 export const CAPABILITY_CHECK_CANCELLED = "capability_check_cancelled";
 
 type Run = {
+  removeAbort?: () => void;
+  results: NonNullable<AdminProviderCheckRun["results"]>;
+  capabilityProgress?: AdminProviderCheckRun["capabilityProgress"];
+  initialSetup?: CapabilityCheckRunStart["initialSetup"];
+  onProgress?: CapabilityCheckRunStart["onProgress"];
+  settled?: Promise<void>;
   setup?: AdminProviderCheckRun["setup"];
   setupController: AbortController;
   skipped: string[];
@@ -80,7 +101,7 @@ export function createCapabilityCheckRunner(input: Readonly<{
   idFactory?: () => string;
   now?: () => Date;
 }>): CapabilityCheckRunner {
-  const concurrency = Math.max(1, input.concurrency ?? 3);
+  const concurrency = Math.min(3, Math.max(1, input.concurrency ?? 3));
   const idFactory = input.idFactory ?? randomUUID;
   const now = input.now ?? (() => new Date());
   const runs = new Map<string, Run>();
@@ -104,6 +125,8 @@ export function createCapabilityCheckRunner(input: Readonly<{
 
   function project(run: Run): AdminProviderCheckRun {
     return {
+      results: [...run.results],
+      ...(run.capabilityProgress ? { capabilityProgress: run.capabilityProgress } : {}),
       ...(run.setup ? { setup: run.setup } : {}),
       ...(run.skipped.length ? { skipped: [...run.skipped] } : {}),
       credentialId: run.credentialId,
@@ -156,6 +179,13 @@ export function createCapabilityCheckRunner(input: Readonly<{
         connectionId: run.connectionId,
         credentialId: run.credentialId,
         providerModelId: modelId,
+        initialSetup: run.initialSetup?.[modelId],
+        onCapabilityProgress: (progress) => {
+          if (run.state !== "running") return;
+          run.capabilityProgress = { ...progress, providerModelId: modelId };
+          run.onProgress?.(project(run));
+        },
+        onResult: (result) => { run.results = [...run.results.filter((item) => item.providerModelId !== modelId), result]; },
         signal: controller.signal
       });
     } catch {
@@ -168,6 +198,7 @@ export function createCapabilityCheckRunner(input: Readonly<{
     if (outcome === "failed") failures.add(key);
     else if (outcome === "stored") failures.delete(key);
     else if (outcome === "skipped") run.skipped.push(modelId);
+    run.onProgress?.(project(run));
   }
 
   async function worker(run: Run, queue: string[]): Promise<void> {
@@ -184,19 +215,25 @@ export function createCapabilityCheckRunner(input: Readonly<{
   }
 
   function finish(run: Run): void {
+    run.removeAbort?.();
     if (run.state === "running") run.state = "completed";
     run.finishedAt = now();
+    run.onProgress?.(project(run));
     prune(run.connectionId);
+  }
+
+  function cancelRun(run: Run): boolean {
+    if (run.state !== "running") return false;
+    run.state = "cancelled";
+    run.setupController.abort(CAPABILITY_CHECK_CANCELLED);
+    for (const controller of run.controllers.values()) controller.abort(CAPABILITY_CHECK_CANCELLED);
+    return true;
   }
 
   return {
     cancel(runId) {
       const run = runs.get(runId);
-      if (!run || run.state !== "running") return false;
-      run.state = "cancelled";
-      run.setupController.abort(CAPABILITY_CHECK_CANCELLED);
-      for (const controller of run.controllers.values()) controller.abort(CAPABILITY_CHECK_CANCELLED);
-      return true;
+      return run ? cancelRun(run) : false;
     },
 
     connectionOf(runId) {
@@ -207,6 +244,8 @@ export function createCapabilityCheckRunner(input: Readonly<{
       const run = runs.get(runId);
       return run ? project(run) : null;
     },
+
+    settled(runId) { return runs.get(runId)?.settled ?? null; },
 
     interrupted(runId) {
       return {
@@ -248,6 +287,9 @@ export function createCapabilityCheckRunner(input: Readonly<{
       const modelIds = [...new Set(value.modelIds)];
       const completed = new Set((value.completedModelIds ?? []).filter((id) => modelIds.includes(id)));
       const run: Run = {
+        results: [],
+        initialSetup: value.initialSetup,
+        onProgress: value.onProgress,
         setupController: new AbortController(),
         skipped: [],
         connectionId: value.connectionId,
@@ -265,6 +307,10 @@ export function createCapabilityCheckRunner(input: Readonly<{
         total: modelIds.length
       };
       runs.set(run.id, run);
+      const abort = () => cancelRun(run);
+      if (value.signal?.aborted) abort();
+      else value.signal?.addEventListener("abort", abort, { once: true });
+      run.removeAbort = () => value.signal?.removeEventListener("abort", abort);
       for (const id of completed) failures.delete(failureKey(value.connectionId, value.credentialId, id));
       const queue = modelIds.filter((id) => !completed.has(id));
       const workers = Array.from(
@@ -284,6 +330,8 @@ export function createCapabilityCheckRunner(input: Readonly<{
           }
         }
       }).then(() => finish(run), () => finish(run));
+      run.settled = settled;
+      run.onProgress?.(project(run));
       return { id: run.id, settled };
     }
   };

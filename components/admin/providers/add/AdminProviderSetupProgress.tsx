@@ -1,6 +1,7 @@
 "use client";
 
 import type { AdminProviderSetupProgress as Progress } from "@/lib/contracts/adminProviderSetupProgress";
+import { CAPABILITY_LABELS } from "./AdminProviderSetupResults";
 import { useEffect, useState } from "react";
 
 const titles: Record<Progress["phase"], string> = {
@@ -24,11 +25,12 @@ export function AdminProviderSetupProgress({ progress }: Readonly<{ progress: Pr
         <p className="text-sm font-medium text-ink">{titles[progress.phase]}</p>
         <p className="mt-1 text-xs leading-5 text-ink-secondary">
           {progress.total === null ? "Waiting for this step to finish." : `${progress.completed} of ${progress.total} models checked.`}
-          {progress.phase === "checking" ? " The provider will be saved after these checks." : ""}
+          {progress.phase === "checking" ? " Verified settings are saved for each model as checking finishes." : ""}
         </p>
+        {progress.capability ? <p className="mt-1 text-xs text-ink-secondary">Checking {CAPABILITY_LABELS[progress.capability]}…</p> : null}
       </div>
       <div
-        aria-label={progress.total === null ? titles[progress.phase] : "Models checked before saving"}
+        aria-label={progress.total === null ? titles[progress.phase] : "Models checked"}
         aria-valuemax={progress.total ?? undefined}
         aria-valuemin={0}
         aria-valuenow={progress.total === null ? undefined : progress.completed}

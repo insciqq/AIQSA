@@ -1,4 +1,6 @@
 import type { AdminProviderSetupProgress } from "../../../contracts/adminProviderSetupProgress";
+import type { AdminProviderCheckRun } from "../../../contracts/adminProviders";
+import { initialModelConfiguration, pendingInitialCapabilityEvidence } from "./initialCapabilitySetup";
 import { randomUUID } from "node:crypto";
 import {
   ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
@@ -128,6 +130,7 @@ function modelConfiguration(
     answerSelectable: true,
     capabilities: {
       ...(request.capabilities ?? ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES),
+      ...request.perModelCapabilities?.[upstreamModelId],
       // Local PDF extraction is an AIQSA capability, not an upstream claim.
       pdf: true
     },
@@ -251,6 +254,8 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
   encryptionKey?: () => Buffer;
   idFactory?: () => string;
   now?: () => Date;
+  finishInitialSetup?(value: { connectionId: string; credentialId: string; modelIds: readonly string[];
+    userId: string; signal?: AbortSignal; onProgress?(value: AdminProviderSetupProgress): void }): Promise<AdminProviderCheckRun>;
   /** Runs after a committed setup (PRD B3 trigger); its failures never reach the caller. */
   onCompleted?(completion: Readonly<{ connectionId: string; credentialId: string; userId: string }>): void | Promise<void>;
   repository: AdminProviderCustomSetupRepository;
@@ -273,9 +278,10 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
       const request = inputValue.request;
       const connection = connectionConfiguration(request);
       const upstreamModelIds = requestedModelIds(request);
-      const modelConfigurations = upstreamModelIds.map((upstreamModelId) =>
+      let modelConfigurations = upstreamModelIds.map((upstreamModelId) =>
         modelConfiguration(request, upstreamModelId)
       );
+      if (input.finishInitialSetup) modelConfigurations = modelConfigurations.map(initialModelConfiguration);
       const connectionName = displayName(
         request.connectionDisplayName,
         defaultConnectionDisplayName(connection.apiRoot)
@@ -314,6 +320,7 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
 
       const evidence: AdminProviderTestEvidence[] = [];
       for (const [index, model] of modelConfigurations.entries()) {
+        if (input.finishInitialSetup) { evidence.push(pendingInitialCapabilityEvidence(model)); continue; }
         inputValue.signal?.throwIfAborted();
         inputValue.onProgress?.({ phase: "checking", completed: index, total: modelConfigurations.length });
         let testOutcome: AdminProviderDraftTestOutcome;
@@ -409,10 +416,12 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
           configuration: model,
           displayName: modelNames[index]!,
           evidence: evidence[index]!,
+          ...(input.finishInitialSetup ? { status: "unavailable" as const } : {}),
           grantId: grantIds[index]!,
           id: providerModelIds[index]!
         })),
         now: now(),
+        signal: inputValue.signal,
         ...(searchGrantId && searchEvidence && searchName && hostedSearchDraft && clientSearchDraft
           ? {
               search: {
@@ -450,11 +459,12 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
           "provider_custom_setup_stale"
         );
       }
-      inputValue.onProgress?.({ phase: "finishing", completed: 0, total: null });
-      try {
-        await input.onCompleted?.({ connectionId, credentialId, userId: inputValue.actor.userId });
-      } catch {
-        // Background checks are best effort; the setup itself is complete.
+      inputValue.onProgress?.({ phase: "finishing", completed: 0, total: null, connectionId, credentialId });
+      const checkRun = input.finishInitialSetup ? await input.finishInitialSetup({ connectionId, credentialId,
+        modelIds: providerModelIds, userId: inputValue.actor.userId, signal: inputValue.signal,
+        onProgress: inputValue.onProgress }) : undefined;
+      if (!input.finishInitialSetup) {
+        try { await input.onCompleted?.({ connectionId, credentialId, userId: inputValue.actor.userId }); } catch { /* Legacy injected callback. */ }
       }
 
       return {
@@ -468,7 +478,9 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
           modelDisplayName: modelNames[index]!,
           providerModelId
         })),
-        outcome: "ready",
+        outcome: checkRun?.state === "cancelled" ? "cancelled" : checkRun &&
+          (checkRun.failed.length || checkRun.skipped?.length || checkRun.setup?.state === "partial") ? "partial" : "ready",
+        ...(checkRun ? { checkRun } : {}),
         providerModelId: providerModelIds[0]!,
         search: searchName
           ? {

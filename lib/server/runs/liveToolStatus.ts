@@ -1,10 +1,12 @@
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import type { ThreadToolActivityOrigin } from "../../contracts/chats";
 import type { ModelToolCall } from "../tools/types";
 
 /** Minimal factual tool status for the active SSE response; never persisted. */
 export function liveToolCallStatus(
   call: ModelToolCall,
   activity: Readonly<{
+    origin?: ThreadToolActivityOrigin;
     round?: number;
     serverName?: string;
     toolName?: string;
@@ -15,6 +17,7 @@ export function liveToolCallStatus(
       artifactType: "tool_call",
       payload: {
         name: activity.toolName ?? call.name,
+        ...(activity.origin ? { origin: activity.origin } : {}),
         ...(Number.isSafeInteger(activity.round) && Number(activity.round) > 0
           ? { round: activity.round }
           : {}),

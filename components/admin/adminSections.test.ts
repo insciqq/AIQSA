@@ -21,6 +21,7 @@ describe("adminSections", () => {
       { group: "models", id: "retrieval", label: "Knowledge & Memory" },
       { group: "people", id: "users", label: "Users" },
       { group: "people", id: "groups", label: "Groups" },
+      { group: "people", id: "access-rules", label: "Sign-up rules" },
       { group: "platform", id: "mcp", label: "MCP servers" },
       { group: "platform", id: "workspace", label: "Workspace" },
       { group: "platform", id: "email", label: "Email" },
@@ -37,7 +38,7 @@ describe("adminSections", () => {
     expect(resolveAdminSectionId("system-models")).toBe("roles");
     expect(resolveAdminSectionId("access")).toBe("groups");
     expect(resolveAdminSectionId("invites")).toBe("users");
-    expect(resolveAdminSectionId("access-rules")).toBe("users");
+    expect(resolveAdminSectionId("access-rules")).toBe("access-rules");
     expect(resolveAdminSectionId("safety")).toBe("users");
     expect(resolveAdminSectionId("knowledge")).toBe("retrieval");
     expect(resolveAdminSectionId("memory")).toBe("retrieval");
@@ -63,6 +64,15 @@ describe("adminSections", () => {
     expect(adminSectionPath("https://aiqsa.example/admin?mode=compact&section=users#current", "overview")).toBe(
       "/admin?mode=compact#current"
     );
+  });
+
+  it("opens the rules page directly and drops stale user resource/filter state", () => {
+    const path = "/admin?section=access-rules&resource=old-user&filter=pending&mode=compact#rules";
+    expect(parseAdminSection(path.slice(path.indexOf("?")))).toBe("access-rules");
+    expect(parseAdminSectionResource("?section=access-rules&resource=old-user")).toBeNull();
+    expect(parseAdminSectionFilter("?section=access-rules&filter=pending")).toBeNull();
+    expect(normalizeAdminSectionPath(path)).toBe("/admin?section=access-rules&mode=compact#rules");
+    expect(adminSectionPath(path, "access-rules", "old-user", "pending")).toBe("/admin?section=access-rules&mode=compact#rules");
   });
 
   it("opens a resource inside a section and drops it when the section changes", () => {

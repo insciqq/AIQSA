@@ -77,6 +77,21 @@ function detailChat(overrides: Record<string, unknown> = {}) {
 }
 
 describe("chat wire contracts", () => {
+  it("preserves authoritative activity origin and rejects unknown origins", () => {
+    const call = { round: 1, serverName: "Repository Tools", status: "error", toolName: "search" };
+    const decode = (origin: unknown) => decodeChatDetailResponse({
+      chat: detailChat({ messages: [{ ...message, toolActivity: { calls: [{ ...call, origin }] } }], usageStats })
+    });
+
+    for (const origin of ["mcp", "web_search", "knowledge", "discovery", "workspace", "memory", "session", "tool"]) {
+      expect(decode(origin)?.messages[0]?.toolActivity).toEqual({ calls: [{ ...call, origin }] });
+    }
+    expect(decode(undefined)?.messages[0]?.toolActivity).toEqual({ calls: [call] });
+    for (const origin of ["unknown", "", null, { kind: "mcp" }]) {
+      expect(decode(origin)).toBeNull();
+    }
+  });
+
   it("decodes the exact content-free navigation page", () => {
     const page = {
       chats: [{

@@ -615,7 +615,7 @@ test("MCP list exposes authorization and runtime problems without opening each s
     await expectTouchSafe(reconnect);
     const failing = section.getByTestId("mcp-server-row-existing-server");
     await expect(failing.getByTestId("mcp-server-status")).toHaveText("Runtime unavailable");
-    await expect(failing).toContainText("MCP runtime unavailable");
+    await expect(failing).toContainText("The MCP runtime is unavailable. Check MCP settings and try again.");
     await expectNoHorizontalOverflow(page);
   }
 

@@ -93,4 +93,44 @@ describe("addProviderView", () => {
     expect(customSaveLabel(1)).toBe("Test & Save 1 model");
     expect(customSaveLabel(3)).toBe("Test & Save 3 models");
   });
+
+  it("keeps each selected model's declared capabilities and limits separate", () => {
+    const discovered = [
+      { id: "first", capabilities: { contextWindow: 272_000, maxOutputTokens: 65_536, defaultMaxOutputTokens: 2_048, toolCalling: true, vision: true, parallelToolCalls: true } },
+      { id: "second", capabilities: { contextWindow: 32_768, toolCalling: false, vision: false, reasoning: false } },
+      { id: "unknown", capabilities: {} },
+      { id: "reasoning", capabilities: { contextWindow: 128_000, reasoning: true, reasoningEfforts: ["low", "high"], defaultReasoningEffort: "low" } }
+    ];
+    const form = {
+      ...initialCustomForm(), apiRoot: "https://llm.example.test/v1", name: "LLM", secret: "test-key",
+      selectedModelIds: discovered.map(({ id }) => id)
+    };
+    const result = customRequest({ connections: [], discovered, form });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.body.perModelCapabilities).toEqual(Object.fromEntries(discovered.map((model) => [model.id, model.capabilities])));
+    expect(result.body.capabilities?.reasoning).toBe(false);
+    expect(result.body.perModelCapabilities?.unknown).not.toHaveProperty("reasoning");
+    expect(result.body.perModelCapabilities?.first).not.toHaveProperty("reasoningEfforts");
+    expect(result.body.reasoningRequestMapping).toMatchObject({ effortPath: "reasoning_effort" });
+
+    const single = customRequest({ connections: [], discovered, form: { ...form, selectedModelIds: ["first"] } });
+    expect(single).toMatchObject({ ok: true, body: { perModelCapabilities: { first: discovered[0]!.capabilities } } });
+  });
+
+  it("preserves an explicit reasoning override without borrowing another model's limits", () => {
+    const discovered = [{
+      id: "model", capabilities: { contextWindow: 272_000, reasoning: true, reasoningEfforts: ["low"], defaultReasoningEffort: "low" }
+    }];
+    const result = customRequest({
+      connections: [], discovered,
+      form: { ...initialCustomForm(), apiRoot: "https://llm.example.test/v1", name: "LLM", secret: "test-key", reasoningChoice: "disabled", selectedModelIds: ["model"] }
+    });
+    expect(result).toMatchObject({ ok: true, body: { perModelCapabilities: { model: { contextWindow: 272_000, reasoning: false } } } });
+    if (result.ok) {
+      expect(result.body.perModelCapabilities?.model).not.toHaveProperty("reasoningEfforts");
+      expect(result.body).not.toHaveProperty("reasoningRequestMapping");
+    }
+    expect(discovered[0]!.capabilities.reasoningEfforts).toEqual(["low"]);
+  });
 });

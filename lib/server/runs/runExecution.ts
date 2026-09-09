@@ -1,4 +1,6 @@
+import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
 import type { ChatUpdateDataWire } from "../../contracts/chats";
+import { isToolSynthesisFailure } from "../../contracts/runs";
 import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1 } from "../knowledge/evidenceAnswerExecutionV1";
 import { refineKnowledgeEvidence } from "./knowledgeEvidenceRefinement";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
@@ -829,7 +831,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         options: Readonly<{ includeTokenEvents?: boolean }> = {}
       ): Promise<void> {
         // Capacity is minted by the server, never by provider output.
-        if (event.type === "artifact" && event.data.artifactType === "context_status") return;
+        if (event.type === "artifact" &&
+          (event.data.artifactType === "context_status" || event.data.artifactType === "tool_budget")) return;
         await assertProjectRunAccessCurrent();
         const includeTokenEvents = options.includeTokenEvents ?? true;
         const effectiveEvent = withPinnedHostedSearchIdentity(event, normalizedRequest);
@@ -1608,36 +1611,20 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         });
       }
 
-      async function currentMcpDispatchAllowed(inputRoute: Readonly<{
-        fingerprint: string;
-        namespacedName: string;
-        originalName: string;
-        serverId: string;
-      }>, generationId: string): Promise<boolean> {
-        if (!input.mcp) return process.env.NODE_ENV !== "production";
+      async function currentMcpDispatchFailureCode(
+        route: NonNullable<ReturnType<typeof resolveMcpRunTool>>,
+        generationId: string
+      ): Promise<McpDispatchFailureCode | null> {
+        if (!input.mcp) return process.env.NODE_ENV !== "production" ? null : "mcp_runtime_unavailable";
         try {
           const current = input.prepared.project?.executionScope === "project" && input.mcp.prepareProject
-            ? await input.mcp.prepareProject([inputRoute.serverId])
+            ? await input.mcp.prepareProject([route.serverId])
             : input.prepared.project?.executionScope === "project"
               ? null
-              : await input.mcp.prepare(input.userId, { allowedServerIds: [inputRoute.serverId] });
-          if (!current || !current.ok) return false;
-          const binding = current.bindings.find((candidate) =>
-            candidate.serverId === inputRoute.serverId);
-          const tool = current.snapshot.tools.find((candidate) =>
-            candidate.serverId === inputRoute.serverId &&
-            candidate.namespacedName === inputRoute.namespacedName &&
-            candidate.originalName === inputRoute.originalName);
-          const server = current.snapshot.servers.find((candidate) =>
-            candidate.serverId === inputRoute.serverId);
-          return Boolean(
-            binding && tool && server &&
-            binding.fingerprint === inputRoute.fingerprint &&
-            server.fingerprint === inputRoute.fingerprint &&
-            binding.runtimeGenerationId === generationId
-          );
+              : await input.mcp.prepare(input.userId, { allowedServerIds: [route.serverId] });
+          return currentMcpDispatchFailure(current, route, generationId);
         } catch {
-          return false;
+          return "mcp_runtime_unavailable";
         }
       }
 
@@ -2078,6 +2065,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                             version: 1
                           };
                         })();
+                  let mcpFailure: McpDispatchFailureCode | null = null;
                   const currentAuthorization = await (isKnowledgeCall(call.name)
                       ? currentKnowledgeDispatchAllowed()
                       : isSearchCall(call.name)
@@ -2088,19 +2076,21 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                           const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                           const generationId = claim.call.mcpBinding?.runtimeGenerationId;
                           return route && generationId
-                            ? currentMcpDispatchAllowed({
-                                fingerprint: route.fingerprint,
-                                namespacedName: call.name,
-                                originalName: route.originalName,
-                                serverId: route.serverId
-                              }, generationId)
+                            ? currentMcpDispatchFailureCode(route, generationId).then(async (failure) => {
+                                try {
+                                  mcpFailure = failure ?? (await runtime().ensureAcceptedGeneration(generationId)
+                                    ? null : "mcp_runtime_unavailable");
+                                } catch { mcpFailure = "mcp_runtime_unavailable"; }
+                                return mcpFailure === null;
+                              })
                             : Promise.resolve(false);
                         })());
                   if (!currentAuthorization) {
+                    const failureCode: McpDispatchFailureCode = mcpFailure ?? "memory_egress_destination_revoked";
                     await input.memoryEgress?.recordBlockedDispatch({
                       destinationKind: String(destinationSnapshot.kind),
                       destinationSnapshot,
-                      errorCode: "memory_egress_destination_revoked",
+                      errorCode: failureCode,
                       mode: "TOOL_CALL",
                       modelRunToolCallId: claim.call.id,
                       requestEvidence: memoryEgressRequestEvidence(request),
@@ -2118,7 +2108,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                         message: "Knowledge access changed before retrieval."
                       };
                     }
-                    throw new Error("memory_egress_destination_revoked");
+                    throw mcpDispatchError(failureCode);
                   }
                   externalReceipt = input.memoryEgress
                     ? await input.memoryEgress.beginDispatch({
@@ -2160,6 +2150,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       call,
                       materialize: materializeMcpTools,
                       maxResults: toolBudgets.maxMcpToolsPerDiscovery,
+                      maxOutputTokens: toolBudgets.mcpAutoDiscoveryMaxOutputTokens,
                       modelRunToolCallId: claim.call.id,
                       onUsage(attribution) {
                         rememberReportedUsage(
@@ -2228,9 +2219,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     throw new Error("mcp_run_binding_unavailable");
                   }
                   const activeRuntime = runtime();
-                  if (!(await activeRuntime.ensureAcceptedGeneration(generationId))) {
-                    throw new Error("mcp_runtime_not_ready");
-                  }
                   result = mcpToolExecutionResult(call, await activeRuntime.callTool({
                     arguments: call.arguments,
                     generationId,
@@ -2312,6 +2300,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           },
           initialRequest: request,
           onEvent: applyProviderEvent,
+          onFinalSynthesis: (budget) => {
+            emitTransient(controller, encoder, {
+              type: "artifact",
+              data: { artifactType: "tool_budget", payload: budget }
+            });
+          },
           onProviderResult: async ({ result }) => {
             if (result.providerResponseId) await publishProviderResponseId(result.providerResponseId);
           },
@@ -2404,6 +2398,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       calls: discoveryCalls,
                       materialize: materializeMcpTools,
                       maxResults: toolBudgets.maxMcpToolsPerDiscovery,
+                      maxOutputTokens: toolBudgets.mcpAutoDiscoveryMaxOutputTokens,
                       onUsage(attribution) {
                         rememberReportedUsage(
                           attribution.provider,
@@ -2451,6 +2446,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             }
             for (const call of calls) {
               const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
+              const registeredTool = tools.find((tool) => tool.name === call.name);
               const builtInServer = isSessionCall(call.name) ? "Chat context" : call.name === "find_tools"
                 ? "Auto tools"
                 : isKnowledgeCall(call.name)
@@ -2471,6 +2467,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 input.repository,
                 runId,
                 liveToolCallStatus(modelToolCall(call), {
+                  origin: route ? "mcp" : registeredTool
+                    ? call.name === "find_tools" ? "discovery" : registeredTool.capability
+                    : "tool",
                   round,
                   ...(route ? {
                     serverName: route.tool.serverName,
@@ -2907,6 +2906,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           input.created.assistantMessageId,
           payload,
           safetyCode || deadlineExceeded || knowledgeAnswerAttempted ||
+            isToolSynthesisFailure(failureCode) ||
             failureCode === "memory_answer_model_tools_retired"
             ? { recoveryTerminal: true }
             : undefined

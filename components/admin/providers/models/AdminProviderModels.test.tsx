@@ -106,6 +106,7 @@ function usageSources(): ProviderUsageSources {
         maxMcpToolsPerDiscovery: 8,
         maxToolCalls: 8,
         maxToolRounds: 4,
+        mcpAutoDiscoveryMaxOutputTokens: 8192,
         mcpAutoDiscoveryTimeoutSeconds: 30,
         reasoningEffort: null,
         updatedAt: "2026-09-07T12:00:00.000Z",
@@ -188,7 +189,7 @@ describe("AdminProviderModels", () => {
     expect(connection.unassignedPolicy).toBe("require_assignment");
   });
 
-  it("requires an explicit choice among multiple keys and keeps rows, details and actions on that key", () => {
+  it("requires an explicit diagnostic key and shows its check in Edit without changing access", async () => {
     const connection = openRouter();
     connection.defaultCredentialId = null;
     const before = structuredClone(connection);
@@ -198,16 +199,23 @@ describe("AdminProviderModels", () => {
     expect(screen.getByRole("button", { name: "Check models" })).toBeDisabled();
     fireEvent.change(picker, { target: { value: "cred-primary" } });
     expect(screen.getByTestId("provider-model-model-opus-works-with")).toHaveAttribute("data-works-with", "checked");
-    fireEvent.click(screen.getByRole("button", { name: "Claude Opus 4.8" }));
-    const details = screen.getByTestId("provider-model-model-opus-details");
-    expect(details).toHaveTextContent("with key Primary");
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Claude Opus 4.8" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    let sheet = await screen.findByRole("dialog", { name: "Edit model" });
+    expect(within(sheet).getByRole("region", { name: "Last model check" })).toHaveTextContent("with key Primary");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
     fireEvent.change(picker, { target: { value: "cred-research" } });
     expect(screen.getByTestId("provider-model-model-opus-works-with")).toHaveAttribute("data-works-with", "not_checked");
-    expect(details).toHaveTextContent("Not checked yet with key Research team.");
-    expect(details).not.toHaveTextContent("with key Primary");
-    expect(Object.values(actions).every((action) => action.mock.calls.length === 0)).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Claude Opus 4.8" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    sheet = await screen.findByRole("dialog", { name: "Edit model" });
+    expect(sheet).toHaveTextContent("Not checked yet with key Research team.");
+    expect(sheet).not.toHaveTextContent("with key Primary");
+    expect(actions.saveModel).not.toHaveBeenCalled();
+    expect(actions.startModelChecks).not.toHaveBeenCalled();
     expect(connection).toEqual(before);
-    fireEvent.click(within(details).getByRole("button", { name: "Re-check" }));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+    fireEvent.click(within(screen.getByTestId("provider-model-model-opus")).getByRole("button", { name: "Check model" }));
     expect(actions.startModelChecks).toHaveBeenCalledWith("conn-or", "cred-research", ["model-opus"]);
   });
 
@@ -271,7 +279,7 @@ describe("AdminProviderModels", () => {
     await act(async () => { fireEvent.click(within(sheet).getByRole("button", { name: "Test & Save" })); });
     expect(actions.saveModel).toHaveBeenCalledWith("conn-or", "model-opus", expect.objectContaining({
       displayName: "My edited model", expectedDraftVersion: 1
-    }));
+    }), expect.objectContaining({ onProgress: expect.any(Function), signal: expect.any(AbortSignal) }));
   });
 
   // The fixtures are checked at FIXTURE_NOW; "Checked today" must not depend on the wall clock.
@@ -290,7 +298,7 @@ describe("AdminProviderModels", () => {
     const groups = [...table.querySelectorAll("tbody")].map((body) => body.querySelector("th")?.textContent);
     expect(groups).toEqual(["Chat models · 3", "Rerankers · 2", "Embeddings · 1"]);
     const names = [...table.querySelectorAll("tr[data-testid^='provider-model-']")]
-      .map((row) => row.querySelector("button[aria-expanded]")?.textContent);
+      .map((row) => row.querySelector("[data-testid=provider-model-name]")?.textContent);
     expect(names).toEqual([
       "Claude Opus 4.8", "Gemini Pro Latest", "Perplexity Sonar Pro Search",
       "Cohere Rerank 4 Pro", "Voyage Rerank 2.5", "Qwen3 Embedding 8B · 1536d"
@@ -323,34 +331,39 @@ describe("AdminProviderModels", () => {
     expect(screen.getByTestId("provider-models")).not.toHaveTextContent(/draft|revision|pending|evidence|probe|adapter|fingerprint|dimensions/iu);
   });
 
-  it("expands one row with the last check, and runs Check, Retry, Re-check and Re-check with key through background checks", () => {
+  it("removes row expansion and Details while keeping Edit, Retry, Re-check with key and Check models", async () => {
     const { actions } = harness();
     const opus = screen.getByTestId("provider-model-model-opus");
-    fireEvent.click(within(opus).getByRole("button", { name: "Claude Opus 4.8" }));
-    const details = screen.getByTestId("provider-model-model-opus-details");
-    expect(details).toHaveTextContent(/Checked today \d{2}:\d{2} with key Primary · tools, JSON and the other checked capabilities work\./u);
-    expect(details).toHaveTextContent("Route: via anthropic only.");
-    fireEvent.click(within(details).getByRole("button", { name: "Re-check" }));
-    expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-primary", ["model-opus"]);
-
-    fireEvent.click(within(screen.getByTestId("provider-model-model-gemini")).getByRole("button", { name: "Gemini Pro Latest" }));
+    fireEvent.click(within(opus).getByText("Claude Opus 4.8"));
+    fireEvent.click(opus);
     expect(screen.queryByTestId("provider-model-model-opus-details")).not.toBeInTheDocument();
-    const geminiDetails = screen.getByTestId("provider-model-model-gemini-details");
-    expect(geminiDetails).toHaveTextContent("works without tools and PDF input.");
-    expect(geminiDetails).toHaveTextContent("No usage reporting — cost accounting for this model will be empty.");
+    expect(opus).not.toHaveAttribute("aria-expanded");
 
     fireEvent.click(within(screen.getByTestId("provider-model-model-cohere")).getByRole("button", { name: "Retry" }));
-    expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-primary", ["model-cohere"]);
+    expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-primary", ["model-cohere"], true);
 
     fireEvent.click(within(opus).getByRole("button", { name: "More actions for Claude Opus 4.8" }));
     const menu = screen.getByRole("menu", { name: "More actions for Claude Opus 4.8" });
     expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-      "Edit", "Re-check with key…", "Details", "Turn off", "Remove from AIQSA"
+      "Edit", "Re-check with key…", "Turn off", "Remove from AIQSA"
     ]);
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Re-check with key…" }));
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Research team" }));
-    expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-research", ["model-opus"]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Edit" }));
+    let sheet = await screen.findByRole("dialog", { name: "Edit model" });
+    expect(sheet).toHaveTextContent(/Checked today \d{2}:\d{2} with key Primary · tools, JSON and the other checked capabilities work\./u);
+    expect(sheet).toHaveTextContent("Saved route: via anthropic only.");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Gemini Pro Latest" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    sheet = await screen.findByRole("dialog", { name: "Edit model" });
+    expect(sheet).toHaveTextContent("works without tools and PDF input.");
+    expect(sheet).toHaveTextContent("No usage reporting — cost accounting for this model will be empty.");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
 
+    fireEvent.click(within(opus).getByRole("button", { name: "More actions for Claude Opus 4.8" }));
+    const recheckMenu = screen.getByRole("menu", { name: "More actions for Claude Opus 4.8" });
+    fireEvent.click(within(recheckMenu).getByRole("menuitem", { name: "Re-check with key…" }));
+    fireEvent.click(within(recheckMenu).getByRole("menuitem", { name: "Research team" }));
+    expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-research", ["model-opus"]);
     fireEvent.click(screen.getByRole("button", { name: "Check models" }));
     expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-research", undefined);
   });
@@ -401,22 +414,22 @@ describe("AdminProviderModels", () => {
     const rerankers = within(menu).getAllByRole("menuitem").map((item) => item.textContent);
     expect(rerankers).not.toContain("Voyage Rerank 2.5");
     expect(rerankers).toContain("Qwen3 Reranker 8B");
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Qwen3 Reranker 8B" }));
+    await act(async () => { fireEvent.click(within(menu).getByRole("menuitem", { name: "Qwen3 Reranker 8B" })); });
     expect(actions.saveModel).toHaveBeenCalledWith("conn-or", null, {
       configuration: expect.objectContaining({ adapterKind: "openrouter_rerank", modelClass: "reranker", upstreamModelId: "qwen/qwen3-reranker-8b" }),
       displayName: "Qwen3 Reranker 8B"
-    });
+    }, expect.objectContaining({ onProgress: expect.any(Function), signal: expect.any(AbortSignal) }));
 
     fireEvent.click(screen.getByTestId("provider-add-model"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Embedding preset" }));
     const embeddings = within(screen.getByRole("menu", { name: "Add model" })).getAllByRole("menuitem").map((item) => item.textContent);
     expect(embeddings).not.toContain("Qwen3 Embedding 8B · 1536d");
     expect(embeddings).toContain("BGE-M3 · 1024d");
-    fireEvent.click(screen.getByRole("menuitem", { name: "BGE-M3 · 1024d" }));
+    await act(async () => { fireEvent.click(screen.getByRole("menuitem", { name: "BGE-M3 · 1024d" })); });
     expect(actions.saveModel).toHaveBeenLastCalledWith("conn-or", null, {
       configuration: expect.objectContaining({ embedding: expect.objectContaining({ targetDimension: 1_024 }), modelClass: "embedding" }),
       displayName: "BGE-M3"
-    });
+    }, expect.objectContaining({ onProgress: expect.any(Function), signal: expect.any(AbortSignal) }));
 
     fireEvent.click(screen.getByTestId("provider-add-model"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Chat model" }));

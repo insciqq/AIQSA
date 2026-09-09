@@ -1,3 +1,4 @@
+import { setupProgressResponse } from "./setupProgressResponse";
 import type {
   AdminProviderConnectionConfiguration,
   AdminProviderFamily,
@@ -375,6 +376,7 @@ export function createAdminProviderConnectionActionHandler(deps: AdminProviderHa
           connectionId,
           credentialId,
           ...(modelIds ? { modelIds } : {}),
+          ...(body.retryUnresolved === true ? { retryUnresolved: true, reuseCurrentChecks: true } : {}),
           reason: "requested"
         });
         return catalog(deps.service);
@@ -522,7 +524,7 @@ export function createAdminProviderModelCreateHandler(deps: AdminProviderHandler
       return errorJson("provider_configuration_invalid", 400);
     }
     const { connectionId } = await context.params;
-    return safely(async () => {
+    return setupProgressResponse(request, (signal, onProgress) => safely(async () => {
       const { id } = await deps.service.createModelDraft({
         configuration: body.configuration as AdminProviderModelConfiguration,
         connectionId,
@@ -531,10 +533,10 @@ export function createAdminProviderModelCreateHandler(deps: AdminProviderHandler
       // `Test & Save` (PRD B2): the saved model goes live and is checked with
       // the default key in the same request.
       if (body.activate === true) {
-        await deps.service.activateModel({ connectionId, modelId: id });
+        await deps.service.activateModel({ connectionId, modelId: id, signal, onProgress });
       }
       return catalog(deps.service, 201);
-    });
+    }));
   };
 }
 
@@ -548,7 +550,7 @@ export function createAdminProviderModelUpdateHandler(deps: AdminProviderHandler
     const action = text(body?.action, 64);
     if (!body || !action) return errorJson("provider_action_invalid", 400);
     const { connectionId, modelId } = await context.params;
-    return safely(async () => {
+    return setupProgressResponse(request, (signal, onProgress) => safely(async () => {
       if (!await modelBelongs(deps.service, connectionId, modelId)) {
         return errorJson("provider_model_not_found", 404);
       }
@@ -566,7 +568,7 @@ export function createAdminProviderModelUpdateHandler(deps: AdminProviderHandler
           modelId
         });
         if (body.activate === true) {
-          await deps.service.activateModel({ connectionId, modelId });
+          await deps.service.activateModel({ connectionId, modelId, signal, onProgress });
         }
       } else if (action === "enable" || action === "disable") {
         await deps.service[action]("model", modelId);
@@ -574,7 +576,7 @@ export function createAdminProviderModelUpdateHandler(deps: AdminProviderHandler
         return errorJson("provider_action_invalid", 400);
       }
       return catalog(deps.service);
-    });
+    }));
   };
 }
 

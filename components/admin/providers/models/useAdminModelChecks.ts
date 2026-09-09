@@ -114,7 +114,7 @@ export function useAdminModelChecks(input: Readonly<{
     const credentialId = interrupted?.credentialId ?? run?.credentialId ?? connection.defaultCredentialId;
     if (!credentialId) return false;
     setLost(null);
-    const result = await controller.actions.startModelChecks(connection.id, credentialId);
+    const result = await controller.actions.startModelChecks(connection.id, credentialId, undefined, true);
     return result.ok;
   }, [connection.defaultCredentialId, connection.id, controller.actions, interrupted, run?.credentialId]);
 

@@ -31,7 +31,8 @@ import {
   CHAT_HISTORY_CURSOR_MAX_LENGTH,
   CHAT_HISTORY_PAGE_SIZE,
   boundedChatBranchPreview,
-  type ChatContextStats
+  type ChatContextStats,
+  type ThreadToolActivityOrigin
 } from "../../contracts/chats";
 import {
   decodeKnowledgeCitationHandle,
@@ -935,10 +936,15 @@ function activityName(value: unknown, fallback: string): string {
 }
 
 function toolActivityDescriptors(normalizedRequest: unknown): Map<string, {
+  origin: ThreadToolActivityOrigin;
   serverName?: string;
   toolName: string;
 }> {
-  const descriptors = new Map<string, { serverName?: string; toolName: string }>();
+  const descriptors = new Map<string, {
+    origin: ThreadToolActivityOrigin;
+    serverName?: string;
+    toolName: string;
+  }>();
   if (!isRecord(normalizedRequest)) return descriptors;
 
   const mcp = isRecord(normalizedRequest.mcp) ? normalizedRequest.mcp : null;
@@ -946,6 +952,7 @@ function toolActivityDescriptors(normalizedRequest: unknown): Map<string, {
     for (const value of mcp.tools) {
       if (!isRecord(value) || typeof value.namespacedName !== "string") continue;
       descriptors.set(value.namespacedName, {
+        origin: "mcp",
         serverName: activityName(value.serverName, "MCP server"),
         toolName: activityName(value.originalName, "Tool")
       });
@@ -963,6 +970,7 @@ function toolActivityDescriptors(normalizedRequest: unknown): Map<string, {
         if (!isRecord(value) || typeof value.namespacedName !== "string") continue;
         if (!descriptors.has(value.namespacedName)) {
           descriptors.set(value.namespacedName, {
+            origin: "mcp",
             serverName: activityName(server.serverName, "MCP server"),
             toolName: activityName(value.originalName, "Tool")
           });
@@ -975,6 +983,7 @@ function toolActivityDescriptors(normalizedRequest: unknown): Map<string, {
   if (searchPlan && Array.isArray(searchPlan.options)) {
     searchPlan.options.forEach((option, index) => {
       descriptors.set(`search_engine_${index + 1}`, {
+        origin: "web_search",
         serverName: isRecord(option)
           ? activityName(option.displayName, "Web search")
           : "Web search",
@@ -986,15 +995,16 @@ function toolActivityDescriptors(normalizedRequest: unknown): Map<string, {
   if (isRecord(normalizedRequest.workspace) && normalizedRequest.workspace.enabled === true) {
     for (const name of WORKSPACE_MCP_TOOL_ALLOWLIST) {
       descriptors.set(namespacedWorkspaceToolName(name), {
+        origin: "workspace",
         serverName: "Workspace",
         toolName: name
       });
     }
   }
 
-  descriptors.set("find_tools", { serverName: "Auto tools", toolName: "find_tools" });
-  descriptors.set("search_knowledge", { serverName: "Knowledge", toolName: "search_knowledge" });
-  descriptors.set("retrieve_knowledge", { serverName: "Knowledge", toolName: "search_knowledge" });
+  descriptors.set("find_tools", { origin: "discovery", serverName: "Auto tools", toolName: "find_tools" });
+  descriptors.set("search_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
+  descriptors.set("retrieve_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
   for (const name of [
     "forget_memory",
     "list_memories",
@@ -1003,7 +1013,7 @@ function toolActivityDescriptors(normalizedRequest: unknown): Map<string, {
     "search_memory",
     "update_memory"
   ]) {
-    descriptors.set(name, { serverName: "Memory", toolName: name });
+    descriptors.set(name, { origin: "memory", serverName: "Memory", toolName: name });
   }
   return descriptors;
 }
@@ -1036,11 +1046,12 @@ function toolBudgetWarning(
   if (errorCode === "tool_round_limit_exceeded") {
     return { kind: "rounds", limit: budgets?.maxToolRounds ?? 3 };
   }
-  if (!budgets || run.status !== "complete") return undefined;
-  if (run.toolCalls.length >= budgets.maxToolCalls) {
+  if (!budgets) return undefined;
+  const providerToolCalls = run.toolCalls.filter((call) => call.roundIndex > 0);
+  if (providerToolCalls.length >= budgets.maxToolCalls) {
     return { kind: "calls", limit: budgets.maxToolCalls };
   }
-  const rounds = new Set(run.toolCalls.map((call) => call.roundIndex)).size;
+  const rounds = new Set(providerToolCalls.map((call) => call.roundIndex)).size;
   return rounds >= budgets.maxToolRounds
     ? { kind: "rounds", limit: budgets.maxToolRounds }
     : undefined;
@@ -1053,6 +1064,7 @@ export function summarizeMessageRunToolActivity(
   const descriptors = toolActivityDescriptors(run.normalizedRequest);
   const calls = run.toolCalls.map((call) => {
     const descriptor = descriptors.get(call.toolName) ?? {
+      origin: call.toolName.startsWith("mcp_") ? "mcp" as const : "tool" as const,
       toolName: call.toolName.startsWith("mcp_")
         ? "MCP tool"
         : activityName(call.toolName, "Tool")
@@ -1066,6 +1078,7 @@ export function summarizeMessageRunToolActivity(
       : "running";
     return {
       ...(duration !== null && duration >= 0 ? { durationMs: duration } : {}),
+      origin: descriptor.origin,
       // Automatic Knowledge retrieval is persisted before the provider loop at
       // round index 0. The browser contract is intentionally user-facing and
       // one-based, so project that preflight activity as the first round.

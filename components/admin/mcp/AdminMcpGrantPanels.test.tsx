@@ -67,9 +67,11 @@ const user: AdminUserRecord = {
 
 function controller(selectedServer: AdminMcpServer = server) {
   const grant = vi.fn().mockResolvedValue(true);
+  const bulkGrantGroup = vi.fn().mockResolvedValue(true);
+  const refresh = vi.fn().mockResolvedValue(undefined);
   return {
     controller: {
-      actions: { grant },
+      actions: { bulkGrantGroup, grant, refresh },
       state: {
         busy: false,
         error: null,
@@ -78,7 +80,9 @@ function controller(selectedServer: AdminMcpServer = server) {
         servers: [selectedServer]
       }
     } as unknown as AdminMcpController,
-    grant
+    bulkGrantGroup,
+    grant,
+    refresh
   };
 }
 
@@ -112,6 +116,9 @@ describe("Admin MCP grant ownership", () => {
     />);
 
     expect(screen.getAllByRole("switch")).toHaveLength(8);
+    expect(screen.getByText("0 of 10 MCP servers granted · None")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Grant all current MCP servers to operators" }));
+    expect(view.bulkGrantGroup).toHaveBeenCalledWith(group, true);
     fireEvent.click(screen.getByRole("button", { name: "2 more" }));
     expect(screen.getAllByRole("switch")).toHaveLength(10);
   });
@@ -136,7 +143,54 @@ describe("Admin MCP grant ownership", () => {
 
     expect(screen.getByTestId("system-mcp-grant-server-1")).toHaveTextContent("Included");
     expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Grant all|Clear/ })).not.toBeInTheDocument();
     expect(view.grant).not.toHaveBeenCalled();
+  });
+
+  it("shows saved partial and all counts, clears the group only and deduplicates the current server list", () => {
+    const selected = { ...server, grants: [{ canUse: true, groupId: group.id, groupName: group.name, id: "g", personalSlotKeys: [], userId: null, userName: null }] };
+    const another = { ...server, id: "second", name: "Second" };
+    const view = controller(selected);
+    const props = { ...view.controller, state: { ...view.controller.state, servers: [selected, selected, another, { ...server, archivedAt: "2026-09-01", id: "archived" }] } };
+    const { rerender } = render(<AdminMcpGroupAccessPanel controller={props} group={group} />);
+    expect(screen.getByText("1 of 2 MCP servers granted · Partial")).toBeInTheDocument();
+    expect(screen.getAllByRole("switch")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Clear current MCP servers for operators" }));
+    expect(view.bulkGrantGroup).toHaveBeenCalledWith(group, false);
+    rerender(<AdminMcpGroupAccessPanel controller={{ ...props, state: { ...props.state, servers: [selected, { ...another, grants: selected.grants }] } }} group={group} />);
+    expect(screen.getByText("2 of 2 MCP servers granted · All")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Grant all current MCP servers to operators" })).toBeDisabled();
+  });
+
+  it.each(["busy", "loading", "archived"])("disables bulk and individual group controls while %s", (reason) => {
+    const view = controller();
+    const changed = { ...view.controller, state: { ...view.controller.state, busy: reason === "busy", loading: reason === "loading" } };
+    render(<AdminMcpGroupAccessPanel controller={changed} group={{ ...group, archivedAt: reason === "archived" ? "2026-09-01" : null }} />);
+    expect(screen.getByRole("button", { name: "Grant all current MCP servers to operators" })).toBeDisabled();
+    expect(screen.getByRole("switch")).toBeDisabled();
+  });
+
+  it("distinguishes a catalog failure from an empty selection and exposes retry", () => {
+    const view = controller();
+    const { rerender } = render(<AdminMcpGroupAccessPanel controller={{ ...view.controller, state: { ...view.controller.state, error: "MCP catalog unavailable" } }} group={group} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("MCP catalog unavailable");
+    expect(screen.queryByRole("button", { name: /Grant all/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry MCP servers" }));
+    expect(view.refresh).toHaveBeenCalledOnce();
+    rerender(<AdminMcpGroupAccessPanel controller={{ ...view.controller, state: { ...view.controller.state, servers: [] } }} group={group} />);
+    expect(screen.getByText("0 of 0 MCP servers granted")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Grant all/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Clear current/ })).toBeDisabled();
+  });
+
+  it("shows confirmed MCP progress only on the group being changed", () => {
+    const view = controller();
+    const changed = { ...view.controller, state: { ...view.controller.state, bulkGrantProgress: { completed: 3, groupId: group.id, total: 9 }, busy: true } };
+    const { rerender } = render(<AdminMcpGroupAccessPanel controller={changed} group={group} />);
+    expect(screen.getByText("Updating MCP access: 3 of 9 changes saved…")).toHaveAttribute("role", "status");
+    rerender(<AdminMcpGroupAccessPanel controller={changed} group={{ ...group, id: "other" }} />);
+    expect(screen.queryByText(/Updating MCP access/)).not.toBeInTheDocument();
   });
 
   it("keeps an installation-wide disabled server visible beside its independent grant", () => {

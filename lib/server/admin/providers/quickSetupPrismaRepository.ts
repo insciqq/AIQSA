@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { initialModelConfiguration } from "./initialCapabilitySetup";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
@@ -1391,6 +1392,7 @@ async function applyQuickSetupPlan(
   plan: AdminProviderQuickSetupCommitPlan,
   exposeFake: boolean
 ): Promise<Exclude<AdminProviderQuickSetupCommitResult, "catalog_unavailable">> {
+  plan.signal?.throwIfAborted();
   await lockAdminProviderQuickSetupState(tx, plan);
   const current = await loadQuickSetupState(tx, {
     ...plan.actor,
@@ -1582,12 +1584,12 @@ async function applyQuickSetupPlan(
     if (!existingModel) {
       await tx.providerModel.create({
         data: {
-          activeConfig: json(candidate.configuration),
+          activeConfig: json(plan.pendingCapabilityChecks ? initialModelConfiguration(candidate.configuration) : candidate.configuration),
           activeVersion: 1,
           activatedAt: plan.now,
           connectionId: policy.connection.id,
           displayName: candidate.displayName,
-          draftConfig: json(candidate.configuration),
+          draftConfig: json(plan.pendingCapabilityChecks ? initialModelConfiguration(candidate.configuration) : candidate.configuration),
           draftVersion: 1,
           enabled: true,
           id: candidate.modelId,
@@ -1595,7 +1597,7 @@ async function applyQuickSetupPlan(
           outputTokenPriceMicros: candidate.model.outputTokenPriceMicros,
           provider: policy.provider,
           templateKey: candidate.templateKey,
-          ...modelColumns(candidate.configuration)
+          ...modelColumns(plan.pendingCapabilityChecks ? initialModelConfiguration(candidate.configuration) : candidate.configuration)
         }
       });
     } else if (existingModel.activeConfig === null) {
@@ -1681,7 +1683,7 @@ async function applyQuickSetupPlan(
       where: { id: policy.connection.id }
     });
   }
-  if (!await synchronizeApprovedQuickSetupRerankers(
+  if (!plan.pendingCapabilityChecks && !await synchronizeApprovedQuickSetupRerankers(
     tx,
     plan,
     connectionVersion
@@ -1710,7 +1712,7 @@ async function applyQuickSetupPlan(
         }),
         modelVersion: target.modelVersion,
         providerModelId,
-        status: "available"
+        status: plan.pendingCapabilityChecks ? "unavailable" : "available"
       }
     });
   }
@@ -1744,11 +1746,12 @@ async function applyQuickSetupPlan(
   const search = await synchronizeQuickSetupSearch(tx, plan);
 
   const eligibleModelIds = await eligibleProviderModelIds(tx, plan.actor.userId, exposeFake);
-  if ([...candidateModelIds, ...plan.preservedModels.map(({ id }) => id)].every(
+  if (!plan.pendingCapabilityChecks && [...candidateModelIds, ...plan.preservedModels.map(({ id }) => id)].every(
     (modelId) => eligibleModelIds.has(modelId)
   ) === false) {
     throw new QuickSetupCatalogUnavailableError();
   }
+  plan.signal?.throwIfAborted();
   return {
     defaultCredentialChanged,
     defaultChanged: false,
@@ -1774,6 +1777,7 @@ async function applyQuickSetupAdditionalPlan(
   plan: AdminProviderQuickSetupAdditionalPlan,
   exposeFake: boolean
 ): Promise<Exclude<AdminProviderQuickSetupAdditionalCommitResult, "catalog_unavailable">> {
+  plan.signal?.throwIfAborted();
   await lockAdminProviderQuickSetupState(tx, plan);
   const current = await loadQuickSetupState(tx, {
     ...plan.actor,
@@ -1850,12 +1854,12 @@ async function applyQuickSetupAdditionalPlan(
   for (const model of plan.models) {
     await tx.providerModel.create({
       data: {
-        activeConfig: json(model.candidate.configuration),
+        activeConfig: json(plan.pendingCapabilityChecks ? initialModelConfiguration(model.candidate.configuration) : model.candidate.configuration),
         activeVersion: 1,
         activatedAt: plan.now,
         connectionId: plan.connection.id,
         displayName: model.candidate.displayName,
-        draftConfig: json(model.candidate.configuration),
+        draftConfig: json(plan.pendingCapabilityChecks ? initialModelConfiguration(model.candidate.configuration) : model.candidate.configuration),
         draftVersion: 1,
         enabled: true,
         id: model.id,
@@ -1863,7 +1867,7 @@ async function applyQuickSetupAdditionalPlan(
         outputTokenPriceMicros: model.candidate.model.outputTokenPriceMicros,
         provider: plan.provider,
         templateKey: null,
-        ...modelColumns(model.candidate.configuration)
+        ...modelColumns(plan.pendingCapabilityChecks ? initialModelConfiguration(model.candidate.configuration) : model.candidate.configuration)
       }
     });
   }
@@ -1920,7 +1924,7 @@ async function applyQuickSetupAdditionalPlan(
         evidence: json(model.evidence),
         modelVersion: 1,
         providerModelId: model.id,
-        status: "available"
+        status: plan.pendingCapabilityChecks ? "unavailable" : "available"
       }
     });
     await tx.accessGrant.create({
@@ -1937,9 +1941,10 @@ async function applyQuickSetupAdditionalPlan(
   }
 
   const eligibleModelIds = await eligibleProviderModelIds(tx, plan.actor.userId, exposeFake);
-  if (plan.models.some((model) => !eligibleModelIds.has(model.id))) {
+  if (!plan.pendingCapabilityChecks && plan.models.some((model) => !eligibleModelIds.has(model.id))) {
     throw new QuickSetupCatalogUnavailableError();
   }
+  plan.signal?.throwIfAborted();
   return { status: "ready" };
 }
 

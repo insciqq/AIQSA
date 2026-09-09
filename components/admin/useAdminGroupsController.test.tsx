@@ -1,6 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminRunAction } from "@/components/admin/useAdminActionRunner";
+import type { AdminDashboardRefresh } from "@/components/admin/useAdminDashboardResource";
 import type { AdminConfirmationController, AdminConfirmedActionRequest } from "@/components/admin/useAdminConfirmationController";
 import type { AdminDashboard, AdminGroup } from "@/lib/contracts/admin";
 import { useAdminGroupsController } from "./useAdminGroupsController";
@@ -44,13 +45,23 @@ function dependencies() {
   const requestConfirmedAction = vi.fn<AdminConfirmationController["requestConfirmedAction"]>((config) => {
     confirmations.push(config);
   });
-  return { confirmations, requestConfirmedAction, runAction };
+  return {
+    confirmations,
+    onError: vi.fn(),
+    onNotice: vi.fn(),
+    refreshDashboard: vi.fn<AdminDashboardRefresh>().mockResolvedValue({ dashboard: dashboard as AdminDashboard, ok: true }),
+    requestConfirmedAction,
+    runAction
+  };
 }
 
 function renderController(deps = dependencies(), actionsDisabled = false) {
   return renderHook(() => useAdminGroupsController({
     actionsDisabled,
     dashboard,
+    onError: deps.onError,
+    onNotice: deps.onNotice,
+    refreshDashboard: deps.refreshDashboard,
     requestConfirmedAction: deps.requestConfirmedAction,
     runAction: deps.runAction
   }));
@@ -90,24 +101,95 @@ describe("useAdminGroupsController", () => {
       { enabled: true, modelId: "gpt-mini", provider: "openai" }
     ];
 
-    await expect(result.current.actions.applyGrants(operators, changes, "All models granted.")).resolves.toBe(true);
+    await act(async () => { await expect(result.current.actions.applyGrants(operators, changes, "All models granted.")).resolves.toBe(true); });
     expect(deps.runAction).toHaveBeenCalledTimes(1);
     expect(deps.runAction).toHaveBeenCalledWith(
       { action: "set_group_grants", changes, groupId: operators.id },
-      "All models granted."
+      "All models granted.",
+      { reload: false, successNotice: false }
     );
 
     deps.runAction.mockResolvedValueOnce({ error: "group_grant_invalid" });
-    await expect(result.current.actions.applyGrants(operators, [{ enabled: false, provider: "openai" }])).resolves.toBe(false);
+    await act(async () => { await expect(result.current.actions.applyGrants(operators, [{ enabled: false, provider: "openai" }])).resolves.toBe(false); });
     expect(deps.runAction).toHaveBeenLastCalledWith(
       { action: "set_group_grants", changes: [{ enabled: false, provider: "openai" }], groupId: operators.id },
-      "Access updated."
+      "Access updated.",
+      { reload: false, successNotice: false }
     );
 
     await expect(result.current.actions.applyGrants(fullAccess, changes)).resolves.toBe(false);
     await expect(result.current.actions.applyGrants(archived, changes)).resolves.toBe(false);
     await expect(result.current.actions.applyGrants(operators, [])).resolves.toBe(false);
     expect(deps.runAction).toHaveBeenCalledTimes(2);
+    expect(deps.refreshDashboard).toHaveBeenCalledTimes(2);
+    expect(deps.onNotice).toHaveBeenCalledTimes(1);
+    expect(deps.onError).toHaveBeenCalledWith(expect.stringContaining("0 of 1 access changes confirmed"));
+  });
+
+  it("serializes bounded batches, deduplicates identities and locks repeat submissions through the final reload", async () => {
+    const deps = dependencies();
+    let finishFirst!: (value: Awaited<ReturnType<AdminRunAction>>) => void;
+    deps.runAction.mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }));
+    let finishReload!: (value: Awaited<ReturnType<typeof deps.refreshDashboard>>) => void;
+    deps.refreshDashboard.mockImplementationOnce(() => new Promise((resolve) => { finishReload = resolve; }));
+    const changes = Array.from({ length: 401 }, (_, index) => ({ enabled: true, modelId: `model-${index}`, provider: "openai" }));
+    const { result } = renderController(deps);
+    let mutation!: Promise<boolean>;
+    act(() => { mutation = result.current.actions.applyGrants(operators, [...changes, changes[0]], "All models granted."); });
+    expect(deps.runAction).toHaveBeenCalledTimes(1);
+    expect(result.current.actionsDisabled).toBe(true);
+    expect(result.current.grantProgress).toEqual({ completed: 0, groupId: operators.id, total: 401 });
+    await expect(result.current.actions.applyGrants(operators, changes)).resolves.toBe(false);
+    await act(async () => { finishFirst({ ok: true }); });
+    expect(deps.runAction.mock.calls.map(([body]) => body.action === "set_group_grants" ? body.changes.length : -1)).toEqual([200, 200, 1]);
+    expect(deps.refreshDashboard).toHaveBeenCalledTimes(1);
+    expect(result.current.grantProgress).toEqual({ completed: 401, groupId: operators.id, total: 401 });
+    expect(result.current.actionsDisabled).toBe(true);
+    expect(deps.onNotice).not.toHaveBeenCalled();
+    await act(async () => {
+      finishReload({ dashboard: dashboard as AdminDashboard, ok: true });
+      await expect(mutation).resolves.toBe(true);
+    });
+    expect(result.current.actionsDisabled).toBe(false);
+    expect(result.current.grantProgress).toBeNull();
+    expect(deps.onNotice).toHaveBeenCalledWith("Operators: All models granted.");
+  });
+
+  it("stops a later rejected batch, reloads confirmed partial work and never announces success", async () => {
+    const deps = dependencies();
+    deps.runAction.mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce({ error: "group_grant_invalid" });
+    const { result } = renderController(deps);
+    const changes = Array.from({ length: 401 }, (_, index) => ({ enabled: false, searchStrategy: `search-${index}` }));
+    await act(async () => { await expect(result.current.actions.applyGrants(operators, changes)).resolves.toBe(false); });
+    expect(deps.runAction).toHaveBeenCalledTimes(2);
+    expect(deps.refreshDashboard).toHaveBeenCalledTimes(1);
+    expect(deps.onError).toHaveBeenCalledWith(expect.stringContaining("200 of 401 access changes confirmed"));
+    expect(deps.onError).toHaveBeenCalledWith(expect.stringContaining("Review the saved grants"));
+    expect(deps.onNotice).not.toHaveBeenCalled();
+    expect(result.current.actionsDisabled).toBe(false);
+  });
+
+  it("reports saved changes without a success notice if authoritative refresh fails", async () => {
+    const deps = dependencies();
+    deps.refreshDashboard.mockResolvedValueOnce({ error: "network_error", ok: false });
+    const { result } = renderController(deps);
+    await act(async () => { await expect(result.current.actions.applyGrants(operators, [{ enabled: true, provider: "openai" }])).resolves.toBe(false); });
+    expect(deps.onError).toHaveBeenCalledWith(expect.stringContaining("1 of 1 access changes saved, but current grants could not be reloaded"));
+    expect(deps.onNotice).not.toHaveBeenCalled();
+  });
+
+  it("does not mutate while its owner is disabled and refreshes an uncertain network failure", async () => {
+    const disabled = dependencies();
+    const blocked = renderController(disabled, true);
+    await expect(blocked.result.current.actions.applyGrants(operators, [{ enabled: true, provider: "openai" }])).resolves.toBe(false);
+    expect(disabled.runAction).not.toHaveBeenCalled();
+    const deps = dependencies();
+    deps.runAction.mockRejectedValueOnce(new Error("network offline"));
+    const { result } = renderController(deps);
+    await act(async () => { await expect(result.current.actions.applyGrants(operators, [{ enabled: true, provider: "openai" }])).resolves.toBe(false); });
+    expect(deps.refreshDashboard).toHaveBeenCalledOnce();
+    expect(deps.onNotice).not.toHaveBeenCalled();
+    expect(result.current.actionsDisabled).toBe(false);
   });
 
   it("adds and removes members without losing their other active groups", async () => {

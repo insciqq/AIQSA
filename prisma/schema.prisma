@@ -1036,6 +1036,7 @@ model ModelPolicy {
   maxToolRounds                  BigInt         @default(8)
   maxMcpToolsPerDiscovery        BigInt         @default(10)
   mcpAutoDiscoveryTimeoutSeconds BigInt         @default(60)
+  mcpAutoDiscoveryMaxOutputTokens BigInt         @default(8192)
   version                        Int            @default(1)
   updatedByUserId                String?
   createdAt                      DateTime       @default(now())

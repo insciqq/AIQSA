@@ -44,6 +44,8 @@ export type ProviderModelCapabilities = {
   backgroundStreaming?: boolean;
   contextWindow?: number;
   defaultMaxOutputTokens?: number;
+  /** Declared per-model output ceiling, independent of its default answer length. */
+  maxOutputTokens?: number;
   /** Legacy/internal declared flag in mutable model configuration. Catalog and
    * run admission replace it with the evidence-backed effective capability. */
   nativePdfInput: boolean;
@@ -209,6 +211,7 @@ export type NormalizedRunRequest = {
   /** Exact installation tool-loop limits frozen when the run is accepted. */
   toolBudgets?: Readonly<{
     mcpAutoDiscoveryTimeoutSeconds?: number;
+    mcpAutoDiscoveryMaxOutputTokens?: number;
     maxMcpToolsPerDiscovery?: number;
     maxToolCalls: number;
     maxToolRounds: number;

@@ -123,6 +123,7 @@ describe("provider runtime factory", () => {
     expect(Boolean(runtime.searchAdapter)).toBe(adapterKind === "openrouter_chat_completions");
     expect(Boolean(runtime.structuredOutputAdapter)).toBe([
       "deepseek_responses_native",
+      "gemini_interactions_native",
       "openai_responses_native",
       "openai_responses_compatible",
       "openrouter_chat_completions"

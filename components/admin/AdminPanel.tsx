@@ -19,6 +19,7 @@ import {
 } from "@/components/admin/AdminShell";
 import { AdminUsageSection } from "@/components/admin/AdminUsageSection";
 import { AdminUsersSection } from "@/components/admin/users/AdminUsersSection";
+import { AdminSignupRulesSection } from "@/components/admin/users/AdminSignupRulesSection";
 import { AdminWorkspaceSection } from "@/components/admin/AdminWorkspaceSection";
 import type { AdminSectionId } from "@/components/admin/adminSections";
 import { useAdminAccessRulesController, type AdminAccessRulesController } from "@/components/admin/useAdminAccessRulesController";
@@ -158,7 +159,6 @@ function AdminSectionContent({
     case "users":
       return (
         <AdminUsersSection
-          accessRules={accessRules}
           dashboard={dashboard}
           filter={navigation.activeFilter}
           invites={invites}
@@ -169,6 +169,8 @@ function AdminSectionContent({
           users={users}
         />
       );
+    case "access-rules":
+      return <AdminSignupRulesSection controller={accessRules} groups={dashboard.groups} />;
     case "groups":
       return (
         <AdminGroupsSection
@@ -278,8 +280,11 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
     runAction: actionRunner.runAction
   });
   const groups = useAdminGroupsController({
-    actionsDisabled,
+    actionsDisabled: actionsDisabled || resource.loading,
     dashboard: resource.dashboard,
+    onError: feedback.reportError,
+    onNotice: feedback.reportNotice,
+    refreshDashboard: () => resource.refresh({ afterReconcile: navigation.restoreFocusAfterMutation }),
     requestConfirmedAction: confirmation.requestConfirmedAction,
     runAction: actionRunner.runAction
   });

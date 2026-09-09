@@ -16,6 +16,7 @@ import {
   type AdminMcpClientResult
 } from "@/components/admin/adminMcpApi";
 import { isAdminMcpActivationPending } from "@/components/admin/mcp/adminMcpActivation";
+import type { AdminGroup } from "@/lib/contracts/admin";
 import type {
   AdminMcpCreateRequest,
   AdminMcpDraftTestRequest,
@@ -50,6 +51,8 @@ export type AdminMcpController = Readonly<{
     delete(serverId: string): Promise<boolean>;
     disconnectValidationOAuth(serverId: string): Promise<boolean>;
     grant(serverId: string, body: AdminMcpGrantRequest): Promise<boolean>;
+    /** One request at a time across the current catalog; stops at the first failed grant. */
+    bulkGrantGroup(group: Pick<AdminGroup, "archivedAt" | "id" | "name" | "systemRole">, canUse: boolean): Promise<boolean>;
     rebuild(serverId: string, body: {
       oneTimeValues?: Record<string, McpSlotValue>;
       replaceDraft?: boolean;
@@ -67,6 +70,7 @@ export type AdminMcpController = Readonly<{
   }>;
   state: Readonly<{
     busy: boolean;
+    bulkGrantProgress?: Readonly<{ completed: number; groupId: string; total: number }> | null;
     /** Why the catalog could not be loaded, for the list; action outcomes go to the feedback host. */
     error: string | null;
     loaded: boolean;
@@ -112,6 +116,7 @@ export function useAdminMcpController({
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [bulkGrantProgress, setBulkGrantProgress] = useState<AdminMcpController["state"]["bulkGrantProgress"]>(null);
   const [error, setError] = useState<string | null>(null);
   const loadRef = useRef<Promise<void> | null>(null);
   const busyRef = useRef(false);
@@ -323,6 +328,59 @@ export function useAdminMcpController({
     booleanMutation(() => setAdminMcpGrant(serverId, body, fetcher), "MCP access updated."),
   [booleanMutation, fetcher]);
 
+  const bulkGrantGroup = useCallback<AdminMcpController["actions"]["bulkGrantGroup"]>(async (group, canUse) => {
+    if (busyRef.current || loading || !loaded || error || group.archivedAt || group.systemRole === "full_access") return false;
+    const eligible = [...new Map(servers.filter((server) => !server.archivedAt).map((server) => [server.id, server])).values()];
+    const pending = eligible.filter((server) =>
+      server.grants.some((grant) => grant.groupId === group.id && grant.canUse) !== canUse
+    );
+    if (!pending.length) return false;
+    busyRef.current = true;
+    mutationEpochRef.current += 1;
+    setBusy(true);
+    let completed = 0;
+    let failure: string | null = null;
+    setBulkGrantProgress({ completed, groupId: group.id, total: pending.length });
+    try {
+      for (const server of pending) {
+        const result = await setAdminMcpGrant(server.id, { canUse, groupId: group.id }, fetcher);
+        if (!result.ok) {
+          failure = adminMcpErrorMessage(result.error);
+          break;
+        }
+        replaceServer(result.data);
+        completed += 1;
+        setBulkGrantProgress({ completed, groupId: group.id, total: pending.length });
+      }
+      const catalog = await requestAdminMcpCatalog(fetcher);
+      if (catalog.ok) {
+        setServers(sortServers(catalog.data.servers));
+        setError(null);
+      } else {
+        setError(adminMcpErrorMessage(catalog.error));
+      }
+      // Keep summary feedback after the dashboard's refresh, which clears earlier errors.
+      if (onMutationCommitted) await Promise.resolve().then(onMutationCommitted).catch(() => undefined);
+      if (failure) {
+        onError?.(`${group.name}: ${completed} of ${pending.length} MCP access changes confirmed before the operation stopped. ${failure} ${catalog.ok
+          ? "Review the saved grants before retrying."
+          : "Current MCP grants could not be reloaded. Refresh before retrying."}`);
+        return false;
+      }
+      if (!catalog.ok) {
+        onError?.(`${group.name}: ${completed} of ${pending.length} MCP access changes saved, but current grants could not be reloaded. Refresh to review them.`);
+        return false;
+      }
+      onNotice?.(`${group.name}: ${canUse ? "All current MCP servers granted." : "Current MCP server access cleared."}`);
+      return true;
+    } finally {
+      mutationEpochRef.current += 1;
+      busyRef.current = false;
+      setBusy(false);
+      setBulkGrantProgress(null);
+    }
+  }, [error, fetcher, loaded, loading, onError, onMutationCommitted, onNotice, replaceServer, servers]);
+
   const disconnectValidationOAuth = useCallback(async (serverId: string) => {
     if (busyRef.current) return false;
     busyRef.current = true;
@@ -352,6 +410,7 @@ export function useAdminMcpController({
 
   const actions = useMemo<AdminMcpController["actions"]>(() => ({
     activate,
+    bulkGrantGroup,
     checkUpdate,
     create,
     delete: deleteServer,
@@ -362,10 +421,10 @@ export function useAdminMcpController({
     rollback,
     save,
     update
-  }), [activate, checkUpdate, create, deleteServer, disconnectValidationOAuth, grant, rebuild, refresh, rollback, save, update]);
+  }), [activate, bulkGrantGroup, checkUpdate, create, deleteServer, disconnectValidationOAuth, grant, rebuild, refresh, rollback, save, update]);
 
   return useMemo(() => ({
     actions,
-    state: { busy, error, loaded, loading, servers }
-  }), [actions, busy, error, loaded, loading, servers]);
+    state: { bulkGrantProgress, busy, error, loaded, loading, servers }
+  }), [actions, bulkGrantProgress, busy, error, loaded, loading, servers]);
 }

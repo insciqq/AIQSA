@@ -96,7 +96,37 @@ export function catalogModelsForProvider(
   catalog: Pick<AdminCatalog, "models">,
   providerId: string
 ): AdminCatalog["models"] {
-  return catalog.models.filter((model) => model.provider === providerId);
+  return [...new Map(catalog.models
+    .filter((model) => model.provider === providerId)
+    .map((model) => [model.modelId, model])).values()];
+}
+
+export function catalogSearchSources(catalog: Pick<AdminCatalog, "searchStrategies">): AdminCatalog["searchStrategies"] {
+  return [...new Map(catalog.searchStrategies.map((source) => [source.strategyId, source])).values()];
+}
+
+/** Current identities only; an existing provider-wide grant remains intact when granting. */
+export function groupModelChanges(group: Pick<AdminGroup, "accessGrants">, catalog: AdminCatalog, enabled: boolean): AdminGroupGrantChange[] {
+  const changes: AdminGroupGrantChange[] = [];
+  for (const providerId of new Set(catalog.providers.map((provider) => provider.id))) {
+    const models = catalogModelsForProvider(catalog, providerId);
+    const access = providerAccess(group, providerId);
+    if (enabled && access.kind === "all") continue;
+    if (!enabled && models.length && access.kind === "all") {
+      changes.push({ enabled: false, provider: providerId });
+    }
+    for (const model of models) {
+      const target = { modelId: model.modelId, provider: providerId };
+      if (grantEnabled(group, target) !== enabled) changes.push({ ...target, enabled });
+    }
+  }
+  return changes;
+}
+
+export function groupSearchChanges(group: Pick<AdminGroup, "accessGrants">, catalog: AdminCatalog, enabled: boolean): AdminGroupGrantChange[] {
+  return catalogSearchSources(catalog)
+    .filter((source) => grantEnabled(group, { searchStrategy: source.strategyId }) !== enabled)
+    .map((source) => ({ enabled, searchStrategy: source.strategyId }));
 }
 
 export type AdminGroupAccessCounts = Readonly<{
@@ -110,24 +140,21 @@ export type AdminGroupAccessCounts = Readonly<{
 export function groupAccessCounts(group: Pick<AdminGroup, "accessGrants">, catalog: AdminCatalog): AdminGroupAccessCounts {
   const modelKeys = new Set<string>();
   let providers = 0;
-  for (const provider of catalog.providers) {
-    const access = providerAccess(group, provider.id);
+  for (const providerId of new Set(catalog.providers.map((provider) => provider.id))) {
+    const access = providerAccess(group, providerId);
     if (access.kind === "none") continue;
     providers += 1;
-    const providerModels = catalogModelsForProvider(catalog, provider.id);
+    const providerModels = catalogModelsForProvider(catalog, providerId);
     if (access.kind === "all") {
-      for (const model of providerModels) modelKeys.add(`${provider.id}:${model.modelId}`);
+      for (const model of providerModels) modelKeys.add(JSON.stringify([providerId, model.modelId]));
     } else {
       const known = new Set(providerModels.map((model) => model.modelId));
       for (const modelId of access.modelIds) {
-        if (known.has(modelId)) modelKeys.add(`${provider.id}:${modelId}`);
+        if (known.has(modelId)) modelKeys.add(JSON.stringify([providerId, modelId]));
       }
     }
   }
-  const knownSearch = new Set(catalog.searchStrategies.map((source) => source.strategyId));
-  const search = enabledGrants(group).filter(
-    (grant) => grant.searchStrategy !== null && knownSearch.has(grant.searchStrategy)
-  ).length;
+  const search = catalogSearchSources(catalog).filter((source) => grantEnabled(group, { searchStrategy: source.strategyId })).length;
   return { models: modelKeys.size, providers, search };
 }
 

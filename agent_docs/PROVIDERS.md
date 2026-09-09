@@ -15,6 +15,8 @@ Key replacement tests the active connection and publishes evidence atomically un
 
 Capabilities require successful probes on the exact active connection/model/credential and route. Model names, administrator metadata and ordinary model access do not prove structured output, strict Memory actions, image or direct-PDF support. These capabilities are independent: ordinary function calling does not prove strict action support. PDF admission requires runtime opt-in as well as positive evidence; an image probe proves support, not maximum payload size. Stale evidence requires re-verification.
 
+Initial Add provider/model and Test & Save authorize all implemented capability probes for that model class, including direct PDF without catalog hints. Publish each successful capability and its enabled flag together on the exact tested model/key revision. Preserve usable models and independent proofs on partial failure; setup retries reuse only current matching proofs and never recreate the saved graph. Later administrator disables remain authoritative: routine discovery and rechecks cannot reactivate them. Setup is complete only after its checks and publications settle; cancellation preserves committed results and fences late writes.
+
 Only deterministic probe rejection or a statically unsupported adapter proves incompatibility. Authentication, rate limiting, network, timeout, safety-limit and upstream outages fail the check while preserving prior evidence. Cancellation cannot erase earlier support or promote untested capability. Discard raw probe output and errors.
 
 ## Transport And Disclosure

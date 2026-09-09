@@ -58,6 +58,7 @@ import {
 import type { ProviderToolBridge } from "../tools/types";
 import {
   createDeepSeekResponsesStructuredOutputAdapter,
+  createGeminiInteractionsStructuredOutputAdapter,
   createOpenAIResponsesStructuredOutputAdapter,
   createOpenRouterStructuredOutputAdapter,
   type ProviderStructuredOutputAdapter
@@ -361,6 +362,10 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
       return {
         adapter: createGeminiInteractionsAdapter({
           client
+        }),
+        structuredOutputAdapter: createGeminiInteractionsStructuredOutputAdapter({
+          client,
+          model: snapshot.model
         }),
         ...(snapshot.model.capabilities.nativeSearch
           ? { searchAdapter: createGeminiInteractionsSearchAdapter({ client }) }

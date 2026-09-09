@@ -37,6 +37,11 @@ describe("custom provider setup API", () => {
         {
           capabilities: {
             contextWindow: 272_000,
+            toolCalling: true,
+            vision: false,
+            parallelToolCalls: true,
+            maxOutputTokens: 65_536,
+            defaultMaxOutputTokens: 2_048,
             defaultReasoningEffort: "low",
             reasoning: true,
             reasoningEfforts: ["low", "medium", "high"]
@@ -106,6 +111,13 @@ describe("custom provider setup API", () => {
     });
   });
 
+  it.each([{ toolCalling: "true" }, { vision: null }, { parallelToolCalls: 1 }, { maxOutputTokens: -1 }, { maxOutputTokens: 10_000_001 }, { metadata: { supports_tools: true } }])("rejects malformed capability hints: %j", async (capabilities) => {
+    const result = await discoverAdminProviderCustomModels(request, vi.fn(async () => Response.json({
+      checkedAt: "2026-07-26T10:00:00.000Z", modelCount: 1, models: [{ id: "model", capabilities }], source: "models_catalog", status: "valid"
+    })));
+    expect(result).toMatchObject({ ok: false, error: { code: "provider_custom_setup_discovery_response_invalid" } });
+  });
+
   it("sends one same-origin write-only request and decodes the safe receipt", async () => {
     const fetcher = vi.fn(async () => Response.json(ready));
     await expect(submitAdminProviderCustomSetup(request, fetcher)).resolves.toEqual({
@@ -119,6 +131,28 @@ describe("custom provider setup API", () => {
       method: "POST",
       signal: undefined
     });
+  });
+
+  it("accepts partial saved results but rejects full success with unpublished or unsafe results", async () => {
+    const checkRun = {
+      credentialId: "credential-1", current: null, done: 1, failed: ["model-1"], finishedAt: ready.checkedAt,
+      id: "run-1", inFlight: [], reason: "setup", startedAt: ready.checkedAt, state: "completed", total: 1,
+      results: [{ providerModelId: "model-1", state: "save_failed", checks: { structuredOutput: "verified", forcedToolCall: "rejected" } }]
+    };
+    const body = { ...ready, outcome: "partial", checkRun };
+    await expect(submitAdminProviderCustomSetup(request, vi.fn(async () => Response.json(body))))
+      .resolves.toEqual({ ok: true, data: body });
+    for (const invalid of [
+      { ...body, outcome: "ready" },
+      { ...body, outcome: "cancelled" },
+      { ...body, models: [body.models[0], body.models[0]] },
+      { ...body, checkRun: { ...checkRun, state: "running" } },
+      { ...body, checkRun: { ...checkRun, results: [{ ...checkRun.results[0], rawBody: "private-response" }] } },
+      { ...body, checkRun: { ...checkRun, results: [{ ...checkRun.results[0], checks: { vision: "yes" } }] } }
+    ]) {
+      await expect(submitAdminProviderCustomSetup(request, vi.fn(async () => Response.json(invalid))))
+        .resolves.toMatchObject({ ok: false, error: { code: "provider_custom_setup_response_invalid" } });
+    }
   });
 
   it("decodes one friendly Search receipt without transport vocabulary", async () => {

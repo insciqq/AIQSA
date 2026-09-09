@@ -35,9 +35,7 @@ const repository = createPrismaAdminProviderCustomSetupRepository(prisma, {
 });
 
 export const adminProviderCustomSetupService = createAdminProviderCustomSetupService({
-  onCompleted: async (completion) => {
-    await adminProviderService.startCheckRun({ ...completion, reason: "setup", reuseCurrentChecks: true }).catch(() => undefined);
-  },
+  finishInitialSetup: (completion) => adminProviderService.finishInitialSetup(completion),
   repository,
   tester
 });

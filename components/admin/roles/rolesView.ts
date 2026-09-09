@@ -6,6 +6,7 @@ import type {
 import type {
   AdminRerankerRouteEntry,
   AdminSystemModelEligibilityRole,
+  AdminSystemModelIneligibleCandidate,
   AdminSystemModelIneligibilityReason,
   AdminSystemModelPolicyCatalog
 } from "@/lib/contracts/adminSystemModelPolicy";
@@ -17,7 +18,8 @@ export type AdminRolePickerItem = Readonly<{
   group: AdminRolePickerGroup;
   id: string;
   label: string;
-  /** Why the deployment is not eligible; only on `ineligible` items. */
+  configurationHref?: string;
+  /** The missing requirement, including checks that can run from the picker. */
   note?: string;
 }>;
 
@@ -66,21 +68,28 @@ export function roleStatus(assignment: Readonly<{ available: boolean }> | null):
 
 export function ineligibilityNote(
   reason: AdminSystemModelIneligibilityReason,
-  role: AdminSystemModelEligibilityRole
+  role: AdminSystemModelEligibilityRole,
+  requirement?: AdminSystemModelIneligibleCandidate["requirement"]
 ): string {
+  const feature = requirement === "structured_output" ? "strict JSON"
+    : requirement === "tool_calling" ? "tools"
+    : requirement === "forced_tool_call" ? "forced tool calls"
+    : requirement === "vision" || role === "vision" ? "image input"
+    : requirement === "direct_pdf" || role === "direct_pdf" ? "direct PDF input"
+    : "required capability";
   switch (reason) {
     case "adapter_unsupported":
-      return role === "memory"
-        ? "no strict JSON on this route"
-        : role === "vision"
-          ? "no image input on this route"
-          : "no direct PDF input on this route";
+      return `${feature} unsupported on this route`;
+    case "capability_disabled":
+      return `${feature} disabled in model settings`;
+    case "probe_rejected":
+      return `${feature} check was rejected`;
     case "model_disabled":
       return "model is disabled";
     case "no_default_credential":
-      return "provider has no default key";
+      return "provider has no usable default key";
     case "not_checked":
-      return "not checked yet";
+      return `${feature} verification required`;
   }
 }
 
@@ -92,9 +101,13 @@ function ineligibleItems(
 ): AdminRolePickerItem[] {
   return catalog.ineligible[role]
     .filter((item) => !readyIds.has(item.id))
-    .map((item) => item.reason === "not_checked"
-      ? { group: "check", id: item.id, label: label(item) }
-      : { group: "ineligible", id: item.id, label: label(item), note: ineligibilityNote(item.reason, role) });
+    .map((item): AdminRolePickerItem => ({
+      configurationHref: `/admin?section=providers&resource=${encodeURIComponent(item.connectionId)}#provider-model-${encodeURIComponent(item.id)}`,
+      group: item.reason === "not_checked" || item.reason === "probe_rejected" ? "check" : "ineligible",
+      id: item.id,
+      label: label(item),
+      note: ineligibilityNote(item.reason, role, item.requirement)
+    }));
 }
 
 /** Picker items for the System model or Chat PDF role. */

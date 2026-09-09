@@ -136,16 +136,40 @@ function compatibleCapabilities(entry: Record<string, unknown>): AdminCompatible
     capabilities.context_length,
     metadata.context_window
   ]);
-  const defaultMaxOutputTokens = firstInteger([
+  const maxOutputTokens = firstInteger([
     entry.maxOutputTokens,
     entry.max_output_tokens,
     capabilities.max_output_tokens,
     metadata.max_output_tokens
   ]);
+  const defaultMaxOutputTokens = firstInteger([
+    entry.defaultMaxOutputTokens, entry.default_max_output_tokens,
+    capabilities.default_max_output_tokens, metadata.default_max_output_tokens
+  ]);
+  // An explicit denial wins conflicting declarations. Missing and malformed
+  // values stay unknown; all applicable initial probes still run independently.
+  const hint = (values: readonly unknown[]): boolean | undefined =>
+    values.includes(false) ? false : values.includes(true) ? true : undefined;
+  const modalities = (value: unknown): boolean | undefined =>
+    Array.isArray(value) && value.length <= 16 && value.every((item) =>
+      typeof item === "string" && item.length <= 32)
+      ? value.includes("image") : undefined;
+  const toolCalling = hint([entry.supports_tool_use, entry.supports_tools,
+    capabilities.supports_tool_use, capabilities.supports_tools, metadata.supports_tool_use]);
+  const vision = hint([entry.supports_images, entry.supports_vision,
+    capabilities.supports_images, capabilities.supports_vision,
+    metadata.supports_images, metadata.supports_vision,
+    modalities(entry.input_modalities), modalities(capabilities.input_modalities), modalities(metadata.input_modalities)]);
+  const parallelToolCalls = hint([entry.supports_parallel_tool_calls,
+    capabilities.supports_parallel_tool_calls, metadata.supports_parallel_tool_calls]);
 
   return {
     ...(contextWindow ? { contextWindow } : {}),
     ...(defaultMaxOutputTokens ? { defaultMaxOutputTokens } : {}),
+    ...(maxOutputTokens ? { maxOutputTokens } : {}),
+    ...(toolCalling === undefined ? {} : { toolCalling }),
+    ...(vision === undefined ? {} : { vision }),
+    ...(parallelToolCalls === undefined ? {} : { parallelToolCalls }),
     ...(reasoning === undefined ? {} : { reasoning }),
     ...(reasoning && reasoningEfforts.length ? {
       reasoningEfforts,

@@ -1492,7 +1492,7 @@ export function ComposerV2({
                         <div className="v2-composer-mcp-problems" role="status">
                           <p>MCP servers need attention</p>
                           {mcpAttentionServers.map((server) => (
-                            <p key={server.id}>{server.name} · {mcpReadinessPresentation(server.attention ?? server.readiness).label}</p>
+                            <p key={server.id}>{server.name} · {mcpReadinessPresentation(server.attention ?? server.readiness, server.runtimeErrorCode).label}</p>
                           ))}
                         </div>
                       ) : null}

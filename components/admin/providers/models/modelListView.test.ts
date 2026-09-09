@@ -17,6 +17,7 @@ import {
   groupProviderModels,
   initialDiagnosticCredentialId,
   modelCheckSummaries,
+  modelEditorCheck,
   modelRouteLabel,
   modelSuccessor,
   modelTitle,
@@ -57,6 +58,7 @@ function sources(overrides: Partial<ProviderUsageSources> = {}): ProviderUsageSo
         maxMcpToolsPerDiscovery: 8,
         maxToolCalls: 8,
         maxToolRounds: 4,
+        mcpAutoDiscoveryMaxOutputTokens: 8192,
         mcpAutoDiscoveryTimeoutSeconds: 30,
         reasoningEffort: null,
         updatedAt: FIXTURE_NOW,
@@ -137,6 +139,32 @@ describe("deriveModelUsage and successors", () => {
 });
 
 describe("check summaries", () => {
+  it("shows an incomplete access-only check, a running check and temporary failure without inventing retained evidence", () => {
+    const connection = workingConnection();
+    const model = connection.models[0]!;
+    expect(modelEditorCheck(connection, model, "cred-primary", NOW)).toMatchObject({ status: "Not checked", summary: null });
+    connection.activeChecks = [fixtureCheck({ credentialId: "cred-primary", providerModelId: model.id })];
+    expect(modelEditorCheck(connection, model, "cred-primary", NOW)).toMatchObject({
+      status: "Check incomplete", summary: expect.stringMatching(/Checked today .* with key Primary/)
+    });
+    connection.checkRun = fixtureCheckRun({ credentialId: "cred-primary", id: "run", inFlight: [model.id] });
+    expect(modelEditorCheck(connection, model, "cred-primary", NOW).status).toBe("Checking");
+    connection.checkRun = { ...connection.checkRun, failed: [model.id], inFlight: [], state: "completed" };
+    expect(modelEditorCheck(connection, model, "cred-primary", NOW)).toMatchObject({ status: "Check failed", message: expect.stringContaining("Earlier results were kept.") });
+    connection.activeChecks = [];
+    expect(modelEditorCheck(connection, model, "cred-primary", NOW)).toMatchObject({ status: "Check failed", message: expect.stringContaining("No earlier result is available.") });
+  });
+
+  it.each(["credential version", "model version", "connection version", "model removed"])("keeps stale check summaries out of Edit after %s changes", (change) => {
+    const connection = workingConnection();
+    const model = connection.models[0]!;
+    connection.activeChecks = [fixtureCheck({ credentialId: "cred-primary", providerModelId: model.id })];
+    if (change === "credential version") connection.credentials[0]!.activeVersion!.id = "replacement";
+    if (change === "model version") model.activeVersion += 1;
+    if (change === "connection version") connection.activeVersion += 1;
+    expect(modelEditorCheck(connection, change === "model removed" ? null : model, "cred-primary", NOW).summary).toBeNull();
+  });
+
   it("selects a live named run, default, or sole key without changing any authority", () => {
     const connection = workingConnection();
     connection.defaultCredentialId = null;

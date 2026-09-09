@@ -811,6 +811,7 @@ export const defaultProviderModels: ProviderModelCatalogEntry[] =
 
 export function resolveProviderModelParameterControls(input: {
   adapterKind: CatalogAdapterKind;
+  maxOutputTokens?: number;
   defaultMaxOutputTokens?: number;
   defaultReasoningEffort?: string;
   defaultReasoningMode?: string;
@@ -834,6 +835,7 @@ export function resolveProviderModelParameterControls(input: {
     adapterKind: input.adapterKind,
     defaultParams: input.defaultParams,
     defaultMaxOutputTokens: input.defaultMaxOutputTokens,
+    maxOutputTokens: input.maxOutputTokens,
     defaultReasoningEffort: input.defaultReasoningEffort,
     defaultReasoningMode: input.defaultReasoningMode,
     provider: input.providerFamily,
@@ -849,6 +851,7 @@ export function fallbackParameterControls(input: {
   adapterKind?: CatalogAdapterKind;
   defaultParams?: Record<string, unknown>;
   defaultMaxOutputTokens?: number;
+  maxOutputTokens?: number;
   defaultReasoningEffort?: string;
   defaultReasoningMode?: string;
   provider: string;
@@ -908,8 +911,8 @@ export function fallbackParameterControls(input: {
       supported: nativeResponses
     },
     maxOutputTokens: {
-      defaultValue: maxOutputTokens,
-      maxValue: maxOutputTokens
+      defaultValue: Math.min(maxOutputTokens, input.maxOutputTokens ?? maxOutputTokens),
+      maxValue: input.maxOutputTokens ?? maxOutputTokens
     },
     reasoningEffort: input.supportsReasoning
       ? {

@@ -39,10 +39,12 @@ export type AdminProviderCustomSetupCommitPlan = Readonly<{
     configuration: ProviderModelConfiguration;
     displayName: string;
     evidence: AdminProviderTestEvidence;
+    status?: "available" | "unavailable";
     grantId: string;
     id: string;
   }>>;
   now: Date;
+  signal?: AbortSignal;
   search?: Readonly<{
     client: Readonly<{
       draft: AdminSearchDraft;

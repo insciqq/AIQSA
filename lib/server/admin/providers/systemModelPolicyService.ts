@@ -2,6 +2,7 @@ import { hasVerifiedDedicatedProtocol } from "../../providers/systemRoleEvidence
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
   AdminSystemModelIneligibilityReason,
+  AdminSystemModelIneligibleCandidate,
   AdminSystemModelPolicyCatalog,
   SystemModelVerificationRole
 } from "../../../contracts/adminSystemModelPolicy";
@@ -13,7 +14,7 @@ import {
 import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
 import { systemModelRoleEligible } from "../../providerRuntime/systemModelCapabilities";
 import { createChatPdfModelRoleResolver } from "../../providerRuntime/chatPdfModelRole";
-import { pdfInputVerificationStatus } from "../../providers/pdfInputEvidence";
+import { pdfInputVerificationStatus, supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 import { hasVerifiedVisionInput } from "../../providers/visionInputEvidence";
 import { createRerankerModelRoleResolver } from "../../providerRuntime/rerankerModelRole";
 import { normalizeProviderModelConfiguration } from "../../providers/providerConfiguration";
@@ -29,6 +30,7 @@ import {
 } from
   "../../providers/forcedToolCallEvidence";
 import { supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
+import { decodeCapabilitySetupEvidence } from "./initialCapabilitySetup";
 import { RERANKER_ROUTE_POLICY_VERSION } from "../../../domain/rerankerModels";
 import {
   approvedRerankerDeploymentByProviderModelId,
@@ -151,33 +153,54 @@ function answerDeploymentActive(row: SystemModelRow): boolean {
 function roleIneligibility(
   row: SystemModelRow,
   serialized: ReturnType<typeof serializeSystemModel>
-): Partial<Record<"direct_pdf" | "memory" | "vision", AdminSystemModelIneligibilityReason>> {
+): Partial<Record<"direct_pdf" | "memory" | "vision", Pick<AdminSystemModelIneligibleCandidate, "reason" | "requirement">>> {
   if (!answerDeploymentActive(row)) {
-    return { direct_pdf: "model_disabled", memory: "model_disabled", vision: "model_disabled" };
+    return { direct_pdf: { reason: "model_disabled" }, memory: { reason: "model_disabled" }, vision: { reason: "model_disabled" } };
   }
-  let visionCapable = false;
-  try {
-    visionCapable = normalizeProviderModelConfiguration(row.activeConfig).capabilities.vision === true;
-  } catch {
-    // A malformed capability payload cannot claim image input.
-  }
-  const credentialReason: AdminSystemModelIneligibilityReason = defaultCredentialUsable(row)
-    ? "not_checked"
-    : "no_default_credential";
+  const model = normalizeProviderModelConfiguration(row.activeConfig);
+  const credential = row.connection.defaultCredential;
+  const credentialUsable = defaultCredentialUsable(row);
+  const check = credentialUsable && credential?.activeVersion ? row.activeCredentialChecks.find((candidate) =>
+    candidate.connectionVersion === row.connection.activeVersion && candidate.modelVersion === row.activeVersion &&
+    candidate.credentialId === credential.id && candidate.credentialVersionId === credential.activeVersion!.id && candidate.status === "available") : undefined;
+  const evidence = check?.evidence && typeof check.evidence === "object" ? check.evidence as Record<string, unknown> : {};
+  const compatibility = evidence.compatibility && typeof evidence.compatibility === "object"
+    ? evidence.compatibility as Record<string, unknown> : {};
+  const setup = decodeCapabilitySetupEvidence(evidence.capabilitySetup);
+  const rejection = (key: string): AdminSystemModelIneligibilityReason =>
+    setup && (setup.checks as Record<string, string>)[key] !== "rejected" ? "not_checked" :
+    compatibility[key] === "not_supported" ? "probe_rejected" : "not_checked";
+  const configuredCapabilityReason = (enabled: boolean | undefined, key: "toolCalling" | "vision" | "directPdf"):
+    AdminSystemModelIneligibilityReason => {
+    if (!credentialUsable) return "no_default_credential";
+    if (enabled) return rejection(key);
+    // Only unresolved initial checks explain a false bootstrap flag. A
+    // previously verified check cannot override an administrator's disable.
+    const status = setup?.checks[key];
+    return status === "rejected" ? "probe_rejected"
+      : status === "incomplete" || status === "not_checked" ? "not_checked"
+      : "capability_disabled";
+  };
   const reasons: ReturnType<typeof roleIneligibility> = {};
   if (serialized.structuredOutput !== "verified" || serialized.forcedToolCall !== "verified") {
-    reasons.memory = serialized.structuredOutput === "unsupported" ||
-      serialized.forcedToolCall === "unsupported"
-      ? "adapter_unsupported"
-      : credentialReason;
+    reasons.memory = !supportsStructuredOutputAdapter(model.adapterKind)
+      ? { reason: "adapter_unsupported", requirement: "structured_output" }
+      : !supportsForcedToolCallProbe(model.adapterKind)
+        ? { reason: "adapter_unsupported", requirement: "forced_tool_call" }
+        : !credentialUsable
+          ? { reason: "no_default_credential" }
+          : !model.capabilities.toolCalling
+            ? { reason: configuredCapabilityReason(false, "toolCalling"), requirement: "tool_calling" }
+            : serialized.structuredOutput !== "verified"
+              ? { reason: rejection("structuredOutput"), requirement: "structured_output" }
+              : { reason: rejection("forcedToolCall"), requirement: "forced_tool_call" };
   }
   if (serialized.visionInput !== "verified") {
-    reasons.vision = visionCapable ? credentialReason : "adapter_unsupported";
+    reasons.vision = { reason: configuredCapabilityReason(model.capabilities.vision, "vision"), requirement: "vision" };
   }
   if (serialized.pdfInput !== "verified") {
-    reasons.direct_pdf = serialized.pdfInput === "not_verified"
-      ? credentialReason
-      : "adapter_unsupported";
+    reasons.direct_pdf = { reason: !supportsPdfInputAdapter(model.adapterKind) ? "adapter_unsupported"
+      : configuredCapabilityReason(model.capabilities.nativePdfInput, "directPdf"), requirement: "direct_pdf" };
   }
   return reasons;
 }
@@ -370,7 +393,7 @@ export function createAdminSystemModelPolicyService(
         const reasons = roleIneligibility(row, serialized);
         for (const role of ["memory", "vision", "direct_pdf"] as const) {
           const reason = reasons[role];
-          if (reason) ineligible[role].push({ ...serialized, reason });
+          if (reason) ineligible[role].push({ ...serialized, ...reason });
         }
       }
       const rerankerCandidates = [];

@@ -128,7 +128,7 @@ import { attachmentItemsForV2 } from "@/features/attachments-v2/attachmentPresen
 import { SentAttachmentsV2 } from "@/features/attachments-v2/SentAttachmentsV2";
 import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
 import type { ComposerConfig } from "@/lib/contracts/composerConfig";
-import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE } from "@/lib/contracts/runs";
+import { isMcpAutoDiscoveryFailureCode } from "@/lib/contracts/runs";
 import type {
   ChatNavigationFolderWire,
   ChatNavigationSummaryWire
@@ -527,7 +527,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           id: server.id,
           knownToolCount: server.knownToolCount,
           name: server.name,
-          readiness: server.readiness
+          readiness: server.readiness,
+          runtimeErrorCode: server.runtimeErrorCode
         })),
     skills: projectContext
       ? (activeProject?.resources ?? []).flatMap((resource) =>
@@ -936,7 +937,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         onRefresh={transportLost ? () => thread.refreshInterruptedRun() : undefined}
         onRegenerate={() => thread.handleRegenerateMessage(source.id)}
         onRetry={() => {
-          if (presentation.failure?.code === MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE) {
+          if (isMcpAutoDiscoveryFailureCode(presentation.failure?.code)) {
             retryAutoMcpDiscoveryV2(() => thread.handleRegenerateMessage(source.id));
             return;
           }

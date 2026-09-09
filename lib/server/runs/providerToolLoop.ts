@@ -1,4 +1,5 @@
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
+import { TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type {
   ModelToolCall,
@@ -8,6 +9,7 @@ import type {
 } from "../tools/types";
 import {
   continueToolLoop,
+  reachedToolLoopBudget,
   type ToolLoopBudgets,
   type ToolLoopCall,
   type ToolLoopOutcome,
@@ -39,6 +41,7 @@ export type ProviderToolLoopInput = Readonly<{
   ): Promise<ToolLoopToolResult<ToolExecutionResult>>;
   initialRequest: ProviderRunRequest;
   onEvent?(event: ModelRunSseEvent): Promise<void> | void;
+  onFinalSynthesis?(budget: NonNullable<ReturnType<typeof reachedToolLoopBudget>>): Promise<void> | void;
   onProviderResult?(input: Readonly<{
     request: ProviderRunRequest;
     result: ProviderRunResult;
@@ -186,32 +189,32 @@ export async function runProviderToolLoop(
         previousToolResults,
         input.projectToolResultForProvider
       );
-      const toolChoice = progress.toolRounds >= input.budgets.maxToolRounds ||
-        progress.toolCalls >= input.budgets.maxToolCalls
+      const budget = reachedToolLoopBudget(progress, input.budgets);
+      const toolChoice = budget || input.initialRequest.toolChoice === "none"
         ? "none"
         : progress.toolRounds === 0 && input.initialRequest.toolChoice === "required"
           ? "required"
           : "auto";
-      const roundRequest = await input.prepareRequest?.({
-        ...input.initialRequest,
-        parallelToolCalls: input.parallelToolCalls,
-        providerToolMessages: [...effectiveContinuation.providerToolMessages],
-        toolChoice,
-        tools: [...input.tools]
-      }, round) ?? {
+      const requestedRound: ProviderRunRequest = {
         ...input.initialRequest,
         parallelToolCalls: input.parallelToolCalls,
         providerToolMessages: [...effectiveContinuation.providerToolMessages],
         toolChoice,
         tools: [...input.tools]
       };
+      const preparedRound = await input.prepareRequest?.(requestedRound, round) ?? requestedRound;
+      // Request/context preparation cannot restore tool authority after its
+      // accepted limit. Keep declarations and signed result context intact.
+      const roundRequest: ProviderRunRequest = toolChoice === "none" ? { ...preparedRound, toolChoice } : preparedRound;
       await input.beforeProviderRound?.({
         continuation: effectiveContinuation,
         request: roundRequest,
         round
       });
+      if (budget) await input.onFinalSynthesis?.(budget);
 
       const stream = input.adapter.stream(roundRequest, { signal });
+      let emittedText = "";
       let lastReportedUsage: ModelRunUsage | null = null;
       let next: IteratorResult<ModelRunSseEvent, ProviderRunResult>;
       try {
@@ -219,6 +222,7 @@ export async function runProviderToolLoop(
         while (!next.done) {
           if (next.value.type === "token") {
             await emitText(next.value.data.delta);
+            emittedText += next.value.data.delta;
           } else if (next.value.type === "usage") {
             lastReportedUsage = next.value.data;
           } else {
@@ -262,11 +266,14 @@ export async function runProviderToolLoop(
       if (publicationFailed) throw publicationError;
       const calls = result.toolCalls ?? [];
       if (roundRequest.toolChoice === "none" && calls.length > 0) {
+        if (result.finalText.startsWith(emittedText)) {
+          const remainingText = result.finalText.slice(emittedText.length);
+          if (remainingText) await emitText(remainingText);
+        }
         return {
           error: {
-            code: "synthesis_tool_call_forbidden",
-            fatal: true,
-            message: "Provider returned a tool call from a no-tool synthesis request."
+            ...TOOL_SYNTHESIS_FAILURE,
+            fatal: true
           },
           status: "error" as const
         };

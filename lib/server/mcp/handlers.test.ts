@@ -391,6 +391,24 @@ function deps(repository: McpRepository) {
 }
 
 describe("MCP handler authorization", () => {
+  it("publishes only a safe runtime cause and clears it after protocol recovery", async () => {
+    const repository = new MemoryMcpRepository();
+    const row = userServer({ readiness: "unavailable", runtimeGenerationId: "private-generation" });
+    row.errorCode = "mcp_health_check_failed";
+    const list = vi.spyOn(repository, "listUserServers").mockResolvedValue([row]);
+    const get = createUserMcpCatalogHandler({ ...deps(repository), runtimeOperationalStatus: () => "active" });
+    const body = await (await get(request({ user: "user-1" }))).json();
+    expect(body.servers[0]).toMatchObject({ operationalStatus: "inactive", runtimeErrorCode: "mcp_health_check_failed" });
+    expect(JSON.stringify(body)).not.toContain("private-generation");
+    list.mockResolvedValue([{ ...row, readiness: "ready", errorCode: null }]);
+    expect(await (await get(request({ user: "user-1" }))).json()).toMatchObject({
+      servers: [expect.objectContaining({ operationalStatus: "active", runtimeErrorCode: null })]
+    });
+    list.mockResolvedValue([{ ...row, errorCode: "PRIVATE_RAW_FAILURE" }]);
+    const failed = await (await get(request({ user: "user-1" }))).json();
+    expect(failed.servers[0].runtimeErrorCode).toBe("mcp_runtime_unavailable");
+    expect(JSON.stringify(failed)).not.toContain("PRIVATE_RAW_FAILURE");
+  });
   it.each(["active", "checking", "inactive"] as const)(
     "projects current health %s without reconciliation or private runtime fields", async (status) => {
       const repository = new MemoryMcpRepository();

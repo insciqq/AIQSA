@@ -1,3 +1,4 @@
+import { isMcpAutoDiscoveryOutputTokens } from "../../contracts/mcp";
 import {
   Prisma,
   type ModelRunStatus,
@@ -892,6 +893,23 @@ function decodeProviderDispatchRecoveryRequest(
       !legacyKnowledgeAnswerContract && !currentKnowledgeAnswerContract ||
     !automaticKnowledgeAnswer &&
       (legacyKnowledgeAnswerContract || currentKnowledgeAnswerContract)) return null;
+  const toolBudgets = value.toolBudgets;
+  if (toolBudgets !== undefined && (!isRecord(toolBudgets) ||
+    !onlyKnownKeys(toolBudgets, new Set([
+      "mcpAutoDiscoveryTimeoutSeconds",
+      "mcpAutoDiscoveryMaxOutputTokens",
+      "maxMcpToolsPerDiscovery",
+      "maxToolCalls",
+      "maxToolRounds"
+    ])) || toolBudgets.mcpAutoDiscoveryMaxOutputTokens !== undefined &&
+      !isMcpAutoDiscoveryOutputTokens(toolBudgets.mcpAutoDiscoveryMaxOutputTokens) ||
+    ["maxToolCalls", "maxToolRounds"].some((key) =>
+      !Number.isSafeInteger(toolBudgets[key]) || Number(toolBudgets[key]) < 1) ||
+    ["mcpAutoDiscoveryTimeoutSeconds", "maxMcpToolsPerDiscovery"].some((key) =>
+      toolBudgets[key] !== undefined &&
+      (!Number.isSafeInteger(toolBudgets[key]) || Number(toolBudgets[key]) < 1)))) {
+    return null;
+  }
   if (!decodeKnowledgePlan(value.knowledgePlan).ok ||
     value.knowledgeFocusedRequest !== undefined &&
       decodeKnowledgeFocusedRequest(value.knowledgeFocusedRequest) === null ||
@@ -935,20 +953,6 @@ function decodeProviderDispatchRecoveryRequest(
   if (value.skills !== undefined && (!Array.isArray(value.skills) || value.skills.some((skill) =>
     !isRecord(skill) || !onlyKnownKeys(skill, new Set(["name", "revisionId", "skillId"])) ||
     !nonBlank(skill.name) || !nonBlank(skill.revisionId) || !nonBlank(skill.skillId)))) return null;
-  const toolBudgets = value.toolBudgets;
-  if (toolBudgets !== undefined && (!isRecord(toolBudgets) ||
-    !onlyKnownKeys(toolBudgets, new Set([
-      "mcpAutoDiscoveryTimeoutSeconds",
-      "maxMcpToolsPerDiscovery",
-      "maxToolCalls",
-      "maxToolRounds"
-    ])) || ["maxToolCalls", "maxToolRounds"].some((key) =>
-      !Number.isSafeInteger(toolBudgets[key]) || Number(toolBudgets[key]) < 1) ||
-    ["mcpAutoDiscoveryTimeoutSeconds", "maxMcpToolsPerDiscovery"].some((key) =>
-      toolBudgets[key] !== undefined &&
-      (!Number.isSafeInteger(toolBudgets[key]) || Number(toolBudgets[key]) < 1)))) {
-    return null;
-  }
   return value as unknown as NormalizedRunRequest;
 }
 

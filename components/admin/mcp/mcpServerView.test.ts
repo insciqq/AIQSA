@@ -74,6 +74,16 @@ function server(overrides: Partial<AdminMcpServer> = {}): AdminMcpServer {
 }
 
 describe("mcpServerStatus", () => {
+  it("keeps administrator OAuth connected while showing the independent runtime failure", () => {
+    const broken = server({
+      runtimeProblem: "unavailable", runtimeErrorCode: "mcp_health_check_failed",
+      draft: { ...server().draft, auth: { allowedAuthorizationServerOrigins: [], mode: "oauth", scopes: [] } },
+      validationOAuth: { accountLabel: "Synthetic operator", connectedAt: "2026-09-07T10:00:00.000Z", state: "ready" }
+    });
+    expect(mcpAuthorizationState(broken)).toMatchObject({ label: "Connected" });
+    expect(mcpServerStatus(broken, NOW)).toMatchObject({ kind: "runtime_unavailable", detail: expect.stringContaining("health check failed") });
+    expect(mcpServerStatus({ ...broken, runtimeProblem: null, runtimeErrorCode: null }, NOW).kind).toBe("working");
+  });
   it("reads Working with the tools and the check time from the configuration in use", () => {
     const status = mcpServerStatus(server(), NOW);
     expect(status).toMatchObject({ kind: "working", label: "Working", tone: "ok" });

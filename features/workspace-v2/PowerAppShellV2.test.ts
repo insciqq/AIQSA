@@ -31,6 +31,18 @@ describe("PowerAppShellV2 catalog loading", () => {
     };
 
     expect(workspaceCommandRunning([workspaceCall])).toBe(true);
+    expect(workspaceCommandRunning([{
+      ...workspaceCall,
+      data: { ...workspaceCall.data, payload: {
+        ...workspaceCall.data.payload, origin: "mcp"
+      } }
+    }])).toBe(false);
+    expect(workspaceCommandRunning([{
+      ...workspaceCall,
+      data: { ...workspaceCall.data, payload: {
+        ...workspaceCall.data.payload, origin: "workspace", serverName: "Execution tools"
+      } }
+    }])).toBe(true);
     expect(workspaceCommandRunning([workspaceCall, {
       data: { artifactType: "summary", payload: { stage: "model", status: "waiting" } },
       type: "artifact"
