@@ -46,6 +46,41 @@ describe("remote Workspace runner protocol", () => {
     })));
   });
 
+  it("reads authenticated inventory through the runner without session fencing or lifecycle side effects", async () => {
+    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
+    const listSessions = vi.spyOn(local, "listSessions").mockResolvedValue({
+      entries: [{ runtimeSandboxId: "runtime_fixture", sandboxName: "private_fixture", state: "stopped" }],
+      nextCursor: "next fixture"
+    });
+    const stop = vi.spyOn(local, "stopSession");
+    const ensure = vi.spyOn(local, "ensureSession");
+    const server = createWorkspaceRunnerServer({ runtime: local, token });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
+    const unauthorized = await fetch(new URL("/v1/inventory", runnerUrl));
+    expect(unauthorized.status).toBe(401);
+    expect(listSessions).not.toHaveBeenCalled();
+    expect(await remote.listSessions({ cursor: "cursor fixture" })).toEqual({
+      entries: [{ runtimeSandboxId: "runtime_fixture", sandboxName: "private_fixture", state: "stopped" }], nextCursor: "next fixture"
+    });
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ cursor: "cursor fixture", signal: expect.any(AbortSignal) }));
+    expect(stop).not.toHaveBeenCalled();
+    expect(ensure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { entries: [{ runtimeSandboxId: "x", sandboxName: "y", state: "unknown-state" }], nextCursor: null },
+    { entries: [], nextCursor: "x".repeat(2_049) },
+    { entries: Array(251).fill({ runtimeSandboxId: "x", sandboxName: "y", state: "running" }), nextCursor: null }
+  ])("rejects invalid or unbounded runner inventory", async (value) => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(value)));
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerToken: token,
+      runnerUrl: new URL("http://runner.invalid"), runtimeMode: "remote" });
+    await expect(remote.listSessions({})).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+  });
+
   it("rejects a receiver that did not confirm the requested durable capture", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ batchId: "fixture", outputs: [] })));
     const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerToken: token,

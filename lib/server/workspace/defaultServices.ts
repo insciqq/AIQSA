@@ -7,6 +7,7 @@ import { createWorkspaceAvailabilityService } from "./availability";
 import { createWorkspaceHealthService } from "./health";
 import { createPrismaWorkspacePolicyRepository } from "./policyRepository";
 import { createWorkspacePolicyService } from "./policyService";
+import { createPrismaWorkspaceOverviewRepository, createWorkspaceOverviewService } from "./overviewService";
 import {
   createPrismaWorkspaceAdmissionRepository,
   createWorkspaceAdmissionService
@@ -26,6 +27,10 @@ export const workspaceConfig = getWorkspaceConfig();
 export const workspaceRuntime: WorkspaceRuntime = createWorkspaceRuntime(workspaceConfig, { sharedState: true });
 export const workspaceHealthService = createWorkspaceHealthService({ runtime: workspaceRuntime });
 export const workspacePolicyRepository = createPrismaWorkspacePolicyRepository(prisma);
+export const workspaceOverviewService = createWorkspaceOverviewService({
+  repository: createPrismaWorkspaceOverviewRepository(prisma),
+  runtime: workspaceRuntime
+});
 export const workspaceAvailabilityService = createWorkspaceAvailabilityService({
   health: workspaceHealthService,
   policy: workspacePolicyRepository

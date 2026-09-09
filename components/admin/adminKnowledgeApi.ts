@@ -44,6 +44,7 @@ export function activateAdminKnowledgeProfile(input: Readonly<{
   expectedVersion: number;
   pdfProcessingMode: AdminKnowledgePdfProcessingMode;
   documentDeploymentId: string | null;
+  documentReasoningEffort: string | null;
 }>, fetcher: Fetcher = fetch) {
   return request({
     body: JSON.stringify({ action: "activate_profile", ...input }),
@@ -88,6 +89,7 @@ export function updateAdminKnowledgeIngestionParallelism(input: Readonly<{
 export function adminKnowledgeErrorMessage(code: string): string {
   const messages: Record<string, string> = {
     knowledge_admin_action_failed: "Knowledge settings could not be updated.",
+    knowledge_document_reasoning_unavailable: "That reasoning level is no longer supported by the selected Documents model. Choose Default or an available level.",
     knowledge_answer_policy_invalid: "Choose between 1 and 32 Knowledge searches.",
     knowledge_answer_policy_stale: "Answer retrieval settings changed elsewhere. Refresh and try again.",
     knowledge_ingestion_parallelism_invalid: "Choose between 1 and 64 parallel documents.",

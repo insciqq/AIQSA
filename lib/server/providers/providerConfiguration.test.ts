@@ -5,6 +5,7 @@ import {
   normalizeProviderConnectionConfiguration,
   normalizeProviderModelConfiguration as normalizeProviderModelConfigurationBase,
   providerAuthenticationMode,
+  providerResponsesRequestIsolationEnabled,
   providerRequestEndpoint,
   ProviderConfigurationError
 } from "./providerConfiguration";
@@ -54,6 +55,34 @@ function expectCode(operation: () => unknown, code: string): void {
 }
 
 describe("provider connection configuration", () => {
+  it.each([
+    { mode: undefined, detected: true, enabled: false },
+    { mode: "auto", detected: undefined, enabled: false },
+    { mode: "auto", detected: false, enabled: false },
+    { mode: "auto", detected: true, enabled: true },
+    { mode: "on", detected: false, enabled: true },
+    { mode: "off", detected: true, enabled: false }
+  ])("normalizes Responses isolation without reinterpreting legacy configurations (%#)", ({ mode, detected, enabled }) => {
+    const configuration = normalizeProviderConnectionConfiguration({
+      allowPrivateNetwork: false, apiRoot: "https://api.example.test/v1", authenticationMode: "bearer",
+      responseTimeoutMs: 300_000, responsesRequestIsolation: mode, responsesRequestIsolationDetected: detected
+    });
+    expect(configuration.responsesRequestIsolation).toBe(mode);
+    expect(configuration.responsesRequestIsolationDetected).toBe(detected);
+    expect(providerResponsesRequestIsolationEnabled(configuration)).toBe(enabled);
+    if (mode === undefined) expect(configuration).not.toHaveProperty("responsesRequestIsolation");
+  });
+
+  it.each([
+    { responsesRequestIsolation: "AUTO" }, { responsesRequestIsolation: true }, { responsesRequestIsolation: null },
+    { responsesRequestIsolationDetected: "true" }, { responsesRequestIsolationDetected: 1 }, { responsesRequestIsolationDetected: null }
+  ])("rejects malformed Responses isolation policy (%#)", (invalid) => {
+    expectCode(() => normalizeProviderConnectionConfiguration({
+      allowPrivateNetwork: false, apiRoot: "https://api.example.test/v1", authenticationMode: "bearer",
+      responseTimeoutMs: 300_000, ...invalid
+    }), "provider_responses_isolation_invalid");
+  });
+
   it("canonicalizes an HTTPS API root and derives reviewed terminal paths", () => {
     const configuration = normalizeProviderConnectionConfiguration({
       allowPrivateNetwork: false,

@@ -3,8 +3,9 @@
 import { AdminTopbarMenu } from "@/components/admin/AdminShell";
 import { AdminKnowledgeProcessingRows } from "@/components/admin/roles/AdminKnowledgeProcessingRows";
 import { AdminRolePicker } from "@/components/admin/roles/AdminRolePicker";
+import { AdminReasoningSelect as ReasoningSelect } from "@/components/admin/roles/AdminReasoningSelect";
 import { AdminStatusPill } from "@/components/admin/roles/AdminStatusPill";
-import { cardClass, compactSelectClass } from "@/components/admin/roles/rolesControls";
+import { cardClass } from "@/components/admin/roles/rolesControls";
 import {
   ADMIN_ROLE_STATUS_LABEL,
   deploymentLabeller,
@@ -17,7 +18,6 @@ import {
 import type { AdminRolesController } from "@/components/admin/roles/useAdminRolesController";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { UiV2MenuAction } from "@/components/ui-v2";
-import type { AdminSystemModelCandidate } from "@/lib/contracts/adminSystemModelPolicy";
 import type { ReactNode } from "react";
 
 const rowGrid = "grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-3 px-4 py-3 xl:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_8.5rem_2.5rem] xl:items-start xl:gap-4";
@@ -51,38 +51,6 @@ function RoleRow({
         <AdminStatusPill label={ADMIN_ROLE_STATUS_LABEL[status]} status={status} testId={`${testId}-status`} />
       </div>
     </div>
-  );
-}
-
-function ReasoningSelect({
-  disabled,
-  label,
-  model,
-  onChange,
-  value
-}: Readonly<{
-  disabled: boolean;
-  label: string;
-  model: AdminSystemModelCandidate | null;
-  onChange(effort: string | null): void;
-  value: string | null;
-}>) {
-  const efforts = model?.reasoningEfforts ?? [];
-  const unavailable = value !== null && !efforts.includes(value);
-  return (
-    <select
-      aria-label={label}
-      className={`${compactSelectClass} xl:w-[14rem]`}
-      disabled={disabled || !model || (efforts.length === 0 && value === null)}
-      onChange={(event) => onChange(event.currentTarget.value || null)}
-      value={value ?? ""}
-    >
-      <option value="">
-        Reasoning: Default{model?.defaultReasoningEffort ? ` (${model.defaultReasoningEffort})` : ""}
-      </option>
-      {unavailable ? <option disabled value={value}>Reasoning: {value} (unavailable)</option> : null}
-      {efforts.map((effort) => <option key={effort} value={effort}>Reasoning: {effort}</option>)}
-    </select>
   );
 }
 

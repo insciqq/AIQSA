@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   adminWorkspaceErrorMessage,
   getAdminWorkspacePolicy,
+  getAdminWorkspaceOverview,
   updateAdminWorkspacePolicy
 } from "./adminWorkspaceApi";
 
@@ -21,6 +22,18 @@ const policy = {
 };
 
 describe("admin Workspace API", () => {
+  it("bounds an admin-only overview read with cancellation and rejects malformed success", async () => {
+    const controller = new AbortController();
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ overview: { activeCount: 0 } }));
+    await expect(getAdminWorkspaceOverview({ filter: "all", page: 2, signal: controller.signal }, fetcher))
+      .resolves.toEqual({ error: "workspace_overview_unavailable", ok: false });
+    expect(fetcher).toHaveBeenCalledWith("/api/admin/workspace/overview?filter=all&page=2", {
+      cache: "no-store", credentials: "same-origin", signal: controller.signal
+    });
+    fetcher.mockResolvedValue(Response.json({ error: "private diagnostic" }, { status: 503 }));
+    await expect(getAdminWorkspaceOverview({ filter: "active", page: 1, signal: controller.signal }, fetcher))
+      .resolves.toEqual({ error: "workspace_overview_unavailable", ok: false });
+  });
   it("decodes reads and sends an optimistic bounded update", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(policy), { status: 200 }))

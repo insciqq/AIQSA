@@ -18,9 +18,11 @@ import {
   AdminProviderCredentialTestError,
   type AdminProviderCredentialTester
 } from "./credentialTester";
+import { createCustomSetupCatalogProof } from "./customSetupCatalogProof";
 
 export type AdminProviderCustomDiscoveryHandlerDeps = Readonly<{
   now?: () => Date;
+  proofKey?: () => string;
   resolveAuth: RequestAuthResolver;
   tester: AdminProviderCredentialTester;
 }>;
@@ -129,7 +131,20 @@ export function createAdminProviderCustomDiscoveryHandler(
         modelCount: outcome.modelIds.length,
         models: outcome.models ?? outcome.modelIds.map((id) => ({ capabilities: {}, id })),
         source: "models_catalog",
-        status: "valid"
+        status: "valid",
+        ...(deps.proofKey && outcome.responsesRequestIsolationDetected !== undefined
+          ? {
+              catalogProof: createCustomSetupCatalogProof({
+                endpoint: connection.apiRoot,
+                key: deps.proofKey(),
+                responsesRequestIsolationDetected: outcome.responsesRequestIsolationDetected,
+                now: now().valueOf(),
+                secret,
+                userId: session.userId
+              }),
+              responsesRequestIsolationDetected: outcome.responsesRequestIsolationDetected
+            }
+          : {})
       };
       return Response.json(result);
     } catch (error) {

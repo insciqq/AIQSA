@@ -15,6 +15,7 @@ export function fenceDeterministicWorkspaceRuntime(runtime: WorkspaceRuntime, sh
       action(input.signal ? AbortSignal.any([input.signal, signal]) : signal));
   return {
     health: (signal) => runtime.health(signal),
+    ...(runtime.listSessions ? { listSessions: runtime.listSessions.bind(runtime) } : {}),
     claimSessionOperation: (input) => fence.claim(input),
     retireSessionOperation: (input) => fence.retire(input),
     async ensureSession(input) {

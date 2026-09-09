@@ -187,7 +187,10 @@ function discovery(value: unknown): AdminProviderCustomDiscoveryResult | null {
   if (
     !record(value) ||
     containsForbiddenMaterial(value) ||
-    !exactKeys(value, ["checkedAt", "modelCount", "models", "source", "status"]) ||
+    !exactKeys(value, ["checkedAt", "modelCount", "models", "source", "status",
+      ...(value.catalogProof === undefined ? [] : ["catalogProof"]),
+      ...(value.responsesRequestIsolationDetected === undefined ? [] : ["responsesRequestIsolationDetected"])
+    ]) ||
     !timestamp(value.checkedAt) ||
     !Number.isInteger(value.modelCount) ||
     Number(value.modelCount) < 0 ||
@@ -196,12 +199,15 @@ function discovery(value: unknown): AdminProviderCustomDiscoveryResult | null {
     value.models.length !== value.modelCount ||
     value.models.some((model) =>
       !record(model) ||
-      !exactKeys(model, ["capabilities", "id"]) ||
+      !exactKeys(model, ["capabilities", "id", ...(model.ownedBy === undefined ? [] : ["ownedBy"])]) ||
       !discoveredCapabilities(model.capabilities) ||
-      !safeText(model.id, 256)
+      !safeText(model.id, 256) ||
+      (model.ownedBy !== undefined && !safeText(model.ownedBy, 128))
     ) ||
     value.source !== "models_catalog" ||
     value.status !== "valid"
+    || (value.catalogProof !== undefined && !safeText(value.catalogProof, 16_384))
+    || (value.responsesRequestIsolationDetected !== undefined && typeof value.responsesRequestIsolationDetected !== "boolean")
   ) {
     return null;
   }

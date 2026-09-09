@@ -43,6 +43,9 @@ import {
 } from "./toolCatalog";
 import {
   WorkspaceRuntimeError,
+  WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE,
+  type WorkspaceRuntimeInventoryInput,
+  type WorkspaceRuntimeInventoryPage,
   type WorkspaceExecutionTermination,
   type WorkspaceOutputStream,
   type WorkspaceRuntime,
@@ -396,8 +399,48 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   private readonly initializing = new Map<string, Promise<WorkspaceRuntimeSession>>();
 
   private captures: WorkspaceOutputCaptureStore | undefined;
+  private inventoryRequest: { cursor: string | undefined; promise: Promise<WorkspaceRuntimeInventoryPage> } | null = null;
 
   constructor(private readonly config: WorkspaceConfig, private readonly captureDirectory?: string) {}
+
+  async listSessions(input: WorkspaceRuntimeInventoryInput): Promise<WorkspaceRuntimeInventoryPage> {
+    if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+    if (this.inventoryRequest) {
+      const current = this.inventoryRequest;
+      const page = await current.promise;
+      if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+      return current.cursor === input.cursor ? page : this.listSessions(input);
+    }
+    const promise = this.readInventoryPage(input.cursor);
+    this.inventoryRequest = { cursor: input.cursor, promise };
+    try {
+      const page = await promise;
+      if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+      return page;
+    } finally {
+      if (this.inventoryRequest?.promise === promise) this.inventoryRequest = null;
+    }
+  }
+
+  private async readInventoryPage(cursor: string | undefined): Promise<WorkspaceRuntimeInventoryPage> {
+    try {
+      const page = await Sandbox.listWith((list) => {
+        list.label("aiqsa.workspace", "true").limit(WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE);
+        return cursor ? list.cursor(cursor) : list;
+      });
+      return {
+        entries: page.sandboxes.map((sandbox) => ({
+          runtimeSandboxId: sandbox.id,
+          sandboxName: sandbox.name,
+          state: sandbox.status
+        })),
+        nextCursor: page.nextCursor ?? null
+      };
+    } catch (error) {
+      if (error instanceof WorkspaceRuntimeError) throw error;
+      throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
+    }
+  }
 
   private outputCaptures(): WorkspaceOutputCaptureStore {
     const directory = this.captureDirectory ?? (process.env.MSB_HOME?.trim() ? join(process.env.MSB_HOME.trim(), "workspace-outputs") : null);

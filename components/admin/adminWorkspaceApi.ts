@@ -2,6 +2,11 @@ import {
   decodeWorkspacePolicyResponse,
   type WorkspacePolicyWire
 } from "@/lib/contracts/workspace";
+import {
+  decodeWorkspaceOverviewResponse,
+  type WorkspaceOverviewFilter,
+  type WorkspaceOverviewWire
+} from "@/lib/contracts/workspaceOverview";
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -35,8 +40,22 @@ async function request(init: RequestInit, fetcher: Fetcher): Promise<AdminWorksp
   }
 }
 
-export function getAdminWorkspacePolicy(fetcher: Fetcher = fetch) {
-  return request({ method: "GET" }, fetcher);
+export function getAdminWorkspacePolicy(fetcher: Fetcher = fetch, signal?: AbortSignal) {
+  return request({ method: "GET", ...(signal ? { signal } : {}) }, fetcher);
+}
+
+export async function getAdminWorkspaceOverview(
+  input: Readonly<{ filter: WorkspaceOverviewFilter; page: number; signal: AbortSignal }>,
+  fetcher: Fetcher = fetch
+): Promise<{ data: WorkspaceOverviewWire; ok: true } | { error: string; ok: false }> {
+  try {
+    const response = await fetcher(`/api/admin/workspace/overview?filter=${input.filter}&page=${input.page}`, {
+      cache: "no-store", credentials: "same-origin", signal: input.signal
+    });
+    if (!response.ok) return { error: response.status === 401 ? "unauthorized" : response.status === 403 ? "forbidden" : "workspace_overview_unavailable", ok: false };
+    const decoded = decodeWorkspaceOverviewResponse(await response.json());
+    return decoded ? { data: decoded, ok: true } : { error: "workspace_overview_unavailable", ok: false };
+  } catch { return { error: "workspace_overview_unavailable", ok: false }; }
 }
 
 export function updateAdminWorkspacePolicy(
@@ -60,7 +79,8 @@ export function adminWorkspaceErrorMessage(code: string): string {
     workspace_policy_failed: "Workspace policy could not be loaded.",
     workspace_policy_input_invalid: "The Workspace policy change was not accepted.",
     workspace_policy_response_invalid: "The Workspace policy response was invalid.",
-    workspace_policy_stale: "Workspace policy changed in another session. Refresh and try again."
+    workspace_policy_stale: "Workspace policy changed in another session. Refresh and try again.",
+    workspace_overview_unavailable: "Workspace activity could not be refreshed. Try again."
   };
   return messages[code] ?? "Workspace policy could not be updated.";
 }

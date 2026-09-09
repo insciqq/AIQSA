@@ -68,6 +68,7 @@ describe("provider automatic setup", () => {
       connectionDisplayName: value.connection.displayName, provider: "openrouter", targetDimension: 1536 };
     Object.assign(value.knowledge, { availableDestinations: [destination], availablePdfDestinations: [{
       deploymentId: value.roles.documentCandidates[0]!.id, modelDisplayName: "Page reader",
+      defaultReasoningEffort: null, reasoningEfforts: [],
       connectionDisplayName: value.connection.displayName, provider: "openrouter", upstreamModelId: "page-reader", directPdf: false, vision: true
     }] });
     expect(await value.run()).toMatchObject({ state: "completed", defaults: expect.arrayContaining([

@@ -50,6 +50,17 @@ function post(body: unknown, contentType = "application/json") {
 }
 
 describe("custom provider setup handler", () => {
+  it.each([null, true, "AUTO", "enabled"])("rejects malformed isolation before setup (%#)", async (mode) => {
+    const customService = service();
+    const response = await createAdminProviderCustomSetupHandler({
+      resolveAuth: vi.fn(async () => session), service: customService
+    })(post({ allowPrivateNetwork: false, apiRoot: "https://llm.example.test/v1", authenticationMode: "bearer",
+      confirmPaidRequest: true, modelId: "model-1", protocol: "responses", responsesRequestIsolation: mode,
+      responseTimeoutSeconds: 300, secret: "synthetic-key" }));
+    expect(response.status).toBe(400);
+    expect(customService.setup).not.toHaveBeenCalled();
+  });
+
   it("requires an active administrator", async () => {
     const anonymous = await createAdminProviderCustomSetupHandler({
       resolveAuth: vi.fn(async () => null),

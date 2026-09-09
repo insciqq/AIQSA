@@ -110,6 +110,13 @@ function searchRequest(overrides: Partial<ProviderSearchRequest> = {}): Provider
 }
 
 describe("OpenRouter request builders", () => {
+  it("sends explicit reasoning Off without carrying a prior token budget", () => {
+    const body = buildOpenRouterChatRequest({ ...request(), params: {
+      ...request().params, reasoning: { enabled: false, effort: "none", maxTokens: 4096 }
+    } });
+    expect(body.reasoning).toEqual({ enabled: false, effort: "none" });
+  });
+
   it("serializes required tool choice", () => {
     const body = buildOpenRouterChatRequest(request({
       toolChoice: "required",
@@ -450,8 +457,7 @@ describe("OpenRouter request builders", () => {
     expect(actual).toContain("PRIVATE_IMAGE_BYTES");
     expect(actual).toContain("DOCUM\\n[truncated 15 chars]");
     expect(actual).not.toContain("PDF fallback must not be sent");
-    expect(transport.plugins).toEqual([{ id: "file-parser" }]);
-    expect(actual).not.toContain('"engine"');
+    expect(transport.plugins).toEqual([{ id: "file-parser", pdf: { engine: "native" } }]);
     expect(previewJson).not.toContain("PRIVATE_PDF_BYTES");
     expect(previewJson).not.toContain("PRIVATE_IMAGE_BYTES");
     for (const canary of [

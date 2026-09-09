@@ -13,6 +13,7 @@ describe("optional local development profile", () => {
     const loadModule = vi.fn();
 
     await expect(runOptionalLocalDevProfile(prisma, {
+      disabled: false,
       loadModule,
       profilePath: "/tmp/aiqsa-local-profile-that-does-not-exist/post-seed.ts",
       repositoryRoot: "/tmp/aiqsa-local-profile-that-does-not-exist"
@@ -53,6 +54,7 @@ describe("optional local development profile", () => {
     const profilePath = resolve(repositoryRoot, "prisma/local-dev-profile.ts");
 
     await expect(runOptionalLocalDevProfile(prisma, {
+      disabled: false,
       ensureDefaultCredentials,
       loadModule,
       profilePath,
@@ -156,6 +158,7 @@ describe("optional local development profile", () => {
 
   it("fails closed when the entrypoint does not export run", async () => {
     await expect(runOptionalLocalDevProfile(prisma, {
+      disabled: false,
       loadModule: async () => ({}),
       profilePath: resolve(process.cwd(), "prisma/local-dev-profile.ts")
     })).rejects.toThrow("local_dev_profile_entrypoint_invalid");

@@ -36,6 +36,13 @@ for (const theme of ["light", "dark"] as const) {
       const add = page.getByRole("button", { name: "Add rule", exact: true });
       await expectWithinViewport(page, add);
       await expectNoHorizontalOverflow(page);
+      const contentBounds = await section.boundingBox();
+      const textBounds = await section.getByText(/Registrations with a matching verified email/).boundingBox();
+      expect(contentBounds).not.toBeNull();
+      expect(textBounds).not.toBeNull();
+      const expectedPadding = viewport.width >= 1024 ? 32 : viewport.width >= 640 ? 24 : 16;
+      expect(textBounds!.x - contentBounds!.x).toBeGreaterThanOrEqual(expectedPadding);
+      expect(textBounds!.y - contentBounds!.y).toBeGreaterThanOrEqual(24);
       await add.click();
       const dialog = page.getByRole("dialog", { name: "Add sign-up rule" });
       await expect(dialog.getByRole("button", { name: "Close", exact: true })).toBeFocused();
@@ -71,5 +78,12 @@ for (const theme of ["light", "dark"] as const) {
     await expect(section).toBeVisible();
     await page.goForward();
     await expect(page.getByTestId("admin-section-users")).toBeVisible();
+    dashboard.accessRules = [];
+    await page.goto("/admin?section=access-rules");
+    await expect(section.getByText(/No rules yet/)).toBeVisible();
+    const emptyBounds = await section.getByText(/No rules yet/).boundingBox();
+    const sectionBounds = await section.boundingBox();
+    expect(emptyBounds!.x - sectionBounds!.x).toBeGreaterThanOrEqual(32);
+    await expectNoHorizontalOverflow(page);
   });
 }

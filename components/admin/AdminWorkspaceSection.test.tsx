@@ -1,9 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminWorkspaceSection } from "./AdminWorkspaceSection";
 
 const workspaceApi = vi.hoisted(() => ({
   get: vi.fn(),
+  overview: vi.fn(),
   update: vi.fn()
 }));
 
@@ -14,6 +15,7 @@ vi.mock("./adminWorkspaceApi", async (importOriginal) => {
   return {
     ...actual,
     getAdminWorkspacePolicy: workspaceApi.get,
+    getAdminWorkspaceOverview: workspaceApi.overview,
     updateAdminWorkspacePolicy: workspaceApi.update
   };
 });
@@ -35,8 +37,14 @@ describe("AdminWorkspaceSection", () => {
   beforeEach(() => {
     workspaceApi.get.mockReset().mockResolvedValue({ data: readyPolicy, ok: true });
     workspaceApi.update.mockReset();
+    workspaceApi.overview.mockReset().mockResolvedValue({ ok: true, data: {
+      activeCount: 0, filter: "active", observedAt: "2026-09-09T12:00:00.000Z", page: 1, pageSize: 20,
+      rows: [], state: "fresh", stoppedCount: 1, totalCount: 0, transitioningCount: 0, unknownCount: 0,
+      updatedAt: "2026-09-09T12:00:00.000Z"
+    } });
     reportNotice.mockReset();
   });
+  afterEach(() => vi.restoreAllMocks());
 
   it("shows content-free readiness and persists both installation controls", async () => {
     workspaceApi.update
@@ -93,10 +101,13 @@ describe("AdminWorkspaceSection", () => {
   });
 
   it("refreshes on focus without allowing an older read to replace a saved policy", async () => {
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
     let finishRead!: (value: unknown) => void;
     render(<AdminWorkspaceSection reportNotice={reportNotice} />);
     const enabled = await screen.findByRole("switch", { name: "Enable Workspace" });
     workspaceApi.get.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    now = 6_000;
     fireEvent.focus(window);
     workspaceApi.update.mockResolvedValue({ data: { ...readyPolicy, enabled: true, version: 3 }, ok: true });
     fireEvent.click(enabled);
@@ -105,7 +116,23 @@ describe("AdminWorkspaceSection", () => {
     expect(enabled).toBeChecked();
 
     workspaceApi.get.mockResolvedValue({ data: { ...readyPolicy, version: 4 }, ok: true });
+    now = 12_000;
     fireEvent.focus(window);
     await waitFor(() => expect(enabled).not.toBeChecked());
+  });
+
+  it("keeps a failed policy save visible through activity and policy refreshes", async () => {
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    workspaceApi.update.mockResolvedValue({ error: "workspace_policy_action_failed", ok: false });
+    render(<AdminWorkspaceSection reportNotice={reportNotice} />);
+    fireEvent.click(await screen.findByRole("switch", { name: "Enable Workspace" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Workspace policy could not be updated.");
+    fireEvent.click(screen.getByRole("button", { name: "Refresh activity" }));
+    now = 6_000;
+    fireEvent.focus(window);
+    await waitFor(() => expect(workspaceApi.get).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("alert")).toHaveTextContent("Workspace policy could not be updated.");
+    expect(screen.getByRole("switch", { name: "Enable Workspace" })).not.toBeChecked();
   });
 });

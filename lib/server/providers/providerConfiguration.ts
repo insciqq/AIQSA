@@ -69,6 +69,7 @@ export type ProviderFamily =
   | "openrouter";
 
 export type ProviderAuthenticationMode = "bearer" | "none";
+export type ResponsesRequestIsolationMode = "auto" | "on" | "off";
 export type ProviderModelClass = "answer" | "embedding" | "reranker";
 
 export type EmbeddingModelConfiguration = Readonly<{
@@ -84,6 +85,10 @@ export type ProviderConnectionConfiguration = {
   apiRoot: string;
   authenticationMode: ProviderAuthenticationMode;
   responseTimeoutMs: number;
+  /** Compatible Responses routing policy. Omitted on legacy connections. */
+  responsesRequestIsolation?: ResponsesRequestIsolationMode;
+  /** Server-owned catalog marker captured for the exact configuration. */
+  responsesRequestIsolationDetected?: boolean;
 };
 
 export type OpenRouterRoutingConfiguration =
@@ -121,6 +126,7 @@ export type ProviderConfigurationErrorCode =
   | "provider_model_capabilities_invalid"
   | "provider_reasoning_mapping_invalid"
   | "provider_response_timeout_invalid"
+  | "provider_responses_isolation_invalid"
   | "provider_routing_invalid"
   | "provider_upstream_model_invalid";
 
@@ -309,12 +315,33 @@ export function normalizeProviderConnectionConfiguration(
     throw new ProviderConfigurationError("provider_authentication_mode_invalid");
   }
 
+  const responsesRequestIsolation = value.responsesRequestIsolation === undefined
+    ? undefined
+    : value.responsesRequestIsolation === "auto" || value.responsesRequestIsolation === "on" || value.responsesRequestIsolation === "off"
+      ? value.responsesRequestIsolation
+      : (() => { throw new ProviderConfigurationError("provider_responses_isolation_invalid"); })();
+  const responsesRequestIsolationDetected = value.responsesRequestIsolationDetected === undefined
+    ? undefined
+    : typeof value.responsesRequestIsolationDetected === "boolean"
+      ? value.responsesRequestIsolationDetected
+      : (() => { throw new ProviderConfigurationError("provider_responses_isolation_invalid"); })();
+
   return {
     allowPrivateNetwork: value.allowPrivateNetwork,
     apiRoot,
     authenticationMode: value.authenticationMode,
-    responseTimeoutMs
+    responseTimeoutMs,
+    ...(responsesRequestIsolation === undefined ? {} : { responsesRequestIsolation }),
+    ...(responsesRequestIsolationDetected === undefined ? {} : { responsesRequestIsolationDetected })
   };
+}
+
+export function providerResponsesRequestIsolationEnabled(
+  configuration: ProviderConnectionConfiguration
+): boolean {
+  if (configuration.responsesRequestIsolation === "off") return false;
+  if (configuration.responsesRequestIsolation === "on") return true;
+  return configuration.responsesRequestIsolation === "auto" && configuration.responsesRequestIsolationDetected === true;
 }
 
 export function providerAuthenticationMode(

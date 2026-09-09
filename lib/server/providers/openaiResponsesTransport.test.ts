@@ -94,6 +94,30 @@ describe("OpenAI Responses transport", () => {
     expect(fetchFn).toHaveBeenCalledOnce();
   });
 
+  it("assigns a fresh opaque prompt cache key to every isolated physical POST", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const responses = [
+      new Response("temporary", { status: 503 }),
+      new Response(JSON.stringify({ id: "isolated" }), { status: 200 })
+    ];
+    const client = createFetchOpenAIResponsesClient({
+      apiKey: "key",
+      fetchFn: async (_input, init) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return responses.shift() ?? new Response("{}", { status: 200 });
+      },
+      initialRequestRetry: { maxAttempts: 2, random: () => 0, sleep: async () => undefined },
+      requestIsolation: true
+    });
+
+    await expect(client.create({ model: "model" })).resolves.toEqual({ id: "isolated" });
+    expect(bodies).toHaveLength(2);
+    expect(typeof bodies[0]!.prompt_cache_key).toBe("string");
+    expect(bodies[0]!.prompt_cache_key).not.toBe(bodies[1]!.prompt_cache_key);
+    expect(bodies[0]).toMatchObject({ model: "model" });
+    expect(bodies[1]).toMatchObject({ model: "model" });
+  });
+
   it("uses the official base URL when the configured URL is blank", async () => {
     const urls: string[] = [];
     const client = createFetchOpenAIResponsesClient({
@@ -222,7 +246,7 @@ describe("OpenAI Responses transport", () => {
     expect(fetchFn).toHaveBeenCalledOnce();
   });
 
-  it("keeps retry backoff inside the original Responses request deadline", async () => {
+  it.each([false, true])("keeps retry backoff inside the original Responses request deadline (isolation=%s)", async (requestIsolation) => {
     const fetchFn = vi.fn<typeof fetch>(async () =>
       new Response("gateway unavailable", { status: 502 })
     );
@@ -230,6 +254,7 @@ describe("OpenAI Responses transport", () => {
       apiKey: "key",
       defaultTimeoutMs: 5,
       fetchFn,
+      requestIsolation,
       initialRequestRetry: {
         maxAttempts: 3,
         sleep: async (_delayMs, signal) =>
@@ -356,7 +381,7 @@ describe("OpenAI Responses transport", () => {
     }
   });
 
-  it("releases the ordinary deadline at successful SSE headers but keeps caller cancellation", async () => {
+  it.each([false, true])("releases the ordinary deadline at successful SSE headers but keeps caller cancellation (isolation=%s)", async (requestIsolation) => {
     const caller = new AbortController();
     let transportSignal: AbortSignal | undefined;
     const response = new Response(new ReadableStream<Uint8Array>());
@@ -364,6 +389,7 @@ describe("OpenAI Responses transport", () => {
     const client = createFetchOpenAIResponsesClient({
       apiKey: "key",
       defaultTimeoutMs: 5,
+      requestIsolation,
       fetchFn: async (_input, init) => {
         transportSignal = init?.signal ?? undefined;
         return response;
@@ -381,11 +407,12 @@ describe("OpenAI Responses transport", () => {
     await response.body?.cancel();
   });
 
-  it("combines caller cancellation with transport timeouts for signal-aware methods", async () => {
+  it.each([false, true])("combines caller cancellation with transport timeouts for signal-aware methods (isolation=%s)", async (requestIsolation) => {
     const controller = new AbortController();
     controller.abort(new Error("caller_cancelled"));
     const client = createFetchOpenAIResponsesClient({
       apiKey: "key",
+      requestIsolation,
       fetchFn: async (_input, init) => {
         const signal = init?.signal;
         if (!signal?.aborted) {

@@ -99,7 +99,8 @@ export function adminKnowledgeProfileFixture(
     pdfProcessing: {
       destination: null,
       mode: "local" as const,
-      parserProfileVersion: 1
+      parserProfileVersion: 1,
+      reasoningEffort: null
     },
     revisionNumber: 1
   };

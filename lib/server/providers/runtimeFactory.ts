@@ -33,6 +33,7 @@ import {
   normalizeProviderModelConfiguration,
   effectiveProviderResponseTimeoutMs,
   providerAuthenticationMode,
+  providerResponsesRequestIsolationEnabled,
   type ProviderConnectionConfiguration,
   type ProviderModelConfiguration
 } from "./providerConfiguration";
@@ -280,7 +281,8 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         baseUrl: snapshot.connection.apiRoot,
         defaultTimeoutMs: responseTimeoutMs,
         fetchFn,
-        initialRequestRetry: { maxAttempts: input.options.disableRequestRetries ? 1 : 3 }
+        initialRequestRetry: { maxAttempts: input.options.disableRequestRetries ? 1 : 3 },
+        requestIsolation: providerResponsesRequestIsolationEnabled(snapshot.connection)
       });
       return {
         adapter: createCompatibleResponsesAdapter({
@@ -405,7 +407,8 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         baseUrl,
         defaultTimeoutMs: responseTimeoutMs,
         fetchFn,
-        initialRequestRetry: { maxAttempts: input.options.disableRequestRetries ? 1 : 3 }
+        initialRequestRetry: { maxAttempts: input.options.disableRequestRetries ? 1 : 3 },
+        requestIsolation: providerResponsesRequestIsolationEnabled(snapshot.connection)
       });
       return {
         adapter: createCompatibleResponsesAdapter({

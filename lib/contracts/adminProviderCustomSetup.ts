@@ -41,6 +41,8 @@ export type AdminProviderCustomSetupRequest = Readonly<{
   authenticationMode: AdminProviderCustomAuthenticationMode;
   capabilities?: AdminProviderModelCapabilities;
   confirmPaidRequest: true;
+  /** Short-lived server-signed receipt from the preceding catalog discovery. */
+  catalogProof?: string;
   connectionDisplayName?: string;
   defaultParams?: Record<string, unknown>;
   modelDisplayName?: string;
@@ -53,6 +55,8 @@ export type AdminProviderCustomSetupRequest = Readonly<{
   protocol: AdminProviderCustomProtocol;
   reasoningRequestMapping?: ProviderReasoningRequestMapping;
   responseTimeoutSeconds: number;
+  /** Compatible Responses routing isolation policy; defaults to auto for new Responses connections. */
+  responsesRequestIsolation?: "auto" | "on" | "off";
   secret?: string;
 }>;
 
@@ -67,11 +71,13 @@ export type AdminProviderCustomDiscoveryRequest = Readonly<{
 export type AdminProviderCustomDiscoveredModel = Readonly<AdminCompatibleDiscoveredModel>;
 
 export type AdminProviderCustomDiscoveryResult = Readonly<{
+  catalogProof?: string;
   checkedAt: string;
   modelCount: number;
   models: AdminProviderCustomDiscoveredModel[];
   source: "models_catalog";
   status: "valid";
+  responsesRequestIsolationDetected?: boolean;
 }>;
 
 export type AdminProviderCustomSetupReadyResult = Readonly<{

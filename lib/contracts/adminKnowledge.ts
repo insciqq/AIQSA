@@ -13,9 +13,11 @@ export type AdminKnowledgePdfProcessingMode =
 
 export type AdminKnowledgePdfProcessingDestination = Readonly<{
   connectionDisplayName: string;
+  defaultReasoningEffort: string | null;
   deploymentId: string;
   modelDisplayName: string;
   provider: string;
+  reasoningEfforts: string[];
   upstreamModelId: string;
 }>;
 
@@ -28,6 +30,7 @@ export type AdminKnowledgeProfileRevision = Readonly<{
     destination: AdminKnowledgePdfProcessingDestination | null;
     mode: AdminKnowledgePdfProcessingMode;
     parserProfileVersion: number;
+    reasoningEffort: string | null;
   }>;
   revisionNumber: number;
 }>;
@@ -207,12 +210,19 @@ function pdfProcessingMode(value: unknown): AdminKnowledgePdfProcessingMode | nu
 function decodePdfDestination(value: unknown): AdminKnowledgePdfProcessingDestination | null {
   if (!record(value) || !safeString(value.connectionDisplayName) ||
     !safeString(value.deploymentId) || !safeString(value.modelDisplayName) ||
-    !safeString(value.provider) || !safeString(value.upstreamModelId, 512)) return null;
+    !safeString(value.provider) || !safeString(value.upstreamModelId, 512) ||
+    !Array.isArray(value.reasoningEfforts) || value.reasoningEfforts.length > 16 ||
+    !value.reasoningEfforts.every((effort) => safeString(effort, 32)) ||
+    new Set(value.reasoningEfforts).size !== value.reasoningEfforts.length ||
+    (value.defaultReasoningEffort === null ? value.reasoningEfforts.length !== 0 :
+      !safeString(value.defaultReasoningEffort, 32) || !value.reasoningEfforts.includes(value.defaultReasoningEffort))) return null;
   return {
     connectionDisplayName: value.connectionDisplayName,
+    defaultReasoningEffort: value.defaultReasoningEffort as string | null,
     deploymentId: value.deploymentId,
     modelDisplayName: value.modelDisplayName,
     provider: value.provider,
+    reasoningEfforts: [...value.reasoningEfforts] as string[],
     upstreamModelId: value.upstreamModelId
   };
 }
@@ -231,6 +241,8 @@ function decodeRevision(value: unknown): AdminKnowledgeProfileRevision | null {
     : decodePdfDestination(processing?.destination);
   if (!destination || !processing || !mode ||
     !positiveInteger(processing.parserProfileVersion) ||
+    (processing.reasoningEffort !== null && !safeString(processing.reasoningEffort, 32)) ||
+    (mode === "local" && processing.reasoningEffort !== null) ||
     (mode === "local" && processingDestination !== null) ||
     (mode !== "local" && processingDestination === null)) return null;
   return {
@@ -241,7 +253,8 @@ function decodeRevision(value: unknown): AdminKnowledgeProfileRevision | null {
     pdfProcessing: {
       destination: processingDestination,
       mode,
-      parserProfileVersion: Number(processing.parserProfileVersion)
+      parserProfileVersion: Number(processing.parserProfileVersion),
+      reasoningEffort: processing.reasoningEffort as string | null
     },
     revisionNumber: value.revisionNumber
   };

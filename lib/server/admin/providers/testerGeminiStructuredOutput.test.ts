@@ -110,6 +110,29 @@ describe("Gemini administrator JSON capability probe", () => {
     });
   });
 
+  it("checks Gemini 3.8 Flash with low thinking without changing its ordinary medium setting", async () => {
+    const model = { ...input.model, upstreamModelId: "gemini-3.8-flash",
+      capabilities: { ...input.model.capabilities, reasoning: true },
+      defaultParams: { reasoning: { effort: "medium" } }
+    };
+    const { fetchFn, tester } = fixture(() => Response.json({ ...response(), model: model.upstreamModelId }));
+    const result = await tester.test({ ...input, model });
+    const schemaBodies = fetchFn.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))
+      .filter((body) => body.response_format);
+    expect(schemaBodies).toHaveLength(1);
+    expect(schemaBodies[0]).toMatchObject({ model: "gemini-3.8-flash", store: false, stream: false,
+      generation_config: { max_output_tokens: 1_024, thinking_level: "low", thinking_summaries: "none" },
+      response_format: { mime_type: "application/json", type: "text", schema: { additionalProperties: false } }
+    });
+    expect(model.defaultParams).toEqual({ reasoning: { effort: "medium" } });
+    expect(result.evidence.compatibility?.structuredOutput).toBe("verified");
+    expect(hasVerifiedStructuredOutput(result.evidence, model)).toBe(true);
+    expect(modelChipsFromEvidence(model, fixtureCheck({
+      credentialId: input.credentialId, providerModelId: input.providerModelId, evidence: result.evidence
+    })))
+      .toContainEqual({ key: "json", label: "JSON", tone: "ok" });
+  });
+
   it.each([400, 404, 415, 422])("records a deterministic native schema rejection (%s) independently of access", async (status) => {
     const { tester } = fixture(() => new Response("PRIVATE_UPSTREAM_ERROR", { status }));
     const result = await tester.test(input);

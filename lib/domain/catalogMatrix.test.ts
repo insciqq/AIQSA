@@ -470,4 +470,21 @@ describe("catalog capability matrix", () => {
     });
     expect(buildCatalogModel(flash!, defaultSearchStrategies).capabilities.background).toBe(false);
   });
+
+  it.each(["gemini-3.8-flash", "google/gemini-3.8-flash"])(
+    "offers only the supported thinking levels for %s while retaining medium by default", (modelId) => {
+      const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
+      expect(model.parameterControls.reasoningEffort).toEqual({
+        defaultValue: "medium", options: ["low", "medium", "high"], supported: true
+      });
+      expect(model.defaultParams.reasoning).toMatchObject({ effort: "medium" });
+    }
+  );
+
+  it.each(["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"])(
+    "retains minimal thinking for %s", (modelId) => {
+      const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
+      expect(model.parameterControls.reasoningEffort.options).toContain("minimal");
+    }
+  );
 });

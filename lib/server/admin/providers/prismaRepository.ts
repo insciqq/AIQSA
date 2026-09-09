@@ -29,6 +29,7 @@ import { searchValidationFingerprint } from "../../search/probeBinding";
 import type {
   AdminProviderRepository,
   ProviderActivationWrite,
+  ProviderCatalogCredentialFence,
   StoredProviderDraftCheck
 } from "./repositoryContract";
 import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
@@ -54,6 +55,38 @@ function sameStrings(left: string[], right: string[]): boolean {
   const a = [...new Set(left)].sort();
   const b = [...new Set(right)].sort();
   return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+async function liveCatalogCredentials(
+  db: Prisma.TransactionClient,
+  connectionId: string
+): Promise<ProviderCatalogCredentialFence[]> {
+  const credentials = await db.providerCredential.findMany({
+    select: { id: true, draftVersion: true, activeVersionId: true },
+    where: { connectionId, activeVersion: { is: { revokedAt: null } } },
+    orderBy: { id: "asc" }
+  });
+  return credentials.map((credential) => ({
+    credentialId: credential.id,
+    expectedDraftVersion: credential.draftVersion,
+    expectedVersionId: credential.activeVersionId!
+  }));
+}
+
+function sameCatalogCredentials(
+  current: readonly ProviderCatalogCredentialFence[],
+  expected: readonly ProviderCatalogCredentialFence[]
+): boolean {
+  return current.length === expected.length &&
+    new Set(expected.map(({ credentialId }) => credentialId)).size === expected.length &&
+    expected.every((write) => current.some((credential) => credential.credentialId === write.credentialId &&
+      credential.expectedDraftVersion === write.expectedDraftVersion &&
+      credential.expectedVersionId === write.expectedVersionId));
+}
+
+function sameConnectionConfiguration(left: unknown, right: unknown): boolean {
+  return JSON.stringify(normalizeProviderConnectionConfiguration(left)) ===
+    JSON.stringify(normalizeProviderConnectionConfiguration(right));
 }
 
 function noAuthConnection(configuration: unknown, family: string): boolean {
@@ -1150,6 +1183,7 @@ export function createPrismaAdminProviderRepository(
       const connection = await prisma.providerConnection.findUnique({
         select: {
           activeConfig: true,
+          activeVersion: true,
           displayName: true,
           draftConfig: true,
           draftVersion: true,
@@ -1159,6 +1193,9 @@ export function createPrismaAdminProviderRepository(
         where: { id: connectionId }
       });
       if (!connection || connection.family === "fake") return null;
+      const isolationConfigured = connection.family === "openai_compatible" &&
+        normalizeProviderConnectionConfiguration(connection.draftConfig).responsesRequestIsolation !== undefined;
+      const catalogCredentials = isolationConfigured ? await liveCatalogCredentials(prisma, connectionId) : undefined;
       const [models, referencedCredentialIds] = await Promise.all([
         prisma.providerModel.findMany({
           select: { displayName: true, draftConfig: true, draftVersion: true, id: true },
@@ -1221,8 +1258,10 @@ export function createPrismaAdminProviderRepository(
           })
         : [];
       return {
+        ...(catalogCredentials ? { catalogCredentials } : {}),
         connection: {
           activeConfiguration: connection.activeConfig,
+          activeVersion: connection.activeVersion,
           configuration: connection.draftConfig,
           displayName: connection.displayName,
           draftVersion: connection.draftVersion,
@@ -1505,9 +1544,11 @@ export function createPrismaAdminProviderRepository(
 
     async activateConnectionCas(input) {
       try {
-        return await repeatableRead(prisma, async (tx) => {
+        return await serializable(prisma, async (tx) => {
         const connection = await tx.providerConnection.findUnique({
           select: {
+            activeConfig: true,
+            activeVersion: true,
             defaultCredentialId: true,
             displayName: true,
             draftConfig: true,
@@ -1520,6 +1561,21 @@ export function createPrismaAdminProviderRepository(
         });
         if (!connection) return "not_found" as const;
         if (connection.draftVersion !== input.connection.draftVersion) return "stale" as const;
+        const isolationConfigured = connection.family === "openai_compatible" &&
+          input.connection.configuration.responsesRequestIsolation !== undefined;
+        if (isolationConfigured !== Boolean(input.isolationRefresh)) return "stale" as const;
+        const activeVersion = input.isolationRefresh?.activeVersion ?? input.connection.draftVersion;
+        if (input.isolationRefresh) {
+          const configurationChanged = connection.activeConfig === null ||
+            !sameConnectionConfiguration(connection.activeConfig, input.connection.configuration);
+          if (connection.activeVersion !== input.isolationRefresh.expectedActiveVersion ||
+            activeVersion !== Math.max(connection.draftVersion, connection.activeVersion + (configurationChanged ? 1 : 0)) ||
+            !sameCatalogCredentials(await liveCatalogCredentials(tx, connection.id), input.isolationRefresh.credentials) ||
+            input.isolationRefresh.credentials.some((credential) => credential.modelChecks.some((check) =>
+              !input.models.some((model) => model.id === check.providerModelId && model.draftVersion === check.modelVersion)))) {
+            return "stale" as const;
+          }
+        }
 
         const [models, referencedCredentialIds, credentials] = await Promise.all([
           tx.providerModel.findMany({
@@ -1618,7 +1674,9 @@ export function createPrismaAdminProviderRepository(
               ? credential.versionId
               : null)
           );
-          const previousEvidence = previous ? evidence(previous.evidence) : null;
+          const previousEvidence = previous && (!input.isolationRefresh ||
+            sameConnectionConfiguration(connection.draftConfig, input.connection.configuration))
+            ? evidence(previous.evidence) : null;
           return previousEvidence?.upstreamModelId === check.evidence.upstreamModelId
             ? {
                 ...check,
@@ -1673,7 +1731,8 @@ export function createPrismaAdminProviderRepository(
           data: {
             activatedAt: input.now,
             activeConfig: json(input.connection.configuration),
-            activeVersion: input.connection.draftVersion,
+            activeVersion,
+            ...(input.isolationRefresh ? { draftConfig: json(input.connection.configuration), draftVersion: activeVersion } : {}),
             enabled: input.connection.enable
           },
           where: {
@@ -1698,7 +1757,7 @@ export function createPrismaAdminProviderRepository(
         await synchronizeProviderSearch(tx, input, connection);
 
         const tuples = checks.map((check) => ({
-          connectionVersion: input.connection.draftVersion,
+          connectionVersion: activeVersion,
           credentialVersionId: activeVersionIds.get(check.credentialId) as string,
           modelVersion: check.modelDraftVersion,
           providerModelId: check.providerModelId
@@ -1710,7 +1769,7 @@ export function createPrismaAdminProviderRepository(
           data: checks.map((check) => ({
             checkedAt: check.checkedAt,
             connectionId: input.connection.id,
-            connectionVersion: input.connection.draftVersion,
+            connectionVersion: activeVersion,
             credentialId: check.credentialId,
             credentialVersionId: activeVersionIds.get(check.credentialId) as string,
             evidence: json(check.evidence),
@@ -1719,6 +1778,19 @@ export function createPrismaAdminProviderRepository(
             status: check.status
           }))
         });
+        if (input.isolationRefresh) {
+          // Unreferenced keys keep their active versions and pending drafts.
+          // Existing proof for an unchanged tuple is never replaced by catalog evidence.
+          const data = input.isolationRefresh.credentials.filter((credential) =>
+            !activeVersionIds.has(credential.credentialId)).flatMap((credential) =>
+            credential.modelChecks.map((check) => ({
+              checkedAt: input.now, connectionId: connection.id, connectionVersion: activeVersion,
+              credentialId: credential.credentialId, credentialVersionId: credential.expectedVersionId,
+              evidence: json(check.evidence), modelVersion: check.modelVersion,
+              providerModelId: check.providerModelId, status: check.status
+            })));
+          if (data.length) await tx.providerModelCredentialCheck.createMany({ data, skipDuplicates: true });
+        }
           await cleanupProviderReferences(tx, { connectionId: input.connection.id }, input.now);
           return "updated" as const;
         });
@@ -1737,13 +1809,33 @@ export function createPrismaAdminProviderRepository(
       try {
         return await serializable(prisma, async (tx) => {
           const connection = await tx.providerConnection.findUnique({
-            select: { activeVersion: true, draftVersion: true, defaultCredentialId: true, family: true, id: true },
+            select: { activeConfig: true, activeVersion: true, draftConfig: true, draftVersion: true,
+              defaultCredentialId: true, family: true, id: true },
             where: { id: input.connectionId }
           });
           if (!connection || connection.family === "fake") return "connection_not_found" as const;
           if (connection.activeVersion !== input.expectedConnectionVersion ||
-            connection.activeVersion === 0 && connection.draftVersion !== input.expectedConnectionDraftVersion) {
+            (connection.activeVersion === 0 || input.isolationRefresh) &&
+              connection.draftVersion !== input.expectedConnectionDraftVersion) {
             return "stale" as const;
+          }
+          const activeConfiguration = connection.activeConfig === null ? null :
+            normalizeProviderConnectionConfiguration(connection.activeConfig);
+          const isolationConfigured = connection.family === "openai_compatible" &&
+            activeConfiguration?.responsesRequestIsolation !== undefined;
+          if (isolationConfigured !== Boolean(input.isolationRefresh)) return "stale" as const;
+          let activeConnectionVersion = input.bootstrap ? connection.draftVersion : connection.activeVersion;
+          let isolationChanged = false;
+          if (input.isolationRefresh) {
+            const configuration = input.isolationRefresh.configuration;
+            if (!activeConfiguration || input.bootstrap || typeof configuration.responsesRequestIsolationDetected !== "boolean" ||
+              !sameConnectionConfiguration({ ...activeConfiguration,
+                responsesRequestIsolationDetected: configuration.responsesRequestIsolationDetected }, configuration) ||
+              !sameCatalogCredentials(await liveCatalogCredentials(tx, connection.id), input.isolationRefresh.credentials)) {
+              return "stale" as const;
+            }
+            isolationChanged = !sameConnectionConfiguration(activeConfiguration, configuration);
+            if (isolationChanged) activeConnectionVersion = Math.max(connection.activeVersion, connection.draftVersion) + 1;
           }
           if (input.bootstrap) {
             if (connection.activeVersion !== 0) return "stale" as const;
@@ -1758,7 +1850,8 @@ export function createPrismaAdminProviderRepository(
               return "stale" as const;
             }
           }
-          for (const check of input.modelChecks) {
+          for (const check of [...input.modelChecks,
+            ...(input.isolationRefresh?.credentials.flatMap(({ modelChecks }) => modelChecks) ?? [])]) {
             const model = await tx.providerModel.findFirst({
               select: { activeVersion: true, draftVersion: true },
               where: { connectionId: input.connectionId, id: check.providerModelId }
@@ -1848,12 +1941,32 @@ export function createPrismaAdminProviderRepository(
                 where: { id: model.id }
               });
             }
+          } else if (isolationChanged && input.isolationRefresh) {
+            const configuration = input.isolationRefresh.configuration;
+            const pendingDraft = !sameConnectionConfiguration({
+              ...normalizeProviderConnectionConfiguration(connection.draftConfig),
+              responsesRequestIsolationDetected: configuration.responsesRequestIsolationDetected
+            }, configuration);
+            const updated = await tx.providerConnection.updateMany({
+              data: {
+                activatedAt: input.now,
+                activeConfig: json(configuration),
+                activeVersion: activeConnectionVersion,
+                // Keep separate operator edits; their draft identity must remain
+                // newer than the newly published active configuration.
+                draftVersion: activeConnectionVersion + (pendingDraft ? 1 : 0),
+                ...(!pendingDraft ? { draftConfig: json(configuration) } : {})
+              },
+              where: { id: connection.id, activeVersion: input.expectedConnectionVersion,
+                draftVersion: input.expectedConnectionDraftVersion }
+            });
+            if (updated.count !== 1) throw new ProviderActivationStaleError();
           }
           for (const check of input.modelChecks) {
             await tx.providerModelCredentialCheck.create({ data: {
               checkedAt: input.checkedAt,
               connectionId: input.connectionId,
-              connectionVersion: input.bootstrap ? connection.draftVersion : connection.activeVersion,
+              connectionVersion: activeConnectionVersion,
               credentialId: input.credential.id,
               credentialVersionId: input.versionId,
               evidence: json(check.evidence),
@@ -1861,6 +1974,19 @@ export function createPrismaAdminProviderRepository(
               providerModelId: check.providerModelId,
               status: check.status
             } });
+          }
+          if (isolationChanged && input.isolationRefresh) {
+            for (const credential of input.isolationRefresh.credentials) {
+              if (credential.credentialId === input.credential.id) continue;
+              for (const check of credential.modelChecks) {
+                await tx.providerModelCredentialCheck.create({ data: {
+                  checkedAt: input.checkedAt, connectionId: connection.id, connectionVersion: activeConnectionVersion,
+                  credentialId: credential.credentialId, credentialVersionId: credential.expectedVersionId,
+                  evidence: json(check.evidence), modelVersion: check.modelVersion,
+                  providerModelId: check.providerModelId, status: check.status
+                } });
+              }
+            }
           }
 
           if (input.bootstrap || !connection.defaultCredentialId) {

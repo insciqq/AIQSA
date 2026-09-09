@@ -282,7 +282,7 @@ function geminiModel(input: Readonly<{
       },
       reasoningEffort: {
         defaultValue: input.effort,
-        options: input.pro
+        options: input.pro || input.modelId === "gemini-3.8-flash"
           ? ["low", "medium", "high"]
           : ["minimal", "low", "medium", "high"],
         supported: true

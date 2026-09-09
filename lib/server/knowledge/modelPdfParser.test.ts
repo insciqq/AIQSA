@@ -22,6 +22,8 @@ import {
   KNOWLEDGE_MODEL_PDF_VISION_PAGE_CONCURRENCY
 } from "./modelPdfParser";
 import { KNOWLEDGE_PDF_PARSER_PROFILE_VERSION } from "./knowledgeProfile";
+import { freezeKnowledgeDocumentReasoning } from "./documentReasoning";
+import { buildOpenAIResponsesRequest } from "../providers/openaiResponsesRequest";
 
 function snapshot(defaultParams: Record<string, unknown> = {}): ProviderExecutionSnapshot & {
   model: Exclude<ProviderExecutionSnapshot["model"], { adapterKind: "fake" }>;
@@ -207,6 +209,52 @@ function adaptiveDocling(geometry: NativePdfGeometry) {
 }
 
 describe("Knowledge System Model PDF parser", () => {
+  it.each([
+    ["system_model_direct_pdf", 1], ["system_model_vision", 1],
+    ["system_model_vision", KNOWLEDGE_PDF_PARSER_PROFILE_VERSION]
+  ] as const)("uses the frozen reasoning on %s profile %s, retries and settled recovery", async (mode, parserProfileVersion) => {
+    const base = snapshot({ reasoning: { effort: "high", summary: "auto" } });
+    const deployment = { ...base, model: { ...base.model, capabilities: { ...base.model.capabilities,
+      reasoning: true, reasoningEfforts: ["none", "low", "high"], defaultReasoningEffort: "high" } } };
+    const accepted = JSON.parse(JSON.stringify(freezeKnowledgeDocumentReasoning(deployment, "low")));
+    deployment.model.defaultParams.reasoning = { effort: "none" };
+    const text = [modelPdfPageStartMarker(1), "A small synthetic page.", modelPdfPageEndMarker(1)].join("\n");
+    let settled: Record<string, unknown> | null = null;
+    const reserve = vi.fn(async () => settled
+      ? { kind: "settled", batch: settled } : { kind: "dispatch", attemptId: "attempt-frozen" });
+    let calls = 0;
+    const execute = vi.fn(async (_snapshot: unknown, request: ProviderRunRequest) => {
+      expect(buildOpenAIResponsesRequest(request).reasoning?.effort).toBe("low");
+      expect(request).toMatchObject({ tools: [], toolChoice: "none", toolMode: "none",
+        searchPlan: { options: [] }, params: { store: false, stream: false, background: false } });
+      if (++calls === 1) throw new TypeError("synthetic_network_failure");
+      return { finalProviderResponsePreview: {}, finalText: text,
+        usage: { inputTokens: 10, outputTokens: 5, reasoningTokens: 1, totalTokens: 15 } };
+    });
+    const parser = createKnowledgeModelPdfParser({} as PrismaClient, {
+      attemptRepository: { reserve, markDispatched: vi.fn(async () => true), markAmbiguous: vi.fn(),
+        settle: vi.fn(async (input: Record<string, unknown>) => { settled = input; return input; }) } as never,
+      execute: execute as never, extractGeometry: vi.fn(async () => { throw new Error("no_native_text"); }),
+      inspect: vi.fn(async () => ({ pageCount: 1 })),
+      prepare: vi.fn(async () => mode === "system_model_direct_pdf"
+        ? { bytes: Buffer.from("%PDF-range"), kind: "pdf" as const, pageStart: 1, pageEnd: 1 }
+        : { kind: "images" as const, pageStart: 1, pageEnd: 1, images: [{
+            bytes: Buffer.from("page-image"), height: 800, width: 600,
+            sourceHeight: 800, sourceWidth: 600, mimeType: "image/png" as const, page: 1
+          }] }),
+      retry: { random: () => 0, sleep: async () => undefined }
+    });
+    const input = { artifactId: "artifact-frozen", bytes: Buffer.from("%PDF-original"), maxBlocks: 20,
+      maxCharacters: 5000, maxPages: 5, mode, ownerUserId: "owner-1", parserProfileVersion,
+      processingGeneration: 0, profileRevisionId: "profile-frozen", sourceVersionId: "source-version-frozen",
+      systemModelPolicyVersion: 3, systemModelSnapshot: accepted };
+    const first = await parser.parse(input);
+    const recovered = await parser.parse(input);
+    expect(recovered.blocks).toEqual(first.blocks);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(reserve).toHaveBeenCalledTimes(2);
+  });
+
   it.each([17, 18, 19])("keeps figure crops opt-in when parsing profile %s", async (parserProfileVersion) => {
     const bytes = await (await import("sharp")).default({
       create: { width: 600, height: 800, channels: 3, background: "white" }

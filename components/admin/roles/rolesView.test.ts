@@ -89,6 +89,7 @@ describe("rolesView", () => {
   it("builds Documents items from the Knowledge profile plus the role catalog's Check first group", () => {
     const destinations = [{
       connectionDisplayName: "OpenAI", deploymentId: "luna", directPdf: false,
+      defaultReasoningEffort: null, reasoningEfforts: [],
       modelDisplayName: "GPT Luna", provider: "openai", upstreamModelId: "luna", vision: true
     }];
     expect(knowledgeDocumentItems(destinations, "system_model_vision", catalog())).toMatchObject([

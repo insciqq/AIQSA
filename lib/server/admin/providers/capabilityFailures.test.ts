@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
-import type { AdminProviderConnection, AdminProviderTestEvidence } from "../../../contracts/adminProviders";
+import type { AdminProviderConnection, AdminProviderModelConfiguration, AdminProviderTestEvidence } from "../../../contracts/adminProviders";
 import { encryptProviderCredentialSecret } from "../../providers/credentialSecrets";
 import { createPrismaAdminProviderRepository } from "./prismaRepository";
 import { createAdminProviderService } from "./service";
@@ -27,14 +27,21 @@ const previous: AdminProviderTestEvidence = {
   visionInput: { adapterKind: model.adapterKind, upstreamModelId: model.upstreamModelId, probeVersion: 1, verified: true }
 };
 
-function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "failed" | "incomplete", nativeGemini = false) {
-  const selectedModel = nativeGemini ? { ...model, adapterKind: "gemini_interactions_native" as const } : model;
-  const family = nativeGemini ? "gemini" : "openai_compatible";
+function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "failed" | "incomplete", nativeGemini = false,
+  routerFailure?: "refusal" | "parser" | "limit" | "truncated" | "wrong" | "unsupported") {
+  const selectedModel: AdminProviderModelConfiguration = routerFailure ? { ...model, adapterKind: "openrouter_chat_completions" as const,
+    openRouterRouting: { mode: "automatic" as const, providers: [] } }
+    : nativeGemini ? { ...model, adapterKind: "gemini_interactions_native" as const } : model;
+  const family = routerFailure ? "openrouter" : nativeGemini ? "gemini" : "openai_compatible";
   const previousEvidence: AdminProviderTestEvidence = nativeGemini ? {
     ...previous,
     structuredOutput: { ...previous.structuredOutput!, adapterKind: "gemini_interactions_native" },
     pdfInput: { ...previous.pdfInput!, adapterKind: "gemini_interactions_native" },
     visionInput: { ...previous.visionInput!, adapterKind: "gemini_interactions_native" }
+  } : routerFailure ? { ...previous,
+    structuredOutput: { ...previous.structuredOutput!, adapterKind: "openrouter_chat_completions", probeVersion: 5 },
+    pdfInput: { ...previous.pdfInput!, adapterKind: "openrouter_chat_completions" },
+    visionInput: { ...previous.visionInput!, adapterKind: "openrouter_chat_completions" }
   } : previous;
   const envelope = encryptProviderCredentialSecret({ credentialId: request.credentialId, key: KEY,
     secret: "synthetic-secret", valueId: "version" });
@@ -86,7 +93,26 @@ function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "fai
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const body = JSON.parse(String(init?.body));
     const structured = Boolean(body.text?.format || body.response_format);
-    const pdf = JSON.stringify(body.input).includes("input_file");
+    const pdf = Boolean(body.plugins) || (JSON.stringify(body.input) ?? "").includes("input_file");
+    if (routerFailure) {
+      if (pdf) {
+        expect(body.plugins).toEqual([{ id: "file-parser", pdf: { engine: "native" } }]);
+        expect(body.provider).toMatchObject({ data_collection: "deny" });
+      }
+      if (fail && pdf && ["parser", "limit", "unsupported"].includes(routerFailure)) {
+        return Response.json({ error: { code: routerFailure === "unsupported" ? "unsupported_file_type" : "invalid_request",
+          message: "PRIVATE_SYNTHETIC_UPSTREAM_DETAIL" } }, { status: 400 });
+      }
+      const text = structured ? JSON.stringify({ count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] })
+        : pdf ? fail && routerFailure === "wrong" ? "APPLES" : "PEARS" : "OK";
+      const choice = { finish_reason: fail && pdf && routerFailure === "truncated" ? "length"
+        : fail && pdf && routerFailure === "refusal" ? "content_filter" : "stop",
+        message: { role: "assistant", content: text,
+          ...(fail && pdf && routerFailure === "refusal" ? { refusal: "PRIVATE_SYNTHETIC_UPSTREAM_DETAIL" } : {}) } };
+      const response = { choices: [choice], usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 } };
+      return body.stream ? new Response(`data: ${JSON.stringify({ ...response, choices: [{ ...choice, delta: { content: text } }] })}\n\ndata: [DONE]\n\n`,
+        { headers: { "content-type": "text/event-stream" } }) : Response.json(response);
+    }
     if (fail && (target === "memory" ? structured : pdf)) return Response.json({
       id: "synthetic-response", status: terminal, output: [],
       error: { code: "server_error", message: "PRIVATE_SYNTHETIC_UPSTREAM_DETAIL" },
@@ -104,19 +130,91 @@ function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "fai
     }
     const response = { id: "synthetic-response", status: "completed", output: [{ type: "message", role: "assistant",
       content: [{ type: "output_text", text: structured
-        ? JSON.stringify({ count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] }) : pdf ? "Q7K4P9" : "OK" }] }],
+        ? JSON.stringify({ count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] }) : pdf ? "PEARS" : "OK" }] }],
       usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 } };
     return body.stream ? new Response(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response })}\n\n`,
       { headers: { "content-type": "text/event-stream" } }) : Response.json(response);
   });
+  const tester = createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn });
   const service = createAdminProviderService({ repository, now: () => NOW, encryptionKey: () => KEY,
     credentialTester: { async test() { throw new Error("unexpected_credential_test"); } },
-    tester: createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn }) });
-  return { active, candidate, fetchFn, previousEvidence, repository, service, updateMany, upsert,
+    tester });
+  return { active, candidate, fetchFn, previousEvidence, repository, service, tester, updateMany, upsert,
     row: () => row, succeed: () => { fail = false; } };
 }
 
 describe("failed capability response publication", () => {
+  it.each([true, false])("replaces an incomplete setup PDF state with a conclusive role recheck: verified=%s", async (verified) => {
+    const f = fixture(true, "direct_pdf", "failed", false, "unsupported");
+    f.row()!.evidence = { ...f.previousEvidence, pdfInput: undefined,
+      compatibility: { ...f.previousEvidence.compatibility, directPdf: "not_supported" },
+      capabilitySetup: { policyVersion: 1, checks: { modelAccess: "verified", directPdf: "incomplete", vision: "verified" } }
+    };
+    if (verified) f.succeed();
+    await expect(f.service.refreshActive({ ...request, capabilityRole: "direct_pdf" })).resolves.toMatchObject({
+      evidence: { compatibility: { directPdf: verified ? "verified" : "not_supported" } }
+    });
+    expect(f.row()?.evidence).toMatchObject({
+      compatibility: { directPdf: verified ? "verified" : "not_supported" },
+      capabilitySetup: { checks: { directPdf: verified ? "verified" : "unsupported", vision: "verified" } }
+    });
+  });
+
+  it.each(["refusal", "parser", "limit", "truncated", "wrong"] as const)(
+    "preserves prior OpenRouter PDF proof after %s and publishes the next successful refresh", async (failure) => {
+      const f = fixture(true, "direct_pdf", "failed", false, failure);
+      await expect(f.service.refreshActive({ ...request, capabilityRole: "direct_pdf" }))
+        .rejects.toMatchObject({ code: "provider_refresh_failed" });
+      expect(f.upsert).not.toHaveBeenCalled();
+      expect(f.row()?.evidence).toEqual(f.previousEvidence);
+      expect(f.fetchFn).toHaveBeenCalledTimes(2);
+      f.succeed();
+      await expect(f.service.refreshActive({ ...request, capabilityRole: "direct_pdf" })).resolves.toMatchObject({
+        connectionVersion: 3, modelVersion: 4, credentialVersionId: "version",
+        latestRefreshError: null, evidence: { pdfInput: { verified: true }, compatibility: { directPdf: "verified" } }
+      });
+      expect(JSON.stringify(f.row())).not.toContain("PRIVATE_SYNTHETIC_UPSTREAM_DETAIL");
+    }
+  );
+
+  it.each(["refusal", "parser", "limit", "truncated", "wrong", "unsupported"] as const)(
+    "keeps fresh setup PDF %s separate from independent successful checks", async (failure) => {
+      const f = fixture(false, "direct_pdf", "failed", false, failure);
+      const result = await f.tester.test({
+        connection: configuration, connectionDisplayName: "Synthetic", connectionId: "connection",
+        credentialId: "credential", credentialVersionIdentity: "version", model: f.candidate.model.configuration,
+        modelDisplayName: "Synthetic", providerModelId: "model", providerFamily: "openrouter",
+        initialSetup: true, mode: "tiny_generation", secret: "synthetic-secret"
+      });
+      expect(result).toMatchObject({ status: "available", evidence: {
+        capabilitySetup: { checks: { directPdf: failure === "unsupported" ? "unsupported" : "incomplete",
+          structuredOutput: "verified", modelAccess: "verified", streaming: "verified" } },
+        structuredOutput: { verified: true }
+      } });
+      expect(result.evidence.pdfInput).toBeUndefined();
+      expect(JSON.stringify(result)).not.toContain("PRIVATE_SYNTHETIC_UPSTREAM_DETAIL");
+    }
+  );
+
+  it("replaces an earlier Gemini JSON rejection through the normal exact-revision refresh", async () => {
+    const f = fixture(true, "memory", "failed", true);
+    const row = f.row()!;
+    row.evidence = { ...f.previousEvidence, structuredOutput: undefined,
+      compatibility: { ...f.previousEvidence.compatibility, structuredOutput: "not_supported" }
+    };
+    f.succeed();
+    const result = await f.service.refreshActive({ ...request, capabilityRole: "memory" });
+    expect(result).toMatchObject({ status: "available", connectionVersion: 3,
+      modelVersion: 4, credentialVersionId: "version", evidence: {
+        compatibility: { structuredOutput: "verified" },
+        structuredOutput: { verified: true, adapterKind: "gemini_interactions_native" }
+      }
+    });
+    expect(f.candidate.model.configuration.defaultParams).toEqual({});
+    expect((f.row()?.evidence as AdminProviderTestEvidence).visionInput).toEqual(f.previousEvidence.visionInput);
+    expect(f.upsert).toHaveBeenCalledOnce();
+  });
+
   it.each(["failed", "incomplete"] as const)("preserves Gemini evidence on %s and publishes the matching native JSON recheck", async (terminal) => {
     const f = fixture(true, "memory", terminal, true);
     await expect(f.service.refreshActive({ ...request, capabilityRole: "memory" })).rejects.toMatchObject({ code: "provider_refresh_failed" });

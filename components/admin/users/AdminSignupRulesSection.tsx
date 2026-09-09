@@ -54,7 +54,7 @@ export function AdminSignupRulesSection({ controller, groups }: Readonly<{
   };
 
   return (
-    <div className="flex min-w-0 flex-col gap-5">
+    <div className="flex min-w-0 flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
       <div className="max-w-3xl space-y-2 text-sm leading-6 text-ink-muted">
         <p>Registrations with a matching verified email address or domain are automatically approved and receive the rule’s groups. Other registrations wait for approval.</p>
         <p>Use an exact domain such as <span className="font-mono text-ink">example.com</span>. Rule changes do not disable active accounts or grant administrator access.</p>

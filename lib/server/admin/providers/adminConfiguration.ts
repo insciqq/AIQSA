@@ -50,7 +50,13 @@ export function adminProviderConnectionConfiguration(
     allowPrivateNetwork: configuration.allowPrivateNetwork,
     apiRoot: configuration.apiRoot,
     authenticationMode: configuration.authenticationMode,
-    responseTimeoutSeconds: effectiveProviderResponseTimeoutMs(configuration) / 1_000
+    responseTimeoutSeconds: effectiveProviderResponseTimeoutMs(configuration) / 1_000,
+    ...(configuration.responsesRequestIsolation === undefined ? {} : {
+      responsesRequestIsolation: configuration.responsesRequestIsolation
+    }),
+    ...(configuration.responsesRequestIsolationDetected === undefined ? {} : {
+      responsesRequestIsolationDetected: configuration.responsesRequestIsolationDetected
+    })
   };
 }
 

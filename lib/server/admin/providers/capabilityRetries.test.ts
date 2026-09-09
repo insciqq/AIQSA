@@ -34,7 +34,7 @@ describe("bounded capability retries", () => {
         bodies.push(String(init?.body));
         attempts += 1;
         if (attempts === 1) return completed();
-        if (attempts === 4) return completed("Q7K4P9");
+        if (attempts === 4) return completed("PEARS");
         if (failure === "network") throw new TypeError("fetch failed");
         if (failure === "project_rate_limit") return Response.json({ error: { message: "Rate limit reached for this project." } }, { status: 429 });
         return typeof failure === "number" ? Response.json({}, { status: failure }) : terminal(failure);
@@ -73,7 +73,7 @@ describe("bounded capability retries", () => {
           : terminal(failure === "cancelled" ? "cancelled" : "failed", failure));
       fetchFn.mockImplementationOnce(async () => completed());
       const outcome = createAdminProviderDraftTester({ retrySleep, createFetch: () => fetchFn }).test(input());
-      if (failure === 401 || failure === 403 || failure === "cancelled" || failure === "invalid_api_key") {
+      if (typeof failure === "number" || failure === "unsupported_parameter" || failure === "wrong_answer" || failure === "cancelled" || failure === "invalid_api_key") {
         await expect(outcome).rejects.toBeInstanceOf(Error);
       } else {
         await expect(outcome).resolves.toMatchObject({ status: "available", evidence: { compatibility: { directPdf: "not_supported" } } });
@@ -191,17 +191,32 @@ describe("bounded capability retries", () => {
       }, { status }));
       fetchFn.mockImplementationOnce(async () => completed());
       const outcome = createAdminProviderDraftTester({ retrySleep, createFetch: () => fetchFn }).test(input());
-      if (status === 500) await expect(outcome).resolves.toMatchObject({ evidence: { compatibility: { directPdf: "not_supported" } } });
-      else {
-        const error = await outcome.catch((failure: unknown) => failure);
-        expect(error).toBeInstanceOf(Error);
-        expect(String(error)).not.toContain("PRIVATE_SYNTHETIC_DETAIL");
-        expect(JSON.stringify(error)).not.toContain("PRIVATE_SYNTHETIC_DETAIL");
-      }
+      const error = await outcome.catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).not.toContain("PRIVATE_SYNTHETIC_DETAIL");
+      expect(JSON.stringify(error)).not.toContain("PRIVATE_SYNTHETIC_DETAIL");
       expect(fetchFn).toHaveBeenCalledTimes(2);
       expect(retrySleep).not.toHaveBeenCalled();
     }
   );
+
+  it.each([
+    [400, "unsupported_file_type", "PRIVATE_SYNTHETIC_DETAIL", true],
+    [400, "invalid_request", "This model does not support PDF input.", true],
+    [400, "unsupported_parameter", "Reasoning is not supported.", false],
+    [400, "unsupported_parameter", "The input parameter 'reasoning' is not supported with this model.", false],
+    [500, "unsupported_file_type", "PRIVATE_SYNTHETIC_DETAIL", false],
+    [400, "invalid_request", "File processing failed.", false]
+  ] as const)("requires explicit input incompatibility for PDF HTTP %s/%s", async (status, code, message, unsupported) => {
+    const retrySleep = vi.fn(async (_delay: number, _signal?: AbortSignal) => {});
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ error: { code, message } }, { status }));
+    fetchFn.mockImplementationOnce(async () => completed());
+    const outcome = createAdminProviderDraftTester({ retrySleep, createFetch: () => fetchFn }).test(input());
+    if (unsupported) await expect(outcome).resolves.toMatchObject({ evidence: { compatibility: { directPdf: "not_supported" } } });
+    else await expect(outcome).rejects.toBeInstanceOf(Error);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(retrySleep).not.toHaveBeenCalled();
+  });
 
   it.each([
     ["This model does not support PDF input.", true],

@@ -19,6 +19,7 @@ import {
   knowledgeProfileEgressPolicy
 } from "../../knowledge/knowledgeProfile";
 import { scheduleKnowledgeProfileMigration } from "../../knowledge/profileMigration";
+import { freezeKnowledgeDocumentReasoning } from "../../knowledge/documentReasoning";
 import {
   loadProjectEmbeddingProviderRole,
   loadInstallationAnswerProviderRole,
@@ -35,8 +36,10 @@ import {
   type ProviderExecutionSnapshot
 } from "../../providers/runtimeFactory";
 import { createProviderVisionInputProbe } from "../../providers/visionInputProbe";
+import { configuredModelParameterControls } from "../../providers/providerModelCapabilities";
 
 export type AdminKnowledgeProfileServiceErrorCode =
+  | "knowledge_document_reasoning_unavailable"
   | "knowledge_pdf_processing_mode_unavailable"
   | "knowledge_profile_destination_unavailable"
   | "knowledge_profile_revision_unavailable"
@@ -93,11 +96,14 @@ function embeddingDestination(revision: RevisionRecord): AdminKnowledgeProfileDe
 function processingDestination(
   snapshot: ProviderExecutionSnapshot
 ): AdminKnowledgePdfProcessingDestination {
+  const control = configuredModelParameterControls(snapshot.model, snapshot.providerFamily).reasoningEffort;
   return {
     connectionDisplayName: snapshot.connectionDisplayName,
     deploymentId: snapshot.providerModelId,
+    defaultReasoningEffort: control.supported ? control.defaultValue : null,
     modelDisplayName: snapshot.modelDisplayName,
     provider: snapshot.providerFamily,
+    reasoningEfforts: control.supported ? [...control.options] : [],
     upstreamModelId: snapshot.model.upstreamModelId
   };
 }
@@ -135,7 +141,11 @@ function revisionProjection(revision: RevisionRecord): AdminKnowledgeProfileRevi
     pdfProcessing: {
       destination: pin ? processingDestination(pin.snapshot) : null,
       mode: revision.pdfProcessingMode,
-      parserProfileVersion: revision.pdfParserProfileVersion
+      parserProfileVersion: revision.pdfParserProfileVersion,
+      reasoningEffort: typeof revision.profileConfiguration === "object" &&
+        revision.profileConfiguration !== null && !Array.isArray(revision.profileConfiguration) &&
+        typeof revision.profileConfiguration.pdfReasoningEffort === "string"
+        ? revision.profileConfiguration.pdfReasoningEffort : null
     },
     revisionNumber: revision.revisionNumber
   };
@@ -338,6 +348,7 @@ export function createAdminKnowledgeProfileService(
   async function processingPreflight(
     mode: AdminKnowledgePdfProcessingMode,
     deploymentId: string | null,
+    reasoningEffort: string | null,
     signal?: AbortSignal
   ): Promise<SystemModelPin | null> {
     if (mode === "local") return null;
@@ -345,6 +356,9 @@ export function createAdminKnowledgeProfileService(
     if (!pin || !supportsMode(pin, mode) ||
       !await processingSnapshotAvailable(prisma, pin, mode)) {
       throw new AdminKnowledgeProfileServiceError("knowledge_pdf_processing_mode_unavailable");
+    }
+    if (!freezeKnowledgeDocumentReasoning(pin.snapshot, reasoningEffort)) {
+      throw new AdminKnowledgeProfileServiceError("knowledge_document_reasoning_unavailable");
     }
     if (mode === "system_model_vision") {
       let verified = false;
@@ -397,11 +411,18 @@ export function createAdminKnowledgeProfileService(
       now?: Date;
       pdfProcessingMode: AdminKnowledgePdfProcessingMode;
       documentDeploymentId: string | null;
+      documentReasoningEffort?: string | null;
       signal?: AbortSignal;
       userId: string;
     }>): Promise<void> {
       if ((input.pdfProcessingMode === "local") !== (input.documentDeploymentId === null)) {
         throw new AdminKnowledgeProfileServiceError("knowledge_pdf_processing_mode_unavailable");
+      }
+      const reasoningEffort = input.documentReasoningEffort ?? null;
+      if (reasoningEffort !== null && (input.pdfProcessingMode === "local" ||
+        typeof reasoningEffort !== "string" || !reasoningEffort.trim() || reasoningEffort.length > 32 ||
+        /[\u0000-\u001f\u007f]/u.test(reasoningEffort))) {
+        throw new AdminKnowledgeProfileServiceError("knowledge_document_reasoning_unavailable");
       }
       let processingPin: SystemModelPin | null = null;
       if (input.pdfProcessingMode !== "local") {
@@ -412,7 +433,9 @@ export function createAdminKnowledgeProfileService(
         if (!before || before.version !== input.expectedVersion) {
           throw new AdminKnowledgeProfileServiceError("knowledge_profile_stale");
         }
-        processingPin = await processingPreflight(input.pdfProcessingMode, input.documentDeploymentId, input.signal);
+        processingPin = await processingPreflight(
+          input.pdfProcessingMode, input.documentDeploymentId, reasoningEffort, input.signal
+        );
       }
       input.signal?.throwIfAborted();
       const now = input.now ?? new Date();
@@ -439,6 +462,11 @@ export function createAdminKnowledgeProfileService(
           }
         }
         const processingProviderModelId = processingPin?.snapshot.providerModelId ?? null;
+        const executionSnapshot = processingPin
+          ? freezeKnowledgeDocumentReasoning(processingPin.snapshot, reasoningEffort) : null;
+        if (processingPin && !executionSnapshot) {
+          throw new AdminKnowledgeProfileServiceError("knowledge_document_reasoning_unavailable");
+        }
         input.signal?.throwIfAborted();
         const lastRevision = await tx.knowledgeIndexProfileRevision.findFirst({
           orderBy: { revisionNumber: "desc" },
@@ -460,8 +488,8 @@ export function createAdminKnowledgeProfileService(
             pdfParserProfileVersion: KNOWLEDGE_PDF_PARSER_PROFILE_VERSION,
             pdfProcessingMode: input.pdfProcessingMode,
             pdfSystemModelPolicyVersion: processingPin?.policyVersion ?? null,
-            pdfSystemModelSnapshot: processingPin
-              ? processingPin.snapshot as unknown as Prisma.InputJsonValue
+            pdfSystemModelSnapshot: executionSnapshot
+              ? executionSnapshot as unknown as Prisma.InputJsonValue
               : Prisma.DbNull,
             preflightCheckedAt: now,
             preflightErrorCode: null,
@@ -469,6 +497,7 @@ export function createAdminKnowledgeProfileService(
             profileConfiguration: knowledgeProfileConfiguration({
               embeddingProviderModelId: input.deploymentId,
               pdfProcessingMode: input.pdfProcessingMode,
+              pdfReasoningEffort: reasoningEffort,
               pdfSystemModelProviderModelId: processingProviderModelId
             }),
             profileId: KNOWLEDGE_INDEX_PROFILE_ID,

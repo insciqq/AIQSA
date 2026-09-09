@@ -175,6 +175,7 @@ describe("administrator Knowledge settings handlers", () => {
       deploymentId: "embedding-1",
       expectedVersion: 2,
       documentDeploymentId: null,
+      documentReasoningEffort: null,
       pdfProcessingMode: "local",
       userId: "user-1"
     });
@@ -196,5 +197,33 @@ describe("administrator Knowledge settings handlers", () => {
     ));
     expect(obsoleteVisionResponse.status).toBe(400);
     expect(service.activateProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes a bounded independent Documents reasoning override to activation", async () => {
+    const service = { activateProfile: vi.fn(), list: vi.fn().mockResolvedValue({}), rollbackProfile: vi.fn() };
+    const handlers = createAdminKnowledgePolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never
+    });
+    const body = { action: "activate_profile", deploymentId: "embedding-1", documentDeploymentId: "reader-1",
+      documentReasoningEffort: "low", expectedVersion: 2, pdfProcessingMode: "system_model_vision" };
+    const response = await handlers.PATCH(new Request("http://local.test/api/admin/knowledge", {
+      body: JSON.stringify(body), headers: { "content-type": "application/json" }, method: "PATCH"
+    }));
+    expect(response.status).toBe(200);
+    expect(service.activateProfile).toHaveBeenCalledWith({
+      deploymentId: "embedding-1", documentDeploymentId: "reader-1", documentReasoningEffort: "low",
+      expectedVersion: 2, pdfProcessingMode: "system_model_vision", userId: "user-1"
+    });
+    for (const fields of [
+      { documentReasoningEffort: "" }, { documentReasoningEffort: 1 },
+      { documentReasoningEffort: "low\n" }, { documentReasoningEffort: "a".repeat(33) },
+      { documentReasoningEffort: "none", pdfProcessingMode: "local", documentDeploymentId: null }
+    ]) {
+      const invalid = await handlers.PATCH(new Request("http://local.test/api/admin/knowledge", {
+        body: JSON.stringify({ ...body, ...fields }), headers: { "content-type": "application/json" }, method: "PATCH"
+      }));
+      expect(invalid.status).toBe(400);
+    }
+    expect(service.activateProfile).toHaveBeenCalledOnce();
   });
 });

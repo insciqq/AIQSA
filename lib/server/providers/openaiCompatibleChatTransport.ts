@@ -5,6 +5,7 @@ import {
   withTimeoutSignal
 } from "./network";
 import { isOpenAIChatRecord } from "./openaiChatCompletions";
+import { providerResponseFailure } from "./responseFailure";
 
 export type OpenAICompatibleChatClientRequestOptions = {
   signal?: AbortSignal;
@@ -88,15 +89,27 @@ async function throwHttpError(
   signal: AbortSignal,
   providerName: string
 ): Promise<never> {
+  let failureCode: string | undefined;
+  let unsupportedInput = false;
   try {
-    await readBoundedResponseText(response, { signal });
+    const text = await readBoundedResponseText(response, { signal });
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (isOpenAIChatRecord(parsed)) {
+        const failure = providerResponseFailure("provider_response_failed", parsed);
+        failureCode = "code" in failure && typeof failure.code === "string" ? failure.code : undefined;
+        unsupportedInput = "unsupportedInput" in failure && failure.unsupportedInput === true;
+      }
+    } catch { /* An undecodable body cannot prove unsupported input. */ }
   } catch (error) {
     if (!(error instanceof ProviderResponseTooLargeError)) {
       throw error;
     }
   }
 
-  throw new Error(providerHttpErrorMessage(providerName, response.status));
+  throw Object.assign(new Error(providerHttpErrorMessage(providerName, response.status)),
+    failureCode && response.status !== 401 && response.status !== 403
+      ? { code: failureCode, ...(unsupportedInput ? { unsupportedInput: true } : {}) } : {});
 }
 
 export function createFetchOpenAIChatCompletionClient(input: Readonly<{
