@@ -505,7 +505,7 @@ describe("deriveAdminAttentionItems", () => {
         target: { resource: "mcp-oauth", section: "mcp" }
       }),
       expect.objectContaining({
-        detail: "Tools · MCP runtime unavailable",
+        detail: "Tools · The MCP runtime is unavailable. Check MCP settings and try again.",
         id: "mcp_server_needs_attention:mcp-runtime",
         severity: "bad"
       })
