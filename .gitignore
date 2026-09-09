@@ -1,6 +1,7 @@
 # Runtime-local agent mountpoints are ignored; repository instructions use AGENTS.md only.
 .codex
 .agents/
+/DEV_SERVER.md
 
 node_modules/
 .next/

@@ -30,11 +30,11 @@ function fixture() {
     "/agent_docs/tasks/queue/*.md\n!/agent_docs/tasks/queue/README.md\n" +
       "/agent_docs/tasks/archive/*\n!/agent_docs/tasks/archive/README.md\n" +
       "/agent_docs/tasks/drafts/*\n!/agent_docs/tasks/drafts/README.md\n" +
-      "/agent_docs/PRD/**\n"
+      "/agent_docs/PRD/**\n/DEV_SERVER.md\n"
   );
   writeFileSync(
     path.join(root, ".dockerignore"),
-    "agent_docs\n**/AGENTS.md\n**/CLAUDE.md\n!.env.example\n"
+    "agent_docs\nDEV_SERVER.md\n**/AGENTS.md\n**/CLAUDE.md\n!.env.example\n"
   );
   writeFileSync(path.join(root, "README.md"), "# Public source\n");
   git(root, "init", "-q");
@@ -110,5 +110,33 @@ describe("release privacy command", () => {
     expect(result.stderr).toContain(
       "origin fetch URL is not the public AIQSA GitHub repository"
     );
+  });
+
+  it("keeps local server instructions private even after forced staging or later deletion", () => {
+    const root = fixture();
+    const baseline = git(root, "rev-parse", "HEAD").stdout.trim();
+    writeFileSync(path.join(root, "DEV_SERVER.md"), "# Synthetic private server\n");
+    expect(git(root, "check-ignore", "DEV_SERVER.md").status).toBe(0);
+    expect(run(root, baseline).status).toBe(0);
+
+    git(root, "add", "-f", "DEV_SERVER.md");
+    expect(run(root, baseline).stderr).toContain("DEV_SERVER.md: public Git tracks a private task artifact");
+    commit(root, "unsafe server instructions");
+    expect(run(root, baseline).stderr).toContain("release tree contains private task artifact DEV_SERVER.md");
+    rmSync(path.join(root, "DEV_SERVER.md"));
+    commit(root, "remove unsafe server instructions");
+    expect(run(root, baseline).stderr).toContain("post-baseline history contains private task artifact DEV_SERVER.md");
+  });
+
+  it.each(["missing", "negated"])("rejects %s Docker protection for local server instructions", (mode) => {
+    const root = fixture();
+    const baseline = git(root, "rev-parse", "HEAD").stdout.trim();
+    writeFileSync(path.join(root, ".dockerignore"),
+      "agent_docs\n**/AGENTS.md\n**/CLAUDE.md\n" + (mode === "negated" ? "DEV_SERVER.md\n!DEV_SERVER.md\n" : ""));
+    const result = run(root, baseline);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(mode === "missing"
+      ? "missing agent-only exclusion DEV_SERVER.md"
+      : "later negation !DEV_SERVER.md may re-include protected DEV_SERVER.md");
   });
 });

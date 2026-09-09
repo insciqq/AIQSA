@@ -7,6 +7,7 @@ AIQSA is a self-hosted, multi-user, model-agnostic conversational workspace. Opt
 - Treat implementation requests as permission to proceed. Concrete same-session changes need no task. For queued, dependent, broad, parallel, or multi-session work, use [Autonomous workflow](agent_docs/AUTONOMOUS_WORKFLOW.md) and the [task manual](agent_docs/tasks/README.md); mark selected tasks `in_progress` before implementation. The integrating agent owns state, conflicts, review, and verification.
 - Start with [critical invariants](agent_docs/CRITICAL_INVARIANTS.md), then [INDEX](agent_docs/INDEX.md) and only the crossed owners. Read the nearest scoped `AGENTS.md` before editing; adjacent `CLAUDE.md` files import it.
 - Read [Testing](agent_docs/TESTING.md) before behavior/test changes and [Environment](agent_docs/ENV_VARIABLES.md) before Compose commands. Preserve the checkout's environment selection. Use [defaults](agent_docs/DECISION_DEFAULTS.md) only for choices the operator leaves open.
+- Before heavy checks, read root `DEV_SERVER.md` if present. It is optional private machine configuration; [Testing](agent_docs/TESTING.md) owns remote selection, bounded local fallback, and task/slice/RC verification.
 - Inspect `git status --short` before editing and preserve unrelated changes. Without Git, report that and continue without synchronization.
 - Implement the smallest complete slice, verify proportionally, and complete verified work directly; there is no human-review gate. Unavailable required evidence leaves work blocked. Continue beyond the current work only under broad implementation permission with another concrete unblocked task.
 - Stop only for missing secrets/authority, unrequested destructive work, an unavailable required service, or an uncovered product decision. Provider-smoke and dependency-security permissions belong to Testing and [Security](agent_docs/SECURITY.md).
@@ -25,7 +26,7 @@ Use only the scoped `.aiqsa/handoff/` (when explicitly requested), `.aiqsa/local
 
 ## Publication
 
-`origin` is public. Private task instances and `.aiqsa/` state must never be staged, committed, included in Docker contexts/images, or added to public refs. Existing history does not justify ref rewrites. Pushes, ref rewrites, and release tags require an explicit request; publication also requires fresh readiness and privacy checks.
+`origin` is public. Private task instances, `DEV_SERVER.md`, and `.aiqsa/` state must never be staged, committed, included in Docker contexts/images, or added to public refs. Existing history does not justify ref rewrites. Pushes, ref rewrites, and release tags require an explicit request; publication also requires fresh readiness and privacy checks.
 
 Export an inspected commit/tree with `git archive` to a fresh path, never archive the working directory. Attach local tasks separately only after manual review.
 

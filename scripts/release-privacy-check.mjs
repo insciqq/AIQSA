@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 
 const PRIVATE_REFERENCE_PATH = "agent_docs/PRD";
 const TASK_PATH = "agent_docs/tasks";
-const PRIVATE_PATHS = [PRIVATE_REFERENCE_PATH, TASK_PATH];
+const PRIVATE_SERVER_PATH = "DEV_SERVER.md";
+const PRIVATE_PATHS = [PRIVATE_REFERENCE_PATH, TASK_PATH, PRIVATE_SERVER_PATH];
 const ALLOWED_TASK_FILES = new Set([
   "agent_docs/tasks/README.md",
   "agent_docs/tasks/archive/README.md",
@@ -30,6 +31,7 @@ function git(root, arguments_) {
 
 function forbiddenPrivatePath(filename) {
   if (!filename) return false;
+  if (filename === PRIVATE_SERVER_PATH) return true;
   if (filename === PRIVATE_REFERENCE_PATH || filename.startsWith(`${PRIVATE_REFERENCE_PATH}/`)) return true;
   return (filename === TASK_PATH || filename.startsWith(`${TASK_PATH}/`)) && !ALLOWED_TASK_FILES.has(filename);
 }
@@ -107,6 +109,7 @@ function dockerPrivacyErrors(root) {
   const errors = [];
   for (const [required, protectedPath] of [
     ["agent_docs", "agent_docs"],
+    [PRIVATE_SERVER_PATH, PRIVATE_SERVER_PATH],
     ["**/AGENTS.md", "AGENTS.md"],
     ["**/CLAUDE.md", "CLAUDE.md"]
   ]) {
