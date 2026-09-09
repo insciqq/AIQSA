@@ -3,6 +3,7 @@ import { exposeFakeProvider } from "../../catalog/prismaCatalogData";
 import { prisma } from "../../prisma";
 import { createAdminProviderCustomSetupHandler } from "./customSetupHandlers";
 import { createPrismaAdminProviderCustomSetupRepository } from "./customSetupPrismaRepository";
+import { getAuthConfig } from "../../auth/config";
 import { adminProviderService } from "./defaultProviders";
 import {
   createAdminProviderCustomSetupService,
@@ -36,6 +37,7 @@ const repository = createPrismaAdminProviderCustomSetupRepository(prisma, {
 
 export const adminProviderCustomSetupService = createAdminProviderCustomSetupService({
   finishInitialSetup: (completion) => adminProviderService.finishInitialSetup(completion),
+  proofKey: () => getAuthConfig().sessionSecret,
   repository,
   tester
 });

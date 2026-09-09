@@ -139,6 +139,7 @@ export function createAdminProviderCustomSetupHandler(
       "apiRoot",
       "authenticationMode",
       "capabilities",
+      "catalogProof",
       "confirmPaidRequest",
       "connectionDisplayName",
       "defaultParams",
@@ -149,6 +150,7 @@ export function createAdminProviderCustomSetupHandler(
       "protocol",
       "reasoningRequestMapping",
       "responseTimeoutSeconds",
+      "responsesRequestIsolation",
       "secret"
     ]);
     if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
@@ -183,10 +185,18 @@ export function createAdminProviderCustomSetupHandler(
     const secret = body.secret === undefined
       ? undefined
       : boundedText(body.secret, 16_384) ?? null;
+    const catalogProof = body.catalogProof === undefined
+      ? undefined
+      : boundedText(body.catalogProof, 16_384) ?? null;
     const responseTimeoutSeconds = Number.isSafeInteger(body.responseTimeoutSeconds) &&
           Number(body.responseTimeoutSeconds) >= ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS &&
           Number(body.responseTimeoutSeconds) <= ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS
         ? Number(body.responseTimeoutSeconds)
+        : null;
+    const responsesRequestIsolation = body.responsesRequestIsolation === undefined
+      ? undefined
+      : body.responsesRequestIsolation === "auto" || body.responsesRequestIsolation === "on" || body.responsesRequestIsolation === "off"
+        ? body.responsesRequestIsolation
         : null;
     const perModelKeys = new Set(["contextWindow", "defaultMaxOutputTokens", "maxOutputTokens",
       "defaultReasoningEffort", "defaultReasoningMode", "reasoning", "reasoningEfforts", "reasoningModes",
@@ -205,9 +215,11 @@ export function createAdminProviderCustomSetupHandler(
       connectionDisplayName === null ||
       modelDisplayName === null ||
       responseTimeoutSeconds === null ||
+      responsesRequestIsolation === null ||
       (normalizedModelIds !== undefined &&
         normalizedModelIds.length > 1 && modelDisplayName !== undefined) ||
       secret === null ||
+      catalogProof === null ||
       (body.capabilities !== undefined && !isRecord(body.capabilities)) ||
       (perModelCapabilities !== undefined && (!isRecord(perModelCapabilities) ||
         Object.keys(perModelCapabilities).length > MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS ||
@@ -246,7 +258,9 @@ export function createAdminProviderCustomSetupHandler(
               body.reasoningRequestMapping as AdminProviderReasoningRequestMapping
           }),
       responseTimeoutSeconds,
-      ...(secret === undefined ? {} : { secret })
+      ...(responsesRequestIsolation === undefined ? {} : { responsesRequestIsolation }),
+      ...(secret === undefined ? {} : { secret }),
+      ...(catalogProof === undefined ? {} : { catalogProof })
     };
     return setupProgressResponse(request, (signal, onProgress) => safely(async () =>
       Response.json(await deps.service.setup({

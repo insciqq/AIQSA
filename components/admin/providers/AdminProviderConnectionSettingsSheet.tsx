@@ -22,6 +22,7 @@ type SettingsForm = Readonly<{
   apiRoot: string;
   displayName: string;
   responseTimeoutSeconds: string;
+  responsesRequestIsolation: "auto" | "on" | "off" | undefined;
   secrets: Readonly<Record<string, string>>;
 }>;
 
@@ -41,6 +42,7 @@ function initialForm(connection: AdminProviderConnection): SettingsForm {
     responseTimeoutSeconds: String(
       (connection.activeConfig ?? connection.draftConfig).responseTimeoutSeconds ?? ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS
     ),
+    responsesRequestIsolation: (connection.activeConfig ?? connection.draftConfig).responsesRequestIsolation,
     secrets: {}
   };
 }
@@ -65,12 +67,21 @@ function SettingsSheetBody({
   const live = connection.activeConfig !== null;
   const endpointChanged = normalizedEndpoint(form.apiRoot) !== normalizedEndpoint(effectiveEndpoint(connection));
   const keyless = (connection.activeConfig ?? connection.draftConfig).authenticationMode === "none";
+  const compatibleResponses = isCustomProvider(connection) && connection.models.some((model) =>
+    model.draftConfig.adapterKind === "openai_responses_compatible" ||
+    model.activeConfig?.adapterKind === "openai_responses_compatible"
+  );
+  const isolationMode = form.responsesRequestIsolation ?? "off";
+  const isolationDetected = !endpointChanged &&
+    (connection.activeConfig ?? connection.draftConfig).responsesRequestIsolationDetected === true;
+  const isolationEnabled = isolationMode === "on" || (isolationMode === "auto" && isolationDetected);
   const requiredKeys = endpointChanged && !keyless ? connection.credentials.filter((credential) =>
     credential.activeVersion !== null && credential.activeVersion.revokedAt === null) : [];
   const dirty = form.allowPrivateNetwork !== baseline.allowPrivateNetwork ||
     form.apiRoot !== baseline.apiRoot ||
     form.displayName !== baseline.displayName ||
     form.responseTimeoutSeconds !== baseline.responseTimeoutSeconds ||
+    form.responsesRequestIsolation !== baseline.responsesRequestIsolation ||
     Object.values(form.secrets).some(Boolean);
   const update = (patch: Partial<SettingsForm>) => setForm((current) => ({ ...current, ...patch }));
 
@@ -95,7 +106,8 @@ function SettingsSheetBody({
         allowPrivateNetwork: form.allowPrivateNetwork,
         apiRoot: form.apiRoot.trim(),
         authenticationMode: (connection.activeConfig ?? connection.draftConfig).authenticationMode,
-        responseTimeoutSeconds: Number(form.responseTimeoutSeconds)
+        responseTimeoutSeconds: Number(form.responseTimeoutSeconds),
+        ...(form.responsesRequestIsolation === undefined ? {} : { responsesRequestIsolation: form.responsesRequestIsolation })
       },
       displayName: form.displayName.trim(),
       expectedDraftVersion,
@@ -154,6 +166,34 @@ function SettingsSheetBody({
             value={form.displayName}
           />
         </label>
+        {compatibleResponses ? (
+          <label>
+            <span className={fieldLabel}>Compatible Responses request isolation</span>
+            <select
+              className={inputClass}
+              disabled={busy}
+              onChange={(event) => update({ responsesRequestIsolation: event.currentTarget.value as SettingsForm["responsesRequestIsolation"] })}
+              value={isolationMode}
+            >
+              <option value="auto">Automatic (Codex LB detection)</option>
+              <option value="on">Always on</option>
+              <option value="off">Always off</option>
+            </select>
+            <span className={helpText}>
+              Automatic mode follows Codex LB detection. When enabled, each request uses a fresh prompt_cache_key. This can reduce prefix-cache reuse and increase connection overhead. No fixed delay is added.
+            </span>
+            <span className={helpText} role="status">
+              {endpointChanged
+                ? "Codex LB detection will be checked for the new endpoint when saved."
+                : isolationDetected
+                  ? "Codex LB was detected from the validated models catalog."
+                  : "No Codex LB marker is currently recorded."}
+              {endpointChanged && isolationMode === "auto"
+                ? " Automatic isolation will follow that result."
+                : ` Responses isolation is ${isolationEnabled ? "enabled" : "disabled"}.`}
+            </span>
+          </label>
+        ) : null}
         <label>
           <span className={fieldLabel}>Endpoint</span>
           <input

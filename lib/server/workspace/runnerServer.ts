@@ -216,6 +216,31 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         sendJson(response, 200, await input.runtime.health());
         return;
       }
+      if (request.method === "GET" && url.pathname === "/v1/inventory") {
+        if (!input.runtime.listSessions) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+        if ([...url.searchParams.keys()].some((key) => key !== "cursor") || url.searchParams.getAll("cursor").length > 1) {
+          throw new Error("field_invalid");
+        }
+        const cursor = url.searchParams.has("cursor") ? requiredString(url.searchParams.get("cursor"), 2_048) : undefined;
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        response.once("close", abort);
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)]);
+        let rejectAborted: (() => void) | undefined;
+        try {
+          const deadline = new Promise<never>((_resolve, reject) => {
+            rejectAborted = () => reject(new WorkspaceRuntimeError("workspace_runtime_unavailable"));
+            signal.addEventListener("abort", rejectAborted, { once: true });
+          });
+          sendJson(response, 200, await Promise.race([
+            input.runtime.listSessions({ ...(cursor ? { cursor } : {}), signal }), deadline
+          ]));
+        } finally {
+          response.off("close", abort);
+          if (rejectAborted) signal.removeEventListener("abort", rejectAborted);
+        }
+        return;
+      }
       if (request.method === "POST" && url.pathname === "/v1/sessions/ensure") {
         const body = await readJson(request);
         const sessionId = requiredString(body.sessionId, 128);

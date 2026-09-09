@@ -2,6 +2,7 @@ import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "@/lib/server/http/requestBody";
 import type { createWorkspacePolicyService } from "./policyService";
 import { WorkspacePolicyServiceError } from "./policyService";
+import type { createWorkspaceOverviewService } from "./overviewService";
 
 type Service = ReturnType<typeof createWorkspacePolicyService>;
 
@@ -24,6 +25,34 @@ function failure(error: unknown): Response {
   }
   console.error("workspace_policy_action_failed");
   return Response.json({ error: "workspace_policy_action_failed" }, { status: 500 });
+}
+
+export function createWorkspaceOverviewHandler(input: Readonly<{
+  resolveAuth: RequestAuthResolver;
+  service: Pick<ReturnType<typeof createWorkspaceOverviewService>, "read">;
+}>) {
+  return async (request: Request): Promise<Response> => {
+    const headers = { "cache-control": "private, no-store" };
+    const auth = await requireAdmin(request, input.resolveAuth);
+    if (auth instanceof Response) {
+      auth.headers.set("cache-control", "private, no-store");
+      return auth;
+    }
+    const params = new URL(request.url).searchParams;
+    const page = params.get("page") ?? "1";
+    const filter = params.get("filter") ?? "active";
+    if ([...params.keys()].some((key) => !["page", "filter"].includes(key)) ||
+      params.getAll("page").length > 1 || params.getAll("filter").length > 1 ||
+      !/^[1-9]\d{0,5}$/u.test(page) || Number(page) > 100_000 ||
+      !(filter === "active" || filter === "all")) {
+      return Response.json({ error: "workspace_overview_input_invalid" }, { headers, status: 400 });
+    }
+    try {
+      return Response.json({ overview: await input.service.read({ filter, page: Number(page) }) }, { headers });
+    } catch {
+      return Response.json({ error: "workspace_overview_unavailable" }, { headers, status: 503 });
+    }
+  };
 }
 
 export function createWorkspacePolicyHandlers(input: Readonly<{

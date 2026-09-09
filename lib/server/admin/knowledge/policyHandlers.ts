@@ -86,14 +86,19 @@ export function createAdminKnowledgePolicyHandlers(input: Readonly<{
       if (record(value) && value.action === "activate_profile") {
         const deploymentId = boundedId(value.deploymentId);
         const mode = pdfProcessingMode(value.pdfProcessingMode);
+        const reasoningEffort = value.documentReasoningEffort ?? null;
         if (!allowedKeys(value, [
           "action",
           "deploymentId",
           "expectedVersion",
           "pdfProcessingMode",
-          "documentDeploymentId"
+          "documentDeploymentId",
+          "documentReasoningEffort"
         ]) || !deploymentId || !mode || !Number.isSafeInteger(value.expectedVersion) ||
           Number(value.expectedVersion) < 1 ||
+          (reasoningEffort !== null && (typeof reasoningEffort !== "string" ||
+            !reasoningEffort.trim() || reasoningEffort.length > 32 ||
+            /[\u0000-\u001f\u007f]/u.test(reasoningEffort) || mode === "local")) ||
           (mode === "local" ? value.documentDeploymentId !== null : !boundedId(value.documentDeploymentId))) {
           return Response.json({ error: "knowledge_profile_input_invalid" }, { status: 400 });
         }
@@ -103,6 +108,7 @@ export function createAdminKnowledgePolicyHandlers(input: Readonly<{
             expectedVersion: Number(value.expectedVersion),
             pdfProcessingMode: mode,
             documentDeploymentId: mode === "local" ? null : boundedId(value.documentDeploymentId),
+            documentReasoningEffort: reasoningEffort,
             userId: auth.session.userId
           });
           return Response.json({ knowledge: await input.service.list() });

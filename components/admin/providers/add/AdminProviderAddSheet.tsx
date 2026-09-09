@@ -68,6 +68,8 @@ type SnapshotState =
   | Readonly<{ kind: "ready"; snapshot: AdminProviderQuickSetupSnapshot }>;
 
 type DiscoveryState = Readonly<{
+  catalogProof?: string;
+  responsesRequestIsolationDetected?: boolean;
   attempted: boolean;
   error: string | null;
   loading: boolean;
@@ -318,7 +320,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
     });
     setError(null);
     if ("apiRoot" in patch || "secret" in patch || "noKey" in patch || "allowPrivateNetwork" in patch) {
-      setDiscovery((current) => ({ ...current, error: null, models: null }));
+      setDiscovery((current) => ({ attempted: current.attempted, error: null, loading: false, models: null }));
     }
   };
 
@@ -424,7 +426,11 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
       return;
     }
     const models = result.data.models;
-    setDiscovery({ attempted: true, error: null, loading: false, models });
+    setDiscovery({ attempted: true, error: null, loading: false, models,
+      ...(result.data.catalogProof ? { catalogProof: result.data.catalogProof } : {}),
+      ...(result.data.responsesRequestIsolationDetected === undefined ? {} : {
+        responsesRequestIsolationDetected: result.data.responsesRequestIsolationDetected
+      }) });
     const supported = models.filter((model) => discoveredModelHint(model).supported);
     setCustom((current) => ({
       ...current,
@@ -501,7 +507,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
   };
 
   const submitCustom = async () => {
-    const validation = customRequest({ connections, discovered: discovery.models, form: custom });
+    const validation = customRequest({ connections, discovered: discovery.models, catalogProof: discovery.catalogProof, form: custom });
     if (!validation.ok) {
       setError({ field: validation.field, message: validation.message });
       return;
@@ -844,6 +850,8 @@ function CustomFields({
 }>) {
   const modelsLabelId = useId();
   const models = discovery.models;
+  const isolationEnabled = form.responsesRequestIsolation === "on" ||
+    (form.responsesRequestIsolation === "auto" && discovery.responsesRequestIsolationDetected === true);
   const showManual = discovery.attempted && !discovery.loading && (models === null || models.length === 0);
   const toggleModel = (id: string, checked: boolean) => update({
     selectedModelIds: checked
@@ -984,6 +992,11 @@ function CustomFields({
             })}
           </div>
         ) : null}
+        {form.protocol === "responses" && discovery.responsesRequestIsolationDetected === true ? (
+          <p className={`mt-2 text-xs leading-5 ${isolationEnabled ? "text-proof" : "text-ink-secondary"}`} role="status">
+            Codex LB detected from the validated models catalog. Responses isolation is {isolationEnabled ? "enabled" : "disabled"}.
+          </p>
+        ) : null}
         {discovery.error ? (
           <p className="mt-2 text-xs leading-5 text-critical" role="alert">{discovery.error}</p>
         ) : null}
@@ -1027,6 +1040,29 @@ function CustomFields({
           disabled={busy || form.noKey}
           onChange={(allowPrivateNetwork) => update({ allowPrivateNetwork })}
         />
+        {form.protocol === "responses" ? (
+          <Field
+            help={`${form.responsesRequestIsolation === "auto"
+              ? isolationEnabled
+                ? "Automatic isolation is enabled for this endpoint."
+                : "Automatic isolation stays disabled until a validated catalog identifies Codex LB."
+              : `Isolation is ${isolationEnabled ? "enabled" : "disabled"} for Responses requests.`} When enabled, each request uses a fresh prompt_cache_key. This can reduce prefix-cache reuse and increase connection overhead. No fixed delay is added.`}
+            label="Responses request isolation"
+            render={(id) => (
+              <select
+                className={inputClass}
+                disabled={busy}
+                id={id}
+                onChange={(event) => update({ responsesRequestIsolation: event.currentTarget.value as CustomForm["responsesRequestIsolation"] })}
+                value={form.responsesRequestIsolation}
+              >
+                <option value="auto">Automatic (Codex LB detection)</option>
+                <option value="on">Always on</option>
+                <option value="off">Always off</option>
+              </select>
+            )}
+          />
+        ) : null}
         <Field
           className="sm:max-w-xs"
           help={form.reasoningChoice === "automatic"

@@ -11,6 +11,10 @@ const blockedCodes = new Set([
 
 const unsupportedMessage = /\b(?:does not support|do not support|not supported|unsupported)\b/iu;
 const capabilityMessage = /\b(?:inputs?|output formats?|response formats?|images?|vision|pdfs?|documents?|files?|json|schemas?|structured outputs?|tools?|function calling|response_format|input_image|input_file)\b|\b(?:this|the|requested) (?:request|feature|input|capability)\b/iu;
+// Bare "input" may refer to an unrelated input parameter such as reasoning.
+// Require an input modality/file marker before claiming PDF incompatibility.
+const inputMessage = /\b(?:images?|vision|pdfs?|documents?|files?|input_image|input_file)\b/iu;
+const unsupportedInputCodes = new Set(["unsupported_content_type", "unsupported_image", "unsupported_file", "unsupported_file_type"]);
 const blockedMessage = /\b(?:api[ -]?key|authentication|permission|access denied|unauthorized|forbidden|quota|credits?|billing|balance|spend limit|usage limit|policy|safety|moderation|country|region|account|organization|project)\b|\b(?:unknown|invalid|unsupported) model\b|\bmodel(?:\s+\S+){0,3}\s+(?:not found|does not exist|is not available|is not supported)\b/iu;
 
 const accessFailureMessage = /\b(?:invalid|incorrect|expired|revoked) (?:api[ -]?key|credentials?)\b|\b(?:unauthorized|forbidden|permission denied|access denied|insufficient quota|quota exceeded|quota exhausted|insufficient credits|insufficient balance|unknown model|invalid model)\b/iu;
@@ -32,5 +36,8 @@ export function providerResponseFailure(message: string, response: Readonly<Reco
     : explicitlyBlocked ? "provider_response_not_retryable"
       : explicitlyUnsupported ? "provider_capability_unsupported"
         : hasUnsupportedMessage ? "provider_response_not_retryable" : undefined;
-  return Object.assign(new Error(message), code ? { code } : {});
+  const unsupportedInput = code === "provider_capability_unsupported" &&
+    (typeof detail?.code === "string" && unsupportedInputCodes.has(detail.code) ||
+      hasUnsupportedMessage && inputMessage.test(messageText));
+  return Object.assign(new Error(message), code ? { code } : {}, unsupportedInput ? { unsupportedInput: true } : {});
 }

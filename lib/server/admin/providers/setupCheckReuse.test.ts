@@ -45,7 +45,7 @@ async function fixture(realTester = false) {
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const body = JSON.parse(String(init?.body));
     const text = body.text?.format ? JSON.stringify({ count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] })
-      : JSON.stringify(body.input).includes("input_file") ? "Q7K4P9" : "OK";
+      : JSON.stringify(body.input).includes("input_file") ? "PEARS" : "OK";
     const response = { id: "synthetic-response", status: "completed", output: [{ type: "message", role: "assistant",
       content: [{ type: "output_text", text }] }], usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 } };
     return body.stream ? new Response(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response })}\n\n`,

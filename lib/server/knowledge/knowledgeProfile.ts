@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { MODEL_PDF_LAYOUT_TEXT_PROFILE_VERSION } from "../parsing/modelPdfOutput";
+import { freezeKnowledgeDocumentReasoning } from "./documentReasoning";
 import {
   loadEmbeddingProviderRole,
   loadProjectEmbeddingProviderRole,
@@ -136,6 +137,7 @@ export function knowledgeProfileConfiguration(
   input: Readonly<{
     embeddingProviderModelId: string;
     pdfProcessingMode?: KnowledgePdfProcessingMode;
+    pdfReasoningEffort?: string | null;
     pdfSystemModelProviderModelId?: string | null;
   } & Record<string, unknown>>
 ): Prisma.InputJsonObject {
@@ -148,6 +150,7 @@ export function knowledgeProfileConfiguration(
     }) as unknown as
       Prisma.InputJsonArray,
     pdfProcessingMode,
+    ...(input.pdfReasoningEffort ? { pdfReasoningEffort: input.pdfReasoningEffort } : {}),
     rolePolicyVersion: KNOWLEDGE_PROFILE_ROLE_POLICY_VERSION,
     schemaVersion: 7
   };
@@ -218,12 +221,18 @@ export function isCurrentKnowledgeProfilePolicy(input: Readonly<{
   profileConfiguration: unknown;
 }>): boolean {
   const pdfProcessingMode = input.pdfProcessingMode ?? "local";
+  const pdfReasoningEffort = record(input.profileConfiguration)
+    ? input.profileConfiguration.pdfReasoningEffort ?? null : null;
+  if (pdfReasoningEffort !== null && (typeof pdfReasoningEffort !== "string" ||
+    !pdfReasoningEffort.trim() || pdfReasoningEffort.length > 32 ||
+    /[\u0000-\u001f\u007f]/u.test(pdfReasoningEffort) || pdfProcessingMode === "local")) return false;
   let pdfSystemModelProviderModelId: string | null = null;
   if (pdfProcessingMode !== "local") {
     try {
-      pdfSystemModelProviderModelId = normalizeProviderExecutionSnapshot(
-        input.pdfSystemModelSnapshot
-      ).providerModelId;
+      const snapshot = normalizeProviderExecutionSnapshot(input.pdfSystemModelSnapshot);
+      const effective = freezeKnowledgeDocumentReasoning(snapshot, pdfReasoningEffort);
+      if (!effective || canonicalJson(effective) !== canonicalJson(snapshot)) return false;
+      pdfSystemModelProviderModelId = snapshot.providerModelId;
     } catch {
       return false;
     }
@@ -235,6 +244,7 @@ export function isCurrentKnowledgeProfilePolicy(input: Readonly<{
     knowledgeProfileConfiguration({
       embeddingProviderModelId: input.embeddingProviderModelId,
       pdfProcessingMode,
+      pdfReasoningEffort,
       pdfSystemModelProviderModelId
     })
   ) && canonicalJson(input.egressPolicy) === canonicalJson(

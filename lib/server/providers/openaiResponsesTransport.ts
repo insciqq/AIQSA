@@ -11,6 +11,7 @@ import {
   type ProviderRetryOptions
 } from "./providerRetry";
 import { parseRetryAfterMs } from "../retryAfter";
+import { randomUUID } from "node:crypto";
 
 export type OpenAIResponseObject = Record<string, unknown>;
 
@@ -70,6 +71,7 @@ async function parseOpenAIJsonResponse(
 async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Promise<never> {
   const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
   let failureCode: string | undefined;
+  let unsupportedInput = false;
   try {
     const text = await readBoundedResponseText(response, { signal });
     try {
@@ -77,6 +79,7 @@ async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Pr
       if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
         const failure = providerResponseFailure("provider_response_failed", parsed as Record<string, unknown>);
         failureCode = "code" in failure && typeof failure.code === "string" ? failure.code : undefined;
+        unsupportedInput = "unsupportedInput" in failure && failure.unsupportedInput === true;
       }
     } catch { /* An undecodable error body never changes the HTTP classification. */ }
   } catch (error) {
@@ -89,7 +92,9 @@ async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Pr
     providerHttpErrorMessage("OpenAI", response.status),
     response.status,
     retryAfterMs
-  ), failureCode && response.status !== 401 && response.status !== 403 ? { code: failureCode } : {});
+  ), failureCode && response.status !== 401 && response.status !== 403
+    ? { code: failureCode, ...(unsupportedInput ? { unsupportedInput: true } : {}) }
+    : {});
 }
 
 function initialRequestRetryDecision(
@@ -126,6 +131,8 @@ export function createFetchOpenAIResponsesClient(input: {
    * create can have crash-ambiguous provider state without a response id.
    */
   initialRequestRetry?: ProviderRetryOptions;
+  /** Adds a fresh opaque routing key to every physical compatible POST. */
+  requestIsolation?: boolean;
 }): OpenAIResponsesClient {
   const baseUrl = input.baseUrl?.trim() || "https://api.openai.com/v1";
   const fetchFn = input.fetchFn ?? fetch;
@@ -145,10 +152,14 @@ export function createFetchOpenAIResponsesClient(input: {
       options?.timeoutMs ?? input.defaultTimeoutMs
     );
     try {
-      const serializedBody = JSON.stringify(body);
       const operation = async () => {
+        // Generate inside the retry operation: each physical POST, including an
+        // explicitly allowed replay, receives a distinct routing identity.
+        const requestBody = input.requestIsolation
+          ? { ...body, prompt_cache_key: randomUUID() }
+          : body;
         const response = await fetchFn(`${baseUrl}/responses`, {
-          body: serializedBody,
+          body: JSON.stringify(requestBody),
           headers,
           method: "POST",
           signal: timeout.signal

@@ -18,6 +18,9 @@ import { WorkspaceOutputCaptureStore } from "./outputCapture";
 import { loadPinnedOfficialWorkspaceToolCatalog } from "./microsandboxRuntime";
 import {
   WorkspaceRuntimeError,
+  WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE,
+  type WorkspaceRuntimeInventoryInput,
+  type WorkspaceRuntimeInventoryPage,
   type WorkspaceOutputStream,
   type WorkspaceRuntime,
   type WorkspaceRuntimeSession,
@@ -396,6 +399,21 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
         virtualizationReady: false
       };
     }
+  }
+
+  async listSessions(input: WorkspaceRuntimeInventoryInput): Promise<WorkspaceRuntimeInventoryPage> {
+    if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+    const sessions = [...this.sessions.values()].sort((a, b) => a.runtimeSandboxId.localeCompare(b.runtimeSandboxId));
+    const remaining = input.cursor ? sessions.filter((session) => session.runtimeSandboxId > input.cursor!) : sessions;
+    const page = remaining.slice(0, WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE);
+    return {
+      entries: page.map((session) => ({
+        runtimeSandboxId: session.runtimeSandboxId,
+        sandboxName: session.sandboxName,
+        state: session.state === "ready" ? "running" : "stopped"
+      })),
+      nextCursor: remaining.length > page.length ? page.at(-1)!.runtimeSandboxId : null
+    };
   }
 
   private catalog(): Promise<WorkspaceToolCatalog> {

@@ -83,8 +83,11 @@ export type StoredProviderDraftCheck = Readonly<{
 }>;
 
 export type ProviderActivationCandidate = Readonly<{
+  /** All live keys, including unreferenced/disabled keys, for catalog detection. */
+  catalogCredentials?: readonly ProviderCatalogCredentialFence[];
   connection: {
     activeConfiguration: unknown | null;
+    activeVersion?: number;
     configuration: unknown;
     displayName: string;
     draftVersion: number;
@@ -112,6 +115,11 @@ export type ProviderActivationCandidate = Readonly<{
 }>;
 
 export type ProviderActivationWrite = Readonly<{
+  isolationRefresh?: Readonly<{
+    activeVersion: number;
+    expectedActiveVersion: number;
+    credentials: readonly ProviderCatalogCredentialCheck[];
+  }>;
   checks: StoredProviderDraftCheck[];
   connection: {
     configuration: ProviderConnectionConfiguration;
@@ -197,6 +205,11 @@ export type ProviderModelActivationWrite = Readonly<{
  * its catalog models together. Established connections retain their choices.
  */
 export type ProviderCredentialActivationWrite = Readonly<{
+  /** Rebind endpoint detection to the complete post-save live credential set. */
+  isolationRefresh?: Readonly<{
+    configuration: ProviderConnectionConfiguration;
+    credentials: readonly ProviderCatalogCredentialCheck[];
+  }>;
   catalogAdditions?: readonly Readonly<{
     configuration: ProviderModelConfiguration;
     displayName: string;
@@ -235,6 +248,16 @@ export type ProviderCatalogAccessCheck = Readonly<{
   modelVersion: number;
   providerModelId: string;
   status: AdminProviderCheckStatus;
+}>;
+
+export type ProviderCatalogCredentialFence = Readonly<{
+  credentialId: string;
+  expectedDraftVersion: number;
+  expectedVersionId: string;
+}>;
+
+export type ProviderCatalogCredentialCheck = ProviderCatalogCredentialFence & Readonly<{
+  modelChecks: readonly ProviderCatalogAccessCheck[];
 }>;
 
 export type ProviderConnectionSettingsWrite = Readonly<{

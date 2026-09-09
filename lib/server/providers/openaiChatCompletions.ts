@@ -19,6 +19,7 @@ import {
 } from "./streamSafety";
 import type { ProviderRunResult } from "./types";
 import { visibleAnswerText } from "./visibleAnswer";
+import { providerResponseFailure } from "./responseFailure";
 
 export type OpenAIChatCompletionsRecord = Readonly<Record<string, unknown>>;
 
@@ -160,6 +161,10 @@ export function assertOpenAIChatTerminalResponse(
   if (!message) {
     throw new Error(options.invalidTerminalError);
   }
+  if (firstOpenAIChatChoice(response)?.finish_reason === "content_filter" ||
+    typeof message.refusal === "string" && message.refusal.trim()) {
+    throw Object.assign(new Error(options.invalidTerminalError), { code: "provider_response_not_retryable" });
+  }
 
   const calls = rawToolCalls(message);
   if (openAIChatText(message.content).trim()) {
@@ -294,7 +299,7 @@ export async function* streamOpenAIChatJsonResponse<
 ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
   const responseError = profile.responseError(response);
   if (responseError) {
-    throw new Error(responseError);
+    throw providerResponseFailure(responseError, response);
   }
   profile.validateJsonTerminal(response);
 

@@ -19,11 +19,15 @@ Initial Add provider/model and Test & Save authorize all implemented capability 
 
 Only deterministic probe rejection or a statically unsupported adapter proves incompatibility. Authentication, rate limiting, network, timeout, safety-limit and upstream outages fail the check while preserving prior evidence. Cancellation cannot erase earlier support or promote untested capability. Discard raw probe output and errors.
 
+Native PDF qualification must read image content through the selected native route; intermediary OCR text does not prove that capability. A refused, incorrect or truncated answer and a generic HTTP error are inconclusive; only explicit unsupported input/route evidence establishes PDF incompatibility.
+
 ## Transport And Disclosure
 
 Every accepted transport has bounded input/output, cancellation, exact terminal proof and value-free failures. Retry only explicitly admitted replay-safe work under its adapter/stage-owned failure classification and deadline policy, without changing accepted authority or destinations. Native/background create, accepted streams and crash-ambiguous dispatched work are never blindly replayed. Every physical utility request contributes content-free accounting, including admitted retries or delayed selected-provider attempts. Never retain raw requests, responses, reasoning, tool arguments or provider errors for diagnosis.
 
 Custom roots require explicit protocol and canonical base URL; do not guess `/v1`. Public endpoints require HTTPS and bearer authentication. Private/local HTTP and no-auth require their reviewed flags, pinned resolution/redirect checks and immutable tested evidence. No-auth emits no Authorization header.
+
+Gateway routing isolation is compatibility behavior, never identity or retry authority. Automatic detection belongs to validated catalog evidence bound to the tested endpoint and credential; explicit overrides and accepted snapshots remain authoritative. Opaque routing keys isolate physical requests without exposing private identity or acting as idempotency keys. Preserve concurrency; fixed delays cannot guarantee isolation.
 
 Native and compatible protocols are separate runtime identities; wire similarity grants no fallback authority. Native OpenAI background work requires stored provider state; compatible Responses does not inherit its store/background/cache lifecycle. DeepSeek and Gemini use their dedicated native paths without compatible fallback. Gemini thought signatures remain private continuation state; hosted Search and application tools are not combined until the stable protocol supports it. OpenRouter preserves the selected routing/privacy profile and defaults data collection to `deny`; an administrator may explicitly opt an individual model into `allow`, revalidated at admission and dispatch. Fakes are verification-only.
 

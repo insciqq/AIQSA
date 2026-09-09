@@ -41,6 +41,8 @@ export type AdminProviderCredentialTestOutcome = Readonly<{
   modelIds: string[];
   modelIdsByClass?: Readonly<Record<ProviderModelClass, string[]>>;
   models?: AdminCompatibleDiscoveredModel[];
+  /** Exact whole-catalog marker, observed before model-id deduplication. */
+  responsesRequestIsolationDetected?: boolean;
 }>;
 
 export type AdminProviderCredentialTester = Readonly<{
@@ -72,6 +74,12 @@ function modelId(value: unknown): string | null {
     !/[\u0000-\u001f\u007f]/u.test(normalized)
     ? normalized
     : null;
+}
+
+function ownerMarker(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= 128 && !/[\u0000-\u001f\u007f]/u.test(value)
+    ? value
+    : undefined;
 }
 
 function firstInteger(values: readonly unknown[]): number | undefined {
@@ -228,7 +236,10 @@ function modelsFromCatalog(
       capabilities: family === "openai_compatible" && isRecord(entry)
         ? compatibleCapabilities(entry)
         : {},
-      id
+      id,
+      ...(family === "openai_compatible" && isRecord(entry) && ownerMarker(entry.owned_by)
+        ? { ownedBy: ownerMarker(entry.owned_by) }
+        : {})
     });
   }
   return output;
@@ -296,6 +307,7 @@ export function createAdminProviderCredentialTester(
         const timeout = withTimeoutSignal(input.signal, connection.responseTimeoutMs);
         try {
           const classes = requestedModelClasses(input.family, input.modelClasses);
+          let responsesRequestIsolationDetected = true;
           const load = async (
             path: string,
             requiredOutputModality?: string
@@ -312,11 +324,19 @@ export function createAdminProviderCredentialTester(
             });
             if (!response.ok) throw new AdminProviderCredentialTestError();
             try {
-              return modelsFromCatalog(
-                JSON.parse(text) as unknown,
+              const catalog: unknown = JSON.parse(text);
+              // Inspect every entry before the catalog projection drops metadata
+              // and duplicate IDs. A duplicate with another owner is ambiguous.
+              const allCodexLb = isRecord(catalog) && Array.isArray(catalog.data) &&
+                catalog.data.length > 0 && catalog.data.every((entry) =>
+                  isRecord(entry) && entry.owned_by === "codex-lb");
+              const models = modelsFromCatalog(
+                catalog,
                 input.family,
                 requiredOutputModality
               );
+              responsesRequestIsolationDetected &&= allCodexLb;
+              return models;
             } catch {
               throw new AdminProviderCredentialTestError();
             }
@@ -345,7 +365,7 @@ export function createAdminProviderCredentialTester(
             method: "models_catalog",
             modelIds: models.map(({ id }) => id),
             ...(input.modelClasses ? { modelIdsByClass } : {}),
-            ...(input.family === "openai_compatible" ? { models } : {})
+            ...(input.family === "openai_compatible" ? { models, responsesRequestIsolationDetected } : {})
           };
         } finally {
           timeout.clear();

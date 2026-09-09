@@ -12,12 +12,13 @@ import { WorkspaceRuntimeError, type WorkspaceRuntime } from "./runtime";
 const sdk = vi.hoisted(() => ({
   builder: vi.fn(),
   get: vi.fn(),
+  listWith: vi.fn(),
   callTool: vi.fn(),
   closeMcp: vi.fn(async () => undefined)
 }));
 
 vi.mock("microsandbox", () => ({
-  Sandbox: { builder: sdk.builder, get: sdk.get },
+  Sandbox: { builder: sdk.builder, get: sdk.get, listWith: sdk.listWith },
   SandboxNotFoundError: class extends Error {},
   NetworkPolicy: { none: () => ({}) }
 }));
@@ -138,6 +139,38 @@ function fixture() {
 
 describe("Microsandbox Workspace lifecycle", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("reads labelled inventory pages without connecting, touching or starting stopped environments", async () => {
+    const value = fixture();
+    const list = { cursor: vi.fn().mockReturnThis(), label: vi.fn().mockReturnThis(), limit: vi.fn().mockReturnThis() };
+    const touch = vi.fn();
+    sdk.listWith.mockImplementationOnce(async (configure) => {
+      expect(configure(list)).toBe(list);
+      return { nextCursor: "next-fixture", sandboxes: [
+        { ...value.handle, status: "stopped", touch },
+        { ...value.handle, id: "second-runtime", name: "second-name", status: "running", touch }
+      ] };
+    });
+    expect(await value.runtime.listSessions({ cursor: "first-fixture" })).toEqual({
+      entries: [
+        { runtimeSandboxId, sandboxName, state: "stopped" },
+        { runtimeSandboxId: "second-runtime", sandboxName: "second-name", state: "running" }
+      ], nextCursor: "next-fixture"
+    });
+    expect(list.label).toHaveBeenCalledWith("aiqsa.workspace", "true");
+    expect(list.limit).toHaveBeenCalledWith(100);
+    expect(list.cursor).toHaveBeenCalledWith("first-fixture");
+    expect(touch).not.toHaveBeenCalled();
+    expect(sdk.get).not.toHaveBeenCalled();
+    expect(sdk.builder).not.toHaveBeenCalled();
+    expect(value.handle.connectOrStart).not.toHaveBeenCalled();
+    expect(value.handle.stopWithTimeout).not.toHaveBeenCalled();
+    expect(value.sandbox.exec).not.toHaveBeenCalled();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(value.runtime.listSessions({ signal: controller.signal })).rejects.toMatchObject({ code: "workspace_tool_cancelled" });
+    expect(sdk.listWith).toHaveBeenCalledTimes(1);
+  });
 
   it("removes private output captures after a restart discovers the guest disk is gone", async () => {
     const value = fixture();

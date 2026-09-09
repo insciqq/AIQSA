@@ -67,6 +67,26 @@ const alternateEmbedding = {
   connectionDisplayName: "OpenRouter", deploymentId: "qwen", modelDisplayName: "Qwen3 Embedding 8B", provider: "openrouter", targetDimension: 1536
 };
 
+const documentModel = {
+  connectionDisplayName: "OpenAI", defaultReasoningEffort: "medium", deploymentId: "luna",
+  directPdf: true, modelDisplayName: "GPT Luna", provider: "openai",
+  reasoningEfforts: ["none", "low", "medium", "high"], upstreamModelId: "luna", vision: true
+};
+
+function documentSettings(effort: string | null = null): AdminKnowledgeSettings {
+  const knowledge = knowledgeSettings();
+  const active = { ...knowledge.profile.activeRevision!, pdfProcessing: {
+    destination: documentModel, mode: "system_model_vision" as const, parserProfileVersion: 19,
+    reasoningEffort: effort
+  } };
+  return { ...knowledge, profile: { ...knowledge.profile, activeRevision: active,
+    availablePdfDestinations: [documentModel, {
+      ...documentModel, defaultReasoningEffort: null, deploymentId: "terra",
+      modelDisplayName: "GPT Terra", reasoningEfforts: []
+    }], recentRevisions: [active, ...knowledge.profile.recentRevisions]
+  } };
+}
+
 function knowledgeSettings(): AdminKnowledgeSettings {
   const profile = adminKnowledgeProfileFixture();
   const active = { ...profile.activeRevision!, revisionNumber: 2 };
@@ -146,11 +166,21 @@ function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSetti
     }
     if (url === "/api/admin/knowledge") {
       if (method === "PATCH" && body) {
+        if (body.expectedVersion !== knowledge.profile.version) {
+          return Response.json({ error: "knowledge_profile_stale" }, { status: 409 });
+        }
         const destination = knowledge.profile.availableDestinations.find((item) => item.deploymentId === body.deploymentId) ??
           knowledge.profile.recentRevisions.find((item) => item.id === body.revisionId)?.destination;
         if (!destination) return Response.json({ error: "knowledge_profile_input_invalid" }, { status: 400 });
         const activeRevision = {
-          ...knowledge.profile.activeRevision!, activatedAt: "2026-09-07T01:00:00.000Z", destination, id: "profile-revision-3", revisionNumber: 3
+          ...knowledge.profile.activeRevision!, activatedAt: "2026-09-07T01:00:00.000Z", destination, id: "profile-revision-3", revisionNumber: 3,
+          pdfProcessing: body.action === "rollback_profile"
+            ? knowledge.profile.recentRevisions.find((item) => item.id === body.revisionId)!.pdfProcessing
+            : {
+                destination: knowledge.profile.availablePdfDestinations.find((item) => item.deploymentId === body.documentDeploymentId) ?? null,
+                mode: body.pdfProcessingMode as "local" | "system_model_vision" | "system_model_direct_pdf",
+                parserProfileVersion: 19, reasoningEffort: body.documentReasoningEffort as string | null
+              }
         };
         knowledge = adminKnowledgeSettingsFixture({ profile: adminKnowledgeProfileFixture({
           ...knowledge.profile, activeRevision,
@@ -315,7 +345,7 @@ describe("AdminRolesSection", () => {
     const knowledge = knowledgeSettings();
     const calls = server(roles, { ...knowledge, profile: {
       ...knowledge.profile, activeRevision: null, availablePdfDestinations: [{
-        deploymentId: "luna", modelDisplayName: "GPT Luna", connectionDisplayName: "OpenAI", provider: "openai", upstreamModelId: "luna", vision: true, directPdf: false
+        ...documentModel, directPdf: false
       }], health: { checkedAt: null, code: "knowledge_profile_not_configured", state: "not_configured" },
       egress: { embeddingDestination: null, pdfDestination: null, representations: ["document_text_chunks", "search_queries"] }
     } });
@@ -405,7 +435,7 @@ describe("AdminRolesSection", () => {
     await config.onConfirm();
     await waitFor(() => expect(screen.getByTestId("admin-knowledge-state")).toHaveTextContent("Reindexing 1 of 5 bases"));
     expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([{
-      action: "activate_profile", deploymentId: "qwen", documentDeploymentId: null, expectedVersion: 1, pdfProcessingMode: "local"
+      action: "activate_profile", deploymentId: "qwen", documentDeploymentId: null, documentReasoningEffort: null, expectedVersion: 1, pdfProcessingMode: "local"
     }]);
     expect(screen.queryByRole("button", { name: "Apply" })).not.toBeInTheDocument();
   });
@@ -424,6 +454,80 @@ describe("AdminRolesSection", () => {
     await config.onConfirm();
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Earlier configurations" })).not.toBeInTheDocument());
     expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([{ action: "rollback_profile", expectedVersion: 1, revisionId: "profile-revision-0" }]);
+  });
+
+  it("keeps Documents reasoning independent and requires confirmation for a reasoning-only change", async () => {
+    const calls = server(rolesCatalog(), documentSettings());
+    const { requestConfirmation } = renderSection();
+    const documents = await screen.findByTestId("admin-role-documents");
+    fireEvent.click(within(documents).getByText("Advanced"));
+    const reasoning = screen.getByRole("combobox", { name: "Documents reasoning" });
+    expect(reasoning).toHaveValue("");
+    expect(within(reasoning).getByRole("option", { name: "Reasoning: Default (medium)" })).toHaveValue("");
+    expect(within(reasoning).getByRole("option", { name: "Reasoning: none" })).toHaveValue("none");
+    fireEvent.change(reasoning, { target: { value: "none" } });
+    expect(screen.getByRole("button", { name: "Apply" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([]);
+    // Cancelling the confirmation leaves the same draft and active revision.
+    fireEvent.click(within(screen.getByTestId("admin-role-knowledge")).getByRole("button", { name: "Discard" }));
+    expect(reasoning).toHaveValue("");
+    fireEvent.change(reasoning, { target: { value: "low" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await act(async () => requestConfirmation.mock.calls.at(-1)![0].onConfirm());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Apply" })).not.toBeInTheDocument());
+    expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([{
+      action: "activate_profile", deploymentId: "embedding-model-1", documentDeploymentId: "luna",
+      documentReasoningEffort: "low", expectedVersion: 1, pdfProcessingMode: "system_model_vision"
+    }]);
+    const reads = calls.length;
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(calls.length).toBeGreaterThan(reads));
+    expect(reasoning).toHaveValue("low");
+    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([]);
+  });
+
+  it("resets Documents reasoning on model or mode changes and restores it on Discard", async () => {
+    const calls = server(rolesCatalog(), documentSettings("high"));
+    renderSection();
+    fireEvent.click(within(await screen.findByTestId("admin-role-documents")).getByText("Advanced"));
+    const reasoning = screen.getByRole("combobox", { name: "Documents reasoning" });
+    expect(reasoning).toHaveValue("high");
+    fireEvent.click(screen.getByRole("button", { name: "Documents model" }));
+    fireEvent.click(within(screen.getByRole("listbox", { name: "Ready for Documents" })).getByRole("option", { name: /GPT Terra/ }));
+    expect(reasoning).toHaveValue("");
+    expect(reasoning).toBeDisabled();
+    expect(within(reasoning).getAllByRole("option")).toHaveLength(1);
+    fireEvent.click(within(screen.getByTestId("admin-role-knowledge")).getByRole("button", { name: "Discard" }));
+    expect(reasoning).toHaveValue("high");
+    fireEvent.change(screen.getByRole("combobox", { name: "Documents mode" }), { target: { value: "system_model_direct_pdf" } });
+    expect(reasoning).toHaveValue("");
+    fireEvent.click(within(screen.getByTestId("admin-role-knowledge")).getByRole("button", { name: "Discard" }));
+    expect(reasoning).toHaveValue("high");
+    fireEvent.change(screen.getByRole("combobox", { name: "Documents mode" }), { target: { value: "local" } });
+    expect(screen.queryByRole("combobox", { name: "Documents reasoning" })).not.toBeInTheDocument();
+    expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([]);
+  });
+
+  it("shows unavailable saved reasoning honestly and preserves a failed draft across stale refresh", async () => {
+    const calls = server(rolesCatalog(), documentSettings("removed-level"));
+    const { reportError, requestConfirmation } = renderSection();
+    fireEvent.click(within(await screen.findByTestId("admin-role-documents")).getByText("Advanced"));
+    const reasoning = screen.getByRole("combobox", { name: "Documents reasoning" });
+    expect(within(reasoning).getByRole("option", { name: "Reasoning: removed-level (unavailable)" })).toBeDisabled();
+    fireEvent.change(reasoning, { target: { value: "low" } });
+    const original = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input) === "/api/admin/knowledge" && init?.method === "PATCH"
+        ? Response.json({ error: "knowledge_profile_stale" }, { status: 409 }) : original(input, init)));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await act(async () => requestConfirmation.mock.calls.at(-1)![0].onConfirm());
+    await waitFor(() => expect(reportError).toHaveBeenCalledWith(expect.stringMatching(/changed elsewhere/)));
+    expect(reasoning).toHaveValue("low");
+    expect(screen.getByRole("button", { name: "Apply" })).toBeEnabled();
+    expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([]);
+    fireEvent.click(within(screen.getByTestId("admin-role-knowledge")).getByRole("button", { name: "Discard" }));
+    expect(reasoning).toHaveValue("removed-level");
   });
 
   it("reports a stale immediate apply and reloads the current assignment instead of guessing", async () => {

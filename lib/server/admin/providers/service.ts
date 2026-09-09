@@ -61,7 +61,9 @@ import type {
   ProviderActivationWrite,
   ProviderActiveRefreshCandidate,
   ProviderCatalogAccessCheck,
+  ProviderCatalogCredentialCheck,
   ProviderConnectionSettingsWrite,
+  ProviderCredentialActivationWrite,
   ProviderCredentialSecretSource,
   ProviderDisableTarget,
   ProviderDraftMutationResult,
@@ -550,10 +552,46 @@ export function createAdminProviderService(input: Readonly<{
         id: model.id, activeConfig: adminProviderModelConfiguration(model.configuration), activeVersion: 1
       }))]
     };
+    let isolationRefresh: ProviderCredentialActivationWrite["isolationRefresh"];
+    const activeConfiguration = connection.activeConfig
+      ? normalizeAdminProviderConnectionConfiguration(connection.activeConfig) : null;
+    if (activeConfiguration && connection.family === "openai_compatible" &&
+      activeConfiguration.responsesRequestIsolation !== undefined) {
+      const catalogDetections = [outcome.responsesRequestIsolationDetected === true];
+      const credentials: ProviderCatalogCredentialCheck[] = [];
+      for (const current of connection.credentials) {
+        if (!current.activeVersion || current.activeVersion.revokedAt) continue;
+        // The rotated key's candidate catalog replaces its old catalog. Other
+        // keys use their active secret, including disabled/unreferenced keys.
+        const currentOutcome = current.id === credentialId ? outcome : await testCredentialCatalog({
+          connection: activeConfiguration,
+          family: connection.family,
+          modelClasses: modelClasses.length ? modelClasses : ["answer"],
+          secret: () => activeCredentialSecret(current.id, current.activeVersion!.id),
+          signal: value.signal
+        });
+        catalogDetections.push(currentOutcome.responsesRequestIsolationDetected === true);
+        credentials.push({
+          credentialId: current.id,
+          expectedDraftVersion: current.draftVersion,
+          expectedVersionId: current.activeVersion.id,
+          modelChecks: catalogAccessChecks(checkedConnection, currentOutcome)
+        });
+      }
+      isolationRefresh = {
+        configuration: { ...activeConfiguration, responsesRequestIsolationDetected: catalogDetections.every(Boolean) },
+        credentials
+      };
+    }
     const result = await input.repository.activateCredentialCas({
+      ...(isolationRefresh ? { isolationRefresh } : {}),
       catalogAdditions: additions,
       ...(initialSetup ? { bootstrap: {
-        configuration: normalizeAdminProviderConnectionConfiguration(connection.draftConfig),
+        configuration: {
+          ...normalizeAdminProviderConnectionConfiguration(connection.draftConfig),
+          ...(connection.family === "openai_compatible" && connection.draftConfig.responsesRequestIsolation !== undefined
+            ? { responsesRequestIsolationDetected: outcome.responsesRequestIsolationDetected === true } : {})
+        },
         models
       } } : {}),
       checkedAt: now(),
@@ -593,7 +631,13 @@ export function createAdminProviderService(input: Readonly<{
     }
     if (result === "stale") throw new AdminProviderServiceError("provider_draft_stale");
     if (value.startChecks !== false) {
-      await startBackgroundChecks({ connectionId: connection.id, credentialId, reason: "credential", userId: value.userId });
+      const changed = isolationRefresh && activeConfiguration?.responsesRequestIsolationDetected !==
+        isolationRefresh.configuration.responsesRequestIsolationDetected;
+      const credentialIds = new Set([credentialId, ...(changed ? connection.credentials.filter((current) =>
+        current.enabled && current.activeVersion && !current.activeVersion.revokedAt).map(({ id }) => id) : [])]);
+      for (const id of credentialIds) {
+        await startBackgroundChecks({ connectionId: connection.id, credentialId: id, reason: "credential", userId: value.userId });
+      }
     }
     return { credentialId, versionId };
   }
@@ -950,7 +994,7 @@ export function createAdminProviderService(input: Readonly<{
       if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
       if (connection.draftVersion !== value.expectedDraftVersion) throw new AdminProviderServiceError("provider_draft_stale");
       const displayName = name(value.displayName);
-      const configuration = normalizeAdminProviderConnectionConfiguration(value.configuration);
+      let configuration = normalizeAdminProviderConnectionConfiguration(value.configuration);
       const previous = normalizeAdminProviderConnectionConfiguration(connection.activeConfig ?? connection.draftConfig);
       const endpointChanged = configuration.apiRoot !== previous.apiRoot;
       const keyless = configuration.authenticationMode === "none" && connection.family === "openai_compatible";
@@ -968,6 +1012,7 @@ export function createAdminProviderService(input: Readonly<{
         throw new AdminProviderServiceError("provider_endpoint_keys_required");
       }
       const writes: ProviderConnectionSettingsWrite["credentials"][number][] = [];
+      const catalogDetections: boolean[] = [];
       const modelClasses = [...new Set(connection.models.map((model) =>
         (model.activeConfig ?? model.draftConfig).modelClass))];
       for (const credential of credentials) {
@@ -981,6 +1026,7 @@ export function createAdminProviderService(input: Readonly<{
           secret,
           signal: value.signal
         });
+        catalogDetections.push(outcome.responsesRequestIsolationDetected === true);
         const versionId = replacementSecret === null ? null : idFactory();
         writes.push({
           credentialId: credential.id,
@@ -995,6 +1041,10 @@ export function createAdminProviderService(input: Readonly<{
           },
           testEvidence: { method: outcome.method, modelCount: outcome.modelIds.length, version: 1 }
         });
+      }
+      if (connection.family === "openai_compatible" && configuration.responsesRequestIsolation !== undefined) {
+        configuration = { ...configuration,
+          responsesRequestIsolationDetected: catalogDetections.length > 0 && catalogDetections.every(Boolean) };
       }
       if (value.signal?.aborted) throw new AdminProviderServiceError("provider_credential_test_failed");
       const result = await input.repository.saveConnectionSettingsCas({
@@ -1324,7 +1374,7 @@ export function createAdminProviderService(input: Readonly<{
       if (candidate.models.length === 0 || candidate.credentials.length === 0) {
         throw new AdminProviderServiceError("provider_activation_empty");
       }
-      const connection = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
+      let connection = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
       if (candidate.connection.activeConfiguration &&
         normalizeProviderConnectionConfiguration(candidate.connection.activeConfiguration).apiRoot !== connection.apiRoot) {
         // Only the atomic settings operation can collect replacements for every saved key.
@@ -1388,6 +1438,38 @@ export function createAdminProviderService(input: Readonly<{
         }
       }
 
+      let isolationRefresh: ProviderActivationWrite["isolationRefresh"];
+      if (candidate.connection.family === "openai_compatible" && connection.responsesRequestIsolation !== undefined) {
+        if (!candidate.catalogCredentials || candidate.connection.activeVersion === undefined) {
+          throw new AdminProviderServiceError("provider_draft_stale");
+        }
+        const catalogDetections = testedCredentials.map(({ outcome }) => outcome.responsesRequestIsolationDetected === true);
+        const catalogCredentials: ProviderCatalogCredentialCheck[] = [];
+        const checkedModels = { models: models.map((model) => ({
+          activeConfig: adminProviderModelConfiguration(model.configuration), activeVersion: model.draftVersion, id: model.id
+        })) };
+        for (const current of candidate.catalogCredentials) {
+          const referenced = testedCredentials.find(({ credential }) => credential.id === current.credentialId);
+          const outcome = referenced?.outcome ?? await testCredentialCatalog({
+            connection,
+            family: candidate.connection.family,
+            modelClasses: [...new Set(models.map(({ configuration }) => configuration.modelClass))],
+            secret: () => activeCredentialSecret(current.credentialId, current.expectedVersionId),
+            signal: value.signal
+          });
+          catalogDetections.push(outcome.responsesRequestIsolationDetected === true);
+          catalogCredentials.push({ ...current, modelChecks: catalogAccessChecks(checkedModels, outcome) });
+        }
+        connection = { ...connection, responsesRequestIsolationDetected: catalogDetections.every(Boolean) };
+        const configurationChanged = !candidate.connection.activeConfiguration || canonicalJson(connection) !==
+          canonicalJson(normalizeProviderConnectionConfiguration(candidate.connection.activeConfiguration));
+        isolationRefresh = {
+          activeVersion: Math.max(candidate.connection.draftVersion,
+            candidate.connection.activeVersion + (configurationChanged ? 1 : 0)),
+          expectedActiveVersion: candidate.connection.activeVersion,
+          credentials: catalogCredentials
+        };
+      }
       const credentials: ProviderActivationWrite["credentials"] = testedCredentials.map((tested) => {
         const { checkedAt, credential, outcome } = tested;
         const testEvidence = {
@@ -1526,6 +1608,7 @@ export function createAdminProviderService(input: Readonly<{
         );
       }
       const result = await input.repository.activateConnectionCas({
+        ...(isolationRefresh ? { isolationRefresh } : {}),
         checks,
         connection: {
           configuration: connection,
@@ -1542,7 +1625,7 @@ export function createAdminProviderService(input: Readonly<{
       return {
         activatedCredentialCount: credentials.length,
         activatedModelCount: models.length,
-        connectionVersion: candidate.connection.draftVersion
+        connectionVersion: isolationRefresh?.activeVersion ?? candidate.connection.draftVersion
       };
     },
 

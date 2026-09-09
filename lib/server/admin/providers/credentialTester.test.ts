@@ -181,6 +181,7 @@ describe("admin provider credential tester", () => {
       method: "models_catalog",
       modelIds: ["model-b", "model-a"],
       ...(family === "openai_compatible" ? {
+        responsesRequestIsolationDetected: false,
         models: [
           { capabilities: {}, id: "model-b" },
           { capabilities: {}, id: "model-a" }
@@ -228,6 +229,7 @@ describe("admin provider credential tester", () => {
     })).resolves.toEqual({
       method: "models_catalog",
       modelIds: ["local-model"],
+      responsesRequestIsolationDetected: false,
       models: [{ capabilities: {}, id: "local-model" }]
     });
     expect(requests[0]?.headers.has("authorization")).toBe(false);
@@ -306,6 +308,7 @@ describe("admin provider credential tester", () => {
     expect(result).toEqual({
       method: "models_catalog",
       modelIds: ["gpt-5.6-sol"],
+      responsesRequestIsolationDetected: false,
       models: [{
         capabilities: {
           contextWindow: 272_000,
@@ -342,6 +345,62 @@ describe("admin provider credential tester", () => {
     } catch (error) {
       expectStableFailure(error);
     }
+  });
+
+  it.each([
+    { label: "all exact markers", entries: [{ id: "one", owned_by: "codex-lb" }, { id: "two", owned_by: "codex-lb" }], detected: true },
+    { label: "empty catalog", entries: [], detected: false },
+    { label: "unmarked model", entries: [{ id: "codex-lb-model" }], detected: false },
+    { label: "mixed owners", entries: [{ id: "one", owned_by: "codex-lb" }, { id: "two", owned_by: "other" }], detected: false },
+    { label: "whitespace marker", entries: [{ id: "one", owned_by: " codex-lb " }], detected: false },
+    { label: "blank marker", entries: [{ id: "one", owned_by: "   " }], detected: false },
+    { label: "uppercase marker", entries: [{ id: "one", owned_by: "CODEX-LB" }], detected: false },
+    { label: "wrong marker type", entries: [{ id: "one", owned_by: ["codex-lb"] }], detected: false },
+    { label: "duplicate positive marker", entries: [{ id: "one", owned_by: "codex-lb" }, { id: "one", owned_by: "codex-lb" }], detected: true },
+    { label: "duplicate conflicting owner", entries: [{ id: "one", owned_by: "codex-lb" }, { id: "one", owned_by: "other" }], detected: false },
+    { label: "duplicate unmarked owner", entries: [{ id: "one", owned_by: "codex-lb" }, { id: "one" }], detected: false }
+  ])("detects routing isolation from the complete raw catalog: $label", async ({ label, entries, detected }) => {
+    const dispatch = vi.fn(async () => Response.json({ data: entries }));
+    const tester = createAdminProviderCredentialTester({ network: { lookupHostname: publicLookup, dispatch } });
+    const result = await tester.test(input("openai_compatible", "codex-lb-looking-key", {
+      apiRoot: "https://codex-lb.example.test/v1"
+    }));
+    expect(result.responsesRequestIsolationDetected).toBe(detected);
+    expect(result.modelIds).toEqual([...new Set(entries.map((entry) => entry.id))]);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    if (label === "whitespace marker") expect(result.models?.[0]?.ownedBy).toBe(" codex-lb ");
+    if (label === "blank marker") expect(result.models?.[0]).not.toHaveProperty("ownedBy");
+  });
+
+  it("does not accept an all-marked malformed compatible catalog", async () => {
+    const tester = createAdminProviderCredentialTester({ network: { lookupHostname: publicLookup,
+      dispatch: async () => Response.json({ data: [{ id: "one", owned_by: "codex-lb" }, { owned_by: "codex-lb" }] })
+    } });
+    await expect(tester.test(input("openai_compatible"))).rejects.toMatchObject({ code: "provider_credential_test_failed" });
+  });
+
+  it("requires every loaded class catalog to have the marker and leaves native connections alone", async () => {
+    const dispatch = vi.fn()
+      .mockResolvedValueOnce(Response.json({ data: [{ id: "one", owned_by: "codex-lb" }] }))
+      .mockResolvedValueOnce(Response.json({ data: [{ id: "one" }] }))
+      .mockResolvedValueOnce(Response.json({ data: [{ id: "one", owned_by: "codex-lb" }] }));
+    const tester = createAdminProviderCredentialTester({ network: { lookupHostname: publicLookup, dispatch } });
+    const result = await tester.test({ ...input("openai_compatible"), modelClasses: ["answer", "embedding"] });
+    expect(result.responsesRequestIsolationDetected).toBe(false);
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(await tester.test(input("openai"))).not.toHaveProperty("responsesRequestIsolationDetected");
+  });
+
+  it("detects the explicit marker on an allowed keyless private endpoint", async () => {
+    const dispatch = vi.fn(async () => Response.json({ data: [{ id: "local", owned_by: "codex-lb" }] }));
+    const tester = createAdminProviderCredentialTester({ network: { dispatch,
+      lookupHostname: async () => [{ address: "127.0.0.1", family: 4 as const }]
+    } });
+    const result = await tester.test(input("openai_compatible", null, {
+      allowPrivateNetwork: true, apiRoot: "http://127.0.0.1:8080/v1", authenticationMode: "none"
+    }));
+    expect(result.responsesRequestIsolationDetected).toBe(true);
+    expect(dispatch).toHaveBeenCalledTimes(1);
   });
 
   it("rejects catalog count and response-byte overflows with one stable error", async () => {

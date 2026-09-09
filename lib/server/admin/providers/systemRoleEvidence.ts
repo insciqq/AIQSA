@@ -24,6 +24,10 @@ export function mergeSystemRoleEvidence(
     if (next[field]) Object.assign(result, { [field]: next[field] });
     result.compatibility[capability] = next.compatibility[capability] ?? "not_supported";
   }
+  if (role === "direct_pdf" && result.capabilitySetup) {
+    result.capabilitySetup = { ...result.capabilitySetup, checks: { ...result.capabilitySetup.checks,
+      directPdf: result.compatibility.directPdf === "verified" ? "verified" : "unsupported" } };
+  }
   if (role === "memory") result.compatibility.probeVersion = next.compatibility.probeVersion;
   return result;
 }

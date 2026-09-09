@@ -343,6 +343,9 @@ function buildProviderRouting(
 }
 
 function buildReasoning(params: OpenRouterParams): Record<string, unknown> | undefined {
+  if (params.reasoning.effort === "none") {
+    return { enabled: false, effort: "none", ...(params.reasoning.exclude ? { exclude: true } : {}) };
+  }
   const reasoning: Record<string, unknown> = {};
 
   if (params.reasoning.enabled) {
@@ -418,7 +421,7 @@ function buildOpenRouterBody(input: {
   }
 
   if (input.nativePdfInput) {
-    body.plugins = [{ id: "file-parser" }];
+    body.plugins = [{ id: "file-parser", pdf: { engine: "native" } }];
   }
 
   if (input.tools && input.tools.length > 0) {

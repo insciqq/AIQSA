@@ -4,6 +4,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../../prisma";
 import { createPrismaAdminProviderRepository } from "./prismaRepository";
 import { normalizeProviderConnectionConfiguration, normalizeProviderModelConfiguration } from "../../providers/providerConfiguration";
+import type { ProviderCredentialActivationWrite } from "./repositoryContract";
+import { createAdminProviderService } from "./service";
 
 afterAll(() => prisma.$disconnect());
 
@@ -376,6 +378,161 @@ describe("credential publication preserves immediate answer access", () => {
       expect(changed).toMatchObject({ activeConfig: write.configuration, activeVersion: 2, displayName: "Changed" });
       expect(await db.providerCredentialVersion.count({ where: { credentialId: { in: ids } } })).toBe(4);
       expect((await db.providerCredential.findUniqueOrThrow({ where: { id: ids[1] } })).enabled).toBe(false);
+    });
+  });
+});
+
+describe("Responses isolation credential binding", () => {
+  async function setup(db: PrismaClient, connectionId: string,
+    repository: ReturnType<typeof createPrismaAdminProviderRepository>, pendingDraft = false) {
+    const model = await db.providerModel.findFirstOrThrow({ where: { connectionId } });
+    await db.providerModel.update({ data: { activeConfig: model.draftConfig as Prisma.InputJsonValue,
+      activatedAt: NOW, activeVersion: model.draftVersion }, where: { id: model.id } });
+    const credentials = [];
+    for (const label of ["Primary", "Disabled"]) {
+      const id = randomUUID();
+      const versionId = randomUUID();
+      await repository.activateCredentialCas({ checkedAt: NOW, connectionId, expectedConnectionDraftVersion: 1,
+        expectedConnectionVersion: 1, credential: { id, kind: "new", label }, modelChecks: [], now: NOW,
+        testEvidence: {}, versionEnvelope: `synthetic-${label}`, versionId });
+      credentials.push({ credentialId: id, expectedDraftVersion: 1, expectedVersionId: versionId });
+    }
+    await db.providerCredential.update({ data: { enabled: false, draftSecretEnvelope: "pending-disabled-draft" },
+      where: { id: credentials[1]!.credentialId } });
+    const configuration = { ...normalizeProviderConnectionConfiguration(connectionConfiguration),
+      responsesRequestIsolation: "auto" as const, responsesRequestIsolationDetected: true };
+    const draft = { ...configuration, ...(pendingDraft ? { responseTimeoutMs: 120_000 } : {}) };
+    await db.providerConnection.update({ data: { activeConfig: configuration, draftConfig: draft,
+      draftVersion: pendingDraft ? 5 : 1 }, where: { id: connectionId } });
+    const modelChecks = [{ modelVersion: model.draftVersion, providerModelId: model.id, status: "available" as const,
+      evidence: { detail: "ok" as const, method: "models_catalog" as const, selectedProviders: [], upstreamModelId: "fixture/model" } }];
+    const proof = { ...modelChecks[0]!.evidence, method: "tiny_generation" as const,
+      pdfInput: { adapterKind: "openai_responses_compatible" as const, probeVersion: 1 as const,
+        upstreamModelId: "fixture/model", verified: true as const } };
+    await db.providerModelCredentialCheck.create({ data: { checkedAt: NOW, connectionId, connectionVersion: 1,
+      credentialId: credentials[0]!.credentialId, credentialVersionId: credentials[0]!.expectedVersionId,
+      modelVersion: model.draftVersion, providerModelId: model.id, status: "available", evidence: proof } });
+    const write: ProviderCredentialActivationWrite = { checkedAt: NOW, connectionId,
+      expectedConnectionVersion: 1, expectedConnectionDraftVersion: pendingDraft ? 5 : 1,
+      credential: { id: randomUUID(), kind: "new", label: "Added key" }, modelChecks, now: NOW,
+      testEvidence: { method: "models_catalog", modelCount: 1, version: 1 },
+      versionEnvelope: "synthetic-new-version", versionId: randomUUID(),
+      isolationRefresh: { configuration: { ...configuration, responsesRequestIsolationDetected: false },
+        credentials: credentials.map((credential) => ({ ...credential, modelChecks })) }
+    };
+    return { configuration, credentials, draft, model, modelChecks, proof, write };
+  }
+
+  it.each([false, true])("publishes detection and catalog checks atomically, preserving pending draft=%s and prior proof", async (pendingDraft) => {
+    await fixture(async ({ db, connectionId, repository }) => {
+      const { credentials, draft, proof, write } = await setup(db, connectionId, repository, pendingDraft);
+      await expect(repository.activateCredentialCas(write)).resolves.toBe("updated");
+      const connection = await db.providerConnection.findUniqueOrThrow({ where: { id: connectionId } });
+      const version = pendingDraft ? 6 : 2;
+      expect(connection).toMatchObject({ activeVersion: version, draftVersion: version + (pendingDraft ? 1 : 0),
+        activeConfig: { responsesRequestIsolation: "auto", responsesRequestIsolationDetected: false, responseTimeoutMs: 300_000 } });
+      expect(connection.draftConfig).toEqual(pendingDraft ? draft : write.isolationRefresh!.configuration);
+      const checks = await db.providerModelCredentialCheck.findMany({ where: { connectionId, connectionVersion: version } });
+      expect(checks).toHaveLength(3);
+      for (const check of checks) expect(check.evidence).toEqual(write.modelChecks[0]!.evidence);
+      expect((await db.providerModelCredentialCheck.findFirstOrThrow({ where: { connectionId, connectionVersion: 1 } })).evidence).toEqual(proof);
+      expect(await db.providerCredentialVersion.count({ where: { credentialId: { in: credentials.map(({ credentialId }) => credentialId) } } })).toBe(2);
+      expect(await db.providerCredential.findUniqueOrThrow({ where: { id: credentials[1]!.credentialId } }))
+        .toMatchObject({ enabled: false, draftSecretEnvelope: "pending-disabled-draft", activeVersionId: credentials[1]!.expectedVersionId });
+    });
+  });
+
+  it("rotates a key without replacing the unchanged connection tuple or another key's proof", async () => {
+    await fixture(async ({ db, connectionId, repository }) => {
+      const { credentials, configuration, proof, write } = await setup(db, connectionId, repository);
+      const disabled = credentials[1]!;
+      await expect(repository.activateCredentialCas({ ...write,
+        credential: { id: disabled.credentialId, expectedDraftVersion: 1, kind: "rotate" },
+        isolationRefresh: { ...write.isolationRefresh!, configuration }
+      })).resolves.toBe("updated");
+      expect(await db.providerConnection.findUniqueOrThrow({ where: { id: connectionId } }))
+        .toMatchObject({ activeVersion: 1, draftVersion: 1, activeConfig: configuration });
+      const prior = await db.providerModelCredentialCheck.findFirstOrThrow({ where: { credentialId: credentials[0]!.credentialId } });
+      expect(prior.evidence).toEqual(proof);
+      expect(await db.providerCredential.findUniqueOrThrow({ where: { id: disabled.credentialId } }))
+        .toMatchObject({ enabled: false, activeVersionId: write.versionId, draftVersion: 2 });
+    });
+  });
+
+  it("rejects missing disabled keys and stale key/model/draft catalogs before writing", async () => {
+    await fixture(async ({ db, connectionId, repository }) => {
+      const { write } = await setup(db, connectionId, repository);
+      const refresh = write.isolationRefresh!;
+      const staleWrites: ProviderCredentialActivationWrite[] = [
+        { ...write, isolationRefresh: undefined },
+        { ...write, isolationRefresh: { ...refresh, credentials: refresh.credentials.slice(0, 1) } },
+        { ...write, isolationRefresh: { ...refresh, credentials: [refresh.credentials[0]!, refresh.credentials[0]!] } },
+        { ...write, expectedConnectionDraftVersion: 2 },
+        ...["expectedDraftVersion", "expectedVersionId", "modelChecks"].map((field) => ({ ...write,
+          isolationRefresh: { ...refresh, credentials: refresh.credentials.map((credential, index) => index === 0 ? credential : ({
+            ...credential, ...(field === "expectedDraftVersion" ? { expectedDraftVersion: 99 } :
+              field === "expectedVersionId" ? { expectedVersionId: randomUUID() } :
+              { modelChecks: [{ ...credential.modelChecks[0]!, modelVersion: 99 }] })
+          })) }
+        }))
+      ];
+      for (const stale of staleWrites) await expect(repository.activateCredentialCas(stale)).resolves.toBe("stale");
+      expect(await db.providerCredential.count({ where: { connectionId } })).toBe(2);
+      expect(await db.providerCredentialVersion.count({ where: { credential: { connectionId } } })).toBe(2);
+      await db.providerCredentialVersion.update({ data: { revokedAt: NOW }, where: { id: refresh.credentials[1]!.expectedVersionId } });
+      await expect(repository.activateCredentialCas(write)).resolves.toBe("stale");
+      expect((await db.providerConnection.findUniqueOrThrow({ where: { id: connectionId } })).activeVersion).toBe(1);
+    });
+  });
+
+  it("activation detects all live keys while publishing only referenced keys and fresh catalog proof", async () => {
+    await fixture(async ({ db, connectionId, repository }) => {
+      const { credentials, model, proof } = await setup(db, connectionId, repository);
+      const candidate = await repository.loadActivationCandidate(connectionId);
+      expect(candidate!.credentials.map(({ id }) => id)).toEqual([credentials[0]!.credentialId]);
+      expect(candidate!.catalogCredentials).toEqual(expect.arrayContaining(credentials));
+      expect(candidate!.catalogCredentials).toHaveLength(2);
+      await db.providerDraftCheck.create({ data: { checkedAt: NOW, connectionId, connectionDraftVersion: 1,
+        credentialId: credentials[0]!.credentialId, credentialVersionId: credentials[0]!.expectedVersionId,
+        credentialDraftVersion: null, modelDraftVersion: model.draftVersion, providerModelId: model.id,
+        status: "available", fingerprint: "synthetic-old-configuration-proof", evidence: proof } });
+      let catalogCalls = 0;
+      const service = createAdminProviderService({ repository: { ...repository,
+        async activateConnectionCas(write) {
+          await expect(repository.activateConnectionCas({ ...write, isolationRefresh: {
+            ...write.isolationRefresh!, credentials: write.isolationRefresh!.credentials.slice(0, 1)
+          } })).resolves.toBe("stale");
+          return repository.activateConnectionCas(write);
+        }
+      }, now: () => NOW,
+        tester: { async test() { throw new Error("Capability proof requires a separate fresh probe"); } },
+        credentialTester: { async test() { return { method: "models_catalog", modelIds: ["fixture/model"],
+          responsesRequestIsolationDetected: ++catalogCalls === 1 }; } }
+      });
+      await expect(service.activateConnection({ connectionId, confirmUnavailable: true, enableConnection: true }))
+        .resolves.toEqual({ activatedCredentialCount: 1, activatedModelCount: 1, connectionVersion: 2 });
+      expect(catalogCalls).toBe(2);
+      const checks = await db.providerModelCredentialCheck.findMany({ where: { connectionId, connectionVersion: 2 } });
+      expect(checks).toHaveLength(2);
+      expect(checks.every(({ evidence }) => (evidence as Record<string, unknown>).method === "models_catalog" &&
+        !("pdfInput" in (evidence as Record<string, unknown>)))).toBe(true);
+      expect(await db.providerCredential.findUniqueOrThrow({ where: { id: credentials[1]!.credentialId } }))
+        .toMatchObject({ enabled: false, activeVersionId: credentials[1]!.expectedVersionId, draftSecretEnvelope: "pending-disabled-draft" });
+      expect((await db.providerConnection.findUniqueOrThrow({ where: { id: connectionId } })).activeConfig)
+        .toMatchObject({ responsesRequestIsolationDetected: false });
+    });
+  });
+
+  it("rejects a catalog snapshot if another live key appeared without changing detection", async () => {
+    await fixture(async ({ db, connectionId, repository }) => {
+      const { configuration, write } = await setup(db, connectionId, repository);
+      await expect(repository.activateCredentialCas({ ...write,
+        credential: { id: randomUUID(), kind: "new", label: "Concurrent key" }, versionId: randomUUID(),
+        isolationRefresh: { ...write.isolationRefresh!, configuration }
+      })).resolves.toBe("updated");
+      await expect(repository.activateCredentialCas(write)).resolves.toBe("stale");
+      expect(await db.providerCredential.count({ where: { connectionId } })).toBe(3);
+      expect((await db.providerConnection.findUniqueOrThrow({ where: { id: connectionId } })).activeVersion).toBe(1);
     });
   });
 });

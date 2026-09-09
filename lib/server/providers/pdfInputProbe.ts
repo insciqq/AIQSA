@@ -14,32 +14,37 @@ import {
   type PdfInputVerificationEvidence
 } from "./pdfInputEvidence";
 
-export const PDF_INPUT_PROBE_CODE = "Q7K4P9";
+export const PDF_INPUT_PROBE_ANSWER = "PEARS";
 export const PDF_INPUT_PROBE_MIME_TYPE = "application/pdf";
 export const PDF_INPUT_PROBE_WIDTH = 480;
-export const PDF_INPUT_PROBE_HEIGHT = 240;
+export const PDF_INPUT_PROBE_HEIGHT = 360;
 
 const PDF_INPUT_PROBE_MAX_OUTPUT_TOKENS = 512;
 
 const PDF_INPUT_PROBE_PROMPT = [
   "Read the attached image-only PDF.",
-  "Return exactly the code shown in the bottom-right table cell.",
+  "Which item on the receipt has a quantity of 7? Return only the item name in uppercase.",
   "Return no explanation, punctuation, Markdown, or additional text."
 ].join("\n");
 
 const glyphs: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
   "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
   "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
   "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
-  "9": ["01110", "10001", "10001", "01111", "00001", "00010", "11100"],
   A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
-  B: ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
+  C: ["01111", "10000", "10000", "10000", "10000", "10000", "01111"],
   E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
-  H: ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
+  I: ["11111", "00100", "00100", "00100", "00100", "00100", "11111"],
   K: ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
   L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
+  M: ["10001", "11011", "10101", "10101", "10001", "10001", "10001"],
+  O: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
   P: ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
   Q: ["01110", "10001", "10001", "10001", "10101", "10010", "01101"],
+  R: ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
+  S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
+  Y: ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
   T: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"]
 });
 
@@ -91,17 +96,20 @@ function imageOnlyProbeRaster(): Uint8Array {
   const raster = new Uint8Array(PDF_INPUT_PROBE_WIDTH * PDF_INPUT_PROBE_HEIGHT);
   raster.fill(255);
 
-  drawRectangle(raster, 18, 18, 444, 3);
-  drawRectangle(raster, 18, 118, 444, 3);
-  drawRectangle(raster, 18, 218, 444, 3);
-  drawRectangle(raster, 18, 18, 3, 203);
-  drawRectangle(raster, 238, 18, 3, 203);
-  drawRectangle(raster, 459, 18, 3, 203);
-
-  drawRasterText(raster, "ALPHA", 55, 52, 5);
-  drawRasterText(raster, "17", 320, 52, 5);
-  drawRasterText(raster, "BETA", 65, 152, 5);
-  drawRasterText(raster, PDF_INPUT_PROBE_CODE, 274, 154, 4);
+  // Original synthetic receipt and bitmap lettering: no third-party document,
+  // font, encryption, hidden text layer or network dependency. Fixed geometry
+  // and Flate encoding make the reviewed bytes reproducible.
+  drawRasterText(raster, "MARKET RECEIPT", 30, 28, 5);
+  drawRectangle(raster, 30, 82, 420, 2);
+  drawRasterText(raster, "ITEM", 30, 108, 4);
+  drawRasterText(raster, "QTY", 358, 108, 4);
+  drawRasterText(raster, "APPLES", 30, 166, 5);
+  drawRasterText(raster, "4", 406, 166, 5);
+  drawRasterText(raster, PDF_INPUT_PROBE_ANSWER, 30, 228, 5);
+  drawRasterText(raster, "7", 406, 228, 5);
+  drawRectangle(raster, 30, 282, 420, 2);
+  drawRasterText(raster, "TOTAL", 30, 304, 4);
+  drawRasterText(raster, "11", 382, 304, 4);
   return raster;
 }
 
@@ -192,6 +200,7 @@ export type ProviderPdfInputProbeInput = Readonly<{
 }>;
 
 export type ProviderPdfInputProbe = Readonly<{
+  /** Null means a statically unsupported adapter; inconclusive answers throw. */
   probe(input: ProviderPdfInputProbeInput): Promise<PdfInputVerificationEvidence | null>;
 }>;
 
@@ -293,7 +302,12 @@ export function createProviderPdfInputProbe(
       });
       let next = await stream.next();
       while (!next.done) next = await stream.next();
-      if (next.value.finalText.trim() !== PDF_INPUT_PROBE_CODE) return null;
+      input.signal?.throwIfAborted();
+      const finishReason = next.value.finalProviderResponsePreview.finishReason;
+      if (finishReason === "length" || finishReason === "content_filter" ||
+        next.value.finalText.trim() !== PDF_INPUT_PROBE_ANSWER) {
+        throw new Error("pdf_input_probe_inconclusive");
+      }
       return pdfInputVerificationEvidence(
         input.model.adapterKind,
         input.model.upstreamModelId

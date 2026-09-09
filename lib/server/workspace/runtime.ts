@@ -19,6 +19,26 @@ export type WorkspaceRuntimeSession = Readonly<{
   state: "ready" | "running";
 }>;
 
+export const WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE = 100;
+export const WORKSPACE_RUNTIME_INVENTORY_STATES = [
+  "created", "starting", "running", "draining", "paused", "stopped", "crashed"
+] as const;
+
+/** Private runner metadata. Never serialize this shape to the browser. */
+export type WorkspaceRuntimeInventoryPage = Readonly<{
+  entries: readonly Readonly<{
+    runtimeSandboxId: string;
+    sandboxName: string;
+    state: (typeof WORKSPACE_RUNTIME_INVENTORY_STATES)[number];
+  }>[];
+  nextCursor: string | null;
+}>;
+
+export type WorkspaceRuntimeInventoryInput = Readonly<{
+  cursor?: string;
+  signal?: AbortSignal;
+}>;
+
 export type WorkspaceBoundTool = Readonly<{
   description: string;
   inputSchema: Record<string, unknown>;
@@ -101,6 +121,8 @@ export interface WorkspaceRuntime {
   claimSessionOperation?(input: WorkspaceOperationInput): Promise<void>;
   retireSessionOperation?(input: WorkspaceOperationInput): Promise<void>;
   health(signal?: AbortSignal): Promise<WorkspaceRuntimeHealth>;
+  /** Lists labelled environments without connecting, touching, or changing lifecycle. */
+  listSessions?(input: WorkspaceRuntimeInventoryInput): Promise<WorkspaceRuntimeInventoryPage>;
   ensureSession(input: Readonly<{
     cpus: number;
     diskMiB: number;

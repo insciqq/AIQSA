@@ -6,7 +6,7 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import { expect, test } from "@playwright/test";
 import type { AdminProviderConnection } from "../../lib/contracts/adminProviders";
 import { adminProviderQuickSetupPolicy } from "../../lib/server/admin/providers/quickSetupPolicy";
-import { PDF_INPUT_PROBE_CODE } from "../../lib/server/providers/pdfInputProbe";
+import { PDF_INPUT_PROBE_ANSWER } from "../../lib/server/providers/pdfInputProbe";
 import { VISION_INPUT_PROBE_CODE } from "../../lib/server/providers/visionInputProbe";
 import { signInWithLocalToken } from "./support/localAuth";
 
@@ -67,7 +67,7 @@ test("one key save activates models, fills empty defaults and retries failed Sea
       }
       const source = { title: "Fixture source", url: "https://example.com/fixture" };
       const wire = JSON.stringify(body);
-      const text = wire.includes('"type":"input_file"') ? PDF_INPUT_PROBE_CODE
+      const text = wire.includes('"type":"input_file"') ? PDF_INPUT_PROBE_ANSWER
         : wire.includes('"type":"input_image"') ? VISION_INPUT_PROBE_CODE
         : wire.includes('"type":"json_schema"') ? JSON.stringify({ ready: true, count: 2, label: "ready", tool_ids: ["alpha", "beta"] })
         : "OK";
@@ -152,6 +152,7 @@ test("one key save activates models, fills empty defaults and retries failed Sea
     await page.getByRole("button", { name: "Retry checks" }).click();
     await expect.poll(async () => (await read()).checkRun?.setup, { timeout: 60_000 })
       .toMatchObject({ search: "ready", state: "completed" });
+    await expect(page.getByText("Search checked and ready.", { exact: true })).toBeVisible();
     expect(searchCalls).toBeGreaterThanOrEqual(2);
     expect(await prisma.modelPolicy.findUnique({ where: { id: "installation" } })).toMatchObject({ defaultProviderModelId: modelId });
     expect(await prisma.systemModelPolicy.findUnique({ where: { id: "installation" } })).toMatchObject({
@@ -177,7 +178,6 @@ test("one key save activates models, fills empty defaults and retries failed Sea
     });
     await page.reload();
     await expect(page.getByTestId("provider-page-status")).not.toContainText("Disabled");
-    await expect(page.getByText("Search checked and ready.", { exact: true })).toBeVisible();
     expect((await read()).credentials).toHaveLength(1);
     for (const theme of ["light", "dark"] as const) {
       await context.addCookies([{ name: "aiqsa.theme", value: theme, url: "http://127.0.0.1:3000" }]);

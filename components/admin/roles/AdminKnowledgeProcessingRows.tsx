@@ -3,6 +3,7 @@
 import { AdminSheet } from "@/components/admin/AdminSheet";
 import { AdminTopbarMenu } from "@/components/admin/AdminShell";
 import { AdminRolePicker } from "@/components/admin/roles/AdminRolePicker";
+import { AdminReasoningSelect } from "@/components/admin/roles/AdminReasoningSelect";
 import { AdminStatusPill } from "@/components/admin/roles/AdminStatusPill";
 import { compactSelectClass } from "@/components/admin/roles/rolesControls";
 import {
@@ -33,6 +34,7 @@ function draftFor(profile: AdminKnowledgeProfileSettings | null): AdminKnowledge
     documentDeploymentId: active
       ? active.pdfProcessing.destination?.deploymentId ?? null
       : profile?.availablePdfDestinations.find((model) => model.vision)?.deploymentId ?? null,
+    documentReasoningEffort: active?.pdfProcessing.reasoningEffort ?? null,
     embeddingDeploymentId: active?.destination.deploymentId ?? profile?.availableDestinations[0]?.deploymentId ?? "",
     mode: active?.pdfProcessing.mode ?? "system_model_vision"
   };
@@ -40,7 +42,8 @@ function draftFor(profile: AdminKnowledgeProfileSettings | null): AdminKnowledge
 
 function sameDraft(left: AdminKnowledgeDraft, right: AdminKnowledgeDraft): boolean {
   return left.mode === right.mode && left.embeddingDeploymentId === right.embeddingDeploymentId &&
-    (left.mode === "local" || left.documentDeploymentId === right.documentDeploymentId);
+    (left.mode === "local" || left.documentDeploymentId === right.documentDeploymentId &&
+      left.documentReasoningEffort === right.documentReasoningEffort);
 }
 
 function nestedStatus(profile: AdminKnowledgeProfileSettings): AdminRoleStatus {
@@ -50,7 +53,7 @@ function nestedStatus(profile: AdminKnowledgeProfileSettings): AdminRoleStatus {
 
 function revisionSummary(revision: AdminKnowledgeProfileRevision): string {
   const documents = revision.pdfProcessing.destination
-    ? `${KNOWLEDGE_MODE_LABEL[revision.pdfProcessing.mode]} · ${knowledgeDestinationLabel(revision.pdfProcessing.destination)}`
+    ? `${KNOWLEDGE_MODE_LABEL[revision.pdfProcessing.mode]} · ${knowledgeDestinationLabel(revision.pdfProcessing.destination)} · Reasoning: ${revision.pdfProcessing.reasoningEffort ?? "Default"}`
     : KNOWLEDGE_MODE_LABEL.local;
   return `Embeddings: ${embeddingDestinationLabel(revision.destination)} · Documents: ${documents}`;
 }
@@ -96,8 +99,13 @@ export function AdminKnowledgeProcessingRows({
     : [];
   const documentReady = documentItems.some((item) => item.group === "ready" && item.id === draft.documentDeploymentId);
   const activeDocument = profile.activeRevision?.pdfProcessing.destination ?? null;
+  const selectedDocument = profile.availablePdfDestinations.find((item) =>
+    item.deploymentId === draft.documentDeploymentId) ?? null;
+  const reasoningAvailable = draft.documentReasoningEffort === null ||
+    selectedDocument?.reasoningEfforts.includes(draft.documentReasoningEffort) === true;
   const embeddingReady = profile.availableDestinations.some((item) => item.deploymentId === draft.embeddingDeploymentId);
-  const canApply = dirty && !busy && embeddingReady && (modelMode === null || documentReady);
+  const canApply = dirty && !busy && embeddingReady &&
+    (modelMode === null || documentReady && reasoningAvailable);
   const earlier = profile.recentRevisions.filter((revision) =>
     revision.id !== profile.activeRevision?.id && revision.executionAuthority === "installation");
 
@@ -193,6 +201,7 @@ export function AdminKnowledgeProcessingRows({
                 documentDeploymentId: mode === "local" ? null
                   : profile.availablePdfDestinations.find((model) =>
                       mode === "system_model_vision" ? model.vision : model.directPdf)?.deploymentId ?? null,
+                documentReasoningEffort: null,
                 mode
               }));
             }}
@@ -210,10 +219,14 @@ export function AdminKnowledgeProcessingRows({
               label="Documents model"
               onCheck={async (id) => {
                 const ready = await controller.checkDocument(modelMode, id);
-                if (ready) setEdits((previous) => ({ ...previous, documentDeploymentId: id }));
+                if (ready) setEdits((previous) => ({
+                  ...previous, documentDeploymentId: id, documentReasoningEffort: null
+                }));
                 return ready;
               }}
-              onSelect={(id) => setEdits((previous) => ({ ...previous, documentDeploymentId: id }))}
+              onSelect={(id) => setEdits((previous) => ({
+                ...previous, documentDeploymentId: id, documentReasoningEffort: null
+              }))}
               placeholder="Choose a model"
               roleName="Documents"
               selectedId={draft.documentDeploymentId}
@@ -222,6 +235,22 @@ export function AdminKnowledgeProcessingRows({
                 : null}
               testId="admin-documents-picker"
             />
+          ) : null}
+          {modelMode ? (
+            <details>
+              <summary className="cursor-pointer text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">Advanced</summary>
+              <div className="pt-2">
+                <AdminReasoningSelect
+                  disabled={busy}
+                  label="Documents reasoning"
+                  model={selectedDocument}
+                  onChange={(effort) => setEdits((previous) => ({
+                    ...previous, documentReasoningEffort: effort
+                  }))}
+                  value={draft.documentReasoningEffort}
+                />
+              </div>
+            </details>
           ) : null}
         </div>
         <div className="col-span-2 xl:col-span-1">
@@ -277,20 +306,20 @@ export function AdminKnowledgeProcessingRows({
                 <UiV2Button
                   aria-label={`Restore configuration applied ${dateFormat.format(new Date(revision.activatedAt))}`}
                   disabled={busy}
-                  onClick={() => confirmAndRun(
-                    revision.pdfProcessing.mode,
-                    "Restore this configuration?",
-                    "Restore",
-                    "admin-knowledge-restore-confirmation",
-                    async () => {
-                      const restored = await controller.restoreKnowledge(revision.id);
-                      if (restored) {
-                        setEdits({});
-                        setEarlierOpen(false);
+                  onClick={() => {
+                    setEarlierOpen(false);
+                    confirmAndRun(
+                      revision.pdfProcessing.mode,
+                      "Restore this configuration?",
+                      "Restore",
+                      "admin-knowledge-restore-confirmation",
+                      async () => {
+                        const restored = await controller.restoreKnowledge(revision.id);
+                        if (restored) setEdits({});
+                        return restored;
                       }
-                      return restored;
-                    }
-                  )}
+                    );
+                  }}
                   tone="ghost"
                 >
                   Restore

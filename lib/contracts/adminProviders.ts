@@ -32,6 +32,8 @@ export type AdminProviderConnectionConfiguration = {
   apiRoot: string;
   authenticationMode: "bearer" | "none";
   responseTimeoutSeconds: number;
+  responsesRequestIsolation?: "auto" | "on" | "off";
+  responsesRequestIsolationDetected?: boolean;
 };
 
 export type AdminProviderModelCapabilities = {
@@ -381,6 +383,8 @@ export type AdminCompatibleDiscoveredCapabilities = {
 export type AdminCompatibleDiscoveredModel = {
   capabilities: AdminCompatibleDiscoveredCapabilities;
   id: string;
+  /** Bounded upstream ownership marker, used only for server-side gateway detection. */
+  ownedBy?: string;
 };
 
 export type AdminOpenRouterDiscoveredEndpoint = {

@@ -8,6 +8,8 @@ import {
   createAdminProviderCustomSetupService
 } from "./customSetupService";
 import type { AdminProviderCustomSetupCommitPlan } from "./customSetupRepositoryContract";
+import { createCustomSetupCatalogProof } from "./customSetupCatalogProof";
+import { providerResponsesRequestIsolationEnabled } from "../../providers/providerConfiguration";
 
 const ACTOR = { sessionId: "session-1", userId: "admin-1" };
 const CHECKED_AT = new Date("2026-07-26T10:00:00.000Z");
@@ -37,6 +39,7 @@ function harness(options: {
   testStatus?: "available" | "unavailable";
   unavailableModelId?: string;
   searchThrows?: boolean;
+  proofKey?: string;
 } = {}) {
   const test = vi.fn(async (input: { model: { upstreamModelId: string } }) => ({
     evidence: {
@@ -81,8 +84,9 @@ function harness(options: {
   const service = createAdminProviderCustomSetupService({
     encryptionKey,
     idFactory: () => ids.shift()!,
-    now: () => times.shift()!,
+    now: () => times.shift() ?? COMMITTED_AT,
     onCompleted,
+    ...(options.proofKey ? { proofKey: () => options.proofKey! } : {}),
     repository: { commit },
     ...(options.searchThrows ? { searchTester: { test: searchTest } } : {}),
     tester: { test }
@@ -91,6 +95,68 @@ function harness(options: {
 }
 
 describe("custom OpenAI-compatible provider setup service", () => {
+  it("commits detected isolation before starting the initial background capability checks", async () => {
+    const proofKey = "synthetic-proof-signing-key";
+    const catalogProof = createCustomSetupCatalogProof({ endpoint: "https://llm.example.test/v1", key: proofKey,
+      now: CHECKED_AT.valueOf(), responsesRequestIsolationDetected: true, secret: "exact-secret", userId: ACTOR.userId });
+    const commit = vi.fn(async (_plan: AdminProviderCustomSetupCommitPlan) => ({ defaultChanged: false, status: "ready" as const }));
+    const checksStarted = new Error("synthetic-check-start-boundary");
+    const test = vi.fn();
+    const service = createAdminProviderCustomSetupService({
+      encryptionKey: () => Buffer.alloc(32, 9), now: () => CHECKED_AT, proofKey: () => proofKey,
+      repository: { commit }, tester: { test },
+      finishInitialSetup: async () => {
+        expect(commit).toHaveBeenCalledOnce();
+        expect(providerResponsesRequestIsolationEnabled(commit.mock.calls[0]![0].connection.configuration)).toBe(true);
+        throw checksStarted;
+      }
+    });
+    await expect(service.setup({ actor: ACTOR, request: request({ protocol: "responses", catalogProof }) })).rejects.toBe(checksStarted);
+    expect(test).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { mode: undefined, detected: true, enabled: true },
+    { mode: "auto" as const, detected: false, enabled: false },
+    { mode: "on" as const, detected: false, enabled: true },
+    { mode: "off" as const, detected: true, enabled: false }
+  ])("resolves catalog detection before the first probe and preserves the saved override (%#)", async ({ mode, detected, enabled }) => {
+    const proofKey = "synthetic-proof-signing-key";
+    const catalogProof = createCustomSetupCatalogProof({ endpoint: "https://llm.example.test/v1", key: proofKey,
+      now: CHECKED_AT.valueOf(), responsesRequestIsolationDetected: detected, secret: "exact-secret", userId: ACTOR.userId });
+    const { commit, service, test } = harness({ proofKey });
+    await service.setup({ actor: ACTOR, request: request({ catalogProof, protocol: "responses", responsesRequestIsolation: mode }) });
+    expect(test).toHaveBeenCalledOnce();
+    expect(test).toHaveBeenCalledWith(expect.objectContaining({ connection: expect.objectContaining({
+      responsesRequestIsolation: mode ?? "auto", responsesRequestIsolationDetected: detected
+    }) }));
+    const saved = commit.mock.calls[0]![0].connection.configuration;
+    expect(saved).toMatchObject({ responsesRequestIsolation: mode ?? "auto", responsesRequestIsolationDetected: detected });
+    expect(providerResponsesRequestIsolationEnabled(saved)).toBe(enabled);
+  });
+
+  it.each(["missing", "endpoint", "credential", "expired", "tampered"])("keeps Auto disabled for a %s catalog receipt", async (change) => {
+    const proofKey = "synthetic-proof-signing-key";
+    const proof = createCustomSetupCatalogProof({
+      endpoint: change === "endpoint" ? "https://another.example.test/v1" : "https://llm.example.test/v1",
+      key: proofKey, now: CHECKED_AT.valueOf() - (change === "expired" ? 300_001 : 0),
+      responsesRequestIsolationDetected: true, secret: change === "credential" ? "other-secret" : "exact-secret", userId: ACTOR.userId
+    });
+    const { commit, service, test } = harness({ proofKey });
+    await service.setup({ actor: ACTOR, request: request({ protocol: "responses",
+      catalogProof: change === "missing" ? undefined : change === "tampered" ? `${proof}x` : proof }) });
+    expect(test).toHaveBeenCalledOnce();
+    expect(providerResponsesRequestIsolationEnabled(commit.mock.calls[0]![0].connection.configuration)).toBe(false);
+  });
+
+  it.each([null, true, "AUTO", "enabled"])("rejects invalid isolation before provider I/O (%#)", async (mode) => {
+    const { commit, service, test } = harness();
+    await expect(service.setup({ actor: ACTOR, request: request({ protocol: "responses",
+      responsesRequestIsolation: mode as never }) })).rejects.toThrow("provider_responses_isolation_invalid");
+    expect(test).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
   it("tests once, then commits an active personal bearer graph", async () => {
     const { commit, onCompleted, service, test } = harness();
 

@@ -10,6 +10,10 @@ import { parseWorkspaceOperation } from "./operationFence";
 import { parseOutputCaptureRequest } from "./outputManifest";
 import {
   WorkspaceRuntimeError,
+  WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE,
+  WORKSPACE_RUNTIME_INVENTORY_STATES,
+  type WorkspaceRuntimeInventoryInput,
+  type WorkspaceRuntimeInventoryPage,
   type WorkspaceBoundTool,
   type WorkspaceExecutionTermination,
   type WorkspaceOutputReleaseInput,
@@ -211,6 +215,32 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
         state: "unavailable"
       };
     }
+  }
+
+  async listSessions(input: WorkspaceRuntimeInventoryInput): Promise<WorkspaceRuntimeInventoryPage> {
+    const query = input.cursor ? `?cursor=${encodeURIComponent(input.cursor)}` : "";
+    const deadline = AbortSignal.timeout(5_000);
+    const value = await this.json(`/v1/inventory${query}`, {
+      signal: input.signal ? AbortSignal.any([input.signal, deadline]) : deadline
+    });
+    if (!isRecord(value) || !Array.isArray(value.entries) ||
+      value.entries.length > WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE ||
+      !(value.nextCursor === null || typeof value.nextCursor === "string" && value.nextCursor.length > 0 && value.nextCursor.length <= 2_048)) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    const entries = value.entries.map((entry) => {
+      if (!isRecord(entry) || typeof entry.runtimeSandboxId !== "string" || !entry.runtimeSandboxId ||
+        entry.runtimeSandboxId.length > 256 || typeof entry.sandboxName !== "string" || !entry.sandboxName ||
+        entry.sandboxName.length > 160 || !(WORKSPACE_RUNTIME_INVENTORY_STATES as readonly unknown[]).includes(entry.state)) {
+        throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+      }
+      return {
+        runtimeSandboxId: entry.runtimeSandboxId,
+        sandboxName: entry.sandboxName,
+        state: entry.state as WorkspaceRuntimeInventoryPage["entries"][number]["state"]
+      };
+    });
+    return { entries, nextCursor: value.nextCursor as string | null };
   }
 
   async ensureSession(input: Parameters<WorkspaceRuntime["ensureSession"]>[0]): Promise<WorkspaceRuntimeSession> {

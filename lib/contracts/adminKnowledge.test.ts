@@ -29,6 +29,33 @@ describe("administrator Knowledge contract", () => {
     expect(decodeAdminKnowledgeResponse(response)).toEqual(response);
   });
 
+  it("decodes reasoning metadata and an unavailable saved choice without inventing support", () => {
+    const destination = {
+      connectionDisplayName: "Reader", defaultReasoningEffort: "low", deploymentId: "reader-1",
+      modelDisplayName: "Page reader", provider: "openai", reasoningEfforts: ["low", "high"], upstreamModelId: "reader"
+    };
+    const profile = response.knowledge.profile;
+    const activeRevision = { ...profile.activeRevision!, pdfProcessing: {
+      destination, mode: "system_model_vision", parserProfileVersion: 19, reasoningEffort: "removed-level"
+    } };
+    const withDestination = (overrides: Record<string, unknown> = {}) => ({ knowledge: {
+      ...response.knowledge, profile: { ...profile, activeRevision,
+        availablePdfDestinations: [{ ...destination, directPdf: true, vision: true, ...overrides }]
+      }
+    } });
+    expect(decodeAdminKnowledgeResponse(withDestination())?.knowledge.profile.activeRevision?.pdfProcessing.reasoningEffort)
+      .toBe("removed-level");
+    for (const overrides of [
+      { reasoningEfforts: ["low", "low"] }, { reasoningEfforts: ["low\n"] },
+      { defaultReasoningEffort: "none" }, { reasoningEfforts: [], defaultReasoningEffort: "low" },
+      { reasoningEfforts: undefined }, { defaultReasoningEffort: null }
+    ]) expect(decodeAdminKnowledgeResponse(withDestination(overrides))).toBeNull();
+    const invalidLocal = { knowledge: { ...response.knowledge, profile: { ...profile, activeRevision: {
+      ...profile.activeRevision!, pdfProcessing: { ...profile.activeRevision!.pdfProcessing, reasoningEffort: "none" }
+    } } } };
+    expect(decodeAdminKnowledgeResponse(invalidLocal)).toBeNull();
+  });
+
   it("rejects a missing, out-of-range, or drifted ingestion parallelism", () => {
     const answerPolicy = response.knowledge.answerPolicy;
     const withPolicy = (overrides: Record<string, unknown>) => ({

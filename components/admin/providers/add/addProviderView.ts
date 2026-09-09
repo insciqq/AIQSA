@@ -61,6 +61,7 @@ export type CustomForm = Readonly<{
   reasoningChoice: AdminProviderReasoningChoice;
   reasoningEffortPath: string;
   reasoningModePath: string;
+  responsesRequestIsolation: "auto" | "on" | "off";
   responseTimeoutSeconds: string;
   secret: string;
   selectedModelIds: readonly string[];
@@ -127,6 +128,7 @@ export function initialCustomForm(): CustomForm {
     reasoningChoice: "automatic",
     reasoningEffortPath: compatibleReasoningRequestMappingDefault("chat_completions").effortPath,
     reasoningModePath: compatibleReasoningRequestMappingDefault("chat_completions").modePath ?? "",
+    responsesRequestIsolation: "auto",
     responseTimeoutSeconds: DEFAULT_TIMEOUT,
     secret: "",
     selectedModelIds: []
@@ -266,6 +268,7 @@ export type CustomValidation =
 
 export function customRequest(input: Readonly<{
   connections: readonly AdminProviderConnection[];
+  catalogProof?: string;
   discovered: readonly AdminProviderCustomDiscoveredModel[] | null;
   form: CustomForm;
 }>): CustomValidation {
@@ -348,6 +351,7 @@ export function customRequest(input: Readonly<{
       connectionDisplayName: name,
       ...(usesDiscovered ? { modelIds, perModelCapabilities } : { modelId: manualModelId }),
       protocol: form.protocol,
+      ...(input.catalogProof ? { catalogProof: input.catalogProof } : {}),
       ...(usesReasoning
         ? {
             reasoningRequestMapping: {
@@ -357,6 +361,7 @@ export function customRequest(input: Readonly<{
           }
         : {}),
       responseTimeoutSeconds: seconds,
+      ...(form.protocol === "responses" ? { responsesRequestIsolation: form.responsesRequestIsolation } : {}),
       ...(form.noKey ? {} : { secret: form.secret.trim() })
     },
     ok: true

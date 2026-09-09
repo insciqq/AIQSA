@@ -36,6 +36,7 @@ import { searchDraftHash } from "../../search/configuration";
 import type { AdminProviderQuickSetupSearchTester } from "./quickSetupSearchTester";
 import { ADMIN_PROVIDER_SETUP_CREDENTIAL_LABEL } from "./quickSetupRepositoryContract";
 import type { AdminProviderDraftTestOutcome } from "./tester";
+import { verifyCustomSetupCatalogProof } from "./customSetupCatalogProof";
 import type {
   AdminProviderCustomConnectionConfiguration,
   AdminProviderCustomSetupActor,
@@ -102,6 +103,8 @@ function connectionConfiguration(
     allowPrivateNetwork: request.allowPrivateNetwork,
     apiRoot: request.apiRoot,
     authenticationMode: request.authenticationMode,
+    responsesRequestIsolation: request.responsesRequestIsolation === undefined && request.protocol === "responses"
+      ? "auto" : request.responsesRequestIsolation,
     responseTimeoutMs: providerResponseTimeoutMsFromSeconds(
       request.responseTimeoutSeconds
     )
@@ -259,6 +262,8 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
   /** Runs after a committed setup (PRD B3 trigger); its failures never reach the caller. */
   onCompleted?(completion: Readonly<{ connectionId: string; credentialId: string; userId: string }>): void | Promise<void>;
   repository: AdminProviderCustomSetupRepository;
+  /** Verifies the short-lived server-owned catalog receipt. */
+  proofKey?: () => string;
   searchTester?: AdminProviderQuickSetupSearchTester;
   tester: AdminProviderCustomSetupTester;
 }>) {
@@ -276,7 +281,7 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
       inputValue.signal?.throwIfAborted();
       inputValue.onProgress?.({ phase: "validating", completed: 0, total: null });
       const request = inputValue.request;
-      const connection = connectionConfiguration(request);
+      let connection = connectionConfiguration(request);
       const upstreamModelIds = requestedModelIds(request);
       let modelConfigurations = upstreamModelIds.map((upstreamModelId) =>
         modelConfiguration(request, upstreamModelId)
@@ -319,6 +324,17 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
         : undefined;
 
       const evidence: AdminProviderTestEvidence[] = [];
+      if (request.protocol === "responses" && input.proofKey && request.catalogProof) {
+        const proof = verifyCustomSetupCatalogProof({
+          endpoint: connection.apiRoot,
+          key: input.proofKey(),
+          now: now().valueOf(),
+          proof: request.catalogProof,
+          secret,
+          userId: inputValue.actor.userId
+        });
+        if (proof) connection = { ...connection, responsesRequestIsolationDetected: proof.detectedCodexLb };
+      }
       for (const [index, model] of modelConfigurations.entries()) {
         if (input.finishInitialSetup) { evidence.push(pendingInitialCapabilityEvidence(model)); continue; }
         inputValue.signal?.throwIfAborted();

@@ -1,10 +1,11 @@
 import { inflateSync } from "node:zlib";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderAdapter, ProviderRunResult } from "./types";
 import {
   createProviderPdfInputProbe,
   imageOnlyPdfInputProbeFixture,
-  PDF_INPUT_PROBE_CODE,
+  PDF_INPUT_PROBE_ANSWER,
   PDF_INPUT_PROBE_HEIGHT,
   PDF_INPUT_PROBE_MIME_TYPE,
   PDF_INPUT_PROBE_WIDTH,
@@ -77,23 +78,22 @@ function compressedRaster(pdf: Buffer): Buffer {
   return inflateSync(pdf.subarray(streamStart, streamStart + length));
 }
 
-const expectedProbeCodeGlyphs = {
-  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
-  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
-  "9": ["01110", "10001", "10001", "01111", "00001", "00010", "11100"],
-  K: ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
+const expectedAnswerGlyphs = {
+  A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
+  E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
   P: ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
-  Q: ["01110", "10001", "10001", "10001", "10101", "10010", "01101"]
+  R: ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
+  S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"]
 } as const;
 
-function expectProbeCodeInRaster(raster: Buffer): void {
-  [...PDF_INPUT_PROBE_CODE].forEach((character, characterIndex) => {
-    const glyph = expectedProbeCodeGlyphs[character as keyof typeof expectedProbeCodeGlyphs];
+function expectAnswerInRaster(raster: Buffer): void {
+  [..."PEARS"].forEach((character, characterIndex) => {
+    const glyph = expectedAnswerGlyphs[character as keyof typeof expectedAnswerGlyphs];
     expect(glyph, `missing independent test glyph for ${character}`).toBeDefined();
     glyph.forEach((row, rowIndex) => {
       [...row].forEach((pixel, columnIndex) => {
-        const x = 274 + (characterIndex * 6 + columnIndex) * 4 + 2;
-        const y = 154 + rowIndex * 4 + 2;
+        const x = 30 + (characterIndex * 6 + columnIndex) * 5 + 2;
+        const y = 228 + rowIndex * 5 + 2;
         expect(raster[y * PDF_INPUT_PROBE_WIDTH + x]).toBe(pixel === "1" ? 0 : 255);
       });
     });
@@ -101,14 +101,18 @@ function expectProbeCodeInRaster(raster: Buffer): void {
 }
 
 describe("direct PDF input probe", () => {
-  it("builds a small image-only PDF whose raster contains the expected code", () => {
+  it("builds a pinned image-only receipt with the expected factual answer", () => {
     const fixture = imageOnlyPdfInputProbeFixture();
     expect(fixture.mimeType).toBe(PDF_INPUT_PROBE_MIME_TYPE);
     expect(fixture.bytes.length).toBeGreaterThan(0);
+    expect(fixture.bytes.length).toBeLessThan(10_000);
+    expect(createHash("sha256").update(fixture.bytes).digest("hex")).toBe("c12a255c8ccd4cd54aebf5bbf33086fd9c474f494f88be3f2c76e84f3e98bdcf");
     expect(fixture.bytes.subarray(0, 8).toString("ascii")).toBe("%PDF-1.4");
-    expect(fixture.bytes.includes(Buffer.from(PDF_INPUT_PROBE_CODE, "ascii"))).toBe(false);
+    expect(fixture.bytes.includes(Buffer.from(PDF_INPUT_PROBE_ANSWER, "ascii"))).toBe(false);
     expect(fixture.bytes.toString("latin1")).toContain("/Subtype /Image");
     expect(fixture.bytes.toString("latin1")).not.toContain("/Font");
+    expect(fixture.bytes.toString("latin1")).not.toContain("/Encrypt");
+    expect(fixture.fileName).not.toContain(PDF_INPUT_PROBE_ANSWER);
     expect(fixture.bytes.toString("latin1")).toContain(
       `${PDF_INPUT_PROBE_WIDTH} 0 0 ${PDF_INPUT_PROBE_HEIGHT} 0 0 cm`
     );
@@ -118,19 +122,13 @@ describe("direct PDF input probe", () => {
 
     const raster = compressedRaster(fixture.bytes);
     expect(raster).toHaveLength(PDF_INPUT_PROBE_WIDTH * PDF_INPUT_PROBE_HEIGHT);
-    expectProbeCodeInRaster(raster);
-    const bottomRightInk = Array.from(raster).filter((value, index) => {
-      const x = index % PDF_INPUT_PROBE_WIDTH;
-      const y = Math.floor(index / PDF_INPUT_PROBE_WIDTH);
-      return x >= 274 && y >= 154 && value === 0;
-    }).length;
-    expect(bottomRightInk).toBeGreaterThan(300);
+    expectAnswerInRaster(raster);
   });
 
   it("uses an original PDF block with every optional feature disabled", async () => {
     const requests: unknown[] = [];
     const probe = createProviderPdfInputProbe({
-      createAdapter: () => adapter(PDF_INPUT_PROBE_CODE, requests)
+      createAdapter: () => adapter(PDF_INPUT_PROBE_ANSWER, requests)
     });
 
     await expect(probe.probe(input())).resolves.toEqual({
@@ -140,6 +138,7 @@ describe("direct PDF input probe", () => {
       verified: true
     });
     expect(requests).toHaveLength(1);
+    expect(JSON.stringify((requests[0] as { content: unknown }).content)).not.toContain(PDF_INPUT_PROBE_ANSWER);
     expect(requests[0]).toMatchObject({
       attachments: [{
         base64Data: expect.any(String),
@@ -165,17 +164,17 @@ describe("direct PDF input probe", () => {
   });
 
   it.each([
-    [PDF_INPUT_PROBE_CODE, true],
-    [` ${PDF_INPUT_PROBE_CODE}\n`, true],
-    [`The code is ${PDF_INPUT_PROBE_CODE}`, false],
-    ["```\nQ7K4P9\n```", false],
+    [PDF_INPUT_PROBE_ANSWER, true],
+    [` ${PDF_INPUT_PROBE_ANSWER}\n`, true],
+    [`The item is ${PDF_INPUT_PROBE_ANSWER}`, false],
+    ["```\nPEARS\n```", false],
     ["", false]
   ])("accepts only exact trimmed final text %#", async (output, verified) => {
     const probe = createProviderPdfInputProbe({
       createAdapter: () => adapter(output, [])
     });
-    const result = await probe.probe(input());
-    expect(Boolean(result)).toBe(verified);
+    if (verified) await expect(probe.probe(input())).resolves.toMatchObject({ verified: true });
+    else await expect(probe.probe(input())).rejects.toThrow("pdf_input_probe_inconclusive");
   });
 
   it("rejects reasoning artifacts without visible final text", async () => {
@@ -183,7 +182,7 @@ describe("direct PDF input probe", () => {
       createAdapter: () => ({
         async *stream() {
           yield {
-            data: { artifactType: "reasoning", payload: { reasoning: PDF_INPUT_PROBE_CODE } },
+            data: { artifactType: "reasoning", payload: { reasoning: PDF_INPUT_PROBE_ANSWER } },
             type: "artifact" as const
           };
           return terminal("");
@@ -191,11 +190,20 @@ describe("direct PDF input probe", () => {
       })
     });
 
-    await expect(probe.probe(input())).resolves.toBeNull();
+    await expect(probe.probe(input())).rejects.toThrow("pdf_input_probe_inconclusive");
+  });
+
+  it.each(["length", "content_filter"])("does not verify the expected text from a %s terminal", async (finishReason) => {
+    const probe = createProviderPdfInputProbe({ createAdapter: () => ({
+      async *stream() {
+        return { ...terminal(PDF_INPUT_PROBE_ANSWER), finalProviderResponsePreview: { finishReason } };
+      }
+    }) });
+    await expect(probe.probe(input())).rejects.toThrow("pdf_input_probe_inconclusive");
   });
 
   it("discovers PDF support without a declared flag and skips unsupported adapters", async () => {
-    const createAdapter = vi.fn(() => adapter(PDF_INPUT_PROBE_CODE, []));
+    const createAdapter = vi.fn(() => adapter(PDF_INPUT_PROBE_ANSWER, []));
     const probe = createProviderPdfInputProbe({ createAdapter });
 
     await expect(probe.probe({

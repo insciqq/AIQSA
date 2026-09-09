@@ -549,7 +549,16 @@ async function testPdfInput(
       : { evidence: null, status: "not_supported" };
   } catch (error) {
     preserveTestWideFailure(input, error);
-    return { evidence: null, status: "not_supported" };
+    const status = providerHttpStatus(error);
+    if (status !== null && !deterministicCapabilityHttpStatuses.has(status)) throw error;
+    if (record(error)?.code === "provider_capability_unsupported" && record(error)?.unsupportedInput === true ||
+      error instanceof Error && error.message === "pdf_input_adapter_unsupported") {
+      return { evidence: null, status: "not_supported" };
+    }
+    // HTTP 400, refusal, parser failure and a wrong/truncated answer do not
+    // establish unsupported PDF input. Setup records incomplete; refresh keeps
+    // the exact tuple's previous evidence and exposes a retryable check warning.
+    throw error;
   }
 }
 
@@ -865,7 +874,7 @@ async function testInitialAnswerModel(original: AdminProviderDraftTesterInput, o
       const result = await testPdfInput(input, options);
       compatibility.directPdf = result.status;
       if (result.evidence) evidence.pdfInput = result.evidence;
-      return result.evidence ? "verified" : "rejected";
+      return result.evidence ? "verified" : "unsupported";
     });
     await check("streaming", true, async () => {
       const result = await runGenerationProbe(input, options, true);

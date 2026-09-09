@@ -41,6 +41,7 @@ export type AdminRolePatch = Readonly<{
 
 export type AdminKnowledgeDraft = Readonly<{
   documentDeploymentId: string | null;
+  documentReasoningEffort: string | null;
   embeddingDeploymentId: string;
   mode: AdminKnowledgePdfProcessingMode;
 }>;
@@ -302,6 +303,7 @@ export function useAdminRolesController({
     const result = await activateAdminKnowledgeProfile({
       deploymentId: draft.embeddingDeploymentId,
       documentDeploymentId: draft.mode === "local" ? null : draft.documentDeploymentId,
+      documentReasoningEffort: draft.mode === "local" ? null : draft.documentReasoningEffort,
       expectedVersion: current.profile.version,
       pdfProcessingMode: draft.mode
     });

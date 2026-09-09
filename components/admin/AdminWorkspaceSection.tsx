@@ -9,6 +9,7 @@ import { useAdminSectionTopbar } from "@/components/admin/AdminShell";
 import { cardClass, sectionHeadingClass } from "@/components/admin/roles/rolesControls";
 import type { AdminFeedbackController } from "@/components/admin/useAdminFeedback";
 import { UiV2Button, UiV2Switch } from "@/components/ui-v2";
+import { AdminWorkspaceOverview } from "./AdminWorkspaceOverview";
 import type { WorkspacePolicyWire } from "@/lib/contracts/workspace";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -64,42 +65,57 @@ export function AdminWorkspaceSection({ reportNotice }: Readonly<{
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
   const readGeneration = useRef(0);
   const mutationPending = useRef(false);
+  const pendingRead = useRef<AbortController | null>(null);
+  const mounted = useRef(false);
+  const lastReadAt = useRef(-Infinity);
 
-  const refresh = useCallback(async () => {
-    if (mutationPending.current) return;
+  const refresh = useCallback(async (force = false) => {
+    if (!mounted.current || mutationPending.current || pendingRead.current || document.visibilityState === "hidden" ||
+      !force && Date.now() - lastReadAt.current < 5_000) return;
     const generation = ++readGeneration.current;
-    const result = await getAdminWorkspacePolicy();
-    if (generation !== readGeneration.current) return;
+    const controller = new AbortController();
+    pendingRead.current = controller;
+    lastReadAt.current = Date.now();
+    const result = await getAdminWorkspacePolicy(undefined, AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]));
+    if (!mounted.current || controller.signal.aborted || generation !== readGeneration.current) return;
+    pendingRead.current = null;
     setLoading(false);
     if (result.ok) {
       setPolicy(result.data);
-      setError(null);
+      setReadError(null);
     }
-    else setError(adminWorkspaceErrorMessage(result.error));
+    else {
+      if (result.error === "forbidden" || result.error === "unauthorized") setPolicy(null);
+      setReadError(adminWorkspaceErrorMessage(result.error));
+    }
   }, []);
 
   useEffect(() => {
+    mounted.current = true;
     const onFocus = () => {
       if (document.visibilityState !== "hidden") void refresh();
     };
-    const generation = ++readGeneration.current;
-    void getAdminWorkspacePolicy().then((result) => {
-      if (generation !== readGeneration.current) return;
-      setLoading(false);
-      if (result.ok) {
-        setPolicy(result.data);
-        setError(null);
-      } else setError(adminWorkspaceErrorMessage(result.error));
-    });
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        readGeneration.current += 1;
+        pendingRead.current?.abort();
+        pendingRead.current = null;
+      } else onFocus();
+    };
+    queueMicrotask(() => { void refresh(true); });
     window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
     const timer = window.setInterval(onFocus, 30_000);
     return () => {
+      mounted.current = false;
       readGeneration.current += 1;
+      pendingRead.current?.abort();
+      pendingRead.current = null;
       window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
       window.clearInterval(timer);
     };
   }, [refresh]);
@@ -108,10 +124,13 @@ export function AdminWorkspaceSection({ reportNotice }: Readonly<{
     if (!policy || mutationPending.current) return;
     mutationPending.current = true;
     readGeneration.current += 1;
+    pendingRead.current?.abort();
+    pendingRead.current = null;
     setBusy(true);
     setLoading(false);
     setError(null);
     const result = await updateAdminWorkspacePolicy(policy.version, patch);
+    if (!mounted.current) return;
     readGeneration.current += 1;
     mutationPending.current = false;
     setBusy(false);
@@ -120,7 +139,7 @@ export function AdminWorkspaceSection({ reportNotice }: Readonly<{
       reportNotice("Workspace policy updated.");
     } else {
       setError(adminWorkspaceErrorMessage(result.error));
-      if (result.error === "workspace_policy_stale") void refresh();
+      if (result.error === "workspace_policy_stale") void refresh(true);
     }
   }
 
@@ -131,6 +150,7 @@ export function AdminWorkspaceSection({ reportNotice }: Readonly<{
       </p>
 
       {error ? <p className="mt-4 border-l-2 border-critical bg-critical/10 px-3 py-2 text-xs text-critical" role="alert">{error}</p> : null}
+      {readError ? <p className="text-xs leading-5 text-critical" role="alert">{readError}</p> : null}
 
       {policy ? (
         <>
@@ -153,6 +173,7 @@ export function AdminWorkspaceSection({ reportNotice }: Readonly<{
               />
             </div>
           </div>
+          <AdminWorkspaceOverview />
           <dl className={`${cardClass} grid min-w-0 gap-5 p-5 sm:grid-cols-2`} aria-live="polite">
             <div className="min-w-0">
               <dt className={sectionHeadingClass}>Runtime readiness</dt>
@@ -175,7 +196,7 @@ export function AdminWorkspaceSection({ reportNotice }: Readonly<{
         </>
       ) : loading ? (
         <p className="mt-5 text-sm text-ink-muted" role="status">Loading Workspace policy…</p>
-      ) : <UiV2Button className="self-start" onClick={() => { setLoading(true); void refresh(); }} tone="ghost">Try again</UiV2Button>}
+      ) : <UiV2Button className="self-start" onClick={() => { setLoading(true); void refresh(true); }} tone="ghost">Try again</UiV2Button>}
     </section>
   );
 }

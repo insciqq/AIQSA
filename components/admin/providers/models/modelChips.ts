@@ -86,11 +86,15 @@ export function modelChipsFromEvidence(
   // pass nor a rejection of that transport proves native JSON Schema support.
   const nativeJsonChecked = configuration.adapterKind !== "openrouter_chat_completions" ||
     compatibility?.probeVersion === 2 || evidence.structuredOutput?.probeVersion === 5;
+  const pdfCheck = evidence.capabilitySetup?.checks.directPdf;
+  const pdfChip = pdfCheck === "incomplete" || pdfCheck === "not_checked"
+    ? { key: "pdf" as const, label: "PDF check incomplete", tone: "warn" as const }
+    : chip("pdf", "PDF", compatibility?.directPdf);
   const chips = compatibility
     ? [
         chip("tools", "Tools", compatibility.toolCalling),
         chip("json", "JSON", nativeJsonChecked ? compatibility.structuredOutput : null),
-        chip("pdf", "PDF", compatibility.directPdf),
+        pdfChip,
         chip("images", "Images", compatibility.vision),
         chip("stream", "Stream", compatibility.streaming)
       ]

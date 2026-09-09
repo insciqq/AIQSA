@@ -44,6 +44,17 @@ function run(overrides: Partial<AdminProviderCheckRun> = {}): AdminProviderCheck
 }
 
 describe("modelChipsFromEvidence", () => {
+  it.each(["incomplete", "not_checked"] as const)("does not report No PDF after a %s setup check", (status) => {
+    const check = fixtureCheck({ credentialId: "cred-primary", providerModelId: "m", evidence: evidence({
+      compatibility: { ...evidence().compatibility!, directPdf: "not_supported" },
+      capabilitySetup: { policyVersion: 1, checks: { modelAccess: "verified", directPdf: status } }
+    }) });
+    const chips = modelChipsFromEvidence(answer, check);
+    expect(chips).toContainEqual({ key: "pdf", label: "PDF check incomplete", tone: "warn" });
+    expect(chips).not.toContainEqual(expect.objectContaining({ label: "No PDF" }));
+    expect(chips).toContainEqual({ key: "json", label: "JSON", tone: "ok" });
+  });
+
   it("keeps ordinary Tools and JSON green when strict Memory calls are unsupported", () => {
     const check = fixtureCheck({ credentialId: "cred-primary", providerModelId: "m", evidence: evidence({
       compatibility: { ...evidence().compatibility!, probeVersion: 2, forcedToolCall: "not_supported" }

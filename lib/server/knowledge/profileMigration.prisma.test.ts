@@ -47,6 +47,15 @@ describe("Knowledge profile shadow migration", () => {
     const profileId = `profile-shadow-profile-${suffix}`;
     const oldProfileRevisionId = `profile-shadow-old-${suffix}`;
     const targetProfileRevisionId = `profile-shadow-target-${suffix}`;
+    const pdfSnapshot = (effort: string) => ({
+      connection: { allowPrivateNetwork: false, apiRoot: "https://api.openai.com/v1", authenticationMode: "bearer", responseTimeoutMs: 300_000 },
+      connectionDisplayName: "Synthetic reader", connectionId, credentialId: `reader-key-${suffix}`,
+      credentialVersionId: `reader-key-version-${suffix}`, modelDisplayName: "Synthetic reader", providerFamily: "openai",
+      providerModelId: `reader-${suffix}`, version: 1,
+      model: { adapterKind: "openai_responses_native", answerSelectable: true, modelClass: "answer", upstreamModelId: "reader",
+        capabilities: { nativePdfInput: true, nativeSearch: false, pdf: true, reasoning: true, vision: true },
+        defaultParams: { reasoning: { effort } } }
+    });
 
     await prisma.user.create({
       data: { displayName: "Profile shadow owner", id: ownerUserId, status: "active" }
@@ -78,7 +87,10 @@ describe("Knowledge profile shadow migration", () => {
         id: oldProfileRevisionId,
         preflightCheckedAt: now,
         preflightStatus: "ready",
-        profileConfiguration: {},
+        pdfProcessingMode: "system_model_vision",
+        pdfSystemModelPolicyVersion: 1,
+        pdfSystemModelSnapshot: pdfSnapshot("high"),
+        profileConfiguration: { pdfReasoningEffort: "high" },
         profileId,
         revisionNumber: 1,
         targetDimension: 1024,
@@ -93,7 +105,10 @@ describe("Knowledge profile shadow migration", () => {
         id: targetProfileRevisionId,
         preflightCheckedAt: now,
         preflightStatus: "ready",
-        profileConfiguration: {},
+        pdfProcessingMode: "system_model_vision",
+        pdfSystemModelPolicyVersion: 1,
+        pdfSystemModelSnapshot: pdfSnapshot("low"),
+        profileConfiguration: { pdfReasoningEffort: "low" },
         profileId,
         revisionNumber: 2,
         targetDimension: 1024,
@@ -250,11 +265,18 @@ describe("Knowledge profile shadow migration", () => {
       staleBefore: new Date(now.getTime() - 30_000)
     });
     expect(claim).toMatchObject({
-      artifact: { profileRevisionId: targetProfileRevisionId },
+      artifact: { profileRevisionId: targetProfileRevisionId,
+        pdfSystemModelSnapshot: { model: { defaultParams: { reasoning: { effort: "low" } } } } },
       knowledgeBaseId: base.id,
       sourceVersionId: version.id
     });
     if (!claim || !("artifact" in claim)) throw new Error("profile_shadow_claim_missing");
+    const recoveredClaim = await repository.claim({ claimToken: `profile-shadow-recovered-${suffix}`,
+      now: new Date(now.getTime() + 1000), staleBefore: new Date(now.getTime() + 1) });
+    expect(recoveredClaim).toMatchObject({ artifact: {
+      id: claim.artifact.id, profileRevisionId: targetProfileRevisionId,
+      pdfSystemModelSnapshot: { model: { defaultParams: { reasoning: { effort: "low" } } } }
+    } });
     await createReadyHierarchy({
       artifactId: claim.artifact.id,
       sourceVersionId: version.id
@@ -338,6 +360,17 @@ describe("Knowledge profile shadow migration", () => {
       sourceIndexGenerationId: targetBase.activeIndexGenerationId,
       status: "active"
     });
+    // Moving the active profile and completing its shadow does not rewrite
+    // the configuration bound to either earlier snapshot or accepted claim.
+    expect(claim.artifact.pdfSystemModelSnapshot).toMatchObject({
+      model: { defaultParams: { reasoning: { effort: "low" } } }
+    });
+    for (const [id, effort] of [[oldProfileRevisionId, "high"], [targetProfileRevisionId, "low"]]) {
+      await expect(prisma.knowledgeIndexProfileRevision.findUniqueOrThrow({
+        where: { id }, select: { pdfSystemModelSnapshot: true, profileConfiguration: true }
+      })).resolves.toMatchObject({ pdfSystemModelSnapshot: { model: { defaultParams: { reasoning: { effort } } } },
+        profileConfiguration: { pdfReasoningEffort: effort } });
+    }
     expect(rollbackBase.activeIndexGenerationId).not.toBe(oldGeneration.id);
     await expect(prisma.knowledgeBaseSnapshot.count({
       where: { knowledgeBaseId: base.id }

@@ -172,6 +172,7 @@ function activationCandidate(): ProviderActivationCandidate {
   return {
     connection: {
       activeConfiguration: null,
+      activeVersion: 0,
       configuration: storedConnectionConfiguration,
       displayName: "Compatible gateway",
       draftVersion: 3,
@@ -680,6 +681,35 @@ describe("admin provider service", () => {
       credentialId: "credential-1",
       providerModelId: "model-1"
     })).rejects.toMatchObject({ code: "provider_test_evidence_invalid" });
+  });
+
+  it.each([
+    { detected: true, markers: [true, true] },
+    { detected: false, markers: [true, false] },
+    { detected: false, markers: [false, true] }
+  ])("binds connection activation isolation to every fresh credential catalog: $markers", async ({ detected, markers }) => {
+    const base = activationCandidate();
+    const candidate = { ...base,
+      catalogCredentials: [{ credentialId: "credential-active", expectedDraftVersion: 1, expectedVersionId: "active-version" }],
+      connection: { ...base.connection, configuration: {
+      ...storedConnectionConfiguration,
+      responsesRequestIsolation: "auto" as const, responsesRequestIsolationDetected: !detected
+    } } };
+    const activateConnectionCas = vi.fn<AdminProviderRepository["activateConnectionCas"]>(async () => "updated");
+    let catalogIndex = 0;
+    const testCredential = vi.fn<AdminProviderCredentialTester["test"]>(async () => ({
+      method: "models_catalog",
+      modelIds: ["vendor/model", "vendor/model-two"],
+      responsesRequestIsolationDetected: markers[catalogIndex++]
+    }));
+    const providers = service(repository({ activateConnectionCas,
+      async loadActivationCandidate() { return candidate; }
+    }), tester(), [], credentialTester(testCredential));
+    await providers.activateConnection({ confirmUnavailable: true, connectionId: "connection-1", enableConnection: true });
+    expect(testCredential).toHaveBeenCalledTimes(2);
+    expect(activateConnectionCas.mock.calls[0]?.[0].connection.configuration).toMatchObject({
+      responsesRequestIsolation: "auto", responsesRequestIsolationDetected: detected
+    });
   });
 
   it("validates each referenced credential once and derives the model matrix from catalogs", async () => {
@@ -1329,6 +1359,118 @@ describe("admin provider service", () => {
   });
 });
 
+describe("Responses isolation catalog refresh", () => {
+  function connection(): AdminProviderConnection {
+    const configuration = { ...connectionConfiguration, responsesRequestIsolation: "auto" as const,
+      responsesRequestIsolationDetected: true };
+    return { ...adminConnection(), activeConfig: configuration, activeVersion: 3, draftVersion: 4,
+      draftConfig: { ...configuration, responseTimeoutSeconds: 120 },
+      credentials: ["primary", "disabled"].map((id) => ({
+        id, label: id, enabled: id === "primary", draftVersion: 2, draftSecretConfigured: true,
+        activatedAt: NOW.toISOString(), createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(), testedAt: NOW.toISOString(),
+        activeVersion: { id: `${id}-version`, version: 1, revokedAt: null,
+          activatedAt: NOW.toISOString(), testedAt: NOW.toISOString() }
+      })),
+      models: [{ id: "model-1", connectionId: "connection-1", displayName: "Model", modelClass: "answer",
+        activeConfig: modelConfiguration, activeVersion: 1, draftConfig: modelConfiguration, draftVersion: 2,
+        enabled: true, activatedAt: NOW.toISOString(), createdAt: NOW.toISOString(), updatedAt: NOW.toISOString() }]
+    };
+  }
+
+  it.each([
+    { kind: "new", candidateDetected: true, disabledDetected: false, detected: false },
+    { kind: "rotate", candidateDetected: false, disabledDetected: true, detected: false },
+    { kind: "rotate", candidateDetected: true, disabledDetected: true, detected: true }
+  ] as const)("rechecks all live keys for $kind ($candidateDetected/$disabledDetected)", async (scenario) => {
+    const active = connection();
+    const activateCredentialCas = vi.fn<AdminProviderRepository["activateCredentialCas"]>(async () => "updated");
+    const seenSecrets: string[] = [];
+    const test = vi.fn<AdminProviderCredentialTester["test"]>(async (input) => {
+      const secret = typeof input.secret === "function" ? await input.secret() : input.secret;
+      seenSecrets.push(secret!);
+      expect(input.connection).toMatchObject({ responseTimeoutMs: 300_000 });
+      return { method: "models_catalog", modelIds: ["vendor/model"],
+        responsesRequestIsolationDetected: secret === "candidate-secret" ? scenario.candidateDetected :
+          secret === "disabled-secret" ? scenario.disabledDetected : true };
+    });
+    const providers = service(repository({ activateCredentialCas, listConnections: async () => [active],
+      async withLockedCredential(id, versionId, consume) {
+        return consume({ credentialId: id, id: versionId, revokedAt: null,
+          secretEnvelope: encryptProviderCredentialSecret({ credentialId: id, valueId: versionId,
+            key: KEY, secret: `${id}-secret` }) });
+      }
+    }), tester(), ["new-key", "new-version"], credentialTester(test));
+    if (scenario.kind === "new") {
+      await providers.activateNewCredential({ connectionId: active.id, label: "New", secret: "candidate-secret" });
+    } else {
+      await providers.activateRotatedCredential({ connectionId: active.id, credentialId: "primary",
+        expectedDraftVersion: 2, secret: "candidate-secret" });
+    }
+    expect(seenSecrets).toEqual(scenario.kind === "new"
+      ? ["candidate-secret", "primary-secret", "disabled-secret"] : ["candidate-secret", "disabled-secret"]);
+    const write = activateCredentialCas.mock.calls[0]![0];
+    expect(write.isolationRefresh).toMatchObject({
+      configuration: { responsesRequestIsolation: "auto", responsesRequestIsolationDetected: scenario.detected,
+        responseTimeoutMs: 300_000 },
+      credentials: ["primary", "disabled"].map((id) => ({ credentialId: id, expectedDraftVersion: 2,
+        expectedVersionId: `${id}-version`, modelChecks: [{ modelVersion: 1, providerModelId: "model-1",
+          evidence: { method: "models_catalog" } }] }))
+    });
+    expect(write.expectedConnectionDraftVersion).toBe(4);
+    expect(JSON.stringify(write.isolationRefresh)).not.toContain("secret");
+    expect(active.draftConfig.responseTimeoutSeconds).toBe(120);
+  });
+
+  it("writes nothing if a disabled key cannot be rechecked", async () => {
+    const activateCredentialCas = vi.fn<AdminProviderRepository["activateCredentialCas"]>(async () => "updated");
+    let count = 0;
+    const providers = service(repository({ activateCredentialCas, listConnections: async () => [connection()] }),
+      tester(), [], credentialTester(async () => {
+        if (++count === 3) throw new Error("private gateway detail");
+        return { method: "models_catalog", modelIds: [], responsesRequestIsolationDetected: true };
+      }));
+    await expect(providers.activateNewCredential({ connectionId: "connection-1", label: "New", secret: "candidate" }))
+      .rejects.toMatchObject({ code: "provider_credential_test_failed" });
+    expect(activateCredentialCas).not.toHaveBeenCalled();
+  });
+
+  it("tests an unreferenced live key without activating its draft and advances a reused connection version", async () => {
+    const base = activationCandidate();
+    const configuration = { ...storedConnectionConfiguration, responsesRequestIsolation: "auto" as const,
+      responsesRequestIsolationDetected: true };
+    const candidate: ProviderActivationCandidate = { ...base,
+      connection: { ...base.connection, activeConfiguration: configuration, activeVersion: 3, configuration },
+      catalogCredentials: [
+        { credentialId: "credential-active", expectedDraftVersion: 1, expectedVersionId: "active-version" },
+        { credentialId: "unreferenced-disabled", expectedDraftVersion: 9, expectedVersionId: "disabled-active-version" }
+      ]
+    };
+    const activateConnectionCas = vi.fn<AdminProviderRepository["activateConnectionCas"]>(async () => "updated");
+    let count = 0;
+    const providers = service(repository({ activateConnectionCas, loadActivationCandidate: async () => candidate,
+      async withLockedCredential(id, versionId, consume) {
+        expect([id, versionId]).toEqual(["unreferenced-disabled", "disabled-active-version"]);
+        return consume({ credentialId: id, id: versionId, revokedAt: null,
+          secretEnvelope: encryptProviderCredentialSecret({ credentialId: id, valueId: versionId,
+            key: KEY, secret: "disabled-active-secret" }) });
+      }
+    }), tester(), [], credentialTester(async (input) => {
+      count++;
+      if (count === 3) expect(await (input.secret as () => Promise<string>)()).toBe("disabled-active-secret");
+      return { method: "models_catalog", modelIds: ["vendor/model", "vendor/model-two"],
+        responsesRequestIsolationDetected: count !== 3 };
+    }));
+    await expect(providers.activateConnection({ confirmUnavailable: true, connectionId: "connection-1", enableConnection: true }))
+      .resolves.toMatchObject({ activatedCredentialCount: 2, connectionVersion: 4 });
+    expect(count).toBe(3);
+    const write = activateConnectionCas.mock.calls[0]![0];
+    expect(write.connection.configuration.responsesRequestIsolationDetected).toBe(false);
+    expect(write.credentials.map(({ id }) => id)).toEqual(["credential-draft", "credential-active"]);
+    expect(write.isolationRefresh).toMatchObject({ activeVersion: 4, expectedActiveVersion: 3,
+      credentials: [{ credentialId: "credential-active" }, { credentialId: "unreferenced-disabled", expectedDraftVersion: 9 }] });
+  });
+});
+
 describe("atomic provider connection settings", () => {
   function liveConnection(): AdminProviderConnection {
     return {
@@ -1364,6 +1506,31 @@ describe("atomic provider connection settings", () => {
       unassignedPolicy: "use_default" as const
     };
   }
+
+  it.each([
+    { mode: "auto", flags: [false, true], detected: false },
+    { mode: "auto", flags: [true, false], detected: false },
+    { mode: "auto", flags: [true, true], detected: true },
+    { mode: "on", flags: [true, true], detected: true },
+    { mode: "off", flags: [true, true], detected: true }
+  ] as const)("binds $mode discovery to every freshly tested credential without losing the manual override (%#)", async ({ mode, flags, detected }) => {
+    const saveConnectionSettingsCas = vi.fn<AdminProviderRepository["saveConnectionSettingsCas"]>(async () => "updated");
+    let index = 0;
+    const test = vi.fn<AdminProviderCredentialTester["test"]>(async () => ({
+      method: "models_catalog", modelIds: ["vendor/model"],
+      models: [{ capabilities: {}, id: "vendor/model", ownedBy: "codex-lb" }],
+      responsesRequestIsolationDetected: flags[index++]!
+    }));
+    const providers = service(repository({ listConnections: async () => [liveConnection()], saveConnectionSettingsCas }),
+      tester(), ["replacement-primary", "replacement-group"], credentialTester(test));
+    await providers.saveConnectionSettings({ ...request(), configuration: { ...request().configuration,
+      responsesRequestIsolation: mode, responsesRequestIsolationDetected: true } });
+    expect(test).toHaveBeenCalledTimes(2);
+    expect(saveConnectionSettingsCas.mock.calls[0]![0]).toMatchObject({
+      configuration: { responsesRequestIsolation: mode, responsesRequestIsolationDetected: detected },
+      expectedActiveVersion: 1, expectedDraftVersion: 3
+    });
+  });
 
   it("tests only re-entered keys at a changed endpoint and publishes them together, including a disabled key", async () => {
     const saveConnectionSettingsCas = vi.fn<AdminProviderRepository["saveConnectionSettingsCas"]>(async () => "updated");
