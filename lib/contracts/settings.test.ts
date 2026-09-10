@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { decodeUpdateSettingsResponse, type UpdateSettingsResponse } from "./settings";
+import { ANSWER_SOUNDS } from "./answerSound";
 
 function validResponse(): UpdateSettingsResponse {
   return {
     settings: {
+      answerSoundEnabled: true,
+      answerSoundId: "rise",
       defaultControlValues: {},
       defaultKnowledgePlan: null,
       defaultMcpMode: "auto",
@@ -25,6 +28,25 @@ function validResponse(): UpdateSettingsResponse {
 }
 
 describe("settings wire contract", () => {
+  it("decodes saved sound preferences and rejects invalid field values", () => {
+    const response = validResponse();
+    response.settings.answerSoundEnabled = false;
+    response.settings.answerSoundId = "double-tap";
+    expect(decodeUpdateSettingsResponse(response)?.settings).toMatchObject({
+      answerSoundEnabled: false, answerSoundId: "double-tap"
+    });
+    for (const invalid of ["unknown", "", null, 12]) {
+      expect(decodeUpdateSettingsResponse({ settings: { ...response.settings, answerSoundId: invalid } })).toBeNull();
+    }
+    expect(decodeUpdateSettingsResponse({ settings: { ...response.settings, answerSoundEnabled: "false" } })).toBeNull();
+  });
+
+  it.each(ANSWER_SOUNDS)("accepts the saved $label selection", ({ value }) => {
+    const response = validResponse();
+    response.settings.answerSoundId = value;
+    expect(decodeUpdateSettingsResponse(response)?.settings.answerSoundId).toBe(value);
+  });
+
   it("preserves a null personal default when the effective model is the organization default", () => {
     expect(decodeUpdateSettingsResponse(validResponse())?.settings).toMatchObject({
       hasPersonalModelDefault: false,

@@ -1,8 +1,11 @@
 import { setupProgressResponse } from "./setupProgressResponse";
+import type { AdminProviderModelSaveReceipt } from "../../../contracts/adminProviderModelSave";
+import type { AdminProviderSetupProgress } from "../../../contracts/adminProviderSetupProgress";
 import type {
   AdminProviderConnectionConfiguration,
   AdminProviderFamily,
   AdminProviderModelConfiguration,
+  AdminProviderModelEditGuard,
   AdminProviderUnassignedPolicy
 } from "../../../contracts/adminProviders";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
@@ -51,6 +54,19 @@ function version(value: unknown): number | null {
   return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 2_147_483_647
     ? Number(value)
     : null;
+}
+
+function modelEditGuard(body: Record<string, unknown>): AdminProviderModelEditGuard | null {
+  const expectedActiveVersion = version(body.expectedActiveVersion);
+  const expectedDraftVersion = version(body.expectedDraftVersion);
+  const { expectedDisplayName, expectedUpdatedAt } = body;
+  if (expectedActiveVersion === null || expectedDraftVersion === null ||
+    typeof expectedDisplayName !== "string" || !expectedDisplayName.trim() || expectedDisplayName.length > 160 ||
+    /[\u0000-\u001f\u007f]/u.test(expectedDisplayName) ||
+    typeof expectedUpdatedAt !== "string" || expectedUpdatedAt.length > 32) return null;
+  const parsed = new Date(expectedUpdatedAt);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== expectedUpdatedAt) return null;
+  return { expectedActiveVersion, expectedDisplayName, expectedDraftVersion, expectedUpdatedAt };
 }
 
 function optionalIdList(value: unknown, maxLength = 256): string[] | null | undefined {
@@ -158,6 +174,35 @@ async function safely(operation: () => Promise<Response>): Promise<Response> {
 
 async function catalog(service: AdminProviderService, status = 200): Promise<Response> {
   return Response.json({ connections: await service.listConnections() }, { status });
+}
+
+async function modelSaveResponse(input: {
+  service: AdminProviderService;
+  connectionId: string;
+  write(): Promise<{ id: string; displayName: string; draftVersion: number }>;
+  activate: boolean;
+  signal: AbortSignal;
+  onProgress?: (value: AdminProviderSetupProgress) => void;
+  status?: number;
+}): Promise<Response> {
+  let receipt: AdminProviderModelSaveReceipt | null = null;
+  const response = await safely(async () => {
+    const saved = await input.write();
+    receipt = { connectionId: input.connectionId, modelId: saved.id, displayName: saved.displayName,
+      draftVersion: saved.draftVersion, saved: "configuration", publication: "draft", checks: "not_requested" };
+    if (input.activate) {
+      const outcome = await input.service.activateModel({ connectionId: input.connectionId, modelId: saved.id,
+        expectedDraftVersion: saved.draftVersion,
+        signal: input.signal, onProgress: input.onProgress,
+        onActivated: () => { receipt = { ...receipt!, publication: "active", checks: "unknown" }; } });
+      receipt = { ...receipt, publication: "active", checks: outcome.check };
+    }
+    return Response.json({ receipt }, { status: input.status ?? 200 });
+  });
+  // A later check/publication failure does not undo the exact draft write above.
+  return !response.ok && receipt
+    ? Response.json({ ...await response.json(), receipt }, { status: response.status })
+    : response;
 }
 
 async function connectionExists(service: AdminProviderService, connectionId: string): Promise<boolean> {
@@ -531,18 +576,10 @@ export function createAdminProviderModelCreateHandler(deps: AdminProviderHandler
       return errorJson("provider_configuration_invalid", 400);
     }
     const { connectionId } = await context.params;
-    return setupProgressResponse(request, (signal, onProgress) => safely(async () => {
-      const { id } = await deps.service.createModelDraft({
-        configuration: body.configuration as AdminProviderModelConfiguration,
-        connectionId,
-        displayName
-      });
-      // `Test & Save` (PRD B2): the saved model goes live and is checked with
-      // the default key in the same request.
-      if (body.activate === true) {
-        await deps.service.activateModel({ connectionId, modelId: id, signal, onProgress });
-      }
-      return catalog(deps.service, 201);
+    return setupProgressResponse(request, (signal, onProgress) => modelSaveResponse({
+      service: deps.service, connectionId, signal, onProgress, status: 201, activate: body.activate === true,
+      write: () => deps.service.createModelDraft({ configuration: body.configuration as AdminProviderModelConfiguration,
+        connectionId, displayName })
     }));
   };
 }
@@ -557,26 +594,32 @@ export function createAdminProviderModelUpdateHandler(deps: AdminProviderHandler
     const action = text(body?.action, 64);
     if (!body || !action) return errorJson("provider_action_invalid", 400);
     const { connectionId, modelId } = await context.params;
+    if (action === "rename") {
+      const guard = modelEditGuard(body);
+      if (!guard || typeof body.displayName !== "string" || Object.keys(body).some((key) => ![
+        "action", "displayName", "expectedActiveVersion", "expectedDisplayName", "expectedDraftVersion", "expectedUpdatedAt"
+      ].includes(key))) return errorJson("provider_configuration_invalid", 400);
+      return safely(async () => {
+        const saved = await deps.service.renameModel({ ...guard, connectionId, displayName: body.displayName as string, modelId });
+        const receipt: AdminProviderModelSaveReceipt = { ...saved, connectionId, modelId,
+          saved: "name", publication: "not_requested", checks: "not_requested" };
+        return Response.json({ receipt });
+      });
+    }
     return setupProgressResponse(request, (signal, onProgress) => safely(async () => {
       if (!await modelBelongs(deps.service, connectionId, modelId)) {
         return errorJson("provider_model_not_found", 404);
       }
       if (action === "update") {
         const displayName = text(body.displayName, 160);
-        const expectedDraftVersion = version(body.expectedDraftVersion);
-        if (!displayName || expectedDraftVersion === null || !isRecord(body.configuration) ||
+        const guard = modelEditGuard(body);
+        if (!displayName || !guard || !isRecord(body.configuration) ||
           (body.activate !== undefined && typeof body.activate !== "boolean")) {
           return errorJson("provider_configuration_invalid", 400);
         }
-        await deps.service.updateModelDraft({
-          configuration: body.configuration as AdminProviderModelConfiguration,
-          displayName,
-          expectedDraftVersion,
-          modelId
-        });
-        if (body.activate === true) {
-          await deps.service.activateModel({ connectionId, modelId, signal, onProgress });
-        }
+        return modelSaveResponse({ service: deps.service, connectionId, signal, onProgress, activate: body.activate === true,
+          write: async () => ({ ...await deps.service.updateModelDraft({ ...guard,
+            configuration: body.configuration as AdminProviderModelConfiguration, displayName, modelId }), id: modelId }) });
       } else if (action === "enable" || action === "disable") {
         await deps.service[action]("model", modelId);
       } else {

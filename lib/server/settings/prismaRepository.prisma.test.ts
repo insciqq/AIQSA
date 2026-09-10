@@ -3,6 +3,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
 import type { SettingsValidationModel, UserSettingsUpdate } from "./handlers";
 import { createPrismaSettingsRepository } from "./prismaRepository";
+import { ANSWER_SOUNDS } from "@/lib/contracts/answerSound";
 
 function createTestSettingsRepository(validationModels: SettingsValidationModel[]) {
   const repository = createPrismaSettingsRepository(prisma);
@@ -79,6 +80,36 @@ async function withSettingsUser<T>(run: (input: SettingsUserFixture) => Promise<
 }
 
 describe("Prisma-backed settings repository", () => {
+  it("persists separate sound preferences through concurrent saves without changing another account", async () => {
+    await withSettingsUser(async ({ userId, validationModels }) => {
+      await withSettingsUser(async ({ userId: otherUserId }) => {
+        const repository = createTestSettingsRepository(validationModels);
+        await Promise.all([
+          repository.updateSettings(userId, { answerSoundEnabled: false }),
+          repository.updateSettings(userId, { answerSoundId: "bell" }),
+          repository.updateSettings(userId, { sendWithEnter: false, showCitations: false })
+        ]);
+        expect(await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).toMatchObject({
+          answerSoundEnabled: false, answerSoundId: "bell", sendWithEnter: false, showCitations: false
+        });
+        expect(await prisma.userSettings.findUniqueOrThrow({ where: { userId: otherUserId } })).toMatchObject({
+          answerSoundEnabled: true, answerSoundId: "rise", sendWithEnter: true
+        });
+        expect(await repository.updateSettings(userId, { answerSoundEnabled: true })).toMatchObject({
+          settings: { answerSoundEnabled: true, answerSoundId: "bell" }
+        });
+        for (const { value } of ANSWER_SOUNDS) {
+          expect(await repository.updateSettings(userId, { answerSoundId: value })).toMatchObject({
+            kind: "updated", settings: { answerSoundEnabled: true, answerSoundId: value }
+          });
+          expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).answerSoundId).toBe(value);
+        }
+        await expect(prisma.$executeRaw`UPDATE "UserSettings" SET "answerSoundId" = 'invalid' WHERE "userId" = ${userId}`)
+          .rejects.toMatchObject({ code: "P2010" });
+      });
+    });
+  });
+
   afterAll(async () => {
     await prisma.$disconnect();
   });

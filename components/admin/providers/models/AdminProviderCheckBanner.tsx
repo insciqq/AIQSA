@@ -2,7 +2,7 @@
 
 import type { AdminModelCheckState } from "@/components/admin/providers/models/useAdminModelChecks";
 import { UiV2Button } from "@/components/ui-v2";
-import { AdminProviderSetupResults, CAPABILITY_LABELS } from "@/components/admin/providers/add/AdminProviderSetupResults";
+import { AdminProviderSetupResults, CAPABILITY_LABELS, providerSetupNeedsRecovery } from "@/components/admin/providers/add/AdminProviderSetupResults";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
 import { useState } from "react";
 
@@ -80,21 +80,20 @@ export function AdminProviderCheckBanner({ checks, connection, disabled, selecte
 
   if (run?.state === "completed") {
     const setup = run.setup && run.setup.state !== "running" ? run.setup : null;
-    const retry = run.total === 0 || setup?.state === "partial" || run.failed.length > 0 || Boolean(run.skipped?.length) || Boolean(run.results?.some((result) => result.state !== "saved" &&
-      !(result.state === "unavailable" && result.checks?.modelAccess === "unsupported" &&
-        Object.values(result.checks).every((status) => status === "verified" || status === "unsupported"))));
+    const retry = providerSetupNeedsRecovery(run);
     return (
       <section className="rounded-[12px] border border-trace-subtle bg-answer-paper px-4 py-3.5 sm:px-5" role="status">
         <p className={`text-sm ${retry ? "font-semibold text-critical" : "font-medium text-ink"}`}>{run.total === 0
           ? "No models were checked."
-          : retry ? "Some checks need another attempt." : run.reason === "setup" ? "Automatic setup finished." : "Model checks finished."}</p>
+          : retry ? "Some setup work is unfinished." : run.reason === "setup" ? "Automatic setup finished." : "Model checks finished."}</p>
         <p className="mt-1 text-xs leading-5 text-ink-muted">{run.total === 0
           ? "Add a supported model or check which models this key can access."
           : setup?.search === "failed" ? "Search could not be verified. Your saved key and model results are kept."
-          : run.failed.length ? `${run.failed.length} models have unresolved checks. Saved capabilities remain available; details are shown below.`
           : setup?.state === "partial" ? "Some default assignments could not be saved. Retry setup to finish."
           : setup?.search === "ready" ? "Search checked and ready."
-          : run.skipped?.length ? "Some models changed during checking. Recheck to use their current settings." : `Model results for key ${keyLabel(run.credentialId)} are shown below.`}</p>
+          : run.skipped?.length ? "Some models changed during checking. Recheck to use their current settings."
+          : retry ? "Saved capabilities remain available. Retry to finish the interrupted checks or save."
+          : `Capabilities for key ${keyLabel(run.credentialId)} are shown with each model.`}</p>
         {setup?.defaults.length ? <p className="mt-1 text-xs leading-5 text-ink-muted">Defaults set — {setup.defaults.join("; ")}.</p> : null}
         <AdminProviderSetupResults models={connection.models} run={run} />
         {retry ? <UiV2Button className="mt-2" disabled={disabled} onClick={() => void checks.restart()} tone="ghost" type="button">Retry checks</UiV2Button> : null}

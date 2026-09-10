@@ -55,6 +55,7 @@ describe("OAuth provider protocol", () => {
       "https://aiqsa.example/api/auth/oauth/google/callback"
     );
     expect(google.searchParams.get("state")).toBe("state");
+    expect(google.searchParams.has("force_confirm")).toBe(false);
     expect(yandex.origin).toBe("https://oauth.yandex.ru");
     expect(yandex.searchParams.get("scope")).toBe("login:info login:email");
     expect(yandex.searchParams.get("code_challenge_method")).toBe("S256");
@@ -62,6 +63,23 @@ describe("OAuth provider protocol", () => {
       "https://aiqsa.example/api/auth/oauth/yandex/callback"
     );
     expect(yandex.searchParams.get("state")).toBe("state");
+    expect(yandex.searchParams.has("force_confirm")).toBe(false);
+  });
+
+  it.each(["google", "yandex"] as const)("scopes explicit account selection to Yandex for %s", (provider) => {
+    const url = buildOAuthAuthorizationUrl({
+      clientId: "client-id",
+      codeChallenge: "challenge",
+      nonce: "nonce",
+      provider,
+      redirectUri: `https://aiqsa.example/api/auth/oauth/${provider}/callback`,
+      state: "state",
+      switchAccount: true
+    });
+
+    expect(url.searchParams.get("force_confirm")).toBe(provider === "yandex" ? "yes" : null);
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(url.searchParams.get("state")).toBe("state");
   });
 
   it("exchanges a Google code and validates the returned ID token through the injected verifier", async () => {

@@ -161,6 +161,25 @@ describe("native Gemini structured output", () => {
     expect(KNOWLEDGE_EVIDENCE_ANSWER_REVIEW_SCHEMA_V2.properties.requirements.items.properties.requirement.minLength).toBe(1);
   });
 
+  it.each(["mcp_tool_routing", "mcp_tool_routing_retry"])("omits only the two routing bounds for %s", (name) => {
+    const boundedArray = { items: { type: "string" }, type: "array", maxItems: 3, minItems: 1 };
+    const routingSchema = { type: "object", properties: {
+      other: boundedArray,
+      requirements: { type: "array", maxItems: 16, minItems: 1, items: {
+        type: "object", properties: { other: boundedArray, tool_ids: { ...boundedArray, maxItems: 10 } }
+      } }
+    } };
+    const original = structuredClone(routingSchema);
+    const wire = buildGeminiInteractionsStructuredOutputRequest(model, { ...request, name, schema: routingSchema });
+    const expected = { ...routingSchema, properties: { ...routingSchema.properties, requirements: {
+      type: "array", minItems: 1, items: { type: "object", properties: {
+        other: boundedArray, tool_ids: { items: { type: "string" }, type: "array", minItems: 1 }
+      } }
+    } } };
+    expect(wire.response_format).toEqual({ mime_type: "application/json", schema: expected, type: "text" });
+    expect(routingSchema).toEqual(original);
+  });
+
   it("unwraps only the exact bounded object root of a discriminated union", async () => {
     const union = { oneOf: ["yes", "no"].map((kind) => ({
       additionalProperties: false, properties: { kind: { const: kind, type: "string" } }, required: ["kind"], type: "object"

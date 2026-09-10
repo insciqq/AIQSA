@@ -1,6 +1,6 @@
 "use client";
 
-import { inputClass } from "@/components/admin/adminPrimitives";
+import { focusRing, inputClass, touchTarget } from "@/components/admin/adminPrimitives";
 import { AdminProviderModelSheet } from "@/components/admin/providers/models/AdminProviderModelSheet";
 import { modelWorksWith, type ModelChip } from "@/components/admin/providers/models/modelChips";
 import {
@@ -20,7 +20,7 @@ import {
 } from "@/components/admin/providers/models/modelListView";
 import { useAdminOpenRouterDiscovery } from "@/components/admin/providers/models/useAdminOpenRouterDiscovery";
 import { describeDeleteBlockers } from "@/components/admin/providers/providerBlockers";
-import type { ProviderUsageSources } from "@/components/admin/providers/providerListView";
+import { visibleProviderModels, type ProviderUsageSources } from "@/components/admin/providers/providerListView";
 import { ProviderRowMenu, ProviderTag } from "@/components/admin/providers/providerPrimitives";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
@@ -55,16 +55,25 @@ function Chip({ chip }: Readonly<{ chip: ModelChip }>) {
     : chip.key === "json" ? "Structured responses using a strict JSON Schema." : undefined;
   const help = [chip.help, description].filter(Boolean).join(" ") || undefined;
   return (
-    <span
-      aria-label={help}
-      className={`inline-flex h-[22px] shrink-0 items-center gap-1 whitespace-nowrap rounded-[6px] border px-1.5 text-metadata font-medium ${chipTone[chip.tone]}`}
-      data-chip-tone={chip.tone}
-      data-testid={`model-chip-${chip.key}`}
-      title={help}
-    >
-      {chip.tone === "ok" ? <UiV2Icon className="size-3" name="check" /> : null}
-      {chip.label}
-    </span>
+    <details className="min-w-0 max-w-full" onKeyDown={(event) => {
+      if (event.key !== "Escape" || !event.currentTarget.open) return;
+      event.stopPropagation();
+      event.currentTarget.open = false;
+      event.currentTarget.querySelector("summary")?.focus();
+    }}>
+      <summary
+        aria-label={`${chip.label} capability details`}
+        className={`inline-flex min-h-7 cursor-pointer list-none items-center gap-1 rounded-[6px] border px-1.5 text-metadata font-medium [&::-webkit-details-marker]:hidden ${focusRing} ${touchTarget} ${chipTone[chip.tone]}`}
+        data-chip-tone={chip.tone}
+        data-testid={`model-chip-${chip.key}`}
+      >
+        {chip.tone === "ok" ? <UiV2Icon aria-hidden="true" className="size-3" name="check" /> : null}
+        {chip.label}
+      </summary>
+      <p className={`mt-1 max-h-40 max-w-72 overflow-y-auto break-words text-xs leading-5 text-ink-secondary ${focusRing}`} tabIndex={0}>
+        {help ?? (chip.tone === "ok" ? "Verified with this key." : "This model is not available to the selected key.")}
+      </p>
+    </details>
   );
 }
 
@@ -157,7 +166,7 @@ export function AdminProviderModels({
   const needsKey = providerNeedsKeyForModels(connection);
   const keyHelpId = useId();
   const usage = useMemo(() => deriveModelUsage(usageSources), [usageSources]);
-  const groups = useMemo(() => groupProviderModels(connection.models), [connection.models]);
+  const groups = useMemo(() => groupProviderModels(visibleProviderModels(connection)), [connection]);
   const checkable = checkableCredentials(connection);
   const selectedKey = connection.credentials.find(({ id }) => id === diagnosticCredentialId) ?? null;
   const checkKey = checkable.find(({ id }) => id === diagnosticCredentialId) ?? null;
@@ -175,10 +184,9 @@ export function AdminProviderModels({
       : running ? "Model checks are already running."
         : "Sends small requests to verify model access, tools, JSON output, PDF and image input, and streaming.";
 
-  const startChecks = (credentialId: string, modelIds?: readonly string[], retryUnresolved?: boolean) => {
+  const startChecks = (credentialId: string, modelIds?: readonly string[]) => {
     onDiagnosticCredentialChange(credentialId);
-    if (retryUnresolved) void controller.actions.startModelChecks(connection.id, credentialId, modelIds, true);
-    else void controller.actions.startModelChecks(connection.id, credentialId, modelIds);
+    void controller.actions.startModelChecks(connection.id, credentialId, modelIds);
   };
 
   const setEnabled = (model: AdminProviderModel, enabled: boolean) => {
@@ -289,7 +297,7 @@ export function AdminProviderModels({
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
         <h3 className="text-base font-semibold text-ink" id="provider-models-heading">Models</h3>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          {connection.models.length ? (
+          {groups.length ? (
             <UiV2Button
               aria-describedby={checkHelpId}
               disabled={busy || running || !checkKey || !hasCheckableModels}
@@ -331,7 +339,7 @@ export function AdminProviderModels({
       <div className="overflow-hidden rounded-[12px] border border-trace-subtle bg-answer-paper">
         {groups.length === 0 ? (
           <p className="px-5 py-8 text-center text-sm text-ink-muted" role="status">
-            No models yet. Add one to make this provider usable in chat.
+            {needsKey ? "Models appear after a working key is saved." : "No models yet. Add one to make this provider usable in chat."}
           </p>
         ) : (
           <div className="xl:overflow-x-auto">
@@ -419,17 +427,10 @@ export function AdminProviderModels({
                               {!model.enabled && !initialSetup ? <span>Turn this model on to check it.</span> : null}
                             </span>
                           ) : (
-                            <span className="flex flex-wrap items-center gap-1.5">
+                            <div className="flex flex-wrap items-start gap-1.5">
                               {worksWith.chips.map((chip) => <Chip chip={chip} key={chip.key} />)}
-                              {worksWith.kind === "failed" ? (
-                                <span className="inline-flex items-center gap-2 text-xs font-semibold text-critical">
-                                  Check failed
-                                  <UiV2Button aria-describedby={checkHelpId} disabled={!canCheck} onClick={() => checkKey && startChecks(checkKey.id, [model.id], true)} title={checkHelp} tone="ghost" type="button">
-                                    Retry
-                                  </UiV2Button>
-                                </span>
-                              ) : null}
-                            </span>
+                              {worksWith.kind === "failed" ? <span className="text-xs text-ink-muted">No completed check. Use Re-check with key… in the model menu.</span> : null}
+                            </div>
                           )}
                         </td>
                         <td className={`col-span-3 row-start-3 min-w-0 px-4 pb-3 sm:px-3 sm:py-3 ${tags.length ? "" : "hidden xl:table-cell"}`}>

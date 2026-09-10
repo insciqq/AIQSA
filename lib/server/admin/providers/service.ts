@@ -18,6 +18,8 @@ import type {
   AdminProviderDeleteResult,
   AdminProviderFamily,
   AdminProviderModelConfiguration,
+  AdminProviderModelEditGuard,
+  AdminProviderModelRename,
   AdminProviderModel,
   AdminProviderTestEvidence,
   AdminProviderUnassignedPolicy
@@ -1108,11 +1110,16 @@ export function createAdminProviderService(input: Readonly<{
     async activateModel(value: {
       connectionId: string;
       modelId: string;
+      expectedDraftVersion?: number;
       signal?: AbortSignal;
       onProgress?(value: AdminProviderSetupProgress): void;
+      onActivated?(): void;
     }): Promise<{ check: "checked" | "failed" | "skipped" }> {
       const candidate = await input.repository.loadModelActivationCandidate(value);
       if (!candidate) throw new AdminProviderServiceError("provider_model_not_found");
+      if (value.expectedDraftVersion !== undefined && candidate.model.draftVersion !== value.expectedDraftVersion) {
+        throw new AdminProviderServiceError("provider_draft_stale");
+      }
       let model = normalizeProviderModelConfiguration(candidate.model.configuration);
       const initial = candidate.model.activeVersion === 0;
       if (initial && model.modelClass === "answer") model = { ...model, capabilities: {
@@ -1144,6 +1151,7 @@ export function createAdminProviderService(input: Readonly<{
       });
       if (result === "stale") throw new AdminProviderServiceError("provider_draft_stale");
       if (result === "not_found") throw new AdminProviderServiceError("provider_model_not_found");
+      value.onActivated?.();
       const credential = candidate.connection.defaultCredential;
       if (!credential?.usable) return { check: "skipped" };
       const run = await startCheckRun({
@@ -1339,10 +1347,11 @@ export function createAdminProviderService(input: Readonly<{
     }) {
       const configuration = normalizeAdminProviderModelConfiguration(value.configuration);
       const id = idFactory();
+      const displayName = name(value.displayName);
       const result = await input.repository.createModel({
         configuration,
         connectionId: value.connectionId,
-        displayName: name(value.displayName),
+        displayName,
         family: expectedFamily(configuration),
         id
       });
@@ -1352,20 +1361,36 @@ export function createAdminProviderService(input: Readonly<{
       if (result === "family_mismatch") {
         throw new AdminProviderServiceError("provider_family_adapter_mismatch");
       }
-      return { id };
+      return { id, displayName, draftVersion: 1 };
     },
 
-    async updateModelDraft(value: {
+    async renameModel(value: AdminProviderModelRename & { connectionId: string; modelId: string }) {
+      const displayName = name(value.displayName);
+      const result = await input.repository.renameModelCas({
+        ...value,
+        displayName,
+        expectedUpdatedAt: new Date(value.expectedUpdatedAt),
+        now: now()
+      });
+      if (result === "stale") throw new AdminProviderServiceError("provider_draft_stale");
+      if (result === "not_found") throw new AdminProviderServiceError("provider_model_not_found");
+      return { displayName, draftVersion: value.expectedDraftVersion };
+    },
+
+    async updateModelDraft(value: AdminProviderModelEditGuard & {
       configuration: AdminProviderModelConfiguration;
       displayName: string;
-      expectedDraftVersion: number;
       modelId: string;
     }) {
       const configuration = normalizeAdminProviderModelConfiguration(value.configuration);
+      const displayName = name(value.displayName);
       const result = await input.repository.updateModelDraft({
         configuration,
-        displayName: name(value.displayName),
+        displayName,
+        expectedActiveVersion: value.expectedActiveVersion,
+        expectedDisplayName: value.expectedDisplayName,
         expectedDraftVersion: value.expectedDraftVersion,
+        expectedUpdatedAt: new Date(value.expectedUpdatedAt),
         family: expectedFamily(configuration),
         modelId: value.modelId
       });
@@ -1377,7 +1402,7 @@ export function createAdminProviderService(input: Readonly<{
       if (result === "family_mismatch") {
         throw new AdminProviderServiceError("provider_family_adapter_mismatch");
       }
-      return { draftVersion: value.expectedDraftVersion + 1 };
+      return { displayName, draftVersion: value.expectedDraftVersion + 1 };
     },
 
     async renameCredential(value: { credentialId: string; label: string }) {

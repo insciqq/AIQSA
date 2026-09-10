@@ -76,6 +76,8 @@ export function humanizeErrorCode(code: string): string {
       "Turn off streaming or background mode to use MCP with this model",
     mcp_auto_discovery_unavailable:
       "Automatic tool discovery is unavailable. Retry in Auto or use Load all",
+    mcp_auto_discovery_request_rejected:
+      "The System Model rejected automatic tool selection. Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection",
     mcp_not_ready:
       "An enabled MCP server or tool is no longer ready. Review MCP settings and try again",
     mcp_plan_too_large:
@@ -94,6 +96,10 @@ export function humanizeErrorCode(code: string): string {
       "No matching passages were found in the ready documents. Rephrase the question or change the selection",
     provider_not_available: "Provider is not available",
     provider_unavailable: "Provider is unavailable. Try again",
+    openrouter_required_parameters_unavailable:
+      "OpenRouter could not route the answer request with its required parameters. Ask an administrator to review the selected model's routing and tool support before retrying",
+    openrouter_routing_unavailable:
+      "OpenRouter could not route the answer request. Ask an administrator to review the selected model's routing settings before retrying",
     project_default_model_unavailable:
       "The Project default model is unavailable. Review Project resources and choose an available default",
     project_setup_required:

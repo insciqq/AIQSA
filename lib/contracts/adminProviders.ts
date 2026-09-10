@@ -107,7 +107,7 @@ export type AdminProviderCapabilityCheck = (typeof ADMIN_PROVIDER_CAPABILITY_CHE
 export type AdminProviderCapabilityCheckStatus = "verified" | "rejected" | "unsupported" | "incomplete" | "not_checked";
 export const ADMIN_PROVIDER_CAPABILITY_REASONS = ["verified", "adapter_unsupported", "route_unsupported", "refusal",
   "budget_exhausted", "invalid_input", "http_error", "timeout", "network", "rate_limit", "authorization",
-  "semantic_inconclusive", "not_checked", "run_deadline"] as const;
+  "semantic_inconclusive", "malformed_tool_output", "not_checked", "run_deadline"] as const;
 export type AdminProviderCapabilityAttempt = {
   attempts: number;
   status: "verified" | "unsupported" | "incomplete" | "not_checked";
@@ -263,6 +263,17 @@ export type AdminProviderCredential = {
   testedAt: string | null;
   updatedAt: string;
 };
+
+export type AdminProviderModelEditGuard = Readonly<{
+  expectedActiveVersion: number;
+  expectedDisplayName: string;
+  expectedDraftVersion: number;
+  expectedUpdatedAt: string;
+}>;
+
+export type AdminProviderModelRename = AdminProviderModelEditGuard & Readonly<{
+  displayName: string;
+}>;
 
 export type AdminProviderModel = {
   activatedAt: string | null;

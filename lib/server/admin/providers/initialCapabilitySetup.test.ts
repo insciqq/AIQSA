@@ -6,6 +6,13 @@ import { createAdminProviderDraftTester, type AdminProviderDraftTesterInput } fr
 import { capabilitySetupIncomplete, decodeCapabilitySetupEvidence, initiallyVerifiedModelConfiguration, reusableCapabilitySetupEvidence } from "./initialCapabilitySetup";
 import { supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
 import { pdfInputVerificationEvidence, supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
+import { createGeminiInteractionsAdapter } from "../../providers/geminiInteractions";
+import { createFetchGeminiInteractionsClient } from "../../providers/geminiInteractionsTransport";
+import { capabilityAttemptDescription } from "../../../../components/admin/providers/add/AdminProviderSetupResults";
+import { fixtureCheck, fixtureConnection, fixtureCredential, fixtureModel } from "../../../../components/admin/providers/providerFixtures";
+import { createAdminProviderService } from "./service";
+import { adminProviderModelConfiguration } from "./adminConfiguration";
+import type { AdminProviderRepository } from "./repositoryContract";
 
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
@@ -24,12 +31,18 @@ function fixture(adapterKind: AdminProviderDraftTesterInput["model"]["adapterKin
   let parallelCount = 2;
   let jsonWait: Promise<void> | null = null;
   let forcedError: Error | null = null;
+  let parallelFetch: typeof fetch | null = null;
   const calls: string[] = [];
   vi.spyOn(vision, "createProviderVisionInputProbe").mockReturnValue({ async probe() { calls.push("vision"); return true; } });
   vi.spyOn(runtime, "createProviderRuntimeBinding").mockImplementation((): runtime.ProviderRuntimeBinding => ({
-    adapter: { buildRequestPreview() { return {}; }, async *stream(request) {
+    adapter: { buildRequestPreview() { return {}; }, async *stream(request, execution) {
       const tool = request.tools?.[0]?.name;
       calls.push(tool ?? (request.forceNonStreaming ? "access" : "streaming"));
+      if (tool === "aiqsa_parallel_probe" && parallelFetch) {
+        return yield* createGeminiInteractionsAdapter({ client: createFetchGeminiInteractionsClient({
+          apiKey: "synthetic-key", fetchFn: parallelFetch
+        }) }).stream(request, execution);
+      }
       if (tool === "aiqsa_forced_tool_call_probe" && forcedError) throw forcedError;
       const toolCalls = tool === "aiqsa_parallel_probe"
         ? ["Oslo", "Rome"].slice(0, parallelCount).map((city, index) => ({ id: `call-${index}`, name: tool, arguments: { city } }))
@@ -53,10 +66,122 @@ function fixture(adapterKind: AdminProviderDraftTesterInput["model"]["adapterKin
   } } });
   return { calls, input, tester, failJson: () => { failingJson = true; }, fixJson: () => { failingJson = false; },
     holdJson: (wait: Promise<void>) => { jsonWait = wait; }, failForced: (error: Error) => { forcedError = error; },
+    setParallelFetch: (fetchFn: typeof fetch) => { parallelFetch = fetchFn; },
     singleParallel: () => { parallelCount = 1; } };
 }
 
 describe("universal initial capability setup", () => {
+  it.each(["malformed_tool_call", "malformed_function_call"] as const)("retries Gemini %s through the native transport and keeps the other seven proofs", async (code) => {
+    const f = fixture("gemini_interactions_native");
+    let fail = true;
+    const fetchFn = vi.fn<typeof fetch>(async () => fail
+      ? Response.json({ error: { code, message: "synthetic private error text" } }, { status: 400 })
+      : Response.json({ id: "parallel-response", status: "completed", steps: ["Oslo", "Rome"].map((city, index) => ({
+        type: "function_call", id: `parallel-${index}`, name: "aiqsa_parallel_probe", arguments: { city }
+      })) }));
+    f.setParallelFetch(fetchFn);
+    const prior = await f.tester.test(f.input);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(prior.evidence.capabilitySetup?.attempts?.parallelToolCalls).toEqual({
+      attempts: 2, status: "incomplete", reason: "malformed_tool_output", httpStatus: 400
+    });
+    expect(capabilityAttemptDescription(prior.evidence.capabilitySetup?.attempts?.parallelToolCalls))
+      .toBe("the model returned an invalid tool call · HTTP 400 · 2 attempts");
+    expect(Object.values(prior.evidence.capabilitySetup!.checks).filter((status) => status === "verified")).toHaveLength(7);
+    expect(JSON.stringify(prior)).not.toContain("synthetic private error text");
+    expect(prior.evidence.parallelToolCalls).toBeUndefined();
+
+    f.calls.length = 0;
+    fetchFn.mockClear();
+    fetchFn.mockImplementationOnce(async () => Response.json({ error: { code, message: "synthetic private error text" } }, { status: 400 }));
+    fail = false;
+    const result = await f.tester.test({ ...f.input, reuseSetupEvidence: prior.evidence });
+    expect(f.calls).toEqual(["aiqsa_parallel_probe", "aiqsa_parallel_probe"]);
+    expect(result.evidence.capabilitySetup?.attempts?.parallelToolCalls).toEqual({ attempts: 2, status: "verified", reason: "verified" });
+    expect(capabilitySetupIncomplete(result.evidence)).toBe(false);
+    expect(initiallyVerifiedModelConfiguration(f.input.model, result.evidence).capabilities.parallelToolCalls).toBe(true);
+    for (const key of ["structuredOutput", "forcedToolCall", "visionInput", "pdfInput"] as const) {
+      expect(result.evidence[key]).toEqual(prior.evidence[key]);
+    }
+  });
+
+  it.each(["invalid_request", "parameter_unknown", "private-unknown"])("does not retry Gemini input rejection %s as malformed generation", async (code) => {
+    const f = fixture("gemini_interactions_native");
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ error: { code } }, { status: 400 }));
+    f.setParallelFetch(fetchFn);
+    const result = await f.tester.test(f.input);
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(result.evidence.capabilitySetup?.attempts?.parallelToolCalls).toEqual({ attempts: 1,
+      status: "incomplete", reason: "invalid_input", httpStatus: 400 });
+  });
+
+  it.each([true, false])("continues only unresolved Gemini parallel calls through retryUnresolved (success=%s)", async (success) => {
+    const f = fixture("gemini_interactions_native");
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ error: {
+      code: "malformed_tool_call", message: "synthetic private error text"
+    } }, { status: 400 }));
+    f.setParallelFetch(fetchFn);
+    const prior = await f.tester.test(f.input);
+    const configuration = initiallyVerifiedModelConfiguration(f.input.model, prior.evidence);
+    const publicConfiguration = adminProviderModelConfiguration(configuration);
+    const credential = fixtureCredential({ id: "credential", label: "Synthetic" });
+    const connection = fixtureConnection({ id: "connection", displayName: "Synthetic", family: "gemini",
+      credentials: [credential], defaultCredentialId: credential.id,
+      models: [fixtureModel({ id: "model", connectionId: "connection", displayName: "Synthetic",
+        activeConfig: publicConfiguration, draftConfig: publicConfiguration })],
+      activeChecks: [fixtureCheck({ credentialId: credential.id, providerModelId: "model", evidence: prior.evidence })]
+    });
+    const store = vi.fn<AdminProviderRepository["storeActiveRefreshCas"]>(async () => "stored");
+    const repository = {
+      listConnections: async () => [connection],
+      loadActiveRefreshCandidate: async () => ({
+        connection: { id: connection.id, family: "gemini", displayName: "Synthetic", version: 1, configuration: f.input.connection },
+        credential: { id: credential.id, versionId: credential.activeVersion!.id, envelope: "unused-synthetic-envelope" },
+        model: { id: "model", displayName: "Synthetic", version: 1, draftVersion: 1, configuration }
+      }),
+      storeActiveRefreshCas: store,
+      recordActiveRefreshFailureCas: vi.fn(async () => "stored")
+    } as unknown as AdminProviderRepository;
+    const credentialTest = vi.fn(async () => { throw new Error("unexpected_credential_test"); });
+    const service = createAdminProviderService({ repository, tester: f.tester,
+      credentialTester: { test: credentialTest }, encryptionKey: () => Buffer.alloc(32, 7) });
+    f.calls.length = 0;
+    if (success) fetchFn.mockImplementation(async () => Response.json({ id: "parallel-response", status: "completed",
+      steps: ["Oslo", "Rome"].map((city, index) => ({ type: "function_call", id: `parallel-${index}`,
+        name: "aiqsa_parallel_probe", arguments: { city } })) }));
+    const run = await service.startCheckRun({ connectionId: connection.id, credentialId: credential.id,
+      modelIds: ["model"], reason: "requested", retryUnresolved: true });
+    await vi.waitFor(() => expect(service.checkRun({ connectionId: connection.id, runId: run.id }).state).toBe("completed"));
+    expect(f.calls).toEqual(Array(success ? 1 : 2).fill("aiqsa_parallel_probe"));
+    expect(store).toHaveBeenCalledOnce();
+    const evidence = store.mock.calls[0]![0].evidence;
+    expect(capabilitySetupIncomplete(evidence)).toBe(!success);
+    for (const key of ["structuredOutput", "forcedToolCall", "visionInput", "pdfInput"] as const) {
+      expect(evidence[key]).toEqual(prior.evidence[key]);
+    }
+    expect(Object.values(evidence.capabilitySetup!.checks).filter((status) => status === "verified")).toHaveLength(success ? 8 : 7);
+    expect(repository.recordActiveRefreshFailureCas).not.toHaveBeenCalled();
+    expect(credentialTest).not.toHaveBeenCalled();
+  });
+
+  it("fences Gemini retry and checkpoint writes when cancelled during the malformed response", async () => {
+    const f = fixture("gemini_interactions_native");
+    const controller = new AbortController();
+    const checkpoint = vi.fn();
+    const fetchFn = vi.fn<typeof fetch>(async () => {
+      controller.abort();
+      return Response.json({ error: { code: "malformed_tool_call" } }, { status: 400 });
+    });
+    f.setParallelFetch(fetchFn);
+    await expect(f.tester.test({ ...f.input, signal: controller.signal, onSetupCheckpoint: checkpoint }))
+      .rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(checkpoint).toHaveBeenCalledTimes(4);
+    await Promise.resolve();
+    expect(checkpoint).toHaveBeenCalledTimes(4);
+    expect(f.calls).not.toContain("vision");
+  });
+
   it.each(["anthropic_messages", "deepseek_responses_native", "gemini_interactions_native",
     "openai_chat_completions_compatible", "openai_responses_compatible", "openai_responses_native", "openrouter_chat_completions"] as const)(
     "checks all implemented %s capabilities from disabled defaults and enables only proofs", async (adapter) => {

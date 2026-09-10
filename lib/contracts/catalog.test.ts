@@ -77,6 +77,18 @@ function validResponse(): CatalogResponse {
 }
 
 describe("catalog wire contract", () => {
+  it("normalizes absent sound preferences and strictly preserves an explicit mute", () => {
+    const response = validResponse();
+    expect(decodeCatalogResponse(response)?.defaults).toMatchObject({ answerSoundEnabled: true, answerSoundId: "rise" });
+    const withSound = { ...response, catalog: { ...response.catalog, defaults: {
+      ...response.catalog.defaults, answerSoundEnabled: false, answerSoundId: "bell"
+    } } };
+    expect(decodeCatalogResponse(withSound)?.defaults).toMatchObject({ answerSoundEnabled: false, answerSoundId: "bell" });
+    expect(decodeCatalogResponse({ ...withSound, catalog: { ...withSound.catalog, defaults: {
+      ...withSound.catalog.defaults, answerSoundId: "unrecognized"
+    } } })).toBeNull();
+  });
+
   it("decodes the complete catalog response", () => {
     expect(decodeCatalogResponse(validResponse())).toMatchObject({
       defaults: validResponse().catalog.defaults,

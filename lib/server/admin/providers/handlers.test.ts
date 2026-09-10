@@ -103,14 +103,14 @@ function resolver(value: AuthenticatedSession | null): RequestAuthResolver {
 function service(overrides: Partial<Record<keyof AdminProviderService, unknown>> = {}) {
   return {
     activateConnection: vi.fn(),
-    activateModel: vi.fn(),
+    activateModel: vi.fn(async () => ({ check: "checked" })),
     activateNewCredential: vi.fn(),
     activateRotatedCredential: vi.fn(),
     assignGroupCredential: vi.fn(),
     cancelCheckRun: vi.fn(),
     checkRun: vi.fn(),
     createConnectionDraft: vi.fn(),
-    createModelDraft: vi.fn(async () => ({ id: "model-new" })),
+    createModelDraft: vi.fn(async () => ({ id: "model-new", displayName: "Sonnet", draftVersion: 1 })),
     deleteConnection: vi.fn(),
     deleteCredential: vi.fn(),
     deleteModel: vi.fn(),
@@ -122,12 +122,13 @@ function service(overrides: Partial<Record<keyof AdminProviderService, unknown>>
     listConnections: vi.fn(async () => [connection]),
     refreshActive: vi.fn(),
     renameCredential: vi.fn(),
+    renameModel: vi.fn(),
     revokeCredentialVersion: vi.fn(),
     revokeGroupCredential: vi.fn(),
     saveConnectionSettings: vi.fn(),
     setDefaultCredential: vi.fn(),
     startCheckRun: vi.fn(),
-    updateModelDraft: vi.fn(),
+    updateModelDraft: vi.fn(async () => ({ displayName: "Sonnet", draftVersion: 2 })),
     ...overrides
   } as unknown as AdminProviderService;
 }
@@ -374,8 +375,8 @@ describe("admin provider HTTP handlers", () => {
     );
     expect(checked.status).toBe(201);
     expect(providerService.createModelDraft).toHaveBeenCalledTimes(2);
-    expect(providerService.activateModel).toHaveBeenCalledWith({ connectionId: "connection-1", modelId: "model-new",
-      signal: expect.any(AbortSignal), onProgress: undefined });
+    expect(providerService.activateModel).toHaveBeenCalledWith({ connectionId: "connection-1", modelId: "model-new", expectedDraftVersion: 1,
+      signal: expect.any(AbortSignal), onProgress: undefined, onActivated: expect.any(Function) });
     expect((await create(
       jsonRequest("http://localhost/models", { ...body, activate: "yes" }),
       { params: { connectionId: "connection-1" } }
@@ -383,13 +384,14 @@ describe("admin provider HTTP handlers", () => {
 
     const update = createAdminProviderModelUpdateHandler({ resolveAuth: resolver(auth()), service: providerService });
     const updated = await update(
-      jsonRequest("http://localhost/models/model-1", { ...body, action: "update", activate: true, expectedDraftVersion: 1 }, "PATCH"),
+      jsonRequest("http://localhost/models/model-1", { ...body, action: "update", activate: true,
+        expectedActiveVersion: 1, expectedDisplayName: "Sonnet", expectedDraftVersion: 1, expectedUpdatedAt: connection.updatedAt }, "PATCH"),
       { params: { connectionId: "connection-1", modelId: "model-1" } }
     );
     expect(updated.status).toBe(200);
     expect(providerService.updateModelDraft).toHaveBeenCalledWith(expect.objectContaining({ expectedDraftVersion: 1, modelId: "model-1" }));
-    expect(providerService.activateModel).toHaveBeenLastCalledWith({ connectionId: "connection-1", modelId: "model-1",
-      signal: expect.any(AbortSignal), onProgress: undefined });
+    expect(providerService.activateModel).toHaveBeenLastCalledWith({ connectionId: "connection-1", modelId: "model-1", expectedDraftVersion: 2,
+      signal: expect.any(AbortSignal), onProgress: undefined, onActivated: expect.any(Function) });
   });
 
   it("starts, reads and cancels background checks without exposing anything but progress", async () => {

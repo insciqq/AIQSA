@@ -5,6 +5,7 @@ import { useComposerControlStore } from "@/components/app-shell/composerControlS
 import { resetSkillLibraryStoreForTest } from "@/components/app-shell/skillLibraryStore";
 import { resetComposerControlStoreForTest } from "@/tests/support/appShellStores";
 import {
+  AnswerSoundSettingsRowV2,
   RunSetupV2,
   TemporaryChatIndicatorV2,
   WorkspaceHeaderV2,
@@ -624,5 +625,46 @@ describe("Blank welcome v2", () => {
       projectSelected: false
     })}</>);
     expect(screen.getByTestId("assistant-intro")).toBeVisible();
+  });
+});
+
+describe("answer sound settings", () => {
+  it("offers ten choices and plays only an explicit preview, including while muted", async () => {
+    const composer = {
+      notificationSoundEnabled: false, notificationSoundId: "rise" as const, notificationSoundReady: true,
+      previewAnswerSound: vi.fn(async () => true), selectAnswerSound: vi.fn(), toggleNotificationSound: vi.fn()
+    };
+    const { rerender } = render(<AnswerSoundSettingsRowV2 composer={composer} />);
+    expect(composer.previewAnswerSound).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Completion sound" }));
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Rise", "Bell", "Drop", "Double tap", "Soft bell", "Warm success", "Marimba",
+      "Gentle pop", "Minimal confirm", "Liquid bubble"
+    ]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Marimba" }));
+    expect(composer.selectAnswerSound).toHaveBeenCalledWith("marimba");
+    expect(composer.previewAnswerSound).not.toHaveBeenCalled();
+    rerender(<AnswerSoundSettingsRowV2 composer={{ ...composer, notificationSoundId: "marimba" }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Play preview" }));
+    await waitFor(() => expect(composer.previewAnswerSound).toHaveBeenCalledWith("marimba"));
+    expect(composer.toggleNotificationSound).not.toHaveBeenCalled();
+    expect(screen.getByRole("switch", { name: "Answer sound" })).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(screen.getByRole("switch", { name: "Answer sound" }));
+    expect(composer.toggleNotificationSound).toHaveBeenCalledOnce();
+    expect(composer.previewAnswerSound).toHaveBeenCalledOnce();
+  });
+
+  it("disables loading preferences and reports a failed preview without enabling sound", async () => {
+    const composer = {
+      notificationSoundEnabled: false, notificationSoundId: "rise" as const, notificationSoundReady: false,
+      previewAnswerSound: vi.fn(async () => false), selectAnswerSound: vi.fn(), toggleNotificationSound: vi.fn()
+    };
+    const { rerender } = render(<AnswerSoundSettingsRowV2 composer={composer} />);
+    expect(screen.getByRole("switch", { name: "Answer sound" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Play preview" })).toBeDisabled();
+    rerender(<AnswerSoundSettingsRowV2 composer={{ ...composer, notificationSoundReady: true }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Play preview" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Preview could not play"));
+    expect(composer.toggleNotificationSound).not.toHaveBeenCalled();
   });
 });

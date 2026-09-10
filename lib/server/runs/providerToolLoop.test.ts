@@ -4,6 +4,10 @@ import type { ProviderAdapter, ProviderRunRequest } from "../providers/types";
 import { createAnthropicMessagesAdapter, type AnthropicStreamEvent } from "../providers/anthropicMessages";
 import { anthropicMessagesToolBridge, openAIResponsesToolBridge } from "../tools/bridges";
 import { runProviderToolLoop } from "./providerToolLoop";
+import { openRouterMixedTools } from "@/tests/support/openRouterTools";
+import { openRouterChatToolBridge } from "../tools/bridges";
+import { createOpenRouterChatAdapter } from "../providers/openRouterChat";
+import type { RunTool } from "../tools/types";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   return {
@@ -32,6 +36,63 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 }
 
 describe("provider tool loop", () => {
+  it.each([false, true])("enforces prepared local concurrency %s even when strict routing omits the wire flag", async (parallelToolCalls) => {
+    const operations: string[] = [];
+    const bodies: Record<string, unknown>[] = [];
+    const adapter = createOpenRouterChatAdapter({ client: {
+      async createChatCompletion(body) {
+        bodies.push(body);
+        return { id: `response-${bodies.length}`, choices: [{ finish_reason: bodies.length === 1 ? "tool_calls" : "stop", message: {
+          content: bodies.length === 1 ? null : "complete",
+          ...(bodies.length === 1 ? { tool_calls: ["first", "second"].map((id) => ({ id, type: "function",
+            function: { name: "get_session_status", arguments: "{}" } })) } : {})
+        } }], usage: { prompt_tokens: 2, completion_tokens: 1 } };
+      }
+    } });
+    const outcome = await runProviderToolLoop({
+      adapter, bridge: openRouterChatToolBridge, budgets: { maxConcurrency: 2, maxToolCalls: 3, maxToolRounds: 2 },
+      initialRequest: request({ provider: "openrouter" }), parallelToolCalls: true,
+      prepareRequest: (round) => ({ ...round, parallelToolCalls }), tools: openRouterMixedTools(),
+      persistToolBatch: () => { operations.push("persist"); },
+      executeTool: async (call) => {
+        operations.push(`start:${call.id}`);
+        await Promise.resolve();
+        operations.push(`end:${call.id}`);
+        return { status: "complete", value: { callId: call.id, name: call.name, status: "complete", content: [{ type: "text", text: "ok" }] } };
+      }
+    });
+    expect(outcome).toMatchObject({ status: "complete", toolCalls: 2 });
+    expect(bodies[0]).not.toHaveProperty("parallel_tool_calls");
+    expect(operations).toEqual(parallelToolCalls
+      ? ["persist", "start:first", "start:second", "end:first", "end:second"]
+      : ["persist", "start:first", "end:first", "start:second", "end:second"]);
+    expect((bodies[1]?.messages as Record<string, unknown>[]).filter((message) => message.role === "tool").map((message) => message.tool_call_id))
+      .toEqual(["first", "second"]);
+  });
+
+  it.each(["undiscovered", "duplicate"] as const)("rejects an adversarial %s batch before discovery or other side effects", async (mode) => {
+    const executeTool = vi.fn();
+    const persistToolBatch = vi.fn();
+    const tools: RunTool[] = openRouterMixedTools();
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream() {
+        return { finalText: "", finalProviderResponsePreview: {}, usage: { inputTokens: 2, outputTokens: 1, reasoningTokens: 0 },
+          toolCalls: [
+            { id: "discover", name: "find_tools", arguments: { goal: "Read the synthetic service" } },
+            { id: mode === "duplicate" ? "discover" : "future", name: mode === "duplicate" ? "find_tools" : "mcp_future_tool", arguments: {} }
+          ] };
+      }
+    };
+    const outcome = await runProviderToolLoop({ adapter, bridge: openRouterChatToolBridge,
+      budgets: { maxConcurrency: 2, maxToolCalls: 3, maxToolRounds: 2 }, executeTool, persistToolBatch,
+      initialRequest: request({ provider: "openrouter" }), parallelToolCalls: false, tools });
+    expect(outcome).toMatchObject({ status: "failed", toolCalls: 0,
+      failure: { code: mode === "duplicate" ? "provider_tool_call_id_duplicate" : "unsupported_tool_call" } });
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(persistToolBatch).not.toHaveBeenCalled();
+  });
+
   it("keeps streaming/background request controls while executing an ordered parallel batch", async () => {
     const requests: ProviderRunRequest[] = [];
     const events: ModelRunSseEvent[] = [];

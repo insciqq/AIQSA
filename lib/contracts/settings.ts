@@ -1,3 +1,4 @@
+import { decodeAnswerSoundPreferences, type AnswerSoundPreferences } from "./answerSound";
 import {
   decodeOptionalChatDefaults,
   type ChatDefaultMcpMode
@@ -5,7 +6,7 @@ import {
 import type { KnowledgeSelection } from "./knowledge";
 import { decodeSearchPlan, type SearchPlan } from "./search";
 
-export type UserSettingsWire = {
+export type UserSettingsWire = AnswerSoundPreferences & {
   defaultControlValues: Record<string, unknown>;
   /** Knowledge selection attached to new chats; null starts them without Knowledge. */
   defaultKnowledgePlan: KnowledgeSelection | null;
@@ -47,6 +48,7 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   }
 
   const settings = value.settings;
+  const answerSound = decodeAnswerSoundPreferences(settings);
   const defaultSearchPlan = decodeSearchPlan(settings.defaultSearchPlan);
   const organizationSearchPlan = decodeSearchPlan(settings.organizationSearchPlan);
   const chatDefaults = decodeOptionalChatDefaults({
@@ -55,6 +57,7 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
     sendWithEnter: settings.sendWithEnter
   });
   if (
+    !answerSound ||
     !chatDefaults ||
     !isRecord(settings.defaultControlValues) ||
     typeof settings.hasPersonalModelDefault !== "boolean" ||
@@ -76,6 +79,7 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
 
   return {
     settings: {
+      ...answerSound,
       defaultControlValues: { ...settings.defaultControlValues },
       defaultKnowledgePlan: chatDefaults.knowledgePlan,
       defaultMcpMode: chatDefaults.mcpMode,

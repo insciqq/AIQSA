@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { currentSearchToolFixture } from "@/tests/support/tools";
+import { openRouterMixedTools } from "@/tests/support/openRouterTools";
 import { validateSearchToolArguments } from "../search/query";
 import type {
   ProviderRunRequest,
@@ -110,6 +111,46 @@ function searchRequest(overrides: Partial<ProviderSearchRequest> = {}): Provider
 }
 
 describe("OpenRouter request builders", () => {
+  it.each([undefined, false, true])("preserves strict routing and local parallel preference %s for each tool shape", (parallelToolCalls) => {
+    const mixed = openRouterMixedTools();
+    for (const tools of [[mixed[1]!], [mixed[1]!, currentSearchToolFixture], mixed]) {
+      const body = buildOpenRouterChatRequest(request({ parallelToolCalls, tools }));
+      expect(body).not.toHaveProperty("parallel_tool_calls");
+      expect(body).toMatchObject({ max_tokens: 64, provider: { require_parameters: true, data_collection: "deny" } });
+      expect(body.tools).toEqual(tools.map((tool) => ({ type: "function", function: {
+        description: tool.description, name: tool.name, parameters: tool.inputSchema, strict: tool.strict
+      } })));
+    }
+    for (const tools of [[mixed[0]!], [mixed[0]!, mixed[2]!]]) {
+      expect(buildOpenRouterChatRequest(request({ parallelToolCalls, tools })).parallel_tool_calls)
+        .toBe(parallelToolCalls === true);
+    }
+    expect(buildOpenRouterChatRequest(request({ parallelToolCalls, tools: [] }))).not.toHaveProperty("parallel_tool_calls");
+    const synthesis = buildOpenRouterChatRequest(request({ parallelToolCalls, tools: mixed, toolChoice: "none" }));
+    expect(synthesis).toMatchObject({ parallel_tool_calls: parallelToolCalls === true, tool_choice: "none" });
+  });
+
+  it.each(["deepseek/deepseek-v4-pro-0813", "anthropic/claude-opus-5"])("routes the mixed application tools for %s without changing accepted controls", (modelId) => {
+    const body = buildOpenRouterChatRequest(request({
+      modelId, parallelToolCalls: false, tools: openRouterMixedTools(),
+      params: { maxTokens: 65_536, temperature: 1, stream: true,
+        reasoning: { enabled: true, effort: "high" },
+        provider: { dataCollection: "deny", allowFallbacks: true, requireParameters: false, sort: "throughput", order: [], only: [] } }
+    }));
+    expect(body).toMatchObject({ model: modelId, max_tokens: 65_536, temperature: 1, stream: true,
+      reasoning: { enabled: true, effort: "high" },
+      provider: { data_collection: "deny", allow_fallbacks: true, require_parameters: true, sort: "throughput" },
+      tools: [
+        { function: { name: "generate_image", strict: false } },
+        { function: { name: "get_session_status", strict: true } },
+        { function: { name: "find_tools", strict: false } }
+      ] });
+    expect(body).not.toHaveProperty("parallel_tool_calls");
+    expect(body.provider).not.toHaveProperty("only");
+    expect(body.provider).not.toHaveProperty("order");
+    expect(body.cache_control).toEqual(modelId.startsWith("anthropic/") ? { type: "ephemeral" } : undefined);
+  });
+
   it("sends explicit reasoning Off without carrying a prior token budget", () => {
     const body = buildOpenRouterChatRequest({ ...request(), params: {
       ...request().params, reasoning: { enabled: false, effort: "none", maxTokens: 4096 }

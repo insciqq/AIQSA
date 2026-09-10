@@ -12,6 +12,16 @@ afterEach(() => {
 describe("OpenAI-compatible Chat Completions transport", () => {
   const remoteSecret = "sk-aiqsa-remote-error-regression-123456789";
 
+  it("does not promote OpenRouter routing text on a compatible provider", async () => {
+    const client = createFetchOpenAICompatibleChatClient({ apiRoot: "https://llm.example.test/v1", bearerToken: "key",
+      fetchFn: async () => Response.json({ error: { code: 404, message: "No endpoints found that support the provided parameters",
+        metadata: { failed_routing_step: "parameters" } } }, { status: 404 }) });
+    let failure: unknown;
+    try { await client.createChatCompletion({}); } catch (error) { failure = error; }
+    expect(failure).not.toHaveProperty("code");
+    expect(failure).toMatchObject({ httpStatus: 404, message: "OpenAI-compatible request failed with status 404" });
+  });
+
   it("posts to the derived endpoint with only explicit bearer JSON headers", async () => {
     const calls: Array<{ init?: RequestInit; url: string }> = [];
     const client = createFetchOpenAICompatibleChatClient({

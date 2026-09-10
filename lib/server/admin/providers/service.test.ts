@@ -107,6 +107,7 @@ function repository(
     async loadDiscoveryCandidate() { return null; },
     async loadModelActivationCandidate() { return null; },
     async renameCredential() { return "updated"; },
+    async renameModelCas() { return "updated"; },
     async recordActiveRefreshFailureCas() { return "stored"; },
     async revokeCredentialVersion() { return "revoked"; },
     async revokeGroupCredential() { return "revoked"; },
@@ -332,7 +333,7 @@ describe("admin provider service", () => {
       configuration: geminiConfiguration,
       connectionId: "gemini-connection-1",
       displayName: "Gemini 3.6 Flash"
-    })).resolves.toEqual({ id: "gemini-model-1" });
+    })).resolves.toEqual({ id: "gemini-model-1", displayName: "Gemini 3.6 Flash", draftVersion: 1 });
     expect(create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         connectionId: "gemini-connection-1",
@@ -348,9 +349,12 @@ describe("admin provider service", () => {
     await expect(providers.updateModelDraft({
       configuration: geminiConfiguration,
       displayName: "Gemini 3.6 Flash",
+      expectedActiveVersion: 0,
+      expectedDisplayName: "Gemini 3.6 Flash",
       expectedDraftVersion: 1,
+      expectedUpdatedAt: NOW.toISOString(),
       modelId: "gemini-model-1"
-    })).resolves.toEqual({ draftVersion: 2 });
+    })).resolves.toEqual({ displayName: "Gemini 3.6 Flash", draftVersion: 2 });
     expect(updateMany).toHaveBeenCalledWith({
       data: expect.objectContaining({
         draftConfig: expect.objectContaining({
@@ -358,7 +362,7 @@ describe("admin provider service", () => {
         }),
         draftVersion: { increment: 1 }
       }),
-      where: { draftVersion: 1, id: "gemini-model-1" }
+      where: { activeVersion: 0, displayName: "Gemini 3.6 Flash", draftVersion: 1, id: "gemini-model-1", updatedAt: NOW }
     });
 
     await expect(providers.createModelDraft({

@@ -11,6 +11,7 @@ import {
   endpointLabel,
   modelFormBody,
   modelFormFrom,
+  modelNameOnlyChanged,
   moveProviderTag,
   withDataCollection
 } from "./modelSheetView";
@@ -18,6 +19,22 @@ import {
 const openRouter = fixtureConnection({ displayName: "OpenRouter", family: "openrouter", id: "conn-or" });
 
 describe("model sheet form", () => {
+  it("recognizes only a display-name edit against the frozen form", () => {
+    const baseline = blankModelForm(openRouter);
+    const renamed = { ...baseline, displayName: "New label" };
+    expect(modelNameOnlyChanged(baseline, baseline)).toBe(false);
+    expect(modelNameOnlyChanged(renamed, baseline)).toBe(true);
+    for (const patch of [
+      { defaultParamsText: "{ \"temperature\": 1 }" }, { defaultParamsText: "{invalid" },
+      { adapterKind: "openai_responses_compatible" as const }, { answerSelectable: false },
+      { capabilities: { ...baseline.capabilities, vision: true } }, { dataCollectionAllowed: true },
+      { openRouterRoutingMode: "only_selected" as const }, { providerTags: ["vendor"] },
+      { reasoningEffortPath: "effort" }, { reasoningModePath: "mode" },
+      { responseTimeoutSeconds: "120" }, { upstreamModelId: "different-model" },
+      { modelClass: "image" as const }, { image: { profile: "openai" as const } }
+    ]) expect(modelNameOnlyChanged({ ...renamed, ...patch }, baseline)).toBe(false);
+  });
+
   it("starts from family defaults and turns into a Test & Save body with routing and data collection", () => {
     const form = blankModelForm(openRouter);
     expect(form.adapterKind).toBe("openrouter_chat_completions");

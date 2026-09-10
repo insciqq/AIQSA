@@ -104,6 +104,8 @@ describe("catalog handler", () => {
     expect(body.catalog.attachmentLimits).not.toHaveProperty("readConcurrency");
     expect(catalog?.attachmentLimits).toEqual(body.catalog.attachmentLimits);
     expect(Object.keys(body.catalog.defaults)).toEqual([
+      "answerSoundEnabled",
+      "answerSoundId",
       "controlValues",
       "modelId",
       "hasPersonalModelDefault",

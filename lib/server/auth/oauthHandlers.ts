@@ -238,7 +238,8 @@ export function createOAuthStartHandler(deps: OAuthStartHandlerDeps) {
       return unavailable();
     }
 
-    const nextPath = safeInternalPath(new URL(request.url).searchParams.get("next"), config.appBaseUrl);
+    const query = new URL(request.url).searchParams;
+    const nextPath = safeInternalPath(query.get("next"), config.appBaseUrl);
     const token = deps.randomToken ?? randomToken;
     const flow: OAuthFlow = {
       codeVerifier: token(),
@@ -254,7 +255,8 @@ export function createOAuthStartHandler(deps: OAuthStartHandlerDeps) {
       nonce: flow.nonce,
       provider: rawProvider,
       redirectUri,
-      state: flow.state
+      state: flow.state,
+      switchAccount: rawProvider === "yandex" && singleQueryValue(query, "switch_account") === "1"
     });
     const signedFlow = await signFlow(flow, config, deps.now?.() ?? new Date());
 

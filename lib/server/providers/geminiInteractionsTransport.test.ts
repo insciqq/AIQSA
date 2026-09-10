@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProviderResponseTooLargeError } from "./network";
 import {
   createFetchGeminiInteractionsClient,
-  deriveGeminiInteractionsEndpoint
+  deriveGeminiInteractionsEndpoint,
+  GeminiHttpError
 } from "./geminiInteractionsTransport";
 
 afterEach(() => {
@@ -10,6 +11,38 @@ afterEach(() => {
 });
 
 describe("Gemini Interactions transport", () => {
+  it.each(["malformed_tool_call", "malformed_function_call", "invalid_request", "parameter_unknown"] as const)(
+    "projects only the allowlisted HTTP error identity %s for unary and streaming requests", async (code) => {
+      const client = createFetchGeminiInteractionsClient({ apiKey: "key", fetchFn: async () =>
+        Response.json({ error: { code, message: "synthetic private error text", arguments: { secret: "private" } } }, { status: 400 }) });
+      for (const send of [client.createInteraction, client.streamInteraction]) {
+        const error = await send({}).catch((failure: unknown) => failure);
+        expect(error).toBeInstanceOf(GeminiHttpError);
+        expect(error).toMatchObject({ code, httpStatus: 400, message: "Gemini request failed with status 400" });
+        expect(JSON.stringify(error)).not.toMatch(/private|arguments|message/u);
+      }
+    });
+
+  it.each(["", "null", "[]", "{", '{"error":null}', '{"error":{"code":400}}',
+    '{"error":{"code":"malformed_tool_call\\n"}}', '{"error":{"code":"private-unknown"}}',
+    JSON.stringify({ error: { code: "malformed_tool_call", message: "x".repeat(16_384) } })])(
+    "keeps malformed, unknown and oversized envelopes as safe HTTP fallbacks (%#)", async (body) => {
+      const client = createFetchGeminiInteractionsClient({ apiKey: "key", fetchFn: async () => new Response(body, { status: 400 }) });
+      await expect(client.createInteraction({})).rejects.toMatchObject({ code: undefined, httpStatus: 400,
+        message: "Gemini request failed with status 400" });
+    });
+
+  it("cancels a pending error body without reclassifying cancellation", async () => {
+    const controller = new AbortController();
+    const cancel = vi.fn();
+    const client = createFetchGeminiInteractionsClient({ apiKey: "key", fetchFn: async () => new Response(
+      new ReadableStream({ cancel }), { status: 400 }) });
+    const pending = client.createInteraction({}, { signal: controller.signal });
+    await Promise.resolve();
+    controller.abort(new Error("synthetic_cancel"));
+    await expect(pending).rejects.toThrow("synthetic_cancel");
+  });
+
   it("posts to stable /interactions with only the Google API key auth", async () => {
     const calls: Array<{ init?: RequestInit; url: string }> = [];
     const client = createFetchGeminiInteractionsClient({

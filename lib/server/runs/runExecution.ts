@@ -2,7 +2,7 @@ import { imageDispatchMustStop } from "../images/errors";
 import { imageGenerationTool, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
 import type { ChatUpdateDataWire } from "../../contracts/chats";
-import { isToolSynthesisFailure } from "../../contracts/runs";
+import { isMcpAutoDiscoveryFailureCode, isToolSynthesisFailure } from "../../contracts/runs";
 import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1 } from "../knowledge/evidenceAnswerExecutionV1";
 import { refineKnowledgeEvidence } from "./knowledgeEvidenceRefinement";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
@@ -17,6 +17,7 @@ import {
 import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
 import { validateRunAccess } from "../auth/entitlements";
 import { isProviderDeadlineExceededError } from "../providers/network";
+import { openRouterRoutingFailureCode, openRouterRoutingFailureMessage } from "../providers/responseFailure";
 import {
   isProviderStreamSafetyCode,
   providerStreamSafeMessage,
@@ -2890,6 +2891,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
         const deadlineExceeded = isProviderDeadlineExceededError(failure);
         const pipelineError = failure instanceof RunPipelineError ? failure : null;
+        const routingCode = normalizedRequest.provider === "openrouter" && !knowledgeAnswerAttempted
+          ? openRouterRoutingFailureCode(failure) : null;
         const streamSafetyReport = providerStreamSafetyReport(failure);
         const contractFailureCode = isRecord(failure) &&
           (failure.code === "knowledge_answer_contract_failed" ||
@@ -2902,7 +2905,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             : isRecord(failure) && isProviderStreamSafetyCode(failure.code)
               ? failure.code
               : null);
-        const failureCode = contractFailureCode ??
+        const failureCode = contractFailureCode ?? routingCode ??
           (knowledgeAnswerAttempted
             ? focusedKnowledgeFailureCode(failure)
             : pipelineError?.code ??
@@ -2913,7 +2916,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               code: safetyCode,
               message: providerStreamSafeMessage(safetyCode)
             }
-          : {
+          : routingCode ? {
+              code: routingCode,
+              message: `The request to answer model “${input.prepared.providerAdmissionPlan.answer.snapshot.modelDisplayName}” could not be routed. ${openRouterRoutingFailureMessage(routingCode)}`
+            } : {
               code: failureCode,
               message: knowledgeAnswerAttempted
                 ? safeKnowledgeFailureMessage(failureCode)
@@ -2931,8 +2937,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           runId,
           input.created.assistantMessageId,
           payload,
-          safetyCode || deadlineExceeded || knowledgeAnswerAttempted ||
+          safetyCode || deadlineExceeded || knowledgeAnswerAttempted || routingCode ||
             isToolSynthesisFailure(failureCode) ||
+            isMcpAutoDiscoveryFailureCode(failureCode) ||
             failureCode === "memory_answer_model_tools_retired"
             ? { recoveryTerminal: true }
             : undefined

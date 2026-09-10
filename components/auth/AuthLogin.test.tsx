@@ -139,18 +139,95 @@ describe("AuthLogin", () => {
     expect(googleLink.parentElement).not.toHaveClass("sm:grid-cols-2");
   });
 
+  it.each([
+    ["not_allowed", "This Yandex account is not allowed to access AIQSA."],
+    ["pending", "Yandex confirmed your account. AIQSA access is pending administrator approval."],
+    ["account_conflict", "Yandex could not be linked to this AIQSA account."],
+    ["cancelled", "Yandex sign-in was cancelled."],
+    ["failed", "Yandex sign-in could not be completed."]
+  ] as const)("offers a separate account-selection action after Yandex %s", (outcome, message) => {
+    render(<AuthLogin
+      nextPath="/admin?tab=users#section"
+      oauthOutcome={outcome}
+      oauthProvider="yandex"
+      oauthProviders={["google", "yandex"]}
+    />);
+
+    expect(screen.getByRole(outcome === "pending" ? "status" : "alert")).toHaveTextContent(message);
+    const recovery = screen.getByRole("link", { name: "Use another Yandex account" });
+    expect(recovery).toHaveAttribute(
+      "href",
+      "/api/auth/oauth/yandex?next=%2Fadmin%3Ftab%3Dusers%23section&switch_account=1"
+    );
+    expect(recovery).toHaveAccessibleDescription("Choose another Yandex account to try signing in again.");
+    expect(recovery).not.toHaveAttribute("aria-disabled");
+    expect(screen.getByRole("link", { name: "Continue with Yandex" })).toHaveAttribute(
+      "href",
+      "/api/auth/oauth/yandex?next=%2Fadmin%3Ftab%3Dusers%23section"
+    );
+    expect(screen.getByRole("link", { name: "Continue with Google" })).toHaveAttribute(
+      "href",
+      "/api/auth/oauth/google?next=%2Fadmin%3Ftab%3Dusers%23section"
+    );
+  });
+
+  it("keeps account switching specific to a configured Yandex callback outcome", () => {
+    const { rerender } = render(<AuthLogin nextPath="/" oauthProviders={["yandex"]} />);
+    expect(screen.queryByRole("link", { name: "Use another Yandex account" })).not.toBeInTheDocument();
+
+    rerender(<AuthLogin nextPath="/" oauthOutcome="failed" oauthProvider="google" oauthProviders={["google", "yandex"]} />);
+    expect(screen.queryByRole("link", { name: "Use another Yandex account" })).not.toBeInTheDocument();
+
+    rerender(<AuthLogin nextPath="/" oauthOutcome="not_allowed" oauthProvider="yandex" oauthProviders={["google"]} />);
+    expect(screen.queryByRole("link", { name: "Use another Yandex account" })).not.toBeInTheDocument();
+  });
+
+  it.each(["https://evil.example/steal", "//evil.example/steal", "/%5cevil.example"])(
+    "does not carry an unsafe destination into Yandex account recovery: %s",
+    (nextPath) => {
+      render(<AuthLogin nextPath={nextPath} oauthOutcome="not_allowed" oauthProvider="yandex" oauthProviders={["yandex"]} />);
+      expect(screen.getByRole("link", { name: "Use another Yandex account" })).toHaveAttribute(
+        "href", "/api/auth/oauth/yandex?next=%2F&switch_account=1"
+      );
+    }
+  );
+
+  it("pauses account-switch navigation while a password sign-in is pending", async () => {
+    let settleLogin!: (response: Response) => void;
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce(() => new Promise<Response>((resolve) => {
+      settleLogin = resolve;
+    }));
+    render(<AuthLogin nextPath="/" oauthOutcome="not_allowed" oauthProvider="yandex" oauthProviders={["yandex"]} />);
+    const recovery = screen.getByRole("link", { name: "Use another Yandex account" });
+    fillCredentialForm();
+    fireEvent.submit(screen.getByRole("button", { name: "Sign in" }).closest("form")!);
+
+    expect(recovery).toHaveAttribute("aria-disabled", "true");
+    expect(recovery).toHaveAttribute("tabindex", "-1");
+    expect(recovery).not.toHaveAttribute("href");
+    await act(async () => {
+      settleLogin(new Response(JSON.stringify({ error: "invalid_credentials" }), { status: 401 }));
+    });
+    expect(screen.getByRole("link", { name: "Use another Yandex account" })).toHaveAttribute(
+      "href", "/api/auth/oauth/yandex?next=%2F&switch_account=1"
+    );
+    expect(recovery).not.toHaveAttribute("aria-disabled");
+  });
+
   it("keeps OAuth choices out of proof-bearing modes and activates a newly received proof", async () => {
     const { rerender } = render(
-      <AuthLogin inviteToken="invite-token" nextPath="/" oauthProviders={["google", "yandex"]} />
+      <AuthLogin inviteToken="invite-token" nextPath="/" oauthOutcome="not_allowed" oauthProvider="yandex" oauthProviders={["google", "yandex"]} />
     );
 
     expect(screen.getByRole("heading", { level: 1, name: "Create your account" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Continue with/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Use another Yandex account" })).not.toBeInTheDocument();
 
-    rerender(<AuthLogin nextPath="/" oauthProviders={["google", "yandex"]} resetToken="reset-token" />);
+    rerender(<AuthLogin nextPath="/" oauthOutcome="not_allowed" oauthProvider="yandex" oauthProviders={["google", "yandex"]} resetToken="reset-token" />);
     expect(await screen.findByRole("heading", { level: 1, name: "Choose a new password" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Update password" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Continue with/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Use another Yandex account" })).not.toBeInTheDocument();
   });
 
   it("starts a fresh uncontrolled field session when an invite or reset proof changes", async () => {

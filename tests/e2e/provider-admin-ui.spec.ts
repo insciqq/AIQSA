@@ -1653,7 +1653,10 @@ test("administrator adds a model with one Test & Save, follows the background ch
         },
         models: [...connection.models, model("model-new", String(body.displayName), upstreamModelId)]
       };
-      await route.fulfill({ contentType: "application/json", json: { connections: [connection] }, status: 201 });
+      await route.fulfill({ contentType: "application/json", json: { receipt: {
+        connectionId: connection.id, modelId: "model-new", displayName: String(body.displayName),
+        draftVersion: 1, saved: "configuration", publication: "active", checks: "checked"
+      } }, status: 201 });
       return;
     }
     if (method === "PATCH" && path === "/api/admin/providers/provider-models-e2e/models/model-sol") {
@@ -1703,7 +1706,14 @@ test("administrator adds a model with one Test & Save, follows the background ch
   await expect(models.getByRole("table", { name: "Models" })).toBeVisible();
   await expect(models).toContainText("Chat models · 2");
   const sol = models.getByTestId("provider-model-model-sol");
-  await expect(sol.getByTestId("model-chip-pdf")).toHaveText("No PDF");
+  const pdf = sol.getByTestId("model-chip-pdf");
+  await expect(pdf).toHaveText("PDF");
+  await expect(pdf).toHaveAttribute("data-chip-tone", "muted");
+  await pdf.click();
+  await expect(sol.getByText("Not verified with this key. This does not establish that the capability is unsupported.")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(pdf).toBeFocused();
+  await expect(sol.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
   await expect(models.getByTestId("provider-model-model-terra").getByTestId("model-chip-pdf")).toHaveText("PDF");
   await expect(models).not.toContainText(/\bdraft\b|\brevision\b|\bpending\b|\bevidence\b|\bprobe\b|\badapter\b|\bfingerprint\b|\bdimensions\b/iu);
 
@@ -1712,7 +1722,7 @@ test("administrator adds a model with one Test & Save, follows the background ch
   await page.getByRole("menuitem", { name: "Chat model" }).click();
   const sheet = page.getByRole("dialog", { name: "Add model" });
   await expect(sheet).toContainText("Checks supported capabilities with key Primary and enables verified features, including PDF");
-  await sheet.getByRole("combobox", { name: "Model" }).fill("gpt-5.6-luna");
+  await sheet.getByRole("combobox", { name: "Model", exact: true }).fill("gpt-5.6-luna");
   await expect(sheet.getByLabel("Display name")).toHaveValue("GPT-5.6 Luna");
   await sheet.getByRole("button", { name: "Test & Save" }).click();
   await expect(sheet).toHaveCount(0);

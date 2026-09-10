@@ -26,6 +26,12 @@ function present(
 }
 
 describe("Run transport presentation v2", () => {
+  it("restores deterministic Gemini routing rejection without a blind retry after reload", () => {
+    const failure = mcpAutoDiscoveryFailure("mcp_router_gemini_invalid_request");
+    const slice = runTransportStateV2({ activeChatStreaming: false, interruptedRun: null,
+      message: { ...streamingMessage, errorMessage: failure.message, status: "error" }, persistedRunStatus: "error" });
+    expect(present(slice)).toMatchObject({ kind: "terminal_error", failure: { ...failure, recovery: "change_parameters" } });
+  });
   it.each([TOOL_SYNTHESIS_FAILURE.message, "Provider returned a tool call from a no-tool synthesis request."])(
     "restores a safe final synthesis failure from its persisted message", (errorMessage) => {
       const slice = runTransportStateV2({ activeChatStreaming: false, interruptedRun: null,

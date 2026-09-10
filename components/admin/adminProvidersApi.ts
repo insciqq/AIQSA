@@ -6,11 +6,13 @@ import type {
   AdminOpenRouterDiscoveredEndpoint,
   AdminOpenRouterDiscoveredModel,
   AdminProviderCheckRun,
-  AdminProviderConnection
+  AdminProviderConnection,
+  AdminProviderModelRename
 } from "@/lib/contracts/adminProviders";
 import { normalizeImageModelConfiguration } from "@/lib/contracts/imageGeneration";
 import { ADMIN_PROVIDER_SETUP_STREAM_TYPE, type AdminProviderSetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
-import { readAdminProviderSetupResponse } from "./adminProviderSetupStream";
+import { adminProviderSetupFailureCode, readAdminProviderSetupResponse } from "./adminProviderSetupStream";
+import { decodeAdminProviderModelSaveReceipt, type AdminProviderModelSaveReceipt } from "@/lib/contracts/adminProviderModelSave";
 import {
   ADMIN_PROVIDER_CAPABILITY_CHECKS,
   ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
@@ -28,6 +30,10 @@ export type AdminProviderClientError = Readonly<{
 export type AdminProviderClientResult<T> =
   | { data: T; ok: true }
   | { error: AdminProviderClientError; ok: false };
+
+export type AdminProviderModelSaveClientResult =
+  | { data: AdminProviderModelSaveReceipt; ok: true }
+  | { error: AdminProviderClientError; ok: false; receipt?: AdminProviderModelSaveReceipt; status?: number };
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -147,7 +153,9 @@ function isDiscoveredModel(value: unknown): value is AdminOpenRouterDiscoveredMo
 }
 
 function isCompatibleDiscoveredModel(value: unknown): value is AdminCompatibleDiscoveredModel {
-  if (!record(value) || Object.keys(value).sort().join(",") !== "capabilities,id" ||
+  if (!record(value)) return false;
+  const keys = Object.keys(value).sort().join(",");
+  if ((keys !== "capabilities,id" && keys !== "capabilities,id,ownedBy") ||
     !record(value.capabilities)) return false;
   const capabilities = value.capabilities;
   const allowed = new Set([
@@ -196,6 +204,9 @@ function isCompatibleDiscoveredModel(value: unknown): value is AdminCompatibleDi
       (typeof capabilities.defaultReasoningMode === "string" &&
         Array.isArray(capabilities.reasoningModes) &&
         capabilities.reasoningModes.includes(capabilities.defaultReasoningMode))) &&
+    (value.ownedBy === undefined ||
+      (typeof value.ownedBy === "string" && value.ownedBy.trim().length > 0 &&
+        value.ownedBy.length <= 128 && !/[\u0000-\u001f\u007f]/u.test(value.ownedBy))) &&
     typeof value.id === "string" && value.id.trim().length > 0 && value.id.length <= 256 &&
     !/[\u0000-\u001f\u007f]/u.test(value.id);
 }
@@ -444,14 +455,30 @@ export function updateAdminProviderModel(
   );
 }
 
+export function renameAdminProviderModel(
+  connectionId: string,
+  modelId: string,
+  body: AdminProviderModelRename,
+  fetcher: Fetcher = fetch
+) {
+  return modelSetupRequest(
+    `/api/admin/providers/${encoded(connectionId)}/models/${encoded(modelId)}`,
+    json("PATCH", { ...body, action: "rename" }),
+    fetcher
+  );
+}
+
+export function runAdminProviderModelAction(connectionId: string, modelId: string, body: unknown, fetcher: Fetcher = fetch) {
+  return request(`/api/admin/providers/${encoded(connectionId)}/models/${encoded(modelId)}`, json("PATCH", body), catalog, fetcher);
+}
+
 async function modelSetupRequest(
   url: string,
   init: RequestInit,
   fetcher: Fetcher,
   signal?: AbortSignal,
   onProgress?: (value: AdminProviderSetupProgress) => void
-): Promise<AdminProviderClientResult<AdminProviderConnection[]>> {
-  if (!onProgress && !signal) return request(url, init, catalog, fetcher);
+): Promise<AdminProviderModelSaveClientResult> {
   try {
     const headers = new Headers(init.headers);
     if (onProgress) headers.set("accept", ADMIN_PROVIDER_SETUP_STREAM_TYPE);
@@ -460,11 +487,14 @@ async function modelSetupRequest(
       headers
     });
     const result = await readAdminProviderSetupResponse(response, onProgress);
-    if (!result.ok) return { ok: false, error: clientError(result.value, "provider_admin_action_failed") };
-    const data = catalog(result.value);
+    const row = record(result.value) ? result.value : null;
+    const data = decodeAdminProviderModelSaveReceipt(row?.receipt);
+    if (!result.ok) return { ok: false, error: clientError(result.value, "provider_admin_action_failed"), status: result.status,
+      ...(data ? { receipt: data } : {}) };
+    if (!row || Object.keys(row).join(",") !== "receipt") return { ok: false, error: clientError(null, "provider_admin_response_invalid") };
     return data ? { ok: true, data } : { ok: false, error: clientError(null, "provider_admin_response_invalid") };
-  } catch {
-    return { ok: false, error: clientError(null, signal?.aborted ? "request_aborted" : "network_error") };
+  } catch (error) {
+    return { ok: false, error: clientError(null, adminProviderSetupFailureCode(error, signal)) };
   }
 }
 
@@ -510,6 +540,10 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     provider_admin_action_failed: "The provider action could not be completed.",
     provider_admin_route_unavailable: "The provider action route is unavailable in this app process. Restart the development app and try again.",
     provider_admin_response_invalid: "The provider API returned an unexpected response. Refresh and try again.",
+    provider_setup_response_invalid: "The provider administration response was malformed. Review saved results before continuing.",
+    provider_setup_response_too_large: "The provider administration response exceeded its size limit. Review saved results before continuing.",
+    provider_setup_interrupted: "The provider administration response ended before completion. Review saved results before continuing.",
+    provider_setup_timeout: "The provider administration response stopped arriving. Review saved results before continuing.",
     provider_configuration_invalid: "Review the provider fields and try again.",
     provider_connection_not_found: "This provider connection no longer exists.",
     provider_credential_label_taken: "A key with this name already exists on this provider.",

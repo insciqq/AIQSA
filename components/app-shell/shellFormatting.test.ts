@@ -31,6 +31,9 @@ describe("shell error formatting", () => {
     expect(humanizeErrorCode("mcp_auto_discovery_unavailable")).toBe(
       "Automatic tool discovery is unavailable. Retry in Auto or use Load all (mcp_auto_discovery_unavailable)"
     );
+    expect(humanizeErrorCode("mcp_auto_discovery_request_rejected")).toBe(
+      "The System Model rejected automatic tool selection. Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection (mcp_auto_discovery_request_rejected)"
+    );
     expect(humanizeErrorCode("structured_output_not_supported")).toBe(
       "The selected System Model does not have verified structured output (structured_output_not_supported)"
     );
@@ -57,6 +60,14 @@ describe("shell error formatting", () => {
     expect(message).toContain(expected);
     expect(message).toContain(`(${code})`);
     expect(message).not.toMatch(/providerResponseId|manifestHash|sourceArtifactId/u);
+  });
+
+  it.each(["openrouter_required_parameters_unavailable", "openrouter_routing_unavailable"])("identifies the answer route for %s without suggesting an unchanged retry", (code) => {
+    const message = humanizeErrorCode(code);
+    expect(message).toContain("OpenRouter could not route the answer request");
+    expect(message).toContain("before retrying");
+    expect(message).not.toContain("System Model");
+    expect(message).not.toContain("GitLab");
   });
 
   it("prefers structured API errors and preserves plain response text", async () => {

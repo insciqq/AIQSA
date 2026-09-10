@@ -1,3 +1,4 @@
+import { isAnswerSoundId } from "../../contracts/answerSound";
 import {
   type CatalogAdapterKind,
   type ProviderModelCatalogEntry,
@@ -53,6 +54,8 @@ type UserSettingsRow = {
   defaultMcpMode: string;
   defaultProviderModelId: string | null;
   defaultSearchPlan: unknown;
+  answerSoundEnabled: boolean;
+  answerSoundId: string;
   sendWithEnter: boolean;
   showCitations: boolean;
   showReasoningBlocks: boolean;
@@ -608,6 +611,8 @@ export function createPrismaCatalogDataLoader({
             defaultMcpMode: true,
             defaultProviderModelId: true,
             defaultSearchPlan: true,
+            answerSoundEnabled: true,
+            answerSoundId: true,
             sendWithEnter: true,
             showCitations: true,
             showReasoningBlocks: true
@@ -721,6 +726,8 @@ export function createPrismaCatalogDataLoader({
         defaultMcpMode: user.settings.defaultMcpMode,
         defaultProviderModelId: user.settings.defaultProviderModelId,
         defaultSearchPlan: user.settings.defaultSearchPlan,
+        answerSoundEnabled: user.settings.answerSoundEnabled,
+        answerSoundId: isAnswerSoundId(user.settings.answerSoundId) ? user.settings.answerSoundId : "rise",
         sendWithEnter: user.settings.sendWithEnter,
         showCitations: user.settings.showCitations,
         showReasoningBlocks: user.settings.showReasoningBlocks

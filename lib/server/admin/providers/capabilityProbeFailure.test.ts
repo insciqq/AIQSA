@@ -1,10 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { capabilityFailureAttempt, retryCapabilityAttempt } from "./capabilityProbeFailure";
+import { GeminiHttpError } from "../../providers/geminiInteractionsTransport";
 
 const input = { attempts: 1, capability: "directPdf" as const,
   adapterKind: "openrouter_chat_completions" as const, accessVerified: true, timedOut: false };
 
 describe("bounded capability failure receipts", () => {
+  it.each(["malformed_tool_call", "malformed_function_call"] as const)("retries generated %s once, preserving input and auth failures", (code) => {
+    const gemini = { ...input, adapterKind: "gemini_interactions_native" as const, capability: "parallelToolCalls" as const };
+    const receipt = capabilityFailureAttempt(new GeminiHttpError(400, code), gemini);
+    expect(receipt).toEqual({ attempts: 1, status: "incomplete", reason: "malformed_tool_output", httpStatus: 400 });
+    expect(retryCapabilityAttempt(receipt)).toBe(true);
+    expect(retryCapabilityAttempt({ ...receipt, attempts: 2 })).toBe(false);
+    expect(capabilityFailureAttempt(new GeminiHttpError(401, code), gemini).reason).toBe("authorization");
+    expect(capabilityFailureAttempt(new GeminiHttpError(400, "invalid_request"), gemini).reason).toBe("invalid_input");
+    expect(capabilityFailureAttempt(new GeminiHttpError(400, "parameter_unknown"), gemini).reason).toBe("invalid_input");
+    expect(capabilityFailureAttempt(Object.assign(new Error("private"), { code, httpStatus: 400 }), gemini).reason).toBe("invalid_input");
+  });
+
   it.each([
     [400, "invalid_input", false], [401, "authorization", false], [403, "authorization", false],
     [429, "rate_limit", true], [503, "http_error", true]

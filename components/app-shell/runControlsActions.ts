@@ -1,3 +1,4 @@
+import { isAnswerSoundId, type AnswerSoundId } from "@/lib/contracts/answerSound";
 import {
   clampedNumber,
   coerceReasoningEffort,
@@ -40,6 +41,7 @@ type RunControlsActionsInput = {
   catalog: Catalog | null;
   currentModel: CatalogModel | undefined;
   allowPersonalPersistence?(): boolean;
+  isSettingsSessionCurrent?(): boolean;
   pendingControlDefaultsRef: MutableRef<PendingControlDefaults | null>;
   pendingControlDefaultsTimerRef: MutableRef<number | null>;
   resolveCatalog?(): Catalog | null;
@@ -51,6 +53,7 @@ type RunControlsActionsInput = {
 
 export function useRunControlsActions({
   allowPersonalPersistence,
+  isSettingsSessionCurrent,
   catalog,
   currentModel,
   pendingControlDefaultsRef,
@@ -285,6 +288,7 @@ export function useRunControlsActions({
     update: Partial<Catalog["defaults"]>,
     replaceControlValueKeys: ReadonlySet<string> = new Set()
   ) {
+    if (isSettingsSessionCurrent?.() === false) return;
     setCatalog((current) =>
       current
         ? {
@@ -306,6 +310,7 @@ export function useRunControlsActions({
   const settingsMutationCoordinator =
     settingsMutationCoordinatorRef.current ??
     createSettingsMutationCoordinator({
+      isCurrent: isSettingsSessionCurrent,
       callbacks: {
         onFailure: () => undefined,
         onReconcile: () => undefined,
@@ -354,6 +359,7 @@ export function useRunControlsActions({
     update: SettingsDefaultsPatch,
     options: { noticeScope?: SettingsNoticeScope } = {}
   ) {
+    if (isSettingsSessionCurrent?.() === false) return Promise.resolve(false);
     if (allowPersonalPersistence?.() === false) {
       return Promise.resolve(true);
     }
@@ -625,6 +631,19 @@ export function useRunControlsActions({
     void persistUserDefaults({ knowledgePlan: plan }, { noticeScope: "settings" });
   }
 
+  // These are account presentation choices even while a Project is open.
+  function setAnswerSoundEnabled(value: boolean) {
+    if (isSettingsSessionCurrent?.() === false) return;
+    updateLocalCatalogDefaults({ answerSoundEnabled: value });
+    void settingsMutationCoordinator.enqueue({ answerSoundEnabled: value }, { noticeScope: "settings" });
+  }
+
+  function setAnswerSoundId(value: AnswerSoundId) {
+    if (isSettingsSessionCurrent?.() === false || !isAnswerSoundId(value)) return;
+    updateLocalCatalogDefaults({ answerSoundId: value });
+    void settingsMutationCoordinator.enqueue({ answerSoundId: value }, { noticeScope: "settings" });
+  }
+
   function setSendWithEnter(value: boolean) {
     void persistUserDefaults({ sendWithEnter: value }, { noticeScope: "settings" });
   }
@@ -732,6 +751,8 @@ export function useRunControlsActions({
   }
 
   return {
+    setAnswerSoundEnabled,
+    setAnswerSoundId,
     applyAssistantToComposer,
     applyModelControlDefaults,
     buildControlDraft: currentControlDraft,

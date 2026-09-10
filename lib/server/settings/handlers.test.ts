@@ -56,6 +56,39 @@ function baseSettingsData(): SettingsHandlerData {
 
 describe("settings handler", () => {
   it.each([
+    [{ answerSoundEnabled: false, answerSoundId: "bell" }, 200],
+    [{ answerSoundEnabled: true }, 200],
+    [{ answerSoundId: "double-tap" }, 200],
+    [{ answerSoundId: "upload.wav" }, 400],
+    [{ answerSoundId: null }, 400],
+    [{ answerSoundEnabled: "off" }, 400],
+    [{ answerSoundEnabled: false, userId: "another-user" }, 400]
+  ])("validates sound preferences and uses only authenticated ownership: %j", async (update, status) => {
+    const data = baseSettingsData();
+    data.settings.answerSoundId = "drop";
+    data.settings.answerSoundEnabled = false;
+    const calls: Array<{ userId: string; update: UserSettingsUpdate }> = [];
+    const PATCH = createUpdateSettingsHandler({
+      resolveAuth: auth.resolveAuth,
+      loadSettingsData: async () => data,
+      updateSettings: async (userId, patch) => {
+        calls.push({ userId, update: patch });
+        return updated({ ...data.settings, ...patch });
+      }
+    });
+    const response = await PATCH(new Request("http://app.local/api/me/settings", {
+      body: JSON.stringify(update), headers: { cookie: authCookie(), "content-type": "application/json" }, method: "PATCH"
+    }));
+    expect(response.status).toBe(status);
+    if (status === 200) {
+      expect(calls).toEqual([{ userId: config.bootstrapUserId, update }]);
+      expect((await response.json()).settings).toMatchObject({
+        answerSoundEnabled: false, answerSoundId: "drop", ...update
+      });
+    } else expect(calls).toHaveLength(0);
+  });
+
+  it.each([
     { personalModel: null, personalEffort: null, expected: "high" },
     { personalModel: null, personalEffort: "low", expected: "low" },
     { personalModel: "gpt-5.5", personalEffort: null, expected: undefined }
@@ -177,6 +210,8 @@ describe("settings handler", () => {
       }
     });
     expect(Object.keys(responseBody.settings)).toEqual([
+      "answerSoundEnabled",
+      "answerSoundId",
       "defaultControlValues",
       "defaultKnowledgePlan",
       "defaultMcpMode",

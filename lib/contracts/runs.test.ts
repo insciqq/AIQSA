@@ -1,8 +1,36 @@
 import { describe, expect, it } from "vitest";
 import {
   decodeCancelModelRunResponse,
-  decodeRunOutcomeResponse
+  decodeRunOutcomeResponse,
+  canRetryMcpAutoDiscoveryFailure,
+  mcpAutoDiscoveryFailure,
+  mcpAutoDiscoveryFailureForMessage
 } from "./runs";
+
+describe("safe MCP routing failures", () => {
+  it.each(["mcp_router_gemini_invalid_request", "mcp_router_gemini_parameter_unknown", "mcp_router_request_rejected"])(
+    "retains the fixed request rejection and recovery policy on reload: %s", (reason) => {
+      const failure = mcpAutoDiscoveryFailure(reason);
+      expect(failure.code).toBe("mcp_auto_discovery_request_rejected");
+      expect(failure.message).toContain("System Model");
+      expect(failure.message).toContain("Gemini HTTP 400");
+      expect(failure.message).toContain("Load all to bypass automatic selection");
+      expect(mcpAutoDiscoveryFailureForMessage(failure.message)).toEqual(failure);
+      expect(canRetryMcpAutoDiscoveryFailure(failure.code)).toBe(false);
+      expect(mcpAutoDiscoveryFailureForMessage(`${failure.message} PRIVATE_BODY`)).toBeNull();
+    }
+  );
+
+  it("keeps transient System Model errors distinct from MCP materialization without retaining unknown data", () => {
+    const transient = mcpAutoDiscoveryFailure("mcp_router_request_failed");
+    const materialization = mcpAutoDiscoveryFailure("mcp_materialization_mcp_not_ready");
+    expect(transient.message).toContain("System Model");
+    expect(canRetryMcpAutoDiscoveryFailure(transient.code)).toBe(true);
+    expect(materialization.message).toContain("activate the selected MCP tools");
+    expect(materialization.code).not.toEqual(transient.code);
+    expect(JSON.stringify(mcpAutoDiscoveryFailure("PRIVATE_PROVIDER_CODE"))).not.toContain("PRIVATE");
+  });
+});
 
 describe("decodeCancelModelRunResponse", () => {
   it("decodes only the cancellation facts consumed by the browser", () => {

@@ -34,6 +34,58 @@ function delayedResponse(input: {
 describe("OpenRouter Chat transport", () => {
   const remoteSecret = "sk-aiqsa-remote-error-regression-123456789";
 
+  it.each(["createChatCompletion", "streamChatCompletion"] as const)("classifies a parameter-routing 404 through %s without retaining provider details", async (method) => {
+    const client = createFetchOpenRouterChatClient({ apiKey: "key", fetchFn: async () => Response.json({
+      error: { code: 404, message: `No endpoints found that support the provided parameters. ${remoteSecret}`,
+        metadata: { failed_routing_step: "parameters", routing_funnel: { private: remoteSecret }, raw: remoteSecret } }
+    }, { status: 404 }) });
+    let failure: unknown;
+    try { await client[method]!({}); } catch (error) { failure = error; }
+    expect(failure).toMatchObject({ code: "openrouter_required_parameters_unavailable", httpStatus: 404,
+      message: expect.stringContaining("no endpoint that supports the required request parameters") });
+    expect((failure as Error).message).toContain("before retrying");
+    expect(JSON.stringify(failure)).not.toContain(remoteSecret);
+    expect((failure as Error).message).not.toContain(remoteSecret);
+    expect(failure).not.toHaveProperty("metadata");
+  });
+
+  it.each([
+    { status: 404, error: { code: "model_not_found", message: "Model not found" }, code: "provider_response_not_retryable" },
+    { status: 404, error: { message: "No endpoints found for missing/model" }, code: undefined },
+    { status: 404, error: { message: "No endpoints found that match your data policy" }, code: "openrouter_routing_unavailable" },
+    { status: 404, error: { message: "No endpoints found that support tool use", metadata: { failed_routing_step: "parameters" } }, code: "openrouter_required_parameters_unavailable" },
+    { status: 404, error: { message: "No endpoints found that support tool use", metadata: { failed_routing_step: { private: "not-a-step" } } }, code: "openrouter_routing_unavailable" },
+    { status: 404, error: { message: { private: "not-a-message" }, metadata: { failed_routing_step: "parameters" } }, code: undefined },
+    ...[401, 403, 429, 500, 502, 503].map((status) => ({ status, error: { message: "No endpoints found that support the provided parameters" }, code: undefined }))
+  ])("keeps routing distinct from other HTTP $status failures ($code)", async ({ status, error, code }) => {
+    const client = createFetchOpenRouterChatClient({ apiKey: "key", fetchFn: async () => Response.json({ error }, { status }) });
+    let failure: unknown;
+    try { await client.createChatCompletion({}); } catch (caught) { failure = caught; }
+    expect(failure).toMatchObject({ httpStatus: status });
+    expect((failure as { code?: string }).code).toBe(code);
+    if (!code?.startsWith("openrouter_")) expect((failure as Error).message).toBe(`OpenRouter request failed with status ${status}`);
+  });
+
+  it("does not classify malformed or oversized routing errors from a partial body", async () => {
+    const previousMaxBytes = process.env.AIQSA_PROVIDER_RESPONSE_MAX_BYTES;
+    process.env.AIQSA_PROVIDER_RESPONSE_MAX_BYTES = "128";
+    const bodies = ["{malformed", JSON.stringify({ error: { message: "No endpoints found that support the provided parameters",
+      metadata: { raw: remoteSecret.repeat(30) } } })];
+    const client = createFetchOpenRouterChatClient({ apiKey: "key", fetchFn: async () => new Response(bodies.shift(), { status: 404 }) });
+    try {
+      for (let index = 0; index < 2; index += 1) {
+        let failure: unknown;
+        try { await client.createChatCompletion({}); } catch (error) { failure = error; }
+        expect(failure).not.toHaveProperty("code");
+        expect((failure as Error).message).toBe("OpenRouter request failed with status 404");
+        expect(JSON.stringify(failure)).not.toContain(remoteSecret);
+      }
+    } finally {
+      if (previousMaxBytes === undefined) delete process.env.AIQSA_PROVIDER_RESPONSE_MAX_BYTES;
+      else process.env.AIQSA_PROVIDER_RESPONSE_MAX_BYTES = previousMaxBytes;
+    }
+  });
+
   it("preserves the endpoint, method, body, headers, and normalized custom base URL", async () => {
     const calls: Array<{ init?: RequestInit; url: string }> = [];
     const client = createFetchOpenRouterChatClient({

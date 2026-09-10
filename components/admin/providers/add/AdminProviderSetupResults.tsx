@@ -11,6 +11,7 @@ const reasonLabels: Record<AdminProviderCapabilityAttempt["reason"], string> = {
   refusal: "provider refused the request", budget_exhausted: "output budget exhausted", invalid_input: "provider rejected the input",
   http_error: "provider request failed", timeout: "check timed out", network: "network connection failed", rate_limit: "provider rate limit",
   authorization: "key or account authorization failed", semantic_inconclusive: "response did not prove the capability",
+  malformed_tool_output: "the model returned an invalid tool call",
   not_checked: "not checked", run_deadline: "overall checking deadline reached"
 };
 
@@ -21,43 +22,34 @@ export function capabilityAttemptDescription(attempt: AdminProviderCapabilityAtt
   return `${reasonLabels[attempt.reason] ?? "check inconclusive"}${status}${count}`;
 }
 
-const stateLabels: Record<NonNullable<AdminProviderCheckRun["results"]>[number]["state"], string> = {
-  saved: "Saved", partial: "Saved · some capabilities need attention", unavailable: "Model unavailable",
-  save_failed: "Could not save checked settings", check_failed: "Check failed",
-  cancelled: "Stopped before completion", stale: "Settings changed · check again"
-};
+/** A settled optional limitation is not unfinished setup. Unknown failures stay recoverable. */
+export function providerSetupNeedsRecovery(run: AdminProviderCheckRun | null | undefined): boolean {
+  if (!run) return true;
+  if (run.state === "running") return false;
+  if (run.state !== "completed" || run.total === 0 || run.done < run.total ||
+    run.setup?.state === "partial" || run.setup?.state === "running" || run.skipped?.length) return true;
+  const settled = (result: NonNullable<AdminProviderCheckRun["results"]>[number]) =>
+    result.state === "saved" || result.state === "partial" ||
+    result.state === "unavailable" && result.checks?.modelAccess === "unsupported";
+  return Boolean(run.results?.some((result) => !settled(result))) ||
+    run.failed.some((modelId) => !run.results?.some((result) => result.providerModelId === modelId && settled(result)));
+}
 
 /** Receipts describe persisted results; a passed check alone is never called saved. */
 export function AdminProviderSetupResults({ run, models }: Readonly<{
   run: AdminProviderCheckRun;
   models: ReadonlyArray<{ id: string; displayName: string }>;
 }>) {
-  if (!run.results?.length) return null;
+  if (!run.results?.length || run.state === "running") return null;
+  const saved = run.results.filter((result) => result.state === "saved" || result.state === "partial").length;
+  const unavailable = run.results.filter((result) => result.state === "unavailable").length;
+  const unsaved = run.results.filter((result) => result.state === "save_failed");
+  const names = unsaved.slice(0, 3).map((result) => models.find((model) => model.id === result.providerModelId)?.displayName ?? "a model").join(", ");
   return (
-    <ul aria-label="Model setup results" className="mt-3 grid min-w-0 gap-2">
-      {run.results.map((result) => (
-        <li className="min-w-0 border-t border-trace-subtle pt-2 text-xs leading-5" key={result.providerModelId}>
-          <p className="break-words font-medium text-ink">
-            {models.find((model) => model.id === result.providerModelId)?.displayName ?? result.providerModelId}
-            <span className={result.state === "saved" ? "font-normal text-ink-secondary" : "font-semibold text-critical"}> · {stateLabels[result.state]}</span>
-          </p>
-          {result.state === "save_failed" ? <p className="font-semibold text-critical">The latest checked settings were not saved. Earlier saved capabilities are kept.</p> : null}
-          {result.checks ? <ul className="flex flex-wrap gap-x-3 gap-y-0.5 text-ink-muted">
-            {Object.entries(result.checks).map(([capability, status]) => {
-              const attempt = result.attempts?.[capability as AdminProviderCapabilityCheck];
-              const failedRefresh = status === "verified" && attempt?.status === "incomplete";
-              const needsAttention = failedRefresh || status === "rejected" || status === "incomplete" || status === "unsupported";
-              return <li className={needsAttention ? "font-semibold text-critical" : undefined} key={capability}>
-                {CAPABILITY_LABELS[capability as AdminProviderCapabilityCheck]}: {status === "verified" ? "verified"
-                  : status === "unsupported" ? "unsupported on this route"
-                  : status === "rejected" || status === "incomplete" ? "inconclusive" : "not checked"}
-                {failedRefresh ? " previously; latest check inconclusive" : ""}
-                {attempt && attempt.status !== "verified" ? ` — ${capabilityAttemptDescription(attempt)}` : ""}
-              </li>;
-            })}
-          </ul> : null}
-        </li>
-      ))}
-    </ul>
+    <div aria-label="Model setup summary" className="mt-2 min-w-0 text-xs leading-5 text-ink-secondary" role="group">
+      <p>{saved} of {run.total} model results saved. Open a capability in the model list for its check result.</p>
+      {unavailable > 0 ? <p className="text-critical">{unavailable} {unavailable === 1 ? "model is" : "models are"} unavailable to this key. Review model and key access.</p> : null}
+      {unsaved.length > 0 ? <p className="break-words text-critical">Could not save checked settings for {names}{unsaved.length > 3 ? ` and ${unsaved.length - 3} more` : ""}. Earlier saved capabilities are kept.</p> : null}
+    </div>
   );
 }

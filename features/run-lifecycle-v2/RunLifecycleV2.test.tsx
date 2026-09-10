@@ -9,7 +9,7 @@ import {
   settledRunPresentationV2,
   type RunPresentationV2
 } from "./runPresentation";
-import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
+import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, mcpAutoDiscoveryFailure, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
 
 function presentation(
   overrides: Partial<RunPresentationV2> = {}
@@ -22,6 +22,20 @@ function presentation(
 }
 
 describe("Run lifecycle v2", () => {
+  it("offers only explicit Load all for a deterministic System Model routing rejection", () => {
+    const retry = vi.fn();
+    const useLoadAll = vi.fn();
+    const failure = mcpAutoDiscoveryFailure("mcp_router_gemini_invalid_request");
+    render(<RunAnswerV2 content="" onRetry={retry} onUseLoadAll={useLoadAll} onRegenerate={vi.fn()}
+      presentation={presentation({ kind: "terminal_error", failure: { ...failure, recovery: "change_parameters" } })} />);
+    expect(screen.getByText(failure.message, { exact: true })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Regenerate" })).toBeNull();
+    expect(retry).not.toHaveBeenCalled();
+    expect(useLoadAll).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Use Load all" }));
+    expect(useLoadAll).toHaveBeenCalledOnce();
+  });
   it("prioritizes final synthesis over stale running steps and keeps partial work after its failure", () => {
     const onRegenerate = vi.fn();
     const toolActivity = { calls: [{ origin: "mcp" as const, round: 8, serverName: "Repository Tools", status: "running" as const, toolName: "search" }],

@@ -1,6 +1,7 @@
 import type { AdminProviderCapabilityAttempt, AdminProviderCapabilityCheck } from "../../../contracts/adminProviders";
 import type { ProviderModelConfiguration } from "../../providers/providerConfiguration";
 import { isRetryableProviderNetworkError } from "../../providers/providerRetry";
+import { GeminiHttpError } from "../../providers/geminiInteractionsTransport";
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -33,6 +34,8 @@ export function capabilityFailureAttempt(error: unknown, input: {
     : candidate.capabilityFailureReason === "budget_exhausted" ? "budget_exhausted"
     : httpStatus === 401 || httpStatus === 403 ? "authorization"
     : httpStatus === 429 ? "rate_limit"
+    : input.adapterKind === "gemini_interactions_native" && error instanceof GeminiHttpError &&
+      (code === "malformed_tool_call" || code === "malformed_function_call") ? "malformed_tool_output"
     : httpStatus === 400 || httpStatus === 422 ? "invalid_input"
     : httpStatus ? "http_error"
     : error instanceof TypeError || isRetryableProviderNetworkError(error) ? "network"
@@ -45,5 +48,5 @@ export function retryCapabilityAttempt(attempt: AdminProviderCapabilityAttempt):
   if (attempt.status !== "incomplete" || attempt.attempts >= 3) return false;
   if (attempt.reason === "network" || attempt.reason === "rate_limit") return true;
   if (attempt.reason === "http_error") return (attempt.httpStatus ?? 0) >= 500;
-  return attempt.attempts < 2 && ["refusal", "budget_exhausted", "semantic_inconclusive"].includes(attempt.reason);
+  return attempt.attempts < 2 && ["refusal", "budget_exhausted", "semantic_inconclusive", "malformed_tool_output"].includes(attempt.reason);
 }

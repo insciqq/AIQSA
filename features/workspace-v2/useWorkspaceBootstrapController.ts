@@ -25,7 +25,7 @@ import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import type { useWorkspaceActions } from "@/components/app-shell/workspaceActions";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { decodeCatalogResponse } from "@/lib/contracts/catalog";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 type ComposerControlState = ReturnType<typeof useComposerControlStore.getState>;
 type WorkspaceActions = ReturnType<typeof useWorkspaceActions>;
@@ -79,6 +79,7 @@ export function runCatalogLoadDeduped<T>({
 
 export function useWorkspaceBootstrapController({
   accountEmail,
+  accountId,
   activateBlankWorkspace,
   applyControlDefaults,
   reapplyActiveChatDefaults,
@@ -93,6 +94,7 @@ export function useWorkspaceBootstrapController({
   workspaceRefreshPromiseRef
 }: Readonly<{
   accountEmail: string | null;
+  accountId: string;
   activateBlankWorkspace: WorkspaceActions["activateBlankWorkspace"];
   applyControlDefaults: ComposerControlState["applyControlDefaults"];
   reapplyActiveChatDefaults: WorkspaceActions["reapplyActiveChatDefaults"];
@@ -106,12 +108,19 @@ export function useWorkspaceBootstrapController({
   setShowReasoningBlocks: ComposerControlState["setShowReasoningBlocks"];
   workspaceRefreshPromiseRef: { current: Promise<ChatDetail | null> | null };
 }>) {
-  const catalogLoadPromiseRef = useRef<Promise<Catalog | null> | null>(null);
-  const shellMountedRef = useRef(true);
+  const scope = useMemo(() => ({
+    token: Symbol(accountId),
+    request: { current: null as Promise<Catalog | null> | null }
+  }), [accountId]);
+  const activeScopeRef = useRef<symbol | null>(scope.token);
+  const currentCatalog = () => {
+    const workspace = useWorkspaceStore.getState();
+    return workspace.catalogAccountId === accountId ? workspace.catalog : null;
+  };
 
   const loadCatalog = useEventCallback((): Promise<Catalog | null> => {
     return runCatalogLoadDeduped({
-      getLoadedCatalog: () => useWorkspaceStore.getState().catalog,
+      getLoadedCatalog: currentCatalog,
       load: async () => {
         setCatalogError(null);
         try {
@@ -125,7 +134,7 @@ export function useWorkspaceBootstrapController({
             throw new Error("catalog_malformed");
           }
 
-          if (!shellMountedRef.current) {
+          if (activeScopeRef.current !== scope.token) {
             return null;
           }
 
@@ -134,7 +143,7 @@ export function useWorkspaceBootstrapController({
               (model) =>
                 model.provider === nextCatalog.defaults.provider && model.modelId === nextCatalog.defaults.modelId
             );
-          setCatalog(nextCatalog);
+          setCatalog(nextCatalog, accountId);
           setCatalogError(null);
           setSelectedProvider(defaultModel?.provider ?? "", "system");
           setSelectedModelId(defaultModel?.modelId ?? "", "system");
@@ -151,13 +160,13 @@ export function useWorkspaceBootstrapController({
           }
           return nextCatalog;
         } catch (error) {
-          if (shellMountedRef.current) {
+          if (activeScopeRef.current === scope.token) {
             setCatalogError(errorMessage(error));
           }
           return null;
         }
       },
-      requestRef: catalogLoadPromiseRef
+      requestRef: scope.request
     });
   });
   const refreshWorkspaceEvent = useEventCallback(refreshWorkspace);
@@ -168,12 +177,12 @@ export function useWorkspaceBootstrapController({
     })
   );
   const retryCatalog = useEventCallback(async () => {
-    if (useWorkspaceStore.getState().catalog) {
+    if (currentCatalog()) {
       return;
     }
 
     const loadedCatalog = await loadCatalog();
-    if (!loadedCatalog || !shellMountedRef.current) {
+    if (!loadedCatalog || activeScopeRef.current !== scope.token) {
       return;
     }
 
@@ -185,7 +194,7 @@ export function useWorkspaceBootstrapController({
     });
     if (
       pendingWorkspaceRefresh &&
-      shellMountedRef.current &&
+      activeScopeRef.current === scope.token &&
       useWorkspaceStore.getState().activeChatId === activeChatIdBeforeRefresh &&
       workspaceDefaultControlsFingerprint(useComposerControlStore.getState()) === controlsBeforeRefresh
     ) {
@@ -194,7 +203,8 @@ export function useWorkspaceBootstrapController({
   });
 
   useEffect(() => {
-    shellMountedRef.current = true;
+    activeScopeRef.current = scope.token;
+    if (useWorkspaceStore.getState().catalogAccountId !== accountId) setCatalog(null, accountId);
 
     async function bootstrap() {
       const recoveredDraft = storedSessionExpiredDraft();
@@ -208,7 +218,7 @@ export function useWorkspaceBootstrapController({
         ? chatIdFromComposerSessionKey(ownedRecoveredDraft.sessionKey)
         : null;
       const loadedCatalog = await loadCatalog();
-      if (shellMountedRef.current) {
+      if (activeScopeRef.current === scope.token) {
         await refreshWorkspaceEvent(
           recoveredChatId ?? useWorkspaceStore.getState().activeChatId,
           {
@@ -216,7 +226,7 @@ export function useWorkspaceBootstrapController({
           }
         );
       }
-      if (!shellMountedRef.current || !ownedRecoveredDraft) {
+      if (activeScopeRef.current !== scope.token || !ownedRecoveredDraft) {
         return;
       }
 
@@ -247,9 +257,9 @@ export function useWorkspaceBootstrapController({
     void bootstrap();
 
     return () => {
-      shellMountedRef.current = false;
+      activeScopeRef.current = null;
     };
-  }, [accountEmail, activateBlankWorkspaceEvent, loadCatalog, refreshWorkspaceEvent]);
+  }, [accountEmail, accountId, activateBlankWorkspaceEvent, loadCatalog, refreshWorkspaceEvent, scope, setCatalog]);
 
   return { activateBlankWorkspaceEvent, retryCatalog, retryWorkspace };
 }

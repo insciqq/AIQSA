@@ -2,7 +2,7 @@ import type {
   RunLifecycleStateV2,
   RunLifecycleStatusV2
 } from "@/features/run-lifecycle-v2/runPresentation";
-import { isToolSynthesisFailure, mcpAutoDiscoveryFailureForMessage, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
+import { canRetryMcpAutoDiscoveryFailure, isToolSynthesisFailure, mcpAutoDiscoveryFailureForMessage, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
 
 /**
  * The run-lifecycle store's record of a stream whose transport failed without
@@ -62,7 +62,8 @@ export function runTransportStateV2(input: Readonly<{
   }
 
   const discoveryFailure = mcpAutoDiscoveryFailureForMessage(input.message.errorMessage);
-  const failure = discoveryFailure ? { ...discoveryFailure, recovery: "retry" as const }
+  const failure = discoveryFailure ? { ...discoveryFailure,
+    recovery: canRetryMcpAutoDiscoveryFailure(discoveryFailure.code) ? "retry" as const : "change_parameters" as const }
     : isToolSynthesisFailure(null, input.message.errorMessage)
       ? { ...TOOL_SYNTHESIS_FAILURE, recovery: "regenerate" as const } : null;
   return {

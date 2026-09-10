@@ -9,6 +9,8 @@ import {
 
 function settings(overrides: Partial<UserSettingsWire> = {}): UserSettingsWire {
   return {
+    answerSoundEnabled: true,
+    answerSoundId: "rise",
     defaultControlValues: {},
     defaultKnowledgePlan: null,
     defaultMcpMode: "auto",
@@ -41,6 +43,59 @@ afterEach(() => {
 });
 
 describe("settings mutation coordinator", () => {
+  it("retains mute and the selected sound over older unrelated responses and keeps failed edits for retry", async () => {
+    const older = deferred<UserSettingsWire>();
+    const onReconcile = vi.fn();
+    const onFailure = vi.fn();
+    const send = vi.fn<(patch: SettingsDefaultsPatch) => Promise<UserSettingsWire>>()
+      .mockImplementationOnce(() => older.promise)
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(settings({ answerSoundEnabled: false, answerSoundId: "bell" }));
+    const coordinator = createSettingsMutationCoordinator({
+      callbacks: { onFailure, onReconcile, onRecovered: vi.fn() }, send
+    });
+    const first = coordinator.enqueue({ showCitations: false });
+    const muted = coordinator.enqueue({ answerSoundEnabled: false });
+    const choice = coordinator.enqueue({ answerSoundId: "bell" }, { noticeScope: "settings" });
+    older.resolve(settings({ showCitations: false }));
+    await first;
+    await expect(muted).resolves.toBe(false);
+    await expect(choice).resolves.toBe(false);
+    expect(onReconcile.mock.calls[0]?.[0]).toMatchObject({ answerSoundEnabled: false, answerSoundId: "bell" });
+    expect(onFailure).toHaveBeenCalledWith(expect.any(Error), expect.any(Function), "settings");
+    coordinator.retry();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(3));
+    expect(send.mock.calls[2]?.[0]).toEqual({ answerSoundEnabled: false, answerSoundId: "bell" });
+  });
+
+  it("fences stale account responses, failures, queued requests and old actions", async () => {
+    let active = true;
+    const response = deferred<UserSettingsWire>();
+    const send = vi.fn(() => response.promise);
+    const onReconcile = vi.fn();
+    const onFailure = vi.fn();
+    const coordinator = createSettingsMutationCoordinator({
+      callbacks: { onFailure, onReconcile, onRecovered: vi.fn() }, isCurrent: () => active, send
+    });
+    const saving = coordinator.enqueue({ answerSoundEnabled: false });
+    const pending = coordinator.enqueue({ answerSoundId: "bell" });
+    active = false;
+    response.resolve(settings({ answerSoundEnabled: false }));
+    await expect(saving).resolves.toBe(false);
+    await expect(pending).resolves.toBe(false);
+    await expect(coordinator.enqueue({ answerSoundEnabled: true })).resolves.toBe(false);
+    expect(onReconcile).not.toHaveBeenCalled();
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledOnce();
+  });
+
+  it("sends only the requested sound field and does not overwrite its independent mute", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ settings: settings({ answerSoundId: "bell", answerSoundEnabled: false }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    await sendSettingsDefaultsPatch({ answerSoundId: "bell" });
+    expect(JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual({ answerSoundId: "bell" });
+  });
+
   it.each([true, false])("replaces inherited reasoning when switching to organization default: %s", async (inherit) => {
     const model = { modelId: "gpt-5.5", provider: "openai" };
     const onReconcile = vi.fn();

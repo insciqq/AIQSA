@@ -4,6 +4,7 @@ import {
   createAdminProviderCredential,
   discoverAdminCompatibleModels,
   getAdminProviderConnections,
+  renameAdminProviderModel,
   runAdminProviderConnectionAction
 } from "./adminProvidersApi";
 
@@ -42,6 +43,15 @@ const safeConnection = {
 };
 
 describe("admin provider browser API", () => {
+  it.each(["saved", "publication", "checks"])("rejects non-primitive receipt %s without coercion", async (field) => {
+    const receipt = { connectionId: "provider", modelId: "model", displayName: "New name", draftVersion: 1,
+      saved: "name", publication: "not_requested", checks: "not_requested", [field]: { toString: "private-invalid-enum" } };
+    const fetcher = vi.fn(async () => Response.json({ receipt }));
+    expect(await renameAdminProviderModel("provider", "model", { displayName: "New name", expectedActiveVersion: 1,
+      expectedDisplayName: "Old name", expectedDraftVersion: 1, expectedUpdatedAt: "2026-09-10T00:00:00.000Z" }, fetcher))
+      .toMatchObject({ ok: false, error: { code: "provider_admin_response_invalid" } });
+  });
+
   it("accepts a model that inherits its response timeout from the connection", async () => {
     const fetcher = vi.fn(async () => Response.json({
       connections: [{
@@ -155,7 +165,8 @@ describe("admin provider browser API", () => {
             reasoning: true,
             reasoningEfforts: ["low", "medium", "high"]
           },
-          id: "vendor/model-a"
+          id: "vendor/model-a",
+          ownedBy: "codex-lb"
         },
         { capabilities: {}, id: "vendor/model-b" }
       ]
@@ -173,7 +184,8 @@ describe("admin provider browser API", () => {
             reasoning: true,
             reasoningEfforts: ["low", "medium", "high"]
           },
-          id: "vendor/model-a"
+          id: "vendor/model-a",
+          ownedBy: "codex-lb"
         },
         { capabilities: {}, id: "vendor/model-b" }
       ],
@@ -189,6 +201,19 @@ describe("admin provider browser API", () => {
         method: "POST"
       })
     );
+
+    for (const ownedBy of ["", "\u0000", "x".repeat(129), 42, { nested: "marker" }]) {
+      await expect(discoverAdminCompatibleModels(
+        "connection/one",
+        "credential/one",
+        vi.fn(async () => Response.json({
+          models: [{ capabilities: {}, id: "vendor/model-a", ownedBy }]
+        }))
+      )).resolves.toMatchObject({
+        error: { code: "provider_admin_response_invalid" },
+        ok: false
+      });
+    }
 
     await expect(discoverAdminCompatibleModels(
       "connection/one",

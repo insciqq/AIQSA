@@ -1,6 +1,8 @@
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { describe, expect, it, vi } from "vitest";
 import { currentSearchToolFixture } from "@/tests/support/tools";
+import { openRouterMixedTools } from "@/tests/support/openRouterTools";
+import { mcpFindToolsArguments } from "../mcp/discovery";
 import { validateSearchToolArguments } from "../search/query";
 import * as openRouterFacade from "./openRouterChat";
 import {
@@ -342,6 +344,38 @@ describe("OpenRouter Chat facade", () => {
         totalTokens: 10
       }
     });
+  });
+
+  it.each(["deepseek/deepseek-v4-pro-0813", "anthropic/claude-opus-5"])("decodes a complete mixed-tool discovery stream for %s", async (modelId) => {
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body).toMatchObject({ model: modelId, max_tokens: 65_536, temperature: 1, stream: true,
+        provider: { require_parameters: true, data_collection: "deny", allow_fallbacks: true },
+        tools: [
+          { function: { name: "generate_image", strict: false } },
+          { function: { name: "get_session_status", strict: true } },
+          { function: { name: "find_tools", strict: false } }
+        ] });
+      expect(body).not.toHaveProperty("parallel_tool_calls");
+      expect(body.cache_control).toEqual(modelId.startsWith("anthropic/") ? { type: "ephemeral" } : undefined);
+      expect(new Headers(init?.headers).get("x-anthropic-beta")).toBe("structured-outputs-2025-11-13");
+      return sseResponse([
+        `data: ${JSON.stringify({ id: "mixed-1", choices: [{ delta: { tool_calls: [{ index: 0, id: "discover-1", type: "function",
+          function: { name: "find_tools", arguments: '{"goal":"Read the ' } }] }, finish_reason: null }] })}\n\n`,
+        `data: ${JSON.stringify({ id: "mixed-1", choices: [{ delta: { tool_calls: [{ index: 0,
+          function: { arguments: 'synthetic service"}' } }] }, finish_reason: "tool_calls" }], usage: { prompt_tokens: 17, completion_tokens: 9 } })}\n\n`,
+        "data: [DONE]\n\n"
+      ]);
+    });
+    const adapter = createOpenRouterChatAdapter({ client: createFetchOpenRouterChatClient({ apiKey: "fixture", fetchFn }) });
+    const { result } = await collect(adapter.stream(request({ modelId, tools: openRouterMixedTools(), parallelToolCalls: false,
+      params: { maxTokens: 65_536, temperature: 1, stream: true, reasoning: { enabled: true, effort: "high" },
+        provider: { dataCollection: "deny", allowFallbacks: true, sort: "throughput", requireParameters: false } } })));
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls?.[0]).toMatchObject({ id: "discover-1", name: "find_tools" });
+    expect(mcpFindToolsArguments(result.toolCalls![0]!.arguments)).toEqual({ goal: "Read the synthetic service" });
+    expect(result.usage).toMatchObject({ inputTokens: 17, outputTokens: 9 });
   });
 
   it("composes provider-neutral tools into the streaming continuation boundary", async () => {

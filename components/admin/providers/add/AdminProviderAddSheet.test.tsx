@@ -140,14 +140,14 @@ describe("AdminProviderAddSheet", () => {
     expect(dialog.textContent).not.toContain("sk-new-key");
   });
 
-  it("keeps per-model partial results and retries the existing setup without creating another provider", async () => {
+  it("summarizes a failed save and retries the existing setup without creating another provider", async () => {
     const connection = workingConnection();
     const run: AdminProviderCheckRun = {
       credentialId: connection.defaultCredentialId!, current: null, done: 2, failed: ["model-luna"], finishedAt: checkedAt,
       id: "run-partial", inFlight: [], reason: "setup", startedAt: checkedAt, state: "completed", total: 2,
       results: [
         { providerModelId: connection.models[0]!.id, state: "saved", checks: { structuredOutput: "verified", forcedToolCall: "verified" } },
-        { providerModelId: "model-luna", state: "partial", checks: { structuredOutput: "verified", forcedToolCall: "rejected" } }
+        { providerModelId: "model-luna", state: "save_failed", checks: { structuredOutput: "verified", forcedToolCall: "verified" } }
       ]
     };
     const calls = mockFetch(({ url, method, body }) => {
@@ -163,9 +163,10 @@ describe("AdminProviderAddSheet", () => {
     await within(dialog).findByText(/GPT-5.6 Terra, GPT-5.6 Luna/);
     fireEvent.change(within(dialog).getByLabelText("API key"), { target: { value: "test-key" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Test & Save" }));
-    const results = await within(dialog).findByRole("list", { name: "Model setup results" });
-    expect(results).toHaveTextContent("Strict JSON: verified");
-    expect(results).toHaveTextContent("Forced tool calls: inconclusive");
+    const results = await within(dialog).findByRole("group", { name: "Model setup summary" });
+    expect(results).toHaveTextContent("1 of 2 model results saved.");
+    expect(results).toHaveTextContent("Could not save checked settings");
+    expect(within(dialog).queryByRole("list", { name: "Model setup results" })).not.toBeInTheDocument();
     expect(onCreated).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "Retry unfinished checks" }));
     await within(dialog).findByText("Setup finished");
@@ -175,6 +176,33 @@ describe("AdminProviderAddSheet", () => {
     ]);
     fireEvent.click(within(dialog).getByRole("button", { name: "View provider" }));
     expect(onCreated).toHaveBeenCalledWith(connection.id);
+  });
+
+  it("finishes without a retry prompt when saved models only lack optional capabilities", async () => {
+    const connection = workingConnection();
+    const run: AdminProviderCheckRun = {
+      credentialId: connection.defaultCredentialId!, current: null, done: 2, failed: ["model-luna"], finishedAt: checkedAt,
+      id: "optional-run", inFlight: [], reason: "setup", startedAt: checkedAt, state: "completed", total: 2,
+      results: connection.models.map((model) => ({ providerModelId: model.id, state: "partial", checks: {
+        modelAccess: "verified", structuredOutput: "verified", forcedToolCall: "unsupported", directPdf: "incomplete"
+      } }))
+    };
+    const calls = mockFetch(({ url, method }) => {
+      if (url === "/api/admin/providers/quick-setup" && method === "POST") return Response.json({ ...ready(connection.id), outcome: "partial", checkRun: run });
+      if (url === "/api/admin/providers") return Response.json({ connections: [{ ...connection, checkRun: run }] });
+      return null;
+    });
+    const { onCreated } = renderSheet();
+    const dialog = await sheet();
+    await within(dialog).findByText(/GPT-5.6 Terra, GPT-5.6 Luna/);
+    fireEvent.change(within(dialog).getByLabelText("API key"), { target: { value: "test-key" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Test & Save" }));
+    expect(await within(dialog).findByRole("heading", { name: "Setup finished" })).toBeVisible();
+    expect(within(dialog).getByRole("group", { name: "Model setup summary" })).toHaveTextContent("2 of 2 model results saved.");
+    expect(within(dialog).queryByRole("button", { name: /Retry/ })).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "View provider" }));
+    expect(onCreated).toHaveBeenCalledWith(connection.id);
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
   });
 
   it("stops the setup stream and recovers saved ids for retry instead of submitting Add again", async () => {

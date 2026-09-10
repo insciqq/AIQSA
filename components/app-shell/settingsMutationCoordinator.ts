@@ -37,6 +37,7 @@ export type SettingsMutationCoordinator = {
 type SettingsMutationCoordinatorInput = {
   callbacks: SettingsMutationCallbacks;
   send?(patch: SettingsDefaultsPatch): Promise<UserSettingsWire>;
+  isCurrent?(): boolean;
 };
 
 type SettingsWaiter = {
@@ -108,6 +109,8 @@ function requestBody(patch: SettingsDefaultsPatch): Record<string, unknown> {
     "personalModelDefault"
   );
   return {
+    ...(patch.answerSoundEnabled !== undefined ? { answerSoundEnabled: patch.answerSoundEnabled } : {}),
+    ...(patch.answerSoundId !== undefined ? { answerSoundId: patch.answerSoundId } : {}),
     ...(updatesPersonalModel
       ? patch.personalModelDefault
         ? { defaultProviderModelId: patch.personalModelDefault.modelId }
@@ -160,6 +163,8 @@ function reconciledPatch(
   settings: UserSettingsWire
 ): SettingsDefaultsPatch {
   const patch: SettingsDefaultsPatch = {};
+  if (sent.answerSoundEnabled !== undefined) patch.answerSoundEnabled = settings.answerSoundEnabled;
+  if (sent.answerSoundId !== undefined) patch.answerSoundId = settings.answerSoundId;
 
   if (Object.prototype.hasOwnProperty.call(sent, "personalModelDefault")) {
     const effectiveModel = settings.personalModelDefault ?? settings.organizationModelDefault;
@@ -209,7 +214,8 @@ function reconciledPatch(
 
 export function createSettingsMutationCoordinator({
   callbacks: initialCallbacks,
-  send = sendSettingsDefaultsPatch
+  send = sendSettingsDefaultsPatch,
+  isCurrent = () => true
 }: SettingsMutationCoordinatorInput): SettingsMutationCoordinator {
   let callbacks = initialCallbacks;
   let failureOutstanding = false;
@@ -235,7 +241,7 @@ export function createSettingsMutationCoordinator({
   }
 
   async function drain() {
-    if (inFlight || paused || !pending) {
+    if (inFlight || paused || !pending || !isCurrent()) {
       return;
     }
 
@@ -245,6 +251,11 @@ export function createSettingsMutationCoordinator({
 
     try {
       const settings = await send(batch.patch);
+      if (!isCurrent()) {
+        pending = null;
+        settleWaiters(sequence, false);
+        return;
+      }
       const newerPatch = pendingBatch()?.patch ?? {};
       const reconciled = reconciledPatch(batch.patch, settings);
       callbacks.onReconcile(
@@ -257,6 +268,11 @@ export function createSettingsMutationCoordinator({
         callbacks.onRecovered(failureNoticeScope);
       }
     } catch (error) {
+      if (!isCurrent()) {
+        pending = null;
+        settleWaiters(sequence, false);
+        return;
+      }
       const queued = pendingBatch();
       const combinedNoticeScope =
         batch.noticeScope === "settings" || queued?.noticeScope === "settings"
@@ -295,6 +311,7 @@ export function createSettingsMutationCoordinator({
       callbacks = nextCallbacks;
     },
     enqueue(patch, options = {}) {
+      if (!isCurrent()) return Promise.resolve(false);
       sequence += 1;
       pending = {
         noticeScope: options.noticeScope ?? pending?.noticeScope ?? "general",

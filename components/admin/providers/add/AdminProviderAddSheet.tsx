@@ -1,7 +1,7 @@
 "use client";
 
 import { AdminProviderSetupProgress } from "./AdminProviderSetupProgress";
-import { AdminProviderSetupResults } from "./AdminProviderSetupResults";
+import { AdminProviderSetupResults, providerSetupNeedsRecovery } from "./AdminProviderSetupResults";
 import { adminProviderErrorMessage, getAdminProviderCheckRun, getAdminProviderConnections, runAdminProviderConnectionAction } from "@/components/admin/adminProvidersApi";
 import type { AdminProviderSetupProgress as SetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 import { inputClass } from "@/components/admin/adminPrimitives";
@@ -480,7 +480,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
         await showInterruptedSetup(adminProviderQuickSetupErrorMessage(result.error));
         return;
       }
-      if (["network_error", "provider_setup_interrupted"].includes(result.error.code) || result.error.code.endsWith("response_invalid")) {
+      if (["network_error", "provider_setup_interrupted", "provider_setup_timeout", "provider_setup_response_too_large"].includes(result.error.code) || result.error.code.endsWith("response_invalid")) {
         await showInterruptedSetup("The setup connection was interrupted. Saved results are kept; review them before continuing.");
         return;
       }
@@ -534,7 +534,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
         await showInterruptedSetup(adminProviderCustomSetupErrorMessage(result.error));
         return;
       }
-      if (["network_error", "provider_setup_interrupted"].includes(result.error.code) || result.error.code.endsWith("response_invalid")) {
+      if (["network_error", "provider_setup_interrupted", "provider_setup_timeout", "provider_setup_response_too_large"].includes(result.error.code) || result.error.code.endsWith("response_invalid")) {
         await showInterruptedSetup("The setup connection was interrupted. Saved results are kept; review them before continuing.");
         return;
       }
@@ -560,9 +560,7 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
     ? { reasoning: (discovery.models ?? []).some((model) =>
       custom.selectedModelIds.includes(model.id) && model.capabilities.reasoning === true) }
     : reasoningForChoice(custom.reasoningChoice, []);
-  const unfinished = !savedSetup?.run || savedSetup.run.state !== "completed" ||
-    savedSetup.run.failed.length > 0 || Boolean(savedSetup.run.skipped?.length) || savedSetup.run.setup?.state === "partial" ||
-    Boolean(savedSetup.run.results?.some((result) => result.state !== "saved"));
+  const unfinished = providerSetupNeedsRecovery(savedSetup?.run);
   const fieldsLocked = busy || interrupted || Boolean(savedSetup);
 
   return (
@@ -646,7 +644,11 @@ function AddSheetBody({ connections, onClose, onCreated }: Omit<AdminProviderAdd
           <h3 className="text-sm font-medium text-ink">{savedSetup.run?.state === "running" ? "Checking unfinished work…"
             : savedSetup.run?.state === "cancelled" ? "Setup stopped"
             : unfinished ? "Some setup steps need attention" : "Setup finished"}</h3>
-          <p className="mt-1 text-xs leading-5 text-ink-muted">Saved models are kept. Retry uses their current successful checks and completes only unfinished work.</p>
+          <p className="mt-1 text-xs leading-5 text-ink-muted">{savedSetup.run?.state === "running"
+            ? "Saved results are kept while the remaining work finishes."
+            : unfinished
+              ? "Saved models are kept. Retry uses their current successful checks and completes only unfinished work."
+              : "Results are saved. Open the provider to review what each model can do."}</p>
           {savedSetup.run?.state === "running" ? <AdminProviderSetupProgress progress={{
             phase: savedSetup.run.setup?.state === "running" ? "finishing" : "checking",
             completed: savedSetup.run.done, total: savedSetup.run.total || null,

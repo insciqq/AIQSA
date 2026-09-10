@@ -12,18 +12,25 @@ import {
   discoverAdminOpenRouterModels,
   getAdminProviderConnections,
   runAdminProviderConnectionAction,
+  renameAdminProviderModel,
+  runAdminProviderModelAction,
   updateAdminProviderConnection,
   updateAdminProviderCredential,
   updateAdminProviderModel,
   type AdminProviderClientError,
   type AdminProviderClientResult
 } from "./adminProvidersApi";
+import type { AdminProviderModelSaveClientResult } from "./adminProvidersApi";
+import type { AdminProviderModelSaveReceipt } from "@/lib/contracts/adminProviderModelSave";
+import type { AdminProviderModelPersistence } from "./providers/models/modelSaveReconciliation";
 import type {
   AdminCompatibleDiscoveredModel,
   AdminOpenRouterDiscoveredEndpoint,
   AdminOpenRouterDiscoveredModel,
   AdminProviderConnection,
-  AdminProviderConnectionConfiguration
+  AdminProviderConnectionConfiguration,
+  AdminProviderModelEditGuard,
+  AdminProviderModelRename
 } from "@/lib/contracts/adminProviders";
 import type { AdminProviderSetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -33,6 +40,10 @@ type CatalogOperation = () => Promise<AdminProviderClientResult<AdminProviderCon
 export type AdminProviderOperationResult =
   | { ok: true }
   | { error: AdminProviderClientError; message: string; ok: false };
+
+export type AdminProviderModelOperationResult = AdminProviderOperationResult & {
+  persistence?: AdminProviderModelPersistence;
+};
 
 export type UseAdminProvidersControllerOptions = Readonly<{
   /** Whole-action failures that no form shows inline (toast). */
@@ -82,12 +93,18 @@ export function useAdminProvidersController(
   const busyRef = useRef(false);
   const connectionsRef = useRef<AdminProviderConnection[]>([]);
   const catalogGenerationRef = useRef(0);
+  const mountedRef = useRef(false);
   const autoLoadAttemptedRef = useRef(false);
   const optionsRef = useRef(options);
 
   useEffect(() => {
     optionsRef.current = options;
   }, [options]);
+  useEffect(() => {
+    // Effect replay keeps the initial request valid; a real unmount rejects its result.
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const applyConnections = useCallback((next: AdminProviderConnection[]) => {
     connectionsRef.current = next;
@@ -103,7 +120,7 @@ export function useAdminProvidersController(
     setErrorBlockers([]);
     setFeedbackConnectionId(null);
     const result = await getAdminProviderConnections();
-    if (generation !== catalogGenerationRef.current) return false;
+    if (!mountedRef.current || generation !== catalogGenerationRef.current) return false;
     setLoading(false);
     setLoaded(true);
     if (!result.ok) {
@@ -185,7 +202,7 @@ export function useAdminProvidersController(
     const generation = ++catalogGenerationRef.current;
     beginRun();
     const result = await operation();
-    if (generation !== catalogGenerationRef.current) {
+    if (!mountedRef.current || generation !== catalogGenerationRef.current) {
       busyRef.current = false;
       setBusy(false);
       return failure({ blockers: [], code: "provider_admin_superseded", resourceIds: [] });
@@ -208,6 +225,46 @@ export function useAdminProvidersController(
   ) => (await runCatalogResult(operation, success, { reconcileFailure, scope: feedbackScope })).ok,
   [runCatalogResult]);
 
+  const runModelSave = useCallback(async (
+    operation: () => Promise<AdminProviderModelSaveClientResult>,
+    connectionId: string,
+    modelId: string | null,
+    body: { displayName: string } & Partial<AdminProviderModelEditGuard>,
+    saved: AdminProviderModelSaveReceipt["saved"]
+  ): Promise<AdminProviderModelOperationResult> => {
+    if (busyRef.current) return failure({ blockers: [], code: "provider_admin_busy", resourceIds: [] });
+    const generation = ++catalogGenerationRef.current;
+    beginRun();
+    const result = await operation();
+    if (!mountedRef.current || generation !== catalogGenerationRef.current) return failure({ blockers: [], code: "provider_admin_superseded", resourceIds: [] });
+    const candidate = result.ok ? result.data : result.receipt;
+    const receipt = candidate && candidate.connectionId === connectionId &&
+      (modelId === null || candidate.modelId === modelId) && candidate.displayName === body.displayName && candidate.saved === saved &&
+      candidate.draftVersion === (modelId === null ? 1 : Number(body.expectedDraftVersion) + (saved === "configuration" ? 1 : 0))
+      ? candidate : null;
+    const latest = await getAdminProviderConnections();
+    if (!mountedRef.current || generation !== catalogGenerationRef.current) return failure({ blockers: [], code: "provider_admin_superseded", resourceIds: [] });
+    const catalog = latest.ok ? latest.data : null;
+    if (catalog) applyConnections(catalog);
+    const resolvedId = receipt?.modelId ?? modelId;
+    const current = catalog?.find(({ id }) => id === connectionId)?.models.find(({ id }) => id === resolvedId) ?? null;
+    const ambiguous = !result.ok && result.status === undefined;
+    const persistence: AdminProviderModelPersistence = { receipt, model: receipt || ambiguous ? current : null };
+    const nameConfirmed = ambiguous && saved === "name" && current?.displayName === body.displayName &&
+      current.draftVersion === body.expectedDraftVersion && current.activeVersion === body.expectedActiveVersion &&
+      new Date(current.updatedAt).getTime() > new Date(body.expectedUpdatedAt ?? "").getTime();
+    if (catalog && (nameConfirmed || result.ok && receipt &&
+      (saved === "name" || receipt.publication === "active" && ["checked", "skipped"].includes(receipt.checks)))) {
+      return { ...finishSuccess(catalog, null, { quiet: true, scope: connectionId }), persistence };
+    }
+    const clientError = !result.ok ? result.error : !receipt
+      ? { blockers: [], code: "provider_admin_response_invalid", resourceIds: [] }
+      : !latest.ok ? latest.error : { blockers: [], code: "provider_refresh_failed", resourceIds: [] };
+    const failed = finishFailure(clientError, { quiet: true, scope: connectionId });
+    if (receipt) notifyMutationCommitted(optionsRef.current.onMutationCommitted);
+    return { ...failed, persistence };
+  }, [applyConnections, beginRun, finishFailure, finishSuccess]);
+
   /**
    * Background polling (capability checks in progress): replaces the catalog
    * without touching busy, loading or feedback state, and yields to any
@@ -217,7 +274,7 @@ export function useAdminProvidersController(
     if (busyRef.current) return false;
     const generation = ++catalogGenerationRef.current;
     const result = await getAdminProviderConnections();
-    if (generation !== catalogGenerationRef.current || busyRef.current || !result.ok) return false;
+    if (!mountedRef.current || generation !== catalogGenerationRef.current || busyRef.current || !result.ok) return false;
     applyConnections(result.data);
     return true;
   }, [applyConnections]);
@@ -343,6 +400,10 @@ export function useAdminProvidersController(
       { quiet: true, scope: connectionId }
     ),
     saveConnectionSettings,
+    renameModel: (connectionId: string, modelId: string, body: AdminProviderModelRename) => runModelSave(
+      () => renameAdminProviderModel(connectionId, modelId, body),
+      connectionId, modelId, body, "name"
+    ),
     /**
      * Model `Test & Save` (PRD B2): create or update the model, take it live
      * and check it with the default key in one request. The sheet shows the
@@ -351,14 +412,13 @@ export function useAdminProvidersController(
     saveModel: (
       connectionId: string,
       modelId: string | null,
-      body: Readonly<{ configuration: unknown; displayName: string; expectedDraftVersion?: number }>,
+      body: Readonly<{ configuration: unknown; displayName: string }> & Partial<AdminProviderModelEditGuard>,
       setupOptions?: Readonly<{ signal?: AbortSignal; onProgress?(value: AdminProviderSetupProgress): void }>
-    ) => runCatalogResult(
+    ) => runModelSave(
       () => modelId === null
         ? createAdminProviderModel(connectionId, { ...body, activate: true }, fetch, setupOptions?.signal, setupOptions?.onProgress)
         : updateAdminProviderModel(connectionId, modelId, { ...body, action: "update", activate: true }, fetch, setupOptions?.signal, setupOptions?.onProgress),
-      null,
-      { quiet: true, reconcileFailure: true, scope: connectionId }
+      connectionId, modelId, body, "configuration"
     ),
     /** One-step add: the key is tested and becomes the default when none is set. */
     saveCredential: (
@@ -406,12 +466,12 @@ export function useAdminProvidersController(
     )).ok,
     updateModel: (connectionId: string, modelId: string, body: unknown, success: string) =>
       runCatalog(
-        () => updateAdminProviderModel(connectionId, modelId, body),
+        () => runAdminProviderModelAction(connectionId, modelId, body),
         success,
         false,
         connectionId
       )
-  }), [refresh, refreshQuietly, runCatalog, runCatalogResult, runScopedDiscovery, saveConnectionSettings]);
+  }), [refresh, refreshQuietly, runCatalog, runCatalogResult, runModelSave, runScopedDiscovery, saveConnectionSettings]);
 
   return {
     actions,

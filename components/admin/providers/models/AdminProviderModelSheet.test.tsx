@@ -1,5 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi, type Mock } from "vitest";
+import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
+import * as providerApi from "@/components/admin/adminProvidersApi";
+import { imageModelConfiguration } from "@/lib/domain/imageModels";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import {
   fixtureConnection,
@@ -64,14 +66,88 @@ function discovery(): AdminOpenRouterDiscoverySession {
   };
 }
 
-function controller(saveModel: Mock = vi.fn(async () => ({ ok: true as const }))) {
+function controller(saveModel: Mock = vi.fn(async () => ({ ok: true as const })), renameModel: Mock = vi.fn(async () => ({ ok: true as const }))) {
   return {
-    actions: { saveModel },
+    actions: { saveModel, renameModel },
     state: { busy: false }
   } as unknown as AdminProvidersController;
 }
 
 describe("AdminProviderModelSheet", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("defers saved image catalog and endpoint discovery until the picker is opened", async () => {
+    const loadModels = vi.spyOn(providerApi, "discoverAdminImageModels").mockResolvedValue({ ok: true, data: [] });
+    const loadEndpoints = vi.spyOn(providerApi, "discoverAdminImageEndpoints").mockResolvedValue({ ok: true, data: [] });
+    const connection = workingConnection();
+    connection.family = "openrouter";
+    const configuration = imageModelConfiguration("vendor/image", { profile: "openrouter" });
+    const model = fixtureModel({ connectionId: connection.id, displayName: "Image model", id: "image-model",
+      modelClass: "image", draftConfig: configuration, activeConfig: configuration });
+    const renameModel = vi.fn(async () => ({ ok: true as const }));
+    render(<AdminProviderModelSheet connection={{ ...connection, models: [model] }} model={model}
+      controller={controller(vi.fn(), renameModel)} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    const sheet = screen.getByRole("dialog", { name: "Edit model" });
+    fireEvent.change(within(sheet).getByLabelText("Display name"), { target: { value: "Renamed image" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(renameModel).toHaveBeenCalledOnce());
+    expect(loadModels).not.toHaveBeenCalled();
+    expect(loadEndpoints).not.toHaveBeenCalled();
+    const picker = within(sheet).getByRole("button", { name: "Image model" });
+    await waitFor(() => expect(picker).toBeEnabled());
+    fireEvent.click(picker);
+    await waitFor(() => expect(loadModels).toHaveBeenCalledOnce());
+    expect(loadEndpoints).toHaveBeenCalledOnce();
+  });
+
+  it.each((["openai", "openai_compatible", "openrouter"] as const).flatMap((family) => [
+    { family, workingKey: true }, { family, workingKey: false }
+  ]))("renames a disabled $family model (key: $workingKey) without discovery or checks and keeps its frozen guard", async ({ family, workingKey }) => {
+    const connection = workingConnection();
+    connection.family = family;
+    if (!workingKey) { connection.credentials = []; connection.defaultCredentialId = null; }
+    const model = { ...connection.models[0]!, enabled: false };
+    connection.models[0] = model;
+    const renameModel = vi.fn(async () => ({ ok: true as const }));
+    const saveModel = vi.fn();
+    const session = discovery();
+    const modelLoad = vi.spyOn(session.models, "load");
+    const compatibleLoad = vi.spyOn(session.compatibleModels, "load");
+    const endpointLoad = vi.spyOn(session.endpoints, "load");
+    const onSaved = vi.fn();
+    const props = { connection, model, controller: controller(saveModel, renameModel), discovery: session, onClose: vi.fn(), onSaved, open: true };
+    const view = render(<AdminProviderModelSheet {...props} />);
+    const sheet = screen.getByRole("dialog", { name: "Edit model" });
+    fireEvent.change(within(sheet).getByLabelText("Display name"), { target: { value: "New label" } });
+    expect(within(sheet).getByRole("button", { name: "Save" })).toBeEnabled();
+    view.rerender(<AdminProviderModelSheet {...props} model={{ ...model, draftVersion: 2, displayName: "Concurrent name" }} />);
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+    expect(renameModel).toHaveBeenCalledWith(connection.id, model.id, {
+      displayName: "New label", expectedActiveVersion: model.activeVersion, expectedDisplayName: model.displayName,
+      expectedDraftVersion: model.draftVersion, expectedUpdatedAt: model.updatedAt
+    });
+    expect(saveModel).not.toHaveBeenCalled();
+    expect(modelLoad).not.toHaveBeenCalled();
+    expect(compatibleLoad).not.toHaveBeenCalled();
+    expect(endpointLoad).not.toHaveBeenCalled();
+  });
+
+  it("keeps discard protection for an unsaved rename and uses Test & Save after any configuration change", () => {
+    const connection = workingConnection();
+    const onClose = vi.fn();
+    render(<AdminProviderModelSheet connection={connection} model={connection.models[0]!} controller={controller()} discovery={discovery()} onClose={onClose} onSaved={vi.fn()} open />);
+    const sheet = screen.getByRole("dialog", { name: "Edit model" });
+    fireEvent.change(within(sheet).getByLabelText("Display name"), { target: { value: "New label" } });
+    expect(within(sheet).getByRole("button", { name: "Save" })).toBeEnabled();
+    fireEvent.change(within(sheet).getByLabelText("Response timeout (seconds)"), { target: { value: "120" } });
+    expect(within(sheet).getByRole("button", { name: "Test & Save" })).toBeEnabled();
+    fireEvent.change(within(sheet).getByLabelText("Response timeout (seconds)"), { target: { value: "" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByTestId("provider-model-discard")).toBeVisible();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it("keeps a new model draft when its last key is revoked and blocks even form submission", async () => {
     const connection = workingConnection();
     const saveModel = vi.fn(async () => ({ ok: true as const }));
@@ -120,7 +196,8 @@ describe("AdminProviderModelSheet", () => {
     fireEvent.click(within(sheet).getByRole("button", { name: "Stop checking" }));
     expect(await within(sheet).findByRole("alert")).toHaveTextContent("Saved results are kept");
     fireEvent.click(within(sheet).getByRole("button", { name: "View model results" }));
-    expect(onSaved).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("provider-model-discard")).toBeVisible();
+    expect(onSaved).not.toHaveBeenCalled();
     expect(saveModel).toHaveBeenCalledOnce();
   });
   it("applies JSON locally, preserves unrelated edits and retains the complete draft when Test & Save is rejected", async () => {
@@ -311,7 +388,10 @@ describe("AdminProviderModelSheet", () => {
         upstreamModelId: "gpt-5.6-terra"
       }),
       displayName: "GPT-5.6 Terra",
-      expectedDraftVersion: 1
+      expectedActiveVersion: 1,
+      expectedDisplayName: model.displayName,
+      expectedDraftVersion: 1,
+      expectedUpdatedAt: model.updatedAt
     }, expect.objectContaining({ onProgress: expect.any(Function), signal: expect.any(AbortSignal) }));
 
     fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));

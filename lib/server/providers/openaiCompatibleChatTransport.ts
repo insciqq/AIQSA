@@ -5,7 +5,7 @@ import {
   withTimeoutSignal
 } from "./network";
 import { isOpenAIChatRecord } from "./openaiChatCompletions";
-import { providerResponseFailure } from "./responseFailure";
+import { openRouterRoutingFailureCode, openRouterRoutingFailureMessage, providerResponseFailure } from "./responseFailure";
 
 export type OpenAICompatibleChatClientRequestOptions = {
   signal?: AbortSignal;
@@ -97,7 +97,7 @@ async function throwHttpError(
     try {
       const parsed: unknown = JSON.parse(text);
       if (isOpenAIChatRecord(parsed)) {
-        const failure = providerResponseFailure("provider_response_failed", parsed);
+        const failure = providerResponseFailure("provider_response_failed", parsed, { httpStatus: response.status, providerName });
         failureCode = "code" in failure && typeof failure.code === "string" ? failure.code : undefined;
         unsupportedInput = "unsupportedInput" in failure && failure.unsupportedInput === true;
         if ("capabilityFailureReason" in failure && (failure.capabilityFailureReason === "refusal" || failure.capabilityFailureReason === "budget_exhausted")) capabilityFailureReason = failure.capabilityFailureReason;
@@ -109,7 +109,10 @@ async function throwHttpError(
     }
   }
 
-  throw Object.assign(new Error(providerHttpErrorMessage(providerName, response.status)),
+  const routingCode = openRouterRoutingFailureCode({ code: failureCode });
+  throw Object.assign(new Error(routingCode
+    ? openRouterRoutingFailureMessage(routingCode) : providerHttpErrorMessage(providerName, response.status)),
+    { httpStatus: response.status },
     failureCode && response.status !== 401 && response.status !== 403
       ? { code: failureCode, ...(unsupportedInput ? { unsupportedInput: true } : {}), ...(capabilityFailureReason ? { capabilityFailureReason } : {}) } : {});
 }

@@ -1,5 +1,5 @@
 import { ADMIN_PROVIDER_SETUP_STREAM_TYPE, type AdminProviderSetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
-import { readAdminProviderSetupResponse } from "./adminProviderSetupStream";
+import { adminProviderSetupFailureCode, readAdminProviderSetupResponse } from "./adminProviderSetupStream";
 import { isAdminProviderCheckRun } from "./adminProvidersApi";
 import {
   ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS,
@@ -242,8 +242,8 @@ async function request<T>(
     return data
       ? { data, ok: true }
       : { error: { code: "provider_quick_setup_response_invalid" }, ok: false };
-  } catch {
-    return { error: { code: "network_error" }, ok: false };
+  } catch (error) {
+    return { error: { code: adminProviderSetupFailureCode(error, init.signal) }, ok: false };
   }
 }
 
@@ -273,6 +273,11 @@ export function adminProviderQuickSetupErrorMessage(
 ): string {
   const messages: Record<string, string> = {
     forbidden: "Your account no longer has permission to manage providers.",
+    request_aborted: "Checking stopped. Saved results are kept.",
+    provider_setup_interrupted: "The setup response ended before completion. Review saved results before continuing.",
+    provider_setup_timeout: "The setup response stopped arriving. Review saved results before continuing.",
+    provider_setup_response_invalid: "The setup response was malformed. Review saved results before continuing.",
+    provider_setup_response_too_large: "The setup response exceeded its size limit. Review saved results before continuing.",
     network_error: "Could not reach the provider setup API. Try again.",
     provider_admin_action_failed: "The provider setup could not be completed. Review its saved results before continuing.",
     provider_configuration_invalid: "Review the name, endpoint and timeout, then try again.",

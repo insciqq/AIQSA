@@ -1,5 +1,6 @@
 import { declaredModelOutputTokenLimit } from "../providers/providerModelCapabilities";
 import { isProviderDeadlineExceededError } from "../providers/network";
+import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { sumTokenUsage } from "../../domain/usage";
@@ -34,6 +35,9 @@ export type McpSemanticRouterErrorCode =
   | "mcp_router_credential_unavailable"
   | "mcp_router_output_invalid"
   | "mcp_router_request_failed"
+  | "mcp_router_request_rejected"
+  | "mcp_router_gemini_invalid_request"
+  | "mcp_router_gemini_parameter_unknown"
   | "mcp_router_structured_output_unverified"
   | "mcp_router_system_model_absent"
   | "mcp_router_system_model_unavailable";
@@ -202,6 +206,18 @@ export function buildMcpRouterPrompt(input: Readonly<{
       } : {})
     })
   };
+}
+
+function geminiRequestFailure(error: unknown): McpSemanticRouterErrorCode | null {
+  if (!(error instanceof GeminiHttpError)) return null;
+  if (error.httpStatus === 401 || error.httpStatus === 403) return "mcp_router_credential_unavailable";
+  if (error.httpStatus !== 400) return null;
+  if (error.code === "invalid_request") return "mcp_router_gemini_invalid_request";
+  if (error.code === "parameter_unknown") return "mcp_router_gemini_parameter_unknown";
+  if (error.code === "malformed_tool_call" || error.code === "malformed_function_call") {
+    return "mcp_router_output_invalid";
+  }
+  return "mcp_router_request_rejected";
 }
 
 function candidates(
@@ -434,6 +450,8 @@ export function createMcpSemanticRouter(dependencies: Readonly<{
           usageAttribution: usageAttribution()
         };
       } catch (error) {
+        const requestFailure = resolution.role.modelConfiguration.adapterKind === "gemini_interactions_native"
+          ? geminiRequestFailure(error) : null;
         throw new McpSemanticRouterError(
           input.signal?.aborted ? "mcp_router_cancelled"
             : error instanceof McpSemanticRouterError ? error.code
@@ -442,8 +460,9 @@ export function createMcpSemanticRouter(dependencies: Readonly<{
               ? "mcp_router_output_limit"
             : error instanceof Error && ["credential_revoked", "provider_credential_missing"].includes(error.message)
               ? "mcp_router_credential_unavailable"
-            : error instanceof Error && ["structured_output_provider_incomplete", "structured_output_invalid", "structured_output_response_invalid"].includes(error.message)
-              ? "mcp_router_output_invalid" : "mcp_router_request_failed",
+            : requestFailure ?? (
+              error instanceof Error && ["structured_output_provider_incomplete", "structured_output_invalid", "structured_output_response_invalid"].includes(error.message)
+              ? "mcp_router_output_invalid" : "mcp_router_request_failed"),
           usageAttribution()
         );
       }

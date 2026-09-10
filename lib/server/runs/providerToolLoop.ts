@@ -206,6 +206,7 @@ export async function runProviderToolLoop(
       // Request/context preparation cannot restore tool authority after its
       // accepted limit. Keep declarations and signed result context intact.
       const roundRequest: ProviderRunRequest = toolChoice === "none" ? { ...preparedRound, toolChoice } : preparedRound;
+      const advertisedToolNames = new Set(roundRequest.tools?.map((tool) => tool.name));
       await input.beforeProviderRound?.({
         continuation: effectiveContinuation,
         request: roundRequest,
@@ -279,6 +280,19 @@ export async function runProviderToolLoop(
         };
       }
       if (calls.length === 0) return { final: result, status: "complete" as const };
+      // Validate the entire batch against this provider round before persisting
+      // or executing any call. Discovery can add authority only to a later
+      // request, even when a provider omits/ignores its optional parallel flag.
+      if (calls.some((call) => !advertisedToolNames.has(call.name))) {
+        return {
+          error: {
+            code: "unsupported_tool_call",
+            fatal: true,
+            message: "The model requested a tool that was not available in this step."
+          },
+          status: "error" as const
+        };
+      }
       return {
         calls,
         continuation: providerToolLoopContinuationAfterResult(
@@ -286,6 +300,7 @@ export async function runProviderToolLoop(
           effectiveContinuation,
           result
         ),
+        parallelToolCalls: roundRequest.parallelToolCalls === true,
         status: "tool_calls" as const
       };
     },

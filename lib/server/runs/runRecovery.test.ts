@@ -7224,7 +7224,7 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
-  it.each(["unexpected", "reported", "cancelled", "output_limit"] as const)(
+  it.each(["unexpected", "reported", "cancelled", "output_limit", "request_rejected"] as const)(
     "settles recovered discovery %s with safe errors and cumulative usage", async (outcome) => {
     const rawFailure = "PRIVATE_RECOVERY_ROUTER_FAILURE";
     const recoveryRegistry = registry();
@@ -7232,7 +7232,8 @@ describe("run recovery", () => {
       if (outcome === "unexpected") throw new Error(rawFailure);
       if (outcome === "cancelled") expect(recoveryRegistry.abort(runId)).toBe(true);
       throw new McpSemanticRouterError(
-        outcome === "cancelled" ? "mcp_router_cancelled" : outcome === "output_limit" ? "mcp_router_output_limit" : "mcp_router_request_failed",
+        outcome === "cancelled" ? "mcp_router_cancelled" : outcome === "output_limit" ? "mcp_router_output_limit"
+          : outcome === "request_rejected" ? "mcp_router_gemini_invalid_request" : "mcp_router_request_failed",
         { modelId: "router-model", provider: "openai", usage: { inputTokens: 12, outputTokens: 3, reasoningTokens: 0 } }
       );
     });
@@ -7309,7 +7310,8 @@ describe("run recovery", () => {
 
     if (outcome !== "cancelled") expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
       error: {
-        ...mcpAutoDiscoveryFailure(outcome === "output_limit" ? "mcp_router_output_limit" : "mcp_router_request_failed")
+        ...mcpAutoDiscoveryFailure(outcome === "output_limit" ? "mcp_router_output_limit"
+          : outcome === "request_rejected" ? "mcp_router_gemini_invalid_request" : "mcp_router_request_failed")
       }
     })]);
     expect(JSON.stringify(harness.state.recoveredErrors)).not.toContain(rawFailure);

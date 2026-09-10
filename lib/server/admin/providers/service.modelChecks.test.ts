@@ -208,6 +208,7 @@ function repository(overrides: Partial<AdminProviderRepository> = {}): AdminProv
     async loadDiscoveryCandidate() { return null; },
     async loadModelActivationCandidate() { return activationCandidate(); },
     async renameCredential() { return "updated"; },
+    async renameModelCas() { return "updated"; },
     async recordActiveRefreshFailureCas() { return "stored"; },
     async revokeCredentialVersion() { return "revoked"; },
     async revokeGroupCredential() { return "revoked"; },
