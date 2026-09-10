@@ -42,6 +42,7 @@ export type ToolLoopProviderRoundResult<Continuation, FinalValue> =
   | Readonly<{
       calls: readonly ToolLoopCall[];
       continuation: Continuation;
+      parallelToolCalls?: boolean;
       status: "tool_calls";
     }>
   | Readonly<{
@@ -628,7 +629,7 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
     const results = await settleToolBatch({
       calls,
       executeTool: input.executeTool,
-      maxConcurrency: input.budgets.maxConcurrency,
+      maxConcurrency: providerResult.parallelToolCalls === false ? 1 : input.budgets.maxConcurrency,
       parentSignal: input.signal,
       round: toolRound,
       timeoutMs: input.budgets.toolCallTimeoutMs

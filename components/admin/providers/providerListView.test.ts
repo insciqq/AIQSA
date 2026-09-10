@@ -11,6 +11,7 @@ import {
   providerListStatus,
   providerModelsSummary,
   providerSubtitle,
+  visibleProviderModels,
   visibleUsageTags
 } from "./providerListView";
 import {
@@ -27,6 +28,59 @@ const localTime = (iso: string) => new Intl.DateTimeFormat("en-US", {
   hour12: false,
   minute: "2-digit"
 }).format(new Date(iso));
+
+describe("initial provider model visibility", () => {
+  const models = ["Cohere Rerank 4 Pro", "Qwen3 Reranker 8B", "Voyage Rerank 2.5"].map((displayName, index) => fixtureModel({
+    connectionId: "initial", displayName, id: `preset-${index}`, activeConfig: null, activeVersion: 0, activatedAt: null,
+    modelClass: "reranker"
+  }));
+  const initial = () => fixtureConnection({ family: "openrouter", id: "initial", displayName: "Initial provider", models });
+
+  it.each(["openrouter", "gemini", "openai", "anthropic", "deepseek", "openai_compatible"] as const)(
+    "keeps uninitialized %s names and counts out of configured-model summaries", (family) => {
+      const connection = { ...initial(), family };
+      expect(visibleProviderModels(connection)).toEqual([]);
+      expect(providerModelsSummary(connection)).toBe("No models");
+      expect(providerSubtitle(connection, new Map())).toContain("No models yet");
+      expect(providerHeaderStatus(connection, NOW)).toBe("No keys yet · No models on");
+      if (family === "openai_compatible") expect(providerSubtitle({ ...connection, enabled: false }, new Map())).toMatch(/ · 0 models$/u);
+    }
+  );
+
+  it("keeps an unsaved or rejected draft key from revealing presets", () => {
+    const connection = { ...initial(), credentials: [fixtureCredential({ id: "draft", label: "Draft", activeVersion: null,
+      activatedAt: null, draftSecretConfigured: true })] };
+    expect(visibleProviderModels(connection)).toEqual([]);
+    expect(providerModelsSummary(connection)).toBe("No models");
+    expect(providerHeaderStatus(connection, NOW)).toContain("No models on");
+  });
+
+  it.each(["accepted", "disabled", "revoked"])("reveals presets after key activation and keeps that boundary for a later %s key", (state) => {
+    const credential = fixtureCredential({ id: "key", label: "Main", enabled: state !== "disabled" });
+    if (state === "revoked") credential.activeVersion!.revokedAt = credential.updatedAt;
+    const connection = { ...initial(), credentials: [credential] };
+    expect(visibleProviderModels(connection).map(({ id }) => id)).toEqual(models.map(({ id }) => id));
+    expect(providerModelsSummary(connection)).toBe("3 on");
+    expect(providerSubtitle(connection, new Map())).toBe(models.map(({ displayName }) => displayName).join(", "));
+  });
+
+  it("keeps configured models after the last key is removed, while hiding untouched presets", () => {
+    const configured = fixtureModel({ connectionId: "initial", displayName: "Configured model", id: "configured", enabled: false });
+    const connection = { ...initial(), models: [...models, configured] };
+    expect(visibleProviderModels(connection)).toEqual([configured]);
+    expect(providerModelsSummary(connection)).toBe("1 off");
+  });
+
+  it("preserves explicit no-auth setup and does not use an uncommitted no-auth draft over the active settings", () => {
+    const connection = { ...initial(), family: "openai_compatible" as const };
+    connection.draftConfig = { ...connection.draftConfig, authenticationMode: "none" };
+    expect(visibleProviderModels(connection)).toEqual([]);
+    connection.activeConfig = null;
+    expect(visibleProviderModels(connection)).toEqual(models);
+    connection.activeConfig = connection.draftConfig;
+    expect(providerModelsSummary(connection)).toBe("3 on");
+  });
+});
 
 describe("providerListStatus", () => {
   it("reads Working when the connection is on and every resolved key is live", () => {

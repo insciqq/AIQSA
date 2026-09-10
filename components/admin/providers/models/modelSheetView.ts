@@ -8,7 +8,8 @@ import type {
   AdminProviderModel,
   AdminProviderModelCapabilities,
   AdminProviderModelClass,
-  AdminProviderModelConfiguration
+  AdminProviderModelConfiguration,
+  AdminProviderModelEditGuard
 } from "@/lib/contracts/adminProviders";
 import {
   ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
@@ -40,10 +41,9 @@ export type ModelForm = Readonly<{
   upstreamModelId: string;
 }>;
 
-export type ModelFormBody = Readonly<{
+export type ModelFormBody = Partial<AdminProviderModelEditGuard> & Readonly<{
   configuration: AdminProviderModelConfiguration;
   displayName: string;
-  expectedDraftVersion?: number;
 }>;
 
 export type ModelFormResult =
@@ -151,6 +151,20 @@ export function modelFormsEqual(left: ModelForm, right: ModelForm): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+export function modelNameOnlyChanged(form: ModelForm, baseline: ModelForm): boolean {
+  return form.displayName !== baseline.displayName &&
+    modelFormsEqual({ ...form, displayName: baseline.displayName }, baseline);
+}
+
+export function modelEditGuard(model: Pick<AdminProviderModel, "activeVersion" | "displayName" | "draftVersion" | "updatedAt">): AdminProviderModelEditGuard {
+  return {
+    expectedActiveVersion: model.activeVersion,
+    expectedDisplayName: model.displayName,
+    expectedDraftVersion: model.draftVersion,
+    expectedUpdatedAt: model.updatedAt
+  };
+}
+
 /** Capabilities OpenRouter reports for a catalog model, in AIQSA's terms. */
 export function capabilitiesFromOpenRouter(model: AdminOpenRouterDiscoveredModel): AdminProviderModelCapabilities {
   const parameters = new Set(model.supportedParameters);
@@ -252,7 +266,7 @@ export function moveProviderTag(tags: readonly string[], index: number, directio
 export function modelFormBody(
   form: ModelForm,
   connection: Pick<AdminProviderConnection, "family">,
-  editing: Pick<AdminProviderModel, "draftConfig" | "draftVersion"> | null
+  editing: Pick<AdminProviderModel, "activeVersion" | "displayName" | "draftConfig" | "draftVersion" | "updatedAt"> | null
 ): ModelFormResult {
   if (!form.upstreamModelId.trim()) {
     return { error: "Choose a model first.", field: "upstreamModelId", ok: false };
@@ -315,7 +329,7 @@ export function modelFormBody(
     body: {
       configuration,
       displayName: form.displayName.trim() || form.upstreamModelId.trim(),
-      ...(editing ? { expectedDraftVersion: editing.draftVersion } : {})
+      ...(editing ? modelEditGuard(editing) : {})
     },
     ok: true
   };

@@ -1,3 +1,4 @@
+import { decodeAnswerSoundPreferences, DEFAULT_ANSWER_SOUND, isAnswerSoundId } from "../../../lib/contracts/answerSound";
 import type { Page, Route } from "@playwright/test";
 import {
   decodeOptionalChatDefaults,
@@ -76,6 +77,7 @@ export async function installMatrixCatalogFixture(
     sendWithEnter: fixtureDefaults.sendWithEnter
   }) ?? INSTALLATION_CHAT_DEFAULTS;
   const settings: UserSettingsWire = {
+    ...(decodeAnswerSoundPreferences(fixtureDefaults) ?? DEFAULT_ANSWER_SOUND),
     defaultControlValues: structuredClone(fixtureCatalog.defaults.controlValues),
     defaultKnowledgePlan: chatDefaults.knowledgePlan,
     defaultMcpMode: chatDefaults.mcpMode,
@@ -99,6 +101,8 @@ export async function installMatrixCatalogFixture(
           ...fixtureCatalog,
           defaults: {
             ...fixtureCatalog.defaults,
+            answerSoundEnabled: settings.answerSoundEnabled,
+            answerSoundId: settings.answerSoundId,
             controlValues: settings.defaultControlValues,
             hasPersonalModelDefault: settings.hasPersonalModelDefault,
             modelId: effectiveModelDefault?.modelId ?? "",
@@ -175,6 +179,12 @@ export async function installMatrixCatalogFixture(
         settings.defaultSearchPlan = body.defaultSearchPlan as typeof settings.defaultSearchPlan;
         settings.searchPreferenceSource = "personal";
       }
+    }
+    if (typeof body.answerSoundEnabled === "boolean") {
+      settings.answerSoundEnabled = body.answerSoundEnabled;
+    }
+    if (isAnswerSoundId(body.answerSoundId)) {
+      settings.answerSoundId = body.answerSoundId;
     }
     if (typeof body.showCitations === "boolean") {
       settings.showCitations = body.showCitations;

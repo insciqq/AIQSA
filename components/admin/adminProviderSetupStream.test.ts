@@ -30,7 +30,7 @@ describe("readAdminProviderSetupResponse", () => {
     source.enqueue(encode({ type: "heartbeat" }));
     const terminal = encode({ type: "result", status: 201, data: { displayName: "Модель" } });
     for (const byte of terminal) source.enqueue(new Uint8Array([byte]));
-    await expect(reading).resolves.toEqual({ ok: true, value: { displayName: "Модель" } });
+    await expect(reading).resolves.toEqual({ ok: true, status: 201, value: { displayName: "Модель" } });
     expect(received).toHaveBeenCalledTimes(5);
     expect(cancel).toHaveBeenCalledOnce();
     expect(body.locked).toBe(false);
@@ -41,7 +41,7 @@ describe("readAdminProviderSetupResponse", () => {
     source.enqueue(encode(progress(2)));
     source.enqueue(encode({ type: "result", status: 422, data: { error: "provider_custom_setup_test_failed" } }));
     await expect(readAdminProviderSetupResponse(response)).resolves.toEqual({
-      ok: false, value: { error: "provider_custom_setup_test_failed" }
+      ok: false, status: 422, value: { error: "provider_custom_setup_test_failed" }
     });
   });
 
@@ -84,7 +84,7 @@ describe("readAdminProviderSetupResponse", () => {
   it("rejects an oversized individual frame and releases the stream", async () => {
     const { cancel, response, source } = streamResponse();
     source.enqueue(encoder.encode("x".repeat(65_537)));
-    await expect(readAdminProviderSetupResponse(response)).rejects.toThrow("provider_setup_response_invalid");
+    await expect(readAdminProviderSetupResponse(response)).rejects.toThrow("provider_setup_response_too_large");
     expect(cancel).toHaveBeenCalledOnce();
   });
 
@@ -92,7 +92,7 @@ describe("readAdminProviderSetupResponse", () => {
     const { cancel, response, source } = streamResponse();
     const frame = encode({ type: "heartbeat" });
     for (let sent = 0; sent <= 1_048_576; sent += frame.length) source.enqueue(frame);
-    await expect(readAdminProviderSetupResponse(response)).rejects.toThrow("provider_setup_response_invalid");
+    await expect(readAdminProviderSetupResponse(response)).rejects.toThrow("provider_setup_response_too_large");
     expect(cancel).toHaveBeenCalledOnce();
   });
 
@@ -102,7 +102,7 @@ describe("readAdminProviderSetupResponse", () => {
     source.enqueue(encoder.encode(`${JSON.stringify({ type: "heartbeat" })}\n`.repeat(4_000)));
     source.enqueue(encode(progress(4)));
     source.enqueue(encode({ type: "result", status: 200, data: {} }));
-    await expect(readAdminProviderSetupResponse(response, received)).resolves.toEqual({ ok: true, value: {} });
+    await expect(readAdminProviderSetupResponse(response, received)).resolves.toEqual({ ok: true, status: 200, value: {} });
     expect(received).toHaveBeenCalledExactlyOnceWith({ phase: "checking", completed: 4, total: 4 });
   });
 
@@ -122,7 +122,7 @@ describe("readAdminProviderSetupResponse", () => {
     try {
       const { body, cancel, response, source } = streamResponse();
       const reading = readAdminProviderSetupResponse(response);
-      const rejected = expect(reading).rejects.toThrow("provider_setup_interrupted");
+      const rejected = expect(reading).rejects.toThrow("provider_setup_timeout");
       await vi.advanceTimersByTimeAsync(44_999);
       expect(cancel).not.toHaveBeenCalled();
       source.enqueue(encode({ type: "heartbeat" }));
@@ -139,8 +139,8 @@ describe("readAdminProviderSetupResponse", () => {
 
   it("continues decoding ordinary JSON success and HTTP failures", async () => {
     const received = vi.fn();
-    await expect(readAdminProviderSetupResponse(Response.json({ result: true }), received)).resolves.toEqual({ ok: true, value: { result: true } });
-    await expect(readAdminProviderSetupResponse(Response.json({ error: "forbidden" }, { status: 403 }), received)).resolves.toEqual({ ok: false, value: { error: "forbidden" } });
+    await expect(readAdminProviderSetupResponse(Response.json({ result: true }), received)).resolves.toEqual({ ok: true, status: 200, value: { result: true } });
+    await expect(readAdminProviderSetupResponse(Response.json({ error: "forbidden" }, { status: 403 }), received)).resolves.toEqual({ ok: false, status: 403, value: { error: "forbidden" } });
     expect(received).not.toHaveBeenCalled();
   });
 });

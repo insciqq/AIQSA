@@ -4,6 +4,7 @@ import type {
   AdminProviderConnection,
   AdminProviderDeleteResult,
   AdminProviderFamily,
+  AdminProviderModelEditGuard,
   AdminProviderTestEvidence,
   AdminProviderUnassignedPolicy
 } from "../../../contracts/adminProviders";
@@ -348,6 +349,13 @@ export type AdminProviderRepository = Readonly<{
     credentialId: string;
     label: string;
   }): Promise<"not_found" | "updated">;
+  renameModelCas(input: Omit<AdminProviderModelEditGuard, "expectedUpdatedAt"> & {
+    connectionId: string;
+    displayName: string;
+    expectedUpdatedAt: Date;
+    modelId: string;
+    now: Date;
+  }): Promise<ProviderDraftMutationResult>;
   revokeCredentialVersion(input: {
     clearSecret: boolean;
     credentialId: string;
@@ -375,10 +383,10 @@ export type AdminProviderRepository = Readonly<{
     evidence: AdminProviderTestEvidence;
     status: AdminProviderCheckStatus;
   }): Promise<"stale" | "stored">;
-  updateModelDraft(input: {
+  updateModelDraft(input: Omit<AdminProviderModelEditGuard, "expectedUpdatedAt"> & {
     configuration: ProviderModelConfiguration;
     displayName: string;
-    expectedDraftVersion: number;
+    expectedUpdatedAt: Date;
     family: AdminProviderFamily;
     modelId: string;
   }): Promise<ProviderDraftMutationResult | "family_mismatch" | "model_class_mismatch">;

@@ -17,6 +17,22 @@ export const MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE =
   "Automatic tool discovery is unavailable." as const;
 
 const mcpAutoDiscoveryFailures = {
+  mcp_router_gemini_invalid_request: {
+    code: "mcp_auto_discovery_request_rejected",
+    message: "The System Model rejected automatic tool selection (Gemini HTTP 400: invalid_request). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection."
+  },
+  mcp_router_gemini_parameter_unknown: {
+    code: "mcp_auto_discovery_request_rejected",
+    message: "The System Model rejected automatic tool selection (Gemini HTTP 400: parameter_unknown). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection."
+  },
+  mcp_router_request_rejected: {
+    code: "mcp_auto_discovery_request_rejected",
+    message: "The System Model rejected automatic tool selection (Gemini HTTP 400). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection."
+  },
+  mcp_router_request_failed: {
+    code: "mcp_auto_discovery_unavailable",
+    message: "The System Model could not complete automatic tool selection. Retry in Auto, or use Load all to bypass automatic selection."
+  },
   mcp_router_output_limit: {
     code: "mcp_auto_discovery_output_limit",
     message: "Automatic tool discovery reached its output-token limit before completing the JSON selection. Retry in Auto, use Load all, or ask an administrator to review MCP Auto output tokens."
@@ -66,6 +82,10 @@ export function mcpAutoDiscoveryFailure(reason: string): Readonly<{ code: string
 export function isMcpAutoDiscoveryFailureCode(code: string | null | undefined): boolean {
   return code === MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE ||
     Object.values(mcpAutoDiscoveryFailures).some((failure) => failure.code === code);
+}
+
+export function canRetryMcpAutoDiscoveryFailure(code: string | null | undefined): boolean {
+  return isMcpAutoDiscoveryFailureCode(code) && code !== "mcp_auto_discovery_request_rejected";
 }
 
 export function mcpAutoDiscoveryFailureForMessage(message: string | null | undefined) {

@@ -19,13 +19,49 @@ const blockedMessage = /\b(?:api[ -]?key|authentication|permission|access denied
 
 const accessFailureMessage = /\b(?:invalid|incorrect|expired|revoked) (?:api[ -]?key|credentials?)\b|\b(?:unauthorized|forbidden|permission denied|access denied|insufficient quota|quota exceeded|quota exhausted|insufficient credits|insufficient balance|unknown model|invalid model)\b/iu;
 
+const openRouterRoutingMessages = {
+  openrouter_required_parameters_unavailable:
+    "OpenRouter has no endpoint that supports the required request parameters. Ask an administrator to review the selected model's routing and tool support before retrying.",
+  openrouter_routing_unavailable:
+    "OpenRouter has no endpoint matching the request's routing requirements. Ask an administrator to review the selected model's routing settings before retrying."
+} as const;
+
+export function openRouterRoutingFailureCode(value: unknown): keyof typeof openRouterRoutingMessages | null {
+  const code = typeof value === "object" && value !== null && "code" in value ? value.code : null;
+  return typeof code === "string" && Object.hasOwn(openRouterRoutingMessages, code)
+    ? code as keyof typeof openRouterRoutingMessages : null;
+}
+
+export function openRouterRoutingFailureMessage(code: keyof typeof openRouterRoutingMessages): string {
+  return openRouterRoutingMessages[code];
+}
+
 /** Retains only a reviewed failure category, never the upstream message or body. */
-export function providerResponseFailure(message: string, response: Readonly<Record<string, unknown>>): Error {
+export function providerResponseFailure(
+  message: string,
+  response: Readonly<Record<string, unknown>>,
+  context?: Readonly<{ httpStatus: number; providerName: string }>
+): Error {
   const detail = typeof response.error === "object" && response.error !== null
     ? response.error as Record<string, unknown> : null;
   const incomplete = typeof response.incomplete_details === "object" && response.incomplete_details !== null
     ? response.incomplete_details as Record<string, unknown> : null;
   const messageText = typeof detail?.message === "string" ? detail.message.slice(0, 2_048) : "";
+  // OpenRouter's routing 404 is distinct from a missing model. Only known
+  // no-eligible-endpoint messages and a closed routing-step vocabulary qualify;
+  // raw messages, funnels and private metadata never leave this decoder.
+  if (context?.providerName === "OpenRouter" && context.httpStatus === 404 &&
+    !(typeof detail?.code === "string" && blockedCodes.has(detail.code)) &&
+    !accessFailureMessage.test(messageText) &&
+    /^No endpoints found that (?:support |match (?:your|the requested) (?:data policy|privacy|routing))/iu.test(messageText)) {
+    const metadata = typeof detail?.metadata === "object" && detail.metadata !== null
+      ? detail.metadata as Record<string, unknown> : null;
+    const step = metadata?.failed_routing_step;
+    const parameters = /^No endpoints found that support (?:the provided|(?:all )?(?:the )?requested) parameters\b/iu.test(messageText) ||
+      step === "parameters" || step === "required_parameters";
+    const code = parameters ? "openrouter_required_parameters_unavailable" : "openrouter_routing_unavailable";
+    return Object.assign(new Error(openRouterRoutingFailureMessage(code)), { code });
+  }
   const hasUnsupportedMessage = unsupportedMessage.test(messageText);
   const explicitlyBlocked = typeof detail?.code === "string" && blockedCodes.has(detail.code) ||
     incomplete?.reason === "content_filter" || accessFailureMessage.test(messageText) ||

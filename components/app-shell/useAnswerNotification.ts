@@ -1,6 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
+
+import { isAnswerSoundId, type AnswerSoundId, type AnswerSoundPreferences } from "@/lib/contracts/answerSound";
+import { prepareAnswerSound, startAnswerSound } from "./answerSound";
 
 const ALERT_FAVICON_HREF = "/favicon-alert.svg";
 const DEFAULT_FAVICON_HREF = "/favicon.svg";
@@ -18,11 +21,16 @@ function ensureFaviconLink() {
   return link;
 }
 
-export function useAnswerNotification() {
-  const [notificationSoundEnabled, setNotificationSoundEnabled] = useState(true);
-  const notificationSoundEnabledRef = useRef(notificationSoundEnabled);
+export function useAnswerNotification({ accountId, readPreferences }: {
+  accountId: string;
+  readPreferences(): AnswerSoundPreferences | null;
+}) {
+  const scope = useMemo(() => Symbol(accountId), [accountId]);
+  const currentRef = useRef<{ scope: symbol; readPreferences(): AnswerSoundPreferences | null } | null>(null);
   const answerAudioRef = useRef<AudioContext | null>(null);
   const faviconPulseTimerRef = useRef<number | null>(null);
+  const playbackRef = useRef<(() => void) | null>(null);
+  const playbackSequenceRef = useRef(0);
 
   const stopReadyFaviconAlert = useCallback(() => {
     if (typeof window === "undefined" || typeof document === "undefined") {
@@ -39,21 +47,7 @@ export function useAnswerNotification() {
     }
   }, []);
 
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return undefined;
-    }
-
-    const timer = window.setTimeout(() => {
-      const enabled = window.localStorage.getItem("aiqsa.answerSound") !== "off";
-      notificationSoundEnabledRef.current = enabled;
-      setNotificationSoundEnabled(enabled);
-    }, 0);
-
-    return () => window.clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
+  useLayoutEffect(() => {
     function handleVisible() {
       if (document.visibilityState === "visible") {
         stopReadyFaviconAlert();
@@ -64,6 +58,10 @@ export function useAnswerNotification() {
     window.addEventListener("focus", stopReadyFaviconAlert);
 
     return () => {
+      currentRef.current = null;
+      playbackSequenceRef.current += 1;
+      playbackRef.current?.();
+      playbackRef.current = null;
       stopReadyFaviconAlert();
       const audioContext = answerAudioRef.current;
       answerAudioRef.current = null;
@@ -73,52 +71,75 @@ export function useAnswerNotification() {
       document.removeEventListener("visibilitychange", handleVisible);
       window.removeEventListener("focus", stopReadyFaviconAlert);
     };
-  }, [stopReadyFaviconAlert]);
+  }, [scope, stopReadyFaviconAlert]);
 
-  async function answerAudioContext() {
-    if (!notificationSoundEnabledRef.current || typeof window === "undefined") {
-      return null;
-    }
+  useLayoutEffect(() => {
+    currentRef.current = { scope, readPreferences };
+  });
 
-    const AudioContextConstructor =
-      window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextConstructor) {
-      return null;
-    }
+  function currentPreferences() {
+    const current = currentRef.current;
+    return current?.scope === scope ? current.readPreferences() : null;
+  }
 
-    const context = answerAudioRef.current ?? new AudioContextConstructor();
+  async function answerAudioContext(preview = false) {
+    const preferences = currentPreferences();
+    if (!preferences || (!preview && !preferences.answerSoundEnabled) || typeof window === "undefined") return null;
+    const Constructor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Constructor) return null;
+    const context = answerAudioRef.current ?? new Constructor();
     answerAudioRef.current = context;
-    if (context.state === "suspended") {
-      await context.resume().catch(() => undefined);
-    }
-
-    return context;
+    if (context.state === "suspended") await context.resume();
+    return context.state === "running" && answerAudioRef.current === context ? context : null;
   }
 
   async function primeAnswerSound() {
     await answerAudioContext().catch(() => null);
   }
 
-  async function playAnswerSound() {
-    const context = await answerAudioContext().catch(() => null);
-    if (!context) {
+  async function playSound(previewId?: AnswerSoundId) {
+    const sequence = ++playbackSequenceRef.current;
+    playbackRef.current?.();
+    const pending = new AbortController();
+    const cancelPending = () => pending.abort();
+    playbackRef.current = cancelPending;
+    try {
+      const context = await answerAudioContext(previewId !== undefined);
+      function selectedSound() {
+        const preferences = currentPreferences();
+        if (!context || context !== answerAudioRef.current || context.state !== "running" ||
+          !preferences || pending.signal.aborted || sequence !== playbackSequenceRef.current ||
+          (previewId === undefined && !preferences.answerSoundEnabled)) return null;
+        return previewId ?? preferences.answerSoundId;
+      }
+      let sound = selectedSound();
+      // Resume and sample decoding can both wait. Recheck the current account,
+      // mute and choice immediately before scheduling any audible node.
+      while (context && sound !== null) {
+        const timer = window.setTimeout(cancelPending, 5000);
+        let buffer: AudioBuffer | null;
+        try {
+          buffer = await prepareAnswerSound(context, sound, pending.signal);
+        } finally {
+          window.clearTimeout(timer);
+        }
+        const latest = selectedSound();
+        if (latest !== sound) { sound = latest; continue; }
+        playbackRef.current = startAnswerSound(context, sound, () => {
+          if (sequence === playbackSequenceRef.current) playbackRef.current = null;
+        }, buffer);
+        return true;
+      }
       return false;
+    } catch {
+      return false;
+    } finally {
+      if (playbackRef.current === cancelPending) playbackRef.current = null;
     }
+  }
 
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(880, context.currentTime);
-    oscillator.frequency.exponentialRampToValueAtTime(1320, context.currentTime + 0.16);
-    gain.gain.setValueAtTime(0.0001, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.14, context.currentTime + 0.03);
-    gain.gain.exponentialRampToValueAtTime(0.04, context.currentTime + 0.2);
-    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.34);
-    oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.start();
-    oscillator.stop(context.currentTime + 0.36);
-    return true;
+  async function previewAnswerSound(sound: AnswerSoundId) {
+    return currentRef.current?.scope === scope && isAnswerSoundId(sound) && await playSound(sound);
   }
 
   function pulseReadyFavicon() {
@@ -148,28 +169,10 @@ export function useAnswerNotification() {
   }
 
   async function notifyAnswerReady() {
-    const sounded = await playAnswerSound();
-    if (sounded) {
-      pulseReadyFavicon();
-    }
+    if (currentRef.current?.scope !== scope) return;
+    pulseReadyFavicon();
+    await playSound();
   }
 
-  function toggleNotificationSound() {
-    setNotificationSoundEnabled((enabled) => {
-      const next = !enabled;
-      notificationSoundEnabledRef.current = next;
-      window.localStorage.setItem("aiqsa.answerSound", next ? "on" : "off");
-      if (next) {
-        void primeAnswerSound();
-      }
-      return next;
-    });
-  }
-
-  return {
-    notificationSoundEnabled,
-    notifyAnswerReady,
-    primeAnswerSound,
-    toggleNotificationSound
-  };
+  return { notifyAnswerReady, primeAnswerSound, previewAnswerSound };
 }

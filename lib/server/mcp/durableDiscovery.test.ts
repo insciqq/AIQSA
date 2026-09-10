@@ -7,6 +7,7 @@ import {
   McpAutoDiscoveryUnavailableError
 } from "./durableDiscovery";
 import { McpSemanticRouterError } from "./router";
+import { mcpAutoDiscoveryFailure } from "../../contracts/runs";
 import type {
   McpCapabilityCatalog,
   McpDiscoveryState,
@@ -116,6 +117,20 @@ function harness(activeCatalog: McpCapabilityCatalog = catalog) {
 }
 
 describe("durable MCP discovery", () => {
+  it.each(["mcp_router_gemini_invalid_request", "mcp_router_gemini_parameter_unknown", "mcp_router_request_rejected"] as const)(
+    "preserves %s safely without tool materialization, checkpoint or retry", async (reason) => {
+      const state = harness();
+      const route = vi.fn(async () => { throw new McpSemanticRouterError(reason); });
+      await expect(executeDurableMcpDiscovery({
+        activeDiscovery: state.discovery(), appendEpoch: state.appendEpoch, call: call("provider-rejected"),
+        materialize: state.materialize, modelRunToolCallId: "persisted-rejected", request, roundIndex: 0,
+        router: { route }, runId: "run-1", userId: "user-1"
+      })).rejects.toMatchObject({ ...mcpAutoDiscoveryFailure(reason), internalReason: reason });
+      expect(route).toHaveBeenCalledOnce();
+      expect(state.appendEpoch).not.toHaveBeenCalled();
+      expect(state.materialize).not.toHaveBeenCalled();
+    }
+  );
   it("routes every full batch goal once and replays the shared selection without charging again", async () => {
     const state = harness();
     const goals = ["a".repeat(400), "Find an unrelated calendar action"];
@@ -360,7 +375,7 @@ describe("durable MCP discovery", () => {
     })).rejects.toMatchObject({
       code: "mcp_auto_discovery_unavailable",
       internalReason: "mcp_router_request_failed",
-      message: "Automatic tool discovery is unavailable."
+      message: mcpAutoDiscoveryFailure("mcp_router_request_failed").message
     } satisfies Partial<McpAutoDiscoveryUnavailableError>);
   });
 

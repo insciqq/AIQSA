@@ -53,11 +53,24 @@ describe("useAdminModelChecks", () => {
     expect(actions.cancelModelChecks).toHaveBeenCalledWith("conn-openai", "run-1");
 
     rerender({ connection: withRun({ ...running, done: 2, failed: ["model-luna"], finishedAt: "2026-09-07T12:52:00.000Z", inFlight: [], state: "completed" }) });
-    expect(onNotice).toHaveBeenCalledWith("Checked 2 models · 1 model has unresolved checks — use Retry.");
+    expect(onNotice).toHaveBeenCalledWith("Checked 2 models. Some work is unfinished; review provider setup.");
     await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
     expect(actions.refreshQuietly).toHaveBeenCalledTimes(2);
     expect(onNotice).toHaveBeenCalledTimes(1);
     expect(api.getCheckRun).not.toHaveBeenCalled();
+  });
+
+  it("does not turn a saved optional limitation into a failure notice", () => {
+    const { controller: value } = controller();
+    const onNotice = vi.fn();
+    const running = fixtureCheckRun({ credentialId: "cred-primary", id: "run-optional", total: 1 });
+    const { rerender } = renderHook(
+      ({ connection }) => useAdminModelChecks({ connection, controller: value, onNotice }),
+      { initialProps: { connection: withRun(running) } }
+    );
+    rerender({ connection: withRun({ ...running, done: 1, state: "completed", failed: ["model-terra"],
+      results: [{ providerModelId: "model-terra", state: "partial", checks: { modelAccess: "verified", directPdf: "incomplete" } }] }) });
+    expect(onNotice).toHaveBeenCalledExactlyOnceWith("All 1 model checked.");
   });
 
   it("recognises a run the server forgot as interrupted and restarts it with the same key", async () => {

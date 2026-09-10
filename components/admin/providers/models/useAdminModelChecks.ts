@@ -3,6 +3,7 @@
 import { getAdminProviderCheckRun } from "@/components/admin/adminProvidersApi";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import type { AdminProviderCheckRun, AdminProviderConnection } from "@/lib/contracts/adminProviders";
+import { providerSetupNeedsRecovery } from "../add/AdminProviderSetupResults";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const POLL_INTERVAL_MS = 1_200;
@@ -68,8 +69,8 @@ export function useAdminModelChecks(input: Readonly<{
           ? "Models checked. Some automatic setup steps need a retry."
           : run.skipped?.length
           ? `${run.skipped.length} models changed during checking. Run Check models again.`
-          : run.failed.length
-          ? `Checked ${run.total} ${run.total === 1 ? "model" : "models"} · ${run.failed.length} ${run.failed.length === 1 ? "model has" : "models have"} unresolved checks — use Retry.`
+          : providerSetupNeedsRecovery(run)
+          ? `Checked ${run.done} ${run.done === 1 ? "model" : "models"}. Some work is unfinished; review provider setup.`
           : `All ${run.total} ${run.total === 1 ? "model" : "models"} checked.`);
       } else if (run.state === "cancelled") {
         noticeRef.current("Checking stopped.");

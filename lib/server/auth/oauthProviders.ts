@@ -27,6 +27,7 @@ export type OAuthAuthorizationInput = {
   provider: OAuthProviderId;
   redirectUri: string;
   state: string;
+  switchAccount?: boolean;
 };
 
 export type OAuthIdentityProfile = {
@@ -200,6 +201,9 @@ export function buildOAuthAuthorizationUrl(input: OAuthAuthorizationInput): URL 
     scope: "login:info login:email",
     state: input.state
   }).toString();
+  if (input.switchAccount) {
+    url.searchParams.set("force_confirm", "yes");
+  }
   return url;
 }
 

@@ -1028,9 +1028,35 @@ export function createPrismaAdminProviderRepository(
           draftConfig: json(input.configuration),
           draftVersion: { increment: 1 }
         },
-        where: { draftVersion: input.expectedDraftVersion, id: input.modelId }
+        where: {
+          activeVersion: input.expectedActiveVersion,
+          displayName: input.expectedDisplayName,
+          draftVersion: input.expectedDraftVersion,
+          id: input.modelId,
+          updatedAt: input.expectedUpdatedAt
+        }
       });
       return updated.count === 1 ? "updated" : "stale";
+    },
+
+    async renameModelCas(input) {
+      const where = { connectionId: input.connectionId, id: input.modelId, connection: { family: { not: "fake" } } };
+      const updated = await prisma.providerModel.updateMany({
+        data: {
+          displayName: input.displayName,
+          // Advance metadata time even when two writes share a millisecond.
+          updatedAt: new Date(Math.max(input.now.getTime(), input.expectedUpdatedAt.getTime() + 1))
+        },
+        where: {
+          ...where,
+          activeVersion: input.expectedActiveVersion,
+          displayName: input.expectedDisplayName,
+          draftVersion: input.expectedDraftVersion,
+          updatedAt: input.expectedUpdatedAt
+        }
+      });
+      if (updated.count === 1) return "updated";
+      return await prisma.providerModel.findFirst({ where, select: { id: true } }) ? "stale" : "not_found";
     },
 
     async renameCredential(input) {

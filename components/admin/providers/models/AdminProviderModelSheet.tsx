@@ -1,6 +1,7 @@
 "use client";
 
 import { ImageModelFields } from "./ImageModelFields";
+import { reconcileModelForm } from "./modelSaveReconciliation";
 import { imageModelConfiguration } from "@/lib/domain/imageModels";
 import { inputClass } from "@/components/admin/adminPrimitives";
 import {
@@ -26,6 +27,8 @@ import {
   modelFormBody,
   modelFormFrom,
   modelFormsEqual,
+  modelEditGuard,
+  modelNameOnlyChanged,
   moveProviderTag,
   type ModelForm
 } from "@/components/admin/providers/models/modelSheetView";
@@ -38,7 +41,7 @@ import { ModelJsonDialog } from "@/components/admin/providers/models/ModelJsonDi
 import { AdminProviderSetupProgress } from "@/components/admin/providers/add/AdminProviderSetupProgress";
 import type { AdminProviderSetupProgress as SetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 import { providerFamilyLabel } from "@/components/admin/providers/providerListView";
-import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
+import type { AdminProviderModelOperationResult, AdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { UiV2Button, UiV2Icon, UiV2IconButton, UiV2Switch } from "@/components/ui-v2";
 import type {
@@ -97,6 +100,7 @@ function RoutingField({
   credentialId,
   disabled,
   discovery,
+  discoverOnMount,
   form,
   setForm
 }: Readonly<{
@@ -104,10 +108,12 @@ function RoutingField({
   credentialId: string | null;
   disabled: boolean;
   discovery: AdminOpenRouterDiscoverySession;
+  discoverOnMount: boolean;
   form: ModelForm;
   setForm(next: ModelForm): void;
 }>) {
   const [query, setQuery] = useState("");
+  const [requested, setRequested] = useState(discoverOnMount);
   const credential = connection.credentials.find(({ id }) => id === credentialId) ?? null;
   const identity = useMemo(
     () => openRouterEndpointDiscoveryIdentity(openRouterModelDiscoveryIdentity(connection, credential), form.upstreamModelId),
@@ -117,8 +123,8 @@ function RoutingField({
   const selectedMode = form.openRouterRoutingMode === "only_selected";
 
   useEffect(() => {
-    if (selectedMode && identity) void discovery.endpoints.load(identity);
-  }, [discovery.endpoints, identity, selectedMode]);
+    if (requested && selectedMode && identity) void discovery.endpoints.load(identity);
+  }, [discovery.endpoints, identity, requested, selectedMode]);
 
   const byTag = useMemo(() => new Map(endpoints.items.map((endpoint) => [endpoint.tag, endpoint])), [endpoints.items]);
   const normalized = query.trim().toLocaleLowerCase();
@@ -140,11 +146,11 @@ function RoutingField({
         className="sr-only"
         disabled={disabled}
         name="routing-mode"
-        onChange={() => setForm({
+        onChange={() => { setRequested(true); setForm({
           ...form,
           openRouterRoutingMode: mode,
           providerTags: mode === "automatic" ? [] : form.providerTags
-        })}
+        }); }}
         type="radio"
         value={mode}
       />
@@ -213,6 +219,7 @@ function RoutingField({
                     className={`${inputClass} h-9 min-h-0 pl-8 text-[13px]`}
                     disabled={disabled}
                     onChange={(event) => setQuery(event.currentTarget.value)}
+                    onFocus={() => setRequested(true)}
                     placeholder={`Add provider${suggestion ? ` · ${suggestion}…` : ""}`}
                     type="search"
                     value={query}
@@ -268,8 +275,12 @@ function SheetBody({
   onClose,
   onSaved
 }: AdminProviderModelSheetProps) {
-  const [form, setForm] = useState<ModelForm>(() => model ? modelFormFrom(model) : blankModelForm(connection));
-  const [baseline] = useState(form);
+  const [editing, setEditing] = useState(model);
+  const [form, setForm] = useState<ModelForm>(() => editing ? modelFormFrom(editing) : blankModelForm(connection));
+  const [baseline, setBaseline] = useState(form);
+  const [guardReady, setGuardReady] = useState(true);
+  const attemptRef = useRef(0);
+  const formRef = useRef(form);
   const [error, setError] = useState<string | null>(null);
   const [discarding, setDiscarding] = useState(false);
   const [jsonEditing, setJsonEditing] = useState(false);
@@ -285,7 +296,7 @@ function SheetBody({
   const errorId = useId();
   const hintsId = useId();
   const busy = controller.state.busy || saving;
-  const needsKeyForNewModel = model === null && providerNeedsKeyForModels(connection);
+  const needsKeyForNewModel = editing === null && providerNeedsKeyForModels(connection);
   const family = connection.family;
   const openRouter = family === "openrouter";
   const compatible = family === "openai_compatible";
@@ -313,19 +324,22 @@ function SheetBody({
   const selectedCompatibleModel = compatibleCatalog.items.find(({ id }) => id === form.upstreamModelId) ?? null;
   const hints = useMemo(() => openRouter || compatible ? [] : catalogHintsFor(family), [compatible, family, openRouter]);
   const dirty = !modelFormsEqual(form, baseline);
+  const nameOnly = editing !== null && modelNameOnlyChanged(form, baseline);
 
-  useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => { formRef.current = form; }, [form]);
+  useEffect(() => () => { attemptRef.current += 1; abortRef.current?.abort(); }, []);
 
   useEffect(() => {
-    if (!answer || !modelIdentity) return;
+    if (editing || !answer || !modelIdentity) return;
     if (openRouter) void discovery.models.load(modelIdentity);
     else if (compatible) void discovery.compatibleModels.load(modelIdentity);
-  }, [answer, compatible, discovery.compatibleModels, discovery.models, modelIdentity, openRouter]);
+  }, [answer, compatible, discovery.compatibleModels, discovery.models, editing, modelIdentity, openRouter]);
 
   const update = (patch: Partial<ModelForm>) => {
     setForm({ ...form, ...patch });
     setError(null);
     setErrorField(null);
+    if (guardReady) setInterrupted(false);
   };
   const updateCapability = (key: keyof AdminProviderModelCapabilities, value: boolean | number | undefined) => {
     const capabilities = { ...form.capabilities };
@@ -364,9 +378,49 @@ function SheetBody({
     onClose();
   };
 
+  const applySaveResult = (saved: AdminProviderModelOperationResult, submitted: ModelForm) => {
+    const reconciled = saved.persistence ? reconcileModelForm(baseline, submitted, saved.persistence) : null;
+    if (reconciled) {
+      setBaseline(reconciled.baseline);
+      setGuardReady(reconciled.guardModel !== null);
+      if (reconciled.guardModel) setEditing(reconciled.guardModel);
+    }
+    if (saved.ok) {
+      if (modelFormsEqual(formRef.current, submitted)) onSaved();
+      return;
+    }
+    const uncertain = ["network_error", "request_aborted", "provider_admin_response_invalid", "provider_setup_response_invalid",
+      "provider_setup_response_too_large", "provider_setup_interrupted", "provider_setup_timeout"].includes(saved.error.code);
+    const confirmed = reconciled?.confirmed || saved.persistence?.receipt;
+    const prefix = saved.persistence?.receipt?.publication === "draft"
+      ? "The draft was saved, but these changes were not activated. "
+      : confirmed ? reconciled?.complete
+      ? nameOnly ? "Display name saved. " : "Model settings saved. "
+      : "Some fields are saved; other changes are still unsaved. "
+      : uncertain ? "Save status could not be confirmed. Your draft is kept. " : "";
+    setError(`${prefix}${saved.message}`);
+    if (uncertain || saved.persistence?.receipt) setInterrupted(true);
+    setErrorField(saved.error.code === "provider_configuration_invalid" ? "configuration" : null);
+  };
+
   const submit = async () => {
     if (busy || interrupted || jsonEditing || discarding || needsKeyForNewModel) return;
-    const result = modelFormBody(form, connection, model);
+    const attempt = ++attemptRef.current;
+    const submitted = form;
+    if (nameOnly) {
+      if (!form.displayName.trim()) { setError("Enter a display name."); return; }
+      setError(null);
+      setSaving(true);
+      const saved = await controller.actions.renameModel(connection.id, editing.id, {
+        ...modelEditGuard(editing),
+        displayName: form.displayName.trim()
+      });
+      if (attempt !== attemptRef.current) return;
+      setSaving(false);
+      applySaveResult(saved, submitted);
+      return;
+    }
+    const result = modelFormBody(form, connection, editing);
     if (!result.ok) {
       setErrorField(result.field);
       if (result.field === "defaultParams") jsonTriggerRef.current?.focus();
@@ -379,23 +433,18 @@ function SheetBody({
     abortRef.current = abort;
     setSaving(true);
     setProgress({ phase: "validating", completed: 0, total: null });
-    const saved = await controller.actions.saveModel(connection.id, model?.id ?? null, result.body, {
+    const saved = await controller.actions.saveModel(connection.id, editing?.id ?? null, result.body, {
       signal: abort.signal,
       onProgress: (value) => { if (!abort.signal.aborted) setProgress(value); }
     });
+    if (attempt !== attemptRef.current) return;
     abortRef.current = null;
     setSaving(false);
     setProgress(null);
-    if (saved.ok) {
-      onSaved();
-      return;
-    }
-    setError(saved.message);
-    if (abort.signal.aborted || ["network_error", "provider_admin_response_invalid"].includes(saved.error.code)) setInterrupted(true);
-    setErrorField(saved.error?.code === "provider_configuration_invalid" ? "configuration" : null);
+    applySaveResult(saved, submitted);
   };
 
-  const canSave = !busy && !needsKeyForNewModel && !interrupted && !jsonEditing && !discarding && form.upstreamModelId.trim() !== "" && (model === null || dirty);
+  const canSave = !busy && !needsKeyForNewModel && !interrupted && !jsonEditing && !discarding && form.upstreamModelId.trim() !== "" && (editing === null || dirty);
   const capabilityRows: ReadonlyArray<[keyof AdminProviderModelCapabilities, string, string?]> = compatible
     ? [
         ["toolCalling", "Tools", "Function calling for Search, MCP and Memory."],
@@ -420,13 +469,13 @@ function SheetBody({
       description={providerFamilyLabel(family)}
       footer={(
         <>
-          {interrupted ? <UiV2Button onClick={onSaved} tone="primary" type="button">View model results</UiV2Button> : <UiV2Button aria-describedby={keyHelpId} busy={busy} disabled={!canSave} form={formId} tone="primary" type="submit">
-            Test &amp; Save
+          {interrupted ? <UiV2Button onClick={() => dirty ? requestClose() : onSaved()} tone="primary" type="button">View model results</UiV2Button> : <UiV2Button aria-describedby={keyHelpId} busy={busy} disabled={!canSave} form={formId} tone="primary" type="submit">
+            {nameOnly ? "Save" : "Test & Save"}
           </UiV2Button>}
-          {saving ? <UiV2Button onClick={() => abortRef.current?.abort()} tone="ghost" type="button">Stop checking</UiV2Button>
+          {saving && !nameOnly ? <UiV2Button onClick={() => abortRef.current?.abort()} tone="ghost" type="button">Stop checking</UiV2Button>
             : <UiV2Button disabled={busy || jsonEditing || discarding} onClick={requestClose} tone="ghost" type="button">Cancel</UiV2Button>}
           <span className="min-w-0 break-words text-xs leading-5 text-ink-muted [overflow-wrap:anywhere] sm:ml-auto sm:text-right" id={keyHelpId}>
-            {needsKeyForNewModel ? providerKeyFirstHelp : checkKeyLabel
+            {nameOnly ? "Saves the display name without changing model settings or checking the provider." : needsKeyForNewModel ? providerKeyFirstHelp : checkKeyLabel
               ? model ? `Checks the model with key ${checkKeyLabel} and preserves your capability choices`
                 : `Checks supported capabilities with key ${checkKeyLabel} and enables verified features, including PDF`
               : "Turns the model on without a check — add a key first to check it"}
@@ -474,8 +523,8 @@ function SheetBody({
           <div className="min-w-0">
             {/* The pickers render their own visible label; keep this one for the read-only id and aria-labelledby. */}
             <span className={answer ? "sr-only" : fieldLabel} id={`${formId}-model-label`}>Model</span>
-            {imageModel ? <ImageModelFields connection={connection} credential={discoveryCredential} form={form} disabled={busy}
-              onChange={(next) => { setForm(next); setError(null); }} /> : !answer ? (
+            {imageModel ? <ImageModelFields connection={connection} credential={discoveryCredential} form={form} disabled={busy} discoverOnMount={!editing}
+              onChange={(next) => update(next)} /> : !answer ? (
               <p className="flex min-h-control items-center break-all rounded-control border border-trace-subtle bg-control-surface/60 px-3 font-mono text-xs text-ink-secondary">
                 {form.upstreamModelId}
               </p>
@@ -495,11 +544,12 @@ function SheetBody({
                   label="Model"
                   loading={catalog.status === "loading"}
                   noun={{ plural: "models", singular: "model" }}
+                  onOpenChange={(open) => { if (open) void discovery.models.load(modelIdentity); }}
                   onRetry={() => void discovery.models.retry(modelIdentity)}
                   onSelect={(item) => {
                     const entry = catalog.items.find(({ id }) => id === item.id);
                     if (entry) {
-                      setForm(applyOpenRouterModel(form, entry));
+                      update(applyOpenRouterModel(form, entry));
                       setError(null);
                     }
                   }}
@@ -527,9 +577,10 @@ function SheetBody({
                   label="Model"
                   loading={compatibleCatalog.status === "loading"}
                   noun={{ plural: "models", singular: "model" }}
+                  onOpenChange={(open) => { if (open) void discovery.compatibleModels.load(modelIdentity); }}
                   onRetry={() => void discovery.compatibleModels.retry(modelIdentity)}
                   onSelect={(item) => {
-                    setForm(applyCompatibleModel(form, compatibleCatalog.items.find(({ id }) => id === item.id) ?? null, item.id));
+                    update(applyCompatibleModel(form, compatibleCatalog.items.find(({ id }) => id === item.id) ?? null, item.id));
                     setError(null);
                   }}
                   placeholder="Choose a reported model"
@@ -573,7 +624,7 @@ function SheetBody({
                   onChange={(event) => {
                     const value = event.currentTarget.value;
                     const hint = hints.find((entry) => entry.upstreamModelId === value);
-                    setForm(hint ? applyCatalogHint(form, hint) : { ...form, upstreamModelId: value });
+                    update(hint ? applyCatalogHint(form, hint) : { ...form, upstreamModelId: value });
                     setError(null);
                   }}
                   placeholder={hints[0]?.upstreamModelId ?? "model id"}
@@ -609,8 +660,9 @@ function SheetBody({
                 credentialId={discoveryCredential?.id ?? null}
                 disabled={busy || !form.upstreamModelId}
                 discovery={discovery}
+                discoverOnMount={!editing}
                 form={form}
-                setForm={(next) => { setForm(next); setError(null); }}
+                setForm={(next) => update(next)}
               />
             </div>
           ) : null}

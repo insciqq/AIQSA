@@ -26,10 +26,11 @@ function sharedParameters(endpoints: readonly AdminImageDiscoveredEndpoint[]): I
   return common;
 }
 
-export function ImageModelFields({ connection, credential, form, disabled, onChange }: {
+export function ImageModelFields({ connection, credential, form, disabled, discoverOnMount = true, onChange }: {
   connection: AdminProviderConnection; credential: AdminProviderCredential | null;
-  form: ModelForm; disabled: boolean; onChange(form: ModelForm): void;
+  form: ModelForm; disabled: boolean; discoverOnMount?: boolean; onChange(form: ModelForm): void;
 }) {
+  const [requested, setRequested] = useState(discoverOnMount);
   const [catalogState, setCatalogState] = useState<{ key: string; models: AdminImageDiscoveredModel[]; error: string | null } | null>(null);
   const [endpointState, setEndpointState] = useState<{ key: string; endpoints: AdminImageDiscoveredEndpoint[] } | null>(null);
   const [revision, setRevision] = useState(0);
@@ -39,25 +40,25 @@ export function ImageModelFields({ connection, credential, form, disabled, onCha
   const endpointKey = `${identity}:${form.upstreamModelId}`;
   const catalog = catalogState?.key === catalogKey ? catalogState.models : [];
   const endpoints = endpointState?.key === endpointKey ? endpointState.endpoints : [];
-  const loading = Boolean(credentialId) && catalogState?.key !== catalogKey;
+  const loading = requested && Boolean(credentialId) && catalogState?.key !== catalogKey;
   const error = catalogState?.key === catalogKey ? catalogState.error : null;
   useEffect(() => {
     let current = true;
-    if (!credentialId) return;
+    if (!requested || !credentialId) return;
     void discoverAdminImageModels(connection.id, credentialId).then((result) => {
       if (!current) return;
       setCatalogState({ key: catalogKey, models: result.ok ? result.data : [], error: result.ok ? null : "Image models could not be loaded. Check the provider key and try again." });
     });
     return () => { current = false; };
-  }, [connection.id, credentialId, catalogKey]);
+  }, [connection.id, credentialId, catalogKey, requested]);
   useEffect(() => {
     let current = true;
-    if (connection.family !== "openrouter" || !credentialId || !form.upstreamModelId) return;
+    if (!requested || connection.family !== "openrouter" || !credentialId || !form.upstreamModelId) return;
     void discoverAdminImageEndpoints(connection.id, credentialId, form.upstreamModelId).then((result) => {
       if (current) setEndpointState({ key: endpointKey, endpoints: result.ok ? result.data : [] });
     });
     return () => { current = false; };
-  }, [connection.family, connection.id, credentialId, form.upstreamModelId, endpointKey]);
+  }, [connection.family, connection.id, credentialId, form.upstreamModelId, endpointKey, requested]);
   const parameters = useMemo(() => {
     try { return JSON.parse(form.defaultParamsText) as ImageGenerationParameters; } catch { return {}; }
   }, [form.defaultParamsText]);
@@ -66,6 +67,7 @@ export function ImageModelFields({ connection, credential, form, disabled, onCha
     <AdminSearchablePicker label="Image model" items={catalog.map((entry) => ({ id: entry.id, label: entry.name,
       secondaryText: `${entry.id}${entry.source === "preset" ? " · requires a capability check" : ""}` }))}
       disabled={disabled || !credentialId} loading={loading} error={error} onRetry={() => setRevision((value) => value + 1)}
+      onOpenChange={(open) => { if (open) setRequested(true); }}
       placeholder="Choose an image model" searchPlaceholder="Search image models" noun={{ singular: "model", plural: "models" }}
       emptyTitle="No image models reported" emptyDescription="For a compatible provider, enter the image model id below."
       selectedId={form.upstreamModelId || null} selectedFallbackLabel={form.displayName || form.upstreamModelId}
@@ -86,7 +88,7 @@ export function ImageModelFields({ connection, credential, form, disabled, onCha
           <option value="openai_compatible">OpenAI compatible Images</option><option value="codex_lb">codex-lb</option>
         </select></label>
     </> : null}
-    {connection.family === "openrouter" ? <fieldset className="min-w-0">
+    {connection.family === "openrouter" ? <fieldset className="min-w-0" onFocus={() => setRequested(true)}>
       <legend className="mb-1 text-xs font-medium text-ink-secondary">Image providers</legend>
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={disabled} checked={form.openRouterRoutingMode === "automatic"}
         onChange={(event) => onChange({ ...form, openRouterRoutingMode: event.currentTarget.checked ? "automatic" : "only_selected",

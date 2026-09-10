@@ -1,0 +1,52 @@
+Answer notification samples
+
+All six samples are licensed under Creative Commons Zero 1.0 (CC0-1.0).
+https://creativecommons.org/publicdomain/zero/1.0/
+
+Processing: resampled to 48 kHz PCM16, original channel count and duration retained,
+peak amplitude adjusted to 0.16. No pitch or tempo changes.
+
+soft-bell.wav
+SFXMint
+https://sfxmint.com/sounds/ui-chime-24
+Source: https://sfxmint.com/dl/ui-chime-24.wav
+Source SHA256: 7be545b5d0498069c70f738414bf47a793e50779b55b9e8d36d6557f41edc7b8
+Included WAV SHA256: 0a4c333418e9c8aa5d799791dc5f44e9e8ff73fd692e5b77c282079d3b1fbfe2
+
+warm-success.wav
+SFXMint
+https://sfxmint.com/sounds/feedback-success-30
+Source: https://sfxmint.com/dl/feedback-success-30.wav
+Source SHA256: 3cafcea3db05fbef758f549613a218ed0512218d76af4a9306c81d7c0ba3a584
+Included WAV SHA256: 9d9b58812b14684ebe1d88cb6a76eec5de3cea811a7f15d1ad2cb90038c03a5e
+
+marimba.wav
+SFXMint
+https://sfxmint.com/sounds/feedback-confirm-14
+Source: https://sfxmint.com/dl/feedback-confirm-14.wav
+Source SHA256: 446229668bb0782ffa7874a76f420587af9ce5890676b25d9cd4a059419c1930
+Included WAV SHA256: ef1c18160c024f6312a543c874f5b59c9234b3565d6939ebf123448dc54d7b65
+
+gentle-pop.wav
+SFXMint
+https://sfxmint.com/sounds/ui-pop-21
+Source: https://sfxmint.com/dl/ui-pop-21.wav
+Source SHA256: 385b559eee77ee3c101d37e849293a184843b0776bfe13085c1a61ae2458078f
+Included WAV SHA256: 2b7b24080f01e6307768bd04a706049944a7f98fb5db708aa62f1ac7a8a39c16
+
+minimal-confirm.wav
+Colorosse
+https://www.colorosse.com/assets/audio/sfx/vellum-ui-sfx
+Source: https://cdn.colorosse.com/downloads/vellum-ui-sfx/wav/ui-confirm.wav
+Source SHA256: 5176696c80ccc7d00a5aa422afdac422643ecc572cf4bb48276c1386425528a6
+Included WAV SHA256: 6ee5043cda334b22573e018790c8907c254628a869ba3fe73200124a09d3c50d
+
+liquid-bubble.wav
+ATP2-kh / Freesound
+https://freesound.org/people/ATP2-kh/sounds/844241/
+Source: https://cdn.freesound.org/previews/844/844241_18042200-hq.mp3
+Source SHA256: 1a4dadba5198835b9e5b3ab6d89df5e6aa31e30c75f548883742e7883ce8c109
+Included WAV SHA256: a4e52e49c63b55d3f38629bf804f67bdb588c5fe892ba9053d4e694b9136c234
+
+SFXMint license: https://sfxmint.com/license
+Liquid Bubble uses the publicly available Freesound HQ preview, decoded to WAV.

@@ -1,5 +1,7 @@
 // @vitest-environment node
 
+import { createHash } from "node:crypto";
+import { jwtVerify } from "jose";
 import { describe, expect, it, vi } from "vitest";
 import { getAuthConfig } from "./config";
 import {
@@ -8,7 +10,9 @@ import {
   OAUTH_FLOW_COOKIE_NAME
 } from "./oauthHandlers";
 import type { OAuthIdentityRepository } from "./oauthRepository";
+import { type exchangeOAuthCode } from "./oauthProviders";
 import { createFixedWindowLoginRateLimiter } from "./rateLimit";
+import { createAuthSession, resolveAuthToken } from "./requestAuth";
 import { readCookie, SESSION_COOKIE_NAME } from "./session";
 import { createMemoryAuthSessionStore, createTestUser } from "@/tests/support/auth";
 
@@ -49,18 +53,22 @@ async function startFlow(input: {
   next?: string;
   provider?: "google" | "yandex";
   seed?: string;
+  switchAccount?: boolean;
 } = {}) {
   const provider = input.provider ?? "google";
   const suffix = input.seed ? `-${input.seed}` : "";
   const values = [`code-verifier${suffix}`, `nonce${suffix}`, `state${suffix}`];
+  const url = new URL(`https://aiqsa.example/api/auth/oauth/${provider}`);
+  url.searchParams.set("next", input.next ?? "/admin?tab=users");
+  if (input.switchAccount) {
+    url.searchParams.set("switch_account", "1");
+  }
   const response = await createOAuthStartHandler({
     getConfig: () => config,
     now: () => now,
     randomToken: () => values.shift()!
   })(
-    new Request(
-      `https://aiqsa.example/api/auth/oauth/${provider}?next=${encodeURIComponent(input.next ?? "/admin?tab=users")}`
-    ),
+    new Request(url),
     {
       params: {
         provider
@@ -83,6 +91,7 @@ function callbackRequest(input: {
   error?: string;
   flowToken: string;
   provider: "google" | "yandex";
+  sessionCookie?: string;
   state: string;
 }): Request {
   const url = new URL(`https://aiqsa.example/api/auth/oauth/${input.provider}/callback`);
@@ -98,13 +107,78 @@ function callbackRequest(input: {
 
   return new Request(url, {
     headers: {
-      cookie: `${OAUTH_FLOW_COOKIE_NAME}=${input.flowToken}`,
+      cookie: [
+        `${OAUTH_FLOW_COOKIE_NAME}=${input.flowToken}`,
+        input.sessionCookie
+      ].filter(Boolean).join("; "),
       "user-agent": "OAuth handler test"
     }
   });
 }
 
 describe("OAuth route handlers", () => {
+  it.each([
+    ["yandex", "", null],
+    ["yandex", "switch_account=1", "yes"],
+    ["yandex", "switch_account=true", null],
+    ["yandex", "switch_account=1&switch_account=1", null],
+    ["yandex", "force_confirm=yes&prompt=select_account&login_hint=private-account", null],
+    ["google", "switch_account=1", null]
+  ] as const)("accepts only explicit Yandex switching: %s ?%s", async (provider, query, forceConfirm) => {
+    const response = await createOAuthStartHandler({ getConfig: () => config })(
+      new Request(`https://aiqsa.example/api/auth/oauth/${provider}?${query}&client_id=untrusted&redirect_uri=https://evil.example`),
+      { params: { provider } }
+    );
+    const location = new URL(response.headers.get("location")!);
+
+    expect(location.searchParams.get("force_confirm")).toBe(forceConfirm);
+    expect(location.searchParams.get("client_id")).toBe(`${provider}-client`);
+    expect(location.searchParams.get("redirect_uri")).toBe(
+      `https://aiqsa.example/api/auth/oauth/${provider}/callback`
+    );
+    expect(location.searchParams.has("switch_account")).toBe(false);
+    expect(location.searchParams.has("prompt")).toBe(false);
+    expect(location.searchParams.has("login_hint")).toBe(false);
+  });
+
+  it("replaces an existing Yandex flow with fresh signed state, nonce, and PKCE when switching", async () => {
+    const handler = createOAuthStartHandler({ getConfig: () => config, now: () => now });
+    const context = { params: { provider: "yandex" } };
+    const first = await handler(new Request("https://aiqsa.example/api/auth/oauth/yandex"), context);
+    const firstToken = readCookie(first.headers.get("set-cookie"), OAUTH_FLOW_COOKIE_NAME)!;
+    const nextPath = "/admin?tab=users#section";
+    const second = await handler(
+      new Request(`https://aiqsa.example/api/auth/oauth/yandex?switch_account=1&next=${encodeURIComponent(nextPath)}`, {
+        headers: { cookie: `${OAUTH_FLOW_COOKIE_NAME}=${firstToken}` }
+      }),
+      context
+    );
+    const secondToken = readCookie(second.headers.get("set-cookie"), OAUTH_FLOW_COOKIE_NAME)!;
+    const verifyOptions = { algorithms: ["HS256"], currentDate: now };
+    const secret = new TextEncoder().encode(config.sessionSecret);
+    const firstFlow = (await jwtVerify(firstToken, secret, verifyOptions)).payload;
+    const secondFlow = (await jwtVerify(secondToken, secret, verifyOptions)).payload;
+    const location = new URL(second.headers.get("location")!);
+
+    expect(secondToken).not.toBe(firstToken);
+    for (const field of ["state", "nonce", "codeVerifier"] as const) {
+      expect(secondFlow[field]).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(secondFlow[field]).not.toBe(firstFlow[field]);
+    }
+    expect(secondFlow).toMatchObject({ nextPath, provider: "yandex" });
+    expect(location.searchParams.get("force_confirm")).toBe("yes");
+    expect(location.searchParams.get("state")).toBe(secondFlow.state);
+    expect(location.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(location.searchParams.get("code_challenge")).toBe(
+      createHash("sha256").update(secondFlow.codeVerifier as string).digest("base64url")
+    );
+    expect(location.searchParams.get("redirect_uri")).toBe("https://aiqsa.example/api/auth/oauth/yandex/callback");
+    expect(second.headers.getSetCookie()).toHaveLength(1);
+    expect(second.headers.get("set-cookie")).toContain("HttpOnly");
+    expect(second.headers.get("set-cookie")).toContain("Path=/api/auth/oauth");
+    expect(second.headers.get("referrer-policy")).toBe("no-referrer");
+  });
+
   it("starts a provider-bound PKCE flow in a short-lived secure HttpOnly cookie", async () => {
     const { location, response } = await startFlow();
     const cookie = response.headers.get("set-cookie")!;
@@ -175,6 +249,169 @@ describe("OAuth route handlers", () => {
     });
     expect(sessions.records.size).toBe(1);
   });
+
+  it.each(["active", "pending", "not_allowed", "account_conflict"] as const)(
+    "keeps admission authoritative when rejected Yandex account A switches to account B: %s",
+    async (secondStatus) => {
+      const nextPath = "/admin?tab=users#section";
+      const firstFlow = await startFlow({ next: nextPath, provider: "yandex", seed: "account-a" });
+      const sessions = createMemoryAuthSessionStore({ user: createTestUser({ id: "admitted-user-b" }) });
+      const createSession = vi.spyOn(sessions, "createSession");
+      const settleIdentity = vi.fn<OAuthIdentityRepository["settleIdentity"]>(async ({ providerAccountId }) => {
+        if (providerAccountId === "yandex-account-a") return { status: "not_allowed" };
+        return secondStatus === "active"
+          ? { status: "active", userId: "admitted-user-b" }
+          : { status: secondStatus };
+      });
+      const exchangeCode = vi.fn<typeof exchangeOAuthCode>(async ({ code }) => ({
+        displayName: "Yandex User",
+        email: `${code}@example.com`,
+        providerAccountId: `yandex-${code}`
+      }));
+      const handler = createOAuthCallbackHandler({
+        exchangeCode,
+        getConfig: () => config,
+        now: () => now,
+        repository: { settleIdentity },
+        sessions
+      });
+      const context = { params: { provider: "yandex" } };
+      const first = await handler(callbackRequest({
+        code: "account-a",
+        flowToken: firstFlow.flowToken,
+        provider: "yandex",
+        state: firstFlow.location.searchParams.get("state")!
+      }), context);
+      const recovery = new URL(first.headers.get("location")!);
+
+      expect(recovery.searchParams.get("oauth")).toBe("not_allowed");
+      expect(recovery.searchParams.get("provider")).toBe("yandex");
+      expect(recovery.searchParams.get("next")).toBe(nextPath);
+      expect(first.headers.getSetCookie()).toEqual([
+        expect.stringContaining(`${OAUTH_FLOW_COOKIE_NAME}=; Path=/api/auth/oauth; HttpOnly; SameSite=Lax; Max-Age=0`)
+      ]);
+      expect(createSession).not.toHaveBeenCalled();
+      expect(sessions.records.size).toBe(0);
+
+      const secondFlow = await startFlow({
+        next: recovery.searchParams.get("next")!,
+        provider: "yandex",
+        seed: "account-b",
+        switchAccount: true
+      });
+      const second = await handler(callbackRequest({
+        code: "account-b",
+        flowToken: secondFlow.flowToken,
+        provider: "yandex",
+        state: secondFlow.location.searchParams.get("state")!
+      }), context);
+
+      expect(secondFlow.location.searchParams.get("force_confirm")).toBe("yes");
+      expect(secondFlow.flowToken).not.toBe(firstFlow.flowToken);
+      expect(exchangeCode).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        code: "account-b",
+        codeVerifier: "code-verifier-account-b",
+        provider: "yandex"
+      }));
+      expect(settleIdentity).toHaveBeenNthCalledWith(1, {
+        displayName: "Yandex User", email: "account-a@example.com", now,
+        provider: "yandex", providerAccountId: "yandex-account-a"
+      });
+      expect(settleIdentity).toHaveBeenNthCalledWith(2, {
+        displayName: "Yandex User", email: "account-b@example.com", now,
+        provider: "yandex", providerAccountId: "yandex-account-b"
+      });
+      if (secondStatus === "active") {
+        expect(second.headers.get("location")).toBe(`https://aiqsa.example${nextPath}`);
+        expect(createSession).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ userId: "admitted-user-b" }));
+        expect([...sessions.records.values()].map((session) => session.userId)).toEqual(["admitted-user-b"]);
+        expect(second.headers.getSetCookie()).toHaveLength(2);
+      } else {
+        const outcome = new URL(second.headers.get("location")!);
+        expect(outcome.searchParams.get("oauth")).toBe(secondStatus);
+        expect(outcome.searchParams.get("next")).toBe(nextPath);
+        expect(createSession).not.toHaveBeenCalled();
+        expect(sessions.records.size).toBe(0);
+        expect(second.headers.getSetCookie()).toHaveLength(1);
+      }
+      expect(second.headers.get("set-cookie")).toContain(`${OAUTH_FLOW_COOKIE_NAME}=;`);
+      expect(second.headers.get("location")).not.toContain("yandex-account");
+      expect(second.headers.get("location")).not.toContain("@example.com");
+    }
+  );
+
+  it.each([
+    "missing-flow", "invalid-flow", "expired-flow", "mismatched-state", "mismatched-provider",
+    "cancelled", "provider-error", "exchange-failed"
+  ] as const)("preserves the existing session when a switched Yandex attempt ends with %s", async (failure) => {
+    const flow = await startFlow({ provider: "yandex", seed: failure, switchAccount: true });
+    const sessions = createMemoryAuthSessionStore({ user: createTestUser({ id: "existing-user" }) });
+    const existingSession = await createAuthSession({
+      now, secureCookie: true, sessions, userId: "existing-user"
+    });
+    const createSession = vi.spyOn(sessions, "createSession");
+    const revokeSession = vi.spyOn(sessions, "revokeSessionByTokenHash");
+    const repo = repository();
+    const exchangeCode = vi.fn(async () => {
+      throw new Error("private provider response and account identifier");
+    });
+    const provider = failure === "mismatched-provider" ? "google" : "yandex";
+    const rejectedBeforeExchange = failure !== "exchange-failed";
+    const invalidFlow = ["missing-flow", "invalid-flow", "expired-flow", "mismatched-state", "mismatched-provider"].includes(failure);
+    const response = await createOAuthCallbackHandler({
+      exchangeCode,
+      getConfig: () => config,
+      now: () => failure === "expired-flow" ? new Date(now.getTime() + 11 * 60 * 1000) : now,
+      repository: repo.repository,
+      sessions
+    })(callbackRequest({
+      code: failure === "cancelled" || failure === "provider-error" ? undefined : "code",
+      error: failure === "cancelled" ? "access_denied" : failure === "provider-error" ? "private-provider-error" : undefined,
+      flowToken: failure === "missing-flow" ? "" : failure === "invalid-flow" ? "invalid-token" : flow.flowToken,
+      provider,
+      sessionCookie: `${SESSION_COOKIE_NAME}=${existingSession.token}`,
+      state: failure === "mismatched-state" ? "wrong-state" : flow.location.searchParams.get("state")!
+    }), { params: { provider } });
+    const outcome = new URL(response.headers.get("location")!);
+
+    expect(outcome.origin).toBe("https://aiqsa.example");
+    expect(outcome.pathname).toBe("/login");
+    expect(outcome.searchParams.get("oauth")).toBe(failure === "cancelled" ? "cancelled" : "failed");
+    expect(outcome.searchParams.get("next")).toBe(invalidFlow ? null : "/admin?tab=users");
+    expect(outcome.searchParams.get("provider")).toBe(provider);
+    expect([...outcome.searchParams.keys()].sort()).toEqual(invalidFlow ? ["oauth", "provider"] : ["next", "oauth", "provider"]);
+    expect(response.headers.getSetCookie()).toEqual([
+      expect.stringContaining(`${OAUTH_FLOW_COOKIE_NAME}=; Path=/api/auth/oauth; HttpOnly; SameSite=Lax; Max-Age=0`)
+    ]);
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(exchangeCode).toHaveBeenCalledTimes(rejectedBeforeExchange ? 0 : 1);
+    expect(repo.settleIdentity).not.toHaveBeenCalled();
+    expect(createSession).not.toHaveBeenCalled();
+    expect(revokeSession).not.toHaveBeenCalled();
+    expect(sessions.records.size).toBe(1);
+    await expect(resolveAuthToken(existingSession.token, { now, sessions })).resolves.toMatchObject({ userId: "existing-user" });
+  });
+
+  it.each(["https://evil.example/steal", "//evil.example/steal", "/%5cevil.example", "/\\evil.example", "/bad path"])(
+    "does not carry unsafe next through account switching: %s",
+    async (next) => {
+      const flow = await startFlow({ next, provider: "yandex", switchAccount: true });
+      const response = await createOAuthCallbackHandler({
+        getConfig: () => config,
+        now: () => now,
+        repository: repository().repository,
+        sessions: createMemoryAuthSessionStore()
+      })(callbackRequest({
+        error: "access_denied",
+        flowToken: flow.flowToken,
+        provider: "yandex",
+        state: flow.location.searchParams.get("state")!
+      }), { params: { provider: "yandex" } });
+
+      expect(flow.location.searchParams.get("force_confirm")).toBe("yes");
+      expect(response.headers.get("location")).toBe("https://aiqsa.example/login?oauth=cancelled&provider=yandex");
+    }
+  );
 
   it("fails a direct OAuth callback closed before provider exchange without a launcher stamp", async () => {
     const flow = await startFlow();

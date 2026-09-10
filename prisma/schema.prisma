@@ -1007,6 +1007,8 @@ model UserSettings {
   defaultControlValues    Json           @default("{}")
   defaultKnowledgePlan    Json?
   defaultMcpMode          String         @default("auto")
+  answerSoundEnabled      Boolean        @default(true)
+  answerSoundId           String         @default("rise") @db.VarChar(16)
   sendWithEnter           Boolean        @default(true)
   showCitations           Boolean        @default(true)
   showReasoningBlocks     Boolean        @default(false)

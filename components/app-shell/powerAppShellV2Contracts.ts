@@ -1,3 +1,4 @@
+import type { AnswerSoundId } from "@/lib/contracts/answerSound";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
@@ -246,6 +247,10 @@ export type ShellComposerView = {
   };
   makeModelDefault?(model: CatalogModel): void;
   notificationSoundEnabled: boolean;
+  notificationSoundId: AnswerSoundId;
+  notificationSoundReady: boolean;
+  previewAnswerSound(sound: AnswerSoundId): Promise<boolean>;
+  selectAnswerSound(sound: AnswerSoundId): void;
   operationError: string | null;
   operationErrorLive: boolean;
   operationErrorRetryable?: boolean;

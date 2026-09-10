@@ -159,6 +159,9 @@ describe("AdminProvidersSection", () => {
   });
 
   it("adds a key with one Test & Save, keeps the catalog unchanged when the provider rejects it", async () => {
+    const preset = fixtureModel({ connectionId: "conn-gemini", displayName: "Gemini setup model", id: "initial-gemini-model",
+      activeConfig: null, activeVersion: 0, activatedAt: null });
+    connections.current = connections.current.map((connection) => connection.id === "conn-gemini" ? { ...connection, models: [preset] } : connection);
     const calls = mockFetch(connections, ({ body, method, url }) => {
       if (method === "POST" && url === "/api/admin/providers/conn-gemini/credentials") {
         if (body?.secret === "bad-key") {
@@ -185,6 +188,8 @@ describe("AdminProvidersSection", () => {
     expect(screen.getByRole("button", { name: "Add key" })).toHaveAttribute("data-tone", "primary");
     expect(screen.getByRole("button", { name: "Add model" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Add model" })).toHaveAccessibleDescription("Add a working key first, then add models.");
+    expect(screen.queryByText(preset.displayName)).not.toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "Models" })).not.toBeInTheDocument();
     // The topbar is owned through a context effect, so it settles one tick after the page.
     await waitFor(() => expect(screen.getByTestId("topbar-title")).toHaveTextContent("Gemini"));
     expect(screen.getByTestId("topbar-title")).toHaveTextContent("Providers");
@@ -194,12 +199,15 @@ describe("AdminProvidersSection", () => {
     expect(within(form).getByLabelText("Label")).toHaveValue("Main");
     expect(within(form).getByLabelText("API key")).toHaveFocus();
     fireEvent.change(within(form).getByLabelText("API key"), { target: { value: "bad-key" } });
+    expect(screen.queryByText(preset.displayName)).not.toBeInTheDocument();
     fireEvent.click(within(form).getByRole("button", { name: "Test & Save" }));
     expect(screen.getByRole("button", { name: "Add model" })).toBeDisabled();
 
     const alert = await within(form).findByRole("alert");
     expect(screen.getByRole("button", { name: "Add model" })).toBeDisabled();
     expect(alert).toHaveTextContent("The provider rejected this key. Check the key and try again.");
+    expect(screen.queryByText(preset.displayName)).not.toBeInTheDocument();
+    expect(screen.getByTestId("provider-page-status")).toHaveTextContent("No models on");
     expect(within(form).getByLabelText("API key")).toHaveAttribute("aria-invalid", "true");
     expect(within(form).getByLabelText("API key")).toHaveValue("bad-key");
     expect(screen.queryByTestId("provider-key-cred-new")).not.toBeInTheDocument();
@@ -213,6 +221,8 @@ describe("AdminProvidersSection", () => {
     fireEvent.change(within(form).getByLabelText("API key"), { target: { value: "good-key" } });
     fireEvent.click(within(form).getByRole("button", { name: "Test & Save" }));
     const row = await screen.findByTestId("provider-key-cred-new");
+    expect(screen.getByTestId(`provider-model-${preset.id}`)).toHaveTextContent(preset.displayName);
+    expect(screen.getByTestId("provider-page-status")).toHaveTextContent("1 model on");
     expect(screen.getByRole("button", { name: "Add model" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Add key" })).toHaveAttribute("data-tone", "ghost");
     expect(screen.queryByText("Add a working key first, then add models.")).not.toBeInTheDocument();

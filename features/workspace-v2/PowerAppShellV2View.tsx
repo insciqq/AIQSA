@@ -1,5 +1,7 @@
 "use client";
 
+import { ANSWER_SOUNDS } from "@/lib/contracts/answerSound";
+
 import { useChatPdfRoutePreview } from "@/components/app-shell/useChatPdfRoutePreview";
 import { useChatContinuation } from "@/components/app-shell/useChatContinuation";
 import { composerContextGauge } from "@/components/app-shell/composerContextStats";
@@ -1459,16 +1461,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           dirty={mcpDirty}
           generalSlot={(
             <>
-              <SettingsRowV2
-                description="Play a short sound when an answer finishes in a background tab."
-                title="Answer sound"
-              >
-                <SettingsSwitchV2
-                  checked={composer.notificationSoundEnabled}
-                  label="Answer sound"
-                  onChange={() => composer.toggleNotificationSound()}
-                />
-              </SettingsRowV2>
+              <AnswerSoundSettingsRowV2 composer={composer} />
               <SettingsRowV2
                 description="Show numbered source citations inside answers."
                 title="Citations"
@@ -1787,5 +1780,50 @@ function SettingsAccountPanelV2({
         {signOutError ? <span className="v2-live-menu-error" role="alert">Could not sign out.</span> : null}
       </SettingsRowV2>
     </>
+  );
+}
+
+export function AnswerSoundSettingsRowV2({ composer }: Readonly<{
+  composer: Pick<ShellComposerView, "notificationSoundEnabled" | "notificationSoundId" |
+    "notificationSoundReady" | "toggleNotificationSound" | "selectAnswerSound" | "previewAnswerSound">;
+}>) {
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const previewSequence = useRef(0);
+  useEffect(() => () => { previewSequence.current += 1; }, []);
+  return (
+    <SettingsRowV2
+      description={previewFailed
+        ? <span role="status">Preview could not play. Try Play again or check your browser’s audio settings.</span>
+        : "Play a short sound when an answer finishes. Preview also works with sound off."}
+      title="Answer sound"
+    >
+      <SettingsSwitchV2
+        checked={composer.notificationSoundEnabled}
+        disabled={!composer.notificationSoundReady}
+        label="Answer sound"
+        onChange={() => composer.toggleNotificationSound()}
+      />
+      <SettingsSelectV2
+        disabled={!composer.notificationSoundReady}
+        label="Completion sound"
+        options={ANSWER_SOUNDS}
+        value={composer.notificationSoundId}
+        onChange={(sound) => {
+          setPreviewFailed(false);
+          composer.selectAnswerSound(sound);
+        }}
+      />
+      <UiV2Button
+        aria-label="Play preview"
+        disabled={!composer.notificationSoundReady}
+        onClick={() => {
+          const sequence = ++previewSequence.current;
+          setPreviewFailed(false);
+          void composer.previewAnswerSound(composer.notificationSoundId).then((played) => {
+            if (sequence === previewSequence.current) setPreviewFailed(!played);
+          });
+        }}
+      >Play</UiV2Button>
+    </SettingsRowV2>
   );
 }

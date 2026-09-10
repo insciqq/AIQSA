@@ -173,10 +173,13 @@ function initialAuthFeedback(
   };
 }
 
-function oauthStartHref(provider: OAuthProviderId, nextPath: string): string {
+function oauthStartHref(provider: OAuthProviderId, nextPath: string, switchAccount = false): string {
   const query = new URLSearchParams({
     next: safeInternalPath(nextPath)
   });
+  if (provider === "yandex" && switchAccount) {
+    query.set("switch_account", "1");
+  }
 
   return `/api/auth/oauth/${provider}?${query.toString()}`;
 }
@@ -1039,6 +1042,22 @@ export function AuthLogin({
                       </a>
                     ))}
                   </div>
+                  {oauthProvider === "yandex" && oauthOutcome && oauthProviders.includes("yandex") ? (
+                    <div className="space-y-1 text-center">
+                      <p className="text-xs leading-5 text-ink-muted" id="yandex-switch-help">
+                        Choose another Yandex account to try signing in again.
+                      </p>
+                      <a
+                        aria-describedby="yandex-switch-help"
+                        aria-disabled={submitting || undefined}
+                        className={`${secondaryButtonClassName} w-full ${submitting ? "pointer-events-none cursor-not-allowed opacity-60" : ""}`}
+                        href={submitting ? undefined : oauthStartHref("yandex", nextPath, true)}
+                        tabIndex={submitting ? -1 : undefined}
+                      >
+                        Use another Yandex account
+                      </a>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </form>

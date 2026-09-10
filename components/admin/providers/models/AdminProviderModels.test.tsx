@@ -148,6 +148,7 @@ function harness(connection = openRouter(), busy = false) {
     discoverCompatibleModels: vi.fn(async () => []),
     discoverEndpoints: vi.fn(async () => []),
     discoverModels: vi.fn(async () => []),
+    renameModel: vi.fn(async () => ({ ok: true as const })),
     saveModel: vi.fn(async () => ({ ok: true as const })),
     startModelChecks: vi.fn(async () => ({ ok: true as const })),
     updateModel: vi.fn(async () => true)
@@ -175,6 +176,32 @@ function harness(connection = openRouter(), busy = false) {
 }
 
 describe("AdminProviderModels", () => {
+  it("hides initial presets until key activation and reveals their existing rows during checks", () => {
+    const connection = openRouter();
+    const credentials = connection.credentials;
+    connection.credentials = [];
+    connection.defaultCredentialId = null;
+    connection.models = connection.models.map((model) => ({ ...model, activeConfig: null, activeVersion: 0, activatedAt: null }));
+    const { rerender } = harness(connection);
+    expect(screen.queryByRole("table", { name: "Models" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Check models" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Models appear after a working key is saved.");
+    expect(screen.queryByText("Cohere Rerank 4 Pro")).not.toBeInTheDocument();
+
+    rerender({ ...connection, credentials: [fixtureCredential({ id: "draft", label: "Draft", activeVersion: null,
+      activatedAt: null, draftSecretConfigured: true })] });
+    expect(screen.queryByRole("table", { name: "Models" })).not.toBeInTheDocument();
+    const accepted = { ...connection, credentials, checkRun: fixtureCheckRun({ credentialId: credentials[0]!.id,
+      id: "initial-check", inFlight: [connection.models[0]!.id], total: connection.models.length }) };
+    rerender(accepted);
+    expect(screen.getByRole("table", { name: "Models" })).toBeVisible();
+    for (const model of connection.models) expect(screen.getAllByTestId(`provider-model-${model.id}`)).toHaveLength(1);
+    rerender({ ...accepted, checkRun: { ...accepted.checkRun, state: "completed", inFlight: [], done: accepted.models.length,
+      failed: [accepted.models[0]!.id], results: [{ providerModelId: accepted.models[0]!.id, state: "partial",
+        checks: { modelAccess: "verified", vision: "incomplete" } }] } });
+    expect(screen.getByTestId(`provider-model-${connection.models[0]!.id}`)).toBeVisible();
+  });
+
   it.each(["absent", "disabled", "revoked", "unsaved"])("blocks creation with %s keys and preserves existing model editing", (kind) => {
     const connection = openRouter();
     connection.credentials = kind === "absent" ? [] : connection.credentials.map((credential) => ({
@@ -313,10 +340,13 @@ describe("AdminProviderModels", () => {
           : model)
     });
     expect(within(sheet).getByLabelText("Display name")).toHaveValue("My edited model");
-    await act(async () => { fireEvent.click(within(sheet).getByRole("button", { name: "Test & Save" })); });
-    expect(actions.saveModel).toHaveBeenCalledWith("conn-or", "model-opus", expect.objectContaining({
-      displayName: "My edited model", expectedDraftVersion: 1
-    }), expect.objectContaining({ onProgress: expect.any(Function), signal: expect.any(AbortSignal) }));
+    await act(async () => { fireEvent.click(within(sheet).getByRole("button", { name: "Save" })); });
+    const baseline = connection.models.find(({ id }) => id === "model-opus")!;
+    expect(actions.renameModel).toHaveBeenCalledWith("conn-or", "model-opus", {
+      displayName: "My edited model", expectedActiveVersion: baseline.activeVersion, expectedDisplayName: baseline.displayName,
+      expectedDraftVersion: baseline.draftVersion, expectedUpdatedAt: baseline.updatedAt
+    });
+    expect(actions.saveModel).not.toHaveBeenCalled();
   });
 
   // The fixtures are checked at FIXTURE_NOW; "Checked today" must not depend on the wall clock.
@@ -345,15 +375,15 @@ describe("AdminProviderModels", () => {
     expect(opus).toHaveTextContent("anthropic/claude-opus-4.8 · via anthropic only");
     expect(within(opus).getAllByTestId(/model-chip-/).map((chip) => `${chip.textContent}:${chip.dataset.chipTone}`))
       .toEqual(["Tools:ok", "JSON:ok", "PDF:ok", "Images:ok", "Stream:ok"]);
-    expect(within(opus).getByTestId("model-chip-tools")).toHaveAccessibleName(/Ordinary function calling.*Memory calls are checked separately/);
-    expect(within(opus).getByTestId("model-chip-json")).toHaveAccessibleName(/strict JSON Schema/);
+    expect(within(opus).getByTestId("model-chip-tools")).toHaveAccessibleName("Tools capability details");
+    expect(within(opus).getByTestId("model-chip-json")).toHaveAccessibleName("JSON capability details");
     expect(within(opus).getByText("Default chat")).toBeInTheDocument();
     expect(within(opus).getByRole("switch", { name: "Claude Opus 4.8 on" })).toBeChecked();
 
     const gemini = screen.getByTestId("provider-model-model-gemini");
     expect(gemini).toHaveTextContent("automatic routing");
     expect(within(gemini).getAllByTestId(/model-chip-/).map((chip) => `${chip.textContent}:${chip.dataset.chipTone}`))
-      .toEqual(["Tools: not verified:muted", "JSON:ok", "PDF: not verified:muted", "Images:ok", "Stream:ok"]);
+      .toEqual(["Tools:muted", "JSON:ok", "PDF:muted", "Images:ok", "Stream:ok"]);
 
     const sonar = screen.getByTestId("provider-model-model-sonar");
     expect(sonar).toHaveTextContent("not checked yet");
@@ -362,13 +392,16 @@ describe("AdminProviderModels", () => {
 
     const cohere = screen.getByTestId("provider-model-model-cohere");
     expect(within(cohere).getByTestId("model-chip-reranking")).toHaveTextContent("Reranking");
-    expect(cohere).toHaveTextContent("Check failed");
-    expect(within(cohere).getByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(cohere).not.toHaveTextContent("Check failed");
+    expect(within(cohere).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(within(cohere).getByTestId("model-chip-reranking")).toHaveAttribute("data-chip-tone", "ok");
+    fireEvent.click(within(cohere).getByTestId("model-chip-reranking"));
+    expect(within(cohere).getByText(/The latest model check could not finish/)).toBeVisible();
     expect(within(screen.getByTestId("provider-model-model-voyage")).getByText("Reranker · primary")).toBeInTheDocument();
     expect(screen.getByTestId("provider-models")).not.toHaveTextContent(/draft|revision|pending|evidence|probe|adapter|fingerprint|dimensions/iu);
   });
 
-  it("removes row expansion and Details while keeping Edit, Retry, Re-check with key and Check models", async () => {
+  it("keeps model rechecks in the explicit key menu without inline retry controls", async () => {
     const { actions } = harness();
     const opus = screen.getByTestId("provider-model-model-opus");
     fireEvent.click(within(opus).getByText("Claude Opus 4.8"));
@@ -376,8 +409,8 @@ describe("AdminProviderModels", () => {
     expect(screen.queryByTestId("provider-model-model-opus-details")).not.toBeInTheDocument();
     expect(opus).not.toHaveAttribute("aria-expanded");
 
-    fireEvent.click(within(screen.getByTestId("provider-model-model-cohere")).getByRole("button", { name: "Retry" }));
-    expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-primary", ["model-cohere"], true);
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(actions.startModelChecks).not.toHaveBeenCalled();
 
     fireEvent.click(within(opus).getByRole("button", { name: "More actions for Claude Opus 4.8" }));
     const menu = screen.getByRole("menu", { name: "More actions for Claude Opus 4.8" });
@@ -403,6 +436,21 @@ describe("AdminProviderModels", () => {
     expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-research", ["model-opus"]);
     fireEvent.click(screen.getByRole("button", { name: "Check models" }));
     expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-research", undefined);
+  });
+
+  it("opens capability explanations on activation and restores the chip focus on Escape", () => {
+    const { actions } = harness();
+    const row = screen.getByTestId("provider-model-model-gemini");
+    const chip = within(row).getByTestId("model-chip-pdf");
+    const help = within(row).getByText("Not verified with this key. This does not establish that the capability is unsupported.");
+    expect(help).not.toBeVisible();
+    expect(chip).toHaveAccessibleName("PDF capability details");
+    fireEvent.click(chip);
+    expect(help).toBeVisible();
+    fireEvent.keyDown(chip, { key: "Escape" });
+    expect(help).not.toBeVisible();
+    expect(chip).toHaveFocus();
+    expect(actions.startModelChecks).not.toHaveBeenCalled();
   });
 
   it("asks before turning off a model a role uses, names the successor, and turns off unused models directly", async () => {
@@ -486,7 +534,7 @@ describe("AdminProviderModels", () => {
 
     const custom = fixtureConnection({ displayName: "codex-lb", family: "openai_compatible", id: "conn-custom", models: [] });
     harness(custom);
-    expect(screen.getByRole("status")).toHaveTextContent("No models yet.");
+    expect(screen.getByRole("status")).toHaveTextContent("Models appear after a working key is saved.");
     expect(screen.getByTestId("provider-add-model")).not.toHaveAttribute("aria-haspopup");
     expect(screen.queryByRole("button", { name: "Check models" })).not.toBeInTheDocument();
   });

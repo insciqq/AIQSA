@@ -3,7 +3,7 @@
 import { CHAT_PDF_LOCAL_TEXT_MULTIPLE_NOTICE, CHAT_PDF_LOCAL_TEXT_NOTICE, CHAT_PDF_LONG_DOCUMENT_NOTICE,
   type ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
-import { isMcpAutoDiscoveryFailureCode, isToolSynthesisFailure } from "@/lib/contracts/runs";
+import { canRetryMcpAutoDiscoveryFailure, isMcpAutoDiscoveryFailureCode, isToolSynthesisFailure } from "@/lib/contracts/runs";
 import type { ThreadArtifactSummary, ThreadToolActivity } from "@/lib/contracts/chats";
 import type { MarkdownCitationRenderer, MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
@@ -120,6 +120,7 @@ function RunErrorV2({
   const pdfFailed = pdfPreparation?.some((item) => item.phase === "failed");
   const autoDiscoveryUnavailable =
     isMcpAutoDiscoveryFailureCode(presentation.failure.code);
+  const retryAutoDiscovery = canRetryMcpAutoDiscoveryFailure(presentation.failure.code);
   // The card is a neutral surface: an alert glyph plus a plain-language
   // heading and explanation; the primary recovery action comes first and the
   // safe error code sits quietly on the right as the support reference.
@@ -141,11 +142,11 @@ function RunErrorV2({
       </div>
       <p>{presentation.failure.message}</p>
       <div className="v2-run-error-actions">
-        {autoDiscoveryUnavailable && onRetry ? (
+        {retryAutoDiscovery && onRetry ? (
           <UiV2Button icon="regenerate" tone="primary" onClick={onRetry}>Retry</UiV2Button>
         ) : null}
         {autoDiscoveryUnavailable && onUseLoadAll ? (
-          <UiV2Button onClick={onUseLoadAll}>Use Load all</UiV2Button>
+          <UiV2Button tone={retryAutoDiscovery ? undefined : "primary"} onClick={onUseLoadAll}>Use Load all</UiV2Button>
         ) : null}
         {!autoDiscoveryUnavailable && recoverable && onRetry ? (
           <UiV2Button icon="regenerate" tone="primary" onClick={onRetry}>Retry</UiV2Button>

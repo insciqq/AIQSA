@@ -1,3 +1,4 @@
+import { DEFAULT_ANSWER_SOUND, type AnswerSoundPreferences } from "../../contracts/answerSound";
 import type {
   CurrentUserCatalogWire,
   CatalogWireModel
@@ -21,7 +22,7 @@ import {
 } from "../../contracts/chatDefaults";
 import { decodeKnowledgePlan } from "../../contracts/knowledge";
 
-export type CatalogSettingsRecord = {
+export type CatalogSettingsRecord = Partial<AnswerSoundPreferences> & {
   defaultControlValues: unknown;
   /** Persisted knowledge selection for new chats; absent or invalid means none. */
   defaultKnowledgePlan?: unknown;
@@ -217,6 +218,8 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
   });
   return {
     defaults: {
+      answerSoundEnabled: input.settings.answerSoundEnabled ?? DEFAULT_ANSWER_SOUND.answerSoundEnabled,
+      answerSoundId: input.settings.answerSoundId ?? DEFAULT_ANSWER_SOUND.answerSoundId,
       controlValues: resolveCurrentUserControlValues(input, selection),
       modelId: defaultModel?.modelId ?? "",
       hasPersonalModelDefault,

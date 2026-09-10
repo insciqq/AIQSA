@@ -1,3 +1,4 @@
+import { DEFAULT_ANSWER_SOUND, isAnswerSoundId, type AnswerSoundPreferences } from "../../contracts/answerSound";
 import type { CatalogWireModel } from "../../contracts/catalog";
 import type { UserSettingsWire } from "../../contracts/settings";
 import type { RequestAuthResolver } from "../auth/requestAuth";
@@ -30,7 +31,7 @@ export type SettingsHandlerData = CatalogSelectionData & {
   searchPolicy?: { defaultPlan: unknown } | null;
 };
 
-export type UserSettingsUpdate = Partial<{
+export type UserSettingsUpdate = Partial<AnswerSoundPreferences & {
   defaultControlValues: Record<string, unknown>;
   defaultKnowledgePlan: KnowledgeSelection | null;
   defaultMcpMode: ChatDefaultMcpMode;
@@ -180,6 +181,8 @@ function buildSettingsUpdate(
   }
 
   const supportedKeys = new Set([
+    "answerSoundEnabled",
+    "answerSoundId",
     "defaultControlValues",
     "defaultKnowledgePlan",
     "defaultMcpMode",
@@ -249,6 +252,15 @@ function buildSettingsUpdate(
     update.defaultMcpMode = mode;
   }
 
+  if ("answerSoundEnabled" in body) {
+    if (typeof body.answerSoundEnabled !== "boolean") return { error: "answer_sound_enabled_boolean_required" };
+    update.answerSoundEnabled = body.answerSoundEnabled;
+  }
+  if ("answerSoundId" in body) {
+    if (!isAnswerSoundId(body.answerSoundId)) return { error: "answer_sound_id_invalid" };
+    update.answerSoundId = body.answerSoundId;
+  }
+
   if ("sendWithEnter" in body) {
     if (typeof body.sendWithEnter !== "boolean") {
       return { error: "send_with_enter_boolean_required" };
@@ -293,6 +305,8 @@ function serializeSettings(
   });
   const chatDefaults = resolveChatDefaults(settings);
   return {
+    answerSoundEnabled: settings.answerSoundEnabled ?? DEFAULT_ANSWER_SOUND.answerSoundEnabled,
+    answerSoundId: settings.answerSoundId ?? DEFAULT_ANSWER_SOUND.answerSoundId,
     defaultControlValues: resolveCurrentUserControlValues({ ...data, settings }, selection),
     defaultKnowledgePlan: chatDefaults.knowledgePlan,
     defaultMcpMode: chatDefaults.mcpMode,

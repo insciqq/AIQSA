@@ -6,6 +6,7 @@ import {
   MAX_PROVIDER_CREDENTIAL_TEST_MODELS,
   type AdminProviderCredentialTesterInput
 } from "./credentialTester";
+import { discoverAdminCompatibleModels } from "@/components/admin/adminProvidersApi";
 
 const publicLookup = async () => [
   { address: "93.184.216.34", family: 4 as const }
@@ -53,6 +54,56 @@ afterEach(() => {
 });
 
 describe("admin provider credential tester", () => {
+  it("feeds the actual compatible catalog projection through the client decoder", async () => {
+    const tester = createAdminProviderCredentialTester({
+      network: {
+        dispatch: async () => new Response(JSON.stringify({
+          data: [{
+            capabilities: {
+              context_length: 128_000,
+              supports_reasoning: true
+            },
+            id: "vendor/model",
+            owned_by: "codex-lb",
+            supported_reasoning_levels: ["low", "high"]
+          }]
+        }), {
+          headers: { "content-type": "application/json" },
+          status: 200
+        }),
+        lookupHostname: publicLookup
+      }
+    });
+    const outcome = await tester.test({
+      connection: {
+        allowPrivateNetwork: false,
+        apiRoot: "https://compatible.example.test/v1",
+        authenticationMode: "bearer",
+        responseTimeoutMs: 300_000
+      },
+      family: "openai_compatible",
+      secret: "catalog-key"
+    });
+    expect(outcome.responsesRequestIsolationDetected).toBe(true);
+    expect(outcome.models).toEqual([{
+      capabilities: {
+        contextWindow: 128_000,
+        defaultReasoningEffort: "low",
+        reasoning: true,
+        reasoningEfforts: ["low", "high"]
+      },
+      id: "vendor/model",
+      ownedBy: "codex-lb"
+    }]);
+
+    const fetcher = vi.fn(async () => Response.json({ models: outcome.models }));
+    await expect(discoverAdminCompatibleModels(
+      "connection/one",
+      "credential/one",
+      fetcher
+    )).resolves.toEqual({ data: outcome.models, ok: true });
+  });
+
   it("retains an authenticated chat catalog when optional image discovery is unavailable", async () => {
     const dispatch = vi.fn().mockResolvedValueOnce(catalog(["chat-model"]))
       .mockResolvedValue(new Response("{}", { status: 503 }));

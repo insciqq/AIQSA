@@ -1,3 +1,4 @@
+import { isAnswerSoundId } from "../../contracts/answerSound";
 import { Prisma } from "@prisma/client";
 import type {
   SettingsValidationModel,
@@ -29,6 +30,8 @@ function serializeSettings(settings: {
   defaultMcpMode: string;
   defaultProviderModel: { id: string } | null;
   defaultSearchPlan: unknown;
+  answerSoundEnabled: boolean;
+  answerSoundId: string;
   sendWithEnter: boolean;
   showCitations: boolean;
   showReasoningBlocks: boolean;
@@ -40,6 +43,8 @@ function serializeSettings(settings: {
     defaultMcpMode: settings.defaultMcpMode,
     defaultProviderModelId,
     defaultSearchPlan: settings.defaultSearchPlan,
+    answerSoundEnabled: settings.answerSoundEnabled,
+    answerSoundId: isAnswerSoundId(settings.answerSoundId) ? settings.answerSoundId : "rise",
     sendWithEnter: settings.sendWithEnter,
     showCitations: settings.showCitations,
     showReasoningBlocks: settings.showReasoningBlocks
@@ -176,6 +181,8 @@ export async function applySettingsUpdateInTransaction(
         }
       },
       defaultSearchPlan: true,
+      answerSoundEnabled: true,
+      answerSoundId: true,
       sendWithEnter: true,
       showCitations: true,
       showReasoningBlocks: true

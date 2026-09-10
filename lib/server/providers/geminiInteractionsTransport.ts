@@ -1,11 +1,34 @@
 import {
   ProviderResponseTooLargeError,
   providerHttpErrorMessage,
+  providerResponseMaxBytes,
   readBoundedResponseText,
   withTimeoutSignal
 } from "./network";
 
 export type GeminiInteractionObject = Record<string, unknown>;
+
+const GEMINI_HTTP_ERROR_CODES = [
+  "malformed_tool_call", "malformed_function_call", "invalid_request", "parameter_unknown"
+] as const;
+export type GeminiHttpErrorCode = (typeof GEMINI_HTTP_ERROR_CODES)[number];
+
+/** Only reviewed error identities cross the transport boundary; never retain
+ * provider messages, arguments or the error envelope. */
+export class GeminiHttpError extends Error {
+  constructor(readonly httpStatus: number, readonly code?: GeminiHttpErrorCode) {
+    super(providerHttpErrorMessage("Gemini", httpStatus));
+    this.name = "GeminiHttpError";
+  }
+}
+
+function geminiHttpErrorCode(text: string): GeminiHttpErrorCode | undefined {
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { return undefined; }
+  if (!isRecord(value) || !isRecord(value.error)) return undefined;
+  const candidate = value.error.code;
+  return GEMINI_HTTP_ERROR_CODES.find((code) => code === candidate);
+}
 
 export type GeminiInteractionsClientRequestOptions = Readonly<{
   signal?: AbortSignal;
@@ -82,15 +105,18 @@ async function parseJsonResponse(
 }
 
 async function throwHttpError(response: Response, signal: AbortSignal): Promise<never> {
+  let code: GeminiHttpErrorCode | undefined;
   try {
-    await readBoundedResponseText(response, { signal });
+    code = geminiHttpErrorCode(await readBoundedResponseText(response, {
+      signal, maxBytes: Math.min(providerResponseMaxBytes(), 16_384)
+    }));
   } catch (error) {
     if (!(error instanceof ProviderResponseTooLargeError)) {
       throw error;
     }
   }
 
-  throw new Error(providerHttpErrorMessage("Gemini", response.status));
+  throw new GeminiHttpError(response.status, code);
 }
 
 export function createFetchGeminiInteractionsClient(input: Readonly<{

@@ -44,25 +44,31 @@ function run(overrides: Partial<AdminProviderCheckRun> = {}): AdminProviderCheck
 }
 
 describe("modelChipsFromEvidence", () => {
-  it.each(["incomplete", "not_checked"] as const)("does not report No PDF after a %s setup check", (status) => {
+  it.each([
+    ["incomplete", "Inconclusive: this check did not prove support."],
+    ["unsupported", "Unsupported on this route."],
+    ["not_checked", "Not checked with this key."]
+  ] as const)("keeps %s PDF results muted with a distinct explanation", (status, help) => {
     const check = fixtureCheck({ credentialId: "cred-primary", providerModelId: "m", evidence: evidence({
       compatibility: { ...evidence().compatibility!, directPdf: "not_supported" },
       capabilitySetup: { policyVersion: 1, checks: { modelAccess: "verified", directPdf: status } }
     }) });
     const chips = modelChipsFromEvidence(answer, check);
-    expect(chips).toContainEqual(expect.objectContaining({ key: "pdf",
-      label: status === "incomplete" ? "PDF: inconclusive" : "PDF: not checked",
-      tone: status === "incomplete" ? "critical" : "muted" }));
+    expect(chips).toContainEqual({ key: "pdf", label: "PDF", tone: "muted", help });
     expect(chips).not.toContainEqual(expect.objectContaining({ label: "No PDF" }));
     expect(chips).toContainEqual({ key: "json", label: "JSON", tone: "ok" });
   });
 
   it("keeps ordinary Tools and JSON green when strict Memory calls are unsupported", () => {
     const check = fixtureCheck({ credentialId: "cred-primary", providerModelId: "m", evidence: evidence({
-      compatibility: { ...evidence().compatibility!, probeVersion: 2, forcedToolCall: "not_supported" }
+      compatibility: { ...evidence().compatibility!, probeVersion: 2, forcedToolCall: "not_supported", parallelToolCalls: "not_supported" },
+      capabilitySetup: { policyVersion: 2, checks: { forcedToolCall: "unsupported", parallelToolCalls: "incomplete" },
+        attempts: { parallelToolCalls: { attempts: 3, status: "incomplete", reason: "malformed_tool_output" } } }
     }) });
     expect(modelChipsFromEvidence({ ...answer, adapterKind: "openrouter_chat_completions" }, check).slice(0, 2))
-      .toEqual([{ key: "tools", label: "Tools", tone: "ok" }, { key: "json", label: "JSON", tone: "ok" }]);
+      .toEqual([expect.objectContaining({ key: "tools", label: "Tools", tone: "ok",
+        help: "Ordinary function calling verified with this key. Strict Memory calls: Unsupported on this route. Parallel tool calls: Inconclusive: this check did not prove support. the model returned an invalid tool call · 3 attempts." }),
+      { key: "json", label: "JSON", tone: "ok" }]);
   });
 
   it.each(["not_supported", "verified"] as const)("does not relabel old %s strict-call results as ordinary Tools or native JSON", (status) => {
@@ -82,12 +88,51 @@ describe("modelChipsFromEvidence", () => {
       providerModelId: "m"
     });
     expect(modelChipsFromEvidence(answer, check)).toEqual([
-      { key: "tools", label: "Tools: not verified", tone: "muted" },
+      expect.objectContaining({ key: "tools", label: "Tools", tone: "muted", help: expect.stringContaining("Not verified with this key. This does not establish that the capability is unsupported.") }),
       { key: "json", label: "JSON", tone: "ok" },
-      { key: "pdf", label: "PDF: not verified", tone: "muted" },
+      { key: "pdf", label: "PDF", tone: "muted", help: "Not verified with this key. This does not establish that the capability is unsupported." },
       { key: "images", label: "Images", tone: "ok" },
       { key: "stream", label: "Stream", tone: "ok" }
     ]);
+  });
+
+  it("keeps retained positive proof green and explains the latest inconclusive attempt", () => {
+    const check = fixtureCheck({ credentialId: "cred-primary", providerModelId: "m", evidence: evidence({
+      capabilitySetup: { policyVersion: 2, checks: { directPdf: "verified" },
+        attempts: { directPdf: { attempts: 2, status: "incomplete", reason: "http_error", httpStatus: 503 } } }
+    }) });
+    expect(modelChipsFromEvidence(answer, check)).toContainEqual({ key: "pdf", label: "PDF", tone: "ok",
+      help: "Previously verified. Latest check inconclusive: provider request failed · HTTP 503 · 2 attempts." });
+  });
+
+  it.each(["embedding", "reranker"] as const)("explains an unverified %s result without a critical chip", (modelClass) => {
+    const key = modelClass === "embedding" ? "embedding" : "reranking";
+    const check = fixtureCheck({ credentialId: "cred-primary", providerModelId: "m", evidence: evidence({
+      capabilitySetup: { policyVersion: 2, checks: { [key]: "incomplete" },
+        attempts: { [key]: { attempts: 1, status: "incomplete", reason: "timeout" } } }
+    }) });
+    expect(modelChipsFromEvidence({ ...answer, modelClass }, check)).toEqual([expect.objectContaining({
+      tone: "muted", help: "Inconclusive: this check did not prove support. check timed out · 1 attempt."
+    })]);
+  });
+
+  it("explains image limitations while retaining independently verified editing", () => {
+    const configuration = { ...answer, adapterKind: "openai_images_native" as const, modelClass: "image" as const };
+    const check = fixtureCheck({ credentialId: "cred-primary", providerModelId: "m", evidence: evidence({
+      imageEditing: { adapterKind: "openai_images_native", upstreamModelId: answer.upstreamModelId, verified: true, probeVersion: 1 },
+      capabilitySetup: { policyVersion: 2, checks: { imageGeneration: "incomplete", imageEditing: "verified" },
+        attempts: { imageGeneration: { attempts: 1, status: "incomplete", reason: "semantic_inconclusive" } } }
+    }) });
+    expect(modelChipsFromEvidence(configuration, check)).toEqual([
+      { key: "imageGeneration", label: "Generate images", tone: "muted", help: "Inconclusive: this check did not prove support. response did not prove the capability · 1 attempt." },
+      { key: "imageEditing", label: "Edit images", tone: "ok" }
+    ]);
+    const unavailable = { ...check, status: "unavailable" as const, evidence: evidence({
+      capabilitySetup: { policyVersion: 2, checks: { modelAccess: "unsupported", imageGeneration: "unsupported" },
+        attempts: { imageGeneration: { attempts: 1, status: "unsupported", reason: "route_unsupported", httpStatus: 404 } } }
+    }) };
+    expect(modelChipsFromEvidence(configuration, unavailable)).toEqual([expect.objectContaining({ tone: "critical",
+      help: expect.stringContaining("Image generation: no supporting endpoint on this route · HTTP 404 · 1 attempt.") })]);
   });
 
   it("omits chips without a result and ignores evidence made for another upstream id", () => {
@@ -140,7 +185,7 @@ describe("modelChipsFromEvidence", () => {
 describe("modelWorksWith", () => {
   const check = fixtureCheck({ credentialId: "cred-primary", evidence: evidence(), providerModelId: "m" });
 
-  it("shows a check in progress, then a temporary failure with the chips it kept, then the chips", () => {
+  it("shows progress and keeps prior chips with a quiet explanation after refresh failure", () => {
     expect(modelWorksWith({ check, checkRun: run({ inFlight: ["m"] }), configuration: answer, defaultCredentialId: "cred-primary", modelId: "m" }))
       .toEqual({ kind: "checking", label: "Checking tools, JSON, PDF, images and streaming…" });
     expect(modelWorksWith({
@@ -149,7 +194,8 @@ describe("modelWorksWith", () => {
       configuration: answer,
       defaultCredentialId: "cred-primary",
       modelId: "m"
-    })).toMatchObject({ chips: expect.arrayContaining([{ key: "tools", label: "Tools", tone: "ok" }]), kind: "failed", usageMissing: false });
+    })).toMatchObject({ chips: expect.arrayContaining([expect.objectContaining({ key: "tools", label: "Tools", tone: "ok",
+      help: expect.stringContaining("The latest model check could not finish. Earlier saved results are kept.") })]), kind: "checked", usageMissing: false });
     expect(modelWorksWith({ check, checkRun: run({ done: 1, state: "completed" }), configuration: answer, defaultCredentialId: "cred-primary", modelId: "m" }))
       .toMatchObject({ kind: "checked" });
   });

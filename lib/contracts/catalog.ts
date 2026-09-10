@@ -1,3 +1,4 @@
+import { decodeAnswerSoundPreferences, type AnswerSoundPreferences } from "./answerSound";
 import {
   decodeOptionalChatDefaults,
   type ChatDefaultMcpMode
@@ -116,7 +117,7 @@ export type CatalogSearchStrategy = CatalogWireSearchStrategy;
 
 export type CatalogSearchStrategyKind = CatalogSearchStrategy["kind"];
 
-export type CatalogDefaults = {
+export type CatalogDefaults = Partial<AnswerSoundPreferences> & {
   controlValues: Record<string, unknown>;
   hasPersonalModelDefault: boolean;
   /** Personal chat defaults applied when a new chat starts; absent on older wires. */
@@ -458,6 +459,8 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     return null;
   }
 
+  const answerSound = decodeAnswerSoundPreferences(defaults);
+  if (!answerSound) return null;
   const models = catalog.models.map(decodeCatalogModel);
   const providers = catalog.providers.map(decodeCatalogProvider);
   const searchStrategies = catalog.searchStrategies.map(decodeSearchStrategy);
@@ -500,6 +503,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   return {
     ...(attachmentLimits ? { attachmentLimits } : {}),
     defaults: {
+      ...answerSound,
       controlValues: defaults.controlValues,
       hasPersonalModelDefault: defaults.hasPersonalModelDefault,
       knowledgePlan: chatDefaults.knowledgePlan,

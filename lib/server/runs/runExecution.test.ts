@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { sessionStatusTool } from "../tools/sessionStatus";
+import { mixedToolsImagePlan, openRouterMixedTools } from "@/tests/support/openRouterTools";
 import {
   MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
   MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE
@@ -15,7 +16,8 @@ import type { McpDiscoveryState, McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import { buildOpenAIResponsesRequestPreview } from "../providers/openaiResponsesRequest";
-import { buildOpenRouterChatRequestPreview } from "../providers/openRouterChatRequest";
+import { buildOpenRouterChatRequest, buildOpenRouterChatRequestPreview } from "../providers/openRouterChatRequest";
+import { createFetchOpenRouterChatClient, createOpenRouterChatAdapter } from "../providers/openRouterChat";
 import { ProviderRequestTimeoutError } from "../providers/network";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
@@ -4230,10 +4232,53 @@ describe("run execution", () => {
     expect(durable).not.toContain("RAW_ANTHROPIC_RESULT_CANARY");
   });
 
+  it.each([false, true])("persists a safe answer-routing failure with mixed tools %s", async (mixedTools) => {
+    const base = preparedData({ provider: "openrouter", modelId: "deepseek/deepseek-v4-pro-0813",
+      ...(mixedTools ? { mcpDiscovery: { version: 2, catalog: { version: 1, servers: [] }, epochs: [] } } : {}) });
+    const prepared = {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, ...(mixedTools ? { imagePlan: mixedToolsImagePlan, sessionStatusTool: true as const } : {}) },
+      providerRequest: { ...base.providerRequest, ...(mixedTools ? { imagePlan: mixedToolsImagePlan, sessionStatusTool: true as const, tools: openRouterMixedTools() } : {}) },
+      providerAdmissionPlan: { ...base.providerAdmissionPlan, answer: { ...base.providerAdmissionPlan.answer,
+        snapshot: { ...base.providerAdmissionPlan.answer.snapshot, modelDisplayName: "Accepted answer label" } } }
+    };
+    const remotePrivate = "PRIVATE_ROUTING_FUNNEL_CANARY";
+    const fetchFn = vi.fn(async () => Response.json({ error: { code: 404,
+      message: `No endpoints found that support the provided parameters. ${remotePrivate}`,
+      metadata: { failed_routing_step: "parameters", routing_funnel: { raw: remotePrivate } }
+    } }, { status: 404 }));
+    const route = vi.fn();
+    const materialize = vi.fn();
+    const appendMcpDiscoveryEpoch = vi.fn();
+    const repository = createRepository();
+    const response = await createRunExecutionResponse(executionInput({ prepared,
+      adapter: createOpenRouterChatAdapter({ client: createFetchOpenRouterChatClient({ apiKey: "fixture", fetchFn }) }),
+      mcp: { materialize, prepare: materialize, router: { route } },
+      repository: { ...repository.repository, appendMcpDiscoveryEpoch }
+    })).text();
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(repository.failedRuns).toEqual([expect.objectContaining({
+      error: { code: "openrouter_required_parameters_unavailable",
+        message: expect.stringContaining("answer model “Accepted answer label”") },
+      options: { recoveryTerminal: true }
+    })]);
+    expect(repository.failedRuns[0]?.error.message).toContain("before retrying");
+    expect(response).toContain("openrouter_required_parameters_unavailable");
+    expect(response).toContain("Accepted answer label");
+    expect(response + JSON.stringify(repository.failedRuns)).not.toContain(remotePrivate);
+    expect(repository.toolCalls.size).toBe(0);
+    expect(route).not.toHaveBeenCalled();
+    expect(materialize).not.toHaveBeenCalled();
+    expect(appendMcpDiscoveryEpoch).not.toHaveBeenCalled();
+    expect(repository.completeRuns).toEqual([]);
+  });
+
   it.each([
-    { mode: "single", goals: ["create a Jira issue"] },
-    { mode: "batch", goals: ["a".repeat(400), "create a Jira issue"] }
-  ])("discovers and checkpoints MCP schemas for $mode goals", async ({ goals }) => {
+    { mode: "single", goals: ["create a Jira issue"], provider: "openai", modelId: "gpt-tool-model" },
+    { mode: "batch", goals: ["a".repeat(400), "create a Jira issue"], provider: "openai", modelId: "gpt-tool-model" },
+    { mode: "OpenRouter DeepSeek", goals: ["create a Jira issue"], provider: "openrouter", modelId: "deepseek/deepseek-v4-pro-0813" },
+    { mode: "OpenRouter Opus batch", goals: ["a".repeat(400), "create a Jira issue"], provider: "openrouter", modelId: "anthropic/claude-opus-5" }
+  ])("discovers and checkpoints MCP schemas for $mode goals", async ({ goals, provider, modelId }) => {
     const namespacedName = "mcp_jira_create_issue_auto";
     const fingerprint = "fingerprint-auto";
     const snapshot: McpRunPlanSnapshot = {
@@ -4280,13 +4325,22 @@ describe("run execution", () => {
     };
     const basePrepared = preparedData({
       mcpDiscovery: discovery,
-      modelId: "gpt-tool-model",
-      provider: "openai"
+      modelId,
+      provider
     });
+    const applicationTools = provider === "openrouter" ? openRouterMixedTools() : [];
+    const applicationControls = provider === "openrouter" ? {
+      imagePlan: mixedToolsImagePlan, sessionStatusTool: true as const,
+      modelCapabilities: { ...basePrepared.normalizedRequest.modelCapabilities, contextWindow: 262_144 },
+      params: { maxTokens: 65_536, temperature: 1, reasoning: { enabled: true, effort: "high" },
+        provider: { dataCollection: "deny", allowFallbacks: true, sort: "throughput", requireParameters: false } }
+    } : {};
     const prepared: MaterializedPreparedRunData = {
       ...basePrepared,
+      normalizedRequest: { ...basePrepared.normalizedRequest, ...applicationControls },
       providerRequest: {
         ...basePrepared.providerRequest,
+        ...applicationControls,
         tools: [{
           capability: "mcp",
           description: "Find relevant tools",
@@ -4298,6 +4352,17 @@ describe("run execution", () => {
     const providerRequests: ProviderRunRequest[] = [];
     const adapter = createAdapter(async function* (request) {
       providerRequests.push(request);
+      if (provider === "openrouter") {
+        const body = buildOpenRouterChatRequest(request);
+        expect(body).not.toHaveProperty("parallel_tool_calls");
+        expect(body).toMatchObject({ max_tokens: 65_536, temperature: 1,
+          provider: { data_collection: "deny", require_parameters: true, allow_fallbacks: true } });
+        expect(body.tools).toEqual(expect.arrayContaining([
+          expect.objectContaining({ function: expect.objectContaining({ name: "generate_image", strict: false }) }),
+          expect.objectContaining({ function: expect.objectContaining({ name: "get_session_status", strict: true }) }),
+          expect.objectContaining({ function: expect.objectContaining({ name: "find_tools", strict: false }) })
+        ]));
+      }
       if (providerRequests.length === 1) {
         return providerResult({
           finalText: "",
@@ -4375,11 +4440,12 @@ describe("run execution", () => {
     })).text();
 
     expect(providerRequests).toHaveLength(3);
-    expect(providerRequests[0]?.tools?.map((tool) => tool.name)).toEqual(["find_tools"]);
+    const initialToolNames = applicationTools.length ? applicationTools.map((tool) => tool.name) : ["find_tools"];
+    expect(providerRequests[0]?.tools?.map((tool) => tool.name)).toEqual(initialToolNames);
     expect(providerRequests[0]?.parallelToolCalls).toBe(false);
     expect(JSON.stringify(providerRequests[0]?.mcpDiscovery?.catalog)).not.toContain("inputSchema");
     expect(providerRequests[1]?.tools?.map((tool) => tool.name)).toEqual([
-      "find_tools",
+      ...initialToolNames,
       namespacedName
     ]);
     expect(providerRequests[1]?.parallelToolCalls).toBe(true);
@@ -4444,7 +4510,7 @@ describe("run execution", () => {
     expect(repository.failedRuns).toEqual([]);
   });
 
-  it.each(["unexpected", "reported", "cancelled", "output_limit"] as const)(
+  it.each(["unexpected", "reported", "cancelled", "output_limit", "request_rejected"] as const)(
     "settles Auto discovery %s with safe errors and reported usage", async (outcome) => {
     const discovery: McpDiscoveryState = {
       catalog: { servers: [], version: 1 },
@@ -4456,7 +4522,8 @@ describe("run execution", () => {
       if (outcome === "unexpected") throw new Error(rawFailure);
       if (outcome === "cancelled") expect(activeRunControllerRegistry.abort("run-1")).toBe(true);
       throw new McpSemanticRouterError(
-        outcome === "cancelled" ? "mcp_router_cancelled" : outcome === "output_limit" ? "mcp_router_output_limit" : "mcp_router_request_failed",
+        outcome === "cancelled" ? "mcp_router_cancelled" : outcome === "output_limit" ? "mcp_router_output_limit"
+          : outcome === "request_rejected" ? "mcp_router_gemini_invalid_request" : "mcp_router_request_failed",
         { modelId: "gpt-router", provider: "openai", usage: { inputTokens: 12, outputTokens: 3, reasoningTokens: 0 } }
       );
     });
@@ -4491,10 +4558,12 @@ describe("run execution", () => {
 
     if (outcome !== "cancelled") expect(repository.failedRuns).toEqual([expect.objectContaining({
       error: {
-        ...mcpAutoDiscoveryFailure(outcome === "output_limit" ? "mcp_router_output_limit" : "mcp_router_request_failed")
+        ...mcpAutoDiscoveryFailure(outcome === "output_limit" ? "mcp_router_output_limit"
+          : outcome === "request_rejected" ? "mcp_router_gemini_invalid_request" : "mcp_router_request_failed")
       }
     })]);
     expect(JSON.stringify(repository.failedRuns)).not.toContain(rawFailure);
+    if (outcome === "request_rejected") expect(repository.failedRuns[0]?.options).toEqual({ recoveryTerminal: true });
     if (outcome !== "cancelled") expect([...repository.toolCalls.values()]).toEqual([
       expect.objectContaining({ state: "error", toolName: "find_tools" })
     ]);
@@ -4720,10 +4789,12 @@ describe("run execution", () => {
       }
     );
 
+    const route = vi.fn(async () => { throw new McpSemanticRouterError("mcp_router_gemini_invalid_request"); });
+
     const events = parseSse(await createRunExecutionResponse(executionInput({
       adapter,
       memoryEgress: egress.service,
-      mcp: { prepare },
+      mcp: { prepare, router: { route } },
       mcpRuntime: {
         callTool,
         async ensureAcceptedGeneration(generationId) {
@@ -4734,6 +4805,7 @@ describe("run execution", () => {
       repository: repository.repository
     })).text());
 
+    expect(route).not.toHaveBeenCalled();
     expect(providerRequests).toHaveLength(2);
     const planningWire = JSON.stringify(providerRequests[0]);
     for (const [name, marker] of Object.entries(canaries)) {

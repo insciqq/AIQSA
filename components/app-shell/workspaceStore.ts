@@ -13,6 +13,7 @@ export type WorkspaceSnapshot = {
   activeChatDetailLoading: boolean;
   activeChatId: string | null;
   catalog: Catalog | null;
+  catalogAccountId: string | null;
   catalogError: string | null;
   chats: WorkspaceChatSummary[];
   creatingChat: boolean;
@@ -38,7 +39,7 @@ export type WorkspaceStore = WorkspaceSnapshot & {
   setActiveChatDetailError(value: string | null): void;
   setActiveChatDetailLoading(value: boolean): void;
   setActiveChatId(value: string | null): void;
-  setCatalog(update: StateUpdate<Catalog | null>): void;
+  setCatalog(update: StateUpdate<Catalog | null>, accountId?: string): void;
   setCatalogError(value: string | null): void;
   setChats(update: StateUpdate<WorkspaceChatSummary[]>): void;
   setCreatingChat(value: boolean): void;
@@ -69,6 +70,7 @@ export const initialWorkspaceSnapshot: WorkspaceSnapshot = {
   activeChatDetailLoading: false,
   activeChatId: null,
   catalog: null,
+  catalogAccountId: null,
   catalogError: null,
   chats: [],
   creatingChat: false,
@@ -142,8 +144,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   setActiveChatId(value) {
     set({ activeChatId: value });
   },
-  setCatalog(update) {
-    set((state) => ({ catalog: applyUpdate(state.catalog, update) }));
+  setCatalog(update, accountId) {
+    set((state) => ({
+      catalog: applyUpdate(state.catalog, update),
+      ...(accountId !== undefined ? { catalogAccountId: accountId } : {})
+    }));
   },
   setCatalogError(value) {
     set({ catalogError: value });

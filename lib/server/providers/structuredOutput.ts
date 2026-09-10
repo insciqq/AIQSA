@@ -248,6 +248,26 @@ function decodeProviderStructuredOutput(
   return output[PROVIDER_ROOT_WRAPPER_KEY];
 }
 
+function geminiRequestSchema(request: ProviderStructuredOutputRequest): Record<string, unknown> {
+  const { schema } = schemaForProvider(request.schema, "gemini");
+  if (request.name !== "mcp_tool_routing" && request.name !== "mcp_tool_routing_retry") {
+    return schema;
+  }
+  // This nested routing shape is rejected with Gemini invalid_request when
+  // these two array bounds are on the wire. Other Gemini maxItems stay intact.
+  // The router still validates its original canonical limits and allowed IDs.
+  const requirements = isRecord(schema.properties) ? schema.properties.requirements : null;
+  if (isRecord(requirements) && requirements.type === "array" &&
+    isRecord(requirements.items) && isRecord(requirements.items.properties)) {
+    const toolIds = requirements.items.properties.tool_ids;
+    if (isRecord(toolIds) && toolIds.type === "array") {
+      delete requirements.maxItems;
+      delete toolIds.maxItems;
+    }
+  }
+  return schema;
+}
+
 function normalizeRequest(
   request: ProviderStructuredOutputRequest
 ): Required<Omit<ProviderStructuredOutputRequest, "reasoningEffort">> &
@@ -457,7 +477,7 @@ export function buildGeminiInteractionsStructuredOutputRequest(
     model: model.upstreamModelId,
     response_format: {
       mime_type: "application/json",
-      schema: schemaForProvider(normalized.schema, "gemini").schema,
+      schema: geminiRequestSchema(normalized),
       type: "text"
     },
     store: false,

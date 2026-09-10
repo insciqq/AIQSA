@@ -1,5 +1,7 @@
 "use client";
 
+import { decodeAnswerSoundPreferences, DEFAULT_ANSWER_SOUND } from "@/lib/contracts/answerSound";
+
 import { toolActivityOriginV2 } from "@/features/run-lifecycle-v2/runPresentation";
 import {
   attachmentPolicyForModel,
@@ -139,7 +141,7 @@ import type {
 } from "@/components/app-shell/types";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memoryClient";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   type SavedControlDraft
 } from "@/components/app-shell/powerAppShellData";
@@ -326,7 +328,13 @@ export function PowerAppShellV2({
   accountEmail: string | null;
   adminEntryVisible?: boolean;
 }) {
-  const catalog = useWorkspaceStore((state) => state.catalog);
+  const catalog = useWorkspaceStore((state) => state.catalogAccountId === accountId ? state.catalog : null);
+  const settingsSession = useMemo(() => Symbol(accountId), [accountId]);
+  const activeSettingsSessionRef = useRef<symbol | null>(null);
+  useLayoutEffect(() => {
+    activeSettingsSessionRef.current = settingsSession;
+    return () => { activeSettingsSessionRef.current = null; };
+  }, [settingsSession]);
   const catalogError = useWorkspaceStore((state) => state.catalogError);
   const folders = useWorkspaceStore((state) => state.folders);
   const chats = useWorkspaceStore((state) => state.chats);
@@ -456,8 +464,16 @@ export function PowerAppShellV2({
   );
   const activeRunChatIdsKey = useRunLifecycleStore((state) => Object.keys(state.activeStreams).sort().join("\u0000"));
   const currentRunId = activeChatStream?.runId ?? null;
-  const { notificationSoundEnabled, notifyAnswerReady, primeAnswerSound, toggleNotificationSound } =
-    useAnswerNotification();
+  const soundPreferences = catalog ? decodeAnswerSoundPreferences(catalog.defaults) : null;
+  const { notifyAnswerReady, primeAnswerSound, previewAnswerSound } = useAnswerNotification({
+    accountId,
+    readPreferences() {
+      const current = useWorkspaceStore.getState();
+      return activeSettingsSessionRef.current === settingsSession && current.catalogAccountId === accountId && current.catalog
+        ? decodeAnswerSoundPreferences(current.catalog.defaults)
+        : null;
+    }
+  });
 
   useMcpOAuthReturn(accountId, openMcpSettings);
 
@@ -493,7 +509,10 @@ export function PowerAppShellV2({
   const [pendingThreadMutations] = useState(() => new Set<string>());
   const pendingControlDefaultsRef = useRef<{ draft: SavedControlDraft; model: CatalogModel } | null>(null);
   const pendingControlDefaultsTimerRef = useRef<number | null>(null);
-  const settingsMutationCoordinatorRef = useRef<SettingsMutationCoordinator | null>(null);
+  const settingsMutationCoordinatorRef = useMemo(() => ({
+    current: null as SettingsMutationCoordinator | null,
+    accountId
+  }), [accountId]);
   const runCatalogRef = useRef<Catalog | null>(catalog);
   const projectRunContextRef = useRef(false);
   const personalComposerControlsRef = useRef<ComposerControlSnapshot | null>(null);
@@ -688,12 +707,15 @@ export function PowerAppShellV2({
     setDefaultMcpMode,
     setDefaultSearchPlan,
     setSendWithEnter,
+    setAnswerSoundEnabled,
+    setAnswerSoundId,
     toggleCitationsVisibility,
     toggleReasoningBlockVisibility,
     useOrganizationModelDefault,
     useOrganizationSearchDefault
   } = useRunControlsActions({
     allowPersonalPersistence: () => !projectRunContextRef.current,
+    isSettingsSessionCurrent: () => activeSettingsSessionRef.current === settingsSession,
     catalog,
     currentModel,
     pendingControlDefaultsRef,
@@ -891,6 +913,7 @@ export function PowerAppShellV2({
     retryWorkspace
   } = useWorkspaceBootstrapController({
     accountEmail,
+    accountId,
     activateBlankWorkspace,
     applyControlDefaults,
     reapplyActiveChatDefaults,
@@ -1899,7 +1922,11 @@ export function PowerAppShellV2({
     },
     sendWithEnter: catalog?.defaults.sendWithEnter ?? true,
     setSendWithEnter,
-    notificationSoundEnabled,
+    notificationSoundEnabled: soundPreferences?.answerSoundEnabled ?? false,
+    notificationSoundId: soundPreferences?.answerSoundId ?? DEFAULT_ANSWER_SOUND.answerSoundId,
+    notificationSoundReady: soundPreferences !== null,
+    previewAnswerSound,
+    selectAnswerSound: setAnswerSoundId,
     operationError: composerSession.operationError,
     operationErrorLive: composerSession.operationErrorLive,
     operationErrorRetryable: composerSession.operationErrorRetryable,
@@ -1919,7 +1946,12 @@ export function PowerAppShellV2({
     submitComposer,
     temperature,
     toggleCitationsVisibility,
-    toggleNotificationSound,
+    toggleNotificationSound: () => {
+      const current = useWorkspaceStore.getState();
+      if (current.catalogAccountId === accountId && current.catalog) {
+        setAnswerSoundEnabled(!(current.catalog.defaults.answerSoundEnabled ?? true));
+      }
+    },
     toggleReasoningBlockVisibility,
     useOrganizationSearchDefault,
     useOrganizationModelDefault,

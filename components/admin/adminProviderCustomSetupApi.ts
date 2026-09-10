@@ -1,5 +1,5 @@
 import { ADMIN_PROVIDER_SETUP_STREAM_TYPE, type AdminProviderSetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
-import { readAdminProviderSetupResponse } from "./adminProviderSetupStream";
+import { adminProviderSetupFailureCode, readAdminProviderSetupResponse } from "./adminProviderSetupStream";
 import { isAdminProviderCheckRun } from "./adminProvidersApi";
 import type {
   AdminProviderCustomDiscoveryRequest,
@@ -286,10 +286,7 @@ export async function submitAdminProviderCustomSetup(
           ok: false
         };
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      return { error: { code: "request_aborted" }, ok: false };
-    }
-    return { error: { code: "network_error" }, ok: false };
+    return { error: { code: adminProviderSetupFailureCode(error, signal) }, ok: false };
   }
 }
 
@@ -298,6 +295,11 @@ export function adminProviderCustomSetupErrorMessage(
 ): string {
   const messages: Record<string, string> = {
     forbidden: "Your account no longer has permission to manage providers.",
+    request_aborted: "Checking stopped. Saved results are kept.",
+    provider_setup_interrupted: "The setup response ended before completion. Review saved results before continuing.",
+    provider_setup_timeout: "The setup response stopped arriving. Review saved results before continuing.",
+    provider_setup_response_invalid: "The setup response was malformed. Review saved results before continuing.",
+    provider_setup_response_too_large: "The setup response exceeded its size limit. Review saved results before continuing.",
     network_error: "Could not reach the provider administration API.",
     provider_configuration_invalid: "Review the endpoint, model, and authentication fields.",
     provider_custom_setup_catalog_unavailable:

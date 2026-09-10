@@ -4,6 +4,7 @@ import type {
   AdminOpenRouterDiscoveredModel,
   AdminProviderCredential
 } from "@/lib/contracts/adminProviders";
+import { discoverAdminCompatibleModels } from "@/components/admin/adminProvidersApi";
 import { describe, expect, it, vi } from "vitest";
 import {
   openRouterEndpointDiscoveryIdentity,
@@ -55,6 +56,45 @@ function identity(
 }
 
 describe("useAdminOpenRouterDiscovery", () => {
+  it("retries after the compatible decoder rejects a response and recovers on valid output", async () => {
+    let attempt = 0;
+    const loadCompatibleModels = vi.fn(async (connectionId: string, credentialId: string) => {
+      const body = attempt++ === 0
+        ? { models: [{ capabilities: {}, id: "vendor/model", ownedBy: "" }] }
+        : { models: [{ capabilities: {}, id: "vendor/model", ownedBy: "codex-lb" }] };
+      const decoded = await discoverAdminCompatibleModels(
+        connectionId,
+        credentialId,
+        vi.fn(async () => Response.json(body))
+      );
+      return decoded.ok ? decoded.data : null;
+    });
+    const { result } = renderHook(() => useAdminOpenRouterDiscovery({
+      loadCompatibleModels,
+      loadEndpoints: vi.fn(),
+      loadModels: vi.fn()
+    }));
+    const currentIdentity = identity();
+
+    await act(async () => {
+      await result.current.compatibleModels.load(currentIdentity);
+    });
+    expect(result.current.compatibleModels.get(currentIdentity)).toMatchObject({
+      error: "Compatible endpoint models could not be loaded. Try again.",
+      status: "error"
+    });
+
+    await act(async () => {
+      await result.current.compatibleModels.retry(currentIdentity);
+    });
+    expect(result.current.compatibleModels.get(currentIdentity)).toMatchObject({
+      error: null,
+      items: [{ capabilities: {}, id: "vendor/model", ownedBy: "codex-lb" }],
+      status: "success"
+    });
+    expect(loadCompatibleModels).toHaveBeenCalledTimes(2);
+  });
+
   it("reuses a model catalog only for the same connection and credential-version identity", async () => {
     const first = deferred<AdminOpenRouterDiscoveredModel[] | null>();
     const loadModels = vi.fn().mockReturnValueOnce(first.promise)

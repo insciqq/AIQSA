@@ -2,7 +2,8 @@ import type { AdminKnowledgeSettings } from "@/lib/contracts/adminKnowledge";
 import type { AdminModelPolicyCatalog } from "@/lib/contracts/adminModelPolicy";
 import type {
   AdminProviderConnection,
-  AdminProviderCredential
+  AdminProviderCredential,
+  AdminProviderModel
 } from "@/lib/contracts/adminProviders";
 import type { AdminSearchCatalog } from "@/lib/contracts/adminSearch";
 import type { AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
@@ -229,10 +230,20 @@ export function providerListStatus(connection: AdminProviderConnection): Provide
   return { kind: "working", label: "Working", tone: "ok" };
 }
 
+/** Initial presets become visible after key activation, independently of optional checks.
+ * Configured models stay administrable after key loss; this grants no execution authority. */
+export function visibleProviderModels(connection: AdminProviderConnection): readonly AdminProviderModel[] {
+  const configuration = connection.activeConfig ?? connection.draftConfig;
+  const keyless = connection.family === "openai_compatible" && configuration.authenticationMode === "none";
+  if (keyless || connection.credentials.some((credential) => credential.activeVersion !== null)) return connection.models;
+  return connection.models.filter((model) => model.activeConfig !== null || model.activeVersion > 0 || model.activatedAt !== null);
+}
+
 /** `4 on` · `7 on · 1 off` · `3 off` · `No models`. */
 export function providerModelsSummary(connection: AdminProviderConnection): string {
-  const on = connection.models.filter((model) => model.enabled).length;
-  const off = connection.models.length - on;
+  const models = visibleProviderModels(connection);
+  const on = models.filter((model) => model.enabled).length;
+  const off = models.length - on;
   if (on === 0 && off === 0) return "No models";
   if (off === 0) return `${on} on`;
   if (on === 0) return `${off} off`;
@@ -240,7 +251,7 @@ export function providerModelsSummary(connection: AdminProviderConnection): stri
 }
 
 function modelNames(connection: AdminProviderConnection): string {
-  const names = connection.models.filter((model) => model.enabled).map((model) => model.displayName);
+  const names = visibleProviderModels(connection).filter((model) => model.enabled).map((model) => model.displayName);
   return names.length ? names.join(", ") : "No models yet";
 }
 
@@ -256,9 +267,10 @@ export function providerSubtitle(
   const tags = usage.get(connection.id) ?? [];
   if (isCustomProvider(connection)) {
     const host = providerHost(effectiveEndpoint(connection));
+    const count = visibleProviderModels(connection).length;
     const models = connection.enabled
       ? modelNames(connection)
-      : `${connection.models.length} model${connection.models.length === 1 ? "" : "s"}`;
+      : `${count} model${count === 1 ? "" : "s"}`;
     return `Custom · ${host} · ${models}`;
   }
   if (tags.includes("Default chat")) {
@@ -351,7 +363,7 @@ export function providerHeaderStatus(connection: AdminProviderConnection, now = 
     if (failed) problems.push(`${failed} ${failed === 1 ? "key needs" : "keys need"} a re-check`);
     parts.push(problems.length ? problems.join(", ") : "All keys working");
   }
-  const on = connection.models.filter((model) => model.enabled).length;
+  const on = visibleProviderModels(connection).filter((model) => model.enabled).length;
   parts.push(on === 0 ? "No models on" : `${on} model${on === 1 ? "" : "s"} on`);
   if (connection.checkRun?.state === "running" && connection.checkRun.reason !== "model") {
     parts.push("checking models");

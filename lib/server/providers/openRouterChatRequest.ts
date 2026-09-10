@@ -427,11 +427,11 @@ function buildOpenRouterBody(input: {
   if (input.tools && input.tools.length > 0) {
     body.tools = input.tools;
     body.tool_choice = input.toolChoice ?? "auto";
-    // A single strict tool is already a bounded schema route. Omitting this
-    // optional flag keeps the request routable to strict-capable endpoints
-    // that do not advertise parallel tool calls; multiple tools retain the
-    // caller's exact sequential/parallel contract.
-    if (!strictTools || input.tools.length > 1) {
+    // Strict tools require parameter filtering. Either value of this optional
+    // flag excludes otherwise eligible endpoints that do not advertise it,
+    // including mixed application-tool requests. The tool loop enforces the
+    // accepted concurrency and advertised-tool authority locally.
+    if (!strictTools) {
       body.parallel_tool_calls = input.parallelToolCalls === true;
     }
   }
