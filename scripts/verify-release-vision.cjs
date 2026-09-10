@@ -54,8 +54,8 @@ async function main() {
       const image = Buffer.from(attachment.dataUrl.split(",")[1], "base64");
       assert.equal(image.length, attachment.byteSize, "vision_release_attachment_size_invalid");
       await assertVisionProbeImage(image);
-      assert.ok(!JSON.stringify(request.content).includes("V4K8M2"), "vision_release_answer_leaked");
-      return { finalText: "V4K8M2" };
+      assert.ok(!JSON.stringify(request.content).includes("PEARS"), "vision_release_answer_leaked");
+      return { finalText: "PEARS" };
     }
   });
   const passed = await probe.probe({
@@ -70,7 +70,7 @@ async function main() {
   });
   assert.equal(passed, true, "vision_release_probe_failed");
   assert.equal(requests, 1, "vision_release_request_count_invalid");
-  console.log(JSON.stringify({ role, architecture: process.arch, native: true, readableCode: true, sharp: sharp.versions.sharp }));
+  console.log(JSON.stringify({ role, architecture: process.arch, native: true, readableReceipt: true, sharp: sharp.versions.sharp }));
 }
 
 main().catch(() => {

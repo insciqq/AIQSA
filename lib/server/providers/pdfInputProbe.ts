@@ -1,7 +1,7 @@
 import { deflateSync } from "node:zlib";
 import type { ProviderModelConfiguration } from "./providerConfiguration";
 import type { ProviderCredentialSource } from "./providerCredentialSource";
-import { lowestConfiguredReasoningEffort } from "./providerModelCapabilities";
+import { declaredModelOutputTokenLimit, lowestConfiguredReasoningEffort } from "./providerModelCapabilities";
 import { createProviderSafeFetch } from "./providerSafeFetch";
 import {
   createProviderRuntimeBinding,
@@ -14,10 +14,10 @@ import {
   type PdfInputVerificationEvidence
 } from "./pdfInputEvidence";
 
-export const PDF_INPUT_PROBE_ANSWER = "PEARS";
+import { receiptProbeRaster, RECEIPT_PROBE_ANSWER as PDF_INPUT_PROBE_ANSWER,
+  RECEIPT_PROBE_WIDTH as PDF_INPUT_PROBE_WIDTH, RECEIPT_PROBE_HEIGHT as PDF_INPUT_PROBE_HEIGHT } from "./receiptProbeFixture";
+export { PDF_INPUT_PROBE_ANSWER, PDF_INPUT_PROBE_WIDTH, PDF_INPUT_PROBE_HEIGHT };
 export const PDF_INPUT_PROBE_MIME_TYPE = "application/pdf";
-export const PDF_INPUT_PROBE_WIDTH = 480;
-export const PDF_INPUT_PROBE_HEIGHT = 360;
 
 const PDF_INPUT_PROBE_MAX_OUTPUT_TOKENS = 512;
 
@@ -27,91 +27,6 @@ const PDF_INPUT_PROBE_PROMPT = [
   "Return no explanation, punctuation, Markdown, or additional text."
 ].join("\n");
 
-const glyphs: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
-  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
-  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
-  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
-  A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
-  C: ["01111", "10000", "10000", "10000", "10000", "10000", "01111"],
-  E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
-  I: ["11111", "00100", "00100", "00100", "00100", "00100", "11111"],
-  K: ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
-  L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
-  M: ["10001", "11011", "10101", "10101", "10001", "10001", "10001"],
-  O: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
-  P: ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
-  Q: ["01110", "10001", "10001", "10001", "10101", "10010", "01101"],
-  R: ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
-  S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
-  Y: ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
-  T: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"]
-});
-
-function drawRectangle(
-  raster: Uint8Array,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  value = 0
-): void {
-  for (let row = Math.max(0, y); row < Math.min(PDF_INPUT_PROBE_HEIGHT, y + height); row += 1) {
-    const offset = row * PDF_INPUT_PROBE_WIDTH;
-    for (let column = Math.max(0, x); column < Math.min(PDF_INPUT_PROBE_WIDTH, x + width); column += 1) {
-      raster[offset + column] = value;
-    }
-  }
-}
-
-function drawRasterText(
-  raster: Uint8Array,
-  text: string,
-  x: number,
-  y: number,
-  scale: number
-): void {
-  let cursor = x;
-  for (const character of text) {
-    const glyph = glyphs[character];
-    if (!glyph) throw new Error("pdf_input_probe_glyph_missing");
-    glyph.forEach((row, rowIndex) => {
-      [...row].forEach((pixel, columnIndex) => {
-        if (pixel === "1") {
-          drawRectangle(
-            raster,
-            cursor + columnIndex * scale,
-            y + rowIndex * scale,
-            scale,
-            scale
-          );
-        }
-      });
-    });
-    cursor += 6 * scale;
-  }
-}
-
-function imageOnlyProbeRaster(): Uint8Array {
-  const raster = new Uint8Array(PDF_INPUT_PROBE_WIDTH * PDF_INPUT_PROBE_HEIGHT);
-  raster.fill(255);
-
-  // Original synthetic receipt and bitmap lettering: no third-party document,
-  // font, encryption, hidden text layer or network dependency. Fixed geometry
-  // and Flate encoding make the reviewed bytes reproducible.
-  drawRasterText(raster, "MARKET RECEIPT", 30, 28, 5);
-  drawRectangle(raster, 30, 82, 420, 2);
-  drawRasterText(raster, "ITEM", 30, 108, 4);
-  drawRasterText(raster, "QTY", 358, 108, 4);
-  drawRasterText(raster, "APPLES", 30, 166, 5);
-  drawRasterText(raster, "4", 406, 166, 5);
-  drawRasterText(raster, PDF_INPUT_PROBE_ANSWER, 30, 228, 5);
-  drawRasterText(raster, "7", 406, 228, 5);
-  drawRectangle(raster, 30, 282, 420, 2);
-  drawRasterText(raster, "TOTAL", 30, 304, 4);
-  drawRasterText(raster, "11", 382, 304, 4);
-  return raster;
-}
 
 function pdfObject(id: number, body: Buffer | string): Buffer {
   return Buffer.concat([
@@ -122,7 +37,7 @@ function pdfObject(id: number, body: Buffer | string): Buffer {
 }
 
 function buildImageOnlyProbePdf(): Buffer {
-  const compressedRaster = deflateSync(imageOnlyProbeRaster(), { level: 9 });
+  const compressedRaster = deflateSync(receiptProbeRaster(), { level: 9 });
   const content = Buffer.from(
     `q\n${PDF_INPUT_PROBE_WIDTH} 0 0 ${PDF_INPUT_PROBE_HEIGHT} 0 0 cm\n/Im0 Do\nQ\n`,
     "ascii"
@@ -197,6 +112,7 @@ export type ProviderPdfInputProbeInput = Readonly<{
   providerModelId: string;
   secret: ProviderCredentialSource | null;
   signal?: AbortSignal;
+  maxOutputTokens?: number;
 }>;
 
 export type ProviderPdfInputProbe = Readonly<{
@@ -226,6 +142,8 @@ function executionSnapshot(input: ProviderPdfInputProbeInput): ProviderExecution
 }
 
 function probeRequest(input: ProviderPdfInputProbeInput): ProviderRunRequest {
+  const requestedTokens = input.maxOutputTokens ?? PDF_INPUT_PROBE_MAX_OUTPUT_TOKENS;
+  const maxOutputTokens = Math.min(requestedTokens, declaredModelOutputTokenLimit(input.model, input.providerFamily) ?? requestedTokens);
   const fixture = imageOnlyPdfInputProbeFixture();
   const responsesAdapter = input.model.adapterKind === "openai_responses_native" ||
     input.model.adapterKind === "openai_responses_compatible";
@@ -254,9 +172,9 @@ function probeRequest(input: ProviderPdfInputProbeInput): ProviderRunRequest {
     params: {
       ...input.model.defaultParams,
       background: false,
-      maxOutputTokens: PDF_INPUT_PROBE_MAX_OUTPUT_TOKENS,
-      maxTokens: PDF_INPUT_PROBE_MAX_OUTPUT_TOKENS,
-      max_output_tokens: PDF_INPUT_PROBE_MAX_OUTPUT_TOKENS,
+      maxOutputTokens,
+      maxTokens: maxOutputTokens,
+      max_output_tokens: maxOutputTokens,
       ...(responsesAdapter
         ? { reasoning: { effort: lowestConfiguredReasoningEffort(input.model, input.providerFamily), summary: "none" } }
         : {}),
@@ -306,7 +224,8 @@ export function createProviderPdfInputProbe(
       const finishReason = next.value.finalProviderResponsePreview.finishReason;
       if (finishReason === "length" || finishReason === "content_filter" ||
         next.value.finalText.trim() !== PDF_INPUT_PROBE_ANSWER) {
-        throw new Error("pdf_input_probe_inconclusive");
+        throw Object.assign(new Error("pdf_input_probe_inconclusive"), finishReason === "length" || finishReason === "content_filter"
+          ? { capabilityFailureReason: finishReason === "length" ? "budget_exhausted" : "refusal" } : {});
       }
       return pdfInputVerificationEvidence(
         input.model.adapterKind,

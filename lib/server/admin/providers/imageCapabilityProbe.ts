@@ -6,6 +6,7 @@ import type { AdminProviderCapabilityCheckStatus, AdminProviderTestEvidence } fr
 import type { AdminProviderDraftTesterInput, AdminProviderDraftTestOutcome } from "./tester";
 import type { ProviderConnectionConfiguration } from "../../providers/providerConfiguration";
 import { unsupportedAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
+import { reusableCapabilitySetupEvidence } from "./initialCapabilitySetup";
 
 /** Two separate requests and deadlines; a failed generator does not suppress the editor probe. */
 export async function testImageCapabilities(input: AdminProviderDraftTesterInput, options: {
@@ -16,10 +17,21 @@ export async function testImageCapabilities(input: AdminProviderDraftTesterInput
   const checks: NonNullable<AdminProviderTestEvidence["capabilitySetup"]>["checks"] = {
     modelAccess: "not_checked", imageGeneration: "not_checked", imageEditing: "not_checked"
   };
+  const previous = reusableCapabilitySetupEvidence(input.reuseSetupEvidence ?? input.priorEvidence, model);
+  const priorProofs: Partial<Pick<AdminProviderTestEvidence, "imageGeneration" | "imageEditing">> = {};
+  for (const capability of ["imageGeneration", "imageEditing"] as const) {
+    const proof = decodeImageVerificationEvidence(previous?.[capability]);
+    if (previous?.capabilitySetup?.checks[capability] === "verified" && proof?.adapterKind === model.adapterKind && proof.upstreamModelId === model.upstreamModelId) {
+      priorProofs[capability] = proof;
+      checks[capability] = "verified";
+    }
+  }
+  const attempts: NonNullable<AdminProviderTestEvidence["capabilitySetup"]>["attempts"] = { ...previous?.capabilitySetup?.attempts };
   const evidence: AdminProviderTestEvidence = {
+    ...priorProofs,
     detail: "model_missing", method: input.mode === "account_catalog" ? "openrouter_account_catalog" : "tiny_generation",
     upstreamModelId: model.upstreamModelId, selectedProviders: model.openRouterRouting?.providers ?? [],
-    compatibility: unsupportedAdminProviderCompatibilityEvidence(), capabilitySetup: { policyVersion: 1, checks }
+    compatibility: unsupportedAdminProviderCompatibilityEvidence(), capabilitySetup: { policyVersion: 2, activation: input.initialSetup ? "initial" : "preserve", checks, attempts }
   };
   const definitions = imageParameterDefinitions(model.image, model.upstreamModelId);
   const parameters: ImageGenerationParameters = {};
@@ -33,7 +45,8 @@ export async function testImageCapabilities(input: AdminProviderDraftTesterInput
   let completed = 0;
   const snapshot = (): AdminProviderDraftTestOutcome => {
     const available = checks.imageGeneration === "verified" || checks.imageEditing === "verified";
-    checks.modelAccess = available ? "verified" : "incomplete";
+    checks.modelAccess = available ? "verified"
+      : checks.imageGeneration === "unsupported" && checks.imageEditing === "unsupported" ? "unsupported" : "incomplete";
     evidence.detail = available ? "ok" : "model_missing";
     evidence.compatibility!.modelAccess = available ? "verified" : "not_supported";
     return { status: available ? "available" : "unavailable", evidence: structuredClone(evidence) };
@@ -41,11 +54,14 @@ export async function testImageCapabilities(input: AdminProviderDraftTesterInput
   for (const capability of ["imageGeneration", "imageEditing"] as const) {
     input.signal?.throwIfAborted();
     input.onCapabilityProgress?.({ capability, completed, total: 2 });
-    const previous = input.reuseSetupEvidence;
-    const proof = decodeImageVerificationEvidence(previous?.[capability]);
-    if (previous?.capabilitySetup?.checks[capability] === "verified" && proof?.adapterKind === model.adapterKind && proof.upstreamModelId === model.upstreamModelId) {
+    const reusable = input.reuseSetupEvidence ? previous : undefined;
+    const proof = decodeImageVerificationEvidence(reusable?.[capability]);
+    if (reusable?.capabilitySetup?.checks[capability] === "verified" && proof?.adapterKind === model.adapterKind && proof.upstreamModelId === model.upstreamModelId) {
       checks[capability] = "verified";
       evidence[capability] = proof;
+    } else if (reusable?.capabilitySetup?.policyVersion === 2 && reusable.capabilitySetup.checks[capability] === "unsupported") {
+      checks[capability] = "unsupported";
+      delete evidence[capability];
     } else {
       try {
         const result = await adapter.generate({
@@ -54,9 +70,12 @@ export async function testImageCapabilities(input: AdminProviderDraftTesterInput
           ...(capability === "imageEditing" ? { images: [{ bytes: reference, mimeType: "image/png" as const }] } : {}),
           parameters, signal: AbortSignal.any([...(input.signal ? [input.signal] : []), AbortSignal.timeout(60_000)])
         });
+        input.signal?.throwIfAborted();
         if (capability === "imageEditing" && Buffer.from(result.bytes).equals(reference)) {
-          checks[capability] = "rejected";
+          attempts[capability] = { attempts: 1, status: "incomplete", reason: "semantic_inconclusive" };
+          if (!priorProofs[capability]) checks[capability] = "incomplete";
         } else {
+          attempts[capability] = { attempts: 1, status: "verified", reason: "verified" };
           checks[capability] = "verified";
           evidence[capability] = { adapterKind: model.adapterKind, upstreamModelId: model.upstreamModelId, probeVersion: 1, verified: true };
         }
@@ -68,11 +87,20 @@ export async function testImageCapabilities(input: AdminProviderDraftTesterInput
           else if ([400, 422].includes(error.httpStatus ?? 0)) status = "rejected";
           else if (["image_response_invalid", "image_output_missing"].includes(error.code)) status = "rejected";
         }
-        checks[capability] = status;
+        const httpStatus = error instanceof ImageGenerationError ? error.httpStatus : undefined;
+        attempts[capability] = { attempts: 1, status: status === "unsupported" ? "unsupported" : "incomplete",
+          reason: status === "unsupported" ? "route_unsupported" : httpStatus === 400 || httpStatus === 422 ? "invalid_input"
+            : httpStatus === 429 ? "rate_limit" : httpStatus === 401 || httpStatus === 403 ? "authorization"
+              : httpStatus ? "http_error" : "semantic_inconclusive", ...(httpStatus ? { httpStatus } : {}) };
+        if (status === "unsupported" || !priorProofs[capability]) {
+          checks[capability] = status === "unsupported" ? "unsupported" : "incomplete";
+          delete evidence[capability];
+        }
       }
     }
     completed += 1;
-    input.onSetupCheckpoint?.(snapshot());
+    input.signal?.throwIfAborted();
+    await input.onSetupCheckpoint?.(snapshot());
     input.onCapabilityProgress?.({ capability, completed, total: 2 });
   }
   return snapshot();

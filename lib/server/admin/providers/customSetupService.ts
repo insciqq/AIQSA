@@ -1,6 +1,6 @@
 import type { AdminProviderSetupProgress } from "../../../contracts/adminProviderSetupProgress";
 import type { AdminProviderCheckRun } from "../../../contracts/adminProviders";
-import { initialModelConfiguration, pendingInitialCapabilityEvidence } from "./initialCapabilitySetup";
+import { decodeCapabilitySetupEvidence, initialModelConfiguration, pendingInitialCapabilityEvidence } from "./initialCapabilitySetup";
 import { providerSetupModels } from "./setupModels";
 import { randomUUID } from "node:crypto";
 import {
@@ -15,7 +15,8 @@ import { decodeStructuredOutputVerificationEvidence } from "../../providers/stru
 import { decodeForcedToolCallVerificationEvidence } from
   "../../providers/forcedToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
-import { decodeVisionInputVerificationEvidence, hasVerifiedVisionInput } from "../../providers/visionInputEvidence";
+import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
+import { decodeParallelToolCallVerificationEvidence } from "../../providers/parallelToolCallEvidence";
 import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
 import {
   adminSearchExecutionDefaults,
@@ -127,17 +128,19 @@ function modelConfiguration(
   upstreamModelId: string
 ): ProviderModelConfiguration {
   const protocol = request.protocol;
+  const overrides = request.perModelCapabilities?.[upstreamModelId];
+  const capabilities = { ...ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES, ...request.capabilities, ...overrides, pdf: true };
+  // Clamp only the generated default; explicit administrator/model values retain validation.
+  if (request.capabilities?.defaultMaxOutputTokens === undefined && overrides?.defaultMaxOutputTokens === undefined) {
+    capabilities.defaultMaxOutputTokens = Math.min(ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES.defaultMaxOutputTokens,
+      capabilities.maxOutputTokens ?? ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES.defaultMaxOutputTokens);
+  }
   const configuration = normalizeProviderModelConfiguration({
     adapterKind: protocol === "responses"
       ? "openai_responses_compatible"
       : "openai_chat_completions_compatible",
     answerSelectable: true,
-    capabilities: {
-      ...(request.capabilities ?? ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES),
-      ...request.perModelCapabilities?.[upstreamModelId],
-      // Local PDF extraction is an AIQSA capability, not an upstream claim.
-      pdf: true
-    },
+    capabilities,
     defaultParams: request.defaultParams ?? {},
     modelClass: "answer",
     ...(request.reasoningRequestMapping
@@ -201,6 +204,8 @@ function validatedEvidence(
   );
   const pdfInput = decodePdfInputVerificationEvidence(outcome.evidence.pdfInput);
   const visionInput = decodeVisionInputVerificationEvidence(outcome.evidence.visionInput);
+  const parallelToolCalls = decodeParallelToolCallVerificationEvidence(outcome.evidence.parallelToolCalls);
+  const capabilitySetup = decodeCapabilitySetupEvidence(outcome.evidence.capabilitySetup);
   const hasPdfInput = Object.prototype.hasOwnProperty.call(outcome.evidence, "pdfInput");
   const compatibility = decodeAdminProviderCompatibilityEvidence(
     outcome.evidence.compatibility
@@ -216,6 +221,9 @@ function validatedEvidence(
     outcome.evidence.upstreamModelId !== model.upstreamModelId ||
     outcome.evidence.selectedProviders.length !== 0 ||
     (hasCompatibility && !compatibility) ||
+    (outcome.evidence.capabilitySetup !== undefined && !capabilitySetup) ||
+    (outcome.evidence.parallelToolCalls !== undefined && (!parallelToolCalls ||
+      parallelToolCalls.adapterKind !== model.adapterKind || parallelToolCalls.upstreamModelId !== model.upstreamModelId)) ||
     (compatibility && (
       compatibility.modelAccess !== "verified" ||
       (compatibility.directPdf === "verified") !== Boolean(pdfInput) ||
@@ -224,7 +232,8 @@ function validatedEvidence(
       (compatibility.structuredOutput === "verified") !== Boolean(structuredOutput)
     )) ||
     (Object.hasOwn(outcome.evidence, "visionInput") &&
-      (!visionInput || !hasVerifiedVisionInput(outcome.evidence, model) || model.modelClass !== "answer")) ||
+      (!visionInput || visionInput.adapterKind !== model.adapterKind ||
+        visionInput.upstreamModelId !== model.upstreamModelId || model.modelClass !== "answer")) ||
     (hasPdfInput && (!pdfInput ||
       pdfInput.adapterKind !== model.adapterKind ||
       pdfInput.upstreamModelId !== model.upstreamModelId)) ||
@@ -243,6 +252,8 @@ function validatedEvidence(
   }
   return {
     ...(compatibility ? { compatibility } : {}),
+    ...(capabilitySetup ? { capabilitySetup } : {}),
+    ...(parallelToolCalls ? { parallelToolCalls } : {}),
     detail: "ok",
     method: "tiny_generation",
     selectedProviders: [],

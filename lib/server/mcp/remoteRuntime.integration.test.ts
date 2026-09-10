@@ -26,7 +26,8 @@ async function closeHttpServer(server: HttpServer): Promise<void> {
 async function startRemoteFixture(
   secret: string,
   echoSecret = false,
-  toolDescription = "Create a task"
+  toolDescription = "Create a task",
+  gitlabRecovery = false
 ): Promise<Fixture> {
   const cursors: Array<string | undefined> = [];
   const observedStaticHeaders: Array<string | undefined> = [];
@@ -63,6 +64,22 @@ async function startRemoteFixture(
   const httpServer = createServer((request, response) => {
     const value = request.headers["x-validation-secret"];
     observedStaticHeaders.push(Array.isArray(value) ? value[0] : value);
+    if (gitlabRecovery) {
+      const origin = `http://${request.headers.host}`;
+      const metadataPath = "/.well-known/oauth-protected-resource/api/v4/mcp";
+      if (request.url?.startsWith("/.well-known/oauth-protected-resource")) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ resource: `${origin}/api/v4/mcp`, authorization_servers: [origin], scopes_supported: ["mcp"] }));
+        return;
+      }
+      if (request.url !== "/api/v4/mcp") { response.statusCode = 404; response.end(); return; }
+      if (value !== secret) {
+        response.statusCode = 401;
+        response.setHeader("www-authenticate", `Bearer realm="GitLab", resource_metadata="${origin}${metadataPath}"`);
+        response.end();
+        return;
+      }
+    }
     void transport.handleRequest(request, response).catch(() => {
       if (!response.headersSent) {
         response.statusCode = 500;
@@ -99,6 +116,24 @@ afterEach(async () => {
 });
 
 describe("remote MCP runtime integration", () => {
+  it("recovers a GitLab endpoint over real pinned HTTP and completes official-SDK initialize and paginated tools", async () => {
+    const secret = "fixture-gitlab-header";
+    const fixture = await startRemoteFixture(secret, false, "Create a task", true);
+    const validator = createRemoteMcpDraftValidator({ fetch: createMcpSafeFetch({ allowInsecureHttp: true, allowPrivateNetwork: true }) });
+    const draft: McpDraftConfiguration = {
+      auth: { mode: "static" }, transport: "streamable_http", runtime: { callTimeoutMs: 2_000, startupTimeoutMs: 2_000 },
+      source: { kind: "remote", url: fixture.url.href, allowPrivateNetwork: true },
+      slots: [{ label: "Key", policy: { kind: "shared", allowPersonalOverride: false }, sensitive: true, slotKey: "key",
+        target: { kind: "header", name: "X-Validation-Secret" }, valueType: "secret" }]
+    };
+    const outcome = await validator.validate({ draft, values: { key: secret } });
+    expect(outcome).toMatchObject({ kind: "ok", endpointCorrection: { fromUrl: fixture.url.href, toUrl: `${fixture.url.origin}/api/v4/mcp` },
+      toolInventory: [{ name: "create_task" }, { name: "list_tasks" }] });
+    expect(fixture.cursors).toEqual([undefined, "page-2"]);
+    expect(fixture.observedStaticHeaders.slice(0, 4)).toEqual([secret, undefined, undefined, undefined]);
+    expect(JSON.stringify(outcome)).not.toContain(secret);
+  });
+
   it("validates a paginated official-SDK endpoint through the real safe session", async () => {
     const staticSecret = "integration-static-secret";
     const fixture = await startRemoteFixture(staticSecret);
@@ -228,14 +263,13 @@ describe("remote MCP runtime integration", () => {
       });
 
       expect(outcome).toEqual({
-        issues: [{ code: "mcp_inventory_response_too_large", path: "tools" }],
+        issues: [{ code: "mcp_inventory_response_too_large", path: "tools", operation: "list_tools", endpoint: fixture.url.href }],
         kind: "invalid"
       });
       expect(fixture.cursors).toEqual([undefined]);
       const serialized = JSON.stringify(outcome);
       expect(serialized).not.toContain(privateBodyMarker);
       expect(serialized).not.toContain(staticSecret);
-      expect(serialized).not.toContain(fixture.url.toString());
     } finally {
       if (previousLimit === undefined) {
         delete process.env.AIQSA_MCP_LIST_TOOLS_RESPONSE_MAX_BYTES;

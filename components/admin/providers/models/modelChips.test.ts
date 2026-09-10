@@ -50,7 +50,9 @@ describe("modelChipsFromEvidence", () => {
       capabilitySetup: { policyVersion: 1, checks: { modelAccess: "verified", directPdf: status } }
     }) });
     const chips = modelChipsFromEvidence(answer, check);
-    expect(chips).toContainEqual({ key: "pdf", label: "PDF check incomplete", tone: "warn" });
+    expect(chips).toContainEqual(expect.objectContaining({ key: "pdf",
+      label: status === "incomplete" ? "PDF: inconclusive" : "PDF: not checked",
+      tone: status === "incomplete" ? "critical" : "muted" }));
     expect(chips).not.toContainEqual(expect.objectContaining({ label: "No PDF" }));
     expect(chips).toContainEqual({ key: "json", label: "JSON", tone: "ok" });
   });
@@ -73,16 +75,16 @@ describe("modelChipsFromEvidence", () => {
     expect(chips.some(({ key, tone }) => key === "images" && tone === "ok")).toBe(true);
   });
 
-  it("maps verified results to green chips, not_supported to muted ones and PDF to a yellow No PDF", () => {
+  it("does not treat legacy absence of proof as verified incompatibility", () => {
     const check = fixtureCheck({
       credentialId: "cred-primary",
       evidence: evidence({ compatibility: { ...evidence().compatibility!, directPdf: "not_supported", toolCalling: "not_supported" } }),
       providerModelId: "m"
     });
     expect(modelChipsFromEvidence(answer, check)).toEqual([
-      { key: "tools", label: "Tools", tone: "muted" },
+      { key: "tools", label: "Tools: not verified", tone: "muted" },
       { key: "json", label: "JSON", tone: "ok" },
-      { key: "pdf", label: "No PDF", tone: "warn" },
+      { key: "pdf", label: "PDF: not verified", tone: "muted" },
       { key: "images", label: "Images", tone: "ok" },
       { key: "stream", label: "Stream", tone: "ok" }
     ]);
@@ -131,7 +133,7 @@ describe("modelChipsFromEvidence", () => {
       providerModelId: "m",
       status: "unavailable"
     });
-    expect(modelChipsFromEvidence(answer, unavailable)).toEqual([{ key: "unavailable", label: "Not available", tone: "warn" }]);
+    expect(modelChipsFromEvidence(answer, unavailable)).toEqual([{ key: "unavailable", label: "Not available", tone: "critical" }]);
   });
 });
 

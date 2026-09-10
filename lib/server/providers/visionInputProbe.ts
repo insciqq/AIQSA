@@ -1,16 +1,17 @@
 import sharp from "sharp";
 import type { ProviderExecutionSnapshot } from "./runtimeFactory";
 import type { ProviderRunRequest, ProviderRunResult } from "./types";
-import { lowestConfiguredReasoningEffort } from "./providerModelCapabilities";
-import { visionInputProbeSvg } from "./visionInputProbeFixture";
+import { declaredModelOutputTokenLimit, lowestConfiguredReasoningEffort } from "./providerModelCapabilities";
+import { receiptProbeRaster, RECEIPT_PROBE_ANSWER as VISION_INPUT_PROBE_ANSWER,
+  RECEIPT_PROBE_WIDTH, RECEIPT_PROBE_HEIGHT } from "./receiptProbeFixture";
 
-export const VISION_INPUT_PROBE_CODE = "V4K8M2";
+export { VISION_INPUT_PROBE_ANSWER };
 
 const VISION_INPUT_PROBE_MAX_OUTPUT_TOKENS = 512;
 
 const VISION_INPUT_PROBE_PROMPT = [
   "Read the attached image.",
-  "Return exactly the code shown in the bottom-right table cell.",
+  "Which item on the receipt has a quantity of 7? Return only the item name in uppercase.",
   "Return no explanation, punctuation, Markdown, or additional text."
 ].join("\n");
 
@@ -18,7 +19,7 @@ let fixturePromise: Promise<Buffer> | null = null;
 
 function fixture(): Promise<Buffer> {
   fixturePromise ??= Promise.resolve().then(() =>
-    sharp(Buffer.from(visionInputProbeSvg(VISION_INPUT_PROBE_CODE), "utf8"))
+    sharp(Buffer.from(receiptProbeRaster()), { raw: { width: RECEIPT_PROBE_WIDTH, height: RECEIPT_PROBE_HEIGHT, channels: 1 } })
       .png({ compressionLevel: 9 }).toBuffer()
   ).catch(() => {
     // A process-local rendering failure must be retryable and must not become
@@ -29,7 +30,8 @@ function fixture(): Promise<Buffer> {
   return fixturePromise;
 }
 
-function request(snapshot: ProviderExecutionSnapshot, image: Buffer): ProviderRunRequest {
+function request(snapshot: ProviderExecutionSnapshot, image: Buffer, requestedTokens = VISION_INPUT_PROBE_MAX_OUTPUT_TOKENS): ProviderRunRequest {
+  const maxOutputTokens = Math.min(requestedTokens, declaredModelOutputTokenLimit(snapshot.model, snapshot.providerFamily) ?? requestedTokens);
   const responsesAdapter = snapshot.model.adapterKind === "openai_responses_native" ||
     snapshot.model.adapterKind === "openai_responses_compatible" ||
     snapshot.model.adapterKind === "deepseek_responses_native";
@@ -42,7 +44,7 @@ function request(snapshot: ProviderExecutionSnapshot, image: Buffer): ProviderRu
       fileName: "vision-input-probe.png",
       id: "vision-input-probe",
       kind: "image",
-      metadata: { image: { height: 240, width: 640 } },
+      metadata: { image: { height: RECEIPT_PROBE_HEIGHT, width: RECEIPT_PROBE_WIDTH } },
       mimeType: "image/png",
       status: "ready"
     }],
@@ -55,9 +57,9 @@ function request(snapshot: ProviderExecutionSnapshot, image: Buffer): ProviderRu
     params: {
       ...snapshot.model.defaultParams,
       background: false,
-      maxOutputTokens: VISION_INPUT_PROBE_MAX_OUTPUT_TOKENS,
-      maxTokens: VISION_INPUT_PROBE_MAX_OUTPUT_TOKENS,
-      max_output_tokens: VISION_INPUT_PROBE_MAX_OUTPUT_TOKENS,
+      maxOutputTokens,
+      maxTokens: maxOutputTokens,
+      max_output_tokens: maxOutputTokens,
       ...(responsesAdapter ? { reasoning: { effort: lowestConfiguredReasoningEffort(snapshot.model, snapshot.providerFamily), summary: "none" } } : {}),
       store: false,
       stream: false
@@ -79,18 +81,22 @@ export function createProviderVisionInputProbe(input: Readonly<{
   ): Promise<ProviderRunResult>;
 }>) {
   return {
-    async probe(snapshot: ProviderExecutionSnapshot, signal?: AbortSignal): Promise<boolean> {
+    async probe(snapshot: ProviderExecutionSnapshot, signal?: AbortSignal, maxOutputTokens?: number): Promise<boolean> {
       if (snapshot.model.adapterKind === "fake" || snapshot.model.modelClass !== "answer" ||
         snapshot.model.capabilities.vision !== true) {
         return false;
       }
       const image = await fixture();
       const deadline = AbortSignal.timeout(120_000);
-      const result = await input.execute(snapshot, request(snapshot, image), {
+      const result = await input.execute(snapshot, request(snapshot, image, maxOutputTokens), {
         signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
         timeoutMs: 120_000
       });
-      return result.finalText.trim() === VISION_INPUT_PROBE_CODE;
+      const finish = result.finalProviderResponsePreview?.finishReason;
+      if (finish === "length" || finish === "content_filter") throw Object.assign(new Error("vision_input_probe_inconclusive"), {
+        capabilityFailureReason: finish === "length" ? "budget_exhausted" : "refusal"
+      });
+      return result.finalText.trim() === VISION_INPUT_PROBE_ANSWER;
     }
   };
 }

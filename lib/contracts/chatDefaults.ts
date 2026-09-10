@@ -1,5 +1,8 @@
 import { decodeKnowledgeSelection, type KnowledgeSelection } from "./knowledge";
 
+/** Ordinary chat defaults; diagnostic and utility budgets are owned separately. */
+export const DEFAULT_CHAT_MAX_OUTPUT_TOKENS = 65_536;
+
 /** MCP discovery mode a new chat starts with; mirrors the run selection vocabulary. */
 export type ChatDefaultMcpMode = "auto" | "load_all" | "off";
 

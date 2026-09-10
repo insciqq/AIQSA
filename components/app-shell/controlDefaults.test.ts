@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { modelControlKey, resolveModelControlDefaults } from "./powerAppShellData";
 import type { Catalog, CatalogModel } from "./types";
 import {
   clampedNumber,
@@ -67,10 +68,19 @@ function catalog(models: CatalogModel[]): Catalog {
 }
 
 describe("control defaults", () => {
+  it("keeps saved legacy overrides and uses the new current default when they are cleared", () => {
+    const selected = model({ provider: "openai_compatible", modelId: "fixture" });
+    selected.parameterControls.maxOutputTokens = { defaultValue: 65536 };
+    const saved = { [modelControlKey(selected)]: { maxOutputTokens: "1024", temperature: "0.3" } };
+    expect(resolveModelControlDefaults(selected, saved)).toMatchObject({ maxOutputTokens: "1024", temperature: "0.3" });
+    expect(resolveModelControlDefaults(selected, {})).toMatchObject({ maxOutputTokens: "65536", temperature: "1" });
+    selected.parameterControls.maxOutputTokens = { defaultValue: 8192, maxValue: 8192 };
+    expect(resolveModelControlDefaults(selected, {})).toMatchObject({ maxOutputTokens: "8192", temperature: "1" });
+  });
   it("provides stable empty-selection controls", () => {
     expect(defaultParameterControls(null)).toEqual({
       background: { defaultValue: false, supported: false },
-      maxOutputTokens: { defaultValue: 1024, maxValue: 1024 },
+      maxOutputTokens: { defaultValue: 65536 },
       reasoningEffort: {
         defaultValue: "none",
         options: ["none"],

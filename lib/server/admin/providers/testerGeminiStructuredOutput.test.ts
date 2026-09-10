@@ -66,12 +66,13 @@ describe("Gemini administrator JSON capability probe", () => {
       } } });
     expect(schemaBodies[0].tools).toBeUndefined();
     expect(schemaBodies[0].generation_config.thinking_level).toBeUndefined();
-    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(bodies.some((body) => body.stream)).toBe(true);
     expect(result.evidence.forcedToolCall).toBeUndefined();
     const check = fixtureCheck({ credentialId: "credential-1", providerModelId: "model-1", evidence: result.evidence });
     expect(modelChipsFromEvidence(input.model, check)).toContainEqual({ key: "json", label: "JSON", tone: "ok" });
-    expect(modelChipsFromEvidence(input.model, null)).toEqual([]);
-    expect(modelChipsFromEvidence({ ...input.model, upstreamModelId: "other-model" }, check)).toEqual([]);
+    expect(modelChipsFromEvidence(input.model, null)).not.toContainEqual({ key: "json", label: "JSON", tone: "ok" });
+    expect(modelChipsFromEvidence({ ...input.model, upstreamModelId: "other-model" }, check))
+      .not.toContainEqual({ key: "json", label: "JSON", tone: "ok" });
     expect(JSON.stringify(result)).not.toMatch(/SYNTHETIC_KEY|synthetic-interaction|system_instruction|tool_ids/);
     const jsonOnlyRole: ProviderAdmissionRole = {
       verifiedStructuredOutput: true,
@@ -144,13 +145,25 @@ describe("Gemini administrator JSON capability probe", () => {
   });
 
   it.each([401, 403, 429, 500])("does not publish incompatibility for an authentication or transient failure (%s)", async (status) => {
-    const { tester } = fixture(() => new Response("PRIVATE_UPSTREAM_ERROR", { status }));
-    await expect(tester.test(input)).rejects.toThrow(`Gemini request failed with status ${status}`);
+    const { tester, fetchFn } = fixture(() => new Response("PRIVATE_UPSTREAM_ERROR", { status }));
+    const result = await tester.test(input);
+    expect(result).toMatchObject({ status: "available", evidence: { capabilitySetup: {
+      checks: { structuredOutput: "incomplete", modelAccess: "verified", streaming: "verified" },
+      attempts: { structuredOutput: { status: "incomplete", httpStatus: status, attempts: status < 429 ? 1 : 3 } }
+    } } });
+    expect(result.evidence.structuredOutput).toBeUndefined();
+    expect(fetchFn.mock.calls.filter(([, init]) => JSON.parse(String(init?.body)).response_format)).toHaveLength(status < 429 ? 1 : 3);
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_UPSTREAM_ERROR");
   });
 
   it.each(["incomplete", "failed", "in_progress", "cancelled"])("does not verify a %s response containing valid JSON", async (status) => {
     const { tester } = fixture(() => Response.json({ ...response(), status }));
-    await expect(tester.test(input)).rejects.toThrow("structured_output_provider_incomplete");
+    const result = await tester.test(input);
+    expect(result.evidence.structuredOutput).toBeUndefined();
+    expect(result.evidence.capabilitySetup).toMatchObject({
+      checks: { structuredOutput: "incomplete", streaming: "verified" },
+      attempts: { structuredOutput: { status: "incomplete", attempts: 2 } }
+    });
   });
 
   it("keeps malformed schema values from publishing positive evidence", async () => {
@@ -160,21 +173,25 @@ describe("Gemini administrator JSON capability probe", () => {
     expect(result.evidence.structuredOutput).toBeUndefined();
   });
 
-  it("fails the whole check without retrying when native JSON exceeds its bounded output", async () => {
+  it("keeps native JSON output overflow inconclusive while later checks continue", async () => {
     const { fetchFn, tester } = fixture(() => Response.json(response({
       ...probeValue, label: "x".repeat(STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters)
     })));
-    await expect(tester.test(input)).rejects.toThrow("provider_output_too_large");
-    expect(fetchFn).toHaveBeenCalledTimes(2);
+    const result = await tester.test(input);
+    expect(result.evidence.structuredOutput).toBeUndefined();
+    expect(result.evidence.capabilitySetup?.checks).toMatchObject({ structuredOutput: "incomplete", streaming: "verified" });
+    expect(fetchFn.mock.calls.filter(([, init]) => JSON.parse(String(init?.body)).response_format)).toHaveLength(2);
   });
 
-  it("preserves a provider execution output-limit error without retrying or publishing incompatibility", async () => {
+  it("records an output-limit failure independently without publishing incompatibility", async () => {
     const error = Object.assign(new Error("structured_output_output_limit_exceeded"), {
       code: "structured_output_output_limit_exceeded"
     });
     const { fetchFn, tester } = fixture(() => { throw error; });
-    await expect(tester.test(input)).rejects.toBe(error);
-    expect(fetchFn).toHaveBeenCalledTimes(2);
+    const result = await tester.test(input);
+    expect(result.evidence.structuredOutput).toBeUndefined();
+    expect(result.evidence.capabilitySetup?.checks).toMatchObject({ structuredOutput: "incomplete", streaming: "verified" });
+    expect(fetchFn.mock.calls.filter(([, init]) => JSON.parse(String(init?.body)).response_format)).toHaveLength(2);
   });
 
   it("cancels the whole check without promoting the returned JSON", async () => {

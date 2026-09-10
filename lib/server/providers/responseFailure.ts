@@ -39,5 +39,12 @@ export function providerResponseFailure(message: string, response: Readonly<Reco
   const unsupportedInput = code === "provider_capability_unsupported" &&
     (typeof detail?.code === "string" && unsupportedInputCodes.has(detail.code) ||
       hasUnsupportedMessage && inputMessage.test(messageText));
-  return Object.assign(new Error(message), code ? { code } : {}, unsupportedInput ? { unsupportedInput: true } : {});
+  const choice = Array.isArray(response.choices) ? response.choices[0] : null;
+  const choiceRecord = choice && typeof choice === "object" ? choice as Record<string, unknown> : null;
+  const choiceMessage = choiceRecord?.message && typeof choiceRecord.message === "object" ? choiceRecord.message as Record<string, unknown> : null;
+  const refusal = incomplete?.reason === "content_filter" || detail?.code === "content_filter" ||
+    choiceRecord?.finish_reason === "content_filter" || typeof choiceMessage?.refusal === "string" && choiceMessage.refusal.length > 0;
+  const capabilityFailureReason = refusal ? "refusal" : incomplete?.reason === "max_output_tokens" || choiceRecord?.finish_reason === "length" ? "budget_exhausted" : undefined;
+  return Object.assign(new Error(message), code ? { code } : {}, unsupportedInput ? { unsupportedInput: true } : {},
+    capabilityFailureReason ? { capabilityFailureReason } : {});
 }

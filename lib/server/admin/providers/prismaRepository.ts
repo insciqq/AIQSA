@@ -1341,7 +1341,16 @@ export function createPrismaAdminProviderRepository(
       ) {
         return null;
       }
+      const prior = await prisma.providerModelCredentialCheck.findUnique({
+        where: { providerModelId_credentialVersionId_connectionVersion_modelVersion: {
+          providerModelId: model.id, modelVersion: model.activeVersion, connectionVersion: connection.activeVersion,
+          credentialVersionId: credential.activeVersion.id
+        } }, select: { status: true, evidence: true }
+      });
+      const priorEvidence = prior ? evidence(prior.evidence) : null;
       return {
+        ...(priorEvidence ? { priorEvidence } : {}),
+        checkEvidence: prior ? { evidence: prior.evidence, status: prior.status } : null,
         connection: {
           configuration: connection.activeConfig,
           displayName: connection.displayName,
@@ -1415,6 +1424,21 @@ export function createPrismaAdminProviderRepository(
     async storeActiveRefreshCas(input) {
       return repeatableRead(prisma, async (tx) => {
         input.signal?.throwIfAborted();
+        if (input.candidate.checkEvidence !== undefined) {
+          const currentCheck = await tx.providerModelCredentialCheck.findUnique({
+            where: { providerModelId_credentialVersionId_connectionVersion_modelVersion: {
+              providerModelId: input.candidate.model.id, modelVersion: input.candidate.model.version,
+              connectionVersion: input.candidate.connection.version, credentialVersionId: input.candidate.credential.versionId
+            } }, select: { status: true, evidence: true }
+          });
+          const expected = input.candidate.checkEvidence;
+          if (Boolean(currentCheck) !== Boolean(expected)) return "stale" as const;
+          if (expected && !await tx.providerModelCredentialCheck.findFirst({
+            where: { providerModelId: input.candidate.model.id, modelVersion: input.candidate.model.version,
+              connectionVersion: input.candidate.connection.version, credentialVersionId: input.candidate.credential.versionId,
+              status: expected.status, evidence: { equals: expected.evidence === null ? Prisma.AnyNull : json(expected.evidence) } }, select: { id: true }
+          })) return "stale" as const;
+        }
         const [connection, model, credential] = await Promise.all([
           tx.providerConnection.findUnique({
             select: { activeVersion: true },

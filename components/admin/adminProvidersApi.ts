@@ -1,3 +1,4 @@
+import { decodeAdminProviderCapabilityAttempts } from "@/lib/contracts/adminProviders";
 import type {
   AdminImageDiscoveredModel,
   AdminImageDiscoveredEndpoint,
@@ -102,7 +103,7 @@ export function isAdminProviderCheckRun(value: unknown): value is AdminProviderC
     (value.skipped === undefined || ids(value.skipped)) &&
     (value.results === undefined || Array.isArray(value.results) && value.results.length <= 1_000 &&
       new Set(value.results.map((entry) => record(entry) ? entry.providerModelId : null)).size === value.results.length &&
-      value.results.every((entry) => record(entry) && Object.keys(entry).every((key) => ["providerModelId", "state", "checks"].includes(key)) &&
+      value.results.every((entry) => record(entry) && (entry.attempts === undefined || decodeAdminProviderCapabilityAttempts(entry.attempts) !== null) && Object.keys(entry).every((key) => ["providerModelId", "state", "checks", "attempts"].includes(key)) &&
         text(entry.providerModelId) && ["saved", "partial", "unavailable", "save_failed", "check_failed", "cancelled", "stale"].includes(String(entry.state)) &&
         (entry.checks === undefined || record(entry.checks) && Object.entries(entry.checks).every(([key, state]) =>
           ADMIN_PROVIDER_CAPABILITY_CHECKS.includes(key as typeof ADMIN_PROVIDER_CAPABILITY_CHECKS[number]) &&
@@ -526,7 +527,7 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     provider_model_class_immutable: "A model cannot change between chat, embedding and reranker classes; add a new model instead.",
     provider_paid_test_confirmation_required: "Confirm the provider requests before running the check.",
     provider_revoke_confirmation_required: "This key action requires confirmation.",
-    provider_refresh_failed: "The check hit a temporary provider failure. Earlier results were kept.",
+    provider_refresh_failed: "The check could not be completed. Saved capability results were kept.",
     unauthorized: "Your administrator session is no longer valid. Sign in again."
   };
   const blockerLabels: Record<string, string> = {

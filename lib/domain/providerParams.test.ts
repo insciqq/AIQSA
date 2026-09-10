@@ -6,7 +6,7 @@ describe("provider parameter defaults", () => {
     expect(defaultOpenAIResponsesParams()).toMatchObject({
       background: true,
       manualContextReplay: true,
-      maxOutputTokens: 128000,
+      maxOutputTokens: 65536,
       reasoning: {
         effort: "medium"
       },

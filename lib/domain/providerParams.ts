@@ -1,3 +1,6 @@
+import { DEFAULT_CHAT_MAX_OUTPUT_TOKENS } from "../contracts/chatDefaults";
+export { DEFAULT_CHAT_MAX_OUTPUT_TOKENS } from "../contracts/chatDefaults";
+
 export type ProviderId = "fake" | "openai" | "anthropic" | "gemini" | "deepseek" | "openrouter";
 export type ReasoningEffort = string;
 export type OpenAIReasoningEffort = string;
@@ -126,7 +129,7 @@ export function defaultOpenAIResponsesParams(): OpenAIResponsesParams {
   return {
     background: true,
     manualContextReplay: true,
-    maxOutputTokens: 128000,
+    maxOutputTokens: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
     reasoning: {
       effort: "medium",
       summary: "auto"
@@ -139,7 +142,7 @@ export function defaultOpenAIResponsesParams(): OpenAIResponsesParams {
 
 export function defaultGeminiInteractionsParams(): GeminiInteractionsParams {
   return {
-    maxTokens: 65536,
+    maxTokens: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
     reasoning: {
       effort: "medium"
     },
@@ -149,7 +152,7 @@ export function defaultGeminiInteractionsParams(): GeminiInteractionsParams {
 
 export function defaultDeepSeekResponsesParams(): DeepSeekResponsesParams {
   return {
-    maxOutputTokens: 32_768,
+    maxOutputTokens: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
     reasoning: {
       effort: "high"
     },
@@ -195,7 +198,7 @@ export function normalizeOpenAIResponsesParams(
 
 export function defaultAnthropicMessagesParams(): AnthropicMessagesParams {
   return {
-    maxTokens: 128000,
+    maxTokens: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
     temperature: 1,
     thinking: {
       budgetTokens: 0,
@@ -271,7 +274,7 @@ function openRouterStructuredOutputToolChoice(
 
 export function defaultOpenRouterParams(): OpenRouterParams {
   return {
-    maxTokens: 128000,
+    maxTokens: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
     provider: {
       allowFallbacks: true,
       dataCollection: "deny",

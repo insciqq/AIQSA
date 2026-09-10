@@ -1,5 +1,7 @@
+import { capabilityAttemptDescription } from "@/components/admin/providers/add/AdminProviderSetupResults";
 import type {
   AdminProviderActiveCheck,
+  AdminProviderCapabilityCheck,
   AdminProviderCheckRun,
   AdminProviderCompatibilityStatus,
   AdminProviderConnection,
@@ -11,11 +13,11 @@ import type {
 /**
  * `Works with` chips (PRD 5.4): what the last check of the active model with
  * the default key found. A chip exists only where there is a result; a
- * result of `not_supported` is a muted dashed chip (yellow `No PDF` for PDF),
+ * unverified legacy evidence stays distinct from an explicit unsupported receipt,
  * and PDF, images, tools, JSON and streaming come only from answer models.
  */
 
-export type ModelChipTone = "muted" | "ok" | "warn";
+export type ModelChipTone = "muted" | "ok" | "warn" | "critical";
 
 export type ModelChipKey =
   | "imageGeneration"
@@ -32,6 +34,7 @@ export type ModelChipKey =
 export type ModelChip = Readonly<{
   key: ModelChipKey;
   label: string;
+  help?: string;
   tone: ModelChipTone;
 }>;
 
@@ -44,7 +47,7 @@ export type ModelWorksWith =
 function chip(key: ModelChipKey, label: string, status: AdminProviderCompatibilityStatus | null | undefined): ModelChip | null {
   if (status === "verified") return { key, label, tone: "ok" };
   if (status === "not_supported") {
-    return key === "pdf" ? { key, label: "No PDF", tone: "warn" } : { key, label, tone: "muted" };
+    return { key, label: `${label}: not verified`, tone: "muted" };
   }
   return null;
 }
@@ -75,7 +78,7 @@ export function modelChipsFromEvidence(
   const evidence = matchingEvidence(check, configuration);
   if (!evidence || !check) return [];
   if (check.status === "unavailable") {
-    return [{ key: "unavailable", label: "Not available", tone: "warn" }];
+    return [{ key: "unavailable", label: "Not available", tone: "critical" }];
   }
   if (configuration.modelClass === "embedding") {
     return evidence.embedding ? [{ key: "embeddings", label: "Embeddings", tone: "ok" }] : [];
@@ -83,12 +86,22 @@ export function modelChipsFromEvidence(
   if (configuration.modelClass === "reranker") {
     return evidence.reranking ? [{ key: "reranking", label: "Reranking", tone: "ok" }] : [];
   }
+  const capabilityChip = (key: ModelChipKey, label: string, capability: AdminProviderCapabilityCheck,
+    status: AdminProviderCompatibilityStatus | null | undefined): ModelChip | null => {
+    const receipt = evidence.capabilitySetup?.checks[capability];
+    const attempt = evidence.capabilitySetup?.attempts?.[capability];
+    const detail = capabilityAttemptDescription(attempt);
+    if (status === "verified") return { key, label, tone: "ok",
+      ...(attempt?.status === "incomplete" ? { help: `Previously verified. Latest check inconclusive: ${detail}.` } : {}) };
+    if (receipt === "unsupported") return { key, label: `${label}: unsupported`, tone: "critical", help: detail || "Unsupported on this route." };
+    if (receipt === "incomplete" || receipt === "rejected") return { key, label: `${label}: inconclusive`, tone: "critical", help: detail || "This check did not prove the capability." };
+    if (receipt === "not_checked") return { key, label: `${label}: not checked`, tone: "muted" };
+    return chip(key, label, status);
+  };
   if (configuration.modelClass === "image") {
-    return (["imageGeneration", "imageEditing"] as const).map((key) => {
-      const status = evidence.capabilitySetup?.checks[key];
-      const label = key === "imageGeneration" ? "Generate images" : "Edit images";
-      return { key, label: status === "incomplete" ? `${label}: check incomplete` : label,
-        tone: legacyStatus(evidence[key], configuration) === "verified" ? "ok" as const : status === "incomplete" ? "warn" as const : "muted" as const };
+    return (["imageGeneration", "imageEditing"] as const).flatMap((key) => {
+      const result = capabilityChip(key, key === "imageGeneration" ? "Generate images" : "Edit images", key, legacyStatus(evidence[key], configuration));
+      return result ? [result] : [];
     });
   }
   const compatibility = evidence.compatibility;
@@ -96,22 +109,18 @@ export function modelChipsFromEvidence(
   // pass nor a rejection of that transport proves native JSON Schema support.
   const nativeJsonChecked = configuration.adapterKind !== "openrouter_chat_completions" ||
     compatibility?.probeVersion === 2 || evidence.structuredOutput?.probeVersion === 5;
-  const pdfCheck = evidence.capabilitySetup?.checks.directPdf;
-  const pdfChip = pdfCheck === "incomplete" || pdfCheck === "not_checked"
-    ? { key: "pdf" as const, label: "PDF check incomplete", tone: "warn" as const }
-    : chip("pdf", "PDF", compatibility?.directPdf);
   const chips = compatibility
     ? [
-        chip("tools", "Tools", compatibility.toolCalling),
-        chip("json", "JSON", nativeJsonChecked ? compatibility.structuredOutput : null),
-        pdfChip,
-        chip("images", "Images", compatibility.vision),
-        chip("stream", "Stream", compatibility.streaming)
+        capabilityChip("tools", "Tools", "toolCalling", compatibility.toolCalling),
+        capabilityChip("json", "JSON", "structuredOutput", nativeJsonChecked ? compatibility.structuredOutput : null),
+        capabilityChip("pdf", "PDF", "directPdf", compatibility.directPdf),
+        capabilityChip("images", "Images", "vision", compatibility.vision),
+        capabilityChip("stream", "Stream", "streaming", compatibility.streaming)
       ]
     : [
-        chip("json", "JSON", nativeJsonChecked ? legacyStatus(evidence.structuredOutput, configuration) : null),
-        chip("pdf", "PDF", legacyStatus(evidence.pdfInput, configuration)),
-        chip("images", "Images", legacyStatus(evidence.visionInput, configuration))
+        capabilityChip("json", "JSON", "structuredOutput", nativeJsonChecked ? legacyStatus(evidence.structuredOutput, configuration) : null),
+        capabilityChip("pdf", "PDF", "directPdf", legacyStatus(evidence.pdfInput, configuration)),
+        capabilityChip("images", "Images", "vision", legacyStatus(evidence.visionInput, configuration))
       ];
   return chips.filter((entry): entry is ModelChip => entry !== null);
 }
@@ -170,7 +179,8 @@ export function modelWorksWith(input: Readonly<{
   }
   const chips = modelChipsFromEvidence(input.configuration, input.check);
   const usageMissing = modelUsageMissing(input.configuration, input.check);
-  const failed = input.check?.latestRefreshError !== null && input.check?.latestRefreshError !== undefined ||
+  const failedAttempt = Object.values(matchingEvidence(input.check, input.configuration)?.capabilitySetup?.attempts ?? {}).some((attempt) => attempt.status === "incomplete");
+  const failed = failedAttempt || input.check?.latestRefreshError !== null && input.check?.latestRefreshError !== undefined ||
     (run !== null && run.credentialId === input.defaultCredentialId && run.failed.includes(input.modelId));
   if (failed) return { chips, kind: "failed", usageMissing };
   if (chips.length === 0) return { kind: "not_checked" };

@@ -28,7 +28,7 @@ export type JsonValidation = Readonly<{ ok: true }> | Readonly<{
 }>;
 
 /** An iterative syntax walk gives the same location in every browser, without echoing draft values in errors. */
-export function validateJsonParameters(text: string): JsonValidation {
+export function validateJsonParameters(text: string, label = "Default parameters"): JsonValidation {
   const fail = (offset: number, message: string): JsonValidation => {
     const before = text.slice(0, offset).split(/\r\n|\r|\n/u);
     return { column: before.at(-1)!.length + 1, line: before.length, message, offset, ok: false };
@@ -36,7 +36,7 @@ export function validateJsonParameters(text: string): JsonValidation {
   type Frame = { kind: "array" | "object"; state: "start" | "value" | "key" | "colon" | "comma" };
   const stack: Frame[] = [];
   const tokens = jsonTokens(text).filter((token) => token.kind !== "space");
-  if (tokens[0]?.text !== "{") return fail(tokens[0]?.offset ?? 0, "Default parameters must be one JSON object.");
+  if (tokens[0]?.text !== "{") return fail(tokens[0]?.offset ?? 0, `${label} must be one JSON object.`);
   let rootStarted = false;
   for (const token of tokens) {
     const frame = stack.at(-1);

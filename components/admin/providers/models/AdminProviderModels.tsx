@@ -14,6 +14,8 @@ import {
   modelRouteLabel,
   modelSuccessor,
   modelTitle,
+  providerKeyFirstHelp,
+  providerNeedsKeyForModels,
   turnOffConsequence
 } from "@/components/admin/providers/models/modelListView";
 import { useAdminOpenRouterDiscovery } from "@/components/admin/providers/models/useAdminOpenRouterDiscovery";
@@ -43,6 +45,7 @@ const USED_AS_LIMIT = 2;
 const chipTone: Record<ModelChip["tone"], string> = {
   muted: "border-dashed border-trace-strong text-ink-muted",
   ok: "border-positive/30 bg-positive/10 text-positive",
+  critical: "border-critical/30 bg-critical/10 text-critical font-semibold",
   warn: "border-caution/30 bg-caution/10 text-caution"
 };
 
@@ -50,7 +53,7 @@ function Chip({ chip }: Readonly<{ chip: ModelChip }>) {
   const description = chip.key === "tools"
     ? "Ordinary function calling. Strict Memory calls are checked separately in Defaults & roles."
     : chip.key === "json" ? "Structured responses using a strict JSON Schema." : undefined;
-  const help = description ? `${chip.label}: ${chip.tone === "ok" ? "verified" : "not supported on this connection"}. ${description}` : undefined;
+  const help = [chip.help, description].filter(Boolean).join(" ") || undefined;
   return (
     <span
       aria-label={help}
@@ -77,18 +80,21 @@ export type AdminProviderModelsProps = Readonly<{
 
 function AddModelMenu({
   actions,
+  descriptionId,
   disabled,
   onChatModel
 }: Readonly<{
   actions: readonly UiV2MenuAction[];
+  descriptionId?: string;
   disabled: boolean;
   onChatModel(): void;
 }>) {
   const [open, setOpen] = useState(false);
+  if (disabled && open) setOpen(false);
   const { closeForAction, menuRef, triggerRef } = useMenuDismissalV2({ onClose: () => setOpen(false), open });
   if (!actions.length) {
     return (
-      <UiV2Button data-testid="provider-add-model" disabled={disabled} icon="plus" onClick={onChatModel} tone="primary" type="button">
+      <UiV2Button aria-describedby={descriptionId} data-testid="provider-add-model" disabled={disabled} icon="plus" onClick={onChatModel} tone="primary" type="button">
         Add model
       </UiV2Button>
     );
@@ -96,6 +102,7 @@ function AddModelMenu({
   return (
     <div className="relative">
       <UiV2Button
+        aria-describedby={descriptionId}
         aria-expanded={open}
         aria-haspopup="menu"
         data-testid="provider-add-model"
@@ -147,6 +154,8 @@ export function AdminProviderModels({
     loadModels: controller.actions.discoverModels
   });
   const busy = controller.state.busy || presetProgress !== null;
+  const needsKey = providerNeedsKeyForModels(connection);
+  const keyHelpId = useId();
   const usage = useMemo(() => deriveModelUsage(usageSources), [usageSources]);
   const groups = useMemo(() => groupProviderModels(connection.models), [connection.models]);
   const checkable = checkableCredentials(connection);
@@ -226,7 +235,7 @@ export function AdminProviderModels({
   };
 
   const addPreset = (displayName: string, configuration: unknown) => {
-    if (presetAbortRef.current) return;
+    if (busy || needsKey || presetAbortRef.current) return;
     const abort = new AbortController();
     presetAbortRef.current = abort;
     setPresetProgress({ phase: "validating", completed: 0, total: null });
@@ -293,9 +302,11 @@ export function AdminProviderModels({
               Check models
             </UiV2Button>
           ) : null}
-          <AddModelMenu actions={presetActions} disabled={busy} onChatModel={() => setSheet({ kind: "add" })} />
+          <AddModelMenu actions={presetActions} descriptionId={needsKey ? keyHelpId : undefined} disabled={busy || needsKey} onChatModel={() => { if (!busy && !needsKey) setSheet({ kind: "add" }); }} />
         </div>
       </div>
+
+      {needsKey ? <p className="text-sm text-ink-secondary" id={keyHelpId}>{providerKeyFirstHelp}</p> : null}
 
       <label className="flex min-w-0 flex-wrap items-center gap-2 text-[13px] text-ink-secondary">
         <span>Check results for key</span>
@@ -411,7 +422,7 @@ export function AdminProviderModels({
                             <span className="flex flex-wrap items-center gap-1.5">
                               {worksWith.chips.map((chip) => <Chip chip={chip} key={chip.key} />)}
                               {worksWith.kind === "failed" ? (
-                                <span className="inline-flex items-center gap-2 text-xs text-caution">
+                                <span className="inline-flex items-center gap-2 text-xs font-semibold text-critical">
                                   Check failed
                                   <UiV2Button aria-describedby={checkHelpId} disabled={!canCheck} onClick={() => checkKey && startChecks(checkKey.id, [model.id], true)} title={checkHelp} tone="ghost" type="button">
                                     Retry

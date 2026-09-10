@@ -20,6 +20,7 @@ import {
 } from "./clientSession";
 import { createMcpClientSessionFactory } from "./clientSessionFactory";
 import type { McpResponseWireLimits } from "./responseLimits";
+import { McpSafeFetchError } from "./safeFetch";
 
 type FixtureOptions = Readonly<{
   callTool?: (input: Readonly<{
@@ -58,6 +59,30 @@ const defaultLimits: McpClientSessionLimits = {
   maxTools: 16
 };
 const privateCancellationReason = "private-cancellation-reason";
+
+describe("MCP bounded transport failure details", () => {
+  it.each([401, 403, 404, 429, 503])("preserves HTTP %s during initialization without the response body", async (status) => {
+    const fixture = await startFixture();
+    const session = createSession(fixture, { fetch: async () => new Response("private upstream body", { status }) });
+    try {
+      const error = await session.initialize().catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(McpClientSessionError);
+      expect(error).toMatchObject({ httpStatus: status, operation: "initialize", code: status === 401 || status === 403 ? "mcp_authorization_required" : "mcp_initialize_failed" });
+      expect(JSON.stringify(error)).not.toContain("private upstream body");
+    } finally { await session.close(); }
+  });
+
+  it.each([
+    ["mcp_http_dns_failed", "mcp_network_failed"],
+    ["mcp_http_tls_failed", "mcp_tls_failed"],
+    ["mcp_http_address_forbidden", "mcp_connection_forbidden"]
+  ] as const)("keeps %s distinct from authorization", async (cause, code) => {
+    const fixture = await startFixture();
+    const session = createSession(fixture, { fetch: async () => { throw new McpSafeFetchError(cause); } });
+    try { await expect(session.initialize()).rejects.toMatchObject({ code, operation: "initialize" }); }
+    finally { await session.close(); }
+  });
+});
 
 function tool(
   name: string,

@@ -18,6 +18,7 @@ import type {
 export type CapabilityCheckOutcome = "cancelled" | "failed" | "skipped" | "stored";
 
 export type InitialCapabilityCheck = Readonly<{
+  activateCapabilities?: boolean;
   connectionVersion: number;
   credentialVersionId: string;
   modelVersion: number;

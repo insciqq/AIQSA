@@ -5,6 +5,7 @@ import { signInWithLocalToken } from "./support/localAuth";
 test("model JSON preserves local drafts, native undo, nested focus and viewport access", async ({ page }) => {
   let connection = workingConnection();
   const model = connection.models[0]!;
+  model.draftConfig.defaultParams = {};
   connection.credentials.push(fixtureCredential({ id: "research", label: "Research diagnostics with a long key label" }));
   connection.activeChecks = [fixtureCheck({ credentialId: "research", providerModelId: model.id })];
   const mutations: Record<string, unknown>[] = [];
@@ -34,6 +35,15 @@ test("model JSON preserves local drafts, native undo, nested focus and viewport 
   await trigger.click();
   const dialog = page.getByRole("dialog", { name: "Default parameters · JSON" });
   const editor = dialog.getByRole("textbox", { name: "Default parameters JSON" });
+  await expect(editor).toHaveValue("{}");
+  await expect(dialog.getByTestId("model-json-example")).toHaveText('{"maxOutputTokens":1024}');
+  await expect(editor).toHaveAccessibleDescription(/one JSON object.*Example only/u);
+  await dialog.getByRole("button", { name: "Apply to model" }).click();
+  await expect(sheet).toContainText("No custom parameters");
+  await trigger.click();
+  await dialog.getByRole("button", { name: "Close JSON editor" }).click();
+  await expect(page.getByRole("dialog", { name: "Discard JSON changes" })).toHaveCount(0);
+  await trigger.click();
   await editor.fill('{"x":1}');
   await dialog.getByRole("button", { name: "Format", exact: true }).click();
   await expect(editor).toHaveValue('{\n  "x": 1\n}');
@@ -62,6 +72,7 @@ test("model JSON preserves local drafts, native undo, nested focus and viewport 
       await page.setViewportSize(viewport);
       await expect(dialog.getByRole("button", { name: "Apply to model" })).toBeInViewport();
       await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeInViewport();
+      await expect(dialog.getByTestId("model-json-example")).toBeInViewport();
       const geometry = await editor.boundingBox();
       expect(geometry!.height).toBeGreaterThan(80);
       expect(geometry!.x).toBeGreaterThanOrEqual(0);

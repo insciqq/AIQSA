@@ -21,9 +21,18 @@ export type McpDraftValidationStage =
   | "connecting"
   | "discovering_tools";
 
+// Server-owned validation evidence, never accepted from an administration request.
+export type McpEndpointCorrection = Readonly<{
+  kind: "gitlab";
+  fromUrl: string;
+  toUrl: string;
+  oauthBinding?: Readonly<{ connectionId: string; policyFingerprint: string; tokenVersion: string }>;
+}>;
+
 export type McpDraftValidationOutcome =
   | Readonly<{
       evidence: McpJsonObject;
+      endpointCorrection?: McpEndpointCorrection;
       kind: "ok";
       resolvedArtifact: McpJsonObject | null;
       toolInventory: readonly McpToolInventoryEntry[];

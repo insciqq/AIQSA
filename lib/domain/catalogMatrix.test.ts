@@ -169,7 +169,7 @@ describe("catalog capability matrix", () => {
       expect(model).toMatchObject({
         contextWindow: 1_050_000,
         defaultParams: {
-          maxOutputTokens: 128_000,
+          maxOutputTokens: 65_536,
           reasoning: {
             effort: "medium",
             mode: "standard"
@@ -179,7 +179,7 @@ describe("catalog capability matrix", () => {
         outputTokenPriceMicros: 0,
         parameterControls: {
           maxOutputTokens: {
-            defaultValue: 128_000,
+            defaultValue: 65_536,
             maxValue: 128_000
           },
           reasoningEffort: {
@@ -218,11 +218,11 @@ describe("catalog capability matrix", () => {
         capabilities: { nativeSearch: true },
         contextWindow: 1_000_000,
         defaultParams: {
-          maxTokens: 128_000,
+          maxTokens: 65_536,
           thinking: { enabled: true, type: "adaptive" }
         },
         parameterControls: {
-          maxOutputTokens: { defaultValue: 128_000, maxValue: 128_000 },
+          maxOutputTokens: { defaultValue: 65_536, maxValue: 128_000 },
           temperature: { supported: false }
         }
       });
@@ -431,7 +431,7 @@ describe("catalog capability matrix", () => {
     );
 
     expect(model.defaultParams).toEqual({
-      maxTokens: 128_000,
+      maxTokens: 65_536,
       reasoning: { effort: "high" },
       stream: true,
       verbosity: "high"

@@ -69,7 +69,7 @@ export function useAdminModelChecks(input: Readonly<{
           : run.skipped?.length
           ? `${run.skipped.length} models changed during checking. Run Check models again.`
           : run.failed.length
-          ? `Checked ${run.total} ${run.total === 1 ? "model" : "models"} · ${run.failed.length} hit a temporary failure — use Retry.`
+          ? `Checked ${run.total} ${run.total === 1 ? "model" : "models"} · ${run.failed.length} ${run.failed.length === 1 ? "model has" : "models have"} unresolved checks — use Retry.`
           : `All ${run.total} ${run.total === 1 ? "model" : "models"} checked.`);
       } else if (run.state === "cancelled") {
         noticeRef.current("Checking stopped.");

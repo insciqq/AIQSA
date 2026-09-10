@@ -1,3 +1,5 @@
+import { buildOpenAICompatibleChatRequest } from "../providers/openaiCompatibleChatRequest";
+import { buildOpenAIResponsesRequest } from "../providers/openaiResponsesRequest";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { KnowledgeSelection } from "../../contracts/knowledge";
@@ -1027,7 +1029,7 @@ describe("run preparation", () => {
       })
     );
 
-    expect(result).toMatchObject({ code: "context_too_large", ok: false });
+    expect(result.ok).toBe(true);
     expect(admissionLoad).toHaveBeenCalledOnce();
     expect(admissionLoad).toHaveBeenCalledWith(expect.objectContaining({
       executionScope: "project"
@@ -1738,6 +1740,7 @@ describe("run preparation", () => {
     );
 
     expect(prepared.normalizedRequest.params).toEqual({
+      temperature: 1,
       maxOutputTokens: 256,
       provider: policy,
       reasoning: {
@@ -1768,6 +1771,7 @@ describe("run preparation", () => {
       )
     );
     expect(defaultsOnly.normalizedRequest.params).toEqual({
+      temperature: 1,
       maxOutputTokens: 512,
       provider: policy,
       stream: true
@@ -1974,6 +1978,31 @@ describe("run preparation", () => {
     expect(prepared.mcpBindings).toEqual(mcpPlan.bindings);
     expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session") ?? []).toEqual([]);
   });
+
+  it.each(["openai_responses_compatible", "openai_chat_completions_compatible"] as const)(
+    "carries ordinary defaults and explicit overrides through admission into %s requests", async (adapterKind) => {
+      for (const [ceiling, override, expected] of [[undefined, undefined, 65536], [8192, undefined, 8192],
+        [131072, undefined, 65536], [131072, 1024, 1024]] as const) {
+        const original = compatibleAdmissionPlan(adapterKind);
+        const capabilities = { ...baseCapabilities, contextWindow: 272_000, defaultMaxOutputTokens: undefined, maxOutputTokens: ceiling };
+        const plan: ProviderAdmissionPlan = { ...original, answer: { ...original.answer,
+          modelConfiguration: { ...original.answer.modelConfiguration, capabilities, defaultParams: {} },
+          snapshot: { ...original.answer.snapshot, model: { ...original.answer.snapshot.model, capabilities, defaultParams: {} } }
+        } };
+        const harness = createHarness();
+        const prepared = preparedFrom(await prepareRun({ ...harness.deps, allowFakeProvider: false,
+          providerAdmission: { async load() { return plan; } }
+        }, sendInput(successBody({ modelId: plan.selection.providerModelId, provider: plan.selection.providerConnectionId,
+          controlDefaults: {}, params: override ? { maxOutputTokens: override, temperature: 0.4 } : {}
+        }))));
+        const body = adapterKind === "openai_responses_compatible"
+          ? buildOpenAIResponsesRequest(materializePreparedRunData(prepared).providerRequest)
+          : buildOpenAICompatibleChatRequest(materializePreparedRunData(prepared).providerRequest);
+        expect(body).toMatchObject({ [adapterKind === "openai_responses_compatible" ? "max_output_tokens" : "max_completion_tokens"]: expected,
+          temperature: override ? 0.4 : 1 });
+        expect(plan.answer.snapshot.model.capabilities.maxOutputTokens).toBe(ceiling);
+      }
+    });
 
   it.each([
     "openai_responses_compatible",

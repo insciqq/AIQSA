@@ -95,6 +95,17 @@ function harness(options: {
 }
 
 describe("custom OpenAI-compatible provider setup service", () => {
+  it.each([undefined, 8192, 131072])("bounds generated defaults by discovered ceiling %s", async (maxOutputTokens) => {
+    const h = harness();
+    await h.service.setup({ actor: ACTOR, request: request({
+      perModelCapabilities: { "vendor/model-1": { ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }) } }
+    }) });
+    const capabilities = h.commit.mock.calls[0]![0].models[0]!.configuration.capabilities;
+    expect(capabilities.defaultMaxOutputTokens).toBe(maxOutputTokens === 8192 ? 8192 : 65536);
+    expect(capabilities.maxOutputTokens).toBe(maxOutputTokens);
+    expect(capabilities.contextWindow).toBeUndefined();
+  });
+
   it("checks a separate image candidate when adding a codex gateway", async () => {
     const commit = vi.fn(async (_plan: AdminProviderCustomSetupCommitPlan) => ({ defaultChanged: false, status: "ready" as const }));
     const boundary = new Error("checks-started");
@@ -216,8 +227,7 @@ describe("custom OpenAI-compatible provider setup service", () => {
     expect(plan.credential.secretEnvelope).toEqual(expect.any(String));
     expect(plan.credential.secretEnvelope).not.toContain("exact-secret");
     expect(plan.models[0]!.configuration.capabilities).toMatchObject({
-      contextWindow: 8_192,
-      defaultMaxOutputTokens: 1_024,
+      defaultMaxOutputTokens: 65_536,
       pdf: true,
       toolCalling: false
     });

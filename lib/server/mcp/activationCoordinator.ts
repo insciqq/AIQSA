@@ -5,10 +5,12 @@ import type {
   McpToolInventoryEntry,
   McpValidationIssue
 } from "@/lib/contracts/mcp";
+import { mcpValidationIssue } from "@/lib/contracts/mcp";
 import {
   McpDraftValidationAbortedError,
   McpDraftValidationUnavailableError,
   type McpDraftValidationOutcome,
+  type McpEndpointCorrection,
   type McpDraftValidationStage,
   type McpDraftValidator
 } from "./draftValidator";
@@ -25,6 +27,7 @@ export type McpActivationClaim = Readonly<{
 
 export type McpActivationPublication = Readonly<{
   evidence: McpJsonObject;
+  endpointCorrection?: McpEndpointCorrection;
   resolvedArtifact: McpJsonObject | null;
   toolInventory: readonly McpToolInventoryEntry[];
 }>;
@@ -65,10 +68,7 @@ const MAX_FAILURE_ISSUES = 20;
 const SAFE_TOKEN = /^[a-z0-9_.-]{1,128}$/u;
 
 function safeIssues(issues: readonly McpValidationIssue[]): McpValidationIssue[] {
-  return issues.slice(0, MAX_FAILURE_ISSUES).map((issue) => ({
-    code: SAFE_TOKEN.test(issue.code) ? issue.code : "mcp_activation_validation_failed",
-    path: SAFE_TOKEN.test(issue.path) ? issue.path : "validator"
-  }));
+  return issues.slice(0, MAX_FAILURE_ISSUES).map((issue) => mcpValidationIssue(issue, "mcp_activation_validation_failed"));
 }
 
 function validPublication(outcome: Extract<McpDraftValidationOutcome, { kind: "ok" }>): boolean {
@@ -214,6 +214,7 @@ export class McpActivationCoordinator {
         now: this.#now(),
         publication: {
           evidence: outcome.evidence,
+          ...(outcome.endpointCorrection ? { endpointCorrection: outcome.endpointCorrection } : {}),
           resolvedArtifact: outcome.resolvedArtifact,
           toolInventory: outcome.toolInventory
         }

@@ -21,10 +21,31 @@ import {
   modelRouteLabel,
   modelSuccessor,
   modelTitle,
+  providerNeedsKeyForModels,
   turnOffConsequence
 } from "./modelListView";
 
 const NOW = new Date(FIXTURE_NOW);
+
+describe("provider model creation prerequisite", () => {
+  it("accepts only explicit keyless compatible connections or an enabled live key", () => {
+    const connection = workingConnection();
+    connection.credentials = [];
+    expect(providerNeedsKeyForModels(connection)).toBe(true);
+    connection.draftConfig = { ...connection.draftConfig, authenticationMode: "none" };
+    expect(providerNeedsKeyForModels(connection)).toBe(true);
+    connection.family = "openai_compatible";
+    expect(providerNeedsKeyForModels(connection)).toBe(true);
+    connection.activeConfig = { ...connection.draftConfig, authenticationMode: "none" };
+    expect(providerNeedsKeyForModels(connection)).toBe(false);
+    connection.activeConfig = null;
+    expect(providerNeedsKeyForModels(connection)).toBe(false);
+    connection.draftConfig.authenticationMode = "bearer";
+    connection.credentials = [fixtureCredential({ id: "non-default", label: "Fixture key" })];
+    connection.defaultCredentialId = null;
+    expect(providerNeedsKeyForModels(connection)).toBe(false);
+  });
+});
 
 function candidate(id: string, displayName: string) {
   return { connectionDisplayName: "OpenRouter", connectionId: "conn-or", displayName, id };

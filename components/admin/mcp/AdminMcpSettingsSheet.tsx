@@ -3,6 +3,7 @@
 import { inputClass } from "@/components/admin/adminPrimitives";
 import { AdminSheet } from "@/components/admin/AdminSheet";
 import { AdminMcpDraftEditor } from "@/components/admin/mcp/AdminMcpDraftEditor";
+import { McpConfigurationEditor } from "@/components/admin/mcp/McpConfigurationEditor";
 import {
   blankMcpServerForm,
   editableMcpServerForm,
@@ -21,7 +22,7 @@ export type AdminMcpSettingsSheetMode =
   | Readonly<{ kind: "create" }>
   | Readonly<{ kind: "edit"; server: AdminMcpServer }>;
 
-const errorClass = "rounded-[10px] border border-critical/25 bg-critical/5 px-3 py-2 text-xs leading-5 text-critical";
+const errorClass = "rounded-[10px] border border-critical/25 bg-critical/5 px-3 py-2 text-xs leading-5 text-critical [overflow-wrap:anywhere]";
 
 function SheetBody({
   controller,
@@ -47,8 +48,6 @@ function SheetBody({
   const [saving, setSaving] = useState(false);
   const formId = useId();
   const importId = useId();
-  const importHelpId = useId();
-  const importErrorId = useId();
   const errorId = useId();
   const importRef = useRef<HTMLTextAreaElement>(null);
   const busy = controller.state.busy || saving;
@@ -58,8 +57,8 @@ function SheetBody({
   const canSave = !busy && form.name.trim() !== "";
 
   useEffect(() => {
-    if (importError) importRef.current?.focus();
-  }, [importError]);
+    if (stage === "import") importRef.current?.focus();
+  }, [importError, stage]);
 
   const requestClose = () => {
     if (busy) return;
@@ -187,30 +186,18 @@ function SheetBody({
         {stage === "import" ? (
           <div className="flex flex-col gap-2">
             <label className={fieldLabelClass} htmlFor={importId}>Configuration JSON, URL, or install command</label>
-            <textarea
-              aria-describedby={importError ? `${importHelpId} ${importErrorId}` : importHelpId}
-              aria-invalid={importError ? true : undefined}
-              autoCapitalize="off"
-              autoCorrect="off"
-              className={`${inputClass} min-h-56 resize-y py-2 font-mono text-[13px] leading-6`}
-              data-testid="mcp-configuration-document"
+            <McpConfigurationEditor
               disabled={busy}
+              error={importError}
               id={importId}
-              onChange={(event) => {
-                setImportValue(event.currentTarget.value);
+              onChange={(value) => {
+                setImportValue(value);
                 setImportError(null);
               }}
-              placeholder={'{\n  "mcpServers": {\n    "example": { "command": "npx", "args": ["-y", "@example/mcp"] }\n  }\n}\n\nor paste: npx -y @example/mcp@latest'}
-              ref={importRef}
-              spellCheck={false}
+              onError={setImportError}
+              textareaRef={importRef}
               value={importValue}
             />
-            <span className={helpTextClass} id={importHelpId}>
-              Trailing commas are accepted. AIQSA reviews the result with you before anything is saved.
-            </span>
-            {importError ? (
-              <p className={errorClass} id={importErrorId} role="alert">{importError}</p>
-            ) : null}
           </div>
         ) : (
           <>

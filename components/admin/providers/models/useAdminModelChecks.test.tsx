@@ -53,7 +53,7 @@ describe("useAdminModelChecks", () => {
     expect(actions.cancelModelChecks).toHaveBeenCalledWith("conn-openai", "run-1");
 
     rerender({ connection: withRun({ ...running, done: 2, failed: ["model-luna"], finishedAt: "2026-09-07T12:52:00.000Z", inFlight: [], state: "completed" }) });
-    expect(onNotice).toHaveBeenCalledWith("Checked 2 models · 1 hit a temporary failure — use Retry.");
+    expect(onNotice).toHaveBeenCalledWith("Checked 2 models · 1 model has unresolved checks — use Retry.");
     await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
     expect(actions.refreshQuietly).toHaveBeenCalledTimes(2);
     expect(onNotice).toHaveBeenCalledTimes(1);

@@ -1,3 +1,4 @@
+import { mcpValidationIssue } from "@/lib/contracts/mcp";
 import type {
   AdminMcpCatalogResponse,
   AdminMcpCreateRequest,
@@ -27,7 +28,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isIssue(value: unknown): value is McpValidationIssue {
-  return isRecord(value) && typeof value.code === "string" && typeof value.path === "string";
+  if (!isRecord(value)) return false;
+  const safe = mcpValidationIssue(value);
+  return safe.code === value.code && safe.path === value.path &&
+    ["httpStatus", "operation", "endpoint"].every((key) => value[key] === undefined || value[key] === safe[key as keyof McpValidationIssue]);
 }
 
 function hasIdentityHash(value: unknown): boolean {
@@ -282,7 +286,26 @@ export function adminMcpErrorMessage(error: AdminMcpClientError): string {
   };
   const summary = messages[error.code] ?? "The MCP action could not be completed. Refresh and try again.";
   if (!error.issues.length) return summary;
-  const detail = error.issues.slice(0, 4).map((issue) => {
+  const detail = error.issues.slice(0, 4).map((rawIssue) => {
+    const issue = mcpValidationIssue(rawIssue);
+    const stage = issue.operation === "initialize" ? "MCP initialization" : issue.operation === "list_tools" ? "tools/list" : "MCP connection";
+    const location = issue.endpoint ? ` at ${issue.endpoint}` : "";
+    if (issue.code === "mcp_gitlab_reauthorization_required") return "GitLab advertised its /api/v4/mcp endpoint, but the current OAuth grant does not authorize that resource. Set the advertised MCP URL and reconnect before Test & Save.";
+    if (issue.code === "mcp_gitlab_endpoint_failed") return "GitLab advertised its /api/v4/mcp endpoint, but that endpoint did not pass MCP validation. Review its availability and permissions; the saved URL was not changed.";
+    if (issue.code === "mcp_draft_changed") return "The configuration or OAuth connection changed during validation. Use Test & Save again.";
+    if (issue.httpStatus) {
+      const next = issue.httpStatus === 401 || issue.httpStatus === 403
+        ? "Check the account authorization and required permissions; reconnect if needed."
+        : issue.httpStatus === 404 && issue.operation !== "list_tools"
+          ? "Confirm the server's MCP endpoint. A website URL may not be an MCP endpoint."
+          : issue.operation === "list_tools" ? "The server connected, but its tool list could not be read. Check permissions and server availability."
+            : "Check the server's availability and try again.";
+      return `HTTP ${issue.httpStatus} during ${stage}${location}. ${next}`;
+    }
+    if (issue.code === "mcp_tls_failed") return `TLS verification failed during ${stage}${location}. Check the server certificate and HTTPS configuration.`;
+    if (issue.code === "mcp_network_failed") return `Network connection failed during ${stage}${location}. Check DNS and server availability.`;
+    if (issue.code === "mcp_connection_forbidden") return `The network policy blocked ${stage}${location}. Review this server's URL and network settings.`;
+    if (issue.code === "mcp_authorization_required") return `Authorization is required for ${stage}${location}. Reconnect the account and check its permissions.`;
     if (issue.code === "mcp_oauth_validation_deferred") {
       return "Connect your administrator account under Authorization on the server page, then use Test & Save. That account is used only to check settings.";
     }
@@ -290,7 +313,7 @@ export function adminMcpErrorMessage(error: AdminMcpClientError): string {
       return "The authorization has expired or was revoked. Reconnect under Authorization on the server page, then use Test & Save.";
     }
     if (issue.code === "mcp_request_timeout") {
-      return "The server did not respond in time. Check its availability and try again.";
+      return `The server did not respond in time during ${stage}${location}. Check its availability and try again.`;
     }
     if (issue.code === "mcp_remote_validation_failed" || issue.code === "mcp_initialize_failed") {
       return "Could not connect to this MCP server. Check its URL, credentials and network access.";

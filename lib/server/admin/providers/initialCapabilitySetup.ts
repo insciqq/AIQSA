@@ -1,5 +1,6 @@
 import {
   ADMIN_PROVIDER_CAPABILITY_CHECKS,
+  decodeAdminProviderCapabilityAttempts,
   type AdminProviderCapabilitySetupEvidence,
   type AdminProviderTestEvidence
 } from "../../../contracts/adminProviders";
@@ -11,7 +12,7 @@ import { hasVerifiedForcedToolCall } from "../../providers/forcedToolCallEvidenc
 import { hasVerifiedStructuredOutput } from "../../providers/structuredOutputEvidence";
 import { decodeImageVerificationEvidence } from "../../providers/imageGenerationEvidence";
 
-export const INITIAL_CAPABILITY_SETUP_POLICY_VERSION = 1 as const;
+export const INITIAL_CAPABILITY_SETUP_POLICY_VERSION = 2 as const;
 export const INITIAL_CAPABILITY_MODEL_TIMEOUT_MS = 180_000;
 export const INITIAL_CAPABILITY_BATCH_TIMEOUT_MS = 30 * 60_000;
 
@@ -32,20 +33,30 @@ export function pendingInitialCapabilityEvidence(model: ProviderModelConfigurati
 export function decodeCapabilitySetupEvidence(value: unknown): AdminProviderCapabilitySetupEvidence | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
-  if (candidate.policyVersion !== INITIAL_CAPABILITY_SETUP_POLICY_VERSION ||
+  if ((candidate.policyVersion !== 1 && candidate.policyVersion !== INITIAL_CAPABILITY_SETUP_POLICY_VERSION) ||
     !candidate.checks || typeof candidate.checks !== "object" || Array.isArray(candidate.checks) ||
-    Object.keys(candidate).some((key) => key !== "policyVersion" && key !== "checks")) return null;
+    Object.keys(candidate).some((key) => !["policyVersion", "checks", "attempts", "activation"].includes(key)) ||
+    candidate.activation !== undefined && candidate.activation !== "initial" && candidate.activation !== "preserve") return null;
   const entries = Object.entries(candidate.checks);
   if (!entries.length || entries.some(([key, status]) =>
     !(ADMIN_PROVIDER_CAPABILITY_CHECKS as readonly string[]).includes(key) ||
     typeof status !== "string" || !["verified", "rejected", "unsupported", "incomplete", "not_checked"].includes(status))) return null;
-  return { policyVersion: INITIAL_CAPABILITY_SETUP_POLICY_VERSION,
+  const attempts = candidate.attempts === undefined ? undefined : decodeAdminProviderCapabilityAttempts(candidate.attempts);
+  if (attempts === null) return null;
+  return { policyVersion: candidate.policyVersion,
+    ...(candidate.activation ? { activation: candidate.activation } : {}), ...(attempts ? { attempts } : {}),
     checks: Object.fromEntries(entries) as AdminProviderCapabilitySetupEvidence["checks"] };
 }
 
 export function capabilitySetupIncomplete(evidence: AdminProviderTestEvidence): boolean {
   const setup = decodeCapabilitySetupEvidence(evidence.capabilitySetup);
   return !setup || Object.values(setup.checks).some((status) => status !== "verified" && status !== "unsupported");
+}
+
+export function settledUnsupportedImageCapabilities(evidence: AdminProviderTestEvidence): boolean {
+  const setup = decodeCapabilitySetupEvidence(evidence.capabilitySetup);
+  return setup?.policyVersion === INITIAL_CAPABILITY_SETUP_POLICY_VERSION &&
+    setup.checks.modelAccess === "unsupported" && setup.checks.imageGeneration === "unsupported" && setup.checks.imageEditing === "unsupported";
 }
 
 /** Use only during the authorized initial setup or an exact-current setup retry.
@@ -55,6 +66,7 @@ export function initiallyVerifiedModelConfiguration(
   evidence: AdminProviderTestEvidence
 ): ProviderModelConfiguration {
   const setup = decodeCapabilitySetupEvidence(evidence.capabilitySetup);
+  if (setup?.activation === "preserve") return model;
   if (setup && model.modelClass === "image") {
     const verified = (capability: "imageGeneration" | "imageEditing") => {
       const proof = decodeImageVerificationEvidence(evidence[capability]);
@@ -81,12 +93,35 @@ export function reusableCapabilitySetupEvidence(
   evidence: AdminProviderTestEvidence | undefined,
   model: ProviderModelConfiguration
 ): AdminProviderTestEvidence | undefined {
-  const setup = decodeCapabilitySetupEvidence(evidence?.capabilitySetup);
+  let setup = decodeCapabilitySetupEvidence(evidence?.capabilitySetup);
+  if (!setup && evidence && model.modelClass === "answer" && evidence.compatibility?.modelAccess === "verified") {
+    // Legacy ordinary checks have positive proofs but no capability receipt.
+    // Their negative/default flags never establish settled incompatibility.
+    const checks: AdminProviderCapabilitySetupEvidence["checks"] = { modelAccess: "verified" };
+    for (const key of ["structuredOutput", "toolCalling", "forcedToolCall", "parallelToolCalls", "vision", "directPdf", "streaming"] as const) {
+      checks[key] = evidence.compatibility[key] === "verified" ? "verified" : "not_checked";
+    }
+    setup = { policyVersion: 1, activation: "preserve", checks };
+  }
   if (!evidence || !setup || evidence.upstreamModelId !== model.upstreamModelId ||
-    evidence.detail !== "ok" || evidence.method !== "tiny_generation" ||
+    !["tiny_generation", "openrouter_account_catalog"].includes(evidence.method)) return undefined;
+  if (model.modelClass === "image" && evidence.detail === "model_missing" && settledUnsupportedImageCapabilities(evidence)) {
+    // Negative-only receipts suppress redundant probes; they grant no capability.
+    return { detail: "model_missing", method: evidence.method, selectedProviders: evidence.selectedProviders,
+      upstreamModelId: model.upstreamModelId, capabilitySetup: setup };
+  }
+  if (evidence.detail !== "ok" ||
     setup.checks.modelAccess !== "verified" || evidence.compatibility?.modelAccess !== "verified") return undefined;
-  if ((setup.checks.structuredOutput === "verified" && !hasVerifiedStructuredOutput(evidence, model)) ||
-    (setup.checks.forcedToolCall === "verified" && !hasVerifiedForcedToolCall(evidence, model))) return undefined;
+  const checks = { ...setup.checks };
+  const retained = { ...evidence, ...(evidence.compatibility ? { compatibility: { ...evidence.compatibility } } : {}) };
+  for (const [key, valid] of [["structuredOutput", hasVerifiedStructuredOutput(evidence, model)],
+    ["forcedToolCall", hasVerifiedForcedToolCall(evidence, model)]] as const) {
+    if (!valid) {
+      if (checks[key] === "verified") checks[key] = "not_checked";
+      delete retained[key];
+      if (retained.compatibility) retained.compatibility[key] = "not_supported";
+    }
+  }
   for (const [check, proof] of [
     ["vision", decodeVisionInputVerificationEvidence(evidence.visionInput)],
     ["directPdf", decodePdfInputVerificationEvidence(evidence.pdfInput)],
@@ -94,8 +129,14 @@ export function reusableCapabilitySetupEvidence(
     ["imageGeneration", decodeImageVerificationEvidence(evidence.imageGeneration)],
     ["imageEditing", decodeImageVerificationEvidence(evidence.imageEditing)]
   ] as const) {
-    if (setup.checks[check] === "verified" &&
-      (proof?.adapterKind !== model.adapterKind || proof.upstreamModelId !== model.upstreamModelId)) return undefined;
+    if (proof?.adapterKind !== model.adapterKind || proof.upstreamModelId !== model.upstreamModelId) {
+      if (checks[check] === "verified") checks[check] = "not_checked";
+      const field = check === "vision" ? "visionInput" : check === "directPdf" ? "pdfInput" : check;
+      delete retained[field];
+      if (retained.compatibility && check !== "imageGeneration" && check !== "imageEditing") retained.compatibility[check] = "not_supported";
+    }
   }
-  return evidence;
+  for (const check of ["toolCalling", "streaming"] as const) if (checks[check] === "verified" && evidence.compatibility?.[check] !== "verified") checks[check] = "not_checked";
+  for (const key of ADMIN_PROVIDER_CAPABILITY_CHECKS) if (checks[key] === "unsupported" && setup.policyVersion === 1) checks[key] = "not_checked";
+  return { ...retained, capabilitySetup: { ...setup, checks } };
 }

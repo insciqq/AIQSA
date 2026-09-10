@@ -41,6 +41,21 @@ function response(value: unknown, status = 200): Response {
 }
 
 describe("adminMcpApi", () => {
+  it.each([401, 403, 404, 503])("describes HTTP %s, its stage and a safe endpoint", (httpStatus) => {
+    const message = adminMcpErrorMessage({ code: "mcp_draft_test_failed", issues: [{ code: "mcp_initialize_failed", path: "source", httpStatus, operation: "initialize", endpoint: "https://user:secret@mcp.example.test/wrong?token=secret#secret" }] });
+    expect(message).toContain(`HTTP ${httpStatus} during MCP initialization at https://mcp.example.test/wrong`);
+    expect(message).not.toContain("secret");
+    expect(message).not.toContain("mcp_initialize_failed");
+    if (httpStatus === 404) expect(message).toContain("Confirm the server's MCP endpoint");
+    if (httpStatus === 401 || httpStatus === 403) expect(message).toContain("account authorization");
+  });
+
+  it("distinguishes a tool-list HTTP failure after initialization", () => {
+    const message = adminMcpErrorMessage({ code: "mcp_draft_test_failed", issues: [{ code: "mcp_list_tools_failed", path: "tools", operation: "list_tools", httpStatus: 404 }] });
+    expect(message).toContain("HTTP 404 during tools/list");
+    expect(message).toContain("server connected");
+    expect(message).not.toContain("Confirm the server's MCP endpoint");
+  });
   it.each([
     ["mcp_request_timeout", "did not respond in time"],
     ["mcp_initialize_failed", "Check its URL, credentials and network access"],

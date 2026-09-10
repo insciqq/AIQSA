@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { mcpRuntimeErrorCode } from "@/lib/contracts/mcp";
+import { mcpRuntimeErrorCode, mcpValidationIssue } from "@/lib/contracts/mcp";
 import type {
   AdminMcpActivationSummary,
   AdminMcpServer,
@@ -36,6 +36,8 @@ import {
   type McpEnvelopeContext
 } from "./encryption";
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
+import { correctedMcpDraft } from "./endpointCorrection";
+import { McpEndpointBindingChangedError, rebindMcpValidationEndpoint } from "./oauthRepository";
 import { parseMcpLocalResolvedArtifact } from "./localArtifact";
 import type {
   McpActivationClaim,
@@ -266,7 +268,7 @@ function activationIssuesFrom(value: unknown): McpValidationIssue[] {
     if (!isRecord(candidate) || typeof candidate.code !== "string" ||
       typeof candidate.path !== "string" || candidate.code.length > 128 ||
       candidate.path.length > 128) return [];
-    return [{ code: candidate.code, path: candidate.path }];
+    return [mcpValidationIssue(candidate)];
   });
 }
 
@@ -1384,7 +1386,9 @@ export function createPrismaMcpRepository(input: {
           };
         }
 
-        const draft = draftFrom(server.draft);
+        const originalDraft = draftFrom(server.draft);
+        const draft = correctedMcpDraft(originalDraft, publication.endpointCorrection);
+        if (!draft) return { kind: "invalid", issues: [{ code: "validator_result_invalid", path: "validator" }] };
         const lineageIssues = slotLineageIssues(draft, server.revisions);
         if (lineageIssues.length) return { issues: lineageIssues, kind: "invalid" };
         const evidence = jsonObjectFrom(publication.evidence);
@@ -1407,7 +1411,7 @@ export function createPrismaMcpRepository(input: {
           };
         }
 
-        const draftHash = job.draftHash;
+        const draftHash = hashCanonicalMcpValue(draft);
         const identityHash = revisionIdentityHash({
           draftHash,
           evidence,
@@ -1434,6 +1438,10 @@ export function createPrismaMcpRepository(input: {
           }
         });
         if (accepted.count !== 1) return { kind: "lease_lost" };
+        if (publication.endpointCorrection) await rebindMcpValidationEndpoint({
+          tx, key: encryptionKey(), serverId: claim.serverId, userId: claim.validationUserId,
+          fromDraft: originalDraft, toDraft: draft, binding: publication.endpointCorrection.oauthBinding
+        });
 
         let revisionId = existingRevision?.id;
         if (!revisionId) {
@@ -1474,6 +1482,7 @@ export function createPrismaMcpRepository(input: {
         await tx.mcpServer.update({
           data: {
             activeRevisionId: revisionId,
+            ...(publication.endpointCorrection ? { draft: draft as Prisma.InputJsonValue } : {}),
             draftTestEvidence: draftTestEvidence as Prisma.InputJsonValue,
             enabled: server.activeRevisionId ? server.enabled : true,
             testedDraftHash: draftHash
@@ -1485,6 +1494,9 @@ export function createPrismaMcpRepository(input: {
           where: { enabled: true, serverId: claim.serverId }
         });
         return { kind: "published" };
+      }).catch((error) => {
+        if (error instanceof McpEndpointBindingChangedError) return { kind: "invalid" as const, issues: [{ code: "mcp_draft_changed", path: "auth.mode" }] };
+        throw error;
       });
     },
 
@@ -1623,8 +1635,8 @@ export function createPrismaMcpRepository(input: {
         return { kind: "draft_changed" as const };
       }
       const storedDraftHash = hashCanonicalMcpValue(draftFrom(server.draft));
-      const draft = candidateDraft ?? draftFrom(server.draft);
-      const draftHash = hashCanonicalMcpValue(draft);
+      let draft = candidateDraft ?? draftFrom(server.draft);
+      let draftHash = hashCanonicalMcpValue(draft);
       if (expectedDraftHash && draftHash !== expectedDraftHash) {
         return { kind: "draft_changed" as const };
       }
@@ -1662,6 +1674,11 @@ export function createPrismaMcpRepository(input: {
       if (outcome.kind === "invalid") {
         return { issues: outcome.issues, kind: "draft_validation_failed" as const };
       }
+      const originalDraft = draft;
+      const corrected = correctedMcpDraft(draft, outcome.endpointCorrection);
+      if (!corrected) return { kind: "draft_validation_failed" as const, issues: [{ code: "validator_result_invalid", path: "validator" }] };
+      draft = corrected;
+      draftHash = hashCanonicalMcpValue(draft);
       const evidence = jsonObjectFrom(outcome.evidence);
       const resolvedArtifact = outcome.resolvedArtifact === null
         ? null
@@ -1713,6 +1730,10 @@ export function createPrismaMcpRepository(input: {
         })) {
           return { kind: "invalid_values" as const, issues: [{ code: "validation_identity_invalid", path: "validation" }] };
         }
+        if (outcome.endpointCorrection) await rebindMcpValidationEndpoint({
+          tx, key, serverId, userId: validationUserId, fromDraft: originalDraft, toDraft: draft,
+          binding: outcome.endpointCorrection.oauthBinding
+        });
         const sharedConfigVersion = current.sharedConfigVersion + 1;
         const sharedPatch = publish && sharedValues && Object.keys(sharedValues).length
           ? {
@@ -1725,7 +1746,7 @@ export function createPrismaMcpRepository(input: {
         await tx.mcpServer.update({
           data: {
             ...sharedPatch,
-            ...(candidateDraft ? { draft: candidateDraft as Prisma.InputJsonValue } : {}),
+            ...(candidateDraft || outcome.endpointCorrection ? { draft: draft as Prisma.InputJsonValue } : {}),
             ...(name !== undefined ? { displayName: name } : {}),
             ...(description !== undefined ? { description } : {}),
             draftTestEvidence: draftTestEvidence as Prisma.InputJsonValue,
@@ -1742,6 +1763,9 @@ export function createPrismaMcpRepository(input: {
           return activated;
         }
         return adminResult(tx, serverId, key, input.oauthValidationRedirectUri);
+      }).catch((error) => {
+        if (error instanceof McpEndpointBindingChangedError) return { kind: "draft_changed" as const };
+        throw error;
       });
     },
 

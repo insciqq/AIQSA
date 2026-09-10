@@ -6,6 +6,7 @@ import { inputClass } from "@/components/admin/adminPrimitives";
 import { AdminSearchablePicker } from "@/components/admin/AdminSearchablePicker";
 import { describeDeleteBlockers } from "@/components/admin/providers/providerBlockers";
 import { providerKeyState } from "@/components/admin/providers/providerListView";
+import { providerNeedsKeyForModels } from "@/components/admin/providers/models/modelListView";
 import { ProviderRowMenu, ProviderTag } from "@/components/admin/providers/providerPrimitives";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
@@ -382,7 +383,7 @@ export function AdminProviderKeys({
           disabled={busy || form?.kind === "add"}
           icon="plus"
           onClick={() => openForm({ kind: "add" })}
-          tone="ghost"
+          tone={providerNeedsKeyForModels(connection) ? "primary" : "ghost"}
           type="button"
         >
           Add key

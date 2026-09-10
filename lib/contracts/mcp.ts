@@ -19,6 +19,7 @@ export function mcpRuntimeErrorCode(value: unknown): McpRuntimeErrorCode {
     return value as McpRuntimeErrorCode;
   }
   if (value === "mcp_request_timeout") return "mcp_timeout";
+  if (value === "mcp_network_failed" || value === "mcp_tls_failed" || value === "mcp_connection_forbidden") return "mcp_connect_failed";
   if (value === "mcp_ping_failed" || value === "mcp_ping_unsupported") return "mcp_health_check_failed";
   if (value === "mcp_oauth_reauthorization_required" || value === "oauth_reauthorization_required") return "mcp_authorization_required";
   if (typeof value === "string" && /^mcp_(?:initialize|inventory|call_result)_response_too_large$/.test(value)) return "mcp_response_too_large";
@@ -106,7 +107,34 @@ export type McpDraftConfiguration = {
 export type McpValidationIssue = {
   code: string;
   path: string;
+  httpStatus?: number;
+  operation?: "initialize" | "list_tools";
+  endpoint?: string;
 };
+
+/** Administrator diagnostics only; credentials and query/fragment values never cross this projection. */
+export function safeMcpEndpoint(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 2048 || /[\u0000-\u001f\u007f]/u.test(value)) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return undefined;
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return undefined;
+  }
+}
+
+export function mcpValidationIssue(value: unknown, fallbackCode = "mcp_remote_validation_failed"): McpValidationIssue {
+  const issue = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const endpoint = safeMcpEndpoint(issue.endpoint);
+  return {
+    code: typeof issue.code === "string" && /^[a-z0-9_.-]{1,128}$/u.test(issue.code) ? issue.code : fallbackCode,
+    path: typeof issue.path === "string" && /^[A-Za-z0-9_.-]{1,128}$/u.test(issue.path) ? issue.path : "validator",
+    ...(typeof issue.httpStatus === "number" && Number.isInteger(issue.httpStatus) && issue.httpStatus >= 400 && issue.httpStatus <= 599 ? { httpStatus: issue.httpStatus } : {}),
+    ...(issue.operation === "initialize" || issue.operation === "list_tools" ? { operation: issue.operation } : {}),
+    ...(endpoint ? { endpoint } : {})
+  };
+}
 
 export type McpJsonValue =
   | boolean

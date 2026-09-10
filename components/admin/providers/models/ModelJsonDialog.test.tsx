@@ -12,7 +12,7 @@ function harness(value = "{}") {
     return <AdminSheet onClose={closeSheet} open testId="outer" title="Edit model">
       <button onClick={() => setOpen(true)} type="button">Edit JSON</button>
       <input aria-label="Other model setting" defaultValue="Keep this" />
-      {open ? <ModelJsonDialog modelLabel="Test model" onApply={(next) => { apply(next); setOpen(false); }} onClose={() => setOpen(false)} providerLabel="Test provider" value={value} /> : null}
+      {open ? <ModelJsonDialog example={'{ "maxOutputTokens": 1024 }'} modelLabel="Test model" onApply={(next) => { apply(next); setOpen(false); }} onClose={() => setOpen(false)} providerLabel="Test provider" value={value} /> : null}
     </AdminSheet>;
   }
   render(<Harness />);
@@ -23,6 +23,24 @@ function harness(value = "{}") {
 }
 
 describe("ModelJsonDialog", () => {
+  it.each(["", "{}", " {\n } ", '{"temperature":0.5}'])("shows an instructional example without changing or dirtying %j", async (value) => {
+    const { apply, trigger } = harness(value);
+    const editor = screen.getByRole("textbox", { name: "Default parameters JSON" });
+    expect(editor).toHaveValue(value);
+    expect(editor).toHaveAccessibleDescription(/one JSON object.*Example only/u);
+    expect(JSON.parse(screen.getByTestId("model-json-example").textContent!)).toEqual({ maxOutputTokens: 1024 });
+    fireEvent.click(screen.getByRole("button", { name: "Close JSON editor" }));
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(screen.queryByRole("dialog", { name: "Discard JSON changes" })).not.toBeInTheDocument();
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it.each(["{}", " {\n } "])("applies untouched %j without injecting example settings", (value) => {
+    const { apply } = harness(value);
+    fireEvent.click(screen.getByRole("button", { name: "Apply to model" }));
+    expect(apply).toHaveBeenCalledExactlyOnceWith(value);
+  });
+
   it("locally formats a long configuration and applies its exact text to the model draft", async () => {
     const { apply, closeSheet, trigger } = harness();
     const dialog = screen.getByRole("dialog", { name: "Default parameters · JSON" });

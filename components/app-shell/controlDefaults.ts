@@ -1,3 +1,4 @@
+import { DEFAULT_CHAT_MAX_OUTPUT_TOKENS, maxOutputTokensFromParams } from "@/lib/domain/providerParams";
 import type {
   Catalog,
   CatalogModel,
@@ -7,10 +8,7 @@ import type {
 import { numberValue } from "@/components/app-shell/shellValues";
 
 export function defaultParameterControls(model?: CatalogModel | null): ModelParameterControls {
-  const defaultMax =
-    numberValue(model?.defaultParams.maxOutputTokens, 0) ||
-    numberValue(model?.defaultParams.maxTokens, 0) ||
-    numberValue(model?.defaultParams.max_output_tokens, 1024);
+  const defaultMax = maxOutputTokensFromParams(model?.defaultParams ?? {}) ?? DEFAULT_CHAT_MAX_OUTPUT_TOKENS;
 
   return (
     model?.parameterControls ?? {
@@ -19,8 +17,7 @@ export function defaultParameterControls(model?: CatalogModel | null): ModelPara
         supported: model?.provider === "openai"
       },
       maxOutputTokens: {
-        defaultValue: defaultMax,
-        maxValue: defaultMax
+        defaultValue: defaultMax
       },
       reasoningEffort: model?.capabilities.reasoning
         ? {

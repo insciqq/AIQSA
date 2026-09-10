@@ -1,3 +1,4 @@
+import { DEFAULT_CHAT_MAX_OUTPUT_TOKENS } from "@/lib/domain/providerParams";
 import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData";
 import type { AssistantAvatarRecipe } from "@/lib/contracts/assistants";
 import {
@@ -144,7 +145,7 @@ export const initialComposerControlSnapshot: ComposerControlSnapshot = {
   assistantManualBackup: null,
   assistantRemovedNotice: false,
   backgroundMode: true,
-  maxOutputTokens: "128000",
+  maxOutputTokens: String(DEFAULT_CHAT_MAX_OUTPUT_TOKENS),
   mcpSelection: { mode: "auto" },
   knowledgePlanSource: "off",
   knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,

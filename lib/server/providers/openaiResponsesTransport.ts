@@ -72,6 +72,7 @@ async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Pr
   const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
   let failureCode: string | undefined;
   let unsupportedInput = false;
+  let capabilityFailureReason: "refusal" | "budget_exhausted" | undefined;
   try {
     const text = await readBoundedResponseText(response, { signal });
     try {
@@ -80,6 +81,7 @@ async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Pr
         const failure = providerResponseFailure("provider_response_failed", parsed as Record<string, unknown>);
         failureCode = "code" in failure && typeof failure.code === "string" ? failure.code : undefined;
         unsupportedInput = "unsupportedInput" in failure && failure.unsupportedInput === true;
+        if ("capabilityFailureReason" in failure && (failure.capabilityFailureReason === "refusal" || failure.capabilityFailureReason === "budget_exhausted")) capabilityFailureReason = failure.capabilityFailureReason;
       }
     } catch { /* An undecodable error body never changes the HTTP classification. */ }
   } catch (error) {
@@ -93,7 +95,7 @@ async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Pr
     response.status,
     retryAfterMs
   ), failureCode && response.status !== 401 && response.status !== 403
-    ? { code: failureCode, ...(unsupportedInput ? { unsupportedInput: true } : {}) }
+    ? { code: failureCode, ...(unsupportedInput ? { unsupportedInput: true } : {}), ...(capabilityFailureReason ? { capabilityFailureReason } : {}) }
     : {});
 }
 

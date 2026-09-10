@@ -165,7 +165,7 @@ describe("AdminProviderAddSheet", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Test & Save" }));
     const results = await within(dialog).findByRole("list", { name: "Model setup results" });
     expect(results).toHaveTextContent("Strict JSON: verified");
-    expect(results).toHaveTextContent("Forced tool calls: check rejected");
+    expect(results).toHaveTextContent("Forced tool calls: inconclusive");
     expect(onCreated).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "Retry unfinished checks" }));
     await within(dialog).findByText("Setup finished");
