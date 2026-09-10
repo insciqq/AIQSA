@@ -14,7 +14,8 @@ const outcomes = [
 ] as const;
 const profiles = [
   { name: "desktop light keyboard", theme: "light", touch: false, viewport: { width: 1280, height: 900 } },
-  { name: "narrow dark touch", theme: "dark", touch: true, viewport: { width: 390, height: 844 } }
+  { name: "narrow dark touch", theme: "dark", touch: true, viewport: { width: 390, height: 640 } },
+  { name: "short light keyboard", theme: "light", touch: false, viewport: { width: 1280, height: 600 } }
 ] as const;
 
 async function expectReachableControl(page: Page, control: Locator) {
@@ -32,10 +33,10 @@ async function expectReachableControl(page: Page, control: Locator) {
   )).toBe(true);
 }
 
-async function tabToControl(page: Page, control: Locator) {
+async function tabToControl(page: Page, control: Locator, beforeEmail: boolean) {
   await page.getByLabel("Email", { exact: true }).focus();
   for (let index = 0; index < 10; index += 1) {
-    await page.keyboard.press("Tab");
+    await page.keyboard.press(beforeEmail ? "Shift+Tab" : "Tab");
     if (await control.evaluate((element) => element === document.activeElement)) break;
   }
   await expect(control).toBeFocused();
@@ -104,8 +105,16 @@ for (const profile of profiles) {
         const recovery = page.getByRole("link", { name: "Use another Yandex account" });
         let action = ordinary;
         if (state.outcome) {
-          await expect(page.getByTestId("auth-root").getByRole(state.outcome === "pending" ? "status" : "alert")).toContainText(state.message);
+          const feedback = page.getByTestId("auth-root").getByRole(state.outcome === "pending" ? "status" : "alert");
+          await expect(feedback).toContainText(state.message);
           await expect(recovery).toBeVisible();
+          await expect(recovery).toBeInViewport({ ratio: 1 });
+          const feedbackBox = (await feedback.boundingBox())!;
+          const recoveryBox = (await recovery.boundingBox())!;
+          const emailBox = (await page.getByLabel("Email", { exact: true }).boundingBox())!;
+          expect(recoveryBox.y).toBeGreaterThanOrEqual(feedbackBox.y + feedbackBox.height);
+          expect(recoveryBox.y - feedbackBox.y - feedbackBox.height).toBeLessThanOrEqual(32);
+          expect(recoveryBox.y + recoveryBox.height).toBeLessThan(emailBox.y);
           await expect(recovery).toHaveAccessibleDescription("Choose another Yandex account to try signing in again.");
           await expect(recovery).toHaveAttribute("href", `/api/auth/oauth/yandex?${new URLSearchParams({
             next: expectedNext, switch_account: "1"
@@ -116,7 +125,7 @@ for (const profile of profiles) {
           await expect(page.getByTestId("auth-root").getByRole("alert")).toHaveCount(0);
         }
         await expectReachableControl(page, action);
-        if (!profile.touch) await tabToControl(page, action);
+        if (!profile.touch) await tabToControl(page, action, Boolean(state.outcome));
         if (state.outcome === "not_allowed") {
           await testInfo.attach(`yandex-recovery-${profile.theme}`, {
             body: await page.screenshot({ fullPage: true }), contentType: "image/png"

@@ -55,6 +55,15 @@ async function poll(operation, predicate, input = {}) {
   return fail(input.code ?? "deepseek_browser_poll_timeout");
 }
 
+async function openModelPicker(page) {
+  const picker = page.getByRole("dialog", { name: "Choose model" });
+  await poll(async () => {
+    if (!await picker.isVisible()) await page.getByTestId("header-model-trigger").click();
+    return picker.isVisible();
+  }, Boolean, { code: "deepseek_browser_model_picker_unavailable", timeoutMs: 30_000 });
+  return picker;
+}
+
 loadLocalEnv();
 if (process.env.AIQSA_DEEPSEEK_BROWSER_PAID_SMOKE !== "DISPOSABLE") {
   throw new Error("deepseek_browser_smoke_opt_in_required");
@@ -75,9 +84,8 @@ if (!apiKey || !email || !password) {
 }
 
 const expectedModels = [
-  "deepseek-v4-flash",
-  "deepseek-v4-pro",
-  "deepseek-v4-flash-vision-exp"
+  "deepseek-flash",
+  "deepseek-v4-pro"
 ];
 const checks = {};
 let stage = "launch";
@@ -88,6 +96,7 @@ async function main() {
   try {
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage({ baseURL: parsedBaseUrl.origin });
+    page.setDefaultTimeout(30_000);
 
     stage = "login";
     await page.goto("/login", { waitUntil: "domcontentloaded" });
@@ -102,26 +111,41 @@ async function main() {
     const section = page.getByTestId("admin-section-providers");
     await section.getByRole("list", { name: "Providers" })
       .waitFor({ state: "visible", timeout: 60_000 });
+    stage = "provider_sheet";
     await page.getByRole("button", { name: "Add provider" }).click();
     const sheet = page.getByRole("dialog", { name: "Add provider" });
-    await sheet.getByRole("button", { name: "DeepSeek" }).click();
+    stage = "provider_family";
+    await sheet.getByTestId("provider-add-tile-deepseek").click();
+    stage = "provider_key";
     await sheet.getByLabel("API key").fill(apiKey);
+    stage = "provider_submit";
     await sheet.getByRole("button", { name: "Test & Save" }).click();
-    // The sheet hands over to the new provider page in its checking state.
+    stage = "quick_setup_result";
+    const viewProvider = sheet.getByRole("button", { name: "View provider" });
+    const setupResult = await poll(async () => {
+      if (await section.getByTestId("provider-page").isVisible()) return "ready";
+      if (await viewProvider.isVisible()) return "review";
+      if (await sheet.getByTestId("provider-add-error").isVisible()) return "failed";
+      return null;
+    }, Boolean, { code: "deepseek_browser_setup_timeout", timeoutMs: 180_000 });
+    ensure(setupResult !== "failed", "deepseek_browser_setup_failed");
+    checks.setupReviewNeeded = setupResult === "review";
+    if (setupResult === "review") await viewProvider.click();
     await section.getByTestId("provider-page").waitFor({ state: "visible", timeout: 180_000 });
     const modelsTable = section.getByTestId("provider-models");
     await modelsTable.waitFor({ state: "visible", timeout: 60_000 });
     const modelsText = await modelsTable.textContent();
-    checks.quickSetup = expectedModels.length === 3 &&
+    checks.quickSetup = expectedModels.length === 2 &&
       modelsText?.includes("DeepSeek V4 Pro") &&
-      modelsText.includes("DeepSeek V4 Flash") &&
-      modelsText.includes("DeepSeek V4 Flash Vision (Experimental)") &&
+      modelsText.includes("DeepSeek V4.1 Flash") &&
       (await section.getByTestId("provider-page-status").textContent())?.includes("All keys working");
     ensure(checks.quickSetup, "deepseek_browser_quick_setup_contract_invalid");
     const visibleText = await section.textContent();
     ensure(!visibleText?.includes(apiKey), "deepseek_browser_secret_visible");
 
     stage = "catalog";
+    const createdConnectionId = new URL(page.url()).searchParams.get("resource");
+    ensure(createdConnectionId, "deepseek_browser_provider_missing");
     const catalogBody = await responseJson(
       await page.request.get("/api/me/catalog"),
       "deepseek_browser_catalog_failed"
@@ -130,7 +154,8 @@ async function main() {
       ? catalogBody.catalog.providers
       : [];
     const models = Array.isArray(catalogBody?.catalog?.models) ? catalogBody.catalog.models : [];
-    const provider = providers.find((candidate) => candidate?.family === "deepseek");
+    const provider = providers.find((candidate) =>
+      candidate?.family === "deepseek" && candidate.id === createdConnectionId);
     const deepSeekModels = models.filter((candidate) => candidate?.provider === provider?.id);
     checks.catalog = Boolean(provider) && deepSeekModels.length === expectedModels.length &&
       expectedModels.every((modelId) =>
@@ -140,17 +165,17 @@ async function main() {
     stage = "model_selection";
     await page.goto("/", { waitUntil: "domcontentloaded" });
     await page.getByTestId("app-shell").waitFor({ state: "visible", timeout: 30_000 });
-    await page.locator(".v2-composer-model-trigger").click();
-    const picker = page.getByRole("dialog", { name: "Choose model" });
-    await picker.getByRole("searchbox", { name: "Search models" }).fill("DeepSeek V4 Pro");
+    await page.getByRole("textbox", { name: "Message" }).waitFor({ state: "visible" });
+    const picker = await openModelPicker(page);
+    await picker.getByRole("searchbox", { name: "Search models" }).fill("DeepSeek V4.1 Flash");
     const modelOption = picker.locator(
       `[role="option"][data-provider-id="${provider.id}"]`
-    ).filter({ hasText: "DeepSeek V4 Pro" }).first();
+    ).filter({ hasText: "DeepSeek V4.1 Flash" }).first();
     await modelOption.waitFor({ state: "visible" });
     await modelOption.click();
     await picker.waitFor({ state: "detached" });
-    checks.modelSelection = (await page.locator(".v2-composer-model-trigger").textContent())
-      ?.includes("DeepSeek V4 Pro") === true;
+    checks.modelSelection = (await page.getByTestId("header-model-trigger").textContent())
+      ?.includes("DeepSeek V4.1 Flash") === true;
     ensure(checks.modelSelection, "deepseek_browser_model_selection_failed");
 
     const searchIndicator = page.getByRole("button", { name: "Turn off Search" });
@@ -158,9 +183,7 @@ async function main() {
     const knowledgeIndicator = page.getByRole("button", { name: "Turn off Knowledge" });
     if (await knowledgeIndicator.isVisible()) await knowledgeIndicator.click();
 
-    await page.getByRole("button", { name: "Capabilities" }).click();
-    const capabilitiesMenu = page.getByRole("menu", { name: "Capabilities" });
-    await capabilitiesMenu.getByRole("menuitemcheckbox", { name: /Model parameters/u }).click();
+    await (await openModelPicker(page)).getByTestId("composer-v2-model-parameters").click();
     const parameters = page.getByRole("dialog", { name: "Model parameters" });
     await parameters.getByLabel("Max output tokens").fill("128");
     await parameters.getByLabel("Reasoning effort").selectOption("none");

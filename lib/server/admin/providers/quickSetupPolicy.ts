@@ -19,7 +19,7 @@ import {
 } from "../../providers/providerConfiguration";
 import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 
-export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 7;
+export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 8;
 
 type QuickSetupCandidateDefinition = Readonly<{
   candidateId: string;
@@ -75,19 +75,14 @@ const candidateDefinitions: Readonly<Record<
   ]),
   deepseek: Object.freeze([
     Object.freeze({
-      candidateId: "p6-d1",
+      candidateId: "p8-d4",
       recommended: true,
+      templateKey: "deepseek:deepseek-flash"
+    }),
+    Object.freeze({
+      candidateId: "p6-d1",
+      recommended: false,
       templateKey: "deepseek:deepseek-v4-pro"
-    }),
-    Object.freeze({
-      candidateId: "p6-d2",
-      recommended: false,
-      templateKey: "deepseek:deepseek-v4-flash"
-    }),
-    Object.freeze({
-      candidateId: "p6-d3",
-      recommended: false,
-      templateKey: "deepseek:deepseek-v4-flash-vision-exp"
     })
   ]),
   gemini: Object.freeze([
@@ -159,6 +154,11 @@ const candidateDefinitions: Readonly<Record<
       candidateId: "p1-r3",
       recommended: false,
       templateKey: "openrouter:deepseek/deepseek-v4-pro-0813"
+    }),
+    Object.freeze({
+      candidateId: "p8-r6",
+      recommended: false,
+      templateKey: "openrouter:deepseek/deepseek-v4.1-flash"
     }),
     Object.freeze({
       candidateId: "p7-r4",
