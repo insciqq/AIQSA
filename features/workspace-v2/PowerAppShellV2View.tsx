@@ -922,11 +922,16 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     // the client clock (send → first token) fills the same slot.
     const workDurationMs = artifact?.workDurationMs ??
       (source.runId === thread.currentRunId ? thread.liveWorkDurationMs : null);
+    const copiedAttachments = attachmentBlocksFromThreadContent(source.content)
+      .filter((block) => !artifact?.generatedImages?.some((image) => image.attachmentId === block.attachmentId));
     return (
       <RunAnswerV2
         actions={settled ? actions : undefined}
         actionsSlot={settled
-          ? <AnswerOutputsV2 artifact={artifact} canSaveFiles={!projectContext && !temporarySession} workspaceOutputStatus={workspaceActivity?.outputStatus ?? null} />
+          ? <>
+              <SentAttachmentsV2 blocks={copiedAttachments} canSave={!projectContext && !temporarySession} />
+              <AnswerOutputsV2 artifact={artifact} canSaveFiles={!projectContext && !temporarySession} workspaceOutputStatus={workspaceActivity?.outputStatus ?? null} />
+            </>
           : null}
         anchorId={source.id}
         artifact={artifact}

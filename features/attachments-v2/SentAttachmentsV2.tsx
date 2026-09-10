@@ -1,5 +1,6 @@
 "use client";
 
+import { ChatImageV2 } from "./ChatImageV2";
 import type { ThreadAttachmentBlock } from "@/components/app-shell/threadContent";
 import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
 import { UiV2Icon } from "@/components/ui-v2";
@@ -24,6 +25,7 @@ export function SentAttachmentsV2({ blocks, canSave = false }: Readonly<{
     >
       {blocks.map((block, index) => (
         <li key={`${index}:${block.label}`}>
+          {block.type === "image" ? <ChatImageV2 attachmentId={block.attachmentId} label={block.label} canSave={canSave} /> : <>
           <UiV2Icon name="attach" />
           <a
             className="v2-focusable"
@@ -33,6 +35,7 @@ export function SentAttachmentsV2({ blocks, canSave = false }: Readonly<{
             {block.label}
           </a>
           {canSave ? <SaveFileButtonV2 attachmentId={block.attachmentId} /> : null}
+          </>}
         </li>
       ))}
     </ul>

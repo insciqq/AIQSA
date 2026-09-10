@@ -1,3 +1,4 @@
+import { normalizeImageModelConfiguration, normalizeImageGenerationParameters, type ImageModelConfiguration } from "../../contracts/imageGeneration";
 import type { ProviderModelCapabilities } from "./types";
 import type { EmbeddingProviderFamily } from "../../domain/embeddingModels";
 import {
@@ -56,7 +57,11 @@ export const providerAdapterKinds = [
   "openai_responses_native",
   "openai_embeddings_compatible",
   "openrouter_chat_completions",
-  "openrouter_rerank"
+  "openrouter_rerank",
+  "openai_images_native",
+  "openai_images_compatible",
+  "gemini_images_native",
+  "openrouter_images"
 ] as const;
 
 export type ProviderAdapterKind = (typeof providerAdapterKinds)[number];
@@ -70,7 +75,7 @@ export type ProviderFamily =
 
 export type ProviderAuthenticationMode = "bearer" | "none";
 export type ResponsesRequestIsolationMode = "auto" | "on" | "off";
-export type ProviderModelClass = "answer" | "embedding" | "reranker";
+export type ProviderModelClass = "answer" | "embedding" | "reranker" | "image";
 
 export type EmbeddingModelConfiguration = Readonly<{
   nativeDimension: number;
@@ -107,6 +112,7 @@ export type ProviderModelConfiguration = {
   capabilities: ProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
   embedding?: EmbeddingModelConfiguration;
+  image?: ImageModelConfiguration;
   modelClass: ProviderModelClass;
   openRouterRouting?: OpenRouterRoutingConfiguration;
   reasoningRequestMapping?: ProviderReasoningRequestMapping;
@@ -122,6 +128,7 @@ export type ProviderConfigurationErrorCode =
   | "provider_authentication_mode_invalid"
   | "provider_default_params_invalid"
   | "provider_embedding_configuration_invalid"
+  | "provider_image_configuration_invalid"
   | "provider_model_class_invalid"
   | "provider_model_capabilities_invalid"
   | "provider_reasoning_mapping_invalid"
@@ -354,7 +361,10 @@ export function providerRequestEndpoint(
   configuration: ProviderConnectionConfiguration,
   adapterKind: ProviderAdapterKind
 ): string {
-  const terminalPath = adapterKind === "openai_embeddings_compatible" ? "embeddings" :
+  const terminalPath = adapterKind === "openrouter_images" ? "images" :
+    adapterKind === "openai_images_native" || adapterKind === "openai_images_compatible" ? "images/generations" :
+    adapterKind === "gemini_images_native" ? "interactions" :
+    adapterKind === "openai_embeddings_compatible" ? "embeddings" :
     adapterKind === "openrouter_rerank" ? "rerank" :
     adapterKind === "gemini_interactions_native" ? "interactions" :
     adapterKind.includes("responses") ? "responses" :
@@ -414,6 +424,8 @@ function nonAnswerCapabilitiesAreInert(capabilities: ProviderModelCapabilities):
     !capabilities.maxOutputTokens &&
     !capabilities.nativeBackground &&
     !capabilities.nativeImageGeneration &&
+    !capabilities.imageGeneration &&
+    !capabilities.imageEditing &&
     !capabilities.nativePdfInput &&
     !capabilities.nativeSearch &&
     !capabilities.parallelToolCalls &&
@@ -450,6 +462,8 @@ export function normalizeProviderModelCapabilities(value: unknown): ProviderMode
     "backgroundStreaming",
     "nativeBackground",
     "nativeImageGeneration",
+    "imageGeneration",
+    "imageEditing",
     "parallelToolCalls",
     "streaming",
     "streamUsage",
@@ -516,6 +530,8 @@ export function normalizeProviderModelCapabilities(value: unknown): ProviderMode
     ...(typeof value.nativeImageGeneration === "boolean"
       ? { nativeImageGeneration: value.nativeImageGeneration }
       : {}),
+    ...(typeof value.imageGeneration === "boolean" ? { imageGeneration: value.imageGeneration } : {}),
+    ...(typeof value.imageEditing === "boolean" ? { imageEditing: value.imageEditing } : {}),
     nativeSearch: value.nativeSearch as boolean,
     ...(typeof value.parallelToolCalls === "boolean" ? { parallelToolCalls: value.parallelToolCalls } : {}),
     pdf: value.pdf as boolean,
@@ -618,13 +634,31 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
   const adapterKind = value.adapterKind as ProviderAdapterKind;
   const modelClass = value.modelClass;
   if (modelClass !== "answer" && modelClass !== "embedding" &&
-    modelClass !== "reranker") {
+    modelClass !== "reranker" && modelClass !== "image") {
     throw new ProviderConfigurationError("provider_model_class_invalid");
   }
   const capabilities = normalizeProviderModelCapabilities(value.capabilities);
   const embedding = value.embedding === undefined
     ? undefined
     : normalizeEmbeddingModelConfiguration(value.embedding);
+  let image: ImageModelConfiguration | undefined;
+  if (modelClass === "image") {
+    try {
+      image = normalizeImageModelConfiguration(value.image);
+      normalizeImageGenerationParameters(rawDefaultParams, image, value.upstreamModelId);
+    } catch {
+      throw new ProviderConfigurationError("provider_image_configuration_invalid");
+    }
+    const expectedAdapter = image.profile === "openai" ? "openai_images_native" :
+      image.profile === "gemini" ? "gemini_images_native" :
+      image.profile === "openrouter" ? "openrouter_images" : "openai_images_compatible";
+    if (adapterKind !== expectedAdapter || value.answerSelectable || embedding ||
+      !nonAnswerCapabilitiesAreInert({ ...capabilities, imageGeneration: false, imageEditing: false })) {
+      throw new ProviderConfigurationError("provider_image_configuration_invalid");
+    }
+  } else if (value.image !== undefined || adapterKind.includes("images") || capabilities.imageGeneration || capabilities.imageEditing) {
+    throw new ProviderConfigurationError("provider_image_configuration_invalid");
+  }
   if (modelClass === "embedding") {
     if (
       adapterKind !== "openai_embeddings_compatible" ||
@@ -675,7 +709,7 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
     ? undefined
     : normalizeOpenRouterRouting(value.openRouterRouting);
   const openRouterRoutingRequired = adapterKind === "openrouter_chat_completions" ||
-    adapterKind === "openrouter_rerank";
+    adapterKind === "openrouter_rerank" || adapterKind === "openrouter_images";
   const openRouterRoutingAllowed = openRouterRoutingRequired || (
     adapterKind === "openai_embeddings_compatible" &&
     modelClass === "embedding" &&
@@ -701,6 +735,7 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
     capabilities,
     defaultParams,
     ...(embedding ? { embedding } : {}),
+    ...(image ? { image } : {}),
     modelClass,
     ...(openRouterRouting ? { openRouterRouting } : {}),
     ...(reasoningRequestMapping ? { reasoningRequestMapping } : {}),

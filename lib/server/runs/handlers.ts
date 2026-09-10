@@ -71,6 +71,7 @@ export type {
 } from "./runRepositoryContract";
 
 export type RunHandlerDeps = {
+  images?: import("../images/service").ImageGenerationService;
   allowFakeProvider?: boolean;
   assistants?: RunPreparationDeps["assistants"];
   chatTitleGenerator?: ChatTitleGenerator;
@@ -192,6 +193,7 @@ function recoveryDeps(
     | "knowledgeAdmission"
     | "knowledgeExecutor"
     | "knowledgeProviderDispatch"
+    | "images"
     | "memoryEgress"
     | "mcp"
     | "providerAdmission"
@@ -210,6 +212,7 @@ function recoveryDeps(
     ...(deps.knowledgeProviderDispatch
       ? { knowledgeProviderDispatch: deps.knowledgeProviderDispatch }
       : {}),
+    ...(deps.images ? { images: deps.images } : {}),
     ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
     ...(deps.mcp ? { mcp: deps.mcp } : {}),
     ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
@@ -638,6 +641,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         ? { knowledgeProviderDispatch: deps.knowledgeProviderDispatch }
         : {}),
       ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
+      ...(deps.images ? { images: deps.images } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
       ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
@@ -819,6 +823,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
         ? { knowledgeProviderDispatch: deps.knowledgeProviderDispatch }
         : {}),
       ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
+      ...(deps.images ? { images: deps.images } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
       ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
@@ -841,6 +846,7 @@ export function createGetModelRunHandler(
     | "knowledgeAdmission"
     | "knowledgeExecutor"
     | "knowledgeProviderDispatch"
+    | "images"
     | "memoryEgress"
     | "mcp"
     | "providerAdmission"

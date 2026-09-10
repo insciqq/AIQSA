@@ -1,3 +1,4 @@
+import { decodeThreadGeneratedImage } from "@/lib/contracts/imageGeneration";
 import { decodeGroundingDisplay } from "../../lib/domain/groundingDisplay";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type {
@@ -112,6 +113,10 @@ export function summarizeThreadArtifacts(
     .map(groundingDisplayFromEvent)
     .filter((value): value is NonNullable<typeof value> => Boolean(value))
     .at(-1) ?? null;
+  const generatedImages = [...new Map(events.filter((event) => artifactTypeFromEvent(event) === "image").flatMap((event) => {
+    const image = decodeThreadGeneratedImage(artifactPayload(event));
+    return image ? [[image.attachmentId, image] as const] : [];
+  })).values()];
   const reasoningText = events
     .filter((event) => artifactTypeFromEvent(event) === "reasoning")
     .map((event) => reasoningTextFromValue(artifactPayload(event)))
@@ -131,6 +136,7 @@ export function summarizeThreadArtifacts(
   ]);
 
   if (
+    generatedImages.length === 0 &&
     citations.length === 0 &&
     sources.length === 0 &&
     reasoningText.length === 0 &&
@@ -142,6 +148,7 @@ export function summarizeThreadArtifacts(
   return {
     citations,
     groundingDisplay: grounding?.display ?? null,
+    ...(generatedImages.length ? { generatedImages } : {}),
     reasoningText,
     sources
   };

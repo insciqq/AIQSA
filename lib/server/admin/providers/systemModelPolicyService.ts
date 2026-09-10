@@ -1,3 +1,6 @@
+import { loadInstallationImageProviderRole } from "../../providerRuntime/admission";
+import { normalizeImageGenerationParameters, type ImageGenerationParameters } from "../../../contracts/imageGeneration";
+import { hasVerifiedImageCapability } from "../../providers/imageGenerationEvidence";
 import { hasVerifiedDedicatedProtocol } from "../../providers/systemRoleEvidence";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
@@ -58,6 +61,7 @@ type SystemModelRow = AdminAnswerModelRow & {
 export type AdminSystemModelPolicyServiceErrorCode =
   | "system_model_policy_reasoning_unavailable"
   | "system_model_policy_stale"
+  | "system_model_policy_image_parameters_invalid"
   | "system_model_policy_structured_output_unsupported"
   | "system_model_policy_target_unavailable"
   | "system_model_policy_verification_failed";
@@ -205,6 +209,23 @@ function roleIneligibility(
   return reasons;
 }
 
+function serializeImageModel(row: SystemModelRow) {
+  try {
+    const model = normalizeProviderModelConfiguration(row.activeConfig);
+    if (model.modelClass !== "image" || !model.image) return null;
+    const credential = row.connection.defaultCredential;
+    const active = row.enabled && row.activeVersion > 0 && row.connection.enabled && row.connection.activeVersion > 0 &&
+      Boolean(row.activatedAt && row.connection.activatedAt && row.connection.activeConfig) && defaultCredentialUsable(row);
+    const check = active && credential?.activeVersion ? row.activeCredentialChecks.find((entry) =>
+      entry.status === "available" && entry.connectionVersion === row.connection.activeVersion && entry.modelVersion === row.activeVersion &&
+      entry.credentialId === credential.id && entry.credentialVersionId === credential.activeVersion!.id) : null;
+    return { ...serializeAdminAnswerModel(row), upstreamModelId: model.upstreamModelId, image: model.image,
+      defaultParameters: normalizeImageGenerationParameters(model.defaultParams, model.image, model.upstreamModelId),
+      generation: hasVerifiedDedicatedProtocol(check?.evidence, model) && hasVerifiedImageCapability(check?.evidence, model, "imageGeneration"),
+      editing: hasVerifiedDedicatedProtocol(check?.evidence, model) && hasVerifiedImageCapability(check?.evidence, model, "imageEditing") };
+  } catch { return null; }
+}
+
 function rerankerModelAvailable(row: AdminAnswerModelRow): boolean {
   if (!row.enabled || row.activeVersion < 1 || row.activatedAt === null ||
     row.activeConfig === null || !row.connection.enabled ||
@@ -350,6 +371,21 @@ export function createAdminSystemModelPolicyService(
         resolveChatPdfRole()
       ]);
       if (!policy) throw new Error("installation_system_model_policy_missing");
+      const imageRows = await prisma.providerModel.findMany({
+        where: { modelClass: "image" }, orderBy: [{ displayName: "asc" }, { id: "asc" }],
+        include: { activeCredentialChecks: true, connection: { include: { defaultCredential: { include: { activeVersion: true } } } } }
+      });
+      const imageModels = imageRows.map((row) => serializeImageModel(row as SystemModelRow)).filter((row) => row !== null);
+      const selectedImage = imageModels.find((row) => row.id === policy.imageProviderModelId) ?? null;
+      let imageParameters: ImageGenerationParameters = {};
+      let imageAvailable = Boolean(selectedImage && (selectedImage.generation || selectedImage.editing));
+      if (selectedImage) {
+        try {
+          imageParameters = normalizeImageGenerationParameters(policy.imageParamsJson ?? {}, selectedImage.image, selectedImage.upstreamModelId);
+          normalizeImageGenerationParameters({ ...selectedImage.defaultParameters, ...imageParameters }, selectedImage.image, selectedImage.upstreamModelId);
+        }
+        catch { imageAvailable = false; }
+      }
       const models = rows as SystemModelRow[];
       const typedRerankerRows = rerankerRows as AdminAnswerModelRow[];
       const selectedRerankerId = policy.rerankerProviderModelId;
@@ -412,7 +448,10 @@ export function createAdminSystemModelPolicyService(
         verificationCandidates: deployments,
         ineligible,
         rerankerCandidates,
+        imageCandidates: imageModels.filter((model) => model.generation || model.editing),
         policy: {
+          imageModel: selectedImage ? { ...selectedImage, available: imageAvailable } : null,
+          imageParameters,
           chatPdfReasoningEffort: policy.chatPdfReasoningEffort ?? null,
           chatPdfModel: policy.chatPdfProviderModel ? {
             ...serializeSystemModel(policy.chatPdfProviderModel as SystemModelRow),
@@ -471,7 +510,7 @@ export function createAdminSystemModelPolicyService(
       if ((input.role === "memory" && (!supportsStructuredOutputAdapter(configuration.adapterKind) ||
         !supportsForcedToolCallProbe(configuration.adapterKind))) ||
         (input.role === "embedding" ? configuration.modelClass !== "embedding" :
-         input.role === "reranker" ? configuration.modelClass !== "reranker" : configuration.modelClass !== "answer")) {
+         input.role === "reranker" ? configuration.modelClass !== "reranker" : input.role === "image" ? configuration.modelClass !== "image" : configuration.modelClass !== "answer")) {
         throw new AdminSystemModelPolicyServiceError("system_model_policy_structured_output_unsupported");
       }
       const checked = model.activeCredentialChecks.find((check) => check.status === "available" &&
@@ -504,6 +543,8 @@ export function createAdminSystemModelPolicyService(
     },
 
     async update(input: Readonly<{
+      imageProviderModelId?: string | null;
+      imageParameters?: ImageGenerationParameters;
       chatPdfProviderModelId?: string | null;
       chatPdfReasoningEffort?: string | null;
       expectedVersion: number;
@@ -520,6 +561,10 @@ export function createAdminSystemModelPolicyService(
       const providerModelId = input.providerModelId;
       const reasoningEffort = input.reasoningEffort;
       const rerankerProviderModelId = input.rerankerProviderModelId;
+      const hasImageUpdate = input.imageProviderModelId !== undefined;
+      if (hasImageUpdate !== (input.imageParameters !== undefined) || input.imageProviderModelId === null && Object.keys(input.imageParameters ?? {}).length) {
+        throw new AdminSystemModelPolicyServiceError("system_model_policy_image_parameters_invalid");
+      }
       const hasPdfUpdate = input.chatPdfProviderModelId !== undefined;
       if (hasPdfUpdate !== (input.chatPdfReasoningEffort !== undefined)) {
         throw new Error("system_model_policy_update_invalid");
@@ -527,7 +572,7 @@ export function createAdminSystemModelPolicyService(
       const hasUtilityUpdate = providerModelId !== undefined;
       const hasReasoningUpdate = reasoningEffort !== undefined;
       if (hasUtilityUpdate !== hasReasoningUpdate ||
-        !hasUtilityUpdate && !hasPdfUpdate && rerankerProviderModelId === undefined) {
+        !hasUtilityUpdate && !hasPdfUpdate && !hasImageUpdate && rerankerProviderModelId === undefined) {
         throw new Error("system_model_policy_update_invalid");
       }
       try {
@@ -615,8 +660,21 @@ export function createAdminSystemModelPolicyService(
             }
           }
 
+          let imageParameters = input.imageParameters;
+          if (input.imageProviderModelId) {
+            try {
+              const role = await loadInstallationImageProviderRole(tx, { providerModelId: input.imageProviderModelId });
+              imageParameters = normalizeImageGenerationParameters(input.imageParameters, role.configuration.image!, role.configuration.upstreamModelId);
+              normalizeImageGenerationParameters({ ...role.configuration.defaultParams, ...imageParameters },
+                role.configuration.image!, role.configuration.upstreamModelId);
+            } catch (error) {
+              if (error instanceof ProviderAdmissionError) throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
+              throw new AdminSystemModelPolicyServiceError("system_model_policy_image_parameters_invalid");
+            }
+          }
           await tx.systemModelPolicy.update({
             data: {
+              ...(hasImageUpdate ? { imageProviderModelId: input.imageProviderModelId, imageParamsJson: imageParameters as Prisma.InputJsonObject } : {}),
               ...(hasPdfUpdate ? {
                 chatPdfProviderModelId: input.chatPdfProviderModelId,
                 chatPdfReasoningEffort: input.chatPdfReasoningEffort

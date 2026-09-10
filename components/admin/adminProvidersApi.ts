@@ -1,10 +1,13 @@
 import type {
+  AdminImageDiscoveredModel,
+  AdminImageDiscoveredEndpoint,
   AdminCompatibleDiscoveredModel,
   AdminOpenRouterDiscoveredEndpoint,
   AdminOpenRouterDiscoveredModel,
   AdminProviderCheckRun,
   AdminProviderConnection
 } from "@/lib/contracts/adminProviders";
+import { normalizeImageModelConfiguration } from "@/lib/contracts/imageGeneration";
 import { ADMIN_PROVIDER_SETUP_STREAM_TYPE, type AdminProviderSetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 import { readAdminProviderSetupResponse } from "./adminProviderSetupStream";
 import {
@@ -73,7 +76,7 @@ function isModel(value: unknown): boolean {
     typeof value.draftConfig.answerSelectable === "boolean" &&
     (value.draftConfig.modelClass === "answer" ||
       value.draftConfig.modelClass === "embedding" ||
-      value.draftConfig.modelClass === "reranker") &&
+      value.draftConfig.modelClass === "reranker" || value.draftConfig.modelClass === "image") &&
     optionalResponseTimeoutSeconds(value.draftConfig.responseTimeoutSeconds) &&
     typeof value.draftConfig.upstreamModelId === "string";
 }
@@ -311,6 +314,28 @@ export function discoverAdminOpenRouterModels(
     fetcher,
     "provider_admin_route_unavailable"
   );
+}
+
+function validImageCatalogEntry(value: unknown): boolean {
+  if (!record(value) || containsSecretMaterial(value)) return false;
+  try { normalizeImageModelConfiguration(value.image); return true; } catch { return false; }
+}
+
+export function discoverAdminImageModels(connectionId: string, credentialId: string, fetcher: Fetcher = fetch) {
+  return request<AdminImageDiscoveredModel[]>(`/api/admin/providers/${encoded(connectionId)}/actions`,
+    json("POST", { action: "discover_image_models", credentialId }),
+    (value) => record(value) && Array.isArray(value.models) && value.models.length <= 1000 && value.models.every((entry: unknown) =>
+      record(entry) && validImageCatalogEntry(entry) && typeof entry.id === "string" && typeof entry.name === "string" &&
+      typeof entry.editing === "boolean" && (entry.source === "catalog" || entry.source === "preset")) ? value.models as AdminImageDiscoveredModel[] : null,
+    fetcher, "provider_admin_route_unavailable");
+}
+
+export function discoverAdminImageEndpoints(connectionId: string, credentialId: string, modelId: string, fetcher: Fetcher = fetch) {
+  return request<AdminImageDiscoveredEndpoint[]>(`/api/admin/providers/${encoded(connectionId)}/actions`,
+    json("POST", { action: "discover_image_endpoints", credentialId, modelId }),
+    (value) => record(value) && Array.isArray(value.endpoints) && value.endpoints.length <= 128 && value.endpoints.every((entry: unknown) =>
+      record(entry) && validImageCatalogEntry(entry) && typeof entry.tag === "string" && typeof entry.name === "string") ? value.endpoints as AdminImageDiscoveredEndpoint[] : null,
+    fetcher, "provider_admin_route_unavailable");
 }
 
 export function discoverAdminOpenRouterEndpoints(

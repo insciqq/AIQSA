@@ -1,3 +1,5 @@
+import { imageDispatchMustStop } from "../images/errors";
+import { imageGenerationTool, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
 import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1 } from "../knowledge/evidenceAnswerExecutionV1";
 import { knowledgeRefinementUsageAfter, refineKnowledgeEvidence } from "./knowledgeEvidenceRefinement";
@@ -276,6 +278,7 @@ export type RunRecoveryMcpRuntime = Readonly<{
 }>;
 
 export type RunRecoveryDeps = Readonly<{
+  images?: import("../images/service").ImageGenerationService;
   getAttachmentLimits?: () => RunAttachmentLimits;
   knowledgeExecutor?: KnowledgeToolExecutor;
   knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
@@ -1258,6 +1261,17 @@ async function executePersistedToolCall(
     runId: context.run.id,
     userId: context.run.userId
   });
+  if (claim.kind === "ambiguous" && context.run.normalizedRequest.imagePlan && call.name === IMAGE_GENERATION_TOOL_NAME && context.deps.images) {
+    const restored = await context.deps.images.restore(call, { persistedToolCallId: persisted.id, request: context.providerRequest, runId: context.run.id, userId: context.run.userId });
+    if (restored) {
+      const snapshot = snapshotToolExecutionResult(restored, toolLoopPersistenceLimits.resultBytes);
+      const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: persisted.id, result: snapshot, runId: context.run.id, state: "complete", userId: context.run.userId });
+      if (settled === "settled" || settled === "reused") {
+        await context.deps.memoryEgress?.settleRecoveredToolDispatch({ modelRunToolCallId: persisted.id, outcome: "COMPLETED", runId: context.run.id, userId: context.run.userId });
+        return { call, ordinal: persisted.ordinal, result: { status: "complete", value: restored }, round: persisted.roundIndex };
+      }
+    }
+  }
   if (claim.kind === "ambiguous") {
     throw new ToolLoopRecoveryError(
       "tool_call_outcome_unknown",
@@ -1336,6 +1350,7 @@ async function executePersistedToolCall(
         preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
       }
     }
+    const isImageCall = Boolean(context.run.normalizedRequest.imagePlan) && call.name === IMAGE_GENERATION_TOOL_NAME;
     const isSessionCall = context.run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME;
     const externalCall = !preflightResult && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall;
     if (externalCall) {
@@ -1343,7 +1358,9 @@ async function executePersistedToolCall(
         throw new Error("memory_egress_receipt_unavailable");
       }
       const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
-      const destinationSnapshot = isRecoveredKnowledgeCall(context, call.name)
+      const destinationSnapshot = isImageCall
+          ? { kind: "image", version: 1, authority: context.run.normalizedRequest.imagePlan!.authority, snapshot: context.run.normalizedRequest.imagePlan!.snapshot }
+          : isRecoveredKnowledgeCall(context, call.name)
           ? {
               kind: "knowledge",
               scopeFingerprint: memorySha256(context.run.knowledgeScope ?? null),
@@ -1376,7 +1393,9 @@ async function executePersistedToolCall(
             };
       const generationId = claim.call.mcpBinding?.runtimeGenerationId;
       let mcpFailure: McpDispatchFailureCode | null = null;
-      const allowed = isRecoveredKnowledgeCall(context, call.name)
+      const allowed = isImageCall
+          ? await context.deps.images?.authorize(context.run.normalizedRequest.imagePlan!) ?? false
+          : isRecoveredKnowledgeCall(context, call.name)
           ? (await currentFocusedKnowledgeRecoveryAuthorization(context.deps, {
               ...(context.run.project ? { project: context.run.project } : {}),
               runId: context.run.id,
@@ -1437,6 +1456,9 @@ async function executePersistedToolCall(
     }
     if (preflightResult) {
       result = preflightResult;
+    } else if (isImageCall) {
+      if (!context.deps.images) throw new Error("image_tool_unavailable");
+      result = await context.deps.images.execute(call, executionContext, signal);
     } else if (isSessionCall) {
       result = executeSessionStatus(call, context.sessionRequest ?? context.providerRequest, context.sessionToolBridge);
     } else if (isRecoveredMcpDiscoveryCall(context, call.name)) {
@@ -1522,6 +1544,9 @@ async function executePersistedToolCall(
       ).catch(() => undefined);
     }
     if (signal.aborted) throw new ToolLoopRecoveryStopped();
+    if (call.name === IMAGE_GENERATION_TOOL_NAME && imageDispatchMustStop(error)) {
+      fatalToolError = new ToolLoopRecoveryError("image_generation_failed", "Image generation could not finish. The request was not repeated. Any saved image remains in the chat.");
+    }
     if (error instanceof McpAutoDiscoveryUnavailableError) {
       fatalToolError = new ToolLoopRecoveryError(error.code, error.message);
       result = toolExecutionErrorResult(call, error);
@@ -1765,6 +1790,7 @@ async function recoverCheckpointedToolLoop(
       ...run.normalizedRequest,
       attachments
     };
+    if (deps.images) providerRequest = await deps.images.withConversationPixels(providerRequest, run.userId, signal);
     const clientToolsEnabled = run.normalizedRequest.toolMode !== "none";
     const planRuntimes: Record<string, ProviderRuntimeBinding> = {};
     for (const option of clientToolsEnabled
@@ -1852,6 +1878,7 @@ async function recoverCheckpointedToolLoop(
         })
       : [];
     const tools: RunTool[] = [
+      ...(clientToolsEnabled && run.normalizedRequest.imagePlan ? [imageGenerationTool(run.normalizedRequest.imagePlan)] : []),
       ...(run.normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
       ...(recoveredKnowledgeEnabled
         ? knowledgeRetrievalToolsForRequest(run.normalizedRequest, deps.knowledgeExecutor?.tools ?? [])
@@ -2300,6 +2327,7 @@ async function recoverCheckpointedToolLoop(
           if (!route && !isRecoveredKnowledgeCall(context, call.name) &&
             searchExecutor?.accepts(call.name) !== true &&
             !isRecoveredMcpDiscoveryCall(context, call.name) &&
+            !(run.normalizedRequest.imagePlan && call.name === IMAGE_GENERATION_TOOL_NAME) &&
             !isRecoveredWorkspaceCall(context, call.name) &&
             !(run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME)) {
             throw new ToolLoopRecoveryError(

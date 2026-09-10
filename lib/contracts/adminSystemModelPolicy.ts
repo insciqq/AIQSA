@@ -1,6 +1,15 @@
 import type { AdminModelDefaultCandidate } from "./adminModelPolicy";
+import { normalizeImageModelConfiguration, normalizeImageGenerationParameters, type ImageModelConfiguration, type ImageGenerationParameters } from "./imageGeneration";
 
-export type SystemModelVerificationRole = "memory" | "direct_pdf" | "vision" | "embedding" | "reranker";
+export type SystemModelVerificationRole = "memory" | "direct_pdf" | "vision" | "embedding" | "reranker" | "image";
+
+export type AdminImageModelCandidate = AdminModelDefaultCandidate & {
+  upstreamModelId: string;
+  image: ImageModelConfiguration;
+  defaultParameters: ImageGenerationParameters;
+  generation: boolean;
+  editing: boolean;
+};
 
 export type AdminSystemModelCandidate = AdminModelDefaultCandidate & {
   pdfInput?: "not_requested" | "not_verified" | "unsupported" | "verified";
@@ -58,7 +67,10 @@ export type AdminSystemModelPolicyCatalog = {
   /** Every answer deployment that is not ready for the role, with the reason. */
   ineligible: Record<AdminSystemModelEligibilityRole, AdminSystemModelIneligibleCandidate[]>;
   rerankerCandidates: AdminRerankerModelCandidate[];
+  imageCandidates?: AdminImageModelCandidate[];
   policy: {
+    imageModel?: (AdminImageModelCandidate & { available: boolean }) | null;
+    imageParameters?: ImageGenerationParameters;
     chatPdfModel: (AdminSystemModelCandidate & { available: boolean }) | null;
     chatPdfReasoningEffort: string | null;
     rerankerModel: (AdminRerankerModelCandidate & { available: boolean }) | null;
@@ -113,6 +125,16 @@ function candidate(value: unknown): value is AdminSystemModelCandidate {
     value.reasoningEfforts.includes(value.defaultReasoningEffort);
 }
 
+function imageCandidate(value: unknown): value is AdminImageModelCandidate {
+  if (!record(value) || !baseCandidate(value) || !boundedText(value.upstreamModelId, 256) ||
+    typeof value.generation !== "boolean" || typeof value.editing !== "boolean") return false;
+  try {
+    const image = normalizeImageModelConfiguration(value.image);
+    normalizeImageGenerationParameters(value.defaultParameters, image, value.upstreamModelId);
+    return true;
+  } catch { return false; }
+}
+
 function ineligibleCandidate(value: unknown): value is AdminSystemModelIneligibleCandidate {
   return candidate(value) &&
     ((value as Record<string, unknown>).requirement === undefined ||
@@ -153,6 +175,14 @@ export function decodeAdminSystemModelPolicyResponse(
     !catalog.rerankerCandidates.every(baseCandidate) ||
     !record(catalog.policy)) return null;
   const policy = catalog.policy;
+  if (catalog.imageCandidates !== undefined && (!Array.isArray(catalog.imageCandidates) || !catalog.imageCandidates.every(imageCandidate)) ||
+    policy.imageModel !== undefined && policy.imageModel !== null && (!imageCandidate(policy.imageModel) || typeof (policy.imageModel as Record<string, unknown>).available !== "boolean")) return null;
+  if (policy.imageParameters !== undefined) {
+    if (!record(policy.imageParameters)) return null;
+    if (policy.imageModel && imageCandidate(policy.imageModel)) {
+      try { normalizeImageGenerationParameters(policy.imageParameters, policy.imageModel.image, policy.imageModel.upstreamModelId); } catch { return null; }
+    } else if (Object.keys(policy.imageParameters).length) return null;
+  }
   const reasoningEffort = policy.reasoningEffort;
   const systemModel = policy.systemModel;
   const rerankerModel = policy.rerankerModel;
@@ -193,7 +223,10 @@ export function decodeAdminSystemModelPolicyResponse(
       verificationCandidates: catalog.verificationCandidates,
       ineligible,
       rerankerCandidates: catalog.rerankerCandidates,
+      imageCandidates: (catalog.imageCandidates ?? []) as AdminImageModelCandidate[],
       policy: {
+        imageModel: (policy.imageModel ?? null) as AdminSystemModelPolicyCatalog["policy"]["imageModel"],
+        imageParameters: (policy.imageParameters ?? {}) as ImageGenerationParameters,
         chatPdfModel: policy.chatPdfModel as AdminSystemModelPolicyCatalog["policy"]["chatPdfModel"],
         chatPdfReasoningEffort: policy.chatPdfReasoningEffort as string | null,
         reasoningEffort: reasoningEffort as string | null,

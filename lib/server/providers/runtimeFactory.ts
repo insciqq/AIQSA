@@ -163,11 +163,12 @@ export function normalizeProviderExecutionSnapshot(value: unknown): ProviderExec
   }
   const compatibleAdapter = model.adapterKind === "openai_chat_completions_compatible" ||
     model.adapterKind === "openai_responses_compatible" ||
+    model.adapterKind === "openai_images_compatible" ||
     (model.adapterKind === "openai_embeddings_compatible" &&
       model.modelClass === "embedding" &&
       model.embedding?.providerFamily === "openai_compatible");
   if (
-    (model.adapterKind === "gemini_interactions_native") !==
+    (model.adapterKind === "gemini_interactions_native" || model.adapterKind === "gemini_images_native") !==
     (value.providerFamily === "gemini")
   ) {
     throw new Error("provider_execution_snapshot_invalid");
@@ -179,6 +180,10 @@ export function normalizeProviderExecutionSnapshot(value: unknown): ProviderExec
     throw new Error("provider_execution_snapshot_invalid");
   }
   if (compatibleAdapter !== (value.providerFamily === "openai_compatible")) {
+    throw new Error("provider_execution_snapshot_invalid");
+  }
+  if (model.adapterKind !== "fake" && model.modelClass === "image" &&
+    (model.image?.profile === "codex_lb" ? "openai_compatible" : model.image?.profile) !== value.providerFamily) {
     throw new Error("provider_execution_snapshot_invalid");
   }
   if (
@@ -193,6 +198,7 @@ export function normalizeProviderExecutionSnapshot(value: unknown): ProviderExec
     model.adapterKind !== "fake" &&
     model.adapterKind !== "openai_chat_completions_compatible" &&
     model.adapterKind !== "openai_responses_compatible" &&
+    model.adapterKind !== "openai_images_compatible" &&
     model.adapterKind !== "openai_embeddings_compatible"
   ) {
     throw new Error("provider_execution_snapshot_invalid");
@@ -481,6 +487,10 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
     }
     case "openai_embeddings_compatible":
     case "openrouter_rerank":
+    case "openai_images_native":
+    case "openai_images_compatible":
+    case "gemini_images_native":
+    case "openrouter_images":
       throw new Error("provider_model_class_invalid");
   }
 }

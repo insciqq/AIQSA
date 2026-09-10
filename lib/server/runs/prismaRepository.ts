@@ -115,6 +115,10 @@ type ConversationPathRow = {
   messageStatus: string | null;
 };
 
+function contentHasImage(value: unknown): boolean {
+  return isRecord(value) && Array.isArray(value.blocks) && value.blocks.some((block) => isRecord(block) && block.type === "image" && typeof block.attachmentId === "string");
+}
+
 export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): ProviderConversationMessage[] {
   const failedWithoutAnswer = new Set<string>();
   for (let index = 1; index < rows.length; index += 1) {
@@ -123,6 +127,7 @@ export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): P
     if (
       row.messageRole === "assistant" &&
       row.messageStatus === "error" &&
+      !contentHasImage(row.messageContent) &&
       (!isRecord(row.messageContent) || !textFromContentBlocks(row.messageContent).trim()) &&
       parent.messageId &&
       parent.messageRole === "user" &&
@@ -142,7 +147,7 @@ export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): P
       !row.messageId ||
       failedWithoutAnswer.has(row.messageId) ||
       (row.messageRole !== "user" && row.messageRole !== "assistant") ||
-      (row.messageStatus !== "complete" && row.messageStatus !== "streaming" && !cancelledWithText)
+      (row.messageStatus !== "complete" && row.messageStatus !== "streaming" && !cancelledWithText && !contentHasImage(row.messageContent))
     ) {
       return [];
     }
@@ -287,6 +292,16 @@ export function createPrismaRunRepository(
       ORDER BY path."depth" DESC NULLS LAST
     `);
 
+    const generated = await prismaClient.attachment.findMany({
+      where: { chatId, messageId: { in: rows.flatMap((row) => row.messageId ? [row.messageId] : []) }, origin: "IMAGE_OUTPUT", status: "ready" },
+      select: { id: true, messageId: true, fileName: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 256
+    });
+    for (const row of rows) {
+      const images = generated.filter((entry) => entry.messageId === row.messageId).reverse();
+      if (images.length && isRecord(row.messageContent) && Array.isArray(row.messageContent.blocks)) {
+        row.messageContent = { ...row.messageContent, blocks: [...row.messageContent.blocks, ...images.map((entry) => ({ type: "image", attachmentId: entry.id, label: entry.fileName }))] };
+      }
+    }
     return {
       chatMatched: rows.length > 0,
       messages: conversationMessagesFromPathRows(rows)
@@ -732,7 +747,7 @@ export function createPrismaRunRepository(
         }, memorySourceHooks);
         await tx.usageEvent.deleteMany({
           where: {
-            chatPdfPreparation: false,
+            chatPdfPreparation: false, imageGeneration: false,
             modelRunId: input.runId
           }
         });
@@ -1410,6 +1425,7 @@ export function createPrismaRunRepository(
                       fileName: true,
                       id: true,
                       mimeType: true,
+                      origin: true, metadata: true,
                       workspaceRunOutput: { select: { relativePath: true } }
                     }
                   }
@@ -1738,7 +1754,7 @@ export function createPrismaRunRepository(
           reasoningTokens: true,
           totalTokens: true
         },
-        where: { chatPdfPreparation: false, modelRunId: input.runId, userId: input.userId }
+        where: { chatPdfPreparation: false, imageGeneration: false, modelRunId: input.runId, userId: input.userId }
       });
       return rows.map((row) => ({
         estimatedCostMicros: row.estimatedCostMicros,

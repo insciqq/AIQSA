@@ -3,7 +3,7 @@ import type { AdminProviderCapabilityCheck, AdminProviderCheckRun } from "@/lib/
 export const CAPABILITY_LABELS: Record<AdminProviderCapabilityCheck, string> = {
   modelAccess: "Text access", structuredOutput: "Strict JSON", toolCalling: "Tools",
   forcedToolCall: "Forced tool calls", parallelToolCalls: "Parallel tool calls", vision: "Image input",
-  directPdf: "Direct PDF", streaming: "Streaming", embedding: "Embeddings", reranking: "Reranking"
+  directPdf: "Direct PDF", streaming: "Streaming", embedding: "Embeddings", reranking: "Reranking", imageGeneration: "Image generation", imageEditing: "Image editing"
 };
 
 const stateLabels: Record<NonNullable<AdminProviderCheckRun["results"]>[number]["state"], string> = {

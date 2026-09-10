@@ -1,3 +1,4 @@
+import { imageGenerationTool, imageReferenceInstructions } from "../tools/imageGeneration";
 import type { AssistantIdentity } from "../../contracts/assistants";
 import type { ChatPdfAttachmentAdmission, ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
@@ -139,6 +140,7 @@ type RunPreparationRepository = Pick<
 > & Partial<Pick<RunRepository, "loadKnowledgeFullContextPassages">>;
 
 export type RunPreparationDeps = Readonly<{
+  images?: import("../images/service").ImageGenerationService;
   allowFakeProvider?: boolean;
   assistants?: AssistantRunResolver;
   getAttachmentLimits?: () => RunAttachmentLimits;
@@ -860,7 +862,8 @@ function hasTextContent(content: NormalizedRunRequest["content"]): boolean {
 function validateAttachmentCapabilities(
   attachments: ProviderAttachment[],
   capabilities: ProviderModelCapabilities,
-  workspaceEnabled = false
+  workspaceEnabled = false,
+  imageEditing = false
 ): { code: string; status: 400 } | null {
   const hasPdf = attachments.some((attachment) => attachment.kind === "pdf");
   const hasImage = attachments.some((attachment) => attachment.kind === "image");
@@ -873,7 +876,7 @@ function validateAttachmentCapabilities(
     return { code: "pdf_attachment_not_supported", status: 400 };
   }
 
-  if (hasImage && !workspaceEnabled && !capabilities.vision) {
+  if (hasImage && !workspaceEnabled && !capabilities.vision && !imageEditing) {
     return { code: "image_attachment_not_supported", status: 400 };
   }
 
@@ -1579,6 +1582,8 @@ export async function prepareRun(
   });
   if (mcpCompatibility) return failure(mcpCompatibility.code, mcpCompatibility.status);
 
+  const imagePlan = body?.tools !== "none" && modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider })
+    ? await deps.images?.resolve() ?? null : null;
   const pdfRoute = deps.chatPdf && attachmentIds.length
     ? await deps.chatPdf.resolve(admissionPlan.answer) : undefined;
   let chatPdfAdmissions: ChatPdfAttachmentAdmission[] = [];
@@ -1605,7 +1610,8 @@ export async function prepareRun(
   const attachmentAccess = validateAttachmentCapabilities(
     attachments,
     pdfRoute ? { ...modelCapabilities, pdf: true } : modelCapabilities,
-    workspaceEnabled
+    workspaceEnabled,
+    imagePlan?.snapshot.model.capabilities.imageEditing === true
   );
   if (attachmentAccess) {
     return failure(attachmentAccess.code, attachmentAccess.status);
@@ -1654,7 +1660,16 @@ export async function prepareRun(
     prompt = promptWithWorkspaceContract(prompt, workspaceAdmission.plan, attachments);
   }
 
+  const referenceMessages = [...contextMessages, { id: input.source.kind === "send" ? "current" : input.source.source.userMessage.id, role: "user" as const, content }];
+  const imageReferenceIds = [...new Set(referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks)))].slice(-256);
+  const imageRecords = imagePlan && imageReferenceIds.length ? await deps.repository.loadAttachments(input.userId, imageReferenceIds, project?.projectId) : [];
+  const imageReferences = referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks).flatMap((id) => {
+    const row = imageRecords.find((entry) => entry.id === id && entry.kind === "image" && entry.status === "ready");
+    return row ? [{ attachmentId: id, messageId: message.id, fileName: row.fileName, origin: message.role === "assistant" ? "generated" as const : "upload" as const }] : [];
+  })).slice(-256);
+  if (imagePlan) prompt = { ...prompt, system: [prompt.system, imageReferenceInstructions(imageReferences, modelCapabilities.vision === true)].filter(Boolean).join("\n\n") };
   const baseNormalizedRequest: NormalizedRunRequest = {
+    ...(imagePlan ? { imagePlan, imageReferences } : {}),
     ...(modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
       modelId: executionModelId, provider: executionProvider
     }) === true ? { sessionStatusTool: true as const } : {}),
@@ -1741,6 +1756,7 @@ export async function prepareRun(
   const nonKnowledgeClientTools = [
     ...(baseNormalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
+        ...(imagePlan ? [imageGenerationTool(imagePlan)] : []),
         ...plannedSearchTools,
         ...(mcpDiscoveryEnabled ? [mcpFindToolsTool] : []),
         ...mcpRunTools(baseNormalizedRequest.mcp),

@@ -14,12 +14,15 @@ const response = {
       structuredOutput: "verified"
     }],
     documentCandidates: [],
+    imageCandidates: [],
     verificationCandidates: [],
     ineligible: { direct_pdf: [], memory: [], vision: [] },
     rerankerCandidates: [],
     policy: {
       chatPdfModel: null,
       chatPdfReasoningEffort: null,
+      imageModel: null,
+      imageParameters: {},
       reasoningEffort: null,
       rerankerModel: null,
       systemModel: null,

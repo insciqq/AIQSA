@@ -1,3 +1,4 @@
+import type { ImageGenerationParameters } from "@/lib/contracts/imageGeneration";
 import {
   decodeAdminSystemModelPolicyResponse,
   type AdminSystemModelPolicyCatalog,
@@ -43,6 +44,8 @@ export function getAdminSystemModelPolicy(fetcher: Fetcher = fetch) {
 }
 
 export function updateAdminSystemModelPolicy(input: Readonly<{
+  imageProviderModelId?: string | null;
+  imageParameters?: ImageGenerationParameters;
   chatPdfProviderModelId?: string | null;
   chatPdfReasoningEffort?: string | null;
   expectedVersion: number;
@@ -76,6 +79,7 @@ export function adminSystemModelPolicyErrorMessage(code: string): string {
     network_error: "The system model policy could not be reached.",
     system_model_policy_admin_action_failed: "The system model policy could not be updated.",
     system_model_policy_response_invalid: "The system model policy response was invalid.",
+    system_model_policy_image_parameters_invalid: "Choose image settings supported by this model and provider.",
     system_model_policy_reasoning_unavailable: "Choose a reasoning effort advertised by the selected system model.",
     system_model_policy_stale: "The system model changed elsewhere. Reload and apply your choice again.",
     system_model_policy_structured_output_unsupported: "Strict utility verification is not supported for this adapter.",

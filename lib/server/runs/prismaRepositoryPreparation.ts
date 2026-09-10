@@ -1084,6 +1084,7 @@ export async function admitProjectRunWithClient(
         userId: input.userId
       });
       await insertAcceptedProviderRunBindings(tx, {
+        imagePlan: input.normalizedRequest.imagePlan,
         nativeBackgroundRequested: input.normalizedRequest.params.background === true,
         plan: input.providerAdmissionPlan,
         runId: run.id,
@@ -1555,6 +1556,7 @@ export async function admitPreparingRunWithClient(
         userId: input.userId
       });
       await insertAcceptedProviderRunBindings(tx, {
+        imagePlan: input.normalizedRequest.imagePlan,
         nativeBackgroundRequested: input.normalizedRequest.params.background === true,
         plan: input.providerAdmissionPlan,
         runId: run.id,

@@ -95,6 +95,27 @@ function harness(options: {
 }
 
 describe("custom OpenAI-compatible provider setup service", () => {
+  it("checks a separate image candidate when adding a codex gateway", async () => {
+    const commit = vi.fn(async (_plan: AdminProviderCustomSetupCommitPlan) => ({ defaultChanged: false, status: "ready" as const }));
+    const boundary = new Error("checks-started");
+    const service = createAdminProviderCustomSetupService({
+      encryptionKey: () => Buffer.alloc(32, 9), repository: { commit }, tester: { test: vi.fn() },
+      finishInitialSetup: async ({ modelIds }) => {
+        const models = commit.mock.calls[0]![0].models;
+        expect(modelIds).toEqual(models.map((model) => model.id));
+        expect(models.map((model) => model.configuration.modelClass)).toEqual(["answer", "image"]);
+        expect(models[1]).toMatchObject({ status: "unavailable", configuration: {
+          adapterKind: "openai_images_compatible", upstreamModelId: "gpt-image-2", image: { profile: "codex_lb" },
+          capabilities: { imageGeneration: false, imageEditing: false, vision: false }
+        } });
+        throw boundary;
+      }
+    });
+    await expect(service.setup({ actor: ACTOR, request: request({
+      protocol: "responses", apiRoot: "https://gateway.example.test/backend-api/codex"
+    }) })).rejects.toBe(boundary);
+  });
+
   it("commits detected isolation before starting the initial background capability checks", async () => {
     const proofKey = "synthetic-proof-signing-key";
     const catalogProof = createCustomSetupCatalogProof({ endpoint: "https://llm.example.test/v1", key: proofKey,

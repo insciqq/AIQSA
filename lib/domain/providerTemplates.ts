@@ -9,6 +9,9 @@ export const providerTemplateIds = Object.freeze({
 });
 
 export const providerModelTemplateIds = Object.freeze({
+  "openai:gpt-image-2": "00000000-0000-4000-8000-000000001232",
+  "gemini:gemini-3.1-flash-image": "00000000-0000-4000-8000-000000001233",
+  "openrouter:google/gemini-3.1-flash-image": "00000000-0000-4000-8000-000000001234",
   "anthropic:claude-fable-5-1": "00000000-0000-4000-8000-000000001224",
   "anthropic:claude-opus-5": "00000000-0000-4000-8000-000000001211",
   "anthropic:claude-opus-4-8": "00000000-0000-4000-8000-000000001206",

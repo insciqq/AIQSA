@@ -1,3 +1,5 @@
+import { imageModelConfiguration } from "../../domain/imageModels";
+import type { ImageProviderProfile } from "../../contracts/imageGeneration";
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderRunRequest, ProviderRunResult } from "./types";
 import type { ProviderExecutionSnapshot } from "./runtimeFactory";
@@ -111,6 +113,16 @@ async function collect(
 }
 
 describe("provider runtime factory", () => {
+  it.each<ImageProviderProfile>(["openai", "gemini", "openrouter", "codex_lb", "openai_compatible"])(
+    "retains the exact image adapter family in accepted and recovered snapshots (%s)", (profile) => {
+      const providerFamily = profile === "codex_lb" ? "openai_compatible" : profile;
+      const value = { ...snapshot("openai_responses_native"), providerFamily,
+        model: imageModelConfiguration(profile === "gemini" ? "gemini-3.1-flash-image" : "gpt-image-2", { profile }) };
+      expect(normalizeProviderExecutionSnapshot(value)).toMatchObject({ providerFamily, model: { image: { profile }, modelClass: "image" } });
+      expect(() => normalizeProviderExecutionSnapshot({ ...value, providerFamily: "anthropic" })).toThrow("provider_execution_snapshot_invalid");
+    }
+  );
+
   it.each(runtimeAdapterKinds)("constructs %s only with an explicit safe fetch", (adapterKind) => {
     const fetchFn = vi.fn<typeof fetch>();
     const runtime = createProviderRuntimeBinding({

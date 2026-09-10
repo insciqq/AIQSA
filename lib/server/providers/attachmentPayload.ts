@@ -93,7 +93,7 @@ export function providerAttachmentBudgetTokens(input: {
 }): number {
   return input.attachments.reduce((total, attachment) => {
     if (attachment.kind === "image") {
-      return total + imageProxyTokens(attachment);
+      return total + (input.modelCapabilities.vision ? imageProxyTokens(attachment) : 0);
     }
 
     if (attachment.kind === "pdf" && input.modelCapabilities.nativePdfInput) {

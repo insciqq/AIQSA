@@ -18,6 +18,8 @@ import type {
 export type ModelChipTone = "muted" | "ok" | "warn";
 
 export type ModelChipKey =
+  | "imageGeneration"
+  | "imageEditing"
   | "embeddings"
   | "images"
   | "json"
@@ -81,6 +83,14 @@ export function modelChipsFromEvidence(
   if (configuration.modelClass === "reranker") {
     return evidence.reranking ? [{ key: "reranking", label: "Reranking", tone: "ok" }] : [];
   }
+  if (configuration.modelClass === "image") {
+    return (["imageGeneration", "imageEditing"] as const).map((key) => {
+      const status = evidence.capabilitySetup?.checks[key];
+      const label = key === "imageGeneration" ? "Generate images" : "Edit images";
+      return { key, label: status === "incomplete" ? `${label}: check incomplete` : label,
+        tone: legacyStatus(evidence[key], configuration) === "verified" ? "ok" as const : status === "incomplete" ? "warn" as const : "muted" as const };
+    });
+  }
   const compatibility = evidence.compatibility;
   // Earlier OpenRouter checks used a forced tool call for JSON. Neither a
   // pass nor a rejection of that transport proves native JSON Schema support.
@@ -136,6 +146,7 @@ export function modelUsageMissing(
 }
 
 export function checkingLabel(modelClass: AdminProviderModelClass): string {
+  if (modelClass === "image") return "Checking image generation and editing…";
   if (modelClass === "embedding") return "Checking embeddings…";
   if (modelClass === "reranker") return "Checking reranking…";
   return "Checking tools, JSON, PDF, images and streaming…";

@@ -1,3 +1,5 @@
+import { imageDispatchMustStop } from "../images/errors";
+import { imageGenerationTool, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
 import type { ChatUpdateDataWire } from "../../contracts/chats";
 import { isToolSynthesisFailure } from "../../contracts/runs";
@@ -271,6 +273,7 @@ export type RunExecutionRepository = Pick<
 >;
 
 export type RunExecutionInput = Readonly<{
+  images?: import("../images/service").ImageGenerationService;
   adapter: ProviderAdapter;
   /** Names a personal chat after its first answer; absent on recovery paths. */
   chatTitleGenerator?: ChatTitleGenerator;
@@ -1777,7 +1780,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         }
         const isMcpDiscoveryCall = (name: string) =>
           name === MCP_FIND_TOOLS_NAME && activeMcpDiscovery !== undefined;
+        const isImageCall = (name: string) => clientToolsEnabled && Boolean(normalizedRequest.imagePlan) && name === IMAGE_GENERATION_TOOL_NAME;
         const tools: RunTool[] = [
+          ...(clientToolsEnabled && normalizedRequest.imagePlan ? [imageGenerationTool(normalizedRequest.imagePlan)] : []),
           ...(normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
           ...knowledgeTools,
           ...(searchPlanRouter?.tools ?? []),
@@ -1940,6 +1945,17 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 runId,
                 userId: input.userId
               });
+              if (claim.kind === "ambiguous" && isImageCall(call.name) && input.images) {
+                const restored = await input.images.restore(call, { persistedToolCallId: persisted.id, request, runId, userId: input.userId });
+                if (restored) {
+                  const snapshot = snapshotToolExecutionResult(restored, toolLoopPersistenceLimits.resultBytes);
+                  const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id, result: snapshot, runId, state: "complete", userId: input.userId });
+                  if (settled === "settled" || settled === "reused") {
+                    await input.memoryEgress?.settleRecoveredToolDispatch({ modelRunToolCallId: persisted.id, outcome: "COMPLETED", runId, userId: input.userId });
+                    return { status: "complete", value: restored };
+                  }
+                }
+              }
               if (claim.kind === "ambiguous") {
                 return {
                   error: {
@@ -2031,7 +2047,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   if (!input.memoryEgress && process.env.NODE_ENV === "production") {
                     throw new Error("memory_egress_receipt_unavailable");
                   }
-                  const destinationSnapshot = isKnowledgeCall(call.name)
+                  const destinationSnapshot = isImageCall(call.name)
+                    ? { kind: "image", version: 1, authority: normalizedRequest.imagePlan!.authority, snapshot: normalizedRequest.imagePlan!.snapshot }
+                    : isKnowledgeCall(call.name)
                     ? {
                         kind: "knowledge",
                         scopeFingerprint: input.prepared.knowledgeAdmissionPlan?.fingerprint ?? null,
@@ -2066,7 +2084,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                           };
                         })();
                   let mcpFailure: McpDispatchFailureCode | null = null;
-                  const currentAuthorization = await (isKnowledgeCall(call.name)
+                  const currentAuthorization = await (isImageCall(call.name)
+                      ? input.images?.authorize(normalizedRequest.imagePlan!) ?? Promise.resolve(false)
+                      : isKnowledgeCall(call.name)
                       ? currentKnowledgeDispatchAllowed()
                       : isSearchCall(call.name)
                       ? currentSearchDispatchAllowed()
@@ -2128,6 +2148,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 }
                 if (preflightResult) {
                   result = preflightResult;
+                } else if (isImageCall(call.name)) {
+                  if (!input.images) throw new Error("image_tool_unavailable");
+                  result = await input.images.execute(call, executionContext, signal);
                 } else if (isSessionCall(call.name)) {
                   result = executeSessionStatus(call, sessionRequest, toolBridge);
                 } else if (isMcpDiscoveryCall(call.name)) {
@@ -2247,6 +2270,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 // side-effecting non-Knowledge tool, remains crash-ambiguous.
                 if (signal.aborted ||
                   isAbortError(error) && !isKnowledgeCall(call.name)) throw error;
+                if (isImageCall(call.name) && imageDispatchMustStop(error)) {
+                  fatalToolError = { code: "image_generation_failed", fatal: true, message: "Image generation could not finish. The request was not repeated. Any saved image remains in the chat." };
+                }
                 if (error instanceof McpAutoDiscoveryUnavailableError) {
                   fatalToolError = {
                     code: error.code,
@@ -2343,7 +2369,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                 if (!route && !isKnowledgeCall(call.name) &&
                   !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name) &&
-                  !isWorkspaceCall(call.name) && !isSessionCall(call.name)) {
+                  !isImageCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 return {
@@ -2447,7 +2473,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             for (const call of calls) {
               const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
               const registeredTool = tools.find((tool) => tool.name === call.name);
-              const builtInServer = isSessionCall(call.name) ? "Chat context" : call.name === "find_tools"
+              const builtInServer = isImageCall(call.name) ? "Images" : isSessionCall(call.name) ? "Chat context" : call.name === "find_tools"
                 ? "Auto tools"
                 : isKnowledgeCall(call.name)
                   ? "Knowledge"
@@ -2627,12 +2653,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         const hasClientKnowledge = !groundedKnowledgeAnswer && clientToolsEnabled &&
           admittedKnowledgeReady &&
           normalizedRequest.knowledgePlan.mode !== "none";
-        const hasClientTools = normalizedRequest.sessionStatusTool === true || hasClientKnowledge || hasClientSearch ||
+        const hasClientTools = (clientToolsEnabled && normalizedRequest.imagePlan !== undefined) || normalizedRequest.sessionStatusTool === true || hasClientKnowledge || hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
           normalizedRequest.mcpDiscovery !== undefined ||
           normalizedRequest.workspace !== undefined;
         const preparedProviderRequest = await requestWithAutomaticKnowledgeEvidence(
-          input.prepared.providerRequest
+          input.images ? await input.images.withConversationPixels(input.prepared.providerRequest, input.userId, signal) : input.prepared.providerRequest
         );
         const providerRequest = preparedProviderRequest.request;
         lastSessionRequest = groundedKnowledgeAnswer ? { ...providerRequest, tools: [] } : providerRequest;

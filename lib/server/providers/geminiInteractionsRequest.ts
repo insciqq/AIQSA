@@ -166,7 +166,7 @@ function latestUserContent(
   }
 
   for (const attachment of request.attachments) {
-    if (attachment.kind === "image") {
+    if (attachment.kind === "image" && request.modelCapabilities.vision) {
       content.push(imageContent(attachment, options.preview));
       continue;
     }

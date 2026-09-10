@@ -17,10 +17,11 @@ import type {
 
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
-export const MODEL_GROUP_ORDER: readonly AdminProviderModelClass[] = ["answer", "reranker", "embedding"];
+export const MODEL_GROUP_ORDER: readonly AdminProviderModelClass[] = ["answer", "image", "reranker", "embedding"];
 
 const groupTitles: Record<AdminProviderModelClass, string> = {
   answer: "Chat models",
+  image: "Image models",
   embedding: "Embeddings",
   reranker: "Rerankers"
 };
@@ -93,6 +94,7 @@ export function deriveModelUsage(sources: ProviderUsageSources): ModelUsageIndex
   const roles = sources.systemModelPolicy?.policy;
   add(roles?.systemModel?.id, "System model");
   add(roles?.chatPdfModel?.id, "Chat PDF");
+  add(roles?.imageModel?.id, "Image generation");
   const route = roles?.rerankerRoute?.entries ?? [];
   if (route.length) {
     for (const entry of route) add(entry.id, entry.role === "primary" ? "Reranker · primary" : "Reranker · fallback");

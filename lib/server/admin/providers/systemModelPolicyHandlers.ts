@@ -1,3 +1,4 @@
+import type { ImageGenerationParameters } from "../../../contracts/imageGeneration";
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
@@ -74,16 +75,19 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
       const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", "rerankerProviderModelId",
-        "chatPdfProviderModelId", "chatPdfReasoningEffort"];
+        "chatPdfProviderModelId", "chatPdfReasoningEffort", "imageProviderModelId", "imageParameters"];
       const textOrNull = (entry: unknown, limit: number) => entry === null ||
         typeof entry === "string" && entry.trim() === entry && entry.length > 0 && entry.length <= limit &&
         !/[\u0000-\u001f\u007f]/u.test(entry);
       const hasUtilityUpdate = record(value) && Object.hasOwn(value, "providerModelId");
       const hasRerankerUpdate = record(value) && Object.hasOwn(value, "rerankerProviderModelId");
+      const hasImageUpdate = record(value) && Object.hasOwn(value, "imageProviderModelId");
       const hasPdfModelUpdate = record(value) && Object.hasOwn(value, "chatPdfProviderModelId");
       if (!record(value) || Object.keys(value).some((key) => !allowed.includes(key)) ||
         !Number.isSafeInteger(value.expectedVersion) || Number(value.expectedVersion) < 1 ||
-        !hasUtilityUpdate && !hasRerankerUpdate && !hasPdfModelUpdate ||
+        !hasUtilityUpdate && !hasRerankerUpdate && !hasPdfModelUpdate && !hasImageUpdate ||
+        hasImageUpdate !== Object.hasOwn(value, "imageParameters") ||
+        hasImageUpdate && (!textOrNull(value.imageProviderModelId, 256) || !record(value.imageParameters)) ||
         hasUtilityUpdate !== Object.hasOwn(value, "reasoningEffort") ||
         hasPdfModelUpdate !== Object.hasOwn(value, "chatPdfReasoningEffort") ||
         hasUtilityUpdate && (!textOrNull(value.providerModelId, 256) || !textOrNull(value.reasoningEffort, 32)) ||
@@ -95,6 +99,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       }
       try {
         await input.service.update({
+          ...(hasImageUpdate ? { imageProviderModelId: value.imageProviderModelId as string | null, imageParameters: value.imageParameters as ImageGenerationParameters } : {}),
           ...(hasPdfModelUpdate ? {
             chatPdfProviderModelId: value.chatPdfProviderModelId as string | null,
             chatPdfReasoningEffort: value.chatPdfReasoningEffort as string | null
@@ -125,7 +130,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
       if (!record(value) || Object.keys(value).length !== 2 ||
-        !["memory", "direct_pdf", "vision", "embedding", "reranker"].includes(String(value.role)) ||
+        !["memory", "direct_pdf", "vision", "embedding", "reranker", "image"].includes(String(value.role)) ||
         typeof value.providerModelId !== "string" ||
         value.providerModelId.trim() !== value.providerModelId ||
         value.providerModelId.length < 1 || value.providerModelId.length > 256 ||

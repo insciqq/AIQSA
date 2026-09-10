@@ -51,6 +51,8 @@ export type ProviderModelCapabilities = {
   nativePdfInput: boolean;
   nativeBackground?: boolean;
   nativeImageGeneration?: boolean;
+  imageGeneration?: boolean;
+  imageEditing?: boolean;
   nativeSearch: boolean;
   parallelToolCalls?: boolean;
   pdf: boolean;
@@ -107,6 +109,8 @@ export type NormalizedRunWorkspace = Readonly<{
 }>;
 
 export type NormalizedRunRequest = {
+  imagePlan?: import("../providerRuntime/imageModelRole").AcceptedImageGenerationPlan;
+  imageReferences?: import("../../contracts/imageGeneration").ConversationImageReference[];
   attachmentIds: string[];
   chatId: string;
   content: {

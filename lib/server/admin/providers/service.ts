@@ -1,3 +1,5 @@
+import { decodeImageVerificationEvidence } from "../../providers/imageGenerationEvidence";
+import { createImageModelDiscovery } from "../../providers/imageModelDiscovery";
 import { hasVerifiedDedicatedProtocol } from "../../providers/systemRoleEvidence";
 import type { AdminProviderSetupProgress } from "../../../contracts/adminProviderSetupProgress";
 import { withTimeoutSignal } from "../../providers/network";
@@ -156,15 +158,19 @@ function expectedFamily(model: ProviderModelConfiguration): AdminProviderFamily 
       return "anthropic";
     case "deepseek_responses_native":
       return "deepseek";
+    case "gemini_images_native":
     case "gemini_interactions_native":
       return "gemini";
+    case "openai_images_compatible":
     case "openai_chat_completions_compatible":
     case "openai_responses_compatible":
       return "openai_compatible";
+    case "openai_images_native":
     case "openai_responses_native":
       return "openai";
     case "openai_embeddings_compatible":
       throw new AdminProviderServiceError("provider_family_adapter_mismatch");
+    case "openrouter_images":
     case "openrouter_chat_completions":
       return "openrouter";
     case "openrouter_rerank":
@@ -256,12 +262,19 @@ function validateEvidence(
   );
   const pdfInput = decodePdfInputVerificationEvidence(evidence.pdfInput);
   const visionInput = decodeVisionInputVerificationEvidence(evidence.visionInput);
+  const imageGeneration = decodeImageVerificationEvidence(evidence.imageGeneration);
+  const imageEditing = decodeImageVerificationEvidence(evidence.imageEditing);
+  const invalidImageProof = (["imageGeneration", "imageEditing"] as const).some((key) => {
+    const proof = decodeImageVerificationEvidence(evidence[key]);
+    return evidence[key] !== undefined && (model.modelClass !== "image" || !proof || proof.adapterKind !== model.adapterKind || proof.upstreamModelId !== model.upstreamModelId);
+  });
   const hasPdfInput = Object.prototype.hasOwnProperty.call(evidence, "pdfInput");
   const compatibility = decodeAdminProviderCompatibilityEvidence(evidence.compatibility);
   const capabilitySetup = decodeCapabilitySetupEvidence(evidence.capabilitySetup);
   const parallelToolCalls = decodeParallelToolCallVerificationEvidence(evidence.parallelToolCalls);
   const hasCompatibility = Object.prototype.hasOwnProperty.call(evidence, "compatibility");
   if (
+    invalidImageProof ||
     evidence.method !== expectedMethod ||
     evidence.upstreamModelId !== model.upstreamModelId ||
     evidence.selectedProviders.length !== expectedProviders.length ||
@@ -313,6 +326,8 @@ function validateEvidence(
   }
   return {
     ...(capabilitySetup ? { capabilitySetup } : {}),
+    ...(imageGeneration ? { imageGeneration } : {}),
+    ...(imageEditing ? { imageEditing } : {}),
     ...(parallelToolCalls ? { parallelToolCalls } : {}),
     ...(compatibility ? { compatibility } : {}),
     ...(evidence.embedding && hasVerifiedDedicatedProtocol(evidence, model) ? { embedding: {
@@ -504,7 +519,7 @@ export function createAdminProviderService(input: Readonly<{
     const initialSetup = connection.activeVersion === 0;
     const setupPolicy = ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.includes(connection.family as AdminProviderQuickSetupProviderId)
       ? adminProviderQuickSetupPolicy(connection.family as AdminProviderQuickSetupProviderId) : null;
-    const setupModels = providerSetupModels(connection.family);
+    const setupModels = providerSetupModels(connection.family, (connection.activeConfig ?? connection.draftConfig).apiRoot);
     const modelClasses = [...new Set([
       ...connection.models.filter((model) => initialSetup || model.enabled)
         .map((model) => model.modelClass ?? model.draftConfig.modelClass),
@@ -536,7 +551,8 @@ export function createAdminProviderService(input: Readonly<{
         .includes(candidate.configuration.upstreamModelId) && !connection.models.some((model) =>
         model.draftConfig.upstreamModelId === candidate.configuration.upstreamModelId))
       .map((candidate) => ({
-        configuration: candidate.configuration,
+        configuration: candidate.configuration.modelClass === "image" ? { ...candidate.configuration,
+          image: outcome.imageModels?.find((entry) => entry.id === candidate.configuration.upstreamModelId)?.image ?? candidate.configuration.image } : candidate.configuration,
         displayName: candidate.displayName,
         id: connection.id === setupPolicy?.connection.id ? candidate.modelId : idFactory(),
         inputTokenPriceMicros: candidate.inputTokenPriceMicros,
@@ -866,7 +882,7 @@ export function createAdminProviderService(input: Readonly<{
     if (running) return running;
     if ((value.reason === "requested" || value.reason === "setup") && !value.modelIds && connection.enabled &&
       connection.activeConfig && connection.defaultCredentialId === credential.id) {
-      const missing = providerSetupModels(connection.family).filter((candidate) =>
+      const missing = providerSetupModels(connection.family, (connection.activeConfig ?? connection.draftConfig).apiRoot).filter((candidate) =>
         !connection!.models.some((model) => [model.draftConfig, model.activeConfig].some((config) =>
           config?.upstreamModelId === candidate.configuration.upstreamModelId)));
       if (missing.length) {
@@ -876,14 +892,16 @@ export function createAdminProviderService(input: Readonly<{
           secret: () => activeCredentialSecret(credential.id, credential.activeVersion!.id),
           signal: value.signal
         });
-        const policy = adminProviderQuickSetupPolicy(connection.family as AdminProviderQuickSetupProviderId);
+        const policy = ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.includes(connection.family as AdminProviderQuickSetupProviderId)
+          ? adminProviderQuickSetupPolicy(connection.family as AdminProviderQuickSetupProviderId) : null;
         const additions = missing.filter((candidate) =>
           (outcome.modelIdsByClass?.[candidate.configuration.modelClass] ?? outcome.modelIds)
             .includes(candidate.configuration.upstreamModelId)).map((candidate) => ({
-          configuration: initialModelConfiguration(candidate.configuration), displayName: candidate.displayName,
-          id: connection!.id === policy.connection.id ? candidate.modelId : idFactory(),
+          configuration: initialModelConfiguration(candidate.configuration.modelClass === "image" ? { ...candidate.configuration,
+            image: outcome.imageModels?.find((entry) => entry.id === candidate.configuration.upstreamModelId)?.image ?? candidate.configuration.image } : candidate.configuration), displayName: candidate.displayName,
+          id: connection!.id === policy?.connection.id ? candidate.modelId : idFactory(),
           inputTokenPriceMicros: candidate.inputTokenPriceMicros, outputTokenPriceMicros: candidate.outputTokenPriceMicros,
-          templateKey: connection!.id === policy.connection.id ? candidate.templateKey : null
+          templateKey: connection!.id === policy?.connection.id ? candidate.templateKey : null
         }));
         if (additions.length && await input.repository.addSetupModelsCas({
           connectionId: connection.id, connectionVersion: connection.activeVersion,
@@ -1200,6 +1218,23 @@ export function createAdminProviderService(input: Readonly<{
       } catch {
         throw new AdminProviderServiceError("provider_discovery_failed");
       }
+    },
+
+    async discoverImageModels(value: { connectionId: string; credentialId: string; modelId?: string; signal?: AbortSignal }) {
+      const candidate = await input.repository.loadDiscoveryCandidate(value);
+      if (!candidate) throw new AdminProviderServiceError("provider_credential_not_found");
+      if (!["openai", "openai_compatible", "gemini", "openrouter"].includes(candidate.connection.family)) {
+        throw new AdminProviderServiceError("provider_discovery_unsupported");
+      }
+      const configuration = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
+      if ((configuration.authenticationMode === "none") !== (candidate.credential.source === null)) {
+        throw new AdminProviderServiceError("provider_credential_not_found");
+      }
+      const client = createImageModelDiscovery({ connection: configuration, family: candidate.connection.family,
+        secret: candidate.credential.source ? credentialSecretSource(candidate.credential.id, candidate.credential.source) : null });
+      try {
+        return value.modelId ? { endpoints: await client.endpoints(value.modelId, value.signal) } : { models: await client.models(value.signal) };
+      } catch { throw new AdminProviderServiceError("provider_discovery_failed"); }
     },
 
     async discoverCompatibleModels(value: {

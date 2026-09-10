@@ -1,5 +1,7 @@
 "use client";
 
+import { ImageModelFields } from "./ImageModelFields";
+import { imageModelConfiguration } from "@/lib/domain/imageModels";
 import { inputClass } from "@/components/admin/adminPrimitives";
 import {
   reasoningCapabilitiesEqual,
@@ -286,6 +288,7 @@ function SheetBody({
   const openRouter = family === "openrouter";
   const compatible = family === "openai_compatible";
   const answer = form.modelClass === "answer";
+  const imageModel = form.modelClass === "image";
   const currentModel = model ? connection.models.find(({ id }) => id === model.id) ?? null : null;
   const defaultCredential = defaultCredentialOf(connection);
   const check = modelEditorCheck(connection, currentModel, diagnosticCredentialId === undefined ? connection.defaultCredentialId : diagnosticCredentialId);
@@ -455,10 +458,22 @@ function SheetBody({
         ) : null}
         <section aria-label="Model identity and routing" className="flex min-w-0 flex-col gap-4">
           <h3 className="text-sm font-semibold text-ink">Model and routing</h3>
+          {!model && ["openai", "openai_compatible", "gemini", "openrouter"].includes(family) ? <label>
+            <span className={fieldLabel}>Model purpose</span>
+            <select className={inputClass} disabled={busy} value={form.modelClass} onChange={(event) => {
+              const blank = blankModelForm(connection);
+              if (event.currentTarget.value === "image") {
+                const profile = family === "openai" ? "openai" : family === "gemini" ? "gemini" : family === "openrouter" ? "openrouter" :
+                  connection.draftConfig.responsesRequestIsolationDetected ? "codex_lb" : "openai_compatible";
+                setForm({ ...blank, ...imageModelConfiguration("", { profile }), image: { profile } });
+              } else setForm(blank);
+            }}><option value="answer">Chat</option><option value="image">Image generation</option></select>
+          </label> : null}
           <div className="min-w-0">
             {/* The pickers render their own visible label; keep this one for the read-only id and aria-labelledby. */}
             <span className={answer ? "sr-only" : fieldLabel} id={`${formId}-model-label`}>Model</span>
-            {!answer ? (
+            {imageModel ? <ImageModelFields connection={connection} credential={discoveryCredential} form={form} disabled={busy}
+              onChange={(next) => { setForm(next); setError(null); }} /> : !answer ? (
               <p className="flex min-h-control items-center break-all rounded-control border border-trace-subtle bg-control-surface/60 px-3 font-mono text-xs text-ink-secondary">
                 {form.upstreamModelId}
               </p>
@@ -584,7 +599,7 @@ function SheetBody({
             />
           </label>
 
-          {openRouter ? (
+          {openRouter && !imageModel ? (
             <div className="min-w-0">
               {savedRoute ? <p className="mb-2 break-words text-xs text-ink-muted [overflow-wrap:anywhere]">Saved route: {savedRoute}.</p> : null}
               <RoutingField
@@ -733,7 +748,7 @@ function SheetBody({
             </label>
             <span className={helpText}>Blank inherits the provider timeout. 5 to 900 seconds.</span>
           </div>
-          {openRouter ? (
+          {openRouter && !imageModel ? (
             <div className="border-t border-trace-subtle">
               <SettingRow
                 checked={form.dataCollectionAllowed}

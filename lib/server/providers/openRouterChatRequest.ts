@@ -169,7 +169,7 @@ function buildUserContent(
       }
     }
 
-    if (attachment.kind === "image") {
+    if (attachment.kind === "image" && request.modelCapabilities.vision) {
       hasImage = true;
     }
   }
@@ -185,7 +185,7 @@ function buildUserContent(
         contentParts.push(pdfContent(attachment, options.redactFiles, options.preview));
       }
 
-      if (attachment.kind === "image") {
+      if (attachment.kind === "image" && request.modelCapabilities.vision) {
         contentParts.push(imageContent(attachment, options.redactImages));
       }
     }

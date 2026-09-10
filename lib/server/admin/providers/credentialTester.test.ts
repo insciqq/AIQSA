@@ -53,6 +53,16 @@ afterEach(() => {
 });
 
 describe("admin provider credential tester", () => {
+  it("retains an authenticated chat catalog when optional image discovery is unavailable", async () => {
+    const dispatch = vi.fn().mockResolvedValueOnce(catalog(["chat-model"]))
+      .mockResolvedValue(new Response("{}", { status: 503 }));
+    const tester = createAdminProviderCredentialTester({ network: { lookupHostname: publicLookup, dispatch } });
+    await expect(tester.test({ ...input("openai"), modelClasses: ["answer", "image"] })).resolves.toMatchObject({
+      modelIds: ["chat-model"], imageModels: [], modelIdsByClass: { answer: ["chat-model"], image: [] }
+    });
+    await expect(tester.test({ ...input("openai"), modelClasses: ["image"] })).rejects.toBeInstanceOf(AdminProviderCredentialTestError);
+  });
+
   it("keeps only bounded per-model tool/image/parallel hints and distinct output ceilings", async () => {
     const tester = createAdminProviderCredentialTester({ network: { lookupHostname: publicLookup,
       dispatch: async () => Response.json({ data: [

@@ -37,6 +37,7 @@ import { decodeForcedToolCallVerificationEvidence } from
   "../../providers/forcedToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
 import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
+import { decodeImageVerificationEvidence } from "../../providers/imageGenerationEvidence";
 import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
 import {
   countBlockingMemoryExecutionBindings,
@@ -123,6 +124,8 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
   const forcedToolCall = decodeForcedToolCallVerificationEvidence(value.forcedToolCall);
   const pdfInput = decodePdfInputVerificationEvidence(value.pdfInput);
   const visionInput = decodeVisionInputVerificationEvidence(value.visionInput);
+  const imageGeneration = decodeImageVerificationEvidence(value.imageGeneration);
+  const imageEditing = decodeImageVerificationEvidence(value.imageEditing);
   const compatibility = decodeAdminProviderCompatibilityEvidence(value.compatibility);
   const capabilitySetup = decodeCapabilitySetupEvidence(value.capabilitySetup);
   const parallelToolCalls = decodeParallelToolCallVerificationEvidence(value.parallelToolCalls);
@@ -146,6 +149,8 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
     selectedProviders: value.selectedProviders as string[],
     ...(pdfInput ? { pdfInput } : {}),
     ...(visionInput ? { visionInput } : {}),
+    ...(imageGeneration ? { imageGeneration } : {}),
+    ...(imageEditing ? { imageEditing } : {}),
     ...(forcedToolCall ? { forcedToolCall } : {}),
     ...(structuredOutput ? { structuredOutput } : {}),
     upstreamModelId: value.upstreamModelId

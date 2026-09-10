@@ -240,12 +240,14 @@ describe("SentAttachmentsV2", () => {
 
     const list = screen.getByRole("list", { name: "Message attachments" });
     expect(list).toHaveTextContent("sample.txt");
-    expect(list).toHaveTextContent("Диаграмма продаж");
+    expect(screen.getByRole("img", { name: "Диаграмма продаж" })).toHaveAttribute(
+      "src", "/api/attachments/private-image-id/content?preview=image"
+    );
     expect(screen.getByRole("link", { name: "sample.txt" })).toHaveAttribute(
       "href",
       "/api/attachments/private-attachment-id/content"
     );
-    expect(screen.getByRole("link", { name: "Диаграмма продаж" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute(
       "href",
       "/api/attachments/private-image-id/content"
     );

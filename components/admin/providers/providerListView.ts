@@ -313,6 +313,7 @@ export function deriveProviderUsage(
   add(roles?.systemModel?.connectionId, "System model");
   add(roles?.chatPdfModel?.connectionId, "Chat PDF");
   add(roles?.rerankerModel?.connectionId, "Reranker");
+  add(roles?.imageModel?.connectionId, "Image generation");
   for (const entry of roles?.rerankerRoute?.entries ?? []) add(entry.connectionId, "Reranker");
   const revision = sources.knowledge?.profile.activeRevision;
   add(modelOwner.get(revision?.pdfProcessing.destination?.deploymentId ?? ""), "Knowledge docs");

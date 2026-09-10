@@ -1,3 +1,4 @@
+import { decodeThreadGeneratedImage, type ThreadGeneratedImage } from "./imageGeneration";
 import { decodeSessionContextStatus, type SessionContextStatus } from "./sessionStatus";
 import { decodeChatPdfPreparations, type ChatPdfPreparationWire } from "./chatPdfPreparation";
 import type {
@@ -92,6 +93,7 @@ export type ThreadAssistantIdentity = AssistantIdentity;
 export type ThreadArtifactSummary = {
   citations: ThreadCitation[];
   generatedFiles?: ThreadGeneratedFile[];
+  generatedImages?: ThreadGeneratedImage[];
   groundingDisplay?: ThreadGroundingDisplay | null;
   knowledgeState?: ThreadKnowledgeAnswerState;
   knowledgeCitations?: ThreadKnowledgeCitation[];
@@ -115,6 +117,7 @@ export type ThreadToolActivity = {
 };
 
 export type ThreadToolActivityOrigin =
+  | "image"
   | "discovery"
   | "knowledge"
   | "mcp"
@@ -125,7 +128,7 @@ export type ThreadToolActivityOrigin =
   | "workspace";
 
 export function isThreadToolActivityOrigin(value: unknown): value is ThreadToolActivityOrigin {
-  return value === "discovery" || value === "knowledge" || value === "mcp" ||
+  return value === "image" || value === "discovery" || value === "knowledge" || value === "mcp" ||
     value === "memory" || value === "session" || value === "tool" ||
     value === "web_search" || value === "workspace";
 }
@@ -731,6 +734,8 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     if (!groundingDisplay) return null;
   }
 
+  const generatedImages = value.generatedImages === undefined ? undefined : Array.isArray(value.generatedImages) ? value.generatedImages.map(decodeThreadGeneratedImage) : null;
+  if (generatedImages === null || generatedImages && (generatedImages.length > 16 || generatedImages.some((image) => !image) || new Set(generatedImages.map((image) => image!.attachmentId)).size !== generatedImages.length)) return null;
   let generatedFiles: ThreadGeneratedFile[] | undefined;
   if (value.generatedFiles !== undefined) {
     if (!Array.isArray(value.generatedFiles) || value.generatedFiles.length > 25) return null;
@@ -812,6 +817,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     citations: citations.filter(
       (citation): citation is ThreadCitation => citation !== null
     ),
+    ...(generatedImages ? { generatedImages: generatedImages as ThreadGeneratedImage[] } : {}),
     ...(generatedFiles !== undefined ? { generatedFiles } : {}),
     ...(groundingDisplay !== undefined ? { groundingDisplay } : {}),
     ...(knowledgeState ? { knowledgeState } : {}),

@@ -1,5 +1,6 @@
 "use client";
 
+import { ChatImageV2 } from "@/features/attachments-v2/ChatImageV2";
 import { SaveFileButtonV2 } from "@/features/attachments-v2/SaveFileButtonV2";
 
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
@@ -540,6 +541,7 @@ export function AnswerOutputsV2({
     artifact.knowledgeState.answer === "insufficient_evidence" ||
     artifact.knowledgeState.scope === "partial_sources_ready"
   ));
+  const hasGeneratedImages = (artifact?.generatedImages?.length ?? 0) > 0;
   const hasGeneratedFiles = (artifact?.generatedFiles?.length ?? 0) > 0;
   const outputStatusCopy = workspaceOutputStatusCopyV2(
     workspaceOutputStatus ?? undefined,
@@ -547,7 +549,7 @@ export function AnswerOutputsV2({
   );
 
   if ((!artifact || (
-    !hasSuggestions && !hasMemoryStatus && !hasKnowledgeState && !hasGeneratedFiles
+    !hasSuggestions && !hasMemoryStatus && !hasKnowledgeState && !hasGeneratedFiles && !hasGeneratedImages
   )) && !outputStatusCopy) {
     return null;
   }
@@ -566,6 +568,7 @@ export function AnswerOutputsV2({
           {outputStatusCopy}
         </p>
       ) : null}
+      {artifact?.generatedImages?.map((image) => <ChatImageV2 key={image.attachmentId} attachmentId={image.attachmentId} label="Generated image" width={image.width} height={image.height} canSave={canSaveFiles} />)}
       {hasGeneratedFiles ? (
         <GeneratedFilesV2 canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} />
       ) : null}

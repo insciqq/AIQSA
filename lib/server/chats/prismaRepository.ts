@@ -1,3 +1,4 @@
+import { decodeThreadGeneratedImage } from "../../contracts/imageGeneration";
 import { projectGroundingDisplay } from "../runs/runOutputEvents";
 import { decodeSessionContextStatus, type SessionContextStatus } from "../../contracts/sessionStatus";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
@@ -174,6 +175,7 @@ const assistantRunDetailSelect = {
       fileName: true,
       id: true,
       mimeType: true,
+      origin: true, metadata: true,
       workspaceRunOutput: { select: { relativePath: true } }
     }
   }
@@ -334,6 +336,8 @@ type ArtifactSummaryRun = {
     id: string;
     mimeType: string;
     workspaceRunOutput: { relativePath: string } | null;
+    origin?: string;
+    metadata?: unknown;
   }[];
 };
 
@@ -719,7 +723,8 @@ function serializeHydratedMessage(
       projectChatPdfPreparation(row, modelRun.chatPdfPreparation?.state === "failed" || modelRun.chatPdfPreparation?.state === "cancelled"
         ? { phase: modelRun.status === "error" ? "failed" : "cancelled",
             retryable: modelRun.status === "error" && modelRun.chatPdfPreparation?.retryable === true } : undefined)) } : {}),
-    artifactSummary,
+    artifactSummary: artifactSummary && !message.assistantModelRuns.length && message.branchSourceModelRun
+      ? { ...artifactSummary, generatedImages: [] } : artifactSummary,
     assistantIdentity: serializeAssistantIdentity(modelRun),
     author: message.authorDisplayName && message.authorProjectRole
       ? {
@@ -1003,6 +1008,7 @@ function toolActivityDescriptors(normalizedRequest: unknown): Map<string, {
   }
 
   descriptors.set("find_tools", { origin: "discovery", serverName: "Auto tools", toolName: "find_tools" });
+  if (normalizedRequest.imagePlan) descriptors.set("generate_image", { origin: "image", serverName: "Images", toolName: "generate_image" });
   descriptors.set("search_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
   descriptors.set("retrieve_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
   for (const name of [
@@ -1298,6 +1304,10 @@ export function summarizeMessageRunArtifacts(
     ...searchPayloads.flatMap(sourceValuesFromSearchPayload),
     ...(grounding ? [citations] : [])
   ]);
+  const generatedImages = (run.workspaceProducedAttachments ?? []).flatMap((attachment) => {
+    const image = attachment.origin === "IMAGE_OUTPUT" && isRecord(attachment.metadata) ? decodeThreadGeneratedImage(attachment.metadata.image) : null;
+    return image && image.attachmentId === attachment.id ? [image] : [];
+  });
   const generatedFiles = (run.workspaceProducedAttachments ?? []).flatMap((attachment) =>
     attachment.workspaceRunOutput
       ? [{
@@ -1355,6 +1365,7 @@ export function summarizeMessageRunArtifacts(
 
   if (
     citations.length === 0 &&
+    generatedImages.length === 0 &&
     generatedFiles.length === 0 &&
     sources.length === 0 &&
     reasoningTexts.length === 0 &&
@@ -1371,6 +1382,7 @@ export function summarizeMessageRunArtifacts(
 
   return {
     citations,
+    ...(generatedImages.length > 0 ? { generatedImages } : {}),
     ...(generatedFiles.length > 0 ? { generatedFiles } : {}),
     ...(grounding ? { groundingDisplay: { provider: grounding.provider, suggestionsHtml: grounding.suggestionsHtml } } : {}),
     ...(knowledgeState ? { knowledgeState } : {}),

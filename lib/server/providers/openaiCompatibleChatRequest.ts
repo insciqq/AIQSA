@@ -68,7 +68,7 @@ function currentUserContent(
   options: PrivateBuildOptions
 ): string | Record<string, unknown>[] {
   const textParts = [textFromContentBlocks(request.content)].filter((part) => part.trim());
-  const images = request.attachments.filter((attachment) => attachment.kind === "image");
+  const images = request.attachments.filter((attachment) => attachment.kind === "image" && request.modelCapabilities.vision);
 
   for (const attachment of request.attachments) {
     if (attachment.kind !== "pdf" && attachment.kind !== "document") {

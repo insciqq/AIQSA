@@ -1,4 +1,6 @@
 import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
+import { IMAGE_MAX_BYTES, IMAGE_MIME_TYPES } from "../../contracts/imageGeneration";
+import { validateGeneratedImage } from "../providers/imageGeneration";
 import {
   getStoredObjectStream,
   type StorageAdapter
@@ -68,6 +70,18 @@ export function createAttachmentDownloadHandler(input: Readonly<{
       return Response.json({ error: "attachment_unavailable" }, { status: 503 });
     }
     try {
+      if (new URL(request.url).searchParams.get("preview") === "image") {
+        if (!IMAGE_MIME_TYPES.includes(record.mimeType as typeof IMAGE_MIME_TYPES[number]) || record.byteSize > IMAGE_MAX_BYTES) {
+          return Response.json({ error: "image_preview_unavailable" }, { status: 415 });
+        }
+        const stored = await input.storage.getObject(record.storageKey, { maxBytes: record.byteSize, signal: request.signal });
+        if (stored.body.byteLength !== record.byteSize) throw new Error("image_preview_invalid");
+        await validateGeneratedImage(stored.body, record.mimeType);
+        const headers = privateHeaders(record);
+        headers.set("content-disposition", "inline");
+        headers.set("content-security-policy", "default-src 'none'; sandbox");
+        return new Response(new Uint8Array(stored.body), { headers });
+      }
       const object = await getStoredObjectStream(input.storage, record.storageKey, {
         maxBytes: record.byteSize,
         signal: request.signal

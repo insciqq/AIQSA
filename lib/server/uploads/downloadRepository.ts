@@ -21,7 +21,7 @@ export function createPrismaAttachmentDownloadRepository(
             storageKey: true,
             userId: true
           },
-          where: { id: input.attachmentId }
+          where: { id: input.attachmentId, status: "ready" }
         });
         if (!attachment) return null;
         if (attachment.userId !== null) {

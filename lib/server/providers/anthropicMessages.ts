@@ -282,7 +282,7 @@ function buildUserContent(
       }
     }
 
-    if (attachment.kind === "image") {
+    if (attachment.kind === "image" && request.modelCapabilities.vision) {
       content.push({
         source: imageSource(attachment, options.redactImages, options.preview),
         type: "image"

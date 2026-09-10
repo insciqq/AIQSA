@@ -309,3 +309,18 @@ html[data-motion="off"] .v2-attachment-spinner {
     animation: none;
   }
 }
+
+
+.v2-chat-image { display: grid; gap: 0.5rem; width: min(100%, 32rem); margin: 0.75rem 0; }
+.v2-chat-image-preview { display: block; padding: 0; overflow: hidden; border: 1px solid var(--v2-color-border); border-radius: var(--v2-radius-m); background: var(--v2-color-surface2); cursor: zoom-in; }
+.v2-chat-image-preview img { display: block; width: 100%; max-height: 36rem; height: auto; object-fit: contain; }
+.v2-chat-image figcaption { display: flex; align-items: center; gap: 0.75rem; font-size: 0.78125rem; color: var(--v2-color-text2); }
+.v2-chat-image figcaption a, .v2-image-viewer-actions a { display: inline-flex; gap: 0.375rem; align-items: center; color: inherit; }
+.v2-sent-attachments li:has(.v2-chat-image) { width: min(100%, 22rem); }
+.v2-image-overlay { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; padding: 1rem; background: rgb(0 0 0 / 0.78); }
+.v2-image-viewer { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 0.75rem; width: min(100%, 90rem); max-height: 95dvh; color: var(--v2-color-text); border-radius: var(--v2-radius-m); background: var(--v2-color-surface); padding: 0.75rem; box-shadow: var(--v2-shadow-overlay); }
+.v2-image-viewer > img { display: block; width: 100%; height: 100%; min-height: 0; max-height: calc(95dvh - 5rem); object-fit: contain; }
+.v2-image-viewer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 1.5rem; }
+.v2-image-viewer-actions button { display: inline-flex; align-items: center; justify-content: center; min-width: 2.75rem; min-height: 2.75rem; padding: 0.375rem; border: 0; border-radius: var(--v2-radius-s); color: inherit; background: transparent; cursor: pointer; }
+.v2-image-viewer-actions a { min-height: 2.75rem; }
+@media (pointer: coarse) { .v2-chat-image figcaption a { min-height: 2.75rem; } }
