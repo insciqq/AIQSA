@@ -465,7 +465,7 @@ describe("admin provider service", () => {
     expect(test).toHaveBeenCalledWith(expect.objectContaining({ modelClasses: ["reranker", "answer", "embedding", "image"] }));
     expect(activateCredentialCas.mock.calls[0]![0].catalogAdditions?.map((model) => model.configuration.upstreamModelId))
       .toEqual(expect.arrayContaining([
-        "deepseek/deepseek-v4-pro-0813", "anthropic/claude-opus-5", "anthropic/claude-fable-5.1",
+        "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4.1-flash", "anthropic/claude-opus-5", "anthropic/claude-fable-5.1",
         "google/gemini-3.8-flash", "openai/gpt-6-astra", "perplexity/sonar-pro-search", "qwen/qwen3-embedding-8b"
       ]));
   });

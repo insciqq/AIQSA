@@ -306,6 +306,7 @@ function geminiModel(input: Readonly<{
 function deepSeekModel(input: Readonly<{
   displayName: string;
   modelId: string;
+  nativeSearch?: boolean;
   vision?: boolean;
 }>): ProviderModelTemplate {
   return {
@@ -319,7 +320,7 @@ function deepSeekModel(input: Readonly<{
       backgroundStreaming: false,
       nativeBackground: false,
       nativePdfInput: false,
-      nativeSearch: true,
+      nativeSearch: input.nativeSearch !== false,
       parallelToolCalls: true,
       pdf: true,
       reasoning: true,
@@ -552,6 +553,12 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     pro: true
   }),
   deepSeekModel({
+    displayName: "DeepSeek V4.1 Flash",
+    modelId: "deepseek-flash",
+    nativeSearch: false,
+    vision: true
+  }),
+  deepSeekModel({
     displayName: "DeepSeek V4 Pro",
     modelId: "deepseek-v4-pro"
   }),
@@ -564,6 +571,10 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     modelId: "deepseek-v4-flash-vision-exp",
     vision: true
   }),
+  openRouterModel(
+    deepSeekModel({ displayName: "DeepSeek V4.1 Flash", modelId: "deepseek-flash", vision: true }),
+    "deepseek/deepseek-v4.1-flash"
+  ),
   openRouterModel(
     deepSeekModel({ displayName: "DeepSeek V4 Pro 0813", modelId: "deepseek-v4-pro" }),
     "deepseek/deepseek-v4-pro-0813"

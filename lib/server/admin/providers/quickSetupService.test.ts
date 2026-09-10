@@ -360,12 +360,11 @@ describe("provider Quick setup service", () => {
     });
   });
 
-  it("bootstraps every official DeepSeek model, including vision and Search", async () => {
+  it("bootstraps the current DeepSeek catalog including Flash vision without retired aliases", async () => {
     const value = fixture({
       modelIds: [
-        "deepseek-v4-flash-vision-exp",
-        "deepseek-v4-flash",
         "deepseek-v4-pro",
+        "deepseek-flash",
         "remote-unknown"
       ]
     });
@@ -381,25 +380,20 @@ describe("provider Quick setup service", () => {
     const plan = value.commit.mock.calls[0][0];
     expect(plan.candidates.map(({ candidateId, configuration }) => ({
       candidateId,
+      nativeSearch: configuration.capabilities.nativeSearch,
       upstreamModelId: configuration.upstreamModelId,
       vision: configuration.capabilities.vision
     }))).toEqual([
-      { candidateId: "p6-d1", upstreamModelId: "deepseek-v4-pro", vision: false },
-      { candidateId: "p6-d2", upstreamModelId: "deepseek-v4-flash", vision: false },
-      {
-        candidateId: "p6-d3",
-        upstreamModelId: "deepseek-v4-flash-vision-exp",
-        vision: true
-      }
+      { candidateId: "p8-d4", nativeSearch: false, upstreamModelId: "deepseek-flash", vision: true },
+      { candidateId: "p6-d1", nativeSearch: true, upstreamModelId: "deepseek-v4-pro", vision: false }
     ]);
     expect(value.pdfInputProbe).not.toHaveBeenCalled();
     expect(plan.search).toBeUndefined();
     expect(result).toMatchObject({
-      model: { displayName: "DeepSeek V4 Pro" },
+      model: { displayName: "DeepSeek V4.1 Flash" },
       models: [
-        { displayName: "DeepSeek V4 Pro" },
-        { displayName: "DeepSeek V4 Flash" },
-        { displayName: "DeepSeek V4 Flash Vision (Experimental)" }
+        { displayName: "DeepSeek V4.1 Flash" },
+        { displayName: "DeepSeek V4 Pro" }
       ],
       outcome: "ready",
       provider: "deepseek",
@@ -467,7 +461,7 @@ describe("provider Quick setup service", () => {
         expectedState: state,
         provider: "openai",
         secret: "sk-picker",
-        selectedModel: { candidateId: "p2-o2", policyVersion: 7 }
+        selectedModel: { candidateId: "p2-o2", policyVersion: 8 }
       }
     });
     expect(result.outcome).toBe("ready");
@@ -904,7 +898,7 @@ describe("provider Quick setup service", () => {
         expectedState: await expectedState(value.service, "openai"),
         provider: "openai",
         secret: "sk-second-account",
-        selectedModel: { candidateId: "p2-o2", policyVersion: 7 }
+        selectedModel: { candidateId: "p2-o2", policyVersion: 8 }
       }
     })).rejects.toMatchObject({ code: "provider_quick_setup_selection_invalid" });
     expect(value.order).toEqual([]);

@@ -943,6 +943,22 @@ export function AuthLogin({
             )}
 
             {showInitialAuthFeedback ? <AuthFeedback error={error} notice={notice} /> : null}
+            {passwordMode && oauthProvider === "yandex" && oauthOutcome && oauthProviders.includes("yandex") ? (
+              <div className="mt-3">
+                <a
+                  aria-describedby="yandex-switch-help"
+                  aria-disabled={submitting || undefined}
+                  className={`${primaryButtonClassName} ${submitting ? "pointer-events-none cursor-not-allowed opacity-60" : ""}`}
+                  href={submitting ? undefined : oauthStartHref("yandex", nextPath, true)}
+                  tabIndex={submitting ? -1 : undefined}
+                >
+                  Use another Yandex account
+                </a>
+                <p className="sr-only" id="yandex-switch-help">
+                  Choose another Yandex account to try signing in again.
+                </p>
+              </div>
+            ) : null}
 
           {mode === "password" ? (
             <form aria-busy={submitting} className={formClassName} noValidate onSubmit={submitPassword}>
@@ -1042,22 +1058,6 @@ export function AuthLogin({
                       </a>
                     ))}
                   </div>
-                  {oauthProvider === "yandex" && oauthOutcome && oauthProviders.includes("yandex") ? (
-                    <div className="space-y-1 text-center">
-                      <p className="text-xs leading-5 text-ink-muted" id="yandex-switch-help">
-                        Choose another Yandex account to try signing in again.
-                      </p>
-                      <a
-                        aria-describedby="yandex-switch-help"
-                        aria-disabled={submitting || undefined}
-                        className={`${secondaryButtonClassName} w-full ${submitting ? "pointer-events-none cursor-not-allowed opacity-60" : ""}`}
-                        href={submitting ? undefined : oauthStartHref("yandex", nextPath, true)}
-                        tabIndex={submitting ? -1 : undefined}
-                      >
-                        Use another Yandex account
-                      </a>
-                    </div>
-                  ) : null}
                 </div>
               ) : null}
             </form>

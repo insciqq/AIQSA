@@ -24,9 +24,8 @@ import { runProviderToolLoop } from "../lib/server/runs/providerToolLoop";
 import { deepSeekResponsesToolBridge } from "../lib/server/tools/bridges";
 
 const officialModels = Object.freeze([
-  "deepseek-v4-flash",
-  "deepseek-v4-pro",
-  "deepseek-v4-flash-vision-exp"
+  "deepseek-flash",
+  "deepseek-v4-pro"
 ] as const);
 
 function unquoteEnvValue(value: string): string {
@@ -177,7 +176,7 @@ async function main(): Promise<void> {
 
     stage = "stream";
     const streamed = await complete(adapter, request({
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-flash",
       stream: true,
       text: "Reply exactly AIQSA_STREAM_OK."
     }));
@@ -280,7 +279,7 @@ async function main(): Promise<void> {
         byteSize: image.byteLength,
         dataUrl: `data:image/png;base64,${image.toString("base64")}`
       },
-      modelId: "deepseek-v4-flash-vision-exp",
+      modelId: "deepseek-flash",
       text: "This is a solid-color image. If the image is red, reply exactly AIQSA_VISION_OK."
     }));
     aggregateTokens += tokenCount(vision);

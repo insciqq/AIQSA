@@ -9,6 +9,8 @@ export const providerTemplateIds = Object.freeze({
 });
 
 export const providerModelTemplateIds = Object.freeze({
+  "deepseek:deepseek-flash": "00000000-0000-4000-8000-000000001235",
+  "openrouter:deepseek/deepseek-v4.1-flash": "00000000-0000-4000-8000-000000001236",
   "openai:gpt-image-2": "00000000-0000-4000-8000-000000001232",
   "gemini:gemini-3.1-flash-image": "00000000-0000-4000-8000-000000001233",
   "openrouter:google/gemini-3.1-flash-image": "00000000-0000-4000-8000-000000001234",

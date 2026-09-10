@@ -7,6 +7,24 @@ import {
 import { availableSearchStrategiesForModel, buildCatalogModel, isSearchCombinationCompatible, reconcileSearchPlanSelection, resolveSearchRouteForModel, toCatalogSearchStrategy } from "./catalogMatrix";
 
 describe("catalog capability matrix", () => {
+  it.each([
+    ["deepseek", "deepseek-flash", "deepseek_responses_native"],
+    ["openrouter", "deepseek/deepseek-v4.1-flash", "openrouter_chat_completions"]
+  ])("offers V4.1 Flash with vision through the %s adapter", (provider, modelId, adapterKind) => {
+    const model = defaultProviderModels.find((entry) => entry.provider === provider && entry.modelId === modelId)!;
+    expect(model).toMatchObject({
+      adapterKind,
+      contextWindow: 1_048_576,
+      parameterControls: { maxOutputTokens: { maxValue: 384_000 } },
+      upstreamModelId: modelId
+    });
+    const catalog = buildCatalogModel(model, defaultSearchStrategies);
+    expect(catalog.displayName).toBe("DeepSeek V4.1 Flash");
+    expect(catalog.capabilities).toMatchObject({
+      imageInput: true, nativeWebSearch: false, streaming: true, toolCalling: true
+    });
+  });
+
   it("enforces bounded Search combination policy without provider-id branches", () => {
     const options = [
       {
