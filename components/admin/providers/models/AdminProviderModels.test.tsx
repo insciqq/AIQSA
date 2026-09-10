@@ -175,6 +175,43 @@ function harness(connection = openRouter(), busy = false) {
 }
 
 describe("AdminProviderModels", () => {
+  it.each(["absent", "disabled", "revoked", "unsaved"])("blocks creation with %s keys and preserves existing model editing", (kind) => {
+    const connection = openRouter();
+    connection.credentials = kind === "absent" ? [] : connection.credentials.map((credential) => ({
+      ...credential,
+      enabled: kind !== "disabled",
+      activeVersion: kind === "unsaved" ? null : { ...credential.activeVersion!, revokedAt: kind === "revoked" ? FIXTURE_NOW : null }
+    }));
+    const { actions } = harness(connection);
+    const add = screen.getByRole("button", { name: "Add model" });
+    expect(add).toBeDisabled();
+    fireEvent.click(add);
+    expect(screen.queryByRole("menu", { name: "Add model" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Add model" })).not.toBeInTheDocument();
+    expect(actions.saveModel).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Claude Opus 4.8" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    expect(screen.getByRole("dialog", { name: "Edit model" })).toBeVisible();
+  });
+
+  it("closes an open preset menu when the last live key is lost and unlocks for a non-default key", () => {
+    const connection = openRouter();
+    const { actions, rerender } = harness(connection);
+    fireEvent.click(screen.getByRole("button", { name: "Add model" }));
+    expect(screen.getByRole("menuitem", { name: "Chat model" })).toBeVisible();
+    const unavailable = { ...connection, credentials: [], defaultCredentialId: null };
+    rerender(unavailable);
+    expect(screen.queryByRole("menuitem", { name: "Chat model" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add model" })).toBeDisabled();
+    rerender({ ...unavailable, credentials: [fixtureCredential({ id: "non-default", label: "Fixture key" })] });
+    expect(screen.getByRole("button", { name: "Add model" })).toBeEnabled();
+    expect(screen.queryByRole("menuitem", { name: "Chat model" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add model" }));
+    expect(screen.getByRole("menuitem", { name: "Embedding preset" })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: "Reranker preset" })).toBeVisible();
+    expect(actions.saveModel).not.toHaveBeenCalled();
+  });
+
   it("shows saved personal-key checks without an installation default", () => {
     const connection = openRouter();
     connection.defaultCredentialId = null;
@@ -316,7 +353,7 @@ describe("AdminProviderModels", () => {
     const gemini = screen.getByTestId("provider-model-model-gemini");
     expect(gemini).toHaveTextContent("automatic routing");
     expect(within(gemini).getAllByTestId(/model-chip-/).map((chip) => `${chip.textContent}:${chip.dataset.chipTone}`))
-      .toEqual(["Tools:muted", "JSON:ok", "No PDF:warn", "Images:ok", "Stream:ok"]);
+      .toEqual(["Tools: not verified:muted", "JSON:ok", "PDF: not verified:muted", "Images:ok", "Stream:ok"]);
 
     const sonar = screen.getByTestId("provider-model-model-sonar");
     expect(sonar).toHaveTextContent("not checked yet");

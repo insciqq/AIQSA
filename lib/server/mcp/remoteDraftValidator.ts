@@ -5,7 +5,7 @@ import type {
   McpToolInventoryEntry,
   McpValidationIssue
 } from "@/lib/contracts/mcp";
-import type { OAuthClientProvider } from "@modelcontextprotocol/client";
+import { mcpValidationIssue, safeMcpEndpoint } from "@/lib/contracts/mcp";
 import {
   McpClientSession,
   McpClientSessionError,
@@ -17,12 +17,14 @@ import {
 } from "./clientSession";
 import { hashCanonicalMcpValue, validateMcpSlotValue } from "./definitions";
 import type {
+  McpEndpointCorrection,
   McpDraftValidationInput,
   McpDraftValidationOutcome,
   McpDraftValidator
 } from "./draftValidator";
 import { McpDraftValidationAbortedError } from "./draftValidator";
 import { compactMcpToolInventoryEntry } from "./catalogMetadata";
+import { discoverGitLabMcpEndpoint, type McpValidationOAuthProvider } from "./endpointCorrection";
 
 const MAX_EVIDENCE_TOOLS = 256;
 const MAX_TOOL_DESCRIPTION_LENGTH = 2_048;
@@ -55,10 +57,6 @@ export type McpRemoteDraftValidationSession = Readonly<{
 export type McpRemoteDraftValidationSessionFactory = (
   options: McpClientSessionOptions
 ) => McpRemoteDraftValidationSession;
-
-type McpValidationOAuthProvider = OAuthClientProvider & {
-  exactKnownSecrets?(): readonly string[];
-};
 
 export type McpRemoteDraftValidatorOptions = Readonly<{
   fetch: McpClientSessionOptions["fetch"];
@@ -116,14 +114,14 @@ function headersForDraft(input: McpDraftValidationInput):
     : { headers: Object.fromEntries(headers.entries()), issues: [] };
 }
 
-function sensitiveStrings(input: McpDraftValidationInput): string[] {
+function sensitiveStrings(input: McpDraftValidationInput, includeEndpoint = true): string[] {
   const values = input.draft.slots.flatMap((slot) => {
     const value = input.values[slot.slotKey];
     return slot.sensitive && typeof value === "string" && value.length > 0 ? [value] : [];
   });
   if (input.draft.source.kind === "remote") {
     const endpoint = new URL(input.draft.source.url);
-    values.push(endpoint.toString());
+    if (includeEndpoint) values.push(endpoint.toString());
     for (const value of endpoint.searchParams.values()) {
       if (value) values.push(value);
     }
@@ -175,16 +173,22 @@ function sanitizedInventory(
   return { inventory, issue: null };
 }
 
-function safeFailure(error: unknown): McpDraftValidationOutcome {
+function safeFailure(error: unknown, input: McpDraftValidationInput, authProvider: McpValidationOAuthProvider | null): McpDraftValidationOutcome {
   if (error instanceof McpClientSessionError) {
     const path = error.operation === "list_tools" ? "tools" : "source";
-    return invalid(error.code, path);
+    let endpoint = input.draft.source.kind === "remote" ? safeMcpEndpoint(input.draft.source.url) : undefined;
+    try {
+      const secrets = [...sensitiveStrings(input, false), ...(authProvider?.exactKnownSecrets?.() ?? [])].filter(Boolean);
+      if (endpoint && containsSensitiveValue(decodeURIComponent(endpoint), secrets)) endpoint = undefined;
+    } catch { endpoint = undefined; }
+    return { kind: "invalid", issues: [mcpValidationIssue({ code: error.code, path, httpStatus: error.httpStatus, operation: error.operation, endpoint })] };
   }
   return invalid("mcp_remote_validation_failed", "source");
 }
 
 function successfulOutcome(input: {
   draft: McpDraftConfiguration;
+  endpointCorrection?: McpEndpointCorrection;
   inventory: McpToolInventoryEntry[];
   serverEvidence: AiqsaMcpServerEvidence | null;
   tools: readonly AiqsaMcpToolDefinition[];
@@ -199,6 +203,7 @@ function successfulOutcome(input: {
   const toolDefinitionHashes = input.tools.map((tool) => tool.definitionHash).sort();
   const evidence: McpJsonObject = {
     endpointHash,
+    ...(input.endpointCorrection ? { endpointCorrection: { kind: "gitlab", endpoint: safeMcpEndpoint(source.url)! } } : {}),
     ...(input.serverEvidence ? { server: input.serverEvidence } : {}),
     toolCount: input.tools.length,
     toolDefinitionHashes,
@@ -210,6 +215,7 @@ function successfulOutcome(input: {
   };
   return {
     evidence,
+    ...(input.endpointCorrection ? { endpointCorrection: input.endpointCorrection } : {}),
     kind: "ok",
     resolvedArtifact: {
       endpointHash,
@@ -252,17 +258,41 @@ export function createRemoteMcpDraftValidator(
       }
 
       let session: McpRemoteDraftValidationSession | null = null;
-      try {
-        session = sessionFactory({
+      let checkedDraft = input.draft;
+      let endpointCorrection: McpEndpointCorrection | undefined;
+      const fetch = options.fetchForDraft?.(input.draft) ?? options.fetch;
+      const openSession = () => sessionFactory({
           ...(authProvider ? { authProvider } : {}),
-          fetch: options.fetchForDraft?.(input.draft) ?? options.fetch,
+          fetch,
           headers: headerResult.headers,
           limits,
           requestTimeoutMs: input.draft.runtime.callTimeoutMs,
-          url: new URL(input.draft.source.url)
+          url: new URL(checkedDraft.source.kind === "remote" ? checkedDraft.source.url : "")
         });
+      try {
+        session = openSession();
         await input.onProgress?.("connecting");
-        await session.initialize({ timeoutMs: input.draft.runtime.startupTimeoutMs });
+        try {
+          await session.initialize({ timeoutMs: input.draft.runtime.startupTimeoutMs });
+        } catch (error) {
+          if (!(error instanceof McpClientSessionError) || error.operation !== "initialize" ||
+            error.code !== "mcp_initialize_failed" || (error.httpStatus !== undefined && error.httpStatus !== 404)) throw error;
+          await session.close().catch(() => undefined);
+          session = null;
+          const candidate = await discoverGitLabMcpEndpoint({ draft: input.draft, fetch, authProvider });
+          if (!candidate) throw error;
+          if (authProvider) {
+            try {
+              const resource = await authProvider.validateResourceURL?.(candidate, candidate);
+              if (resource?.href !== candidate || !authProvider.validationBinding?.()) throw new Error("unbound");
+            } catch { return invalid("mcp_gitlab_reauthorization_required", "auth.mode"); }
+          }
+          endpointCorrection = { kind: "gitlab", fromUrl: input.draft.source.url, toUrl: candidate };
+          checkedDraft = { ...input.draft, source: { ...input.draft.source, kind: "remote", url: candidate } };
+          await input.onProgress?.("connecting");
+          session = openSession();
+          await session.initialize({ timeoutMs: input.draft.runtime.startupTimeoutMs });
+        }
         await input.onProgress?.("discovering_tools");
         const tools = await session.listAllTools({ timeoutMs: input.draft.runtime.callTimeoutMs });
         let oauthSecrets: readonly string[] = [];
@@ -286,15 +316,27 @@ export function createRemoteMcpDraftValidator(
         if (containsSensitiveValue(JSON.stringify(tools), secrets)) {
           return invalid("mcp_remote_inventory_unsafe", "tools");
         }
+        if (endpointCorrection) {
+          if (containsSensitiveValue(endpointCorrection.toUrl, oauthSecrets) || containsSensitiveValue(endpointCorrection.toUrl, sensitiveStrings(input, false))) {
+            return invalid("mcp_remote_inventory_unsafe", "source");
+          }
+          const oauthBinding = authProvider?.validationBinding?.();
+          if (authProvider && !oauthBinding) return invalid("mcp_gitlab_reauthorization_required", "auth.mode");
+          endpointCorrection = { ...endpointCorrection, ...(oauthBinding ? { oauthBinding } : {}) };
+        }
         return successfulOutcome({
-          draft: input.draft,
+          draft: checkedDraft,
+          endpointCorrection,
           inventory: inventory.inventory,
           serverEvidence: session.serverEvidence ?? null,
           tools
         });
       } catch (error) {
         if (error instanceof McpDraftValidationAbortedError) throw error;
-        return safeFailure(error);
+        const failure = safeFailure(error, { ...input, draft: checkedDraft }, authProvider);
+        return endpointCorrection && failure.kind === "invalid"
+          ? { ...failure, issues: [...failure.issues, { code: "mcp_gitlab_endpoint_failed", path: "source" }] }
+          : failure;
       } finally {
         await session?.close().catch(() => undefined);
       }

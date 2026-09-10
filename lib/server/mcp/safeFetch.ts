@@ -54,6 +54,7 @@ export type McpSafeFetchErrorCode =
   | "mcp_http_redirect_forbidden"
   | "mcp_http_redirect_invalid"
   | "mcp_http_request_failed"
+  | "mcp_http_tls_failed"
   | "mcp_http_too_many_redirects"
   | "mcp_http_url_credentials_forbidden"
   | "mcp_http_url_fragment_forbidden";
@@ -353,10 +354,12 @@ async function defaultDispatch(input: McpPinnedHttpRequest): Promise<Response> {
   };
 
   return new Promise<Response>((resolve, reject) => {
-    const rejectRequest = () => {
+    const rejectRequest = (cause?: unknown) => {
+      const code = cause && typeof cause === "object" && "code" in cause ? cause.code : null;
+      const tls = typeof code === "string" && ["CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "CERT_REVOKED", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "ERR_TLS_CERT_ALTNAME_INVALID", "ERR_SSL_WRONG_VERSION_NUMBER"].includes(code);
       reject(input.signal.aborted
         ? abortReason(input.signal)
-        : new McpSafeFetchError("mcp_http_request_failed"));
+        : new McpSafeFetchError(tls ? "mcp_http_tls_failed" : "mcp_http_request_failed"));
     };
     try {
       const outgoing = request({

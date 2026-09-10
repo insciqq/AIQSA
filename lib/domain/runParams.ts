@@ -146,7 +146,7 @@ function validateBoolean(value: unknown): boolean {
   return typeof value === "boolean";
 }
 
-function validateIntegerRange(value: unknown, min: number, max: number): value is number {
+function validateIntegerRange(value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): value is number {
   return (
     typeof value === "number" &&
     Number.isFinite(value) &&

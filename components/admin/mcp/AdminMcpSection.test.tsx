@@ -519,6 +519,19 @@ describe("AdminMcpSection", () => {
     await waitFor(() => expect(calls.at(-1)?.url).toBe("/api/admin/mcp/server-1/activate"));
   });
 
+  it("shows the checked correction from the active revision with only a safe endpoint projection", async () => {
+    const server = workingServer();
+    server.activeRevision!.validationEvidence.evidence = { endpointCorrection: {
+      kind: "gitlab", endpoint: "https://tools.example.test/api/v4/mcp?secret=must-not-show#private"
+    } };
+    state.servers = [server];
+    renderSection(state, "server-1");
+    const notice = await screen.findByTestId("admin-mcp-endpoint-corrected");
+    expect(notice).toHaveTextContent("Corrected the GitLab MCP URL to https://tools.example.test/api/v4/mcp.");
+    expect(notice).toHaveTextContent("Initialization and tool discovery passed before saving.");
+    expect(notice).not.toHaveTextContent("must-not-show");
+  });
+
   it("turns the OAuth return into the server page and shows the outcome in the banner slot", async () => {
     window.history.replaceState(null, "", "/admin?section=mcp&oauth=connected&server=server-oauth&keep=yes#current");
     const { onSelectResource, rerender } = renderSection(state);

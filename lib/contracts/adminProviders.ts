@@ -105,10 +105,41 @@ export const ADMIN_PROVIDER_CAPABILITY_CHECKS = ["modelAccess", "structuredOutpu
   "forcedToolCall", "parallelToolCalls", "vision", "directPdf", "streaming", "embedding", "reranking", "imageGeneration", "imageEditing"] as const;
 export type AdminProviderCapabilityCheck = (typeof ADMIN_PROVIDER_CAPABILITY_CHECKS)[number];
 export type AdminProviderCapabilityCheckStatus = "verified" | "rejected" | "unsupported" | "incomplete" | "not_checked";
-export type AdminProviderCapabilitySetupEvidence = {
-  policyVersion: 1;
-  checks: Partial<Record<AdminProviderCapabilityCheck, AdminProviderCapabilityCheckStatus>>;
+export const ADMIN_PROVIDER_CAPABILITY_REASONS = ["verified", "adapter_unsupported", "route_unsupported", "refusal",
+  "budget_exhausted", "invalid_input", "http_error", "timeout", "network", "rate_limit", "authorization",
+  "semantic_inconclusive", "not_checked", "run_deadline"] as const;
+export type AdminProviderCapabilityAttempt = {
+  attempts: number;
+  status: "verified" | "unsupported" | "incomplete" | "not_checked";
+  reason: (typeof ADMIN_PROVIDER_CAPABILITY_REASONS)[number];
+  httpStatus?: number;
 };
+export type AdminProviderCapabilitySetupEvidence = {
+  policyVersion: 1 | 2;
+  /** Refresh evidence cannot grant initial capability-enablement authority. */
+  activation?: "initial" | "preserve";
+  checks: Partial<Record<AdminProviderCapabilityCheck, AdminProviderCapabilityCheckStatus>>;
+  /** Latest attempt, separate from any retained exact-current positive proof. */
+  attempts?: Partial<Record<AdminProviderCapabilityCheck, AdminProviderCapabilityAttempt>>;
+};
+
+export function decodeAdminProviderCapabilityAttempts(value: unknown): NonNullable<AdminProviderCapabilitySetupEvidence["attempts"]> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const attempts: NonNullable<AdminProviderCapabilitySetupEvidence["attempts"]> = {};
+  for (const [key, rawAttempt] of Object.entries(value)) {
+    if (!(ADMIN_PROVIDER_CAPABILITY_CHECKS as readonly string[]).includes(key) || !rawAttempt || typeof rawAttempt !== "object" || Array.isArray(rawAttempt)) return null;
+    const attempt = rawAttempt as Record<string, unknown>;
+    if (Object.keys(attempt).some((field) => !["attempts", "status", "reason", "httpStatus"].includes(field)) ||
+      !Number.isSafeInteger(attempt.attempts) || Number(attempt.attempts) < 0 || Number(attempt.attempts) > 3 ||
+      typeof attempt.status !== "string" || !["verified", "unsupported", "incomplete", "not_checked"].includes(attempt.status) ||
+      !(ADMIN_PROVIDER_CAPABILITY_REASONS as readonly unknown[]).includes(attempt.reason) ||
+      attempt.httpStatus !== undefined && (!Number.isSafeInteger(attempt.httpStatus) || Number(attempt.httpStatus) < 400 || Number(attempt.httpStatus) > 599)) return null;
+    attempts[key as keyof typeof attempts] = { attempts: Number(attempt.attempts),
+      status: attempt.status as AdminProviderCapabilityAttempt["status"], reason: attempt.reason as AdminProviderCapabilityAttempt["reason"],
+      ...(attempt.httpStatus !== undefined ? { httpStatus: Number(attempt.httpStatus) } : {}) };
+  }
+  return attempts;
+}
 
 export type AdminProviderCompatibilityEvidence = {
   directPdf: AdminProviderCompatibilityStatus;
@@ -291,7 +322,7 @@ export type AdminProviderBootstrapResult = {
  */
 export type AdminProviderCheckRun = {
   results?: Array<{ providerModelId: string; state: "saved" | "partial" | "unavailable" | "save_failed" | "check_failed" | "cancelled" | "stale";
-    checks?: AdminProviderCapabilitySetupEvidence["checks"] }>;
+    checks?: AdminProviderCapabilitySetupEvidence["checks"]; attempts?: AdminProviderCapabilitySetupEvidence["attempts"] }>;
   capabilityProgress?: { capability: AdminProviderCapabilityCheck; completed: number; total: number; providerModelId: string };
   setup?: AdminProviderBootstrapResult | { state: "running" };
   skipped?: string[];

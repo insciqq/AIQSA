@@ -14,6 +14,7 @@ import {
   type OAuthTokens
 } from "@modelcontextprotocol/client";
 import { createMcpSafeFetch } from "./safeFetch";
+import type { McpEndpointCorrection } from "./draftValidator";
 import {
   bindMcpOAuthPolicyResource,
   mcpOAuthPolicyFingerprint,
@@ -74,6 +75,7 @@ export type McpOAuthDisconnectResult = "disconnected" | "disconnecting" | "not_f
 
 export type McpOAuthRuntimeProvider = OAuthClientProvider & Readonly<{
   exactKnownSecrets(): readonly string[];
+  validationBinding(): McpEndpointCorrection["oauthBinding"];
 }>;
 
 type OAuthProviderMode = "callback" | "runtime" | "start";
@@ -277,6 +279,12 @@ class DurableOAuthProvider implements OAuthClientProvider {
 
   exactKnownSecrets(): readonly string[] {
     return [...this.#knownSecrets];
+  }
+
+  validationBinding(): McpEndpointCorrection["oauthBinding"] {
+    const connection = this.#connection;
+    if (this.#mode !== "runtime" || connection?.purpose !== "validation" || connection.state !== "ready") return undefined;
+    return { connectionId: connection.id, policyFingerprint: connection.policyFingerprint, tokenVersion: connection.tokenVersion };
   }
 
   clientInformation(): OAuthClientInformationMixed | undefined {
@@ -638,7 +646,7 @@ export class McpOAuthService {
     redirectUri: string;
     serverId: string;
     userId: string;
-  }>): Promise<OAuthClientProvider | null> {
+  }>): Promise<McpOAuthRuntimeProvider | null> {
     const policy = await this.#repository.loadPolicy({ ...input, purpose: "validation" });
     if (!policy) return null;
     const connection = await this.#repository.findLatestReadyConnection({

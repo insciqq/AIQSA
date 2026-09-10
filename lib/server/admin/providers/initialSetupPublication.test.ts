@@ -52,7 +52,7 @@ function fixture() {
     const available = value.model.upstreamModelId !== unavailable;
     const evidence: AdminProviderTestEvidence = { detail: available ? "ok" : "model_missing",
       method: "tiny_generation", selectedProviders: [], upstreamModelId: value.model.upstreamModelId,
-      capabilitySetup: { policyVersion: 1, checks: { modelAccess: available ? "verified" : "incomplete",
+      capabilitySetup: { policyVersion: 2, checks: { modelAccess: available ? "verified" : "incomplete",
         toolCalling: "unsupported", forcedToolCall: "unsupported", structuredOutput: "unsupported",
         parallelToolCalls: "unsupported", vision: "unsupported", directPdf: "unsupported", streaming: available ? "verified" : "not_checked" } },
       compatibility: { probeVersion: 2, modelAccess: available ? "verified" : "not_supported",

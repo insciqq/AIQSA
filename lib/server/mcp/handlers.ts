@@ -1,4 +1,5 @@
 import { mcpRuntimeErrorCode } from "@/lib/contracts/mcp";
+import { mcpValidationIssue } from "@/lib/contracts/mcp";
 import type {
   AdminMcpCatalogResponse,
   AdminMcpServer,
@@ -51,7 +52,7 @@ type RouteContext = {
 
 function errorJson(error: McpErrorCode, status: number, issues?: readonly McpValidationIssue[]): Response {
   return Response.json(
-    { error, ...(issues?.length ? { issues } : {}) } satisfies McpErrorResponse,
+    { error, ...(issues?.length ? { issues: issues.slice(0, 20).map((issue) => mcpValidationIssue(issue)) } : {}) } satisfies McpErrorResponse,
     { status }
   );
 }

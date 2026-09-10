@@ -91,6 +91,7 @@ async function throwHttpError(
 ): Promise<never> {
   let failureCode: string | undefined;
   let unsupportedInput = false;
+  let capabilityFailureReason: "refusal" | "budget_exhausted" | undefined;
   try {
     const text = await readBoundedResponseText(response, { signal });
     try {
@@ -99,6 +100,7 @@ async function throwHttpError(
         const failure = providerResponseFailure("provider_response_failed", parsed);
         failureCode = "code" in failure && typeof failure.code === "string" ? failure.code : undefined;
         unsupportedInput = "unsupportedInput" in failure && failure.unsupportedInput === true;
+        if ("capabilityFailureReason" in failure && (failure.capabilityFailureReason === "refusal" || failure.capabilityFailureReason === "budget_exhausted")) capabilityFailureReason = failure.capabilityFailureReason;
       }
     } catch { /* An undecodable body cannot prove unsupported input. */ }
   } catch (error) {
@@ -109,7 +111,7 @@ async function throwHttpError(
 
   throw Object.assign(new Error(providerHttpErrorMessage(providerName, response.status)),
     failureCode && response.status !== 401 && response.status !== 403
-      ? { code: failureCode, ...(unsupportedInput ? { unsupportedInput: true } : {}) } : {});
+      ? { code: failureCode, ...(unsupportedInput ? { unsupportedInput: true } : {}), ...(capabilityFailureReason ? { capabilityFailureReason } : {}) } : {});
 }
 
 export function createFetchOpenAIChatCompletionClient(input: Readonly<{

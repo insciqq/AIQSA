@@ -163,7 +163,7 @@ export function assertOpenAIChatTerminalResponse(
   }
   if (firstOpenAIChatChoice(response)?.finish_reason === "content_filter" ||
     typeof message.refusal === "string" && message.refusal.trim()) {
-    throw Object.assign(new Error(options.invalidTerminalError), { code: "provider_response_not_retryable" });
+    throw Object.assign(new Error(options.invalidTerminalError), { code: "provider_response_not_retryable", capabilityFailureReason: "refusal" });
   }
 
   const calls = rawToolCalls(message);

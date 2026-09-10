@@ -149,7 +149,7 @@ function invalidRunControlMessage(
     case "backgroundMode":
       return "This model does not support Background mode.";
     case "maxOutputTokens":
-      return `Enter a whole number from 1 to ${controls.maxOutputTokens.maxValue}.`;
+      return controls.maxOutputTokens.maxValue === undefined ? "Enter a positive whole number." : `Enter a whole number from 1 to ${controls.maxOutputTokens.maxValue}.`;
     case "reasoningEffort":
       return "Choose a reasoning effort offered by this model.";
     case "reasoningMode":
@@ -216,7 +216,7 @@ export function assistantDraftFromEditorState(
     if (
       Number.isInteger(maxOutputTokens) &&
       maxOutputTokens >= 1 &&
-      maxOutputTokens <= modelControls.maxOutputTokens.maxValue
+      maxOutputTokens <= (modelControls.maxOutputTokens.maxValue ?? Number.MAX_SAFE_INTEGER)
     ) {
       runControls.maxOutputTokens = maxOutputTokens;
     } else {
@@ -305,7 +305,7 @@ export function reconcileDraftForModel(
     (!controls ||
       !Number.isInteger(Number(draft.maxOutputTokens)) ||
       Number(draft.maxOutputTokens) < 1 ||
-      Number(draft.maxOutputTokens) > controls.maxOutputTokens.maxValue)
+      Number(draft.maxOutputTokens) > (controls.maxOutputTokens.maxValue ?? Number.MAX_SAFE_INTEGER))
   ) {
     reset("maxOutputTokens", "");
   }

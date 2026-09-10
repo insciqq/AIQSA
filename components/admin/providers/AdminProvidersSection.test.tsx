@@ -182,6 +182,9 @@ describe("AdminProvidersSection", () => {
     const { confirmations, feedback } = renderSection("conn-gemini");
 
     expect(await screen.findByTestId("provider-page-status")).toHaveTextContent("No keys yet · No models on");
+    expect(screen.getByRole("button", { name: "Add key" })).toHaveAttribute("data-tone", "primary");
+    expect(screen.getByRole("button", { name: "Add model" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add model" })).toHaveAccessibleDescription("Add a working key first, then add models.");
     // The topbar is owned through a context effect, so it settles one tick after the page.
     await waitFor(() => expect(screen.getByTestId("topbar-title")).toHaveTextContent("Gemini"));
     expect(screen.getByTestId("topbar-title")).toHaveTextContent("Providers");
@@ -192,8 +195,10 @@ describe("AdminProvidersSection", () => {
     expect(within(form).getByLabelText("API key")).toHaveFocus();
     fireEvent.change(within(form).getByLabelText("API key"), { target: { value: "bad-key" } });
     fireEvent.click(within(form).getByRole("button", { name: "Test & Save" }));
+    expect(screen.getByRole("button", { name: "Add model" })).toBeDisabled();
 
     const alert = await within(form).findByRole("alert");
+    expect(screen.getByRole("button", { name: "Add model" })).toBeDisabled();
     expect(alert).toHaveTextContent("The provider rejected this key. Check the key and try again.");
     expect(within(form).getByLabelText("API key")).toHaveAttribute("aria-invalid", "true");
     expect(within(form).getByLabelText("API key")).toHaveValue("bad-key");
@@ -208,6 +213,9 @@ describe("AdminProvidersSection", () => {
     fireEvent.change(within(form).getByLabelText("API key"), { target: { value: "good-key" } });
     fireEvent.click(within(form).getByRole("button", { name: "Test & Save" }));
     const row = await screen.findByTestId("provider-key-cred-new");
+    expect(screen.getByRole("button", { name: "Add model" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Add key" })).toHaveAttribute("data-tone", "ghost");
+    expect(screen.queryByText("Add a working key first, then add models.")).not.toBeInTheDocument();
     expect(row).toHaveTextContent("Main");
     expect(row).toHaveTextContent("Default key");
     expect(within(row).getByTestId("provider-key-detail")).toHaveTextContent("Working · added Sep 7");

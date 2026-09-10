@@ -1348,7 +1348,7 @@ describe("no-auth provider capability checks", () => {
       providerConnection: { findUnique: vi.fn(async () => connection) },
       providerModel: { findFirst: vi.fn(async () => model) },
       providerCredential: { findFirst: vi.fn(async () => credential) },
-      providerModelCredentialCheck: { upsert: vi.fn(), updateMany: vi.fn() }
+      providerModelCredentialCheck: { upsert: vi.fn(), updateMany: vi.fn(), findUnique: vi.fn(async () => null) }
     });
     const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
     const loaded = await repository.loadActiveRefreshCandidate({ connectionId: "connection-1", credentialId: "credential-1", providerModelId: "model-1" });

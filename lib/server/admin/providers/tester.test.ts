@@ -70,10 +70,10 @@ describe("image input compatibility", () => {
       const body = JSON.parse(String(request?.body));
       bodies.push(body);
       if (JSON.stringify(body.messages).includes("image_url")) return Response.json({
-        choices: [{ finish_reason: "stop", message: { role: "assistant", content: "V4K8M2" } }]
+        choices: [{ finish_reason: "stop", message: { role: "assistant", content: "PEARS" } }]
       });
       const name = body.tools?.[0]?.function?.name;
-      if (name === "aiqsa_forced_tool_call_probe") return strictToolChatResponse(name, { nonce: "aiqsa-control-ready" });
+      if (name === "aiqsa_forced_tool_call_probe") return strictToolChatResponse(name, { city: "Oslo" });
       return structuredChatResponse();
     });
     const base = input();
@@ -95,7 +95,7 @@ describe("image input compatibility", () => {
       const body = JSON.parse(String(init?.body));
       if (JSON.stringify(body.messages).includes("image_url")) return Response.json({
         choices: [{ finish_reason: "stop", message: {
-          content: success ? "V4K8M2" : "WRONG", role: "assistant"
+          content: success ? "PEARS" : "WRONG", role: "assistant"
         } }],
         usage: { completion_tokens: 4, prompt_tokens: 10, total_tokens: 14 }
       });
@@ -112,7 +112,7 @@ describe("image input compatibility", () => {
     expect(Boolean(outcome.evidence.visionInput)).toBe(success);
     const calls = fetchFn.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
     const vision = calls.filter((body) => JSON.stringify(body.messages).includes("image_url"));
-    expect(vision).toHaveLength(1);
+    expect(vision).toHaveLength(success ? 1 : 2);
     expect(vision[0].stream).toBe(false);
     expect(vision[0].tools ?? []).toEqual([]);
   });
@@ -176,7 +176,7 @@ describe("admin provider draft tester", () => {
         const name = body.tools?.[0]?.function?.name;
         if (name === "aiqsa_tool_call_probe") return strictToolChatResponse(name, { city: "Oslo" });
         if (name === "aiqsa_forced_tool_call_probe") {
-          if (strictResult === "verified") return strictToolChatResponse(name, { nonce: "aiqsa-control-ready" });
+          if (strictResult === "verified") return strictToolChatResponse(name, { city: "Oslo" });
           if (strictResult === "rejected") return Response.json({ error: { code: 404 } }, { status: 404 });
         }
         return structuredChatResponse();
@@ -229,21 +229,36 @@ describe("admin provider draft tester", () => {
     expect(outcome.evidence.compatibility).toMatchObject({ toolCalling: "not_supported", structuredOutput: "verified" });
   });
 
-  it.each([401, 429, 503])("fails the refresh on an ordinary-tool HTTP %s without publishing incompatibility", async (status) => {
+  it.each([401, 429, 503])("keeps later capabilities after an ordinary-tool HTTP %s without publishing incompatibility", async (status) => {
     const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
       const body = JSON.parse(String(request?.body));
       return body.tools?.[0]?.function?.name === "aiqsa_tool_call_probe"
-        ? Response.json({ error: { code: status } }, { status }) : structuredChatResponse();
+        ? Response.json({ error: { code: status } }, { status }) : body.stream ? streamedChatResponse() : structuredChatResponse();
     });
-    await expect(createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn }).test(input({
+    const outcome = await createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn }).test(input({
       mode: "tiny_generation",
       model: { ...input().model, capabilities: { ...input().model.capabilities, toolCalling: true } }
-    }))).rejects.toThrow();
+    }));
+    expect(outcome).toMatchObject({ status: "available", evidence: { capabilitySetup: {
+      checks: { modelAccess: "verified", toolCalling: "incomplete", streaming: "verified" },
+      attempts: { toolCalling: { attempts: status === 401 ? 1 : 3, status: "incomplete", httpStatus: status,
+        reason: status === 401 ? "authorization" : status === 429 ? "rate_limit" : "http_error" } }
+    } } });
   });
 
-  it("verifies all five answer-model compatibility contracts", async () => {
+  it("verifies all eight answer-model capability contracts independently", async () => {
     const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
-      const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
+      const body = JSON.parse(String(request?.body));
+      if (JSON.stringify(body.messages).includes("image_url")) return Response.json({
+        choices: [{ finish_reason: "stop", message: { content: "PEARS", role: "assistant" } }]
+      });
+      const name = body.tools?.[0]?.function?.name;
+      if (name === "aiqsa_parallel_probe") return Response.json({ choices: [{ finish_reason: "tool_calls", message: {
+        role: "assistant", content: null, tool_calls: ["Oslo", "Rome"].map((city, index) => ({
+          id: `call-${index}`, type: "function", function: { name, arguments: JSON.stringify({ city }) }
+        }))
+      } }] });
+      if (name) return strictToolChatResponse(name, { city: "Oslo" });
       return body.stream === true
         ? streamedChatResponse()
         : structuredChatResponse();
@@ -273,16 +288,18 @@ describe("admin provider draft tester", () => {
           structuredOutput: "verified",
           usage: "verified"
         },
+        capabilitySetup: { checks: { modelAccess: "verified", structuredOutput: "verified", toolCalling: "verified",
+          forcedToolCall: "verified", parallelToolCalls: "verified", vision: "verified", directPdf: "verified", streaming: "verified" } },
         pdfInput: { verified: true },
         structuredOutput: { verified: true }
       },
       status: "available"
     });
-    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(fetchFn).toHaveBeenCalledTimes(7);
     expect(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body))).toMatchObject({
       stream: false
     });
-    expect(JSON.parse(String(fetchFn.mock.calls[2]?.[1]?.body))).toMatchObject({
+    expect(JSON.parse(String(fetchFn.mock.calls.at(-1)?.[1]?.body))).toMatchObject({
       stream: true
     });
   });
@@ -299,7 +316,7 @@ describe("admin provider draft tester", () => {
       evidence: { detail: "ok" },
       status: "available"
     });
-    expect(probe).toHaveBeenCalledOnce();
+    expect(probe).toHaveBeenCalledTimes(2);
   });
 
   it("adds exact PDF evidence after a successful image-only probe", async () => {
@@ -356,7 +373,12 @@ describe("admin provider draft tester", () => {
       }
     });
 
-    await expect(providerTester.test(direct)).rejects.toThrow("private upstream PDF failure");
+    const outcome = await providerTester.test(direct);
+    expect(outcome).toMatchObject({ status: "available", evidence: { capabilitySetup: {
+      checks: { modelAccess: "verified", directPdf: "incomplete" },
+      attempts: { directPdf: { attempts: 2, status: "incomplete", reason: "semantic_inconclusive" } }
+    } } });
+    expect(JSON.stringify(outcome)).not.toContain("private upstream PDF failure");
   });
 
   it("does not convert a transient capability failure into Not supported", async () => {
@@ -370,9 +392,10 @@ describe("admin provider draft tester", () => {
       }
     });
 
-    await expect(providerTester.test(input())).rejects.toThrow(
-      "OpenAI request failed with status 503"
-    );
+    await expect(providerTester.test(input())).resolves.toMatchObject({ status: "available", evidence: { capabilitySetup: {
+      checks: { modelAccess: "verified", directPdf: "incomplete" },
+      attempts: { directPdf: { attempts: 3, status: "incomplete", reason: "http_error", httpStatus: 503 } }
+    } } });
   });
 
   it("checks embedding deployments against the OpenRouter embedding catalog", async () => {
@@ -606,7 +629,7 @@ describe("admin provider draft tester", () => {
       }
     });
 
-    await expect(providerTester.test(selected)).resolves.toEqual({
+    await expect(providerTester.test(selected)).resolves.toMatchObject({
       evidence: {
         compatibility: {
           directPdf: "not_supported",
@@ -643,7 +666,7 @@ describe("admin provider draft tester", () => {
       createFetch: () => fetchFn
     });
 
-    await expect(providerTester.test(input())).resolves.toEqual({
+    await expect(providerTester.test(input())).resolves.toMatchObject({
       evidence: {
         compatibility: {
           directPdf: "not_supported",
@@ -706,7 +729,7 @@ describe("admin provider draft tester", () => {
     expect(outcome.evidence).not.toHaveProperty("structuredOutput");
   });
 
-  it("records rejected JSON and statically unsupported PDF independently", async () => {
+  it("keeps wrong JSON and an inconclusive PDF separate from access", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       choices: [{
         finish_reason: "stop",
@@ -717,7 +740,7 @@ describe("admin provider draft tester", () => {
 
     const outcome = await providerTester.test(input({ mode: "tiny_generation" }));
 
-    expect(outcome).toEqual({
+    expect(outcome).toMatchObject({
       evidence: {
         compatibility: {
           directPdf: "not_supported",
@@ -734,15 +757,15 @@ describe("admin provider draft tester", () => {
       },
       status: "available"
     });
-    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(outcome.evidence.capabilitySetup?.checks).toMatchObject({ structuredOutput: "incomplete", directPdf: "incomplete" });
     const firstBody = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
     const secondBody = JSON.parse(String(fetchFn.mock.calls[1]?.[1]?.body));
-    const thirdBody = JSON.parse(String(fetchFn.mock.calls[2]?.[1]?.body));
+    const streamBody = fetchFn.mock.calls.map(([, init]) => JSON.parse(String(init?.body))).find((body) => body.stream);
     expect(firstBody).not.toHaveProperty("response_format");
     expect(secondBody).toMatchObject({
       response_format: { type: "json_schema", json_schema: { strict: true } }
     });
-    expect(thirdBody).toMatchObject({ stream: true });
+    expect(streamBody).toMatchObject({ stream: true });
   });
 
   it("runs the explicit tiny generation through the existing runtime adapter and stores no output", async () => {
@@ -773,7 +796,7 @@ describe("admin provider draft tester", () => {
     });
 
     const result = await providerTester.test(compatible);
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       evidence: {
         compatibility: {
           directPdf: "not_supported",
@@ -791,7 +814,7 @@ describe("admin provider draft tester", () => {
       status: "available"
     });
     expect(JSON.stringify(result)).not.toContain("private output");
-    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn.mock.calls.every(([url]) => url === "https://compatible.example.test/v1/chat/completions")).toBe(true);
     const [endpoint, request] = fetchFn.mock.calls[0] ?? [];
     expect(endpoint).toBe("https://compatible.example.test/v1/chat/completions");
     expect(request).toMatchObject({ method: "POST", redirect: "error" });
@@ -830,7 +853,7 @@ describe("admin provider draft tester", () => {
       evidence: { detail: "ok", method: "tiny_generation" },
       status: "available"
     });
-    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn.mock.calls.length).toBeGreaterThan(2);
   });
 
   it("does not allow no-auth to enter the OpenRouter account-catalog path", async () => {
@@ -1053,7 +1076,7 @@ describe("capability check failure boundaries", () => {
     }
   });
 
-  it.each(["structured", "pdf"] as const)("fails a full model check on an incomplete %s response", async (capability) => {
+  it.each(["structured", "pdf"] as const)("keeps a full model check usable after an incomplete %s response", async (capability) => {
     const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
       const body = JSON.parse(String(request?.body));
       const isTarget = capability === "structured" ? Boolean(body.text?.format) : JSON.stringify(body.input).includes("input_file");
@@ -1062,9 +1085,15 @@ describe("capability check failure boundaries", () => {
         : completedResponsesResponse(body.text?.format
           ? JSON.stringify({ count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] }) : "OK");
     });
-    await expect(createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn }).test(responsesInput()))
-      .rejects.toThrow(capability === "structured" ? "structured_output_output_limit_exceeded" : "compatible_response_incomplete");
-    expect(fetchFn).toHaveBeenCalledTimes(capability === "structured" ? 2 : 5);
+    const outcome = await createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn }).test(responsesInput());
+    const key = capability === "structured" ? "structuredOutput" : "directPdf";
+    expect(outcome.status).toBe("available");
+    expect(outcome.evidence.capabilitySetup?.checks[key]).toBe("incomplete");
+    expect(outcome.evidence.capabilitySetup?.attempts?.[key]).toMatchObject({ attempts: 2, status: "incomplete", reason: "budget_exhausted" });
+    const bodies = fetchFn.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
+    const affected = bodies.filter((body) => capability === "structured" ? body.text?.format : JSON.stringify(body.input).includes("input_file"));
+    expect(affected.map((body) => body.max_output_tokens)).toEqual([capability === "structured" ? 128 : 512, 4096]);
+    expect(bodies.at(-1).stream).toBe(true);
   });
 
   it.each([
@@ -1103,12 +1132,17 @@ describe("capability check failure boundaries", () => {
     });
     try {
       const base = input();
-      await expect(createAdminProviderDraftTester({ retrySleep: async () => {},
+      const check = createAdminProviderDraftTester({ retrySleep: async () => {},
         createFetch: () => async () => structuredChatResponse(),
         pdfInputProbe: { async probe() { return null; } }
       }).test({ ...base, capabilityRole, mode: "tiny_generation",
         model: { ...base.model, capabilities: { ...base.model.capabilities, vision: true } }
-      })).rejects.toThrow("vision_input_fixture_unavailable");
+      });
+      if (capabilityRole === "vision") await expect(check).rejects.toThrow("vision_input_fixture_unavailable");
+      else await expect(check).resolves.toMatchObject({ status: "available", evidence: { capabilitySetup: {
+        checks: { modelAccess: "verified", vision: "incomplete" },
+        attempts: { vision: { attempts: 2, reason: "semantic_inconclusive" } }
+      } } });
     } finally {
       probe.mockRestore();
     }

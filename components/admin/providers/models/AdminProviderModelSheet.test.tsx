@@ -72,6 +72,37 @@ function controller(saveModel: Mock = vi.fn(async () => ({ ok: true as const }))
 }
 
 describe("AdminProviderModelSheet", () => {
+  it("keeps a new model draft when its last key is revoked and blocks even form submission", async () => {
+    const connection = workingConnection();
+    const saveModel = vi.fn(async () => ({ ok: true as const }));
+    const props = { connection, controller: controller(saveModel), discovery: discovery(), model: null, onClose: vi.fn(), onSaved: vi.fn(), open: true };
+    const view = render(<AdminProviderModelSheet {...props} />);
+    const sheet = await screen.findByRole("dialog", { name: "Add model" });
+    fireEvent.change(within(sheet).getByRole("combobox", { name: "Model" }), { target: { value: "new-model" } });
+    expect(within(sheet).getByRole("button", { name: "Test & Save" })).toBeEnabled();
+    view.rerender(<AdminProviderModelSheet {...props} connection={{ ...connection, credentials: [] }} />);
+    expect(within(sheet).getByRole("combobox", { name: "Model" })).toHaveValue("new-model");
+    expect(within(sheet).getByRole("button", { name: "Test & Save" })).toBeDisabled();
+    expect(sheet).toHaveTextContent("Add a working key first, then add models.");
+    fireEvent.submit(within(sheet).getByRole("combobox", { name: "Model" }).closest("form")!);
+    expect(saveModel).not.toHaveBeenCalled();
+  });
+
+  it("shows a canonical output-limit example within the model ceiling without changing defaults", async () => {
+    const connection = workingConnection();
+    const model = connection.models[0]!;
+    model.draftConfig.defaultParams = {};
+    model.draftConfig.capabilities.maxOutputTokens = 512;
+    const saveModel = vi.fn(async () => ({ ok: true as const }));
+    render(<AdminProviderModelSheet connection={connection} controller={controller(saveModel)} discovery={discovery()} model={model} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    const sheet = await screen.findByRole("dialog", { name: "Edit model" });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Edit JSON" }));
+    expect(JSON.parse(screen.getByTestId("model-json-example").textContent!)).toEqual({ maxOutputTokens: 512 });
+    fireEvent.click(screen.getByRole("button", { name: "Apply to model" }));
+    expect(sheet).toHaveTextContent("No custom parameters");
+    expect(saveModel).not.toHaveBeenCalled();
+  });
+
   it("shows capability progress for a new model and preserves a stopped result for review", async () => {
     const connection = workingConnection();
     const saveModel = vi.fn(async (_connectionId: string, _modelId: string | null, _body: unknown, options: { signal: AbortSignal; onProgress(value: AdminProviderSetupProgress): void }) => {
@@ -290,8 +321,8 @@ describe("AdminProviderModelSheet", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("offers built-in ids as hints and saves without a check when no key is usable", async () => {
-    const connection = fixtureConnection({ displayName: "Anthropic", family: "anthropic", id: "conn-anthropic" });
+  it("offers built-in ids as hints with a usable non-default key without changing the save key", async () => {
+    const connection = fixtureConnection({ credentials: [fixtureCredential({ id: "non-default", label: "Fixture key" })], displayName: "Anthropic", family: "anthropic", id: "conn-anthropic" });
     render(
       <AdminProviderModelSheet
         connection={connection}

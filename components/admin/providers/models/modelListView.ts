@@ -225,6 +225,14 @@ export function checkableCredentials(connection: AdminProviderConnection): reado
   return connection.credentials.filter((credential) => credential.enabled && liveVersion(credential) !== null);
 }
 
+export function providerNeedsKeyForModels(connection: AdminProviderConnection): boolean {
+  const configuration = connection.activeConfig ?? connection.draftConfig;
+  return !(connection.family === "openai_compatible" && configuration.authenticationMode === "none") &&
+    checkableCredentials(connection).length === 0;
+}
+
+export const providerKeyFirstHelp = "Add a working key first, then add models.";
+
 export type ModelCheckSummary = Readonly<{
   chips: readonly ModelChip[];
   credentialLabel: string;

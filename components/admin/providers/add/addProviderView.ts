@@ -19,6 +19,7 @@ import {
   ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS,
   ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
   ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS,
+  type AdminProviderModelCapabilities,
   type AdminProviderConnection
 } from "@/lib/contracts/adminProviders";
 import { compatibleReasoningRequestMappingDefault } from "@/lib/contracts/providerReasoningRequestMapping";
@@ -338,15 +339,15 @@ export function customRequest(input: Readonly<{
   if (usesReasoning && !form.reasoningEffortPath.trim()) {
     return { field: "reasoning", message: "Enter the reasoning effort field, or turn reasoning off.", ok: false };
   }
+  const capabilities: AdminProviderModelCapabilities = { ...ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES, ...reasoning };
+  // The server derives the output default after applying each discovered ceiling.
+  delete capabilities.defaultMaxOutputTokens;
   return {
     body: {
       allowPrivateNetwork: form.allowPrivateNetwork,
       apiRoot: form.apiRoot.trim(),
       authenticationMode: form.noKey ? "none" : "bearer",
-      capabilities: {
-        ...ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
-        ...reasoning
-      },
+      capabilities,
       confirmPaidRequest: true,
       connectionDisplayName: name,
       ...(usesDiscovered ? { modelIds, perModelCapabilities } : { modelId: manualModelId }),

@@ -6,7 +6,7 @@ import { withTimeoutSignal } from "../../providers/network";
 import { decodeParallelToolCallVerificationEvidence } from "../../providers/parallelToolCallEvidence";
 import { capabilitySetupIncomplete, decodeCapabilitySetupEvidence, initiallyVerifiedModelConfiguration,
   initialModelConfiguration,
-  INITIAL_CAPABILITY_BATCH_TIMEOUT_MS, reusableCapabilitySetupEvidence } from "./initialCapabilitySetup";
+  INITIAL_CAPABILITY_BATCH_TIMEOUT_MS, reusableCapabilitySetupEvidence, settledUnsupportedImageCapabilities } from "./initialCapabilitySetup";
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import { createHash, randomUUID } from "node:crypto";
 import type {
@@ -80,7 +80,7 @@ import { decodeStructuredOutputVerificationEvidence } from "../../providers/stru
 import { decodeForcedToolCallVerificationEvidence } from
   "../../providers/forcedToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
-import { decodeVisionInputVerificationEvidence, hasVerifiedVisionInput } from "../../providers/visionInputEvidence";
+import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
 import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
 import { isApprovedRerankerProviderModelId } from "./approvedRerankers";
 
@@ -309,7 +309,8 @@ function validateEvidence(
       ))
     )) ||
     (Object.hasOwn(evidence, "visionInput") &&
-      (!visionInput || !hasVerifiedVisionInput(evidence, model) || model.modelClass !== "answer")) ||
+      (!visionInput || visionInput.adapterKind !== model.adapterKind ||
+        visionInput.upstreamModelId !== model.upstreamModelId || model.modelClass !== "answer")) ||
     (hasPdfInput && (!pdfInput ||
       pdfInput.adapterKind !== model.adapterKind ||
       pdfInput.upstreamModelId !== model.upstreamModelId)) ||
@@ -361,7 +362,11 @@ function activationFingerprint(input: {
 
 type ActiveCheckResult =
   | { check: AdminProviderActiveCheck; kind: "stored" }
-  | { kind: "cancelled" | "failed" | "save_failed" | "stale" };
+  | { check?: AdminProviderActiveCheck; kind: "cancelled" | "failed" | "save_failed" | "stale" };
+
+class ActiveCheckpointError extends Error {
+  constructor(readonly kind: "save_failed" | "stale") { super("provider_checkpoint_failed"); }
+}
 
 export function createAdminProviderService(input: Readonly<{
   completeSetup?(input: {
@@ -658,11 +663,8 @@ export function createAdminProviderService(input: Readonly<{
     return { credentialId, versionId };
   }
 
-  /**
-   * One exact active-tuple check: every provider call happens before the
-   * evidence CAS, a transient failure only marks the tuple (prior evidence
-   * stays), and an abort caused by cancellation writes nothing at all.
-   */
+  /** Each checkpoint is a guarded durable write. Only revisions produced by
+   * this setup may advance its next CAS; external edits and cancellation fence it. */
   async function executeActiveCheck(value: {
     candidate: ProviderActiveRefreshCandidate;
     capabilityRole?: SystemModelVerificationRole;
@@ -670,103 +672,83 @@ export function createAdminProviderService(input: Readonly<{
     signal?: AbortSignal;
     initialSetup?: InitialCapabilityCheck;
     onCapabilityProgress?: CapabilityCheckRequest["onCapabilityProgress"];
+    onSavedCheckpoint?(check: AdminProviderActiveCheck): void;
   }): Promise<ActiveCheckResult> {
-    const { candidate } = value;
+    let candidate = value.candidate;
     const connection = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
-    const model = normalizeProviderModelConfiguration(candidate.model.configuration);
-    const initialSetup = value.initialSetup && value.initialSetup.connectionVersion === candidate.connection.version &&
-      value.initialSetup.modelVersion === candidate.model.version &&
-      value.initialSetup.credentialVersionId === candidate.credential.versionId;
-    const cacheKey = createHash("sha256").update(canonicalJson({
+    let model = normalizeProviderModelConfiguration(candidate.model.configuration);
+    const exactSetup = value.initialSetup && value.initialSetup.connectionVersion === candidate.connection.version &&
+      value.initialSetup.modelVersion === candidate.model.version && value.initialSetup.credentialVersionId === candidate.credential.versionId;
+    const initialSetup = Boolean(exactSetup && value.initialSetup?.activateCapabilities !== false);
+    const cacheKey = () => createHash("sha256").update(canonicalJson({
       connection: candidate.connection, model: candidate.model, credentialId: candidate.credential.id,
-      credentialVersionId: candidate.credential.versionId, policyVersion: 1
+      credentialVersionId: candidate.credential.versionId, checkEvidence: candidate.checkEvidence, policyVersion: 2
     })).digest("hex");
     for (const [key, cached] of pendingSetupChecks) if (cached.expiresAt <= Date.now()) pendingSetupChecks.delete(key);
     validateFamily(candidate.connection.family, model);
     const keyless = connection.authenticationMode === "none" && candidate.connection.family === "openai_compatible";
-    if ((candidate.credential.envelope === null) !== keyless) {
-      throw new AdminProviderServiceError("provider_active_tuple_not_found");
-    }
+    if ((candidate.credential.envelope === null) !== keyless) throw new AdminProviderServiceError("provider_active_tuple_not_found");
     const secret = candidate.credential.envelope === null ? null : credentialSecretSource(candidate.credential.id, {
-      envelope: candidate.credential.envelope,
-      kind: "active",
-      versionId: candidate.credential.versionId
+      envelope: candidate.credential.envelope, kind: "active", versionId: candidate.credential.versionId
     }, "provider_active_tuple_not_found");
-    let outcome: AdminProviderDraftTestOutcome;
+    let lastSaved: AdminProviderActiveCheck | undefined;
+    async function persist(outcome: AdminProviderDraftTestOutcome, complete: boolean): Promise<AdminProviderActiveCheck> {
+      value.signal?.throwIfAborted();
+      const activatedModel = initialSetup ? initiallyVerifiedModelConfiguration(model, outcome.evidence) : model;
+      const activatedConfiguration = canonicalJson(activatedModel) !== canonicalJson(model) ? activatedModel : undefined;
+      const evidence = validateEvidence(outcome, value.mode, activatedModel);
+      if (lastSaved?.status === outcome.status && canonicalJson(lastSaved.evidence) === canonicalJson(evidence)) return lastSaved;
+      const key = cacheKey();
+      if (!value.capabilityRole) {
+        if (pendingSetupChecks.size >= 256) pendingSetupChecks.delete(pendingSetupChecks.keys().next().value!);
+        pendingSetupChecks.set(key, { complete, expiresAt: Date.now() + INITIAL_CAPABILITY_BATCH_TIMEOUT_MS,
+          outcome: { evidence, status: outcome.status } });
+      }
+      const checkedAt = now();
+      let stored: "stored" | "stale";
+      try { stored = await input.repository.storeActiveRefreshCas({ candidate, capabilityRole: value.capabilityRole, checkedAt, evidence,
+        status: outcome.status, signal: value.signal, ...(activatedConfiguration ? { activatedConfiguration } : {}) }); }
+      catch { value.signal?.throwIfAborted(); throw new ActiveCheckpointError("save_failed"); }
+      if (stored === "stale") { pendingSetupChecks.delete(key); throw new ActiveCheckpointError("stale"); }
+      pendingSetupChecks.delete(key);
+      if (activatedConfiguration) {
+        model = activatedConfiguration;
+        candidate = { ...candidate, model: { ...candidate.model, configuration: model,
+          version: candidate.model.version + 1, draftVersion: candidate.model.version + 1 } };
+      }
+      if (!value.capabilityRole) candidate = { ...candidate, checkEvidence: { evidence, status: outcome.status } };
+      lastSaved = { checkedAt: checkedAt.toISOString(), connectionVersion: candidate.connection.version,
+        credentialId: candidate.credential.id, credentialVersionId: candidate.credential.versionId, evidence,
+        latestRefreshError: null, modelVersion: candidate.model.version, providerModelId: candidate.model.id,
+        refreshFailedAt: null, status: outcome.status };
+      value.onSavedCheckpoint?.(lastSaved);
+      return lastSaved;
+    }
     try {
-      outcome = initialSetup && pendingSetupChecks.get(cacheKey)?.complete ? pendingSetupChecks.get(cacheKey)!.outcome : await input.tester.test({
-        ...(initialSetup ? { initialSetup: true,
-          reuseSetupEvidence: pendingSetupChecks.get(cacheKey)?.outcome.evidence ?? value.initialSetup?.reuseEvidence,
+      const cached = value.capabilityRole ? undefined : pendingSetupChecks.get(cacheKey());
+      const outcome = cached?.complete ? cached.outcome : await input.tester.test({
+        ...(initialSetup ? { initialSetup: true } : {}),
+        ...(candidate.priorEvidence ? { priorEvidence: candidate.priorEvidence } : {}),
+        ...(!value.capabilityRole ? {
+          reuseSetupEvidence: cached?.outcome.evidence ?? (exactSetup ? value.initialSetup?.reuseEvidence : undefined),
           onCapabilityProgress: value.onCapabilityProgress,
-          onSetupCheckpoint: (checkpoint: AdminProviderDraftTestOutcome) => {
-            if (value.signal?.aborted) return;
-            if (pendingSetupChecks.size >= 256) pendingSetupChecks.delete(pendingSetupChecks.keys().next().value!);
-            pendingSetupChecks.set(cacheKey, { complete: false,
-              expiresAt: Date.now() + INITIAL_CAPABILITY_BATCH_TIMEOUT_MS, outcome: checkpoint });
-          } } : {}),
-        ...(value.capabilityRole ? { capabilityRole: value.capabilityRole } : {}),
-        connection,
-        connectionDisplayName: candidate.connection.displayName,
-        connectionId: candidate.connection.id,
-        credentialId: candidate.credential.id,
-        credentialVersionIdentity: candidate.credential.versionId,
-        mode: value.mode,
-        model,
-        modelDisplayName: candidate.model.displayName,
-        providerFamily: candidate.connection.family,
-        providerModelId: candidate.model.id,
-        secret,
-        signal: value.signal
+          onSetupCheckpoint: async (checkpoint: AdminProviderDraftTestOutcome) => { await persist(checkpoint, false); }
+        } : { capabilityRole: value.capabilityRole }),
+        connection, connectionDisplayName: candidate.connection.displayName, connectionId: candidate.connection.id,
+        credentialId: candidate.credential.id, credentialVersionIdentity: candidate.credential.versionId,
+        mode: value.mode, model, modelDisplayName: candidate.model.displayName,
+        providerFamily: candidate.connection.family, providerModelId: candidate.model.id, secret, signal: value.signal
       });
-    } catch {
-      if (value.signal?.aborted) {
-        return { kind: "cancelled" };
-      }
-      const failedAt = now();
-      if (await input.repository.recordActiveRefreshFailureCas({ candidate, failedAt }) === "stale") {
-        return { kind: "stale" };
-      }
-      return { kind: "failed" };
+      value.signal?.throwIfAborted();
+      return { kind: "stored", check: await persist(outcome, true) };
+    } catch (error) {
+      const saved = lastSaved ? { check: lastSaved } : {};
+      if (value.signal?.aborted) return { kind: "cancelled", ...saved };
+      if (error instanceof ActiveCheckpointError) return { kind: error.kind, ...saved };
+      if (error instanceof AdminProviderServiceError && error.code === "provider_test_evidence_invalid") throw error;
+      if (await input.repository.recordActiveRefreshFailureCas({ candidate, failedAt: now() }) === "stale") return { kind: "stale", ...saved };
+      return { kind: "failed", ...saved };
     }
-    if (value.signal?.aborted) return { kind: "cancelled" };
-    const checkedAt = now();
-    const activatedModel = initialSetup ? initiallyVerifiedModelConfiguration(model, outcome.evidence) : model;
-    const activatedConfiguration = canonicalJson(activatedModel) !== canonicalJson(model) ? activatedModel : undefined;
-    const evidence = validateEvidence(outcome, value.mode, activatedModel);
-    if (initialSetup) {
-      if (pendingSetupChecks.size >= 256) pendingSetupChecks.delete(pendingSetupChecks.keys().next().value!);
-      pendingSetupChecks.set(cacheKey, { complete: true, expiresAt: Date.now() + INITIAL_CAPABILITY_BATCH_TIMEOUT_MS,
-        outcome: { evidence, status: outcome.status } });
-    }
-    let stored: "stored" | "stale";
-    try { stored = await input.repository.storeActiveRefreshCas({
-      ...(activatedConfiguration ? { activatedConfiguration } : {}),
-      candidate,
-      capabilityRole: value.capabilityRole,
-      checkedAt,
-      evidence,
-      status: outcome.status,
-      signal: value.signal
-    }); } catch {
-      return { kind: value.signal?.aborted ? "cancelled" : "save_failed" };
-    }
-    if (stored === "stale") return { kind: "stale" };
-    pendingSetupChecks.delete(cacheKey);
-    return {
-      check: {
-        checkedAt: checkedAt.toISOString(),
-        connectionVersion: candidate.connection.version,
-        credentialId: candidate.credential.id,
-        credentialVersionId: candidate.credential.versionId,
-        evidence,
-        latestRefreshError: null,
-        modelVersion: candidate.model.version + (activatedConfiguration ? 1 : 0),
-        providerModelId: candidate.model.id,
-        refreshFailedAt: null,
-        status: outcome.status
-      },
-      kind: "stored"
-    };
   }
 
   /**
@@ -783,7 +765,9 @@ export function createAdminProviderService(input: Readonly<{
     const controller = new AbortController();
     const deadline = setTimeout(
       () => controller.abort("capability_check_deadline"),
-      effectiveProviderResponseTimeoutMs(connection, model)
+      model.modelClass === "answer" ? Math.min(INITIAL_CAPABILITY_BATCH_TIMEOUT_MS,
+        Math.min(120_000, effectiveProviderResponseTimeoutMs(connection, model)) * 8 + 5_000)
+        : effectiveProviderResponseTimeoutMs(connection, model)
     );
     const forward = () => controller.abort(value.signal?.reason);
     if (value.signal?.aborted) forward();
@@ -793,20 +777,24 @@ export function createAdminProviderService(input: Readonly<{
         candidate,
         initialSetup: value.initialSetup,
         onCapabilityProgress: value.onCapabilityProgress,
+        onSavedCheckpoint: (check) => value.onResult?.({ providerModelId: value.providerModelId,
+          state: "partial", checks: check.evidence?.capabilitySetup?.checks, attempts: check.evidence?.capabilitySetup?.attempts }),
         mode: "tiny_generation",
         signal: controller.signal
       });
       if (result.kind === "stored") {
-        const complete = result.check.status === "available" &&
-          (!value.initialSetup || !capabilitySetupIncomplete(result.check.evidence!));
+        const complete = Boolean(result.check.evidence && settledUnsupportedImageCapabilities(result.check.evidence)) ||
+          result.check.status === "available" && (!result.check.evidence?.capabilitySetup || !capabilitySetupIncomplete(result.check.evidence));
         value.onResult?.({ providerModelId: value.providerModelId,
           state: result.check.status !== "available" ? "unavailable" : complete ? "saved" : "partial",
-          checks: result.check.evidence?.capabilitySetup?.checks });
+          checks: result.check.evidence?.capabilitySetup?.checks, attempts: result.check.evidence?.capabilitySetup?.attempts });
         return complete ? "stored" : "failed";
       }
       value.onResult?.({ providerModelId: value.providerModelId,
         state: result.kind === "failed" ? "check_failed" : result.kind === "save_failed" ? "save_failed"
-          : result.kind === "cancelled" ? "cancelled" : "stale" });
+          : result.kind === "cancelled" ? "cancelled" : "stale",
+        ...(result.check?.evidence?.capabilitySetup ? { checks: result.check.evidence.capabilitySetup.checks,
+          attempts: result.check.evidence.capabilitySetup.attempts } : {}) });
       if (result.kind === "stale") return "skipped";
       return result.kind === "save_failed" ? "failed" : result.kind;
     } finally {
@@ -921,12 +909,15 @@ export function createAdminProviderService(input: Readonly<{
       // A changed key/endpoint invalidates all reusable proof, but does not
       // turn an unfinished initial model into an administrator override.
       // Model revisions still fence the initial activation authority.
-      const marked = decodeCapabilitySetupEvidence(current?.evidence?.capabilitySetup) || value.retryUnresolved &&
+      const currentSetup = decodeCapabilitySetupEvidence(current?.evidence?.capabilitySetup);
+      const initialMarker = currentSetup ? currentSetup.activation !== "preserve" : value.retryUnresolved &&
         connection.activeChecks.some((check) => check.providerModelId === id && check.modelVersion === model.activeVersion &&
-          decodeCapabilitySetupEvidence(check.evidence?.capabilitySetup));
-      if (value.initialModelIds?.includes(id) || marked && model.draftVersion === model.activeVersion &&
-        (value.reason === "setup" || value.retryUnresolved)) {
-        initialSetup[id] = { connectionVersion: connection.activeVersion,
+          Boolean(decodeCapabilitySetupEvidence(check.evidence?.capabilitySetup)) &&
+          decodeCapabilitySetupEvidence(check.evidence?.capabilitySetup)?.activation !== "preserve");
+      const activateCapabilities = Boolean(value.initialModelIds?.includes(id) || initialMarker &&
+        model.draftVersion === model.activeVersion && (value.reason === "setup" || value.retryUnresolved));
+      if (activateCapabilities || value.retryUnresolved || value.reuseCurrentChecks) {
+        initialSetup[id] = { activateCapabilities, connectionVersion: connection.activeVersion,
           credentialVersionId: credential.activeVersion!.id, modelVersion: model.activeVersion,
           ...(value.reuseCurrentChecks || value.retryUnresolved ? {
             reuseEvidence: reusableCapabilitySetupEvidence(current?.evidence ?? undefined,
@@ -941,10 +932,13 @@ export function createAdminProviderService(input: Readonly<{
             check.providerModelId === id && check.connectionVersion === connection!.activeVersion &&
             check.modelVersion === model.activeVersion && check.credentialId === credential.id &&
             check.credentialVersionId === credential.activeVersion!.id &&
-            check.status === "available" && check.latestRefreshError === null &&
-            check.evidence?.method === "tiny_generation" && check.evidence.detail === "ok" &&
-            check.evidence.compatibility?.modelAccess === "verified" &&
-            (!initialSetup[id] || !capabilitySetupIncomplete(check.evidence)));
+            check.latestRefreshError === null && Boolean(check.evidence) &&
+            ["tiny_generation", "openrouter_account_catalog"].includes(check.evidence?.method ?? "") &&
+            (check.status === "available" && check.evidence?.detail === "ok" && check.evidence.compatibility?.modelAccess === "verified" ||
+              check.evidence && settledUnsupportedImageCapabilities(check.evidence)) &&
+            ((model.modelClass ?? model.activeConfig?.modelClass ?? "answer") !== "answer" && !check.evidence!.capabilitySetup ||
+              !capabilitySetupIncomplete(reusableCapabilitySetupEvidence(check.evidence!,
+                normalizeProviderModelConfiguration(model.activeConfig)) ?? check.evidence!)));
         })
       : [];
     const run = checkRuns.start({

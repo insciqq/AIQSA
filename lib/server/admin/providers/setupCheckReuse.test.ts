@@ -45,17 +45,26 @@ async function fixture(realTester = false) {
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const body = JSON.parse(String(init?.body));
     const text = body.text?.format ? JSON.stringify({ count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] })
-      : JSON.stringify(body.input).includes("input_file") ? "PEARS" : "OK";
+      : /input_file|input_image/u.test(JSON.stringify(body.input)) ? "PEARS" : "OK";
+    const tool = body.tools?.find((value: { name?: string }) => value.name?.startsWith("aiqsa_"));
+    const calls = tool ? (tool.name === "aiqsa_parallel_probe" ? ["Oslo", "Rome"] : ["Oslo"]).map((city, index) => ({
+      type: "function_call", id: `function-${index}`, call_id: `call-${index}`, name: tool.name,
+      arguments: JSON.stringify({ city }), status: "completed"
+    })) : null;
     const response = { id: "synthetic-response", status: "completed", output: [{ type: "message", role: "assistant",
       content: [{ type: "output_text", text }] }], usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 } };
-    return body.stream ? new Response(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response })}\n\n`,
-      { headers: { "content-type": "text/event-stream" } }) : Response.json(response);
+    const completed = calls ? { ...response, output: calls } : response;
+    return body.stream ? new Response(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: completed })}\n\n`,
+      { headers: { "content-type": "text/event-stream" } }) : Response.json(completed);
   });
-  const draftTester = createAdminProviderDraftTester({ createFetch: () => fetchFn });
+  const draftTester = createAdminProviderDraftTester({ createFetch: () => fetchFn, retrySleep: async () => {} });
   const test = vi.fn(async (input: Omit<AdminProviderDraftTesterInput, "mode">) => {
     if (realTester) return draftTester.test({ ...input, mode: "tiny_generation" });
     const evidence: AdminProviderTestEvidence = { detail: "ok", method: "tiny_generation", selectedProviders: [],
       upstreamModelId: input.model.upstreamModelId,
+      capabilitySetup: { policyVersion: 2, checks: { modelAccess: "verified", streaming: "verified",
+        structuredOutput: "unsupported", toolCalling: "unsupported", forcedToolCall: "unsupported",
+        parallelToolCalls: "unsupported", vision: "unsupported", directPdf: "unsupported" } },
       compatibility: { probeVersion: 2, modelAccess: "verified", streaming: "verified", usage: "verified",
         structuredOutput: "not_supported", directPdf: "not_supported" } };
     return { status: "available" as const, evidence };
@@ -98,15 +107,15 @@ describe("reuse of checks committed by custom setup", () => {
     const f = await fixture(true);
     expect(f.test).toHaveBeenCalledTimes(4);
     expect(f.test.mock.calls.map(([input]) => input.model.upstreamModelId)).toEqual(["model-a", "model-b", "model-c", "model-d"]);
-    expect(f.fetchFn).toHaveBeenCalledTimes(16);
+    expect(f.fetchFn).toHaveBeenCalledTimes(32);
     expect(f.repository.loadActiveRefreshCandidate).not.toHaveBeenCalled();
     expect(f.current()).toMatchObject({ state: "running", done: 4, total: 4, failed: [], inFlight: [], setup: { state: "running" } });
     await f.finish();
     expect(f.current()).toMatchObject({ state: "completed", done: 4, failed: [],
       setup: { state: "completed", defaults: ["Chat: Synthetic"], search: "skipped" } });
     expect(f.test).toHaveBeenCalledTimes(4);
-    // Four physical probes per model: access, JSON, PDF and streaming. Bootstrap adds none.
-    expect(f.fetchFn).toHaveBeenCalledTimes(16);
+    // Eight independent probes per model. Bootstrap adds none.
+    expect(f.fetchFn).toHaveBeenCalledTimes(32);
   });
 
   it.each(["connection", "model", "credential", "warning", "unavailable", "unproved"] as const)(

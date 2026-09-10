@@ -99,7 +99,7 @@ function numberFromDraft(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function clamp(value: number, min: number, max: number): number {
+function clamp(value: number, min: number, max = Number.MAX_SAFE_INTEGER): number {
   return Math.min(max, Math.max(min, value));
 }
 

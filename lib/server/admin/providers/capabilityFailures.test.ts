@@ -65,12 +65,17 @@ function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "fai
     providerModel: { findFirst: async () => ({ activeVersion: active.model }) },
     providerCredential: { findFirst: async () => ({ activeVersionId: active.credential,
       activeVersion: { revokedAt: active.revokedAt, secretEnvelope: envelope } }) },
-    providerModelCredentialCheck: { updateMany, upsert, findUnique: async () => row }
+    providerModelCredentialCheck: { updateMany, upsert, findUnique: async () => row,
+      findFirst: async ({ where }: { where: { status: unknown; evidence: { equals: unknown } } }) =>
+        row?.status === where.status && JSON.stringify(row?.evidence) === JSON.stringify(where.evidence.equals) ? { id: "check" } : null }
   };
   const repository = createPrismaAdminProviderRepository({ ...db,
     $transaction: async (operation: (tx: typeof db) => Promise<unknown>) => operation(db)
   } as unknown as PrismaClient);
-  vi.spyOn(repository, "loadActiveRefreshCandidate").mockResolvedValue(candidate);
+  vi.spyOn(repository, "loadActiveRefreshCandidate").mockImplementation(async () => ({ ...candidate,
+    checkEvidence: row ? { status: row.status as "available", evidence: row.evidence } : null,
+    ...(row?.evidence ? { priorEvidence: row.evidence as AdminProviderTestEvidence } : {})
+  }));
   vi.spyOn(repository, "withLockedCredential").mockImplementation(async (_id, _version, consume) =>
     consume({ credentialId: request.credentialId, id: "version", revokedAt: null, secretEnvelope: envelope }));
   const adminConfig = { allowPrivateNetwork: false, apiRoot: configuration.apiRoot,
@@ -128,12 +133,19 @@ function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "fai
         "event: done\ndata: [DONE]\n\n"
       ].join(""), { headers: { "content-type": "text/event-stream" } }) : Response.json(response);
     }
+    const tool = body.tools?.find((value: { name?: string }) => value.name?.startsWith("aiqsa_"));
+    const calls = tool ? (tool.name === "aiqsa_parallel_probe" ? ["Oslo", "Rome"] : ["Oslo"]).map((city, index) => ({
+      type: "function_call", id: `function-${index}`, call_id: `call-${index}`, name: tool.name,
+      arguments: JSON.stringify({ city }), status: "completed"
+    })) : null;
     const response = { id: "synthetic-response", status: "completed", output: [{ type: "message", role: "assistant",
       content: [{ type: "output_text", text: structured
-        ? JSON.stringify({ count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] }) : pdf ? "PEARS" : "OK" }] }],
+        ? JSON.stringify({ count: 2, label: "AIQSA", ready: true, tool_ids: ["alpha", "beta"] })
+          : pdf || JSON.stringify(body.input).includes("input_image") ? "PEARS" : "OK" }] }],
       usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 } };
-    return body.stream ? new Response(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response })}\n\n`,
-      { headers: { "content-type": "text/event-stream" } }) : Response.json(response);
+    const completed = calls ? { ...response, output: calls } : response;
+    return body.stream ? new Response(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: completed })}\n\n`,
+      { headers: { "content-type": "text/event-stream" } }) : Response.json(completed);
   });
   const tester = createAdminProviderDraftTester({ retrySleep: async () => {}, createFetch: () => fetchFn });
   const service = createAdminProviderService({ repository, now: () => NOW, encryptionKey: () => KEY,
@@ -243,18 +255,32 @@ describe("failed capability response publication", () => {
 
   it.each([
     ["memory", "failed"], ["memory", "incomplete"], ["direct_pdf", "failed"], ["direct_pdf", "incomplete"]
-  ] as const)("preserves prior or absent evidence on %s/%s and permits an ordinary recheck", async (target, terminal) => {
+  ] as const)("preserves prior proof on %s/%s while ordinary checks publish independent results", async (target, terminal) => {
     for (const prior of [true, false]) {
       for (const capabilityRole of [target, undefined] as const) {
         const f = fixture(prior, target, terminal);
-        await expect(f.service.refreshActive({ ...request, capabilityRole })).rejects.toMatchObject({ code: "provider_refresh_failed" });
-        expect(f.upsert).not.toHaveBeenCalled();
-        expect(f.updateMany).toHaveBeenCalledWith({ data: {
-          latestRefreshError: { code: "provider_refresh_failed", version: 1 }, refreshFailedAt: NOW
-        }, where: { connectionId: request.connectionId, connectionVersion: 3, credentialId: request.credentialId,
-          credentialVersionId: "version", modelVersion: 4, providerModelId: request.providerModelId } });
-        expect(f.row()?.evidence ?? null).toEqual(prior ? previous : null);
-        expect(f.row()?.status ?? null).toBe(prior ? "available" : null);
+        if (capabilityRole) {
+          await expect(f.service.refreshActive({ ...request, capabilityRole })).rejects.toMatchObject({ code: "provider_refresh_failed" });
+          expect(f.upsert).not.toHaveBeenCalled();
+          expect(f.updateMany).toHaveBeenCalledWith({ data: {
+            latestRefreshError: { code: "provider_refresh_failed", version: 1 }, refreshFailedAt: NOW
+          }, where: { connectionId: request.connectionId, connectionVersion: 3, credentialId: request.credentialId,
+            credentialVersionId: "version", modelVersion: 4, providerModelId: request.providerModelId } });
+          expect(f.row()?.evidence ?? null).toEqual(prior ? previous : null);
+          expect(f.row()?.status ?? null).toBe(prior ? "available" : null);
+        } else {
+          const result = await f.service.refreshActive(request);
+          const check = target === "memory" ? "structuredOutput" : "directPdf";
+          expect(result.evidence).toMatchObject({ capabilitySetup: {
+            checks: { [check]: prior ? "verified" : "incomplete", streaming: "verified", vision: "verified" },
+            attempts: { [check]: { status: "incomplete" } }
+          } });
+          expect(f.upsert).toHaveBeenCalledTimes(8);
+          expect(f.candidate.model.configuration.capabilities.vision).toBe(false);
+          expect(result.evidence?.visionInput?.verified).toBe(true);
+          if (prior) expect(result.evidence?.[target === "memory" ? "structuredOutput" : "pdfInput"])
+            .toEqual(previous[target === "memory" ? "structuredOutput" : "pdfInput"]);
+        }
         expect(JSON.stringify(f.row())).not.toContain("PRIVATE_SYNTHETIC_UPSTREAM_DETAIL");
         f.succeed();
         const result = await f.service.refreshActive({ ...request, capabilityRole });
@@ -284,8 +310,10 @@ describe("failed capability response publication", () => {
     const started = await f.service.startCheckRun({ ...request, modelIds: [request.providerModelId], reason: "setup" });
     await vi.waitFor(() => expect(f.service.checkRun({ connectionId: request.connectionId, runId: started.id }))
       .toMatchObject({ state: "completed", done: 1, failed: [request.providerModelId] }));
-    expect(f.row()).toBeNull();
-    expect(f.upsert).not.toHaveBeenCalled();
+    expect(f.row()).toMatchObject({ status: "available", evidence: { capabilitySetup: {
+      checks: { modelAccess: "verified", streaming: "verified", [target === "memory" ? "structuredOutput" : "directPdf"]: "incomplete" }
+    } } });
+    expect(f.upsert).toHaveBeenCalledTimes(8);
     f.succeed();
     const retry = await f.service.startCheckRun({ ...request, modelIds: [request.providerModelId], reason: "requested" });
     await vi.waitFor(() => expect(f.service.checkRun({ connectionId: request.connectionId, runId: retry.id }))

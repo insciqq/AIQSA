@@ -40,6 +40,10 @@ export type ProviderDiscoveryCandidate = Readonly<{
 }>;
 
 export type ProviderActiveRefreshCandidate = Readonly<{
+  /** Loaded only from this exact active connection/model/credential tuple. */
+  priorEvidence?: AdminProviderTestEvidence;
+  /** Check-row CAS fence; absent only in repository test doubles. */
+  checkEvidence?: Readonly<{ evidence: unknown; status: AdminProviderCheckStatus }> | null;
   connection: {
     configuration: unknown;
     displayName: string;

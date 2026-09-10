@@ -175,6 +175,13 @@ export function RunSetupV2({ composer, onClose }: Readonly<{
             ) : null}
           </div>
           <div className="v2-run-setup-defaults">
+            <UiV2Button onClick={() => {
+              composer.changeMaxOutputTokens(String(controls.maxOutputTokens.defaultValue));
+              if (controls.temperature.supported) composer.changeTemperature(String(controls.temperature.defaultValue));
+              setDefaultsFeedback("Output settings reset to this model’s defaults.");
+            }}>
+              Reset output settings
+            </UiV2Button>
             {composer.useOrganizationModelDefault ? (
               <UiV2Button onClick={() => {
                 composer.useOrganizationModelDefault?.();

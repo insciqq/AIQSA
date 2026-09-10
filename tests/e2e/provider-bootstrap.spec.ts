@@ -7,7 +7,7 @@ import { expect, test } from "@playwright/test";
 import type { AdminProviderConnection } from "../../lib/contracts/adminProviders";
 import { adminProviderQuickSetupPolicy } from "../../lib/server/admin/providers/quickSetupPolicy";
 import { PDF_INPUT_PROBE_ANSWER } from "../../lib/server/providers/pdfInputProbe";
-import { VISION_INPUT_PROBE_CODE } from "../../lib/server/providers/visionInputProbe";
+import { VISION_INPUT_PROBE_ANSWER } from "../../lib/server/providers/visionInputProbe";
 import { signInWithLocalToken } from "./support/localAuth";
 
 const prisma = new PrismaClient();
@@ -25,6 +25,9 @@ test("one key save activates models, fills empty defaults and retries failed Sea
   const priorRoles = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
   const priorSearch = await prisma.searchPolicy.findUniqueOrThrow({ where: { id: "installation" } });
   let failSearch = true;
+  let failPdf = true;
+  let failJsonOnce = true;
+  const capabilityCalls: Array<{ model: unknown; check: string }> = [];
   let searchCalls = 0;
   const server = createServer((request, response) => {
     void (async () => {
@@ -67,19 +70,29 @@ test("one key save activates models, fills empty defaults and retries failed Sea
       }
       const source = { title: "Fixture source", url: "https://example.com/fixture" };
       const wire = JSON.stringify(body);
+      const check = wire.includes('"type":"input_file"') ? "pdf" : wire.includes('"type":"input_image"') ? "vision"
+        : wire.includes('"type":"json_schema"') ? "json" : tools?.[0]?.name ?? (body.stream ? "stream" : "access");
+      if (!search) capabilityCalls.push({ model: body.model, check });
+      if (check === "json" && body.model === "gpt-5.6-terra" && failJsonOnce) {
+        failJsonOnce = false;
+        response.writeHead(503, { "content-type": "application/json" }); response.end("{}"); return;
+      }
+      if (check === "pdf" && body.model === "gpt-6-astra" && failPdf) {
+        send({ id: "resp-fixture", status: "incomplete", output: [], incomplete_details: { reason: "max_output_tokens" } }); return;
+      }
       const text = wire.includes('"type":"input_file"') ? PDF_INPUT_PROBE_ANSWER
-        : wire.includes('"type":"input_image"') ? VISION_INPUT_PROBE_CODE
+        : wire.includes('"type":"input_image"') ? VISION_INPUT_PROBE_ANSWER
         : wire.includes('"type":"json_schema"') ? JSON.stringify({ ready: true, count: 2, label: "ready", tool_ids: ["alpha", "beta"] })
         : "OK";
       const output: unknown[] = [{ type: "message", role: "assistant", content: [{
         type: "output_text", text, annotations: search ? [{ ...source, type: "url_citation" }] : []
       }] }];
       if (search) output.unshift({ id: "search-1", type: "web_search_call", status: "completed", action: { type: "search", query: "fixture", sources: [source] } });
-      const forced = tools?.find(({ name }) => name === "aiqsa_forced_tool_call_probe");
-      if (forced) output.splice(0, output.length, {
-        type: "function_call", id: "function-1", call_id: "call-1", name: forced.name,
-        arguments: JSON.stringify({ nonce: "aiqsa-control-ready" }), status: "completed"
-      });
+      const tool = tools?.find(({ name }) => name?.startsWith("aiqsa_"));
+      if (tool) output.splice(0, output.length, ...(tool.name === "aiqsa_parallel_probe" ? ["Oslo", "Rome"] : ["Oslo"]).map((city, index) => ({
+        type: "function_call", id: `function-${index}`, call_id: `call-${index}`, name: tool.name,
+        arguments: JSON.stringify({ city }), status: "completed"
+      })));
       const completed = { id: "resp-fixture", model: body.model, status: "completed", output,
         usage: { input_tokens: 5, output_tokens: 5, total_tokens: 10 } };
       if (body.stream) {
@@ -142,17 +155,26 @@ test("one key save activates models, fills empty defaults and retries failed Sea
     expect(checked.enabled).toBe(true);
     expect(checked.models).toHaveLength(2);
     expect(checked.models.every((model) => model.enabled && model.activeVersion > 0)).toBe(true);
-    expect(checked.checkRun).toMatchObject({ total: 2, failed: [], setup: { state: "partial", search: "failed" } });
+    expect(checked.checkRun).toMatchObject({ total: 2, setup: { state: "partial", search: "failed" } });
+    expect(checked.checkRun?.failed).toHaveLength(1);
+    const partial = checked.activeChecks.find((check) => check.evidence?.capabilitySetup?.checks.directPdf === "incomplete");
+    expect(partial?.evidence?.capabilitySetup).toMatchObject({ checks: { modelAccess: "verified", streaming: "verified" },
+      attempts: { directPdf: { attempts: 2, reason: "budget_exhausted" } } });
+    expect(checked.activeChecks.some((check) => check.evidence?.capabilitySetup?.attempts?.structuredOutput?.attempts === 2)).toBe(true);
     expect(await prisma.searchPolicy.findUnique({ where: { id: "installation" } })).toMatchObject({
       defaultPlan: { mode: "all_selected", optionIds: [] }, version: 1, updatedByUserId: null
     });
     expect(checked.models.map(({ activeConfig }) => activeConfig?.upstreamModelId)).toContain("gpt-6-astra");
     await expect(page.getByRole("button", { name: "Retry checks" })).toBeVisible();
     failSearch = false;
+    failPdf = false;
+    capabilityCalls.length = 0;
     await page.getByRole("button", { name: "Retry checks" }).click();
     await expect.poll(async () => (await read()).checkRun?.setup, { timeout: 60_000 })
       .toMatchObject({ search: "ready", state: "completed" });
     await expect(page.getByText("Search checked and ready.", { exact: true })).toBeVisible();
+    expect(capabilityCalls).toEqual([{ model: "gpt-6-astra", check: "pdf" }]);
+    expect((await read()).checkRun?.failed).toEqual([]);
     expect(searchCalls).toBeGreaterThanOrEqual(2);
     expect(await prisma.modelPolicy.findUnique({ where: { id: "installation" } })).toMatchObject({ defaultProviderModelId: modelId });
     expect(await prisma.systemModelPolicy.findUnique({ where: { id: "installation" } })).toMatchObject({

@@ -1,3 +1,4 @@
+import { DEFAULT_CHAT_MAX_OUTPUT_TOKENS } from "./chatDefaults";
 import type {
   AdminCompatibleDiscoveredModel,
   AdminProviderCheckRun,
@@ -21,8 +22,7 @@ export type AdminProviderCustomProtocol =
 export const MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS = 32;
 
 export const ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES = {
-  contextWindow: 8_192,
-  defaultMaxOutputTokens: 1_024,
+  defaultMaxOutputTokens: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
   nativePdfInput: false,
   nativeImageGeneration: false,
   nativeSearch: false,

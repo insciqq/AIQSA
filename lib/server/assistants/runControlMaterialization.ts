@@ -34,7 +34,7 @@ export function assistantRunControlIssue(
   }
   if (
     runControls.maxOutputTokens !== undefined &&
-    runControls.maxOutputTokens > controls.maxOutputTokens.maxValue
+    controls.maxOutputTokens.maxValue !== undefined && runControls.maxOutputTokens > controls.maxOutputTokens.maxValue
   ) {
     return {
       control: "maxOutputTokens",

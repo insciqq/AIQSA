@@ -14,6 +14,7 @@ import {
 import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { prisma } from "@/lib/server/prisma";
 import { resolveEffectiveMcpGrant } from "./access";
+import type { McpEndpointCorrection } from "./draftValidator";
 import { hashCanonicalMcpValue, validateMcpDraft } from "./definitions";
 import {
   decryptMcpEnvelope,
@@ -370,6 +371,61 @@ function parseTokenEnvelope(
     tokens: parsedTokens,
     version: 1
   };
+}
+
+export class McpEndpointBindingChangedError extends Error {
+  constructor() { super("mcp_endpoint_binding_changed"); }
+}
+
+// Called only inside the same guarded transaction that publishes the checked URL.
+// No token, scope, client, audience or user runtime connection is replaced.
+export async function rebindMcpValidationEndpoint(input: {
+  tx: Prisma.TransactionClient;
+  key: Buffer;
+  serverId: string;
+  userId: string | null | undefined;
+  fromDraft: McpDraftConfiguration;
+  toDraft: McpDraftConfiguration;
+  binding: McpEndpointCorrection["oauthBinding"];
+}): Promise<void> {
+  if (input.fromDraft.auth.mode !== "oauth") return;
+  const { binding, tx } = input;
+  if (!binding || !input.userId) throw new McpEndpointBindingChangedError();
+  const connection = await tx.mcpOAuthConnection.findUnique({
+    include: { oauthClient: { select: { clientId: true } } }, where: { id: binding.connectionId }
+  });
+  if (!connection?.tokenEnvelope || !connection.oauthClient || connection.purpose !== "validation" || connection.state !== "ready" ||
+    connection.disconnectRequestedAt || connection.serverId !== input.serverId || connection.userId !== input.userId ||
+    connection.policyFingerprint !== binding.policyFingerprint || tokenVersion(connection.tokenGeneration) !== binding.tokenVersion ||
+    (connection.expiresAt && connection.expiresAt.getTime() <= Date.now()) ||
+    !await tx.user.findFirst({ where: { id: input.userId, role: "admin", status: "active" }, select: { id: true } })) {
+    throw new McpEndpointBindingChangedError();
+  }
+  const prior = parseTokenEnvelope(connection.tokenEnvelope, input.key, connection.id, connection.tokenGeneration);
+  const makePolicy = (draft: McpDraftConfiguration) => bindMcpOAuthPolicyResource(buildMcpOAuthPolicy({
+    configurationIdentity: hashCanonicalMcpValue(draft), draft,
+    purpose: "validation", redirectUri: prior.policy.redirectUri, serverId: input.serverId, userId: input.userId!
+  }), prior.policy.resource);
+  const oldPolicy = makePolicy(input.fromDraft);
+  const nextPolicy = makePolicy(input.toDraft);
+  if (!oldPolicy || !nextPolicy || input.toDraft.source.kind !== "remote" ||
+    new URL(prior.policy.resource).href !== new URL(input.toDraft.source.url).href ||
+    hashCanonicalMcpValue(oldPolicy) !== hashCanonicalMcpValue(prior.policy) ||
+    mcpOAuthPolicyFingerprint(oldPolicy, connection.oauthClient.clientId) !== binding.policyFingerprint) {
+    throw new McpEndpointBindingChangedError();
+  }
+  const generation = connection.tokenGeneration + 1;
+  const changed = await tx.mcpOAuthConnection.updateMany({
+    data: {
+      policyFingerprint: mcpOAuthPolicyFingerprint(nextPolicy, connection.oauthClient.clientId),
+      tokenEnvelope: encryptMcpEnvelope({ ...prior, policy: nextPolicy } satisfies StoredTokenEnvelope, input.key,
+        mcpOAuthTokenEnvelopeContext(connection.id, generation)),
+      tokenGeneration: generation
+    },
+    where: { id: connection.id, purpose: "validation", state: "ready", disconnectRequestedAt: null,
+      tokenGeneration: connection.tokenGeneration, policyFingerprint: binding.policyFingerprint }
+  });
+  if (changed.count !== 1) throw new McpEndpointBindingChangedError();
 }
 
 function checkedTokens(tokens: OAuthTokens): OAuthTokens {

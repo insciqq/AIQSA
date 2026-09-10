@@ -712,7 +712,7 @@ function projectRunControlsFromDefaults(
   return controls;
 }
 
-function clamp(value: number, min: number, max: number): number {
+function clamp(value: number, min: number, max = Number.MAX_SAFE_INTEGER): number {
   return Math.min(max, Math.max(min, value));
 }
 
@@ -1543,7 +1543,11 @@ export async function prepareRun(
   if (!paramValidation.ok) {
     return failure(invalidRunParamsError, 400);
   }
-  const runParams = mergeModelParams(parameterProvider, defaultParams, paramValidation.params);
+  const runParams = mergeModelParams(parameterProvider, {
+    ...canonicalizeMaxOutputTokenParams(defaultParams),
+    maxOutputTokens: parameterControls.maxOutputTokens.defaultValue,
+    ...(parameterControls.temperature.supported ? { temperature: parameterControls.temperature.defaultValue } : {})
+  }, paramValidation.params);
   const acceptedReasoning = resolveAcceptedRunReasoningEffort({
     controls: parameterControls,
     params: runParams,

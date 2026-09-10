@@ -493,10 +493,28 @@ describe("remote MCP draft validator", () => {
       draft: remoteDraft({ auth: { mode: "none" }, slots: [] }),
       values: {}
     })).resolves.toEqual({
-      issues: [{ code: "mcp_list_tools_failed", path: "tools" }],
+      issues: [{ code: "mcp_list_tools_failed", path: "tools", operation: "list_tools", endpoint: "https://mcp.example.test/rpc" }],
       kind: "invalid"
     });
     expect(discoveryHarness.events).toEqual(["initialize", "listAllTools", "close"]);
+  });
+
+  it("reports the failed operation and HTTP status after OAuth without exposing token values", async () => {
+    const harness = sessionHarness({ initializeError: new McpClientSessionError({ code: "mcp_initialize_failed", operation: "initialize", httpStatus: 404 }) });
+    const validator = createRemoteMcpDraftValidator({ fetch: safeFetch, sessionFactory: harness.sessionFactory,
+      oauthProviderForDraft: async () => ({ exactKnownSecrets: () => [SECRET] }) as unknown as OAuthClientProvider });
+    const outcome = await validator.validate({ draft: remoteDraft({ auth: { mode: "oauth", scopes: [], allowedAuthorizationServerOrigins: [] }, slots: [] }), values: {} });
+    expect(outcome).toEqual({ kind: "invalid", issues: [{ code: "mcp_initialize_failed", operation: "initialize", path: "source", httpStatus: 404, endpoint: "https://mcp.example.test/rpc" }] });
+    expect(JSON.stringify(outcome)).not.toContain(URL_SECRET);
+    expect(harness.events).toEqual(["initialize", "close"]);
+  });
+
+  it("omits an endpoint containing an exact known secret even in its path", async () => {
+    const harness = sessionHarness({ initializeError: new McpClientSessionError({ code: "mcp_request_timeout", operation: "initialize" }) });
+    const validator = createRemoteMcpDraftValidator({ fetch: safeFetch, sessionFactory: harness.sessionFactory });
+    const outcome = await validator.validate({ draft: remoteDraft({ slots: [remoteDraft().slots[0]!], url: "https://mcp.example.test/path-secret/mcp" }), values: { authorization: "path-secret" } });
+    expect(outcome).toEqual({ kind: "invalid", issues: [{ code: "mcp_request_timeout", path: "source", operation: "initialize" }] });
+    expect(JSON.stringify(outcome)).not.toContain("path-secret");
   });
 
   it("rejects missing effective values and reserved headers before session creation", async () => {

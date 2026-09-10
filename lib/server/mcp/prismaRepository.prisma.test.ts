@@ -6,11 +6,13 @@ import { hashCanonicalMcpValue } from "./definitions";
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 import type { McpDraftValidationInput, McpDraftValidationOutcome } from "./draftValidator";
 import { createPrismaMcpRepository } from "./prismaRepository";
+import { createPrismaMcpOAuthRepository } from "./oauthRepository";
+import { McpOAuthService } from "./oauthService";
 
 const userIds: string[] = [];
 const serverIds: string[] = [];
 const clientIds: string[] = [];
-const valid: McpDraftValidationOutcome = {
+const valid: Extract<McpDraftValidationOutcome, { kind: "ok" }> = {
   evidence: { protocol: "fixture" }, kind: "ok", resolvedArtifact: null,
   toolInventory: [{ name: "search", description: "Search records" }, { name: "write", description: "Write records" }]
 };
@@ -59,6 +61,113 @@ async function fixture() {
   if (activated.kind !== "ok") throw new Error(`fixture_publish_${activated.kind}`);
   return { redirectUri, repository, save, server: activated.value, serverId, userId, validate };
 }
+
+async function correctionFixture() {
+  const base = await fixture();
+  const origin = "https://git-tools.example.test";
+  const endpoint = `${origin}/api/v4/mcp`;
+  const pending: McpDraftConfiguration = {
+    ...draft, slots: [], auth: { mode: "oauth", scopes: ["mcp"], allowedAuthorizationServerOrigins: [] },
+    source: { kind: "remote", url: `${origin}/`, allowPrivateNetwork: true }
+  };
+  await base.repository.updateServer({ serverId: base.serverId, draft: pending });
+  const oauth = createPrismaMcpOAuthRepository({ prisma, encryptionKey: () => Buffer.alloc(32, 1) });
+  const redirectUri = base.redirectUri(base.serverId);
+  const policy = await oauth.prepareValidationPolicy({ serverId: base.serverId, userId: base.userId, redirectUri });
+  if (!policy) throw new Error("fixture_policy_missing");
+  const client = await oauth.saveClient({
+    clientInformation: { client_id: `fixture-${randomUUID()}` }, clientMetadata: { redirect_uris: [redirectUri] },
+    registrationKey: randomUUID(), discoveryState: {
+      authorizationServerUrl: origin,
+      resourceMetadata: { resource: endpoint, authorization_servers: [origin], scopes_supported: ["mcp"] }
+    }
+  });
+  clientIds.push(client.id);
+  const created = await oauth.createConnection({
+    clientId: client.clientInformation.client_id, oauthClientId: client.id,
+    configurationIdentity: policy.configurationIdentity, externalAccountLabel: null,
+    policyFingerprint: mcpOAuthPolicyFingerprint(policy, client.clientInformation.client_id),
+    purpose: "validation", redirectUri, resource: endpoint, serverId: base.serverId, userId: base.userId,
+    tokens: { access_token: "fixture-validation-token", token_type: "Bearer", scope: "mcp" }
+  });
+  if (created.kind !== "ok") throw new Error(created.kind);
+  const connection = created.value;
+  const outcome: McpDraftValidationOutcome = {
+    ...valid, kind: "ok", evidence: { endpointCorrection: { kind: "gitlab", endpoint } },
+    endpointCorrection: { kind: "gitlab", fromUrl: `${origin}/`, toUrl: endpoint, oauthBinding: {
+      connectionId: connection.id, tokenVersion: connection.tokenVersion, policyFingerprint: connection.policyFingerprint
+    } }
+  };
+  base.validate.mockResolvedValue(outcome);
+  const current = await prisma.mcpServer.findUniqueOrThrow({ where: { id: base.serverId } });
+  return { ...base, oauth, connection, pending, endpoint, outcome, expectedUpdatedAt: current.updatedAt.toISOString() };
+}
+
+describe("atomic MCP endpoint correction", () => {
+  it.each(["test_save", "activation"] as const)("publishes the checked URL and validation binding together through %s", async (mode) => {
+    const f = await correctionFixture();
+    const oldRevision = await prisma.mcpRevision.findUniqueOrThrow({ where: { id: f.server.activeRevision!.id } });
+    if (mode === "test_save") {
+      expect(await f.repository.testDraft({ serverId: f.serverId, expectedUpdatedAt: f.expectedUpdatedAt, oneTimeValues: {}, publish: true, validationUserId: f.userId })).toMatchObject({ kind: "ok" });
+    } else {
+      expect(await f.repository.requestActivation({ serverId: f.serverId, validationUserId: f.userId })).toMatchObject({ kind: "ok" });
+      const claim = await f.repository.claimActivation({ now: new Date(), staleBefore: new Date(0) });
+      if (!claim || claim.serverId !== f.serverId || f.outcome.kind !== "ok") throw new Error("fixture_claim_missing");
+      await f.repository.advanceActivation({ id: claim.id, leaseId: claim.leaseId, now: new Date(), stage: "publishing" });
+      expect(await f.repository.publishActivation({ claim, now: new Date(), publication: f.outcome })).toEqual({ kind: "published" });
+    }
+    const stored = await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId }, include: { activeRevision: true } });
+    const corrected = { ...f.pending, source: { ...f.pending.source, url: f.endpoint } };
+    expect(stored.draft).toEqual(corrected);
+    expect(stored.activeRevision?.configuration).toEqual(corrected);
+    expect(stored.testedDraftHash).toBe(hashCanonicalMcpValue(corrected));
+    const connection = await f.oauth.loadConnection(f.connection.id);
+    expect(connection?.policy).toMatchObject({ serverUrl: f.endpoint, resource: f.endpoint,
+      configurationIdentity: hashCanonicalMcpValue(corrected), allowPrivateNetwork: true });
+    expect(connection?.tokens).toEqual(f.connection.tokens);
+    expect(connection?.scopes).toEqual(f.connection.scopes);
+    expect(connection?.client.id).toBe(f.connection.client.id);
+    expect(connection?.tokenVersion).not.toBe(f.connection.tokenVersion);
+    expect(await new McpOAuthService({ repository: f.oauth }).createValidationProvider({
+      serverId: f.serverId, userId: f.userId, redirectUri: f.redirectUri(f.serverId)
+    })).not.toBeNull();
+    expect(await prisma.mcpRevision.findUniqueOrThrow({ where: { id: oldRevision.id } })).toEqual(oldRevision);
+  });
+
+  it.each(["draft", "token", "revocation"] as const)("retains the previous active revision when %s changes during validation", async (change) => {
+    const f = await correctionFixture();
+    f.validate.mockImplementationOnce(async () => {
+      if (change === "draft") await f.repository.updateServer({ serverId: f.serverId,
+        draft: { ...f.pending, runtime: { ...f.pending.runtime, callTimeoutMs: 40_000 } } });
+      if (change === "token") await f.oauth.rotateTokens({ connectionId: f.connection.id, expectedTokenVersion: f.connection.tokenVersion,
+        tokens: { access_token: "fixture-new-token", token_type: "Bearer", scope: "mcp" } });
+      if (change === "revocation") await f.oauth.requestDisconnect({ purpose: "validation", serverId: f.serverId, userId: f.userId });
+      return f.outcome;
+    });
+    expect(await f.repository.testDraft({ serverId: f.serverId, expectedUpdatedAt: f.expectedUpdatedAt, oneTimeValues: {}, publish: true, validationUserId: f.userId })).toEqual({ kind: "draft_changed" });
+    const stored = await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } });
+    expect(stored.activeRevisionId).toBe(f.server.activeRevision!.id);
+    expect(stored.draft).toMatchObject({ source: f.pending.source });
+    const connection = await f.oauth.loadConnection(f.connection.id);
+    if (connection) expect(connection.policy.serverUrl).toBe(f.connection.policy.serverUrl);
+  });
+
+  it("rolls back activation completion when the checked OAuth token was replaced", async () => {
+    const f = await correctionFixture();
+    await f.repository.requestActivation({ serverId: f.serverId, validationUserId: f.userId });
+    const claim = await f.repository.claimActivation({ now: new Date(), staleBefore: new Date(0) });
+    if (!claim || claim.serverId !== f.serverId || f.outcome.kind !== "ok") throw new Error("fixture_claim_missing");
+    await f.repository.advanceActivation({ id: claim.id, leaseId: claim.leaseId, now: new Date(), stage: "publishing" });
+    await f.oauth.rotateTokens({ connectionId: f.connection.id, expectedTokenVersion: f.connection.tokenVersion,
+      tokens: { access_token: "fixture-rotated", token_type: "Bearer", scope: "mcp" } });
+    expect(await f.repository.publishActivation({ claim, now: new Date(), publication: f.outcome })).toMatchObject({ kind: "invalid" });
+    const stored = await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId }, include: { activationJob: true } });
+    expect(stored.activeRevisionId).toBe(f.server.activeRevision!.id);
+    expect(stored.draft).toEqual(f.pending);
+    expect(stored.activationJob).toMatchObject({ stage: "publishing", leaseId: claim.leaseId });
+    expect((await f.oauth.loadConnection(f.connection.id))?.policy).toEqual(f.connection.policy);
+  });
+});
 
 describe("MCP Test & Save persistence", () => {
   it("applies tool switches without another check, preserving the pending endpoint, keys and immutable revisions", async () => {

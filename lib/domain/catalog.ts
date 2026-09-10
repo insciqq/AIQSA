@@ -1,4 +1,6 @@
 import {
+  DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
+  maxOutputTokensFromParams,
   defaultAnthropicMessagesParams,
   defaultDeepSeekResponsesParams,
   defaultFakeProviderParams,
@@ -163,7 +165,7 @@ function openAIReasoningModel(modelId: string, displayName: string): ProviderMod
         supported: true
       },
       maxOutputTokens: {
-        defaultValue: 128_000,
+        defaultValue: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
         maxValue: 128_000
       },
       reasoningEffort: {
@@ -222,7 +224,7 @@ function anthropicClaude5Model(modelId: string, displayName: string): ProviderMo
     },
     parameterControls: controls({
       maxOutputTokens: {
-        defaultValue: 128_000,
+        defaultValue: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
         maxValue: 128_000
       },
       reasoningEffort: {
@@ -277,7 +279,7 @@ function geminiModel(input: Readonly<{
     },
     parameterControls: controls({
       maxOutputTokens: {
-        defaultValue: 65_536,
+        defaultValue: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
         maxValue: 65_536
       },
       reasoningEffort: {
@@ -328,7 +330,7 @@ function deepSeekModel(input: Readonly<{
     defaultParams: deepSeekResponsesParams,
     parameterControls: controls({
       maxOutputTokens: {
-        defaultValue: 32_768,
+        defaultValue: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
         maxValue: 384_000
       },
       reasoningEffort: {
@@ -454,7 +456,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
         supported: true
       },
       maxOutputTokens: {
-        defaultValue: 128000,
+        defaultValue: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
         maxValue: 128000
       },
       reasoningEffort: {
@@ -503,7 +505,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     defaultParams: anthropicMessagesParams,
     parameterControls: controls({
       maxOutputTokens: {
-        defaultValue: 128000,
+        defaultValue: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
         maxValue: 128000
       },
       reasoningEffort: {
@@ -607,7 +609,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     },
     parameterControls: controls({
       maxOutputTokens: {
-        defaultValue: 128000,
+        defaultValue: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
         maxValue: 128000
       },
       reasoningEffort: {
@@ -648,7 +650,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     },
     defaultParams: {
       ...openRouterParams,
-      maxTokens: 65536,
+      maxTokens: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
       reasoning: {
         ...openRouterParams.reasoning,
         enabled: true,
@@ -658,7 +660,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     },
     parameterControls: controls({
       maxOutputTokens: {
-        defaultValue: 65536,
+        defaultValue: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
         maxValue: 65536
       },
       reasoningEffort: {
@@ -699,7 +701,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     },
     defaultParams: {
       ...openRouterParams,
-      maxTokens: 65536,
+      maxTokens: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
       reasoning: {
         ...openRouterParams.reasoning,
         enabled: true,
@@ -709,7 +711,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     },
     parameterControls: controls({
       maxOutputTokens: {
-        defaultValue: 65536,
+        defaultValue: DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
         maxValue: 65536
       },
       reasoningEffort: {
@@ -831,11 +833,11 @@ export function resolveProviderModelParameterControls(input: {
       model.upstreamModelId === input.upstreamModelId
   );
 
-  return template?.parameterControls ?? fallbackParameterControls({
+  const fallback = fallbackParameterControls({
     adapterKind: input.adapterKind,
     defaultParams: input.defaultParams,
-    defaultMaxOutputTokens: input.defaultMaxOutputTokens,
-    maxOutputTokens: input.maxOutputTokens,
+    defaultMaxOutputTokens: input.defaultMaxOutputTokens ?? template?.parameterControls.maxOutputTokens.defaultValue,
+    maxOutputTokens: input.maxOutputTokens ?? template?.parameterControls.maxOutputTokens.maxValue,
     defaultReasoningEffort: input.defaultReasoningEffort,
     defaultReasoningMode: input.defaultReasoningMode,
     provider: input.providerFamily,
@@ -845,6 +847,8 @@ export function resolveProviderModelParameterControls(input: {
     supportsReasoning: input.supportsReasoning,
     supportsStreaming: input.supportsStreaming
   });
+  return template ? { ...template.parameterControls, maxOutputTokens: fallback.maxOutputTokens,
+    temperature: { ...template.parameterControls.temperature, defaultValue: fallback.temperature.defaultValue } } : fallback;
 }
 
 export function fallbackParameterControls(input: {
@@ -863,10 +867,7 @@ export function fallbackParameterControls(input: {
 }): ModelParameterControls {
   const defaultParams = input.defaultParams ?? {};
   const reasoning = isRecord(defaultParams.reasoning) ? defaultParams.reasoning : {};
-  const maxOutputTokens =
-    numberValue(defaultParams.maxOutputTokens, 0) ||
-    numberValue(defaultParams.maxTokens, 0) ||
-    numberValue(defaultParams.max_output_tokens, input.defaultMaxOutputTokens ?? 1024);
+  const maxOutputTokens = maxOutputTokensFromParams(defaultParams) ?? input.defaultMaxOutputTokens ?? DEFAULT_CHAT_MAX_OUTPUT_TOKENS;
   const nativeResponses = input.adapterKind === "openai_responses_native";
   const openRouter = input.adapterKind === "openrouter_chat_completions";
   const streamDefault = booleanValue(defaultParams.stream, openRouter);
@@ -912,7 +913,7 @@ export function fallbackParameterControls(input: {
     },
     maxOutputTokens: {
       defaultValue: Math.min(maxOutputTokens, input.maxOutputTokens ?? maxOutputTokens),
-      maxValue: input.maxOutputTokens ?? maxOutputTokens
+      ...(input.maxOutputTokens === undefined ? {} : { maxValue: input.maxOutputTokens })
     },
     reasoningEffort: input.supportsReasoning
       ? {
@@ -946,6 +947,7 @@ export function parameterControlsForModel(input: {
   defaultParams?: Record<string, unknown>;
   modelCapabilities?: {
     defaultMaxOutputTokens?: number;
+    maxOutputTokens?: number;
     defaultReasoningEffort?: string;
     defaultReasoningMode?: string;
     reasoning?: boolean;
@@ -962,21 +964,15 @@ export function parameterControlsForModel(input: {
     (entry) => entry.providerFamily === input.provider && entry.upstreamModelId === input.modelId
   );
 
-  if (defaultEntry) {
-    return defaultEntry.parameterControls;
-  }
-
-  return fallbackParameterControls({
-    adapterKind: input.adapterKind,
+  return resolveProviderModelParameterControls({
+    adapterKind: input.adapterKind ?? defaultEntry?.adapterKind ?? "fake",
+    defaultParams: input.defaultParams ?? {},
     defaultMaxOutputTokens: input.modelCapabilities?.defaultMaxOutputTokens,
+    maxOutputTokens: input.modelCapabilities?.maxOutputTokens,
     defaultReasoningEffort: input.modelCapabilities?.defaultReasoningEffort,
     defaultReasoningMode: input.modelCapabilities?.defaultReasoningMode,
-    defaultParams:
-      input.defaultParams ??
-      (typeof input.modelCapabilities?.defaultMaxOutputTokens === "number"
-        ? { maxOutputTokens: input.modelCapabilities.defaultMaxOutputTokens }
-        : {}),
-    provider: input.provider,
+    providerFamily: input.provider,
+    upstreamModelId: input.modelId,
     reasoningEfforts: input.modelCapabilities?.reasoningEfforts,
     reasoningModes: input.modelCapabilities?.reasoningModes,
     supportsReasoningMode: input.supportsReasoningMode,

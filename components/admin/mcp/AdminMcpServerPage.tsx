@@ -1,6 +1,7 @@
 "use client";
 
 import { adminMcpErrorMessage } from "@/components/admin/adminMcpApi";
+import { safeMcpEndpoint } from "@/lib/contracts/mcp";
 import {
   adminMcpActivationStage,
   adminMcpActivationVerb,
@@ -142,6 +143,12 @@ function ActivationBanner({
     );
   }
 
+  const correction = server.activeRevision?.validationEvidence.evidence.endpointCorrection;
+  const endpoint = correction && typeof correction === "object" && !Array.isArray(correction) && correction.kind === "gitlab"
+    ? safeMcpEndpoint(correction.endpoint) : undefined;
+  if (endpoint) return <McpNote data-testid="admin-mcp-endpoint-corrected" role="status" tone="ok">
+    <span className="[overflow-wrap:anywhere]">Corrected the GitLab MCP URL to {endpoint}. Initialization and tool discovery passed before saving.</span>
+  </McpNote>;
   return null;
 }
 

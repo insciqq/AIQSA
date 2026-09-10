@@ -26,7 +26,8 @@ export type ModelParameterControls = {
   };
   maxOutputTokens: {
     defaultValue: number;
-    maxValue: number;
+    /** Omitted when no model output ceiling is known. */
+    maxValue?: number;
   };
   reasoningEffort: {
     defaultValue: ReasoningEffort;
@@ -225,7 +226,7 @@ function isModelParameterControls(value: unknown): value is ModelParameterContro
     typeof value.background.supported === "boolean" &&
     isRecord(value.maxOutputTokens) &&
     finiteNumber(value.maxOutputTokens.defaultValue) &&
-    finiteNumber(value.maxOutputTokens.maxValue) &&
+    (value.maxOutputTokens.maxValue === undefined || finiteNumber(value.maxOutputTokens.maxValue)) &&
     isRecord(value.reasoningEffort) &&
     typeof value.reasoningEffort.defaultValue === "string" &&
     stringArray(value.reasoningEffort.options) &&

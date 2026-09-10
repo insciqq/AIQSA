@@ -13,7 +13,7 @@ import {
 } from "@/components/admin/adminProviderReasoning";
 import { AdminSearchablePicker } from "@/components/admin/AdminSearchablePicker";
 import { AdminSheet } from "@/components/admin/AdminSheet";
-import { defaultCredentialOf, modelEditorCheck, modelRouteLabel } from "@/components/admin/providers/models/modelListView";
+import { defaultCredentialOf, modelEditorCheck, modelRouteLabel, providerKeyFirstHelp, providerNeedsKeyForModels } from "@/components/admin/providers/models/modelListView";
 import {
   applyCatalogHint,
   applyCompatibleModel,
@@ -281,9 +281,11 @@ function SheetBody({
   const jsonTriggerRef = useRef<HTMLButtonElement>(null);
   const timeoutRef = useRef<HTMLInputElement>(null);
   const formId = useId();
+  const keyHelpId = useId();
   const errorId = useId();
   const hintsId = useId();
   const busy = controller.state.busy || saving;
+  const needsKeyForNewModel = model === null && providerNeedsKeyForModels(connection);
   const family = connection.family;
   const openRouter = family === "openrouter";
   const compatible = family === "openai_compatible";
@@ -363,7 +365,7 @@ function SheetBody({
   };
 
   const submit = async () => {
-    if (busy || interrupted || jsonEditing || discarding) return;
+    if (busy || interrupted || jsonEditing || discarding || needsKeyForNewModel) return;
     const result = modelFormBody(form, connection, model);
     if (!result.ok) {
       setErrorField(result.field);
@@ -393,7 +395,7 @@ function SheetBody({
     setErrorField(saved.error?.code === "provider_configuration_invalid" ? "configuration" : null);
   };
 
-  const canSave = !busy && !interrupted && !jsonEditing && !discarding && form.upstreamModelId.trim() !== "" && (model === null || dirty);
+  const canSave = !busy && !needsKeyForNewModel && !interrupted && !jsonEditing && !discarding && form.upstreamModelId.trim() !== "" && (model === null || dirty);
   const capabilityRows: ReadonlyArray<[keyof AdminProviderModelCapabilities, string, string?]> = compatible
     ? [
         ["toolCalling", "Tools", "Function calling for Search, MCP and Memory."],
@@ -418,13 +420,13 @@ function SheetBody({
       description={providerFamilyLabel(family)}
       footer={(
         <>
-          {interrupted ? <UiV2Button onClick={onSaved} tone="primary" type="button">View model results</UiV2Button> : <UiV2Button busy={busy} disabled={!canSave} form={formId} tone="primary" type="submit">
+          {interrupted ? <UiV2Button onClick={onSaved} tone="primary" type="button">View model results</UiV2Button> : <UiV2Button aria-describedby={keyHelpId} busy={busy} disabled={!canSave} form={formId} tone="primary" type="submit">
             Test &amp; Save
           </UiV2Button>}
           {saving ? <UiV2Button onClick={() => abortRef.current?.abort()} tone="ghost" type="button">Stop checking</UiV2Button>
             : <UiV2Button disabled={busy || jsonEditing || discarding} onClick={requestClose} tone="ghost" type="button">Cancel</UiV2Button>}
-          <span className="min-w-0 break-words text-xs leading-5 text-ink-muted [overflow-wrap:anywhere] sm:ml-auto sm:text-right">
-            {checkKeyLabel
+          <span className="min-w-0 break-words text-xs leading-5 text-ink-muted [overflow-wrap:anywhere] sm:ml-auto sm:text-right" id={keyHelpId}>
+            {needsKeyForNewModel ? providerKeyFirstHelp : checkKeyLabel
               ? model ? `Checks the model with key ${checkKeyLabel} and preserves your capability choices`
                 : `Checks supported capabilities with key ${checkKeyLabel} and enables verified features, including PDF`
               : "Turns the model on without a check — add a key first to check it"}
@@ -795,6 +797,7 @@ function SheetBody({
       </form>
       {jsonEditing ? (
         <ModelJsonDialog
+          example={JSON.stringify(answer ? { maxOutputTokens: Math.min(1024, form.capabilities.maxOutputTokens ?? 1024) } : {})}
           modelLabel={form.displayName || form.upstreamModelId}
           onApply={(text) => { update({ defaultParamsText: text }); setJsonEditing(false); }}
           onClose={() => setJsonEditing(false)}

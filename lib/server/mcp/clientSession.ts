@@ -19,6 +19,7 @@ import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/
 import packageMetadata from "@/package.json";
 import { canonicalMcpJson, hashCanonicalMcpValue } from "./definitions";
 import { McpResponseGuard } from "./responseGuard";
+import { McpSafeFetchError } from "./safeFetch";
 import {
   McpResponseTooLargeError,
   type McpResponseOperation,
@@ -49,6 +50,9 @@ export type McpClientSessionErrorCode =
   | "mcp_ping_failed"
   | "mcp_ping_unsupported"
   | "mcp_authorization_required"
+  | "mcp_network_failed"
+  | "mcp_tls_failed"
+  | "mcp_connection_forbidden"
   | "mcp_response_too_large"
   | "mcp_request_cancelled"
   | "mcp_request_timeout"
@@ -84,6 +88,9 @@ const ERROR_MESSAGES: Record<McpClientSessionErrorCode, string> = {
   mcp_ping_failed: "The MCP server did not respond.",
   mcp_ping_unsupported: "The MCP server does not support the ping health method.",
   mcp_authorization_required: "The MCP server requires renewed authorization.",
+  mcp_network_failed: "The MCP server could not be reached over the network.",
+  mcp_tls_failed: "The MCP server's TLS connection could not be verified.",
+  mcp_connection_forbidden: "The MCP connection was blocked by its network policy.",
   mcp_response_too_large: "The MCP response exceeds the configured byte limit.",
   mcp_request_cancelled: "The MCP request was cancelled.",
   mcp_request_timeout: "The MCP request timed out.",
@@ -96,17 +103,20 @@ export class McpClientSessionError extends Error {
   readonly code: McpClientSessionErrorCode;
   readonly operation: SessionOperation;
   readonly retryable: boolean;
+  readonly httpStatus?: number;
 
   constructor(input: Readonly<{
     code: McpClientSessionErrorCode;
     operation: SessionOperation;
     retryable?: boolean;
+    httpStatus?: number;
   }>) {
     super(ERROR_MESSAGES[input.code]);
     this.name = "McpClientSessionError";
     this.code = input.code;
     this.operation = input.operation;
     this.retryable = input.retryable ?? false;
+    if (Number.isInteger(input.httpStatus) && input.httpStatus! >= 400 && input.httpStatus! <= 599) this.httpStatus = input.httpStatus;
   }
 
   toJSON(): Readonly<{
@@ -114,11 +124,13 @@ export class McpClientSessionError extends Error {
     message: string;
     operation: SessionOperation;
     retryable: boolean;
+    httpStatus?: number;
   }> {
     return {
       code: this.code,
       message: this.message,
       operation: this.operation,
+      ...(this.httpStatus ? { httpStatus: this.httpStatus } : {}),
       retryable: this.retryable
     };
   }
@@ -208,9 +220,10 @@ function positiveInteger(value: number): boolean {
 function sessionError(
   code: McpClientSessionErrorCode,
   operation: SessionOperation,
-  retryable = false
+  retryable = false,
+  httpStatus?: number
 ): McpClientSessionError {
-  return new McpClientSessionError({ code, operation, retryable });
+  return new McpClientSessionError({ code, operation, retryable, httpStatus });
 }
 
 function responseTooLargeErrorCode(error: McpResponseTooLargeError): McpFatalResponseErrorCode {
@@ -249,10 +262,19 @@ function requestFailure(
   if (SdkError.isInstance(error) && error.code === SdkErrorCode.RequestTimeout) {
     return sessionError("mcp_request_timeout", operation, true);
   }
-  if (SdkHttpError.isInstance(error) && (error.data.status === 401 || error.data.status === 403) ||
-    SdkError.isInstance(error) && [SdkErrorCode.ClientHttpAuthentication, SdkErrorCode.ClientHttpForbidden].includes(error.code) ||
+  if (SdkHttpError.isInstance(error)) {
+    const status = error.data.status;
+    return sessionError(status === 401 || status === 403 ? "mcp_authorization_required" : fallbackCode, operation, status >= 500 || status === 429, status);
+  }
+  if (error instanceof McpSafeFetchError) {
+    const code = error.code === "mcp_http_tls_failed" ? "mcp_tls_failed"
+      : error.code === "mcp_http_request_failed" || error.code === "mcp_http_dns_failed" ? "mcp_network_failed" : "mcp_connection_forbidden";
+    return sessionError(code, operation, code === "mcp_network_failed");
+  }
+  if (SdkError.isInstance(error) && [SdkErrorCode.ClientHttpAuthentication, SdkErrorCode.ClientHttpForbidden].includes(error.code) ||
     error instanceof Error && error.name === "UnauthorizedError") {
-    return sessionError("mcp_authorization_required", operation);
+    return sessionError("mcp_authorization_required", operation, false,
+      SdkError.isInstance(error) ? error.code === SdkErrorCode.ClientHttpForbidden ? 403 : 401 : undefined);
   }
   return sessionError(fallbackCode, operation, true);
 }

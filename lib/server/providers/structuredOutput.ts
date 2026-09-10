@@ -316,7 +316,7 @@ function hasReportedTokenUsage(value: unknown, fields: readonly string[]): value
 
 function structuredOutputTokenLimitFailure(): Error {
   const code = "structured_output_output_limit_exceeded";
-  return Object.assign(new Error(code), { code });
+  return Object.assign(new Error(code), { code, capabilityFailureReason: "budget_exhausted" });
 }
 
 function openAIResponseText(response: Record<string, unknown>): string {
@@ -472,13 +472,13 @@ function geminiStructuredOutputText(response: Record<string, unknown>): string {
   }
   const refusal = (value: Record<string, unknown>) =>
     value.refusal !== undefined && value.refusal !== null && value.refusal !== false && value.refusal !== "";
-  const refused = () => Object.assign(new Error("structured_output_provider_incomplete"), {
-    code: "provider_response_not_retryable"
+  const refused = (isRefusal = true) => Object.assign(new Error("structured_output_provider_incomplete"), {
+    code: "provider_response_not_retryable", ...(isRefusal ? { capabilityFailureReason: "refusal" } : {})
   });
   if (refusal(response) || response.error ||
     response.errors !== undefined && response.errors !== null &&
       (!Array.isArray(response.errors) || response.errors.length > 0)) {
-    throw refused();
+    throw refused(refusal(response));
   }
   if (!Array.isArray(response.steps) || response.steps.length === 0 || response.steps.length > 10_000) {
     throw new Error("structured_output_invalid");
