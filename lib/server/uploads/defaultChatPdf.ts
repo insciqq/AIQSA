@@ -1,3 +1,4 @@
+import { imageGenerationForStorage } from "../images/defaultImages";
 import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
 import { knowledgeRunAdmissionService } from "../knowledge/runAdmission";
 import { knowledgeToolExecutor } from "../knowledge/defaultRetrieval";
@@ -44,6 +45,7 @@ function createDefaultChatPdf() {
       } catch { return false; }
     },
     continueRun: createChatPdfRunContinuation({
+      images: imageGenerationForStorage(storage),
       chatTitleGenerator: createPrismaChatTitleGenerator(),
       knowledgeAdmission: knowledgeRunAdmissionService, knowledgeExecutor: knowledgeToolExecutor,
       knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle, memoryEgress: defaultMemoryToolEgressReceiptService,

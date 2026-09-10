@@ -1,3 +1,4 @@
+import { decodeAcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
 import { isMcpAutoDiscoveryOutputTokens } from "../../contracts/mcp";
 import {
   Prisma,
@@ -502,6 +503,8 @@ const normalizedRequestKeys = new Set([
   "knowledgeReviewRepairFeedbackVersion",
   "knowledgeEvidencePackingVersion",
   "knowledgeFocusedRequest",
+  "imagePlan",
+  "imageReferences",
   "knowledgePlan",
   "knowledgeSearchInstructionVersion",
   "knowledgeQueryAnchorVersion",
@@ -848,6 +851,8 @@ function decodeProviderDispatchRecoveryRequest(
       value.knowledgeEvidencePackingVersion !== 2 && value.knowledgeEvidencePackingVersion !== 3 && value.knowledgeEvidencePackingVersion !== 4 && value.knowledgeEvidencePackingVersion !== 5 ||
     value.knowledgeSearchInstructionVersion !== undefined && value.knowledgeSearchInstructionVersion !== 2 && value.knowledgeSearchInstructionVersion !== 3 ||
     value.knowledgeQueryAnchorVersion !== undefined && value.knowledgeQueryAnchorVersion !== 2 ||
+    value.imagePlan !== undefined && !decodeAcceptedImageGenerationPlan(value.imagePlan) ||
+    value.imageReferences !== undefined && (!value.imagePlan || !Array.isArray(value.imageReferences) || value.imageReferences.length > 256 || value.imageReferences.some((reference) => !isRecord(reference) || !onlyKnownKeys(reference, new Set(["attachmentId", "messageId", "fileName", "origin"])) || !nonBlank(reference.attachmentId, 128) || !nonBlank(reference.messageId, 128) || !nonBlank(reference.fileName, 256) || !["upload", "generated"].includes(String(reference.origin)))) ||
     !validCapabilities(value.modelCapabilities) || !validWorkspace(value.workspace, identity.runId) ||
     (value.sessionStatusTool !== undefined && value.sessionStatusTool !== true) ||
     !isRecord(value.params) || !finiteJson(value.params) ||
@@ -1834,7 +1839,7 @@ export function createPrismaRunToolLoopOperations(
 
         await tx.usageEvent.deleteMany({
           where: {
-            chatPdfPreparation: false,
+            chatPdfPreparation: false, imageGeneration: false,
             modelRunId: input.runId
           }
         });
@@ -2004,7 +2009,7 @@ export function createPrismaRunToolLoopOperations(
         if (usageAttributions.length > 0) {
           await tx.usageEvent.deleteMany({
             where: {
-              chatPdfPreparation: false,
+              chatPdfPreparation: false, imageGeneration: false,
               modelRunId: input.runId
             }
           });

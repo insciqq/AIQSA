@@ -109,7 +109,7 @@ function inputContent(
     if (attachment.kind === "pdf" || attachment.kind === "document") {
       const block = attachmentTextBlock(attachment, options);
       if (block) content.push(block);
-    } else if (attachment.kind === "image") {
+    } else if (attachment.kind === "image" && request.modelCapabilities.vision) {
       content.push(imageBlock(attachment, options.redactImages));
     }
   }

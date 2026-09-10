@@ -1,3 +1,4 @@
+import type { ImageModelConfiguration } from "./imageGeneration";
 import type { ProviderReasoningRequestMapping } from "./providerReasoningRequestMapping";
 
 export type AdminProviderFamily =
@@ -17,11 +18,15 @@ export type AdminProviderAdapterKind =
   | "openai_responses_compatible"
   | "openai_responses_native"
   | "openrouter_chat_completions"
-  | "openrouter_rerank";
+  | "openrouter_rerank"
+  | "openai_images_native"
+  | "openai_images_compatible"
+  | "gemini_images_native"
+  | "openrouter_images";
 
 export type AdminProviderUnassignedPolicy = "require_assignment" | "use_default";
 export type AdminProviderCheckStatus = "available" | "unavailable";
-export type AdminProviderModelClass = "answer" | "embedding" | "reranker";
+export type AdminProviderModelClass = "answer" | "embedding" | "reranker" | "image";
 
 export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS = 300;
 export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS = 900;
@@ -43,10 +48,10 @@ export type AdminProviderModelCapabilities = {
   /** Declared output ceiling; independent of the default generation value. */
   maxOutputTokens?: number;
   nativeBackground?: boolean;
-  /** Administrator-declared support for OpenAI-compatible image generation.
-   * AIQSA records this for future image workflows; the current run pipeline
-   * does not expose image generation as a runnable tool. */
+  /** Legacy declaration; executable image roles require independent evidence. */
   nativeImageGeneration?: boolean;
+  imageGeneration?: boolean;
+  imageEditing?: boolean;
   /** Legacy/internal declared Direct PDF input flag. Effective user access also
    * requires current verification evidence for the exact credential tuple. */
   nativePdfInput: boolean;
@@ -83,6 +88,7 @@ export type AdminProviderModelConfiguration = {
   capabilities: AdminProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
   embedding?: AdminEmbeddingModelConfiguration;
+  image?: ImageModelConfiguration;
   modelClass: AdminProviderModelClass;
   openRouterRouting?: AdminOpenRouterRouting;
   reasoningRequestMapping?: ProviderReasoningRequestMapping;
@@ -96,7 +102,7 @@ export type AdminProviderReasoningRequestMapping = ProviderReasoningRequestMappi
 export type AdminProviderCompatibilityStatus = "not_supported" | "verified";
 
 export const ADMIN_PROVIDER_CAPABILITY_CHECKS = ["modelAccess", "structuredOutput", "toolCalling",
-  "forcedToolCall", "parallelToolCalls", "vision", "directPdf", "streaming", "embedding", "reranking"] as const;
+  "forcedToolCall", "parallelToolCalls", "vision", "directPdf", "streaming", "embedding", "reranking", "imageGeneration", "imageEditing"] as const;
 export type AdminProviderCapabilityCheck = (typeof ADMIN_PROVIDER_CAPABILITY_CHECKS)[number];
 export type AdminProviderCapabilityCheckStatus = "verified" | "rejected" | "unsupported" | "incomplete" | "not_checked";
 export type AdminProviderCapabilitySetupEvidence = {
@@ -132,6 +138,8 @@ export type AdminProviderTestEvidence = {
   };
   embedding?: { probeVersion: 1; document: true; query: true; dimensions: number };
   reranking?: { probeVersion: 1; completeScores: true };
+  imageGeneration?: { adapterKind: AdminProviderAdapterKind; upstreamModelId: string; probeVersion: 1; verified: true };
+  imageEditing?: { adapterKind: AdminProviderAdapterKind; upstreamModelId: string; probeVersion: 1; verified: true };
   compatibility?: AdminProviderCompatibilityEvidence;
   visionInput?: {
     adapterKind: AdminProviderAdapterKind;
@@ -361,6 +369,20 @@ export type AdminOpenRouterDiscoveredModel = {
   outputModalities: string[];
   pricing: Record<string, string>;
   supportedParameters: string[];
+};
+
+export type AdminImageDiscoveredModel = {
+  id: string;
+  name: string;
+  image: ImageModelConfiguration;
+  editing: boolean;
+  source: "catalog" | "preset";
+};
+
+export type AdminImageDiscoveredEndpoint = {
+  tag: string;
+  name: string;
+  image: ImageModelConfiguration;
 };
 
 export type AdminCompatibleDiscoveredCapabilities = {

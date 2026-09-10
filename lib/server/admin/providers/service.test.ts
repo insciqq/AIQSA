@@ -458,7 +458,7 @@ describe("admin provider service", () => {
     const providers = service(repository({ activateCredentialCas, listConnections: async () => [connection] }),
       tester(), ["credential-new", "version-new"], { test });
     await providers.activateNewCredential({ connectionId: connection.id, label: "Main", secret: "candidate-secret" });
-    expect(test).toHaveBeenCalledWith(expect.objectContaining({ modelClasses: ["reranker", "answer", "embedding"] }));
+    expect(test).toHaveBeenCalledWith(expect.objectContaining({ modelClasses: ["reranker", "answer", "embedding", "image"] }));
     expect(activateCredentialCas.mock.calls[0]![0].catalogAdditions?.map((model) => model.configuration.upstreamModelId))
       .toEqual(expect.arrayContaining([
         "deepseek/deepseek-v4-pro-0813", "anthropic/claude-opus-5", "anthropic/claude-fable-5.1",

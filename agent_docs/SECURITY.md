@@ -63,7 +63,7 @@ Do not add a repository-owned OSV client, lockfile scanner, or aggregate depende
 | --- | --- |
 | MCP SDK packages | The pinned official SDKs own protocol/OAuth behavior; Node adapter is test/build-only. The Hono override enforces the reviewed advisory floor despite no exposed static server. |
 | `deepmerge-ts` | Patched-major override prevents recursive-object stack exhaustion in Prisma config/CLI; Map-merge behavior is outside current operator/repository config. Remove when supported Prisma carries the fix. |
-| `sharp` | Runtime input is bounded PDF-renderer output, including citation overlays; original uploads need separate review. |
+| `sharp` | Handles untrusted raster uploads and image-provider output as well as PDF rendering. Keep byte, pixel and frame limits plus full decoding at input boundaries; reject SVG and MIME mismatches. |
 | `pdfjs-dist` | Standard-font assets only; adopting its engine or optional canvas requires compatibility/security review. |
 | `nanoid` | Patched compatible override addresses zero-size custom-generator denial of service; current use is transitive build tooling, not affected APIs. |
 | `postcss` | Override crosses Next's exact older dependency and processes repository CSS only; review before user/runtime CSS or when upstream is safe. |

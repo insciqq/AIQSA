@@ -70,6 +70,7 @@ export function adminProviderModelConfiguration(
     capabilities: configuration.capabilities,
     defaultParams: configuration.defaultParams,
     ...(configuration.embedding ? { embedding: configuration.embedding } : {}),
+    ...(configuration.image ? { image: configuration.image } : {}),
     modelClass: configuration.modelClass,
     ...(configuration.openRouterRouting
       ? { openRouterRouting: configuration.openRouterRouting }

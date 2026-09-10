@@ -221,7 +221,9 @@ test("one key save activates models, fills empty defaults and retries failed Sea
     }
   } finally {
     await prisma.modelPolicy.update({ where: { id: "installation" }, data: priorChat });
-    await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: priorRoles });
+    await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: {
+      ...priorRoles, imageParamsJson: priorRoles.imageParamsJson as Prisma.InputJsonValue
+    } });
     await prisma.searchPolicy.update({ where: { id: "installation" }, data: { ...priorSearch,
       defaultPlan: priorSearch.defaultPlan as Prisma.InputJsonValue
     } });

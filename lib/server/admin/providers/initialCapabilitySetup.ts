@@ -9,6 +9,7 @@ import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvid
 import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
 import { hasVerifiedForcedToolCall } from "../../providers/forcedToolCallEvidence";
 import { hasVerifiedStructuredOutput } from "../../providers/structuredOutputEvidence";
+import { decodeImageVerificationEvidence } from "../../providers/imageGenerationEvidence";
 
 export const INITIAL_CAPABILITY_SETUP_POLICY_VERSION = 1 as const;
 export const INITIAL_CAPABILITY_MODEL_TIMEOUT_MS = 180_000;
@@ -17,6 +18,8 @@ export const INITIAL_CAPABILITY_BATCH_TIMEOUT_MS = 30 * 60_000;
 export function initialModelConfiguration(model: ProviderModelConfiguration): ProviderModelConfiguration {
   return model.modelClass === "answer" ? { ...model, capabilities: { ...model.capabilities,
     toolCalling: false, parallelToolCalls: false, vision: false, nativePdfInput: false, streaming: false
+  } } : model.modelClass === "image" ? { ...model, capabilities: { ...model.capabilities,
+    imageGeneration: false, imageEditing: false
   } } : model;
 }
 
@@ -52,6 +55,13 @@ export function initiallyVerifiedModelConfiguration(
   evidence: AdminProviderTestEvidence
 ): ProviderModelConfiguration {
   const setup = decodeCapabilitySetupEvidence(evidence.capabilitySetup);
+  if (setup && model.modelClass === "image") {
+    const verified = (capability: "imageGeneration" | "imageEditing") => {
+      const proof = decodeImageVerificationEvidence(evidence[capability]);
+      return setup.checks[capability] === "verified" && proof?.adapterKind === model.adapterKind && proof.upstreamModelId === model.upstreamModelId;
+    };
+    return { ...model, capabilities: { ...model.capabilities, imageGeneration: verified("imageGeneration"), imageEditing: verified("imageEditing") } };
+  }
   if (!setup || model.modelClass !== "answer") return model;
   const matching = (proof: { adapterKind: string; upstreamModelId: string } | null) =>
     proof?.adapterKind === model.adapterKind && proof.upstreamModelId === model.upstreamModelId;
@@ -80,7 +90,9 @@ export function reusableCapabilitySetupEvidence(
   for (const [check, proof] of [
     ["vision", decodeVisionInputVerificationEvidence(evidence.visionInput)],
     ["directPdf", decodePdfInputVerificationEvidence(evidence.pdfInput)],
-    ["parallelToolCalls", decodeParallelToolCallVerificationEvidence(evidence.parallelToolCalls)]
+    ["parallelToolCalls", decodeParallelToolCallVerificationEvidence(evidence.parallelToolCalls)],
+    ["imageGeneration", decodeImageVerificationEvidence(evidence.imageGeneration)],
+    ["imageEditing", decodeImageVerificationEvidence(evidence.imageEditing)]
   ] as const) {
     if (setup.checks[check] === "verified" &&
       (proof?.adapterKind !== model.adapterKind || proof.upstreamModelId !== model.upstreamModelId)) return undefined;

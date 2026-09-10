@@ -64,6 +64,7 @@ export type CatalogWireModelCapabilities = {
   background: boolean;
   documentInputMode: "native_pdf" | "none" | "pdf_text_extraction";
   imageInput: boolean;
+  imageTool?: { generation: boolean; editing: boolean };
   nativeWebSearch: boolean;
   openRouterPerplexitySearch: boolean;
   reasoning: boolean;
@@ -275,6 +276,7 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
       documentInputMode !== "none" &&
       documentInputMode !== "pdf_text_extraction") ||
     typeof capabilities.imageInput !== "boolean" ||
+    (capabilities.imageTool !== undefined && (!isRecord(capabilities.imageTool) || typeof capabilities.imageTool.generation !== "boolean" || typeof capabilities.imageTool.editing !== "boolean")) ||
     typeof capabilities.nativeWebSearch !== "boolean" ||
     typeof capabilities.openRouterPerplexitySearch !== "boolean" ||
     typeof capabilities.reasoning !== "boolean" ||
@@ -299,6 +301,7 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
       background: capabilities.background,
       documentInputMode,
       imageInput: capabilities.imageInput,
+      ...(isRecord(capabilities.imageTool) ? { imageTool: { generation: capabilities.imageTool.generation as boolean, editing: capabilities.imageTool.editing as boolean } } : {}),
       nativeWebSearch: capabilities.nativeWebSearch,
       openRouterPerplexitySearch: capabilities.openRouterPerplexitySearch,
       reasoning: capabilities.reasoning,

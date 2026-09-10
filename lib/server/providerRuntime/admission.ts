@@ -1,3 +1,4 @@
+import { hasVerifiedImageCapability } from "../providers/imageGenerationEvidence";
 import { hasVerifiedDedicatedProtocol } from "../providers/systemRoleEvidence";
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
@@ -80,6 +81,8 @@ export type RerankerProviderAdmissionRole = Readonly<{
   snapshot: ProviderExecutionSnapshot;
 }>;
 
+export type ImageProviderAdmissionRole = RerankerProviderAdmissionRole;
+
 export type ProviderAdmissionPlan = Readonly<{
   answer: ProviderAdmissionRole;
   /** `project` means installation/shared authority; it never consults the
@@ -149,6 +152,8 @@ type AnswerRoleInput = SharedRoleInput & Readonly<{
 type EmbeddingRoleInput = SharedRoleInput & Readonly<{
   modelClass: "embedding";
 }>;
+
+type ImageRoleInput = SharedRoleInput & Readonly<{ modelClass: "image" }>;
 
 type RerankerRoleInput = SharedRoleInput & Readonly<{
   modelClass: "reranker";
@@ -289,7 +294,11 @@ async function loadRole(
 ): Promise<RerankerProviderAdmissionRole>;
 async function loadRole(
   db: AdmissionPrisma,
-  input: AnswerRoleInput | EmbeddingRoleInput | RerankerRoleInput
+  input: ImageRoleInput
+): Promise<ImageProviderAdmissionRole>;
+async function loadRole(
+  db: AdmissionPrisma,
+  input: AnswerRoleInput | EmbeddingRoleInput | RerankerRoleInput | ImageRoleInput
 ): Promise<ProviderAdmissionRole | EmbeddingProviderAdmissionRole |
   RerankerProviderAdmissionRole> {
   const model = await db.providerModel.findFirst({
@@ -494,6 +503,18 @@ async function loadRole(
     modelVersion: model.activeVersion,
     providerModelId: model.id
   } satisfies SearchProbeBinding;
+  if (input.modelClass === "image") {
+    if (resolvedModel.adapterKind === "fake" || resolvedModel.modelClass !== "image" || !resolvedModel.image) {
+      throw new ProviderAdmissionError("model_not_available");
+    }
+    const family = resolvedModel.image.profile === "codex_lb" ? "openai_compatible" : resolvedModel.image.profile;
+    if (family !== model.connection.family) throw new ProviderAdmissionError("model_not_available");
+    const configuration = { ...resolvedModel, capabilities: { ...resolvedModel.capabilities,
+      imageGeneration: hasVerifiedImageCapability(check.evidence, resolvedModel, "imageGeneration"),
+      imageEditing: hasVerifiedImageCapability(check.evidence, resolvedModel, "imageEditing") } };
+    return { authority, configuration, credentialSource: credential.source, provider: model.provider,
+      snapshot: { ...snapshot, model: configuration } };
+  }
   if (input.modelClass === "embedding") {
     if (
       resolvedModel.adapterKind === "fake" ||
@@ -657,6 +678,21 @@ export async function loadInstallationAnswerProviderRole(
   } catch (error) {
     if (error instanceof ProviderConfigurationError ||
       error instanceof Error && error.message === "provider_execution_snapshot_invalid") {
+      throw new ProviderAdmissionError("model_not_available");
+    }
+    throw error;
+  }
+}
+
+/** The image role is shared installation authority, independent of the chat model/key. */
+export async function loadInstallationImageProviderRole(db: AdmissionPrisma, input: { providerModelId: string }): Promise<ImageProviderAdmissionRole> {
+  const model = await db.providerModel.findUnique({ select: { connectionId: true }, where: { id: input.providerModelId } });
+  if (!model) throw new ProviderAdmissionError("model_not_available");
+  try {
+    return await loadRole(db, { connectionId: model.connectionId, credentialAuthority: { kind: "installation" },
+      modelClass: "image", modelId: input.providerModelId, requireEntitlement: false });
+  } catch (error) {
+    if (error instanceof ProviderConfigurationError || error instanceof Error && error.message === "provider_execution_snapshot_invalid") {
       throw new ProviderAdmissionError("model_not_available");
     }
     throw error;

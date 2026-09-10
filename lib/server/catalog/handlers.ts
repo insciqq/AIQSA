@@ -11,6 +11,7 @@ export { buildCurrentUserCatalog } from "./currentUserCatalog";
 export type { CatalogData } from "./currentUserCatalog";
 
 export type CatalogHandlerDeps = {
+  resolveImageCapabilities?(): Promise<{ generation: boolean; editing: boolean } | null>;
   loadCatalogData(userId: string): Promise<CatalogData | null>;
   resolveAuth: RequestAuthResolver;
   resolveRunAttachmentLimits?(): RunAttachmentLimits;
@@ -37,9 +38,13 @@ export function createCatalogHandler(deps: CatalogHandlerDeps) {
       return catalogErrorJson({ error: "user_not_found" }, { status: 404 });
     }
 
+    const imageTool = await deps.resolveImageCapabilities?.();
+    const catalog = buildCurrentUserCatalog(data);
+    if (imageTool) catalog.models = catalog.models.map((model) => model.capabilities.toolCalling
+      ? { ...model, capabilities: { ...model.capabilities, imageTool } } : model);
     const response = {
       catalog: {
-        ...buildCurrentUserCatalog(data),
+        ...catalog,
         attachmentLimits: toCatalogAttachmentLimits(
           deps.resolveRunAttachmentLimits?.() ?? getRunAttachmentLimits()
         )

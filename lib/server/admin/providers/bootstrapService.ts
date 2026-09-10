@@ -58,6 +58,7 @@ export function createAdminProviderBootstrap(input: {
     }
     try {
       const roles = await input.roles.list();
+      const image = !roles.policy.imageModel ? pick(roles.imageCandidates ?? []) : null;
       const memory = !roles.policy.systemModel ? pick(roles.candidates) : null;
       const pdf = !roles.policy.chatPdfModel
         ? pick(roles.documentCandidates.filter((model) => model.visionInput === "verified")) : null;
@@ -66,15 +67,17 @@ export function createAdminProviderBootstrap(input: {
       const reranker = !roles.policy.rerankerModel
         ? pick(roles.rerankerCandidates.filter((model) => model.id === rerankerId)) : null;
       if (connection.family === "openrouter" && !roles.policy.rerankerModel && !reranker) result.state = "partial";
-      if (memory || pdf || reranker) {
+      if (memory || pdf || reranker || image) {
         value.signal.throwIfAborted();
         await input.roles.update({ expectedVersion: roles.policy.version, userId: value.userId,
+          ...(image ? { imageProviderModelId: image.id, imageParameters: {} } : {}),
           ...(memory ? { providerModelId: memory.id, reasoningEffort: null } : {}),
           ...(pdf ? { chatPdfProviderModelId: pdf.id, chatPdfReasoningEffort: null } : {}),
           ...(reranker ? { rerankerProviderModelId: reranker.id } : {}) });
         if (memory) result.defaults.push(`System model: ${memory.displayName}`);
         if (pdf) result.defaults.push(`PDF reading in chats: ${pdf.displayName}`);
         if (reranker) result.defaults.push(`Reranking: ${reranker.displayName}`);
+        if (image) result.defaults.push(`Image generation: ${image.displayName}`);
       }
     } catch {
       value.signal.throwIfAborted();

@@ -1,3 +1,5 @@
+import { createImageModelDiscovery } from "../../providers/imageModelDiscovery";
+import type { AdminImageDiscoveredModel } from "../../../contracts/adminProviders";
 import {
   providerResponseMaxBytes,
   readBoundedResponseText,
@@ -39,8 +41,9 @@ export type AdminProviderCredentialTesterInput = Readonly<{
 export type AdminProviderCredentialTestOutcome = Readonly<{
   method: "models_catalog";
   modelIds: string[];
-  modelIdsByClass?: Readonly<Record<ProviderModelClass, string[]>>;
+  modelIdsByClass?: Readonly<Partial<Record<ProviderModelClass, string[]>>>;
   models?: AdminCompatibleDiscoveredModel[];
+  imageModels?: AdminImageDiscoveredModel[];
   /** Exact whole-catalog marker, observed before model-id deduplication. */
   responsesRequestIsolationDetected?: boolean;
 }>;
@@ -258,10 +261,11 @@ function requestedModelClasses(
   if (
     classes.length < 1 ||
     classes.some((modelClass) => modelClass !== "answer" &&
-      modelClass !== "embedding" && modelClass !== "reranker") ||
+      modelClass !== "embedding" && modelClass !== "reranker" && modelClass !== "image") ||
     (family !== "openai" && family !== "openai_compatible" && family !== "openrouter") &&
       classes.includes("embedding") ||
-    family !== "openrouter" && classes.includes("reranker")
+    family !== "openrouter" && classes.includes("reranker") ||
+    (family === "anthropic" || family === "deepseek") && classes.includes("image")
   ) {
     throw new AdminProviderCredentialTestError();
   }
@@ -352,10 +356,19 @@ export function createAdminProviderCredentialTester(
           const rerankerModels = classes.includes("reranker")
             ? await load("models?output_modalities=rerank", "rerank")
             : [];
+          const imageModels = classes.includes("image") ? await createImageModelDiscovery({
+            connection, family: input.family, secret, fetchFn
+          }).models(timeout.signal).catch((error: unknown) => {
+            // Image discovery is optional when another requested catalog has
+            // already authenticated the key. The explicit image picker can retry.
+            if (input.signal?.aborted || !classes.some((kind) => kind !== "image")) throw error;
+            return [];
+          }) : [];
           const modelIdsByClass = {
             answer: classes.includes("answer") ? answerModels.map(({ id }) => id) : [],
             embedding: embeddingModels.map(({ id }) => id),
-            reranker: rerankerModels.map(({ id }) => id)
+            reranker: rerankerModels.map(({ id }) => id),
+            ...(classes.includes("image") ? { image: imageModels.map(({ id }) => id) } : {})
           };
           const models = [...new Map(
             [...answerModels, ...embeddingModels, ...rerankerModels]
@@ -363,7 +376,8 @@ export function createAdminProviderCredentialTester(
           ).values()];
           return {
             method: "models_catalog",
-            modelIds: models.map(({ id }) => id),
+            modelIds: [...new Set([...models.map(({ id }) => id), ...imageModels.map(({ id }) => id)])],
+            ...(classes.includes("image") ? { imageModels } : {}),
             ...(input.modelClasses ? { modelIdsByClass } : {}),
             ...(input.family === "openai_compatible" ? { models, responsesRequestIsolationDetected } : {})
           };

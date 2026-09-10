@@ -390,12 +390,14 @@ describe("background capability checks (B3)", () => {
       ...okOutcome(input), evidence: { ...okOutcome(input).evidence,
         ...(input.model.modelClass === "embedding" ? { embedding: {
           probeVersion: 1, dimensions: 1536, document: true, query: true
+        } } : input.model.modelClass === "image" ? { imageGeneration: {
+          probeVersion: 1, verified: true, adapterKind: "openrouter_images", upstreamModelId: input.model.upstreamModelId
         } } : { reranking: { probeVersion: 1, completeScores: true } })
       }
     }));
     const catalogTest = vi.fn<AdminProviderCredentialTester["test"]>(async () => ({
       method: "models_catalog", modelIds: [], modelIdsByClass: {
-        answer: [], embedding: ["qwen/qwen3-embedding-8b"], reranker: ["voyageai/rerank-2.5"]
+        answer: [], embedding: ["qwen/qwen3-embedding-8b"], reranker: ["voyageai/rerank-2.5"], image: ["google/gemini-3.1-flash-image"]
       }
     }));
     const providers = service(repository({ addSetupModelsCas, activateCredentialCas, listConnections: async () => [catalog],
@@ -412,7 +414,7 @@ describe("background capability checks (B3)", () => {
     await waitFor(() => providers.checkRun({ connectionId: catalog.id, runId: run.id }).state === "completed");
     expect(addSetupModelsCas).toHaveBeenCalledWith(expect.objectContaining({ connectionVersion: 1,
       credentialId: "cred-primary", credentialVersionId: "version-primary" }));
-    expect(test.mock.calls.map(([input]) => input.model.modelClass).sort()).toEqual(["embedding", "reranker"]);
+    expect(test.mock.calls.map(([input]) => input.model.modelClass).sort()).toEqual(["embedding", "image", "reranker"]);
     expect(activateCredentialCas).not.toHaveBeenCalled();
     const retry = await providers.startCheckRun({ connectionId: catalog.id, credentialId: "cred-primary", reason });
     await waitFor(() => providers.checkRun({ connectionId: catalog.id, runId: retry.id }).state === "completed");

@@ -1,6 +1,7 @@
 import type { AdminProviderSetupProgress } from "../../../contracts/adminProviderSetupProgress";
 import type { AdminProviderCheckRun } from "../../../contracts/adminProviders";
 import { initialModelConfiguration, pendingInitialCapabilityEvidence } from "./initialCapabilitySetup";
+import { providerSetupModels } from "./setupModels";
 import { randomUUID } from "node:crypto";
 import {
   ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
@@ -286,13 +287,19 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
       let modelConfigurations = upstreamModelIds.map((upstreamModelId) =>
         modelConfiguration(request, upstreamModelId)
       );
+      if (input.finishInitialSetup && request.protocol === "responses" &&
+        modelConfigurations.length < MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS) {
+        for (const candidate of providerSetupModels("openai_compatible", connection.apiRoot)) {
+          if (!upstreamModelIds.includes(candidate.configuration.upstreamModelId)) modelConfigurations.push(candidate.configuration);
+        }
+      }
       if (input.finishInitialSetup) modelConfigurations = modelConfigurations.map(initialModelConfiguration);
       const connectionName = displayName(
         request.connectionDisplayName,
         defaultConnectionDisplayName(connection.apiRoot)
       );
       const modelNames = modelConfigurations.map((model, index) => displayName(
-        index === 0 && modelConfigurations.length === 1
+        index === 0 && upstreamModelIds.length === 1
           ? request.modelDisplayName
           : undefined,
         model.upstreamModelId.slice(0, MAX_DISPLAY_NAME_LENGTH)

@@ -17,10 +17,27 @@ import {
 } from "@/components/admin/roles/rolesView";
 import type { AdminRolesController } from "@/components/admin/roles/useAdminRolesController";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
-import type { UiV2MenuAction } from "@/components/ui-v2";
-import type { ReactNode } from "react";
+import { UiV2Button, type UiV2MenuAction } from "@/components/ui-v2";
+import { useState, type ReactNode } from "react";
+import { ImageParameterFields } from "@/components/admin/providers/models/ImageParameterFields";
+import type { AdminImageModelCandidate } from "@/lib/contracts/adminSystemModelPolicy";
+import type { ImageGenerationParameters } from "@/lib/contracts/imageGeneration";
 
 const rowGrid = "grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-3 px-4 py-3 xl:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_8.5rem_2.5rem] xl:items-start xl:gap-4";
+
+function ImageRoleParameters({ model, parameters, busy, save }: {
+  model: AdminImageModelCandidate; parameters: ImageGenerationParameters; busy: boolean;
+  save(parameters: ImageGenerationParameters): void;
+}) {
+  const [draft, setDraft] = useState(parameters);
+  return <details>
+    <summary className="cursor-pointer text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">Image settings</summary>
+    <div className="flex flex-col gap-3 pt-3">
+      <ImageParameterFields image={model.image} modelId={model.upstreamModelId} parameters={draft} onChange={setDraft} disabled={busy} defaultLabel="Model default" />
+      <UiV2Button disabled={busy || JSON.stringify(draft) === JSON.stringify(parameters)} onClick={() => save(draft)} type="button">Apply image settings</UiV2Button>
+    </div>
+  </details>;
+}
 
 function RoleRow({
   children,
@@ -80,6 +97,7 @@ export function AdminSystemRolesTable({
     chatPdfReasoningEffort: policy.chatPdfReasoningEffort
   };
   const rerankerUndo = { rerankerProviderModelId: policy.rerankerModel?.id ?? null };
+  const imageUndo = { imageProviderModelId: policy.imageModel?.id ?? null, imageParameters: policy.imageParameters ?? {} };
   const fallbacks = rerankerFallbacksLine(catalog);
 
   return (
@@ -199,6 +217,21 @@ export function AdminSystemRolesTable({
           testId="admin-reranker-picker"
         />
         {fallbacks ? <p className="text-xs leading-5 text-ink-muted" data-testid="admin-reranker-fallbacks">{fallbacks}</p> : null}
+      </RoleRow>
+
+      <RoleRow title="Image generation" testId="admin-role-image" status={roleStatus(policy.imageModel ?? null)}
+        description="Creates and edits images when requested in chat. Uses this model and the provider's default key."
+        menu={[{ disabled: !policy.imageModel || busy, label: "Clear assignment",
+          onSelect: () => void controller.assign({ imageProviderModelId: null, imageParameters: {} }, imageUndo) }]}>
+        <AdminRolePicker busy={busy} items={(catalog.imageCandidates ?? []).map((model) => ({ group: "ready", id: model.id, label: `${model.displayName} · ${model.connectionDisplayName}` }))}
+          label="Image generation deployment" roleName="Image generation" testId="admin-image-picker"
+          selectedId={policy.imageModel?.id ?? null} selectedLabel={policy.imageModel ? `${policy.imageModel.displayName} · ${policy.imageModel.connectionDisplayName}` : null}
+          onSelect={(id) => void controller.assign({ imageProviderModelId: id, imageParameters: {} }, imageUndo)} />
+        {policy.imageModel ? <>
+          <p className="text-xs text-ink-muted">{[policy.imageModel.generation ? "Generation verified" : "Generation unavailable", policy.imageModel.editing ? "Editing verified" : "Editing unavailable"].join(" · ")}</p>
+          <ImageRoleParameters key={`${policy.imageModel.id}:${policy.version}`} model={policy.imageModel} parameters={policy.imageParameters ?? {}} busy={busy}
+            save={(parameters) => void controller.assign({ imageProviderModelId: policy.imageModel!.id, imageParameters: parameters }, imageUndo)} />
+        </> : <p className="text-xs text-ink-muted">Add and test an image model in Providers to make it available here.</p>}
       </RoleRow>
 
       <AdminKnowledgeProcessingRows controller={controller} requestConfirmation={requestConfirmation} />

@@ -66,6 +66,14 @@ function attachment(overrides: Partial<ProviderAttachment> = {}): ProviderAttach
   };
 }
 
+it("keeps non-vision image tool handles out of the conversation model's image input", () => {
+  const input = request({ attachments: [attachment({ kind: "image", id: "opaque-image", mimeType: "image/png" })],
+    imageReferences: [{ attachmentId: "opaque-image", messageId: "current", fileName: "image.png", origin: "upload" }],
+    modelCapabilities: { vision: false, pdf: false, nativePdfInput: false, nativeSearch: false, reasoning: false } });
+  const body = buildOpenAIResponsesRequest(input);
+  expect(JSON.stringify(body)).not.toContain("input_image");
+});
+
 function searchOption(
   overrides: Partial<NormalizedSearchPlanOption> = {}
 ): NormalizedSearchPlanOption {

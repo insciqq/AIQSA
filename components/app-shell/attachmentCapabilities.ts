@@ -117,7 +117,7 @@ export function attachmentPolicyForModel(
   }
   return {
     documents: Boolean(model),
-    images: Boolean(model?.capabilities.imageInput),
+    images: Boolean(model?.capabilities.imageInput || model?.capabilities.imageTool?.editing),
     // Every answer model can consume AIQSA's locally extracted PDF text.
     // documentInputMode only selects local extraction versus verified direct input.
     pdfs: Boolean(model)

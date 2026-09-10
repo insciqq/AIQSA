@@ -1,3 +1,4 @@
+import { hasVerifiedImageCapability } from "./imageGenerationEvidence";
 import type { ProviderModelConfiguration } from "./providerConfiguration";
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -12,6 +13,7 @@ export function hasVerifiedDedicatedProtocol(
   if (!record(evidence) || evidence.upstreamModelId !== model.upstreamModelId ||
     !["tiny_generation", "openrouter_account_catalog"].includes(String(evidence.method)) ||
     JSON.stringify(evidence.selectedProviders) !== JSON.stringify(model.openRouterRouting?.providers ?? [])) return false;
+  if (model.modelClass === "image") return hasVerifiedImageCapability(evidence, model, "imageGeneration") || hasVerifiedImageCapability(evidence, model, "imageEditing");
   if (model.modelClass === "embedding") {
     const proof = evidence.embedding;
     return record(proof) && proof.probeVersion === 1 && proof.document === true && proof.query === true &&

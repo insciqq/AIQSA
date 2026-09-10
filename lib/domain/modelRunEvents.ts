@@ -91,6 +91,7 @@ export type ModelRunSseEvent =
       type: "artifact";
       data: {
         artifactType:
+          | "image"
           | "citation"
           | "context_status"
           | "context_truncated"

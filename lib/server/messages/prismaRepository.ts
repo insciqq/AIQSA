@@ -346,6 +346,25 @@ export function createPrismaMessageBranchRepository(
               )?.providerRunBindings[0] ?? null
             : null;
 
+        // A branch owns local copies of image outputs, independently of the
+        // source run and chat. They join the ordinary attachment clone path.
+        const generatedImages = await tx.attachment.findMany({
+          where: { chatId: lockedChat.id, messageId: { in: path.map((message) => message.id) },
+            origin: "IMAGE_OUTPUT", kind: "image", status: "ready",
+            ...(isProjectChat(lockedChat) ? { projectId: lockedChat.projectId, userId: null } : { userId }) },
+          select: { id: true, messageId: true, fileName: true }, orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+        });
+        for (const message of path) {
+          const images = generatedImages.filter((image) => image.messageId === message.id);
+          if (!images.length) continue;
+          const content = message.content;
+          if (!content || typeof content !== "object" || Array.isArray(content) || !Array.isArray(content.blocks)) throw new BranchAttachmentCloneError();
+          const present = new Set(attachmentIdsFromMessageContent(content));
+          message.content = { ...content, blocks: [...content.blocks, ...images.filter((image) => !present.has(image.id)).map((image) => ({
+            type: "image", attachmentId: image.id, label: image.fileName
+          }))] };
+        }
+
         const attachmentIdsByMessageId = new Map(
           path.map((message) => [
             message.id,
@@ -803,6 +822,13 @@ export function createPrismaMessageBranchRepository(
         const nextActiveLeafMessageId =
           activeLeafMessageId && deletedDepths.has(activeLeafMessageId) ? root.parentMessageId : activeLeafMessageId;
 
+        // Release deleted image outputs into ordinary orphan retention before
+        // their producer calls/runs disappear. Saved copies retain their objects.
+        await tx.attachment.updateMany({
+          where: { origin: "IMAGE_OUTPUT", producerModelRun: { chatId: root.chatId,
+            OR: [{ assistantMessageId: { in: deletedMessageIds } }, { userMessageId: { in: deletedMessageIds } }] } },
+          data: { imageToolCallId: null, producerModelRunId: null, messageId: null, origin: "USER_UPLOAD" }
+        });
         await tx.modelRun.deleteMany({
           where: {
             OR: [

@@ -6,7 +6,7 @@ import type { SystemModelVerificationRole } from "../../../contracts/adminSystem
 export function mergeSystemRoleEvidence(
   previous: unknown, next: AdminProviderTestEvidence, role: SystemModelVerificationRole
 ): AdminProviderTestEvidence {
-  if (role === "embedding" || role === "reranker") return next;
+  if (role === "embedding" || role === "reranker" || role === "image") return next;
   if (typeof previous !== "object" || previous === null || Array.isArray(previous)) {
     throw new Error("system_role_evidence_missing");
   }

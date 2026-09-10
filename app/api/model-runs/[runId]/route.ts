@@ -1,3 +1,4 @@
+import { imageGenerationForStorage } from "@/lib/server/images/defaultImages";
 import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
@@ -15,12 +16,14 @@ import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
 export const runtime = "nodejs";
 
 const repository = createPrismaRunRepository();
+const storage = createS3StorageAdapter();
 
 export const GET: AsyncRouteHandler<ReturnType<typeof createGetModelRunHandler>> = createGetModelRunHandler({
   getConfig: () => getAuthConfig(),
   knowledgeAdmission: knowledgeRunAdmissionService,
   knowledgeExecutor: knowledgeToolExecutor,
   knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle,
+  images: imageGenerationForStorage(storage),
   memoryEgress: defaultMemoryToolEgressReceiptService,
   mcp: defaultMcpRunPlan,
   providerAdmission: providerAdmissionService,
@@ -28,5 +31,5 @@ export const GET: AsyncRouteHandler<ReturnType<typeof createGetModelRunHandler>>
   providers: {},
   repository,
   resolveAuth: resolveRequestAuth,
-  storage: createS3StorageAdapter()
+  storage
 });

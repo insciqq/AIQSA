@@ -1,4 +1,5 @@
 import { isRetryableProviderNetworkError } from "../../providers/providerRetry";
+import { testImageCapabilities } from "./imageCapabilityProbe";
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import type {
   AdminProviderCheckStatus,
@@ -1014,6 +1015,7 @@ export function createAdminProviderDraftTester(
   };
   return {
     async test(input) {
+      if (input.model.modelClass === "image") return testImageCapabilities(input, resolvedOptions);
       if (input.initialSetup && input.model.modelClass === "answer") return testInitialAnswerModel(input, resolvedOptions);
       if (input.initialSetup && input.model.modelClass !== "answer") {
         const previous = reusableCapabilitySetupEvidence(input.reuseSetupEvidence, input.model);

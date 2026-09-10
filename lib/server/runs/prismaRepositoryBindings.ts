@@ -1,3 +1,5 @@
+import { loadInstallationImageProviderRole } from "../providerRuntime/admission";
+import type { AcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
 import { randomInt, randomUUID } from "node:crypto";
 import {
   Prisma,
@@ -1185,11 +1187,27 @@ export async function insertAcceptedProviderRunBindings(
   tx: Prisma.TransactionClient,
   input: {
     nativeBackgroundRequested: boolean;
+    imagePlan?: AcceptedImageGenerationPlan;
     plan: ProviderAdmissionPlan | undefined;
     runId: string;
     userId: string;
   }
 ): Promise<void> {
+  if (input.imagePlan) {
+    const accepted = input.imagePlan;
+    const policy = await tx.systemModelPolicy.findUnique({ where: { id: "installation" }, select: { version: true, imageProviderModelId: true } });
+    const currentImage = await loadInstallationImageProviderRole(tx, { providerModelId: accepted.authority.providerModelId });
+    if (!policy || policy.version !== accepted.policyVersion || policy.imageProviderModelId !== accepted.authority.providerModelId ||
+      Object.entries(accepted.authority).some(([key, value]) => currentImage.authority[key as keyof typeof currentImage.authority] !== value)) {
+      throw new ProviderAdmissionConflictError();
+    }
+    await tx.providerRunBinding.create({ data: {
+      modelRunId: input.runId, bindingKey: "image", role: "image", credentialSource: "default",
+      connectionId: accepted.authority.connectionId, providerModelId: accepted.authority.providerModelId,
+      credentialId: accepted.authority.credentialId, credentialVersionId: accepted.authority.credentialVersionId,
+      executionSnapshot: json(accepted.snapshot)
+    } });
+  }
   if (!input.plan) return;
   let current: ProviderAdmissionPlan;
   try {

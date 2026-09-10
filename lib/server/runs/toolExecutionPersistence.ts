@@ -15,6 +15,7 @@ import {
 } from "../knowledge/toolResult";
 
 const artifactTypes = new Set([
+  "image",
   "citation",
   "context_truncated",
   "reasoning",

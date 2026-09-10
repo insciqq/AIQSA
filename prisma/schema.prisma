@@ -123,6 +123,7 @@ enum AttachmentOrigin {
   USER_UPLOAD
   WORKSPACE_OUTPUT
   WORKSPACE_EXPORT
+  IMAGE_OUTPUT
 }
 
 enum WorkspaceSessionState {
@@ -225,6 +226,7 @@ enum ProviderCredentialCheckStatus {
 }
 
 enum ProviderRunRole {
+  image
   answer
   search
 }
@@ -233,6 +235,7 @@ enum ProviderModelClass {
   answer
   embedding
   reranker
+  image
 }
 
 enum ProviderCredentialSource {
@@ -1049,6 +1052,9 @@ model ModelPolicy {
 }
 
 model SystemModelPolicy {
+  imageProviderModelId    String?
+  imageParamsJson         Json           @default("{}")
+  imageProviderModel      ProviderModel? @relation("ImageGenerationProviderModel", fields: [imageProviderModelId], references: [id], onDelete: Restrict)
   id                      String         @id
   chatPdfProviderModelId   String?
   chatPdfReasoningEffort   String?        @db.VarChar(32)
@@ -1067,6 +1073,7 @@ model SystemModelPolicy {
   rerankerProviderModel   ProviderModel? @relation("MemoryRerankerProviderModel", fields: [rerankerProviderModelId], references: [id], onDelete: Restrict)
   updatedBy               User?          @relation("SystemModelPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
 
+  @@index([imageProviderModelId])
   @@index([providerModelId])
   @@index([rerankerProviderModelId])
   @@index([chatPdfProviderModelId])
@@ -2265,6 +2272,7 @@ model ProviderModel {
   knowledgeRunProfileBindings KnowledgeRunProfileBinding[]
   chatPdfRoles                SystemModelPolicy[]             @relation("ChatPdfProviderModel")
   systemUtilityRoles          SystemModelPolicy[]             @relation("SystemUtilityProviderModel")
+  imageGenerationRoles       SystemModelPolicy[]             @relation("ImageGenerationProviderModel")
   memoryRerankerRoles         SystemModelPolicy[]             @relation("MemoryRerankerProviderModel")
   userDefaults                UserSettings[]                  @relation("UserDefaultProviderModel")
 
@@ -3121,6 +3129,8 @@ model McpRunBinding {
 }
 
 model ModelRunToolCall {
+  generatedImages            Attachment[]                @relation("ImageToolOutput")
+  imageUsage                 UsageEvent?                 @relation("ImageToolUsage")
   id                         String                      @id @default(uuid())
   modelRunId                 String
   mcpRunBindingId            String?
@@ -3552,6 +3562,8 @@ model DocumentProcessingFairnessCursor {
 }
 
 model Attachment {
+  imageToolCallId       String?                  @unique
+  imageToolCall         ModelRunToolCall?         @relation("ImageToolOutput", fields: [producerModelRunId, imageToolCallId], references: [modelRunId, id], onDelete: Restrict, onUpdate: Restrict, map: "Attachment_imageToolCallId_fkey")
   chatPdfPreparations  ChatPdfAttachmentPreparation[]
   chatPdfArtifacts     ChatPdfArtifact[]
   id                  String                   @id @default(uuid())
@@ -3719,6 +3731,9 @@ model SharedChatSnapshot {
 }
 
 model UsageEvent {
+  imageGeneration                 Boolean                        @default(false)
+  imageToolCallId                  String?                        @unique
+  imageToolCall                    ModelRunToolCall?              @relation("ImageToolUsage", fields: [imageToolCallId], references: [id], onDelete: SetNull, onUpdate: Restrict)
   chatPdfPreparation              Boolean                        @default(false)
   chatPdfPageAttemptId             String?                        @unique
   chatPdfPageAttempt               ChatPdfPageAttempt?            @relation(fields: [chatPdfPageAttemptId], references: [id], onDelete: SetNull, onUpdate: Restrict)

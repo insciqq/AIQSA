@@ -1,3 +1,4 @@
+import { normalizeImageGenerationParameters, type ImageModelConfiguration } from "@/lib/contracts/imageGeneration";
 import type {
   AdminCompatibleDiscoveredModel,
   AdminOpenRouterDiscoveredEndpoint,
@@ -30,6 +31,7 @@ export type ModelForm = Readonly<{
   defaultParamsText: string;
   displayName: string;
   modelClass: AdminProviderModelClass;
+  image?: ImageModelConfiguration;
   openRouterRoutingMode: "automatic" | "only_selected";
   providerTags: readonly string[];
   reasoningEffortPath: string;
@@ -133,6 +135,7 @@ export function modelFormFrom(model: AdminProviderModel): ModelForm {
     defaultParamsText: JSON.stringify(configuration.defaultParams, null, 2),
     displayName: model.displayName,
     modelClass: model.modelClass ?? configuration.modelClass ?? "answer",
+    ...(configuration.image ? { image: configuration.image } : {}),
     openRouterRoutingMode: configuration.openRouterRouting?.mode ?? "automatic",
     providerTags: [...(configuration.openRouterRouting?.providers ?? [])],
     reasoningEffortPath: mapping.effortPath,
@@ -258,7 +261,8 @@ export function modelFormBody(
   try {
     const parsed = JSON.parse(form.defaultParamsText) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
-    defaultParams = parsed as Record<string, unknown>;
+    defaultParams = form.modelClass === "image" && form.image
+      ? normalizeImageGenerationParameters(parsed, form.image, form.upstreamModelId) : parsed as Record<string, unknown>;
   } catch {
     return { error: "Default parameters must be one JSON object.", field: "defaultParams", ok: false };
   }
@@ -284,10 +288,11 @@ export function modelFormBody(
     adapterKind: form.adapterKind,
     answerSelectable: answer ? form.answerSelectable : false,
     capabilities: form.capabilities,
-    defaultParams: connection.family === "openrouter"
+    defaultParams: connection.family === "openrouter" && answer
       ? withDataCollection(defaultParams, form.dataCollectionAllowed)
       : defaultParams,
     modelClass: form.modelClass,
+    ...(form.modelClass === "image" && form.image ? { image: form.image } : {}),
     ...(connection.family === "openrouter"
       ? {
           openRouterRouting: form.openRouterRoutingMode === "automatic"

@@ -225,6 +225,11 @@ export function describeToolCallV2(
 ): string {
   const running = phase === "running";
   const origin = toolActivityOriginV2(call);
+  if (origin === "image") {
+    if (phase === "failed") return "Image generation failed";
+    if (phase === "cancelled") return "Image generation stopped";
+    return running ? "Creating image" : "Image ready";
+  }
   if (origin === "discovery") {
     if (phase === "failed") return "Tool discovery failed";
     if (phase === "cancelled") return "Tool discovery stopped";

@@ -204,7 +204,7 @@ function buildInputContent(
       }
     }
 
-    if (attachment.kind === "image") {
+    if (attachment.kind === "image" && request.modelCapabilities.vision) {
       content.push(imageBlock(attachment, options.redactImages));
     }
   }

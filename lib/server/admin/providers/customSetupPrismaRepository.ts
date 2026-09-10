@@ -27,6 +27,7 @@ function json(value: unknown): Prisma.InputJsonValue {
 
 function modelColumns(configuration: ProviderModelConfiguration) {
   return {
+    modelClass: configuration.modelClass,
     capabilities: json(configuration.capabilities),
     defaultParams: json(configuration.defaultParams),
     modelId: configuration.upstreamModelId,

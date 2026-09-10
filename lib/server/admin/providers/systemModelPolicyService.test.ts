@@ -106,7 +106,7 @@ describe("administrator system model policy service", () => {
       defaultParams: { reasoning: { effort: "high" } }, upstreamModelId: "google/gemini-3.8-flash"
     } });
     const prisma = {
-      providerModel: { findMany: vi.fn().mockResolvedValueOnce([target]).mockResolvedValueOnce([]) },
+      providerModel: { findMany: vi.fn().mockResolvedValue([]).mockResolvedValueOnce([target]).mockResolvedValueOnce([]) },
       systemModelPolicy: { findUnique: vi.fn().mockResolvedValue({ providerModel: target, providerModelId: target.id,
         chatPdfProviderModel: target, chatPdfProviderModelId: target.id, updatedAt: NOW, updatedBy: null, version: 1 }) }
     } as unknown as PrismaClient;
@@ -123,6 +123,7 @@ describe("administrator system model policy service", () => {
     const answer = activeModel();
     const reranker = activeRerankerModel();
     const findMany = vi.fn()
+      .mockResolvedValue([])
       .mockResolvedValueOnce([answer])
       .mockResolvedValueOnce([reranker]);
     const prisma = {
@@ -668,7 +669,7 @@ describe("administrator system model policy service", () => {
     });
     const prisma = {
       providerModel: {
-        findMany: vi.fn()
+        findMany: vi.fn().mockResolvedValue([])
           .mockResolvedValueOnce([activeModel()])
           .mockResolvedValueOnce([disguisedAnswer, disguisedEmbedding, reranker])
       },
@@ -852,7 +853,7 @@ describe("administrator system model policy service", () => {
       compatibility: { vision: "not_supported" }
     });
     const prisma = {
-      providerModel: { findMany: vi.fn().mockResolvedValueOnce([disabled, missingForced, rejectedForced, rejectedImage, incompleteImage])
+      providerModel: { findMany: vi.fn().mockResolvedValue([]).mockResolvedValueOnce([disabled, missingForced, rejectedForced, rejectedImage, incompleteImage])
         .mockResolvedValueOnce([]) },
       systemModelPolicy: { findUnique: vi.fn().mockResolvedValue({ providerModel: null, providerModelId: null,
         reasoningEffort: null, updatedAt: NOW, updatedBy: null, version: 1 }) }

@@ -331,6 +331,13 @@ export function createAdminProviderConnectionActionHandler(deps: AdminProviderHa
         await deps.service.revokeGroupCredential({ connectionId, groupId });
         return catalog(deps.service);
       }
+      if (action === "discover_image_models" || action === "discover_image_endpoints") {
+        const credentialId = text(body.credentialId, 128);
+        const modelId = action === "discover_image_endpoints" ? text(body.modelId, 256) : undefined;
+        if (!credentialId || action === "discover_image_endpoints" && !modelId) return errorJson("provider_action_invalid", 400);
+        return Response.json(await deps.service.discoverImageModels({ connectionId, credentialId,
+          ...(modelId ? { modelId } : {}), signal: request.signal }));
+      }
       if (action === "discover_models") {
         const credentialId = text(body.credentialId, 128);
         if (!credentialId) return errorJson("provider_action_invalid", 400);

@@ -9,6 +9,7 @@ import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { safeExternalHref } from "../../domain/links";
 import { projectThreadSearchSources } from "../../domain/searchSources";
 import { decodeSessionContextStatus, type SessionContextStatus } from "../../contracts/sessionStatus";
+import { decodeThreadGeneratedImage, type ThreadGeneratedImage } from "../../contracts/imageGeneration";
 
 const citationTitleLimit = 500;
 const citationSnippetLimit = 2_000;
@@ -26,6 +27,7 @@ type RunOutputCitation = {
 };
 
 export type RunOutputArtifactEvent =
+  | { type: "artifact"; data: { artifactType: "image"; payload: ThreadGeneratedImage } }
   | { type: "artifact"; data: { artifactType: "context_status"; payload: SessionContextStatus } }
   | { type: "grounding_display"; data: GroundingDisplay }
   | {
@@ -189,6 +191,11 @@ export function projectRunOutputArtifactEvent(
   }
   if (event.type !== "artifact") return null;
 
+  if (event.data.artifactType === "image") {
+    const payload = decodeThreadGeneratedImage(event.data.payload);
+    return payload ? { type: "artifact", data: { artifactType: "image", payload } } : null;
+  }
+
   if (event.data.artifactType === "citation") {
     const payload = projectCitation(event.data.payload);
     return payload ? { data: { artifactType: "citation", payload }, type: "artifact" } : null;
@@ -254,6 +261,7 @@ export function isRunOutputArtifactEvent(
   if (event.type !== "artifact" ||
     !hasOnlyKeys(event.data, ["artifactType", "payload"])) return false;
 
+  if (event.data.artifactType === "image") return decodeThreadGeneratedImage(event.data.payload) !== null;
   if (event.data.artifactType === "context_status") {
     return decodeSessionContextStatus(event.data.payload) !== null;
   }
