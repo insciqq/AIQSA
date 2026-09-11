@@ -21,7 +21,8 @@ function transactional<T extends Record<string, unknown>>(db: T): T & {
   const transaction = Object.assign({
     $executeRaw: vi.fn(async () => 0),
     $queryRaw: vi.fn(async () => [{ id: "installation" }]),
-    memoryExecutionBinding: { count: vi.fn(async () => 0) }
+    memoryExecutionBinding: { count: vi.fn(async () => 0) },
+    chatTitleGeneration: { count: vi.fn(async () => 0) }
   }, db);
   return Object.assign(transaction, {
     $transaction: vi.fn(async (operation: (tx: T) => Promise<unknown>) =>

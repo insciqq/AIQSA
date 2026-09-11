@@ -38,10 +38,9 @@ function safeCount(value: string): number {
 }
 
 /**
- * Counts meaningful Memory-owned records. The mandatory untouched settings
- * legacy row is inert and does not turn every stale account into a
- * deletion blocker. `learnAutomatically` is not inspected directly because
- * an actual user mutation is already fenced by `settingsRevision`.
+ * Counts meaningful Memory-owned records. Default preferences and technical
+ * revision counters do not require asynchronous cleanup: migrations also
+ * advance those counters for accounts that have never stored any Memory.
  */
 export async function loadAccountMemoryOwnedCounts(
   client: MemoryInventoryClient,
@@ -55,21 +54,15 @@ export async function loadAccountMemoryOwnedCounts(
       WHERE
         settings."useMemoryFacts" IS DISTINCT FROM TRUE
         OR settings."referenceChatHistory" IS DISTINCT FROM TRUE
+        OR settings."learnAutomatically" IS DISTINCT FROM TRUE
         OR settings."memoryGeneration" <> 0
-        OR settings."memoryRevision" <> 0
         OR settings."activeIndexGenerationId" IS NOT NULL
         OR settings."embeddingProviderModelId" IS NOT NULL
         OR settings."sensitiveAutomaticPolicy" <> 'EXPLICIT_ONLY'::"MemorySensitiveAutomaticPolicy"
         OR settings."memoryConsentRevision" <> 0
-        OR settings."settingsRevision" <> 0
         OR settings."acceptedUtilityEgressFingerprint" IS NOT NULL
         OR settings."acceptedUtilityPolicyVersion" IS NOT NULL
         OR settings."acceptedUtilityEgressAt" IS NOT NULL
-        OR settings."decayEnabled" = TRUE
-        OR settings."decayPolicyVersion" IS NOT NULL
-        OR settings."synthesisEnabled" = TRUE
-        OR settings."synthesisEnabledAt" IS NOT NULL
-        OR settings."synthesisPolicyVersion" IS NOT NULL
         OR settings."lastSynthesisAt" IS NOT NULL
       GROUP BY settings."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryScope" row INNER JOIN requested USING ("userId") GROUP BY row."userId"

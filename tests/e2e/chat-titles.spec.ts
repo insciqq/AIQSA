@@ -148,7 +148,14 @@ test("independent background titles release the composer, survive navigation and
     await expect(page.getByTestId("header-title")).toHaveText("Title fixture timeout");
     await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0);
 
-    await page.goto("/admin?section=roles");
+    await prisma.providerModel.update({ where: { id: title.id }, data: { enabled: false } });
+    await page.goto("/admin?section=overview");
+    const attention = page.getByTestId("admin-attention-item").filter({ hasText: "Chat titles uses" });
+    await expect(attention).toContainText("which is not available");
+    await attention.getByRole("button", { name: "Open roles" }).click();
+    await expect(page.getByTestId("admin-role-chat-titles")).toBeFocused();
+    await prisma.providerModel.update({ where: { id: title.id }, data: { enabled: true } });
+    await page.reload();
     await page.getByRole("button", { name: "Chat titles actions" }).click();
     await page.getByRole("menuitem", { name: "Clear assignment" }).click();
     await expect(page.getByTestId("admin-role-chat-titles-status")).toHaveText("Not assigned");

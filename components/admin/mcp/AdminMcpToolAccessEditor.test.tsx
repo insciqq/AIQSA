@@ -37,12 +37,36 @@ describe("MCP tool recipients", () => {
   it("allows removing a recipient deleted during editing without losing other selections", async () => {
     const f = fixture({ ...empty, restricted: true, userIds: ["alice"], groupIds: ["editors"] });
     f.rerender(<AdminMcpToolAccessEditor {...f.props} users={[]} />);
+    expect(screen.getByRole("button", { name: "Save access" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Save access" }));
+    expect(f.update).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Remove unavailable user 1" }));
     expect(screen.getByRole("checkbox", { name: "Allow group Tracker editors" })).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Save access" }));
     await waitFor(() => expect(f.onClose).toHaveBeenCalled());
     expect(f.update.mock.calls[0]![1].toolAccess).toEqual({ ...empty, restricted: true, groupIds: ["editors"] });
   });
+  it("loads cascaded recipient deletion even when the server timestamp is unchanged", async () => {
+    const f = fixture({ ...empty, restricted: true, userIds: ["alice"], groupIds: ["editors"] });
+    const current = server({ ...empty, restricted: true, groupIds: ["editors"] });
+    f.rerender(<AdminMcpToolAccessEditor {...f.props} server={current} users={[]} />);
+    expect(screen.getByRole("button", { name: "Save access" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Load saved access" }));
+    expect(screen.queryByRole("button", { name: "Remove unavailable user 1" })).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Allow group Tracker editors" })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Save access" }));
+    await waitFor(() => expect(f.onClose).toHaveBeenCalled());
+    expect(f.update.mock.calls[0]![1].toolAccess).toEqual(current.toolAccess![0]);
+  });
+
+  it("blocks missing groups even when restrictions are switched off", () => {
+    const f = fixture({ ...empty, groupIds: ["deleted-group"] });
+    expect(screen.getByRole("button", { name: "Save access" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Remove unavailable group 1" }));
+    expect(screen.getByRole("button", { name: "Save access" })).toBeEnabled();
+    expect(f.update).not.toHaveBeenCalled();
+  });
+
   it("focuses the editor and saves restricted + empty atomically", async () => {
     const f = fixture();
     expect(screen.getByRole("heading", { name: "Access to issue_update" })).toHaveFocus();

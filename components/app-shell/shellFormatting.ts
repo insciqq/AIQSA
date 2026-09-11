@@ -80,6 +80,8 @@ export function humanizeErrorCode(code: string): string {
       "The System Model rejected automatic tool selection. Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection",
     mcp_not_ready:
       "An enabled MCP server or tool is no longer ready. Review MCP settings and try again",
+    mcp_tool_access_denied:
+      "You no longer have access to a required MCP tool. Review the selected tools or ask an administrator for access",
     mcp_plan_too_large:
       "The enabled MCP tools exceed the per-run limit. Disable some servers and try again",
     mcp_selection_invalid: "Choose Auto, Load all, or Off for MCP tools and try again",

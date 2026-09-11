@@ -3,6 +3,13 @@ import type { CatalogModel } from "./types";
 import { chatTitleForDisplay, exportFileBaseName, formatTokenCount, humanizeErrorCode, modelCapabilityDescription, modelCapabilityLabel, modelCapabilityLabels, responseErrorMessage } from "./shellFormatting";
 
 describe("shell error formatting", () => {
+  it("explains MCP tool denial at send and regeneration admission", async () => {
+    for (const fallback of ["send_failed_409", "regenerate_failed_409"]) {
+      expect(await responseErrorMessage(Response.json({ error: "mcp_tool_access_denied" }, { status: 409 }), fallback))
+        .toBe("You no longer have access to a required MCP tool. Review the selected tools or ask an administrator for access (mcp_tool_access_denied)");
+    }
+  });
+
   it("turns known code families into readable messages while keeping the raw code", () => {
     expect(humanizeErrorCode("send_failed_400")).toBe(
       "Send failed with HTTP 400 (send_failed_400)"

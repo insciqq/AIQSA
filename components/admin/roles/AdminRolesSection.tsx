@@ -37,7 +37,7 @@ export function AdminRolesSection({
       return;
     }
     if (!controller.policy || focusedResource.current === resource) return;
-    const id = ({ memory: "memory", chat_pdf: "chat-pdf", reranker: "reranker" } as Record<string, string>)[resource];
+    const id = ({ memory: "memory", chat_pdf: "chat-pdf", chat_titles: "chat-titles", reranker: "reranker" } as Record<string, string>)[resource];
     const row = id ? document.getElementById(`admin-role-${id}`) : null;
     if (row) {
       row.focus({ preventScroll: true });

@@ -51,7 +51,7 @@ export type AssistantContentRow = {
   providerModelId: string;
   runControls: unknown;
   searchPlan: unknown;
-  skillSummaries?: { id: string; name: string }[];
+  skillSummaries?: { id: string; name: string; available?: boolean }[];
   skillIds: string[];
   starterPrompts: string[];
   systemPrompt: string;
@@ -76,7 +76,10 @@ export type AssistantAccessEntry = {
   published: boolean;
   /** One complete live definition for future admission. */
   content: AssistantContentRow;
-  dependencyAvailability?: Readonly<{ knowledge: boolean; skills: boolean }>;
+  dependencyAvailability?: Readonly<{
+    knowledge: "ready" | "not_ready" | "access_denied" | "unavailable";
+    skills: boolean;
+  }>;
   updatedAt: Date;
   version: number;
 };

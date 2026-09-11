@@ -208,7 +208,7 @@ describe("Prisma Assistant Skill links", () => {
         expect.objectContaining({ id: assistantId, content: expect.objectContaining({ name: "Concurrent identity" }) })
       ]);
       await expect(assistantRepository.getDetail(memberUserId, assistantId)).resolves.toMatchObject({
-        dependencyAvailability: { knowledge: true, skills: true },
+        dependencyAvailability: { knowledge: "ready", skills: true },
         content: {
           skillIds: [liveSkillId, firstSkillId],
           skillSummaries: [
@@ -224,7 +224,7 @@ describe("Prisma Assistant Skill links", () => {
         expect((await assistantRepository.getDetail(userId, assistantId))?.dependencyAvailability?.skills).toBe(false);
       }
       expect((await assistantRepository.getDetail(memberUserId, assistantId))?.content.skillSummaries)
-        .toEqual([{ id: firstSkillId, name: "Action closer" }]);
+        .toEqual([{ id: firstSkillId, name: "Action closer", available: true }]);
       await expect(skillRepository.setArchived(ownerUserId, liveSkillId, liveSkillVersion + 1, false)).resolves.toMatchObject({ kind: "ok" });
       expect((await assistantRepository.getDetail(memberUserId, assistantId))?.dependencyAvailability?.skills).toBe(true);
 
@@ -232,7 +232,7 @@ describe("Prisma Assistant Skill links", () => {
       await prisma.skillPublication.delete({ where: { id: revoked.id } });
       expect((await assistantRepository.getDetail(memberUserId, assistantId))?.dependencyAvailability?.skills).toBe(false);
       expect((await assistantRepository.getDetail(memberUserId, assistantId))?.content.skillSummaries)
-        .toEqual([{ id: firstSkillId, name: "Action closer" }]);
+        .toEqual([{ id: firstSkillId, name: "Action closer", available: true }]);
       await prisma.skillPublication.create({ data: revoked });
       expect((await assistantRepository.getDetail(memberUserId, assistantId))?.dependencyAvailability?.skills).toBe(true);
       const beforeEdit = await skillRepository.resolveForRun(
@@ -318,16 +318,16 @@ describe("Prisma Assistant Skill links", () => {
       } });
       // Owner can see the empty base; the recipient cannot. Neither can run it.
       for (const userId of [ownerUserId, memberUserId]) {
-        expect((await assistantRepository.getDetail(userId, assistantId))?.dependencyAvailability?.knowledge).toBe(false);
+        expect((await assistantRepository.getDetail(userId, assistantId))?.dependencyAvailability?.knowledge).toBe(userId === ownerUserId ? "not_ready" : "access_denied");
       }
       await prisma.knowledgeBase.update({ where: { id: knowledge.id }, data: { trashedAt: new Date() } });
-      expect((await assistantRepository.getDetail(ownerUserId, assistantId))?.dependencyAvailability?.knowledge).toBe(false);
+      expect((await assistantRepository.getDetail(ownerUserId, assistantId))?.dependencyAvailability?.knowledge).toBe("access_denied");
       await prisma.knowledgeBase.delete({ where: { id: knowledge.id } });
-      expect((await assistantRepository.getDetail(ownerUserId, assistantId))?.dependencyAvailability?.knowledge).toBe(false);
+      expect((await assistantRepository.getDetail(ownerUserId, assistantId))?.dependencyAvailability?.knowledge).toBe("access_denied");
       await prisma.assistantDefinition.update({ where: { id: assistantId }, data: {
         knowledgeSelection: { mode: "none", version: 1, baseIds: [], sourceIds: [] }
       } });
-      expect((await assistantRepository.getDetail(ownerUserId, assistantId))?.dependencyAvailability?.knowledge).toBe(true);
+      expect((await assistantRepository.getDetail(ownerUserId, assistantId))?.dependencyAvailability?.knowledge).toBe("ready");
 
       await expect(skillRepository.delete(ownerUserId, liveSkillId)).resolves.toBe("ok");
       await expect(prisma.assistantSkill.count({ where: { skillId: liveSkillId } }))

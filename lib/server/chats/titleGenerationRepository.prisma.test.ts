@@ -4,6 +4,7 @@ import { chatTitleWork } from "@/tests/support/chatTitles";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memory";
 import { textMessageContent } from "../../domain/content";
 import { prisma } from "../prisma";
+import { createPrismaAdminProviderRepository } from "../admin/providers/prismaRepository";
 import { createPrismaMemoryMutationAuthorizationRepository } from "../memory/persistence/authorizations";
 import { createPrismaPermanentChatDeletionRepository } from "./permanentDeletion/repository";
 import { createPermanentChatDeletionService } from "./permanentDeletion/service";
@@ -47,6 +48,8 @@ async function fixture(run: (work: ReturnType<typeof chatTitleWork>, userMessage
     await prisma.chat.deleteMany({ where: { userId } });
     await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
     await prisma.user.delete({ where: { id: userId } });
+    await prisma.providerConnection.update({ where: { id: connectionId }, data: { defaultCredentialId: null } });
+    await prisma.providerCredential.updateMany({ where: { connectionId }, data: { activeVersionId: null } });
     await prisma.providerCredentialVersion.deleteMany({ where: { credential: { connectionId } } });
     await prisma.providerCredential.deleteMany({ where: { connectionId } });
     await prisma.providerModel.deleteMany({ where: { connectionId } });
@@ -74,6 +77,69 @@ async function fenceDeletion(work: ReturnType<typeof chatTitleWork>) {
 }
 
 describe("durable optional title work", () => {
+  it.each(["pending", "dispatched"] as const)("retains a %s title's accepted key through connection activation and releases it on settlement", async (status) => {
+    await fixture(async (work) => {
+      const providers = createPrismaAdminProviderRepository(prisma);
+      const snapshot = work.providerSnapshot;
+      const now = new Date();
+      const replacementId = randomUUID();
+      await prisma.providerModel.update({ where: { id: snapshot.providerModelId }, data: { enabled: false } });
+      await prisma.providerCredential.update({ where: { id: snapshot.credentialId! }, data: {
+        activatedAt: now, activeVersionId: snapshot.credentialVersionId,
+        draftSecretEnvelope: "synthetic-replacement", draftVersion: 2, enabled: true
+      } });
+      await prisma.providerConnection.update({ where: { id: snapshot.connectionId }, data: {
+        defaultCredentialId: snapshot.credentialId, draftVersion: 2
+      } });
+      await repository.enqueue(work, expiry());
+      expect(await job(work.runId)).toMatchObject({ credentialVersionId: snapshot.credentialVersionId });
+      if (status === "dispatched") expect(await repository.take(now)).toMatchObject({ runId: work.runId });
+      const activation = {
+        checks: [], models: [], now,
+        connection: { configuration: snapshot.connection, draftVersion: 2, enable: true, id: snapshot.connectionId }
+      };
+      expect(await providers.activateConnectionCas({ ...activation, credentials: [{
+        checkedAt: now, draftVersion: 2, id: snapshot.credentialId!, kind: "draft", testEvidence: {},
+        versionEnvelope: "synthetic-replacement", versionId: replacementId
+      }] })).toBe("updated");
+      expect(await prisma.providerCredentialVersion.findUnique({ where: { id: snapshot.credentialVersionId! } }))
+        .toMatchObject({ revokedAt: null });
+      expect(await providers.deleteModel(snapshot.providerModelId)).toMatchObject({
+        status: "conflict", blockers: expect.arrayContaining([{ kind: "run_bindings", count: 1 }])
+      });
+      expect(await providers.deleteCredential(snapshot.credentialId!)).toMatchObject({
+        status: "conflict", blockers: expect.arrayContaining([{ kind: "run_bindings", count: 1 }])
+      });
+      expect(await providers.deleteConnection(snapshot.connectionId)).toMatchObject({
+        status: "conflict", blockers: expect.arrayContaining([{ kind: "run_bindings", count: 1 }])
+      });
+      if (status === "pending") expect(await repository.take(now)).toMatchObject({ runId: work.runId });
+      await repository.recordUsage(work, usage);
+      await repository.finish(work, "Title using the accepted key");
+      expect((await chat(work.chatId)).title).toBe("Title using the accepted key");
+      expect(await job(work.runId)).toMatchObject({ status: "settled", credentialVersionId: null });
+      expect(await providers.activateConnectionCas({ ...activation, credentials: [{
+        checkedAt: now, id: snapshot.credentialId!, kind: "active", testEvidence: {}, versionId: replacementId
+      }] })).toBe("updated");
+      expect(await prisma.providerCredentialVersion.findUnique({ where: { id: snapshot.credentialVersionId! } })).toBeNull();
+      expect(await prisma.usageEvent.findUnique({ where: { chatTitleGenerationId: work.runId } })).toMatchObject({ totalTokens: 15 });
+    });
+  });
+
+  it("holds the key for previous-version writers and releases it when expired without replay", async () => {
+    await fixture(async (work) => {
+      await prisma.chatTitleGeneration.create({ data: {
+        ...work, expiresAt: expiry(), providerSnapshot: JSON.parse(JSON.stringify(work.providerSnapshot))
+      } });
+      expect(await job(work.runId)).toMatchObject({ credentialVersionId: work.providerSnapshot.credentialVersionId });
+      await expect(prisma.providerCredentialVersion.delete({ where: { id: work.providerSnapshot.credentialVersionId! } }))
+        .rejects.toThrow("ChatTitleGeneration_credentialVersionId_fkey");
+      await repository.recover(new Date(Date.now() + 301_000));
+      expect(await job(work.runId)).toMatchObject({ status: "skipped", credentialVersionId: null });
+      await expect(prisma.providerCredentialVersion.delete({ where: { id: work.providerSnapshot.credentialVersionId! } })).resolves.toBeDefined();
+    });
+  });
+
   it("claims once across workers, survives a second turn and enriches only the original run once", async () => {
     await fixture(async (work, userMessageId) => {
       expect(await loadChatTitleFirstTurn(prisma, { ...work, userMessageId })).toMatchObject({ titleRevision: 0 });

@@ -19,6 +19,19 @@ export function assistantUnavailabilityCopy(
 ): AssistantUnavailabilityCopy | null {
   if (assistant.availability.ok) return null;
 
+  if (assistant.availability.reason === "knowledge_not_ready") {
+    return {
+      explanation: "Required Knowledge has no ready documents yet. Try again when the documents are ready.",
+      headline: "Knowledge is not ready yet"
+    };
+  }
+  if (assistant.availability.reason === "knowledge_unavailable") {
+    return {
+      explanation: "Required Knowledge could not be checked. Try again later or ask an administrator to check its configuration.",
+      headline: "Knowledge is temporarily unavailable"
+    };
+  }
+
   if (assistant.availability.reason === "skills_access" || assistant.availability.reason === "knowledge_access") {
     const resource = assistant.availability.reason === "skills_access" ? "Skills" : "Knowledge";
     return {

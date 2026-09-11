@@ -249,6 +249,15 @@ function systemRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminAttention
           "warn"
         )
       : null,
+    policy.chatTitleModel
+      ? roleItem(
+          "chat_titles",
+          "Chat titles",
+          policy.chatTitleModel,
+          "the assigned model cannot generate chat titles",
+          "warn"
+        )
+      : null,
     roleItem(
       "reranker",
       "Reranking",

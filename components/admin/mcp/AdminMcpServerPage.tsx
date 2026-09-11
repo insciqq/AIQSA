@@ -35,7 +35,7 @@ import { UiV2Button, UiV2IconButton, UiV2Switch } from "@/components/ui-v2";
 import type { AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
 import type { AdminMcpServer } from "@/lib/contracts/mcp";
 import { CircleAlert, LoaderCircle } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const linkButton = "v2-button v2-focusable";
 
@@ -221,6 +221,14 @@ function ToolsSection({ controller, groups, server, users }: Pick<AdminMcpServer
     (!search || `${tool.name} ${tool.description ?? ""}`.toLocaleLowerCase().includes(search)));
   const shown = expanded ? filtered : filtered.slice(0, 6);
   const locked = controller.state.busy || Boolean(server.archivedAt) || !server.activeRevision;
+  useEffect(() => {
+    if (editingTool !== null || controller.state.busy || !accessTrigger.current) return;
+    // Wait for the closing render to re-enable the trigger before focusing it.
+    const trigger = accessTrigger.current;
+    accessTrigger.current = null;
+    if (trigger.isConnected && !trigger.disabled) trigger.focus();
+    else searchRef.current?.focus();
+  }, [editingTool, controller.state.busy]);
   const setTool = async (name: string, enabled: boolean) => {
     const saved = await controller.actions.update(server.id, {
       expectedUpdatedAt: server.updatedAt,
@@ -290,7 +298,7 @@ function ToolsSection({ controller, groups, server, users }: Pick<AdminMcpServer
           </div>
         )}
       </div>
-      {editingTool ? <AdminMcpToolAccessEditor controller={controller} groups={groups} key={`${server.id}:${editingTool}`} name={editingTool} onClose={() => { setEditingTool(null); requestAnimationFrame(() => { if (accessTrigger.current?.isConnected) accessTrigger.current.focus(); else searchRef.current?.focus(); }); }} server={server} users={users} /> : null}
+      {editingTool ? <AdminMcpToolAccessEditor controller={controller} groups={groups} key={`${server.id}:${editingTool}`} name={editingTool} onClose={() => setEditingTool(null)} server={server} users={users} /> : null}
     </section>
   );
 }

@@ -899,11 +899,6 @@ describe("Prisma account Memory deletion", () => {
   it("counts pause intervals as Memory-owned account data", async () => {
     const userId = await createOwner("disabled");
     try {
-      // This inventory probe starts with an explicitly inert settings row.
-      await prisma.userMemorySettings.update({ where: { userId }, data: {
-        synthesisEnabled: false, synthesisEnabledAt: null, synthesisPolicyVersion: null,
-        decayEnabled: false, decayPolicyVersion: null
-      } });
       await expect(countAccountMemoryOwnedData(prisma, userId)).resolves.toBe(0);
       await prisma.memoryPauseInterval.create({
         data: {
@@ -914,6 +909,23 @@ describe("Prisma account Memory deletion", () => {
         }
       });
       await expect(countAccountMemoryOwnedData(prisma, userId)).resolves.toBe(1);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it.each([0, 1])("deletes an empty account without a Memory hook after %i preference migrations", async (revision) => {
+    const userId = await createOwner("disabled");
+    try {
+      await prisma.userMemorySettings.update({
+        where: { userId },
+        data: { memoryRevision: revision, settingsRevision: revision }
+      });
+      await expect(countAccountMemoryOwnedData(prisma, userId)).resolves.toBe(0);
+      await expect(createPrismaAdminRepository(prisma).deleteStaleUser({
+        actingAdminUserId: `admin-${randomUUID()}`, userId
+      })).resolves.toBe("deleted");
+      await expect(prisma.user.findUnique({ where: { id: userId } })).resolves.toBeNull();
     } finally {
       await cleanupOwner(userId);
     }

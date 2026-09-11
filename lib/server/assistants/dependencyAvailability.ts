@@ -23,23 +23,25 @@ export async function withAssistantDependencyAvailability(
     where: { AND: [{ id: { in: skillIds }, deletedAt: null }, skillAccessWhere(userId)] }
   }) : [];
   const skills = new Map(definitions.map((skill) => [skill.id, skill]));
-  const knowledgeAvailability = new Map<string, boolean>();
+  const knowledgeAvailability = new Map<string, NonNullable<AssistantAccessEntry["dependencyAvailability"]>["knowledge"]>();
   const projected: AssistantAccessEntry[] = [];
   for (const entry of entries) {
     const selection = entry.content.knowledgeSelection;
     const key = JSON.stringify(selection);
     if (!knowledgeAvailability.has(key)) {
-      let available = selection.mode === "none";
-      if (!available) {
+      let availability: NonNullable<AssistantAccessEntry["dependencyAvailability"]>["knowledge"] = "ready";
+      if (selection.mode !== "none") {
         try {
-          available = knowledgeRunAdmissionHasReadySources(await loadKnowledgeRunAdmissionPlan(client, {
+          availability = knowledgeRunAdmissionHasReadySources(await loadKnowledgeRunAdmissionPlan(client, {
             knowledgePlan: selection, userId
-          }));
+          })) ? "ready" : "not_ready";
         } catch (error) {
-          if (!(error instanceof KnowledgeRunAdmissionError)) throw error;
+          // A broken dependency must not hide unrelated Assistants. Do not
+          // expose configuration errors or private dependency metadata here.
+          availability = error instanceof KnowledgeRunAdmissionError ? "access_denied" : "unavailable";
         }
       }
-      knowledgeAvailability.set(key, available);
+      knowledgeAvailability.set(key, availability);
     }
     projected.push({
       ...entry,
@@ -53,8 +55,10 @@ export async function withAssistantDependencyAvailability(
       content: {
         ...entry.content,
         skillSummaries: entry.content.skillIds.flatMap((id) => {
-          const revision = skills.get(id)?.currentRevision;
-          return revision ? [{ id, name: revision.name }] : entry.owned ? [{ id, name: "Unavailable Skill" }] : [];
+          const skill = skills.get(id);
+          const revision = skill?.currentRevision;
+          return revision ? [{ id, name: revision.name, available: skill.archivedAt === null }]
+            : entry.owned ? [{ id, name: "Unavailable Skill", available: false }] : [];
         })
       }
     });

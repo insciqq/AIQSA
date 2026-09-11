@@ -443,6 +443,16 @@ describe("deriveAdminAttentionItems", () => {
     ]);
   });
 
+  it("reports an unavailable assigned chat-title model while leaving an unassigned role quiet", () => {
+    expect(items({ systemRoles: roles({ chatTitleModel: { ...roleCandidate, available: false } }) }))
+      .toEqual([expect.objectContaining({
+        code: "system_role_unavailable", id: "system_role_unavailable:chat_titles", severity: "bad",
+        target: { resource: "chat_titles", section: "roles" }
+      })]);
+    expect(items({ systemRoles: roles({ chatTitleModel: null }) })).toEqual([]);
+    expect(items({ systemRoles: roles({ chatTitleModel: { ...roleCandidate, available: true } }) })).toEqual([]);
+  });
+
   it("summarizes Knowledge alerts and reindexing without exposing internals", () => {
     const result = items({
       knowledge: adminKnowledgeSettingsFixture({
