@@ -71,14 +71,18 @@ describe("SettingsV2", () => {
     }
   });
 
-  it("lets the MCP owner block section replacement until discard is explicit", () => {
+  it.each([
+    ["mcp", "Unsaved MCP changes"],
+    ["workspace_secrets", "Unsaved Workspace secret"]
+  ] as const)("lets the %s owner block section replacement until discard is explicit", (section, label) => {
     const onDiscard = vi.fn();
     render(
       <SettingsV2
         connectedAppsContent={<p>Connected apps owner</p>}
         dirty
-        initialSection="mcp"
+        initialSection={section}
         mcpContent={<p>MCP owner</p>}
+        panels={{ workspace_secrets: <p>Workspace secret owner</p> }}
         onClose={vi.fn()}
         onDiscard={onDiscard}
         onThemeChange={vi.fn()}
@@ -86,7 +90,7 @@ describe("SettingsV2", () => {
       />
     );
     fireEvent.click(screen.getByRole("button", { name: "General" }));
-    expect(screen.getByRole("alertdialog", { name: "Unsaved MCP changes" })).toBeInTheDocument();
+    expect(screen.getByRole("alertdialog", { name: label })).toBeInTheDocument();
     expect(screen.queryByRole("radiogroup", { name: "Theme" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
     expect(onDiscard).toHaveBeenCalledOnce();

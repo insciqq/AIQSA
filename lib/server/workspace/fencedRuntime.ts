@@ -24,11 +24,13 @@ export function fenceDeterministicWorkspaceRuntime(runtime: WorkspaceRuntime, sh
     },
     listStagedAttachments: (input) => call(input, (signal) => runtime.listStagedAttachments({ ...input, signal })),
     stageAttachments: (input) => call(input, (signal) => runtime.stageAttachments({ ...input, signal })),
+    syncPersonalSecrets: (input) => call(input, (signal) => runtime.syncPersonalSecrets({ ...input, signal })),
     loadBoundTools: (input) => call(input, (signal) => runtime.loadBoundTools({ ...input, signal })),
     callBoundTool: (input) => call(input, (signal) => runtime.callBoundTool({ ...input, signal })),
     cancelToolCall: (input) => call(input, () => runtime.cancelToolCall(input)),
     terminateExecutions: (input) => call(input, (signal) => runtime.terminateExecutions({ ...input, signal })),
     collectOutputs: (input) => call(input, (signal) => runtime.collectOutputs({ ...input, signal })),
+    collectBrowserSessions: (input) => call(input, (signal) => runtime.collectBrowserSessions({ ...input, signal })),
     ...(runtime.releaseOutputCapture ? { releaseOutputCapture: (input: Parameters<NonNullable<WorkspaceRuntime["releaseOutputCapture"]>>[0]) =>
       call(input, (signal) => runtime.releaseOutputCapture!({ ...input, signal })) } : {}),
     createProjectArchive: (input) => call(input, (signal) => runtime.createProjectArchive({ ...input, signal })),

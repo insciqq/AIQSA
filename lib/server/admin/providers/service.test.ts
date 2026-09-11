@@ -89,6 +89,7 @@ function repository(
 ): AdminProviderRepository {
   return {
     async addSetupModelsCas() { return "updated"; },
+    async updateCatalogSkips() { return "updated"; },
     async activateConnectionCas() { return "updated"; },
     async activateCredentialCas() { return "updated"; },
     async activateModelCas() { return "updated"; },
@@ -443,7 +444,7 @@ describe("admin provider service", () => {
     expect(JSON.stringify(write)).not.toContain("candidate-secret");
   });
 
-  it.each([0, 1])("discovers OpenRouter chat presets alongside existing rerankers (active version %s)", async (version) => {
+  it.each([0, 1])("imports OpenRouter presets only during first setup, keeping ordinary key additions scoped to existing models (active version %s)", async (version) => {
     const policy = adminProviderQuickSetupPolicy("openrouter");
     const reranker = adminRerankerModelConfiguration(automaticRerankerRoutePresets[0]!);
     const connection: AdminProviderConnection = {
@@ -462,12 +463,13 @@ describe("admin provider service", () => {
     const providers = service(repository({ activateCredentialCas, listConnections: async () => [connection] }),
       tester(), ["credential-new", "version-new"], { test });
     await providers.activateNewCredential({ connectionId: connection.id, label: "Main", secret: "candidate-secret" });
-    expect(test).toHaveBeenCalledWith(expect.objectContaining({ modelClasses: ["reranker", "answer", "embedding", "image"] }));
-    expect(activateCredentialCas.mock.calls[0]![0].catalogAdditions?.map((model) => model.configuration.upstreamModelId))
-      .toEqual(expect.arrayContaining([
+    expect(test).toHaveBeenCalledWith(expect.objectContaining({ modelClasses: version === 0 ? ["reranker", "answer", "embedding", "image"] : ["reranker"] }));
+    const added = activateCredentialCas.mock.calls[0]![0].catalogAdditions?.map((model) => model.configuration.upstreamModelId) ?? [];
+    if (version === 0) expect(added).toEqual(expect.arrayContaining([
         "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4.1-flash", "anthropic/claude-opus-5", "anthropic/claude-fable-5.1",
         "google/gemini-3.8-flash", "openai/gpt-6-astra", "perplexity/sonar-pro-search", "qwen/qwen3-embedding-8b"
       ]));
+    else expect(added).toEqual([]);
   });
 
   it("saves a new key in one step against the active configuration and writes nothing when the provider rejects it", async () => {

@@ -7,6 +7,10 @@ import {
 import { MEMORY_LEXICAL_CHUNKING_VERSION, MEMORY_LEXICAL_ANALYSIS_PROFILE, MEMORY_LEXICAL_NORMALIZATION_VERSION, MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION } from "../../memory/persistence/lexical";
 import { createPrismaAdminMemoryStatusRepository } from "./statusRepository";
 
+vi.mock("./processingRepository", () => ({
+  readAdminMemoryProcessing: vi.fn(async () => ({ enabled: true, issues: [] }))
+}));
+
 function clientFixture(input: Readonly<{
   heartbeat?: Date | null;
   historyReindexing?: boolean;
@@ -111,7 +115,7 @@ describe("Prisma administrator Memory status repository", () => {
 
     expect(result).toMatchObject({
       admissionTimeout: { seconds: 15, version: 4 },
-      activeIssueCode: "memory_job_failed",
+      processing: { enabled: true, issues: [] },
       configuredTargets: [{ model: "Utility model", provider: "Primary provider" }],
       index: {
         activeGenerations: [7],
@@ -146,7 +150,7 @@ describe("Prisma administrator Memory status repository", () => {
     expect(staleProjectionSql).toContain('chunk."sourceProjectionVersion" <>');
     expect(staleProjectionSql).toContain('checkpoint."pipelineVersion" <>');
     expect(JSON.stringify({
-      activeIssueCode: result.activeIssueCode,
+      processing: result.processing,
       configuredTargets: result.configuredTargets,
       queueLength: result.queueLength
     })).not.toMatch(/private-owner|private-generation|private-system-model/u);

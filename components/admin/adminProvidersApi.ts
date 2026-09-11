@@ -1,4 +1,4 @@
-import { decodeAdminProviderCapabilityAttempts } from "@/lib/contracts/adminProviders";
+import { decodeAdminProviderCapabilityAttempts, decodeAdminProviderCatalogUpdates } from "@/lib/contracts/adminProviders";
 import type {
   AdminImageDiscoveredModel,
   AdminImageDiscoveredEndpoint,
@@ -96,6 +96,7 @@ export function isAdminProviderCheckRun(value: unknown): value is AdminProviderC
     entry.length <= maxLength && !/[\u0000-\u001f\u007f]/u.test(entry);
   const ids = (entry: unknown) => Array.isArray(entry) && entry.length <= 1_000 && entry.every((id) => text(id));
   return record(value) && Object.keys(value).every((key) => [
+    "catalogModelIds",
     "capabilityProgress", "setup", "skipped", "credentialId", "current", "done", "failed",
     "finishedAt", "id", "inFlight", "reason", "startedAt", "state", "total", "results"
   ].includes(key)) && text(value.id) && (text(value.credentialId) ||
@@ -106,6 +107,8 @@ export function isAdminProviderCheckRun(value: unknown): value is AdminProviderC
     Number.isSafeInteger(value.total) && Number(value.total) >= Number(value.done) && Number(value.total) <= 1_000 &&
     (value.current === null || text(value.current)) &&
     ids(value.inFlight) && ids(value.failed) &&
+    (value.catalogModelIds === undefined || stringArray(value.catalogModelIds) && ids(value.catalogModelIds) && value.catalogModelIds.length > 0 && value.catalogModelIds.length <= 256 &&
+      new Set(value.catalogModelIds).size === value.catalogModelIds.length) &&
     (value.skipped === undefined || ids(value.skipped)) &&
     (value.results === undefined || Array.isArray(value.results) && value.results.length <= 1_000 &&
       new Set(value.results.map((entry) => record(entry) ? entry.providerModelId : null)).size === value.results.length &&
@@ -135,6 +138,7 @@ export function isAdminProviderCheckRun(value: unknown): value is AdminProviderC
 function isConnection(value: unknown): value is AdminProviderConnection {
   return record(value) && typeof value.id === "string" && typeof value.displayName === "string" &&
     (value.checkRun === undefined || value.checkRun === null || isAdminProviderCheckRun(value.checkRun)) &&
+    (value.catalogUpdates === undefined || decodeAdminProviderCatalogUpdates(value.catalogUpdates) !== null) &&
     typeof value.family === "string" && typeof value.enabled === "boolean" &&
     typeof value.draftVersion === "number" && record(value.draftConfig) &&
     (value.draftConfig.authenticationMode === "bearer" ||
@@ -279,6 +283,19 @@ export function getAdminProviderConnections(fetcher: Fetcher = fetch) {
 
 export function createAdminProviderConnection(body: unknown, fetcher: Fetcher = fetch) {
   return request("/api/admin/providers", json("POST", body), catalog, fetcher);
+}
+
+export function addAdminProviderCatalogModels(connectionId: string, body: Readonly<{
+  credentialId: string; expectedConnectionVersion: number; expectedCredentialVersionId: string; modelIds: readonly string[];
+}>, fetcher: Fetcher = fetch) {
+  return request(`/api/admin/providers/${encoded(connectionId)}/actions`, json("POST", { ...body, action: "add_catalog_models" }),
+    (value) => {
+      const connections = catalog(value);
+      if (!connections || !record(value) || !stringArray(value.unavailableModelIds) ||
+        value.unavailableModelIds.length > 256 || new Set(value.unavailableModelIds).size !== value.unavailableModelIds.length ||
+        value.unavailableModelIds.some((id) => !body.modelIds.includes(id))) return null;
+      return { connections, unavailableModelIds: value.unavailableModelIds };
+    }, fetcher, "provider_admin_route_unavailable");
 }
 
 export function updateAdminProviderConnection(
@@ -536,6 +553,8 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     provider_activation_evidence_missing: "Every default or group key must be turned on and working before the change can be applied.",
     provider_activation_unavailable_confirmation_required: "A configured model ID is absent from one or more referenced key catalogs. Review the setup or confirm the override.",
     provider_check_run_not_found: "This check is no longer running.",
+    provider_checks_running: "Other model checks are running. Wait for them to finish, then retry the unfinished models.",
+    provider_catalog_selection_invalid: "These suggestions have changed. Refresh the provider and select models from the current AIQSA catalog.",
     provider_active_tuple_not_found: "This model and key pair is no longer usable.",
     provider_admin_action_failed: "The provider action could not be completed.",
     provider_admin_route_unavailable: "The provider action route is unavailable in this app process. Restart the development app and try again.",

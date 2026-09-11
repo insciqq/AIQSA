@@ -588,6 +588,17 @@ html[data-motion="off"] .v2-responsive-menu-sheet {
   transform: translate(0, 0);
 }
 
+[data-tooltip][data-tooltip-side="top"]::after {
+  top: auto;
+  bottom: calc(100% + 0.375rem);
+  transform: translate(-50%, 0.125rem);
+}
+
+[data-tooltip][data-tooltip-side="top"]:hover::after,
+[data-tooltip][data-tooltip-side="top"]:focus-visible::after {
+  transform: translate(-50%, 0);
+}
+
 /* An open menu explains itself; its trigger's tooltip would only overlap it. */
 [data-tooltip][aria-expanded="true"]::after,
 [data-tooltip][data-tooltip=""]::after {

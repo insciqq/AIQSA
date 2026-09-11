@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 const POLL_INTERVAL_MS = 1_200;
 
 type Interrupted = Readonly<{
+  catalogModelIds?: readonly string[];
   credentialId: string;
   id: string;
   /** The catalog run in place when the loss was noticed; a newer run hides the notice. */
@@ -81,7 +82,7 @@ export function useAdminModelChecks(input: Readonly<{
     const seenRunId = run?.id ?? null;
     void getAdminProviderCheckRun(connection.id, tracked.id).then((result) => {
       if (cancelled || !result.ok || result.data.state !== "interrupted") return;
-      setLost({ credentialId: tracked.credentialId, id: tracked.id, seenRunId });
+      setLost({ catalogModelIds: tracked.catalogModelIds, credentialId: tracked.credentialId, id: tracked.id, seenRunId });
     });
     return () => {
       cancelled = true;
@@ -114,10 +115,19 @@ export function useAdminModelChecks(input: Readonly<{
   const restart = useCallback(async () => {
     const credentialId = interrupted?.credentialId ?? run?.credentialId ?? connection.defaultCredentialId;
     if (!credentialId) return false;
+    const catalogModelIds = interrupted ? lost?.catalogModelIds : run?.catalogModelIds;
+    if (catalogModelIds) {
+      const credential = connection.credentials.find(({ id }) => id === credentialId);
+      if (!credential?.activeVersion) return false;
+      const result = await controller.actions.addCatalogModels(connection.id, { credentialId,
+        expectedConnectionVersion: connection.activeVersion, expectedCredentialVersionId: credential.activeVersion.id, modelIds: catalogModelIds });
+      if (result.ok) setLost(null);
+      return result.ok;
+    }
     setLost(null);
     const result = await controller.actions.startModelChecks(connection.id, credentialId, undefined, true);
     return result.ok;
-  }, [connection.defaultCredentialId, connection.id, controller.actions, interrupted, run?.credentialId]);
+  }, [connection.activeVersion, connection.credentials, connection.defaultCredentialId, connection.id, controller.actions, interrupted, lost?.catalogModelIds, run?.catalogModelIds, run?.credentialId]);
 
   return {
     dismissInterrupted: () => setLost(null),

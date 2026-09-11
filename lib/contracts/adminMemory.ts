@@ -23,7 +23,15 @@ export const ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS = Object.freeze({
 
 const safeInteger = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const safeLabel = z.string().trim().min(1).max(200);
-const safeErrorCode = z.string().regex(/^[a-z0-9][a-z0-9._:-]{0,63}$/u);
+export const adminMemoryProcessingIssueSchema = z.strictObject({
+  stage: z.enum(["LEARNING", "HISTORY", "INDEXING", "SYNTHESIS", "MAINTENANCE", "DELETION"]),
+  reason: z.enum(["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED", "PROCESSING_FAILED", "RETRYING", "STALLED"]),
+  severity: z.enum(["bad", "warn"]),
+  count: safeInteger,
+  oldestAgeSeconds: safeInteger.nullable()
+});
+
+export type AdminMemoryProcessingIssue = z.infer<typeof adminMemoryProcessingIssueSchema>;
 
 export const adminMemoryStatusSchema = z.strictObject({
   admissionTimeout: z.strictObject({
@@ -31,7 +39,10 @@ export const adminMemoryStatusSchema = z.strictObject({
       .max(ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.maxSeconds),
     version: safeInteger.min(1)
   }),
-  activeIssueCode: safeErrorCode.nullable(),
+  processing: z.strictObject({
+    enabled: z.boolean(),
+    issues: z.array(adminMemoryProcessingIssueSchema).max(6)
+  }),
   configuredTargets: z.array(z.strictObject({
     model: safeLabel,
     provider: safeLabel
@@ -51,6 +62,10 @@ export const adminMemoryStatusSchema = z.strictObject({
     state: z.enum(["NOT_RUNNING", "RUNNING"])
   })
 }).superRefine((value, context) => {
+  if (new Set(value.processing.issues.map((issue) => issue.stage)).size !== value.processing.issues.length ||
+    value.processing.issues.some((issue) => (issue.count === 0) !== (issue.oldestAgeSeconds === null))) {
+    context.addIssue({ code: "custom", message: "Memory processing stages, counts and ages must agree" });
+  }
   if ((value.queue.length === 0) !== (value.queue.oldestAgeSeconds === null)) {
     context.addIssue({
       code: "custom",
@@ -73,12 +88,6 @@ export const adminMemoryStatusSchema = z.strictObject({
     context.addIssue({
       code: "custom",
       message: "Memory rebuild is available only for an index that requires it"
-    });
-  }
-  if (value.queue.length === 0 && value.activeIssueCode !== null) {
-    context.addIssue({
-      code: "custom",
-      message: "Memory cannot report an active issue without active work"
     });
   }
 });

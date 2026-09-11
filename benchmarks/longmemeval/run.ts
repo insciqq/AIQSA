@@ -44,8 +44,6 @@ import {
 } from "../../lib/domain/memory/retrieval/config";
 import { RERANKER_ROUTE_POLICY_VERSION } from
   "../../lib/domain/rerankerModels";
-import { createAdminMemoryEgressService } from
-  "../../lib/server/admin/memory/egressService";
 import {
   approvedRerankerDeploymentByProviderModelId,
   approvedRerankerDeployments
@@ -1306,17 +1304,6 @@ async function resolveProviderRoles(
   });
   const reranker = rerankerRoute[0];
   if (!reranker) throw new Error("longmemeval_reranker_route_invalid");
-  const egress = await createAdminMemoryEgressService(prisma, {
-    consentMode: "ADMIN"
-  }).get();
-  const destinations = new Set(egress.destinations
-    .filter(({ state }) => state === "AVAILABLE")
-    .map(({ id }) => id));
-  if (egress.reviewRequired || !destinations.has("system_model") ||
-    !destinations.has("embedding") ||
-    !destinations.has("remote_reranker")) {
-    throw new Error("longmemeval_memory_egress_not_ready");
-  }
   return Object.freeze({
     reranker,
     rerankerRoute: Object.freeze(rerankerRoute),
@@ -4422,8 +4409,7 @@ async function main(): Promise<void> {
     process.env.AIQSA_MEMORY_BENCHMARK_POSTGRES_PORT ?? "55437",
     "longmemeval_postgres_port_invalid"
   );
-  if (process.env.AIQSA_MEMORY_BENCHMARK_ACK !== "DISPOSABLE_PAID_LONGMEMEVAL" ||
-    process.env.AIQSA_MEMORY_EGRESS_CONSENT_MODE !== "ADMIN") {
+  if (process.env.AIQSA_MEMORY_BENCHMARK_ACK !== "DISPOSABLE_PAID_LONGMEMEVAL") {
     throw new Error("longmemeval_disposable_authority_required");
   }
   const baseUrl = assertBenchmarkBaseUrl(

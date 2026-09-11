@@ -1,10 +1,10 @@
+import { safeWorkspaceBasename } from "../contracts/workspace";
 import { describe, expect, it } from "vitest";
 import {
   WORKSPACE_INBOX_INDEX_PATH,
   WORKSPACE_MCP_TOOL_ALLOWLIST,
   WORKSPACE_PROJECT_DIRECTORY,
   isSafeWorkspaceRelativePath,
-  safeWorkspaceBasename,
   workspaceAttachmentPath,
   workspaceMessageManifestPath,
   workspaceRunOutputDirectory,

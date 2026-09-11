@@ -66,6 +66,7 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
   && MCP_SDK_VERSION="$(node -p "require('./node_modules/@modelcontextprotocol/sdk/package.json').version")" \
   && MICROSANDBOX_VERSION="$(node -p "require('./node_modules/microsandbox/package.json').version")" \
   && MICROSANDBOX_MCP_VERSION="$(node -p "require('./node_modules/microsandbox-mcp/package.json').version")" \
+  && SSH2_VERSION="$(node -p "require('./node_modules/ssh2/package.json').version")" \
   && npm pkg delete dependencies devDependencies \
   && npm pkg set \
     "dependencies.@napi-rs/canvas=$CANVAS_VERSION" \
@@ -79,6 +80,7 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
     "dependencies.zod=$ZOD_VERSION" \
     "dependencies.microsandbox=$MICROSANDBOX_VERSION" \
     "dependencies.microsandbox-mcp=$MICROSANDBOX_MCP_VERSION" \
+    "dependencies.ssh2=$SSH2_VERSION" \
     "dependencies.prisma=$PRISMA_VERSION" \
     "dependencies.tsx=$TSX_VERSION" \
     "dependencies.sharp=$SHARP_VERSION" \
@@ -122,11 +124,12 @@ FROM ${NODE_IMAGE} AS workspace-guest
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH=/opt/aiqsa-python/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/aiqsa-playwright
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash binutils build-essential ca-certificates coreutils curl ffmpeg file git \
-    imagemagick jq libmagic1 libreoffice p7zip-full \
+    fonts-noto-core imagemagick jq libmagic1 libreoffice openssh-client p7zip-full \
     pkg-config poppler-utils python3 python3-dev python3-pip python3-venv \
     ripgrep sqlite3 tar unzip wget xz-utils xxd zip \
   && rm -rf /var/lib/apt/lists/* \
@@ -134,7 +137,10 @@ RUN apt-get update \
   && /opt/aiqsa-python/bin/pip install --disable-pip-version-check --no-cache-dir \
     Pillow==11.3.0 lxml==6.0.1 matplotlib==3.10.6 openpyxl==3.1.5 \
     pandas==2.3.2 pdfplumber==0.11.7 pyarrow==21.0.0 pypdf==6.0.0 \
-    python-docx==1.2.0 python-pptx==1.0.2 uv==0.8.15 \
+    python-docx==1.2.0 python-pptx==1.0.2 uv==0.8.15 playwright==1.60.0 pyotp==2.10.0 \
+  && /opt/aiqsa-python/bin/playwright install --with-deps --only-shell chromium \
+  && apt-get purge -y xvfb \
+  && rm -rf /var/lib/apt/lists/* \
   && npm install --global --ignore-scripts --no-audit --no-fund pnpm@10.15.1 \
   && mkdir -p /workspace/inbox/messages /workspace/project /workspace/output /workspace/tmp \
   && chmod 0755 /workspace /workspace/inbox /workspace/inbox/messages \
@@ -153,7 +159,7 @@ RUN apt-get update \
 COPY scripts/build-workspace-oci.mjs ./build-workspace-oci.mjs
 COPY --from=workspace-guest / /workspace-rootfs/
 RUN node ./build-workspace-oci.mjs \
-  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.25 "$TARGETARCH"
+  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.26 "$TARGETARCH"
 
 # KVM-capable runtime role. Compose grants /dev/kvm and a writable MSB_HOME;
 # the root filesystem itself remains read-only.

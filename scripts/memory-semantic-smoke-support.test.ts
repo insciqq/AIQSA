@@ -9,7 +9,6 @@ import {
   type ResolvedMemoryExecutionTarget
 } from "../lib/server/memory/execution";
 import {
-  MEMORY_SEMANTIC_SMOKE_REQUIRED_ROLES,
   MEMORY_SEMANTIC_SMOKE_SCENARIOS,
   MemorySemanticSmokePreflightError,
   createMemorySemanticSmokeScenarioLedger,
@@ -34,7 +33,6 @@ function snapshot(
 ): MemorySemanticSmokePreflightSnapshot {
   return {
     answer: binding,
-    consentAccepted: true,
     credentialIntegrity: true,
     embeddingReady: true,
     embeddingSelected: true,
@@ -198,19 +196,6 @@ describe("Memory semantic smoke support", () => {
     }))).toEqual({ code: "memory_smoke_settings_disabled", ok: false });
   });
 
-  it("preflights every provider role exercised by the semantic smoke", () => {
-    expect(MEMORY_SEMANTIC_SMOKE_REQUIRED_ROLES).toEqual([
-      "MEMORY_CONTROL",
-      "MEMORY_STATEMENT_CLASSIFY",
-      "MEMORY_HISTORY_CLASSIFY",
-      "MEMORY_FACT_EXTRACT",
-      "MEMORY_CONSOLIDATE",
-      "MEMORY_RERANK",
-      "MEMORY_DOCUMENT_EMBED",
-      "MEMORY_QUERY_EMBED"
-    ]);
-  });
-
   it("accepts an independently bound resolved reranker target", () => {
     const reranker = {
       authority: {
@@ -288,10 +273,7 @@ describe("Memory semantic smoke support", () => {
     });
   });
 
-  it("reports unreadable credentials and unaccepted egress as fixed sanitized codes", () => {
-    expect(preflightCode(() => validateMemorySemanticSmokePreflight(snapshot({
-      consentAccepted: false
-    })))).toBe("memory_smoke_egress_not_accepted");
+  it("reports unreadable credentials with a fixed sanitized code", () => {
     expect(preflightCode(() => validateMemorySemanticSmokePreflight(snapshot({
       credentialIntegrity: false
     })))).toBe("memory_smoke_credential_unreadable");

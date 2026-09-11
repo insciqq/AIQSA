@@ -42,6 +42,7 @@ import {
 import { ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS, type AdminProviderQuickSetupProviderId } from "../../../contracts/adminProviderQuickSetup";
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 import { providerSetupModels } from "./setupModels";
+import { catalogModelPresent, providerCatalogUpdates } from "./catalogModels";
 import {
   effectiveProviderResponseTimeoutMs,
   normalizeProviderConnectionConfiguration,
@@ -94,6 +95,8 @@ export type AdminProviderServiceErrorCode =
   | "provider_activation_evidence_missing"
   | "provider_activation_unavailable_confirmation_required"
   | "provider_check_run_not_found"
+  | "provider_catalog_selection_invalid"
+  | "provider_checks_running"
   | "provider_connection_not_found"
   | "provider_endpoint_keys_required"
   | "provider_credential_label_taken"
@@ -526,7 +529,7 @@ export function createAdminProviderService(input: Readonly<{
     const initialSetup = connection.activeVersion === 0;
     const setupPolicy = ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.includes(connection.family as AdminProviderQuickSetupProviderId)
       ? adminProviderQuickSetupPolicy(connection.family as AdminProviderQuickSetupProviderId) : null;
-    const setupModels = providerSetupModels(connection.family, (connection.activeConfig ?? connection.draftConfig).apiRoot);
+    const setupModels = initialSetup ? providerSetupModels(connection.family, connection.draftConfig.apiRoot) : [];
     const modelClasses = [...new Set([
       ...connection.models.filter((model) => initialSetup || model.enabled)
         .map((model) => model.modelClass ?? model.draftConfig.modelClass),
@@ -555,8 +558,7 @@ export function createAdminProviderService(input: Readonly<{
     }) : [];
     const additions = setupModels.filter((candidate) =>
       (outcome.modelIdsByClass?.[candidate.configuration.modelClass] ?? outcome.modelIds)
-        .includes(candidate.configuration.upstreamModelId) && !connection.models.some((model) =>
-        model.draftConfig.upstreamModelId === candidate.configuration.upstreamModelId))
+        .includes(candidate.configuration.upstreamModelId) && !connection.models.some((model) => catalogModelPresent(model, candidate)))
       .map((candidate) => ({
         configuration: candidate.configuration.modelClass === "image" ? { ...candidate.configuration,
           image: outcome.imageModels?.find((entry) => entry.id === candidate.configuration.upstreamModelId)?.image ?? candidate.configuration.image } : candidate.configuration,
@@ -829,7 +831,10 @@ export function createAdminProviderService(input: Readonly<{
   }
 
   async function startCheckRun(value: {
-    /** Internal setup continuation; explicit rechecks always probe again. */
+    catalogModelIds?: readonly string[];
+    expectedConnectionVersion?: number;
+    expectedCredentialVersionId?: string;
+    /** Internal setup continuation, including newly added setup candidates. */
     reuseCurrentChecks?: boolean;
     retryUnresolved?: boolean;
     initialModelIds?: readonly string[];
@@ -848,6 +853,10 @@ export function createAdminProviderService(input: Readonly<{
     const credential = usableCredential(connection, value.credentialId);
     if (!credential) {
       throw new AdminProviderServiceError("provider_credential_not_found");
+    }
+    if (value.expectedConnectionVersion !== undefined && connection.activeVersion !== value.expectedConnectionVersion ||
+      value.expectedCredentialVersionId !== undefined && credential.activeVersion!.id !== value.expectedCredentialVersionId) {
+      throw new AdminProviderServiceError("provider_draft_stale");
     }
     if (connection.activeVersion === 0 && value.reason === "requested") {
       // Recover only the unchanged first-setup endpoint. A changed draft
@@ -869,12 +878,14 @@ export function createAdminProviderService(input: Readonly<{
       if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
     }
     const running = checkRuns.running(connection.id, value.credentialId);
-    if (running) return running;
-    if ((value.reason === "requested" || value.reason === "setup") && !value.modelIds && connection.enabled &&
+    if (running) {
+      if (value.expectedConnectionVersion !== undefined) throw new AdminProviderServiceError("provider_checks_running");
+      return running;
+    }
+    if (value.reason === "setup" && !value.modelIds && connection.enabled &&
       connection.activeConfig && connection.defaultCredentialId === credential.id) {
-      const missing = providerSetupModels(connection.family, (connection.activeConfig ?? connection.draftConfig).apiRoot).filter((candidate) =>
-        !connection!.models.some((model) => [model.draftConfig, model.activeConfig].some((config) =>
-          config?.upstreamModelId === candidate.configuration.upstreamModelId)));
+      const missing = providerSetupModels(connection.family, connection.activeConfig.apiRoot).filter((candidate) =>
+        !connection!.models.some((model) => catalogModelPresent(model, candidate)));
       if (missing.length) {
         const outcome = await testCredentialCatalog({
           connection: connection.activeConfig, family: connection.family,
@@ -897,6 +908,8 @@ export function createAdminProviderService(input: Readonly<{
           connectionId: connection.id, connectionVersion: connection.activeVersion,
           credentialId: credential.id, credentialVersionId: credential.activeVersion!.id, models: additions, now: now()
         }) !== "updated") throw new AdminProviderServiceError("provider_draft_stale");
+        if (additions.length) value = { ...value, reuseCurrentChecks: true,
+          initialModelIds: [...(value.initialModelIds ?? []), ...additions.map(({ id }) => id)] };
         connection = (await input.repository.listConnections()).find(({ id }) => id === value.connectionId);
         if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
       }
@@ -927,7 +940,7 @@ export function createAdminProviderService(input: Readonly<{
           } : {}) };
       }
     }
-    const completedModelIds = (value.reason === "setup" && value.reuseCurrentChecks || value.retryUnresolved)
+    const completedModelIds = ((value.reason === "setup" || Boolean(value.initialModelIds?.length)) && value.reuseCurrentChecks || value.retryUnresolved)
       ? modelIds.filter((id) => {
           const model = connection!.models.find((candidate) => candidate.id === id)!;
           return connection!.activeChecks.some((check) =>
@@ -944,6 +957,7 @@ export function createAdminProviderService(input: Readonly<{
         })
       : [];
     const run = checkRuns.start({
+      catalogModelIds: value.catalogModelIds,
       signal: value.signal,
       initialSetup,
       onProgress: value.onProgress,
@@ -991,6 +1005,19 @@ export function createAdminProviderService(input: Readonly<{
       timeout.signal.removeEventListener("abort", cancel);
       timeout.clear();
     }
+  }
+
+  const catalogSelectionsInFlight = new Set<string>();
+
+  function selectedCatalogModels(connection: AdminProviderConnection, modelIds: readonly string[]) {
+    const ids = new Set(modelIds);
+    const selected = connection.activeConfig
+      ? providerSetupModels(connection.family, connection.activeConfig.apiRoot).filter((model) => ids.has(model.modelId))
+      : [];
+    if (!ids.size || ids.size > 256 || ids.size !== modelIds.length || selected.length !== ids.size) {
+      throw new AdminProviderServiceError("provider_catalog_selection_invalid");
+    }
+    return selected;
   }
 
   return {
@@ -1077,8 +1104,86 @@ export function createAdminProviderService(input: Readonly<{
       }
     },
 
-    listConnections: async () => (await input.repository.listConnections()).map((connection) => ({
+    async skipCatalogModels(value: {
+      connectionId: string; expectedConnectionVersion: number; modelIds: readonly string[]; skip: boolean;
+    }): Promise<void> {
+      const connection = (await input.repository.listConnections()).find(({ id }) => id === value.connectionId);
+      if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
+      if (connection.activeVersion !== value.expectedConnectionVersion) throw new AdminProviderServiceError("provider_draft_stale");
+      selectedCatalogModels(connection, value.modelIds);
+      requireUpdated(await input.repository.updateCatalogSkips({ connectionId: connection.id,
+        connectionVersion: connection.activeVersion, modelIds: value.modelIds, skip: value.skip }));
+    },
+
+    async addCatalogModels(value: {
+      connectionId: string; credentialId: string; expectedConnectionVersion: number;
+      expectedCredentialVersionId: string; modelIds: readonly string[]; signal?: AbortSignal;
+    }): Promise<{ unavailableModelIds: string[] }> {
+      if (catalogSelectionsInFlight.has(value.connectionId)) throw new AdminProviderServiceError("provider_checks_running");
+      catalogSelectionsInFlight.add(value.connectionId);
+      try {
+        value.signal?.throwIfAborted();
+        const connection = (await input.repository.listConnections()).find(({ id }) => id === value.connectionId);
+        if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
+        const credential = usableCredential(connection, value.credentialId);
+        if (!connection.enabled || !connection.activeConfig || connection.activeVersion !== value.expectedConnectionVersion ||
+          connection.defaultCredentialId !== value.credentialId || !credential ||
+          credential.activeVersion!.id !== value.expectedCredentialVersionId) throw new AdminProviderServiceError("provider_draft_stale");
+        if (checkRuns.running(connection.id, credential.id)) throw new AdminProviderServiceError("provider_checks_running");
+        const selected = selectedCatalogModels(connection, value.modelIds);
+        const missing = selected.filter((candidate) => !connection.models.some((model) => catalogModelPresent(model, candidate)));
+        if (missing.some((candidate) => connection.catalogSkippedIds?.includes(candidate.modelId))) throw new AdminProviderServiceError("provider_draft_stale");
+        const outcome = missing.length ? await testCredentialCatalog({
+          connection: connection.activeConfig, family: connection.family,
+          modelClasses: [...new Set(missing.map((candidate) => candidate.configuration.modelClass))],
+          secret: () => activeCredentialSecret(credential.id, value.expectedCredentialVersionId), signal: value.signal
+        }) : null;
+        value.signal?.throwIfAborted();
+        const available = missing.filter((candidate) =>
+          (outcome?.modelIdsByClass?.[candidate.configuration.modelClass] ?? outcome?.modelIds ?? [])
+            .includes(candidate.configuration.upstreamModelId));
+        const policy = ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.includes(connection.family as AdminProviderQuickSetupProviderId)
+          ? adminProviderQuickSetupPolicy(connection.family as AdminProviderQuickSetupProviderId) : null;
+        const additions = available.map((candidate) => ({
+          configuration: initialModelConfiguration(candidate.configuration.modelClass === "image" ? {
+            ...candidate.configuration,
+            image: outcome?.imageModels?.find((entry) => entry.id === candidate.configuration.upstreamModelId)?.image ?? candidate.configuration.image
+          } : candidate.configuration),
+          displayName: candidate.displayName, id: connection.id === policy?.connection.id ? candidate.modelId : idFactory(),
+          inputTokenPriceMicros: candidate.inputTokenPriceMicros, outputTokenPriceMicros: candidate.outputTokenPriceMicros,
+          templateKey: connection.id === policy?.connection.id ? candidate.templateKey : null
+        }));
+        if (additions.length) requireUpdated(await input.repository.addSetupModelsCas({
+          catalogSelectionIds: available.map((candidate) => candidate.modelId),
+          connectionId: connection.id, connectionVersion: value.expectedConnectionVersion,
+          credentialId: credential.id, credentialVersionId: value.expectedCredentialVersionId, models: additions, now: now()
+        }));
+        const current = (await input.repository.listConnections()).find(({ id }) => id === connection.id);
+        if (!current) throw new AdminProviderServiceError("provider_connection_not_found");
+        if (!current.enabled || current.activeVersion !== value.expectedConnectionVersion || current.defaultCredentialId !== credential.id ||
+          usableCredential(current, credential.id)?.activeVersion?.id !== value.expectedCredentialVersionId) throw new AdminProviderServiceError("provider_draft_stale");
+        const addedIds = new Set(additions.map(({ id }) => id));
+        const modelIds = current.models.filter((model) => selected.some((candidate) => catalogModelPresent(model, candidate)) &&
+          (addedIds.has(model.id) || current.activeChecks.some((check) => check.providerModelId === model.id &&
+            check.modelVersion === model.activeVersion &&
+            Boolean(decodeCapabilitySetupEvidence(check.evidence?.capabilitySetup)) &&
+            decodeCapabilitySetupEvidence(check.evidence?.capabilitySetup)?.activation !== "preserve")))
+          .map(({ id }) => id);
+        if (modelIds.length) await startCheckRun({
+          catalogModelIds: selected.filter((candidate) => current.models.some((model) => modelIds.includes(model.id) && catalogModelPresent(model, candidate)))
+            .map(({ modelId }) => modelId),
+          connectionId: connection.id, credentialId: credential.id, modelIds, reason: "requested",
+          // Persisted initial receipts carry model revision authority across retries.
+          retryUnresolved: true, reuseCurrentChecks: true,
+          expectedConnectionVersion: value.expectedConnectionVersion, expectedCredentialVersionId: value.expectedCredentialVersionId
+        });
+        return { unavailableModelIds: missing.filter((candidate) => !available.includes(candidate)).map((candidate) => candidate.modelId) };
+      } finally { catalogSelectionsInFlight.delete(value.connectionId); }
+    },
+
+    listConnections: async () => (await input.repository.listConnections()).map(({ catalogSkippedIds, ...connection }) => ({
       ...connection,
+      catalogUpdates: providerCatalogUpdates(connection, catalogSkippedIds ?? []),
       checkRun: checkRuns.latest(connection.id)
     })),
 

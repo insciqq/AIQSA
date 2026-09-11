@@ -10,6 +10,7 @@ import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvid
 import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
 import { hasVerifiedForcedToolCall } from "../../providers/forcedToolCallEvidence";
 import { hasVerifiedStructuredOutput } from "../../providers/structuredOutputEvidence";
+import { supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
 import { decodeImageVerificationEvidence } from "../../providers/imageGenerationEvidence";
 
 export const INITIAL_CAPABILITY_SETUP_POLICY_VERSION = 2 as const;
@@ -113,6 +114,9 @@ export function reusableCapabilitySetupEvidence(
   if (evidence.detail !== "ok" ||
     setup.checks.modelAccess !== "verified" || evidence.compatibility?.modelAccess !== "verified") return undefined;
   const checks = { ...setup.checks };
+  if (checks.structuredOutput === "unsupported" &&
+    setup.attempts?.structuredOutput?.reason === "adapter_unsupported" &&
+    supportsStructuredOutputAdapter(model.adapterKind)) checks.structuredOutput = "not_checked";
   const retained = { ...evidence, ...(evidence.compatibility ? { compatibility: { ...evidence.compatibility } } : {}) };
   for (const [key, valid] of [["structuredOutput", hasVerifiedStructuredOutput(evidence, model)],
     ["forcedToolCall", hasVerifiedForcedToolCall(evidence, model)]] as const) {

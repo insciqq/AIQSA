@@ -54,6 +54,11 @@ export async function ensureBundledMicrosandboxRuntime(): Promise<void> {
   }
   const home = process.env.MSB_HOME?.trim();
   if (!home || !isAbsolute(home)) throw new Error("workspace_runtime_home_invalid");
+  // Microsandbox's trampoline root requires user xattrs. Older Linux tmpfs
+  // mounts cannot supply them, so native temporary files use the runtime volume.
+  const temporaryDirectory = join(home, "tmp");
+  await mkdir(temporaryDirectory, { recursive: true, mode: 0o700 });
+  process.env.TMPDIR = temporaryDirectory;
 
   const packageName = PLATFORM_PACKAGES[process.arch as keyof typeof PLATFORM_PACKAGES];
   const packageRoot = join(process.cwd(), "node_modules", ...packageName.split("/"));

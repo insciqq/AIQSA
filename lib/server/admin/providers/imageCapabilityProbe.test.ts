@@ -14,6 +14,46 @@ const input: AdminProviderDraftTesterInput = {
 };
 
 describe("independent image capability probes", () => {
+  it("retains editing after an OpenRouter 400 and recovers generation through Retry only", async () => {
+    const png = await sharp({ create: { width: 64, height: 64, channels: 3, background: "blue" } }).png().toBuffer();
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ error: {
+      code: "invalid_parameter", param: "resolution", message: "private upstream content" } }, { status: 400 }))
+      .mockImplementation(async () => Response.json({ data: [{ b64_json: png.toString("base64") }] }));
+    const openrouter = { ...input, providerFamily: "openrouter", model: imageModelConfiguration("google/gemini-3.1-flash-image", {
+      profile: "openrouter", parameters: { resolution: { type: "enum" as const, values: ["1K", "2K", "4K"] } }
+    }) };
+    const first = await testImageCapabilities(openrouter, { createFetch: () => fetchFn });
+    expect(first.status).toBe("available");
+    expect(first.evidence.capabilitySetup).toMatchObject({ checks: { imageGeneration: "incomplete", imageEditing: "verified" },
+      attempts: { imageGeneration: { reason: "invalid_input", httpStatus: 400,
+        imageFailure: { category: "invalid_parameter", parameter: "resolution" } } } });
+    expect(initiallyVerifiedModelConfiguration(openrouter.model, first.evidence).capabilities).toMatchObject({ imageGeneration: false, imageEditing: true });
+    const recovered = await testImageCapabilities({ ...openrouter, reuseSetupEvidence: first.evidence }, { createFetch: () => fetchFn });
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(recovered.evidence.imageEditing).toEqual(first.evidence.imageEditing);
+    expect(recovered.evidence.capabilitySetup?.attempts?.imageGeneration).toEqual({ attempts: 1, status: "verified", reason: "verified" });
+    expect(initiallyVerifiedModelConfiguration(openrouter.model, recovered.evidence).capabilities).toMatchObject({ imageGeneration: true, imageEditing: true });
+    expect(JSON.stringify(recovered)).not.toContain("private");
+    for (const [, init] of fetchFn.mock.calls) expect(JSON.parse(String(init!.body))).toMatchObject({ resolution: "1K", n: 1,
+      provider: { data_collection: "deny", allow_fallbacks: true } });
+  });
+  it.each(["gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-2.5-flash-image"])(
+    "checks %s generation and editing independently and retries only its failed capability", async (upstreamModelId) => {
+      const png = await sharp({ create: { width: 64, height: 64, channels: 3, background: "white" } }).png().toBuffer();
+      const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({}, { status: 503 }))
+        .mockImplementation(async () => Response.json({ status: "completed", steps: [{ type: "model_output",
+          content: [{ type: "image", mime_type: "image/png", data: png.toString("base64") }] }] }));
+      const gemini = { ...input, model: imageModelConfiguration(upstreamModelId, { profile: "gemini" }), providerFamily: "gemini" };
+      const result = await testImageCapabilities(gemini, { createFetch: () => fetchFn });
+      expect(result.evidence.capabilitySetup?.checks).toMatchObject({ imageGeneration: "incomplete", imageEditing: "verified" });
+      expect(result.evidence.imageEditing).toMatchObject({ adapterKind: "gemini_images_native", upstreamModelId, verified: true });
+      expect(initiallyVerifiedModelConfiguration(gemini.model, result.evidence).capabilities).toMatchObject({ imageGeneration: false, imageEditing: true });
+      const edited = JSON.parse(String(fetchFn.mock.calls[1]![1]!.body));
+      expect(edited).toMatchObject({ model: upstreamModelId, input: [expect.anything(), { type: "image", mime_type: "image/png", data: expect.any(String) }] });
+      await testImageCapabilities({ ...gemini, reuseSetupEvidence: result.evidence }, { createFetch: () => fetchFn });
+      expect(fetchFn).toHaveBeenCalledTimes(3);
+    });
+
   it("settles two unsupported routes without enabling the model or paying again on Retry", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => Response.json({}, { status: 404 }));
     const result = await testImageCapabilities(input, { createFetch: () => fetchFn });

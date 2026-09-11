@@ -27,6 +27,7 @@ export type CatalogSettingsRecord = Partial<AnswerSoundPreferences> & {
   /** Persisted knowledge selection for new chats; absent or invalid means none. */
   defaultKnowledgePlan?: unknown;
   defaultMcpMode?: string | null;
+  defaultWorkspaceEnabled?: boolean;
   defaultProviderModelId: string | null;
   defaultSearchPlan: unknown;
   sendWithEnter?: boolean | null;
@@ -231,6 +232,7 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
       searchPlan: searchPreference.preferredPlan,
       searchPreferenceSource: searchPreference.source,
       ...resolveChatDefaults(input.settings),
+      workspaceEnabled: input.settings.defaultWorkspaceEnabled ?? false,
       showCitations: input.settings.showCitations,
       showReasoningBlocks: input.settings.showReasoningBlocks
     },

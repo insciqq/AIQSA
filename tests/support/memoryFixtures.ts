@@ -35,7 +35,6 @@ export function memoryHealthFixture(
       retrievalFenced: false,
       state: "CLEAR"
     },
-    egressReview: "NONE",
     indexing: {
       completedChats: 0,
       countTruncated: false,
@@ -62,7 +61,6 @@ export function memoryHealthFixture(
 export function memorySettingsFixture(
   overrides: Readonly<{
     capabilities?: Partial<MemorySettingsResponse["capabilities"]>;
-    egress?: Partial<MemorySettingsResponse["egress"]>;
     historyIndexing?: Partial<MemorySettingsResponse["historyIndexing"]>;
     settings?: Partial<MemorySettingsResponse["settings"]>;
   }> = {}
@@ -83,18 +81,6 @@ export function memorySettingsFixture(
       synthesisAvailable: true,
       temporaryChats: true
     },
-    egress: {
-      acceptedAt: "2026-08-10T08:00:00.000Z",
-      acceptedUtilityEgressFingerprint: "accepted-fingerprint-0000000000000001",
-      acceptedUtilityPolicyVersion: "memory-policy-v1",
-      consentMode: "ADMIN",
-      currentUtilityEgressFingerprint: "accepted-fingerprint-0000000000000001",
-      currentUtilityPolicyVersion: "memory-policy-v1",
-      embeddingDestination: "Local / multilingual-embed",
-      remoteRerankerDestination: null,
-      reviewRequired: false,
-      systemModelDestination: "Local / memory-extract"
-    },
     historyIndexing: {
       completedChats: 0,
       state: "DISABLED",
@@ -108,7 +94,6 @@ export function memorySettingsFixture(
         modelDisplayName: "multilingual-embed"
       },
       learnAutomatically: false,
-      memoryConsentRevision: 4,
       memoryGeneration: 3,
       memoryRevision: 8,
       referenceChatHistory: false,
@@ -129,7 +114,6 @@ export function memorySettingsFixture(
     ...base,
     ...overrides,
     capabilities: { ...base.capabilities, ...overrides.capabilities },
-    egress: { ...base.egress, ...overrides.egress },
     historyIndexing: { ...defaultHistoryIndexing, ...overrides.historyIndexing },
     settings
   };

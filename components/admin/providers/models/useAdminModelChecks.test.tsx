@@ -14,6 +14,7 @@ vi.mock("@/components/admin/adminProvidersApi", () => ({
 
 function controller() {
   const actions = {
+    addCatalogModels: vi.fn(async () => ({ ok: true as const, unavailableModelIds: [] })),
     cancelModelChecks: vi.fn(async () => true),
     refreshQuietly: vi.fn(async () => true),
     startModelChecks: vi.fn(async () => ({ ok: true as const }))
@@ -26,6 +27,23 @@ function withRun(run: AdminProviderConnection["checkRun"]): AdminProviderConnect
 }
 
 describe("useAdminModelChecks", () => {
+  it.each([false, true])("retries an explicit catalog batch through the selected add operation, including after interruption (%s)", async (interrupted) => {
+    const { actions, controller: value } = controller();
+    const run = fixtureCheckRun({ credentialId: "cred-primary", id: "catalog-run", catalogModelIds: ["builtin-one"], total: 1,
+      state: interrupted ? "running" : "completed", failed: ["model-terra"] });
+    api.getCheckRun.mockResolvedValue({ ok: true, data: fixtureCheckRun({ credentialId: "", id: run.id, state: "interrupted" }) });
+    const { result, rerender } = renderHook(({ connection }) => useAdminModelChecks({ connection, controller: value, onNotice: vi.fn() }),
+      { initialProps: { connection: withRun(run) } });
+    if (interrupted) {
+      rerender({ connection: withRun(null) });
+      await waitFor(() => expect(result.current.interrupted).not.toBeNull());
+    }
+    await act(async () => { expect(await result.current.restart()).toBe(true); });
+    expect(actions.addCatalogModels).toHaveBeenCalledWith("conn-openai", { credentialId: "cred-primary", expectedConnectionVersion: 1,
+      expectedCredentialVersionId: "cred-primary-version", modelIds: ["builtin-one"] });
+    expect(actions.startModelChecks).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     api.getCheckRun.mockReset();
   });

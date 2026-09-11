@@ -102,6 +102,7 @@ import { ArchivedChatsPanelV2 } from "@/features/settings-v2/ArchivedChatsPanelV
 import { ChatDefaultsRowsV2 } from "@/features/settings-v2/ChatDefaultsRowsV2";
 import { DataSettingsRowsV2 } from "@/features/settings-v2/DataSettingsRowsV2";
 import { MemorySettingsRowsV2 } from "@/features/settings-v2/MemorySettingsRowsV2";
+import { WorkspaceSecretsPanel } from "@/features/settings-v2/WorkspaceSecretsPanel";
 import { SettingsSelectV2 } from "@/features/settings-v2/SettingsSelectV2";
 import { deleteAllPersonalChats } from "@/components/app-shell/accountApi";
 import { loadChatNavigation } from "@/components/app-shell/chatNavigationActions";
@@ -315,6 +316,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [mcpBusy, setMcpBusy] = useState(false);
   const [mcpDirty, setMcpDirty] = useState(false);
   const [mcpKey, setMcpKey] = useState(0);
+  const [secretsBusy, setSecretsBusy] = useState(false);
+  const [secretsDirty, setSecretsDirty] = useState(false);
+  const [secretsKey, setSecretsKey] = useState(0);
   const [dataSubview, setDataSubview] = useState<null | "archived">(null);
   const [skillLibraryOpen, setSkillLibraryOpen] = useState(false);
   const [composerDockHeight, setComposerDockHeight] = useState(0);
@@ -1450,15 +1454,15 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
 
       {settings.settings.open && (!libraryOpen || personalMemoryOpen) ? (
         <SettingsV2
-          busy={mcpBusy || connectedAppsBusy}
-          busyMessage={connectedAppsBusy ? "Revoking app access…" : "Updating MCP…"}
+          busy={mcpBusy || connectedAppsBusy || secretsBusy}
+          busyMessage={secretsBusy ? "Updating Workspace secrets…" : connectedAppsBusy ? "Revoking app access…" : "Updating MCP…"}
           connectedAppsContent={(
             <ConnectedAppsSection
               accountId={session.accountId}
               onBusyChange={setConnectedAppsBusy}
             />
           )}
-          dirty={mcpDirty}
+          dirty={mcpDirty || secretsDirty}
           generalSlot={(
             <>
               <AnswerSoundSettingsRowV2 composer={composer} />
@@ -1509,6 +1513,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           obscured={permanentChatDeletionModalOpen}
           onSectionChange={() => setDataSubview(null)}
           panels={{
+            workspace_secrets: <WorkspaceSecretsPanel key={`${session.accountId}:${secretsKey}`} onBusyChange={setSecretsBusy} onDirtyChange={setSecretsDirty} />,
             account: (
               <SettingsAccountPanelV2
                 accountEmail={session.accountEmail}
@@ -1595,6 +1600,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onDiscard={() => {
             setMcpDirty(false);
             setMcpKey((value) => value + 1);
+            setSecretsDirty(false);
+            setSecretsKey((value) => value + 1);
           }}
           onThemeChange={settings.updateTheme}
         />

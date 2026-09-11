@@ -16,6 +16,8 @@ import {
 import type { WorkspaceConfig } from "./config";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
 import { loadPinnedOfficialWorkspaceToolCatalog } from "./microsandboxRuntime";
+import { WORKSPACE_SECRETS_GUIDE_PATH, WORKSPACE_SECRETS_PATH, WORKSPACE_BROWSER_SESSIONS_PATH, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceSecretAssetPath, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
+import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide } from "./secrets/manifest";
 import {
   WorkspaceRuntimeError,
   WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE,
@@ -73,6 +75,8 @@ type DeterministicSession = {
   };
   runtimeSandboxId: string;
   sandboxName: string;
+  secretEnvironment?: Record<string, string>;
+  secretsRunId?: string;
   state: "ready" | "stopped";
 };
 
@@ -589,9 +593,49 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     return shellResult("", 127, `aiqsa-test: unknown directive\n`);
   }
 
+  async syncPersonalSecrets(input: Parameters<WorkspaceRuntime["syncPersonalSecrets"]>[0]): Promise<void> {
+    if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    const secrets = parseAcceptedWorkspaceSecrets(input.secrets);
+    const sameRun = session.secretsRunId === input.modelRunId;
+    for (const path of session.files.keys()) {
+      if (path.startsWith(`${WORKSPACE_SECRETS_PATH}/ssh/`) || path.startsWith(`${WORKSPACE_SECRETS_PATH}/files/`)) session.files.delete(path);
+      if (!sameRun && path.startsWith(`${WORKSPACE_BROWSER_SESSIONS_PATH}/`)) session.files.delete(path);
+    }
+    session.secretEnvironment = workspaceSecretEnvironment(secrets);
+    session.secretsRunId = input.modelRunId;
+    session.files.set(WORKSPACE_SECRETS_GUIDE_PATH, Buffer.from(workspaceSecretsGuide(secrets)));
+    session.directories.add(`${WORKSPACE_SECRETS_PATH}/browser`);
+    for (const { id, value } of secrets) {
+      if (value.kind === "file") session.files.set(workspaceSecretAssetPath(id, "file"), Buffer.from(value.base64, "base64"));
+      if (value.kind === "browser_session" && !sameRun) session.files.set(workspaceBrowserSessionPath(value.originalName), Buffer.from(value.base64, "base64"));
+      if (value.kind === "ssh_key") session.files.set(workspaceSecretAssetPath(id, "ssh_key"), Buffer.from(value.privateKey));
+    }
+  }
+
   async loadBoundTools(input: Parameters<WorkspaceRuntime["loadBoundTools"]>[0]) {
     this.session(input.sessionId, input.runtimeSandboxId);
     return this.catalog();
+  }
+
+  async collectBrowserSessions(input: Parameters<WorkspaceRuntime["collectBrowserSessions"]>[0]): ReturnType<WorkspaceRuntime["collectBrowserSessions"]> {
+    input.signal?.throwIfAborted();
+    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    const files: WorkspaceOutputStream[] = [];
+    const skipped: import("./secrets/browserSession").WorkspaceBrowserSkipCode[] = [];
+    const prefix = `${WORKSPACE_BROWSER_SESSIONS_PATH}/`;
+    const candidates = [...session.files].filter(([path]) => path.startsWith(prefix)).sort(([a], [b]) => a.localeCompare(b));
+    for (const [path, bytes] of candidates.slice(0, 128)) {
+      const name = path.slice(prefix.length);
+      if (!isWorkspaceBrowserSessionFilename(name) || bytes.byteLength === 0) { skipped.push("browser_session_invalid"); continue; }
+      if (bytes.byteLength > WORKSPACE_BROWSER_SESSION_MAX_BYTES) { skipped.push("browser_session_too_large"); continue; }
+      if (files.length >= WORKSPACE_BROWSER_SESSION_MAX_COUNT) { skipped.push("browser_session_limit"); continue; }
+      files.push({ relativePath: name, byteSize: bytes.byteLength, checksum: createHash("sha256").update(bytes).digest("hex"),
+        opaqueFileId: createHash("sha256").update(`browser\0${path}`).digest("hex"), mimeType: "application/json",
+        body: new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }) });
+    }
+    if (candidates.length > 128) skipped.push("browser_session_limit");
+    return { files, skipped };
   }
 
   async callBoundTool(input: Parameters<WorkspaceRuntime["callBoundTool"]>[0]): Promise<WorkspaceToolResult> {

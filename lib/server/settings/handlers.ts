@@ -35,6 +35,7 @@ export type UserSettingsUpdate = Partial<AnswerSoundPreferences & {
   defaultControlValues: Record<string, unknown>;
   defaultKnowledgePlan: KnowledgeSelection | null;
   defaultMcpMode: ChatDefaultMcpMode;
+  defaultWorkspaceEnabled: boolean;
   defaultProviderModelId: string | null;
   defaultSearchPlan: SearchPlan | null;
   sendWithEnter: boolean;
@@ -186,6 +187,7 @@ function buildSettingsUpdate(
     "defaultControlValues",
     "defaultKnowledgePlan",
     "defaultMcpMode",
+    "defaultWorkspaceEnabled",
     "defaultProviderModelId",
     "defaultSearchPlan",
     "sendWithEnter",
@@ -256,6 +258,10 @@ function buildSettingsUpdate(
     if (typeof body.answerSoundEnabled !== "boolean") return { error: "answer_sound_enabled_boolean_required" };
     update.answerSoundEnabled = body.answerSoundEnabled;
   }
+  if ("defaultWorkspaceEnabled" in body) {
+    if (typeof body.defaultWorkspaceEnabled !== "boolean") return { error: "default_workspace_enabled_boolean_required" };
+    update.defaultWorkspaceEnabled = body.defaultWorkspaceEnabled;
+  }
   if ("answerSoundId" in body) {
     if (!isAnswerSoundId(body.answerSoundId)) return { error: "answer_sound_id_invalid" };
     update.answerSoundId = body.answerSoundId;
@@ -310,6 +316,7 @@ function serializeSettings(
     defaultControlValues: resolveCurrentUserControlValues({ ...data, settings }, selection),
     defaultKnowledgePlan: chatDefaults.knowledgePlan,
     defaultMcpMode: chatDefaults.mcpMode,
+    defaultWorkspaceEnabled: settings.defaultWorkspaceEnabled ?? false,
     hasPersonalModelDefault: selection.hasPersonalModelDefault,
     modelPreferenceSource: selection.modelPreferenceSource,
     organizationModelDefault: selection.organizationModelDefault,

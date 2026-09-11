@@ -80,6 +80,26 @@ async function withSettingsUser<T>(run: (input: SettingsUserFixture) => Promise<
 }
 
 describe("Prisma-backed settings repository", () => {
+  it("persists Workspace choices across reads, isolates accounts and preserves other concurrent preferences", async () => {
+    await withSettingsUser(async ({ userId, validationModels }) => {
+      await withSettingsUser(async ({ userId: otherUserId }) => {
+        const repository = createTestSettingsRepository(validationModels);
+        expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).defaultWorkspaceEnabled).toBe(false);
+        await Promise.all([
+          repository.updateSettings(userId, { defaultWorkspaceEnabled: true }),
+          repository.updateSettings(userId, { sendWithEnter: false })
+        ]);
+        expect(await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).toMatchObject({
+          defaultWorkspaceEnabled: true, sendWithEnter: false
+        });
+        expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId: otherUserId } })).defaultWorkspaceEnabled).toBe(false);
+        expect(await repository.updateSettings(userId, { defaultWorkspaceEnabled: false })).toMatchObject({
+          kind: "updated", settings: { defaultWorkspaceEnabled: false, sendWithEnter: false }
+        });
+      });
+    });
+  });
+
   it("persists separate sound preferences through concurrent saves without changing another account", async () => {
     await withSettingsUser(async ({ userId, validationModels }) => {
       await withSettingsUser(async ({ userId: otherUserId }) => {

@@ -170,6 +170,7 @@ export async function loadMemorySemanticCutoverInventory(
             'CLAIMED'::"MemoryJobState",
             'QUEUED'::"MemoryJobState",
             'RETRYABLE_FAILED'::"MemoryJobState",
+            'WAITING_FOR_CONFIGURATION'::"MemoryJobState",
             'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState"
           )
       )::text AS "legacyNonterminalJobs",

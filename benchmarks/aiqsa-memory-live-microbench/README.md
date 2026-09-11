@@ -24,7 +24,6 @@ profile selected by the operator:
 
 ```bash
 AIQSA_MEMORY_LIVE_BENCHMARK_ACK=DISPOSABLE_PAID_AIQSA_MEMORY_LIVE \
-AIQSA_MEMORY_EGRESS_CONSENT_MODE=ADMIN \
 AIQSA_MEMORY_BENCHMARK_DATABASE_URL='postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@127.0.0.1:55437/aiqsa_memory_benchmark?schema=public' \
 npx tsx benchmarks/aiqsa-memory-live-microbench/run.ts --confirm-paid DISPOSABLE
 ```

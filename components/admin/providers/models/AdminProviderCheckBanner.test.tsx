@@ -15,6 +15,14 @@ function fixture(results: AdminProviderCheckRun["results"], failed: string[] = [
 }
 
 describe("independent model check feedback", () => {
+  it("offers Retry for unconfirmed image generation after editing was saved", () => {
+    const { restart } = fixture([{ providerModelId: "m", state: "partial", checks: {
+      modelAccess: "verified", imageGeneration: "incomplete", imageEditing: "verified"
+    }, attempts: { imageGeneration: { attempts: 1, status: "incomplete", reason: "invalid_input", httpStatus: 400 } } }], ["m"]);
+    expect(screen.getByRole("group", { name: "Model setup summary" })).toHaveTextContent("Image checks remain incomplete for 1 model");
+    fireEvent.click(screen.getByRole("button", { name: "Retry checks" }));
+    expect(restart).toHaveBeenCalledOnce();
+  });
   it("finishes quietly when only optional PDF checks are inconclusive", () => {
     const { restart } = fixture([{ providerModelId: "m", state: "partial", checks: {
       modelAccess: "verified", directPdf: "incomplete", streaming: "verified"

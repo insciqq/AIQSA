@@ -120,6 +120,7 @@ export function humanizeErrorCode(code: string): string {
     workspace_archive_in_progress: "A Workspace archive is already being prepared. Try again shortly",
     workspace_archive_limit_exceeded: "This Workspace is too large to archive. Remove files and try again",
     workspace_attachment_unavailable: "A Workspace attachment is unavailable. Re-upload it and try again",
+    workspace_secrets_prepare_failed: "Workspace could not prepare your saved secrets. Check Workspace secrets in Settings and try again",
     workspace_busy: "Another Workspace operation is still running. Stop it or wait, then try again",
     workspace_disabled: "Workspace is disabled by the administrator. Turn it off to continue in normal chat",
     workspace_intent_invalid: "Workspace settings were not accepted. Refresh the chat and try again",

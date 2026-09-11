@@ -33,7 +33,6 @@ import {
   type MemoryExecutionBindingRecord,
   type MemorySecretFreeExecutionSnapshot
 } from "../memory/execution";
-import { resolveMemoryEgressConsentMode } from "../memory/execution/consentMode";
 import {
   decodeMemoryActionAnswerResult,
   MEMORY_ACTION_NO_COMMIT_RESULT
@@ -126,6 +125,7 @@ import {
   workspaceRunOutputDirectory
 } from "../../domain/workspace";
 import { resolveProjectAccess } from "../projects/access";
+import { acceptWorkspaceBrowserSequence, bindWorkspaceSecrets, lockWorkspaceSecretOwner } from "../workspace/secrets/store";
 import { notifyProjectEvent } from "../projects/events";
 import {
   assertAssistantRunProvenance,
@@ -293,6 +293,7 @@ async function insertAcceptedWorkspaceRunBinding(
   }
   await tx.workspaceRunBinding.create({
     data: {
+      browserSessionSequence: await acceptWorkspaceBrowserSequence(tx, input.userId, input.chatId),
       imageRef: plan.normalized.imageRef,
       internetEnabled: plan.normalized.internetEnabled,
       mcpVersion: plan.normalized.mcpVersion,
@@ -305,6 +306,7 @@ async function insertAcceptedWorkspaceRunBinding(
       workspaceSessionId: plan.sessionId
     }
   });
+  await bindWorkspaceSecrets(tx, { runId: ids.runId, userId: input.userId, chatId: input.chatId });
   await tx.chat.update({
     data: { workspaceEnabled: true },
     where: { id: input.chatId }
@@ -1164,6 +1166,8 @@ export async function admitPreparingRunWithClient(
   });
   return mapActiveRunConflict(() =>
     repeatableReadTransaction(prismaClient, async (tx) => {
+      // Match account/settings owner -> chat lock order before freezing secrets.
+      if (input.workspaceAdmissionPlan) await lockWorkspaceSecretOwner(tx, input.userId);
       const admissionNow = new Date();
       if (input.admissionKind === "NORMAL_SEND" && input.personalChat) {
         const defaults = await loadChatCreationDefaults(tx, input.userId);
@@ -2195,19 +2199,6 @@ async function assertCurrentPreparingExecutionEvidence(
     );
   }
   if (evidence.utilityEgressMode === "LOCAL_ONLY") return;
-  const consentMode = authority.egressConsentMode ??
-    resolveMemoryEgressConsentMode();
-  if (consentMode !== "ADMIN" && (
-    settings.acceptedUtilityEgressFingerprint !==
-      evidence.acceptedUtilityEgressFingerprint ||
-    settings.acceptedUtilityPolicyVersion === null ||
-    settings.acceptedUtilityEgressAt === null
-  )) {
-    throw new MemoryPreparingRunConflictError(
-      "memory_utility_egress_changed",
-      true
-    );
-  }
   try {
     for (const snapshot of evidence.snapshots) {
       await reauthorizeStoredMemoryExecution(tx, settings, {

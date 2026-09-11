@@ -647,7 +647,8 @@ describe("AdminPanel", () => {
     const list = await within(overview).findByRole("list", { name: "Needs attention" });
     expect(within(list).getAllByTestId("admin-attention-item")).toHaveLength(2);
     expect(within(list).getByText("Users are waiting for approval")).toBeInTheDocument();
-    expect(screen.getByText(/When the list is empty, everything is working/)).toBeInTheDocument();
+    expect(screen.getByText(/Only things that need a decision or an action/)).toBeInTheDocument();
+    expect(screen.queryByText(/everything is working/)).not.toBeInTheDocument();
 
     fireEvent.click(within(list).getByRole("button", { name: /Set up email/ }));
     await screen.findByTestId("admin-section-email");
@@ -955,7 +956,7 @@ describe("AdminPanel", () => {
       }
     };
     const memory = {
-      activeIssueCode: null,
+      processing: { enabled: true, issues: [] },
       admissionTimeout: { seconds: 30, version: 1 },
       configuredTargets: [],
       index: { generation: 1, readiness: "READY" },

@@ -382,11 +382,7 @@ describe("installation bootstrap", () => {
       update: {},
       where: { id: "installation" }
     });
-    expect(fixture.spies.memoryEgressAdminPolicyUpsert).toHaveBeenCalledWith({
-      create: { id: "installation" },
-      update: {},
-      where: { id: "installation" }
-    });
+    expect(fixture.spies.memoryEgressAdminPolicyUpsert).not.toHaveBeenCalled();
     expect(fixture.spies.systemModelPolicyUpsert).toHaveBeenCalledWith({
       create: {
         id: "installation",

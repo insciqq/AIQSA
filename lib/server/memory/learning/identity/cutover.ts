@@ -131,6 +131,7 @@ export function createPrismaMemoryIdentityCutoverRepository(
               'CLAIMED'::"MemoryJobState",
               'QUEUED'::"MemoryJobState",
               'RETRYABLE_FAILED'::"MemoryJobState",
+              'WAITING_FOR_CONFIGURATION'::"MemoryJobState",
               'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState"
             )) AS "pendingRebuildJobs",
         (SELECT COUNT(*) FROM "MemoryFact" AS fact

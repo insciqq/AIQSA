@@ -188,6 +188,7 @@ describe("provider structured output", () => {
 
   it("admits only adapter paths with implemented strict-schema transports", () => {
     expect([
+      "anthropic_messages",
       "deepseek_responses_native",
       "gemini_interactions_native",
       "openai_responses_native",
@@ -195,8 +196,7 @@ describe("provider structured output", () => {
       "openrouter_chat_completions"
     ].every(supportsStructuredOutputAdapter)).toBe(true);
     expect([
-      "openai_chat_completions_compatible",
-      "anthropic_messages"
+      "openai_chat_completions_compatible"
     ].some(supportsStructuredOutputAdapter)).toBe(false);
   });
 

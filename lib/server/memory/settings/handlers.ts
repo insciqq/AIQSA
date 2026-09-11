@@ -32,9 +32,6 @@ function serviceErrorStatus(code: MemorySettingsServiceErrorCode): number {
     case "memory_contract_invalid":
     case "memory_embedding_unavailable":
       return 400;
-    case "memory_egress_admin_owned":
-      return 403;
-    case "memory_egress_consent_required":
     case "memory_version_stale":
       return 409;
     case "memory_action_failed":
@@ -79,12 +76,7 @@ export function createPatchMemorySettingsHandler(deps: MemorySettingsHandlerDeps
     if (!decoded.ok) return json({ error: decoded.code }, 400);
 
     try {
-      const response = decoded.value.kind === "patch"
-        ? await deps.service.patch(session.userId, decoded.value.value)
-        : await deps.service.acceptUtilityEgress(
-            session.userId,
-            decoded.value.value
-          );
+      const response = await deps.service.patch(session.userId, decoded.value.value);
       return json(response);
     } catch (error) {
       return serviceError(error);

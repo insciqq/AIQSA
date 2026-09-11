@@ -123,6 +123,7 @@ function requestBody(patch: SettingsDefaultsPatch): Record<string, unknown> {
       ? { defaultKnowledgePlan: patch.knowledgePlan ?? null }
       : {}),
     ...(patch.mcpMode !== undefined ? { defaultMcpMode: patch.mcpMode } : {}),
+    ...(patch.workspaceEnabled !== undefined ? { defaultWorkspaceEnabled: patch.workspaceEnabled } : {}),
     ...(patch.sendWithEnter !== undefined ? { sendWithEnter: patch.sendWithEnter } : {}),
     ...(Object.prototype.hasOwnProperty.call(patch, "showCitations")
       ? { showCitations: patch.showCitations }
@@ -190,6 +191,9 @@ function reconciledPatch(
   }
   if (sent.mcpMode !== undefined) {
     patch.mcpMode = settings.defaultMcpMode;
+  }
+  if (sent.workspaceEnabled !== undefined) {
+    patch.workspaceEnabled = settings.defaultWorkspaceEnabled ?? false;
   }
   if (sent.sendWithEnter !== undefined) {
     patch.sendWithEnter = settings.sendWithEnter;

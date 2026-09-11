@@ -30,7 +30,8 @@ export type SettingsSectionV2 =
   | "defaults"
   | "general"
   | "mcp"
-  | "memory";
+  | "memory"
+  | "workspace_secrets";
 
 type SettingsIntentV2 =
   | Readonly<{ kind: "close" }>
@@ -40,6 +41,7 @@ const SECTION_ORDER: readonly SettingsSectionV2[] = [
   "general",
   "defaults",
   "memory",
+  "workspace_secrets",
   "connected_apps",
   "mcp",
   "data",
@@ -53,7 +55,8 @@ const SECTION_META: Record<SettingsSectionV2, Readonly<{ icon: UiV2IconName; lab
   defaults: { icon: "sliders", label: "Chat defaults" },
   general: { icon: "sun", label: "General" },
   mcp: { icon: "tool", label: "MCP & tools" },
-  memory: { icon: "memory", label: "Memory" }
+  memory: { icon: "memory", label: "Memory" },
+  workspace_secrets: { icon: "lock", label: "Workspace secrets" }
 };
 
 const THEME_CAPTIONS: Record<ThemeId, string> = {
@@ -167,7 +170,7 @@ export function SettingsV2({
   };
   const request = (intent: SettingsIntentV2) => {
     if (busy) return;
-    if (dirty && activeSection === "mcp") {
+    if (dirty && (activeSection === "mcp" || activeSection === "workspace_secrets")) {
       setDiscardIntent(intent);
       return;
     }
@@ -297,7 +300,7 @@ export function SettingsV2({
         </header>
         {busy || dirty ? (
           <p className="v2-settings-state" role="status">
-            {busy ? busyMessage : "Unsaved MCP values"}
+            {busy ? busyMessage : activeSection === "workspace_secrets" ? "Unsaved Workspace secret" : "Unsaved MCP values"}
           </p>
         ) : null}
         {noticeSlot ? <div className="v2-settings-notice">{noticeSlot}</div> : null}
@@ -372,13 +375,13 @@ export function SettingsV2({
       </section>
       {discardIntent ? (
         <section
-          aria-label="Unsaved MCP changes"
+          aria-label={activeSection === "workspace_secrets" ? "Unsaved Workspace secret" : "Unsaved MCP changes"}
           aria-modal="true"
           className="v2-settings-confirm"
           role="alertdialog"
         >
           <h2>Discard unsaved changes?</h2>
-          <p>Changes to your personal MCP connection will be lost.</p>
+          <p>{activeSection === "workspace_secrets" ? "Your unsaved Workspace secret will be lost." : "Changes to your personal MCP connection will be lost."}</p>
           <div>
             <UiV2Button onClick={() => setDiscardIntent(null)}>Keep editing</UiV2Button>
             <UiV2Button tone="destructive" onClick={confirmDiscard}>Discard changes</UiV2Button>

@@ -21,7 +21,6 @@ import type { SearchProbeBinding } from "../../search/probeBinding";
 import type { LockedMemorySettings } from "../persistence/transaction";
 import { memoryExecutionSha256 } from "./canonical";
 import { memoryExecutionFailure } from "./errors";
-import type { MemoryEgressConsentMode } from "./consentMode";
 import {
   MEMORY_EXECUTABLE_ROLES,
   isMemoryEmbeddingRole,
@@ -402,24 +401,4 @@ export function requireMemoryPolicyTarget(
   }
   return policy.targets.get(role) ??
     memoryExecutionFailure("memory_execution_target_unavailable");
-}
-
-export function requireAcceptedMemoryUtilityPolicy(
-  settings: Pick<
-    LockedMemorySettings,
-    "acceptedUtilityEgressAt" |
-    "acceptedUtilityEgressFingerprint" |
-    "acceptedUtilityPolicyVersion"
-  >,
-  policy: ResolvedMemoryUtilityPolicy,
-  consentMode: MemoryEgressConsentMode
-): void {
-  if (consentMode === "ADMIN") return;
-  if (
-    !settings.acceptedUtilityEgressAt ||
-    settings.acceptedUtilityPolicyVersion !== policy.policyVersion ||
-    settings.acceptedUtilityEgressFingerprint !== policy.fingerprint
-  ) {
-    return memoryExecutionFailure("memory_execution_egress_consent_required");
-  }
 }

@@ -219,7 +219,6 @@ function context() {
 describe("Memory item vector enrichment handler", () => {
   it("parks missing consent or runtime capability before binding", async () => {
     for (const code of [
-      "memory_execution_egress_consent_required",
       "memory_execution_capability_unavailable",
       "memory_execution_target_unavailable"
     ] as const) {
@@ -231,7 +230,7 @@ describe("Memory item vector enrichment handler", () => {
       const handler = createMemoryItemEmbeddingHandler(fixture.base);
       await expect(handler.preflight(claim())).resolves.toEqual({
         errorCode: code,
-        status: "WAITING_FOR_EGRESS_CONSENT"
+        status: "WAITING_FOR_CONFIGURATION"
       });
       expect(fixture.bind).not.toHaveBeenCalled();
       expect(fixture.embed).not.toHaveBeenCalled();

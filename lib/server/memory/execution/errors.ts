@@ -2,7 +2,6 @@ export const MEMORY_EXECUTION_ERROR_CODES = [
   "memory_execution_binding_conflict",
   "memory_execution_binding_not_found",
   "memory_execution_capability_unavailable",
-  "memory_execution_egress_consent_required",
   "memory_execution_input_invalid",
   "memory_execution_output_invalid",
   "memory_execution_policy_drift",

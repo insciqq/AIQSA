@@ -194,8 +194,13 @@ describe("auth route handlers", () => {
 
   it("creates a session cookie for verified email/password credentials", async () => {
     const passwordHash = await hashPassword("correct-password");
+    const identity = createTestPasswordIdentity({ passwordHash });
+    // A typed repository can still return additional ORM fields at runtime.
+    // Internal counters must neither break JSON nor enter the browser contract.
+    const storedUser = { ...identity.user, workspaceBrowserSequence: 12n, workspaceBrowserManualSequence: 7n };
+    identity.user = storedUser;
     const repository = createMemoryPasswordAuthRepository({
-      identity: createTestPasswordIdentity({ passwordHash })
+      identity
     });
     const POST = createPasswordLoginHandler({
       getConfig: () => ({
@@ -217,6 +222,10 @@ describe("auth route handlers", () => {
     expect(response.status).toBe(200);
     expect(token).toBeTruthy();
     expect(repository.loginSessions.has(hashToken(token!))).toBe(true);
+    await expect(response.json()).resolves.toEqual({ user: {
+      displayName: identity.user.displayName, email: identity.user.email, id: identity.user.id,
+      role: identity.user.role, status: identity.user.status
+    } });
   });
 
   it("rejects invalid, inactive, and unverified password credentials generically", async () => {

@@ -436,7 +436,13 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
 
     return json(
       {
-        user: currentCredential.user
+        user: {
+          displayName: currentCredential.user.displayName,
+          email: currentCredential.user.email,
+          id: currentCredential.user.id,
+          role: currentCredential.user.role,
+          status: currentCredential.user.status
+        }
       },
       {
         headers: {

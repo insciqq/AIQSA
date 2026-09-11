@@ -291,8 +291,21 @@ export type ProviderCredentialActivationResult =
   | "stale"
   | "updated";
 
+export type StoredProviderConnection = AdminProviderConnection & Readonly<{
+  /** Configuration used for server derivation, omitted from the public catalog. */
+  catalogSkippedIds?: readonly string[];
+}>;
+
 export type AdminProviderRepository = Readonly<{
+  updateCatalogSkips(input: {
+    connectionId: string;
+    connectionVersion: number;
+    modelIds: readonly string[];
+    skip: boolean;
+  }): Promise<ProviderDraftMutationResult>;
   addSetupModelsCas(input: {
+    /** Explicit catalog selection also fences a concurrently committed skip. */
+    catalogSelectionIds?: readonly string[];
     connectionId: string;
     connectionVersion: number;
     credentialId: string;
@@ -330,7 +343,7 @@ export type AdminProviderRepository = Readonly<{
   deleteModel(modelId: string): Promise<AdminProviderDeleteResult>;
   disable(target: ProviderDisableTarget, id: string): Promise<"disabled" | "not_found">;
   enable(target: ProviderDisableTarget, id: string): Promise<"enabled" | "not_found">;
-  listConnections(): Promise<AdminProviderConnection[]>;
+  listConnections(): Promise<StoredProviderConnection[]>;
   loadActiveRefreshCandidate(input: {
     connectionId: string;
     credentialId: string;

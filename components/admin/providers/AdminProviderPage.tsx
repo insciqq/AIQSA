@@ -2,6 +2,7 @@
 
 import { AdminProviderConnectionSettingsSheet } from "@/components/admin/providers/AdminProviderConnectionSettingsSheet";
 import { AdminProviderKeys } from "@/components/admin/providers/AdminProviderKeys";
+import { AdminProviderCatalogModels } from "@/components/admin/providers/AdminProviderCatalogModels";
 import { AdminProviderCheckBanner } from "@/components/admin/providers/models/AdminProviderCheckBanner";
 import { AdminProviderModels } from "@/components/admin/providers/models/AdminProviderModels";
 import { checkableCredentials, diagnosticCheckRun, initialDiagnosticCredentialId } from "@/components/admin/providers/models/modelListView";
@@ -74,6 +75,8 @@ export function AdminProviderPage({
         disabled={controller.state.busy}
         selectedCredentialId={diagnosticCredentialId}
       />
+
+      <AdminProviderCatalogModels connection={connection} controller={controller} key={`catalog:${connection.id}`} />
 
       <AdminProviderKeys
         connection={connection}

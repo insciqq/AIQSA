@@ -70,12 +70,9 @@ import { buildMemoryFactSearchIdentity } from
 import {
   memoryProviderSnapshotVectorSpaceFingerprint,
   memoryVectorSpaceFingerprint,
-  requireAcceptedMemoryUtilityPolicy,
   resolveCurrentMemoryUtilityPolicy
 } from "../execution/policy";
 import { parseMemoryExecutionSnapshot } from "../execution/snapshot";
-import { requireAdminAcceptedMemoryDestination } from "../execution/adminConsent";
-import { resolveMemoryEgressConsentMode } from "../execution/consentMode";
 import { MemoryExecutionError } from "../execution/errors";
 import {
   MEMORY_SHADOW_REBUILD_PIPELINE_VERSION,
@@ -281,6 +278,7 @@ const nonterminalJobStates: readonly MemoryJobState[] = [
   "CLAIMED",
   "QUEUED",
   "RETRYABLE_FAILED",
+  "WAITING_FOR_CONFIGURATION",
   "WAITING_FOR_EGRESS_CONSENT"
 ];
 const COMPATIBLE_GENERATION_PROMOTION_TIMEOUT_MS = 120_000;
@@ -1700,25 +1698,6 @@ async function currentEmbeddingPin(
   ) {
     return null;
   }
-  try {
-    const consentMode = resolveMemoryEgressConsentMode();
-    if (consentMode === "ADMIN") {
-      await requireAdminAcceptedMemoryDestination(tx, {
-        role: "MEMORY_DOCUMENT_EMBED",
-        target: current
-      });
-    } else {
-      requireAcceptedMemoryUtilityPolicy(settings, policy, consentMode);
-    }
-  } catch (error) {
-    if (
-      error instanceof MemoryExecutionError &&
-      error.code === "memory_execution_egress_consent_required"
-    ) {
-      return null;
-    }
-    throw error;
-  }
   const vectorSpaceFingerprint = memoryVectorSpaceFingerprint(current);
   return vectorSpaceFingerprint
     ? {
@@ -1959,7 +1938,8 @@ function statusStateForJob(state: MemoryJobState): MemoryRebuildStatus["state"] 
     case "QUEUED":
     case "RETRYABLE_FAILED": return "QUEUED";
     case "CLAIMED": return "RUNNING";
-    case "WAITING_FOR_EGRESS_CONSENT": return "WAITING_FOR_EGRESS_CONSENT";
+    case "WAITING_FOR_EGRESS_CONSENT":
+    case "WAITING_FOR_CONFIGURATION": return "WAITING_FOR_CONFIGURATION";
     case "SUCCEEDED": return "SUCCEEDED";
     case "TERMINAL_FAILED": return "FAILED";
     case "STALE": return "STALE";
@@ -2023,7 +2003,7 @@ export function createPrismaMemoryRebuildRepository(
         `);
     const childFailure = childJobs.find(({ state }) =>
       ["CANCELLED", "STALE", "TERMINAL_FAILED"].includes(state));
-    const waiting = childJobs.some(({ state }) => state === "WAITING_FOR_EGRESS_CONSENT");
+    const waiting = childJobs.some(({ state }) => ["WAITING_FOR_CONFIGURATION", "WAITING_FOR_EGRESS_CONSENT"].includes(state));
     const completedUnits = generation.indexMode === "LEXICAL_ONLY"
       ? entries.length
       : entries.filter(({ embeddingState }) => embeddingState === "READY").length;
@@ -2041,7 +2021,7 @@ export function createPrismaMemoryRebuildRepository(
     } else if (generation.state === "READY") {
       state = "READY";
     } else if (waiting) {
-      state = "WAITING_FOR_EGRESS_CONSENT";
+      state = "WAITING_FOR_CONFIGURATION";
     } else if (generation.state === "CATCHING_UP") {
       state = "CATCHING_UP";
     } else {
@@ -2434,6 +2414,7 @@ export function createPrismaMemoryRebuildRepository(
                 'CLAIMED'::"MemoryJobState",
                 'QUEUED'::"MemoryJobState",
                 'RETRYABLE_FAILED'::"MemoryJobState",
+                'WAITING_FOR_CONFIGURATION'::"MemoryJobState",
                 'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState"
               )
               AND (

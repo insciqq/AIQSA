@@ -3,7 +3,8 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import sharp from "sharp";
 import { createImageGenerationAdapter, validateGeneratedImage } from "./imageGeneration";
 import { normalizeProviderModelConfiguration, type ProviderConnectionConfiguration, type ProviderModelConfiguration } from "./providerConfiguration";
-import type { ImageProviderProfile } from "../../contracts/imageGeneration";
+import { normalizeImageGenerationParameters, type ImageProviderProfile } from "../../contracts/imageGeneration";
+import { imageParametersFromCatalog } from "./imageModelDiscovery";
 
 let png: Buffer;
 beforeAll(async () => { png = await sharp({ create: { width: 32, height: 32, channels: 3, background: "#ae32c7" } }).png().toBuffer(); });
@@ -19,6 +20,42 @@ function model(profile: ImageProviderProfile): ProviderModelConfiguration {
 function response() { return Response.json({ data: [{ b64_json: png.toString("base64") }], usage: { input_tokens: 12, output_tokens: 20, total_tokens: 32 } }); }
 
 describe("image adapters", () => {
+  it.each([
+    ["google/gemini-3.1-flash-image", ["512", "1K", "2K", "4K"], []],
+    ["google/gemini-3.1-flash-lite-image", ["1K"], []],
+    ["google/gemini-3-pro-image", ["1K", "2K", "4K"], []],
+    ["google/gemini-2.5-flash-image", [], []],
+    ["openai/gpt-image-2.5-sunburst", [], ["auto", "low", "medium", "high", "xhigh", "max"]],
+    ["openai/gpt-image-2.5-flare", [], ["auto", "low", "medium", "high", "xhigh", "max"]]
+  ] as const)("uses the %s endpoint descriptors for generation and editing", async (upstreamModelId, resolution, quality) => {
+    const definitions = imageParametersFromCatalog({ ...(resolution.length ? { resolution: { type: "enum", values: [...resolution] } } : {}),
+      ...(quality.length ? { quality: { type: "enum", values: [...quality] } } : {}), n: { type: "range", min: 1, max: 10 } });
+    const image = { profile: "openrouter" as const, parameters: definitions };
+    expect(() => normalizeImageGenerationParameters({ image_size: "1K" }, image, upstreamModelId)).toThrow();
+    if (!(resolution as readonly string[]).includes("2K")) expect(() => normalizeImageGenerationParameters({ resolution: "2K" }, image, upstreamModelId)).toThrow();
+    if (quality.length) expect(normalizeImageGenerationParameters({ quality: "max" }, image, upstreamModelId)).toEqual({ quality: "max" });
+    const parameters = { ...(resolution.length ? { resolution: "1K" } : {}), ...(quality.length ? { quality: "low" } : {}) };
+    const fetchFn = vi.fn<typeof fetch>(async () => response());
+    const adapter = createImageGenerationAdapter({ connection, model: { ...model("openrouter"), upstreamModelId, image,
+      openRouterRouting: { mode: "automatic", providers: [] } }, secret: "synthetic", fetchFn });
+    await adapter.generate({ prompt: "A blue circle", parameters });
+    await adapter.generate({ prompt: "Add a blue circle", parameters, images: [{ bytes: png, mimeType: "image/png" }] });
+    for (const [url, init] of fetchFn.mock.calls) {
+      expect(url).toBe("https://provider.example/v1/images");
+      expect(JSON.parse(String(init!.body))).toMatchObject({ ...parameters, n: 1, model: upstreamModelId,
+        provider: { data_collection: "deny", allow_fallbacks: true } });
+    }
+    expect(JSON.parse(String(fetchFn.mock.calls[0]![1]!.body)).input_references).toBeUndefined();
+    expect(JSON.parse(String(fetchFn.mock.calls[1]![1]!.body)).input_references).toHaveLength(1);
+  });
+
+  it("bounds rejected bodies and preserves the HTTP status without replay", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response("private".repeat(5000), { status: 400 }));
+    await expect(createImageGenerationAdapter({ connection, model: model("openrouter"), secret: "synthetic", fetchFn })
+      .generate({ prompt: "A circle" })).rejects.toMatchObject({ message: "image_provider_http_error", httpStatus: 400,
+        diagnostic: { category: "unknown" } });
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
   it("does not confer conversation capabilities on an image model", () => {
     expect(normalizeProviderModelConfiguration(model("openai")).modelClass).toBe("image");
     expect(() => normalizeProviderModelConfiguration({ ...model("openai"), answerSelectable: true })).toThrow();
@@ -43,14 +80,23 @@ describe("image adapters", () => {
     expect(Buffer.from(await (form.get("image[]") as Blob).arrayBuffer())).toEqual(png);
     expect(init!.headers).not.toHaveProperty("content-type");
   });
-  it("sends Gemini controls and omits thought images from the output", async () => {
+  it.each(["gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-2.5-flash-image"])(
+    "sends %s controls and omits thought images from the output", async (upstreamModelId) => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ status: "completed", steps: [
       { type: "thought", content: [{ type: "image", data: "private-draft" }] },
       { type: "model_output", content: [{ type: "image", data: png.toString("base64"), mime_type: "image/png" }] }
     ] }));
-    const result = await createImageGenerationAdapter({ connection, model: model("gemini"), secret: "fixture-secret", fetchFn }).generate({ prompt: "Add a circle", images: [{ bytes: png, mimeType: "image/png" }], parameters: { image_size: "1K", thinking_level: "minimal" } });
+    const modern = upstreamModelId.startsWith("gemini-3");
+    const thinking = upstreamModelId.startsWith("gemini-3.1-");
+    const result = await createImageGenerationAdapter({ connection, model: { ...model("gemini"), upstreamModelId }, secret: "fixture-secret", fetchFn }).generate({ prompt: "Add a circle", images: [{ bytes: png, mimeType: "image/png" }], parameters: {
+      ...(modern ? { image_size: "1K" } : {}), ...(thinking ? { thinking_level: "minimal" } : {})
+    } });
     const body = JSON.parse(String(fetchFn.mock.calls[0]![1]!.body));
-    expect(body).toMatchObject({ store: false, stream: false, response_format: { type: "image", image_size: "1K" }, generation_config: { thinking_level: "minimal" } });
+    expect(body).toMatchObject({ model: upstreamModelId, store: false, stream: false,
+      response_format: { type: "image", ...(modern ? { image_size: "1K" } : {}) },
+      ...(thinking ? { generation_config: { thinking_level: "minimal" } } : {}) });
+    if (!modern) expect(body.response_format.image_size).toBeUndefined();
+    if (!thinking) expect(body.generation_config).toBeUndefined();
     expect(body.input[1].data).toBe(png.toString("base64"));
     expect(fetchFn.mock.calls[0]![1]!.headers).toMatchObject({ "x-goog-api-key": "fixture-secret" });
     expect(fetchFn.mock.calls[0]![1]!.headers).not.toHaveProperty("authorization");

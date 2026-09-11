@@ -7,6 +7,8 @@ The cross-cutting safety boundary is in [Critical invariants](CRITICAL_INVARIANT
 
 ## Product And Authority
 
+Personal Memory is enabled by default. Assigning a working System Model with the required verified capabilities authorizes the corresponding Memory operations; there is no separate administrator or user egress consent. Each dispatch still validates the exact configured model, connection, credential and role. Model changes affect future admissions and never retarget accepted executions. Optional embedding and reranking failures preserve the supported local fallback; an explicit user pause remains authoritative.
+
 Personal Memory is user-global. Saved Memories remain directly manageable while Memory is paused; pausing stops new use and work without deleting retained data. Archive is organization only. Resume admits only messages after its server-owned cutoff, never automatic historical backfill. Temporary and Project chats create or receive no Memory context, sources, bindings, counters or jobs. Legacy non-global and Project data is not silently broadened into Personal Memory. Public shares strip the entire private Memory surface.
 
 Ordinary non-empty answers retain deterministic retrieval from the locally sanitized original query, with every enabled source family eligible. They dispatch no System Model read planner or query resolver. Unavailable or invalid optional embedding, sorting, temporal or aggregation signals cannot suppress already admitted evidence or authorize mutations. A valid pure explicit action may skip ordinary retrieval; an action-plus-answer request retains it. Admission exhaustion continues the ordinary answer without Memory, and child budgets reserve time for local retrieval and packing.

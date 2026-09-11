@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
 import {
   MEMORY_UTILITY_EGRESS_POLICY_VERSION,
   type ResolvedMemoryExecutionTarget,
@@ -135,11 +134,6 @@ function repository(
   overrides: Partial<MemorySettingsRepository> = {}
 ): MemorySettingsRepository {
   return {
-    acceptUtilityEgress: vi.fn(async () => settings({
-      memoryConsentRevision: 3,
-      memoryRevision: 4,
-      settingsRevision: 5
-    })),
     get: vi.fn(async () => settings()),
     patch: vi.fn(async () => settings()),
     ...overrides
@@ -149,7 +143,6 @@ function repository(
 describe("Memory settings service", () => {
   it("advertises released Memory surfaces with learning available by default", async () => {
     const service = createMemorySettingsService({
-      egressConsentMode: "PER_USER",
       repository: repository(),
       resolveCurrentUtilityPolicy: async () => policy()
     });
@@ -206,7 +199,6 @@ describe("Memory settings service", () => {
       automaticLearning: true
     }));
     const service = createMemorySettingsService({
-      egressConsentMode: "ADMIN",
       repository: repository({ get: vi.fn(async () => currentSettings) }),
       resolveCapabilities,
       resolveCurrentUtilityPolicy: async () => currentPolicy
@@ -217,12 +209,11 @@ describe("Memory settings service", () => {
     });
     expect(resolveCapabilities).toHaveBeenCalledWith(
       currentSettings,
-      currentPolicy,
-      "ADMIN"
+      currentPolicy
     );
   });
 
-  it("projects bounded safe destinations and exact current/accepted policy evidence", async () => {
+  it("projects bounded settings and capabilities without an acceptance contract", async () => {
     const service = createMemorySettingsService({
       capabilities: {
         ...DEFAULT_MEMORY_SETTINGS_CAPABILITIES,
@@ -231,7 +222,6 @@ describe("Memory settings service", () => {
         historyRecall: false,
         pastChatIndexingAvailable: false
       },
-      egressConsentMode: "PER_USER",
       repository: repository(),
       resolveCurrentUtilityPolicy: async () => policy()
     });
@@ -243,18 +233,6 @@ describe("Memory settings service", () => {
         automaticLearningAvailable: false,
         historyRecall: false,
         pastChatIndexingAvailable: false
-      },
-      egress: {
-        acceptedAt: NOW.toISOString(),
-        acceptedUtilityEgressFingerprint: "a".repeat(64),
-        acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
-        consentMode: "PER_USER",
-        currentUtilityEgressFingerprint: "a".repeat(64),
-        currentUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
-        embeddingDestination: "Embedding provider / Embedding model",
-        remoteRerankerDestination: "System provider / System model",
-        reviewRequired: false,
-        systemModelDestination: "System provider / System model"
       },
       historyIndexing: {
         completedChats: 0,
@@ -269,7 +247,6 @@ describe("Memory settings service", () => {
           modelDisplayName: "Embedding model"
         },
         learnAutomatically: false,
-        memoryConsentRevision: 2,
         memoryGeneration: 0,
         memoryRevision: 3,
         referenceChatHistory: true,
@@ -282,7 +259,7 @@ describe("Memory settings service", () => {
     });
   });
 
-  it("reports drift and remains usable when every utility destination is unavailable", async () => {
+  it("keeps local management available when utility destinations are unavailable", async () => {
     const service = createMemorySettingsService({
       capabilities: {
         ...DEFAULT_MEMORY_SETTINGS_CAPABILITIES,
@@ -291,7 +268,6 @@ describe("Memory settings service", () => {
         historyRecall: false,
         pastChatIndexingAvailable: false
       },
-      egressConsentMode: "PER_USER",
       repository: repository(),
       resolveCurrentUtilityPolicy: async () => policy({
         fingerprint: "9".repeat(64),
@@ -301,43 +277,20 @@ describe("Memory settings service", () => {
 
     const response = await service.get("user-1");
     expect(response.capabilities.explicitMemory).toBe(true);
-    expect(response.egress).toMatchObject({
-      currentUtilityEgressFingerprint: "9".repeat(64),
-      embeddingDestination: null,
-      remoteRerankerDestination: null,
-      reviewRequired: true,
-      systemModelDestination: null
-    });
     expect(response.settings.embeddingDeployment).toBeNull();
   });
 
-  it("defaults destination consent to administrator ownership", async () => {
-    const acceptUtilityEgress = vi.fn(async () => settings());
-    const service = createMemorySettingsService({
-      egressConsentMode: "ADMIN",
-      repository: repository({
-        acceptUtilityEgress,
-        get: vi.fn(async () => settings({
-          acceptedUtilityEgressAt: null,
-          acceptedUtilityEgressFingerprint: null,
-          acceptedUtilityPolicyVersion: null
-        }))
-      }),
-      resolveCurrentUtilityPolicy: async () => policy({ fingerprint: "9".repeat(64) })
-    });
-
-    await expect(service.get("user-1")).resolves.toMatchObject({
-      egress: { consentMode: "ADMIN", reviewRequired: false }
-    });
-    await expect(service.acceptUtilityEgress("user-1", {
-      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-      currentUtilityEgressFingerprint: "9".repeat(64),
-      currentUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
-      expectedMemoryConsentRevision: 2,
-      expectedMemoryRevision: 3,
-      expectedSettingsRevision: 4
-    })).rejects.toEqual(new MemorySettingsServiceError("memory_egress_admin_owned"));
-    expect(acceptUtilityEgress).not.toHaveBeenCalled();
+  it("ignores empty legacy acceptance and requires no additional settings mutation", async () => {
+    const persisted = settings({ acceptedUtilityEgressAt: null, acceptedUtilityEgressFingerprint: null,
+      acceptedUtilityPolicyVersion: null, useMemoryFacts: true, learnAutomatically: true });
+    const repo = repository({ get: vi.fn(async () => persisted) });
+    const service = createMemorySettingsService({ repository: repo, resolveCurrentUtilityPolicy: async () => policy() });
+    const response = await service.get("user-1");
+    expect(response.settings).toMatchObject({ useMemoryFacts: true, learnAutomatically: true });
+    expect(response).not.toHaveProperty("egress");
+    expect(response.settings).not.toHaveProperty("memoryConsentRevision");
+    expect(repo.patch).not.toHaveBeenCalled();
+    expect(persisted.acceptedUtilityEgressAt).toBeNull();
   });
 
   it("projects bounded history progress and wakes automatic enablement", async () => {
@@ -394,12 +347,9 @@ describe("Memory settings service", () => {
     expect(kick).not.toHaveBeenCalled();
   });
 
-  it("maps only stable persistence failures and forwards exact consent", async () => {
-    const acceptUtilityEgress = vi.fn(async () => settings());
+  it("maps only stable persistence failures", async () => {
     const service = createMemorySettingsService({
-      egressConsentMode: "PER_USER",
       repository: repository({
-        acceptUtilityEgress,
         patch: vi.fn(async () => {
           throw new MemoryPersistenceError("memory_settings_conflict");
         })
@@ -411,16 +361,5 @@ describe("Memory settings service", () => {
       expectedSettingsRevision: 4,
       useMemoryFacts: false
     })).rejects.toEqual(new MemorySettingsServiceError("memory_version_stale"));
-
-    const consent = {
-      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-      currentUtilityEgressFingerprint: "a".repeat(64),
-      currentUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
-      expectedMemoryConsentRevision: 2,
-      expectedMemoryRevision: 3,
-      expectedSettingsRevision: 4
-    } as const;
-    await service.acceptUtilityEgress("user-1", consent);
-    expect(acceptUtilityEgress).toHaveBeenCalledWith("user-1", consent);
   });
 });

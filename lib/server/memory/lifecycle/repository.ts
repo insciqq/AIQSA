@@ -806,6 +806,7 @@ async function applyLearnedDeletionFence(
           "CLAIMED",
           "QUEUED",
           "RETRYABLE_FAILED",
+          "WAITING_FOR_CONFIGURATION",
           "WAITING_FOR_EGRESS_CONSENT"
         ]
       },
@@ -920,6 +921,7 @@ async function applyAllReusableDeletionFence(
           "CLAIMED",
           "QUEUED",
           "RETRYABLE_FAILED",
+          "WAITING_FOR_CONFIGURATION",
           "WAITING_FOR_EGRESS_CONSENT"
         ]
       },
@@ -1190,6 +1192,7 @@ export function createPrismaMemoryLifecycleRepository(
                 "CLAIMED",
                 "QUEUED",
                 "RETRYABLE_FAILED",
+                "WAITING_FOR_CONFIGURATION",
                 "WAITING_FOR_EGRESS_CONSENT"
               ]
             },

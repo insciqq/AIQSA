@@ -16,6 +16,7 @@ import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
 import { encryptProviderCredentialSecret } from "../../lib/server/providers/credentialSecrets";
 import { parseSecretEncryptionKey } from "../../lib/server/secrets/envelope";
 import { LOCAL_RESTRICTED_MEMBER } from "../../prisma/local-seed-fixtures";
+import { imageModelConfiguration, initialImageModels } from "../../lib/domain/imageModels";
 import { chooseSearchStrategy, selectModel } from "./shell/composer";
 import { signInWithLocalToken } from "./support/localAuth";
 
@@ -637,6 +638,167 @@ function customConnectionFixture(input: {
     userAssignments: []
   };
 }
+
+test("image checks retain editing and retry unconfirmed generation", async ({ page }, testInfo) => {
+  const presets = initialImageModels("openrouter");
+  const connection = customConnectionFixture({ apiRoot: "https://synthetic.example/v1", displayName: "Synthetic OpenRouter",
+    id: "synthetic-images", modelIds: presets.map(({ id }) => id) });
+  connection.family = "openrouter";
+  connection.models.forEach((model, index) => {
+    const configuration = imageModelConfiguration(presets[index]!.id, { profile: "openrouter" });
+    configuration.capabilities.imageGeneration = index !== 0;
+    model.displayName = presets[index]!.name;
+    model.modelClass = "image";
+    model.activeConfig = configuration;
+    model.draftConfig = configuration;
+    const check = connection.activeChecks[index]!;
+    const proof = { adapterKind: "openrouter_images" as const, upstreamModelId: presets[index]!.id, verified: true as const, probeVersion: 1 as const };
+    check.evidence = { ...check.evidence!, imageEditing: proof, ...(index ? { imageGeneration: proof } : {}),
+      capabilitySetup: { policyVersion: 2, activation: "initial", checks: { modelAccess: "verified", imageGeneration: index ? "verified" : "incomplete", imageEditing: "verified" },
+        ...(index ? {} : { attempts: { imageGeneration: { attempts: 1, status: "incomplete", reason: "invalid_input", httpStatus: 400,
+          imageFailure: { category: "invalid_parameter", parameter: "resolution" } } } }) } };
+  });
+  const first = connection.models[0]!;
+  connection.checkRun = { id: "synthetic-image-check", credentialId: connection.defaultCredentialId!, current: null, done: 6,
+    failed: [first.id], finishedAt: now, inFlight: [], reason: "requested", startedAt: now, state: "completed", total: 6,
+    results: connection.models.map((model, index) => ({ providerModelId: model.id, state: index ? "saved" : "partial",
+      checks: connection.activeChecks[index]!.evidence!.capabilitySetup!.checks })) };
+  let retries = 0;
+  await page.route("**/api/admin/providers**", async (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      expect(request.postDataJSON()).toMatchObject({ action: "check_models", retryUnresolved: true, credentialId: connection.defaultCredentialId });
+      retries++;
+      first.activeConfig!.capabilities.imageGeneration = true;
+      first.activeVersion++;
+      const check = connection.activeChecks[0]!;
+      check.modelVersion = first.activeVersion;
+      check.evidence!.imageGeneration = check.evidence!.imageEditing;
+      check.evidence!.capabilitySetup!.checks.imageGeneration = "verified";
+      check.evidence!.capabilitySetup!.attempts = { imageGeneration: { attempts: 1, reason: "verified", status: "verified" } };
+      connection.checkRun = { ...connection.checkRun!, failed: [], results: connection.checkRun!.results!.map((result) => ({ ...result, state: "saved" })) };
+    }
+    await route.fulfill({ json: { connections: [connection] } });
+  });
+  await signInWithLocalToken(page);
+  await page.goto(`/admin?section=providers&resource=${connection.id}`);
+  const models = page.getByTestId("provider-models");
+  await expect(models).toContainText("Image models · 6");
+  const row = page.getByTestId(`provider-model-${first.id}`);
+  await expect(row.getByTestId("model-chip-imageEditing")).toHaveAttribute("data-chip-tone", "ok");
+  const generation = row.getByTestId("model-chip-imageGeneration");
+  await expect(generation).toHaveAttribute("data-chip-tone", "muted");
+  await generation.click();
+  await expect(row).toContainText("invalid parameter (resolution) · HTTP 400");
+  await page.screenshot({ path: testInfo.outputPath("partial-image-check.png") });
+  await page.getByRole("button", { name: "Retry checks", exact: true }).click();
+  await expect(generation).toHaveAttribute("data-chip-tone", "ok");
+  await expect(row.getByTestId("model-chip-imageEditing")).toHaveAttribute("data-chip-tone", "ok");
+  await expect(page.getByRole("button", { name: "Retry checks", exact: true })).toHaveCount(0);
+  expect(retries).toBe(1);
+  await page.screenshot({ path: testInfo.outputPath("recovered-image-check.png") });
+});
+
+test("long provider models keep navigation fixed and wheel scrolling on the document", async ({ page }, testInfo) => {
+  const connection = customConnectionFixture({ apiRoot: "https://synthetic.example/v1", displayName: "Synthetic long provider",
+    id: "synthetic-scroll", modelIds: Array.from({ length: 24 }, (_, index) => `synthetic/model-${String(index + 1).padStart(2, "0")}`) });
+  connection.models.forEach((model) => { model.displayName = `Long synthetic model name with detailed capability results ${model.id}`; });
+  connection.activeChecks.forEach((check) => { check.evidence = { ...check.evidence!, compatibility: {
+    probeVersion: 2, directPdf: "not_supported", modelAccess: "verified", streaming: "verified", structuredOutput: "not_supported", usage: "verified"
+  }, capabilitySetup: { policyVersion: 2, checks: { structuredOutput: "incomplete" }, attempts: {
+    structuredOutput: { attempts: 3, status: "incomplete", reason: "semantic_inconclusive" }
+  } } }; });
+  const second = customConnectionFixture({ apiRoot: "https://synthetic.example/v1", displayName: "Synthetic second provider",
+    id: "synthetic-scroll-second", modelIds: ["synthetic/second"] });
+  await page.route("**/api/admin/providers**", async (route) => {
+    if (route.request().method() === "GET" && new URL(route.request().url()).pathname === "/api/admin/providers") {
+      await route.fulfill({ json: { connections: [connection, second] } });
+    } else await route.fulfill({ status: 400, json: { error: "unexpected_synthetic_request" } });
+  });
+  await signInWithLocalToken(page);
+  for (const viewport of [
+    { width: 1600, height: 900, theme: "dark" },
+    { width: 1280, height: 560, theme: "light" },
+    { width: 1279, height: 560, theme: "dark" },
+    { width: 1024, height: 560, theme: "light" },
+    { width: 1023, height: 560, theme: "dark" },
+    { width: 390, height: 844, theme: "light" }
+  ] as const) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await page.emulateMedia({ colorScheme: viewport.theme });
+    await page.goto(`/admin?section=providers&resource=${connection.id}`);
+    const table = page.getByRole("table", { name: "Models" });
+    await expect(table).toBeVisible();
+    const scroller = table.locator("..");
+    const expectDocumentScroll = async () => {
+      await expect.poll(() => scroller.evaluate((element) => element.scrollHeight - element.clientHeight)).toBe(0);
+      await page.evaluate(() => window.scrollTo(0, 650));
+      const box = await table.boundingBox();
+      await page.mouse.move(box!.x + Math.min(80, box!.width / 2), Math.min(400, viewport.height - 50));
+      const before = await page.evaluate(() => window.scrollY);
+      await page.mouse.wheel(0, 350);
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(before + 100);
+      await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBe(0);
+    };
+    const expectNavigation = async () => {
+      for (const [id, visible] of [["admin-rail", viewport.width >= 768], ["admin-section-column", viewport.width >= 1024]] as const) {
+        const navigation = page.getByTestId(id);
+        if (!visible) { await expect(navigation).toBeHidden(); continue; }
+        await expect.poll(() => navigation.evaluate((element) => Math.round(element.getBoundingClientRect().top))).toBe(0);
+        await expect.poll(() => navigation.evaluate((element) => Math.round(element.getBoundingClientRect().bottom))).toBe(viewport.height);
+      }
+      if (viewport.width >= 768) await expect(page.getByTestId("admin-rail").getByRole("button").last()).toBeInViewport();
+    };
+    await expectDocumentScroll();
+    await expectNavigation();
+    if (viewport.width === 1280) {
+      // Exercise a wide table without widening the document.
+      await table.evaluate((element) => { element.style.minWidth = `${element.parentElement!.clientWidth + 200}px`; });
+      await expect.poll(() => scroller.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeGreaterThan(0);
+      // Chromium may finish the preceding vertical wheel gesture first.
+      await expect.poll(async () => {
+        await page.mouse.wheel(160, 0);
+        return scroller.evaluate((element) => element.scrollLeft);
+      }).toBeGreaterThan(0);
+      await expect.poll(() => scroller.evaluate((element) => element.scrollHeight - element.clientHeight)).toBe(0);
+      await expectNoPageOverflow(page);
+      await table.evaluate((element) => { element.style.removeProperty("min-width"); });
+    }
+    const last = page.getByTestId(`provider-model-${connection.models.at(-1)!.id}`);
+    await last.scrollIntoViewIfNeeded();
+    await expect(last.getByRole("switch")).toBeInViewport();
+    const diagnostic = last.getByTestId("model-chip-json");
+    await diagnostic.click();
+    await expect(last).toContainText("Inconclusive");
+    await expect.poll(() => scroller.evaluate((element) => element.scrollHeight - element.clientHeight)).toBe(0);
+    await page.keyboard.press("Escape");
+    await expect(diagnostic).toBeFocused();
+    const menu = last.getByRole("button", { name: `More actions for ${connection.models.at(-1)!.displayName}` });
+    await menu.hover();
+    await menu.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("menuitem", { name: "Edit", exact: true })).toBeInViewport();
+    await page.keyboard.press("Escape");
+    await expect(menu).toBeFocused();
+    await expect.poll(() => scroller.evaluate((element) => element.scrollHeight - element.clientHeight)).toBe(0);
+    await expectNavigation();
+    await expectNoPageOverflow(page);
+    if (viewport.width === 1600 || viewport.width === 390) {
+      await page.screenshot({ path: testInfo.outputPath(`models-${viewport.width}-${viewport.theme}.png`) });
+    }
+    await page.reload();
+    await expect(table).toBeVisible();
+    await expectDocumentScroll();
+  }
+  await page.getByTestId("admin-topbar-title").getByRole("link", { name: "Providers", exact: true }).click();
+  await page.getByRole("link", { name: /^Open Synthetic second provider/ }).click();
+  await expect(page.getByRole("table", { name: "Models" })).toContainText("synthetic/second");
+  await page.getByTestId("admin-topbar-title").getByRole("link", { name: "Providers", exact: true }).click();
+  await page.getByRole("link", { name: /^Open Synthetic long provider/ }).click();
+  const restoredTable = page.getByRole("table", { name: "Models" });
+  await expect(restoredTable).toContainText(connection.models.at(-1)!.displayName);
+  await expect.poll(() => restoredTable.locator("..").evaluate((element) => element.scrollHeight - element.clientHeight)).toBe(0);
+});
 
 test("administrator adds OpenAI through the Add provider sheet, retries a rejected key without another model-selection step, and chats with it", async ({ page }) => {
   const upstream = await startLocalResponsesServer();

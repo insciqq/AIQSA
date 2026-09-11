@@ -80,6 +80,8 @@ describe("Prisma Workspace lifecycle", () => {
       loadBoundTools: vi.fn(async () => { throw new Error("unused"); }),
       removeSession: vi.fn(async () => undefined),
       stageAttachments: vi.fn(async () => undefined),
+      syncPersonalSecrets: vi.fn(async () => undefined),
+      collectBrowserSessions: vi.fn(async () => ({ files: [], skipped: [] })),
       stopSession: vi.fn(async () => undefined)
     });
     const user = await prisma.user.create({

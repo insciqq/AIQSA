@@ -28,6 +28,7 @@ import { normalizeSearchDraft, searchDraftHash } from "../../search/configuratio
 import { searchValidationFingerprint } from "../../search/probeBinding";
 import type {
   AdminProviderRepository,
+  StoredProviderConnection,
   ProviderActivationWrite,
   ProviderCatalogCredentialFence,
   StoredProviderDraftCheck
@@ -854,7 +855,8 @@ export function createPrismaAdminProviderRepository(
         prisma.providerModelCredentialCheck.findMany({ orderBy: { checkedAt: "desc" } })
       ]);
 
-      return connections.map((connection): AdminProviderConnection => ({
+      return connections.map((connection): StoredProviderConnection => ({
+        catalogSkippedIds: connection.catalogSkippedIds,
         activatedAt: date(connection.activatedAt),
         activeChecks: activeChecks
           .filter((check) => check.connectionId === connection.id)
@@ -955,6 +957,22 @@ export function createPrismaAdminProviderRepository(
       });
     },
 
+    async updateCatalogSkips(input) {
+      return serializable(prisma, async (tx) => {
+        const connection = await tx.providerConnection.findUnique({ where: { id: input.connectionId } });
+        if (!connection) return "not_found" as const;
+        if (connection.activeVersion !== input.connectionVersion) return "stale" as const;
+        const skipped = new Set(connection.catalogSkippedIds);
+        for (const id of input.modelIds) {
+          if (input.skip) skipped.add(id);
+          else skipped.delete(id);
+        }
+        if (skipped.size > 256) return "stale" as const;
+        await tx.providerConnection.update({ where: { id: connection.id }, data: { catalogSkippedIds: [...skipped].sort() } });
+        return "updated" as const;
+      });
+    },
+
     async addSetupModelsCas(input) {
       return serializable(prisma, async (tx) => {
         const connection = await tx.providerConnection.findUnique({
@@ -963,14 +981,16 @@ export function createPrismaAdminProviderRepository(
         });
         if (!connection) return "not_found" as const;
         const credential = connection.defaultCredential;
+        if (input.catalogSelectionIds?.some((id) => connection.catalogSkippedIds.includes(id))) return "stale" as const;
         if (!connection.enabled || connection.activeVersion !== input.connectionVersion ||
           !credential?.enabled || credential.id !== input.credentialId ||
           !credential.activeVersion || credential.activeVersion.id !== input.credentialVersionId ||
           credential.activeVersion.revokedAt) return "stale" as const;
         for (const model of input.models) {
-          const present = connection.models.some((existing) => existing.modelId === model.configuration.upstreamModelId ||
+          const present = connection.models.some((existing) => existing.id === model.id || (model.templateKey !== null && existing.templateKey === model.templateKey) ||
+            existing.modelClass === model.configuration.modelClass && (existing.modelId === model.configuration.upstreamModelId ||
             [existing.draftConfig, existing.activeConfig].some((config) => config && typeof config === "object" &&
-              !Array.isArray(config) && config.upstreamModelId === model.configuration.upstreamModelId));
+              !Array.isArray(config) && config.upstreamModelId === model.configuration.upstreamModelId)));
           if (present) continue;
           await tx.providerModel.create({ data: {
             ...modelColumns(model.configuration),

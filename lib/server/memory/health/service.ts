@@ -1,17 +1,16 @@
 import type { MemoryIndexMode, MemoryJobState } from "@prisma/client";
 import type { MemorySettingsResponse } from "../../../contracts/memory";
 import type {
-  AdminMemoryHealth,
   UserMemoryHealth
 } from "../../../contracts/memoryHealth";
 
 const ACTIVE_REBUILD_STATES = new Set<MemoryJobState>([
   "QUEUED",
+  "WAITING_FOR_CONFIGURATION",
   "WAITING_FOR_EGRESS_CONSENT",
   "CLAIMED",
   "RETRYABLE_FAILED"
 ]);
-const MANY_COUNT_THRESHOLD = 25;
 const MAX_USER_COUNT = 999;
 
 export type UserMemoryHealthSnapshot = Readonly<{
@@ -20,29 +19,10 @@ export type UserMemoryHealthSnapshot = Readonly<{
   blockedDeletionCount: number;
   latestRebuildState: MemoryJobState | null;
   overdueTemporaryCount: number;
-  waitingForEgressCount: number;
-}>;
-
-export type AdminMemoryHealthSnapshot = Readonly<{
-  activeDeletionCount: number;
-  activeJobCount: number;
-  blockedDeletionCount: number;
-  failedExecutionCount: number;
-  incompleteUsageCount: number;
-  oldestActiveJobAt: Date | null;
-  outcomeUnknownCount: number;
-  overdueTemporaryCount: number;
-  recentExecutionCount: number;
-  recentTerminalJobCount: number;
-  retryingJobCount: number;
-  waitingForEgressCount: number;
+  waitingForConfigurationCount: number;
 }>;
 
 export type MemoryHealthService = Readonly<{
-  admin(
-    adminUserId: string,
-    input: Readonly<{ egressReviewRequired: boolean }>
-  ): Promise<AdminMemoryHealth>;
   user(userId: string): Promise<UserMemoryHealth>;
 }>;
 
@@ -61,25 +41,6 @@ function boundedCount(value: number): Readonly<{ count: number; truncated: boole
   });
 }
 
-function countBand(value: number): AdminMemoryHealth["queue"]["active"] {
-  checkedCount(value);
-  if (value === 0) return "NONE";
-  return value >= MANY_COUNT_THRESHOLD ? "MANY" : "SOME";
-}
-
-function lagBand(
-  oldest: Date | null,
-  now: Date
-): AdminMemoryHealth["queue"]["oldestLag"] {
-  if (!oldest) return "NONE";
-  const lag = Math.max(0, now.getTime() - oldest.getTime());
-  if (lag < 5 * 60_000) return "UNDER_5_MINUTES";
-  if (lag < 15 * 60_000) return "UNDER_15_MINUTES";
-  if (lag < 60 * 60_000) return "UNDER_1_HOUR";
-  if (lag < 24 * 60 * 60_000) return "UNDER_24_HOURS";
-  return "OVER_24_HOURS";
-}
-
 function projectUser(input: Readonly<{
   now: Date;
   settings: MemorySettingsResponse;
@@ -94,17 +55,11 @@ function projectUser(input: Readonly<{
     input.snapshot.activeIndexMode === "LEXICAL_ONLY" ||
     input.settings.settings.embeddingDeployment === null
   );
-  const egressReview = input.snapshot.waitingForEgressCount > 0 &&
-      input.settings.egress.consentMode === "ADMIN"
-    ? "ADMIN_REQUIRED" as const
-    : input.settings.egress.reviewRequired
-      ? "USER_REQUIRED" as const
-      : "NONE" as const;
   const learningDelayed = input.settings.settings.learnAutomatically && (
     !input.settings.capabilities.automaticLearning ||
-    input.snapshot.waitingForEgressCount > 0
+    input.snapshot.waitingForConfigurationCount > 0
   );
-  const learning = !input.settings.settings.learnAutomatically
+  const learning = !input.settings.settings.useMemoryFacts || !input.settings.settings.learnAutomatically
       ? {
         reason: "USER_DISABLED" as const,
         state: "DISABLED" as const
@@ -113,7 +68,7 @@ function projectUser(input: Readonly<{
       ? (() => {
           const reason = !input.settings.capabilities.automaticLearning
             ? "CAPABILITY_UNAVAILABLE" as const
-            : "EGRESS_REVIEW" as const;
+            : "CONFIGURATION_UNAVAILABLE" as const;
           return {
             reason,
             state: "DELAYED" as const
@@ -173,14 +128,11 @@ function projectUser(input: Readonly<{
   const action = state === "REBUILD_FAILED" || state === "DELETION_IN_PROGRESS" ||
       state === "BLOCKED_REQUIRES_ADMIN"
     ? "OPEN_MEMORY_OPERATIONS" as const
-    : egressReview === "USER_REQUIRED"
-      ? "REVIEW_DESTINATIONS" as const
-      : "NONE" as const;
+    : "NONE" as const;
 
   return Object.freeze({
     action,
     deletion: Object.freeze(deletion),
-    egressReview,
     indexing: Object.freeze(indexing),
     learning: Object.freeze(learning),
     observedAt: input.now.toISOString(),
@@ -190,88 +142,13 @@ function projectUser(input: Readonly<{
   });
 }
 
-function projectAdmin(input: Readonly<{
-  egressReviewRequired: boolean;
-  now: Date;
-  snapshot: AdminMemoryHealthSnapshot;
-}>): AdminMemoryHealth {
-  const lag = lagBand(input.snapshot.oldestActiveJobAt, input.now);
-  const queueState = input.snapshot.recentTerminalJobCount > 0
-    ? "BLOCKED" as const
-    : input.snapshot.waitingForEgressCount > 0 ||
-        input.snapshot.retryingJobCount > 0 ||
-        ["UNDER_1_HOUR", "UNDER_24_HOURS", "OVER_24_HOURS"].includes(lag)
-      ? "DELAYED" as const
-      : input.snapshot.activeJobCount > 0
-        ? "WORKING" as const
-        : "CLEAR" as const;
-  const providerState = input.snapshot.recentExecutionCount === 0
-    ? "IDLE" as const
-    : input.snapshot.failedExecutionCount > 0 ||
-        input.snapshot.outcomeUnknownCount > 0 ||
-        input.snapshot.incompleteUsageCount > 0
-      ? "DEGRADED" as const
-      : "READY" as const;
-  const deletionState = input.snapshot.blockedDeletionCount > 0
-    ? "ATTENTION_REQUIRED" as const
-    : input.snapshot.activeDeletionCount > 0
-      ? "WORKING" as const
-      : "CLEAR" as const;
-  const temporaryState = input.snapshot.overdueTemporaryCount > 0
-    ? "OVERDUE" as const
-    : "CLEAR" as const;
-  const actionRequired = input.egressReviewRequired ||
-    deletionState === "ATTENTION_REQUIRED" ||
-    temporaryState === "OVERDUE";
-  const degraded = queueState === "BLOCKED" || queueState === "DELAYED" ||
-    providerState === "DEGRADED";
-
-  return Object.freeze({
-    deletion: Object.freeze({
-      active: countBand(input.snapshot.activeDeletionCount),
-      blocked: countBand(input.snapshot.blockedDeletionCount),
-      state: deletionState
-    }),
-    observedAt: input.now.toISOString(),
-    overall: actionRequired ? "ACTION_REQUIRED" : degraded ? "DEGRADED" : "HEALTHY",
-    provider: Object.freeze({
-      failedRecent: countBand(input.snapshot.failedExecutionCount),
-      outcomeUnknown: countBand(input.snapshot.outcomeUnknownCount),
-      state: providerState,
-      usageIncomplete: countBand(input.snapshot.incompleteUsageCount)
-    }),
-    queue: Object.freeze({
-      active: countBand(input.snapshot.activeJobCount),
-      failed: countBand(input.snapshot.recentTerminalJobCount),
-      oldestLag: lag,
-      state: queueState,
-      waitingForReview: countBand(input.snapshot.waitingForEgressCount)
-    }),
-    temporary: Object.freeze({
-      overdue: countBand(input.snapshot.overdueTemporaryCount),
-      state: temporaryState
-    })
-  });
-}
-
 export function createMemoryHealthService(input: Readonly<{
   now?: () => Date;
-  readAdmin(adminUserId: string, now: Date): Promise<AdminMemoryHealthSnapshot>;
   readSettings(userId: string): Promise<MemorySettingsResponse>;
   readUser(userId: string, now: Date): Promise<UserMemoryHealthSnapshot>;
 }>): MemoryHealthService {
   const now = input.now ?? (() => new Date());
   return Object.freeze({
-    async admin(adminUserId, request) {
-      const observedAt = now();
-      const snapshot = await input.readAdmin(adminUserId, observedAt);
-      return projectAdmin({
-        egressReviewRequired: request.egressReviewRequired,
-        now: observedAt,
-        snapshot
-      });
-    },
-
     async user(userId) {
       const observedAt = now();
       const [settings, snapshot] = await Promise.all([

@@ -302,7 +302,7 @@ describe("Memory coordinator", () => {
     }));
   });
 
-  it("releases a pre-call claim into no-lease consent waiting", async () => {
+  it("releases a pre-call claim into no-lease configuration waiting", async () => {
     const claim = jobClaim();
     const claimJob = vi.fn()
       .mockResolvedValueOnce(claim)
@@ -315,8 +315,8 @@ describe("Memory coordinator", () => {
       execute,
       kind: claim.kind,
       preflight: async () => ({
-        errorCode: "memory_egress_consent_required",
-        status: "WAITING_FOR_EGRESS_CONSENT"
+        errorCode: "memory_execution_target_unavailable",
+        status: "WAITING_FOR_CONFIGURATION"
       })
     });
     const service = coordinator(registry, coordinatorRepository);
@@ -328,8 +328,8 @@ describe("Memory coordinator", () => {
     expect(settleJobGate).toHaveBeenCalledWith(expect.objectContaining({
       claim,
       decision: {
-        errorCode: "memory_egress_consent_required",
-        status: "WAITING_FOR_EGRESS_CONSENT"
+        errorCode: "memory_execution_target_unavailable",
+        status: "WAITING_FOR_CONFIGURATION"
       }
     }));
   });

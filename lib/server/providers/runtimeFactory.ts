@@ -58,6 +58,7 @@ import {
 } from "../tools/bridges";
 import type { ProviderToolBridge } from "../tools/types";
 import {
+  createAnthropicMessagesStructuredOutputAdapter,
   createDeepSeekResponsesStructuredOutputAdapter,
   createGeminiInteractionsStructuredOutputAdapter,
   createOpenAIResponsesStructuredOutputAdapter,
@@ -465,6 +466,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         ...(snapshot.model.capabilities.nativeSearch
           ? { searchAdapter: createAnthropicMessagesSearchAdapter({ client }) }
           : {}),
+        structuredOutputAdapter: createAnthropicMessagesStructuredOutputAdapter({ client, model: snapshot.model }),
         toolBridge: anthropicMessagesToolBridge
       };
     }

@@ -1663,6 +1663,12 @@ export function PowerAppShellV2({
     : null;
 
   const workspaceEnabled = activeChat?.workspace?.enabled ?? composerSession.workspaceEnabled;
+  const workspaceDefault = catalog ? catalog.defaults.workspaceEnabled ?? false : null;
+  useEffect(() => {
+    if (workspaceDefault === null) return;
+    const sessions = useComposerSessionStore.getState();
+    sessions.applyWorkspaceDefault(sessions.activeSessionKey, workspaceDefault);
+  }, [workspaceDefault, activeChatId]);
   const workspaceModelSupportsTools = effectiveCurrentModel?.capabilities.toolCalling === true;
   const workspaceAvailable = workspaceInstallation?.available === true &&
     workspaceModelSupportsTools;
@@ -1694,9 +1700,12 @@ export function PowerAppShellV2({
     workspaceCapabilityMutationRef.current = true;
     setWorkspaceCapabilityBusy(true);
     const sessionKey = useComposerSessionStore.getState().activeSessionKey;
+    const rememberChoice = reason === "user" && !projectRunContextRef.current;
+    const settingsCoordinator = settingsMutationCoordinatorRef.current;
     try {
       if (activeChat && !activeChat.pendingProjectDraft && !activeChat.pendingPersonalDraft) {
         const wire = await updateChatWorkspaceEnabled(activeChat.id, value);
+        if (activeSettingsSessionRef.current !== settingsSession) return false;
         const summary = chatSummaryFromApi(wire);
         useWorkspaceStore.getState().upsertChat(summary);
         useComposerSessionStore.getState().updateSession(sessionKey, {
@@ -1707,6 +1716,10 @@ export function PowerAppShellV2({
         useComposerSessionStore.getState().updateSession(sessionKey, {
           workspaceEnabled: value
         });
+      }
+      if (rememberChoice && settingsCoordinator) {
+        await settingsCoordinator.enqueue({ workspaceEnabled: value });
+        if (activeSettingsSessionRef.current !== settingsSession) return false;
       }
       if (reason === "file_selection" && value) {
         setNotice({

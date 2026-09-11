@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -90,6 +90,7 @@ function fixture() {
   };
   const sandbox = {
     exec: vi.fn(async () => ({ success: true })),
+    execWith: vi.fn(async (_command: string, _configure: unknown) => ({ success: true, stdout: (): string => "{}", stdoutBytes: () => Buffer.from("{}") })),
     fs: () => fs,
     id: runtimeSandboxId,
     name: sandboxName,
@@ -139,6 +140,46 @@ function fixture() {
 
 describe("Microsandbox Workspace lifecycle", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("delivers accepted env to separate exec, shell and long-lived commands, then removes it for the next run", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const builder = { args: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis(), stdinBytes: vi.fn().mockReturnThis() };
+    value.sandbox.execWith.mockImplementationOnce(async (_command, configure) => {
+      (configure as (input: typeof builder) => unknown)(builder);
+      return { success: true, stdout: () => "", stdoutBytes: () => Buffer.from("") };
+    });
+    const token = "synthetic '\"$HOME`command`\nvalue";
+    await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: callInput.modelRunId, secrets: [{
+      id: randomUUID(), versionId: randomUUID(), name: "API access", description: "Synthetic fixture",
+      value: { kind: "env", entries: [{ name: "SERVICE_TOKEN", value: token }] }
+    }] });
+    expect(JSON.stringify(builder.args.mock.calls)).not.toContain("SERVICE_TOKEN");
+    expect(JSON.parse(builder.stdinBytes.mock.calls[0]![0].toString())).toMatchObject({ environment: { SERVICE_TOKEN: token } });
+    expect(process.env.SERVICE_TOKEN).not.toBe(token);
+    sdk.callTool.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify({ ok: true, data: { execSessionId: "synthetic_exec" } }) }] });
+    for (const originalName of ["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const) {
+      await value.runtime.callBoundTool({ ...callInput, originalName, arguments: { command: "env", env: { CALL_ONLY: "explicit" } } });
+      expect(sdk.callTool).toHaveBeenLastCalledWith(expect.objectContaining({ arguments: expect.objectContaining({ env: { SERVICE_TOKEN: token, CALL_ONLY: "explicit" } }) }), undefined, expect.anything());
+    }
+    await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "next_run", secrets: [] });
+    await value.runtime.callBoundTool({ ...callInput, modelRunId: "next_run" });
+    expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toBeUndefined();
+  });
+
+  it("recovers managed env after receiver restart and fails preparation without dispatching a model command", async () => {
+    const value = fixture();
+    const environment = JSON.stringify({ RECOVERED_TOKEN: "synthetic-recovered" });
+    value.sandbox.execWith.mockResolvedValueOnce({ success: true, stdout: () => environment, stdoutBytes: () => Buffer.from(environment) });
+    const restarted = new MicrosandboxWorkspaceRuntime(config);
+    await restarted.callBoundTool(callInput);
+    expect(sdk.callTool).toHaveBeenLastCalledWith(expect.objectContaining({ arguments: expect.objectContaining({ env: { RECOVERED_TOKEN: "synthetic-recovered" } }) }), undefined, expect.anything());
+    sdk.callTool.mockClear();
+    value.sandbox.execWith.mockResolvedValue({ success: false, stdout: () => "", stdoutBytes: () => Buffer.from("") });
+    await expect(restarted.syncPersonalSecrets({ ...sessionInput, modelRunId: "next", secrets: [] })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
+    await expect(restarted.callBoundTool({ ...callInput, modelRunId: "next" })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
+    expect(sdk.callTool).not.toHaveBeenCalled();
+  });
 
   it("reads labelled inventory pages without connecting, touching or starting stopped environments", async () => {
     const value = fixture();

@@ -1,4 +1,4 @@
-import type { ImageModelConfiguration } from "./imageGeneration";
+import { decodeImageFailureDiagnostic, type ImageFailureDiagnostic, type ImageModelConfiguration } from "./imageGeneration";
 import type { ProviderReasoningRequestMapping } from "./providerReasoningRequestMapping";
 
 export type AdminProviderFamily =
@@ -113,6 +113,7 @@ export type AdminProviderCapabilityAttempt = {
   status: "verified" | "unsupported" | "incomplete" | "not_checked";
   reason: (typeof ADMIN_PROVIDER_CAPABILITY_REASONS)[number];
   httpStatus?: number;
+  imageFailure?: ImageFailureDiagnostic;
 };
 export type AdminProviderCapabilitySetupEvidence = {
   policyVersion: 1 | 2;
@@ -129,14 +130,17 @@ export function decodeAdminProviderCapabilityAttempts(value: unknown): NonNullab
   for (const [key, rawAttempt] of Object.entries(value)) {
     if (!(ADMIN_PROVIDER_CAPABILITY_CHECKS as readonly string[]).includes(key) || !rawAttempt || typeof rawAttempt !== "object" || Array.isArray(rawAttempt)) return null;
     const attempt = rawAttempt as Record<string, unknown>;
-    if (Object.keys(attempt).some((field) => !["attempts", "status", "reason", "httpStatus"].includes(field)) ||
+    const imageFailure = attempt.imageFailure === undefined ? undefined : decodeImageFailureDiagnostic(attempt.imageFailure);
+    if (Object.keys(attempt).some((field) => !["attempts", "status", "reason", "httpStatus", "imageFailure"].includes(field)) ||
+      imageFailure === null || imageFailure && !["imageGeneration", "imageEditing"].includes(key) ||
       !Number.isSafeInteger(attempt.attempts) || Number(attempt.attempts) < 0 || Number(attempt.attempts) > 3 ||
       typeof attempt.status !== "string" || !["verified", "unsupported", "incomplete", "not_checked"].includes(attempt.status) ||
       !(ADMIN_PROVIDER_CAPABILITY_REASONS as readonly unknown[]).includes(attempt.reason) ||
       attempt.httpStatus !== undefined && (!Number.isSafeInteger(attempt.httpStatus) || Number(attempt.httpStatus) < 400 || Number(attempt.httpStatus) > 599)) return null;
     attempts[key as keyof typeof attempts] = { attempts: Number(attempt.attempts),
       status: attempt.status as AdminProviderCapabilityAttempt["status"], reason: attempt.reason as AdminProviderCapabilityAttempt["reason"],
-      ...(attempt.httpStatus !== undefined ? { httpStatus: Number(attempt.httpStatus) } : {}) };
+      ...(attempt.httpStatus !== undefined ? { httpStatus: Number(attempt.httpStatus) } : {}),
+      ...(imageFailure ? { imageFailure } : {}) };
   }
   return attempts;
 }
@@ -207,6 +211,7 @@ export type AdminProviderTestEvidence = {
   };
   structuredOutput?: {
     adapterKind:
+      | "anthropic_messages"
       | "deepseek_responses_native"
       | "gemini_interactions_native"
       | "openai_responses_compatible"
@@ -332,6 +337,8 @@ export type AdminProviderBootstrapResult = {
  * failure, so a row can offer Retry even before any evidence exists.
  */
 export type AdminProviderCheckRun = {
+  /** Built-in candidates belonging to this explicit add operation; Retry preserves its scope. */
+  catalogModelIds?: string[];
   results?: Array<{ providerModelId: string; state: "saved" | "partial" | "unavailable" | "save_failed" | "check_failed" | "cancelled" | "stale";
     checks?: AdminProviderCapabilitySetupEvidence["checks"]; attempts?: AdminProviderCapabilitySetupEvidence["attempts"] }>;
   capabilityProgress?: { capability: AdminProviderCapabilityCheck; completed: number; total: number; providerModelId: string };
@@ -351,6 +358,33 @@ export type AdminProviderCheckRun = {
   total: number;
 };
 
+export type AdminProviderCatalogModel = Readonly<{
+  id: string;
+  displayName: string;
+  upstreamModelId: string;
+  modelClass: "answer" | "embedding" | "reranker" | "image";
+}>;
+
+export type AdminProviderCatalogUpdates = Readonly<{
+  available: readonly AdminProviderCatalogModel[];
+  skipped: readonly AdminProviderCatalogModel[];
+}>;
+
+export function decodeAdminProviderCatalogUpdates(value: unknown): AdminProviderCatalogUpdates | null {
+  const record = (entry: unknown): entry is Record<string, unknown> => typeof entry === "object" && entry !== null && !Array.isArray(entry);
+  const text = (entry: unknown, limit: number): entry is string => typeof entry === "string" && entry.length > 0 &&
+    entry.length <= limit && !/[\u0000-\u001f\u007f]/u.test(entry);
+  const candidate = (entry: unknown): entry is AdminProviderCatalogModel => record(entry) &&
+    Object.keys(entry).sort().join(",") === "displayName,id,modelClass,upstreamModelId" &&
+    text(entry.id, 256) && text(entry.displayName, 160) && text(entry.upstreamModelId, 256) &&
+    typeof entry.modelClass === "string" && ["answer", "embedding", "reranker", "image"].includes(entry.modelClass);
+  if (!record(value) || Object.keys(value).sort().join(",") !== "available,skipped" ||
+    !Array.isArray(value.available) || !Array.isArray(value.skipped) ||
+    value.available.length + value.skipped.length > 256 || !value.available.every(candidate) || !value.skipped.every(candidate) ||
+    new Set([...value.available, ...value.skipped].map(({ id }) => id)).size !== value.available.length + value.skipped.length) return null;
+  return { available: value.available, skipped: value.skipped };
+}
+
 export type AdminProviderConnection = {
   activatedAt: string | null;
   activeChecks: AdminProviderActiveCheck[];
@@ -359,6 +393,8 @@ export type AdminProviderConnection = {
   assignments: AdminProviderGroupCredentialAssignment[];
   /** Latest capability check on this connection; omitted by older payloads. */
   checkRun?: AdminProviderCheckRun | null;
+  /** Installed AIQSA catalog only; these are suggestions, not availability proof. */
+  catalogUpdates?: AdminProviderCatalogUpdates;
   createdAt: string;
   credentials: AdminProviderCredential[];
   defaultCredentialId: string | null;

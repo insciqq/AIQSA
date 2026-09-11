@@ -2,7 +2,7 @@ import sharp from "sharp";
 import {
   IMAGE_MAX_BYTES, IMAGE_MAX_INPUT_BYTES, IMAGE_MAX_INPUTS, IMAGE_MAX_PIXELS, IMAGE_MAX_PROMPT_CHARACTERS,
   IMAGE_MIME_TYPES, normalizeImageGenerationParameters,
-  type GeneratedImageMimeType, type ImageGenerationParameters
+  type GeneratedImageMimeType, type ImageGenerationParameters, type ImageFailureDiagnostic
 } from "../../contracts/imageGeneration";
 import {
   effectiveProviderResponseTimeoutMs, normalizeProviderConnectionConfiguration, normalizeProviderModelConfiguration,
@@ -11,6 +11,7 @@ import {
 import { createProviderSafeFetch } from "./providerSafeFetch";
 import { resolveProviderCredentialSource, type ProviderCredentialSource } from "./providerCredentialSource";
 import { isProviderDeadlineExceededError, ProviderResponseTooLargeError, readBoundedResponseText, withTimeoutSignal } from "./network";
+import { imageFailureDiagnostic } from "./imageFailure";
 
 export type ImageGenerationInput = { bytes: Uint8Array; mimeType: GeneratedImageMimeType };
 export type ImageGenerationRequest = {
@@ -36,7 +37,8 @@ export type ImageGenerationErrorCode = "image_input_invalid" | "image_parameters
   "image_response_too_large" | "image_provider_http_error" | "image_provider_request_failed" | "image_request_timed_out" |
   "image_request_cancelled" | "image_output_missing";
 export class ImageGenerationError extends Error {
-  constructor(readonly code: ImageGenerationErrorCode, readonly httpStatus: number | null = null) {
+  constructor(readonly code: ImageGenerationErrorCode, readonly httpStatus: number | null = null,
+    readonly diagnostic?: ImageFailureDiagnostic) {
     super(code);
     this.name = "ImageGenerationError";
   }
@@ -172,8 +174,13 @@ export function createImageGenerationAdapter(input: {
         const response = await fetchFn(imageGenerationEndpoint(connection, model, images.length > 0), {
           body, headers, method: "POST", redirect: "error", signal: timeout.signal
         });
+        if (!response.ok) {
+          let rejected = "";
+          try { rejected = await readBoundedResponseText(response, { maxBytes: 32 * 1024, signal: timeout.signal }); }
+          catch (error) { if (!(error instanceof ProviderResponseTooLargeError)) throw error; }
+          throw new ImageGenerationError("image_provider_http_error", response.status, imageFailureDiagnostic(rejected, response.status));
+        }
         const text = await readBoundedResponseText(response, { maxBytes: 36 * 1024 * 1024, signal: timeout.signal });
-        if (!response.ok) throw new ImageGenerationError("image_provider_http_error", response.status);
         let parsed: unknown;
         try { parsed = JSON.parse(text) as unknown; } catch { throw new ImageGenerationError("image_response_invalid"); }
         if (!record(parsed)) throw new ImageGenerationError("image_response_invalid");

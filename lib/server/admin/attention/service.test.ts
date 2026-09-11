@@ -180,7 +180,7 @@ function roles(overrides: Partial<AdminSystemModelPolicyCatalog["policy"]> = {})
 }
 
 const memoryOk: AdminMemoryStatus = {
-  activeIssueCode: null,
+  processing: { enabled: true, issues: [] },
   admissionTimeout: { seconds: 30, version: 1 },
   configuredTargets: [],
   index: { generation: 1, readiness: "READY" },
@@ -268,6 +268,21 @@ function items(overrides: Partial<AdminAttentionInputs>) {
 }
 
 describe("deriveAdminAttentionItems", () => {
+  it("offers neutral catalog updates per configured connection, excluding skipped, disabled, and unavailable projections", () => {
+    const suggestion = { id: "builtin", displayName: "New model", upstreamModelId: "upstream", modelClass: "answer" as const };
+    const result = items({ providers: [
+      connection({ id: "one", catalogUpdates: { available: [suggestion], skipped: [] } }),
+      connection({ id: "two", catalogUpdates: { available: [suggestion, { ...suggestion, id: "builtin-2" }], skipped: [] } }),
+      connection({ id: "skipped", catalogUpdates: { available: [], skipped: [suggestion] } }),
+      connection({ id: "disabled", enabled: false, catalogUpdates: { available: [suggestion], skipped: [] } }),
+      connection({ id: "unavailable" })
+    ] }).filter(({ code }) => code === "provider_catalog_models_available");
+    expect(result).toEqual([
+      expect.objectContaining({ count: 1, severity: "neutral", target: { section: "providers", resource: "one" } }),
+      expect.objectContaining({ count: 2, severity: "neutral", target: { section: "providers", resource: "two" } })
+    ]);
+  });
+
   it("returns nothing when everything is working", () => {
     expect(items({})).toEqual([]);
   });
@@ -481,6 +496,38 @@ describe("deriveAdminAttentionItems", () => {
       }),
       expect.objectContaining({ code: "memory_index_rebuild_required", severity: "warn" })
     ]);
+  });
+
+  it.each(["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED"] as const)(
+    "reports three blocked learning jobs despite RUNNING and READY, deduplicating %s role alerts", (reason) => {
+      const result = items({ systemRoles: roles({ systemModel: null }), memory: {
+        ...memoryOk, queue: { length: 3, oldestAgeSeconds: 1865 },
+        processing: { enabled: true, issues: [{ stage: "LEARNING", reason, severity: "bad", count: 3, oldestAgeSeconds: 1865 }] }
+      } });
+      expect(result.filter((item) => item.target.resource === "memory")).toEqual([
+        expect.objectContaining({ code: "memory_processing_blocked", count: 3, severity: "bad",
+          detail: expect.stringContaining("oldest 31m"), title: "Memory is not learning new facts",
+          target: { section: "roles", resource: "memory" } })
+      ]);
+      expect(JSON.stringify(result)).not.toMatch(/consent|memory_execution_|private/u);
+    }
+  );
+
+  it("reports a current failed job outside the active queue, then clears only with recovered data", () => {
+    const result = items({ memory: { ...memoryOk,
+      processing: { enabled: true, issues: [{ stage: "LEARNING", reason: "PROCESSING_FAILED", severity: "bad", count: 1, oldestAgeSeconds: 3600 }] }
+    } });
+    expect(result).toEqual([expect.objectContaining({ code: "memory_processing_blocked", count: 1,
+      target: { section: "retrieval" }, detail: expect.stringContaining("has not recovered") })]);
+    expect(items({ memory: memoryOk })).toEqual([]);
+  });
+
+  it("keeps stalled work a warning and does not turn progressing, idle or paused Memory into a failure", () => {
+    expect(items({ memory: { ...memoryOk,
+      processing: { enabled: true, issues: [{ stage: "HISTORY", reason: "STALLED", severity: "warn", count: 4, oldestAgeSeconds: 1900 }] }
+    } })).toEqual([expect.objectContaining({ severity: "warn", count: 4 })]);
+    expect(items({ memory: { ...memoryOk, queue: { length: 3, oldestAgeSeconds: 30 } } })).toEqual([]);
+    expect(items({ memory: { ...memoryOk, processing: { enabled: false, issues: [] }, worker: { state: "NOT_RUNNING" } } })).toEqual([]);
   });
 
   it("lists MCP servers that need authorization or runtime repair", () => {

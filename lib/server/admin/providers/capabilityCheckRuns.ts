@@ -36,6 +36,7 @@ export type CapabilityCheckRequest = Readonly<{
 }>;
 
 export type CapabilityCheckRunStart = Readonly<{
+  catalogModelIds?: readonly string[];
   signal?: AbortSignal;
   /** Already verified on the same active tuple by this setup operation. */
   completedModelIds?: readonly string[];
@@ -68,6 +69,7 @@ export type CapabilityCheckRunner = Readonly<{
 export const CAPABILITY_CHECK_CANCELLED = "capability_check_cancelled";
 
 type Run = {
+  catalogModelIds?: readonly string[];
   removeAbort?: () => void;
   results: NonNullable<AdminProviderCheckRun["results"]>;
   capabilityProgress?: AdminProviderCheckRun["capabilityProgress"];
@@ -126,6 +128,7 @@ export function createCapabilityCheckRunner(input: Readonly<{
 
   function project(run: Run): AdminProviderCheckRun {
     return {
+      ...(run.catalogModelIds ? { catalogModelIds: [...run.catalogModelIds] } : {}),
       results: [...run.results],
       ...(run.capabilityProgress ? { capabilityProgress: run.capabilityProgress } : {}),
       ...(run.setup ? { setup: run.setup } : {}),
@@ -133,7 +136,7 @@ export function createCapabilityCheckRunner(input: Readonly<{
       credentialId: run.credentialId,
       current: run.inFlight[0] ?? null,
       done: run.done,
-      failed: failedModels(run.connectionId, run.credentialId),
+      failed: failedModels(run.connectionId, run.credentialId).filter((id) => !run.catalogModelIds || run.modelIds.includes(id)),
       finishedAt: run.finishedAt?.toISOString() ?? null,
       id: run.id,
       inFlight: [...run.inFlight],
@@ -288,6 +291,7 @@ export function createCapabilityCheckRunner(input: Readonly<{
       const modelIds = [...new Set(value.modelIds)];
       const completed = new Set((value.completedModelIds ?? []).filter((id) => modelIds.includes(id)));
       const run: Run = {
+        catalogModelIds: value.catalogModelIds ? [...value.catalogModelIds] : undefined,
         results: [],
         initialSetup: value.initialSetup,
         onProgress: value.onProgress,

@@ -1,3 +1,5 @@
+import { safeWorkspaceBasename } from "../contracts/workspace";
+
 export const WORKSPACE_POLICY_ID = "installation";
 export const WORKSPACE_MCP_NAMESPACE = "workspace";
 
@@ -37,7 +39,6 @@ export const WORKSPACE_EXEC_SESSION_TOOL_NAMES = Object.freeze([
 ] as const satisfies readonly WorkspaceMcpToolName[]);
 
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
-const PHYSICAL_BASENAME_MAX_BYTES = 160;
 export const WORKSPACE_RELATIVE_PATH_MAX_BYTES = 512;
 export const WORKSPACE_PATH_SEGMENT_MAX_BYTES = 255;
 
@@ -45,15 +46,6 @@ function utf8Length(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
-function truncateUtf8(value: string, maxBytes: number): string {
-  if (utf8Length(value) <= maxBytes) return value;
-  let result = "";
-  for (const character of value) {
-    if (utf8Length(result + character) > maxBytes) break;
-    result += character;
-  }
-  return result;
-}
 
 export function isWorkspaceOpaqueId(value: string): boolean {
   return OPAQUE_ID_PATTERN.test(value);
@@ -83,20 +75,6 @@ export function workspaceRunOutputDirectory(modelRunId: string): string {
   return `${WORKSPACE_OUTPUT_DIRECTORY}/${requireWorkspaceOpaqueId(modelRunId, "run_id")}`;
 }
 
-/**
- * Produces a path-safe, bounded display derivative. The opaque attachment id is
- * still the physical identity; an original filename is only retained as
- * metadata in the manifest.
- */
-export function safeWorkspaceBasename(originalName: string): string {
-  const normalized = originalName.normalize("NFC").trim();
-  const replaced = normalized
-    .replace(/[\u0000-\u001f\u007f/\\]+/gu, "-")
-    .replace(/[^\p{L}\p{N}._-]+/gu, "-")
-    .replace(/-+/gu, "-")
-    .replace(/^[.-]+|[.-]+$/gu, "");
-  return truncateUtf8(replaced || "file", PHYSICAL_BASENAME_MAX_BYTES);
-}
 
 export function workspaceAttachmentPath(input: Readonly<{
   attachmentId: string;

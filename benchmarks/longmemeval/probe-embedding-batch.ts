@@ -23,8 +23,7 @@ function safeCode(error: unknown): string {
 
 async function main(): Promise<void> {
   loadEnvConfig(repositoryRoot, true, { error() {}, info() {} }, true);
-  if (process.env.AIQSA_MEMORY_BENCHMARK_ACK !== "DISPOSABLE_PAID_LONGMEMEVAL" ||
-    process.env.AIQSA_MEMORY_EGRESS_CONSENT_MODE !== "ADMIN") {
+  if (process.env.AIQSA_MEMORY_BENCHMARK_ACK !== "DISPOSABLE_PAID_LONGMEMEVAL") {
     throw new Error("embedding_batch_probe_authority_required");
   }
   const port = Number(process.env.AIQSA_MEMORY_BENCHMARK_POSTGRES_PORT ?? "55437");

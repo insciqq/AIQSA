@@ -692,6 +692,13 @@ export function useWorkspaceActions({
     useComposerSessionStore.getState().activateSession(
       composerSessionKey(null, folderId, memoryMode)
     );
+    const personalCatalog = useWorkspaceStore.getState().catalog;
+    if (personalCatalog) {
+      useComposerSessionStore.getState().applyWorkspaceDefault(
+        composerSessionKey(null, folderId, memoryMode),
+        personalCatalog.defaults.workspaceEnabled ?? false
+      );
+    }
     pruneThreadCache();
     if (!useComposerControlStore.getState().selectedAssistant) {
       const catalog = useWorkspaceStore.getState().catalog;

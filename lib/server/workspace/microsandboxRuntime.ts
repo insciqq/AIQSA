@@ -33,6 +33,11 @@ import {
 } from "@/lib/domain/workspace";
 import type { WorkspaceConfig } from "./config";
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
+import { isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
+import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV } from "./secrets/guest";
+import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
+import type { WorkspaceBrowserSkipCode } from "./secrets/browserSession";
+import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide, WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./secrets/manifest";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
 import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION } from "./config";
 import {
@@ -68,6 +73,7 @@ type LocalSession = {
   runtimeSandboxId: string;
   sandbox: Sandbox;
   sandboxName: string;
+  secretEnvironment?: Readonly<{ modelRunId: string; values: Record<string, string> }>;
 };
 
 const EXEC_SESSION_TOOL_SET = new Set<WorkspaceMcpToolName>(WORKSPACE_EXEC_SESSION_TOOL_NAMES);
@@ -334,7 +340,7 @@ async function hashGuestFile(sandbox: Sandbox, path: string, byteSize: number, s
 
 function safeChildEnvironment(): Record<string, string> {
   return Object.fromEntries(
-    ["HOME", "MSB_HOME", "PATH", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"]
+    ["HOME", "MSB_HOME", "PATH", "TMPDIR", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"]
       .map((name) => [name, process.env[name]])
       .filter((entry): entry is [string, string] => typeof entry[1] === "string")
   );
@@ -787,6 +793,42 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     }
   }
 
+  async syncPersonalSecrets(input: Parameters<WorkspaceRuntime["syncPersonalSecrets"]>[0]): Promise<void> {
+    const session = await this.runningSession(input);
+    session.secretEnvironment = undefined;
+    try {
+      const secrets = parseAcceptedWorkspaceSecrets(input.secrets);
+      const environment = workspaceSecretEnvironment(secrets);
+      const bundle = Buffer.from(JSON.stringify({ secrets, environment, guide: workspaceSecretsGuide(secrets), runId: input.modelRunId }));
+      if (bundle.byteLength > WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES) throw new Error("prepare_input_too_large");
+      input.signal?.throwIfAborted();
+      const prepared = await session.sandbox.execWith("/usr/bin/python3", (builder) => builder
+        .args(["-I", "-c", INSTALL_WORKSPACE_SECRETS]).timeout(90_000)
+        .stdinBytes(bundle));
+      input.signal?.throwIfAborted();
+      if (!prepared.success) throw new Error("prepare_failed");
+      session.secretEnvironment = { modelRunId: input.modelRunId, values: environment };
+    } catch {
+      if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+      throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed");
+    }
+  }
+
+  private async secretEnvironment(session: LocalSession, modelRunId: string): Promise<Record<string, string>> {
+    if (session.secretEnvironment?.modelRunId === modelRunId) return session.secretEnvironment.values;
+    try {
+      const result = await session.sandbox.execWith("/usr/bin/python3", (builder) => builder
+        .args(["-I", "-c", READ_WORKSPACE_SECRET_ENV, modelRunId]).timeout(10_000));
+      if (!result.success || result.stdoutBytes().byteLength > WORKSPACE_SECRET_ENV_MAX_BYTES * 2) throw new Error("invalid");
+      const values: unknown = JSON.parse(result.stdout());
+      if (!values || typeof values !== "object" || Array.isArray(values) ||
+        Object.entries(values).some(([name, value]) => !isWorkspaceEnvName(name) || typeof value !== "string" || value.includes("\0")) ||
+        Buffer.byteLength(JSON.stringify(values), "utf8") > WORKSPACE_SECRET_ENV_MAX_BYTES) throw new Error("invalid");
+      session.secretEnvironment = { modelRunId, values: values as Record<string, string> };
+      return session.secretEnvironment.values;
+    } catch { throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed"); }
+  }
+
   async loadBoundTools(input: Parameters<WorkspaceRuntime["loadBoundTools"]>[0]): Promise<WorkspaceToolCatalog> {
     return (await this.mcp(this.session(input.sessionId, input.runtimeSandboxId))).catalog;
   }
@@ -827,6 +869,16 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         originalName: input.originalName,
         sandboxName: session.sandboxName
       });
+      if (["sandbox_shell", "sandbox_exec", "sandbox_exec_start"].includes(input.originalName)) {
+        const environment = await this.secretEnvironment(session, input.modelRunId);
+        const requested = argumentsWithIdentity.env;
+        if (requested !== undefined && (!requested || typeof requested !== "object" || Array.isArray(requested))) {
+          throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+        }
+        if (Object.keys(environment).length || requested !== undefined) {
+          argumentsWithIdentity.env = { ...environment, ...(requested as Record<string, unknown> | undefined) };
+        }
+      }
       const boundedArguments = input.originalName === "sandbox_shell" || input.originalName === "sandbox_exec"
         ? {
             ...argumentsWithIdentity,
@@ -941,6 +993,41 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       return this.outputCaptures().collect(input, () => this.collectCurrentOutputs(input));
     }
     return this.collectCurrentOutputs(input);
+  }
+
+  async collectBrowserSessions(input: Parameters<WorkspaceRuntime["collectBrowserSessions"]>[0]): ReturnType<WorkspaceRuntime["collectBrowserSessions"]> {
+    const session = await this.runningSession(input);
+    const terminated = await this.terminateExecutionIds(session, this.cachedExecutionIds(session, input.modelRunId));
+    if (terminated.some((entry) => entry.outcome === "unknown")) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+    const files: WorkspaceOutputStream[] = [];
+    const skipped: WorkspaceBrowserSkipCode[] = [];
+    const listed = await session.sandbox.execWith("/usr/bin/python3", (builder) => builder.args(["-I", "-c", LIST_WORKSPACE_BROWSER_SESSIONS]).timeout(10_000));
+    input.signal?.throwIfAborted();
+    if (!listed.success || listed.stdoutBytes().byteLength > 256 * 1024) return { files, skipped: ["browser_session_read_failed"] };
+    let listing: { invalid?: boolean; failed?: boolean; overflow?: boolean; entries?: Array<{ name: string; size: number; file: boolean }> };
+    try { listing = JSON.parse(listed.stdout()); } catch { return { files, skipped: ["browser_session_read_failed"] }; }
+    if (!listing || !Array.isArray(listing.entries) || listing.entries.length > 128 || listing.failed) return { files, skipped: ["browser_session_read_failed"] };
+    if (listing.invalid) return { files, skipped: ["browser_session_invalid"] };
+    if (listing.overflow) skipped.push("browser_session_limit");
+    for (const entry of listing.entries.sort((a, b) => String(a?.name).localeCompare(String(b?.name)))) {
+      input.signal?.throwIfAborted();
+      if (!entry || !entry.file || !isWorkspaceBrowserSessionFilename(entry.name) || !Number.isSafeInteger(entry.size) || entry.size < 1) {
+        skipped.push("browser_session_invalid"); continue;
+      }
+      if (entry.size > WORKSPACE_BROWSER_SESSION_MAX_BYTES) { skipped.push("browser_session_too_large"); continue; }
+      if (files.length >= WORKSPACE_BROWSER_SESSION_MAX_COUNT) { skipped.push("browser_session_limit"); continue; }
+      const path = workspaceBrowserSessionPath(entry.name);
+      try {
+        const checksum = await hashGuestFile(session.sandbox, path, entry.size, input.signal);
+        files.push({ byteSize: entry.size, checksum, body: readStreamBody(() => session.sandbox.fs().readStream(path)),
+          mimeType: "application/json", relativePath: entry.name,
+          opaqueFileId: createHash("sha256").update(`${session.runtimeSandboxId}\0${input.modelRunId}\0browser\0${entry.name}`).digest("hex") });
+      } catch {
+        input.signal?.throwIfAborted();
+        skipped.push("browser_session_read_failed");
+      }
+    }
+    return { files, skipped };
   }
 
   async releaseOutputCapture(input: Parameters<NonNullable<WorkspaceRuntime["releaseOutputCapture"]>>[0]): Promise<void> {

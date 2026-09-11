@@ -61,6 +61,12 @@ export async function startNewChat(page: Page): Promise<void> {
 }
 
 export async function turnWorkspaceOn(page: Page): Promise<void> {
+  const enabled = page.getByRole("button", { name: /^Turn off Workspace/u });
+  if (await enabled.isVisible()) {
+    await expect(enabled).toHaveAttribute("aria-pressed", "true");
+    await expect(enabled).toBeEnabled();
+    return;
+  }
   const toggle = page.getByRole("button", { name: /^Turn on Workspace/u });
   await expect(toggle).toBeEnabled({ timeout: 15_000 });
   await toggle.click();

@@ -102,6 +102,8 @@ function resolver(value: AuthenticatedSession | null): RequestAuthResolver {
 
 function service(overrides: Partial<Record<keyof AdminProviderService, unknown>> = {}) {
   return {
+    addCatalogModels: vi.fn(async () => ({ unavailableModelIds: ["catalog-2"] })),
+    skipCatalogModels: vi.fn(),
     activateConnection: vi.fn(),
     activateModel: vi.fn(async () => ({ check: "checked" })),
     activateNewCredential: vi.fn(),
@@ -142,6 +144,37 @@ function jsonRequest(url: string, body: unknown, method = "POST") {
 }
 
 describe("admin provider HTTP handlers", () => {
+  it("requires exact connection/key versions for selected catalog additions and returns unavailable IDs", async () => {
+    const backend = service();
+    const handler = createAdminProviderConnectionActionHandler({ resolveAuth: resolver(auth()), service: backend });
+    const body = { action: "add_catalog_models", credentialId: "credential-1", expectedConnectionVersion: 2,
+      expectedCredentialVersionId: "key-version", modelIds: ["catalog-1", "catalog-2"] };
+    const response = await handler(jsonRequest("http://localhost/actions", body), { params: { connectionId: "connection-1" } });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ connections: [connection], unavailableModelIds: ["catalog-2"] });
+    expect(backend.addCatalogModels).toHaveBeenCalledWith({ connectionId: "connection-1", credentialId: "credential-1",
+      expectedConnectionVersion: 2, expectedCredentialVersionId: "key-version", modelIds: ["catalog-1", "catalog-2"], signal: expect.any(AbortSignal) });
+    for (const patch of [{ expectedCredentialVersionId: null }, { modelIds: [] }, { expectedConnectionVersion: 0 }]) {
+      expect((await handler(jsonRequest("http://localhost/actions", { ...body, ...patch }), { params: { connectionId: "connection-1" } })).status).toBe(400);
+    }
+    expect(backend.addCatalogModels).toHaveBeenCalledOnce();
+  });
+
+  it("persists selected skips/restores and maps conflicting catalog operations to 409", async () => {
+    const backend = service();
+    const handler = createAdminProviderConnectionActionHandler({ resolveAuth: resolver(auth()), service: backend });
+    for (const skip of [true, false]) {
+      const response = await handler(jsonRequest("http://localhost/actions", {
+        action: skip ? "skip_catalog_models" : "restore_catalog_models", expectedConnectionVersion: 2, modelIds: ["catalog-1"]
+      }), { params: { connectionId: "connection-1" } });
+      expect(response.status).toBe(200);
+      expect(backend.skipCatalogModels).toHaveBeenLastCalledWith({ connectionId: "connection-1", expectedConnectionVersion: 2, modelIds: ["catalog-1"], skip });
+    }
+    vi.mocked(backend.addCatalogModels).mockRejectedValue(new AdminProviderServiceError("provider_checks_running"));
+    expect((await handler(jsonRequest("http://localhost/actions", { action: "add_catalog_models", credentialId: "key",
+      expectedConnectionVersion: 2, expectedCredentialVersionId: "version", modelIds: ["catalog-1"] }), { params: { connectionId: "connection-1" } })).status).toBe(409);
+  });
+
   it("allows only active administrators and rejects non-JSON mutations", async () => {
     const providerService = service();
     const anonymous = createAdminProviderCatalogHandler({

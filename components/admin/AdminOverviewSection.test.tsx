@@ -43,11 +43,25 @@ function controller(overrides: Partial<AdminAttentionController> = {}): AdminAtt
     loading: false,
     refresh: vi.fn(async () => undefined),
     unavailable: false,
+    staleItems: {},
     ...overrides
   };
 }
 
 describe("AdminOverviewSection", () => {
+  it("never calls failed or incomplete checks healthy and marks retained observations", () => {
+    const view = render(<AdminOverviewSection controller={controller({ unavailable: true,
+      staleItems: { [items[0]!.id]: "2026-09-07T12:00:00.000Z" }
+    })} onJump={vi.fn()} />);
+    expect(screen.getByText(/Check unavailable · last confirmed/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("current health is unknown");
+    expect(screen.queryByText(/No issues found|everything is working/)).not.toBeInTheDocument();
+    view.rerender(<AdminOverviewSection controller={controller({ attention: {
+      checkedAt: "2026-09-07T12:00:25.000Z", items: [], unavailable: ["memory"]
+    } })} onJump={vi.fn()} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Could not check Memory");
+    expect(screen.queryByText(/No issues found|everything is working/)).not.toBeInTheDocument();
+  });
   it("lists every item with its severity, count, copy and one jump action", () => {
     const onJump = vi.fn();
     render(<AdminOverviewSection controller={controller()} onJump={onJump} />);
@@ -69,7 +83,7 @@ describe("AdminOverviewSection", () => {
     expect(onJump).toHaveBeenCalledWith({ section: "email" });
   });
 
-  it("shows only the explanatory sentence when nothing needs attention", () => {
+  it("limits the healthy empty claim to the latest complete check", () => {
     render(
       <AdminOverviewSection
         controller={controller({ attention: { checkedAt: "2026-09-07T12:00:00.000Z", items: [], unavailable: [] } })}
@@ -78,7 +92,7 @@ describe("AdminOverviewSection", () => {
     );
     expect(screen.queryByRole("list")).not.toBeInTheDocument();
     expect(screen.getByText(ADMIN_OVERVIEW_EMPTY_COPY)).toBeInTheDocument();
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("No issues found in the latest checks.");
   });
 
   it("keeps loading, failure and partially unavailable states distinct", () => {

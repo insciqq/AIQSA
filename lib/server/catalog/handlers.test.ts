@@ -119,6 +119,7 @@ describe("catalog handler", () => {
       "knowledgePlan",
       "mcpMode",
       "sendWithEnter",
+      "workspaceEnabled",
       "showCitations",
       "showReasoningBlocks",
     ]);

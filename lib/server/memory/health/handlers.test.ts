@@ -9,7 +9,6 @@ const health = {
     retrievalFenced: false,
     state: "CLEAR"
   },
-  egressReview: "NONE",
   indexing: {
     completedChats: 0,
     countTruncated: false,
@@ -30,7 +29,7 @@ describe("owner Memory health handler", () => {
     const user = vi.fn().mockResolvedValue(health);
     const handler = createGetMemoryHealthHandler({
       resolveAuth: vi.fn().mockResolvedValue({ userId: "owner-1" }) as never,
-      service: { admin: vi.fn(), user } as never
+      service: { user } as never
     });
     const response = await handler(new Request("http://local.test/api/me/memory/health"));
 
@@ -46,7 +45,6 @@ describe("owner Memory health handler", () => {
     const handler = createGetMemoryHealthHandler({
       resolveAuth: vi.fn().mockResolvedValue({ userId: "owner-1" }) as never,
       service: {
-        admin: vi.fn(),
         user: vi.fn().mockRejectedValue(new Error("private source text"))
       } as never
     });

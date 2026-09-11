@@ -108,7 +108,7 @@ async function fenceAndAdmit(
     },
     where: {
       state: {
-        in: ["CLAIMED", "QUEUED", "RETRYABLE_FAILED", "WAITING_FOR_EGRESS_CONSENT"]
+        in: ["CLAIMED", "QUEUED", "RETRYABLE_FAILED", "WAITING_FOR_CONFIGURATION", "WAITING_FOR_EGRESS_CONSENT"]
       },
       userId
     }

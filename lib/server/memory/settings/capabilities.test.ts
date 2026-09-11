@@ -159,31 +159,21 @@ function policy(
 }
 
 const operations: MemoryCapabilityOperationalState = Object.freeze({
-  adminAcceptedDestinations: [],
   retrievalIndexAvailable: true,
   workerAvailable: true
 });
 
 function derive(input: Readonly<{
-  adminAcceptedRoles?: readonly MemoryExecutionRole[];
-  consentMode?: "ADMIN" | "PER_USER";
   omitted?: readonly MemoryExecutionRole[];
-  operations?: Partial<Omit<typeof operations, "adminAcceptedDestinations">>;
+  operations?: Partial<typeof operations>;
   settings?: Partial<MemorySettingsPersistenceSnapshot>;
 }> = {}) {
   const currentPolicy = policy(input.omitted);
   return deriveMemorySettingsCapabilities({
     base: { permanentChatDeletion: true, temporaryChats: true },
-    consentMode: input.consentMode ?? "PER_USER",
     operations: {
       ...operations,
-      ...input.operations,
-      adminAcceptedDestinations: (input.adminAcceptedRoles ?? []).flatMap((role) => {
-        const resolved = currentPolicy.targets.get(role);
-        return resolved
-          ? [{ destinationFingerprint: resolved.destinationFingerprint, role }]
-          : [];
-      })
+      ...input.operations
     },
     policy: currentPolicy,
     settings: settings(input.settings)
@@ -256,7 +246,7 @@ describe("Memory capability projection", () => {
     expect(derive({ omitted: [role] }).automaticLearningAvailable).toBe(false);
   });
 
-  it("gates opt-in synthesis on its exact strict role, consent, and worker", () => {
+  it("gates opt-in synthesis on its exact strict role and worker", () => {
     const enabled = { synthesisEnabled: true } as const;
     expect(derive({ settings: enabled })).toMatchObject({
       administratorSetupRequired: false,
@@ -282,8 +272,8 @@ describe("Memory capability projection", () => {
       acceptedUtilityEgressFingerprint: null,
       acceptedUtilityPolicyVersion: null
     } })).toMatchObject({
-      administratorSetupRequired: true,
-      synthesisAvailable: false
+      administratorSetupRequired: false,
+      synthesisAvailable: true
     });
   });
 
@@ -314,102 +304,19 @@ describe("Memory capability projection", () => {
     })).toMatchObject({ decayAvailable: false, retrievalAvailable: false });
   });
 
-  it("projects ADMIN consent per exact execution role and destination", () => {
-    const allRoles = [
-      "MEMORY_CONTROL",
-      "MEMORY_STATEMENT_CLASSIFY",
-      "MEMORY_HISTORY_CLASSIFY",
-      "MEMORY_FACT_EXTRACT",
-      "MEMORY_CONSOLIDATE",
-      "MEMORY_RERANK",
-      "MEMORY_SYNTHESIZE",
-      "MEMORY_DOCUMENT_EMBED",
-      "MEMORY_QUERY_EMBED"
-    ] as const satisfies readonly MemoryExecutionRole[];
-    const admin = (missing?: MemoryExecutionRole) => derive({
-      adminAcceptedRoles: allRoles.filter((role) => role !== missing),
-      consentMode: "ADMIN"
-    });
-
-    expect(admin()).toMatchObject({
-      administratorSetupRequired: false,
-      automaticLearningAvailable: true,
-      naturalLanguageActionsAvailable: true,
-      pastChatIndexingAvailable: true,
-      retrievalAvailable: true
-    });
-    expect(admin("MEMORY_STATEMENT_CLASSIFY")).toMatchObject({
-      administratorSetupRequired: false,
-      automaticLearningAvailable: true,
-      naturalLanguageActionsAvailable: true,
-      pastChatIndexingAvailable: true,
-      retrievalAvailable: true
-    });
-    expect(admin("MEMORY_CONTROL")).toMatchObject({
-      administratorSetupRequired: false,
-      automaticLearningAvailable: true,
-      naturalLanguageActionsAvailable: false,
-      pastChatIndexingAvailable: true,
-      retrievalAvailable: true
-    });
-    expect(admin("MEMORY_HISTORY_CLASSIFY")).toMatchObject({
-      administratorSetupRequired: false,
-      automaticLearningAvailable: true,
-      naturalLanguageActionsAvailable: true,
-      pastChatIndexingAvailable: true,
-      retrievalAvailable: true
-    });
-    expect(admin("MEMORY_FACT_EXTRACT")).toMatchObject({
-      administratorSetupRequired: true,
-      automaticLearningAvailable: false,
-      naturalLanguageActionsAvailable: true,
-      pastChatIndexingAvailable: true,
-      retrievalAvailable: true
-    });
-    expect(admin("MEMORY_CONSOLIDATE")).toMatchObject({
-      administratorSetupRequired: true,
-      automaticLearningAvailable: false,
-      naturalLanguageActionsAvailable: true,
-      pastChatIndexingAvailable: true,
-      retrievalAvailable: true
-    });
-    expect(admin("MEMORY_RERANK")).toMatchObject({
-      administratorSetupRequired: false,
-      automaticLearningAvailable: true,
-      naturalLanguageActionsAvailable: true,
-      pastChatIndexingAvailable: true,
-      retrievalAvailable: true
-    });
-    expect(admin("MEMORY_DOCUMENT_EMBED")).toMatchObject({
-      administratorSetupRequired: false,
-      automaticLearningAvailable: true,
-      naturalLanguageActionsAvailable: true,
-      pastChatIndexingAvailable: true,
-      retrievalAvailable: true
-    });
-    expect(admin("MEMORY_QUERY_EMBED")).toMatchObject({
-      administratorSetupRequired: false,
-      automaticLearningAvailable: true,
-      naturalLanguageActionsAvailable: true,
-      pastChatIndexingAvailable: true,
-      retrievalAvailable: true
-    });
-    expect(derive({
-      adminAcceptedRoles: allRoles,
-      consentMode: "ADMIN",
-      settings: { synthesisEnabled: true }
-    })).toMatchObject({ synthesisAvailable: true });
-    expect(derive({
-      adminAcceptedRoles: allRoles.filter((role) => role !== "MEMORY_SYNTHESIZE"),
-      consentMode: "ADMIN",
-      settings: { synthesisEnabled: true }
-    })).toMatchObject({
-      administratorSetupRequired: true,
-      synthesisAvailable: false
-    });
+  it("starts compatible roles with empty or obsolete acceptance fields", () => {
+    for (const accepted of [
+      { acceptedUtilityEgressAt: null, acceptedUtilityEgressFingerprint: null, acceptedUtilityPolicyVersion: null },
+      { acceptedUtilityEgressAt: NOW, acceptedUtilityEgressFingerprint: "old".repeat(22), acceptedUtilityPolicyVersion: "retired-policy" }
+    ]) {
+      expect(derive({ settings: { ...accepted, synthesisEnabled: true } })).toMatchObject({
+        administratorSetupRequired: false, automaticLearningAvailable: true,
+        naturalLanguageActionsAvailable: true, synthesisAvailable: true, retrievalAvailable: true
+      });
+    }
   });
 
-  it("keeps manual management available while master, subordinate, or consent gates pause inference", () => {
+  it("keeps manual management available while master or subordinate settings pause inference", () => {
     expect(derive({ settings: { useMemoryFacts: false } })).toMatchObject({
       automaticLearningAvailable: false,
       managementAvailable: true,
@@ -429,17 +336,7 @@ describe("Memory capability projection", () => {
       pastChatIndexingAvailable: false,
       retrievalAvailable: true
     });
-    expect(derive({ settings: {
-      acceptedUtilityEgressAt: null,
-      acceptedUtilityEgressFingerprint: null,
-      acceptedUtilityPolicyVersion: null
-    } })).toMatchObject({
-      automaticLearningAvailable: false,
-      managementAvailable: true,
-      naturalLanguageActionsAvailable: false,
-      pastChatIndexingAvailable: true,
-      retrievalAvailable: true
-    });
+
   });
 
   it("requires a fresh worker and a compatible active retrieval generation", async () => {
@@ -463,14 +360,11 @@ describe("Memory capability projection", () => {
       memoryIndexGeneration: { findFirst: findGeneration },
       memoryWorkerHeartbeat: { findUnique: findHeartbeat }
     } as never, {
-      consentMode: "PER_USER",
       now: NOW,
-      policy: currentPolicy,
       settings: settings()
     });
 
     expect(state).toEqual({
-      adminAcceptedDestinations: [],
       retrievalIndexAvailable: true,
       workerAvailable: true
     });
@@ -502,60 +396,24 @@ describe("Memory capability projection", () => {
         findUnique: vi.fn(async () => null)
       }
     } as never, {
-      consentMode: "PER_USER",
       now: NOW,
-      policy: policy(["MEMORY_QUERY_EMBED"]),
       settings: settings({ embeddingProviderModelId: null })
     });
 
     expect(state).toEqual({
-      adminAcceptedDestinations: [],
       retrievalIndexAvailable: true,
       workerAvailable: false
     });
   });
 
-  it("reads and validates the installation-owned ADMIN destination set", async () => {
-    const currentPolicy = policy();
-    const control = currentPolicy.targets.get("MEMORY_CONTROL")!;
-    const acceptedDestinations = [{
-      destinationFingerprint: control.destinationFingerprint,
-      role: "MEMORY_CONTROL"
-    }];
-    const findAdminPolicy = vi.fn(async () => ({
-      acceptedAt: NOW,
-      acceptedDestinations,
-      acceptedPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION
-    }));
-    const client = {
-      memoryEgressAdminPolicy: { findUnique: findAdminPolicy },
+  it("does not read legacy administrator acceptance when assessing runtime readiness", async () => {
+    const readLegacyAcceptance = vi.fn(() => { throw new Error("retired_acceptance_read"); });
+    const result = await readMemoryCapabilityOperationalState({
+      memoryEgressAdminPolicy: { findUnique: readLegacyAcceptance },
       memoryIndexGeneration: { findFirst: vi.fn(async () => null) },
       memoryWorkerHeartbeat: { findUnique: vi.fn(async () => null) }
-    } as never;
-    const input = {
-      consentMode: "ADMIN",
-      now: NOW,
-      policy: currentPolicy,
-      settings: settings({ activeIndexGenerationId: null })
-    } as const;
-    const state = await readMemoryCapabilityOperationalState(client, input);
-
-    expect(state.adminAcceptedDestinations).toEqual(acceptedDestinations);
-    expect(findAdminPolicy).toHaveBeenCalledWith({
-      select: {
-        acceptedAt: true,
-        acceptedDestinations: true,
-        acceptedPolicyVersion: true
-      },
-      where: { id: "installation" }
-    });
-
-    findAdminPolicy.mockResolvedValueOnce({
-      acceptedAt: NOW,
-      acceptedDestinations,
-      acceptedPolicyVersion: "stale-policy"
-    });
-    await expect(readMemoryCapabilityOperationalState(client, input)).resolves
-      .toMatchObject({ adminAcceptedDestinations: [] });
+    } as never, { now: NOW, settings: settings() });
+    expect(result).toEqual({ retrievalIndexAvailable: false, workerAvailable: false });
+    expect(readLegacyAcceptance).not.toHaveBeenCalled();
   });
 });

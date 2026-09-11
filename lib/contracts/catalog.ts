@@ -124,6 +124,7 @@ export type CatalogDefaults = Partial<AnswerSoundPreferences> & {
   knowledgePlan?: KnowledgeSelection | null;
   mcpMode?: ChatDefaultMcpMode;
   sendWithEnter?: boolean;
+  workspaceEnabled?: boolean;
   modelId: string;
   modelPreferenceSource: "none" | "organization" | "personal";
   organizationModelDefault: { modelId: string; provider: string } | null;
@@ -473,6 +474,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   });
   if (
     !chatDefaults ||
+    (defaults.workspaceEnabled !== undefined && typeof defaults.workspaceEnabled !== "boolean") ||
     models.some((model) => model === null) ||
     providers.some((provider) => provider === null) ||
     searchStrategies.some((strategy) => strategy === null) ||
@@ -517,6 +519,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
       searchPlan: decodedSearchPlan.plan,
       searchPreferenceSource: defaults.searchPreferenceSource,
       sendWithEnter: chatDefaults.sendWithEnter,
+      workspaceEnabled: defaults.workspaceEnabled ?? false,
       showCitations: defaults.showCitations,
       showReasoningBlocks: defaults.showReasoningBlocks
     },

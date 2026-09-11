@@ -331,7 +331,7 @@ describe("administrator system model policy service", () => {
           structuredOutput: "verified"
         }
       ],
-      verificationCandidates: [ { id: "model-1" }, { id: "model-anthropic", structuredOutput: "unsupported" } ]
+      verificationCandidates: [ { id: "model-1" }, { id: "model-anthropic", structuredOutput: "not_verified" } ]
     });
   });
 
@@ -429,7 +429,7 @@ describe("administrator system model policy service", () => {
     const unsupported = verifiableModel({
       activeConfig: {
         ...activeConfiguration,
-        adapterKind: "anthropic_messages"
+        adapterKind: "openai_chat_completions_compatible"
       }
     });
     const unsupportedPrisma = {
@@ -958,7 +958,7 @@ describe("administrator system model policy service", () => {
     const reasons = (role: "direct_pdf" | "memory" | "vision") =>
       Object.fromEntries(catalog.ineligible[role].map(({ id, reason }) => [id, reason]));
     expect(reasons("memory")).toEqual({
-      "model-anthropic": "adapter_unsupported",
+      "model-anthropic": "no_default_credential",
       "model-disabled": "model_disabled",
       "model-no-key": "no_default_credential",
       "model-revoked-key": "no_default_credential",

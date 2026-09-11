@@ -8,7 +8,7 @@ import { AdminRetrievalSection } from "./AdminRetrievalSection";
 
 function memoryStatus(overrides: Partial<AdminMemoryStatus> = {}): AdminMemoryStatus {
   return {
-    activeIssueCode: null,
+    processing: { enabled: true, issues: [] },
     admissionTimeout: { seconds: 15, version: 4 },
     configuredTargets: [{ model: "GPT Luna", provider: "OpenAI" }],
     index: { generation: 4, readiness: "READY" },
@@ -49,7 +49,7 @@ function server(initial: Readonly<{ knowledge?: AdminKnowledgeSettings; memory?:
       }
       if (method === "POST") {
         memory = memoryStatus({
-          activeIssueCode: null, index: { generation: 5, readiness: "REBUILDING" },
+          processing: { enabled: true, issues: [] }, index: { generation: 5, readiness: "REBUILDING" },
           queue: { length: 1, oldestAgeSeconds: 0 }, rebuild: { state: "IN_PROGRESS" }
         });
       }
@@ -79,6 +79,20 @@ function renderSection() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("AdminRetrievalSection", () => {
+  it("shows stopped learning ahead of a live worker and ready index with an actionable reason", async () => {
+    server({ memory: memoryStatus({ processing: { enabled: true, issues: [{
+      stage: "LEARNING", reason: "CAPABILITY_UNAVAILABLE", severity: "bad", count: 3, oldestAgeSeconds: 1865
+    }] } }) });
+    renderSection();
+    const memory = await screen.findByTestId("admin-retrieval-memory");
+    await waitFor(() => expect(within(memory).getByTestId("memory-state")).toHaveTextContent("Processing blocked"));
+    expect(within(memory).getByText("Ready", { exact: true })).toBeInTheDocument();
+    expect(within(memory).getByText("Running", { exact: true })).toBeInTheDocument();
+    expect(memory).toHaveTextContent("3 affected jobs; oldest 31m");
+    expect(memory).toHaveTextContent("required verified capability");
+    expect(within(memory).getByRole("link", { name: "Open Defaults & roles" })).toHaveAttribute("href", "/admin?section=roles");
+    expect(memory).not.toHaveTextContent(/consent|memory_execution_/u);
+  });
   it("shows one processing line, alerts and metrics, and links assignments to Defaults & roles", async () => {
     server({ knowledge: adminKnowledgeSettingsFixture({ operations: adminKnowledgeOperationsFixture({
       alerts: [{ code: "knowledge_search_worker_unavailable", severity: "warning" }],

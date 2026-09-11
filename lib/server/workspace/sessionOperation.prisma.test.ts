@@ -63,7 +63,7 @@ const definitions = WORKSPACE_MCP_TOOL_ALLOWLIST.map((originalName) => ({
 
 async function fixture() {
   const userId = prefix + randomUUID();
-  await prisma.user.create({ data: { id: userId, displayName: "Workspace Operation Test" } });
+  await prisma.user.create({ data: { id: userId, displayName: "Workspace Operation Test", status: "active" } });
   await prisma.userMemorySettings.update({ data: {
     learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false
   }, where: { userId } });

@@ -174,9 +174,16 @@ test("image tool keeps generated versions and ordinary uploaded edits through re
     const chatIds = [...new Set([...chats.map((row) => row.chatId), ...(createdChatId ? [createdChatId] : []), ...(branchedChatId ? [branchedChatId] : [])])];
     const outputs = await prisma.attachment.findMany({ where: { chatId: { in: chatIds } }, select: { storageKey: true } });
     await prisma.attachmentDeletionJob.createMany({ data: outputs.map(({ storageKey }) => ({ storageKey })), skipDuplicates: true });
-    await prisma.attachment.deleteMany({ where: { chatId: { in: chatIds } } });
-    await prisma.memoryJob.deleteMany({ where: { chatId: { in: chatIds } } });
-    await prisma.chat.deleteMany({ where: { id: { in: chatIds } } });
+    await prisma.$transaction(async (tx) => {
+      await tx.attachment.deleteMany({ where: { chatId: { in: chatIds } } });
+      await tx.modelRun.deleteMany({ where: { chatId: { in: chatIds } } });
+      await tx.memoryJob.deleteMany({ where: { chatId: { in: chatIds } } });
+      await tx.memoryRetrievalAttempt.deleteMany({ where: { chatId: { in: chatIds } } });
+      await tx.chatMemoryCheckpointMessage.deleteMany({ where: { chatId: { in: chatIds } } });
+      await tx.chatMemoryCheckpoint.deleteMany({ where: { chatId: { in: chatIds } } });
+      await tx.memoryRecallChunk.deleteMany({ where: { chatId: { in: chatIds } } });
+      await tx.chat.deleteMany({ where: { id: { in: chatIds } } });
+    });
     await prisma.modelPolicy.update({ where: { id: "installation" }, data: { defaultProviderModelId: priorChat.defaultProviderModelId, reasoningEffort: priorChat.reasoningEffort, version: { increment: 1 } } });
     await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: { imageProviderModelId: priorRoles.imageProviderModelId, imageParamsJson: json(priorRoles.imageParamsJson), version: { increment: 1 } } });
     await prisma.providerConnection.updateMany({ where: { id: connectionId }, data: { defaultCredentialId: null } });

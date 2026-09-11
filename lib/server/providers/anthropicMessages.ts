@@ -404,11 +404,20 @@ function buildThinking(params: AnthropicMessagesParams): Record<string, unknown>
   };
 }
 
+export function buildAnthropicMessagesOutputParams(values: Record<string, unknown>): Record<string, unknown> {
+  const params = normalizeAnthropicMessagesParams(values);
+  const thinking = buildThinking(params);
+  return {
+    max_tokens: params.maxTokens,
+    ...(thinking ? { thinking } : typeof values.temperature === "number" ? { temperature: params.temperature } : {}),
+    output_config: { effort: params.outputConfig.effort }
+  };
+}
+
 export function buildAnthropicMessagesRequest(
   request: ProviderRunRequest,
   options: Partial<BuildOptions> = {}
 ): Record<string, unknown> {
-  const params = normalizeAnthropicMessagesParams(request.params);
   const storedConversationById = new Map(
     conversationMessagesForRequest(request).map((message) => [message.id, message.content])
   );
@@ -460,28 +469,16 @@ export function buildAnthropicMessagesRequest(
   }
   const tools = [...hostedTools, ...clientTools];
   const body: Record<string, unknown> = {
-    max_tokens: params.maxTokens,
+    ...buildAnthropicMessagesOutputParams(request.params),
     messages,
     model: request.modelId || "claude-opus-4-8",
     stream: true
   };
   const system = combineSystem(request);
-  const thinking = buildThinking(params);
-  const hasExplicitTemperature = typeof request.params.temperature === "number";
 
   if (system) {
     body.system = system;
   }
-
-  if (thinking) {
-    body.thinking = thinking;
-  } else if (hasExplicitTemperature) {
-    body.temperature = params.temperature;
-  }
-
-  body.output_config = {
-    effort: params.outputConfig.effort
-  };
 
   if (tools.length > 0) {
     body.tools = tools;

@@ -201,7 +201,7 @@ export function getWorkspaceConfig(
     cpus: integerValue(env, integerSettings.cpus),
     diskMiB: integerValue(env, integerSettings.diskMiB),
     idleTtlSeconds: integerValue(env, integerSettings.idleTtlSeconds),
-    imageRef: boundedText(env.AIQSA_WORKSPACE_IMAGE, "aiqsa-workspace:0.1.25", 512),
+    imageRef: boundedText(env.AIQSA_WORKSPACE_IMAGE, "aiqsa-workspace:0.1.26", 512),
     maxToolCalls: integerValue(env, integerSettings.maxToolCalls),
     maxToolRounds: integerValue(env, integerSettings.maxToolRounds),
     mcpVersion: boundedText(env.AIQSA_WORKSPACE_MCP_VERSION, WORKSPACE_MCP_VERSION, 64),

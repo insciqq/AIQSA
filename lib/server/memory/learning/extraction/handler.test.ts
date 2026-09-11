@@ -270,7 +270,6 @@ function providerFailure(
 describe("Memory fact extraction handler", () => {
   it("parks missing consent or runtime capability before provider I/O", async () => {
     for (const code of [
-      "memory_execution_egress_consent_required",
       "memory_execution_capability_unavailable",
       "memory_execution_target_unavailable"
     ] as const) {
@@ -278,7 +277,7 @@ describe("Memory fact extraction handler", () => {
         probeAuthority: vi.fn(async () => { throw new MemoryExecutionError(code); })
       });
       await expect(createMemoryFactExtractionHandler(fixture.base).preflight(claim()))
-        .resolves.toEqual({ errorCode: code, status: "WAITING_FOR_EGRESS_CONSENT" });
+        .resolves.toEqual({ errorCode: code, status: "WAITING_FOR_CONFIGURATION" });
       expect(fixture.bind).not.toHaveBeenCalled();
       expect(fixture.run).not.toHaveBeenCalled();
     }

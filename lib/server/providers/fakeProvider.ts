@@ -6,7 +6,7 @@ import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "./t
 const DETERMINISTIC_RESULT_ZIP_BASE64 =
   "UEsDBBQAAAAAAAAAIQDtsuv+JQAAACUAAAAKAAAAcmVzdWx0LnR4dEFJUVNBIGRldGVybWluaXN0aWMgd29ya3NwYWNlIHJlc3VsdApQSwECFAMUAAAAAAAAACEA7bLr/iUAAAAlAAAACgAAAAAAAAAAAAAApIEAAAAAcmVzdWx0LnR4dFBLBQYAAAAAAQABADgAAABNAAAAAAA=";
 const WORKSPACE_TEST_DIRECTIVE =
-  /^\[AIQSA_WORKSPACE_E2E:(activity_probe|async_stop|descendant_stop|export_fault|forget_executions_stop|deterministic_prepare|live_async_stop|live_marker_probe|live_prepare|live_quiesce_probe|live_staging_probe|long_command|lose_session|marker_probe|network_off_probe|recreate_probe|reset_probe|resume_probe|staging_probe|state_probe)\]$/u;
+  /^\[AIQSA_WORKSPACE_E2E:(activity_probe|async_stop|browser_save|browser_restore|browser_missing|descendant_stop|export_fault|forget_executions_stop|deterministic_prepare|live_async_stop|live_marker_probe|live_prepare|live_quiesce_probe|live_staging_probe|long_command|lose_session|marker_probe|network_off_probe|recreate_probe|reset_probe|resume_probe|staging_probe|state_probe)\]$/u;
 
 type FakeToolResultMessage = Readonly<{
   content: readonly Readonly<{ text?: string; type: "json" | "text"; value?: unknown }>[];
@@ -121,7 +121,20 @@ function scriptedWorkspaceResult(
   let call: ModelToolCall | null = null;
   let finalText = "";
 
-  if (scenario === "deterministic_prepare") {
+  if (scenario === "browser_save") {
+    const paths = ["shop.example.json", "invalid.json"];
+    if (step < paths.length) call = toolCall(request, "sandbox_fs_write", step, { path: `/workspace/secrets/browser/${paths[step]}`,
+      content: step === 0 ? JSON.stringify({ cookies: [{ name: "session", value: "synthetic-browser-session", domain: "shop.example", path: "/", expires: -1,
+        httpOnly: true, secure: true, sameSite: "Lax" }], origins: [] }) : "invalid synthetic state", encoding: "utf8" });
+    else finalText = "Workspace browser session saved.";
+  } else if (scenario === "browser_restore" || scenario === "browser_missing") {
+    if (step === 0) call = toolCall(request, "sandbox_fs_read", step, { path: "/workspace/secrets/browser/shop.example.json", encoding: "utf8" });
+    else {
+      const data = lastToolData(results);
+      const found = isRecord(data) && typeof data.content === "string" && data.content.includes("synthetic-browser-session");
+      finalText = found ? "Workspace browser session restored." : "Workspace browser session absent.";
+    }
+  } else if (scenario === "deterministic_prepare") {
     if (step === 0) {
       call = toolCall(request, "sandbox_fs_read", step, {
         encoding: "utf8",

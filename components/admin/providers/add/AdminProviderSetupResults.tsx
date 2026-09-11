@@ -1,4 +1,5 @@
 import type { AdminProviderCapabilityAttempt, AdminProviderCapabilityCheck, AdminProviderCheckRun } from "@/lib/contracts/adminProviders";
+import { decodeImageFailureDiagnostic, type ImageFailureDiagnostic } from "@/lib/contracts/imageGeneration";
 
 export const CAPABILITY_LABELS: Record<AdminProviderCapabilityCheck, string> = {
   modelAccess: "Model access", structuredOutput: "Strict JSON", toolCalling: "Tools",
@@ -14,12 +15,24 @@ const reasonLabels: Record<AdminProviderCapabilityAttempt["reason"], string> = {
   malformed_tool_output: "the model returned an invalid tool call",
   not_checked: "not checked", run_deadline: "overall checking deadline reached"
 };
+const imageFailureLabels: Record<ImageFailureDiagnostic["category"], string> = {
+  invalid_parameter: "invalid parameter", safety: "provider safety rejection", quota: "account quota or credits exhausted",
+  rate_limit: "rate limit", authorization: "authorization failed", upstream_unavailable: "upstream temporarily unavailable",
+  unknown: "provider did not supply a recognized cause"
+};
 
 export function capabilityAttemptDescription(attempt: AdminProviderCapabilityAttempt | undefined): string {
   if (!attempt) return "";
   const status = Number.isInteger(attempt.httpStatus) && Number(attempt.httpStatus) >= 400 && Number(attempt.httpStatus) <= 599 ? ` · HTTP ${attempt.httpStatus}` : "";
   const count = Number.isInteger(attempt.attempts) && attempt.attempts >= 1 && attempt.attempts <= 3 ? ` · ${attempt.attempts} ${attempt.attempts === 1 ? "attempt" : "attempts"}` : "";
-  return `${reasonLabels[attempt.reason] ?? "check inconclusive"}${status}${count}`;
+  const imageFailure = decodeImageFailureDiagnostic(attempt.imageFailure);
+  const diagnostic = imageFailure ? ` · ${imageFailureLabels[imageFailure.category]}${imageFailure.parameter ? ` (${imageFailure.parameter})` : ""}` : "";
+  return `${reasonLabels[attempt.reason] ?? "check inconclusive"}${diagnostic}${status}${count}`;
+}
+
+function incompleteImageCheck(result: NonNullable<AdminProviderCheckRun["results"]>[number]): boolean {
+  return (["imageGeneration", "imageEditing"] as const).some((key) =>
+    result.checks?.[key] !== undefined && ["incomplete", "rejected", "not_checked"].includes(result.checks[key]!));
 }
 
 /** A settled optional limitation is not unfinished setup. Unknown failures stay recoverable. */
@@ -31,7 +44,7 @@ export function providerSetupNeedsRecovery(run: AdminProviderCheckRun | null | u
   const settled = (result: NonNullable<AdminProviderCheckRun["results"]>[number]) =>
     result.state === "saved" || result.state === "partial" ||
     result.state === "unavailable" && result.checks?.modelAccess === "unsupported";
-  return Boolean(run.results?.some((result) => !settled(result))) ||
+  return Boolean(run.results?.some((result) => !settled(result) || incompleteImageCheck(result))) ||
     run.failed.some((modelId) => !run.results?.some((result) => result.providerModelId === modelId && settled(result)));
 }
 
@@ -44,10 +57,12 @@ export function AdminProviderSetupResults({ run, models }: Readonly<{
   const saved = run.results.filter((result) => result.state === "saved" || result.state === "partial").length;
   const unavailable = run.results.filter((result) => result.state === "unavailable").length;
   const unsaved = run.results.filter((result) => result.state === "save_failed");
+  const partialImages = run.results.filter(incompleteImageCheck).length;
   const names = unsaved.slice(0, 3).map((result) => models.find((model) => model.id === result.providerModelId)?.displayName ?? "a model").join(", ");
   return (
     <div aria-label="Model setup summary" className="mt-2 min-w-0 text-xs leading-5 text-ink-secondary" role="group">
       <p>{saved} of {run.total} model results saved. Open a capability in the model list for its check result.</p>
+      {partialImages > 0 ? <p>Image checks remain incomplete for {partialImages} {partialImages === 1 ? "model" : "models"}. Retry checks the unconfirmed capabilities; verified generation or editing remains available.</p> : null}
       {unavailable > 0 ? <p className="text-critical">{unavailable} {unavailable === 1 ? "model is" : "models are"} unavailable to this key. Review model and key access.</p> : null}
       {unsaved.length > 0 ? <p className="break-words text-critical">Could not save checked settings for {names}{unsaved.length > 3 ? ` and ${unsaved.length - 3} more` : ""}. Earlier saved capabilities are kept.</p> : null}
     </div>

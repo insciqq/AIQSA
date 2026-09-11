@@ -473,7 +473,6 @@ async function createPreparingEmbeddingAuthority(userId: string): Promise<Readon
     where: { userId }
   });
   const authority: MemoryExecutionAuthorityDependencies = {
-    egressConsentMode: "PER_USER",
     now: () => new Date(now)
   };
   return {
@@ -2623,7 +2622,7 @@ describe("PREPARING run orchestration", () => {
       const chat = await prisma.chat.create({ data: { title: "Explicit recall", userId } });
       const request = normalizedRequest(chat.id, "My preferred editor is Vim.");
       const repository = createPrismaRunRepository(prisma, {
-        memoryExecutionAuthority: { egressConsentMode: "PER_USER" }
+        memoryExecutionAuthority: {}
       });
       const created = await repository.createRun({
         chatId: chat.id,

@@ -77,6 +77,18 @@ function validResponse(): CatalogResponse {
 }
 
 describe("catalog wire contract", () => {
+  it("decodes the personal Workspace default without accepting truthy invalid values", () => {
+    const response = validResponse();
+    expect(decodeCatalogResponse(response)?.defaults.workspaceEnabled).toBe(false);
+    for (const value of [true, false, null, "true", 1]) {
+      const decoded = decodeCatalogResponse({ catalog: {
+        ...response.catalog, defaults: { ...response.catalog.defaults, workspaceEnabled: value }
+      } });
+      if (typeof value === "boolean") expect(decoded?.defaults.workspaceEnabled).toBe(value);
+      else expect(decoded).toBeNull();
+    }
+  });
+
   it("normalizes absent sound preferences and strictly preserves an explicit mute", () => {
     const response = validResponse();
     expect(decodeCatalogResponse(response)?.defaults).toMatchObject({ answerSoundEnabled: true, answerSoundId: "rise" });

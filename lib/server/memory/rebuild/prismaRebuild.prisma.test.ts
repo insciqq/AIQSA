@@ -16,11 +16,6 @@ import {
   type MemoryItemEmbeddingPin
 } from "../embedding/contract";
 import {
-  currentMemoryAdminDestinations,
-  memoryAdminDestinationsFingerprint
-} from "../execution/adminConsent";
-import {
-  MEMORY_UTILITY_EGRESS_POLICY_VERSION,
   memoryVectorSpaceFingerprint,
   resolveCurrentMemoryUtilityPolicy
 } from "../execution/policy";
@@ -498,46 +493,8 @@ async function configureEmbeddingProvider(
   if (!vectorSpaceFingerprint) {
     throw new Error("memory_rebuild_vector_space_unavailable");
   }
-  const adminDestinations = currentMemoryAdminDestinations([policy]);
-  await prisma.memoryEgressAdminPolicy.upsert({
-    create: {
-      acceptedAt: now,
-      acceptedDestinations: adminDestinations,
-      acceptedFingerprint: memoryAdminDestinationsFingerprint(adminDestinations),
-      acceptedPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
-      id: "installation"
-    },
-    update: {
-      acceptedAt: now,
-      acceptedByUserId: null,
-      acceptedDestinations: adminDestinations,
-      acceptedFingerprint: memoryAdminDestinationsFingerprint(adminDestinations),
-      acceptedPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
-      version: { increment: 1 }
-    },
-    where: { id: "installation" }
-  });
-  await prisma.userMemorySettings.update({
-    data: {
-      acceptedUtilityEgressAt: now,
-      acceptedUtilityEgressFingerprint: policy.fingerprint,
-      acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION
-    },
-    where: { userId }
-  });
   return {
     async cleanup() {
-      await prisma.memoryEgressAdminPolicy.updateMany({
-        data: {
-          acceptedAt: null,
-          acceptedByUserId: null,
-          acceptedDestinations: [],
-          acceptedFingerprint: null,
-          acceptedPolicyVersion: null,
-          version: { increment: 1 }
-        },
-        where: { id: "installation" }
-      });
       await prisma.providerModelCredentialCheck.deleteMany({ where: { connectionId } });
       await prisma.providerConnection.updateMany({
         data: { defaultCredentialId: null },
@@ -2555,7 +2512,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
               "CLAIMED",
               "QUEUED",
               "RETRYABLE_FAILED",
-              "WAITING_FOR_EGRESS_CONSENT"
+              "WAITING_FOR_CONFIGURATION"
             ]
           },
           userId
