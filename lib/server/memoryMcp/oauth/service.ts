@@ -18,6 +18,13 @@ import type {
   InboundMcpOAuthClientRecord,
   InboundMcpOAuthRepository
 } from "./repository";
+import {
+  inboundMcpResourceAuthority,
+  inboundMcpResourceUrl,
+  inboundMcpProtectedResourceMetadataUrl,
+  type InboundMcpCapability,
+  type InboundMcpResourcePath
+} from "./resources";
 
 export const INBOUND_MCP_AUTHORIZATION_CODE_TTL_MS = 5 * 60 * 1_000;
 export const INBOUND_MCP_ACCESS_TOKEN_TTL_MS = 60 * 60 * 1_000;
@@ -31,6 +38,7 @@ export type InboundMcpOAuthErrorCode =
   | "invalid_client"
   | "invalid_grant"
   | "invalid_request"
+  | "invalid_scope"
   | "invalid_target"
   | "server_error";
 
@@ -57,6 +65,7 @@ export type InboundMcpOAuthTokenResponse = Readonly<{
   expires_in: number;
   refresh_token: string;
   token_type: "Bearer";
+  scope?: "mcp:hub";
 }>;
 
 export type InboundMcpAuthorizationView = Readonly<{
@@ -101,7 +110,9 @@ export type InboundMcpOAuthService = Readonly<{
     userId: string;
   }>): Promise<InboundMcpAuthorizationView>;
   registerClient(value: unknown): Promise<InboundMcpDynamicRegistrationResponse>;
-  resolveAccessToken(token: string): Promise<Readonly<{
+  resolveAccessToken(token: string, resource?: string): Promise<Readonly<{
+    capability: InboundMcpCapability;
+    resource: string;
     clientId: string;
     expiresAt: Date;
     grantId: string;
@@ -136,10 +147,7 @@ export function inboundMcpOAuthConfiguration(
     allowLoopbackDevelopment: url.protocol === "http:" && loopback && nodeEnv !== "production",
     authorizationEndpoint: new URL("/oauth/authorize", issuer).toString(),
     issuer,
-    protectedResourceMetadataUrl: new URL(
-      "/.well-known/oauth-protected-resource/mcp",
-      issuer
-    ).toString(),
+    protectedResourceMetadataUrl: inboundMcpProtectedResourceMetadataUrl(issuer, "/mcp"),
     registrationEndpoint: new URL("/oauth/register", issuer).toString(),
     resource: new URL("/mcp", issuer).toString(),
     revocationEndpoint: new URL("/oauth/revoke", issuer).toString(),
@@ -148,13 +156,15 @@ export function inboundMcpOAuthConfiguration(
 }
 
 export function inboundMcpProtectedResourceMetadata(
-  configuration: InboundMcpOAuthConfiguration
+  configuration: InboundMcpOAuthConfiguration,
+  resourcePath: InboundMcpResourcePath = "/mcp"
 ): Readonly<Record<string, unknown>> {
   return Object.freeze({
     authorization_servers: [configuration.issuer],
     bearer_methods_supported: ["header"],
-    resource: configuration.resource,
-    resource_name: "AIQSA Personal Memory"
+    resource: inboundMcpResourceUrl(configuration.issuer, resourcePath),
+    resource_name: resourcePath === "/mcp/hub" ? "AIQSA MCP Hub" : "AIQSA Personal Memory",
+    ...(resourcePath === "/mcp/hub" ? { scopes_supported: ["mcp:hub"] } : {})
   });
 }
 
@@ -171,6 +181,7 @@ export function inboundMcpAuthorizationServerMetadata(
     registration_endpoint: configuration.registrationEndpoint,
     resource_indicators_supported: true,
     response_types_supported: ["code"],
+    scopes_supported: ["mcp:hub"],
     revocation_endpoint: configuration.revocationEndpoint,
     revocation_endpoint_auth_methods_supported: ["none"],
     token_endpoint: configuration.tokenEndpoint,
@@ -193,6 +204,7 @@ function consentPayload(input: Readonly<{
     input.request.codeChallenge,
     input.request.redirectUri,
     input.request.resource,
+    input.request.scope ?? "",
     input.request.state,
     input.metadataFingerprint
   ]);
@@ -278,8 +290,13 @@ export function createInboundMcpOAuthService(input: Readonly<{
 }>): InboundMcpOAuthService {
   const clock = input.clock ?? (() => new Date());
 
-  function assertResource(resource: string): void {
-    if (resource !== input.configuration.resource) failure("invalid_target");
+  function assertResource(resource: string, scope?: string) {
+    const authority = inboundMcpResourceAuthority(input.configuration.issuer, resource);
+    if (!authority) return failure("invalid_target");
+    if (scope && (scope !== "mcp:hub" || authority.capability !== "mcp:hub")) {
+      return failure("invalid_scope");
+    }
+    return authority;
   }
 
   async function resolveClient(
@@ -314,7 +331,7 @@ export function createInboundMcpOAuthService(input: Readonly<{
     request: InboundMcpAuthorizationRequest,
     signal?: AbortSignal
   ): Promise<InboundMcpOAuthClientRecord> {
-    assertResource(request.resource);
+    assertResource(request.resource, request.scope);
     const client = await resolveClient(request.clientId, signal);
     if (!client.redirectUris.some((registered) => registeredRedirectUriMatches({
       applicationType: client.applicationType,
@@ -341,8 +358,9 @@ export function createInboundMcpOAuthService(input: Readonly<{
   function tokenResponse(tokens: Readonly<{
     accessToken: string;
     refreshToken: string;
-  }>): InboundMcpOAuthTokenResponse {
+  }>, capability: InboundMcpCapability): InboundMcpOAuthTokenResponse {
     return {
+      ...(capability === "mcp:hub" ? { scope: "mcp:hub" } : {}),
       access_token: tokens.accessToken,
       expires_in: INBOUND_MCP_ACCESS_TOKEN_TTL_MS / 1_000,
       refresh_token: tokens.refreshToken,
@@ -387,7 +405,7 @@ export function createInboundMcpOAuthService(input: Readonly<{
         issuer: input.configuration.issuer,
         now,
         redirectUri: requestInput.request.redirectUri,
-        resource: input.configuration.resource,
+        ...assertResource(requestInput.request.resource, requestInput.request.scope),
         userId: requestInput.userId
       });
       return approved ? code : failure("access_denied");
@@ -454,12 +472,14 @@ export function createInboundMcpOAuthService(input: Readonly<{
       };
     },
 
-    async resolveAccessToken(token) {
+    async resolveAccessToken(token, resource = input.configuration.resource) {
       if (!validRawCredential(token)) return null;
+      const authority = inboundMcpResourceAuthority(input.configuration.issuer, resource);
+      if (!authority) return null;
       return input.repository.resolveAccessToken({
         issuer: input.configuration.issuer,
         now: clock(),
-        resource: input.configuration.resource,
+        ...authority,
         tokenHash: hashToken(token)
       });
     },
@@ -478,7 +498,7 @@ export function createInboundMcpOAuthService(input: Readonly<{
     },
 
     async token(request) {
-      assertResource(request.resource);
+      const authority = assertResource(request.resource, request.scope);
       const now = clock();
       const tokens = issueTokenPair(now);
       if (request.grantType === "authorization_code") {
@@ -493,9 +513,9 @@ export function createInboundMcpOAuthService(input: Readonly<{
           redirectUri: request.redirectUri,
           refreshExpiresAt: tokens.refreshExpiresAt,
           refreshTokenHash: hashToken(tokens.refreshToken),
-          resource: input.configuration.resource
+          ...authority
         });
-        return exchanged ? tokenResponse(tokens) : failure("invalid_grant");
+        return exchanged ? tokenResponse(tokens, authority.capability) : failure("invalid_grant");
       }
       const rotated = await input.repository.rotateRefreshToken({
         accessExpiresAt: tokens.accessExpiresAt,
@@ -506,9 +526,9 @@ export function createInboundMcpOAuthService(input: Readonly<{
         now,
         presentedRefreshTokenHash: hashToken(request.refreshToken),
         refreshExpiresAt: tokens.refreshExpiresAt,
-        resource: input.configuration.resource
+        ...authority
       });
-      return rotated === "rotated" ? tokenResponse(tokens) : failure("invalid_grant");
+      return rotated === "rotated" ? tokenResponse(tokens, authority.capability) : failure("invalid_grant");
     }
   });
 }

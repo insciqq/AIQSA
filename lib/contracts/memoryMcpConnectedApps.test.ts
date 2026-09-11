@@ -7,6 +7,8 @@ import {
 
 const activeApp = {
   connectionId: "grant-1",
+  resourcePath: "/mcp",
+  capability: "memory:facts",
   clientName: "Codex CLI",
   clientOrigin: "https://chatgpt.com",
   connectedAt: "2026-09-03T01:00:00.000Z",
@@ -50,6 +52,13 @@ describe("Memory MCP Connected Apps contracts", () => {
     expect(decodeMemoryMcpConnectedAppsResponse({
       apps: [{ ...activeApp, clientOrigin: "com.example.client:/callback" }]
     })).toBeNull();
+  });
+
+  it("distinguishes Hub grants and rejects mismatched capabilities", () => {
+    const hub = { ...activeApp, connectionId: "hub-grant", resourcePath: "/mcp/hub", capability: "mcp:hub" };
+    expect(decodeMemoryMcpConnectedAppsResponse({ apps: [activeApp, hub] })).toEqual({ apps: [activeApp, hub] });
+    expect(decodeMemoryMcpConnectedAppsResponse({ apps: [{ ...activeApp, capability: "mcp:hub" }] })).toBeNull();
+    expect(decodeMemoryMcpConnectedAppsResponse({ apps: [{ ...hub, capability: "memory:facts" }] })).toBeNull();
   });
 
   it("validates the opaque revoke target", () => {

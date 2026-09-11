@@ -42,6 +42,7 @@ export type InboundMcpAuthorizationRequest = Readonly<{
   codeChallenge: string;
   redirectUri: string;
   resource: string;
+  scope?: "mcp:hub";
   state: string | null;
 }>;
 
@@ -67,7 +68,7 @@ export function decodeAuthorizationRequest(
 ): OAuthDecodeResult<InboundMcpAuthorizationRequest, InboundMcpAuthorizationRequestError> {
   const values = singleParameters(input, authorizationParameterNames);
   if (!values) return { error: "invalid_request", ok: false };
-  if ((values.scope ?? "") !== "") return { error: "invalid_scope", ok: false };
+  if (!["", "mcp:hub"].includes(values.scope ?? "")) return { error: "invalid_scope", ok: false };
   if (values.response_type !== "code") {
     return { error: "unsupported_response_type", ok: false };
   }
@@ -78,7 +79,7 @@ export function decodeAuthorizationRequest(
     redirect_uri: redirectUriSchema,
     resource: resourceSchema,
     response_type: z.literal("code"),
-    scope: z.literal("").optional(),
+    scope: z.enum(["", "mcp:hub"]).optional(),
     state: stateSchema.optional()
   }).safeParse(values);
   if (!decoded.success) return { error: "invalid_request", ok: false };
@@ -89,6 +90,7 @@ export function decodeAuthorizationRequest(
       codeChallenge: decoded.data.code_challenge,
       redirectUri: decoded.data.redirect_uri,
       resource: decoded.data.resource,
+      ...(decoded.data.scope ? { scope: decoded.data.scope } : {}),
       state: decoded.data.state ?? null
     }
   };
@@ -113,12 +115,14 @@ export type InboundMcpTokenRequest =
       grantType: "authorization_code";
       redirectUri: string;
       resource: string;
+      scope?: "mcp:hub";
     }>
   | Readonly<{
       clientId: string;
       grantType: "refresh_token";
       refreshToken: string;
       resource: string;
+      scope?: "mcp:hub";
     }>;
 
 export type InboundMcpTokenRequestError =
@@ -131,7 +135,7 @@ export function decodeTokenRequest(
 ): OAuthDecodeResult<InboundMcpTokenRequest, InboundMcpTokenRequestError> {
   const values = singleParameters(input, tokenParameterNames);
   if (!values) return { error: "invalid_request", ok: false };
-  if ((values.scope ?? "") !== "") return { error: "invalid_scope", ok: false };
+  if (!["", "mcp:hub"].includes(values.scope ?? "")) return { error: "invalid_scope", ok: false };
   if (values.grant_type !== "authorization_code" && values.grant_type !== "refresh_token") {
     return { error: "unsupported_grant_type", ok: false };
   }
@@ -143,7 +147,7 @@ export function decodeTokenRequest(
       grant_type: z.literal("authorization_code"),
       redirect_uri: redirectUriSchema,
       resource: resourceSchema,
-      scope: z.literal("").optional()
+      scope: z.enum(["", "mcp:hub"]).optional()
     }).safeParse(values);
     return decoded.success
       ? {
@@ -154,7 +158,8 @@ export function decodeTokenRequest(
             codeVerifier: decoded.data.code_verifier,
             grantType: "authorization_code",
             redirectUri: decoded.data.redirect_uri,
-            resource: decoded.data.resource
+            resource: decoded.data.resource,
+            ...(decoded.data.scope ? { scope: decoded.data.scope } : {})
           }
         }
       : { error: "invalid_request", ok: false };
@@ -164,7 +169,7 @@ export function decodeTokenRequest(
     grant_type: z.literal("refresh_token"),
     refresh_token: opaqueTokenSchema,
     resource: resourceSchema,
-    scope: z.literal("").optional()
+    scope: z.enum(["", "mcp:hub"]).optional()
   }).safeParse(values);
   return decoded.success
     ? {
@@ -173,7 +178,8 @@ export function decodeTokenRequest(
           clientId: decoded.data.client_id,
           grantType: "refresh_token",
           refreshToken: decoded.data.refresh_token,
-          resource: decoded.data.resource
+          resource: decoded.data.resource,
+          ...(decoded.data.scope ? { scope: decoded.data.scope } : {})
         }
       }
     : { error: "invalid_request", ok: false };
@@ -232,7 +238,7 @@ const baseClientMetadataSchema = z.object({
   grant_types: grantTypesSchema.optional(),
   redirect_uris: redirectUrisSchema,
   response_types: responseTypesSchema.optional(),
-  scope: z.literal("").optional(),
+  scope: z.enum(["", "mcp:hub"]).optional(),
   token_endpoint_auth_method: z.literal("none").optional()
 });
 

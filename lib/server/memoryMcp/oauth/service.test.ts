@@ -81,7 +81,56 @@ function dependencies() {
 }
 
 describe("inbound Memory MCP OAuth service", () => {
-  it("publishes one canonical resource and a scope-free public-client server", () => {
+  it.each([undefined, "mcp:hub"] as const)("binds Hub consent and issuance when wire scope is %s", async (scope) => {
+    const { repository, service } = dependencies();
+    const request = authorizationRequest({ resource: "https://aiqsa.example/mcp/hub", scope });
+    const authorization = { request, sessionId: "session-1", userId: "user-1" };
+    const view = await service.prepareAuthorization(authorization);
+    const code = await service.approveAuthorization({ ...authorization, consentToken: view.consentToken });
+    expect(repository.approveAuthorization).toHaveBeenCalledWith(expect.objectContaining({
+      resource: request.resource, resourcePath: "/mcp/hub", capability: "mcp:hub"
+    }));
+    const pair = await service.token({
+      clientId: request.clientId, code, codeVerifier: VERIFIER,
+      grantType: "authorization_code", redirectUri: request.redirectUri,
+      resource: request.resource, scope
+    });
+    expect(pair.scope).toBe("mcp:hub");
+    expect(repository.exchangeAuthorizationCode).toHaveBeenCalledWith(expect.objectContaining({
+      resource: request.resource, capability: "mcp:hub"
+    }));
+    await service.token({ clientId: request.clientId, grantType: "refresh_token",
+      refreshToken: pair.refresh_token, resource: request.resource, scope });
+    expect(repository.rotateRefreshToken).toHaveBeenCalledWith(expect.objectContaining({
+      resource: request.resource, capability: "mcp:hub"
+    }));
+    await expect(service.approveAuthorization({ ...authorization, consentToken: view.consentToken,
+      request: { ...request, resource: "https://aiqsa.example/mcp", scope: undefined }
+    })).rejects.toEqual(new InboundMcpOAuthError("invalid_request"));
+    await service.resolveAccessToken(pair.access_token, request.resource);
+    expect(repository.resolveAccessToken).toHaveBeenLastCalledWith(expect.objectContaining({
+      resource: request.resource, capability: "mcp:hub"
+    }));
+    await service.resolveAccessToken(pair.access_token);
+    expect(repository.resolveAccessToken).toHaveBeenLastCalledWith(expect.objectContaining({
+      resource: "https://aiqsa.example/mcp", capability: "memory:facts"
+    }));
+  });
+
+  it("rejects Hub scope on Memory and noncanonical resource URLs before persistence", async () => {
+    const { repository, service } = dependencies();
+    await expect(service.prepareAuthorization({
+      request: authorizationRequest({ scope: "mcp:hub" }), sessionId: "s", userId: "u"
+    })).rejects.toEqual(new InboundMcpOAuthError("invalid_scope"));
+    for (const resource of ["https://aiqsa.example/mcp/hub/", "https://aiqsa.example/mcp/hub?x=1", "https://other.example/mcp/hub"]) {
+      await expect(service.prepareAuthorization({
+        request: authorizationRequest({ resource }), sessionId: "s", userId: "u"
+      })).rejects.toEqual(new InboundMcpOAuthError("invalid_target"));
+    }
+    expect(repository.findClient).not.toHaveBeenCalled();
+  });
+
+  it("publishes separate resource audiences on one public-client server", () => {
     const { configuration } = dependencies();
     expect(inboundMcpProtectedResourceMetadata(configuration)).toEqual({
       authorization_servers: ["https://aiqsa.example"],
@@ -99,9 +148,12 @@ describe("inbound Memory MCP OAuth service", () => {
       resource_indicators_supported: true,
       token_endpoint_auth_methods_supported: ["none"]
     });
-    expect(inboundMcpAuthorizationServerMetadata(configuration)).not.toHaveProperty(
-      "scopes_supported"
+    expect(inboundMcpAuthorizationServerMetadata(configuration)).toHaveProperty(
+      "scopes_supported", ["mcp:hub"]
     );
+    expect(inboundMcpProtectedResourceMetadata(configuration, "/mcp/hub")).toMatchObject({
+      resource: "https://aiqsa.example/mcp/hub", scopes_supported: ["mcp:hub"]
+    });
   });
 
   it("binds browser consent and a one-time code to owner, session, client, and PKCE", async () => {

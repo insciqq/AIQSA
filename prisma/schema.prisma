@@ -3095,6 +3095,8 @@ model InboundMcpOAuthClient {
 }
 
 model InboundMcpOAuthGrant {
+  resourcePath       String                             @default("/mcp") @db.VarChar(32)
+  capability         String                             @default("memory:facts") @db.VarChar(32)
   id                 String                             @id @default(uuid())
   userId             String
   oauthClientId      String
@@ -3111,12 +3113,16 @@ model InboundMcpOAuthGrant {
   user               User                               @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([id, oauthClientId])
-  @@unique([userId, oauthClientId])
+  @@unique([userId, oauthClientId, resourcePath])
+  @@unique([id, resourcePath, capability], map: "InboundMcpOAuthGrant_authority_key")
+  @@unique([id, oauthClientId, resourcePath, capability], map: "InboundMcpOAuthGrant_client_authority_key")
   @@index([oauthClientId, state])
   @@index([userId, state, updatedAt])
 }
 
 model InboundMcpOAuthAuthorizationCode {
+  resourcePath  String                @default("/mcp") @db.VarChar(32)
+  capability    String                @default("memory:facts") @db.VarChar(32)
   id            String                @id @default(uuid())
   codeHash      String                @unique @db.VarChar(64)
   grantId       String
@@ -3130,7 +3136,7 @@ model InboundMcpOAuthAuthorizationCode {
   consumedAt    DateTime?
   createdAt     DateTime              @default(now())
   client        InboundMcpOAuthClient @relation(fields: [oauthClientId], references: [id], onDelete: Cascade)
-  grant         InboundMcpOAuthGrant  @relation(fields: [grantId, oauthClientId], references: [id, oauthClientId], onDelete: Cascade)
+  grant         InboundMcpOAuthGrant  @relation(fields: [grantId, oauthClientId, resourcePath, capability], references: [id, oauthClientId, resourcePath, capability], onDelete: Cascade, map: "InboundMcpOAuthAuthorizationCode_authority_fkey")
 
   @@index([expiresAt, consumedAt])
   @@index([grantId, grantRevision])
@@ -3138,6 +3144,8 @@ model InboundMcpOAuthAuthorizationCode {
 }
 
 model InboundMcpOAuthTokenFamily {
+  resourcePath        String                 @default("/mcp") @db.VarChar(32)
+  capability          String                 @default("memory:facts") @db.VarChar(32)
   id                  String                 @id @default(uuid())
   grantId             String
   grantRevision       Int
@@ -3149,23 +3157,26 @@ model InboundMcpOAuthTokenFamily {
   revocationReason    String?                @db.VarChar(64)
   createdAt           DateTime               @default(now())
   updatedAt           DateTime               @updatedAt
-  grant               InboundMcpOAuthGrant   @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  grant               InboundMcpOAuthGrant   @relation(fields: [grantId, resourcePath, capability], references: [id, resourcePath, capability], onDelete: Cascade, map: "InboundMcpOAuthTokenFamily_authority_fkey")
   tokens              InboundMcpOAuthToken[]
 
+  @@unique([id, resourcePath, capability], map: "InboundMcpOAuthTokenFamily_authority_key")
   @@index([grantId, grantRevision, revokedAt])
   @@index([inactivityExpiresAt, revokedAt])
 }
 
 model InboundMcpOAuthToken {
-  id         String                     @id @default(uuid())
-  familyId   String
-  kind       InboundMcpOAuthTokenKind
-  tokenHash  String                     @unique @db.VarChar(64)
-  expiresAt  DateTime
-  consumedAt DateTime?
-  lastUsedAt DateTime?
-  createdAt  DateTime                   @default(now())
-  family     InboundMcpOAuthTokenFamily @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  resourcePath String                     @default("/mcp") @db.VarChar(32)
+  capability   String                     @default("memory:facts") @db.VarChar(32)
+  id           String                     @id @default(uuid())
+  familyId     String
+  kind         InboundMcpOAuthTokenKind
+  tokenHash    String                     @unique @db.VarChar(64)
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  lastUsedAt   DateTime?
+  createdAt    DateTime                   @default(now())
+  family       InboundMcpOAuthTokenFamily @relation(fields: [familyId, resourcePath, capability], references: [id, resourcePath, capability], onDelete: Cascade, map: "InboundMcpOAuthToken_authority_fkey")
 
   @@index([expiresAt, kind, consumedAt])
   @@index([familyId, kind, consumedAt])

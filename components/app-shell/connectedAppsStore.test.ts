@@ -12,6 +12,8 @@ const activeApp = {
   clientOrigin: "http://127.0.0.1:43119",
   connectedAt: "2026-09-03T01:00:00.000Z",
   connectionId: "grant-1",
+  resourcePath: "/mcp" as const,
+  capability: "memory:facts" as const,
   lastUsedAt: null,
   revokedAt: null,
   state: "ACTIVE" as const

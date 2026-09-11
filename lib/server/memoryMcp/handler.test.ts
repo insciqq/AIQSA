@@ -61,12 +61,16 @@ function nativeSearchService(): MemoryNativeFactSearchService {
 }
 
 function oauthService(
-  resolve: (token: string) => Promise<{
+  resolve: (token: string, resource?: string) => Promise<{
+    capability: "memory:facts" | "mcp:hub";
+    resource: string;
     clientId: string;
     expiresAt: Date;
     grantId: string;
     userId: string;
   } | null> = async (token) => token === activeToken ? {
+    capability: "memory:facts",
+    resource: endpoint.toString(),
     clientId: "codex-client",
     expiresAt: new Date(Date.now() + 60_000),
     grantId: "grant-1",
@@ -358,6 +362,8 @@ describe("Personal Memory MCP handler", () => {
   it("fails missing, invalid, and expired bearer tokens before tools", async () => {
     const service = memoryService();
     const expiredOAuth = oauthService(async (token) => token === activeToken ? {
+      capability: "memory:facts",
+      resource: endpoint.toString(),
       clientId: "codex-client",
       expiresAt: new Date(Date.now() - 1_000),
       grantId: "grant-1",

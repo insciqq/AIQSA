@@ -38,6 +38,8 @@ function hasNoSearchParams(request: Request): boolean {
 function project(app: InboundMcpConnectedApp): MemoryMcpConnectedApp {
   return {
     connectionId: app.grantId,
+    resourcePath: app.resourcePath,
+    capability: app.capability,
     clientName: app.clientName,
     clientOrigin: app.clientOrigin,
     connectedAt: app.connectedAt.toISOString(),
