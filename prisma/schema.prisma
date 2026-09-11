@@ -761,6 +761,7 @@ model User {
   memoryEgressPolicyUpdates           MemoryEgressAdminPolicy[]          @relation("MemoryEgressAdminPolicyUpdater")
   inboundMcpOAuthGrants               InboundMcpOAuthGrant[]
   mcpGrants                           McpGrant[]
+  mcpToolGrants                       McpToolUserGrant[]
   mcpActivationJobs                   McpActivationJob[]
   mcpOAuthConnections                 McpOAuthConnection[]
   mcpUserServers                      McpUserServer[]
@@ -980,6 +981,7 @@ model Group {
   authInviteDefaults            AuthInviteGroup[]
   knowledgeBasePublications     KnowledgeBasePublication[]
   mcpGrants                     McpGrant[]
+  mcpToolGrants                 McpToolGroupGrant[]
   skillPublications             SkillPublication[]
   providerCredentialAssignments ProviderGroupCredentialAssignment[]
   projectGrants                 ProjectGrant[]
@@ -2909,6 +2911,7 @@ model McpServer {
   activeRevision       McpRevision?         @relation("ActiveMcpRevision", fields: [activeRevisionId], references: [id], onDelete: SetNull)
   activationJob        McpActivationJob?
   grants               McpGrant[]
+  toolAccessPolicies   McpToolAccessPolicy[]
   oauthConnections     McpOAuthConnection[]
   projectBindings      ProjectMcpBinding[]
   revisions            McpRevision[]        @relation("McpServerRevisions")
@@ -2976,6 +2979,38 @@ model McpGrant {
   @@unique([serverId, groupId])
   @@index([groupId])
   @@index([userId])
+}
+
+model McpToolAccessPolicy {
+  id         String              @id @default(uuid())
+  serverId   String
+  toolName   String
+  restricted Boolean             @default(false)
+  server     McpServer           @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  users      McpToolUserGrant[]
+  groups     McpToolGroupGrant[]
+
+  @@unique([serverId, toolName])
+}
+
+model McpToolUserGrant {
+  policyId String
+  userId   String
+  policy   McpToolAccessPolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  user     User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([policyId, userId])
+  @@index([userId])
+}
+
+model McpToolGroupGrant {
+  policyId String
+  groupId  String
+  policy   McpToolAccessPolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  group    Group               @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([policyId, groupId])
+  @@index([groupId])
 }
 
 model McpUserServer {

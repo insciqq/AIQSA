@@ -653,6 +653,28 @@ describe("MCP handler input validation", () => {
     });
   });
 
+  it("saves bounded tool recipients only through admin access without waking the runtime", async () => {
+    const repository = new MemoryMcpRepository();
+    const onRuntimeChanged = vi.fn();
+    const update = createAdminMcpUpdateHandler({ ...deps(repository), onRuntimeChanged });
+    const toolAccess = { name: "create_task", restricted: true, userIds: ["user-1"], groupIds: [] };
+    const send = (body: object, user = "admin") => update(request({ body, user, contentType: "application/json", method: "PATCH" }), routeContext);
+    expect((await send({ toolAccess, expectedUpdatedAt: NOW }, "user-1")).status).toBe(403);
+    expect((await send({ toolAccess, expectedUpdatedAt: NOW }, "disabled-admin")).status).toBe(403);
+    for (const body of [{ toolAccess }, { toolAccess, expectedUpdatedAt: "bad" },
+      { toolAccess, expectedUpdatedAt: NOW, tool: { name: "create_task", enabled: true } },
+      { toolAccess, expectedUpdatedAt: NOW, draft },
+      { toolAccess: { ...toolAccess, userIds: Array(257).fill("user-1") }, expectedUpdatedAt: NOW }]) {
+      expect((await send(body)).status).toBe(400);
+    }
+    expect(repository.updateCalls).toEqual([]);
+    expect((await send({ toolAccess, expectedUpdatedAt: NOW })).status).toBe(200);
+    expect(repository.updateCalls).toEqual([{ toolAccess, expectedUpdatedAt: NOW, serverId: SERVER_ID }]);
+    expect(onRuntimeChanged).not.toHaveBeenCalled();
+    repository.nextError = { kind: "draft_changed" };
+    expect((await send({ toolAccess, expectedUpdatedAt: NOW })).status).toBe(409);
+  });
+
   it("requires admin authority and a version for an isolated immediate tool switch", async () => {
     const repository = new MemoryMcpRepository();
     const update = createAdminMcpUpdateHandler(deps(repository));

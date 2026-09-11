@@ -5806,6 +5806,7 @@ describe("model run route handlers", () => {
       serverId: "server-1"
     }];
     const mcp = {
+      filterTools: (async (_userId, tools) => [...tools]) as import("../mcp/toolAccess").McpToolAccessFilter,
       prepare: vi.fn(async () => ({
         bindings,
         ok: true as const,

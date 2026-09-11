@@ -1,3 +1,4 @@
+import { assertMcpToolAccess } from "../mcp/toolAccess";
 import { loadInstallationImageProviderRole } from "../providerRuntime/admission";
 import type { AcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
 import { randomInt, randomUUID } from "node:crypto";
@@ -218,14 +219,16 @@ export function serializeRunAssistantIdentity(modelRun: {
 }
 
 export async function insertAcceptedMcpRunBindings(
-  tx: Pick<Prisma.TransactionClient, "$executeRaw">,
+  tx: Pick<Prisma.TransactionClient, "$executeRaw" | "user" | "mcpToolAccessPolicy">,
   input: {
     bindings: McpRunPlanBinding[] | undefined;
+    tools: readonly import("../mcp/toolAccess").McpToolIdentity[];
     projectId?: string;
     runId: string;
     userId: string;
   }
 ): Promise<void> {
+  await assertMcpToolAccess(tx, input.userId, input.tools);
   const bindings = input.bindings ?? [];
   const serverIds = new Set<string>();
   const generationIds = new Set<string>();

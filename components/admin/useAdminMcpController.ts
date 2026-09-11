@@ -251,6 +251,7 @@ export function useAdminMcpController({
     } : body, fetcher), typeof body.enabled === "boolean"
       ? body.enabled ? "MCP server enabled." : "MCP server disabled."
       : body.tool ? `Tool ${body.tool.enabled ? "enabled" : "disabled"}.`
+      : body.toolAccess ? "Tool access updated."
       : body.draft ? null : "MCP settings updated."),
   [booleanMutation, fetcher, servers]);
 

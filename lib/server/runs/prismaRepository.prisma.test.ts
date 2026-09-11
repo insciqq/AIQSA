@@ -1585,6 +1585,9 @@ describe("Prisma-backed run repository", () => {
             ordinal: 0,
             providerCallId: "provider-find-tools-call",
             toolName: "find_tools"
+          }, {
+            arguments: { goal: "echo a value" }, ordinal: 1,
+            providerCallId: "provider-find-tools-call-2", toolName: "find_tools"
           }],
           providerContinuation: null,
           roundIndex: 0,
@@ -1613,6 +1616,14 @@ describe("Prisma-backed run repository", () => {
           version: 1 as const
         };
         const append = repository.appendMcpDiscoveryEpoch!;
+        const policy = await prisma.mcpToolAccessPolicy.create({ data: {
+          serverId: fixture.server.id, toolName: "echo", restricted: true
+        } });
+        await expect(append({ bindings: [fixture.binding], goal: "echo a value", modelRunToolCallId,
+          roundIndex: 0, runId: created.runId, snapshot, toolIds: [namespacedName], userId
+        })).rejects.toMatchObject({ code: "mcp_tool_access_denied" });
+        expect(await prisma.mcpRunBinding.count({ where: { modelRunId: created.runId } })).toBe(0);
+        await prisma.mcpToolAccessPolicy.update({ where: { id: policy.id }, data: { restricted: false } });
         const appended = await append({
           bindings: [fixture.binding],
           goal: "echo a value",
@@ -1639,6 +1650,13 @@ describe("Prisma-backed run repository", () => {
         await expect(prisma.mcpRunBinding.count({
           where: { modelRunId: created.runId }
         })).resolves.toBe(1);
+        await prisma.mcpToolAccessPolicy.update({ where: { id: policy.id }, data: { restricted: true } });
+        // A new selection on an already accepted binding still checks current rights.
+        await expect(append({ bindings: [], goal: "echo a value", modelRunToolCallId: persisted.calls[1]!.id,
+          roundIndex: 0, runId: created.runId, snapshot: { servers: [], tools: [], version: 1 },
+          toolIds: [namespacedName], userId
+        })).rejects.toMatchObject({ code: "mcp_tool_access_denied" });
+        // The prior accepted epoch remains immutable and readable.
         await expect(append({
           bindings: [fixture.binding],
           goal: "echo a value",

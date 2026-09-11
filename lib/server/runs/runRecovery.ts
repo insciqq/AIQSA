@@ -1,3 +1,4 @@
+import { filterMcpProviderRequest } from "../mcp/toolAccessProjection";
 import { imageDispatchMustStop } from "../images/errors";
 import { imageGenerationTool, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
@@ -300,6 +301,7 @@ export type RunRecoveryDeps = Readonly<{
   memoryEgress?: MemoryToolEgressReceiptService;
   mcpRuntime?: RunRecoveryMcpRuntime;
   mcp?: Readonly<{
+    filterTools: import("../mcp/toolAccess").McpToolAccessFilter;
     materialize?(
       userId: string,
       tools: readonly Readonly<{
@@ -312,7 +314,7 @@ export type RunRecoveryDeps = Readonly<{
       userId: string,
       options?: Readonly<{ allowedServerIds?: readonly string[] }>
     ): Promise<McpRunPlanResult>;
-    prepareProject?(serverIds: readonly string[]): Promise<McpRunPlanResult>;
+    prepareProject?(userId: string, serverIds: readonly string[]): Promise<McpRunPlanResult>;
     router?: McpSemanticRouter;
   }>;
   providerAdmission?: Readonly<{
@@ -967,9 +969,10 @@ async function currentRecoveryMcpDispatchFailure(
   const route = resolveMcpRunTool(context.activeMcpSnapshot, callName);
   if (!route) return "mcp_accepted_generation_changed";
   try {
+    if (!(await context.deps.mcp.filterTools(context.run.userId, [route.tool])).length) return "mcp_tool_access_denied";
     const current = context.run.project
       ? context.deps.mcp.prepareProject
-        ? await context.deps.mcp.prepareProject([route.serverId]) : null
+        ? await context.deps.mcp.prepareProject(context.run.userId, [route.serverId]) : null
       : await context.deps.mcp.prepare(context.run.userId, { allowedServerIds: [route.serverId] });
     return currentMcpDispatchFailure(current, route, generationId);
   } catch {
@@ -1080,6 +1083,7 @@ async function executeRecoveredMcpDiscovery(
         : {}),
       appendEpoch,
       call,
+      filterTools: context.deps.mcp!.filterTools,
       materialize,
       maxResults: toolRunBudgetsForRequest(context.run.normalizedRequest)
         .maxMcpToolsPerDiscovery,
@@ -1148,6 +1152,7 @@ function registerRecoveredMcpDiscoveryBatch(
               : {}),
             appendEpoch,
             calls: discoveryCalls,
+            filterTools: context.deps.mcp!.filterTools,
             materialize,
             maxResults: budgets.maxMcpToolsPerDiscovery,
             maxOutputTokens: budgets.mcpAutoDiscoveryMaxOutputTokens,
@@ -2169,9 +2174,7 @@ async function recoverCheckpointedToolLoop(
       roundRequest: ProviderRunRequest,
       round: number
     ): Promise<ProviderRunRequest> {
-      const budgeted = applyProviderRequestContextBudget({
-        bridge,
-        request: {
+      const currentRequest = {
           ...roundRequest,
           ...(context.activeMcpDiscovery && round === 1
             ? { parallelToolCalls: false }
@@ -2180,7 +2183,12 @@ async function recoverCheckpointedToolLoop(
           ...(context.activeMcpDiscovery
             ? { mcpDiscovery: context.activeMcpDiscovery }
             : {})
-        }
+      };
+      const budgeted = applyProviderRequestContextBudget({
+        bridge,
+        request: deps.mcp
+          ? await filterMcpProviderRequest(currentRequest, run.userId, deps.mcp.filterTools)
+          : currentRequest
       });
       if (!budgeted.ok) {
         throw new ToolLoopRecoveryError("context_too_large", budgeted.error.message);

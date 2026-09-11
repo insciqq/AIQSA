@@ -8,7 +8,8 @@ const MCP_RUNTIME_ERROR_MESSAGES = {
   mcp_response_too_large: "The MCP server response exceeded its size limit. Ask an administrator to check the server.",
   mcp_runtime_unavailable: "The MCP runtime is unavailable. Check MCP settings and try again.",
   mcp_session_closed: "The MCP session closed. Try again to reconnect the runtime.",
-  mcp_timeout: "The MCP server timed out. Check the server and try again."
+  mcp_timeout: "The MCP server timed out. Check the server and try again.",
+  mcp_tool_access_denied: "You no longer have access to this MCP tool."
 } as const;
 
 export type McpRuntimeErrorCode = keyof typeof MCP_RUNTIME_ERROR_MESSAGES;
@@ -219,7 +220,28 @@ export type AdminMcpPersonalSlotSummary = {
   slotKey: string;
 };
 
+export type McpToolAccessPolicy = {
+  name: string;
+  restricted: boolean;
+  userIds: string[];
+  groupIds: string[];
+};
+
+export function decodeMcpToolAccessPolicy(value: unknown): McpToolAccessPolicy | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const policy = value as Record<string, unknown>;
+  const ids = (items: unknown): items is string[] => Array.isArray(items) && items.length <= 256 &&
+    items.every((id) => typeof id === "string" && id.length > 0 && id.length <= 128 && id.trim() === id);
+  if (typeof policy.name !== "string" || !policy.name.trim() || policy.name.length > 256 ||
+    typeof policy.restricted !== "boolean" || !ids(policy.userIds) || !ids(policy.groupIds)) return null;
+  return {
+    name: policy.name, restricted: policy.restricted,
+    userIds: [...new Set(policy.userIds)].sort(), groupIds: [...new Set(policy.groupIds)].sort()
+  };
+}
+
 export type AdminMcpServer = {
+  toolAccess?: McpToolAccessPolicy[];
   runtimeErrorCode?: McpRuntimeErrorCode | null;
   runtimeProblem?: "reauthorization_required" | "unavailable" | null;
   activation: AdminMcpActivationSummary | null;
@@ -357,6 +379,7 @@ export type AdminMcpCreateRequest = {
 };
 
 export type AdminMcpUpdateRequest = {
+  toolAccess?: McpToolAccessPolicy;
   tool?: { enabled: boolean; name: string };
   expectedUpdatedAt?: string;
   description?: string;

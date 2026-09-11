@@ -155,6 +155,7 @@ export type RunPreparationDeps = Readonly<{
     }): Promise<KnowledgeRunAdmissionPlan>;
   }>;
   mcp?: Readonly<{
+    filterTools: import("../mcp/toolAccess").McpToolAccessFilter;
     catalog?(userId: string): Promise<McpCapabilityCatalog>;
     materialize?(
       userId: string,
@@ -169,8 +170,9 @@ export type RunPreparationDeps = Readonly<{
       options?: Readonly<{ allowedServerIds?: readonly string[] }>
     ): Promise<McpRunPlanResult>;
     /** Project MCP admission is intentionally independent of the initiating
-     * user's grants, personal slots, and OAuth connections. */
-    prepareProject?(serverIds: readonly string[]): Promise<McpRunPlanResult>;
+     * user's server grants, personal slots, and OAuth connections. Tool restrictions
+     * additionally use the initiating user. */
+    prepareProject?(userId: string, serverIds: readonly string[]): Promise<McpRunPlanResult>;
     router?: McpSemanticRouter;
   }>;
   providers: Readonly<Record<string, ProviderAdapter>>;
@@ -1339,7 +1341,7 @@ export async function prepareRun(
   const mcpPlan = project
     ? projectMcpServerIds.length > 0 && deps.mcp
       ? deps.mcp.prepareProject
-        ? await deps.mcp.prepareProject(projectMcpServerIds)
+        ? await deps.mcp.prepareProject(input.userId, projectMcpServerIds)
         : process.env.NODE_ENV === "production"
           ? null
           : await deps.mcp.prepare(input.userId, { allowedServerIds: projectMcpServerIds })

@@ -1,3 +1,4 @@
+import { assertMcpToolAccess } from "../mcp/toolAccess";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
 import { assertChatPdfClaim, insertChatPdfAdmissions, storeChatPdfAdmissionResult } from "../uploads/chatPdfPersistence";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
@@ -1082,6 +1083,7 @@ export async function admitProjectRunWithClient(
       });
       await insertAcceptedMcpRunBindings(tx, {
         bindings: input.mcpBindings ? [...input.mcpBindings] : undefined,
+        tools: input.normalizedRequest.mcp?.tools ?? [],
         projectId: project.projectId,
         runId: run.id,
         userId: input.userId
@@ -1552,6 +1554,7 @@ export async function admitPreparingRunWithClient(
       });
       await insertAcceptedMcpRunBindings(tx, {
         bindings: input.mcpBindings ? [...input.mcpBindings] : undefined,
+        tools: input.normalizedRequest.mcp?.tools ?? [],
         runId: run.id,
         userId: input.userId
       });
@@ -2396,11 +2399,13 @@ async function assertCurrentMcpAdmission(
   tx: Prisma.TransactionClient,
   input: Readonly<{
     bindings: readonly McpRunPlanBinding[] | undefined;
+    tools: readonly import("../mcp/toolAccess").McpToolIdentity[];
     projectId?: string;
     runId: string;
     userId: string;
   }>
 ): Promise<void> {
+  await assertMcpToolAccess(tx, input.userId, input.tools);
   if (input.bindings === undefined) return;
   const persisted = await tx.mcpRunBinding.findMany({
     select: {
@@ -3147,6 +3152,7 @@ export async function finalizePreparingRunWithClient(
     });
     await assertCurrentMcpAdmission(tx, {
       bindings: input.mcpBindings,
+      tools: input.normalizedRequest.mcp?.tools ?? [],
       ...(input.project?.projectId ? { projectId: input.project.projectId } : {}),
       runId: input.runId,
       userId: input.userId

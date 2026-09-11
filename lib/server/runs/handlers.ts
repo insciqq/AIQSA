@@ -1,3 +1,4 @@
+import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { randomUUID } from "node:crypto";
 import { chatPdfFingerprint } from "../uploads/chatPdfAdmission";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
@@ -589,6 +590,10 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         return Response.json({ error: "attachment_not_available" }, { status: 409 });
       }
 
+      if (error instanceof McpToolAccessDeniedError) {
+        return Response.json({ error: error.code }, { status: 409 });
+      }
+
       if (isMcpRunPlanConflictError(error)) {
         return Response.json({ error: "mcp_not_ready" }, { status: 409 });
       }
@@ -769,6 +774,10 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
 
       if (isActiveLeafConflictError(error)) {
         return Response.json({ error: "active_leaf_changed" }, { status: 409 });
+      }
+
+      if (error instanceof McpToolAccessDeniedError) {
+        return Response.json({ error: error.code }, { status: 409 });
       }
 
       if (isMcpRunPlanConflictError(error)) {

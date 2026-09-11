@@ -1,3 +1,4 @@
+const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
 import { mcpAutoDiscoveryFailure, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import { WORKSPACE_BROWSER_GUIDANCE } from "../workspace/browserGuidance";
 import { createKnowledgeEvidenceAnswerSnapshotV1 } from "../knowledge/evidenceAnswerSnapshotV1";
@@ -6179,6 +6180,37 @@ describe("run recovery", () => {
     expect(terminal.state.run.status).toBe("complete");
   });
 
+  it.each([false, true])("rejects a pending MCP call after revocation using the persisted actor (Project: %s)", async (projectScope) => {
+    const callTool = vi.fn();
+    const egress = createRecoveryMemoryEgressRecorder();
+    const actors: string[] = [];
+    const filterTools: import("../mcp/toolAccess").McpToolAccessFilter = async (actorId) => { actors.push(actorId); return []; };
+    const prepare = vi.fn();
+    const prepareProject = vi.fn();
+    const project = projectRecoveryAuthority({ providerRequiresClientTools: true });
+    const harness = createHarness({
+      memoryEgress: egress.service,
+      mcp: { filterTools, prepare, prepareProject },
+      mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
+      projectAccessCurrent: true,
+      ...(projectScope ? { providerAdmission: { load: async () => ({ fingerprint: project.providerAdmissionFingerprint }) as ProviderAdmissionPlan } } : {}),
+      providers: { openai: { buildRequestPreview: () => ({}), async *stream(request) {
+        expect(request.tools?.some(({ name }) => name === recoveryToolName)).toBe(false);
+        return { ...providerResult, finalText: "Access revoked" };
+      } } }
+    });
+    const state = installCheckpointState(harness, { ...checkpointedRun({ calls: [persistedRecoveryCall()], phase: "tools_pending" }),
+      ...(projectScope ? { project } : {}) });
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(callTool).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(prepareProject).not.toHaveBeenCalled();
+    expect(actors.length).toBeGreaterThan(0);
+    expect(actors.every((id) => id === userId)).toBe(true);
+    expect(egress.blocked).toEqual(expect.arrayContaining([expect.objectContaining({ errorCode: "mcp_tool_access_denied" })]));
+    expect(state.calls()[0]).toMatchObject({ state: "error" });
+  });
+
   it("revalidates recovered Project MCP through shared authority only", async () => {
     const project = projectRecoveryAuthority({ providerRequiresClientTools: true });
     const snapshot = normalizedToolRequest().mcp!;
@@ -6208,7 +6240,7 @@ describe("run recovery", () => {
       fingerprint: project.providerAdmissionFingerprint
     }) as ProviderAdmissionPlan);
     const harness = createHarness({
-      mcp: { prepare, prepareProject },
+      mcp: { filterTools: allowMcpTools, prepare, prepareProject },
       mcpRuntime: {
         callTool: runtimeCall,
         ensureAcceptedGeneration: async () => true
@@ -6239,7 +6271,7 @@ describe("run recovery", () => {
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
     expect(prepare).not.toHaveBeenCalled();
-    expect(prepareProject).toHaveBeenCalledWith(["server-1"]);
+    expect(prepareProject).toHaveBeenCalledWith("user-1", ["server-1"]);
     expect(runtimeCall).toHaveBeenCalledOnce();
     expect(providerLoad).toHaveBeenCalledWith(expect.objectContaining({
       executionScope: "project",
@@ -6813,7 +6845,7 @@ describe("run recovery", () => {
       const callTool = vi.fn();
       const harness = createHarness({
         memoryEgress: egress.service,
-        mcp: { prepare: async () => ({ ok: false, code: "mcp_not_ready", issues: [{
+        mcp: { filterTools: allowMcpTools, prepare: async () => ({ ok: false, code: "mcp_not_ready", issues: [{
           errorCode: code, name: "Synthetic server", readiness: "unavailable"
         }] }) },
         mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
@@ -6936,7 +6968,7 @@ describe("run recovery", () => {
       unsupportedContentTypes: []
     }));
     const harness = createHarness({
-      mcp: { materialize, prepare, router: { route } },
+      mcp: { filterTools: allowMcpTools, materialize, prepare, router: { route } },
       mcpRuntime: {
         callTool: runtimeCall,
         ensureAcceptedGeneration: async () => true
@@ -7054,7 +7086,7 @@ describe("run recovery", () => {
     const discovery: McpDiscoveryState = { catalog, epochs: [], version: 2 };
     const harness = createHarness({
       mcp: {
-        materialize,
+        filterTools: allowMcpTools, materialize,
         prepare: async () => ({
           bindings: [],
           ok: true,
@@ -7175,7 +7207,7 @@ describe("run recovery", () => {
     const materialize = vi.fn(async () => ({ bindings: [], ok: true as const, snapshot }));
     const harness = createHarness({
       mcp: {
-        materialize,
+        filterTools: allowMcpTools, materialize,
         prepare: async () => ({ bindings: [], ok: true, snapshot }),
         router: { route }
       },
@@ -7268,7 +7300,7 @@ describe("run recovery", () => {
     const harness = createHarness({
       registry: recoveryRegistry,
       mcp: {
-        materialize,
+        filterTools: allowMcpTools, materialize,
         prepare: materialize,
         router: { route }
       },
