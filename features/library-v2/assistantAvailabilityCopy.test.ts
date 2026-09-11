@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { assistantUnavailabilityCopy } from "./assistantAvailabilityCopy";
 
 describe("assistantUnavailabilityCopy", () => {
+  it.each(["skills_access", "knowledge_access"] as const)("offers owner repair and neutral recipient copy for %s", (reason) => {
+    const availability = { ok: false as const, reason };
+    expect(assistantUnavailabilityCopy({ availability, owned: true })).toMatchObject({ action: { kind: "open-editor", label: "Edit setup" } });
+    expect(assistantUnavailabilityCopy({ availability, owned: false })).not.toHaveProperty("action");
+    expect(assistantUnavailabilityCopy({ availability, owned: false })?.explanation).toContain("not available to you");
+  });
   it("names an owner's failing MCP dependency and offers the actionable settings route", () => {
     expect(assistantUnavailabilityCopy({
       availability: {

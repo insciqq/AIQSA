@@ -351,7 +351,7 @@ describe("installation bootstrap", () => {
       data: expect.objectContaining({
         defaultFolderId: null,
         defaultProviderModelId: null,
-        defaultSearchPlan: { mode: "all_selected", optionIds: [] },
+        defaultSearchPlan: Prisma.DbNull,
         userId: USER_ID
       })
     });

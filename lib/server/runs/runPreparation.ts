@@ -14,7 +14,7 @@ import {
   type KnowledgePlan
 } from "../../contracts/knowledge";
 import { decodeMcpRunSelection } from "../../contracts/mcp";
-import { decodeSkillIds, SKILL_MAX_SELECTED } from "../../contracts/skills";
+import { decodeSkillIds, resolveEffectiveSkillIds, SKILL_MAX_SELECTED } from "../../contracts/skills";
 import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
 import type { AssistantRunControls } from "../../contracts/assistants";
 import { materializeAssistantRunParams } from "../assistants/runControlMaterialization";
@@ -1040,8 +1040,7 @@ export async function prepareRun(
     if (!decoded.ok) return failure(decoded.code, 400);
     manualSkillIds = decoded.ids;
   }
-  const effectiveSkillIds = [...(assistantRun?.skillIds ?? []), ...manualSkillIds]
-    .filter((skillId, index, values) => values.indexOf(skillId) === index);
+  const effectiveSkillIds = resolveEffectiveSkillIds(assistantRun?.skillIds ?? [], manualSkillIds);
   if (effectiveSkillIds.length > SKILL_MAX_SELECTED) {
     return failure("skills_invalid", 400);
   }

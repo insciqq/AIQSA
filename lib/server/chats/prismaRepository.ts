@@ -1,3 +1,4 @@
+import { chatTitleMetadataSelect, chatTitlePending } from "./titleMetadata";
 import { decodeThreadGeneratedImage } from "../../contracts/imageGeneration";
 import { projectGroundingDisplay } from "../runs/runOutputEvents";
 import { decodeSessionContextStatus, type SessionContextStatus } from "../../contracts/sessionStatus";
@@ -250,6 +251,7 @@ const lightweightMessageSelect = {
 } satisfies Prisma.MessageSelect;
 
 const chatSummarySelect = {
+  ...chatTitleMetadataSelect,
   continuationSource: { select: { id: true } },
   _count: {
     select: {
@@ -822,6 +824,7 @@ function serializeChatDetail(input: {
     pinned: chat.pinned,
     projectId: chat.projectId,
     title: chat.title,
+    ...(chatTitlePending(chat) ? { titlePending: true } : {}),
     updatedAt: chat.updatedAt,
     usageStats: summarizeChatUsageStats({
       activeLeafMessageId: chat.activeLeafMessageId,
@@ -865,6 +868,7 @@ function serializeChatSummary(
     pinned: chat.pinned,
     projectId: chat.projectId,
     title: chat.title,
+    ...(chatTitlePending(chat) ? { titlePending: true } : {}),
     updatedAt: chat.updatedAt,
     workspace: chatWorkspaceProjection({
       availability,
@@ -2407,7 +2411,7 @@ export function createPrismaChatRepository(
                 : {}),
               ...(folderId !== undefined ? { projectFolderId: folderId } : {}),
               ...(pinned !== undefined ? { pinned } : {}),
-              ...(title ? { title: title.trim().slice(0, 80) } : {}),
+              ...(title ? { title: title.trim().slice(0, 80), titleRevision: { increment: 1 } } : {}),
               ...(workspaceEnabled === undefined ? {} : { workspaceEnabled })
             },
             select: chatSummarySelect,
@@ -2506,7 +2510,7 @@ export function createPrismaChatRepository(
                   ? { defaultKnowledgePlan: knowledgeDefaultJson(defaultKnowledgePlan) }
                   : {}),
                 ...(pinned !== undefined ? { pinned } : {}),
-                ...(title ? { title: title.trim().slice(0, 80) } : {}),
+                ...(title ? { title: title.trim().slice(0, 80), titleRevision: { increment: 1 } } : {}),
                 ...(workspaceEnabled === undefined ? {} : { workspaceEnabled })
               },
               select: chatSummarySelect,

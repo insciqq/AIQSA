@@ -186,6 +186,7 @@ export type ThreadCitation = {
 };
 
 export type WorkspaceChatSummary = {
+  titlePending?: boolean;
   hasContinuationSource?: boolean;
   activeLeafMessageId: string | null;
   createdAt: string;
@@ -1016,7 +1017,7 @@ function decodeChatDefaultSelection(
 }
 
 function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWire | null {
-  if (!isRecord(value) || (value.hasContinuationSource !== undefined && typeof value.hasContinuationSource !== "boolean")) {
+  if (!isRecord(value) || (value.titlePending !== undefined && typeof value.titlePending !== "boolean") || (value.hasContinuationSource !== undefined && typeof value.hasContinuationSource !== "boolean")) {
     return null;
   }
 
@@ -1057,6 +1058,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     activeLeafMessageId,
     createdAt,
     ...(value.hasContinuationSource === true ? { hasContinuationSource: true } : {}),
+    ...(value.titlePending === true ? { titlePending: true } : {}),
     defaultKnowledgePlan,
     defaultModelId: defaultSelection.defaultModelId,
     defaultProvider: defaultSelection.defaultProvider,

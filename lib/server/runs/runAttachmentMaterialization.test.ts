@@ -123,6 +123,7 @@ describe("run attachment materialization", () => {
     const record = {
       ...attachment("direct", "pdf", bytes.length),
       checksum: createHash("sha256").update(bytes).digest("hex"),
+      metadata: { pdfPageCount: 2 },
       processingErrorCode,
       status
     };
@@ -148,7 +149,8 @@ describe("run attachment materialization", () => {
     expect(result).toEqual([expect.objectContaining({
       base64Data: bytes.toString("base64"),
       extractedText: null,
-      id: record.id
+      id: record.id,
+      metadata: { pdfPageCount: 2 }
     })]);
     expect(result[0]).not.toHaveProperty("checksum");
     expect(result[0]).not.toHaveProperty("processingErrorCode");

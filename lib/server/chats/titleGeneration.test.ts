@@ -1,3 +1,4 @@
+import { chatTitleWork } from "@/tests/support/chatTitles";
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
@@ -13,6 +14,7 @@ import { titleFromMessageContent } from "./titlePolicy";
 const context = {
   answerText: "TCP guarantees delivery; UDP trades that for latency.",
   chatId: "chat-1",
+  runId: "run-1",
   userId: "user-1",
   userMessageId: "message-1"
 };
@@ -27,7 +29,7 @@ function resolution(structuredOutput = true): SystemModelRoleResolution {
     role: {
       credentialSource: "default",
       modelConfiguration: { capabilities: { structuredOutput } },
-      snapshot: { providerFamily: "openai", providerModelId: "gpt-5.2" }
+      snapshot: chatTitleWork().providerSnapshot
     } as unknown as ProviderAdmissionRole
   };
 }
@@ -65,80 +67,34 @@ describe("buildChatTitleRequest", () => {
 });
 
 describe("createChatTitleGenerator", () => {
-  it("writes the generated title only while the heuristic title still stands and reports usage", async () => {
-    const applyTitle = vi.fn(async () => true);
-    const executeStructuredOutput = vi.fn(async (_role, _request, options) => {
-      options.onUsage?.({ inputTokens: 120, outputTokens: 8, reasoningTokens: 0, totalTokens: 128 });
-      return { title: "TCP versus UDP" };
-    });
+  it("admits bounded first-turn work with the exact destination without provider execution", async () => {
+    const enqueue = vi.fn<(work: import("./titleGeneration").ChatTitleWork) => Promise<void>>(async () => undefined);
     const generator = createChatTitleGenerator({
-      applyTitle,
-      executeStructuredOutput,
-      loadFirstTurn: async () => ({ expectedTitle: "Explain TCP vs UDP. Include a", questionText: "Explain TCP vs UDP." }),
-      resolveSystemModel: async () => resolution()
+      enqueue,
+      loadFirstTurn: async () => ({ expectedTitle: "Explain TCP versus UDP", questionText: "Q".repeat(4_000), titleRevision: 3 }),
+      resolveTitleModel: async () => resolution()
     });
-    const outcome = await generator.generate(context);
-    expect(outcome).toEqual({
-      status: "generated",
-      title: "TCP versus UDP",
-      usage: { modelId: "gpt-5.2", provider: "openai", usage: { inputTokens: 120, outputTokens: 8, reasoningTokens: 0, totalTokens: 128 } }
+    await generator.schedule({ ...context, answerText: "A".repeat(4_000) });
+    expect(enqueue).toHaveBeenCalledOnce();
+    const work = enqueue.mock.calls[0]?.[0];
+    expect(work).toMatchObject({ chatId: context.chatId, runId: context.runId, userId: context.userId,
+      expectedTitle: "Explain TCP versus UDP", titleRevision: 3, reasoningEffort: "low",
+      providerSnapshot: { credentialId: "title-credential", credentialVersionId: "title-credential-version", providerModelId: "title-model" }
     });
-    expect(applyTitle).toHaveBeenCalledWith({
-      chatId: "chat-1",
-      expectedTitle: "Explain TCP vs UDP. Include a",
-      title: "TCP versus UDP",
-      userId: "user-1"
-    });
-    expect(executeStructuredOutput.mock.calls[0]?.[2]).toMatchObject({ timeoutMs: 8_000 });
+    expect(work?.questionText.length).toBeLessThanOrEqual(1_201);
+    expect(work?.answerText.length).toBeLessThanOrEqual(1_601);
   });
 
-  it("skips later turns, customized titles and installations without a System Model", async () => {
-    const executeStructuredOutput = vi.fn();
-    const base = {
-      applyTitle: vi.fn(async () => true),
-      executeStructuredOutput,
-      resolveSystemModel: async () => resolution()
-    };
-    expect(await createChatTitleGenerator({ ...base, loadFirstTurn: async () => null }).generate(context))
-      .toEqual({ reason: "not_first_turn", status: "skipped" });
-    expect(await createChatTitleGenerator({ ...base, loadFirstTurn: async () => "customized" }).generate(context))
-      .toEqual({ reason: "title_customized", status: "skipped" });
-    const turn = { expectedTitle: "Hello", questionText: "Hello" };
-    expect(await createChatTitleGenerator({
-      ...base,
-      loadFirstTurn: async () => turn,
-      resolveSystemModel: async () => ({ code: "system_model_absent", ok: false })
-    }).generate(context)).toEqual({ reason: "system_model_absent", status: "skipped" });
-    expect(await createChatTitleGenerator({
-      ...base,
-      loadFirstTurn: async () => turn,
-      resolveSystemModel: async () => resolution(false)
-    }).generate(context)).toEqual({ reason: "system_model_unsupported", status: "skipped" });
-    expect(executeStructuredOutput).not.toHaveBeenCalled();
-  });
-
-  it("never throws: provider failures report the usage seen so far and a lost race skips", async () => {
-    const failing = createChatTitleGenerator({
-      applyTitle: vi.fn(async () => true),
-      executeStructuredOutput: async (_role, _request, options) => {
-        options.onUsage?.({ inputTokens: 50, outputTokens: 0, reasoningTokens: 0, totalTokens: 50 });
-        throw new Error("provider_unavailable");
-      },
-      loadFirstTurn: async () => ({ expectedTitle: "Hello", questionText: "Hello" }),
-      resolveSystemModel: async () => resolution()
+  it.each(["later", "customized", "absent", "unsupported"] as const)("does not enqueue %s work", async (kind) => {
+    const enqueue = vi.fn();
+    const generator = createChatTitleGenerator({
+      enqueue,
+      loadFirstTurn: async () => kind === "later" ? null : kind === "customized" ? "customized" :
+        { expectedTitle: "Hello", questionText: "Hello", titleRevision: 0 },
+      resolveTitleModel: async () => kind === "absent" ? { code: "system_model_absent", ok: false } : resolution(kind !== "unsupported")
     });
-    expect(await failing.generate(context)).toEqual({
-      status: "failed",
-      usage: { modelId: "gpt-5.2", provider: "openai", usage: { inputTokens: 50, outputTokens: 0, reasoningTokens: 0, totalTokens: 50 } }
-    });
-
-    const renamedMeanwhile = createChatTitleGenerator({
-      applyTitle: vi.fn(async () => false),
-      executeStructuredOutput: async () => ({ title: "Greeting" }),
-      loadFirstTurn: async () => ({ expectedTitle: "Hello", questionText: "Hello" }),
-      resolveSystemModel: async () => resolution()
-    });
-    expect(await renamedMeanwhile.generate(context)).toEqual({ reason: "title_customized", status: "skipped" });
+    await generator.schedule(context);
+    expect(enqueue).not.toHaveBeenCalled();
   });
 });
 
@@ -151,11 +107,12 @@ describe("loadChatTitleFirstTurn", () => {
   }
 
   it("returns the question and the heuristic title for a two-message personal chat", async () => {
-    const chat = { _count: { messages: 2 }, messages: [{ content }], title: titleFromMessageContent(content) };
+    const chat = { _count: { messages: 2 }, messages: [{ content }], title: titleFromMessageContent(content), titleRevision: 0 };
     const db = client(chat);
     await expect(loadChatTitleFirstTurn(db, context)).resolves.toEqual({
       expectedTitle: titleFromMessageContent(content),
-      questionText: "Explain TCP vs UDP with a table and a code sample please"
+      questionText: "Explain TCP vs UDP with a table and a code sample please",
+      titleRevision: 0
     });
     expect(db.chat.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ id: "chat-1", projectId: null, userId: "user-1" })
@@ -163,6 +120,9 @@ describe("loadChatTitleFirstTurn", () => {
   });
 
   it("reports customized titles and ignores later turns or missing chats", async () => {
+    await expect(loadChatTitleFirstTurn(
+      client({ _count: { messages: 2 }, messages: [{ content }], title: titleFromMessageContent(content), titleRevision: 1 }), context
+    )).resolves.toBe("customized");
     await expect(loadChatTitleFirstTurn(
       client({ _count: { messages: 2 }, messages: [{ content }], title: "My own name" }),
       context

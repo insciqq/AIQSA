@@ -176,68 +176,8 @@ import { workspaceActivityEvent } from "../workspace/activityProjection";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import { workspaceToolNameFromNamespaced } from "../workspace/toolCatalog";
 
-const globalForRuns = globalThis as unknown as {
-  __aiqsaActiveRunControllers?: Map<string, AbortController>;
-  __aiqsaRunSettlements?: Map<string, Promise<void>>;
-};
-const activeRunControllers = globalForRuns.__aiqsaActiveRunControllers ?? new Map<string, AbortController>();
-globalForRuns.__aiqsaActiveRunControllers = activeRunControllers;
-// Shared with the cancel route's bundle for the same reason as the controllers.
-const runSettlements = globalForRuns.__aiqsaRunSettlements ?? new Map<string, Promise<void>>();
-globalForRuns.__aiqsaRunSettlements = runSettlements;
-
-export type ActiveRunControllerRegistry = Readonly<{
-  abort(runId: string): boolean;
-  has(runId: string): boolean;
-  ids(): readonly string[];
-  register(runId: string): Readonly<{
-    release(): void;
-    signal: AbortSignal;
-  }> | null;
-  /**
-   * Resolves once the run executing in this process finished its terminal
-   * handling (tool cancellation, Workspace settlement). Null when no such run
-   * is executing here.
-   */
-  settled(runId: string): Promise<void> | null;
-}>;
-
-export const activeRunControllerRegistry: ActiveRunControllerRegistry = Object.freeze({
-  abort(runId: string): boolean {
-    const controller = activeRunControllers.get(runId);
-    if (!controller) {
-      return false;
-    }
-
-    controller.abort();
-    if (activeRunControllers.get(runId) === controller) {
-      activeRunControllers.delete(runId);
-    }
-    return true;
-  },
-  has(runId: string): boolean {
-    return activeRunControllers.has(runId);
-  },
-  ids(): readonly string[] {
-    return [...activeRunControllers.keys()];
-  },
-  settled(runId: string): Promise<void> | null {
-    return runSettlements.get(runId) ?? null;
-  },
-  register(runId: string) {
-    if (activeRunControllers.has(runId)) return null;
-    const controller = new AbortController();
-    activeRunControllers.set(runId, controller);
-    return Object.freeze({
-      release() {
-        if (activeRunControllers.get(runId) === controller) {
-          activeRunControllers.delete(runId);
-        }
-      },
-      signal: controller.signal
-    });
-  }
-});
+import { activeRunControllers, runSettlements } from "./activeRunControllerRegistry";
+export { activeRunControllerRegistry, type ActiveRunControllerRegistry } from "./activeRunControllerRegistry";
 
 export type RunExecutionRepository = Pick<
   RunRepository,
@@ -393,6 +333,7 @@ function serializeChatUpdate(
       pinned: update.chat.pinned,
       ...(update.chat.projectId !== undefined ? { projectId: update.chat.projectId } : {}),
       title: update.chat.title,
+      ...(update.chat.titlePending ? { titlePending: true } : {}),
       updatedAt: iso(update.chat.updatedAt),
       usageStats: update.chat.usageStats ?? null,
       workspace: update.chat.workspace ?? UNAVAILABLE_CHAT_WORKSPACE_STATE
@@ -2730,20 +2671,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         } else {
           providerResult = await streamProviderRequest(providerRequest);
         }
-        // First-turn chat title (UX audit 2026-09-02 #4): the System Model
-        // names the chat before the run settles so its usage lands in this
-        // run's own accounting; any failure keeps the heuristic title.
-        if (input.chatTitleGenerator && providerResult.finalText) {
-          const titleOutcome = await input.chatTitleGenerator.generate({
-            answerText: providerResult.finalText,
-            chatId: normalizedRequest.chatId,
-            userId: input.userId,
-            userMessageId: input.created.userMessageId
-          }, { signal }).catch(() => null);
-          if (titleOutcome && titleOutcome.status !== "skipped" && titleOutcome.usage) {
-            rememberReportedUsage(titleOutcome.usage.provider, titleOutcome.usage.modelId, titleOutcome.usage.usage);
-          }
-        }
         const attributedProviderResult = {
           ...providerResult,
           usage: sumTokenUsage(reportedUsageAttributions.map((attribution) => attribution.usage)),
@@ -2773,6 +2700,19 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           throwIfAborted(signal);
           await assertProjectRunAccessCurrent(true);
         }
+        // Freeze first-turn eligibility before completion allows another send.
+        // This writes a bounded durable handoff; the title provider runs only
+        // in the application worker after successful terminal persistence.
+        if (input.chatTitleGenerator && providerResult.finalText) {
+          await input.chatTitleGenerator.schedule({
+            answerText: providerResult.finalText,
+            chatId: normalizedRequest.chatId,
+            runId,
+            userId: input.userId,
+            userMessageId: input.created.userMessageId
+          }).catch(() => undefined);
+        }
+        throwIfAborted(signal);
         const contextStatusEvent = {
           type: "artifact", data: { artifactType: "context_status", payload: measureSessionContext({
             answerText: providerResult.finalText,

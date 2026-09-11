@@ -17,6 +17,31 @@ async function settle(): Promise<void> {
 }
 
 describe("capability check runner", () => {
+  it.each([3, 4])("projects %i reused receipts without repeating their checks", async (count) => {
+    const ids = ["a", "b", "c", "d"];
+    const check = vi.fn(async (request: CapabilityCheckRequest) => {
+      request.onResult?.({ providerModelId: request.providerModelId, state: "saved", checks: { modelAccess: "verified" } });
+      return "stored" as const;
+    });
+    const runner = createCapabilityCheckRunner({ check });
+    const run = runner.start({ connectionId: "connection", credentialId: "key", modelIds: ids, reason: "setup",
+      reusedResults: ids.slice(0, count).map((providerModelId) => ({ providerModelId, state: "saved", checks: { modelAccess: "verified" } })) });
+    await run.settled;
+    expect(check).toHaveBeenCalledTimes(4 - count);
+    expect(runner.get(run.id)).toMatchObject({ done: 4, total: 4, state: "completed" });
+    expect(runner.get(run.id)?.results).toHaveLength(4);
+    expect(runner.get(run.id)?.results?.every((result) => result.state === "saved")).toBe(true);
+  });
+
+  it("does not turn an unsaved or foreign receipt into reused proof", async () => {
+    const check = vi.fn(async () => "failed" as const);
+    const runner = createCapabilityCheckRunner({ check });
+    const run = runner.start({ connectionId: "connection", credentialId: "key", modelIds: ["a"], reason: "setup",
+      reusedResults: [{ providerModelId: "a", state: "save_failed" }, { providerModelId: "foreign", state: "saved" }] });
+    await run.settled;
+    expect(check).toHaveBeenCalledOnce();
+    expect(runner.get(run.id)?.results).toEqual([]);
+  });
   it("keeps a selected catalog batch independent of older failures and copies its retry identities", async () => {
     const runner = createCapabilityCheckRunner({ check: async ({ providerModelId }) => providerModelId === "old" ? "failed" : "stored" });
     await runner.start({ connectionId: "connection", credentialId: "key", modelIds: ["old"], reason: "requested" }).settled;

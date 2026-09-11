@@ -213,10 +213,7 @@ export type AssistantLibraryControllerInput = {
   openMcpSettings(): void;
   retryCatalog(): void;
   retryKnowledge(): void;
-  retrySkills(): void;
   setShellNotice(notice: { kind: "error"; text: string }): void;
-  skillDataError: string | null;
-  skillDataState: "error" | "loading" | "ready";
   skills: import("@/lib/contracts/skills").SkillSummary[];
 };
 
@@ -347,6 +344,11 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       fieldErrors: null,
       expectedVersion: null,
       publications: null,
+      selectedSkills: draft.skillIds.map((id) => {
+        const skill = useComposerControlStore.getState().selectedSkills.find((entry) => entry.id === id)
+          ?? input.skills.find((entry) => entry.id === id);
+        return { id, name: skill?.name ?? "Selected Skill" };
+      }),
       saving: false
     };
     store().patch({
@@ -359,7 +361,6 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
     });
     void refreshList();
     void refreshMcpOptions();
-    input.retrySkills();
   }
 
   /** `Create from current setup` prefills the editor from the manual controls. */
@@ -395,6 +396,9 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       fieldErrors: null,
       expectedVersion: detail.version ?? null,
       publications: detail.publications ?? null,
+      selectedSkills: draft.skillIds.map((id) => ({
+        id, name: detail.skills?.find((skill) => skill.id === id)?.name ?? "Unavailable Skill"
+      })),
       saving: false
     };
   }
@@ -402,7 +406,6 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
   async function openAssistantEditor(assistantId: string) {
     const requestId = beginBusyOperation();
     if (requestId === null) return;
-    input.retrySkills();
     const result = await fetchAssistantDetail(assistantId);
     if (!ownsBusyOperation(requestId)) return;
     if (!result.ok || !result.data.owned) {
@@ -816,6 +819,10 @@ export function buildAssistantLibraryView(
             }
             current.patchEditor({
               draft,
+              selectedSkills: draft.skillIds.map((id) => ({ id, name:
+                input.skills.find((skill) => skill.id === id)?.name ??
+                current.editor!.selectedSkills.find((skill) => skill.id === id)?.name ?? "Selected Skill"
+              })),
               error: null,
               fieldErrors: null
             });
@@ -867,11 +874,8 @@ export function buildAssistantLibraryView(
             mcpServers: editorMcpOptions,
             models: editorModels,
             onRetryKnowledge: input.retryKnowledge,
-            onRetrySkills: input.retrySkills,
             searchOptions,
-            skillDataError: input.skillDataError,
-            skillDataState: input.skillDataState,
-            skills: input.skills
+            selectedSkills: editor.selectedSkills
           },
           publications: editor.publications,
           publishableGroups: snapshot.data?.publishableGroups ?? [],

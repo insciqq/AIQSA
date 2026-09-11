@@ -20,7 +20,7 @@ import type { AdminConfirmationController } from "@/components/admin/useAdminCon
 import { UiV2Button, type UiV2MenuAction } from "@/components/ui-v2";
 import { useState, type ReactNode } from "react";
 import { ImageParameterFields } from "@/components/admin/providers/models/ImageParameterFields";
-import type { AdminImageModelCandidate } from "@/lib/contracts/adminSystemModelPolicy";
+import { initialChatTitleReasoningEffort, type AdminImageModelCandidate } from "@/lib/contracts/adminSystemModelPolicy";
 import type { ImageGenerationParameters } from "@/lib/contracts/imageGeneration";
 
 const rowGrid = "grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-3 px-4 py-3 xl:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_8.5rem_2.5rem] xl:items-start xl:gap-4";
@@ -72,8 +72,7 @@ function RoleRow({
 }
 
 /**
- * System roles (PRD 5.5): one row per internal role. Rows 1–3 apply on
- * selection with Undo; the Knowledge processing group needs Apply.
+ * System roles: independent assignments apply on selection with Undo; the Knowledge processing group needs Apply.
  */
 export function AdminSystemRolesTable({
   controller,
@@ -91,6 +90,10 @@ export function AdminSystemRolesTable({
   const memoryUndo = {
     providerModelId: policy.systemModel?.id ?? null,
     reasoningEffort: policy.reasoningEffort
+  };
+  const titleUndo = {
+    chatTitleProviderModelId: policy.chatTitleModel?.id ?? null,
+    chatTitleReasoningEffort: policy.chatTitleReasoningEffort
   };
   const pdfUndo = {
     chatPdfProviderModelId: policy.chatPdfModel?.id ?? null,
@@ -110,7 +113,7 @@ export function AdminSystemRolesTable({
       </div>
 
       <RoleRow
-        description="Handles Memory, chat titles, MCP routing and structured helpers. Needs strict JSON output and forced tool calls."
+        description="Handles Memory, MCP routing and structured helpers. Needs strict JSON output and forced tool calls."
         menu={[{
           disabled: !policy.systemModel || busy,
           label: "Clear assignment",
@@ -144,6 +147,48 @@ export function AdminSystemRolesTable({
                 memoryUndo
               )}
               value={policy.reasoningEffort}
+            />
+          </div>
+        </details>
+      </RoleRow>
+
+      <RoleRow
+        description="Names new chats after the first answer. Needs strict JSON output. When unassigned, uses the first message."
+        menu={[{
+          disabled: !policy.chatTitleModel || busy,
+          label: "Clear assignment",
+          onSelect: () => void controller.assign({ chatTitleProviderModelId: null, chatTitleReasoningEffort: null }, titleUndo)
+        }]}
+        status={roleStatus(policy.chatTitleModel)}
+        testId="admin-role-chat-titles"
+        title="Chat titles"
+      >
+        <AdminRolePicker
+          busy={busy}
+          checkingId={checkingId}
+          items={generativeRoleItems(catalog, "chat_titles")}
+          label="Chat titles deployment"
+          onCheck={(id) => controller.checkAndAssign("chat_titles", id)}
+          onSelect={(id) => void controller.assign({
+            chatTitleProviderModelId: id,
+            chatTitleReasoningEffort: initialChatTitleReasoningEffort(catalog.titleCandidates.find((candidate) => candidate.id === id))
+          }, titleUndo)}
+          roleName="Chat titles"
+          selectedId={policy.chatTitleModel?.id ?? null}
+          selectedLabel={policy.chatTitleModel ? label(policy.chatTitleModel) : null}
+          testId="admin-chat-titles-picker"
+        />
+        <details>
+          <summary className="cursor-pointer text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">Advanced</summary>
+          <div className="pt-2">
+            <ReasoningSelect
+              disabled={busy}
+              label="Chat titles reasoning"
+              model={policy.chatTitleModel}
+              onChange={(effort) => void controller.assign({
+                chatTitleProviderModelId: policy.chatTitleModel?.id ?? null, chatTitleReasoningEffort: effort
+              }, titleUndo)}
+              value={policy.chatTitleReasoningEffort}
             />
           </div>
         </details>

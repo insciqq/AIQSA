@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeAdminSystemModelPolicyResponse } from "./adminSystemModelPolicy";
+import { decodeAdminSystemModelPolicyResponse, initialChatTitleReasoningEffort } from "./adminSystemModelPolicy";
 
 const response = {
   systemModelPolicy: {
@@ -13,13 +13,13 @@ const response = {
       reasoningEfforts: ["low", "medium", "high", "xhigh"],
       structuredOutput: "verified"
     }],
-    documentCandidates: [],
+    titleCandidates: [], documentCandidates: [],
     imageCandidates: [],
     verificationCandidates: [],
-    ineligible: { direct_pdf: [], memory: [], vision: [] },
+    ineligible: { chat_titles: [], direct_pdf: [], memory: [], vision: [] },
     rerankerCandidates: [],
     policy: {
-      chatPdfModel: null,
+      chatTitleModel: null, chatTitleReasoningEffort: null, chatPdfModel: null,
       chatPdfReasoningEffort: null,
       imageModel: null,
       imageParameters: {},
@@ -87,7 +87,7 @@ describe("administrator system model policy contract", () => {
     const withReasons = {
       systemModelPolicy: {
         ...response.systemModelPolicy,
-        ineligible: {
+        ineligible: { chat_titles: [],
           direct_pdf: [{ ...ineligibleModel, reason: "adapter_unsupported" }],
           memory: [{ ...ineligibleModel, reason: "not_checked" }],
           vision: [{ ...ineligibleModel, reason: "no_default_credential" }]
@@ -100,17 +100,29 @@ describe("administrator system model policy contract", () => {
     expect(decodeAdminSystemModelPolicyResponse({ systemModelPolicy: legacyCatalog }))
       .toEqual(response);
     expect(decodeAdminSystemModelPolicyResponse({
-      systemModelPolicy: { ...legacyCatalog, ineligible: { memory: [] } }
+      systemModelPolicy: { ...legacyCatalog, ineligible: { chat_titles: [], memory: [] } }
     })).toEqual(response);
 
     expect(decodeAdminSystemModelPolicyResponse({
       systemModelPolicy: {
         ...response.systemModelPolicy,
-        ineligible: { memory: [{ ...ineligibleModel, reason: "unknown" }] }
+        ineligible: { chat_titles: [], memory: [{ ...ineligibleModel, reason: "unknown" }] }
       }
     })).toBeNull();
     expect(decodeAdminSystemModelPolicyResponse({
       systemModelPolicy: { ...response.systemModelPolicy, ineligible: [] }
     })).toBeNull();
   });
+});
+
+it("accepts title-only structured candidates and chooses only an advertised reasoning disable", () => {
+  const model = { ...response.systemModelPolicy.candidates[0]!, forcedToolCall: "unsupported" };
+  const catalog = { ...response.systemModelPolicy, titleCandidates: [model], policy: {
+    ...response.systemModelPolicy.policy, chatTitleModel: { ...model, available: true }, chatTitleReasoningEffort: "low"
+  } };
+  expect(decodeAdminSystemModelPolicyResponse({ systemModelPolicy: catalog })?.systemModelPolicy.titleCandidates).toEqual([model]);
+  expect(decodeAdminSystemModelPolicyResponse({ systemModelPolicy: { ...catalog, titleCandidates: [{ ...model, structuredOutput: "not_verified" }] } })).toBeNull();
+  expect(initialChatTitleReasoningEffort({ reasoningEfforts: ["none", "low"] })).toBe("none");
+  expect(initialChatTitleReasoningEffort({ reasoningEfforts: ["low", "high"] })).toBeNull();
+  expect(initialChatTitleReasoningEffort({ reasoningEfforts: [] })).toBeNull();
 });

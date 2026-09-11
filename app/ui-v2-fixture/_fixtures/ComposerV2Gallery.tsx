@@ -29,6 +29,9 @@ export type ComposerGalleryState =
   | "assistant-knowledge"
   | "add"
   | "attachments"
+  | "capabilities"
+  | "workspace-running"
+  | "workspace-failed"
   | "default"
   | "error"
   | "model"
@@ -367,6 +370,8 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
         mcpServers: []
       }
     : composerGalleryConfig);
+  const [workspaceEnabled, setWorkspaceEnabled] = useState(true);
+  const allCapabilities = ["capabilities", "workspace-running", "workspace-failed"].includes(state);
   const [draft, setDraft] = useState(state === "default" ? "Подготовь краткое резюме" : "");
   const [selectedModel, setSelectedModel] = useState({ modelId: "gpt-5.2", provider: "openai-work" });
   const [searchIds, setSearchIds] = useState<string[]>(state === "zero" ? [] : ["web-primary"]);
@@ -559,6 +564,10 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
                   };
                 })
               ])}
+              workspace={allCapabilities ? { available: true, busy: false, enabled: workspaceEnabled,
+                internetEnabled: false, loading: false, onToggle: setWorkspaceEnabled,
+                sessionState: state === "workspace-failed" ? "failed" : "ready", commandRunning: state === "workspace-running" } : undefined}
+              selectedSkillIds={allCapabilities ? ["one", "two", "three"] : []}
               selectedAssistant={assistant}
               knowledgePlanSource={knowledgePlanSource}
               selectedKnowledgeSelection={knowledgeSelection}

@@ -10,6 +10,27 @@ function deferred() {
 }
 
 describe("run recovery scheduler", () => {
+  it("keeps run and export recovery independent of a held title and drains all workers on shutdown", async () => {
+    const held = deferred();
+    let titleSignal: AbortSignal | undefined;
+    const titles = vi.fn(async (signal: AbortSignal) => { titleSignal = signal; await held.promise; });
+    const reconcile = vi.fn(async () => undefined);
+    const exports = vi.fn(async () => undefined);
+    const scheduler = new RunRecoveryScheduler({ reconcile, recoverChatTitles: titles, recoverWorkspaceExports: exports });
+    try {
+      await scheduler.reconcileNow();
+      await vi.waitFor(() => expect(titles).toHaveBeenCalledOnce());
+      await scheduler.reconcileNow();
+      expect(reconcile).toHaveBeenCalledTimes(2);
+      expect(exports).toHaveBeenCalledTimes(2);
+      expect(titles).toHaveBeenCalledOnce();
+      const stopping = scheduler.stop();
+      expect(titleSignal?.aborted).toBe(true);
+      held.resolve();
+      await stopping;
+    } finally { held.resolve(); await scheduler.stop(); }
+  });
+
   it("keeps timer-driven run recovery progressing and cancels the single held export on shutdown", async () => {
     vi.useFakeTimers();
     const held = deferred();

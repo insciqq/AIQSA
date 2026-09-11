@@ -159,7 +159,7 @@ function availabilityFor(
   content: AssistantContentRow,
   searchPlanOptionIds: readonly string[],
   view: RunnerCatalogView,
-  options: { owned: boolean }
+  options: { owned: boolean; dependencies?: AssistantAccessEntry["dependencyAvailability"] }
 ): AssistantAvailability {
   const runControls = decodeAssistantRunControls(content.runControls ?? {});
   const searchPlan = decodeSearchPlan(content.searchPlan);
@@ -179,7 +179,11 @@ function availabilityFor(
     view,
     { mcpRunnability: "startable" }
   );
-  if (!failure) return { ok: true };
+  if (!failure) {
+    if (content.skillIds.length > 0 && options.dependencies?.skills !== true) return { ok: false, reason: "skills_access" };
+    if (content.knowledgeSelection.mode !== "none" && options.dependencies?.knowledge !== true) return { ok: false, reason: "knowledge_access" };
+    return { ok: true };
+  }
 
   const dependencies = options.owned
     ? ownerAvailabilityDependencies(content, failure, view)
@@ -249,7 +253,7 @@ export function buildAssistantSummary(
     entry.content,
     decoded.searchPlan.optionIds,
     view,
-    { owned: entry.owned }
+    { owned: entry.owned, dependencies: entry.dependencyAvailability }
   );
   return {
     archived: entry.archived,
@@ -317,7 +321,7 @@ function definitionContent(
             view.entitledSearchOptionIds.has(optionId)
           )
         },
-    skillIds: [...content.skillIds],
+    skillIds: options.owned ? [...content.skillIds] : (content.skillSummaries ?? []).map(({ id }) => id),
     starterPrompts: [...content.starterPrompts],
     systemPrompt: content.systemPrompt
   };
@@ -337,7 +341,7 @@ function detailFromEntry(
       entry.content,
       decoded.searchPlan.optionIds,
       view,
-      { owned: entry.owned }
+      { owned: entry.owned, dependencies: entry.dependencyAvailability }
     ),
     id: entry.id,
     owned: entry.owned,
@@ -355,7 +359,7 @@ function detailFromEntry(
         }
       : {}),
     content: definitionContent(entry.content, view, { owned: entry.owned }),
-    ...(skillSummaries.length === entry.content.skillIds.length
+    ...(!entry.owned || skillSummaries.length === entry.content.skillIds.length
       ? { skills: skillSummaries.map((skill) => ({ ...skill })) }
       : {}),
     ...(entry.owned ? { version: entry.version } : {})

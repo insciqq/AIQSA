@@ -1,3 +1,5 @@
+import { MEMORY_DEFAULTS_MIGRATION, memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql } from "./memory-defaults-adoption";
+import { CHAT_TITLE_ROLE_MIGRATION, chatTitleRoleAdoptionFixtureSql, chatTitleRoleAdoptionProofSql, chatTitleRoleClearProofSql } from "./system-model-roles-adoption";
 import { GEMINI_GROUNDING_MIGRATION, geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql } from "./gemini-grounding-adoption";
 import { MEMORY_CONFIGURATION_WAIT_MIGRATION, memoryConfigurationAdoptionFixtureSql, memoryConfigurationAdoptionProofSql } from "./memory-configuration-adoption";
 import { CHAT_PDF_ASSIGNMENT_MIGRATION, chatPdfAssignmentAdoptionFixtureSql, SYSTEM_MODEL_ROLES_MIGRATION, systemModelRolesAdoptionFixtureSql, systemModelRolesAdoptionProofSql } from "./system-model-roles-adoption";
@@ -556,11 +558,23 @@ function runBootstrapProof(database: string): void {
   };
   const first = app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.match(first, /installation bootstrap created:/u);
+  assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserSettings" s JOIN "User" u ON u.id = s."userId"
+    WHERE u.email = 'baseline-admin@example.invalid' AND s."defaultSearchPlan" IS NULL;`), "1",
+    "initial administrator inherits organization Search");
+  psqlScalar(database, `UPDATE "UserSettings" SET "defaultSearchPlan" = '{"mode":"all_selected","optionIds":[]}';`);
   assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "8192");
   psqlScalar(database, `UPDATE "ModelPolicy" SET "mcpAutoDiscoveryMaxOutputTokens" = 4096 WHERE id = 'installation';`);
+  assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" s JOIN "User" u ON u.id = s."userId"
+    WHERE u.email = 'baseline-admin@example.invalid' AND s."useMemoryFacts" AND s."referenceChatHistory"
+      AND s."learnAutomatically" AND s."synthesisEnabled" AND s."decayEnabled"
+      AND s."synthesisEnabledAt" IS NOT NULL AND s."synthesisPolicyVersion" = 'memory-synthesis-policy-v3'
+      AND s."decayPolicyVersion" = 'memory-decay-v1' AND s."lastSynthesisAt" IS NULL;`), "1", "initial administrator Memory defaults");
+  psqlScalar(database, `UPDATE "UserMemorySettings" SET "synthesisEnabled" = false, "decayEnabled" = false;`);
   const freshDigest = bootstrapFoundationDigest(database);
   const repeat = app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.match(repeat, /installation bootstrap already_adopted:/u);
+  assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" WHERE "synthesisEnabled" OR "decayEnabled";`), "0",
+    "bootstrap adoption must preserve later Memory opt-outs");
   assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "4096", "bootstrap must retain the operator's MCP output allowance");
   assert.equal(
     bootstrapFoundationDigest(database),
@@ -7277,7 +7291,7 @@ function runMemoryVNextRetrievalCutoverMigrationProof(
 }
 
 function runForwardAdoptionProof(
-  database: string, committed: readonly string[], migration: string, fixture: string, proof: string
+  database: string, committed: readonly string[], migration: string, fixture: string, proof: string, repeatProof?: string
 ): void {
   const index = committed.indexOf(migration);
   assert.ok(index > 0, "forward adoption migration is missing");
@@ -7302,6 +7316,7 @@ function runForwardAdoptionProof(
     app(database, ["npx", "prisma", "migrate", "deploy"]);
     psqlScalar(database, proof);
     app(database, ["npx", "prisma", "migrate", "deploy"]);
+    if (repeatProof) psqlScalar(database, repeatProof);
     assertDeployedMigrations(database, committed);
   } finally {
     app(database, ["node", "-e", "require('node:fs').rmSync(process.argv[1], { recursive: true, force: true })", probe]);
@@ -7323,6 +7338,10 @@ function main(
   app(databases[0]!, ["npx", "prisma", "generate"]);
   for (const database of databases) {
     deployAndVerify(database, migrations, shadowDatabase);
+    psqlScalar(database, `DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM "SystemModelPolicy" WHERE "chatTitleProviderModelId" IS NOT NULL OR "chatTitleReasoningEffort" IS NOT NULL)
+        THEN RAISE EXCEPTION 'fresh_title_role_not_unassigned'; END IF;
+    END $$;`);
   }
   const catalogDigests = databases.length > 1
     ? databases.map(schemaCatalogDigest)
@@ -7366,6 +7385,10 @@ function main(
       THEN RAISE EXCEPTION 'Workspace default migration changed a saved administrator policy'; END IF;
     END $$;`);
 
+  runForwardAdoptionProof(shadowDatabase, migrations, CHAT_TITLE_ROLE_MIGRATION,
+    chatTitleRoleAdoptionFixtureSql(), chatTitleRoleAdoptionProofSql(), chatTitleRoleClearProofSql());
+  runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_DEFAULTS_MIGRATION,
+    memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

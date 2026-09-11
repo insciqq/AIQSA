@@ -6,6 +6,15 @@ const input = { attempts: 1, capability: "directPdf" as const,
   adapterKind: "openrouter_chat_completions" as const, accessVerified: true, timedOut: false };
 
 describe("bounded capability failure receipts", () => {
+  it("limits an exact Anthropic forced-call rejection to that capability", () => {
+    const error = Object.assign(new Error("provider_capability_unsupported"), {
+      httpStatus: 400, unsupportedCapability: "forcedToolCall"
+    });
+    const anthropic = { ...input, adapterKind: "anthropic_messages" as const };
+    expect(capabilityFailureAttempt(error, { ...anthropic, capability: "forcedToolCall" }))
+      .toMatchObject({ status: "unsupported", reason: "route_unsupported", httpStatus: 400 });
+    expect(capabilityFailureAttempt(error, { ...anthropic, capability: "toolCalling" }).status).toBe("incomplete");
+  });
   it.each(["malformed_tool_call", "malformed_function_call"] as const)("retries generated %s once, preserving input and auth failures", (code) => {
     const gemini = { ...input, adapterKind: "gemini_interactions_native" as const, capability: "parallelToolCalls" as const };
     const receipt = capabilityFailureAttempt(new GeminiHttpError(400, code), gemini);

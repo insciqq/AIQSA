@@ -117,10 +117,10 @@ function usageSources(): ProviderUsageSources {
     search: null,
     systemModelPolicy: {
       candidates: [],
-      documentCandidates: [],
-      ineligible: { direct_pdf: [], memory: [], vision: [] },
+      titleCandidates: [], documentCandidates: [],
+      ineligible: { chat_titles: [], direct_pdf: [], memory: [], vision: [] },
       policy: {
-        chatPdfModel: null,
+        chatTitleModel: null, chatTitleReasoningEffort: null, chatPdfModel: null,
         chatPdfReasoningEffort: null,
         reasoningEffort: null,
         rerankerModel: { ...candidate("model-voyage", "Voyage Rerank 2.5"), available: true },

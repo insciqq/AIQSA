@@ -1,3 +1,4 @@
+import { chatTitleMetadataSelect, chatTitlePending } from "../chats/titleMetadata";
 import { AttachmentLinkConflictError } from "./runRepositoryContract";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
 import {
@@ -747,7 +748,7 @@ export function createPrismaRunRepository(
         }, memorySourceHooks);
         await tx.usageEvent.deleteMany({
           where: {
-            chatPdfPreparation: false, imageGeneration: false,
+            chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false,
             modelRunId: input.runId
           }
         });
@@ -1323,6 +1324,7 @@ export function createPrismaRunRepository(
         if (!access) return null;
         const chat = await tx.chat.findFirst({
         select: {
+          ...chatTitleMetadataSelect,
           _count: {
             select: {
               messages: true
@@ -1497,6 +1499,7 @@ export function createPrismaRunRepository(
             pinned: chat.pinned,
             projectId: chat.projectId,
             title: chat.title,
+            ...(chatTitlePending(chat) ? { titlePending: true } : {}),
             updatedAt: chat.updatedAt,
             usageStats,
             workspace: workspaceAvailability.project(workspaceSnapshot, {
@@ -1754,7 +1757,7 @@ export function createPrismaRunRepository(
           reasoningTokens: true,
           totalTokens: true
         },
-        where: { chatPdfPreparation: false, imageGeneration: false, modelRunId: input.runId, userId: input.userId }
+        where: { chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false, modelRunId: input.runId, userId: input.userId }
       });
       return rows.map((row) => ({
         estimatedCostMicros: row.estimatedCostMicros,

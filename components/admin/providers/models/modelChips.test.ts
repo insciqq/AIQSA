@@ -44,6 +44,19 @@ function run(overrides: Partial<AdminProviderCheckRun> = {}): AdminProviderCheck
 }
 
 describe("modelChipsFromEvidence", () => {
+  it.each(["incomplete", "rejected", "unsupported"] as const)("makes %s Memory actions visible independently of Tools", (status) => {
+    const check = fixtureCheck({ credentialId: "cred-primary", providerModelId: "m", evidence: evidence({
+      compatibility: { ...evidence().compatibility!, forcedToolCall: "not_supported" },
+      capabilitySetup: { policyVersion: 2, checks: { forcedToolCall: status }, attempts: {
+        forcedToolCall: { attempts: 1, status: status === "rejected" ? "incomplete" : status, reason: status === "unsupported" ? "route_unsupported" : "invalid_input", httpStatus: 400 }
+      } }
+    }) });
+    const chips = modelChipsFromEvidence(answer, check);
+    expect(chips).toContainEqual(expect.objectContaining({ key: "tools", tone: "ok" }));
+    expect(chips).toContainEqual(expect.objectContaining({ key: "memoryActions",
+      label: status === "unsupported" ? "Memory actions: unsupported" : "Memory actions: check incomplete",
+      help: expect.stringContaining("HTTP 400") }));
+  });
   it.each([
     ["incomplete", "Inconclusive: this check did not prove support."],
     ["unsupported", "Unsupported on this route."],

@@ -390,7 +390,7 @@ async function createInitialAdminFoundation(
       defaultControlValues: json({}),
       defaultFolderId: null,
       defaultProviderModelId: null,
-      defaultSearchPlan: json({ mode: "all_selected", optionIds: [] }),
+      defaultSearchPlan: Prisma.DbNull,
       showCitations: true,
       showReasoningBlocks: false,
       userId: input.userId

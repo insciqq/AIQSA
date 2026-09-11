@@ -5,6 +5,38 @@ import { expectNoHorizontalOverflow, expectTouchSafe } from "./support/layoutAss
 
 test.use({ hasTouch: true });
 
+test("Memory action warnings stay visible beside verified ordinary Tools", async ({ page }) => {
+  const connection = workingConnection();
+  connection.models = [connection.models[0]!];
+  const model = connection.models[0]!;
+  connection.activeChecks = [fixtureCheck({ credentialId: "cred-primary", providerModelId: model.id,
+    evidence: { detail: "ok", method: "tiny_generation", selectedProviders: [], upstreamModelId: model.activeConfig!.upstreamModelId,
+      compatibility: { probeVersion: 2, modelAccess: "verified", directPdf: "verified", structuredOutput: "verified", streaming: "verified",
+        usage: "verified", toolCalling: "verified", forcedToolCall: "not_supported" },
+      capabilitySetup: { policyVersion: 2, checks: { toolCalling: "verified", forcedToolCall: "incomplete" },
+        attempts: { forcedToolCall: { attempts: 1, status: "incomplete", reason: "invalid_input", httpStatus: 400 } } }
+    } })];
+  await page.route("**/api/admin/providers**", (route) => route.fulfill({ json: { connections: [connection] } }));
+  await signInWithLocalToken(page);
+  await page.goto(`/admin?section=providers&resource=${connection.id}`);
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+    await page.setViewportSize({ width: theme === "light" ? 1440 : 390, height: 844 });
+    const warning = page.getByTestId("model-chip-memoryActions");
+    await expect(warning).toHaveText("Memory actions: check incomplete");
+    await expect(warning).toBeVisible();
+    await expect(page.getByTestId("model-chip-tools")).toHaveAttribute("data-chip-tone", "ok");
+    await warning.tap();
+    const help = warning.locator("..").locator("p");
+    await expect(help).toContainText("HTTP 400");
+    await expect(help).toContainText("Other Memory features have separate requirements.");
+    await page.keyboard.press("Escape");
+    await expect(help).toBeHidden();
+    await expect(warning).toBeFocused();
+    await expectNoHorizontalOverflow(page);
+  }
+});
+
 test("PDF results distinguish incomplete checks, unsupported input and fresh proof", async ({ page }) => {
   const connection = workingConnection();
   connection.models = [connection.models[0]!];

@@ -71,6 +71,17 @@ export function adminSearchProviderPolicy(input: Readonly<{
       strategyId: "deepseek-responses-web-search"
     };
   }
+  if (input.draft.protocol === "anthropic_web_search") {
+    if (input.provider !== "anthropic") throw new Error("search_protocol_not_supported");
+    return {
+      maxOutputTokens: input.draft.maxOutputTokens,
+      modelCapabilities: input.capabilities,
+      modelId: input.modelId,
+      provider: "anthropic",
+      reasoningPolicy: input.draft.reasoningPolicy,
+      strategyId: "anthropic-web-search"
+    };
+  }
   if (input.draft.protocol === "gemini_google_search" && input.provider === "gemini") {
     return {
       maxOutputTokens: input.draft.maxOutputTokens,

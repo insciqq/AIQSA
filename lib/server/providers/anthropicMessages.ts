@@ -1222,14 +1222,26 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
 }
 
 async function throwAnthropicHttpError(response: Response, signal: AbortSignal): Promise<never> {
+  let forcedToolUseUnsupported = false;
   try {
-    await readBoundedResponseText(response, { signal });
+    const text = await readBoundedResponseText(response, { signal });
+    if (response.status === 400) {
+      let body: unknown;
+      try { body = JSON.parse(text); } catch { body = null; }
+      const error = objectValue(objectValue(body)?.error);
+      forcedToolUseUnsupported = error?.type === "invalid_request_error" &&
+        error.message === 'tool_choice: type "tool" and "any" are not supported for this model.';
+    }
   } catch (error) {
     if (!(error instanceof ProviderResponseTooLargeError)) {
       throw error;
     }
   }
-
+  if (forcedToolUseUnsupported) {
+    throw Object.assign(new Error("provider_capability_unsupported"), {
+      code: "provider_capability_unsupported", httpStatus: 400, unsupportedCapability: "forcedToolCall"
+    });
+  }
   throw new Error(providerHttpErrorMessage("Anthropic", response.status));
 }
 

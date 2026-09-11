@@ -46,11 +46,13 @@ export function deploymentLabeller(
   const sources = catalog
     ? [
         ...catalog.candidates,
+        ...catalog.titleCandidates,
         ...catalog.documentCandidates,
         ...catalog.verificationCandidates,
         ...catalog.rerankerCandidates,
         ...Object.values(catalog.ineligible).flat(),
         ...(catalog.policy.systemModel ? [catalog.policy.systemModel] : []),
+        ...(catalog.policy.chatTitleModel ? [catalog.policy.chatTitleModel] : []),
         ...(catalog.policy.chatPdfModel ? [catalog.policy.chatPdfModel] : []),
         ...(catalog.policy.rerankerModel ? [catalog.policy.rerankerModel] : []),
         ...(catalog.policy.rerankerRoute?.entries ?? [])
@@ -110,14 +112,15 @@ function ineligibleItems(
     }));
 }
 
-/** Picker items for the System model or Chat PDF role. */
+/** Picker items for the independent generative roles. */
 export function generativeRoleItems(
   catalog: AdminSystemModelPolicyCatalog,
-  role: "memory" | "vision"
+  role: "chat_titles" | "memory" | "vision"
 ): AdminRolePickerItem[] {
   const label = deploymentLabeller(catalog);
   const ready = role === "memory"
     ? catalog.candidates
+    : role === "chat_titles" ? catalog.titleCandidates
     : catalog.documentCandidates.filter((item) => item.visionInput === "verified");
   const readyIds = new Set(ready.map((item) => item.id));
   return [

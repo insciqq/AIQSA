@@ -361,6 +361,27 @@ function useMessageRunActionsForTest(input: {
 }
 
 describe("message run actions", () => {
+  it("rejects over-limit Assistant and manual Skills before admission without consuming the draft", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Keep this draft" });
+    useComposerControlStore.setState({
+      selectedAssistant: {
+        id: "assistant", name: "Reviewer", description: "", promptCharacterCount: 0, starterPrompts: [],
+        avatar: { kind: "generated", recipeVersion: 1, paletteId: "ocean", backgroundShape: "circle",
+          foregroundShape: "diamond", accents: [0, 2], rotations: [0, 1] },
+        includedSkills: Array.from({ length: 6 }, (_, index) => ({ id: `included-${index}`, name: `Included ${index}` }))
+      },
+      selectedSkills: Array.from({ length: 3 }, (_, index) => ({ id: `manual-${index}`, name: `Manual ${index}`,
+        description: "", promptCharacterCount: 0 }))
+    });
+    await actions.submitComposer();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(actions.setNotice).toHaveBeenCalledWith(expect.objectContaining({ kind: "error", text: expect.stringContaining("at most 8 Skills") }));
+    expect(actions.session(actions.sourceSessionKey)).toMatchObject({ draft: "Keep this draft", pendingSend: null });
+    expect(useComposerControlStore.getState().selectedSkills).toHaveLength(3);
+  });
+
   afterEach(() => {
     resetRunLifecycleStoreForTest();
     resetRunSurfaceStoreForTest();

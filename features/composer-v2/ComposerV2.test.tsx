@@ -176,7 +176,6 @@ describe("Composer v2", () => {
     const onKnowledge = vi.fn();
     const onSearch = vi.fn();
     const onSelectMcp = vi.fn();
-    const onSelectSkills = vi.fn();
     const config: ComposerConfig = {
       ...composerGalleryConfig,
       mcpServers: [
@@ -211,7 +210,6 @@ describe("Composer v2", () => {
       onSelectKnowledgeBaseIds: onKnowledge,
       onSelectSearchOptionIds: onSearch,
       onSelectMcp,
-      onSelectSkillIds: onSelectSkills,
       selectedKnowledgeBaseIds: ["kb-finance", "missing-base"]
     })} />);
     const menuOpen = (name: string) =>
@@ -228,7 +226,6 @@ describe("Composer v2", () => {
     expect(screen.getByRole("menuitem", { name: /Attach files/ })).toBeVisible();
     fireEvent.click(screen.getByRole("menuitem", { name: /^Skills…/ }));
     expect(onOpenSkillLibrary).toHaveBeenCalledOnce();
-    expect(onSelectSkills).not.toHaveBeenCalled();
     menuClosed("Add");
 
     // Search: one engine at a time; a choice closes the menu.
@@ -373,7 +370,6 @@ describe("Composer v2", () => {
 
   it("separates Assistant-included and manual Skills while keeping manual controls available", () => {
     const onOpenSkillLibrary = vi.fn();
-    const onSelectSkillIds = vi.fn();
     const manualSkill = {
       archived: false,
       description: "Checks claims",
@@ -390,7 +386,6 @@ describe("Composer v2", () => {
       config: { ...composerGalleryConfig, skills: [manualSkill] },
       initialLayer: "add",
       onOpenSkillLibrary,
-      onSelectSkillIds,
       selectedAssistant: {
         ...composerGalleryConfig.assistants[0]!,
         includedSkills: [
@@ -402,20 +397,33 @@ describe("Composer v2", () => {
       selectedSkills: [{ id: manualSkill.id, name: manualSkill.name }]
     })} />);
 
-    const ledger = screen.getByTestId("composer-v2-skill-ledger");
-    expect(ledger).toHaveTextContent("Included by Assistant");
-    expect(ledger).toHaveTextContent("1. Incident brief");
-    expect(ledger).toHaveTextContent("2. Careful reviewer");
-    expect(ledger).toHaveTextContent("Added manually");
-    expect(ledger).toHaveTextContent("1. Careful editor");
-
+    const chip = screen.getByRole("button", { name: "Manage selected Skills" });
+    expect(chip).toHaveTextContent("Skills: 3");
     // Manual Skills are chosen in the Skill Library; the Add menu only
     // discloses the current count and names.
-    expect(screen.getByRole("menuitem", { name: /^Skills…/ })).toHaveTextContent("1 selected · Careful editor");
+    expect(screen.getByRole("menuitem", { name: /^Skills…/ })).toHaveTextContent("3 selected · Careful editor");
     expect(screen.queryByRole("menuitemcheckbox", { name: /Careful editor/ })).toBeNull();
-    expect(onSelectSkillIds).not.toHaveBeenCalled();
-    fireEvent.click(within(ledger).getByRole("button", { name: "Manage" }));
+    fireEvent.click(chip);
     expect(onOpenSkillLibrary).toHaveBeenCalledOnce();
+  });
+
+  it("preserves choices and blocks sends when an Assistant exceeds the effective Skill limit", () => {
+    const includedSkills = Array.from({ length: 6 }, (_, i) => ({ id: `included-${i}`, name: `Included ${i}` }));
+    const onSend = vi.fn();
+    const selection = props({ draft: "Keep this draft", onSend, onOpenSkillLibrary: vi.fn(),
+      selectedAssistant: { ...composerGalleryConfig.assistants[0]!, includedSkills },
+      selectedSkillIds: ["manual-a", "manual-b", "manual-c"] });
+    const { rerender } = render(<ComposerV2 {...selection} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose at most 8 Skills");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Keep this draft");
+    rerender(<ComposerV2 {...selection} selectedSkillIds={["included-0", "manual-a", "manual-b"]} />);
+    expect(screen.getByRole("button", { name: "Manage selected Skills" })).toHaveTextContent("Skills: 8");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    rerender(<ComposerV2 {...selection} selectedSkillIds={[]} />);
+    expect(screen.getByRole("button", { name: "Manage selected Skills" })).toHaveTextContent("Skills: 6");
   });
 
   it("keeps loading, malformed, and zero-entitlement authority states explicit", () => {
@@ -707,13 +715,13 @@ describe("Composer v2", () => {
       }
     })} />);
 
-    const toggle = screen.getByRole("button", { name: /Turn off Workspace.*Workspace ready/u });
-    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    const opener = screen.getByRole("button", { name: /Workspace details/ });
+    expect(opener).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(opener);
+    expect(onToggle).not.toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent("Workspace ready");
-    expect(screen.getByLabelText("Internet in Workspace is disabled")).toHaveTextContent(
-      "Internet: Off"
-    );
-    fireEvent.click(toggle);
+    expect(screen.getByRole("menu", { name: "Workspace" })).toHaveTextContent("Internet: Off");
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Turn off Workspace/ }));
     expect(onToggle).toHaveBeenCalledWith(false);
   });
 
@@ -732,11 +740,10 @@ describe("Composer v2", () => {
     });
     const { rerender } = render(<ComposerV2 {...unavailable} />);
 
-    const toggle = screen.getByRole("button", {
-      name: /Turn on Workspace.*requires a model with tool support/u
-    });
+    fireEvent.click(screen.getByRole("button", { name: /Workspace details/ }));
+    const toggle = screen.getByRole("menuitemcheckbox", { name: /Turn on Workspace/ });
     expect(toggle).toBeDisabled();
-    expect(toggle).toHaveAttribute("title", "Workspace requires a model with tool support.");
+    expect(toggle).toHaveTextContent("Workspace requires a model with tool support.");
 
     const onUploadFiles = vi.fn();
     const opaque = new File(["opaque"], "dataset.custom", {

@@ -23,6 +23,7 @@ export type AssistantLibraryEditorState = {
   fieldErrors: AssistantEditorFieldErrors | null;
   expectedVersion: number | null;
   publications: AssistantPublicationView[] | null;
+  selectedSkills: { id: string; name: string }[];
   saving: boolean;
 };
 

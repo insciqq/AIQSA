@@ -961,7 +961,14 @@ export function createAdminProviderService(input: Readonly<{
       signal: value.signal,
       initialSetup,
       onProgress: value.onProgress,
-      completedModelIds,
+      reusedResults: completedModelIds.map((providerModelId) => {
+        const model = connection!.models.find(({ id }) => id === providerModelId)!;
+        const check = connection!.activeChecks.find((entry) => entry.providerModelId === providerModelId &&
+          entry.connectionVersion === connection!.activeVersion && entry.modelVersion === model.activeVersion &&
+          entry.credentialId === credential.id && entry.credentialVersionId === credential.activeVersion!.id)!;
+        return { providerModelId, state: check.status === "available" ? "saved" as const : "unavailable" as const,
+          checks: check.evidence?.capabilitySetup?.checks, attempts: check.evidence?.capabilitySetup?.attempts };
+      }),
       ...(value.userId && input.completeSetup ? {
         completeSetup: (signal: AbortSignal) => input.completeSetup!({
           connectionId: value.connectionId, credentialId: value.credentialId, userId: value.userId!, signal

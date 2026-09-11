@@ -39,7 +39,7 @@ function safeCount(value: string): number {
 
 /**
  * Counts meaningful Memory-owned records. The mandatory untouched settings
- * row is deliberately inert and does not turn every stale account into a
+ * legacy row is inert and does not turn every stale account into a
  * deletion blocker. `learnAutomatically` is not inspected directly because
  * an actual user mutation is already fenced by `settingsRevision`.
  */

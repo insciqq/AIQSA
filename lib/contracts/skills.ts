@@ -3,6 +3,11 @@ export const SKILL_DESCRIPTION_MAX_LENGTH = 400;
 export const SKILL_INSTRUCTIONS_MAX_LENGTH = 32_000;
 export const SKILL_MAX_SELECTED = 8;
 
+/** Assistant instructions precede manual instructions; overlap consumes one slot. */
+export function resolveEffectiveSkillIds(includedIds: readonly string[], manualIds: readonly string[]): string[] {
+  return [...new Set([...includedIds, ...manualIds])];
+}
+
 export type SkillDraft = {
   description: string;
   instructions: string;

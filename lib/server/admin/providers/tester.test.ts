@@ -64,7 +64,7 @@ function discovery(overrides: Partial<OpenRouterDiscoveryClient> = {}): OpenRout
 }
 
 describe("image input compatibility", () => {
-  it.each(["memory", "vision"] as const)("runs only the requested %s capability probes", async (capabilityRole) => {
+  it.each(["chat_titles", "memory", "vision"] as const)("runs only the requested %s capability probes", async (capabilityRole) => {
     const bodies: Record<string, unknown>[] = [];
     const fetchFn = vi.fn<typeof fetch>(async (_url, request) => {
       const body = JSON.parse(String(request?.body));
@@ -85,7 +85,7 @@ describe("image input compatibility", () => {
     expect(bodies).toHaveLength(capabilityRole === "memory" ? 3 : 2);
     expect(bodies.every((body) => body.stream !== true)).toBe(true);
     expect(Boolean(outcome.evidence.visionInput)).toBe(capabilityRole === "vision");
-    expect(Boolean(outcome.evidence.structuredOutput)).toBe(capabilityRole === "memory");
+    expect(Boolean(outcome.evidence.structuredOutput)).toBe(capabilityRole === "memory" || capabilityRole === "chat_titles");
     expect(Boolean(outcome.evidence.forcedToolCall)).toBe(capabilityRole === "memory");
     expect(outcome.evidence.pdfInput).toBeUndefined();
   });

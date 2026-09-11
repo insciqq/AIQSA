@@ -280,9 +280,9 @@ describe("list copy", () => {
     } as unknown as AdminModelPolicyCatalog;
     const systemModelPolicy = {
       candidates: [],
-      documentCandidates: [],
+      titleCandidates: [], documentCandidates: [],
       policy: {
-        chatPdfModel: { ...candidate, available: true },
+        chatTitleModel: null, chatTitleReasoningEffort: null, chatPdfModel: { ...candidate, available: true },
         rerankerModel: {
           available: true,
           connectionDisplayName: "OpenRouter",

@@ -323,6 +323,7 @@ export function deriveProviderUsage(
   add(sources.modelPolicy?.policy.defaultModel?.connectionId, "Default chat");
   const roles = sources.systemModelPolicy?.policy;
   add(roles?.systemModel?.connectionId, "System model");
+  add(roles?.chatTitleModel?.connectionId, "Chat titles");
   add(roles?.chatPdfModel?.connectionId, "Chat PDF");
   add(roles?.rerankerModel?.connectionId, "Reranker");
   add(roles?.imageModel?.connectionId, "Image generation");

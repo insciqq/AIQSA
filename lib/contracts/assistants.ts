@@ -476,7 +476,7 @@ export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult
   };
 }
 
-export type AssistantAvailabilityReason = "model_access" | "search_access" | "tools_access";
+export type AssistantAvailabilityReason = "model_access" | "search_access" | "tools_access" | "skills_access" | "knowledge_access";
 
 export type AssistantAvailabilityDependency = {
   kind: "mcp" | "model" | "search";
@@ -586,7 +586,8 @@ function decodeAvailability(value: unknown): AssistantAvailability | null {
   if (value.ok === true) return { ok: true };
   if (
     value.ok === false &&
-    (value.reason === "model_access" || value.reason === "search_access" || value.reason === "tools_access")
+    (value.reason === "model_access" || value.reason === "search_access" || value.reason === "tools_access" ||
+      value.reason === "skills_access" || value.reason === "knowledge_access")
   ) {
     let dependencies: AssistantAvailabilityDependency[] | undefined;
     if (value.dependencies !== undefined) {

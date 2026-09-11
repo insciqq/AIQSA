@@ -87,7 +87,7 @@ function accessiblePublicationWhere(userId: string): Prisma.SkillPublicationWher
   };
 }
 
-function accessWhere(userId: string): Prisma.SkillDefinitionWhereInput {
+export function skillAccessWhere(userId: string): Prisma.SkillDefinitionWhereInput {
   return {
     OR: [
       { ownerUserId: userId },
@@ -185,7 +185,7 @@ export function createPrismaSkillRepository(client: PrismaClient) {
       where: {
         AND: [
           { currentRevisionId: { not: null }, deletedAt: null },
-          accessWhere(userId),
+          skillAccessWhere(userId),
           ...(input.cursor ? [{
             OR: [
               { updatedAt: { lt: input.cursor.updatedAt } },
@@ -455,7 +455,7 @@ export function createPrismaSkillRepository(client: PrismaClient) {
           AND: [
             { archivedAt: null, currentRevisionId: { not: null }, deletedAt: null },
             { id: { in: [...skillIds] } },
-            accessWhere(userId)
+            skillAccessWhere(userId)
           ]
         }
       });

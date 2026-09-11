@@ -1065,6 +1065,8 @@ model SystemModelPolicy {
   imageParamsJson         Json           @default("{}")
   imageProviderModel      ProviderModel? @relation("ImageGenerationProviderModel", fields: [imageProviderModelId], references: [id], onDelete: Restrict)
   id                      String         @id
+  chatTitleProviderModelId String?
+  chatTitleReasoningEffort String?        @db.VarChar(32)
   chatPdfProviderModelId   String?
   chatPdfReasoningEffort   String?        @db.VarChar(32)
   /// Memory semantic/action work and its shared structured utilities.
@@ -1077,6 +1079,7 @@ model SystemModelPolicy {
   updatedByUserId         String?
   createdAt               DateTime       @default(now())
   updatedAt               DateTime       @updatedAt
+  chatTitleProviderModel  ProviderModel? @relation("ChatTitleProviderModel", fields: [chatTitleProviderModelId], references: [id], onDelete: Restrict)
   chatPdfProviderModel    ProviderModel? @relation("ChatPdfProviderModel", fields: [chatPdfProviderModelId], references: [id], onDelete: Restrict)
   providerModel           ProviderModel? @relation("SystemUtilityProviderModel", fields: [providerModelId], references: [id], onDelete: Restrict)
   rerankerProviderModel   ProviderModel? @relation("MemoryRerankerProviderModel", fields: [rerankerProviderModelId], references: [id], onDelete: Restrict)
@@ -1085,6 +1088,7 @@ model SystemModelPolicy {
   @@index([imageProviderModelId])
   @@index([providerModelId])
   @@index([rerankerProviderModelId])
+  @@index([chatTitleProviderModelId])
   @@index([chatPdfProviderModelId])
   @@index([updatedByUserId])
 }
@@ -2279,6 +2283,7 @@ model ProviderModel {
   knowledgeProfileRevisions   KnowledgeIndexProfileRevision[]
   knowledgeRunBindings        KnowledgeRunBinding[]
   knowledgeRunProfileBindings KnowledgeRunProfileBinding[]
+  chatTitleRoles              SystemModelPolicy[]             @relation("ChatTitleProviderModel")
   chatPdfRoles                SystemModelPolicy[]             @relation("ChatPdfProviderModel")
   systemUtilityRoles          SystemModelPolicy[]             @relation("SystemUtilityProviderModel")
   imageGenerationRoles       SystemModelPolicy[]             @relation("ImageGenerationProviderModel")
@@ -2599,6 +2604,8 @@ model Chat {
   createdByDisplayName            String               @default("")
   folderId                        String?
   title                           String
+  titleRevision                   Int                  @default(0)
+  titleGeneration                 ChatTitleGeneration?
   activeLeafMessageId             String?
   defaultProviderModelId          String?
   defaultKnowledgePlan            Json?
@@ -2761,7 +2768,39 @@ model ChatContinuation {
   @@index([actorUserId])
 }
 
+enum ChatTitleGenerationStatus {
+  pending
+  dispatched
+  settled
+  skipped
+  ambiguous
+}
+
+model ChatTitleGeneration {
+  runId            String                    @id
+  chatId           String                    @unique
+  userId           String
+  expectedTitle    String
+  titleRevision    Int
+  questionText     String
+  answerText       String
+  reasoningEffort  String?
+  providerSnapshot Json?
+  status           ChatTitleGenerationStatus @default(pending)
+  createdAt        DateTime                  @default(now())
+  expiresAt        DateTime
+  dispatchedAt     DateTime?
+  finishedAt       DateTime?
+  chat             Chat                      @relation(fields: [chatId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  modelRun         ModelRun                  @relation(fields: [userId, chatId, runId], references: [userId, chatId, id], onDelete: Cascade, onUpdate: Restrict)
+  usageEvent       UsageEvent?
+
+  @@unique([userId, chatId, runId])
+  @@index([status, createdAt])
+}
+
 model ModelRun {
+  chatTitleGeneration          ChatTitleGeneration?
   chatPdfPreparation           ChatPdfRunPreparation?
   chatPdfAttachments           ChatPdfAttachmentPreparation[]
   id                           String                              @id @default(uuid())
@@ -3793,6 +3832,9 @@ model SharedChatSnapshot {
 }
 
 model UsageEvent {
+  chatTitleGeneration             Boolean                        @default(false)
+  chatTitleGenerationId           String?                        @unique
+  chatTitle                       ChatTitleGeneration?           @relation(fields: [chatTitleGenerationId], references: [runId], onDelete: SetNull, onUpdate: Restrict)
   imageGeneration                 Boolean                        @default(false)
   imageToolCallId                  String?                        @unique
   imageToolCall                    ModelRunToolCall?              @relation("ImageToolUsage", fields: [imageToolCallId], references: [id], onDelete: SetNull, onUpdate: Restrict)
@@ -4193,12 +4235,12 @@ model UserMemorySettings {
   acceptedUtilityEgressFingerprint String?                        @db.VarChar(128)
   acceptedUtilityPolicyVersion     String?                        @db.VarChar(64)
   acceptedUtilityEgressAt          DateTime?
-  synthesisEnabled                 Boolean                        @default(false)
-  synthesisEnabledAt               DateTime?
-  synthesisPolicyVersion           String?                        @db.VarChar(64)
+  synthesisEnabled                 Boolean                        @default(true)
+  synthesisEnabledAt               DateTime?                      @default(now())
+  synthesisPolicyVersion           String?                        @default("memory-synthesis-policy-v3") @db.VarChar(64)
   lastSynthesisAt                  DateTime?
-  decayEnabled                     Boolean                        @default(false)
-  decayPolicyVersion               String?                        @db.VarChar(64)
+  decayEnabled                     Boolean                        @default(true)
+  decayPolicyVersion               String?                        @default("memory-decay-v1") @db.VarChar(64)
   createdAt                        DateTime                       @default(now())
   updatedAt                        DateTime                       @default(now()) @updatedAt
 

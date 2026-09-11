@@ -30,6 +30,14 @@ function draft(protocol: AdminSearchDraft["protocol"]): AdminSearchDraft {
 }
 
 describe("admin Search diagnostic policies", () => {
+  it("builds the exact Anthropic policy and rejects another provider before dispatch", () => {
+    const input = { capabilities, defaultParams: {}, draft: draft("anthropic_web_search"),
+      modelId: "selected-anthropic-model", provider: "anthropic" };
+    expect(adminSearchProviderPolicy(input)).toEqual({ maxOutputTokens: 4_096,
+      modelCapabilities: capabilities, modelId: input.modelId, provider: "anthropic",
+      reasoningPolicy: "lowest_supported", strategyId: "anthropic-web-search" });
+    expect(() => adminSearchProviderPolicy({ ...input, provider: "openai" })).toThrow("search_protocol_not_supported");
+  });
   it("builds the query-only Gemini policy from the exact draft and model", () => {
     expect(adminSearchProviderPolicy({
       capabilities,

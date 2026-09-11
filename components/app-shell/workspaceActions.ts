@@ -164,6 +164,7 @@ export function useWorkspaceActions({
       pinned: detail.pinned,
       projectId: detail.projectId ?? null,
       title: detail.title,
+      ...(detail.titlePending ? { titlePending: true } : {}),
       updatedAt: detail.updatedAt,
       workspace: detail.workspace
     };
@@ -190,7 +191,8 @@ export function useWorkspaceActions({
       (candidate) => candidate.id === chat.id
     );
     const resolvedChat = { ...currentChat, ...chat };
-    useWorkspaceStore.getState().upsertChat(chat);
+    useWorkspaceStore.getState().upsertChat(currentChat?.titlePending || chat.titlePending
+      ? { ...chat, titlePending: chat.titlePending === true } : chat);
     if (
       useWorkspaceStore.getState().navigationReady &&
       !resolvedChat.projectId &&

@@ -18,12 +18,14 @@ import {
   SKILL_DESCRIPTION_MAX_LENGTH,
   SKILL_INSTRUCTIONS_MAX_LENGTH,
   SKILL_MAX_SELECTED,
+  resolveEffectiveSkillIds,
   SKILL_NAME_MAX_LENGTH,
   type SkillDraft,
   type SkillDetail,
   type SkillSummary
 } from "@/lib/contracts/skills";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { SkillSelectionSummary, type SelectedSkillName } from "./SkillSelectionSummary";
 
 type EditorState = {
   draft: SkillDraft;
@@ -32,6 +34,8 @@ type EditorState = {
 
 type SkillLibraryContentProps = Readonly<{
   mode: "picker" | "section";
+  includedSkills?: readonly SelectedSkillName[];
+  selectedSkills?: readonly SelectedSkillName[];
   onSelectionChange(skillIds: readonly string[]): void;
   selectedIds: readonly string[];
 }>;
@@ -74,9 +78,8 @@ function actionErrorMessage(failure: unknown): string {
   return code.replaceAll("_", " ");
 }
 
-function SkillLibraryContent({ mode, onSelectionChange, selectedIds }: SkillLibraryContentProps) {
+function SkillLibraryContent({ mode, onSelectionChange, selectedIds, includedSkills = [], selectedSkills = [] }: SkillLibraryContentProps) {
   const data = useSkillLibraryStore((state) => state.data);
-  const error = useSkillLibraryStore((state) => state.error);
   const loadingMore = useSkillLibraryStore((state) => state.loadingMore);
   const loadState = useSkillLibraryStore((state) => state.loadState);
   const moreError = useSkillLibraryStore((state) => state.moreError);
@@ -88,8 +91,9 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds }: SkillLibr
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const searchMounted = useRef(false);
   const detailRequest = useRef(0);
+  const selectionRef = useRef({ selectedIds, onSelectionChange });
+  useLayoutEffect(() => { selectionRef.current = { selectedIds, onSelectionChange }; }, [selectedIds, onSelectionChange]);
 
   useEffect(() => {
     void refreshSkillLibrary(true, "").catch(() => undefined);
@@ -100,10 +104,7 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds }: SkillLibr
   }, []);
 
   useEffect(() => {
-    if (!searchMounted.current) {
-      searchMounted.current = true;
-      return;
-    }
+    if (query.trim() === useSkillLibraryStore.getState().query) return;
     const timeout = window.setTimeout(() => {
       void refreshSkillLibrary(true, query).catch(() => undefined);
     }, 250);
@@ -112,6 +113,9 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds }: SkillLibr
 
   const skills = data?.skills ?? [];
   const selectedSet = new Set(selectedIds);
+  const includedSet = new Set(includedSkills.map(({ id }) => id));
+  const effectiveIds = resolveEffectiveSkillIds([...includedSet], selectedIds);
+  const manualSkills = selectedIds.map((id) => selectedSkills.find((skill) => skill.id === id) ?? skills.find((skill) => skill.id === id) ?? { id, name: "Selected Skill" });
   const detailOpen = detailLoading || Boolean(detail) || Boolean(editor);
 
   function closeDetail(): void {
@@ -134,10 +138,10 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds }: SkillLibr
   }
 
   function toggle(skill: SkillSummary | SkillDetail): void {
-    if (skill.archived) return;
+    if (skill.archived || includedSet.has(skill.id)) return;
     const nextIds = selectedSet.has(skill.id)
       ? selectedIds.filter((id) => id !== skill.id)
-      : selectedIds.length < SKILL_MAX_SELECTED
+      : effectiveIds.includes(skill.id) || effectiveIds.length < SKILL_MAX_SELECTED
         ? [...selectedIds, skill.id]
         : selectedIds;
     onSelectionChange(nextIds);
@@ -159,7 +163,8 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds }: SkillLibr
       setDetail(null);
       setActionError(actionErrorMessage(failure));
       if (failure instanceof Error && failure.message === "skill_not_available") {
-        onSelectionChange(selectedIds.filter((id) => id !== skill.id));
+        const current = selectionRef.current;
+        current.onSelectionChange(current.selectedIds.filter((id) => id !== skill.id));
       }
     } finally {
       if (requestId === detailRequest.current) setDetailLoading(false);
@@ -283,7 +288,7 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds }: SkillLibr
           </UiV2Button>
         </div>
         <p className="v2-skill-selection-summary">
-          {selectedIds.length} selected · up to {SKILL_MAX_SELECTED}. Selection order is preserved.
+          {effectiveIds.length} selected · up to {SKILL_MAX_SELECTED}. Selection order is preserved.
         </p>
       </header>
 
@@ -292,6 +297,19 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds }: SkillLibr
 
       <div className="v2-skill-layout">
         <section className="v2-skill-list-pane" aria-label="Skill library">
+          <SkillSelectionSummary includedSkills={includedSkills} manualSkills={manualSkills}
+            onRemove={(id) => onSelectionChange(selectedIds.filter((value) => value !== id))} />
+          {loadState === "error" && data ? (
+            <div className="v2-skill-state" role="alert">
+              <p>Skills could not be loaded. Earlier results are shown.</p>
+              <UiV2Button onClick={() => void refreshSkillLibrary(true, query).catch(() => undefined)}>
+                Try again
+              </UiV2Button>
+            </div>
+          ) : null}
+          {loadState === "loading" && data ? (
+            <p className="v2-skill-searching" role="status">Searching…</p>
+          ) : null}
           {loadState === "loading" && !data ? (
             <p className="v2-skill-state" role="status">Loading Skills…</p>
           ) : loadState === "error" && !data ? (
@@ -302,20 +320,18 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds }: SkillLibr
               </UiV2Button>
             </div>
           ) : skills.length === 0 ? (
-            <div className="v2-skill-state">
+            loadState === "ready" ? <div className="v2-skill-state">
               <strong>{query ? "No matching Skills" : "No Skills yet"}</strong>
               <p>Create a focused workflow with plain-text instructions.</p>
-            </div>
+            </div> : null
           ) : (
             <>
-              {loadState === "loading" ? (
-                <p className="v2-skill-searching" role="status">Searching…</p>
-              ) : null}
               <ul className="v2-skill-list" aria-label="Available Skills">
                 {skills.map((skill) => {
+                  const included = includedSet.has(skill.id);
                   const selected = selectedSet.has(skill.id);
                   const selectedOrder = selectedIds.indexOf(skill.id) + 1;
-                  const atLimit = !selected && selectedIds.length >= SKILL_MAX_SELECTED;
+                  const atLimit = !effectiveIds.includes(skill.id) && effectiveIds.length >= SKILL_MAX_SELECTED;
                   const active = detail?.id === skill.id || editor?.source?.id === skill.id;
                   return (
                     <li className="v2-skill-row" data-active={active || undefined} key={skill.id}>
@@ -337,13 +353,13 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds }: SkillLibr
                         </small>
                       </button>
                       <UiV2Button
-                        aria-label={`${selected ? "Remove" : "Use"} ${skill.name}`}
-                        aria-pressed={selected}
+                        aria-label={`${included ? "Included" : selected ? "Remove" : "Use"} ${skill.name}`}
+                        aria-pressed={included || selected}
                         className="v2-skill-select"
-                        disabled={skill.archived || atLimit || busy}
+                        disabled={included || skill.archived || atLimit || busy}
                         onClick={() => toggle(skill)}
                       >
-                        {selected ? "Remove" : "Use"}
+                        {included ? "Included" : selected ? "Remove" : "Use"}
                       </UiV2Button>
                     </li>
                   );
@@ -354,7 +370,7 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds }: SkillLibr
                   <UiV2Button busy={loadingMore} onClick={() => void loadMoreSkillLibrary().catch(() => undefined)}>
                     {loadingMore ? "Loading…" : "Load more"}
                   </UiV2Button>
-                  {moreError ? <p>More Skills could not be loaded.</p> : null}
+                  {moreError ? <p role="alert">More Skills could not be loaded.</p> : null}
                 </div>
               ) : null}
             </>
@@ -430,11 +446,11 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds }: SkillLibr
                   <p>By {detail.owner.displayName}</p>
                 </div>
                 <UiV2Button
-                  disabled={detail.archived || (!selectedSet.has(detail.id) && selectedIds.length >= SKILL_MAX_SELECTED)}
+                  disabled={includedSet.has(detail.id) || detail.archived || (!effectiveIds.includes(detail.id) && effectiveIds.length >= SKILL_MAX_SELECTED)}
                   tone="primary"
                   onClick={() => toggle(detail)}
                 >
-                  {selectedSet.has(detail.id) ? "Remove" : "Use"}
+                  {includedSet.has(detail.id) ? "Included" : selectedSet.has(detail.id) ? "Remove" : "Use"}
                 </UiV2Button>
               </div>
               {detail.description ? <p className="v2-skill-description">{detail.description}</p> : null}
@@ -540,7 +556,6 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds }: SkillLibr
               <UiV2Icon name="wand" />
               <strong>Choose a Skill to inspect</strong>
               <p>Skills are text-only. They do not install tools, run code, or start MCP servers.</p>
-              {error ? <p data-tone="danger">{actionErrorMessage(new Error(error))}</p> : null}
             </div>
           )}
         </section>
@@ -551,11 +566,15 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds }: SkillLibr
 
 export function SkillLibrarySection({
   onSelectionChange,
-  selectedIds
+  selectedIds,
+  includedSkills,
+  selectedSkills
 }: Omit<SkillLibraryContentProps, "mode">) {
   return (
     <SkillLibraryContent
       mode="section"
+      includedSkills={includedSkills}
+      selectedSkills={selectedSkills}
       onSelectionChange={onSelectionChange}
       selectedIds={selectedIds}
     />
@@ -565,13 +584,19 @@ export function SkillLibrarySection({
 export function SkillLibraryDialog({
   onClose,
   onSelectionChange,
-  selectedIds
+  selectedIds,
+  selectedSkills,
+  includedSkills,
+  restoreFocus
 }: Readonly<{
+  includedSkills?: readonly SelectedSkillName[];
+  selectedSkills?: readonly SelectedSkillName[];
+  restoreFocus?(): HTMLElement | null;
   onClose(): void;
   onSelectionChange(skillIds: readonly string[]): void;
   selectedIds: readonly string[];
 }>) {
-  const dialogRef = useDialogFocus<HTMLDivElement>({ active: true, onClose });
+  const dialogRef = useDialogFocus<HTMLDivElement>({ active: true, onClose, restoreFocus });
 
   return (
     <div
@@ -585,12 +610,14 @@ export function SkillLibraryDialog({
         <header className="v2-skill-dialog-header">
           <div>
             <strong>Choose Skills</strong>
-            <span>Manual Skills stay separate from Assistant-included Skills.</span>
+            <span>Selected Skills run in the order shown.</span>
           </div>
           <UiV2IconButton icon="close" label="Close Skills" onClick={onClose} />
         </header>
         <SkillLibraryContent
           mode="picker"
+          includedSkills={includedSkills}
+          selectedSkills={selectedSkills}
           onSelectionChange={onSelectionChange}
           selectedIds={selectedIds}
         />

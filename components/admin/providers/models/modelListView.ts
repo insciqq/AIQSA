@@ -93,6 +93,7 @@ export function deriveModelUsage(sources: ProviderUsageSources): ModelUsageIndex
   add(sources.modelPolicy?.policy.defaultModel?.id, "Default chat");
   const roles = sources.systemModelPolicy?.policy;
   add(roles?.systemModel?.id, "System model");
+  add(roles?.chatTitleModel?.id, "Chat titles");
   add(roles?.chatPdfModel?.id, "Chat PDF");
   add(roles?.imageModel?.id, "Image generation");
   const route = roles?.rerankerRoute?.entries ?? [];
@@ -148,6 +149,7 @@ export function turnOffConsequence(input: Readonly<{
   const uses: string[] = [];
   if (input.tags.includes("Default chat")) uses.push("the default chat model for new chats");
   if (input.tags.includes("System model")) uses.push("the System model");
+  if (input.tags.includes("Chat titles")) uses.push("the chat title model");
   if (input.tags.includes("Chat PDF")) uses.push("the chat PDF model");
   if (roles.length) {
     uses.push(roles.includes("Reranker · primary") || roles.includes("Reranker")
@@ -156,7 +158,7 @@ export function turnOffConsequence(input: Readonly<{
   }
   if (input.tags.includes("Knowledge docs")) uses.push("the Knowledge document model");
   if (input.tags.includes("Knowledge embeddings")) uses.push("the Knowledge embedding model");
-  const known = new Set(["Default chat", "System model", "Chat PDF", "Knowledge docs", "Knowledge embeddings"]);
+  const known = new Set(["Default chat", "System model", "Chat titles", "Chat PDF", "Knowledge docs", "Knowledge embeddings"]);
   const searchSources = input.tags.filter((tag) => !known.has(tag) && !tag.startsWith("Reranker"));
   if (searchSources.length) {
     uses.push(`the model behind ${joinNames(searchSources.map((name) => `“${name}”`))} Search`);
@@ -243,6 +245,10 @@ export type ModelCheckSummary = Readonly<{
 function describeChips(chips: readonly ModelChip[], modelClass: AdminProviderModelClass): string {
   if (chips.some((entry) => entry.key === "unavailable")) {
     return "the provider reports this model as not available with this key.";
+  }
+  const memoryActions = chips.find((entry) => entry.key === "memoryActions");
+  if (memoryActions) {
+    return `${describeChips(chips.filter((entry) => entry.key !== "memoryActions"), modelClass)} ${memoryActions.label}.`;
   }
   if (modelClass === "embedding") return "embeddings work.";
   if (modelClass === "reranker") return "reranking works.";

@@ -144,6 +144,7 @@ function accessEntry(overrides: Partial<AssistantAccessEntry> = {}): AssistantAc
     pinned: false,
     published: true,
     content: contentRow(),
+    dependencyAvailability: { knowledge: true, skills: true },
     updatedAt: new Date("2026-08-06T00:00:00.000Z"),
     version: 3,
     ...overrides
@@ -202,6 +203,30 @@ function handlerDeps(
     resolveAuth: async () => session(options.role ?? "user")
   };
 }
+
+describe("Assistant dependency availability projection", () => {
+  it.each(["skills", "knowledge"] as const)("rechecks %s for list/detail and keeps shared failures neutral", async (kind) => {
+    const entry = accessEntry({
+      dependencyAvailability: { knowledge: kind !== "knowledge", skills: kind !== "skills" },
+      content: contentRow({
+        skillIds: kind === "skills" ? ["hidden-skill"] : [], skillSummaries: [],
+        knowledgeSelection: kind === "knowledge"
+          ? { mode: "explicit", version: 1, baseIds: ["hidden-base"], sourceIds: [] }
+          : { mode: "none", version: 1, baseIds: [], sourceIds: [] }
+      })
+    });
+    const deps = handlerDeps({ listForUser: vi.fn(async () => [entry]), getDetail: vi.fn(async () => ({ ...entry, publications: null })) });
+    const listed = await (await createListAssistantsHandler(deps)(new Request("http://test/api/me/assistants"))).json();
+    const detail = await (await createGetAssistantHandler(deps)(new Request("http://test/api/me/assistants/assistant-1"),
+      { params: { assistantId: "assistant-1" } })).json();
+    expect(listed.assistants[0].availability).toEqual({ ok: false, reason: `${kind}_access` });
+    expect(detail.assistant.availability).toEqual(listed.assistants[0].availability);
+    expect(JSON.stringify({ listed, detail })).not.toMatch(/hidden-skill|hidden-base/);
+    entry.dependencyAvailability = { knowledge: true, skills: true };
+    const restored = await (await createListAssistantsHandler(deps)(new Request("http://test/api/me/assistants"))).json();
+    expect(restored.assistants[0].availability).toEqual({ ok: true });
+  });
+});
 
 describe("assistant list handler", () => {
   it("projects runner-safe summaries with availability and fingerprint", async () => {

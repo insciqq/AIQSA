@@ -59,6 +59,8 @@ import { presentWorkspaceActivityV2 } from "@/features/run-lifecycle-v2/workspac
 import { resolveWorkspaceOutputLink } from "@/lib/domain/workspaceLinks";
 import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
 import { SkillLibraryDialog } from "@/components/skills/SkillLibraryDialog";
+import { ProjectSkillPicker } from "@/components/skills/ProjectSkillPicker";
+import type { SelectedSkillName } from "@/components/skills/SkillSelectionSummary";
 import {
   BranchDrawerV2,
   BranchPagerSlotV2
@@ -145,6 +147,7 @@ import {
 import { LibrarySurfaceV2 } from "./WorkspaceWelcomeV2";
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -291,8 +294,14 @@ export function SkillLibraryOverlayV2({
   onClose,
   onSelectionChange,
   open,
-  selectedIds
+  selectedIds,
+  selectedSkills,
+  includedSkills,
+  restoreFocus
 }: Readonly<{
+  selectedSkills?: readonly SelectedSkillName[];
+  includedSkills?: readonly SelectedSkillName[];
+  restoreFocus?(): HTMLElement | null;
   onClose(): void;
   onSelectionChange(skillIds: readonly string[]): void;
   open: boolean;
@@ -300,6 +309,9 @@ export function SkillLibraryOverlayV2({
 }>) {
   return open ? (
     <SkillLibraryDialog
+      includedSkills={includedSkills}
+      selectedSkills={selectedSkills}
+      restoreFocus={restoreFocus}
       onClose={onClose}
       onSelectionChange={onSelectionChange}
       selectedIds={selectedIds}
@@ -320,7 +332,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [secretsDirty, setSecretsDirty] = useState(false);
   const [secretsKey, setSecretsKey] = useState(0);
   const [dataSubview, setDataSubview] = useState<null | "archived">(null);
-  const [skillLibraryOpen, setSkillLibraryOpen] = useState(false);
+  const [skillLibraryScope, setSkillLibraryScope] = useState<string | null>(null);
   const [composerDockHeight, setComposerDockHeight] = useState(0);
   const [composerLayer, setComposerLayer] = useState<ComposerV2Layer>(null);
   const [workspaceResetOpen, setWorkspaceResetOpen] = useState(false);
@@ -365,6 +377,31 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     (selectedProjectContext && !activeChatSummary)
     ? workspace.projects.detail
     : null;
+  const skillScopeKey = `${session.accountId}:${projectContext ? activeChatSummary?.projectId ?? workspace.projects.selectedProjectId : "personal"}:${session.activeChatId ?? "new"}`;
+  const skillScopeRef = useRef(skillScopeKey);
+  useLayoutEffect(() => { skillScopeRef.current = skillScopeKey; }, [skillScopeKey]);
+  const [previousSkillScopeKey, setPreviousSkillScopeKey] = useState(skillScopeKey);
+  if (previousSkillScopeKey !== skillScopeKey) {
+    setPreviousSkillScopeKey(skillScopeKey);
+    setSkillLibraryScope(null);
+  }
+  const restoreSkillFocus = () =>
+    composerDockRef.current?.querySelector<HTMLElement>('[aria-label="Manage selected Skills"]') ??
+    composerDockRef.current?.querySelector<HTMLElement>('[aria-label="Add"]') ?? null;
+  function selectManualSkills(ids: readonly string[]) {
+    if (skillScopeRef.current !== skillScopeKey) return;
+    const byId = new Map((projectContext
+      ? (activeProject?.resources ?? []).flatMap((resource) => resource.type === "skill" && resource.available
+        ? [{ id: resource.resourceId, name: resource.label, description: resource.description ?? "", promptCharacterCount: resource.promptCharacterCount ?? 0 }] : [])
+      : (skillCatalog?.skills ?? []).filter((skill) => !skill.archived).map((skill) => ({
+        id: skill.id, name: skill.name, description: skill.description, promptCharacterCount: skill.instructionCharacterCount
+      }))).map((skill) => [skill.id, skill]));
+    const previous = new Map(useComposerControlStore.getState().selectedSkills.map((skill) => [skill.id, skill]));
+    useComposerControlStore.getState().setSelectedSkills(ids.flatMap((id) => {
+      const skill = byId.get(id) ?? (!projectContext ? previous.get(id) : undefined);
+      return skill ? [skill] : [];
+    }));
+  }
   const latestMessage = thread.visibleMessages.at(-1);
   const continuationEligible = Boolean(workspace.pane.actions.openContinuedChat && session.activeChatId && latestMessage?.role === "assistant" &&
     latestMessage.status === "complete" && !thread.activeChatStreaming && !thread.activeChatDetailLoading &&
@@ -645,9 +682,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onOpenKnowledgeLibrary={projectContext ? undefined : settings.openKnowledge}
       onOpenMcpSettings={projectContext ? workspace.projects.actions.openSettings : settings.openMcp}
       onOpenModelParameters={() => setRunSetupOpen(true)}
-      onOpenSkillLibrary={() => {
-        if (!projectContext) setSkillLibraryOpen(true);
-      }}
+      onOpenSkillLibrary={() => setSkillLibraryScope(skillScopeKey)}
       onOverrideKnowledgePlan={composer.knowledge.override}
       onRemoveAssistant={composer.assistant.remove}
       onRemoveAttachment={composer.composerActions.removeAttachment}
@@ -659,23 +694,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onSelectMcp={(selection) => useComposerControlStore.getState().setMcpSelection(selection)}
       onSelectModel={composer.selectModel}
       onSelectSearchOptionIds={(ids) => composer.selectSearchPlan(ids, composer.searchPlanMode)}
-      onSelectSkillIds={(ids) => {
-        const byId = new Map((config?.skills ?? []).map((skill) => [skill.id, skill] as const));
-        const selectedById = new Map(selectedSkills.map((skill) => [skill.id, skill] as const));
-        useComposerControlStore.getState().setSelectedSkills(ids.flatMap((id) => {
-          const skill = byId.get(id);
-          if (skill) {
-            return !skill.archived ? [{
-              description: skill.description,
-              id: skill.id,
-              name: skill.name,
-              promptCharacterCount: skill.instructionCharacterCount
-            }] : [];
-          }
-          const selected = selectedById.get(id);
-          return selected ? [selected] : [];
-        }));
-      }}
       onSend={() => void composer.submitComposer()}
       onStop={() => void composer.stopCurrentRun()}
       onUploadFiles={(files) => composer.uploadFiles(files)}
@@ -1424,29 +1442,26 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onUse={temporarySession || thread.activeChatStreaming || composer.uploading ? undefined : composer.reuseFile}
         />
       ) : null}
-      <SkillLibraryOverlayV2
-        open={skillLibraryOpen && !projectContext}
+      {skillLibraryScope === skillScopeKey && projectContext ? (
+        <ProjectSkillPicker key={`project:${skillScopeKey}`}
+          resources={(activeProject?.resources ?? []).flatMap((resource) => resource.type === "skill" ? [{
+            id: resource.resourceId, name: resource.label, description: resource.description ?? "", available: resource.available
+          }] : [])}
+          includedSkills={composer.assistant.selected?.includedSkills ?? []}
+          selectedSkills={selectedSkills}
+          state={workspace.projects.syncState === "error" ? "error" : activeProject
+            ? "ready" : workspace.projects.syncState === "syncing" ? "loading" : "unavailable"}
+          onRetry={() => void workspace.projects.actions.retrySync()}
+          onClose={() => setSkillLibraryScope(null)} onSelectionChange={selectManualSkills} restoreFocus={restoreSkillFocus}
+        />
+      ) : null}
+      <SkillLibraryOverlayV2 key={`personal:${skillScopeKey}`}
+        open={skillLibraryScope === skillScopeKey && !projectContext}
+        includedSkills={composer.assistant.selected?.includedSkills}
+        selectedSkills={selectedSkills}
         selectedIds={selectedSkills.map((skill) => skill.id)}
-        onClose={() => setSkillLibraryOpen(false)}
-        onSelectionChange={(ids) => {
-            const catalogById = new Map(
-              (skillCatalog?.skills ?? []).map((skill) => [skill.id, skill] as const)
-            );
-            const selectedById = new Map(selectedSkills.map((skill) => [skill.id, skill] as const));
-            useComposerControlStore.getState().setSelectedSkills(ids.flatMap((id) => {
-              const skill = catalogById.get(id);
-              if (skill) {
-                return !skill.archived ? [{
-                  description: skill.description,
-                  id: skill.id,
-                  name: skill.name,
-                  promptCharacterCount: skill.instructionCharacterCount
-                }] : [];
-              }
-              const selected = selectedById.get(id);
-              return selected ? [selected] : [];
-            }));
-        }}
+        onClose={() => setSkillLibraryScope(null)}
+        onSelectionChange={selectManualSkills} restoreFocus={restoreSkillFocus}
       />
 
       <CreateProjectDialogV2 controller={workspace.projects} />

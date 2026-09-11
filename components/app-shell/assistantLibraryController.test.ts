@@ -193,10 +193,7 @@ function controllerInput(): AssistantLibraryControllerInput {
     openMcpSettings: vi.fn(),
     retryCatalog: vi.fn(),
     retryKnowledge: vi.fn(),
-    retrySkills: vi.fn(),
     setShellNotice: vi.fn(),
-    skillDataError: null,
-    skillDataState: "ready",
     skills: []
   };
 }
@@ -217,6 +214,7 @@ function installEditor(options: { busy?: boolean } = {}) {
       fieldErrors: null,
       expectedVersion: 3,
       publications: [],
+      selectedSkills: [],
       saving: false
     },
     open: true,
@@ -240,7 +238,7 @@ beforeEach(() => {
 });
 
 describe("assistantLibraryController", () => {
-  it("loads Skill options lazily and prefills manual Skills from the current setup", () => {
+  it("prefills ordered manual Skill metadata from the current setup without loading instructions", () => {
     useComposerControlStore.setState({
       selectedSkills: [{
         description: "Review carefully",
@@ -259,10 +257,10 @@ describe("assistantLibraryController", () => {
 
     actions.openNewAssistantFromCurrentSetup();
 
-    expect(input.retrySkills).toHaveBeenCalledOnce();
     expect(useAssistantLibraryStore.getState()).toMatchObject({
       editor: {
-        draft: { skillIds: ["skill-review", "skill-actions"] }
+        draft: { skillIds: ["skill-review", "skill-actions"] },
+        selectedSkills: [{ id: "skill-review", name: "Reviewer" }, { id: "skill-actions", name: "Action closer" }]
       },
       task: "editor"
     });
@@ -548,6 +546,7 @@ describe("assistantLibraryController", () => {
         fieldErrors: null,
         expectedVersion: null,
         publications: null,
+        selectedSkills: [],
         saving: false
       },
       open: true,
@@ -574,7 +573,35 @@ describe("assistantLibraryController", () => {
     );
   });
 
-  it("resolves ordered Assistant Skill names only when the Assistant is used", async () => {
+  it("keeps authorized off-page names and removable unavailable selections while editing across pages", async () => {
+    useAssistantLibraryStore.getState().patch({ open: true });
+    mocks.fetchAssistantDetail.mockResolvedValue({ ok: true, data: {
+      ...detail(), content: { ...content(), skillIds: ["off-page", "revoked"] },
+      skills: [{ id: "off-page", name: "Older workflow" }, { id: "revoked", name: "Unavailable Skill" }]
+    } });
+    const input = controllerInput();
+    const actions = createAssistantLibraryActions(input);
+    await actions.openAssistantEditor("assistant-1");
+    const editor = () => buildAssistantLibraryView(input, actions, useAssistantLibraryStore.getState())!.editor!;
+    expect(editor().options.selectedSkills).toEqual([
+      { id: "off-page", name: "Older workflow" }, { id: "revoked", name: "Unavailable Skill" }
+    ]);
+    editor().onChange({ description: "Keep this draft" });
+    input.skills = [{ id: "next-page", name: "Page two", description: "", archived: false,
+      owned: true, ownerDisplayName: "Owner", instructionCharacterCount: 50,
+      scope: { kind: "owner" }, updatedAt: "2026-09-11T00:00:00Z", version: 1 }];
+    editor().onChange({ skillIds: ["off-page", "revoked", "next-page"] });
+    input.skills = [];
+    editor().onChange({ skillIds: ["off-page", "next-page"] });
+    expect(editor().options.selectedSkills).toEqual([
+      { id: "off-page", name: "Older workflow" }, { id: "next-page", name: "Page two" }
+    ]);
+    expect(editor().draft.description).toBe("Keep this draft");
+    expect(editor().draft.skillIds).toEqual(["off-page", "next-page"]);
+    expect(mocks.fetchAssistantDetail).toHaveBeenCalledOnce();
+  });
+
+  it("resolves ordered Assistant Skill names when the Assistant is used", async () => {
     mocks.fetchAssistantDetail.mockResolvedValue({
       data: {
         ...detail(),
@@ -630,6 +657,7 @@ describe("assistantLibraryController", () => {
           fieldErrors: null,
           expectedVersion: 9,
           publications: [],
+          selectedSkills: [],
           saving: false
         },
         task: "editor"

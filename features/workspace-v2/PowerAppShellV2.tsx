@@ -1,5 +1,7 @@
 "use client";
 
+import { useChatTitleReconciliation } from "@/components/app-shell/useChatTitleReconciliation";
+
 import { decodeAnswerSoundPreferences, DEFAULT_ANSWER_SOUND } from "@/lib/contracts/answerSound";
 
 import { toolActivityOriginV2 } from "@/features/run-lifecycle-v2/runPresentation";
@@ -63,10 +65,7 @@ import {
 } from "@/components/app-shell/knowledgeLibraryController";
 import { useKnowledgeLibraryStore } from "@/components/app-shell/knowledgeLibraryStore";
 import { fetchKnowledgeSources } from "@/components/knowledge/knowledgeApi";
-import {
-  refreshSkillLibrary,
-  useSkillLibraryStore
-} from "@/components/app-shell/skillLibraryStore";
+import { useSkillLibraryStore } from "@/components/app-shell/skillLibraryStore";
 import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
 import { deactivateMcpSettings } from "@/components/app-shell/mcpSettingsStore";
 import { useMcpOAuthReturn } from "./useMcpOAuthReturn";
@@ -809,6 +808,7 @@ export function PowerAppShellV2({
     setSelectedSearchPlan,
     workspaceRefreshPromiseRef
   });
+  useChatTitleReconciliation({ accountId, chats });
   useWorkspaceOutputReconciliation({
     accountId, chatId: activeChatId, messages: visibleMessages,
     projectId: activeChat?.projectId, sessionState: activeChat?.workspace?.sessionState,
@@ -977,12 +977,7 @@ export function PowerAppShellV2({
     },
     retryCatalog: () => void retryCatalog(),
     retryKnowledge: () => void knowledgeLibraryActions.refreshList(),
-    retrySkills: () => void refreshSkillLibrary(true).catch(() => undefined),
     setShellNotice: setNotice,
-    skillDataError: skillSnapshot.error,
-    skillDataState: skillSnapshot.loadState === "error"
-      ? "error"
-      : skillSnapshot.loadState === "ready" ? "ready" : "loading",
     skills: skillSnapshot.data?.skills ?? []
   });
 
@@ -2027,12 +2022,7 @@ export function PowerAppShellV2({
         },
         retryCatalog: () => void retryCatalog(),
         retryKnowledge: () => void knowledgeLibraryActions.refreshList(),
-        retrySkills: () => void refreshSkillLibrary(true).catch(() => undefined),
         setShellNotice: setNotice,
-        skillDataError: skillSnapshot.error,
-        skillDataState: skillSnapshot.loadState === "error"
-          ? "error"
-          : skillSnapshot.loadState === "ready" ? "ready" : "loading",
         skills: skillSnapshot.data?.skills ?? []
       },
       assistantLibraryActions,

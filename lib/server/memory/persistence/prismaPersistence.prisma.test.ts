@@ -11,6 +11,7 @@ import {
 } from "../../../contracts/memoryActionIntent";
 import { textMessageContent } from "../../../domain/content";
 import { MEMORY_DECAY_POLICY_VERSION } from "../../../domain/memory/retrieval";
+import { MEMORY_SYNTHESIS_POLICY_VERSION } from "../synthesis/policy";
 import {
   MEMORY_UTILITY_EGRESS_POLICY_VERSION,
   resolveCurrentMemoryUtilityPolicy
@@ -554,62 +555,41 @@ describe("Prisma Memory persistence", () => {
     }
   });
 
-  it("persists reversible versioned decay opt-in without resetting its policy", async () => {
-    const userId = await createActiveUser("settings-decay");
+  it("initializes all five preferences and preserves reversible decay choices", async () => {
+    const createdAfter = new Date();
+    const userId = await createActiveUser("settings-defaults");
     const repository = createPrismaMemorySettingsRepository(prisma);
     try {
-      await expect(repository.get(userId)).resolves.toMatchObject({
-        decayEnabled: false,
-        decayPolicyVersion: null,
-        memoryRevision: 0,
-        settingsRevision: 0
+      const initial = await repository.get(userId);
+      expect(initial).toMatchObject({
+        useMemoryFacts: true, referenceChatHistory: true, learnAutomatically: true,
+        synthesisEnabled: true, synthesisPolicyVersion: MEMORY_SYNTHESIS_POLICY_VERSION,
+        lastSynthesisAt: null, decayEnabled: true, decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION,
+        memoryRevision: 0, settingsRevision: 0
       });
-      const enabled = await repository.patch(userId, {
-        decayEnabled: true,
-        expectedMemoryRevision: 0,
-        expectedSettingsRevision: 0
-      });
-      expect(enabled).toMatchObject({
-        decayEnabled: true,
-        decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION,
-        memoryRevision: 1,
-        settingsRevision: 1
-      });
+      expect(initial.synthesisEnabledAt!.getTime()).toBeGreaterThanOrEqual(createdAfter.getTime());
+      expect(initial.synthesisEnabledAt!.getTime()).toBeLessThanOrEqual(Date.now());
       const disabled = await repository.patch(userId, {
-        decayEnabled: false,
-        expectedMemoryRevision: enabled.memoryRevision,
-        expectedSettingsRevision: enabled.settingsRevision
+        decayEnabled: false, expectedMemoryRevision: 0, expectedSettingsRevision: 0
       });
       expect(disabled).toMatchObject({
-        decayEnabled: false,
-        decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION,
-        memoryRevision: 2,
-        settingsRevision: 2
+        decayEnabled: false, decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION, memoryRevision: 1, settingsRevision: 1
       });
+      await expect(repository.get(userId)).resolves.toMatchObject({ decayEnabled: false });
       const reenabled = await repository.patch(userId, {
-        decayEnabled: true,
-        expectedMemoryRevision: disabled.memoryRevision,
-        expectedSettingsRevision: disabled.settingsRevision
+        decayEnabled: true, expectedMemoryRevision: disabled.memoryRevision, expectedSettingsRevision: disabled.settingsRevision
       });
       expect(reenabled).toMatchObject({
-        decayEnabled: true,
-        decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION,
-        memoryRevision: 3,
-        settingsRevision: 3
+        decayEnabled: true, decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION, memoryRevision: 2, settingsRevision: 2
       });
       await expect(prisma.userMemorySettings.update({
-        data: { decayPolicyVersion: null },
-        where: { userId }
+        data: { decayPolicyVersion: null }, where: { userId }
       })).rejects.toThrow(/UserMemorySettings_decay_shape_check/u);
       await expect(repository.patch(userId, {
-        decayEnabled: true,
-        expectedMemoryRevision: reenabled.memoryRevision,
-        expectedSettingsRevision: reenabled.settingsRevision
+        decayEnabled: true, expectedMemoryRevision: reenabled.memoryRevision, expectedSettingsRevision: reenabled.settingsRevision
       })).resolves.toMatchObject({
-        decayEnabled: true,
-        decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION,
-        memoryRevision: reenabled.memoryRevision,
-        settingsRevision: reenabled.settingsRevision + 1
+        decayEnabled: true, decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION,
+        memoryRevision: reenabled.memoryRevision, settingsRevision: reenabled.settingsRevision + 1
       });
     } finally {
       await cleanupUser(userId);

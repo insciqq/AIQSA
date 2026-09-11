@@ -62,3 +62,41 @@ END $$;
 ROLLBACK;
 `;
 }
+
+export const CHAT_TITLE_ROLE_MIGRATION = "20260911184000_chat_title_model_role";
+
+export function chatTitleRoleAdoptionFixtureSql(): string {
+  return `
+INSERT INTO "ProviderConnection" (id, "displayName", family, "updatedAt")
+VALUES ('title-adoption-provider', 'Synthetic title provider', 'fake', now());
+INSERT INTO "ProviderModel" (id, "connectionId", provider, "modelId", "displayName", capabilities, "defaultParams", "updatedAt")
+VALUES ('title-adoption-model', 'title-adoption-provider', 'fake', 'fixture-title', 'Synthetic model', '{}', '{}', now());
+INSERT INTO "SystemModelPolicy" (id, "providerModelId", "reasoningEffort", version, "updatedAt")
+VALUES ('installation', 'title-adoption-model', 'low', 9, now())
+ON CONFLICT (id) DO UPDATE SET "providerModelId" = EXCLUDED."providerModelId", "reasoningEffort" = 'low', version = 9;
+`;
+}
+
+export function chatTitleRoleAdoptionProofSql(): string {
+  return `
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM "SystemModelPolicy" WHERE id = 'installation'
+    AND "chatTitleProviderModelId" = 'title-adoption-model' AND "chatTitleReasoningEffort" = 'low'
+    AND "providerModelId" = 'title-adoption-model' AND "reasoningEffort" = 'low' AND version = 9) THEN
+    RAISE EXCEPTION 'existing_title_destination_not_copied_once';
+  END IF;
+END $$;
+UPDATE "SystemModelPolicy" SET "chatTitleProviderModelId" = NULL, "chatTitleReasoningEffort" = NULL WHERE id = 'installation';
+UPDATE "SystemModelPolicy" SET "reasoningEffort" = 'high' WHERE id = 'installation';
+`;
+}
+
+export function chatTitleRoleClearProofSql(): string {
+  return `DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM "SystemModelPolicy" WHERE id = 'installation'
+    AND "chatTitleProviderModelId" IS NULL AND "chatTitleReasoningEffort" IS NULL
+    AND "providerModelId" = 'title-adoption-model' AND "reasoningEffort" = 'high') THEN
+    RAISE EXCEPTION 'explicit_title_clear_not_preserved';
+  END IF;
+END $$;`;
+}

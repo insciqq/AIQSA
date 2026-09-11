@@ -62,6 +62,23 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
 describe("provider request context budget", () => {
   afterEach(() => vi.unstubAllEnvs());
 
+  it("admits a large two-page native PDF while preserving reserves and genuine overflow rejection", () => {
+    const pdf = { byteSize: 19_088_864, extractedText: null, fileName: "two-pages.pdf", id: "pdf-1",
+      kind: "pdf" as const, metadata: { pdfPageCount: 2 }, mimeType: "application/pdf", status: "ready" as const };
+    const input = request({ attachments: [pdf], attachmentIds: [pdf.id], modelCapabilities: {
+      ...request().modelCapabilities, nativePdfInput: true, contextWindow: 1_050_000, defaultMaxOutputTokens: 65_536
+    } });
+    expect(calculateContextBudgetLimits({ contextWindow: 1_050_000, maxOutputTokens: 65_536 }).budgetTokens).toBe(879_464);
+    expect(applyProviderRequestContextBudget({ request: input })).toMatchObject({ ok: true });
+    for (const metadata of [{}, { pdfPageCount: 0 }, { pdfPageCount: 501 }]) {
+      expect(applyProviderRequestContextBudget({ request: { ...input, attachments: [{ ...pdf, metadata }] } }))
+        .toMatchObject({ ok: false, error: { code: "context_too_large" } });
+    }
+    expect(applyProviderRequestContextBudget({ request: { ...input,
+      modelCapabilities: { ...input.modelCapabilities, contextWindow: 1024, defaultMaxOutputTokens: 0 }
+    } })).toMatchObject({ ok: false, error: { code: "context_too_large" } });
+  });
+
   it("shares actual serialized tool/transcript measurements with the read-only session tool", () => {
     const base = request({ modelCapabilities: { ...request().modelCapabilities, contextWindow: 10000 } });
     const input = { ...base, tools: [sessionStatusTool], providerToolMessages: [{ role: "tool", content: "tool result" }] };
