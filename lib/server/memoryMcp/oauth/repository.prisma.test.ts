@@ -54,6 +54,141 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
     await prisma.$disconnect();
   });
 
+  it.each([false, true])("isolates both grant orders, reconsent, refresh and revocation (Hub first: %s)", async (hubFirst) => {
+    await withFixture(async ({ clientId, repository, userId }) => {
+      const client = (await repository.findClient(clientId))!;
+      const now = time("2026-09-03T01:00:00.000Z");
+      const memory = { resource: RESOURCE, capability: "memory:facts" as const };
+      const hub = { resource: `${RESOURCE}/hub`, capability: "mcp:hub" as const };
+      async function issue(authority: typeof memory | typeof hub) {
+        const codeHash = hashToken(randomUUID());
+        expect(await repository.approveAuthorization({ ...authority,
+          clientRecordId: client.id, codeChallenge: CHALLENGE, codeHash,
+          expiresAt: time("2026-09-03T01:05:00.000Z"), issuer: ISSUER,
+          now, redirectUri: REDIRECT_URI, userId
+        })).toBe(true);
+        const exchange = { ...authority, codeHash, clientId, codeChallenge: CHALLENGE,
+          redirectUri: REDIRECT_URI, issuer: ISSUER, now,
+          accessExpiresAt: time("2026-09-03T02:00:00.000Z"), accessTokenHash: hashToken(randomUUID()),
+          refreshExpiresAt: time("2026-10-03T01:00:00.000Z"), refreshTokenHash: hashToken(randomUUID()) };
+        // Substituting the audience must neither consume nor broaden the code.
+        expect(await repository.exchangeAuthorizationCode({ ...exchange,
+          ...(authority === memory ? hub : memory) })).toBe(false);
+        expect(await repository.exchangeAuthorizationCode(exchange)).toBe(true);
+        return exchange;
+      }
+      async function resolve(pair: Awaited<ReturnType<typeof issue>>, authority = pair) {
+        return repository.resolveAccessToken({ ...authority, issuer: ISSUER, now, tokenHash: pair.accessTokenHash });
+      }
+      async function refresh(pair: Awaited<ReturnType<typeof issue>>) {
+        const rotation = { ...pair, nextRefreshTokenHash: hashToken(randomUUID()),
+          presentedRefreshTokenHash: pair.refreshTokenHash, accessTokenHash: hashToken(randomUUID()) };
+        expect(await repository.rotateRefreshToken({ ...rotation,
+          ...(pair.capability === "mcp:hub" ? memory : hub) })).toBe("invalid");
+        expect(await repository.rotateRefreshToken(rotation)).toBe("rotated");
+        return { ...pair, accessTokenHash: rotation.accessTokenHash, refreshTokenHash: rotation.nextRefreshTokenHash };
+      }
+      const first = hubFirst ? hub : memory;
+      const second = hubFirst ? memory : hub;
+      const initialFirst = await issue(first);
+      let secondPair = await issue(second);
+      expect(await resolve(initialFirst)).toMatchObject({ userId, clientId, ...first });
+      expect(await resolve(secondPair)).toMatchObject({ userId, clientId, ...second });
+      expect(await resolve(initialFirst, secondPair)).toBeNull();
+      expect(await resolve(secondPair, initialFirst)).toBeNull();
+      let firstPair = await issue(first);
+      expect(await resolve(initialFirst)).toBeNull();
+      secondPair = await refresh(secondPair);
+      const oldSecond = secondPair;
+      secondPair = await issue(second);
+      expect(await resolve(oldSecond)).toBeNull();
+      firstPair = await refresh(firstPair);
+      const firstGrant = (await resolve(firstPair))!;
+      expect(await repository.revokeGrant({ grantId: firstGrant.grantId, now, userId })).toBe(true);
+      expect(await resolve(firstPair)).toBeNull();
+      secondPair = await refresh(secondPair);
+      firstPair = await issue(first);
+      const secondGrant = (await resolve(secondPair))!;
+      expect(await repository.revokeGrant({ grantId: secondGrant.grantId, now, userId })).toBe(true);
+      expect(await resolve(secondPair)).toBeNull();
+      expect(await resolve(firstPair)).not.toBeNull();
+      await prisma.user.update({ where: { id: userId }, data: { status: "disabled" } });
+      expect(await resolve(firstPair)).toBeNull();
+      expect(await repository.rotateRefreshToken({ ...firstPair,
+        presentedRefreshTokenHash: firstPair.refreshTokenHash,
+        nextRefreshTokenHash: hashToken(randomUUID()) })).toBe("invalid");
+      await prisma.user.delete({ where: { id: userId } });
+      expect(await resolve(firstPair)).toBeNull();
+    });
+  });
+
+  it("keeps previous-writer material Memory-only and rejects mutable or inconsistent snapshots", async () => {
+    await withFixture(async ({ clientId, repository, userId }) => {
+      const client = (await repository.findClient(clientId))!;
+      const now = time("2026-09-03T01:00:00.000Z");
+      // No new fields: this is the previous release's grant/family/token writer shape.
+      const grant = await prisma.inboundMcpOAuthGrant.create({
+        data: { userId, oauthClientId: client.id }
+      });
+      const legacyCode = await prisma.inboundMcpOAuthAuthorizationCode.create({ data: {
+        grantId: grant.id, oauthClientId: client.id, grantRevision: grant.revision,
+        codeHash: hashToken(randomUUID()), codeChallenge: CHALLENGE,
+        issuer: ISSUER, resource: RESOURCE, redirectUri: REDIRECT_URI,
+        expiresAt: time("2026-09-03T01:05:00.000Z")
+      } });
+      expect(await repository.approveAuthorization({
+        capability: "mcp:hub", resource: `${RESOURCE}/hub`, clientRecordId: client.id,
+        codeChallenge: CHALLENGE, codeHash: hashToken(randomUUID()),
+        expiresAt: legacyCode.expiresAt, issuer: ISSUER, now, redirectUri: REDIRECT_URI, userId
+      })).toBe(true);
+      const exchange = { clientId, codeHash: legacyCode.codeHash, codeChallenge: CHALLENGE,
+        issuer: ISSUER, resource: RESOURCE, redirectUri: REDIRECT_URI, now,
+        accessTokenHash: hashToken(randomUUID()), refreshTokenHash: hashToken(randomUUID()),
+        accessExpiresAt: time("2026-09-03T02:00:00.000Z"), refreshExpiresAt: time("2026-10-03T01:00:00.000Z") };
+      expect(await repository.exchangeAuthorizationCode({ ...exchange,
+        resource: `${RESOURCE}/hub`, capability: "mcp:hub" })).toBe(false);
+      expect(await repository.exchangeAuthorizationCode(exchange)).toBe(true);
+      await expect(prisma.inboundMcpOAuthAuthorizationCode.update({
+        where: { id: legacyCode.id }, data: { resourcePath: "/mcp/hub", capability: "mcp:hub" }
+      })).rejects.toThrow();
+      const family = await prisma.inboundMcpOAuthTokenFamily.create({ data: {
+        grantId: grant.id, grantRevision: grant.revision, issuer: ISSUER, resource: RESOURCE,
+        inactivityExpiresAt: time("2026-10-03T01:00:00.000Z")
+      } });
+      const tokenHash = hashToken(randomUUID());
+      const token = await prisma.inboundMcpOAuthToken.create({ data: {
+        familyId: family.id, kind: "ACCESS", tokenHash, expiresAt: time("2026-09-03T02:00:00.000Z")
+      } });
+      const query = { issuer: ISSUER, resource: RESOURCE, now, tokenHash };
+      expect(await repository.resolveAccessToken(query)).toMatchObject({ capability: "memory:facts", userId });
+      expect(await repository.resolveAccessToken({ ...query, resource: `${RESOURCE}/hub`, capability: "mcp:hub" })).toBeNull();
+      for (const table of ["InboundMcpOAuthGrant", "InboundMcpOAuthTokenFamily", "InboundMcpOAuthToken"]) {
+        const id = table === "InboundMcpOAuthGrant" ? grant.id : table === "InboundMcpOAuthTokenFamily" ? family.id : token.id;
+        await expect(prisma.$executeRawUnsafe(
+          `UPDATE "${table}" SET "resourcePath"='/mcp/hub', "capability"='mcp:hub' WHERE "id"=$1`, id
+        )).rejects.toThrow();
+      }
+      await expect(prisma.inboundMcpOAuthToken.create({ data: {
+        familyId: family.id, kind: "ACCESS", tokenHash: hashToken(randomUUID()),
+        resourcePath: "/mcp/hub", capability: "mcp:hub", expiresAt: token.expiresAt
+      } })).rejects.toThrow();
+      const refreshTokenHash = hashToken(randomUUID());
+      await prisma.inboundMcpOAuthToken.create({ data: {
+        familyId: family.id, kind: "REFRESH", tokenHash: refreshTokenHash, expiresAt: family.inactivityExpiresAt
+      } });
+      const rotation = { issuer: ISSUER, resource: RESOURCE, clientId, now,
+        presentedRefreshTokenHash: refreshTokenHash, nextRefreshTokenHash: hashToken(randomUUID()),
+        accessTokenHash: hashToken(randomUUID()), accessExpiresAt: token.expiresAt,
+        refreshExpiresAt: family.inactivityExpiresAt };
+      expect(await repository.rotateRefreshToken(rotation)).toBe("rotated");
+      // Wrong resource replay must not revoke a valid Memory family.
+      expect(await repository.rotateRefreshToken({ ...rotation, resource: `${RESOURCE}/hub`, capability: "mcp:hub" })).toBe("invalid");
+      expect(await repository.resolveAccessToken(query)).not.toBeNull();
+      expect(await repository.rotateRefreshToken(rotation)).toBe("reused");
+      expect(await repository.resolveAccessToken(query)).toBeNull();
+    });
+  });
+
   it("consumes one code, rotates refresh tokens, and revokes on reuse", async () => {
     await withFixture(async ({ clientId, repository, userId }) => {
       const approvedAt = time("2026-09-03T01:00:00.000Z");

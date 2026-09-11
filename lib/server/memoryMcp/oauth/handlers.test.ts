@@ -93,6 +93,30 @@ function formRequest(url: string, body: URLSearchParams, origin = "http://localh
 }
 
 describe("inbound Memory MCP OAuth HTTP handlers", () => {
+  it.each([undefined, "mcp:hub"])("shows explicit Hub rights and preserves scope %s in consent", async (scope) => {
+    const oauth = service();
+    const handlers = createInboundMcpAuthorizationHandlers({
+      getConfig: () => config, resolveAuth: async () => authSession(), service: oauth as never
+    });
+    const url = authorizationUrl();
+    url.searchParams.set("resource", "http://localhost:3000/mcp/hub");
+    if (scope) url.searchParams.set("scope", scope);
+    const response = await handlers.GET(new Request(url));
+    const html = await response.text();
+    expect(html).toContain("Connect MCP Hub?");
+    expect(html).toContain("Tools may change data");
+    expect(html).toContain("including integrations you enable later");
+    expect(html).toContain("does not provide access to chats, Personal Memory");
+    expect(html).toContain("revoke this Hub permission separately");
+    expect(html.includes('name="scope" value="mcp:hub"')).toBe(Boolean(scope));
+    url.searchParams.set("consent_token", `abcdefghi.${"A".repeat(43)}`);
+    url.searchParams.set("decision", "approve");
+    expect((await handlers.POST(formRequest(url.origin + url.pathname, url.searchParams))).status).toBe(303);
+    expect(oauth.approveAuthorization).toHaveBeenCalledWith(expect.objectContaining({
+      request: expect.objectContaining({ resource: "http://localhost:3000/mcp/hub", ...(scope ? { scope } : {}) })
+    }));
+  });
+
   it("renders bounded consent and redirects an approved request with state and issuer", async () => {
     const oauth = service();
     const handlers = createInboundMcpAuthorizationHandlers({

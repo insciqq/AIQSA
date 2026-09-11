@@ -1,0 +1,18 @@
+import { defaultInboundMcpOAuthConfiguration } from "@/lib/server/memoryMcp/oauth/default";
+import { inboundMcpProtectedResourceMetadata } from "@/lib/server/memoryMcp/oauth/service";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export function GET(): Response {
+  return Response.json(
+    inboundMcpProtectedResourceMetadata(defaultInboundMcpOAuthConfiguration, "/mcp/hub"),
+    {
+      headers: {
+        "access-control-allow-origin": "*",
+        "cache-control": "public, max-age=300",
+        "content-type": "application/json"
+      }
+    }
+  );
+}

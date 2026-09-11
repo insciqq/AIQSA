@@ -156,6 +156,7 @@ function authorizationFields(
     hidden("code_challenge", request.codeChallenge),
     hidden("code_challenge_method", "S256"),
     hidden("resource", request.resource),
+    ...(request.scope ? [hidden("scope", request.scope)] : []),
     ...(request.state === null ? [] : [hidden("state", request.state)]),
     hidden("consent_token", consentToken)
   ].join("");
@@ -168,15 +169,21 @@ function authorizationPage(input: Readonly<{
   installation: string;
   request: InboundMcpAuthorizationRequest;
 }>): Response {
+  const isHub = new URL(input.request.resource).pathname === "/mcp/hub";
+  const resourceName = isHub ? "MCP Hub" : "Personal Memory";
+  const rights = isHub
+    ? `<p>This app can search and call MCP tools you are allowed to use and have enabled in AIQSA.</p>
+<ul><li>Tools may change data when permitted by your MCP settings.</li><li>Access follows your current permissions and enabled connections, including integrations you enable later.</li><li>This permission does not provide access to chats, Personal Memory, or other internal AIQSA data.</li><li>You can revoke this Hub permission separately in Connected Apps.</li></ul>`
+    : `<p>This app can read, add, change, and delete your Personal Memory facts.</p>
+<ul><li>Chat history is not available through this connection.</li><li>The app decides when to call Memory tools; AIQSA does not answer on its behalf.</li><li>You can revoke access later in Connected Apps. Your facts will remain.</li></ul>`;
   const body = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Connect Personal Memory · AIQSA</title>
+<title>Connect ${resourceName} · AIQSA</title>
 <style>body{margin:0;background:#0c1018;color:#eef2ff;font:16px/1.5 system-ui,sans-serif}main{max-width:36rem;margin:8vh auto;padding:2rem;border:1px solid #30394b;border-radius:1rem;background:#151b27}h1{margin-top:0;font-size:1.6rem}p,li{color:#c7cfdf}.client{padding:1rem;border-radius:.75rem;background:#0e1420}.origin{font-family:ui-monospace,monospace;font-size:.85rem;overflow-wrap:anywhere}form{display:flex;gap:.75rem;margin-top:1.5rem}button{border:0;border-radius:.65rem;padding:.75rem 1.1rem;font:inherit;cursor:pointer}.approve{background:#8fb4ff;color:#08111f}.cancel{background:#2a3344;color:#eef2ff}</style></head>
-<body><main><p>AIQSA · ${htmlEscape(input.installation)}</p><h1>Connect Personal Memory?</h1>
+<body><main><p>AIQSA · ${htmlEscape(input.installation)}</p><h1>Connect ${resourceName}?</h1>
 <div class="client"><strong>${htmlEscape(input.clientName)}</strong><div class="origin">${htmlEscape(input.clientOrigin)}</div></div>
 <p>Callback host: <span class="origin">${htmlEscape(new URL(input.request.redirectUri).hostname)}</span></p>
-<p>This app can read, add, change, and delete your Personal Memory facts.</p>
-<ul><li>Chat history is not available through this connection.</li><li>The app decides when to call Memory tools; AIQSA does not answer on its behalf.</li><li>You can revoke access later in Connected Apps. Your facts will remain.</li></ul>
+${rights}
 <form method="post" action="/oauth/authorize">${authorizationFields(input.request, input.consentToken)}
 <button class="approve" type="submit" name="decision" value="approve">Approve</button>
 <button class="cancel" type="submit" name="decision" value="cancel">Cancel</button></form></main></body></html>`;

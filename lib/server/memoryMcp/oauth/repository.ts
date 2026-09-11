@@ -5,6 +5,7 @@ import type {
   PrismaClient
 } from "@prisma/client";
 import { registeredRedirectUriMatches } from "./contracts";
+import { inboundMcpResourceAuthority, type InboundMcpCapability } from "./resources";
 
 export type InboundMcpOAuthClientRecord = Readonly<{
   applicationType: InboundMcpOAuthApplicationType;
@@ -24,6 +25,8 @@ export type InboundMcpConnectedApp = Readonly<{
   clientOrigin: string;
   connectedAt: Date;
   grantId: string;
+  resourcePath: "/mcp" | "/mcp/hub";
+  capability: InboundMcpCapability;
   lastUsedAt: Date | null;
   revokedAt: Date | null;
   state: "ACTIVE" | "REVOKED";
@@ -39,6 +42,7 @@ export type InboundMcpOAuthRepository = Readonly<{
     now: Date;
     redirectUri: string;
     resource: string;
+    capability?: InboundMcpCapability;
     userId: string;
   }>): Promise<boolean>;
   createDynamicClient(input: InboundMcpOAuthClientWrite): Promise<InboundMcpOAuthClientRecord>;
@@ -49,8 +53,11 @@ export type InboundMcpOAuthRepository = Readonly<{
     issuer: string;
     now: Date;
     resource: string;
+    capability?: InboundMcpCapability;
     tokenHash: string;
   }>): Promise<Readonly<{
+    capability: InboundMcpCapability;
+    resource: string;
     clientId: string;
     expiresAt: Date;
     grantId: string;
@@ -98,6 +105,7 @@ export type InboundMcpAuthorizationCodeExchange = IssuedTokenHashes & Readonly<{
   now: Date;
   redirectUri: string;
   resource: string;
+  capability?: InboundMcpCapability;
 }>;
 
 export type InboundMcpRefreshTokenRotation = Readonly<{
@@ -110,6 +118,7 @@ export type InboundMcpRefreshTokenRotation = Readonly<{
   presentedRefreshTokenHash: string;
   refreshExpiresAt: Date;
   resource: string;
+  capability?: InboundMcpCapability;
 }>;
 
 function clientRecord(input: Readonly<{
@@ -169,6 +178,24 @@ async function markRefreshReuse(
   });
 }
 
+function requestedAuthority(input: Readonly<{
+  issuer: string;
+  resource: string;
+  capability?: InboundMcpCapability;
+}>) {
+  const authority = inboundMcpResourceAuthority(input.issuer, input.resource);
+  return authority && authority.capability === (input.capability ?? "memory:facts")
+    ? authority : null;
+}
+
+function matchesAuthority(
+  snapshot: Readonly<{ resourcePath: string; capability: string }>,
+  authority: Readonly<{ resourcePath: string; capability: string }>
+): boolean {
+  return snapshot.resourcePath === authority.resourcePath &&
+    snapshot.capability === authority.capability;
+}
+
 function activeGrant(input: Readonly<{
   grant: Readonly<{
     revision: number;
@@ -188,6 +215,8 @@ export function createPrismaInboundMcpOAuthRepository(
   return Object.freeze({
     approveAuthorization(input) {
       return prisma.$transaction(async (tx) => {
+        const authority = requestedAuthority(input);
+        if (!authority) return false;
         const [client, user] = await Promise.all([
           tx.inboundMcpOAuthClient.findUnique({
             select: { applicationType: true, id: true, redirectUris: true },
@@ -208,7 +237,8 @@ export function createPrismaInboundMcpOAuthRepository(
         const existing = await tx.inboundMcpOAuthGrant.findUnique({
           select: { id: true, revision: true },
           where: {
-            userId_oauthClientId: {
+            userId_oauthClientId_resourcePath: {
+              resourcePath: authority.resourcePath,
               oauthClientId: client.id,
               userId: user.id
             }
@@ -235,6 +265,8 @@ export function createPrismaInboundMcpOAuthRepository(
         } else {
           grant = await tx.inboundMcpOAuthGrant.create({
             data: {
+              capability: authority.capability,
+              resourcePath: authority.resourcePath,
               client: { connect: { id: client.id } },
               connectedAt: input.now,
               createdAt: input.now,
@@ -246,6 +278,8 @@ export function createPrismaInboundMcpOAuthRepository(
         }
         await tx.inboundMcpOAuthAuthorizationCode.create({
           data: {
+            capability: authority.capability,
+            resourcePath: authority.resourcePath,
             codeChallenge: input.codeChallenge,
             codeHash: input.codeHash,
             createdAt: input.now,
@@ -287,6 +321,8 @@ export function createPrismaInboundMcpOAuthRepository(
 
     exchangeAuthorizationCode(input) {
       return prisma.$transaction(async (tx) => {
+        const authority = requestedAuthority(input);
+        if (!authority) return false;
         const code = await tx.inboundMcpOAuthAuthorizationCode.findUnique({
           include: {
             client: { select: { clientId: true, id: true } },
@@ -303,6 +339,7 @@ export function createPrismaInboundMcpOAuthRepository(
           code.codeChallenge !== input.codeChallenge ||
           code.redirectUri !== input.redirectUri || code.issuer !== input.issuer ||
           code.resource !== input.resource ||
+          !matchesAuthority(code, authority) || !matchesAuthority(code.grant, authority) ||
           !activeGrant({ grant: code.grant, grantRevision: code.grantRevision })) {
           return false;
         }
@@ -313,6 +350,8 @@ export function createPrismaInboundMcpOAuthRepository(
         if (consumed.count !== 1) return false;
         const family = await tx.inboundMcpOAuthTokenFamily.create({
           data: {
+            capability: code.capability,
+            resourcePath: code.resourcePath,
             grantId: code.grantId,
             grantRevision: code.grantRevision,
             createdAt: input.now,
@@ -328,12 +367,16 @@ export function createPrismaInboundMcpOAuthRepository(
           data: [{
             createdAt: input.now,
             expiresAt: input.accessExpiresAt,
+            capability: code.capability,
+            resourcePath: code.resourcePath,
             familyId: family.id,
             kind: "ACCESS",
             tokenHash: input.accessTokenHash
           }, {
             createdAt: input.now,
             expiresAt: input.refreshExpiresAt,
+            capability: code.capability,
+            resourcePath: code.resourcePath,
             familyId: family.id,
             kind: "REFRESH",
             tokenHash: input.refreshTokenHash
@@ -366,6 +409,8 @@ export function createPrismaInboundMcpOAuthRepository(
         orderBy: [{ connectedAt: "desc" }, { id: "desc" }],
         select: {
           client: { select: { clientName: true, clientOrigin: true } },
+          capability: true,
+          resourcePath: true,
           connectedAt: true,
           id: true,
           lastUsedAt: true,
@@ -375,6 +420,8 @@ export function createPrismaInboundMcpOAuthRepository(
         where: { userId }
       });
       return grants.map((grant) => ({
+        capability: grant.capability as InboundMcpCapability,
+        resourcePath: grant.resourcePath as "/mcp" | "/mcp/hub",
         clientName: grant.client.clientName,
         clientOrigin: grant.client.clientOrigin,
         connectedAt: grant.connectedAt,
@@ -387,6 +434,8 @@ export function createPrismaInboundMcpOAuthRepository(
 
     resolveAccessToken(input) {
       return prisma.$transaction(async (tx) => {
+        const authority = requestedAuthority(input);
+        if (!authority) return null;
         const token = await tx.inboundMcpOAuthToken.findUnique({
           include: {
             family: {
@@ -405,6 +454,8 @@ export function createPrismaInboundMcpOAuthRepository(
         if (!token || token.kind !== "ACCESS" || token.expiresAt <= input.now ||
           token.family.revokedAt || token.family.inactivityExpiresAt <= input.now ||
           token.family.issuer !== input.issuer || token.family.resource !== input.resource ||
+          !matchesAuthority(token, authority) || !matchesAuthority(token.family, authority) ||
+          !matchesAuthority(token.family.grant, authority) ||
           !activeGrant({
             grant: token.family.grant,
             grantRevision: token.family.grantRevision
@@ -428,6 +479,8 @@ export function createPrismaInboundMcpOAuthRepository(
           })
         ]);
         return {
+          capability: authority.capability,
+          resource: authority.resource,
           clientId: token.family.grant.client.clientId,
           expiresAt: token.expiresAt,
           grantId: token.family.grantId,
@@ -478,6 +531,8 @@ export function createPrismaInboundMcpOAuthRepository(
 
     rotateRefreshToken(input) {
       return prisma.$transaction(async (tx) => {
+        const authority = requestedAuthority(input);
+        if (!authority) return "invalid";
         const token = await tx.inboundMcpOAuthToken.findUnique({
           include: {
             family: {
@@ -494,14 +549,16 @@ export function createPrismaInboundMcpOAuthRepository(
           where: { tokenHash: input.presentedRefreshTokenHash }
         });
         if (!token || token.kind !== "REFRESH" ||
-          token.family.grant.client.clientId !== input.clientId) return "invalid";
+          token.family.grant.client.clientId !== input.clientId ||
+          token.family.issuer !== input.issuer || token.family.resource !== input.resource ||
+          !matchesAuthority(token, authority) || !matchesAuthority(token.family, authority) ||
+          !matchesAuthority(token.family.grant, authority)) return "invalid";
         if (token.consumedAt) {
           await markRefreshReuse(tx, token.familyId, input.now);
           return "reused";
         }
         if (token.expiresAt <= input.now || token.family.revokedAt ||
           token.family.inactivityExpiresAt <= input.now ||
-          token.family.issuer !== input.issuer || token.family.resource !== input.resource ||
           !activeGrant({
             grant: token.family.grant,
             grantRevision: token.family.grantRevision
@@ -518,12 +575,16 @@ export function createPrismaInboundMcpOAuthRepository(
           data: [{
             createdAt: input.now,
             expiresAt: input.accessExpiresAt,
+            capability: token.capability,
+            resourcePath: token.resourcePath,
             familyId: token.familyId,
             kind: "ACCESS",
             tokenHash: input.accessTokenHash
           }, {
             createdAt: input.now,
             expiresAt: input.refreshExpiresAt,
+            capability: token.capability,
+            resourcePath: token.resourcePath,
             familyId: token.familyId,
             kind: "REFRESH",
             tokenHash: input.nextRefreshTokenHash

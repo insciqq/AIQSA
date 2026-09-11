@@ -28,6 +28,8 @@ function activeApp() {
     clientOrigin: "https://chatgpt.com",
     connectedAt,
     grantId: "grant-1",
+    resourcePath: "/mcp" as const,
+    capability: "memory:facts" as const,
     lastUsedAt,
     revokedAt: null,
     state: "ACTIVE" as const
@@ -51,6 +53,8 @@ describe("Memory MCP Connected Apps handlers", () => {
     await expect(response.json()).resolves.toEqual({
       apps: [{
         connectionId: "grant-1",
+        resourcePath: "/mcp",
+        capability: "memory:facts",
         clientName: "Codex CLI",
         clientOrigin: "https://chatgpt.com",
         connectedAt: connectedAt.toISOString(),

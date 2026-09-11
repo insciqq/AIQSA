@@ -43,6 +43,8 @@ const isoTimestampSchema = z.string().max(64).refine((value) => {
 
 export const memoryMcpConnectedAppSchema = z.strictObject({
   connectionId: connectionIdSchema,
+  resourcePath: z.enum(["/mcp", "/mcp/hub"]),
+  capability: z.enum(["memory:facts", "mcp:hub"]),
   clientName: clientNameSchema,
   clientOrigin: clientOriginSchema,
   connectedAt: isoTimestampSchema,
@@ -50,6 +52,9 @@ export const memoryMcpConnectedAppSchema = z.strictObject({
   revokedAt: isoTimestampSchema.nullable(),
   state: z.enum(["ACTIVE", "REVOKED"])
 }).superRefine((app, context) => {
+  if ((app.resourcePath === "/mcp") !== (app.capability === "memory:facts")) {
+    context.addIssue({ code: "custom", message: "resource capability mismatch" });
+  }
   if (app.state === "ACTIVE" && app.revokedAt !== null) {
     context.addIssue({ code: "custom", message: "active app has revokedAt" });
   }
