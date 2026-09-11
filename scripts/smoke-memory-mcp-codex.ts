@@ -32,8 +32,6 @@ import { decodeMemoryMcpConnectedAppResponse } from
   "../lib/contracts/memoryMcpConnectedApps";
 import { hashPassword } from "../lib/server/auth/password";
 import { ensureFullAccessGroup } from "../lib/server/auth/fullAccessGroup";
-import { createAdminMemoryEgressService } from
-  "../lib/server/admin/memory/egressService";
 import { createMemoryConsumerRefService } from
   "../lib/server/memory/consumer/ref";
 import type { MemoryConsumerRefService } from
@@ -758,29 +756,6 @@ async function selectSyntheticEmbedding(
   });
   ensure(updated.embeddingProviderModelId === embedding.id, "semantic_index",
     "memory_mcp_smoke_embedding_selection_failed");
-  // Selecting a new Memory destination deliberately invalidates the global
-  // admin-consent fingerprint. Re-acknowledge that exact reviewed disposable
-  // profile before admitting the rebuild; this performs no provider call.
-  const administrator = await prisma.user.findFirst({
-    orderBy: { id: "asc" },
-    select: { id: true },
-    where: { role: "admin", status: "active" }
-  });
-  ensure(administrator, "semantic_index",
-    "memory_mcp_smoke_profile_administrator_missing");
-  const egress = createAdminMemoryEgressService(prisma, {
-    consentMode: "ADMIN"
-  });
-  const review = await egress.get();
-  if (review.reviewRequired) {
-    await egress.acknowledge(administrator.id, {
-      currentFingerprint: review.currentFingerprint,
-      expectedVersion: review.version
-    });
-  }
-  const accepted = await egress.get();
-  ensure(!accepted.reviewRequired, "semantic_index",
-    "memory_mcp_smoke_egress_review_incomplete");
   return embedding.id;
 }
 

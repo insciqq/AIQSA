@@ -52,6 +52,10 @@ import { WorkspaceRuntimeError } from "./runtime";
 import type { WorkspaceOperation } from "./operationFence";
 import { failWorkspaceExportsForLostDisk, lockWorkspaceSession, workspaceOperationWhere, workspaceRunOperationOwner } from "./sessionOperation";
 import { workspaceRunTools } from "./admission";
+import { decryptWorkspaceSecret, type AcceptedWorkspaceSecret } from "./secrets/store";
+import { saveWorkspaceBrowserSessions, type WorkspaceBrowserSaveInput } from "./secrets/browserStore";
+import { readWorkspaceBrowserCollection } from "./secrets/browserCollection";
+import type { WorkspaceBrowserSaveReport } from "./secrets/browserSession";
 import {
   namespacedWorkspaceToolName,
   workspaceToolNameFromNamespaced
@@ -144,6 +148,8 @@ export type WorkspaceCoordinatorRepository = Readonly<{
    */
   unregisteredCommands(input: Readonly<{ runId: string }>): Promise<number>;
   attachments(binding: WorkspaceExecutionBinding): Promise<readonly WorkspaceAttachmentRecord[]>;
+  personalSecrets(binding: WorkspaceExecutionBinding): Promise<readonly AcceptedWorkspaceSecret[]>;
+  saveBrowserSessions(input: WorkspaceBrowserSaveInput): Promise<WorkspaceBrowserSaveReport | null>;
   binding(input: Readonly<{ runId: string; userId: string }>): Promise<WorkspaceExecutionBinding | null>;
   claimExport(input: Readonly<{
     handoff?: boolean;
@@ -361,6 +367,20 @@ export function createPrismaWorkspaceCoordinatorRepository(
   }
 
   return {
+    saveBrowserSessions: (input) => saveWorkspaceBrowserSessions(prisma, input),
+    async personalSecrets(binding) {
+      const current = await loadBinding(binding.runId, binding.userId);
+      if (!current || current.operationOwner !== binding.operationOwner || current.operationGeneration !== binding.operationGeneration) {
+        throw new WorkspaceRuntimeError("workspace_operation_stale");
+      }
+      if (current.projectId) return [];
+      const owner = await prisma.user.findFirst({ select: { id: true }, where: { id: binding.userId, status: "active" } });
+      if (!owner) throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed");
+      const secrets = await prisma.workspaceRunSecret.findMany({
+        include: { value: true }, where: { modelRunId: binding.runId }, orderBy: { secretId: "asc" }
+      });
+      return secrets.map(({ value }) => decryptWorkspaceSecret(value, binding.userId));
+    },
     async unregisteredCommands({ runId }) {
       return prisma.modelRunToolCall.count({
         where: {
@@ -972,6 +992,8 @@ export type WorkspaceCoordinator = Readonly<{
     onActivity?: WorkspaceActivityListener;
     /** Captured by an export attempt; a retry must never adopt a successor. */
     operation?: WorkspaceOperation;
+    /** Export/recovery finalizers must not write personal session settings. */
+    skipBrowserSave?: boolean;
     outcome: WorkspaceSettlementOutcome;
     runId: string;
     userId: string;
@@ -1206,6 +1228,15 @@ export function createWorkspaceCoordinator(input: Readonly<{
           runId: binding.runId,
           startedAt
         });
+        try {
+          await input.runtime.syncPersonalSecrets({
+            secrets: await input.repository.personalSecrets(binding), modelRunId: binding.runId,
+            runtimeSandboxId: session.runtimeSandboxId, operation: ownedOperation(binding), sessionId: binding.sessionId, signal
+          });
+        } catch (error) {
+          if (error instanceof WorkspaceRuntimeError) throw error;
+          throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed");
+        }
         const attachments = await input.repository.attachments(binding);
         const prepareStartedAt = new Date();
         const prepareOrdinal = nextLifecycleOrdinal(binding.runId);
@@ -1477,6 +1508,35 @@ export function createWorkspaceCoordinator(input: Readonly<{
     });
   }
 
+  async function persistBrowserSessions(binding: WorkspaceExecutionBinding, signal: AbortSignal, handoffToken?: string): Promise<void> {
+    if (binding.projectId || !binding.runtimeSandboxId || !binding.operationOwner) return;
+    let collection: Awaited<ReturnType<WorkspaceRuntime["collectBrowserSessions"]>> | null = null;
+    try {
+      let contents: Awaited<ReturnType<typeof readWorkspaceBrowserCollection>>;
+      try {
+        collection = await input.runtime.collectBrowserSessions({ modelRunId: binding.runId, runtimeSandboxId: binding.runtimeSandboxId,
+          operation: ownedOperation(binding), sessionId: binding.sessionId, signal });
+        contents = await readWorkspaceBrowserCollection(collection, signal);
+      } catch {
+        if (signal.aborted) return;
+        contents = { files: [], skipped: ["browser_session_read_failed"] };
+      }
+      await input.repository.saveBrowserSessions({ ...contents, runId: binding.runId, userId: binding.userId,
+        sessionId: binding.sessionId, runtimeSandboxId: binding.runtimeSandboxId, operation: ownedOperation(binding), handoffToken, signal });
+    } catch {
+      // Cache failure must not fail an otherwise completed task or expose file data.
+      console.warn("workspace_browser_session_save_failed");
+    } finally {
+      if (collection) {
+        await Promise.allSettled(collection.files.map((file) => file.body.cancel()));
+        for (const batchId of new Set(collection.files.flatMap((file) => file.batchId ? [file.batchId] : []))) {
+          await input.runtime.releaseOutputs?.({ batchId, operation: ownedOperation(binding), runtimeSandboxId: binding.runtimeSandboxId,
+            sessionId: binding.sessionId, signal: AbortSignal.timeout(2_000) }).catch(() => undefined);
+        }
+      }
+    }
+  }
+
   async function ownedExecution(
     binding: WorkspaceExecutionBinding,
     execSessionId: unknown
@@ -1532,7 +1592,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
     accepts({ name, workspace }) {
       return workspace.enabled && workspaceToolNameFromNamespaced(name) !== null;
     },
-    async settle({ onActivity, operation: expectedOperation, outcome, runId, userId, workspace }) {
+    async settle({ onActivity, operation: expectedOperation, outcome, runId, userId, workspace, skipBrowserSave }) {
       const binding = await input.repository.binding({ runId, userId });
       const cached = initialized.get(runId);
       const expected = expectedOperation ?? (cached ? ownedOperation(cached) : null);
@@ -1546,6 +1606,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
         ? { ...binding, runtimeSandboxId: cached.runtimeSandboxId }
         : binding;
       let quiescence = await quiesceRun(current);
+      if (quiescence.proven && !skipBrowserSave && current.operationOwner === workspaceRunOperationOwner(runId)) {
+        await persistBrowserSessions(current, AbortSignal.timeout(10_000));
+      }
       try {
         const operation = { operation: ownedOperation(current), runtimeSandboxId: current.runtimeSandboxId, sessionId: current.sessionId };
         if (!input.runtime.claimSessionOperation || !input.runtime.retireSessionOperation) {
@@ -1878,6 +1941,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           }
         }
         await renew();
+        if (handoff) await persistBrowserSessions(binding, AbortSignal.any([exportSignal, AbortSignal.timeout(30_000)]), claim.token);
         const outputs = await input.runtime.collectOutputs({
           capture: { create: capture.create, id: capture.id },
           modelRunId: runId,
@@ -2004,7 +2068,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
             signal: AbortSignal.timeout(10_000)
           }).catch(() => undefined);
         }
-        await this.settle({ onActivity, operation: retirementOperation, outcome: "completed", runId, userId }).catch(() => undefined);
+        await this.settle({ onActivity, operation: retirementOperation, outcome: "completed", runId, userId, skipBrowserSave: true }).catch(() => undefined);
       }
     },
     async recoverExports({ limit, signal }) {

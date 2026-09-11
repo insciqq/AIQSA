@@ -11,6 +11,7 @@ export type UserSettingsWire = AnswerSoundPreferences & {
   /** Knowledge selection attached to new chats; null starts them without Knowledge. */
   defaultKnowledgePlan: KnowledgeSelection | null;
   defaultMcpMode: ChatDefaultMcpMode;
+  defaultWorkspaceEnabled?: boolean;
   hasPersonalModelDefault: boolean;
   modelPreferenceSource: "none" | "organization" | "personal";
   organizationModelDefault: { modelId: string; provider: string } | null;
@@ -59,6 +60,7 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   if (
     !answerSound ||
     !chatDefaults ||
+    (settings.defaultWorkspaceEnabled !== undefined && typeof settings.defaultWorkspaceEnabled !== "boolean") ||
     !isRecord(settings.defaultControlValues) ||
     typeof settings.hasPersonalModelDefault !== "boolean" ||
     (settings.modelPreferenceSource !== "none" &&
@@ -83,6 +85,7 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
       defaultControlValues: { ...settings.defaultControlValues },
       defaultKnowledgePlan: chatDefaults.knowledgePlan,
       defaultMcpMode: chatDefaults.mcpMode,
+      defaultWorkspaceEnabled: settings.defaultWorkspaceEnabled ?? false,
       hasPersonalModelDefault: settings.hasPersonalModelDefault,
       modelPreferenceSource: settings.modelPreferenceSource,
       organizationModelDefault: settings.organizationModelDefault,

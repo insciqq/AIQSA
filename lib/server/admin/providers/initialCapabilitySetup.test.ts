@@ -71,6 +71,29 @@ function fixture(adapterKind: AdminProviderDraftTesterInput["model"]["adapterKin
 }
 
 describe("universal initial capability setup", () => {
+  it("rechecks old Anthropic adapter_unsupported JSON receipts and preserves independent proofs and explicit settings", async () => {
+    const f = fixture("anthropic_messages");
+    const prior = (await f.tester.test(f.input)).evidence;
+    delete prior.structuredOutput;
+    prior.compatibility!.structuredOutput = "not_supported";
+    prior.capabilitySetup!.checks.structuredOutput = "unsupported";
+    prior.capabilitySetup!.attempts!.structuredOutput = { attempts: 0, status: "unsupported", reason: "adapter_unsupported" };
+    const reusable = reusableCapabilitySetupEvidence(prior, f.input.model)!;
+    expect(capabilitySetupIncomplete(reusable)).toBe(true);
+    f.calls.length = 0;
+    const result = await f.tester.test({ ...f.input, initialSetup: false, reuseSetupEvidence: prior });
+    expect(f.calls).toEqual(["json"]);
+    expect(result.evidence.capabilitySetup?.attempts?.structuredOutput).toEqual({ attempts: 1, status: "verified", reason: "verified" });
+    expect(result.evidence.structuredOutput).toMatchObject({ adapterKind: "anthropic_messages", verified: true });
+    for (const key of ["forcedToolCall", "parallelToolCalls", "visionInput", "pdfInput"] as const) {
+      expect(result.evidence[key]).toEqual(prior[key]);
+    }
+    expect(initiallyVerifiedModelConfiguration(f.input.model, result.evidence)).toEqual(f.input.model);
+    f.calls.length = 0;
+    await f.tester.test({ ...f.input, reuseSetupEvidence: result.evidence });
+    expect(f.calls).toEqual([]);
+  });
+
   it.each(["malformed_tool_call", "malformed_function_call"] as const)("retries Gemini %s through the native transport and keeps the other seven proofs", async (code) => {
     const f = fixture("gemini_interactions_native");
     let fail = true;

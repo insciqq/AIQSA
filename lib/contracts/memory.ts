@@ -50,9 +50,6 @@ export const MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE = 0.6;
 export const MEMORY_CHAT_MODES = ["NORMAL", "EXCLUDED", "TEMPORARY"] as const;
 export type MemoryChatMode = (typeof MEMORY_CHAT_MODES)[number];
 
-export const MEMORY_EGRESS_CONSENT_MODES = ["ADMIN", "PER_USER"] as const;
-export type MemoryEgressConsentMode = (typeof MEMORY_EGRESS_CONSENT_MODES)[number];
-
 export const MEMORY_SCOPE_TYPES = ["GLOBAL_USER", "FOLDER", "ASSISTANT", "CHAT"] as const;
 export type MemoryScopeType = (typeof MEMORY_SCOPE_TYPES)[number];
 
@@ -146,7 +143,7 @@ export const MEMORY_CONFIRMABLE_BULK_OPERATIONS = [
 export const MEMORY_REBUILD_STATES = [
   "QUEUED",
   "RUNNING",
-  "WAITING_FOR_EGRESS_CONSENT",
+  "WAITING_FOR_CONFIGURATION",
   "CATCHING_UP",
   "READY",
   "SUCCEEDED",
@@ -203,8 +200,6 @@ export const MEMORY_ERROR_CODES = [
   "memory_action_failed",
   "memory_intent_confirmation_required",
   "memory_undo_unavailable",
-  "memory_egress_consent_required",
-  "memory_egress_admin_owned",
   "memory_purge_blocked_requires_admin"
 ] as const;
 export type MemoryContractDecodeResult<T> =
@@ -221,14 +216,6 @@ const cursorSchema = z.string().min(1).max(MEMORY_CURSOR_MAX_LENGTH).refine(
   (value) => !/[\u0000-\u001f\u007f]/u.test(value),
   "invalid opaque cursor"
 ).nullable();
-const utilityEgressFingerprintSchema = z.string().trim().min(16).max(128).refine(
-  (value) => !/[\u0000-\u0020\u007f]/u.test(value),
-  "invalid utility egress fingerprint"
-);
-const utilityPolicyVersionSchema = z.string().trim().min(1).max(64).regex(
-  /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u,
-  "invalid utility policy version"
-);
 const safeText = (maxLength: number) => z.string().min(1).max(maxLength)
   .refine((value) => value.trim().length > 0, "text is blank")
   .refine((value) => !/\u0000/u.test(value), "text contains a null byte");
@@ -295,36 +282,15 @@ const memorySettingsPatchSchema = z.strictObject({
 
 export type MemorySettingsPatch = z.infer<typeof memorySettingsPatchSchema>;
 
-const memoryConsentInputSchema = z.strictObject({
-  confirmationCopyVersion: z.literal(MEMORY_CONFIRMATION_COPY_VERSION),
-  currentUtilityEgressFingerprint: utilityEgressFingerprintSchema,
-  currentUtilityPolicyVersion: utilityPolicyVersionSchema,
-  expectedMemoryConsentRevision: safeInteger,
-  expectedMemoryRevision: safeInteger,
-  expectedSettingsRevision: safeInteger
-});
-
-export type MemoryConsentInput = z.infer<typeof memoryConsentInputSchema>;
-
-export type MemorySettingsMutation =
-  | Readonly<{ kind: "accept_utility_egress"; value: MemoryConsentInput }>
-  | Readonly<{ kind: "patch"; value: MemorySettingsPatch }>;
+export type MemorySettingsMutation = Readonly<{ kind: "patch"; value: MemorySettingsPatch }>;
 
 export function decodeMemorySettingsMutation(
   value: unknown
 ): MemoryContractDecodeResult<MemorySettingsMutation> {
   const patch = memorySettingsPatchSchema.safeParse(value);
-  const consent = memoryConsentInputSchema.safeParse(value);
-  if (patch.success && !consent.success) {
-    return { ok: true, value: { kind: "patch", value: patch.data } };
-  }
-  if (consent.success && !patch.success) {
-    return {
-      ok: true,
-      value: { kind: "accept_utility_egress", value: consent.data }
-    };
-  }
-  return { code: "memory_contract_invalid", ok: false };
+  return patch.success
+    ? { ok: true, value: { kind: "patch", value: patch.data } }
+    : { code: "memory_contract_invalid", ok: false };
 }
 
 const mutationAuthorizationCommonSchema = z.strictObject({
@@ -587,18 +553,6 @@ const memorySettingsResponseSchema = z.strictObject({
     synthesisAvailable: z.boolean(),
     temporaryChats: z.boolean()
   }),
-  egress: z.strictObject({
-    acceptedAt: nullableTimestampSchema,
-    acceptedUtilityEgressFingerprint: utilityEgressFingerprintSchema.nullable(),
-    acceptedUtilityPolicyVersion: utilityPolicyVersionSchema.nullable(),
-    consentMode: z.enum(MEMORY_EGRESS_CONSENT_MODES),
-    currentUtilityEgressFingerprint: utilityEgressFingerprintSchema,
-    currentUtilityPolicyVersion: utilityPolicyVersionSchema,
-    embeddingDestination: safeText(256).nullable(),
-    remoteRerankerDestination: safeText(256).nullable(),
-    reviewRequired: z.boolean(),
-    systemModelDestination: safeText(256).nullable()
-  }),
   historyIndexing: z.strictObject({
     completedChats: safeInteger,
     state: z.enum(["DISABLED", "INDEXING", "READY"]),
@@ -612,7 +566,6 @@ const memorySettingsResponseSchema = z.strictObject({
       modelDisplayName: safeText(128)
     }).nullable(),
     learnAutomatically: z.boolean(),
-    memoryConsentRevision: safeInteger,
     memoryGeneration: safeInteger,
     memoryRevision: safeInteger,
     referenceChatHistory: z.boolean(),
@@ -623,23 +576,6 @@ const memorySettingsResponseSchema = z.strictObject({
     useMemoryFacts: z.boolean()
   })
 }).superRefine((value, context) => {
-  const accepted = value.egress.acceptedUtilityEgressFingerprint;
-  const acceptedPolicy = value.egress.acceptedUtilityPolicyVersion;
-  const acceptedAt = value.egress.acceptedAt;
-  if (
-    (accepted === null) !== (acceptedPolicy === null) ||
-    (accepted === null) !== (acceptedAt === null)
-  ) {
-    context.addIssue({ code: "custom", message: "accepted egress evidence is all-or-none" });
-  }
-  const reviewRequired = value.egress.consentMode === "PER_USER" && (
-    accepted === null ||
-    accepted !== value.egress.currentUtilityEgressFingerprint ||
-    acceptedPolicy !== value.egress.currentUtilityPolicyVersion
-  );
-  if (value.egress.reviewRequired !== reviewRequired) {
-    context.addIssue({ code: "custom", message: "utility egress review state mismatch" });
-  }
   if (value.historyIndexing.completedChats > value.historyIndexing.totalChats) {
     context.addIssue({ code: "custom", message: "history indexing progress exceeds total" });
   }

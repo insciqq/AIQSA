@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { createAdminMemoryEgressService } from
-  "../lib/server/admin/memory/egressService";
 import { defaultMemoryConsumerService } from
   "../lib/server/memory/consumer/defaultConsumer";
 import { memorySha256 } from "../lib/server/memory/persistence/lexical";
@@ -94,16 +92,6 @@ function syntheticSources(input: Readonly<{
   }));
 }
 
-async function acknowledgeCurrentEgress(userId: string): Promise<void> {
-  const egress = createAdminMemoryEgressService(prisma, { consentMode: "ADMIN" });
-  const snapshot = await egress.get();
-  if (!snapshot.reviewRequired) return;
-  await egress.acknowledge(userId, {
-    currentFingerprint: snapshot.currentFingerprint,
-    expectedVersion: snapshot.version
-  });
-}
-
 async function main(): Promise<void> {
   requireDisposableDevTarget();
   const userId = await resolveSmokeUserId();
@@ -119,7 +107,6 @@ async function main(): Promise<void> {
         synthesisEnabled: true
       });
     }
-    await acknowledgeCurrentEgress(userId);
 
     const settings = await prisma.userMemorySettings.findUniqueOrThrow({
       select: { memoryGeneration: true, memoryRevision: true },
@@ -227,7 +214,6 @@ async function main(): Promise<void> {
         synthesisEnabled: restoreSynthesis
       });
     }
-    await acknowledgeCurrentEgress(userId);
     await prisma.$disconnect();
   }
   if (!report) fail("memory_synthesis_smoke_report_missing");

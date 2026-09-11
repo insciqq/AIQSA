@@ -11,29 +11,17 @@ export const USER_MEMORY_HEALTH_STATES = [
   "BLOCKED_REQUIRES_ADMIN"
 ] as const;
 
-export const ADMIN_MEMORY_COUNT_BANDS = ["NONE", "SOME", "MANY", "UNKNOWN"] as const;
-export const ADMIN_MEMORY_LAG_BANDS = [
-  "NONE",
-  "UNDER_5_MINUTES",
-  "UNDER_15_MINUTES",
-  "UNDER_1_HOUR",
-  "UNDER_24_HOURS",
-  "OVER_24_HOURS",
-  "UNKNOWN"
-] as const;
-
 const safeCount = z.number().int().min(0).max(999);
 const timestamp = z.string().datetime();
 
 export const userMemoryHealthSchema = z.strictObject({
-  action: z.enum(["NONE", "OPEN_MEMORY_OPERATIONS", "REVIEW_DESTINATIONS"]),
+  action: z.enum(["NONE", "OPEN_MEMORY_OPERATIONS"]),
   deletion: z.strictObject({
     activeCount: safeCount,
     countTruncated: z.boolean(),
     retrievalFenced: z.boolean(),
     state: z.enum(["CLEAR", "IN_PROGRESS", "BLOCKED_REQUIRES_ADMIN"])
   }),
-  egressReview: z.enum(["NONE", "ADMIN_REQUIRED", "USER_REQUIRED"]),
   indexing: z.strictObject({
     completedChats: safeCount,
     countTruncated: z.boolean(),
@@ -45,7 +33,7 @@ export const userMemoryHealthSchema = z.strictObject({
       "NONE",
       "USER_DISABLED",
       "CAPABILITY_UNAVAILABLE",
-      "EGRESS_REVIEW"
+      "CONFIGURATION_UNAVAILABLE"
     ]),
     state: z.enum(["DISABLED", "READY", "DELAYED"])
   }),
@@ -108,9 +96,7 @@ export const userMemoryHealthSchema = z.strictObject({
     "BLOCKED_REQUIRES_ADMIN"
   ].includes(expectedState)
     ? "OPEN_MEMORY_OPERATIONS"
-    : value.egressReview === "USER_REQUIRED"
-      ? "REVIEW_DESTINATIONS"
-      : "NONE";
+    : "NONE";
   if (value.action !== expectedAction) {
     context.addIssue({ code: "custom", message: "health action/state mismatch" });
   }
@@ -126,59 +112,4 @@ export type MemoryHealthResponse = z.infer<typeof memoryHealthResponseSchema>;
 export function decodeMemoryHealthResponse(value: unknown): MemoryHealthResponse | null {
   const decoded = memoryHealthResponseSchema.safeParse(value);
   return decoded.success ? decoded.data : null;
-}
-
-const countBand = z.enum(ADMIN_MEMORY_COUNT_BANDS);
-
-export const adminMemoryHealthSchema = z.strictObject({
-  deletion: z.strictObject({
-    active: countBand,
-    blocked: countBand,
-    state: z.enum(["CLEAR", "WORKING", "ATTENTION_REQUIRED", "UNKNOWN"])
-  }),
-  observedAt: timestamp,
-  overall: z.enum(["HEALTHY", "DEGRADED", "ACTION_REQUIRED", "UNAVAILABLE"]),
-  provider: z.strictObject({
-    failedRecent: countBand,
-    outcomeUnknown: countBand,
-    state: z.enum(["IDLE", "READY", "DEGRADED", "UNKNOWN"]),
-    usageIncomplete: countBand
-  }),
-  queue: z.strictObject({
-    active: countBand,
-    failed: countBand,
-    oldestLag: z.enum(ADMIN_MEMORY_LAG_BANDS),
-    state: z.enum(["CLEAR", "WORKING", "DELAYED", "BLOCKED", "UNKNOWN"]),
-    waitingForReview: countBand
-  }),
-  temporary: z.strictObject({
-    overdue: countBand,
-    state: z.enum(["CLEAR", "OVERDUE", "UNKNOWN"])
-  })
-});
-
-export type AdminMemoryHealth = z.infer<typeof adminMemoryHealthSchema>;
-
-export function unavailableAdminMemoryHealth(observedAt = new Date()): AdminMemoryHealth {
-  const unknown = "UNKNOWN" as const;
-  const fallback = {
-    deletion: { active: unknown, blocked: unknown, state: unknown },
-    observedAt: observedAt.toISOString(),
-    overall: "UNAVAILABLE" as const,
-    provider: {
-      failedRecent: unknown,
-      outcomeUnknown: unknown,
-      state: unknown,
-      usageIncomplete: unknown
-    },
-    queue: {
-      active: unknown,
-      failed: unknown,
-      oldestLag: unknown,
-      state: unknown,
-      waitingForReview: unknown
-    },
-    temporary: { overdue: unknown, state: unknown }
-  };
-  return adminMemoryHealthSchema.parse(fallback);
 }

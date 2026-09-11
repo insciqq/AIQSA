@@ -3,98 +3,15 @@ import { prisma } from "../../prisma";
 import { defaultMemorySettingsService } from "../settings/defaultSettings";
 import {
   createMemoryHealthService,
-  type AdminMemoryHealthSnapshot,
   type UserMemoryHealthSnapshot
 } from "./service";
 
-const ACTIVE_JOB_STATES = [
-  "QUEUED",
-  "WAITING_FOR_EGRESS_CONSENT",
-  "CLAIMED",
-  "RETRYABLE_FAILED"
-] as const;
 const ACTIVE_DELETION_STATES = [
   "PENDING",
   "RUNNING",
   "RETRY_WAIT",
   "BLOCKED_REQUIRES_ADMIN"
 ] as const;
-
-async function readAdminMemoryHealthSnapshot(
-  client: PrismaClient,
-  _adminUserId: string,
-  now: Date
-): Promise<AdminMemoryHealthSnapshot> {
-  const recentSince = new Date(now.getTime() - 24 * 60 * 60_000);
-  const [
-    activeJobCount,
-    retryingJobCount,
-    waitingForEgressCount,
-    recentTerminalJobCount,
-    oldestActiveJob,
-    activeDeletionCount,
-    blockedDeletionCount,
-    overdueTemporaryCount,
-    recentExecutionCount,
-    failedExecutionCount,
-    outcomeUnknownCount,
-    incompleteUsageCount
-  ] = await Promise.all([
-    client.memoryJob.count({ where: { state: { in: [...ACTIVE_JOB_STATES] } } }),
-    client.memoryJob.count({ where: { state: "RETRYABLE_FAILED" } }),
-    client.memoryJob.count({ where: { state: "WAITING_FOR_EGRESS_CONSENT" } }),
-    client.memoryJob.count({
-      where: { state: "TERMINAL_FAILED", updatedAt: { gte: recentSince } }
-    }),
-    client.memoryJob.findFirst({
-      orderBy: { createdAt: "asc" },
-      select: { createdAt: true },
-      where: { state: { in: [...ACTIVE_JOB_STATES] } }
-    }),
-    client.memoryDeletionOutbox.count({
-      where: { state: { in: [...ACTIVE_DELETION_STATES] } }
-    }),
-    client.memoryDeletionOutbox.count({
-      where: { state: "BLOCKED_REQUIRES_ADMIN" }
-    }),
-    client.chat.count({
-      where: {
-        memoryMode: "TEMPORARY",
-        temporaryRetentionDeadline: { lt: now }
-      }
-    }),
-    client.memoryExecutionBinding.count({
-      where: { createdAt: { gte: recentSince } }
-    }),
-    client.memoryExecutionBinding.count({
-      where: { createdAt: { gte: recentSince }, state: "FAILED" }
-    }),
-    client.memoryExecutionBinding.count({
-      where: { createdAt: { gte: recentSince }, state: "OUTCOME_UNKNOWN" }
-    }),
-    client.memoryExecutionBinding.count({
-      where: {
-        createdAt: { gte: recentSince },
-        state: { in: ["SUCCEEDED", "FAILED", "OUTCOME_UNKNOWN"] },
-        usageCompleteness: { in: ["UNAVAILABLE", "PARTIAL"] }
-      }
-    })
-  ]);
-  return Object.freeze({
-    activeDeletionCount,
-    activeJobCount,
-    blockedDeletionCount,
-    failedExecutionCount,
-    incompleteUsageCount,
-    oldestActiveJobAt: oldestActiveJob?.createdAt ?? null,
-    outcomeUnknownCount,
-    overdueTemporaryCount,
-    recentExecutionCount,
-    recentTerminalJobCount,
-    retryingJobCount,
-    waitingForEgressCount
-  });
-}
 
 async function readUserMemoryHealthSnapshot(
   client: PrismaClient,
@@ -106,7 +23,7 @@ async function readUserMemoryHealthSnapshot(
     activeDeletionCount,
     blockedDeletionCount,
     overdueTemporaryCount,
-    waitingForEgressCount,
+    waitingForConfigurationCount,
     latestRebuild
   ] = await Promise.all([
     client.userMemorySettings.findUnique({
@@ -127,7 +44,7 @@ async function readUserMemoryHealthSnapshot(
       }
     }),
     client.memoryJob.count({
-      where: { state: "WAITING_FOR_EGRESS_CONSENT", userId }
+      where: { state: { in: ["WAITING_FOR_CONFIGURATION", "WAITING_FOR_EGRESS_CONSENT"] }, userId }
     }),
     client.memoryJob.findFirst({
       orderBy: { createdAt: "desc" },
@@ -147,13 +64,11 @@ async function readUserMemoryHealthSnapshot(
     blockedDeletionCount,
     latestRebuildState: latestRebuild?.state ?? null,
     overdueTemporaryCount,
-    waitingForEgressCount
+    waitingForConfigurationCount
   });
 }
 
 export const defaultMemoryHealthService = createMemoryHealthService({
-  readAdmin: (adminUserId, now) =>
-    readAdminMemoryHealthSnapshot(prisma, adminUserId, now),
   readSettings: (userId) => defaultMemorySettingsService.get(userId),
   readUser: (userId, now) => readUserMemoryHealthSnapshot(prisma, userId, now)
 });

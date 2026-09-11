@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  addAdminProviderCatalogModels,
   adminProviderErrorMessage,
   createAdminProviderCredential,
   discoverAdminCompatibleModels,
@@ -43,6 +44,18 @@ const safeConnection = {
 };
 
 describe("admin provider browser API", () => {
+  it("posts exact selected catalog identities and rejects unrelated unavailable IDs or malformed suggestions", async () => {
+    const body = { credentialId: "key", expectedConnectionVersion: 3, expectedCredentialVersionId: "version", modelIds: ["builtin"] };
+    const fetcher = vi.fn(async () => Response.json({ connections: [safeConnection], unavailableModelIds: ["builtin"] }));
+    await expect(addAdminProviderCatalogModels("connection-1", body, fetcher)).resolves.toMatchObject({ ok: true, data: { unavailableModelIds: ["builtin"] } });
+    expect(fetcher).toHaveBeenCalledWith("/api/admin/providers/connection-1/actions", expect.objectContaining({ method: "POST", body: JSON.stringify({ ...body, action: "add_catalog_models" }) }));
+    await expect(addAdminProviderCatalogModels("connection-1", body, async () => Response.json({ connections: [safeConnection], unavailableModelIds: ["upstream-only"] })))
+      .resolves.toMatchObject({ ok: false, error: { code: "provider_admin_response_invalid" } });
+    await expect(getAdminProviderConnections(async () => Response.json({ connections: [{ ...safeConnection,
+      catalogUpdates: { available: [{ id: "builtin", displayName: "Model", upstreamModelId: "model", modelClass: "unknown" }], skipped: [] } }] })))
+      .resolves.toMatchObject({ ok: false, error: { code: "provider_admin_response_invalid" } });
+  });
+
   it.each(["saved", "publication", "checks"])("rejects non-primitive receipt %s without coercion", async (field) => {
     const receipt = { connectionId: "provider", modelId: "model", displayName: "New name", draftVersion: 1,
       saved: "name", publication: "not_requested", checks: "not_requested", [field]: { toString: "private-invalid-enum" } };

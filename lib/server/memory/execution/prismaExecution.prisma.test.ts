@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
-import { createAdminMemoryEgressService } from "../../admin/memory/egressService";
 import { prisma } from "../../prisma";
 import { createFakeEmbeddingAdapter } from "@/tests/support/embeddings";
 import { createPrismaMemoryJobRepository } from "@/tests/support/memoryPersistence";
@@ -252,7 +251,6 @@ describe("Prisma Memory execution", () => {
         where: { userId: fixture.userId }
       });
       const service = createPrismaMemoryExecutionService({
-        egressConsentMode: "PER_USER",
         now: () => new Date(clock)
       }, prisma);
       const job = await createPrismaMemoryJobRepository(prisma).enqueue(fixture.userId, {
@@ -501,7 +499,6 @@ describe("Prisma Memory execution", () => {
         where: { userId: fixture.userId }
       });
       const service = createPrismaMemoryExecutionService({
-        egressConsentMode: "PER_USER",
         now: () => INITIAL_NOW
       }, prisma);
       const requestId = `inbound-mcp-${randomUUID()}`;
@@ -586,7 +583,6 @@ describe("Prisma Memory execution", () => {
         where: { userId: fixture.userId }
       });
       const service = createPrismaMemoryExecutionService({
-        egressConsentMode: "PER_USER",
         now: () => INITIAL_NOW
       }, prisma);
       const job = await createPrismaMemoryJobRepository(prisma).enqueue(fixture.userId, {
@@ -718,117 +714,58 @@ describe("Prisma Memory execution", () => {
     }
   });
 
-  it("parks ADMIN work on destination drift and resumes after exact administrator acknowledgment", async () => {
+  it("admits configured destinations without legacy acceptance and never retargets accepted work", async () => {
     const fixture = await createEmbeddingFixture();
-    let coordinatorKicks = 0;
-    const adminPolicy = createAdminMemoryEgressService(prisma, {
-      consentMode: "ADMIN",
-      onAcknowledged: () => {
-        coordinatorKicks += 1;
-      }
-    });
-
-    const accept = async () => {
-      const observed = await adminPolicy.get();
-      expect(observed.reviewRequired).toBe(true);
-      const accepted = await adminPolicy.acknowledge(fixture.userId, {
-        currentFingerprint: observed.currentFingerprint,
-        expectedVersion: observed.version
-      });
-      expect(accepted.reviewRequired).toBe(false);
-    };
-    const currentTarget = async () => prisma.$transaction(async (tx) => {
-      const settings = await tx.userMemorySettings.findUniqueOrThrow({
-        where: { userId: fixture.userId }
-      });
-      const policy = await resolveCurrentMemoryUtilityPolicy(tx, fixture.userId, settings);
-      return policy.targets.get("MEMORY_DOCUMENT_EMBED")!;
-    });
-
     try {
-      await prisma.memoryEgressAdminPolicy.update({
-        data: {
-          acceptedAt: null,
-          acceptedByUserId: null,
-          acceptedDestinations: [],
-          acceptedFingerprint: null,
-          acceptedPolicyVersion: null,
-          version: { increment: 1 }
-        },
-        where: { id: "installation" }
-      });
-      const initialTarget = await currentTarget();
-      const service = createPrismaMemoryExecutionService({
-        egressConsentMode: "ADMIN",
-        now: () => INITIAL_NOW
-      }, prisma);
+      const service = createPrismaMemoryExecutionService({ now: () => INITIAL_NOW }, prisma);
       const job = await createPrismaMemoryJobRepository(prisma).enqueue(fixture.userId, {
-        idempotencyFingerprint: `memory-admin-consent-job-${randomUUID()}`,
+        idempotencyFingerprint: `memory-automatic-job-${randomUUID()}`,
         kind: "EMBED_ITEMS",
         pipelineVersion: VERSIONS.pipelineVersion
       });
       const bind = (ordinal: number) => service.admission.bind(fixture.userId, {
-        inputHash: String(ordinal + 1).repeat(64),
-        ordinal,
+        inputHash: String(ordinal + 1).repeat(64), ordinal,
         owner: { memoryJobId: job.id, type: "JOB" },
-        role: "MEMORY_DOCUMENT_EMBED",
-        versions: VERSIONS
+        role: "MEMORY_DOCUMENT_EMBED", versions: VERSIONS
       });
-
-      await expect(bind(0)).rejects.toMatchObject({
-        code: "memory_execution_egress_consent_required"
-      });
-      await accept();
-      await expect(bind(0)).resolves.toMatchObject({ state: "PENDING" });
-
-      const changedConfiguration = {
-        allowPrivateNetwork: false,
-        apiRoot: "https://memory-provider-rotated.example.test/v1",
-        authenticationMode: "bearer",
-        responseTimeoutMs: 30_000
-      };
+      const initial = await bind(0);
+      expect(initial).toMatchObject({ state: "PENDING", replayed: false });
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({ where: { userId: fixture.userId } }))
+        .resolves.toMatchObject({ acceptedUtilityEgressAt: null, acceptedUtilityEgressFingerprint: null,
+          acceptedUtilityPolicyVersion: null, memoryConsentRevision: 0 });
+      // Rotation invalidates this exact binding. Its old credential receipt
+      // cannot authorize the new connection version.
       await prisma.providerConnection.update({
-        data: {
-          activeConfig: changedConfiguration,
-          activeVersion: 2
-        },
+        data: { activeConfig: { allowPrivateNetwork: false,
+          apiRoot: "https://memory-provider-rotated.example.test/v1",
+          authenticationMode: "bearer", responseTimeoutMs: 30_000 }, activeVersion: 2 },
         where: { id: fixture.connectionId }
       });
-      await prisma.providerModelCredentialCheck.create({
-        data: {
-          checkedAt: INITIAL_NOW,
-          connectionId: fixture.connectionId,
-          connectionVersion: 2,
-          credentialId: fixture.credentialId,
-          credentialVersionId: fixture.credentialVersionId,
-          evidence: embeddingCredentialEvidence,
-          modelVersion: 1,
-          providerModelId: fixture.modelId,
-          status: "available"
-        }
-      });
-      const driftedTarget = await currentTarget();
-      expect(driftedTarget.destinationFingerprint).not.toBe(initialTarget.destinationFingerprint);
-
-      await expect(bind(1)).rejects.toMatchObject({
-        code: "memory_execution_egress_consent_required"
-      });
-      await accept();
-      await expect(bind(1)).resolves.toMatchObject({ state: "PENDING" });
-      expect(coordinatorKicks).toBe(2);
+      await expect(bind(1)).rejects.toMatchObject({ code: "memory_execution_target_unavailable" });
+      await prisma.providerModelCredentialCheck.create({ data: {
+        checkedAt: INITIAL_NOW, connectionId: fixture.connectionId, connectionVersion: 2,
+        credentialId: fixture.credentialId, credentialVersionId: fixture.credentialVersionId,
+        evidence: embeddingCredentialEvidence, modelVersion: 1,
+        providerModelId: fixture.modelId, status: "available"
+      } });
+      await expect(service.admission.start(fixture.userId, initial.id))
+        .rejects.toMatchObject({ code: "memory_execution_policy_drift" });
+      await expect(prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: initial.id } }))
+        .resolves.toMatchObject({ state: "PENDING", startedAt: null });
+      // A fresh operation may use the current verified target even if a
+      // retired writer left an obsolete acceptance record behind.
+      await prisma.userMemorySettings.update({ where: { userId: fixture.userId }, data: {
+        acceptedUtilityEgressAt: INITIAL_NOW, acceptedUtilityEgressFingerprint: "f".repeat(64),
+        acceptedUtilityPolicyVersion: "retired-policy", memoryConsentRevision: 1
+      } });
+      const current = await bind(1);
+      expect(current).toMatchObject({ state: "PENDING", replayed: false });
+      await expect(service.admission.start(fixture.userId, current.id)).resolves.toMatchObject({ bindingId: current.id });
+      await expect(prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: current.id } }))
+        .resolves.toMatchObject({ state: "RUNNING" });
     } finally {
-      await prisma.memoryEgressAdminPolicy.updateMany({
-        data: {
-          acceptedAt: null,
-          acceptedByUserId: null,
-          acceptedDestinations: [],
-          acceptedFingerprint: null,
-          acceptedPolicyVersion: null,
-          version: { increment: 1 }
-        },
-        where: { id: "installation" }
-      });
       await fixture.cleanup();
     }
   });
+
 });

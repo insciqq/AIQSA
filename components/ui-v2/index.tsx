@@ -385,7 +385,7 @@ type UiV2IconButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
    * of the browser's delayed `title`; the accessible name stays `label`.
    */
   tooltip?: string;
-  tooltipSide?: "left" | "right";
+  tooltipSide?: "left" | "right" | "top";
 };
 
 export const UiV2IconButton = forwardRef<HTMLButtonElement, UiV2IconButtonProps>(

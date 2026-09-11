@@ -729,7 +729,6 @@ describe("Prisma explicit Memory vector enrichment", () => {
       };
     });
     const authority = {
-      egressConsentMode: "PER_USER" as const,
       now: () => new Date(INITIAL_NOW)
     };
     const runtime = {
@@ -1003,7 +1002,6 @@ describe("Prisma explicit Memory vector enrichment", () => {
       };
     });
     const authority = {
-      egressConsentMode: "PER_USER" as const,
       now: () => new Date(INITIAL_NOW)
     };
     const runtime = {
@@ -1140,7 +1138,6 @@ describe("Prisma explicit Memory vector enrichment", () => {
       };
     });
     const authority = {
-      egressConsentMode: "PER_USER" as const,
       now: () => new Date(clock)
     };
     const runtime = {
@@ -1255,7 +1252,6 @@ describe("Prisma explicit Memory vector enrichment", () => {
       };
     });
     const authority = {
-      egressConsentMode: "PER_USER" as const,
       now: () => new Date(clock)
     };
     const baseRepository = createPrismaMemoryEmbeddingBatchRepository(prisma);
@@ -1359,7 +1355,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
     }
   }, 60_000);
 
-  it("keeps lexical recall available across consent, outage, rotation, and Forget races", async () => {
+  it("starts without acceptance and keeps lexical recall across outage, rotation, and Forget races", async () => {
     const fixture = await createFixture();
     const { explicit, lifecycle, readRepository } = memoryServices(
       fixture.classifierAuthority
@@ -1383,7 +1379,6 @@ describe("Prisma explicit Memory vector enrichment", () => {
       return vectorResult();
     });
     const authority = {
-      egressConsentMode: "PER_USER" as const,
       now: () => new Date(clock)
     };
     const registry = new MemoryCoordinatorRegistry();
@@ -1416,7 +1411,7 @@ describe("Prisma explicit Memory vector enrichment", () => {
         explicit,
         fixture.userId,
         firstStatement,
-        "embedding-consent-save"
+        "embedding-default-save"
       );
       const firstEntry = await prisma.memorySearchEntry.findFirstOrThrow({
         where: { factVersionId: first.memory.currentVersionId! }
@@ -1434,21 +1429,20 @@ describe("Prisma explicit Memory vector enrichment", () => {
 
       await coordinator.reconcileNow();
       await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: firstJob.id } }))
-        .resolves.toMatchObject({ state: "WAITING_FOR_EGRESS_CONSENT" });
-      expect(embed).not.toHaveBeenCalled();
+        .resolves.toMatchObject({ state: "SUCCEEDED" });
+      expect(embed).toHaveBeenCalledTimes(1);
       await expect(prisma.memoryExecutionBinding.count({
         where: { memoryJobId: firstJob.id }
-      })).resolves.toBe(0);
-
-      await prisma.userMemorySettings.update({
-        data: {
-          acceptedUtilityEgressAt: clock,
-          acceptedUtilityEgressFingerprint: fixture.policy.fingerprint,
-          acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION
-        },
+      })).resolves.toBe(1);
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId: fixture.userId }
+      })).resolves.toMatchObject({
+        acceptedUtilityEgressAt: null,
+        acceptedUtilityEgressFingerprint: null,
+        acceptedUtilityPolicyVersion: null
       });
       await coordinator.reconcileNow();
+      expect(embed).toHaveBeenCalledTimes(1);
       const [firstReady, firstSettled, firstBindings, firstUsage, afterFirst] =
         await Promise.all([
           prisma.memorySearchEntry.findUniqueOrThrow({ where: { id: firstEntry.id } }),
@@ -1638,7 +1632,6 @@ describe("Prisma explicit Memory vector enrichment", () => {
       return vectorResult();
     });
     const authority = {
-      egressConsentMode: "PER_USER" as const,
       now: () => new Date(INITIAL_NOW)
     };
     const registry = new MemoryCoordinatorRegistry();

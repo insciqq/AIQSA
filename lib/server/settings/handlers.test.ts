@@ -55,6 +55,31 @@ function baseSettingsData(): SettingsHandlerData {
 }
 
 describe("settings handler", () => {
+  it.each([true, false, null, "true", 1])("validates the personal Workspace default: %j", async (value) => {
+    const data = baseSettingsData();
+    const calls: Array<{ userId: string; update: UserSettingsUpdate }> = [];
+    const PATCH = createUpdateSettingsHandler({
+      resolveAuth: auth.resolveAuth,
+      loadSettingsData: async () => data,
+      updateSettings: async (userId, update) => {
+        calls.push({ userId, update });
+        return updated({ ...data.settings, ...update });
+      }
+    });
+    const response = await PATCH(new Request("http://app.local/api/me/settings", {
+      method: "PATCH", headers: { cookie: authCookie(), "content-type": "application/json" },
+      body: JSON.stringify({ defaultWorkspaceEnabled: value })
+    }));
+    if (typeof value === "boolean") {
+      expect(response.status).toBe(200);
+      expect(calls).toEqual([{ userId: config.bootstrapUserId, update: { defaultWorkspaceEnabled: value } }]);
+      expect((await response.json()).settings.defaultWorkspaceEnabled).toBe(value);
+    } else {
+      expect(response.status).toBe(400);
+      expect(calls).toEqual([]);
+    }
+  });
+
   it.each([
     [{ answerSoundEnabled: false, answerSoundId: "bell" }, 200],
     [{ answerSoundEnabled: true }, 200],
@@ -215,6 +240,7 @@ describe("settings handler", () => {
       "defaultControlValues",
       "defaultKnowledgePlan",
       "defaultMcpMode",
+      "defaultWorkspaceEnabled",
       "hasPersonalModelDefault",
       "modelPreferenceSource",
       "organizationModelDefault",

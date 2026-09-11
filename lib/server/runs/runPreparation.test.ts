@@ -1,4 +1,5 @@
 import { buildOpenAICompatibleChatRequest } from "../providers/openaiCompatibleChatRequest";
+import { WORKSPACE_BROWSER_GUIDANCE } from "../workspace/browserGuidance";
 import { buildOpenAIResponsesRequest } from "../providers/openaiResponsesRequest";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -882,6 +883,28 @@ async function expectFailure(input: {
 }
 
 describe("run preparation", () => {
+  it.each([true, false])("freezes browser guidance only when Workspace is enabled: %s", async (enabled) => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn<NonNullable<RunPreparationDeps["workspace"]>["prepare"]>(async (input) => ({ ok: true, tools: [], plan: {
+      ...input, expiresAt: new Date(Date.now() + 60_000).toISOString(), policyRevision: 1, sandboxName: "synthetic-browser", sessionId: "ws_browser", toolDefinitions: [],
+      normalized: { enabled: true, imageRef: "synthetic-image", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
+        maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/synthetic/manifest.json",
+        outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_browser",
+        syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
+    } })) };
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, workspace }, sendInput(successBody({ workspace: { enabled } }))));
+    const accepted = materializePreparedRunData(prepared);
+    if (enabled) {
+      expect(workspace.prepare).toHaveBeenCalledOnce();
+      expect(accepted.normalizedRequest.prompt.system).toContain(WORKSPACE_BROWSER_GUIDANCE);
+      expect(accepted.providerRequest.prompt.system).toBe(accepted.normalizedRequest.prompt.system);
+      expect(accepted.normalizedRequest.prompt.system).toContain("aria_snapshot()");
+    } else {
+      expect(workspace.prepare).not.toHaveBeenCalled();
+      expect(accepted.normalizedRequest.prompt.system).not.toContain(WORKSPACE_BROWSER_GUIDANCE);
+    }
+  });
+
 
   it("requires a configured default model for the first Project send", async () => {
     const result = await prepareRun(

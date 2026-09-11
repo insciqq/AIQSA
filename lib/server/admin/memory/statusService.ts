@@ -21,7 +21,7 @@ export type AdminMemoryStatusSnapshot = Readonly<{
     seconds: number;
     version: number;
   }>;
-  activeIssueCode: string | null;
+  processing: AdminMemoryStatus["processing"];
   configuredTargets: readonly Readonly<{ model: string; provider: string }>[];
   index: Readonly<{
     activeGenerations: readonly number[];
@@ -85,14 +85,6 @@ function generation(
   return unique.length === 1 ? unique[0]! : "MIXED";
 }
 
-function safeErrorCode(value: string | null): string | null {
-  if (!value) return null;
-  const normalized = value.trim().toLowerCase();
-  return /^[a-z0-9][a-z0-9._:-]{0,63}$/u.test(normalized)
-    ? normalized
-    : "memory_error_unavailable";
-}
-
 function workerRunning(snapshot: AdminMemoryStatusSnapshot, now: Date): boolean {
   if (!validDate(snapshot.workerLastSeenAt)) return false;
   const age = now.getTime() - snapshot.workerLastSeenAt.getTime();
@@ -132,9 +124,7 @@ function project(snapshot: AdminMemoryStatusSnapshot, now: Date): AdminMemorySta
 
   return adminMemoryStatusSchema.parse({
     admissionTimeout: snapshot.admissionTimeout,
-    activeIssueCode: queueLength === 0
-      ? null
-      : safeErrorCode(snapshot.activeIssueCode),
+    processing: snapshot.processing,
     configuredTargets: snapshot.configuredTargets,
     index: {
       generation: generation(snapshot.index.activeGenerations),

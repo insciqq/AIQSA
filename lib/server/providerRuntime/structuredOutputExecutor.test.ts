@@ -160,6 +160,43 @@ const routingSelection = { mcp_needed: true, requirements: [{
 }] };
 
 describe("accepted structured-output executor", () => {
+  it("executes admitted Anthropic JSON through the native runtime and rechecks credential revocation before I/O", async () => {
+    const base = role();
+    const admitted: ProviderAdmissionRole = {
+      ...base, modelConfiguration: { ...base.modelConfiguration, adapterKind: "anthropic_messages" },
+      snapshot: { ...base.snapshot, providerFamily: "anthropic",
+        connection: { ...base.snapshot.connection, apiRoot: "https://anthropic.example.test/v1" },
+        model: { ...base.snapshot.model, adapterKind: "anthropic_messages", upstreamModelId: "claude-structured-test",
+          answerSelectable: true, modelClass: "answer" } }
+    };
+    const envelope = encryptProviderCredentialSecret({ credentialId: "credential-1", key: KEY,
+      secret: "synthetic-anthropic-key", valueId: "credential-version-1" });
+    let revoked = false;
+    const queryRaw = vi.fn(async () => [{ credentialId: "credential-1", id: "credential-version-1",
+      revokedAt: revoked ? new Date() : null, secretEnvelope: envelope, testEvidence: { authenticationMode: "bearer" } }]);
+    const client = { $transaction: vi.fn(async (consume: (tx: { $queryRaw: typeof queryRaw }) => unknown) =>
+      consume({ $queryRaw: queryRaw })) } as unknown as PrismaClient;
+    const fetchFn = vi.fn<typeof fetch>(async (url, init) => {
+      expect(url).toBe("https://anthropic.example.test/v1/messages");
+      expect(new Headers(init?.headers).get("x-api-key")).toBe("synthetic-anthropic-key");
+      expect(JSON.parse(String(init?.body))).toMatchObject({ model: "claude-structured-test", stream: false,
+        output_config: { format: { type: "json_schema" } } });
+      return Response.json({ type: "message", role: "assistant", stop_reason: "end_turn", id: "msg-runtime-test",
+        content: [{ type: "text", text: JSON.stringify(nativeSelection) }], usage: { input_tokens: 15, output_tokens: 6 } });
+    });
+    const execute = createAcceptedStructuredOutputExecutor(client, { createFetch: () => fetchFn, encryptionKey: () => KEY });
+    const router = createMcpSemanticRouter({ executeStructuredOutput: execute, resolveSystemModel: async () => ({
+      ok: true, credentialScope: "installation", policyVersion: 1, providerModelId: admitted.snapshot.providerModelId,
+      reasoningEffort: null, role: admitted
+    }) });
+    await expect(router.route(nativeRouterInput)).resolves.toMatchObject({ toolNames: ["mcp_sample_lookup_1234567890"],
+      usageAttribution: { provider: "anthropic", usage: { inputTokens: 15, outputTokens: 6, totalTokens: 21 } } });
+    expect(fetchFn).toHaveBeenCalledOnce();
+    revoked = true;
+    await expect(execute(admitted, request)).rejects.toThrow("credential_revoked");
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
   it("routes 31 Gemini tools through the native executor and one accounted coverage repair without weakening canonical bounds", async () => {
     const fixture = geminiExecutorFixture(null, "v1beta", (body, index) => {
       const wire = (body.response_format as { schema: Record<string, unknown> }).schema;

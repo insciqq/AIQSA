@@ -42,7 +42,6 @@ function errorStatus(code: MemoryRebuildServiceErrorCode): number {
   switch (code) {
     case "memory_contract_invalid": return 400;
     case "memory_rebuild_not_found": return 404;
-    case "memory_egress_consent_required":
     case "memory_embedding_unavailable":
     case "memory_intent_confirmation_required":
     case "memory_rebuild_in_progress":

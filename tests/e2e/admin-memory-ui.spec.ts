@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { AdminDashboard } from "../../lib/contracts/admin";
 import type { AdminMemoryStatusResponse } from "../../lib/contracts/adminMemory";
+import { adminMemoryProcessingCopy } from "../../lib/domain/adminMemoryProcessing";
 import { adminKnowledgeSettingsFixture } from "../support/knowledgeProfile";
 import {
   expectNoHorizontalOverflow,
@@ -9,6 +10,75 @@ import {
 import { signInWithLocalToken } from "./support/localAuth";
 
 test.use({ hasTouch: true });
+
+test("Overview observes blocked learning and recovery in the background, retains stale issues and agrees with Memory", async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1280, height: 560 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  const issue = { stage: "LEARNING", reason: "CAPABILITY_UNAVAILABLE", severity: "bad", count: 3, oldestAgeSeconds: 1865 } as const;
+  let blocked = false;
+  let unavailable = false;
+  let reads = 0;
+  const status = (): AdminMemoryStatusResponse => ({ memory: {
+    ...memoryResponse({ rebuilding: false, timeoutSeconds: 30, timeoutVersion: 1 }).memory,
+    index: { generation: 1, readiness: "READY" }, rebuild: { state: "NOT_REQUIRED" },
+    processing: { enabled: true, issues: blocked ? [issue] : [] },
+    queue: { length: blocked ? 3 : 0, oldestAgeSeconds: blocked ? 1865 : null }
+  } });
+  await page.route("**/api/admin", (route) => route.fulfill({ json: emptyAdminDashboard() }));
+  await page.route("**/api/admin/knowledge", (route) => route.fulfill({ json: { knowledge: adminKnowledgeSettingsFixture() } }));
+  await page.route("**/api/admin/memory", (route) => route.fulfill({ json: status() }));
+  await page.route("**/api/admin/attention", (route) => {
+    reads += 1;
+    const copy = adminMemoryProcessingCopy(issue);
+    return route.fulfill({ json: { attention: {
+      checkedAt: new Date().toISOString(), unavailable: unavailable ? ["memory"] : [],
+      items: blocked && !unavailable ? [{ action: copy.action, code: "memory_processing_blocked",
+        count: 3, detail: copy.detail, id: "memory_processing_blocked:LEARNING", severity: "bad",
+        target: { section: "roles", resource: "memory" }, title: copy.title }] : []
+    } } });
+  });
+  await signInWithLocalToken(page);
+  await page.clock.install();
+  await page.goto("/admin?section=overview");
+  await expect(page.getByText("No issues found in the latest checks.")).toBeVisible();
+  blocked = true;
+  await page.clock.fastForward(25_000);
+  const row = page.getByTestId("admin-attention-item");
+  await expect(row).toContainText("Memory is not learning new facts");
+  await expect(row).toContainText("3 affected jobs; oldest 31m");
+  await expect(row.getByTestId("admin-attention-status")).toHaveAttribute("data-severity", "bad");
+  await expectNoHorizontalOverflow(page);
+  await page.screenshot({ path: testInfo.outputPath("memory-overview-blocked-dark.png") });
+  await row.getByRole("button", { name: /Open Defaults & roles/ }).click();
+  await expect(page).toHaveURL(/section=roles/u);
+  const pausedReads = reads;
+  await page.clock.fastForward(50_000);
+  expect(reads).toBe(pausedReads);
+  await page.goto("/admin?section=retrieval");
+  const memory = page.getByTestId("admin-retrieval-memory");
+  await expect(memory.getByTestId("memory-state")).toHaveText("Processing blocked");
+  await expect(memory).toContainText("3 affected jobs; oldest 31m");
+  await expect(memory.getByText("Ready", { exact: true })).toBeVisible();
+  await memory.getByRole("link", { name: "Open Defaults & roles" }).click();
+  await expect(page).toHaveURL(/section=roles/u);
+  await page.goto("/admin?section=overview");
+  await expect(row).toBeVisible();
+  unavailable = true;
+  await page.clock.fastForward(25_000);
+  await expect(row).toContainText("last confirmed");
+  await expect(page.getByText(/Could not check Memory/)).toBeVisible();
+  await expect(page.getByText("No issues found in the latest checks.")).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ colorScheme: "light" });
+  await expectNoHorizontalOverflow(page);
+  await page.screenshot({ path: testInfo.outputPath("memory-overview-stale-mobile-light.png") });
+  unavailable = false;
+  blocked = false;
+  await page.clock.fastForward(25_000);
+  await expect(row).toHaveCount(0);
+  await expect(page.getByText("No issues found in the latest checks.")).toBeVisible();
+});
 
 function emptyAdminDashboard(): AdminDashboard {
   return {
@@ -62,7 +132,7 @@ function memoryResponse(input: Readonly<{
         seconds: input.timeoutSeconds,
         version: input.timeoutVersion
       },
-      activeIssueCode: input.rebuilding ? "memory_provider_unavailable" : null,
+      processing: { enabled: true, issues: [] },
       queue: {
         length: input.rebuilding ? 1 : 0,
         oldestAgeSeconds: input.rebuilding ? 0 : null

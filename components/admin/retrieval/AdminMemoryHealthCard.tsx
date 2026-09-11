@@ -20,11 +20,15 @@ import type { AdminConfirmationController } from "@/components/admin/useAdminCon
 import type { AdminFeedbackController } from "@/components/admin/useAdminFeedback";
 import { UiV2Button } from "@/components/ui-v2";
 import { ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS, type AdminMemoryStatus } from "@/lib/contracts/adminMemory";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { adminMemoryProcessingCopy } from "@/lib/domain/adminMemoryProcessing";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 const POLL_MS = 30_000;
 
 function memoryState(status: AdminMemoryStatus): Readonly<{ label: string; status: AdminRoleStatus | "reindexing" }> {
+  if (status.processing.issues.some((issue) => issue.severity === "bad")) return { label: "Processing blocked", status: "unavailable" };
+  if (status.processing.issues.length > 0) return { label: "Processing delayed", status: "reindexing" };
+  if (!status.processing.enabled) return { label: "Paused", status: "not_assigned" };
   if (status.worker.state !== "RUNNING") return { label: "Worker not running", status: "unavailable" };
   switch (status.index.readiness) {
     case "READY":
@@ -76,13 +80,20 @@ export function AdminMemoryHealthCard({
   const [formError, setFormError] = useState<string | null>(null);
   const [timeoutDraft, setTimeoutDraft] = useState("");
   const [timeoutDirty, setTimeoutDirty] = useState(false);
+  const sequenceRef = useRef(0);
+  const busyRef = useRef(false);
+  const [observedAt, setObservedAt] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
+    if (busyRef.current) return;
+    const sequence = ++sequenceRef.current;
     setLoading(true);
     const result = await getAdminMemoryStatus();
+    if (sequence !== sequenceRef.current) return;
     setLoading(false);
     if (result.ok) {
       setStatus(result.data.memory);
+      setObservedAt(new Date().toISOString());
       setTimeoutDraft((current) => (timeoutDirty ? current : String(result.data.memory.admissionTimeout.seconds)));
       setError(null);
       return;
@@ -100,6 +111,7 @@ export function AdminMemoryHealthCard({
     }, POLL_MS);
     return () => {
       disposed = true;
+      sequenceRef.current += 1;
       clearInterval(timer);
     };
   }, [refresh]);
@@ -112,14 +124,20 @@ export function AdminMemoryHealthCard({
   const saveTimeout = async () => {
     if (busy || !status || !timeoutDirty || !timeoutValid || parsedTimeout === null) return;
     setBusy(true);
+    busyRef.current = true;
+    const sequence = ++sequenceRef.current;
     setFormError(null);
     const result = await updateAdminMemoryAdmissionTimeout(status.admissionTimeout.version, parsedTimeout);
+    if (sequence !== sequenceRef.current) return;
+    busyRef.current = false;
     setBusy(false);
     if (!result.ok) {
       setFormError(adminMemoryErrorMessage(result.error));
       return;
     }
     setStatus(result.data.memory);
+    setObservedAt(new Date().toISOString());
+    setError(null);
     setTimeoutDraft(String(result.data.memory.admissionTimeout.seconds));
     setTimeoutDirty(false);
     reportNotice(copy.timeoutNotice);
@@ -128,14 +146,20 @@ export function AdminMemoryHealthCard({
   const rebuild = async () => {
     if (busy || status?.rebuild.state !== "AVAILABLE") return;
     setBusy(true);
+    busyRef.current = true;
+    const sequence = ++sequenceRef.current;
     setFormError(null);
     const result = await startAdminMemoryRebuild();
+    if (sequence !== sequenceRef.current) return;
+    busyRef.current = false;
     setBusy(false);
     if (!result.ok) {
       setFormError(adminMemoryErrorMessage(result.error));
       return;
     }
     setStatus(result.data.memory);
+    setObservedAt(new Date().toISOString());
+    setError(null);
     reportNotice(copy.notice);
   };
 
@@ -152,7 +176,9 @@ export function AdminMemoryHealthCard({
     });
   };
 
-  const state = status ? memoryState(status) : null;
+  const state = status ? error
+    ? { label: "Status unknown", status: "unavailable" as const }
+    : memoryState(status) : null;
 
   return (
     <section aria-labelledby="admin-memory-health-heading" className={cardClass} data-testid="admin-retrieval-memory">
@@ -162,7 +188,7 @@ export function AdminMemoryHealthCard({
         <p className="min-w-0 basis-full text-xs leading-5 text-ink-muted sm:basis-auto sm:flex-1">
           {status ? copy.intro : error ?? (loading ? copy.loading : copy.statusUnavailable)}
         </p>
-        {error && status ? <p className="basis-full text-xs text-critical" role="alert">{error}</p> : null}
+        {error && status ? <p className="basis-full text-xs text-critical" role="alert">{error} Current health is unknown.{observedAt ? ` Last checked ${new Date(observedAt).toLocaleString()}.` : ""}</p> : null}
       </div>
 
       {status ? (
@@ -197,10 +223,19 @@ export function AdminMemoryHealthCard({
             >
               {adminMemoryIndexCopy("EN", status.index)}
             </StatusLine>
-            <StatusLine label={copy.activeIssue} tone={status.activeIssueCode ? "warning" : "normal"}>
-              <span className={status.activeIssueCode ? "font-mono text-xs" : ""}>
-                {status.activeIssueCode ?? copy.noError}
-              </span>
+            <StatusLine label={copy.activeIssue} tone={status.processing.issues.length > 0 ? "warning" : "normal"}>
+              {status.processing.issues.length === 0 ? copy.noError : (
+                <ul className="grid gap-3">
+                  {status.processing.issues.map((issue) => {
+                    const issueCopy = adminMemoryProcessingCopy(issue);
+                    return <li className={issue.severity === "bad" ? "text-critical" : "text-caution"} key={issue.stage}>
+                      <p>{issueCopy.title}</p>
+                      <p className="mt-1 text-xs font-normal">{issueCopy.detail}</p>
+                      <a className="v2-focusable mt-1 inline-block text-xs underline" href={`/admin?section=${issueCopy.section}`}>{issueCopy.action}</a>
+                    </li>;
+                  })}
+                </ul>
+              )}
             </StatusLine>
           </dl>
 

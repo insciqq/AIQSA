@@ -54,6 +54,12 @@ async function selectFakeModel(page: Page): Promise<void> {
 }
 
 async function turnWorkspaceOn(page: Page): Promise<void> {
+  const enabled = page.getByRole("button", { name: /^Turn off Workspace/u });
+  if (await enabled.isVisible()) {
+    await expect(enabled).toHaveAttribute("aria-pressed", "true");
+    await expect(enabled).toBeEnabled();
+    return;
+  }
   const toggle = page.getByRole("button", { name: /^Turn on Workspace/u });
   await expect(toggle).toBeEnabled({ timeout: 15_000 });
   await toggle.click();
@@ -111,9 +117,15 @@ async function assertGeneratedZip(page: Page): Promise<Readonly<{
   expect(responseBytes.includes(Buffer.from("result.txt"))).toBe(true);
   expect(responseBytes.includes(Buffer.from("AIQSA deterministic workspace result\n"))).toBe(true);
 
-  const pending = page.waitForEvent("download");
-  await link.click();
-  const download = await pending;
+  const chatContext = page.getByRole("dialog", { name: "Chat context" });
+  if (await chatContext.isVisible()) {
+    await chatContext.getByRole("button", { name: "Stay here", exact: true }).click();
+    await expect(chatContext).toBeHidden();
+  }
+  const [download] = await Promise.all([
+    page.waitForEvent("download", { timeout: 30_000 }),
+    link.click({ timeout: 30_000 })
+  ]);
   expect(download.suggestedFilename()).toBe("result.zip");
   const browserBytes = await bytesFromDownload(download);
   expect(browserBytes.equals(RESULT_ZIP)).toBe(true);

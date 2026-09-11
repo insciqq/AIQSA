@@ -138,6 +138,7 @@ function serviceError(error: AdminProviderServiceError): Response {
     "provider_credential_label_taken",
     "provider_delete_confirmation_required",
     "provider_draft_stale",
+    "provider_checks_running",
     "provider_model_class_immutable",
     "provider_revoke_confirmation_required"
   ]);
@@ -416,6 +417,21 @@ export function createAdminProviderConnectionActionHandler(deps: AdminProviderHa
         return Response.json({ endpoints });
       }
 
+      if (action === "add_catalog_models" || action === "skip_catalog_models" || action === "restore_catalog_models") {
+        const modelIds = optionalIdList(body.modelIds);
+        const expectedConnectionVersion = version(body.expectedConnectionVersion);
+        if (!modelIds?.length || expectedConnectionVersion === null || expectedConnectionVersion < 1) return errorJson("provider_action_invalid", 400);
+        if (action !== "add_catalog_models") {
+          await deps.service.skipCatalogModels({ connectionId, expectedConnectionVersion, modelIds, skip: action === "skip_catalog_models" });
+          return catalog(deps.service);
+        }
+        const credentialId = text(body.credentialId, 128);
+        const expectedCredentialVersionId = text(body.expectedCredentialVersionId, 128);
+        if (!credentialId || !expectedCredentialVersionId) return errorJson("provider_action_invalid", 400);
+        const result = await deps.service.addCatalogModels({ connectionId, credentialId, expectedConnectionVersion,
+          expectedCredentialVersionId, modelIds, signal: request.signal });
+        return Response.json({ connections: await deps.service.listConnections(), ...result });
+      }
       if (action === "check_models") {
         // Background capability checks (PRD B3): the response is the catalog
         // with the run in progress; progress arrives through the catalog or

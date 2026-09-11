@@ -24,6 +24,7 @@ export const WORKSPACE_ERROR_CODES = Object.freeze([
   "workspace_tool_timeout",
   "workspace_tool_cancelled",
   "workspace_attachment_unavailable",
+  "workspace_secrets_prepare_failed",
   "workspace_output_limit_exceeded",
   "workspace_output_export_failed",
   "workspace_execution_cleanup_failed",
@@ -482,4 +483,31 @@ export function decodeThreadWorkspaceActivity(value: unknown): ThreadWorkspaceAc
     : decodeThreadWorkspaceOutputStatus(value.outputStatus);
   if (value.outputStatus !== undefined && !outputStatus) return null;
   return { entries, ...(outputStatus ? { outputStatus } : {}) };
+}
+
+const PHYSICAL_BASENAME_MAX_BYTES = 160;
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (utf8Bytes(value) <= maxBytes) return value;
+  let result = "";
+  for (const character of value) {
+    if (utf8Bytes(result + character) > maxBytes) break;
+    result += character;
+  }
+  return result;
+}
+
+/**
+ * Produces a path-safe, bounded display derivative. The opaque attachment id is
+ * still the physical identity; an original filename is only retained as
+ * metadata in the manifest.
+ */
+export function safeWorkspaceBasename(originalName: string): string {
+  const normalized = originalName.normalize("NFC").trim();
+  const replaced = normalized
+    .replace(/[\u0000-\u001f\u007f/\\]+/gu, "-")
+    .replace(/[^\p{L}\p{N}._-]+/gu, "-")
+    .replace(/-+/gu, "-")
+    .replace(/^[.-]+|[.-]+$/gu, "");
+  return truncateUtf8(replaced || "file", PHYSICAL_BASENAME_MAX_BYTES);
 }

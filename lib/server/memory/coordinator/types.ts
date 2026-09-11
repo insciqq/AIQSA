@@ -54,7 +54,7 @@ export type MemoryJobGateDecision =
   | Readonly<{ status: "READY" }>
   | Readonly<{
       errorCode: string;
-      status: "WAITING_FOR_EGRESS_CONSENT" | "STALE" | "CANCELLED";
+      status: "WAITING_FOR_CONFIGURATION" | "STALE" | "CANCELLED";
     }>;
 
 export type MemoryJobApply = (

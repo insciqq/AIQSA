@@ -68,14 +68,12 @@ async function main() {
   }
 
   const [
-    memoryEgressAdminPolicy,
     modelPolicy,
     searchPolicy,
     smtpControl,
     systemModelPolicy,
     fakeModel
   ] = await Promise.all([
-    prisma.memoryEgressAdminPolicy.findUnique({ where: { id: "installation" } }),
     prisma.modelPolicy.findUnique({ where: { id: "installation" } }),
     prisma.searchPolicy.findUnique({ where: { id: "installation" } }),
     prisma.smtpControl.findUnique({ where: { id: "installation-smtp" } }),
@@ -87,7 +85,6 @@ async function main() {
   ]);
 
   if (
-    !memoryEgressAdminPolicy ||
     !modelPolicy ||
     modelPolicy.version < 1 ||
     !searchPolicy ||

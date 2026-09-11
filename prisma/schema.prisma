@@ -490,6 +490,7 @@ enum MemoryJobKind {
 
 enum MemoryJobState {
   QUEUED
+  // Retained for the previous stable writer and guarded legacy recovery.
   WAITING_FOR_EGRESS_CONSENT
   CLAIMED
   RETRYABLE_FAILED
@@ -497,6 +498,7 @@ enum MemoryJobState {
   TERMINAL_FAILED
   STALE
   CANCELLED
+  WAITING_FOR_CONFIGURATION
 }
 
 enum MemoryExecutionOwnerType {
@@ -794,6 +796,10 @@ model User {
   systemModelPolicyUpdates            SystemModelPolicy[]                @relation("SystemModelPolicyUpdater")
   usageEvents                         UsageEvent[]
   workspacePolicyUpdates              WorkspacePolicy[]                  @relation("WorkspacePolicyUpdater")
+  workspaceSecrets                    WorkspaceSecret[]
+  workspaceSecretValues               WorkspaceSecretValue[]
+  workspaceBrowserSequence            BigInt                             @default(0)
+  workspaceBrowserManualSequence      BigInt                             @default(0)
 }
 
 model SmtpControl {
@@ -1007,6 +1013,7 @@ model UserSettings {
   defaultControlValues    Json           @default("{}")
   defaultKnowledgePlan    Json?
   defaultMcpMode          String         @default("auto")
+  defaultWorkspaceEnabled Boolean        @default(false)
   answerSoundEnabled      Boolean        @default(true)
   answerSoundId           String         @default("rise") @db.VarChar(16)
   sendWithEnter           Boolean        @default(true)
@@ -2293,6 +2300,7 @@ model ProviderConnection {
   enabled             Boolean                  @default(false)
   unassignedPolicy    ProviderUnassignedPolicy @default(use_default)
   defaultCredentialId String?
+  catalogSkippedIds   String[]                 @default([])
   draftConfig         Json                     @default("{}")
   draftVersion        Int                      @default(1)
   activeConfig        Json?
@@ -3627,16 +3635,68 @@ model WorkspaceRunBinding {
   exportStartedAt      DateTime?
   exportCompletedAt    DateTime?
   outputCapture        Json?
+  browserSessionSequence BigInt?
+  browserSessionSave     Json?
   createdAt            DateTime             @default(now())
   updatedAt            DateTime             @updatedAt
   modelRun             ModelRun             @relation(fields: [modelRunId], references: [id], onDelete: Cascade, onUpdate: Restrict)
   workspaceSession     WorkspaceSession     @relation(fields: [workspaceSessionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   outputs              WorkspaceRunOutput[]
   toolCalls            ModelRunToolCall[]
+  secrets              WorkspaceRunSecret[]
 
   @@index([workspaceSessionId, createdAt])
   @@index([exportState, updatedAt])
   @@index([exportState, exportLeaseExpiresAt])
+}
+
+model WorkspaceSecret {
+  id           String               @id @default(uuid())
+  userId       String
+  valueId      String               @unique
+  browserFileName String?           @db.VarChar(255)
+  browserWriterSequence BigInt      @default(0)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  value        WorkspaceSecretValue @relation(fields: [valueId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@index([userId, createdAt])
+  @@unique([userId, browserFileName])
+}
+
+/// Encrypted immutable revisions shared by current settings and accepted runs.
+model WorkspaceSecretValue {
+  id              String               @id @default(uuid())
+  userId          String
+  secretId        String
+  kind            String               @db.VarChar(32)
+  name            String               @db.VarChar(120)
+  description     String               @db.VarChar(2000)
+  payloadEnvelope String
+  byteSize        Int
+  envNames        String[]             @default([])
+  originalName    String?              @db.VarChar(255)
+  sshProtected    Boolean              @default(false)
+  autoSaved       Boolean              @default(false)
+  checksum        String?              @db.Char(64)
+  createdAt       DateTime             @default(now())
+  user            User                 @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  currentSecret   WorkspaceSecret?
+  runBindings     WorkspaceRunSecret[]
+
+  @@index([userId, secretId])
+}
+
+model WorkspaceRunSecret {
+  modelRunId String
+  secretId   String
+  valueId    String
+  runBinding WorkspaceRunBinding  @relation(fields: [modelRunId], references: [modelRunId], onDelete: Cascade, onUpdate: Restrict)
+  value      WorkspaceSecretValue @relation(fields: [valueId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@id([modelRunId, secretId])
+  @@index([valueId])
 }
 
 model WorkspaceRunOutput {

@@ -2,10 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import type { MemoryConsumerSettingsResponse } from "../lib/contracts/memoryConsumer";
 import { preflightPrismaMemoryProviderBindings } from "../lib/server/memory/coordinator/providerPreflight";
-import { requireAdminAcceptedMemoryDestination } from "../lib/server/memory/execution/adminConsent";
-import { resolveMemoryEgressConsentMode } from "../lib/server/memory/execution/consentMode";
 import {
-  requireAcceptedMemoryUtilityPolicy,
   resolveCurrentMemoryUtilityPolicy,
   type ResolvedMemoryExecutionTarget
 } from "../lib/server/memory/execution/policy";
@@ -24,7 +21,6 @@ export const MEMORY_SEMANTIC_SMOKE_PREFLIGHT_CODES = [
   "memory_smoke_answer_binding_mismatch",
   "memory_smoke_answer_binding_unavailable",
   "memory_smoke_credential_unreadable",
-  "memory_smoke_egress_not_accepted",
   "memory_smoke_embedding_not_configured",
   "memory_smoke_embedding_unavailable",
   "memory_smoke_reranker_unavailable",
@@ -54,7 +50,6 @@ type BindingIdentity = Readonly<{
 
 export type MemorySemanticSmokePreflightSnapshot = Readonly<{
   answer: BindingIdentity | null;
-  consentAccepted: boolean;
   credentialIntegrity: boolean;
   embeddingReady: boolean;
   embeddingSelected: boolean;
@@ -182,9 +177,6 @@ export function validateMemorySemanticSmokePreflight(
   if (!snapshot.rerankerReady) {
     return preflightFailure("memory_smoke_reranker_unavailable");
   }
-  if (!snapshot.consentAccepted) {
-    return preflightFailure("memory_smoke_egress_not_accepted");
-  }
   if (!snapshot.credentialIntegrity) {
     return preflightFailure("memory_smoke_credential_unreadable");
   }
@@ -229,21 +221,10 @@ export function memorySemanticSmokeRerankerReady(
   return identity(target) !== null;
 }
 
-export const MEMORY_SEMANTIC_SMOKE_REQUIRED_ROLES = Object.freeze([
-  "MEMORY_CONTROL",
-  "MEMORY_STATEMENT_CLASSIFY",
-  "MEMORY_HISTORY_CLASSIFY",
-  "MEMORY_FACT_EXTRACT",
-  "MEMORY_CONSOLIDATE",
-  "MEMORY_RERANK",
-  "MEMORY_DOCUMENT_EMBED",
-  "MEMORY_QUERY_EMBED"
-] as const satisfies readonly MemoryExecutionRole[]);
-
 /**
  * Resolve the exact persisted System Model, per-user embedding, reranker, and
  * answer binding used by production admission. This is a database-only check:
- * it never refreshes a provider, changes policy, or acknowledges egress.
+ * it never refreshes a provider or changes policy.
  */
 export async function preflightPrismaMemorySemanticSmoke(
   client: PrismaClient,
@@ -252,9 +233,6 @@ export async function preflightPrismaMemorySemanticSmoke(
 ): Promise<MemorySemanticSmokeTarget> {
   const settings = await client.userMemorySettings.findUnique({
     select: {
-      acceptedUtilityEgressAt: true,
-      acceptedUtilityEgressFingerprint: true,
-      acceptedUtilityPolicyVersion: true,
       embeddingProviderModelId: true,
       learnAutomatically: true,
       referenceChatHistory: true,
@@ -266,7 +244,6 @@ export async function preflightPrismaMemorySemanticSmoke(
   if (!settings) {
     return validateMemorySemanticSmokePreflight({
       answer: null,
-      consentAccepted: false,
       credentialIntegrity: false,
       embeddingReady: false,
       embeddingSelected: false,
@@ -282,7 +259,6 @@ export async function preflightPrismaMemorySemanticSmoke(
   if (!settingsEnabled || !settings.embeddingProviderModelId) {
     return validateMemorySemanticSmokePreflight({
       answer: null,
-      consentAccepted: false,
       credentialIntegrity: false,
       embeddingReady: false,
       embeddingSelected: Boolean(settings.embeddingProviderModelId),
@@ -297,9 +273,6 @@ export async function preflightPrismaMemorySemanticSmoke(
   const resolved = await client.$transaction(async (tx) => {
     const current = await tx.userMemorySettings.findUnique({
       select: {
-        acceptedUtilityEgressAt: true,
-        acceptedUtilityEgressFingerprint: true,
-        acceptedUtilityPolicyVersion: true,
         embeddingProviderModelId: true,
         learnAutomatically: true,
         referenceChatHistory: true,
@@ -326,26 +299,6 @@ export async function preflightPrismaMemorySemanticSmoke(
     ] as const;
     const reranker = policy.targets.get("MEMORY_RERANK");
     const systemTarget = systemTargets[0];
-    let consentAccepted = MEMORY_SEMANTIC_SMOKE_REQUIRED_ROLES.every((role) =>
-      policy.targets.has(role));
-    if (consentAccepted) {
-      try {
-        const consentMode = resolveMemoryEgressConsentMode();
-        if (consentMode === "ADMIN") {
-          for (const role of MEMORY_SEMANTIC_SMOKE_REQUIRED_ROLES) {
-            await requireAdminAcceptedMemoryDestination(tx, {
-              role,
-              target: policy.targets.get(role)!
-            });
-          }
-        } else {
-          requireAcceptedMemoryUtilityPolicy(current, policy, consentMode);
-        }
-      } catch {
-        consentAccepted = false;
-      }
-    }
-
     let answer: BindingIdentity | null = null;
     if (systemTarget) {
       try {
@@ -372,7 +325,6 @@ export async function preflightPrismaMemorySemanticSmoke(
     const systemIdentity = identity(systemTarget);
     return {
       answer,
-      consentAccepted,
       embeddingReady: targetsShareBinding(embeddingTargets),
       rerankerReady: memorySemanticSmokeRerankerReady(reranker),
       system: systemIdentity && systemTarget
@@ -394,7 +346,7 @@ export async function preflightPrismaMemorySemanticSmoke(
     settingsAvailable: true,
     settingsEnabled: true
   };
-  // Validate capability and consent failures before touching credential
+  // Validate capability failures before touching credential
   // envelopes so missing setup always reports the most actionable blocker.
   validateMemorySemanticSmokePreflight(capabilitySnapshot);
   let credentialIntegrity = true;
@@ -720,7 +672,7 @@ export function createPrismaMemorySemanticSmokeVerifier(client: PrismaClient) {
       }
       const activeStates = new Set([
         "QUEUED",
-        "WAITING_FOR_EGRESS_CONSENT",
+        "WAITING_FOR_CONFIGURATION", "WAITING_FOR_EGRESS_CONSENT",
         "CLAIMED",
         "RETRYABLE_FAILED"
       ]);

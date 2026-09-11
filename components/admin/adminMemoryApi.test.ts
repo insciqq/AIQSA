@@ -9,7 +9,7 @@ function response() {
   return {
     memory: {
       admissionTimeout: { seconds: 15, version: 4 },
-      activeIssueCode: null,
+      processing: { enabled: true, issues: [] },
       configuredTargets: [{ model: "Utility", provider: "Primary" }],
       index: { generation: 2, readiness: "READY" },
       queue: { length: 0, oldestAgeSeconds: null },

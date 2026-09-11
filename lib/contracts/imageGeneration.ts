@@ -6,6 +6,20 @@ export const IMAGE_PARAMETER_NAMES = [
   "aspect_ratio", "image_size", "mime_type", "thinking_level", "resolution", "seed"
 ] as const;
 export type ImageParameterName = (typeof IMAGE_PARAMETER_NAMES)[number];
+export const IMAGE_FAILURE_CATEGORIES = ["invalid_parameter", "safety", "quota", "rate_limit", "authorization", "upstream_unavailable", "unknown"] as const;
+export const IMAGE_FAILURE_PARAMETERS = [...IMAGE_PARAMETER_NAMES, "model", "prompt", "n", "input_references", "provider"] as const;
+export type ImageFailureDiagnostic = {
+  category: (typeof IMAGE_FAILURE_CATEGORIES)[number];
+  parameter?: (typeof IMAGE_FAILURE_PARAMETERS)[number];
+};
+
+export function decodeImageFailureDiagnostic(value: unknown): ImageFailureDiagnostic | null {
+  if (!record(value) || Object.keys(value).some((key) => key !== "category" && key !== "parameter") ||
+    !(IMAGE_FAILURE_CATEGORIES as readonly unknown[]).includes(value.category) ||
+    value.parameter !== undefined && !(IMAGE_FAILURE_PARAMETERS as readonly unknown[]).includes(value.parameter)) return null;
+  return { category: value.category as ImageFailureDiagnostic["category"],
+    ...(value.parameter !== undefined ? { parameter: value.parameter as ImageFailureDiagnostic["parameter"] } : {}) };
+}
 export type ImageParameterDefinition =
   | { type: "enum"; values: string[] }
   | { type: "range"; min: number; max: number }
@@ -59,11 +73,12 @@ export function imageParameterDefinitions(image: ImageModelConfiguration, modelI
   if (image.profile === "openrouter") return image.parameters ?? {};
   if (image.profile === "gemini") {
     const modern = modelId.startsWith("gemini-3");
+    const flashLite = modelId.startsWith("gemini-3.1-flash-lite-image");
     return {
       aspect_ratio: enumeration("1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"),
-      ...(modern ? { image_size: enumeration("1K", "2K", "4K") } : {}),
+      ...(modern ? { image_size: flashLite ? enumeration("1K") : enumeration("1K", "2K", "4K") } : {}),
       mime_type: enumeration("image/png", "image/jpeg"),
-      ...(modelId.includes("3.1-flash-image") ? { thinking_level: enumeration("minimal", "high") } : {})
+      ...(flashLite || modelId.includes("3.1-flash-image") ? { thinking_level: enumeration("minimal", "high") } : {})
     };
   }
   const secondGeneration = modelId.startsWith("gpt-image-2");

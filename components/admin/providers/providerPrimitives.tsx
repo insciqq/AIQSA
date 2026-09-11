@@ -85,8 +85,9 @@ export function ProviderAvatar({
 /** The `⋯` menu on a row: 3–5 actions behind one control. */
 export function ProviderRowMenu({
   actions,
-  label
-}: Readonly<{ actions: readonly UiV2MenuAction[]; label: string }>) {
+  label,
+  tooltipSide
+}: Readonly<{ actions: readonly UiV2MenuAction[]; label: string; tooltipSide?: "top" }>) {
   const [open, setOpen] = useState(false);
   const { closeForAction, menuRef, triggerRef } = useMenuDismissalV2({ onClose: () => setOpen(false), open });
   return (
@@ -99,6 +100,7 @@ export function ProviderRowMenu({
         onClick={() => setOpen((value) => !value)}
         ref={triggerRef}
         tooltip="More"
+        tooltipSide={tooltipSide}
       />
       {open ? (
         <UiV2ResponsiveMenu anchorRef={triggerRef} label={label} menuRef={menuRef} onClose={() => setOpen(false)}>

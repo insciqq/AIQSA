@@ -21,6 +21,7 @@ const nonterminalStates: readonly MemoryJobState[] = [
   "CLAIMED",
   "QUEUED",
   "RETRYABLE_FAILED",
+  "WAITING_FOR_CONFIGURATION",
   "WAITING_FOR_EGRESS_CONSENT"
 ];
 
@@ -225,6 +226,7 @@ export function createPrismaMemoryRetrievalCutoverRepository(
                 'CLAIMED'::"MemoryJobState",
                 'QUEUED'::"MemoryJobState",
                 'RETRYABLE_FAILED'::"MemoryJobState",
+                'WAITING_FOR_CONFIGURATION'::"MemoryJobState",
                 'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState"
               )
           )

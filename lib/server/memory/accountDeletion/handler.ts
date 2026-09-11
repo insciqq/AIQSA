@@ -21,6 +21,7 @@ const nonterminalJobStates = [
   "CLAIMED",
   "QUEUED",
   "RETRYABLE_FAILED",
+  "WAITING_FOR_CONFIGURATION",
   "WAITING_FOR_EGRESS_CONSENT"
 ] as const;
 

@@ -1,4 +1,5 @@
 import type { WorkspaceOperation } from "./operationFence";
+import type { AcceptedWorkspaceSecret } from "./secrets/store";
 import type {
   WorkspaceMcpToolName,
   WorkspaceStagedAttachmentEntry
@@ -111,6 +112,11 @@ export type WorkspaceOutputReleaseInput = Readonly<{
   signal?: AbortSignal;
 }>;
 
+export type WorkspaceBrowserCollection = Readonly<{
+  files: readonly WorkspaceOutputStream[];
+  skipped: readonly import("./secrets/browserSession").WorkspaceBrowserSkipCode[];
+}>;
+
 export type WorkspaceOperationInput = Readonly<{
   operation: WorkspaceOperation;
   runtimeSandboxId: string | null;
@@ -152,6 +158,15 @@ export interface WorkspaceRuntime {
     inboxIndex: unknown;
     manifests: readonly Readonly<{ body: unknown; messageId: string }>[];
     outputDirectory?: string;
+    runtimeSandboxId: string;
+    operation?: WorkspaceOperation;
+    sessionId: string;
+    signal?: AbortSignal;
+  }>): Promise<void>;
+  /** Private accepted inputs; never part of model tool arguments or host env. */
+  syncPersonalSecrets(input: Readonly<{
+    secrets: readonly AcceptedWorkspaceSecret[];
+    modelRunId: string;
     runtimeSandboxId: string;
     operation?: WorkspaceOperation;
     sessionId: string;
@@ -203,6 +218,14 @@ export interface WorkspaceRuntime {
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<readonly WorkspaceOutputStream[]>;
+  /** Private cache input, collected only after accepted-run quiescence; never an output capture. */
+  collectBrowserSessions(input: Readonly<{
+    modelRunId: string;
+    runtimeSandboxId: string;
+    operation?: WorkspaceOperation;
+    sessionId: string;
+    signal?: AbortSignal;
+  }>): Promise<WorkspaceBrowserCollection>;
   /** Releases every unopened handle of an output batch; idempotent. */
   releaseOutputs?(input: WorkspaceOutputReleaseInput): Promise<void>;
   /** Current owner only; completed captures otherwise live until exact-session removal. */
@@ -237,6 +260,7 @@ export interface WorkspaceRuntime {
 export class WorkspaceRuntimeError extends Error {
   readonly code:
     | "workspace_attachment_unavailable"
+    | "workspace_secrets_prepare_failed"
     | "workspace_archive_limit_exceeded"
     | "workspace_execution_cleanup_failed"
     | "workspace_operation_stale"

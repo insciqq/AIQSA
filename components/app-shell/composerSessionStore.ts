@@ -55,6 +55,7 @@ export type ComposerSessionSnapshot = {
   /** Chat-scoped execution intent. For blank sessions this is committed with
    * the first send; saved-chat sessions mirror the canonical chat flag. */
   workspaceEnabled: boolean;
+  workspaceInitialized: boolean;
 };
 
 export type ComposerEditToken = ComposerPendingEdit & {
@@ -95,6 +96,7 @@ type ComposerSessionPatchUpdate =
 type ComposerSessionStore = {
   activeSessionKey: ComposerSessionKey;
   activateSession(key: ComposerSessionKey): void;
+  applyWorkspaceDefault(key: ComposerSessionKey, enabled: boolean): void;
   appendUploadedAttachment(
     key: ComposerSessionKey,
     generation: number,
@@ -150,7 +152,8 @@ export const emptyComposerSessionSnapshot = Object.freeze({
   pendingSend: null,
   pendingUploadGenerations: emptyUploadGenerations,
   revision: 0,
-  workspaceEnabled: false
+  workspaceEnabled: false,
+  workspaceInitialized: false
 }) as ComposerSessionSnapshot;
 
 function newSession(): ComposerSessionSnapshot {
@@ -269,7 +272,7 @@ function patchedSession(
   const errorChanged = errorPatched && patch.operationError !== current.operationError;
   const retryabilityChanged = errorPatched && current.operationErrorRetryable;
   const workspaceChanged = hasOwn(patch, "workspaceEnabled") &&
-    patch.workspaceEnabled !== current.workspaceEnabled;
+    (patch.workspaceEnabled !== current.workspaceEnabled || !current.workspaceInitialized);
 
   if (
     !attachmentsChanged &&
@@ -292,7 +295,7 @@ function patchedSession(
     ...(editingErrorChanged ? { editingError: patch.editingError ?? null } : {}),
     ...(editingMessageChanged ? { editingMessageId: patch.editingMessageId ?? null } : {}),
     ...(errorChanged ? { operationError: patch.operationError ?? null } : {}),
-    ...(workspaceChanged ? { workspaceEnabled: patch.workspaceEnabled ?? false } : {}),
+    ...(workspaceChanged ? { workspaceEnabled: patch.workspaceEnabled ?? false, workspaceInitialized: true } : {}),
     ...(errorPatched ? { operationErrorLive: true, operationErrorRetryable: false } : {}),
     editRevision:
       current.editRevision + (editingDraftChanged || editingMessageChanged ? 1 : 0),
@@ -334,6 +337,15 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
         ? state.sessionsByKey
         : { ...state.sessionsByKey, [key]: newSession() }
     });
+  },
+  applyWorkspaceDefault(key, enabled) {
+    if (chatIdFromComposerSessionKey(key) || projectIdFromComposerSessionKey(key)) return;
+    const session = get().sessionsByKey[key];
+    if (!session || session.pendingSend || session.pendingUploadGenerations.length > 0) return;
+    // A late catalog may initialize a typed draft, but never replace an
+    // initialized draft's execution intent or a file-driven Workspace choice.
+    if (session.workspaceInitialized && (session.draft || session.attachments.length > 0 || session.editingMessageId)) return;
+    get().updateSession(key, { workspaceEnabled: enabled });
   },
   appendUploadedAttachment(key, generation, attachment) {
     const state = get();

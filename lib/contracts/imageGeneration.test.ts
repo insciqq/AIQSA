@@ -2,6 +2,20 @@ import { describe, expect, it } from "vitest";
 import { imageParameterDefinitions, normalizeImageGenerationParameters, normalizeImageModelConfiguration } from "./imageGeneration";
 
 describe("image model controls", () => {
+  it("limits Flash Lite image to 1K while retaining each Gemini model's controls", () => {
+    const image = { profile: "gemini" as const };
+    expect(normalizeImageGenerationParameters({ image_size: "1K", thinking_level: "minimal" }, image, "gemini-3.1-flash-lite-image"))
+      .toEqual({ image_size: "1K", thinking_level: "minimal" });
+    for (const image_size of ["2K", "4K"]) {
+      expect(() => normalizeImageGenerationParameters({ image_size }, image, "gemini-3.1-flash-lite-image")).toThrow("image_parameters_invalid");
+      for (const id of ["gemini-3.1-flash-image", "gemini-3-pro-image"]) {
+        expect(normalizeImageGenerationParameters({ image_size }, image, id)).toEqual({ image_size });
+      }
+    }
+    expect(imageParameterDefinitions(image, "gemini-2.5-flash-image")).not.toHaveProperty("image_size");
+    expect(imageParameterDefinitions(image, "gemini-2.5-flash-image")).not.toHaveProperty("thinking_level");
+  });
+
   it("keeps gateway restrictions and native model capabilities distinct", () => {
     expect(imageParameterDefinitions({ profile: "codex_lb" }, "gpt-image-2")).not.toHaveProperty("thinking_level");
     expect(() => normalizeImageGenerationParameters({ background: "transparent" }, { profile: "codex_lb" }, "gpt-image-2")).toThrow();

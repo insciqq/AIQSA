@@ -16,14 +16,8 @@ import {
 import type { MemorySettingsPersistenceSnapshot } from "../persistence/settings";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from "../retrieval/vector";
 import { MEMORY_WORKER_HEARTBEAT_FRESHNESS_MS } from "../coordinator/workerHeartbeat";
-import type { MemoryEgressConsentMode } from "../execution/consentMode";
-import {
-  decodeMemoryAdminDestinations,
-  type MemoryAdminAcceptedDestination
-} from "../execution/adminConsent";
 
 export type MemoryCapabilityOperationalState = Readonly<{
-  adminAcceptedDestinations: readonly MemoryAdminAcceptedDestination[];
   retrievalIndexAvailable: boolean;
   workerAvailable: boolean;
 }>;
@@ -57,44 +51,16 @@ function strictSystemTargetAvailable(
   );
 }
 
-function egressAccepted(
-  settings: MemorySettingsPersistenceSnapshot,
-  policy: ResolvedMemoryUtilityPolicy,
-  consentMode: MemoryEgressConsentMode,
-  adminAcceptedDestinations: readonly MemoryAdminAcceptedDestination[],
-  role: MemoryExecutionRole
-): boolean {
-  if (consentMode === "PER_USER") {
-    return Boolean(
-      settings.acceptedUtilityEgressAt &&
-      settings.acceptedUtilityEgressFingerprint === policy.fingerprint &&
-      settings.acceptedUtilityPolicyVersion === policy.policyVersion
-    );
-  }
-  const resolved = target(policy, role);
-  return Boolean(resolved && adminAcceptedDestinations.some((destination) =>
-    destination.role === role &&
-    destination.destinationFingerprint === resolved.destinationFingerprint));
-}
-
 export function deriveMemorySettingsCapabilities(input: Readonly<{
   base: MemoryCapabilityBase;
-  consentMode: MemoryEgressConsentMode;
   operations: MemoryCapabilityOperationalState;
   policy: ResolvedMemoryUtilityPolicy;
   settings: MemorySettingsPersistenceSnapshot;
 }>): MemorySettingsResponse["capabilities"] {
-  const accepted = (role: MemoryExecutionRole) => egressAccepted(
-    input.settings,
-    input.policy,
-    input.consentMode,
-    input.operations.adminAcceptedDestinations,
-    role
-  );
   const strictRoleAvailable = (role: Exclude<
     MemoryExecutionRole,
     "MEMORY_DOCUMENT_EMBED" | "MEMORY_QUERY_EMBED"
-  >) => strictSystemTargetAvailable(input.policy, role) && accepted(role);
+  >) => strictSystemTargetAvailable(input.policy, role);
   const controlAvailable = strictRoleAvailable("MEMORY_CONTROL");
   const extractionAvailable = strictRoleAvailable("MEMORY_FACT_EXTRACT");
   const consolidationAvailable = strictRoleAvailable("MEMORY_CONSOLIDATE");
@@ -143,26 +109,14 @@ export function deriveMemorySettingsCapabilities(input: Readonly<{
 export async function readMemoryCapabilityOperationalState(
   client: Pick<
     PrismaClient,
-    "memoryEgressAdminPolicy" | "memoryIndexGeneration" | "memoryWorkerHeartbeat"
+    "memoryIndexGeneration" | "memoryWorkerHeartbeat"
   >,
   input: Readonly<{
-    consentMode: MemoryEgressConsentMode;
     now: Date;
-    policy: ResolvedMemoryUtilityPolicy;
     settings: MemorySettingsPersistenceSnapshot;
   }>
 ): Promise<MemoryCapabilityOperationalState> {
-  const [adminPolicy, generation, heartbeat] = await Promise.all([
-    input.consentMode === "ADMIN"
-      ? client.memoryEgressAdminPolicy.findUnique({
-          select: {
-            acceptedAt: true,
-            acceptedDestinations: true,
-            acceptedPolicyVersion: true
-          },
-          where: { id: "installation" }
-        })
-      : Promise.resolve(null),
+  const [generation, heartbeat] = await Promise.all([
     input.settings.activeIndexGenerationId
       ? client.memoryIndexGeneration.findFirst({
           select: {
@@ -206,12 +160,6 @@ export async function readMemoryCapabilityOperationalState(
   const workerAge = heartbeat ? nowMs - heartbeat.lastSeenAt.getTime() : Number.POSITIVE_INFINITY;
 
   return Object.freeze({
-    adminAcceptedDestinations: Object.freeze(
-      input.consentMode === "ADMIN" && adminPolicy?.acceptedAt &&
-        adminPolicy.acceptedPolicyVersion === input.policy.policyVersion
-        ? decodeMemoryAdminDestinations(adminPolicy?.acceptedDestinations) ?? []
-        : []
-    ),
     retrievalIndexAvailable,
     workerAvailable: Number.isFinite(nowMs) && workerAge >= 0 &&
       workerAge <= MEMORY_WORKER_HEARTBEAT_FRESHNESS_MS

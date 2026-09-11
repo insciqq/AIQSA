@@ -33,17 +33,14 @@ export const defaultMemorySettingsService = createMemorySettingsService({
       settings.useMemoryFacts
     ),
   repository: defaultMemorySettingsRepository,
-  resolveCapabilities: async (settings, policy, consentMode) =>
+  resolveCapabilities: async (settings, policy) =>
     deriveMemorySettingsCapabilities({
       base: {
         permanentChatDeletion: defaultPermanentChatDeletionCapability.enabled,
         temporaryChats: DEFAULT_MEMORY_SETTINGS_CAPABILITIES.temporaryChats
       },
-      consentMode,
       operations: await readMemoryCapabilityOperationalState(prisma, {
-        consentMode,
         now: new Date(),
-        policy,
         settings
       }),
       policy,

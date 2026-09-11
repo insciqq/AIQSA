@@ -1,3 +1,7 @@
+import type { JsonSchemaType } from "@modelcontextprotocol/client";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/ajv";
+import { buildAnthropicMessagesOutputParams } from "./anthropicMessages";
+import { extractAnthropicMessageUsage, type AnthropicMessagesSearchClient } from "./anthropicMessagesSearch";
 import { providerResponseFailure } from "./responseFailure";
 import type { CatalogAdapterKind } from "../../domain/catalog";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
@@ -23,6 +27,7 @@ import {
 export { STRUCTURED_OUTPUT_LIMITS } from "./structuredOutputLimits";
 
 export const STRUCTURED_OUTPUT_SUPPORTED_ADAPTERS = [
+  "anthropic_messages",
   "deepseek_responses_native",
   "gemini_interactions_native",
   "openai_responses_native",
@@ -102,6 +107,19 @@ const GEMINI_SCHEMA_KEYS = new Set([
 ]);
 const GEMINI_SERVER_VALIDATED_SCHEMA_KEYS = new Set(["maxLength", "minLength", "pattern"]);
 const GEMINI_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high"]);
+const ANTHROPIC_SCHEMA_KEYS = new Set([
+  "additionalProperties", "allOf", "anyOf", "const", "default", "description", "enum", "format",
+  "items", "maximum", "maxItems", "maxLength", "minimum", "minItems", "minLength", "multipleOf",
+  "exclusiveMinimum", "exclusiveMaximum", "oneOf", "pattern", "properties", "required", "title", "type", "uniqueItems"
+]);
+const ANTHROPIC_SERVER_VALIDATED_SCHEMA_KEYS = new Set([
+  "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minLength", "maxLength",
+  "maxItems", "uniqueItems", "pattern"
+]);
+const ANTHROPIC_SCHEMA_FORMATS = new Set([
+  "date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid"
+]);
+type StructuredOutputSchemaProvider = "portable" | "gemini" | "anthropic";
 
 type ProviderSchemaProjection = Readonly<{
   rootWrapped: boolean;
@@ -155,19 +173,30 @@ function hasExclusiveConstDiscriminator(branches: readonly unknown[]): boolean {
  * but requires an object root. */
 function schemaForProvider(
   value: Readonly<Record<string, unknown>>,
-  provider: "portable" | "gemini" = "portable"
+  provider: StructuredOutputSchemaProvider = "portable"
 ): ProviderSchemaProjection {
   const visit = (node: unknown, depth = 0): unknown => {
-    if (provider === "gemini" && (!isRecord(node) || depth > 64)) {
+    if (provider !== "portable" && (!isRecord(node) || depth > 64)) {
       throw new Error("structured_output_schema_unsupported");
     }
     if (!isRecord(node)) return node;
     if (provider === "gemini" && Object.keys(node).some((key) => !GEMINI_SCHEMA_KEYS.has(key))) {
       throw new Error("structured_output_schema_unsupported");
     }
+    if (provider === "anthropic" && (Object.keys(node).some((key) => !ANTHROPIC_SCHEMA_KEYS.has(key)) ||
+      (node.type === "object" || isRecord(node.properties)) && node.additionalProperties !== false)) {
+      throw new Error("structured_output_schema_unsupported");
+    }
     const visitChild = (child: unknown) => visit(child, depth + 1);
     const mapped: Record<string, unknown> = {};
+    const serverConstraints: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(node)) {
+      if (provider === "anthropic" && (ANTHROPIC_SERVER_VALIDATED_SCHEMA_KEYS.has(key) ||
+        key === "minItems" && child !== 0 && child !== 1 ||
+        key === "format" && (typeof child !== "string" || !ANTHROPIC_SCHEMA_FORMATS.has(child)))) {
+        serverConstraints[key] = child;
+        continue;
+      }
       if (key === "uniqueItems") continue;
       if (provider === "gemini") {
         // Gemini's documented subset omits these constraints. Existing
@@ -214,6 +243,9 @@ function schemaForProvider(
         mapped[key] = child;
       }
     }
+    if (Object.keys(serverConstraints).length > 0) {
+      mapped.description = `${typeof mapped.description === "string" ? `${mapped.description}\n` : ""}Required constraints: ${JSON.stringify(serverConstraints)}`;
+    }
     return mapped;
   };
   const projected = visit(value) as Record<string, unknown>;
@@ -237,7 +269,7 @@ function schemaForProvider(
 function decodeProviderStructuredOutput(
   request: ProviderStructuredOutputRequest,
   output: Record<string, unknown>,
-  provider: "portable" | "gemini" = "portable"
+  provider: StructuredOutputSchemaProvider = "portable"
 ): Record<string, unknown> {
   if (!schemaForProvider(request.schema, provider).rootWrapped) return output;
   if (Object.keys(output).length !== 1 ||
@@ -337,6 +369,95 @@ function hasReportedTokenUsage(value: unknown, fields: readonly string[]): value
 function structuredOutputTokenLimitFailure(): Error {
   const code = "structured_output_output_limit_exceeded";
   return Object.assign(new Error(code), { code, capabilityFailureReason: "budget_exhausted" });
+}
+
+export function buildAnthropicMessagesStructuredOutputRequest(
+  model: Pick<ProviderModelConfiguration, "adapterKind" | "capabilities" | "defaultParams" | "upstreamModelId">,
+  request: ProviderStructuredOutputRequest
+): Record<string, unknown> {
+  if (model.adapterKind !== "anthropic_messages") throw new Error("structured_output_adapter_unsupported");
+  const normalized = normalizeRequest(request);
+  const outputConfig = isRecord(model.defaultParams.outputConfig) ? model.defaultParams.outputConfig
+    : isRecord(model.defaultParams.output_config) ? model.defaultParams.output_config : {};
+  const effort = normalized.reasoningEffort ?? outputConfig.effort ?? model.capabilities.defaultReasoningEffort;
+  if (effort !== undefined && effort !== null && effort !== "none" && (
+    typeof effort !== "string" || !["low", "medium", "high", "xhigh", "max"].includes(effort) ||
+    !model.capabilities.reasoning || model.capabilities.reasoningEfforts && !model.capabilities.reasoningEfforts.includes(effort)
+  ) || normalized.maxOutputTokens > (model.capabilities.maxOutputTokens ?? Infinity)) {
+    throw new Error("structured_output_request_invalid");
+  }
+  const params = buildAnthropicMessagesOutputParams({
+    ...model.defaultParams,
+    maxOutputTokens: normalized.maxOutputTokens,
+    ...(effort === "none" ? { thinking: { enabled: false } } : {})
+  });
+  return {
+    ...params,
+    messages: [{ content: [{ text: normalized.userPrompt, type: "text" }], role: "user" }],
+    model: model.upstreamModelId,
+    output_config: {
+      ...(effort && effort !== "none" ? { effort } : {}),
+      format: { type: "json_schema", schema: schemaForProvider(normalized.schema, "anthropic").schema }
+    },
+    stream: false,
+    system: normalized.systemPrompt
+  };
+}
+
+function anthropicStructuredOutputText(response: Record<string, unknown>): string {
+  if (response.stop_reason === "max_tokens") throw structuredOutputTokenLimitFailure();
+  if (response.stop_reason === "refusal") throw Object.assign(new Error("structured_output_provider_incomplete"), {
+    code: "provider_response_not_retryable", capabilityFailureReason: "refusal"
+  });
+  if (response.type !== "message" || response.role !== "assistant" || response.stop_reason !== "end_turn" || response.error) {
+    throw new Error("structured_output_provider_incomplete");
+  }
+  if (!Array.isArray(response.content) || !response.content.length || response.content.length > 256) {
+    throw new Error("structured_output_invalid");
+  }
+  let text: string | null = null;
+  for (const block of response.content) {
+    if (!isRecord(block)) throw new Error("structured_output_invalid");
+    // Thinking/signatures are private protocol state, never the JSON result.
+    if (text === null && (block.type === "thinking" || block.type === "redacted_thinking")) continue;
+    if (block.type !== "text" || typeof block.text !== "string" || text !== null ||
+      block.citations !== undefined && (!Array.isArray(block.citations) || block.citations.length !== 0)) {
+      throw new Error("structured_output_invalid");
+    }
+    text = block.text;
+  }
+  if (text === null) throw new Error("structured_output_invalid");
+  return text;
+}
+
+export function createAnthropicMessagesStructuredOutputAdapter(input: Readonly<{
+  client: AnthropicMessagesSearchClient;
+  model: Pick<ProviderModelConfiguration, "adapterKind" | "capabilities" | "defaultParams" | "upstreamModelId">;
+}>): ProviderStructuredOutputAdapter {
+  return {
+    async execute(request, options) {
+      options?.signal?.throwIfAborted();
+      const body = buildAnthropicMessagesStructuredOutputRequest(input.model, request);
+      // The native subset omits bounds and patterns; enforce the untouched
+      // contract locally with the already pinned SDK's JSON Schema validator.
+      let validate;
+      try {
+        validate = new AjvJsonSchemaValidator().getValidator<unknown>(request.schema as JsonSchemaType);
+      } catch {
+        throw new Error("structured_output_schema_unsupported");
+      }
+      const response = await input.client.createMessage(body, options);
+      options?.onProviderResponseId?.(boundedProviderResponseId(response.id));
+      if (hasReportedTokenUsage(response.usage, ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"])) {
+        options?.onUsage?.(extractAnthropicMessageUsage(response.usage));
+      }
+      options?.signal?.throwIfAborted();
+      const output = decodeProviderStructuredOutput(request,
+        parseProviderStructuredOutputObject(anthropicStructuredOutputText(response)), "anthropic");
+      if (!validate(output).valid) throw new Error("structured_output_invalid");
+      return output;
+    }
+  };
 }
 
 function openAIResponseText(response: Record<string, unknown>): string {

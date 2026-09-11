@@ -883,6 +883,7 @@ export function createPrismaMemoryCoordinatorRepository(
             job."state" IN (
               'QUEUED'::"MemoryJobState",
               'RETRYABLE_FAILED'::"MemoryJobState",
+              'WAITING_FOR_CONFIGURATION'::"MemoryJobState",
               'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState"
             )
             OR (
@@ -960,6 +961,7 @@ export function createPrismaMemoryCoordinatorRepository(
             job."state" IN (
               'QUEUED'::"MemoryJobState",
               'RETRYABLE_FAILED'::"MemoryJobState",
+              'WAITING_FOR_CONFIGURATION'::"MemoryJobState",
               'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState"
             )
             OR (
@@ -989,19 +991,24 @@ export function createPrismaMemoryCoordinatorRepository(
         FROM "MemoryJob" AS job
         INNER JOIN "User" AS owner_user ON owner_user."id" = job."userId"
         WHERE job."kind" IN (${jobKindList(input.kinds)})
-          AND job."state" = 'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState"
+          AND job."state" IN ('WAITING_FOR_CONFIGURATION'::"MemoryJobState", 'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState")
           AND owner_user."status" = 'active'::"UserStatus"
-        ORDER BY job."createdAt", job."id"
+        ORDER BY job."updatedAt", job."id"
         LIMIT ${input.limit}
       `);
     },
 
     async resolveWaitingJob(input) {
       if (!validDecision(input.decision)) return false;
-      if (input.decision.status === "WAITING_FOR_EGRESS_CONSENT") return false;
       const terminal = input.decision.status === "STALE" ||
         input.decision.status === "CANCELLED";
       return client.$transaction(async (tx) => {
+        const owners = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+          SELECT "id" FROM "User"
+          WHERE "id" = ${input.job.userId} AND "status" = 'active'::"UserStatus"
+          FOR SHARE
+        `);
+        if (owners.length !== 1) return false;
         const updated = await tx.memoryJob.updateMany({
           data: input.decision.status === "READY"
             ? {
@@ -1011,15 +1018,24 @@ export function createPrismaMemoryCoordinatorRepository(
                 updatedAt: input.now
               }
             : {
-                completedAt: input.now,
+                completedAt: terminal ? input.now : null,
                 errorCode: input.decision.errorCode,
                 nextAttemptAt: null,
-                state: terminal ? input.decision.status : "QUEUED",
+                state: input.decision.status,
                 updatedAt: input.now
               },
           where: {
             id: input.job.id,
-            state: "WAITING_FOR_EGRESS_CONSENT",
+            state: { in: ["WAITING_FOR_CONFIGURATION", "WAITING_FOR_EGRESS_CONSENT"] },
+            memoryGenerationSnapshot: input.job.memoryGenerationSnapshot,
+            memoryRevisionSnapshot: input.job.memoryRevisionSnapshot,
+            sourceHash: input.job.sourceHash,
+            sourceRevision: input.job.sourceRevision,
+            activeLeafMessageId: input.job.activeLeafMessageId,
+            branchGeneration: input.job.branchGeneration,
+            chatId: input.job.chatId,
+            sourceMessageId: input.job.sourceMessageId,
+            targetFactVersionId: input.job.targetFactVersionId,
             userId: input.job.userId
           }
         });

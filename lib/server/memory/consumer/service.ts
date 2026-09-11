@@ -135,9 +135,6 @@ function mappedFailure(error: unknown): never {
     case "memory_model_unavailable":
     case "memory_unavailable":
       return failure("memory_unavailable");
-    case "memory_egress_consent_required":
-    case "memory_egress_admin_owned":
-      return failure("memory_unavailable");
     case "memory_statement_invalid":
       return failure("memory_contract_invalid");
     default:
@@ -228,7 +225,6 @@ function consumerStatus(
     return "NEEDS_ADMIN_SETUP";
   }
   if (
-    response.egress.reviewRequired ||
     !response.capabilities.naturalLanguageActionsAvailable ||
     !response.capabilities.retrievalAvailable ||
     response.settings.learnAutomatically &&

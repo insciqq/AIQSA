@@ -333,7 +333,7 @@ async function extractionStats(db, userId, chatIds) {
     GROUP BY job."state"
   `, [userId, chatIds, runStartedAt.toISOString()]);
   const counts = Object.fromEntries(result.rows.map((row) => [row.state, row.count]));
-  const pending = ["QUEUED", "WAITING_FOR_EGRESS_CONSENT", "CLAIMED", "RETRYABLE_FAILED"]
+  const pending = ["QUEUED", "WAITING_FOR_CONFIGURATION", "WAITING_FOR_EGRESS_CONSENT", "CLAIMED", "RETRYABLE_FAILED"]
     .reduce((sum, state) => sum + (counts[state] ?? 0), 0);
   return {
     pending,
@@ -425,6 +425,7 @@ async function waitForMemoryQuiescence(db, userId, sourceChatId) {
           AND "kind" <> 'SYNTHESIZE_MEMORIES'::"MemoryJobKind"
           AND "state" IN (
             'QUEUED'::"MemoryJobState",
+            'WAITING_FOR_CONFIGURATION'::"MemoryJobState",
             'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState",
             'CLAIMED'::"MemoryJobState",
             'RETRYABLE_FAILED'::"MemoryJobState"

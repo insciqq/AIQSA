@@ -209,16 +209,10 @@ describe("Memory consumer service", () => {
     });
   });
 
-  it("collapses provider review requirements to a friendly unavailable status", async () => {
+  it("projects unavailable System Model capabilities to a friendly unavailable status", async () => {
     const deps = dependencies();
     deps.settingsService.get.mockResolvedValue(memorySettingsFixture({
-      egress: {
-        acceptedAt: null,
-        acceptedUtilityEgressFingerprint: null,
-        acceptedUtilityPolicyVersion: null,
-        consentMode: "PER_USER",
-        reviewRequired: true
-      },
+      capabilities: { administratorSetupRequired: true, retrievalAvailable: false },
       settings: { useMemoryFacts: true }
     }));
     const service = createMemoryConsumerService({
@@ -232,7 +226,7 @@ describe("Memory consumer service", () => {
 
     const settings = await service.settings("user-1");
 
-    expect(settings.status).toBe("UNAVAILABLE");
+    expect(settings.status).toBe("NEEDS_ADMIN_SETUP");
     expect(JSON.stringify(settings)).not.toMatch(/egress|fingerprint|destination|deployment/iu);
   });
 

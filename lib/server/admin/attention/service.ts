@@ -1,3 +1,4 @@
+import { adminMemoryProcessingCopy } from "../../../domain/adminMemoryProcessing";
 import type { AdminDashboard } from "../../../contracts/admin";
 import type {
   AdminAttention,
@@ -104,6 +105,13 @@ function providerItems(connections: readonly AdminProviderConnection[]): AdminAt
   const items: AdminAttentionItem[] = [];
   for (const connection of connections) {
     if (!connection.enabled) continue;
+    const additions = connection.catalogUpdates?.available.length ?? 0;
+    if (connection.activeVersion > 0 && connection.activeConfig && connection.defaultCredentialId && additions > 0) {
+      items.push({ action: "View models", code: "provider_catalog_models_available", count: additions,
+        detail: `The AIQSA catalog includes ${plural(additions, "new model")} for ${connection.displayName}. Check availability with your key before use.`,
+        id: `provider_catalog_models_available:${connection.id}`, severity: "neutral",
+        target: { section: "providers", resource: connection.id }, title: "New models in the AIQSA catalog" });
+    }
     const referenced = new Set<string>([
       ...(connection.defaultCredentialId ? [connection.defaultCredentialId] : []),
       ...connection.assignments.filter((assignment) => assignment.group.archivedAt === null)
@@ -316,8 +324,20 @@ function knowledgeItems(knowledge: AdminKnowledgeSettings): AdminAttentionItem[]
 }
 
 function memoryItems(memory: AdminMemoryStatus): AdminAttentionItem[] {
-  const items: AdminAttentionItem[] = [];
-  if (memory.worker.state === "NOT_RUNNING") {
+  const items: AdminAttentionItem[] = memory.processing.issues.map((issue) => {
+    const copy = adminMemoryProcessingCopy(issue);
+    return {
+      action: copy.action,
+      code: "memory_processing_blocked",
+      count: issue.count || null,
+      detail: copy.detail,
+      id: `memory_processing_blocked:${issue.stage}`,
+      severity: issue.severity,
+      target: { section: copy.section, ...(copy.section === "roles" ? { resource: "memory" } : {}) },
+      title: copy.title
+    };
+  });
+  if (memory.worker.state === "NOT_RUNNING" && memory.processing.enabled) {
     items.push({
       action: "Open Memory",
       code: "memory_worker_not_running",
@@ -331,7 +351,7 @@ function memoryItems(memory: AdminMemoryStatus): AdminAttentionItem[] {
       title: "Memory worker is not running"
     });
   }
-  if (memory.index.readiness === "REBUILD_REQUIRED") {
+  if (memory.index.readiness === "REBUILD_REQUIRED" && memory.processing.enabled) {
     items.push({
       action: "Open Memory",
       code: "memory_index_rebuild_required",
@@ -402,7 +422,9 @@ export function deriveAdminAttentionItems(inputs: AdminAttentionInputs): AdminAt
     ...(inputs.dashboard ? dashboardItems(inputs.dashboard, inputs.actingAdminUserId) : []),
     ...(inputs.providers ? providerItems(inputs.providers) : []),
     ...(inputs.search ? searchItems(inputs.search, inputs.providers) : []),
-    ...(inputs.systemRoles ? systemRoleItems(inputs.systemRoles) : []),
+    ...(inputs.systemRoles ? systemRoleItems(inputs.systemRoles).filter((item) =>
+      item.target.resource !== "memory" || !inputs.memory?.processing.issues.some((issue) =>
+        issue.stage === "LEARNING" && ["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED"].includes(issue.reason))) : []),
     ...(inputs.knowledge ? knowledgeItems(inputs.knowledge) : []),
     ...(inputs.memory ? memoryItems(inputs.memory) : []),
     ...(inputs.mcp ? mcpItems(inputs.mcp) : []),

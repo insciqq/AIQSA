@@ -9,7 +9,7 @@ function response() {
   return {
     memory: {
       admissionTimeout: { seconds: 15, version: 4 },
-      activeIssueCode: null,
+      processing: { enabled: true, issues: [] },
       configuredTargets: [
         { model: "Utility model", provider: "Primary provider" },
         { model: "Embedding model", provider: "Vector provider" }
@@ -68,12 +68,21 @@ describe("administrator Memory status contract", () => {
     })).toBeNull();
   });
 
-  it("does not present a historical issue as active when the queue is empty", () => {
+  it("rejects raw errors and accepts a bounded unresolved failure outside the queue", () => {
     expect(decodeAdminMemoryStatusResponse({
       memory: {
         ...response().memory,
         activeIssueCode: "memory_job_handler_unavailable"
       }
     })).toBeNull();
+    const issue = { stage: "LEARNING", reason: "PROCESSING_FAILED", severity: "bad", count: 1, oldestAgeSeconds: 120 };
+    const memory = { ...response().memory, processing: { enabled: true, issues: [issue] } };
+    expect(decodeAdminMemoryStatusResponse({ memory })).not.toBeNull();
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory,
+      processing: { enabled: true, issues: [{ ...issue, reason: "private-provider-body" }] }
+    } })).toBeNull();
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory,
+      processing: { enabled: true, issues: [{ ...issue, userId: "private-owner" }] }
+    } })).toBeNull();
   });
 });

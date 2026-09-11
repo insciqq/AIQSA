@@ -88,10 +88,13 @@ export async function testImageCapabilities(input: AdminProviderDraftTesterInput
           else if (["image_response_invalid", "image_output_missing"].includes(error.code)) status = "rejected";
         }
         const httpStatus = error instanceof ImageGenerationError ? error.httpStatus : undefined;
+        const diagnostic = error instanceof ImageGenerationError ? error.diagnostic : undefined;
         attempts[capability] = { attempts: 1, status: status === "unsupported" ? "unsupported" : "incomplete",
           reason: status === "unsupported" ? "route_unsupported" : httpStatus === 400 || httpStatus === 422 ? "invalid_input"
             : httpStatus === 429 ? "rate_limit" : httpStatus === 401 || httpStatus === 403 ? "authorization"
-              : httpStatus ? "http_error" : "semantic_inconclusive", ...(httpStatus ? { httpStatus } : {}) };
+              : httpStatus ? "http_error" : error instanceof ImageGenerationError && error.code === "image_request_timed_out" ? "timeout"
+                : error instanceof ImageGenerationError && error.code === "image_provider_request_failed" ? "network" : "semantic_inconclusive",
+          ...(httpStatus ? { httpStatus } : {}), ...(diagnostic ? { imageFailure: diagnostic } : {}) };
         if (status === "unsupported" || !priorProofs[capability]) {
           checks[capability] = status === "unsupported" ? "unsupported" : "incomplete";
           delete evidence[capability];

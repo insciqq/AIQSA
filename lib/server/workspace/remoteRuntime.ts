@@ -8,6 +8,8 @@ import {
 import type { WorkspaceConfig } from "./config";
 import { parseWorkspaceOperation } from "./operationFence";
 import { parseOutputCaptureRequest } from "./outputManifest";
+import { WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, isWorkspaceBrowserSessionFilename } from "@/lib/contracts/workspaceSecrets";
+import { WORKSPACE_BROWSER_SKIP_CODES, type WorkspaceBrowserSkipCode } from "./secrets/browserSession";
 import {
   WorkspaceRuntimeError,
   WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE,
@@ -36,6 +38,7 @@ function workspaceError(value: unknown): WorkspaceRuntimeError {
   const code = isRecord(value) && typeof value.error === "string" ? value.error : "";
   switch (code) {
     case "workspace_attachment_unavailable":
+    case "workspace_secrets_prepare_failed":
     case "workspace_archive_limit_exceeded":
     case "workspace_execution_cleanup_failed":
     case "workspace_operation_stale":
@@ -323,6 +326,14 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     });
   }
 
+  async syncPersonalSecrets(input: Parameters<WorkspaceRuntime["syncPersonalSecrets"]>[0]): Promise<void> {
+    await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/secrets`, {
+      body: JSON.stringify({ secrets: input.secrets, modelRunId: input.modelRunId,
+        operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
+      method: "POST", signal: input.signal
+    });
+  }
+
   async loadBoundTools(input: Parameters<WorkspaceRuntime["loadBoundTools"]>[0]): Promise<WorkspaceToolCatalog> {
     const value = await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/tools/catalog`, {
       body: JSON.stringify({ operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
@@ -452,6 +463,22 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       method: "POST",
       signal: input.signal
     });
+  }
+
+  async collectBrowserSessions(input: Parameters<WorkspaceRuntime["collectBrowserSessions"]>[0]): ReturnType<WorkspaceRuntime["collectBrowserSessions"]> {
+    const value = await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/outputs/list`, {
+      body: JSON.stringify({ purpose: "browser_sessions", modelRunId: input.modelRunId,
+        operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
+      method: "POST", signal: input.signal
+    });
+    if (!isRecord(value) || !Array.isArray(value.outputs) || value.outputs.length > WORKSPACE_BROWSER_SESSION_MAX_COUNT ||
+      !Array.isArray(value.skipped) || value.skipped.length > 130 ||
+      !value.skipped.every((code) => WORKSPACE_BROWSER_SKIP_CODES.includes(code))) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    const metadata = value.outputs.map(outputMetadata);
+    if (metadata.some((entry) => !entry || !isWorkspaceBrowserSessionFilename(entry.relativePath) ||
+      entry.byteSize > WORKSPACE_BROWSER_SESSION_MAX_BYTES)) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    return { files: (metadata as Omit<WorkspaceOutputStream, "body">[]).map((entry) => this.output(input.sessionId, entry, input.signal)),
+      skipped: value.skipped as WorkspaceBrowserSkipCode[] };
   }
 
   async releaseOutputCapture(input: Parameters<NonNullable<WorkspaceRuntime["releaseOutputCapture"]>>[0]): Promise<void> {

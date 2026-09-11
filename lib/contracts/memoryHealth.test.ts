@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  adminMemoryHealthSchema,
   decodeMemoryHealthResponse
 } from "./memoryHealth";
 
@@ -13,7 +12,6 @@ function userHealth() {
       retrievalFenced: false,
       state: "CLEAR"
     },
-    egressReview: "NONE",
     indexing: {
       completedChats: 0,
       countTruncated: false,
@@ -61,32 +59,4 @@ describe("Memory health wire contracts", () => {
     })).toBeNull();
   });
 
-  it("accepts only bounded aggregate admin labels", () => {
-    const value = {
-      deletion: { active: "SOME", blocked: "NONE", state: "WORKING" },
-      observedAt: "2026-08-12T10:00:00.000Z",
-      overall: "DEGRADED",
-      provider: {
-        failedRecent: "NONE",
-        outcomeUnknown: "NONE",
-        state: "READY",
-        usageIncomplete: "NONE"
-      },
-      queue: {
-        active: "SOME",
-        failed: "NONE",
-        oldestLag: "UNDER_15_MINUTES",
-        state: "WORKING",
-        waitingForReview: "NONE"
-      },
-      temporary: { overdue: "NONE", state: "CLEAR" }
-    };
-    expect(adminMemoryHealthSchema.safeParse(value).success).toBe(true);
-    expect(adminMemoryHealthSchema.safeParse({ ...value, ownerId: "user-1" }).success)
-      .toBe(false);
-    expect(adminMemoryHealthSchema.safeParse({
-      ...value,
-      queue: { ...value.queue, active: 12 }
-    }).success).toBe(false);
-  });
 });

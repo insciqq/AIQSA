@@ -46,6 +46,58 @@ describe("remote Workspace runner protocol", () => {
     })));
   });
 
+  it("streams browser states only under the current operation, preserves same-run writes and excludes output capture", async () => {
+    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
+    const collectBrowser = vi.spyOn(local, "collectBrowserSessions");
+    const server = createWorkspaceRunnerServer({ runtime: local, token }); servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
+    const sessionId = "ws_" + "b".repeat(40);
+    const session = await remote.ensureSession({ cpus: 1, diskMiB: deterministicConfig.diskMiB, memoryMiB: 1024,
+      imageRef: deterministicConfig.imageRef, internetEnabled: false, runtimeSandboxId: null, sandboxName: workspaceSandboxName(sessionId), sessionId, operation });
+    const input = { operation, runtimeSandboxId: session.runtimeSandboxId, sessionId, modelRunId: "browser_first" };
+    await remote.syncPersonalSecrets({ ...input, secrets: [] });
+    const content = '{"cookies":[],"origins":[]}\r\n';
+    await remote.callBoundTool({ ...input, modelRunToolCallId: "browser_write", originalName: "sandbox_fs_write",
+      arguments: { path: "/workspace/secrets/browser/shop.example.json", content } });
+    await remote.syncPersonalSecrets({ ...input, secrets: [] });
+    const browser = await remote.collectBrowserSessions(input);
+    expect(browser.skipped).toEqual([]);
+    expect(browser.files).toHaveLength(1);
+    expect(Buffer.from(await collect(browser.files[0]!.body)).toString()).toBe(content);
+    await remote.releaseOutputs({ ...input, batchId: browser.files[0]!.batchId! });
+    expect(await remote.collectOutputs({ ...input, outputDirectory: workspaceRunOutputDirectory(input.modelRunId) })).toEqual([]);
+    const calls = collectBrowser.mock.calls.length;
+    const url = new URL(`/v1/sessions/${sessionId}/outputs/list`, runnerUrl);
+    const unauthorized = await fetch(url, { method: "POST", body: JSON.stringify({ ...input, purpose: "browser_sessions" }) });
+    expect(unauthorized.status).toBe(401); await unauthorized.arrayBuffer();
+    const capture = await fetch(url, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ ...input, purpose: "browser_sessions", capture: { id: "a".repeat(32), create: true } }) });
+    expect(capture.status).toBe(400); await capture.arrayBuffer();
+    expect(collectBrowser).toHaveBeenCalledTimes(calls);
+    const successor = { ...input, operation: { generation: 2, owner: "run:browser_next" }, modelRunId: "browser_next" };
+    await remote.claimSessionOperation(successor);
+    await remote.ensureSession({ cpus: 1, diskMiB: deterministicConfig.diskMiB, memoryMiB: 1024, imageRef: deterministicConfig.imageRef,
+      internetEnabled: false, sandboxName: workspaceSandboxName(sessionId), ...successor });
+    await remote.syncPersonalSecrets({ ...successor, secrets: [] });
+    expect(await remote.collectBrowserSessions(successor)).toEqual({ files: [], skipped: [] });
+    await expect(remote.collectBrowserSessions(input)).rejects.toMatchObject({ code: "workspace_operation_stale" });
+    await remote.removeSession(successor);
+  });
+
+  it.each([
+    { outputs: [], skipped: ["private-cookie-value"] },
+    { outputs: Array(51).fill({}), skipped: [] },
+    { outputs: [], skipped: Array(131).fill("browser_session_invalid") }
+  ])("rejects invalid browser collection metadata before opening a byte stream", async (response) => {
+    const fetch = vi.fn(async () => Response.json(response)); vi.stubGlobal("fetch", fetch);
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerToken: token, runnerUrl: new URL("http://runner.invalid"), runtimeMode: "remote" });
+    await expect(remote.collectBrowserSessions({ operation, runtimeSandboxId: "synthetic", sessionId: "synthetic", modelRunId: "synthetic" }))
+      .rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it("reads authenticated inventory through the runner without session fencing or lifecycle side effects", async () => {
     const local = new DeterministicWorkspaceRuntime(deterministicConfig);
     const listSessions = vi.spyOn(local, "listSessions").mockResolvedValue({

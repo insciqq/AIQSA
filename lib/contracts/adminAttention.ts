@@ -16,8 +16,10 @@ export type AdminAttentionCode =
   | "knowledge_reindexing"
   | "mcp_server_needs_attention"
   | "memory_index_rebuild_required"
+  | "memory_processing_blocked"
   | "memory_worker_not_running"
   | "provider_key_check_failed"
+  | "provider_catalog_models_available"
   | "provider_key_rejected"
   | "search_source_model_off"
   | "system_role_not_assigned"
@@ -93,8 +95,10 @@ const ATTENTION_CODES = new Set<AdminAttentionCode>([
   "knowledge_reindexing",
   "mcp_server_needs_attention",
   "memory_index_rebuild_required",
+  "memory_processing_blocked",
   "memory_worker_not_running",
   "provider_key_check_failed",
+  "provider_catalog_models_available",
   "provider_key_rejected",
   "search_source_model_off",
   "system_role_not_assigned",
@@ -105,6 +109,18 @@ const ATTENTION_CODES = new Set<AdminAttentionCode>([
 const ATTENTION_SECTIONS = new Set<string>(adminAttentionSections);
 const ATTENTION_SOURCES = new Set<string>(adminAttentionSources);
 const MAX_ITEMS = 200;
+
+/** The source owns freshness even when an item jumps to a different section. */
+export function adminAttentionItemSource(item: AdminAttentionItem): AdminAttentionSource {
+  if (item.code.startsWith("memory_")) return "memory";
+  if (item.code.startsWith("system_role_")) return "system_roles";
+  if (item.code.startsWith("provider_")) return "providers";
+  if (item.code.startsWith("users_")) return "dashboard";
+  if (item.code.startsWith("knowledge_")) return "knowledge";
+  if (item.code.startsWith("mcp_")) return "mcp";
+  if (item.code.startsWith("search_")) return "search";
+  return "email";
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

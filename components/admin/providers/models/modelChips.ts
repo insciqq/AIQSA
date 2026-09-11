@@ -104,7 +104,9 @@ export function modelChipsFromEvidence(
     status: AdminProviderCompatibilityStatus | null | undefined): ModelChip | null => {
     const receipt = evidence.capabilitySetup?.checks[capability];
     const attempt = evidence.capabilitySetup?.attempts?.[capability];
-    const help = attemptHelp(status, receipt, attempt);
+    const help = attemptHelp(status, receipt, attempt) +
+      (["imageGeneration", "imageEditing"].includes(key) && status !== "verified" && (receipt === "incomplete" || receipt === "rejected")
+        ? " Retry the check to verify this capability." : "");
     if (status === "verified") return { key, label, tone: "ok",
       ...(attempt?.status === "incomplete" ? { help } : {}) };
     if (receipt === "unsupported" || receipt === "incomplete" || receipt === "rejected" || receipt === "not_checked") {

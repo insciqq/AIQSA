@@ -17,6 +17,20 @@ async function settle(): Promise<void> {
 }
 
 describe("capability check runner", () => {
+  it("keeps a selected catalog batch independent of older failures and copies its retry identities", async () => {
+    const runner = createCapabilityCheckRunner({ check: async ({ providerModelId }) => providerModelId === "old" ? "failed" : "stored" });
+    await runner.start({ connectionId: "connection", credentialId: "key", modelIds: ["old"], reason: "requested" }).settled;
+    const ids = ["builtin-new"];
+    const run = runner.start({ connectionId: "connection", credentialId: "key", modelIds: ["new"], catalogModelIds: ids, reason: "requested" });
+    ids.push("unselected");
+    await run.settled;
+    const result = runner.get(run.id)!;
+    expect(result).toMatchObject({ catalogModelIds: ["builtin-new"], failed: [], total: 1, done: 1 });
+    result.catalogModelIds!.push("mutated");
+    expect(runner.get(run.id)!.catalogModelIds).toEqual(["builtin-new"]);
+    expect(result.setup).toBeUndefined();
+  });
+
   it("keeps setup visible and cancellable after models finish, and never completes setup for an empty inventory", async () => {
     const runner = createCapabilityCheckRunner({ check: async () => "stored" });
     const started = deferred<AbortSignal>();

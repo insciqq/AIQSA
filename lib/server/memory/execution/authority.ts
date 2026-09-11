@@ -1,9 +1,7 @@
-import type { Prisma } from "@prisma/client";
 import type { LockedMemorySettings } from "../persistence/transaction";
 import { canonicalMemoryExecutionJson } from "./canonical";
 import { memoryExecutionFailure } from "./errors";
 import {
-  requireAcceptedMemoryUtilityPolicy,
   requireMemoryPolicyTarget,
   resolveCurrentMemoryUtilityPolicy,
   type ResolvedMemoryExecutionTarget,
@@ -16,16 +14,8 @@ import {
 } from "./compatibility";
 import type { MemoryExecutionRole } from "./roles";
 import type { MemorySecretFreeExecutionSnapshot } from "./snapshot";
-import {
-  resolveMemoryEgressConsentMode,
-  type MemoryEgressConsentMode
-} from "./consentMode";
-import { requireAdminAcceptedMemoryDestination } from "./adminConsent";
-
 export type MemoryExecutionAuthorityDependencies = Readonly<{
-  egressConsentMode?: MemoryEgressConsentMode;
   now?: () => Date;
-  requireAdminAcceptedDestination?: typeof requireAdminAcceptedMemoryDestination;
 }>;
 
 export type CurrentMemoryExecutionAuthority = Readonly<{
@@ -34,8 +24,7 @@ export type CurrentMemoryExecutionAuthority = Readonly<{
   target: ResolvedMemoryExecutionTarget;
 }>;
 
-type AuthorityPrisma = Parameters<typeof resolveCurrentMemoryUtilityPolicy>[0] &
-  Pick<Prisma.TransactionClient, "memoryEgressAdminPolicy">;
+type AuthorityPrisma = Parameters<typeof resolveCurrentMemoryUtilityPolicy>[0];
 
 export function memoryExecutionNow(
   dependencies: MemoryExecutionAuthorityDependencies
@@ -65,16 +54,6 @@ export async function resolveCurrentMemoryExecutionAuthority(
     input.role,
     input.targetProviderModelId
   );
-  const consentMode = input.dependencies.egressConsentMode ??
-    resolveMemoryEgressConsentMode();
-  if (consentMode === "ADMIN") {
-    await (
-      input.dependencies.requireAdminAcceptedDestination ??
-      requireAdminAcceptedMemoryDestination
-    )(tx, { role: input.role, target });
-  } else {
-    requireAcceptedMemoryUtilityPolicy(settings, policy, consentMode);
-  }
   const compatibility = resolveMemoryExecutionCompatibility({
     role: input.role,
     target,

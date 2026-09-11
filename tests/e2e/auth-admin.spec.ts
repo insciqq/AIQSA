@@ -771,7 +771,8 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await expect(attention.getByRole("list", { name: "Needs attention" })).toBeVisible();
     await expect(attention.getByTestId("admin-attention-item").filter({ hasText: "Users are waiting for approval" })).toBeVisible();
     await expect(attention.getByTestId("admin-attention-item").filter({ hasText: "Email delivery is not configured" })).toBeVisible();
-    await expect(attention.getByText(/When the list is empty, everything is working/)).toBeVisible();
+    await expect(attention.getByText(/Only things that need a decision or an action/)).toBeVisible();
+    await expect(attention.getByText(/everything is working/)).toHaveCount(0);
     await attention.getByRole("button", { name: /^Review users:/ }).click();
     await expect(page.getByTestId("admin-section-users")).toBeVisible();
     await expect(page).toHaveURL(/section=users&filter=pending$/);
@@ -1375,6 +1376,15 @@ test("Control Center keeps the current workflow in the short-landscape viewport"
       .poll(() => page.getByTestId("admin-section-scroll").evaluate((element) => getComputedStyle(element).overflowY))
       .toBe("auto");
     await expect(page.getByRole("link", { exact: true, name: "Providers" })).toBeInViewport();
+
+    const sectionScroll = page.getByTestId("admin-section-scroll");
+    const scrollBounds = await sectionScroll.boundingBox();
+    await page.mouse.move(scrollBounds!.x + scrollBounds!.width / 2, scrollBounds!.y + scrollBounds!.height / 2);
+    await page.mouse.wheel(0, 600);
+    await expect.poll(() => sectionScroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    await expect(drawer.getByRole("link", { exact: true, name: "Usage" })).toBeInViewport();
+    await drawer.getByRole("link", { exact: true, name: "Usage" }).focus();
+    await expect.poll(() => drawer.evaluate((element) => element.contains(document.activeElement))).toBe(true);
 
     await page.goBack();
     await expect(users).toBeVisible();

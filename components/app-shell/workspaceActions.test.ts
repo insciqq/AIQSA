@@ -366,6 +366,23 @@ function useWorkspaceActionsForTest(input: {
 }
 
 describe("workspace actions", () => {
+  it("starts personal chats with the remembered Workspace choice and preserves saved chat flags", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const catalog = useWorkspaceStore.getState().catalog!;
+    useWorkspaceStore.setState({ catalog: { ...catalog, defaults: { ...catalog.defaults, workspaceEnabled: true } } });
+    state.actions.activateBlankWorkspace();
+    expect(state.activeComposer().workspaceEnabled).toBe(true);
+    state.actions.activateBlankWorkspace("folder-1", "TEMPORARY");
+    expect(state.activeComposer().workspaceEnabled).toBe(true);
+    await state.actions.activateChat({ ...state.chatA, workspace: {
+      enabled: false, internetEnabled: null, sessionState: null, available: true
+    } }, { resumeRuns: false });
+    expect(state.activeComposer().workspaceEnabled).toBe(false);
+    useWorkspaceStore.setState({ catalog: { ...catalog, defaults: { ...catalog.defaults, workspaceEnabled: false } } });
+    state.actions.activateBlankWorkspace();
+    expect(state.activeComposer().workspaceEnabled).toBe(false);
+  });
+
   afterEach(() => {
     resetComposerSessionStoreForTest();
     resetRunSurfaceStoreForTest();

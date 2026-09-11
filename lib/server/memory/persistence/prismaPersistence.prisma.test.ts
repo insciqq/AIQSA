@@ -13,8 +13,7 @@ import { textMessageContent } from "../../../domain/content";
 import { MEMORY_DECAY_POLICY_VERSION } from "../../../domain/memory/retrieval";
 import {
   MEMORY_UTILITY_EGRESS_POLICY_VERSION,
-  resolveCurrentMemoryUtilityPolicy,
-  type ResolvedMemoryUtilityPolicy
+  resolveCurrentMemoryUtilityPolicy
 } from "../execution/policy";
 import { createMemorySettingsService } from "../settings/service";
 import { memoryActionLifecycleBudgetSnapshot } from "../actions/lifecycleSnapshot";
@@ -1562,17 +1561,9 @@ describe("Prisma Memory persistence", () => {
     }
   });
 
-  it("persists all independent gate combinations and fences consent policy drift", async () => {
+  it("persists independent Memory gates with empty legacy consent and fences stale settings", async () => {
     const userId = await createActiveUser("settings-matrix");
-    let currentFingerprint = "c".repeat(64);
-    const repository = createPrismaMemorySettingsRepository(prisma, {
-      resolveCurrentUtilityPolicy: async () => ({
-        destinations: [],
-        fingerprint: currentFingerprint,
-        policyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
-        targets: new Map()
-      } satisfies ResolvedMemoryUtilityPolicy)
-    });
+    const repository = createPrismaMemorySettingsRepository(prisma);
     try {
       await expect(repository.patch(userId, {
         embeddingDeploymentId: randomUUID(),
@@ -1585,7 +1576,6 @@ describe("Prisma Memory persistence", () => {
         settingsRevision: 0
       });
       const initialProjection = await createMemorySettingsService({
-        egressConsentMode: "PER_USER",
         repository,
         resolveCurrentUtilityPolicy: (ownerUserId, ownerSettings) =>
           resolveCurrentMemoryUtilityPolicy(prisma, ownerUserId, ownerSettings)
@@ -1598,20 +1588,12 @@ describe("Prisma Memory persistence", () => {
           permanentChatDeletion: false,
           temporaryChats: true
         },
-        egress: {
-          acceptedAt: null,
-          acceptedUtilityEgressFingerprint: null,
-          acceptedUtilityPolicyVersion: null,
-          reviewRequired: true
-        },
         settings: {
           embeddingDeployment: null,
           settingsRevision: 0
         }
       });
-      expect(initialProjection.egress.currentUtilityEgressFingerprint).toMatch(
-        /^[a-f0-9]{64}$/u
-      );
+      expect(initialProjection).not.toHaveProperty("egress");
       expect(JSON.stringify(initialProjection)).not.toMatch(/credential/iu);
 
       const combinations = [
@@ -1648,47 +1630,23 @@ describe("Prisma Memory persistence", () => {
         });
       }
 
-      const observedFingerprint = currentFingerprint;
-      currentFingerprint = "d".repeat(64);
-      await expect(repository.acceptUtilityEgress(userId, {
-        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-        currentUtilityEgressFingerprint: observedFingerprint,
-        currentUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
-        expectedMemoryConsentRevision: 0,
-        expectedMemoryRevision: 7,
-        expectedSettingsRevision: 7
-      })).rejects.toMatchObject({ code: "memory_consent_policy_changed" });
       await expect(prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }))
         .resolves.toMatchObject({
+          acceptedUtilityEgressAt: null,
           acceptedUtilityEgressFingerprint: null,
+          acceptedUtilityPolicyVersion: null,
           memoryConsentRevision: 0,
           memoryRevision: 7,
           settingsRevision: 7
         });
-
-      const accepted = await repository.acceptUtilityEgress(userId, {
-        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-        currentUtilityEgressFingerprint: currentFingerprint,
-        currentUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
-        expectedMemoryConsentRevision: 0,
-        expectedMemoryRevision: 7,
-        expectedSettingsRevision: 7
-      });
-      expect(accepted).toMatchObject({
-        acceptedUtilityEgressFingerprint: currentFingerprint,
-        acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION,
-        memoryConsentRevision: 1,
-        memoryRevision: 8,
-        settingsRevision: 8
-      });
       await expect(repository.patch(userId, {
-        expectedMemoryRevision: 7,
-        expectedSettingsRevision: 8,
+        expectedMemoryRevision: 6,
+        expectedSettingsRevision: 7,
         useMemoryFacts: false
       })).rejects.toMatchObject({ code: "memory_revision_conflict" });
       await expect(repository.get(userId)).resolves.toMatchObject({
-        memoryRevision: 8,
-        settingsRevision: 8,
+        memoryRevision: 7,
+        settingsRevision: 7,
         useMemoryFacts: true
       });
       const generations = await prisma.memoryIndexGeneration.findMany({
@@ -1696,7 +1654,7 @@ describe("Prisma Memory persistence", () => {
       });
       expect(generations).toHaveLength(1);
       expect(generations[0]).toMatchObject({
-        indexedThroughMemoryRevision: 8,
+        indexedThroughMemoryRevision: 7,
         state: "ACTIVE",
         targetMemoryRevision: 1
       });

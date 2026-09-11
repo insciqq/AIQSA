@@ -2,6 +2,7 @@
 
 import {
   discoverAdminCompatibleModels,
+  addAdminProviderCatalogModels,
   adminProviderErrorMessage,
   createAdminProviderCredential,
   createAdminProviderModel,
@@ -321,6 +322,16 @@ export function useAdminProvidersController(
   }, [runCatalogResult]);
 
   const actions = useMemo(() => ({
+    addCatalogModels: async (connectionId: string, body: Parameters<typeof addAdminProviderCatalogModels>[1]) => {
+      let unavailableModelIds: string[] = [];
+      const result = await runCatalogResult(async () => {
+        const response = await addAdminProviderCatalogModels(connectionId, body);
+        if (!response.ok) return response;
+        unavailableModelIds = response.data.unavailableModelIds;
+        return { ok: true as const, data: response.data.connections };
+      }, null, { quiet: true, reconcileFailure: true, scope: connectionId });
+      return { ...result, unavailableModelIds };
+    },
     /** `Stop checking`: the run ends where it is; results already stored stay. */
     cancelModelChecks: (connectionId: string, runId: string) =>
       runCatalog(

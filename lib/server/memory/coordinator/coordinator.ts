@@ -213,14 +213,14 @@ export class MemoryCoordinator {
         } catch {
           continue;
         }
-        if (!validGateDecision(decision) || decision.status === "WAITING_FOR_EGRESS_CONSENT") {
+        if (!validGateDecision(decision)) {
           continue;
         }
         if (await this.#repository.resolveWaitingJob({
           decision,
           job,
           now: this.#clock()
-        })) {
+        }) && decision.status !== "WAITING_FOR_CONFIGURATION") {
           this.#rerun = true;
         }
       }

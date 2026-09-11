@@ -15,7 +15,7 @@ function snapshot(
 ): AdminMemoryStatusSnapshot {
   return {
     admissionTimeout: { seconds: 15, version: 4 },
-    activeIssueCode: null,
+    processing: { enabled: true, issues: [] },
     configuredTargets: [{ model: "Utility", provider: "Primary" }],
     index: {
       activeGenerations: [3],
@@ -57,7 +57,7 @@ describe("administrator Memory status service", () => {
           rebuilding: false,
           requiresRebuild: false
         },
-        activeIssueCode: "MEMORY_PROVIDER_FAILED",
+        processing: { enabled: true, issues: [] },
         oldestQueuedAt: new Date(now.getTime() - 12_999),
         queueLength: 3,
         workerLastSeenAt: new Date(now.getTime() - ADMIN_MEMORY_WORKER_FRESHNESS_MS - 1)
@@ -66,7 +66,7 @@ describe("administrator Memory status service", () => {
 
     await expect(service.get()).resolves.toEqual({
       admissionTimeout: { seconds: 15, version: 4 },
-      activeIssueCode: "memory_provider_failed",
+      processing: { enabled: true, issues: [] },
       configuredTargets: [{ model: "Utility", provider: "Primary" }],
       index: { generation: "MIXED", readiness: "READY" },
       queue: { length: 3, oldestAgeSeconds: 12 },

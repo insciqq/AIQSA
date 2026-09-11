@@ -20,11 +20,13 @@ class UnavailableWorkspaceRuntime implements WorkspaceRuntime {
   async ensureSession(): Promise<never> { return this.unavailable(); }
   async listStagedAttachments(): Promise<never> { return this.unavailable(); }
   async stageAttachments(): Promise<never> { return this.unavailable(); }
+  async syncPersonalSecrets(): Promise<never> { return this.unavailable(); }
   async loadBoundTools(): Promise<never> { return this.unavailable(); }
   async callBoundTool(): Promise<never> { return this.unavailable(); }
   async cancelToolCall(): Promise<never> { return this.unavailable(); }
   async terminateExecutions(): Promise<never> { return this.unavailable(); }
   async collectOutputs(): Promise<never> { return this.unavailable(); }
+  async collectBrowserSessions(): Promise<never> { return this.unavailable(); }
   async createProjectArchive(): Promise<never> { return this.unavailable(); }
   async stopSession(): Promise<never> { return this.unavailable(); }
   async removeSession(): Promise<never> { return this.unavailable(); }

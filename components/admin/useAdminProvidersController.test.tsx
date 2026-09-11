@@ -6,6 +6,7 @@ import { useAdminProvidersController } from "./useAdminProvidersController";
 import { fixtureModel } from "./providers/providerFixtures";
 
 const api = vi.hoisted(() => ({
+  addCatalogModels: vi.fn(),
   createModel: vi.fn(),
   discoverCompatibleModels: vi.fn(),
   getConnections: vi.fn(),
@@ -14,6 +15,7 @@ const api = vi.hoisted(() => ({
 }));
 
 vi.mock("./adminProvidersApi", () => ({
+  addAdminProviderCatalogModels: api.addCatalogModels,
   adminProviderErrorMessage: (error: { code: string }) => error.code,
   createAdminProviderModel: api.createModel,
   discoverAdminCompatibleModels: api.discoverCompatibleModels,
@@ -53,11 +55,29 @@ function connection(id: string, displayName: string): AdminProviderConnection {
 
 describe("useAdminProvidersController", () => {
   beforeEach(() => {
+    api.addCatalogModels.mockReset();
     api.createModel.mockReset();
     api.discoverCompatibleModels.mockReset();
     api.getConnections.mockReset();
     api.renameModel.mockReset();
     api.runConnectionAction.mockReset();
+  });
+
+  it("applies a selected catalog addition and notifies Overview while retaining unavailable selection IDs", async () => {
+    const original = connection("connection-a", "Provider A");
+    const updated = { ...original, models: [fixtureModel({ id: "new-model", connectionId: original.id, displayName: "New model" })] };
+    api.getConnections.mockResolvedValue({ ok: true, data: [original] });
+    api.addCatalogModels.mockResolvedValue({ ok: true, data: { connections: [updated], unavailableModelIds: ["missing"] } });
+    const onMutationCommitted = vi.fn();
+    const { result } = renderHook(() => useAdminProvidersController(true, { onMutationCommitted }));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    await act(async () => {
+      expect(await result.current.actions.addCatalogModels(original.id, { credentialId: "key", expectedConnectionVersion: 1,
+        expectedCredentialVersionId: "version", modelIds: ["new", "missing"] })).toMatchObject({ ok: true, unavailableModelIds: ["missing"] });
+    });
+    expect(result.current.state.connections).toEqual([updated]);
+    expect(result.current.state.busy).toBe(false);
+    expect(onMutationCommitted).toHaveBeenCalledOnce();
   });
 
   it("finishes its initial catalog load through StrictMode effect replay", async () => {

@@ -9,6 +9,26 @@ function completed(overrides: Partial<AdminProviderCheckRun> = {}) {
 }
 
 describe("compact setup results", () => {
+  it("keeps partial image checks visible and recoverable without discarding verified editing", () => {
+    const run = completed({ failed: ["image"], results: [{ providerModelId: "image", state: "partial",
+      checks: { imageGeneration: "incomplete", imageEditing: "verified", modelAccess: "verified" } }] });
+    const { rerender } = render(<AdminProviderSetupResults models={[{ id: "image", displayName: "Image model" }]} run={run} />);
+    expect(screen.getByRole("group")).toHaveTextContent("1 of 1 model results saved.");
+    expect(screen.getByRole("group")).toHaveTextContent("Image checks remain incomplete for 1 model.");
+    expect(screen.getByRole("group")).toHaveTextContent("Retry checks the unconfirmed capabilities");
+    expect(providerSetupNeedsRecovery(run)).toBe(true);
+    const recovered = completed({ failed: [], results: [{ providerModelId: "image", state: "saved",
+      checks: { imageGeneration: "verified", imageEditing: "verified", modelAccess: "verified" } }] });
+    rerender(<AdminProviderSetupResults models={[]} run={recovered} />);
+    expect(screen.getByRole("group")).not.toHaveTextContent("incomplete");
+    expect(providerSetupNeedsRecovery(recovered)).toBe(false);
+  });
+
+  it("renders only closed image rejection categories and parameter names", () => {
+    expect(capabilityAttemptDescription({ attempts: 1, status: "incomplete", reason: "invalid_input", httpStatus: 400,
+      imageFailure: { category: "invalid_parameter", parameter: "resolution" } }))
+      .toBe("provider rejected the input · invalid parameter (resolution) · HTTP 400 · 1 attempt");
+  });
   it("keeps an eleven-model optional capability report to one summary", () => {
     const models = Array.from({ length: 11 }, (_, index) => ({ id: `model-${index}`, displayName: `Model ${index}` }));
     const run = completed({ total: 11, done: 11, failed: ["model-9", "model-10"], results: models.map((model, index) => ({

@@ -17,6 +17,7 @@ import {
 } from "./runtime";
 import { parseWorkspaceOperation, WorkspaceOperationFence, type WorkspaceOperation } from "./operationFence";
 import { parseOutputCaptureRequest } from "./outputManifest";
+import { parseAcceptedWorkspaceSecrets, WORKSPACE_SECRETS_REQUEST_MAX_BYTES } from "./secrets/manifest";
 
 const JSON_BODY_MAX_BYTES = 2 * 1_024 * 1_024;
 const HEADER_VALUE_MAX_BYTES = 2_048;
@@ -81,13 +82,13 @@ function authorized(request: IncomingMessage, token: string): boolean {
   return provided.byteLength === expected.byteLength && timingSafeEqual(provided, expected);
 }
 
-async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
+async function readJson(request: IncomingMessage, maxBytes = JSON_BODY_MAX_BYTES): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let byteLength = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     byteLength += buffer.byteLength;
-    if (byteLength > JSON_BODY_MAX_BYTES) throw new Error("body_too_large");
+    if (byteLength > maxBytes) throw new Error("body_too_large");
     chunks.push(buffer);
   }
   const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
@@ -271,6 +272,18 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       const execute = <T>(operation: unknown, action: (signal: AbortSignal) => Promise<T>) =>
         fence.run({ operation: parseWorkspaceOperation(operation), sessionId }, action);
 
+      if (request.method === "POST" && suffix === "/secrets") {
+        const body = await readJson(request, WORKSPACE_SECRETS_REQUEST_MAX_BYTES);
+        const secrets = parseAcceptedWorkspaceSecrets(body.secrets);
+        const modelRunId = requiredString(body.modelRunId, 128);
+        const runtimeSandboxId = requiredString(body.runtimeSandboxId, 256);
+        await execute(body.operation, (signal) => input.runtime.syncPersonalSecrets({
+          secrets, modelRunId, runtimeSandboxId, sessionId, signal
+        }));
+        sendJson(response, 200, { ok: true });
+        return;
+      }
+
       if (request.method === "POST" && (suffix === "/operations/claim" || suffix === "/operations/retire")) {
         const body = await readJson(request);
         const claim = { operation: parseWorkspaceOperation(body.operation), runtimeSandboxId: optionalString(body.runtimeSandboxId, 256), sessionId };
@@ -420,6 +433,17 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         prunePending();
         const body = await readJson(request);
         const operation = parseWorkspaceOperation(body.operation);
+        if (body.purpose === "browser_sessions") {
+          if (body.capture !== undefined || body.outputDirectory !== undefined) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+          const collection = await execute(operation, (signal) => input.runtime.collectBrowserSessions({
+            modelRunId: requiredString(body.modelRunId, 128), runtimeSandboxId: requiredString(body.runtimeSandboxId, 256), sessionId, signal
+          }));
+          const batchId = registerBatch(sessionId, operation, collection.files);
+          sendJson(response, 200, { batchId, skipped: collection.skipped,
+            outputs: collection.files.map(({ body: _body, ...metadata }) => ({ ...metadata, batchId })) });
+          return;
+        }
+        if (body.purpose !== undefined) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         const capture = body.capture === undefined ? undefined : parseOutputCaptureRequest(body.capture);
         const outputs = await execute(operation, (signal) => input.runtime.collectOutputs({
           ...(capture ? { capture } : {}),

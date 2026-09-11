@@ -10,7 +10,8 @@ import type {
 import { createAdminProviderService } from "./service";
 import type { AdminProviderDraftTester, AdminProviderDraftTesterInput } from "./tester";
 import { providerSetupModels } from "./setupModels";
-import { adminProviderModelConfiguration } from "./adminConfiguration";
+import { pendingInitialCapabilityEvidence } from "./initialCapabilitySetup";
+import { adminProviderModelConfiguration, normalizeAdminProviderModelConfiguration } from "./adminConfiguration";
 
 /**
  * Model `Test & Save` (PRD B2) and background capability checks (PRD B3)
@@ -185,6 +186,7 @@ function repository(overrides: Partial<AdminProviderRepository> = {}): AdminProv
   const catalog = connection();
   return {
     async addSetupModelsCas() { return "updated"; },
+    async updateCatalogSkips() { return "updated"; },
     async activateConnectionCas() { return "updated"; },
     async activateCredentialCas() { return "updated"; },
     async activateModelCas() { return "updated"; },
@@ -372,7 +374,144 @@ describe("model Test & Save (B2)", () => {
 });
 
 describe("background capability checks (B3)", () => {
-  it.each(["requested", "setup"] as const)("adds and checks missing dedicated models on %s without replacing the key or enabling disabled models", async (reason) => {
+  it("does not import catalog additions on an ordinary recheck", async () => {
+    const catalog = connection({ models: [] });
+    const addSetupModelsCas = vi.fn<AdminProviderRepository["addSetupModelsCas"]>();
+    const test = vi.fn<AdminProviderDraftTester["test"]>();
+    const catalogTest = vi.fn<AdminProviderCredentialTester["test"]>();
+    const providers = service(repository({ listConnections: async () => [catalog], addSetupModelsCas }), { test }, { credentialTester: { test: catalogTest } });
+    await providers.listConnections();
+    const run = await providers.startCheckRun({ connectionId: catalog.id, credentialId: "cred-primary", reason: "requested" });
+    await waitFor(() => providers.checkRun({ connectionId: catalog.id, runId: run.id }).state === "completed");
+    expect(addSetupModelsCas).not.toHaveBeenCalled();
+    expect(test).not.toHaveBeenCalled();
+    expect(catalogTest).not.toHaveBeenCalled();
+  });
+
+  it("only accepts built-in IDs and current keys; an upstream-only model is never imported", async () => {
+    const catalog = { ...connection({ family: "gemini", models: [] }), catalogSkippedIds: [] as string[] };
+    const selected = providerSetupModels("gemini")[0]!;
+    const addSetupModelsCas = vi.fn<AdminProviderRepository["addSetupModelsCas"]>();
+    const test = vi.fn<AdminProviderDraftTester["test"]>();
+    const catalogTest = vi.fn<AdminProviderCredentialTester["test"]>(async () => ({ method: "models_catalog", modelIds: ["upstream-only"] }));
+    const providers = service(repository({ listConnections: async () => [catalog], addSetupModelsCas }), { test }, { credentialTester: { test: catalogTest } });
+    const request = { connectionId: catalog.id, credentialId: "cred-primary", expectedConnectionVersion: 1,
+      expectedCredentialVersionId: "version-primary", modelIds: [selected.modelId] };
+    await expect(providers.addCatalogModels({ ...request, modelIds: ["upstream-only"] })).rejects.toMatchObject({ code: "provider_catalog_selection_invalid" });
+    await expect(providers.addCatalogModels({ ...request, expectedCredentialVersionId: "stale-key" })).rejects.toMatchObject({ code: "provider_draft_stale" });
+    catalog.catalogSkippedIds = [selected.modelId];
+    await expect(providers.addCatalogModels(request)).rejects.toMatchObject({ code: "provider_draft_stale" });
+    expect(catalogTest).not.toHaveBeenCalled();
+    catalog.catalogSkippedIds = [];
+    await expect(providers.addCatalogModels(request)).resolves.toEqual({ unavailableModelIds: [selected.modelId] });
+    expect(catalogTest).toHaveBeenCalledOnce();
+    expect(addSetupModelsCas).not.toHaveBeenCalled();
+    expect(test).not.toHaveBeenCalled();
+    expect((await providers.listConnections())[0]).not.toHaveProperty("catalogSkippedIds");
+  });
+
+  it("fences overlapping selections and an endpoint change during catalog I/O", async () => {
+    const catalog = connection({ family: "gemini", models: [] });
+    const selected = providerSetupModels("gemini")[0]!;
+    let release!: (value: Awaited<ReturnType<AdminProviderCredentialTester["test"]>>) => void;
+    const catalogTest = vi.fn<AdminProviderCredentialTester["test"]>(() => new Promise((resolve) => { release = resolve; }));
+    const addSetupModelsCas = vi.fn<AdminProviderRepository["addSetupModelsCas"]>();
+    const test = vi.fn<AdminProviderDraftTester["test"]>();
+    const providers = service(repository({ listConnections: async () => [catalog], addSetupModelsCas }), { test }, { credentialTester: { test: catalogTest } });
+    const request = { connectionId: catalog.id, credentialId: "cred-primary", expectedConnectionVersion: 1,
+      expectedCredentialVersionId: "version-primary", modelIds: [selected.modelId] };
+    const first = providers.addCatalogModels(request);
+    await waitFor(() => catalogTest.mock.calls.length === 1);
+    await expect(providers.addCatalogModels(request)).rejects.toMatchObject({ code: "provider_checks_running" });
+    catalog.activeVersion = 2;
+    release({ method: "models_catalog", modelIds: [] });
+    await expect(first).rejects.toMatchObject({ code: "provider_draft_stale" });
+    expect(addSetupModelsCas).not.toHaveBeenCalled();
+    expect(test).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { family: "gemini", enabled: true }, { family: "gemini", enabled: false },
+    { family: "openrouter", enabled: true }, { family: "openrouter", enabled: false }
+  ] as const)("adds only selected missing $family image models and activates their independent proofs (existing enabled=$enabled)", async ({ family, enabled }) => {
+    const presets = providerSetupModels(family);
+    const images = presets.filter((preset) => preset.configuration.modelClass === "image");
+    const selectedImages = images.slice(1, 3);
+    const saved = images[0]!;
+    const configuration = { ...saved.configuration, defaultParams: family === "gemini" ? { image_size: "2K" } : { resolution: "2K" },
+      ...(family === "openrouter" ? { image: { profile: "openrouter" as const,
+        parameters: { resolution: { type: "enum" as const, values: ["1K", "2K"] } } } } : {}) };
+    const catalog = connection({ family, models: presets.filter((preset) => preset.configuration.modelClass !== "image")
+      .map((preset) => model(preset.modelId, preset.configuration.upstreamModelId, { enabled: false,
+        activeConfig: adminProviderModelConfiguration(preset.configuration), draftConfig: adminProviderModelConfiguration(preset.configuration) })) });
+    const savedModel = model(saved.modelId, saved.configuration.upstreamModelId, { modelClass: "image", enabled,
+      activeConfig: adminProviderModelConfiguration(configuration), draftConfig: adminProviderModelConfiguration(configuration) });
+    catalog.models.push(savedModel);
+    const savedBefore = structuredClone(savedModel);
+    const proof = (upstreamModelId: string) => ({ adapterKind: family === "gemini" ? "gemini_images_native" as const : "openrouter_images" as const, upstreamModelId, probeVersion: 1 as const, verified: true as const });
+    const savedEvidence = { detail: "ok" as const, method: "tiny_generation" as const, selectedProviders: [],
+      upstreamModelId: saved.configuration.upstreamModelId,
+      compatibility: { probeVersion: 1 as const, modelAccess: "verified" as const, streaming: "not_supported" as const,
+        structuredOutput: "not_supported" as const, directPdf: "not_supported" as const, usage: "not_supported" as const },
+      imageGeneration: proof(saved.configuration.upstreamModelId), imageEditing: proof(saved.configuration.upstreamModelId),
+      capabilitySetup: { policyVersion: 2 as const, activation: "preserve" as const,
+        checks: { modelAccess: "verified" as const, imageGeneration: "verified" as const, imageEditing: "verified" as const } } };
+    catalog.activeChecks.push({ checkedAt: NOW.toISOString(), connectionVersion: 1, modelVersion: 1,
+      credentialId: "cred-primary", credentialVersionId: "version-primary", providerModelId: saved.modelId,
+      latestRefreshError: null, refreshFailedAt: null, evidence: savedEvidence, status: "available" });
+    const additions = vi.fn<AdminProviderRepository["addSetupModelsCas"]>(async (write) => {
+      for (const added of write.models) {
+        catalog.models.push(model(added.id, added.configuration.upstreamModelId, {
+          modelClass: "image", activeConfig: adminProviderModelConfiguration(added.configuration), draftConfig: adminProviderModelConfiguration(added.configuration) }));
+        catalog.activeChecks.push({ checkedAt: NOW.toISOString(), connectionVersion: 1, modelVersion: 1,
+          credentialId: "cred-primary", credentialVersionId: "version-primary", providerModelId: added.id,
+          latestRefreshError: null, refreshFailedAt: null, status: "unavailable", evidence: pendingInitialCapabilityEvidence(added.configuration) });
+      }
+      return "updated";
+    });
+    const test = vi.fn<AdminProviderDraftTester["test"]>(async (input) => ({ ...okOutcome(input), evidence: {
+      ...okOutcome(input).evidence, imageGeneration: proof(input.model.upstreamModelId),
+      compatibility: { ...okOutcome(input).evidence.compatibility, streaming: "not_supported", usage: "not_supported" },
+      ...(!input.model.upstreamModelId.endsWith("gemini-3-pro-image") ? { imageEditing: proof(input.model.upstreamModelId) } : {}),
+      capabilitySetup: { policyVersion: 2, activation: input.initialSetup ? "initial" : "preserve", checks: {
+        modelAccess: "verified", imageGeneration: "verified", imageEditing: input.model.upstreamModelId.endsWith("gemini-3-pro-image") ? "incomplete" : "verified"
+      } }
+    } }));
+    const store = vi.fn<AdminProviderRepository["storeActiveRefreshCas"]>(async () => "stored");
+    const credentialTest = vi.fn<AdminProviderCredentialTester["test"]>(async () => ({ method: "models_catalog",
+      modelIds: images.map((image) => image.configuration.upstreamModelId),
+      modelIdsByClass: { image: images.map((image) => image.configuration.upstreamModelId) } }));
+    const providers = service(repository({ listConnections: async () => [catalog], addSetupModelsCas: additions,
+      storeActiveRefreshCas: store, loadActiveRefreshCandidate: async ({ providerModelId }) => {
+        const selected = images.find((image) => image.configuration.upstreamModelId === catalog.models.find((model) => model.id === providerModelId)?.activeConfig?.upstreamModelId)!;
+        return { ...refreshCandidate(providerModelId, selected.configuration.upstreamModelId),
+          connection: { ...refreshCandidate(providerModelId, "").connection, family },
+          model: { id: providerModelId, displayName: selected.displayName,
+            configuration: normalizeAdminProviderModelConfiguration(catalog.models.find((model) => model.id === providerModelId)!.activeConfig),
+            version: 1, draftVersion: 1 } };
+      }
+    }), { test }, { credentialTester: { test: credentialTest } });
+    await expect(providers.addCatalogModels({ connectionId: catalog.id, credentialId: "cred-primary", expectedConnectionVersion: 1,
+      expectedCredentialVersionId: "version-primary", modelIds: selectedImages.map(({ modelId }) => modelId) })).resolves.toEqual({ unavailableModelIds: [] });
+    const run = (await providers.listConnections())[0]!.checkRun!;
+    await waitFor(() => providers.checkRun({ connectionId: catalog.id, runId: run.id }).state === "completed");
+    expect(additions.mock.calls[0]![0].models).toHaveLength(selectedImages.length);
+    expect(test.mock.calls.map(([input]) => input.model.upstreamModelId).sort()).toEqual(selectedImages.map((image) => image.configuration.upstreamModelId).sort());
+    expect(test.mock.calls.every(([input]) => input.initialSetup)).toBe(true);
+    expect(store).toHaveBeenCalledTimes(selectedImages.length);
+    for (const [write] of store.mock.calls) {
+      expect(write.activatedConfiguration?.capabilities).toMatchObject({ imageGeneration: true,
+        imageEditing: !write.evidence.upstreamModelId.endsWith("gemini-3-pro-image") });
+    }
+    expect(savedModel).toEqual(savedBefore);
+    expect(catalog.activeChecks[0]?.evidence).toEqual(savedEvidence);
+    const next = await providers.startCheckRun({ connectionId: catalog.id, credentialId: "cred-primary", reason: "requested", retryUnresolved: true });
+    await waitFor(() => providers.checkRun({ connectionId: catalog.id, runId: next.id }).state === "completed");
+    expect(additions).toHaveBeenCalledOnce();
+    expect(credentialTest).toHaveBeenCalledOnce();
+  });
+
+  it.each(["catalog", "setup"] as const)("adds and checks missing dedicated models on %s without replacing the key or enabling disabled models", async (reason) => {
     const presets = providerSetupModels("openrouter");
     const catalog = connection({ family: "openrouter", models: presets.filter((preset) => preset.configuration.modelClass === "answer")
       .map((preset) => model(preset.modelId, preset.configuration.upstreamModelId, {
@@ -380,10 +519,15 @@ describe("background capability checks (B3)", () => {
         draftConfig: adminProviderModelConfiguration(preset.configuration), enabled: false
       })) });
     const addSetupModelsCas = vi.fn<AdminProviderRepository["addSetupModelsCas"]>(async (write) => {
-      for (const addition of write.models) catalog.models.push(model(addition.id, addition.configuration.upstreamModelId, {
-        activeConfig: adminProviderModelConfiguration(addition.configuration),
-        draftConfig: adminProviderModelConfiguration(addition.configuration), modelClass: addition.configuration.modelClass
-      }));
+      for (const addition of write.models) {
+        catalog.models.push(model(addition.id, addition.configuration.upstreamModelId, {
+          activeConfig: adminProviderModelConfiguration(addition.configuration),
+          draftConfig: adminProviderModelConfiguration(addition.configuration), modelClass: addition.configuration.modelClass
+        }));
+        catalog.activeChecks.push({ checkedAt: NOW.toISOString(), connectionVersion: 1, modelVersion: 1,
+          credentialId: "cred-primary", credentialVersionId: "version-primary", providerModelId: addition.id,
+          latestRefreshError: null, refreshFailedAt: null, status: "unavailable", evidence: pendingInitialCapabilityEvidence(addition.configuration) });
+      }
       return "updated";
     });
     const activateCredentialCas = vi.fn<AdminProviderRepository["activateCredentialCas"]>();
@@ -411,16 +555,23 @@ describe("background capability checks (B3)", () => {
         };
       }
     }), { test }, { credentialTester: { test: catalogTest } });
-    const run = await providers.startCheckRun({ connectionId: catalog.id, credentialId: "cred-primary", reason });
+    const start = async () => {
+      if (reason === "setup") return providers.startCheckRun({ connectionId: catalog.id, credentialId: "cred-primary", reason });
+      await providers.addCatalogModels({ connectionId: catalog.id, credentialId: "cred-primary", expectedConnectionVersion: 1,
+        expectedCredentialVersionId: "version-primary", modelIds: presets.filter((preset) => preset.configuration.modelClass !== "answer").map(({ modelId }) => modelId) });
+      return (await providers.listConnections())[0]!.checkRun!;
+    };
+    const run = await start();
     await waitFor(() => providers.checkRun({ connectionId: catalog.id, runId: run.id }).state === "completed");
     expect(addSetupModelsCas).toHaveBeenCalledWith(expect.objectContaining({ connectionVersion: 1,
       credentialId: "cred-primary", credentialVersionId: "version-primary" }));
     expect(test.mock.calls.map(([input]) => input.model.modelClass).sort()).toEqual(["embedding", "image", "reranker"]);
     expect(activateCredentialCas).not.toHaveBeenCalled();
-    const retry = await providers.startCheckRun({ connectionId: catalog.id, credentialId: "cred-primary", reason });
+    const retry = await start();
     await waitFor(() => providers.checkRun({ connectionId: catalog.id, runId: retry.id }).state === "completed");
     expect(addSetupModelsCas).toHaveBeenCalledOnce();
-    expect(catalogTest).toHaveBeenCalledOnce();
+    // The five unlisted image candidates remain discoverable on a later catalog refresh.
+    expect(catalogTest).toHaveBeenCalledTimes(2);
   });
 
   it("checks every enabled active model with the key, three at a time, and stores each result", async () => {

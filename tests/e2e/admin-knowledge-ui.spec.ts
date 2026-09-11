@@ -52,7 +52,7 @@ function emptyAdminDashboard(): AdminDashboard {
 function memoryResponse(): AdminMemoryStatusResponse {
   return {
     memory: {
-      activeIssueCode: null,
+      processing: { enabled: true, issues: [] },
       admissionTimeout: { seconds: 30, version: 1 },
       configuredTargets: [],
       index: { generation: 1, readiness: "READY" },

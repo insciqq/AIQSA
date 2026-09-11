@@ -44,18 +44,6 @@ function settingsResponse() {
       synthesisAvailable: true,
       temporaryChats: true
     },
-    egress: {
-      acceptedAt: now,
-      acceptedUtilityEgressFingerprint: "accepted-fingerprint-1234",
-      acceptedUtilityPolicyVersion: "memory-egress-v1",
-      consentMode: "PER_USER",
-      currentUtilityEgressFingerprint: "accepted-fingerprint-1234",
-      currentUtilityPolicyVersion: "memory-egress-v1",
-      embeddingDestination: "Embedding deployment",
-      remoteRerankerDestination: null,
-      reviewRequired: false,
-      systemModelDestination: "System model"
-    },
     historyIndexing: {
       completedChats: 4,
       state: "INDEXING",
@@ -69,7 +57,6 @@ function settingsResponse() {
         modelDisplayName: "Multilingual embedding"
       },
       learnAutomatically: false,
-      memoryConsentRevision: 3,
       memoryGeneration: 7,
       memoryRevision: 42,
       referenceChatHistory: true,
@@ -227,38 +214,10 @@ describe("Memory request contracts", () => {
 });
 
 describe("Memory response contracts", () => {
-  it("decodes settings only when egress acceptance is internally consistent", () => {
+  it("decodes settings without consent fields and preserves indexing consistency", () => {
     expect(decodeMemorySettingsResponse(settingsResponse())).toMatchObject({ ok: true });
-    expect(decodeMemorySettingsResponse({
-      ...settingsResponse(),
-      egress: {
-        ...settingsResponse().egress,
-        acceptedAt: null
-      }
-    })).toMatchObject({ ok: false });
-    expect(decodeMemorySettingsResponse({
-      ...settingsResponse(),
-      egress: {
-        ...settingsResponse().egress,
-        currentUtilityEgressFingerprint: "changed-fingerprint-1234",
-        reviewRequired: false
-      }
-    })).toMatchObject({ ok: false });
-    expect(decodeMemorySettingsResponse({
-      ...settingsResponse(),
-      egress: {
-        ...settingsResponse().egress,
-        currentUtilityPolicyVersion: "memory-egress-v2",
-        reviewRequired: false
-      }
-    })).toMatchObject({ ok: false });
-    expect(decodeMemorySettingsResponse({
-      ...settingsResponse(),
-      egress: {
-        ...settingsResponse().egress,
-        reviewRequired: true
-      }
-    })).toMatchObject({ ok: false });
+    expect(decodeMemorySettingsResponse({ ...settingsResponse(), egress: { reviewRequired: true } }))
+      .toMatchObject({ ok: false });
     expect(decodeMemorySettingsResponse({
       ...settingsResponse(),
       historyIndexing: {

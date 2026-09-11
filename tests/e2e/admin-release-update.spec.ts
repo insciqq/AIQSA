@@ -73,7 +73,7 @@ test("shows administrators the installed version and a bounded update pill at de
   await expect(update).toHaveAttribute("href", "https://github.com/insciqq/AIQSA/releases/tag/v0.2.0");
   await expect(update).toHaveAttribute("target", "_blank");
   await expect.poll(() => releaseRequests).toBe(1);
-  await expect(page.getByText(/When the list is empty, everything is working/)).toBeVisible();
+  await expect(page.getByTestId("admin-section-overview").getByRole("status")).toHaveText("No issues found in the latest checks.");
   await expectNoHorizontalOverflow(page);
 
   await page.getByRole("link", { exact: true, name: "Usage" }).click();

@@ -30,18 +30,6 @@ const response: MemorySettingsResponse = {
     synthesisAvailable: false,
     temporaryChats: false
   },
-  egress: {
-    acceptedAt: null,
-    acceptedUtilityEgressFingerprint: null,
-    acceptedUtilityPolicyVersion: null,
-    consentMode: "PER_USER",
-    currentUtilityEgressFingerprint: "a".repeat(64),
-    currentUtilityPolicyVersion: "memory-utility-egress-v1",
-    embeddingDestination: null,
-    remoteRerankerDestination: null,
-    reviewRequired: true,
-    systemModelDestination: null
-  },
   historyIndexing: {
     completedChats: 0,
     state: "DISABLED",
@@ -51,7 +39,6 @@ const response: MemorySettingsResponse = {
     decayEnabled: false,
     embeddingDeployment: null,
     learnAutomatically: false,
-    memoryConsentRevision: 0,
     memoryGeneration: 0,
     memoryRevision: 0,
     referenceChatHistory: false,
@@ -80,7 +67,6 @@ function session(): AuthenticatedSession {
 
 function service(overrides: Partial<MemorySettingsService> = {}): MemorySettingsService {
   return {
-    acceptUtilityEgress: vi.fn(async () => response),
     get: vi.fn(async () => response),
     patch: vi.fn(async () => response),
     ...overrides
@@ -130,7 +116,7 @@ describe("Memory settings handlers", () => {
     await expect(success.json()).resolves.toEqual(response);
   });
 
-  it("dispatches exactly one strict settings or consent mutation shape", async () => {
+  it("dispatches strict settings mutations and rejects the retired consent shape", async () => {
     const settingsService = service();
     const handler = createPatchMemorySettingsHandler(deps(settingsService));
     const patched = await handler(patchRequest({
@@ -165,8 +151,8 @@ describe("Memory settings handlers", () => {
       expectedSettingsRevision: 0
     } as const;
     const accepted = await handler(patchRequest(consent));
-    expect(accepted.status).toBe(200);
-    expect(settingsService.acceptUtilityEgress).toHaveBeenCalledWith("user-1", consent);
+    expect(accepted.status).toBe(400);
+    expect(settingsService.patch).toHaveBeenCalledTimes(2);
 
     const invalid = await handler(patchRequest({
       expectedSettingsRevision: 0,
@@ -198,22 +184,6 @@ describe("Memory settings handlers", () => {
     expect(conflict.status).toBe(409);
     expectPrivate(conflict);
     await expect(conflict.json()).resolves.toEqual({ error: "memory_version_stale" });
-
-    const adminOwned = await createPatchMemorySettingsHandler(deps(service({
-      acceptUtilityEgress: vi.fn(async () => {
-        throw new MemorySettingsServiceError("memory_egress_admin_owned");
-      })
-    })))(patchRequest({
-      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-      currentUtilityEgressFingerprint: "a".repeat(64),
-      currentUtilityPolicyVersion: "memory-utility-egress-v1",
-      expectedMemoryConsentRevision: 0,
-      expectedMemoryRevision: 0,
-      expectedSettingsRevision: 0
-    }));
-    expect(adminOwned.status).toBe(403);
-    expectPrivate(adminOwned);
-    await expect(adminOwned.json()).resolves.toEqual({ error: "memory_egress_admin_owned" });
 
     const failed = await createGetMemorySettingsHandler(deps(service({
       get: vi.fn(async () => {

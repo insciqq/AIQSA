@@ -13,7 +13,6 @@ import type {
 export type MemoryRebuildServiceErrorCode =
   | "memory_action_failed"
   | "memory_contract_invalid"
-  | "memory_egress_consent_required"
   | "memory_embedding_unavailable"
   | "memory_intent_confirmation_required"
   | "memory_rebuild_in_progress"
@@ -54,9 +53,6 @@ function admissionFailure(result: Exclude<MemoryRebuildAdmissionResult, { kind: 
 
 function executionFailure(error: unknown): never {
   if (error instanceof MemoryExecutionError) {
-    if (error.code === "memory_execution_egress_consent_required") {
-      return failure("memory_egress_consent_required");
-    }
     if (
       error.code === "memory_execution_capability_unavailable" ||
       error.code === "memory_execution_policy_unavailable" ||

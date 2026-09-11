@@ -15,6 +15,59 @@ describe("Prisma Memory coordinator startup lifecycle preflight", () => {
     await prisma.$disconnect();
   });
 
+  it("normalizes legacy waiting, resumes once, and preserves owner, source and terminal fences", async () => {
+    const userId = `memory-waiting-${randomUUID()}`;
+    await prisma.user.create({ data: { id: userId, displayName: "Waiting fixture",
+      email: `${userId}@example.test`, status: "active" } });
+    try {
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      const repository = createPrismaMemoryCoordinatorRepository(prisma);
+      const now = new Date();
+      const states = ["WAITING_FOR_EGRESS_CONSENT", "WAITING_FOR_CONFIGURATION", "SUCCEEDED", "TERMINAL_FAILED", "CLAIMED"] as const;
+      const jobs = await Promise.all(states.map((state) => prisma.memoryJob.create({ data: {
+        userId, state, kind: "EMBED_ITEMS", pipelineVersion: "waiting-fixture-v1",
+        idempotencyFingerprint: randomUUID(), memoryGenerationSnapshot: settings.memoryGeneration,
+        memoryRevisionSnapshot: settings.memoryRevision,
+        ...(state === "SUCCEEDED" || state === "TERMINAL_FAILED" ? { completedAt: now } : {}),
+        ...(state === "CLAIMED" ? { leaseToken: randomUUID(), leaseExpiresAt: now } : {})
+      } })));
+      const waiting = (await repository.listWaitingJobs({ kinds: ["EMBED_ITEMS"], limit: 100 }))
+        .filter((job) => job.userId === userId);
+      expect(waiting.map(({ id }) => id).sort()).toEqual(jobs.slice(0, 2).map(({ id }) => id).sort());
+      const legacy = waiting.find(({ id }) => id === jobs[0]!.id)!;
+      await expect(repository.resolveWaitingJob({ job: legacy, now,
+        decision: { status: "WAITING_FOR_CONFIGURATION", errorCode: "memory_execution_capability_unavailable" }
+      })).resolves.toBe(true);
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: legacy.id } })).resolves.toMatchObject({
+        state: "WAITING_FOR_CONFIGURATION", errorCode: "memory_execution_capability_unavailable",
+        leaseToken: null, completedAt: null, nextAttemptAt: null, attemptCount: 0
+      });
+      const resolutions = await Promise.all([1, 2].map(() => repository.resolveWaitingJob({
+        job: legacy, now, decision: { status: "READY" }
+      })));
+      expect(resolutions.sort()).toEqual([false, true]);
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: legacy.id } })).resolves.toMatchObject({
+        state: "QUEUED", errorCode: null, attemptCount: 0
+      });
+      const remaining = waiting.find(({ id }) => id === jobs[1]!.id)!;
+      await prisma.user.update({ where: { id: userId }, data: { status: "disabled" } });
+      await expect(repository.resolveWaitingJob({ job: remaining, now, decision: { status: "READY" } })).resolves.toBe(false);
+      await prisma.user.update({ where: { id: userId }, data: { status: "active" } });
+      await expect(repository.resolveWaitingJob({ job: { ...remaining, memoryGenerationSnapshot: settings.memoryGeneration + 1 },
+        now, decision: { status: "READY" } })).resolves.toBe(false);
+      await prisma.memoryJob.update({ where: { id: remaining.id }, data: {
+        state: "CANCELLED", completedAt: now, errorCode: "memory_owner_paused"
+      } });
+      await expect(repository.resolveWaitingJob({ job: remaining, now, decision: { status: "READY" } })).resolves.toBe(false);
+      for (const terminal of jobs.slice(2)) {
+        await expect(repository.resolveWaitingJob({ job: terminal, now, decision: { status: "READY" } })).resolves.toBe(false);
+        await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: terminal.id } })).resolves.toMatchObject({ state: terminal.state });
+      }
+    } finally {
+      await prisma.user.deleteMany({ where: { id: userId } });
+    }
+  });
+
   it("rolls back a real queued, claimed, heartbeat, and succeeded transition", async () => {
     const suffix = randomUUID();
     const userId = `memory-preflight-${suffix}`;

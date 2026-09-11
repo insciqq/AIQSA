@@ -9,7 +9,7 @@ import type {
 } from "@/lib/contracts/adminAttention";
 
 export const ADMIN_OVERVIEW_EMPTY_COPY =
-  "Only things that need a decision or an action appear here. When the list is empty, everything is working.";
+  "Only things that need a decision or an action appear here.";
 
 const severityPill: Record<AdminAttentionSeverity, string> = {
   bad: "border-critical/25 bg-critical/10 text-critical",
@@ -35,10 +35,12 @@ function unavailableCopy(sources: readonly AdminAttentionSource[]): string {
 
 function AttentionRow({
   item,
-  onJump
+  onJump,
+  lastConfirmedAt
 }: Readonly<{
   item: AdminAttentionItem;
   onJump(target: AdminAttentionTarget): void;
+  lastConfirmedAt?: string;
 }>) {
   return (
     <li
@@ -58,6 +60,7 @@ function AttentionRow({
       <div className="min-w-0 flex-1">
         <h3 className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{item.title}</h3>
         <p className="mt-px break-words text-xs text-ink-muted [overflow-wrap:anywhere]">{item.detail}</p>
+        {lastConfirmedAt ? <p className="mt-1 text-xs text-caution">Check unavailable · last confirmed <time dateTime={lastConfirmedAt}>{new Date(lastConfirmedAt).toLocaleString()}</time></p> : null}
       </div>
       <button
         aria-label={`${item.action}: ${item.title}`}
@@ -106,13 +109,21 @@ export function AdminOverviewSection({
           className="divide-y divide-trace-subtle rounded-[12px] border border-trace-subtle bg-answer-paper"
         >
           {items.map((item) => (
-            <AttentionRow item={item} key={item.id} onJump={onJump} />
+            <AttentionRow item={item} key={item.id} lastConfirmedAt={controller.staleItems[item.id]} onJump={onJump} />
           ))}
         </ul>
       ) : null}
 
       {!controller.loading && unavailableSources.length > 0 ? (
         <p className="text-xs text-caution" role="status">{unavailableCopy(unavailableSources)}</p>
+      ) : null}
+
+      {!controller.loading && controller.unavailable && controller.attention ? (
+        <p className="text-xs text-caution" role="status">Refresh failed. Showing the last known results from <time dateTime={controller.attention.checkedAt}>{new Date(controller.attention.checkedAt).toLocaleString()}</time>; current health is unknown.</p>
+      ) : null}
+
+      {!controller.loading && !controller.unavailable && unavailableSources.length === 0 && items.length === 0 ? (
+        <p className="text-sm text-ink-secondary" role="status">No issues found in the latest checks.</p>
       ) : null}
 
       <p className="text-xs leading-5 text-ink-muted">{ADMIN_OVERVIEW_EMPTY_COPY}</p>

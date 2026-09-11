@@ -2,7 +2,6 @@ import type { MemorySettingsResponse } from "../../../contracts/memory";
 import { describe, expect, it, vi } from "vitest";
 import {
   createMemoryHealthService,
-  type AdminMemoryHealthSnapshot,
   type UserMemoryHealthSnapshot
 } from "./service";
 
@@ -11,7 +10,6 @@ function settings(
   input: Readonly<{
     automaticLearning?: boolean;
     historyState?: "DISABLED" | "INDEXING" | "READY";
-    reviewRequired?: boolean;
   }> = {}
 ): MemorySettingsResponse {
   const referenceChatHistory = input.historyState !== undefined &&
@@ -32,18 +30,6 @@ function settings(
       synthesisAvailable: true,
       temporaryChats: true
     },
-    egress: {
-      acceptedAt: input.reviewRequired ? null : "2026-08-12T08:00:00.000Z",
-      acceptedUtilityEgressFingerprint: input.reviewRequired ? null : "a".repeat(64),
-      acceptedUtilityPolicyVersion: input.reviewRequired ? null : "policy-v1",
-      consentMode: "ADMIN",
-      currentUtilityEgressFingerprint: "a".repeat(64),
-      currentUtilityPolicyVersion: "policy-v1",
-      embeddingDestination: "Embedding / Model",
-      remoteRerankerDestination: null,
-      reviewRequired: input.reviewRequired ?? false,
-      systemModelDestination: "System / Model"
-    },
     historyIndexing: {
       completedChats: input.historyState === "INDEXING" ? 3 : 5,
       state: input.historyState ?? "READY",
@@ -57,7 +43,6 @@ function settings(
         modelDisplayName: "Model"
       },
       learnAutomatically: true,
-      memoryConsentRevision: 1,
       memoryGeneration: 1,
       memoryRevision: 1,
       referenceChatHistory,
@@ -77,32 +62,15 @@ const userSnapshot: UserMemoryHealthSnapshot = {
   blockedDeletionCount: 0,
   latestRebuildState: null,
   overdueTemporaryCount: 0,
-  waitingForEgressCount: 0
-};
-
-const adminSnapshot: AdminMemoryHealthSnapshot = {
-  activeDeletionCount: 0,
-  activeJobCount: 0,
-  blockedDeletionCount: 0,
-  failedExecutionCount: 0,
-  incompleteUsageCount: 0,
-  oldestActiveJobAt: null,
-  outcomeUnknownCount: 0,
-  overdueTemporaryCount: 0,
-  recentExecutionCount: 0,
-  recentTerminalJobCount: 0,
-  retryingJobCount: 0,
-  waitingForEgressCount: 0
+  waitingForConfigurationCount: 0
 };
 
 function service(input: Readonly<{
-  admin?: Partial<AdminMemoryHealthSnapshot>;
   settings?: MemorySettingsResponse;
   user?: Partial<UserMemoryHealthSnapshot>;
 }> = {}) {
   return createMemoryHealthService({
     now: () => new Date("2026-08-12T10:00:00.000Z"),
-    readAdmin: vi.fn().mockResolvedValue({ ...adminSnapshot, ...input.admin }),
     readSettings: vi.fn().mockResolvedValue(input.settings ?? settings()),
     readUser: vi.fn().mockResolvedValue({ ...userSnapshot, ...input.user })
   });
@@ -146,45 +114,24 @@ describe("Memory health projections", () => {
     expect(health.state).toBe(expected);
   });
 
-  it("distinguishes capability and admin-review delays", async () => {
+  it("distinguishes capability and configuration delays", async () => {
     await expect(service({
       settings: settings({}, { automaticLearning: false })
     }).user("owner-1")).resolves.toMatchObject({
       learning: { reason: "CAPABILITY_UNAVAILABLE", state: "DELAYED" }
     });
     await expect(service({
-      settings: settings({}, { reviewRequired: true }),
-      user: { waitingForEgressCount: 1 }
+      user: { waitingForConfigurationCount: 1 }
     }).user("owner-1")).resolves.toMatchObject({
-      egressReview: "ADMIN_REQUIRED",
-      learning: { reason: "EGRESS_REVIEW", state: "DELAYED" }
+      learning: { reason: "CONFIGURATION_UNAVAILABLE", state: "DELAYED" }
     });
   });
 
-  it("uses aggregate bands and lag buckets without owner drilldown", async () => {
-    const health = await service({
-      admin: {
-        activeDeletionCount: 2,
-        activeJobCount: 30,
-        blockedDeletionCount: 1,
-        failedExecutionCount: 2,
-        oldestActiveJobAt: new Date("2026-08-12T08:00:00.000Z"),
-        recentExecutionCount: 4,
-        waitingForEgressCount: 3
-      }
-    }).admin("admin-1", { egressReviewRequired: true });
-
-    expect(health).toMatchObject({
-      deletion: { active: "SOME", blocked: "SOME", state: "ATTENTION_REQUIRED" },
-      overall: "ACTION_REQUIRED",
-      provider: { failedRecent: "SOME", state: "DEGRADED" },
-      queue: {
-        active: "MANY",
-        oldestLag: "UNDER_24_HOURS",
-        state: "DELAYED",
-        waitingForReview: "SOME"
-      }
-    });
-    expect(JSON.stringify(health)).not.toMatch(/admin-1|userId|owner|query|source/iu);
+  it("keeps an explicit user pause out of failure states", async () => {
+    const health = await service({ settings: settings({ useMemoryFacts: false }),
+      user: { waitingForConfigurationCount: 1 } }).user("owner-1");
+    expect(health.learning).toEqual({ reason: "USER_DISABLED", state: "DISABLED" });
+    expect(health).not.toHaveProperty("egressReview");
+    expect(health.action).toBe("NONE");
   });
 });

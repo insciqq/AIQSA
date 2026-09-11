@@ -1,4 +1,5 @@
 import { mcpAutoDiscoveryFailure, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
+import { WORKSPACE_BROWSER_GUIDANCE } from "../workspace/browserGuidance";
 import { createKnowledgeEvidenceAnswerSnapshotV1 } from "../knowledge/evidenceAnswerSnapshotV1";
 import { createKnowledgeEvidenceAnswerSnapshotV2 } from "../knowledge/evidenceAnswerSnapshotV2";
 import { knowledgeEvidenceAnswerDraftPromptV1 } from "../knowledge/evidenceAnswerV1";
@@ -1544,6 +1545,27 @@ const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
 };
 
 describe("run recovery", () => {
+
+  it("reconstructs the accepted browser guidance unchanged after a process restart", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) { requests.push(request); return providerResult; } };
+    const harness = createHarness({ providers: { openai: adapter } });
+    const base = checkpointedRun({ calls: [{ ...persistedRecoveryCall(), arguments: {}, toolName: "get_session_status" }], phase: "tools_pending", providerToolMessages: [] });
+    const { mcp: _mcp, ...normalized } = base.normalizedRequest;
+    const prompt = { developer: null, system: `Synthetic accepted baseline\n${WORKSPACE_BROWSER_GUIDANCE}` };
+    installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized, prompt, workspace: completionWorkspace,
+      sessionStatusTool: true, toolMode: "none", searchPlan: { mode: "all_selected", options: [] } } });
+    const workspace: NonNullable<RunRecoveryDeps["workspace"]> = {
+      accepts: () => false, execute: vi.fn(), finalize: vi.fn(), handoff: vi.fn(async () => ({ status: "ready" as const })),
+      recoverExports: vi.fn(), settle: vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true })), tools: async () => []
+    };
+    await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.prompt).toEqual(prompt);
+    expect(workspace.handoff).toHaveBeenCalledOnce();
+    expect(harness.state.completed).not.toBeNull();
+  });
 
   it.each(["ready", "failed", "cancelled", "busy"] as const)("waits for recovered Workspace handoff and respects %s settlement", async (outcome) => {
     const boundary = deferred();

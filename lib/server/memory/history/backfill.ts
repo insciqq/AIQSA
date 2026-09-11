@@ -19,6 +19,7 @@ const MEMORY_HISTORY_BACKFILL_OWNER_BATCH = 16;
 
 const activeJobStates = Object.freeze([
   "QUEUED",
+  "WAITING_FOR_CONFIGURATION",
   "WAITING_FOR_EGRESS_CONSENT",
   "CLAIMED",
   "RETRYABLE_FAILED"
@@ -26,6 +27,7 @@ const activeJobStates = Object.freeze([
 
 const reusableJobStates = Object.freeze([
   "QUEUED",
+  "WAITING_FOR_CONFIGURATION",
   "WAITING_FOR_EGRESS_CONSENT",
   "RETRYABLE_FAILED",
   "SUCCEEDED",
@@ -144,6 +146,7 @@ async function currentBackfillCandidates(
           AND job."kind" = 'INDEX_HISTORY'::"MemoryJobKind"
           AND job."state" IN (
             'QUEUED'::"MemoryJobState",
+            'WAITING_FOR_CONFIGURATION'::"MemoryJobState",
             'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState",
             'CLAIMED'::"MemoryJobState",
             'RETRYABLE_FAILED'::"MemoryJobState"

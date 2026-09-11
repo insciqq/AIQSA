@@ -27,6 +27,37 @@ function session(key: ReturnType<typeof composerSessionKey>) {
 }
 
 describe("composer session store", () => {
+  it("initializes personal Workspace defaults while preserving explicit drafts and isolating saved/Project sessions", () => {
+    const store = useComposerSessionStore.getState();
+    const root = composerSessionKey(null);
+    store.setDraft("Typed before the catalog arrived");
+    store.applyWorkspaceDefault(root, true);
+    expect(session(root).workspaceEnabled).toBe(true);
+    store.updateSession(root, { workspaceEnabled: false });
+    store.applyWorkspaceDefault(root, true);
+    expect(session(root).workspaceEnabled).toBe(false);
+    store.setDraft("");
+    store.applyWorkspaceDefault(root, true);
+    expect(session(root).workspaceEnabled).toBe(true);
+    for (const key of [composerSessionKey("saved"), projectComposerSessionKey("project")]) {
+      store.activateSession(key);
+      store.applyWorkspaceDefault(key, true);
+      expect(session(key).workspaceEnabled).toBe(false);
+    }
+    for (const mode of ["NORMAL", "TEMPORARY", "EXCLUDED"] as const) {
+      const key = composerSessionKey(null, "folder", mode);
+      store.activateSession(key);
+      store.applyWorkspaceDefault(key, true);
+      store.setAttachments([attachment(mode)]);
+      store.applyWorkspaceDefault(key, false);
+      expect(session(key).workspaceEnabled).toBe(true);
+      const token = store.beginSend(key)!;
+      store.applyWorkspaceDefault(key, false);
+      expect(token.workspaceEnabled).toBe(true);
+      expect(session(key).workspaceEnabled).toBe(true);
+    }
+  });
+
   afterEach(() => {
     resetComposerSessionStoreForTest();
   });
@@ -238,7 +269,8 @@ describe("composer session store", () => {
       pendingSend: null,
       pendingUploadGenerations: [],
       revision: 0,
-      workspaceEnabled: false
+      workspaceEnabled: false,
+      workspaceInitialized: false
     });
   });
 

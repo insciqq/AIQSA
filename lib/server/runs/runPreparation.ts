@@ -4,6 +4,7 @@ import type { ChatPdfAttachmentAdmission, ChatPdfRouteAdmission } from "../uploa
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import { randomUUID } from "node:crypto";
 import { WORKSPACE_OFFICE_GUIDANCE } from "../workspace/officeGuidance";
+import { WORKSPACE_BROWSER_GUIDANCE } from "../workspace/browserGuidance";
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import {
@@ -592,7 +593,9 @@ function promptWithWorkspaceContract(
     "After changes, run appropriate tests or checks.",
     "Do not claim that a file was created or a check passed until a tool verified it.",
     "Use sandbox_shell for pipelines, redirects, &&, ||, globbing and heredocs; sandbox_exec runs one program directly without shell parsing.",
+    "Saved personal Workspace accesses are prepared automatically for personal chats; shared Projects do not receive personal secrets. SSH is configured for noninteractive use, and saved environment variables are available in each command and its child processes. Read /workspace/SECRETS.md for text secrets, environment names and exact original file/key paths. Use the accesses needed for the user's task. Values are not automatically included in this prompt. Do not copy managed secrets or the guide into project files or downloads unless the user requests it.",
     WORKSPACE_OFFICE_GUIDANCE,
+    WORKSPACE_BROWSER_GUIDANCE,
     "The inbox index also lists earlier completed exports from this conversation, marked source=export with their producing message and date. Read that index to find the requested earlier result; the current output directory starts fresh and does not describe export history. Use the indexed canonical copy when revising an earlier export, then write a new result to the current output directory. Never claim previous exports are lost solely because the current output directory is empty.",
     "When you create a user-facing file, mention its filename in the answer. Do not create sandbox:, file: or local filesystem download links and do not repeat a \"Files for download\" list: the interface publishes successfully exported files automatically.",
     ...(files.length > 0 ? ["Current message attachments:", ...files] : [])

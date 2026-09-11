@@ -124,7 +124,7 @@ describe("modelChipsFromEvidence", () => {
         attempts: { imageGeneration: { attempts: 1, status: "incomplete", reason: "semantic_inconclusive" } } }
     }) });
     expect(modelChipsFromEvidence(configuration, check)).toEqual([
-      { key: "imageGeneration", label: "Generate images", tone: "muted", help: "Inconclusive: this check did not prove support. response did not prove the capability · 1 attempt." },
+      { key: "imageGeneration", label: "Generate images", tone: "muted", help: "Inconclusive: this check did not prove support. response did not prove the capability · 1 attempt. Retry the check to verify this capability." },
       { key: "imageEditing", label: "Edit images", tone: "ok" }
     ]);
     const unavailable = { ...check, status: "unavailable" as const, evidence: evidence({

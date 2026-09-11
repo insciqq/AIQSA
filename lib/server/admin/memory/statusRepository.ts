@@ -25,8 +25,11 @@ import type {
   AdminMemoryStatusRepository
 } from "./statusService";
 
+import { readAdminMemoryProcessing } from "./processingRepository";
+
 const ACTIVE_JOB_STATES = Object.freeze([
   "QUEUED",
+  "WAITING_FOR_CONFIGURATION",
   "WAITING_FOR_EGRESS_CONSENT",
   "CLAIMED",
   "RETRYABLE_FAILED"
@@ -81,17 +84,6 @@ function generationConfigurationCurrent(generation: Readonly<{
     generation.retrievalPipelineVersion === MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION;
 }
 
-function laterError(
-  left: Readonly<{ errorCode: string | null; updatedAt: Date }> | null,
-  right: Readonly<{ errorCode: string | null; updatedAt: Date }> | null
-): string | null {
-  if (!left) return right?.errorCode ?? null;
-  if (!right) return left.errorCode;
-  return left.updatedAt.getTime() >= right.updatedAt.getTime()
-    ? left.errorCode
-    : right.errorCode;
-}
-
 export function createPrismaAdminMemoryStatusRepository(
   client: PrismaClient,
   startRebuild: StartRebuild
@@ -130,8 +122,7 @@ export function createPrismaAdminMemoryStatusRepository(
         activeDeletionCount,
         oldestJob,
         oldestDeletion,
-        activeJobError,
-        activeDeletionError,
+        processing,
         heartbeat
       ] = await Promise.all([
         client.modelPolicy.findUnique({
@@ -309,24 +300,7 @@ export function createPrismaAdminMemoryStatusRepository(
           select: { createdAt: true },
           where: { state: { in: [...ACTIVE_DELETION_STATES] } }
         }),
-        client.memoryJob.findFirst({
-          orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-          select: { errorCode: true, updatedAt: true },
-          where: {
-            errorCode: { not: null },
-            state: { in: [...ACTIVE_JOB_STATES] },
-            updatedAt: { lte: now }
-          }
-        }),
-        client.memoryDeletionOutbox.findFirst({
-          orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-          select: { errorCode: true, updatedAt: true },
-          where: {
-            errorCode: { not: null },
-            state: { in: [...ACTIVE_DELETION_STATES] },
-            updatedAt: { lte: now }
-          }
-        }),
+        readAdminMemoryProcessing(client, now),
         client.$queryRaw<HeartbeatRow[]>(Prisma.sql`
           SELECT "lastSeenAt"
           FROM "MemoryWorkerHeartbeat"
@@ -414,7 +388,7 @@ export function createPrismaAdminMemoryStatusRepository(
           seconds: admissionTimeoutSeconds,
           version: modelPolicy.version
         }),
-        activeIssueCode: laterError(activeJobError, activeDeletionError),
+        processing,
         configuredTargets: Object.freeze(configuredTargets),
         index: Object.freeze({
           activeGenerations: Object.freeze(generations.map(({ generation }) => generation)),

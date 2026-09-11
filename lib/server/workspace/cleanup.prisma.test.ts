@@ -90,6 +90,8 @@ describe("Prisma Workspace maintenance", () => {
       loadBoundTools: unused,
       removeSession,
       stageAttachments: unused,
+      syncPersonalSecrets: unused,
+      collectBrowserSessions: unused,
       stopSession,
       terminateExecutions: unused
     });
@@ -335,6 +337,8 @@ describe("Prisma Workspace maintenance", () => {
       loadBoundTools: unused,
       removeSession,
       stageAttachments: unused,
+      syncPersonalSecrets: unused,
+      collectBrowserSessions: unused,
       stopSession,
       terminateExecutions: unused
     });
@@ -464,6 +468,8 @@ describe("Prisma Workspace maintenance backstop", () => {
       loadBoundTools: unused,
       removeSession: unused,
       stageAttachments: unused,
+      syncPersonalSecrets: unused,
+      collectBrowserSessions: unused,
       stopSession,
       terminateExecutions
     });

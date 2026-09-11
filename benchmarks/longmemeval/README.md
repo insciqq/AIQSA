@@ -151,7 +151,6 @@ are deliberate guards for paid provider traffic and disposable state:
 
 ```bash
 AIQSA_MEMORY_BENCHMARK_ACK=DISPOSABLE_PAID_LONGMEMEVAL \
-AIQSA_MEMORY_EGRESS_CONSENT_MODE=ADMIN \
 AIQSA_MEMORY_BENCHMARK_DATABASE_URL='postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@127.0.0.1:55437/aiqsa_memory_benchmark?schema=public' \
 npx tsx benchmarks/longmemeval/run.ts --confirm-paid DISPOSABLE --sample-size 1
 ```
@@ -197,7 +196,6 @@ Run the active manifest with the exact lexical environment below:
 AIQSA_MEMORY_LEXICAL_BACKEND=OPENSEARCH \
 AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID=20260831-lme-v7-r2 \
 AIQSA_MEMORY_BENCHMARK_ACK=DISPOSABLE_PAID_LONGMEMEVAL \
-AIQSA_MEMORY_EGRESS_CONSENT_MODE=ADMIN \
 AIQSA_MEMORY_BENCHMARK_DATABASE_URL='postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@127.0.0.1:55437/aiqsa_memory_benchmark?schema=public' \
 npx tsx benchmarks/longmemeval/run.ts --confirm-paid DISPOSABLE \
   --qualification-manifest fu2-reader-first-luna-25-v19 \
@@ -288,7 +286,6 @@ probe against the disposable stack:
 ```bash
 AIQSA_ENCRYPTION_KEY='QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=' \
 AIQSA_MEMORY_BENCHMARK_ACK=DISPOSABLE_PAID_LONGMEMEVAL \
-AIQSA_MEMORY_EGRESS_CONSENT_MODE=ADMIN \
 AIQSA_MEMORY_BENCHMARK_DATABASE_URL='postgresql://aiqsa_benchmark:aiqsa-memory-benchmark-dev-password@127.0.0.1:55437/aiqsa_memory_benchmark?schema=public' \
 npx tsx benchmarks/longmemeval/probe-embedding-batch.ts
 ```

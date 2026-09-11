@@ -43,6 +43,23 @@ afterEach(() => {
 });
 
 describe("settings mutation coordinator", () => {
+  it("retries a failed Workspace preference and reconciles the server's saved choice", async () => {
+    const onReconcile = vi.fn(), onFailure = vi.fn(), onRecovered = vi.fn();
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(Response.json({ settings: settings({ defaultWorkspaceEnabled: true }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    const coordinator = createSettingsMutationCoordinator({ callbacks: { onFailure, onReconcile, onRecovered } });
+    expect(await coordinator.enqueue({ workspaceEnabled: true })).toBe(false);
+    expect(onFailure).toHaveBeenCalledWith(expect.any(Error), expect.any(Function), "general");
+    coordinator.retry();
+    await vi.waitFor(() => expect(onRecovered).toHaveBeenCalledWith("general"));
+    expect(onReconcile).toHaveBeenLastCalledWith({ workspaceEnabled: true }, new Set());
+    expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(init.body))).toEqual([
+      { defaultWorkspaceEnabled: true }, { defaultWorkspaceEnabled: true }
+    ]);
+  });
+
   it("retains mute and the selected sound over older unrelated responses and keeps failed edits for retry", async () => {
     const older = deferred<UserSettingsWire>();
     const onReconcile = vi.fn();

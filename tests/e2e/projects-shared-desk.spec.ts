@@ -105,8 +105,14 @@ async function addContributorThroughPicker(page: Page, projectName: string): Pro
   await settings.getByRole("button", { name: "Add access", exact: true }).click();
   const confirmation = settings.getByRole("alertdialog", { name: "Confirm Project access" });
   await expect(confirmation).toContainText(LOCAL_RESTRICTED_MEMBER.displayName);
-  await confirmation.getByRole("button", { name: "Add access" }).click();
-  await expect(confirmation).toBeHidden();
+  const [created] = await Promise.all([
+    page.waitForResponse((response) => response.request().method() === "POST" &&
+      /^\/api\/projects\/[^/]+\/grants$/u.test(new URL(response.url()).pathname), { timeout: 15_000 }),
+    confirmation.getByRole("button", { name: "Add access" }).click()
+  ]);
+  expect(created.status()).toBe(201);
+  // The mutation also refreshes the Project aggregate and open settings.
+  await expect(confirmation).toBeHidden({ timeout: 15_000 });
   await expect(settings.locator(".v2-project-list-row").filter({
     hasText: LOCAL_RESTRICTED_MEMBER.email
   })).toBeVisible();
@@ -293,10 +299,9 @@ test("keeps two Project members at the same live shared desk", async ({ browser 
     const toolActivity = contributorPage.getByTestId("tool-activity-disclosure").last();
     await expect(toolActivity).toBeVisible({ timeout: 8_000 });
     await toolActivity.locator("summary").click();
-    await expect(toolActivity).toContainText("MCP tool");
-    // Signal tool rows name the settled call ("Ran <tool>") with its duration
-    // instead of a separate "Completed" status label.
-    await expect(toolActivity).toContainText("Ran MCP tool");
+    // Shared Project activity uses the sanitized server label and duration.
+    await expect(toolActivity).toContainText("Used MCP server");
+    await expect(toolActivity).toContainText("25 ms · round 1");
     await expect(contributorPage.getByText(privateMarker, { exact: false })).toHaveCount(0);
 
     const contributorAnswer = contributorPage.locator('article[data-role="assistant"]').last();

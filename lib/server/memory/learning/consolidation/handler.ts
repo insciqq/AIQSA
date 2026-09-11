@@ -149,12 +149,11 @@ function reportedUsage(value: Parameters<typeof normalizeTokenUsage>[0]): Memory
 function authorityGate(error: unknown) {
   if (error instanceof MemoryExecutionError) {
     if (
-      error.code === "memory_execution_egress_consent_required" ||
       error.code === "memory_execution_target_unavailable" ||
       error.code === "memory_execution_capability_unavailable" ||
       error.code === "memory_execution_policy_unavailable"
     ) {
-      return { errorCode: error.code, status: "WAITING_FOR_EGRESS_CONSENT" as const };
+      return { errorCode: error.code, status: "WAITING_FOR_CONFIGURATION" as const };
     }
     return { errorCode: error.code, status: "CANCELLED" as const };
   }

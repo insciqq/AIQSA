@@ -341,7 +341,14 @@ test("v2 sidebar leaves Ctrl/Cmd+K unassigned", async ({ page }) => {
 test("v2 composer preserves its draft above a reduced mobile content viewport", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto("/ui-v2-fixture?fixture=composer&state=default");
+  // Confirm the prefilled fixture is interactive before replacing its draft.
+  await page.getByTestId("header-model-trigger").click();
+  const modelPicker = page.getByRole("dialog", { name: "Choose model" });
+  await expect(modelPicker).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(modelPicker).toBeHidden();
   const input = page.getByRole("textbox", { name: "Message" });
+  await expect(input).toHaveValue("Подготовь краткое резюме");
   const draft = Array.from({ length: 24 }, (_, index) => `Строка ${index + 1}`).join("\n");
   await input.fill(draft);
 

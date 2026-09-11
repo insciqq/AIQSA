@@ -448,7 +448,7 @@ export function AdminProviderModels({
                           />
                         </td>
                         <td className="col-start-3 row-start-1 px-3 py-2.5 text-right">
-                          <ProviderRowMenu actions={menu} label={`More actions for ${model.displayName}`} />
+                          <ProviderRowMenu actions={menu} label={`More actions for ${model.displayName}`} tooltipSide="top" />
                         </td>
                       </tr>
                     );

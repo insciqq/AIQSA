@@ -4,20 +4,12 @@ import {
   type MemoryPauseScope,
   type PrismaClient
 } from "@prisma/client";
-import {
-  MEMORY_CONFIRMATION_COPY_VERSION,
-  type MemoryConsentInput,
-  type MemorySettingsPatch
-} from "../../../contracts/memory";
+import type { MemorySettingsPatch } from "../../../contracts/memory";
 import {
   loadEmbeddingProviderRole,
   ProviderAdmissionError
 } from "../../providerRuntime/admission";
 import { prisma } from "../../prisma";
-import {
-  resolveCurrentMemoryUtilityPolicy,
-  type ResolvedMemoryUtilityPolicy
-} from "../execution/policy";
 import { MEMORY_SYNTHESIS_POLICY_VERSION } from "../synthesis/policy";
 import { MEMORY_DECAY_POLICY_VERSION } from "../../../domain/memory/retrieval";
 import { memoryPersistenceFailure } from "./errors";
@@ -78,11 +70,6 @@ const settingsSelect = {
 
 type MemorySettingsRepositoryOptions = Readonly<{
   now?: () => Date;
-  resolveCurrentUtilityPolicy?: (
-    tx: MemoryTransaction,
-    userId: string,
-    settings: Pick<LockedMemorySettings, "embeddingProviderModelId">
-  ) => Promise<ResolvedMemoryUtilityPolicy>;
   validateEmbeddingSelection?: (
     tx: MemoryTransaction,
     input: Readonly<{ providerModelId: string; userId: string }>
@@ -93,6 +80,7 @@ const pausableJobStates = [
   "CLAIMED",
   "QUEUED",
   "RETRYABLE_FAILED",
+  "WAITING_FOR_CONFIGURATION",
   "WAITING_FOR_EGRESS_CONSENT"
 ] as const;
 
@@ -265,23 +253,6 @@ function validatePatchShape(patch: MemorySettingsPatch): void {
   }
 }
 
-function validateConsentInput(input: MemoryConsentInput): void {
-  if (
-    input.confirmationCopyVersion !== MEMORY_CONFIRMATION_COPY_VERSION ||
-    !validRevision(input.expectedMemoryConsentRevision) ||
-    !validRevision(input.expectedMemoryRevision) ||
-    !validRevision(input.expectedSettingsRevision) ||
-    input.currentUtilityEgressFingerprint.trim() !== input.currentUtilityEgressFingerprint ||
-    input.currentUtilityEgressFingerprint.length === 0 ||
-    input.currentUtilityEgressFingerprint.length > 128 ||
-    input.currentUtilityPolicyVersion.trim() !== input.currentUtilityPolicyVersion ||
-    input.currentUtilityPolicyVersion.length === 0 ||
-    input.currentUtilityPolicyVersion.length > 64
-  ) {
-    return memoryPersistenceFailure("memory_input_invalid");
-  }
-}
-
 async function persistedSettings(
   tx: MemoryTransaction,
   userId: string
@@ -296,60 +267,12 @@ export function createPrismaMemorySettingsRepository(
   options: MemorySettingsRepositoryOptions = {}
 ) {
   const now = options.now ?? (() => new Date());
-  const resolveCurrentUtilityPolicy = options.resolveCurrentUtilityPolicy ??
-    resolveCurrentMemoryUtilityPolicy;
   const validateEmbeddingSelection = options.validateEmbeddingSelection ??
     (async (tx, input) => {
       await loadEmbeddingProviderRole(tx, input);
     });
 
   return Object.freeze({
-    async acceptUtilityEgress(
-      userId: string,
-      input: MemoryConsentInput
-    ): Promise<MemorySettingsPersistenceSnapshot> {
-      validateConsentInput(input);
-      return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
-        if (settings.settingsRevision !== input.expectedSettingsRevision) {
-          return memoryPersistenceFailure("memory_settings_conflict");
-        }
-        if (settings.memoryRevision !== input.expectedMemoryRevision) {
-          return memoryPersistenceFailure("memory_revision_conflict");
-        }
-        if (settings.memoryConsentRevision !== input.expectedMemoryConsentRevision) {
-          return memoryPersistenceFailure("memory_consent_conflict");
-        }
-
-        const currentPolicy = await resolveCurrentUtilityPolicy(tx, userId, settings);
-        if (
-          currentPolicy.fingerprint !== input.currentUtilityEgressFingerprint ||
-          currentPolicy.policyVersion !== input.currentUtilityPolicyVersion
-        ) {
-          return memoryPersistenceFailure("memory_consent_policy_changed");
-        }
-
-        await advanceMemoryMutation(tx, settings, "MEMORY_VISIBLE_SETTING_CHANGE");
-        const updated = await tx.userMemorySettings.updateMany({
-          data: {
-            acceptedUtilityEgressAt: new Date(),
-            acceptedUtilityEgressFingerprint: currentPolicy.fingerprint,
-            acceptedUtilityPolicyVersion: currentPolicy.policyVersion,
-            memoryConsentRevision: { increment: 1 },
-            settingsRevision: { increment: 1 }
-          },
-          where: {
-            memoryConsentRevision: input.expectedMemoryConsentRevision,
-            settingsRevision: input.expectedSettingsRevision,
-            userId
-          }
-        });
-        if (updated.count !== 1) return memoryPersistenceFailure("memory_settings_conflict");
-        settings.memoryConsentRevision += 1;
-        settings.settingsRevision += 1;
-        return persistedSettings(tx, userId);
-      });
-    },
-
     async get(userId: string): Promise<MemorySettingsPersistenceSnapshot> {
       return client.$transaction(async (tx) => {
         const [owner, settings] = await Promise.all([
@@ -487,6 +410,7 @@ export function createPrismaMemorySettingsRepository(
                 'CLAIMED'::"MemoryJobState",
                 'QUEUED'::"MemoryJobState",
                 'RETRYABLE_FAILED'::"MemoryJobState",
+                'WAITING_FOR_CONFIGURATION'::"MemoryJobState",
                 'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState"
               )
               AND (

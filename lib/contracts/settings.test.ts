@@ -28,6 +28,17 @@ function validResponse(): UpdateSettingsResponse {
 }
 
 describe("settings wire contract", () => {
+  it("defaults Workspace to Off and rejects malformed saved choices", () => {
+    const response = validResponse();
+    expect(decodeUpdateSettingsResponse(response)?.settings.defaultWorkspaceEnabled).toBe(false);
+    for (const value of [true, false]) {
+      expect(decodeUpdateSettingsResponse({ settings: { ...response.settings, defaultWorkspaceEnabled: value } })?.settings.defaultWorkspaceEnabled).toBe(value);
+    }
+    for (const value of [null, "true", 1, {}]) {
+      expect(decodeUpdateSettingsResponse({ settings: { ...response.settings, defaultWorkspaceEnabled: value } })).toBeNull();
+    }
+  });
+
   it("decodes saved sound preferences and rejects invalid field values", () => {
     const response = validResponse();
     response.settings.answerSoundEnabled = false;

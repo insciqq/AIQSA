@@ -39,6 +39,14 @@ function body(value: string): ReadableStream<Uint8Array> {
   });
 }
 
+function outputStream(content: string, relativePath: string, batchId = "f".repeat(32)) {
+  return {
+    batchId, body: body(content), byteSize: Buffer.byteLength(content),
+    checksum: createHash("sha256").update(content).digest("hex"), mimeType: "text/plain",
+    opaqueFileId: createHash("sha256").update(relativePath).digest("hex"), relativePath
+  };
+}
+
 function memoryRegistry() {
   const rows: Array<WorkspaceExecutionRecord & { state: WorkspaceExecutionRecord["state"] }> = [];
   const registry: WorkspaceExecutionRegistry = {
@@ -157,6 +165,8 @@ function fixture() {
     storageKey: "user_1/input"
   });
   const repository: WorkspaceCoordinatorRepository = {
+    saveBrowserSessions: vi.fn(async () => ({ saved: 0, unchanged: 0, skipped: {} })),
+    personalSecrets: vi.fn(async () => []),
     async unregisteredCommands() { return unregisteredCommands.count; },
     async attachments() {
       return [{
@@ -247,6 +257,7 @@ function fixture() {
     callBoundTool: vi.fn(async () => complete),
     cancelToolCall: vi.fn(async () => undefined),
     collectOutputs: vi.fn(async () => []),
+    collectBrowserSessions: vi.fn(async () => ({ files: [], skipped: [] })),
     createProjectArchive: vi.fn(async () => {
       throw new Error("unused");
     }),
@@ -265,6 +276,7 @@ function fixture() {
     })),
     removeSession: vi.fn(async () => undefined),
     stageAttachments: vi.fn(async () => undefined),
+    syncPersonalSecrets: vi.fn(async () => undefined),
     stopSession: vi.fn(async () => undefined),
     terminateExecutions: vi.fn(async (input: Parameters<WorkspaceRuntime["terminateExecutions"]>[0]) =>
       input.executions.map((execution) => ({
@@ -293,6 +305,61 @@ function fixture() {
 }
 
 describe("Workspace coordinator", () => {
+  it.each(["handoff", "cancelled"] as const)("saves browser bytes after quiescence and before retirement at %s", async (mode) => {
+    const value = fixture(); value.setRuntimeSandboxId("runtime_1");
+    const data = JSON.stringify({ cookies: [], origins: [] });
+    await value.registry.register({ modelRunId: value.runId, modelRunToolCallId: "browser_start", runtimeExecSessionId: "browser_process", sessionId: value.workspace.sessionId });
+    vi.mocked(value.runtime.collectBrowserSessions).mockResolvedValueOnce({ files: [outputStream(data, "shop.example.json")], skipped: ["browser_session_too_large"] });
+    const request = { runId: value.runId, userId: "user_1", workspace: value.workspace };
+    if (mode === "handoff") await expect(value.coordinator.handoff(request)).resolves.toEqual({ status: "ready" });
+    else await expect(value.coordinator.settle({ ...request, outcome: "cancelled" })).resolves.toMatchObject({ quiesced: true, sessionSettled: true });
+    expect(value.repository.saveBrowserSessions).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      runId: value.runId, userId: "user_1",
+      files: [{ fileName: "shop.example.json", bytes: Buffer.from(data) }], skipped: ["browser_session_too_large"]
+    }));
+    expect(vi.mocked(value.runtime.terminateExecutions).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(value.runtime.collectBrowserSessions).mock.invocationCallOrder[0]!);
+    expect(vi.mocked(value.repository.saveBrowserSessions).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(value.runtime.retireSessionOperation!).mock.invocationCallOrder[0]!);
+    if (mode === "handoff") expect(value.repository.saveBrowserSessions).toHaveBeenCalledWith(expect.objectContaining({ handoffToken: "lease_token_1" }));
+    expect(await value.repository.generatedFiles({ runId: value.runId, userId: "user_1" })).toEqual([]);
+  });
+
+  it.each(["project", "off", "export", "recovery"] as const)("never reads or saves personal browser files during %s", async (mode) => {
+    const value = fixture(); value.setRuntimeSandboxId("runtime_1");
+    const binding = await value.repository.binding({ runId: value.runId, userId: "user_1" });
+    if (mode === "project") vi.spyOn(value.repository, "binding").mockResolvedValue({ ...binding!, projectId: "project_1" });
+    if (mode === "off") vi.spyOn(value.repository, "binding").mockResolvedValue(null);
+    const request = { runId: value.runId, userId: "user_1", workspace: value.workspace };
+    if (mode === "project" || mode === "off") await value.coordinator.settle({ ...request, outcome: "completed" });
+    else await value.coordinator.finalize({ ...request, ...(mode === "recovery" ? { recovery: true } : {}) });
+    expect(value.runtime.collectBrowserSessions).not.toHaveBeenCalled();
+    expect(value.repository.saveBrowserSessions).not.toHaveBeenCalled();
+  });
+
+  it("keeps a browser cache read failure content-free and does not fail accepted handoff", async () => {
+    const value = fixture(); value.setRuntimeSandboxId("runtime_1");
+    vi.mocked(value.runtime.collectBrowserSessions).mockRejectedValueOnce(new Error("synthetic private cookie"));
+    await expect(value.coordinator.handoff({ runId: value.runId, userId: "user_1", workspace: value.workspace })).resolves.toEqual({ status: "ready" });
+    expect(value.repository.saveBrowserSessions).toHaveBeenCalledWith(expect.objectContaining({ files: [], skipped: ["browser_session_read_failed"] }));
+  });
+
+  it("prepares private accepted secrets once before the first command, preserving the accepted run on later calls", async () => {
+    const value = fixture();
+    const secrets = [{ id: "10000000-0000-4000-8000-000000000001", versionId: "10000000-0000-4000-8000-000000000002",
+      name: "Fixture", description: "", value: { kind: "text" as const, text: "synthetic private input" } }];
+    vi.mocked(value.repository.personalSecrets).mockResolvedValue(secrets);
+    for (const id of ["first", "second"]) await value.coordinator.execute({
+      call: { arguments: { path: "/workspace/SECRETS.md" }, id, name: namespacedWorkspaceToolName("sandbox_fs_read") },
+      modelRunToolCallId: id, runId: value.runId, userId: "user_1", workspace: value.workspace
+    });
+    expect(value.repository.personalSecrets).toHaveBeenCalledOnce();
+    expect(value.runtime.syncPersonalSecrets).toHaveBeenCalledOnce();
+    expect(value.runtime.syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({
+      modelRunId: value.runId, secrets, runtimeSandboxId: "runtime_1", operation: { generation: 1, owner: `run:${value.runId}` }
+    }));
+    expect(vi.mocked(value.runtime.syncPersonalSecrets).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(value.runtime.callBoundTool).mock.invocationCallOrder[0]!);
+    expect(value.runtime.callBoundTool).not.toHaveBeenCalledWith(expect.objectContaining({ secrets }));
+  });
+
   it("does not adopt a later operation generation during an old finalizer's settlement", async () => {
     const value = fixture();
     await value.coordinator.execute({
@@ -1170,18 +1237,6 @@ describe("Workspace coordinator export settlement", () => {
     expect(complete).not.toHaveBeenCalled();
     expect(settle).not.toHaveBeenCalled();
   });
-
-  function outputStream(content: string, relativePath: string, batchId = "f".repeat(32)) {
-    return {
-      batchId,
-      body: body(content),
-      byteSize: Buffer.byteLength(content),
-      checksum: createHash("sha256").update(content).digest("hex"),
-      mimeType: "text/plain",
-      opaqueFileId: createHash("sha256").update(relativePath).digest("hex"),
-      relativePath
-    };
-  }
 
   it("reports a busy lease without throwing and releases the runner batch after export", async () => {
     const value = fixture();
