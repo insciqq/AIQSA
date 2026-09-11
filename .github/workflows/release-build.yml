@@ -1,0 +1,312 @@
+name: Build release images
+
+on:
+  workflow_call:
+    inputs:
+      verify:
+        description: Run native image rendering checks.
+        type: boolean
+        default: false
+    outputs:
+      version:
+        description: Validated image version.
+        value: ${{ jobs.prepare.outputs.version }}
+      is_rc:
+        description: Whether this is a numbered release candidate tag.
+        value: ${{ jobs.prepare.outputs.is_rc }}
+      reuse:
+        description: Reused infrastructure image digests.
+        value: ${{ jobs.prepare.outputs.reuse }}
+
+permissions: {}
+
+env:
+  IMAGE: ghcr.io/insciqq/aiqsa
+  POSTGRES_IMAGE: ghcr.io/insciqq/aiqsa-postgres
+  POSTGRES_COMPONENT_TAG: 18.6-pgvector0.8.6
+
+jobs:
+  prepare:
+    name: Validate release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      is_rc: ${{ steps.release.outputs.is_rc }}
+      reuse: ${{ steps.release.outputs.reuse }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify public repository privacy
+        run: node scripts/release-privacy-check.mjs --ref HEAD --require-origin
+
+      - name: Validate version and select reusable infrastructure images
+        id: release
+        run: node scripts/release-plan.mjs
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - id: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.2
+
+      - name: Free hosted runner disk for application and Workspace images
+        if: runner.environment == 'github-hosted'
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Sign in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=rc,enable=${{ needs.prepare.outputs.is_rc == 'true' }}
+            type=sha,format=short,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=AIQSA
+            org.opencontainers.image.description=Self-hosted multi-user AI workspace with multi-provider chat, MCP tools, and web search
+
+      - name: Build and publish platform image by digest
+        id: image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          target: release
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: |
+            type=registry,ref=${{ env.IMAGE }}:buildcache-workspace-${{ matrix.id }}
+            type=gha,scope=release-${{ matrix.id }}
+            type=gha
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.id }}
+
+      - name: Verify native vision rendering in the published image
+        if: inputs.verify
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          docker run --rm --network none --read-only --user node \
+            --entrypoint node "${IMAGE}@${DIGEST}" scripts/verify-release-vision.cjs
+
+      - name: Export platform digest
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Build returned an invalid image digest." >&2
+            exit 1
+          fi
+          digest_dir="${RUNNER_TEMP}/digests"
+          mkdir -p "${digest_dir}"
+          touch "${digest_dir}/${DIGEST#sha256:}"
+
+      - name: Upload platform digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digests-${{ matrix.id }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Build and publish Postgres platform image by digest
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse).postgres }}
+        id: postgres_image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ops/postgres-pgvector.Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.POSTGRES_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=postgres-release-${{ matrix.id }}
+          cache-to: type=gha,mode=max,scope=postgres-release-${{ matrix.id }}
+
+      - name: Export Postgres platform digest
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse).postgres || matrix.id == 'amd64' }}
+        env:
+          DIGEST: ${{ fromJSON(needs.prepare.outputs.reuse).postgres || steps.postgres_image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Build returned an invalid Postgres image digest." >&2
+            exit 1
+          fi
+          digest_dir="${RUNNER_TEMP}/postgres-digests"
+          mkdir -p "${digest_dir}"
+          touch "${digest_dir}/${DIGEST#sha256:}"
+
+      - name: Upload Postgres platform digest
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse).postgres || matrix.id == 'amd64' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: postgres-digests-${{ matrix.id }}
+          path: ${{ runner.temp }}/postgres-digests/*
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      # This target extends release. Building it here shares the application
+      # layers in the same builder instead of compiling AIQSA a second time.
+      - name: Build and publish Workspace runner by digest
+        id: workspace_image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          target: workspace-runner
+          platforms: ${{ matrix.platform }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/insciqq/AIQSA
+            org.opencontainers.image.title=AIQSA workspace-runner
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: |
+            type=registry,ref=${{ env.IMAGE }}:buildcache-workspace-${{ matrix.id }}
+            type=gha,scope=workspace-runner-${{ matrix.id }}
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache-workspace-${{ matrix.id }},mode=max,ignore-error=true
+
+      - name: Export Workspace runner digest
+        env:
+          DIGEST: ${{ steps.workspace_image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p "${RUNNER_TEMP}/workspace-digests/workspace-runner"
+          touch "${RUNNER_TEMP}/workspace-digests/workspace-runner/${DIGEST#sha256:}"
+
+      - name: Upload Workspace runner digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: component-digests-workspace-runner-${{ matrix.id }}
+          path: ${{ runner.temp }}/workspace-digests
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  build-components:
+    name: Build ${{ matrix.component.name }} (${{ matrix.platform.name }})
+    needs: prepare
+    runs-on: ${{ matrix.platform.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - id: amd64
+            name: linux/amd64
+            runner: ubuntu-24.04
+          - id: arm64
+            name: linux/arm64
+            runner: ubuntu-24.04-arm
+        component:
+          - name: docling
+            context: ops/docling
+            file: ops/docling/Dockerfile
+            target: ""
+          - name: tika
+            context: ops/tika
+            file: ops/tika/Dockerfile
+            target: ""
+          - name: opensearch
+            context: ops/opensearch
+            file: ops/opensearch/Dockerfile
+            target: ""
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.2
+
+      - name: Free hosted runner disk for component images
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse)[matrix.component.name] && runner.environment == 'github-hosted' }}
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+
+      - name: Set up Docker Buildx
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse)[matrix.component.name] }}
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Sign in to GHCR
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse)[matrix.component.name] }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build component by digest
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse)[matrix.component.name] }}
+        id: image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ${{ matrix.component.context }}
+          file: ${{ matrix.component.file }}
+          target: ${{ matrix.component.target }}
+          platforms: ${{ matrix.platform.name }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/insciqq/AIQSA
+            org.opencontainers.image.title=AIQSA ${{ matrix.component.name }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.component.name }}-${{ matrix.platform.id }}
+          cache-to: type=gha,mode=min,ignore-error=true,scope=${{ matrix.component.name }}-${{ matrix.platform.id }}
+
+      - name: Export component digest
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse)[matrix.component.name] || matrix.platform.id == 'amd64' }}
+        env:
+          DIGEST: ${{ fromJSON(needs.prepare.outputs.reuse)[matrix.component.name] || steps.image.outputs.digest }}
+          COMPONENT: ${{ matrix.component.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p "${RUNNER_TEMP}/component-digests/${COMPONENT}"
+          touch "${RUNNER_TEMP}/component-digests/${COMPONENT}/${DIGEST#sha256:}"
+
+      - name: Upload component digest
+        if: ${{ !fromJSON(needs.prepare.outputs.reuse)[matrix.component.name] || matrix.platform.id == 'amd64' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: component-digests-${{ matrix.component.name }}-${{ matrix.platform.id }}
+          path: ${{ runner.temp }}/component-digests
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
