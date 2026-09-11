@@ -6464,7 +6464,7 @@ describe("run recovery", () => {
         fileName: "document.pdf",
         id: "pdf-1",
         kind: "pdf",
-        metadata: { pdf: { pageCount: 1 } },
+        metadata: { pdfPageCount: 2 },
         mimeType: "application/pdf",
         processingErrorCode: null,
         status: "ready",
@@ -6482,7 +6482,8 @@ describe("run recovery", () => {
       }),
       expect.objectContaining({
         base64Data: Buffer.from("pdf-bytes").toString("base64"),
-        id: "pdf-1"
+        id: "pdf-1",
+        metadata: { pdfPageCount: 2 }
       })
     ]);
   });

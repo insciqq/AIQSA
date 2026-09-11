@@ -38,8 +38,8 @@ export type CapabilityCheckRequest = Readonly<{
 export type CapabilityCheckRunStart = Readonly<{
   catalogModelIds?: readonly string[];
   signal?: AbortSignal;
-  /** Already verified on the same active tuple by this setup operation. */
-  completedModelIds?: readonly string[];
+  /** Saved receipts revalidated against the exact active model/connection/key tuple. */
+  reusedResults?: AdminProviderCheckRun["results"];
   initialSetup?: Readonly<Record<string, InitialCapabilityCheck>>;
   onProgress?(value: AdminProviderCheckRun): void;
   completeSetup?(signal: AbortSignal): Promise<AdminProviderBootstrapResult>;
@@ -289,10 +289,14 @@ export function createCapabilityCheckRunner(input: Readonly<{
 
     start(value) {
       const modelIds = [...new Set(value.modelIds)];
-      const completed = new Set((value.completedModelIds ?? []).filter((id) => modelIds.includes(id)));
+      const reused = new Map((value.reusedResults ?? [])
+        .filter((result) => modelIds.includes(result.providerModelId) &&
+          (result.state === "saved" || result.state === "unavailable"))
+        .map((result) => [result.providerModelId, result]));
+      const completed = new Set(reused.keys());
       const run: Run = {
         catalogModelIds: value.catalogModelIds ? [...value.catalogModelIds] : undefined,
-        results: [],
+        results: [...reused.values()],
         initialSetup: value.initialSetup,
         onProgress: value.onProgress,
         setupController: new AbortController(),

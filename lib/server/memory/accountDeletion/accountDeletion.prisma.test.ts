@@ -899,6 +899,11 @@ describe("Prisma account Memory deletion", () => {
   it("counts pause intervals as Memory-owned account data", async () => {
     const userId = await createOwner("disabled");
     try {
+      // This inventory probe starts with an explicitly inert settings row.
+      await prisma.userMemorySettings.update({ where: { userId }, data: {
+        synthesisEnabled: false, synthesisEnabledAt: null, synthesisPolicyVersion: null,
+        decayEnabled: false, decayPolicyVersion: null
+      } });
       await expect(countAccountMemoryOwnedData(prisma, userId)).resolves.toBe(0);
       await prisma.memoryPauseInterval.create({
         data: {

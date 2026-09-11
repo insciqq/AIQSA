@@ -18,6 +18,7 @@ import type { ComposerAttachment } from "@/components/app-shell/attachmentContra
 import { calculateContextBudgetLimits, estimateApproxTokens } from "@/lib/domain/contextBudget";
 import { STANDARD_CHAT_BASELINE_TEMPLATE } from "@/lib/domain/promptTemplates";
 import { decodeSessionContextStatus, sessionContextCapacity } from "@/lib/contracts/sessionStatus";
+import { pdfPageCountFromMetadata } from "@/lib/contracts/uploads";
 import { isRecord } from "./shellValues";
 import { useMemo } from "react";
 
@@ -82,7 +83,8 @@ function imageProxyTokens(attachment: ComposerAttachment): number {
 }
 
 function nativePdfProxyTokens(attachment: ComposerAttachment): number {
-  const pageCount = pdfProcessingForAttachment(attachment)?.pageCount ?? null;
+  const pageCount = pdfPageCountFromMetadata({ pdfPageCount: attachment.pageCount })
+    ?? pdfPageCountFromMetadata({ pdfPageCount: pdfProcessingForAttachment(attachment)?.pageCount });
   const extractedTextTokens = attachment.extractedText?.trim() ? estimateApproxTokens(attachment.extractedText) : 0;
   const pageTokens = pageCount ? pageCount * 512 : 0;
   const fallbackByteTokens =

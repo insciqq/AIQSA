@@ -26,9 +26,9 @@ function fixture() {
     maxMcpToolsPerDiscovery: 8, maxToolCalls: 12, maxToolRounds: 8,
     mcpAutoDiscoveryMaxOutputTokens: 8_192, mcpAutoDiscoveryTimeoutSeconds: 10
   } };
-  const roles: AdminSystemModelPolicyCatalog = { candidates, documentCandidates: candidates, verificationCandidates: candidates,
-    ineligible: { memory: [], vision: [], direct_pdf: [] }, rerankerCandidates: [], policy: {
-      chatPdfModel: null, chatPdfReasoningEffort: null, reasoningEffort: null,
+  const roles: AdminSystemModelPolicyCatalog = { candidates, titleCandidates: [], documentCandidates: candidates, verificationCandidates: candidates,
+    ineligible: { chat_titles: [], memory: [], vision: [], direct_pdf: [] }, rerankerCandidates: [], policy: {
+      chatTitleModel: null, chatTitleReasoningEffort: null, chatPdfModel: null, chatPdfReasoningEffort: null, reasoningEffort: null,
       rerankerModel: null, systemModel: null, updatedAt: "2026-09-08T12:00:00Z", updatedBy: null, version: 1
     } };
   const search: AdminSearchCatalog = { integrations: [], policy: { defaultPlan: { mode: "all_selected", optionIds: [] }, version: 1, updatedAt: "2026-09-08T12:00:00Z" },
@@ -48,6 +48,19 @@ function fixture() {
 }
 
 describe("provider automatic setup", () => {
+  it.each([false, true])("publishes Anthropic Search only after its check (failure=%s)", async (fails) => {
+    const value = fixture();
+    value.connection.family = "anthropic";
+    value.connection.displayName = "Anthropic";
+    value.search.providerModels = value.search.providerModels.map((model) => ({
+      ...model, connectionDisplayName: "Anthropic", searchKind: "anthropic_web_search"
+    }));
+    if (fails) value.searchCreate.mockRejectedValueOnce(new Error("synthetic_search_failure"));
+    expect(await value.run()).toMatchObject({ search: fails ? "failed" : "ready", state: fails ? "partial" : "completed" });
+    expect(value.searchCreate).toHaveBeenCalledWith(expect.objectContaining({ bootstrap: true, check: true,
+      draft: expect.objectContaining({ protocol: "anthropic_web_search" }) }));
+    expect(value.chatUpdate).toHaveBeenCalledOnce();
+  });
   it("assigns verified OpenRouter helpers and initializes Knowledge with image reading only once", async () => {
     const value = fixture();
     value.connection.family = "openrouter";

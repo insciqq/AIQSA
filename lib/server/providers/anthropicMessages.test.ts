@@ -24,6 +24,19 @@ const mcpTool: RunTool = {
   name: "mem0__search"
 };
 
+describe("Anthropic explicit capability rejection", () => {
+  it.each([true, false])("recognizes only the exact forced-tool rejection (%s)", async (explicit) => {
+    const message = explicit ? 'tool_choice: type "tool" and "any" are not supported for this model.' : "private invalid input";
+    const client = createFetchAnthropicMessagesClient({ apiKey: "synthetic", fetchFn: async () =>
+      Response.json({ type: "error", error: { type: "invalid_request_error", message } }, { status: 400 }) });
+    const failure = await client.createMessage({}).catch((error: Error) => error);
+    if (explicit) expect(failure).toMatchObject({ code: "provider_capability_unsupported", httpStatus: 400,
+      unsupportedCapability: "forcedToolCall" });
+    else expect(failure).not.toHaveProperty("code", "provider_capability_unsupported");
+    expect(String(failure)).not.toContain(message);
+  });
+});
+
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   return {
     attachmentIds: [],

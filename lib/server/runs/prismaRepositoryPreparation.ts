@@ -1,3 +1,4 @@
+import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
 import { assertChatPdfClaim, insertChatPdfAdmissions, storeChatPdfAdmissionResult } from "../uploads/chatPdfPersistence";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
 import { randomUUID } from "node:crypto";
@@ -3672,8 +3673,10 @@ export async function recoverPreparingRunWithClient(
   input: Readonly<{ now: Date; runId: string; userId: string }>,
   memorySourceHooks?: MemorySourceMutationHooks
 ): Promise<PreparingRunRecoveryResult> {
+  if (activeRunControllerRegistry.has(input.runId)) return "deferred";
   const recovered = await prismaClient.$transaction(async (tx) => {
     const run = await lockPreparingRun(tx, input.runId, input.userId);
+    if (activeRunControllerRegistry.has(input.runId)) return "deferred";
     if (!run) return "not_preparing";
     if (run.pdfPreparationRequired) return "deferred";
     if (run.status !== "preparing") {
@@ -3754,8 +3757,17 @@ export async function createDormantPreparingRun(
     );
   }
   if (created.deferredPdf || created.chatMemoryMode === "TEMPORARY") return created;
-  return continuePreparingRunWithClient(prismaClient, admission, created, memoryRetrieval,
-    memoryExecutionAuthority, memorySourceHooks, memoryAdmissionDeadlineAtMs);
+  // Durable acceptance transfers cancellation from the HTTP request to the
+  // run owner. Stop still aborts this controller; recovery sees an active owner
+  // until Memory settlement. PDF preparation already owns its own registration.
+  const registration = activeRunControllerRegistry.register(created.runId);
+  if (!registration) throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
+  try {
+    return await continuePreparingRunWithClient(prismaClient, { ...admission, signal: registration.signal }, created,
+      memoryRetrieval, memoryExecutionAuthority, memorySourceHooks, memoryAdmissionDeadlineAtMs);
+  } finally {
+    registration.release();
+  }
 }
 
 async function continuePreparingRunWithClient(

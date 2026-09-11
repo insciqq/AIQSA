@@ -21,6 +21,7 @@ export function capabilityFailureAttempt(error: unknown, input: {
   const status = candidate.httpStatus ?? candidate.status ?? (fallbackStatus ? Number(fallbackStatus) : undefined);
   const httpStatus = Number.isSafeInteger(status) && Number(status) >= 400 && Number(status) <= 599 ? Number(status) : undefined;
   const explicitUnsupported = code === "provider_capability_unsupported" && (httpStatus === undefined || [400, 404, 405, 415, 422].includes(httpStatus)) &&
+    (candidate.unsupportedCapability === undefined || candidate.unsupportedCapability === input.capability) &&
     (input.capability !== "directPdf" || candidate.unsupportedInput === true);
   // OpenRouter's capability-only 404 follows successful access on the same
   // pinned route; it means no endpoint satisfies this capability contract.

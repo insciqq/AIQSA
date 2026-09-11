@@ -75,31 +75,39 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
       const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", "rerankerProviderModelId",
-        "chatPdfProviderModelId", "chatPdfReasoningEffort", "imageProviderModelId", "imageParameters"];
+        "chatTitleProviderModelId", "chatTitleReasoningEffort", "chatPdfProviderModelId", "chatPdfReasoningEffort", "imageProviderModelId", "imageParameters"];
       const textOrNull = (entry: unknown, limit: number) => entry === null ||
         typeof entry === "string" && entry.trim() === entry && entry.length > 0 && entry.length <= limit &&
         !/[\u0000-\u001f\u007f]/u.test(entry);
       const hasUtilityUpdate = record(value) && Object.hasOwn(value, "providerModelId");
       const hasRerankerUpdate = record(value) && Object.hasOwn(value, "rerankerProviderModelId");
       const hasImageUpdate = record(value) && Object.hasOwn(value, "imageProviderModelId");
+      const hasTitleModelUpdate = record(value) && Object.hasOwn(value, "chatTitleProviderModelId");
       const hasPdfModelUpdate = record(value) && Object.hasOwn(value, "chatPdfProviderModelId");
       if (!record(value) || Object.keys(value).some((key) => !allowed.includes(key)) ||
         !Number.isSafeInteger(value.expectedVersion) || Number(value.expectedVersion) < 1 ||
-        !hasUtilityUpdate && !hasRerankerUpdate && !hasPdfModelUpdate && !hasImageUpdate ||
+        !hasUtilityUpdate && !hasRerankerUpdate && !hasTitleModelUpdate && !hasPdfModelUpdate && !hasImageUpdate ||
         hasImageUpdate !== Object.hasOwn(value, "imageParameters") ||
         hasImageUpdate && (!textOrNull(value.imageProviderModelId, 256) || !record(value.imageParameters)) ||
         hasUtilityUpdate !== Object.hasOwn(value, "reasoningEffort") ||
+        hasTitleModelUpdate !== Object.hasOwn(value, "chatTitleReasoningEffort") ||
+        hasTitleModelUpdate && (!textOrNull(value.chatTitleProviderModelId, 256) || !textOrNull(value.chatTitleReasoningEffort, 32)) ||
         hasPdfModelUpdate !== Object.hasOwn(value, "chatPdfReasoningEffort") ||
         hasUtilityUpdate && (!textOrNull(value.providerModelId, 256) || !textOrNull(value.reasoningEffort, 32)) ||
         hasPdfModelUpdate && (!textOrNull(value.chatPdfProviderModelId, 256) || !textOrNull(value.chatPdfReasoningEffort, 32)) ||
         hasRerankerUpdate && !textOrNull(value.rerankerProviderModelId, 256) ||
         value.providerModelId === null && value.reasoningEffort !== null ||
+        value.chatTitleProviderModelId === null && value.chatTitleReasoningEffort !== null ||
         value.chatPdfProviderModelId === null && value.chatPdfReasoningEffort !== null) {
         return Response.json({ error: "system_model_policy_update_invalid" }, { status: 400 });
       }
       try {
         await input.service.update({
           ...(hasImageUpdate ? { imageProviderModelId: value.imageProviderModelId as string | null, imageParameters: value.imageParameters as ImageGenerationParameters } : {}),
+          ...(hasTitleModelUpdate ? {
+            chatTitleProviderModelId: value.chatTitleProviderModelId as string | null,
+            chatTitleReasoningEffort: value.chatTitleReasoningEffort as string | null
+          } : {}),
           ...(hasPdfModelUpdate ? {
             chatPdfProviderModelId: value.chatPdfProviderModelId as string | null,
             chatPdfReasoningEffort: value.chatPdfReasoningEffort as string | null
@@ -130,7 +138,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
       if (!record(value) || Object.keys(value).length !== 2 ||
-        !["memory", "direct_pdf", "vision", "embedding", "reranker", "image"].includes(String(value.role)) ||
+        !["chat_titles", "memory", "direct_pdf", "vision", "embedding", "reranker", "image"].includes(String(value.role)) ||
         typeof value.providerModelId !== "string" ||
         value.providerModelId.trim() !== value.providerModelId ||
         value.providerModelId.length < 1 || value.providerModelId.length > 256 ||

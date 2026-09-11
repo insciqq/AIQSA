@@ -7,6 +7,7 @@ import { createPrismaAdminProviderRepository } from "./prismaRepository";
 import { createAdminKnowledgeProfileService } from "../knowledge/profileService";
 import { loadInstallationAnswerProviderRole } from "../../providerRuntime/admission";
 import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
+import { createChatTitleModelRoleResolver } from "../../providerRuntime/chatTitleModelRole";
 import { createChatPdfModelRoleResolver } from "../../providerRuntime/chatPdfModelRole";
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
 import { providerSetupModels } from "./setupModels";
@@ -14,7 +15,7 @@ import { providerSetupModels } from "./setupModels";
 afterAll(() => prisma.$disconnect());
 
 async function fixture(run: (input: {
-  db: PrismaClient; adminId: string; memory: string; vision: string; embedding: string; reranker: string;
+  db: PrismaClient; adminId: string; titles: string; memory: string; vision: string; embedding: string; reranker: string;
 }) => Promise<void>) {
   const rolledBack = new Error("fixture_rollback");
   try {
@@ -27,10 +28,10 @@ async function fixture(run: (input: {
       } }) as unknown as PrismaClient;
       const adminId = randomUUID();
       await tx.user.create({ data: { id: adminId, displayName: "Role test administrator", role: "admin", status: "active" } });
-      async function model(purpose: "memory" | "vision" | "embedding" | "reranker") {
+      async function model(purpose: "titles" | "memory" | "vision" | "embedding" | "reranker") {
         const id = randomUUID();
         const family = purpose === "reranker" ? "openrouter" : "openai_compatible";
-        const answer = purpose === "memory" || purpose === "vision";
+        const answer = purpose === "titles" || purpose === "memory" || purpose === "vision";
         const modelClass = purpose === "embedding" ? "embedding" : purpose === "reranker" ? "reranker" : "answer";
         const adapterKind = answer ? "openai_responses_compatible" : purpose === "embedding" ? "openai_embeddings_compatible" : "openrouter_rerank";
         const capabilities = { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false,
@@ -58,9 +59,10 @@ async function fixture(run: (input: {
         const evidence = { method: "tiny_generation", detail: "ok", selectedProviders: purpose === "reranker" ? ["Together"] : [],
           upstreamModelId: configuration.upstreamModelId,
           compatibility: { probeVersion: 1, modelAccess: "verified", streaming: answer ? "verified" : "not_supported",
-            usage: "not_supported", directPdf: "not_supported", structuredOutput: purpose === "memory" ? "verified" : "not_supported",
+            usage: "not_supported", directPdf: "not_supported", structuredOutput: purpose === "memory" || purpose === "titles" ? "verified" : "not_supported",
             forcedToolCall: purpose === "memory" ? "verified" : "not_supported", vision: purpose === "vision" ? "verified" : "not_supported" },
-          ...(purpose === "memory" ? { structuredOutput: { ...proof, probeVersion: 2 }, forcedToolCall: proof } : {}),
+          ...(purpose === "memory" || purpose === "titles" ? { structuredOutput: { ...proof, probeVersion: 2 } } : {}),
+          ...(purpose === "memory" ? { forcedToolCall: proof } : {}),
           ...(purpose === "vision" ? { visionInput: proof } : {}),
           ...(purpose === "embedding" ? { embedding: { probeVersion: 1, document: true, query: true, dimensions: 1024 } } : {}),
           ...(purpose === "reranker" ? { reranking: { probeVersion: 1, completeScores: true } } : {}) };
@@ -69,7 +71,7 @@ async function fixture(run: (input: {
           status: "available", evidence, checkedAt: new Date() } });
         return id;
       }
-      await run({ db, adminId, memory: await model("memory"), vision: await model("vision"),
+      await run({ db, adminId, titles: await model("titles"), memory: await model("memory"), vision: await model("vision"),
         embedding: await model("embedding"), reranker: await model("reranker") });
       await tx.$executeRawUnsafe("SET CONSTRAINTS ALL IMMEDIATE");
       throw rolledBack;
@@ -173,5 +175,38 @@ describe("persisted independent System Model roles", () => {
       await expect(service.update({ expectedVersion: policy.version + 1, chatPdfProviderModelId: vision,
         chatPdfReasoningEffort: null, userId: adminId })).rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
     });
+  });
+});
+
+it("persists a structured-only title assignment, retains admitted identity and preserves an explicit clear", async () => {
+  await fixture(async ({ db, adminId, titles, memory }) => {
+    const service = createAdminSystemModelPolicyService(db);
+    const version = async () => (await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).version;
+    await service.update({ expectedVersion: await version(), providerModelId: memory, reasoningEffort: null, userId: adminId });
+    const priorVersion = await version();
+    await service.update({ expectedVersion: priorVersion, chatTitleProviderModelId: titles, chatTitleReasoningEffort: null, userId: adminId });
+    const admitted = await createChatTitleModelRoleResolver(db).resolve();
+    expect(admitted).toMatchObject({ ok: true, providerModelId: titles, reasoningEffort: null });
+    const catalog = await service.list();
+    expect(catalog.titleCandidates.map((model) => model.id)).toContain(titles);
+    expect(catalog.candidates.map((model) => model.id)).not.toContain(titles);
+    expect(catalog.policy.systemModel?.id).toBe(memory);
+    expect(catalog.policy.chatTitleModel).toMatchObject({ id: titles, available: true });
+    await expect(service.update({ expectedVersion: priorVersion, chatTitleProviderModelId: null, chatTitleReasoningEffort: null, userId: adminId }))
+      .rejects.toMatchObject({ code: "system_model_policy_stale" });
+    await expect(service.update({ expectedVersion: await version(), providerModelId: titles, reasoningEffort: null, userId: adminId }))
+      .rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
+    await expect(service.update({ expectedVersion: await version(), chatTitleProviderModelId: titles, chatTitleReasoningEffort: "max", userId: adminId }))
+      .rejects.toMatchObject({ code: "system_model_policy_reasoning_unavailable" });
+    await service.update({ expectedVersion: await version(), chatTitleProviderModelId: null, chatTitleReasoningEffort: null, userId: adminId });
+    await service.update({ expectedVersion: await version(), providerModelId: memory, reasoningEffort: null, userId: adminId });
+    expect(await createChatTitleModelRoleResolver(db).resolve()).toMatchObject({ ok: false });
+    expect(admitted).toMatchObject({ ok: true, providerModelId: titles });
+    await service.update({ expectedVersion: await version(), chatTitleProviderModelId: titles, chatTitleReasoningEffort: null, userId: adminId });
+    if (!admitted.ok) throw new Error("title_role_not_admitted");
+    await db.providerCredentialVersion.update({ where: { id: admitted.role.snapshot.credentialVersionId! }, data: { revokedAt: new Date() } });
+    expect(await createChatTitleModelRoleResolver(db).resolve()).toMatchObject({ ok: false });
+    expect((await service.list()).policy.chatTitleModel).toMatchObject({ id: titles, available: false });
+    expect(await createSystemModelRoleResolver(db).resolve()).toMatchObject({ ok: true, providerModelId: memory });
   });
 });

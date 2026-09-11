@@ -13,17 +13,11 @@ import {
   KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES
 } from "@/lib/contracts/knowledge";
 import { isMcpReadinessStartable } from "@/lib/contracts/mcp";
-import { SKILL_MAX_SELECTED, type SkillSummary } from "@/lib/contracts/skills";
+import { SkillLibraryDialog } from "@/components/skills/SkillLibraryDialog";
+import { SKILL_MAX_SELECTED } from "@/lib/contracts/skills";
 import { MAX_SEARCH_PLAN_OPTIONS } from "@/lib/domain/search";
-import { useState, type ReactNode } from "react";
-
-function skillScopeLabel(skill: SkillSummary): string {
-  if (skill.owned) return "Yours";
-  if (skill.scope.kind === "workspace") {
-    return skill.scope.workspaceNames.join(", ") || "Shared workspace";
-  }
-  return "Shared with everyone";
-}
+import { useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 function joinedSummary(labels: readonly string[], empty = "None"): string {
   if (labels.length === 0) return empty;
@@ -97,6 +91,8 @@ export function AssistantSetupPanelV2({
   locked: boolean;
 }>) {
   const [openResource, setOpenResource] = useState<"knowledge" | "search" | "skills" | "tools" | null>(null);
+  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+  const skillPickerOpener = useRef<HTMLButtonElement>(null);
   const { draft, options } = editor;
   const selectedModel = options.models.find((model) => model.id === draft.providerModelId) ?? null;
   const selectedKnowledgeBaseIds = draft.knowledgeSelection.baseIds;
@@ -113,7 +109,7 @@ export function AssistantSetupPanelV2({
     options.searchOptions.find((item) => item.id === id)?.label ?? "Unavailable Search source"
   );
   const selectedSkillLabels = draft.skillIds.map((id) =>
-    options.skills.find((item) => item.id === id)?.name ?? "Unavailable Skill"
+    options.selectedSkills.find((item) => item.id === id)?.name ?? "Selected Skill"
   );
   const capabilityLine = selectedModel ? [
     selectedModel.capabilities.reasoning ? "Reasoning" : null,
@@ -151,10 +147,8 @@ export function AssistantSetupPanelV2({
       ? [...draft.searchOptionIds, optionId]
       : draft.searchOptionIds.filter((id) => id !== optionId)
   });
-  const toggleSkill = (skillId: string, checked: boolean) => editor.onChange({
-    skillIds: checked
-      ? [...draft.skillIds, skillId]
-      : draft.skillIds.filter((id) => id !== skillId)
+  const removeSkill = (skillId: string) => editor.onChange({
+    skillIds: draft.skillIds.filter((id) => id !== skillId)
   });
 
   return (
@@ -350,35 +344,29 @@ export function AssistantSetupPanelV2({
           summary={joinedSummary(selectedSkillLabels)}
           onToggle={() => toggleResource("skills")}
         >
-          <ChoiceStateV2
-            error={options.skillDataState === "error" ? options.skillDataError ?? "Skills did not load." : null}
-            loading={options.skillDataState === "loading"}
-            onRetry={options.onRetrySkills}
-            resource="Skills"
-          />
+          <UiV2Button ref={skillPickerOpener} disabled={locked} onClick={() => setSkillPickerOpen(true)}>Browse Skills</UiV2Button>
           <fieldset>
             <legend>Included Skills</legend>
-            {options.skills.length === 0 && options.skillDataState === "ready" ? <p>No Skills are available.</p> : null}
-            {options.skills.map((skill) => {
-              const checked = draft.skillIds.includes(skill.id);
-              const available = !skill.archived;
+            {draft.skillIds.length === 0 ? <p>No Skills selected.</p> : null}
+            {draft.skillIds.map((id, index) => {
+              const name = selectedSkillLabels[index]!;
               return (
-                <label key={skill.id}>
+                <label key={id}>
                   <input
-                    checked={checked}
-                    disabled={locked || (!checked && (!available || draft.skillIds.length >= SKILL_MAX_SELECTED))}
+                    checked
+                    disabled={locked}
                     type="checkbox"
-                    onChange={(event) => toggleSkill(skill.id, event.currentTarget.checked)}
+                    onChange={() => removeSkill(id)}
                   />
                   <span>
-                    {skill.name}{available ? "" : " · unavailable"}
-                    <small>{skillScopeLabel(skill)}{checked ? ` · order ${draft.skillIds.indexOf(skill.id) + 1}` : ""}</small>
+                    {name}
+                    <small>Order {index + 1}</small>
                   </span>
                 </label>
               );
             })}
           </fieldset>
-          <small>Skills run in the order selected.</small>
+          <small>{draft.skillIds.length} of {SKILL_MAX_SELECTED} Skills selected. Skills run in the order selected.</small>
         </SetupRowV2>
       </div>
 
@@ -386,6 +374,9 @@ export function AssistantSetupPanelV2({
         <UiV2Icon name="lock" />
         <span>Only models and tools you can use yourself are offered here. If your access changes later, the assistant says so before you run it.</span>
       </p>
+      {skillPickerOpen ? createPortal(<SkillLibraryDialog selectedIds={draft.skillIds} selectedSkills={options.selectedSkills}
+        onSelectionChange={(ids) => { if (!locked) editor.onChange({ skillIds: [...ids] }); }}
+        onClose={() => setSkillPickerOpen(false)} restoreFocus={() => skillPickerOpener.current} />, document.body) : null}
     </aside>
   );
 }

@@ -32,7 +32,7 @@ import type {
   ChatWorkspaceState,
   WorkspaceUnavailableReason
 } from "@/lib/contracts/workspace";
-import { SKILL_MAX_SELECTED } from "@/lib/contracts/skills";
+import { resolveEffectiveSkillIds, SKILL_MAX_SELECTED } from "@/lib/contracts/skills";
 import type {
   ComposerConfig,
   ComposerConfigKnowledgeBase,
@@ -65,7 +65,7 @@ import {
   type CSSProperties
 } from "react";
 
-export type ComposerV2Layer = "add" | "files" | "knowledge" | "model" | "search" | "tools" | null;
+export type ComposerV2Layer = "add" | "files" | "knowledge" | "model" | "search" | "tools" | "workspace" | null;
 
 /**
  * Imperative handle for openers outside the composer (the header model
@@ -83,6 +83,7 @@ const LAYER_LABELS: Record<Exclude<ComposerV2Layer, null>, string> = {
   knowledge: "Knowledge",
   model: "Choose model",
   search: "Web search",
+  workspace: "Workspace",
   tools: "MCP tools"
 };
 const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
@@ -91,6 +92,7 @@ const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
   knowledge: "Knowledge",
   model: "Model",
   search: "Web search",
+  workspace: "Workspace",
   tools: "MCP tools"
 };
 /* Desktop popover widths (see composer.css) used to keep a chip-anchored layer
@@ -101,6 +103,7 @@ const LAYER_WIDTH_PX: Record<Exclude<ComposerV2Layer, null>, number> = {
   knowledge: 380,
   model: 380,
   search: 330,
+  workspace: 340,
   tools: 340
 };
 const SEARCH_PROVIDER_FAMILY_NAMES: Readonly<Record<string, string>> = {
@@ -231,7 +234,6 @@ export type ComposerV2Props = Readonly<{
   onSelectModel?(model: CatalogModel): void;
   onSelectMcp?(selection: McpRunSelection): void;
   onSelectSearchOptionIds?(optionIds: readonly string[]): void;
-  onSelectSkillIds?(skillIds: readonly string[]): void;
   onSend?(): void;
   onStop?(runId: string): void;
   /** Keyboard contract: Enter sends (default), or inserts a newline while Ctrl/⌘+Enter sends. */
@@ -413,7 +415,6 @@ export function ComposerV2({
   onSelectMcp,
   onSelectModel,
   onSelectSearchOptionIds,
-  onSelectSkillIds,
   onSend,
   onStop,
   onUploadFiles,
@@ -487,12 +488,15 @@ export function ComposerV2({
   const readyAttachment = hasReadyAttachments || attachmentItems.some(
     (item) => !attachmentItemBlocksSend(item)
   );
+  const effectiveSkillIds = resolveEffectiveSkillIds((selectedAssistant?.includedSkills ?? []).map(({ id }) => id), selectedSkillIds);
+  const skillLimitReason = effectiveSkillIds.length > SKILL_MAX_SELECTED
+    ? `Choose at most ${SKILL_MAX_SELECTED} Skills. Remove manual selections or change the Assistant before sending.` : null;
   const sendDisabled = Boolean(
-    sending || inputDisabled || attachmentBlockReason || (!draft.trim() && !readyAttachment)
+    sending || inputDisabled || attachmentBlockReason || skillLimitReason || (!draft.trim() && !readyAttachment)
   );
   const sendDisabledReason = sending
     ? "Sending message…"
-    : bootstrapReason ?? attachmentBlockReason ??
+    : bootstrapReason ?? attachmentBlockReason ?? skillLimitReason ??
       (!draft.trim() && !readyAttachment ? "Type a message." : null);
 
   const attachmentAccept = attachmentAcceptForPolicy(attachmentPolicy);
@@ -567,14 +571,6 @@ export function ComposerV2({
     : null;
   const explicitSelectionAtLimit = selectedKnowledgeResourceCount >=
     KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES;
-  const availableSkills = (config?.skills ?? []).filter((skill) => !skill.archived);
-  const selectedSkillSet = new Set(selectedSkillIds);
-  const selectedSkillNames = selectedSkillIds.map((id) =>
-    selectedSkills.find((skill) => skill.id === id)?.name ??
-    availableSkills.find((skill) => skill.id === id)?.name ??
-    "Selected Skill"
-  );
-  const assistantSkills = selectedAssistant?.includedSkills ?? [];
 
   const groupedModels = useMemo(() => {
     const normalizedQuery = modelQuery.trim().toLocaleLowerCase();
@@ -720,17 +716,29 @@ export function ComposerV2({
   useEffect(() => {
     onLayerChangeRef.current?.(layer);
   }, [layer]);
-  // An externally anchored layer follows its anchor across viewport resizes.
+  // Follow the actual control when wrapping or resizing moves its anchor.
   const externallyAnchored = externalAnchor !== null;
   useEffect(() => {
-    if (!layer || !externallyAnchored) return;
-    const kind = layer;
+    if (!layer) return;
     const reposition = () => {
       const opener = openerRef.current;
-      if (opener) setExternalAnchor(externalLayerAnchor(opener, kind));
+      const composer = composerRef.current;
+      if (!opener || !composer) return;
+      if (externallyAnchored) setExternalAnchor(externalLayerAnchor(opener, layer));
+      else {
+        setLayerLeft(layerAnchorLeft(opener, composer, layer));
+        const box = composer.getBoundingClientRect();
+        const owner = composer.closest(".v2-conversation-scroll")?.getBoundingClientRect();
+        const above = Math.max(0, box.top - (owner?.top ?? 0));
+        const below = Math.max(0, (owner?.bottom ?? window.innerHeight) - box.bottom);
+        setLayerPlacement({ below: above < LAYER_PREFERRED_PX && below > above,
+          spaceAbove: Math.round(above), spaceBelow: Math.round(below) });
+      }
     };
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reposition);
+    if (composerRef.current) observer?.observe(composerRef.current);
     window.addEventListener("resize", reposition);
-    return () => window.removeEventListener("resize", reposition);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", reposition); };
   }, [externallyAnchored, layer]);
   const portalLayer = (node: ReactNode) =>
     externalAnchor && typeof document !== "undefined" ? createPortal(node, document.body) : node;
@@ -901,16 +909,6 @@ export function ComposerV2({
     onSelectMcp({ mode });
   }
 
-  function toggleSkill(skillId: string) {
-    if (!onSelectSkillIds) return;
-    const next = selectedSkillSet.has(skillId)
-      ? selectedSkillIds.filter((id) => id !== skillId)
-      : selectedSkillIds.length < SKILL_MAX_SELECTED
-        ? [...selectedSkillIds, skillId]
-        : selectedSkillIds;
-    onSelectSkillIds(next);
-  }
-
   // The Knowledge chip is a permanent entry into its picker whenever anything
   // can be selected; the Assistant-locked state keeps only a selected label.
   const knowledgeAvailable = Boolean(onSelectKnowledgeSelection || onSelectKnowledgeBaseIds) && (
@@ -1030,42 +1028,7 @@ export function ComposerV2({
             </span>
           </div>
         ) : null}
-        {selectedAssistant && (assistantSkills.length > 0 || selectedSkillNames.length > 0) ? (
-          <div className="v2-composer-skill-ledger" data-testid="composer-v2-skill-ledger">
-            {assistantSkills.length > 0 ? (
-              <div>
-                <strong>Included by Assistant</strong>
-                <ol>
-                  {assistantSkills.map((skill, index) => (
-                    <li key={skill.id}>{index + 1}. {skill.name}</li>
-                  ))}
-                </ol>
-              </div>
-            ) : null}
-            {selectedSkillNames.length > 0 ? (
-              <div>
-                <span className="v2-composer-skill-ledger-heading">
-                  <strong>Added manually</strong>
-                  {onOpenSkillLibrary ? (
-                    <button
-                      className="v2-focusable"
-                      disabled={activeRun}
-                      type="button"
-                      onClick={onOpenSkillLibrary}
-                    >
-                      Manage
-                    </button>
-                  ) : null}
-                </span>
-                <ol>
-                  {selectedSkillNames.map((name, index) => (
-                    <li key={selectedSkillIds[index]}>{index + 1}. {name}</li>
-                  ))}
-                </ol>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
+        {skillLimitReason ? <p className="v2-composer-status" role="alert">{skillLimitReason}</p> : null}
         {assistantRemovedNotice && !selectedAssistant ? (
           <div
             className="v2-composer-status"
@@ -1138,50 +1101,24 @@ export function ComposerV2({
           <div className="v2-composer-indicators" aria-label="Active capabilities">
             {workspace ? (
               <button
-                aria-label={workspace.enabled
-                  ? `Turn off Workspace. ${workspaceStatusCopy(
-                      workspace.sessionState,
-                      Boolean(workspace.commandRunning)
-                    )}${workspaceToggleReason ? `. ${workspaceToggleReason}` : ""}`
-                  : `Turn on Workspace${workspaceToggleReason ? `. ${workspaceToggleReason}` : ""}`}
-                aria-pressed={workspace.enabled}
+                aria-label={`Workspace details. ${workspace.enabled ? "On" : "Off"}. ${workspaceStatusCopy(workspace.sessionState, Boolean(workspace.commandRunning))}`}
+                aria-controls={`${layerId}-workspace`} aria-expanded={layer === "workspace"} aria-haspopup="menu"
                 className="v2-composer-indicator v2-composer-workspace-toggle v2-focusable"
-                data-glyph="tool"
-                data-quiet={workspace.enabled ? undefined : ""}
-                data-workspace-state={workspace.sessionState ?? "off"}
-                disabled={workspaceToggleDisabled}
-                title={workspaceToggleReason ?? (workspace.enabled
-                  ? "Turn off Workspace for future messages. Existing files are preserved."
-                  : "Turn on a private workspace for this chat.")}
-                type="button"
-                onClick={() => workspace.onToggle(!workspace.enabled)}
+                data-glyph="monitor" data-quiet={workspace.enabled ? undefined : ""}
+                data-workspace-state={workspace.commandRunning ? "running" : workspace.sessionState ?? "off"}
+                title={workspaceStatusCopy(workspace.sessionState, Boolean(workspace.commandRunning))}
+                type="button" onClick={(event) => openLayer("workspace", event.currentTarget)}
               >
                 <span aria-hidden="true" />
-                <UiV2Icon className="v2-composer-indicator-glyph" name="tool" />
+                <UiV2Icon className="v2-composer-indicator-glyph" name="monitor" />
                 <span className="v2-composer-indicator-label">
-                  Workspace: {workspace.busy ? "Saving…" : workspace.enabled ? "On" : "Off"}
+                  Workspace: {workspace.busy ? "Saving…" : workspace.commandRunning ? "Running"
+                    : workspace.sessionState === "failed" ? "Unavailable" : workspace.enabled ? "On" : "Off"}
                 </span>
+                {workspace.sessionState === "failed" || workspace.commandRunning ? (
+                  <small aria-hidden="true" className="v2-composer-workspace-signal">{workspace.sessionState === "failed" ? "!" : "•"}</small>
+                ) : null}
               </button>
-            ) : null}
-            {workspace?.enabled ? (
-              <span
-                className="v2-composer-workspace-state"
-                data-state={workspace.commandRunning ? "running" : workspace.sessionState ?? "not_started"}
-                role="status"
-              >
-                <span aria-hidden="true" />
-                {workspaceStatusCopy(workspace.sessionState, Boolean(workspace.commandRunning))}
-              </span>
-            ) : null}
-            {workspace?.enabled && workspace.internetEnabled !== null ? (
-              <span
-                aria-label={`Internet in Workspace is ${workspace.internetEnabled ? "enabled" : "disabled"}`}
-                className="v2-composer-workspace-internet"
-                title="This setting is managed by the administrator and applies to this environment."
-              >
-                <UiV2Icon name="globe" />
-                Internet: {workspace.internetEnabled ? "On" : "Off"}
-              </span>
             ) : null}
             {searchChipVisible ? (
               <span className="v2-composer-indicator-group">
@@ -1296,7 +1233,7 @@ export function ComposerV2({
               </button>
             ) : null}
             {mcpAttentionLabel ? <span className="v2-sr-only" id={`${layerId}-mcp-attention`}>{mcpAttentionLabel}</span> : null}
-            {selectedSkillIds.length > 0 ? (
+            {effectiveSkillIds.length > 0 ? (
               <button
                 className="v2-composer-indicator v2-focusable"
                 type="button"
@@ -1304,7 +1241,7 @@ export function ComposerV2({
                 aria-label="Manage selected Skills"
                 onClick={onOpenSkillLibrary}
               >
-                <span aria-hidden="true" />Skills: {selectedSkillIds.length}
+                <span aria-hidden="true" />Skills: {effectiveSkillIds.length}
               </button>
             ) : null}
           </div>
@@ -1356,7 +1293,18 @@ export function ComposerV2({
                 <UiV2IconButton icon="close" label="Close" onClick={closeLayer} />
               </header>
 
-              {layer === "model" ? (
+              {layer === "workspace" && workspace ? (
+                <div className="v2-composer-layer-scroll">
+                  <p className="v2-composer-layer-title">Workspace</p>
+                  <CapabilityRow selected={workspace.enabled} disabled={workspaceToggleDisabled}
+                    reason={workspaceToggleReason ?? (activeRun ? "A response is running." : "Applies to future messages. Existing files are preserved.")}
+                    onClick={() => workspace.onToggle(!workspace.enabled)}>
+                    {workspace.enabled ? "Turn off Workspace" : "Turn on Workspace"}
+                  </CapabilityRow>
+                  <p className="v2-composer-layer-note" role="status">{workspaceStatusCopy(workspace.sessionState, Boolean(workspace.commandRunning))}</p>
+                  <p className="v2-composer-layer-note">Internet: {workspace.internetEnabled === null ? "Not configured" : workspace.internetEnabled ? "On" : "Off"}. Managed by the administrator.</p>
+                </div>
+              ) : layer === "model" ? (
                 <ModelLayer
                   config={config}
                   groups={groupedModels}
@@ -1807,9 +1755,9 @@ export function ComposerV2({
                   <CapabilityRow
                     icon="wand"
                     disabled={activeRun || !onOpenSkillLibrary}
-                    reason={selectedSkillIds.length === 0
+                    reason={effectiveSkillIds.length === 0
                       ? "Reusable text instructions"
-                      : `${selectedSkillIds.length} selected${selectedSkills.length > 0
+                      : `${effectiveSkillIds.length} selected${selectedSkills.length > 0
                         ? ` · ${selectedSkills.map((skill) => skill.name).join(", ")}`
                         : ""}`}
                     selectionRole="item"

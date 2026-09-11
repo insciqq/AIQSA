@@ -17,20 +17,21 @@ const base = {
 const luna = { ...base, displayName: "GPT Luna", id: "luna" };
 const terra = { ...base, displayName: "GPT Terra", forcedToolCall: "not_verified" as const, id: "terra", structuredOutput: "not_verified" as const };
 const claude = { ...base, connectionDisplayName: "Anthropic", connectionId: "anthropic", displayName: "Claude", forcedToolCall: "unsupported" as const, id: "claude", structuredOutput: "unsupported" as const };
+const titleModel = { ...luna, displayName: "Small title model", id: "title-model", forcedToolCall: "unsupported" as const, reasoningEfforts: ["none", "low", "medium"] };
 const voyage = { connectionDisplayName: "OpenRouter", connectionId: "openrouter", displayName: "Voyage Rerank", id: "voyage" };
 const cohere = { ...voyage, displayName: "Cohere 4 Pro", id: "cohere" };
 
 function rolesCatalog(): AdminSystemModelPolicyCatalog {
   return {
     candidates: [luna],
-    documentCandidates: [],
-    ineligible: {
+    titleCandidates: [titleModel], documentCandidates: [],
+    ineligible: { chat_titles: [],
       direct_pdf: [],
       memory: [{ ...terra, reason: "not_checked" }, { ...claude, reason: "adapter_unsupported" }],
       vision: [{ ...luna, reason: "not_checked" }, { ...terra, reason: "not_checked" }, { ...claude, reason: "adapter_unsupported" }]
     },
     policy: {
-      chatPdfModel: null, chatPdfReasoningEffort: null, reasoningEffort: null,
+      chatTitleModel: null, chatTitleReasoningEffort: null, chatPdfModel: null, chatPdfReasoningEffort: null, reasoningEffort: null,
       rerankerModel: { ...voyage, available: true },
       rerankerRoute: {
         entries: [
@@ -129,7 +130,7 @@ function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSetti
         if (body.expectedVersion !== roles.policy.version) {
           return Response.json({ error: "system_model_policy_stale" }, { status: 409 });
         }
-        const pick = (id: unknown) => [...roles.candidates, ...roles.verificationCandidates].find((item) => item.id === id) ?? null;
+        const pick = (id: unknown) => [...roles.titleCandidates, ...roles.candidates, ...roles.verificationCandidates].find((item) => item.id === id) ?? null;
         roles = { ...roles, policy: {
           ...roles.policy, version: roles.policy.version + 1,
           ...(Object.hasOwn(body, "providerModelId") ? {
@@ -138,6 +139,10 @@ function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSetti
           } : {}),
           ...(Object.hasOwn(body, "rerankerProviderModelId") ? {
             rerankerModel: body.rerankerProviderModelId ? { ...roles.rerankerCandidates.find((item) => item.id === body.rerankerProviderModelId)!, available: true } : null
+          } : {}),
+          ...(Object.hasOwn(body, "chatTitleProviderModelId") ? {
+            chatTitleModel: body.chatTitleProviderModelId ? { ...pick(body.chatTitleProviderModelId)!, available: true } : null,
+            chatTitleReasoningEffort: body.chatTitleReasoningEffort as string | null
           } : {}),
           ...(Object.hasOwn(body, "chatPdfProviderModelId") ? {
             chatPdfModel: body.chatPdfProviderModelId ? { ...pick(body.chatPdfProviderModelId)!, available: true } : null,
@@ -546,4 +551,33 @@ describe("AdminRolesSection", () => {
     expect(trigger).toHaveTextContent("OpenAI / GPT Luna");
     expect(calls.filter((call) => call.method === "PATCH")).toHaveLength(0);
   });
+});
+
+it("saves, changes reasoning, clears and undoes Chat titles independently", async () => {
+  const calls = server();
+  const { reportNotice } = renderSection();
+  const picker = await screen.findByRole("button", { name: "Chat titles deployment" });
+  expect(screen.getByTestId("admin-role-chat-titles-status")).toHaveTextContent("Not assigned");
+  fireEvent.click(picker);
+  fireEvent.click(screen.getByRole("option", { name: /Small title model/ }));
+  await waitFor(() => expect(picker).toHaveTextContent("Small title model"));
+  fireEvent.click(within(screen.getByTestId("admin-role-chat-titles")).getByText("Advanced"));
+  const reasoning = screen.getByRole("combobox", { name: "Chat titles reasoning" });
+  expect(reasoning).toHaveValue("none");
+  fireEvent.change(reasoning, { target: { value: "low" } });
+  await waitFor(() => expect(reasoning).toHaveValue("low"));
+  await waitFor(() => expect(reasoning).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "Chat titles actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Clear assignment" }));
+  await waitFor(() => expect(screen.getByTestId("admin-role-chat-titles-status")).toHaveTextContent("Not assigned"));
+  reportNotice.mock.calls.at(-1)![1]!.onSelect();
+  await waitFor(() => expect(picker).toHaveTextContent("Small title model"));
+  expect(reasoning).toHaveValue("low");
+  expect(screen.getByRole("button", { name: "System model deployment" })).toHaveTextContent("GPT Luna");
+  expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
+    { expectedVersion: 1, chatTitleProviderModelId: "title-model", chatTitleReasoningEffort: "none" },
+    { expectedVersion: 2, chatTitleProviderModelId: "title-model", chatTitleReasoningEffort: "low" },
+    { expectedVersion: 3, chatTitleProviderModelId: null, chatTitleReasoningEffort: null },
+    { expectedVersion: 4, chatTitleProviderModelId: "title-model", chatTitleReasoningEffort: "low" }
+  ]);
 });

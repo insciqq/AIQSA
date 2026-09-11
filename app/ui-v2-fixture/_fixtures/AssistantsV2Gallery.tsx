@@ -185,11 +185,8 @@ export function AssistantsV2Gallery({
         supportsTools: true
       }],
       onRetryKnowledge: () => undefined,
-      onRetrySkills: () => undefined,
       searchOptions: [{ id: "web", label: "Web Search" }],
-      skillDataError: null,
-      skillDataState: "ready",
-      skills: []
+      selectedSkills: []
     },
     publications: [],
     publishableGroups: [{ id: "group-platform", name: "Platform team" }],

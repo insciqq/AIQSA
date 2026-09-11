@@ -1,7 +1,7 @@
 import type { AdminModelDefaultCandidate } from "./adminModelPolicy";
 import { normalizeImageModelConfiguration, normalizeImageGenerationParameters, type ImageModelConfiguration, type ImageGenerationParameters } from "./imageGeneration";
 
-export type SystemModelVerificationRole = "memory" | "direct_pdf" | "vision" | "embedding" | "reranker" | "image";
+export type SystemModelVerificationRole = "chat_titles" | "memory" | "direct_pdf" | "vision" | "embedding" | "reranker" | "image";
 
 export type AdminImageModelCandidate = AdminModelDefaultCandidate & {
   upstreamModelId: string;
@@ -40,9 +40,10 @@ export const ADMIN_SYSTEM_MODEL_INELIGIBILITY_REASONS: readonly AdminSystemModel
   "not_checked"
 ];
 
-export type AdminSystemModelEligibilityRole = "direct_pdf" | "memory" | "vision";
+export type AdminSystemModelEligibilityRole = "chat_titles" | "direct_pdf" | "memory" | "vision";
 
 export const ADMIN_SYSTEM_MODEL_ELIGIBILITY_ROLES: readonly AdminSystemModelEligibilityRole[] = [
+  "chat_titles",
   "memory",
   "vision",
   "direct_pdf"
@@ -62,6 +63,7 @@ export type AdminRerankerRouteEntry = AdminRerankerModelCandidate & {
 
 export type AdminSystemModelPolicyCatalog = {
   candidates: AdminSystemModelCandidate[];
+  titleCandidates: AdminSystemModelCandidate[];
   documentCandidates: AdminSystemModelCandidate[];
   verificationCandidates: AdminSystemModelCandidate[];
   /** Every answer deployment that is not ready for the role, with the reason. */
@@ -71,6 +73,8 @@ export type AdminSystemModelPolicyCatalog = {
   policy: {
     imageModel?: (AdminImageModelCandidate & { available: boolean }) | null;
     imageParameters?: ImageGenerationParameters;
+    chatTitleModel: (AdminSystemModelCandidate & { available: boolean }) | null;
+    chatTitleReasoningEffort: string | null;
     chatPdfModel: (AdminSystemModelCandidate & { available: boolean }) | null;
     chatPdfReasoningEffort: string | null;
     rerankerModel: (AdminRerankerModelCandidate & { available: boolean }) | null;
@@ -147,7 +151,7 @@ function ineligibleCandidate(value: unknown): value is AdminSystemModelIneligibl
 function decodeIneligible(
   value: unknown
 ): AdminSystemModelPolicyCatalog["ineligible"] | null {
-  const empty: AdminSystemModelPolicyCatalog["ineligible"] = { direct_pdf: [], memory: [], vision: [] };
+  const empty: AdminSystemModelPolicyCatalog["ineligible"] = { chat_titles: [], direct_pdf: [], memory: [], vision: [] };
   if (value === undefined) return empty;
   if (!record(value)) return null;
   for (const role of ADMIN_SYSTEM_MODEL_ELIGIBILITY_ROLES) {
@@ -168,6 +172,8 @@ export function decodeAdminSystemModelPolicyResponse(
   if (!ineligible) return null;
   if (!Array.isArray(catalog.candidates) || !catalog.candidates.every((value) =>
       candidate(value) && value.structuredOutput === "verified" && value.forcedToolCall === "verified") ||
+    !Array.isArray(catalog.titleCandidates) || !catalog.titleCandidates.every((value) =>
+      candidate(value) && value.structuredOutput === "verified") ||
     !Array.isArray(catalog.documentCandidates) || !catalog.documentCandidates.every((value) =>
       candidate(value) && (value.pdfInput === "verified" || value.visionInput === "verified")) ||
     !Array.isArray(catalog.verificationCandidates) || !catalog.verificationCandidates.every(candidate) ||
@@ -188,7 +194,11 @@ export function decodeAdminSystemModelPolicyResponse(
   const rerankerModel = policy.rerankerModel;
   const rerankerRoute = policy.rerankerRoute;
   const updatedBy = policy.updatedBy;
-  if ((policy.chatPdfModel !== null && (!record(policy.chatPdfModel) ||
+  if ((policy.chatTitleModel !== null && (!record(policy.chatTitleModel) ||
+      typeof policy.chatTitleModel.available !== "boolean" || !candidate(policy.chatTitleModel))) ||
+    !(policy.chatTitleReasoningEffort === null || boundedText(policy.chatTitleReasoningEffort, 32)) ||
+    (policy.chatTitleModel === null && policy.chatTitleReasoningEffort !== null) ||
+    (policy.chatPdfModel !== null && (!record(policy.chatPdfModel) ||
       typeof policy.chatPdfModel.available !== "boolean" || !candidate(policy.chatPdfModel))) ||
     !(policy.chatPdfReasoningEffort === null || boundedText(policy.chatPdfReasoningEffort, 32)) ||
     (policy.chatPdfModel === null && policy.chatPdfReasoningEffort !== null) ||
@@ -219,6 +229,7 @@ export function decodeAdminSystemModelPolicyResponse(
   return {
     systemModelPolicy: {
       candidates: catalog.candidates,
+      titleCandidates: catalog.titleCandidates,
       documentCandidates: catalog.documentCandidates,
       verificationCandidates: catalog.verificationCandidates,
       ineligible,
@@ -227,6 +238,8 @@ export function decodeAdminSystemModelPolicyResponse(
       policy: {
         imageModel: (policy.imageModel ?? null) as AdminSystemModelPolicyCatalog["policy"]["imageModel"],
         imageParameters: (policy.imageParameters ?? {}) as ImageGenerationParameters,
+        chatTitleModel: policy.chatTitleModel as AdminSystemModelPolicyCatalog["policy"]["chatTitleModel"],
+        chatTitleReasoningEffort: policy.chatTitleReasoningEffort as string | null,
         chatPdfModel: policy.chatPdfModel as AdminSystemModelPolicyCatalog["policy"]["chatPdfModel"],
         chatPdfReasoningEffort: policy.chatPdfReasoningEffort as string | null,
         reasoningEffort: reasoningEffort as string | null,
@@ -245,4 +258,9 @@ export function decodeAdminSystemModelPolicyResponse(
       }
     }
   };
+}
+
+/** Select only an advertised way to disable optional reasoning for new title assignments. */
+export function initialChatTitleReasoningEffort(model: Pick<AdminSystemModelCandidate, "reasoningEfforts"> | undefined): string | null {
+  return model?.reasoningEfforts.includes("none") ? "none" : null;
 }

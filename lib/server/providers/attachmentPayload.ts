@@ -1,4 +1,5 @@
 import { estimateApproxTokens } from "../../domain/contextBudget";
+import { pdfPageCountFromMetadata } from "../../contracts/uploads";
 import type { ProviderAttachment, ProviderModelCapabilities } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -73,8 +74,8 @@ function imageProxyTokens(attachment: ProviderAttachment): number {
 }
 
 function nativePdfProxyTokens(attachment: ProviderAttachment): number {
-  const pdf = metadataRecord(attachment, "pdf");
-  const pageCount = numberValue(pdf.pageCount);
+  const pageCount = pdfPageCountFromMetadata(attachment.metadata)
+    ?? pdfPageCountFromMetadata({ pdfPageCount: metadataRecord(attachment, "pdf").pageCount });
   const extractedTextTokens = attachment.extractedText?.trim()
     ? estimateApproxTokens(attachment.extractedText)
     : 0;

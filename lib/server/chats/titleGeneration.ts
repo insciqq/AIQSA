@@ -1,70 +1,48 @@
 import type { PrismaClient } from "@prisma/client";
-import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { prisma } from "../prisma";
-import type { ProviderAdmissionRole } from "../providerRuntime/admission";
-import { createAcceptedStructuredOutputExecutor } from "../providerRuntime/structuredOutputExecutor";
-import {
-  createSystemModelRoleResolver,
-  type SystemModelRoleResolution
-} from "../providerRuntime/systemModelRole";
-import type {
-  ProviderStructuredOutputOptions,
-  ProviderStructuredOutputRequest
-} from "../providers/structuredOutput";
+import { normalizeProviderExecutionSnapshot, type ProviderExecutionSnapshot } from "../providers/runtimeFactory";
+import { type SystemModelRoleResolution } from "../providerRuntime/systemModelRole";
+import { createChatTitleModelRoleResolver } from "../providerRuntime/chatTitleModelRole";
+import type { ProviderStructuredOutputRequest } from "../providers/structuredOutput";
+import { createChatTitleRepository } from "./titleGenerationRepository";
 import { messageTextFromContent, titleFromMessageContent } from "./titlePolicy";
-
-/*
- * Generated chat titles (UX audit 2026-09-02 #4). After the first completed
- * answer the installation System Model writes a short title from the
- * question and the answer; until then, and whenever no System Model is
- * configured or the call fails, the heuristic title from `titlePolicy` stays.
- * The update is guarded: a chat the user has already renamed keeps its name.
- * Usage is reported back to the caller so the run persists it with its own
- * provider-reported accounting (CRITICAL_INVARIANTS §4).
- */
 
 export const CHAT_TITLE_MAX_LENGTH = 56;
 export const CHAT_TITLE_GENERATION_TIMEOUT_MS = 8_000;
+export const CHAT_TITLE_QUEUE_TTL_MS = 300_000;
 const QUESTION_EXCERPT_LENGTH = 1_200;
 const ANSWER_EXCERPT_LENGTH = 1_600;
 
 export type ChatTitleGenerationContext = Readonly<{
   answerText: string;
   chatId: string;
+  runId: string;
   userId: string;
   userMessageId: string;
 }>;
 
-export type ChatTitleUsageAttribution = Readonly<{
-  modelId: string;
-  provider: string;
-  usage: ModelRunUsage;
-}>;
-
-export type ChatTitleGenerationOutcome =
-  | Readonly<{ status: "generated"; title: string; usage: ChatTitleUsageAttribution | null }>
-  | Readonly<{
-      reason:
-        | "empty_output"
-        | "not_first_turn"
-        | "system_model_absent"
-        | "system_model_unsupported"
-        | "title_customized";
-      status: "skipped";
-    }>
-  | Readonly<{ status: "failed"; usage: ChatTitleUsageAttribution | null }>;
-
-export type ChatTitleGenerator = Readonly<{
-  generate(
-    context: ChatTitleGenerationContext,
-    options?: Readonly<{ signal?: AbortSignal }>
-  ): Promise<ChatTitleGenerationOutcome>;
-}>;
-
 export type ChatTitleGenerationTurn = Readonly<{
-  /** The heuristic title the chat must still carry for the update to apply. */
   expectedTitle: string;
   questionText: string;
+  titleRevision: number;
+}>;
+
+export type ChatTitleWork = Readonly<{
+  answerText: string;
+  chatId: string;
+  expectedTitle: string;
+  providerSnapshot: ProviderExecutionSnapshot;
+  questionText: string;
+  reasoningEffort: string | null;
+  runId: string;
+  titleRevision: number;
+  userId: string;
+}>;
+
+/** Admission is local durable work only. The application worker owns provider
+ * execution after the originating answer reaches successful completion. */
+export type ChatTitleGenerator = Readonly<{
+  schedule(context: ChatTitleGenerationContext): Promise<void>;
 }>;
 
 function excerpt(value: string, limit: number): string {
@@ -126,76 +104,31 @@ export function buildChatTitleRequest(input: Readonly<{
 }
 
 export function createChatTitleGenerator(deps: Readonly<{
-  applyTitle(input: Readonly<{
-    chatId: string;
-    expectedTitle: string;
-    title: string;
-    userId: string;
-  }>): Promise<boolean>;
-  executeStructuredOutput(
-    role: ProviderAdmissionRole,
-    request: ProviderStructuredOutputRequest,
-    options: ProviderStructuredOutputOptions
-  ): Promise<Record<string, unknown>>;
+  enqueue(work: ChatTitleWork): Promise<void>;
   loadFirstTurn(context: ChatTitleGenerationContext): Promise<ChatTitleGenerationTurn | "customized" | null>;
-  resolveSystemModel(): Promise<SystemModelRoleResolution>;
-  timeoutMs?: number;
+  resolveTitleModel(): Promise<SystemModelRoleResolution>;
 }>): ChatTitleGenerator {
-  const timeoutMs = deps.timeoutMs ?? CHAT_TITLE_GENERATION_TIMEOUT_MS;
   return Object.freeze({
-    async generate(context, options = {}) {
-      let usage: ChatTitleUsageAttribution | null = null;
-      try {
-        const turn = await deps.loadFirstTurn(context);
-        if (turn === null) return { reason: "not_first_turn", status: "skipped" };
-        if (turn === "customized") return { reason: "title_customized", status: "skipped" };
-        const resolution = await deps.resolveSystemModel();
-        if (!resolution.ok) return { reason: "system_model_absent", status: "skipped" };
-        if (resolution.role.modelConfiguration.capabilities.structuredOutput !== true) {
-          return { reason: "system_model_unsupported", status: "skipped" };
-        }
-        const provider = resolution.role.snapshot.providerFamily;
-        const modelId = resolution.role.snapshot.providerModelId;
-        const output = await deps.executeStructuredOutput(
-          resolution.role,
-          buildChatTitleRequest({
-            answerText: context.answerText,
-            questionText: turn.questionText,
-            reasoningEffort: resolution.reasoningEffort
-          }),
-          {
-            onUsage: (value) => { usage = { modelId, provider, usage: value }; },
-            timeoutMs,
-            ...(options.signal ? { signal: options.signal } : {})
-          }
-        );
-        const title = normalizeGeneratedChatTitle(output.title);
-        if (!title || title === turn.expectedTitle) {
-          return { reason: "empty_output", status: "skipped" };
-        }
-        const applied = await deps.applyTitle({
-          chatId: context.chatId,
-          expectedTitle: turn.expectedTitle,
-          title,
-          userId: context.userId
-        });
-        return applied
-          ? { status: "generated", title, usage }
-          : { reason: "title_customized", status: "skipped" };
-      } catch {
-        return { status: "failed", usage };
-      }
+    async schedule(context) {
+      const turn = await deps.loadFirstTurn(context);
+      if (!turn || turn === "customized") return;
+      const resolution = await deps.resolveTitleModel();
+      if (!resolution.ok || resolution.role.modelConfiguration.capabilities.structuredOutput !== true) return;
+      await deps.enqueue({
+        answerText: excerpt(context.answerText, ANSWER_EXCERPT_LENGTH),
+        chatId: context.chatId,
+        expectedTitle: turn.expectedTitle,
+        providerSnapshot: normalizeProviderExecutionSnapshot(resolution.role.snapshot),
+        questionText: excerpt(turn.questionText, QUESTION_EXCERPT_LENGTH),
+        reasoningEffort: resolution.reasoningEffort,
+        runId: context.runId,
+        titleRevision: turn.titleRevision,
+        userId: context.userId
+      });
     }
   });
 }
 
-type ChatTitlePrisma = Pick<PrismaClient, "$transaction" | "chat" | "systemModelPolicy"> &
-  Parameters<typeof createSystemModelRoleResolver>[0];
-
-/** Loads the first turn of a personal chat: the user question and the
- * heuristic title it produced. Returns null when the chat has more than the
- * first pair of messages and "customized" when the title no longer equals
- * that heuristic (renamed or created with an explicit name). */
 export async function loadChatTitleFirstTurn(
   client: Pick<PrismaClient, "chat">,
   context: ChatTitleGenerationContext
@@ -204,7 +137,8 @@ export async function loadChatTitleFirstTurn(
     select: {
       _count: { select: { messages: true } },
       messages: { select: { content: true }, where: { id: context.userMessageId } },
-      title: true
+      title: true,
+      titleRevision: true
     },
     where: {
       archived: false,
@@ -217,35 +151,18 @@ export async function loadChatTitleFirstTurn(
   const userMessage = chat?.messages[0];
   if (!chat || !userMessage || chat._count.messages !== 2) return null;
   const expectedTitle = titleFromMessageContent(userMessage.content);
-  if (chat.title !== expectedTitle) return "customized";
+  if (chat.titleRevision !== 0 || chat.title !== expectedTitle) return "customized";
   const questionText = messageTextFromContent(userMessage.content);
   if (!questionText) return null;
-  return { expectedTitle, questionText };
+  return { expectedTitle, questionText, titleRevision: chat.titleRevision };
 }
 
-export function createPrismaChatTitleGenerator(
-  client: ChatTitlePrisma = prisma,
-  options: Readonly<{ timeoutMs?: number }> = {}
-): ChatTitleGenerator {
-  const resolver = createSystemModelRoleResolver(client);
-  const execute = createAcceptedStructuredOutputExecutor(client);
+export function createPrismaChatTitleGenerator(client: PrismaClient = prisma): ChatTitleGenerator {
+  const resolver = createChatTitleModelRoleResolver(client);
+  const repository = createChatTitleRepository(client);
   return createChatTitleGenerator({
-    applyTitle: async (input) => {
-      const result = await client.chat.updateMany({
-        data: { title: input.title },
-        where: {
-          archived: false,
-          id: input.chatId,
-          permanentDeletionAt: null,
-          title: input.expectedTitle,
-          userId: input.userId
-        }
-      });
-      return result.count === 1;
-    },
-    executeStructuredOutput: execute,
+    enqueue: (work) => repository.enqueue(work, new Date(Date.now() + CHAT_TITLE_QUEUE_TTL_MS)),
     loadFirstTurn: (context) => loadChatTitleFirstTurn(client, context),
-    resolveSystemModel: () => resolver.resolve(),
-    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {})
+    resolveTitleModel: () => resolver.resolve()
   });
 }

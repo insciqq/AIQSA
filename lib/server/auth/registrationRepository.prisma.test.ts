@@ -5,6 +5,7 @@ import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import { loadEntitlementsForUser } from "./dbEntitlements";
 import { hashPassword, verifyPassword } from "./password";
+import { provisionActiveUser } from "./provisioning";
 import { createPrismaAuthRegistrationRepository } from "./registrationRepository";
 import { hashToken } from "./token";
 
@@ -214,6 +215,7 @@ describe("Prisma-backed registration repository", () => {
       expect(user.groups).toHaveLength(1);
       expect(user.settings?.defaultProviderModelId).toBeNull();
       expect(user.settings?.defaultFolderId).toBeNull();
+      expect(user.settings?.defaultSearchPlan).toBeNull();
       expect(user.assistantDefinitions).toHaveLength(0);
       expect(user.folders).toHaveLength(0);
       expect(
@@ -224,6 +226,15 @@ describe("Prisma-backed registration repository", () => {
       expect(entitlements.searchStrategies.has("openai-native-web-search")).toBe(true);
       expect(identity.emailVerifiedAt).toBeInstanceOf(Date);
       await expect(verifyPassword("chosen-password", identity.passwordHash)).resolves.toBe(true);
+      for (const personal of [{ mode: "all_selected", optionIds: [] },
+        { mode: "all_selected", optionIds: ["openai-native-web-search"] }]) {
+        await prisma.userSettings.update({ where: { userId: user.id }, data: { defaultSearchPlan: personal } });
+        await prisma.$transaction((tx) => provisionActiveUser(tx, { userId: user.id }));
+        expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId: user.id } })).defaultSearchPlan).toEqual(personal);
+      }
+      await prisma.userSettings.delete({ where: { userId: user.id } });
+      await prisma.$transaction((tx) => provisionActiveUser(tx, { userId: user.id }));
+      expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId: user.id } })).defaultSearchPlan).toBeNull();
     });
   });
 

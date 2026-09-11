@@ -914,7 +914,7 @@ async function testSystemRole(
   if (input.capabilityRole === "embedding") return testEmbedding(input, options, "tiny_generation", input.model.openRouterRouting?.providers ?? []);
   if (input.capabilityRole === "reranker") return testReranker(input, options, "tiny_generation", input.model.openRouterRouting?.providers ?? []);
   const access = await withCapabilityRetries(input, options, () => runGenerationProbe(input, options, false));
-  const structured = input.capabilityRole === "memory" ? await withCapabilityRetries(input, options, () => testStructuredOutput(input, options)) : null;
+  const structured = input.capabilityRole === "memory" || input.capabilityRole === "chat_titles" ? await withCapabilityRetries(input, options, () => testStructuredOutput(input, options)) : null;
   const forced = input.capabilityRole === "memory" ? await withCapabilityRetries(input, options, () => testForcedToolCall(input, options)) : null;
   const pdf = input.capabilityRole === "direct_pdf" ? await withCapabilityRetries(input, options, () => testPdfInput(input, options)) : null;
   const vision = input.capabilityRole === "vision" ? await withCapabilityRetries(input, options, () => testVisionInput(input, options)) : undefined;

@@ -111,6 +111,8 @@ describe("reuse of checks committed by custom setup", () => {
     expect(f.repository.loadActiveRefreshCandidate).not.toHaveBeenCalled();
     expect(f.current()).toMatchObject({ state: "running", done: 4, total: 4, failed: [], inFlight: [], setup: { state: "running" } });
     await f.finish();
+    expect(f.current().results).toHaveLength(4);
+    expect(f.current().results?.every((result) => result.state === "saved")).toBe(true);
     expect(f.current()).toMatchObject({ state: "completed", done: 4, failed: [],
       setup: { state: "completed", defaults: ["Chat: Synthetic"], search: "skipped" } });
     expect(f.test).toHaveBeenCalledTimes(4);

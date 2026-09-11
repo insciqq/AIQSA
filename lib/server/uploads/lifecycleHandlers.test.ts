@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { getAuthConfig, TEST_AUTH_TOKEN } from "../auth/config";
 import { createTestAuth } from "@/tests/support/auth";
+import { decodeUploadAttachmentResponse } from "../../contracts/uploads";
 import {
   createAttachmentRetryHandler,
   createAttachmentStatusHandler,
@@ -36,6 +37,17 @@ function request(method = "GET", authenticated = true) {
 }
 
 describe("attachment lifecycle handlers", () => {
+  it("preserves canonical PDF pages through status refresh and the browser decoder without private metadata", async () => {
+    const GET = createAttachmentStatusHandler({ resolveAuth: auth.resolveAuth,
+      repository: { retry: vi.fn(), load: vi.fn(async () => ({ ...record,
+        kind: "pdf", fileName: "two-pages.pdf", mimeType: "application/pdf", status: "ready" as const,
+        processingErrorCode: null, metadata: { pdfPageCount: 2, privateField: "private-canary" }
+      })) } });
+    const body = await (await GET(request(), context)).json();
+    expect(decodeUploadAttachmentResponse(body)?.attachment).toMatchObject({ pageCount: 2, extractedText: null });
+    expect(JSON.stringify(body)).not.toContain("private-canary");
+  });
+
   it("authenticates before loading status and exposes no private storage fields", async () => {
     const load = vi.fn(async () => record);
     const GET = createAttachmentStatusHandler({

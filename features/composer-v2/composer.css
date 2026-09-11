@@ -1,4 +1,5 @@
 .v2-composer-wrap {
+  container: composer / inline-size;
   --v2-composer-wrap-bottom: max(1.125rem, env(safe-area-inset-bottom));
   position: relative;
   width: min(var(--v2-measure), calc(100% - 2rem));
@@ -134,62 +135,6 @@
   background: var(--v2-color-hover);
 }
 
-.v2-composer-skill-ledger {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem 1rem;
-  margin: 0 0 0.5rem;
-  padding: 0.5rem 0.625rem;
-  border-top: 1px solid var(--v2-color-line);
-  border-bottom: 1px solid var(--v2-color-line);
-  color: var(--v2-color-text2);
-  font-size: 0.6875rem;
-  line-height: 1.45;
-}
-
-.v2-composer-skill-ledger strong {
-  color: var(--v2-color-text);
-  font-weight: 500;
-}
-
-.v2-composer-skill-ledger ol {
-  display: flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  gap: 0.125rem 0.625rem;
-  margin: 0.25rem 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.v2-composer-skill-ledger li {
-  overflow: hidden;
-  max-width: 100%;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.v2-composer-skill-ledger-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-
-.v2-composer-skill-ledger button {
-  padding: 0;
-  border: 0;
-  color: var(--v2-color-accent);
-  background: transparent;
-  font: inherit;
-  cursor: pointer;
-}
-
-.v2-composer-skill-ledger button:disabled {
-  color: var(--v2-color-text3);
-  cursor: default;
-}
-
 .v2-composer-status {
   display: flex;
   min-height: 1.5rem;
@@ -206,29 +151,20 @@
 }
 
 .v2-composer-controls {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   min-width: 0;
-  align-items: center;
-  gap: 0.25rem;
+  align-items: end;
+  gap: 0.375rem;
 }
 
-/* One row: fixed-size controls never shrink; only the chip strip yields. */
-.v2-composer-controls > * {
-  flex: 0 0 auto;
-}
+.v2-composer-controls > .v2-composer-spacer { display: none; }
 
-.v2-composer-controls > .v2-composer-indicators {
-  flex: 0 1 auto;
-  min-width: 0;
-  /* When the row is narrower than its chips (compact compositions), the strip
-     scrolls instead of clipping a chip's close control under its neighbour. */
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
-}
-
-.v2-composer-controls > .v2-composer-indicators::-webkit-scrollbar {
-  display: none;
+@container composer (max-width: 22rem) {
+  .v2-composer-controls { grid-template-columns: minmax(0, 1fr) auto; }
+  .v2-composer-controls > .v2-composer-indicators { grid-column: 1 / -1; grid-row: 1; }
+  .v2-composer-controls > .v2-icon-button { grid-column: 1; grid-row: 2; }
+  .v2-composer-controls > .v2-composer-run-action { grid-column: 2; grid-row: 2; }
 }
 
 .v2-composer-controls > .v2-icon-button {
@@ -276,12 +212,11 @@
   display: flex;
   min-width: 0;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.375rem;
-  overflow: hidden;
 }
 
-/* Chips keep their full label; a narrow strip scrolls rather than squeezing
-   a chip's chevron and close control together. */
+/* Each capability remains a whole reachable control, including on wrapped rows. */
 .v2-composer-indicators > * {
   flex: 0 0 auto;
 }
@@ -346,48 +281,11 @@
   overflow-wrap: anywhere;
 }
 
-/* Workspace is a compact workbench rail: the toggle is the control, while
-   runtime and network are factual read-only lamps beside it. */
-.v2-composer-workspace-state,
-.v2-composer-workspace-internet {
-  display: inline-flex;
-  min-height: 1.75rem;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0 0.5rem;
-  border-left: 1px solid var(--v2-color-line);
-  color: var(--v2-color-text3);
-  font-size: 0.71875rem;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-
-.v2-composer-workspace-state > span {
-  width: 0.375rem;
-  height: 0.375rem;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--v2-color-text3);
-}
-
-.v2-composer-workspace-state[data-state="ready"] > span,
-.v2-composer-workspace-state[data-state="running"] > span {
-  background: var(--v2-color-accent);
-  box-shadow: 0 0 0.375rem var(--v2-color-accent);
-}
-
-.v2-composer-workspace-state[data-state="failed"] {
+.v2-composer-workspace-toggle[data-workspace-state="failed"] {
   color: var(--v2-color-danger);
+  border-color: var(--v2-color-danger);
 }
-
-.v2-composer-workspace-state[data-state="failed"] > span {
-  background: var(--v2-color-danger);
-}
-
-.v2-composer-workspace-internet .v2-icon {
-  width: 0.75rem;
-  height: 0.75rem;
-}
+.v2-composer-workspace-signal { font-size: 0.875rem; line-height: 1; }
 
 /* An active Search/Knowledge chip pairs its picker trigger with a clear
    control inside ONE accent pill (UX audit 2026-09-02 #9): the group carries
@@ -1422,9 +1320,6 @@
 }
 
 @media (max-width: 42rem) {
-  .v2-composer-skill-ledger {
-    grid-template-columns: minmax(0, 1fr);
-  }
 
   .v2-composer-indicators {
     flex: 1 1 auto;
@@ -1439,14 +1334,14 @@
 
 /*
  * Compact composer row (PRD §4.5): the Search, Knowledge, and MCP chips
- * become 28px icon pills in their state color. MCP stays visible in every
+ * compact to icon pills based on the composer width, then wrap whole controls. MCP stays visible in every
  * mode (FRONTEND: the ordinary MCP choice is always visible).
  */
-@media (max-width: 767px) {
+@container composer (max-width: 42rem) {
   .v2-composer-indicator[data-glyph] {
-    width: 1.75rem;
+    min-width: 1.75rem;
     justify-content: center;
-    padding: 0;
+    padding: 0 0.25rem;
   }
 
   .v2-composer-indicator[data-glyph] > span:first-child,
@@ -1460,24 +1355,6 @@
     width: 0.9375rem;
     height: 0.9375rem;
     opacity: 1;
-  }
-
-  .v2-composer-workspace-state {
-    display: none;
-  }
-
-  .v2-composer-workspace-internet {
-    width: 1.75rem;
-    justify-content: center;
-    padding: 0;
-    overflow: hidden;
-    border: 0;
-    font-size: 0;
-  }
-
-  .v2-composer-workspace-internet .v2-icon {
-    width: 0.9375rem;
-    height: 0.9375rem;
   }
 
   /* The icon pill has no room for a clear control; the menu offers None. */
@@ -1636,72 +1513,13 @@
   }
 }
 
-/* Phones keep one control row (UX audit F9; 2026-09-02 #1): the icon pills —
-   MCP included — stay in reach without scrolling; only when even that is not
-   enough does the strip scroll. */
 @media (max-width: 26rem) {
-  .v2-composer {
-    padding-right: 0.625rem;
-    padding-left: 0.625rem;
-  }
-
-  .v2-composer-controls {
-    gap: 0.125rem;
-  }
-
-  .v2-composer-controls > .v2-composer-indicators {
-    flex: 0 1 auto;
-    min-width: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: none;
-  }
-
-  .v2-composer-controls > .v2-composer-spacer {
-    flex: 1 1 0;
-    min-width: 0;
-  }
-
-  .v2-composer-indicators::-webkit-scrollbar {
-    display: none;
-  }
-
-  .v2-composer-indicators > * {
-    flex: 0 0 auto;
-  }
-
-  .v2-composer-indicator {
-    max-width: 7.5rem;
-  }
-
-  .v2-composer-indicator-prefix {
-    display: none;
-  }
-}
-
-/* Very narrow phones (≤352px): slightly tighter controls so the full row —
-   Add, Search, Knowledge, MCP, Send — still fits without scrolling. */
-@media (max-width: 22rem) {
-  .v2-composer {
-    padding-right: 0.5rem;
-    padding-left: 0.5rem;
-  }
-
-  .v2-composer-controls {
-    gap: 0;
-  }
-
-  .v2-composer-controls > .v2-icon-button,
-  .v2-composer-indicator[data-glyph],
-  .v2-composer-run-action .v2-icon-button {
-    width: 2.5rem;
-    min-width: 2.5rem;
-  }
+  .v2-composer { padding-right: 0.625rem; padding-left: 0.625rem; }
 }
 
 /* Icon pills (≤767px) hide the clear control, so the chip group hands the
    pill chrome back to its trigger. */
-@media (max-width: 767px) {
+@container composer (max-width: 42rem) {
   .v2-composer-indicator-group:has(.v2-composer-indicator-clear) {
     height: auto;
     border: 0;

@@ -25,6 +25,7 @@ import {
 import type { AdminFeedbackNoticeAction } from "@/components/admin/useAdminFeedback";
 import type { AdminKnowledgePdfProcessingMode, AdminKnowledgeSettings } from "@/lib/contracts/adminKnowledge";
 import type { AdminModelPolicyCatalog } from "@/lib/contracts/adminModelPolicy";
+import { initialChatTitleReasoningEffort } from "@/lib/contracts/adminSystemModelPolicy";
 import type {
   AdminSystemModelEligibilityRole,
   AdminSystemModelPolicyCatalog
@@ -35,6 +36,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 export type AdminRolePatch = Readonly<{
   imageProviderModelId?: string | null;
   imageParameters?: ImageGenerationParameters;
+  chatTitleProviderModelId?: string | null;
+  chatTitleReasoningEffort?: string | null;
   chatPdfProviderModelId?: string | null;
   chatPdfReasoningEffort?: string | null;
   providerModelId?: string | null;
@@ -51,10 +54,10 @@ export type AdminKnowledgeDraft = Readonly<{
 
 export type AdminRolesController = Readonly<{
   applyKnowledge(draft: AdminKnowledgeDraft): Promise<boolean>;
-  /** Immediate apply for rows 1–3; `undo` reverts through the same PATCH. */
+  /** Immediate apply for independent roles; `undo` reverts through the same PATCH. */
   assign(patch: AdminRolePatch, undo: AdminRolePatch | null): Promise<boolean>;
   busy: boolean;
-  checkAndAssign(role: "memory" | "vision", id: string): Promise<boolean>;
+  checkAndAssign(role: "chat_titles" | "memory" | "vision", id: string): Promise<boolean>;
   checkDocument(mode: KnowledgeModelMode, id: string): Promise<boolean>;
   checking: Readonly<{ id: string; role: AdminSystemModelEligibilityRole }> | null;
   error: string | null;
@@ -247,9 +250,15 @@ export function useAdminRolesController({
     return true;
   }, [invalidateReads, reportError, setPolicy]);
 
-  const checkAndAssign = useCallback(async (role: "memory" | "vision", id: string): Promise<boolean> => {
+  const checkAndAssign = useCallback(async (role: "chat_titles" | "memory" | "vision", id: string): Promise<boolean> => {
     const previous = policyRef.current?.policy;
     if (!previous || !await check(role, id)) return false;
+    if (role === "chat_titles") return assign(
+      { chatTitleProviderModelId: id, chatTitleReasoningEffort: initialChatTitleReasoningEffort(
+        policyRef.current?.titleCandidates.find((candidate) => candidate.id === id)
+      ) },
+      { chatTitleProviderModelId: previous.chatTitleModel?.id ?? null, chatTitleReasoningEffort: previous.chatTitleReasoningEffort }
+    );
     return role === "memory"
       ? assign(
           { providerModelId: id, reasoningEffort: null },

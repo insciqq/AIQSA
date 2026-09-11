@@ -13,7 +13,6 @@ import type {
 import type { ModelParameterControls } from "@/lib/contracts/catalog";
 import type { McpReadiness } from "@/lib/contracts/mcp";
 import type { SearchPlanMode } from "@/lib/domain/search";
-import type { SkillSummary } from "@/lib/contracts/skills";
 import {
   EMPTY_KNOWLEDGE_SELECTION,
   type KnowledgeSelection
@@ -81,11 +80,8 @@ export type AssistantEditorOptions = {
   mcpServers: { enabled: boolean; id: string; name: string; readiness: McpReadiness }[];
   models: AssistantEditorModelOption[];
   onRetryKnowledge(): void;
-  onRetrySkills(): void;
   searchOptions: { id: string; label: string }[];
-  skillDataError: string | null;
-  skillDataState: "error" | "loading" | "ready";
-  skills: SkillSummary[];
+  selectedSkills: { id: string; name: string }[];
 };
 
 export type AssistantEditorView = {

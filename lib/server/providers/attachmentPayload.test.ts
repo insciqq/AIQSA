@@ -32,6 +32,27 @@ function attachment(overrides: Partial<ProviderAttachment>): ProviderAttachment 
 }
 
 describe("provider attachment payload helpers", () => {
+  it("uses the verified PDF count independently of binary size and prefers it to legacy processing", () => {
+    for (const byteSize of [1024, 19_088_864]) {
+      expect(providerAttachmentBudgetTokens({
+        attachments: [attachment({ kind: "pdf", byteSize, metadata: { pdfPageCount: 2, pdf: { pageCount: 400 } } })],
+        modelCapabilities: { ...textCapabilities, nativePdfInput: true }
+      })).toBe(1024);
+    }
+  });
+
+  it.each([undefined, null, 0, -1, 1.5, 501, Infinity, "2"])(
+    "retains the unknown-PDF fallback for invalid page count %s", (pageCount) => {
+      const pdf = attachment({ kind: "pdf", byteSize: 19_088_864,
+        metadata: { pdfPageCount: pageCount, pdf: { pageCount } } });
+      const modelCapabilities = { ...textCapabilities, nativePdfInput: true };
+      expect(providerAttachmentBudgetTokens({ attachments: [pdf], modelCapabilities })).toBe(1_193_216);
+      expect(providerAttachmentBudgetTokens({ attachments: [{ ...pdf, metadata: {
+        pdfPageCount: pageCount, pdf: { pageCount: 2 }
+      } }], modelCapabilities })).toBe(1024);
+    }
+  );
+
   it("builds the same extracted-text block shape used by provider adapters", () => {
     const doc = attachment({
       extractedText: "alpha,beta\n1,2\n",

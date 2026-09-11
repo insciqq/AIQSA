@@ -279,3 +279,19 @@ describe("administrator system model policy handlers", () => {
     });
   });
 });
+
+it("validates a title assignment pair and preserves unrelated role fields", async () => {
+  const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
+  const handler = createAdminSystemModelPolicyHandlers({ service: service as never,
+    resolveAuth: vi.fn().mockResolvedValue(session()) as never });
+  for (const patch of [{ chatTitleProviderModelId: "title-1" },
+    { chatTitleProviderModelId: null, chatTitleReasoningEffort: "low" }]) {
+    expect((await handler.PATCH(new Request("http://local.test", { method: "PATCH",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: 1, ...patch }) }))).status).toBe(400);
+  }
+  expect(service.update).not.toHaveBeenCalled();
+  const patch = { expectedVersion: 1, chatTitleProviderModelId: "title-1", chatTitleReasoningEffort: "none" };
+  expect((await handler.PATCH(new Request("http://local.test", { method: "PATCH",
+    headers: { "content-type": "application/json" }, body: JSON.stringify(patch) }))).status).toBe(200);
+  expect(service.update).toHaveBeenCalledExactlyOnceWith({ ...patch, userId: "user-1" });
+});

@@ -1,3 +1,4 @@
+import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
 import { decodeAssistantIdentity } from "../../contracts/assistants";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
@@ -911,7 +912,51 @@ describe("PREPARING run orchestration", () => {
     });
   });
 
-  it("finalizes an action-only SAVE across unrelated and committed revision advances", async () => {
+  it.each([false, true])("accepted ordinary Memory survives disconnect but honors explicit Stop=%s", async (stop) => {
+    await withPreparingUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({ data: {
+        defaultProviderModelId: providerTemplateIds.fakeModel, title: "Transport lifetime fixture", userId
+      } });
+      const baseRequest = normalizedRequest(chat.id, "An ordinary question");
+      const request = { ...baseRequest, prompt: {
+        ...baseRequest.prompt, memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
+      } };
+      const transport = new AbortController();
+      let runId = "";
+      const retrieve = vi.fn(async (input: { modelRunId: string; signal: AbortSignal }) => {
+        runId = input.modelRunId;
+        expect((await prisma.modelRun.findUniqueOrThrow({ where: { id: runId } })).status).toBe("preparing");
+        transport.abort(new Error("ResponseAborted"));
+        expect(input.signal.aborted).toBe(false);
+        if (stop) {
+          await repository.cancelRun({ runId, userId, payload: { code: "model_run_cancelled", message: "Model run cancelled" } });
+          expect(activeRunControllerRegistry.abort(runId)).toBe(true);
+        }
+        input.signal.throwIfAborted();
+        return { budgetSnapshot: { memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT, utilityEgressMode: "LOCAL_ONLY" },
+          items: [], outcome: "EMPTY", preparedContext: null, querySnapshot: null };
+      });
+      const repository = createPrismaRunRepository(prisma, { memoryRetrieval: { retrieve } as never });
+      const pending = repository.createRun({ chatId: chat.id, content: request.content, expectedActiveLeafId: null,
+        modelId: request.modelId, provider: request.provider, normalizedRequest: request,
+        providerRequestPreview: {}, signal: transport.signal, userId,
+        memoryMaterializer: () => ({ contextTruncation: null, normalizedRequest: request,
+          providerRequest: { ...request, attachments: [] }, providerRequestPreview: {} }) });
+      if (stop) await expect(pending).rejects.toThrow();
+      else {
+        await pending;
+        await expect(prisma.modelRunMemoryBinding.findUniqueOrThrow({ where: { modelRunId: runId } }))
+          .resolves.toMatchObject({ outcome: "EMPTY", degradationCode: null });
+      }
+      expect(retrieve).toHaveBeenCalledOnce();
+      expect(activeRunControllerRegistry.has(runId)).toBe(false);
+      await expect(prisma.modelRun.findUniqueOrThrow({ where: { id: runId } })).resolves.toMatchObject({
+        status: stop ? "cancelled" : "streaming"
+      });
+    });
+  });
+
+  it("finishes an accepted SAVE after transport abort and competing recovery, including revision advances", async () => {
     await withPreparingUser(async ({ userId }) => {
       const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
       await saveExplicitFact(userId, scope.id, "Existing fixture memory.");
@@ -941,11 +986,19 @@ describe("PREPARING run orchestration", () => {
         statement: "The user lives in Rostov.",
         status: "COMMITTED"
       } as const;
+      const transport = new AbortController();
       const retrieve = vi.fn(async (input: Readonly<{
         expected: Readonly<{ memoryGeneration: number; memoryRevision: number }>;
         modelRunId: string;
+        signal: AbortSignal;
         userId: string;
       }>) => {
+        expect(activeRunControllerRegistry.has(input.modelRunId)).toBe(true);
+        transport.abort(new Error("ResponseAborted"));
+        expect(input.signal).not.toBe(transport.signal);
+        expect(input.signal.aborted).toBe(false);
+        await expect(repository.recoverPreparingRun({ now: new Date(), runId: input.modelRunId, userId })).resolves.toBe("deferred");
+        input.signal.throwIfAborted();
         await saveExplicitFact(
           input.userId,
           scope.id,
@@ -1044,6 +1097,7 @@ describe("PREPARING run orchestration", () => {
         memoryRetrieval: { retrieve } as never
       });
       const created = await repository.createRun({
+        signal: transport.signal,
         chatId: chat.id,
         content: request.content,
         expectedActiveLeafId: null,
@@ -1089,6 +1143,8 @@ describe("PREPARING run orchestration", () => {
         })
       ]);
       expect(retrieve).toHaveBeenCalledTimes(1);
+      expect(activeRunControllerRegistry.has(created.runId)).toBe(false);
+      await expect(repository.recoverPreparingRun({ now: new Date(), runId: created.runId, userId })).resolves.toBe("finalized");
       expect(attempts).toHaveLength(1);
       expect(attempts[0]).toMatchObject({
         attemptOrdinal: 0,

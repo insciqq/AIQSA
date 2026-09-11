@@ -18,6 +18,7 @@ export function mergeSystemRoleEvidence(
   const result = { ...current, compatibility: { ...current.compatibility } };
   const pairs = role === "memory"
     ? [["structuredOutput", "structuredOutput"], ["forcedToolCall", "forcedToolCall"]] as const
+    : role === "chat_titles" ? [["structuredOutput", "structuredOutput"]] as const
     : role === "direct_pdf" ? [["pdfInput", "directPdf"]] as const : [["visionInput", "vision"]] as const;
   for (const [field, capability] of pairs) {
     delete result[field];
@@ -28,6 +29,6 @@ export function mergeSystemRoleEvidence(
     result.capabilitySetup = { ...result.capabilitySetup, checks: { ...result.capabilitySetup.checks,
       directPdf: result.compatibility.directPdf === "verified" ? "verified" : "unsupported" } };
   }
-  if (role === "memory") result.compatibility.probeVersion = next.compatibility.probeVersion;
+  if (role === "memory" || role === "chat_titles") result.compatibility.probeVersion = next.compatibility.probeVersion;
   return result;
 }

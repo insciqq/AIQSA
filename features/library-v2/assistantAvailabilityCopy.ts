@@ -19,6 +19,16 @@ export function assistantUnavailabilityCopy(
 ): AssistantUnavailabilityCopy | null {
   if (assistant.availability.ok) return null;
 
+  if (assistant.availability.reason === "skills_access" || assistant.availability.reason === "knowledge_access") {
+    const resource = assistant.availability.reason === "skills_access" ? "Skills" : "Knowledge";
+    return {
+      ...(assistant.owned ? { action: { kind: "open-editor" as const, label: "Edit setup" } } : {}),
+      explanation: assistant.owned ? `Remove or replace unavailable ${resource} in this Assistant's setup.`
+        : `Required ${resource} ${resource === "Skills" ? "are" : "is"} not available to you.`,
+      headline: `Needs available ${resource}`
+    };
+  }
+
   if (!assistant.owned) {
     if (assistant.availability.reason === "model_access") {
       return {

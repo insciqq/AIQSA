@@ -175,6 +175,7 @@ test("one key save activates models, fills empty defaults and retries failed Sea
     await expect(page.getByText("Search checked and ready.", { exact: true })).toBeVisible();
     expect(capabilityCalls).toEqual([{ model: "gpt-6-astra", check: "pdf" }]);
     expect((await read()).checkRun?.failed).toEqual([]);
+    await expect(page.getByRole("group", { name: "Model setup summary" })).toContainText("2 of 2 model results saved.");
     expect(searchCalls).toBeGreaterThanOrEqual(2);
     expect(await prisma.modelPolicy.findUnique({ where: { id: "installation" } })).toMatchObject({ defaultProviderModelId: modelId });
     expect(await prisma.systemModelPolicy.findUnique({ where: { id: "installation" } })).toMatchObject({

@@ -557,3 +557,16 @@
     padding-left: max(0.75rem, env(safe-area-inset-left));
   }
 }
+
+.v2-skill-selection {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--v2-color-border);
+  font-size: 0.8125rem;
+}
+.v2-skill-selection ol { list-style: none; margin: 0; padding: 0; }
+.v2-skill-selection li { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.v2-skill-selection li span { min-width: 0; overflow-wrap: anywhere; }
+.v2-project-skill-picker { overflow-y: auto; min-height: 0; padding: 1rem; }
+.v2-project-skill-picker .v2-skill-row { grid-template-columns: minmax(0, 1fr) auto; }

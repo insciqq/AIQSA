@@ -37,6 +37,7 @@ import type {
   AssistantRunResolution,
   AssistantRunResolver
 } from "./runMaterialization";
+import { withAssistantDependencyAvailability } from "./dependencyAvailability";
 
 export type AssistantContentRow = {
   avatar: unknown;
@@ -75,6 +76,7 @@ export type AssistantAccessEntry = {
   published: boolean;
   /** One complete live definition for future admission. */
   content: AssistantContentRow;
+  dependencyAvailability?: Readonly<{ knowledge: boolean; skills: boolean }>;
   updatedAt: Date;
   version: number;
 };
@@ -784,7 +786,9 @@ export function createPrismaAssistantRepository(
     },
 
     async getDetail(userId: string, assistantId: string): Promise<AssistantDetailData | null> {
-      const entry = await loadAccessEntry(userId, assistantId);
+      const loaded = await loadAccessEntry(userId, assistantId);
+      if (!loaded) return null;
+      const [entry] = await withAssistantDependencyAvailability(client, userId, [loaded]);
       if (!entry) return null;
       if (!entry.owned) {
         return { ...entry, publications: null };
@@ -837,7 +841,8 @@ export function createPrismaAssistantRepository(
       const entries = definitions.map((definition) =>
         projectAccessEntry(definition, userId, memberGroupIds, definition.pins.length > 0)
       ).filter((entry): entry is AssistantAccessEntry => entry !== null);
-      return entries.sort((left, right) =>
+      const available = await withAssistantDependencyAvailability(client, userId, entries);
+      return available.sort((left, right) =>
         left.content.name.localeCompare(right.content.name) || left.id.localeCompare(right.id));
     },
 

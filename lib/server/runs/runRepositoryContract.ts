@@ -169,6 +169,7 @@ export type InstallationRecoverableRunRecord = StaleRunControlRecord & {
 
 export type RunChatUpdateRecord = {
   chat: {
+    titlePending?: boolean;
     activeLeafMessageId: string | null;
     contextStats: ChatContextStats;
     createdAt: Date | string;

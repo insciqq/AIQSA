@@ -1,7 +1,8 @@
 import type { AssistantAvatarRecipe } from "@/lib/contracts/assistants";
 import type { ModelParameterControls } from "@/lib/contracts/catalog";
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetSkillLibraryStoreForTest } from "@/components/app-shell/skillLibraryStore";
 import { AssistantLibrary } from "./AssistantLibrary";
 import type {
   AssistantEditorDraftState,
@@ -100,11 +101,8 @@ function editor(overrides: Partial<AssistantEditorView> = {}): AssistantEditorVi
         supportsTools: true
       }],
       onRetryKnowledge: vi.fn(),
-      onRetrySkills: vi.fn(),
       searchOptions: [{ id: "search-1", label: "Web Search" }],
-      skillDataError: null,
-      skillDataState: "ready",
-      skills: []
+      selectedSkills: []
     },
     publications: [],
     publishableGroups: [],
@@ -141,7 +139,34 @@ function view(overrides: Partial<AssistantLibraryView> = {}): AssistantLibraryVi
   };
 }
 
+afterEach(() => { resetSkillLibraryStoreForTest(); vi.unstubAllGlobals(); });
+
 describe("Assistant Library subviews", () => {
+  it("keeps selected off-page names and unavailable removal alongside the bounded Skill picker", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ nextCursor: null, skills: [],
+      publishableWorkspaces: [], viewer: { canPublishInstallation: false } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const current = editor({ draft: draft({ skillIds: ["older", "revoked"] }), options: {
+      ...editor().options, selectedSkills: [{ id: "older", name: "Older workflow" }, { id: "revoked", name: "Unavailable Skill" }]
+    } });
+    render(<AssistantLibrary view={view({ editor: current, task: "editor" })} />);
+    const row = screen.getByText("Skills", { exact: true }).closest("section")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Change" }));
+    expect(within(row).getByRole("checkbox", { name: /Older workflow/ })).toBeChecked();
+    fireEvent.click(within(row).getByRole("checkbox", { name: /Unavailable Skill/ }));
+    expect(current.onChange).toHaveBeenCalledWith({ skillIds: ["older"] });
+    const opener = within(row).getByRole("button", { name: "Browse Skills" });
+    opener.focus();
+    fireEvent.click(opener);
+    const picker = screen.getByRole("dialog", { name: "Skills" });
+    expect(await within(picker).findByText("No Skills yet")).toBeVisible();
+    expect(within(picker).getByRole("button", { name: "Remove manual Older workflow" })).toBeEnabled();
+    expect(within(picker).getByRole("button", { name: "Remove manual Unavailable Skill" })).toBeEnabled();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    await waitFor(() => expect(opener).toHaveFocus());
+    expect(screen.queryByRole("dialog", { name: "Skills" })).toBeNull();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
   it("renders the editor as non-modal Library content with honest saved state", () => {
     const current = editor();
     render(<AssistantLibrary view={view({ editor: current, task: "editor" })} />);

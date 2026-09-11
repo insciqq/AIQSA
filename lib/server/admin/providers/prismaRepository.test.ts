@@ -299,6 +299,7 @@ describe("Prisma admin provider repository", () => {
         OR: [
           { providerModelId: "model-1" },
           { rerankerProviderModelId: "model-1" },
+          { chatTitleProviderModelId: "model-1" },
           { chatPdfProviderModelId: "model-1" }
         ]
       }

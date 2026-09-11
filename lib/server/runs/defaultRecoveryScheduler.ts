@@ -12,6 +12,7 @@ import { activeRunControllerRegistry } from "./runExecution";
 import { createPrismaRunRepository } from "./prismaRepository";
 import { reconcileInstallationRuns } from "./runRecovery";
 import { RunRecoveryScheduler } from "./recoveryScheduler";
+import { createPrismaChatTitleWorker } from "../chats/titleGenerationWorker";
 
 const globalForRecoveryScheduler = globalThis as unknown as {
   __aiqsaRunRecoveryScheduler?: RunRecoveryScheduler;
@@ -20,6 +21,7 @@ const globalForRecoveryScheduler = globalThis as unknown as {
 export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
   if (!globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler) {
     const storage = createS3StorageAdapter();
+    const titles = createPrismaChatTitleWorker();
     // The application owns export recovery and orphan settlement, using the
     // same Workspace coordinator as run routes and independent worker slots.
     const deps = {
@@ -37,6 +39,7 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
       workspace: workspaceCoordinatorForStorage(storage)
     };
     globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler = new RunRecoveryScheduler({
+      recoverChatTitles: (signal) => titles.reconcile(signal),
       reconcile: async () => {
         getDefaultChatPdf().kick();
         await reconcileInstallationRuns(deps);

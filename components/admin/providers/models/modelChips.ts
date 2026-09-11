@@ -31,6 +31,7 @@ export type ModelChipKey =
   | "reranking"
   | "stream"
   | "tools"
+  | "memoryActions"
   | "unavailable";
 
 export type ModelChip = Readonly<{
@@ -144,6 +145,14 @@ export function modelChipsFromEvidence(
         capabilityChip("pdf", "PDF", "directPdf", legacyStatus(evidence.pdfInput, configuration)),
         capabilityChip("images", "Images", "vision", legacyStatus(evidence.visionInput, configuration))
       ];
+  const forcedStatus = compatibility?.forcedToolCall ?? legacyStatus(evidence.forcedToolCall, configuration);
+  const forcedReceipt = evidence.capabilitySetup?.checks.forcedToolCall;
+  if (forcedStatus !== "verified" && (forcedStatus || forcedReceipt)) {
+    chips.push({ key: "memoryActions", tone: forcedReceipt === "unsupported" ? "muted" : "warn",
+      label: forcedReceipt === "unsupported" ? "Memory actions: unsupported" : "Memory actions: check incomplete",
+      help: `${attemptHelp(forcedStatus, forcedReceipt, evidence.capabilitySetup?.attempts?.forcedToolCall)} ` +
+        "Memory actions require strict forced tool calls. Other Memory features have separate requirements. Retry checks to verify support." });
+  }
   return chips.filter((entry): entry is ModelChip => entry !== null).map((entry) => entry.key !== "tools" ? entry : {
     ...entry,
     help: [entry.help ?? "Ordinary function calling verified with this key.",

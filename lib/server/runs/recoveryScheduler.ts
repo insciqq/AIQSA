@@ -5,6 +5,7 @@ export class RunRecoveryScheduler {
   readonly #reconcile: (signal: AbortSignal) => Promise<void>;
   readonly #controller = new AbortController();
   readonly #exports: RunRecoveryScheduler | null;
+  readonly #titles: RunRecoveryScheduler | null;
   #stopped = false;
   #pending = false;
   #runPromise: Promise<void> | null = null;
@@ -14,11 +15,14 @@ export class RunRecoveryScheduler {
     intervalMs?: number;
     reconcile(signal: AbortSignal): Promise<void>;
     recoverWorkspaceExports?(signal: AbortSignal): Promise<void>;
+    recoverChatTitles?(signal: AbortSignal): Promise<void>;
   }>) {
     this.#intervalMs = input.intervalMs ?? DEFAULT_RECOVERY_INTERVAL_MS;
     this.#reconcile = input.reconcile;
     this.#exports = input.recoverWorkspaceExports
       ? new RunRecoveryScheduler({ reconcile: input.recoverWorkspaceExports }) : null;
+    this.#titles = input.recoverChatTitles
+      ? new RunRecoveryScheduler({ reconcile: input.recoverChatTitles }) : null;
   }
 
   start(): void {
@@ -33,6 +37,7 @@ export class RunRecoveryScheduler {
     // One owned export worker progresses independently of run reconciliation.
     // It shares the timer, but never the in-flight promise or pending slot.
     this.#exports?.kick();
+    this.#titles?.kick();
     this.#pending = true;
     if (this.#runPromise) return;
     this.#runPromise = Promise.resolve()
@@ -60,6 +65,6 @@ export class RunRecoveryScheduler {
     this.#controller.abort();
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
-    await Promise.all([this.#exports?.stop(), this.#runPromise?.catch(() => undefined)]);
+    await Promise.all([this.#exports?.stop(), this.#titles?.stop(), this.#runPromise?.catch(() => undefined)]);
   }
 }

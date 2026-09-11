@@ -2,6 +2,7 @@
 import { createTestAuth } from "@/tests/support/auth";
 import { describe, expect, it, vi } from "vitest";
 import { createRemoveSavedFileHandler, createSaveFileHandler } from "./savedFileHandlers";
+import { decodeUploadAttachmentResponse } from "../../contracts/uploads";
 
 const auth = createTestAuth({ user: { id: "library-owner" } });
 const context = { params: { attachmentId: "source-file" } };
@@ -16,6 +17,16 @@ const record = {
 };
 
 describe("Library save and reuse", () => {
+  it.each([true, false])("preserves verified PDF pages for the browser without private metadata (save=%s)", async (save) => {
+    const repository = { remove: vi.fn(), copy: vi.fn(async () => ({ ...record, kind: "pdf",
+      fileName: "two-pages.pdf", mimeType: "application/pdf", metadata: { pdfPageCount: 2, privateField: "private-canary" }
+    })) };
+    const POST = createSaveFileHandler({ repository, resolveAuth: auth.resolveAuth }, save);
+    const body = await (await POST(request(), context)).json();
+    expect(decodeUploadAttachmentResponse(body)?.attachment).toMatchObject({ pageCount: 2, extractedText: null });
+    expect(JSON.stringify(body)).not.toContain("private-canary");
+  });
+
   it.each([true, false])("authenticates and projects the independent file (save=%s)", async (save) => {
     const repository = { copy: vi.fn(async () => record), remove: vi.fn() };
     const POST = createSaveFileHandler({ repository, resolveAuth: auth.resolveAuth }, save);

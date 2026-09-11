@@ -218,9 +218,9 @@ test("Documents reasoning keeps the draft, confirmation and saved revision acros
     mode: "system_model_vision" as const, parserProfileVersion: 19, reasoningEffort: null } };
   settings = { ...settings, profile: { ...settings.profile, activeRevision: initial,
     availablePdfDestinations: [destination], recentRevisions: [initial] } };
-  const roles: AdminSystemModelPolicyCatalog = { candidates: [], documentCandidates: [], verificationCandidates: [],
-    ineligible: { direct_pdf: [], memory: [], vision: [] }, rerankerCandidates: [], policy: {
-      chatPdfModel: null, chatPdfReasoningEffort: null, reasoningEffort: null, rerankerModel: null,
+  const roles: AdminSystemModelPolicyCatalog = { candidates: [], titleCandidates: [], documentCandidates: [], verificationCandidates: [],
+    ineligible: { chat_titles: [], direct_pdf: [], memory: [], vision: [] }, rerankerCandidates: [], policy: {
+      chatTitleModel: null, chatTitleReasoningEffort: null, chatPdfModel: null, chatPdfReasoningEffort: null, reasoningEffort: null, rerankerModel: null,
       systemModel: null, updatedAt: "2026-09-09T00:00:00.000Z", updatedBy: null, version: 1
     } };
   const defaults: AdminModelPolicyCatalog = { candidates: [], policy: { defaultModel: null, reasoningEffort: null,

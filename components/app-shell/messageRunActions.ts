@@ -1,3 +1,4 @@
+import { resolveEffectiveSkillIds, SKILL_MAX_SELECTED } from "@/lib/contracts/skills";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import {
   attachmentBlocksSend,
@@ -344,6 +345,7 @@ export function useMessageRunActions({
     if (!sourceChatId || sourceChatId !== activeChatId) {
       return;
     }
+    if (!skillSelectionValid()) return;
     const runControlSnapshot = captureRunControlSnapshot();
 
     const committed = await editMessageBranchAction({
@@ -441,6 +443,13 @@ export function useMessageRunActions({
     if (isTemporaryChat(chatId)) {
       await reconcileTemporaryAdmission(chatId);
     }
+  }
+
+  function skillSelectionValid(): boolean {
+    const { selectedAssistant, selectedSkills } = useComposerControlStore.getState();
+    if (resolveEffectiveSkillIds((selectedAssistant?.includedSkills ?? []).map(({ id }) => id), selectedSkills.map(({ id }) => id)).length <= SKILL_MAX_SELECTED) return true;
+    setNotice({ kind: "error", text: `Choose at most ${SKILL_MAX_SELECTED} Skills. Remove manual selections or change the Assistant before sending.` });
+    return false;
   }
 
   async function submitComposer() {
@@ -588,6 +597,7 @@ export function useMessageRunActions({
     ) {
       return;
     }
+    if (!skillSelectionValid()) return;
     const runControlSnapshot = captureRunControlSnapshot();
     const modelForSend = runControlSnapshot.model;
     if (!modelForSend) {
@@ -957,6 +967,7 @@ export function useMessageRunActions({
     ) {
       return;
     }
+    if (!skillSelectionValid()) return;
     const runControlSnapshot = captureRunControlSnapshot();
     if (!runControlSnapshot.model) {
       return;
@@ -1157,6 +1168,7 @@ export function useMessageRunActions({
     if (useRunLifecycleStore.getState().activeStreams[chatIdForRegenerate]) {
       return;
     }
+    if (!skillSelectionValid()) return;
     const runControlSnapshot = captureRunControlSnapshot();
     if (
       hasUnreconciledOptimisticLeaf(chatIdForRegenerate) &&

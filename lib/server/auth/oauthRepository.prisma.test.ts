@@ -292,6 +292,7 @@ describe("Prisma-backed OAuth identity repository", () => {
       expect(user.groups).toHaveLength(1);
       expect(user.folders).toHaveLength(0);
       expect(user.settings?.defaultFolderId).toBeNull();
+      expect(user.settings?.defaultSearchPlan).toBeNull();
     });
   });
 

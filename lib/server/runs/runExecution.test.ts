@@ -89,6 +89,9 @@ import {
   withAutomaticKnowledgeEvidence
 } from "../knowledge/automaticEvidence";
 
+import { chatTitleWork } from "@/tests/support/chatTitles";
+import { createChatTitleWorker } from "../chats/titleGenerationWorker";
+
 type CompleteRunInput = Parameters<RunRepository["completeRun"]>[0];
 type CreateSearchRunInput = Parameters<RunRepository["createSearchRun"]>[0];
 type RecordRunUsageEventsInput = Parameters<RunRepository["recordRunUsageEvents"]>[0];
@@ -1377,6 +1380,60 @@ const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
 };
 
 describe("run execution", () => {
+  it("persists completion, emits done and closes the answer stream while the title provider is held", async () => {
+    const held = deferred<void>();
+    const repository = createRepository();
+    const adapter = createAdapter(async function* () {
+      yield { data: { delta: "Final answer" }, type: "token" };
+      return providerResult();
+    });
+    let queued = false;
+    let claimed = false;
+    let streamClosed = false;
+    const work = chatTitleWork();
+    const titleRepository = {
+      enqueue: vi.fn(), recover: vi.fn(), isCurrent: vi.fn(async () => true),
+      recordUsage: vi.fn(), finish: vi.fn(),
+      take: vi.fn(async () => {
+        if (!queued || !repository.completeRuns.length || claimed) return null;
+        claimed = true;
+        return work;
+      })
+    };
+    const execute = vi.fn(async () => { await held.promise; return { title: "A later title" }; });
+    const worker = createChatTitleWorker({ execute, repository: titleRepository });
+    const schedule = vi.fn(async () => { queued = true; });
+    const response = createRunExecutionResponse({ ...executionInput({ adapter, repository: repository.repository }),
+      chatTitleGenerator: { schedule } });
+    const body = response.text().then((text) => { streamClosed = true; return text; });
+    let titleWork: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(repository.completeRuns).toHaveLength(1));
+      titleWork = worker.reconcile(new AbortController().signal);
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(streamClosed).toBe(true));
+      const events = parseSse(await body);
+      expect(events).toContainEqual({ data: { delta: "Final answer" }, type: "token" });
+      expect(events.at(-1)).toMatchObject({ type: "done", data: { status: "complete" } });
+      expect(schedule).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1", answerText: "Final answer" }));
+      expect(titleRepository.finish).not.toHaveBeenCalled();
+      expect(repository.failedRuns).toEqual([]);
+      expect(repository.completeRuns[0]?.usage).toMatchObject(usage());
+    } finally { held.resolve(); await titleWork; await body; }
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(titleRepository.finish).toHaveBeenCalledWith(work, "A later title");
+  });
+
+  it("keeps successful answer completion when optional title admission fails", async () => {
+    const repository = createRepository();
+    const adapter = createAdapter(async function* () { return providerResult(); });
+    const response = createRunExecutionResponse({ ...executionInput({ adapter, repository: repository.repository }),
+      chatTitleGenerator: { schedule: async () => { throw new Error("title_handoff_unavailable"); } } });
+    expect(parseSse(await response.text()).at(-1)).toMatchObject({ type: "done", data: { status: "complete" } });
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(repository.failedRuns).toEqual([]);
+  });
+
   it.each(["auto", "none"] as const)("executes the built-in status tool with tool mode %s and persists the completed measurement", async (toolMode) => {
     const base = preparedData({ modelId: "gpt-tool-model", provider: "openai", toolMode });
     const prepared = {

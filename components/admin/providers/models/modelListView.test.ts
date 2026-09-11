@@ -53,7 +53,7 @@ function candidate(id: string, displayName: string) {
 
 function sources(overrides: Partial<ProviderUsageSources> = {}): ProviderUsageSources {
   const policy: AdminSystemModelPolicyCatalog["policy"] = {
-    chatPdfModel: { ...candidate("model-terra", "GPT-5.6 Terra"), available: true, defaultReasoningEffort: null, forcedToolCall: "verified", reasoningEfforts: [], structuredOutput: "verified" },
+    chatTitleModel: null, chatTitleReasoningEffort: null, chatPdfModel: { ...candidate("model-terra", "GPT-5.6 Terra"), available: true, defaultReasoningEffort: null, forcedToolCall: "verified", reasoningEfforts: [], structuredOutput: "verified" },
     chatPdfReasoningEffort: null,
     reasoningEffort: null,
     rerankerModel: { ...candidate("model-voyage", "Voyage Rerank 2.5"), available: true },
@@ -90,8 +90,8 @@ function sources(overrides: Partial<ProviderUsageSources> = {}): ProviderUsageSo
     search: null,
     systemModelPolicy: {
       candidates: [],
-      documentCandidates: [],
-      ineligible: { direct_pdf: [], memory: [], vision: [] },
+      titleCandidates: [], documentCandidates: [],
+      ineligible: { chat_titles: [], direct_pdf: [], memory: [], vision: [] },
       policy,
       rerankerCandidates: [],
       verificationCandidates: []
@@ -252,9 +252,13 @@ describe("check summaries", () => {
     const summaries = connection.credentials.flatMap((credential) => modelCheckSummaries(connection, model, credential, NOW));
     // Local clock formatting: the hour depends on the test machine's time zone.
     expect(summaries.map((summary) => summary.sentence.replace(/\d{2}:\d{2}/u, "HH:MM"))).toEqual([
-      "Checked today HH:MM with key Primary · tools, JSON and the other checked capabilities work.",
-      "Checked Sep 6 HH:MM with key Research team · works without PDF input; tools and JSON output are fine."
+      "Checked today HH:MM with key Primary · tools, JSON and the other checked capabilities work. Memory actions: check incomplete.",
+      "Checked Sep 6 HH:MM with key Research team · works without PDF input; tools and JSON output are fine. Memory actions: check incomplete."
     ]);
+    expect(summaries[0]!.chips).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "tools", tone: "ok" }),
+      expect.objectContaining({ key: "memoryActions", tone: "warn" })
+    ]));
     expect(summaries.map((summary) => summary.usageMissing)).toEqual([false, true]);
     expect(modelCheckSummaries(connection, model, null, NOW)).toEqual([]);
     expect(modelCheckSummaries(connection, connection.models[1]!, connection.credentials[0], NOW)).toEqual([]);

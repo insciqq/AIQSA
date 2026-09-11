@@ -348,6 +348,28 @@ describe("Prisma Memory Dream synthesis", () => {
     expect(row?.value).toBe(memorySynthesisSourceEligibilityHash(input));
   });
 
+  it("admits only post-creation evidence for synthesis without a preference save", async () => {
+    const userId = await createOwner();
+    try {
+      const initial = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      expect(initial).toMatchObject({ synthesisEnabled: true, synthesisPolicyVersion: MEMORY_SYNTHESIS_POLICY_VERSION,
+        settingsRevision: 0, lastSynthesisAt: null });
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+      const facts = createPrismaMemoryFactRepository(keyring, prisma, { consumeExplicitAuthorization: async () => undefined });
+      await facts.save(userId, sourceInput({ index: 0, scopeId: scope.id,
+        observedAt: new Date(initial.synthesisEnabledAt!.getTime() - 1_000) }));
+      for (let index = 1; index <= 3; index += 1) {
+        await facts.save(userId, sourceInput({ index, scopeId: scope.id, observedAt: new Date() }));
+      }
+      await expect(loadMemorySynthesisScheduleStatus(prisma, userId, new Date())).resolves.toMatchObject({
+        activity: { eligibleSourceCount: 3 }
+      });
+      expect((await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } })).settingsRevision).toBe(0);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it("[E06] synthesizes, retrieves, invalidates, and replaces a source-bound pattern", async () => {
     const userId = await createOwner();
     const embeddingConnectionId = `memory-synthesis-connection-${randomUUID()}`;
@@ -355,6 +377,10 @@ describe("Prisma Memory Dream synthesis", () => {
     try {
       const base = new Date(Date.now() - 60 * 60 * 1_000);
       const firstBoundary = new Date(base);
+      // This fixture exercises a previously disabled account's first enable.
+      await prisma.userMemorySettings.update({ where: { userId }, data: {
+        synthesisEnabled: false, synthesisEnabledAt: null, synthesisPolicyVersion: null
+      } });
       const firstSettings = createPrismaMemorySettingsRepository(prisma, {
         now: () => new Date(firstBoundary)
       });

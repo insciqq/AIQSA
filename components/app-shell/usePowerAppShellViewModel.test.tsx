@@ -6,6 +6,7 @@ import { STANDARD_CHAT_BASELINE_TEMPLATE } from "@/lib/domain/promptTemplates";
 import { defaultParameterControls } from "./controlDefaults";
 import type { SessionContextStatus } from "@/lib/contracts/sessionStatus";
 import type { Catalog, FolderSummary, WorkspaceChatSummary } from "./types";
+import { decodeUploadAttachmentResponse } from "@/lib/contracts/uploads";
 
 function chat(id: string): WorkspaceChatSummary {
   return {
@@ -66,6 +67,36 @@ const emptyCatalog: Catalog = {
 };
 
 describe("usePowerAppShellViewModel", () => {
+  it("counts decoded verified PDF pages rather than binary size without requiring extraction metadata", () => {
+    const catalog: Catalog = { ...emptyCatalog, models: [{
+      capabilities: { background: false, documentInputMode: "native_pdf", imageInput: false, nativeWebSearch: false,
+        openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true },
+      contextWindow: 1_050_000, defaultParams: {}, displayName: "PDF model", modelId: "gpt-5.5", provider: "openai",
+      parameterControls: defaultParameterControls(), searchStrategyIds: []
+    }] };
+    for (const byteSize of [1024, 19_088_864]) {
+      const decoded = decodeUploadAttachmentResponse({ attachment: {
+        id: "pdf", kind: "pdf", fileName: "two-pages.pdf", mimeType: "application/pdf", byteSize,
+        pageCount: 2, extractedText: null, status: "ready"
+      } })!;
+      expect(decoded.attachment.processing).toBeUndefined();
+      const { result } = renderViewModel({ catalog, attachments: [decoded.attachment], maxOutputTokens: "65536" });
+      expect(result.current.composerContextStats.approximateInputTokens)
+        .toBe(1024 + estimateApproxTokens(STANDARD_CHAT_BASELINE_TEMPLATE));
+      const legacy = { ...decoded.attachment, pageCount: undefined, processing: {
+        pageCount: 2, pagesProcessed: 2, extractedCharacterCount: 0, status: "no_text" as const
+      } };
+      expect(renderViewModel({ catalog, attachments: [legacy] }).result.current.composerContextStats.approximateInputTokens)
+        .toBe(result.current.composerContextStats.approximateInputTokens);
+      const conflicting = { ...legacy, pageCount: 1 };
+      expect(renderViewModel({ catalog, attachments: [conflicting] }).result.current.composerContextStats.approximateInputTokens)
+        .toBe(512 + estimateApproxTokens(STANDARD_CHAT_BASELINE_TEMPLATE));
+      const unknown = { ...decoded.attachment, pageCount: undefined };
+      expect(renderViewModel({ catalog, attachments: [unknown] }).result.current.composerContextStats.approximateInputTokens)
+        .toBe(Math.max(256, Math.ceil(byteSize / 4096) * 256) + estimateApproxTokens(STANDARD_CHAT_BASELINE_TEMPLATE));
+    }
+  });
+
   it("uses the server snapshot for its selected model and rejects a stale model snapshot", () => {
     const snapshot: SessionContextStatus = {
       approximateInputTokens: 6000, contextWindow: 10000, droppedMessages: 0, loadedTools: 4,
