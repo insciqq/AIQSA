@@ -24,18 +24,20 @@ describe("accepted Workspace secret installation", () => {
     expect(workspaceSecretsGuide([])).toContain("No personal secrets");
   });
 
-  it("handles many Markdown delimiters and keeps the largest admitted guide bundle bounded", () => {
-    const texts = ["` ".repeat(128 * 1024), "`".repeat(128 * 1024) + "~".repeat(128 * 1024), "\n".repeat(128 * 1024)];
-    for (const text of texts) {
-      const secrets: AcceptedWorkspaceSecret[] = Array.from({ length: 15 }, () => ({
-        id: randomUUID(), versionId: randomUUID(), name: "Large literal", description: "Purpose", value: { kind: "text", text }
-      }));
-      parseAcceptedWorkspaceSecrets(secrets);
-      const guide = workspaceSecretsGuide(secrets);
-      expect(guide).toContain(text);
-      expect(Buffer.byteLength(JSON.stringify({ secrets, guide, environment: {}, runId: "fixture" }))).toBeLessThan(WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES);
-    }
-  });
+  // Maximum-size serialization checks byte bounds, not shared CI CPU throughput.
+  it.each([
+    { name: "many separate delimiters", text: "` ".repeat(128 * 1024) },
+    { name: "long runs of both delimiters", text: "`".repeat(128 * 1024) + "~".repeat(128 * 1024) },
+    { name: "escaped newlines", text: "\n".repeat(128 * 1024) }
+  ])("keeps the largest admitted guide bundle bounded with $name", ({ text }) => {
+    const secrets: AcceptedWorkspaceSecret[] = Array.from({ length: 15 }, () => ({
+      id: randomUUID(), versionId: randomUUID(), name: "Large literal", description: "Purpose", value: { kind: "text", text }
+    }));
+    parseAcceptedWorkspaceSecrets(secrets);
+    const guide = workspaceSecretsGuide(secrets);
+    expect(guide).toContain(text);
+    expect(Buffer.byteLength(JSON.stringify({ secrets, guide, environment: {}, runId: "fixture" }))).toBeLessThan(WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES);
+  }, 15_000);
 
   it("rejects duplicate ownership paths, env collisions and oversized admitted sets", () => {
     const secret: AcceptedWorkspaceSecret = { id: randomUUID(), versionId: randomUUID(), name: "Fixture", description: "",
