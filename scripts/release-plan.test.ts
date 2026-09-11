@@ -45,7 +45,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe("release verification selection", () => {
+describe("release channel selection", () => {
   it.each([
     ["tag", "v0.2.1-rc.1", true],
     ["tag", "v0.2.1", false],
@@ -53,9 +53,9 @@ describe("release verification selection", () => {
     ["tag", "v0.2.1-rc.1-extra", false],
     ["tag", "v0.2.1-rc.01", false],
     ["branch", "v0.2.1-rc.1", false]
-  ])("only numbered RC tags skip CI suites: %s %s", (type, ref, fast) => {
+  ])("only numbered RC tags use the RC channel: %s %s", (type, ref, isRc) => {
     expect(releaseMode(type, ref, "0.2.1")).toEqual({
-      version: type === "tag" ? ref.slice(1) : "0.2.1", fast_rc: fast
+      version: type === "tag" ? ref.slice(1) : "0.2.1", is_rc: isRc
     });
   });
 

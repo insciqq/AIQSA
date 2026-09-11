@@ -10,12 +10,12 @@ const stableTag = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const rcTag = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-rc\.(?:0|[1-9]\d*)$/u;
 
 export function releaseMode(refType, refName, packageVersion) {
-  if (refType !== "tag") return { version: packageVersion, fast_rc: false };
+  if (refType !== "tag") return { version: packageVersion, is_rc: false };
   const version = refName.replace(/^v/u, "");
   if (version !== packageVersion && !version.startsWith(`${packageVersion}-`)) {
     throw new Error(`Tag ${refName} does not match package version ${packageVersion}.`);
   }
-  return { version, fast_rc: rcTag.test(refName) };
+  return { version, is_rc: rcTag.test(refName) };
 }
 
 function git(root, args, allowedStatuses = [0]) {
