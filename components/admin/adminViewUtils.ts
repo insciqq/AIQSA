@@ -22,7 +22,8 @@ export function formatTime(value: Date | null): string {
   }).format(value);
 }
 
-export function formatNumber(value: number): string {
+export function formatNumber(value: number | null): string {
+  if (value === null) return "Unavailable";
   return new Intl.NumberFormat(undefined).format(value);
 }
 

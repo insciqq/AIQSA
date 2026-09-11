@@ -6,6 +6,8 @@ import {
 } from "./connectedAppsApi";
 
 const activeApp = {
+  resourcePath: "/mcp" as const,
+  capability: "memory:facts" as const,
   clientName: "Codex CLI",
   clientOrigin: "http://127.0.0.1:43119",
   connectedAt: "2026-09-03T01:00:00.000Z",

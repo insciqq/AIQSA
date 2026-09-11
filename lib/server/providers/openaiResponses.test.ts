@@ -533,7 +533,7 @@ describe("OpenAI Responses adapter", () => {
       providerResponseId: "resp-stream-1",
       usage: {
         cachedInputTokens: 4,
-        cacheWriteInputTokens: 0,
+        cacheWriteInputTokens: null,
         inputTokens: 11,
         outputTokens: 5,
         reasoningTokens: 2,

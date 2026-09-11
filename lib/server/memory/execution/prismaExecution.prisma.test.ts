@@ -348,7 +348,7 @@ describe("Prisma Memory execution", () => {
         acceptedOutputHash: "4".repeat(64),
         errorCode: null,
         state: "SUCCEEDED",
-        usage: completeUsage(11)
+        usage: { ...completeUsage(11), cachedInputTokens: null, reasoningTokens: null, cacheWriteInputTokens: 2 }
       })).resolves.toMatchObject({ replayed: false, state: "SUCCEEDED" });
 
       const sentBeforeDrift = await service.admission.bind(fixture.userId, {
@@ -454,6 +454,10 @@ describe("Prisma Memory execution", () => {
       });
       expect(events.find(({ memoryExecutionBindingId }) =>
         memoryExecutionBindingId === unknown.id)).toMatchObject({
+        cachedInputTokens: null,
+        cacheWriteInputTokens: 2,
+        reasoningTokens: null,
+        usageCompleteness: "COMPLETE",
         estimatedCostMicros: null,
         inputTokens: 11,
         totalTokens: 11

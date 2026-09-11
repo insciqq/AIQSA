@@ -6,6 +6,53 @@ import { signInWithLocalToken as signIn } from "./support/localAuth";
 
 test.use({ hasTouch: true });
 
+for (const profile of [
+  { theme: "light", width: 390, height: 844 },
+  { theme: "dark", width: 1440, height: 900 }
+] as const) {
+  test(`MCP Hub onboarding and independent app revocation · ${profile.theme}`, async ({ context, page }, testInfo) => {
+    await context.addCookies([{ name: "aiqsa.theme", value: profile.theme, url: "http://127.0.0.1:3000" }]);
+    await page.setViewportSize(profile);
+    await installMatrixCatalogFixture(page);
+    const canonical = `https://${"installation-".repeat(8)}example.test/mcp/hub`;
+    await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));
+    await page.route("**/.well-known/oauth-protected-resource/mcp/hub", (route) => route.fulfill({ json: { resource: canonical } }));
+    const common = {
+      clientName: "Synthetic agent", clientOrigin: "https://agent.example.test",
+      connectedAt: "2026-09-12T00:00:00.000Z", lastUsedAt: null, revokedAt: null, state: "ACTIVE"
+    };
+    const memory = { ...common, connectionId: "memory-grant", resourcePath: "/mcp", capability: "memory:facts" };
+    const hub = { ...common, connectionId: "hub-grant", resourcePath: "/mcp/hub", capability: "mcp:hub" };
+    let revoked = false;
+    await page.route("**/api/me/connected-apps", (route) => route.fulfill({ json: { apps: [memory, hub] } }));
+    await page.route("**/api/me/connected-apps/hub-grant", async (route) => {
+      expect(route.request().method()).toBe("DELETE");
+      revoked = true;
+      await route.fulfill({ json: { app: { ...hub, revokedAt: "2026-09-12T00:01:00.000Z", state: "REVOKED" } } });
+    });
+    await signIn(page);
+    await page.goto("/?settings=mcp");
+    const settings = page.getByTestId("settings-v2");
+    await settings.getByText("Connect an external agent to MCP Hub", { exact: true }).click();
+    await expect(settings.getByLabel("MCP Hub URL")).toHaveValue(canonical);
+    await expectWithinViewport(page, settings.getByLabel("MCP Hub URL"));
+    await expectTouchSafe(settings.getByRole("button", { name: "Copy URL" }));
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: testInfo.outputPath(`hub-connect-${profile.theme}.png`) });
+    await settings.getByRole("button", { name: "Connected apps", exact: true }).click();
+    const revoke = settings.getByRole("button", { name: "Revoke Synthetic agent MCP Hub access" });
+    await expectTouchSafe(revoke);
+    await revoke.click();
+    await expect(settings.getByRole("status").filter({ hasText: "MCP Hub access revoked." }))
+      .toHaveText("MCP Hub access revoked. Your MCP connections were kept.");
+    expect(revoked).toBe(true);
+    await expect(settings.getByRole("button", { name: "Revoke Synthetic agent Personal Memory access" })).toBeEnabled();
+    await expect(settings.getByRole("heading", { name: "Synthetic agent" }).last()).toBeFocused();
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: testInfo.outputPath(`hub-revoked-${profile.theme}.png`) });
+  });
+}
+
 test("explains MCP health failures and timeouts and refreshes their status explicitly", async ({ page }) => {
   await installMatrixCatalogFixture(page);
   const failures = [
@@ -309,8 +356,8 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
 
   // Rows toggle with a switch (UX audit 2026-09-02 A13); the switch appears
   // for Mem0 only after its personal value is saved.
-  await settings.getByRole("switch", { name: "Use Mem0 in chats" }).click();
-  await settings.getByRole("switch", { name: "Use Todoist in chats" }).click();
+  await settings.getByRole("switch", { name: "Enable Mem0" }).click();
+  await settings.getByRole("switch", { name: "Enable Todoist" }).click();
   await expect(settings.getByText("Checking", { exact: true })).toBeVisible();
 
   await settings.getByRole("button", { name: "Close settings" }).click();
@@ -321,7 +368,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await expect(settings.getByText("Active", { exact: true })).toHaveCount(2);
   await expect(settings.getByRole("switch", { checked: true })).toHaveCount(2);
   await expect(settings.getByText("Inactive", { exact: true })).toHaveCount(1);
-  await expect(settings.getByRole("switch", { name: "Use Mem0 in chats" })).toHaveAttribute("aria-checked", "true");
+  await expect(settings.getByRole("switch", { name: "Enable Mem0" })).toHaveAttribute("aria-checked", "true");
   await expect(settings.getByText("2 of 3 servers enabled · 2 tools")).toBeVisible();
   await expect(settings.getByText("How tools use data").locator("xpath=..")).not.toHaveAttribute("open", "");
   expect(patchBodies).toContainEqual({ id: "mem0", value: { values: { api_key: "personal-mem0-token" } } });
@@ -400,7 +447,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
 
   await page.setViewportSize({ height: 844, width: 390 });
   await expectNoHorizontalOverflow(page);
-  await expectTouchSafe(settings.getByRole("switch", { name: "Use Mem0 in chats" }));
+  await expectTouchSafe(settings.getByRole("switch", { name: "Enable Mem0" }));
   await expectTouchSafe(settings.getByRole("button", { name: "Close settings" }));
 
   await page.setViewportSize({ height: 390, width: 844 });

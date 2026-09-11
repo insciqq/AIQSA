@@ -1,3 +1,4 @@
+import { decodeTokenUsage } from "../../domain/usage";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import {
@@ -35,30 +36,11 @@ function nonNegativeNumber(value: unknown): value is number {
 }
 
 function parseUsage(value: unknown): ModelRunUsage | null {
-  if (!isRecord(value) ||
-    !nonNegativeNumber(value.inputTokens) ||
-    !nonNegativeNumber(value.outputTokens) ||
-    !nonNegativeNumber(value.reasoningTokens) ||
-    (value.cachedInputTokens !== undefined && !nonNegativeNumber(value.cachedInputTokens)) ||
-    (value.cacheWriteInputTokens !== undefined && !nonNegativeNumber(value.cacheWriteInputTokens)) ||
-    (value.totalTokens !== undefined && !nonNegativeNumber(value.totalTokens)) ||
-    (value.estimatedCostMicros !== undefined && value.estimatedCostMicros !== null &&
-      !nonNegativeNumber(value.estimatedCostMicros))) {
-    return null;
-  }
-  return {
-    ...(value.cachedInputTokens !== undefined ? { cachedInputTokens: value.cachedInputTokens } : {}),
-    ...(value.cacheWriteInputTokens !== undefined
-      ? { cacheWriteInputTokens: value.cacheWriteInputTokens }
-      : {}),
-    ...(value.estimatedCostMicros !== undefined
-      ? { estimatedCostMicros: value.estimatedCostMicros as number | null }
-      : {}),
-    inputTokens: value.inputTokens,
-    outputTokens: value.outputTokens,
-    reasoningTokens: value.reasoningTokens,
-    ...(value.totalTokens !== undefined ? { totalTokens: value.totalTokens } : {})
-  };
+  const usage = decodeTokenUsage(value);
+  if (!usage || !isRecord(value) || (value.estimatedCostMicros != null &&
+    !nonNegativeNumber(value.estimatedCostMicros))) return null;
+  return { ...usage, ...(value.estimatedCostMicros !== undefined
+    ? { estimatedCostMicros: value.estimatedCostMicros as number | null } : {}) };
 }
 
 function parseStoredEvent(value: unknown): ModelRunSseEvent | null {
@@ -76,8 +58,10 @@ function parseStoredEvent(value: unknown): ModelRunSseEvent | null {
       return Number.isSafeInteger(data.round) && (data.round as number) >= 0
         ? value as unknown as ModelRunSseEvent
         : null;
-    case "usage":
-      return parseUsage(data) ? value as unknown as ModelRunSseEvent : null;
+    case "usage": {
+      const usage = parseUsage(data);
+      return usage ? { type: "usage", data: usage } : null;
+    }
     case "run_start":
       return typeof data.modelId === "string" && typeof data.provider === "string" &&
         typeof data.runId === "string" && data.status === "streaming"

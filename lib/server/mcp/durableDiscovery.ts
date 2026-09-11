@@ -1,6 +1,7 @@
 import type { ProviderRunRequest } from "../providers/types";
 import type { McpToolAccessFilter } from "./toolAccess";
-import { filterMcpCatalog } from "./toolAccessProjection";
+import { mcpChatDiscoveryContext } from "./chatDiscoveryContext";
+import { discoverMcpTools, McpDiscoveryError } from "./discoveryService";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
@@ -14,7 +15,6 @@ import {
   mcpFindToolsExecutionResult
 } from "./discovery";
 import {
-  McpSemanticRouterError,
   type McpRouterUsageAttribution,
   type McpSemanticRouter
 } from "./router";
@@ -68,17 +68,6 @@ function selectedToolsFromCheckpoint(input: Readonly<{
     throw new Error("mcp_discovery_checkpoint_conflict");
   }
   return tools;
-}
-
-function materializedSelectionMatches(
-  result: Extract<McpRunPlanResult, { ok: true }>,
-  selectedNames: readonly string[]
-): boolean {
-  const actual = result.snapshot.tools.map((tool) => tool.namespacedName);
-  const expected = new Set(selectedNames);
-  return actual.length === selectedNames.length &&
-    new Set(actual).size === actual.length &&
-    actual.every((name) => expected.has(name));
 }
 
 type ExecuteDurableMcpDiscoveryInput = Readonly<{
@@ -144,76 +133,33 @@ export async function executeDurableMcpDiscovery(
     };
   }
 
-  const catalog = await filterMcpCatalog(input.userId, input.activeDiscovery.catalog, input.filterTools);
   const activeNames = new Set(currentSnapshot.tools.map((tool) => tool.namespacedName));
-  const routeLimit = Math.min(
-    maxResults,
-    Math.max(0, MCP_RUN_PLAN_LIMITS.maxTools - activeNames.size)
-  );
-  if (!input.router) {
-    throw new McpAutoDiscoveryUnavailableError("mcp_router_unavailable");
-  }
-  let routed: Awaited<ReturnType<McpSemanticRouter["route"]>>;
+  let discovered: Awaited<ReturnType<typeof discoverMcpTools>>;
   try {
-    routed = await input.router.route({
-      activeToolNames: activeNames,
-      catalog,
-      goals: input.routingGoals ?? [parsed.goal],
-      limit: routeLimit,
-      maxOutputTokens: input.maxOutputTokens,
-      request: input.request,
-      ...(input.signal ? { signal: input.signal } : {}),
-      ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {})
+    discovered = await discoverMcpTools({
+      catalog: input.activeDiscovery.catalog,
+      filterTools: input.filterTools,
+      materialize: input.materialize,
+      onUsage: input.onUsage,
+      router: input.router,
+      routing: {
+        activeToolNames: activeNames,
+        context: mcpChatDiscoveryContext(input.request),
+        goals: input.routingGoals ?? [parsed.goal],
+        limit: Math.min(maxResults, Math.max(0, MCP_RUN_PLAN_LIMITS.maxTools - activeNames.size)),
+        maxOutputTokens: input.maxOutputTokens,
+        signal: input.signal,
+        timeoutMs: input.timeoutMs
+      },
+      userId: input.userId
     });
   } catch (error) {
-    if (error instanceof McpSemanticRouterError && error.usageAttribution) {
-      input.onUsage?.(error.usageAttribution);
-    }
     if (input.signal?.aborted) throw error;
-    throw new McpAutoDiscoveryUnavailableError(
-      error instanceof McpSemanticRouterError ? error.code : "mcp_router_request_failed"
-    );
+    throw new McpAutoDiscoveryUnavailableError(error instanceof McpDiscoveryError ? error.code : "mcp_materialization_failed");
   }
-  if (routed.usageAttribution) input.onUsage?.(routed.usageAttribution);
-  if (routed.toolNames.length > routeLimit ||
-    new Set(routed.toolNames).size !== routed.toolNames.length) {
-    throw new McpAutoDiscoveryUnavailableError("mcp_router_output_invalid");
-  }
-
-  const selected = mcpCatalogToolsByNames(
-    catalog,
-    routed.toolNames
-  ).filter((tool) => !activeNames.has(tool.namespacedName));
-  if (selected.length !== routed.toolNames.length) {
-    throw new McpAutoDiscoveryUnavailableError("mcp_router_output_invalid");
-  }
-
-  let addedSnapshot = emptySnapshot();
-  let bindings: readonly McpRunPlanBinding[] = [];
-  if (selected.length > 0) {
-    let plan: McpRunPlanResult;
-    try {
-      plan = await input.materialize(
-        input.userId,
-        selected.map((tool) => ({
-          namespacedName: tool.namespacedName,
-          revisionId: tool.revisionId,
-          serverId: tool.serverId
-        }))
-      );
-    } catch (error) {
-      if (input.signal?.aborted) throw error;
-      throw new McpAutoDiscoveryUnavailableError("mcp_materialization_failed");
-    }
-    if (!plan.ok) {
-      throw new McpAutoDiscoveryUnavailableError(`mcp_materialization_${plan.code}`);
-    }
-    if (!materializedSelectionMatches(plan, routed.toolNames)) {
-      throw new McpAutoDiscoveryUnavailableError("mcp_materialization_mismatch");
-    }
-    addedSnapshot = plan.snapshot;
-    bindings = plan.bindings;
-  }
+  const { selected, plans } = discovered;
+  const addedSnapshot = plans[0]?.snapshot ?? emptySnapshot();
+  const bindings = plans[0]?.bindings ?? [];
 
   const appended = await input.appendEpoch({
     bindings,

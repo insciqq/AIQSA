@@ -2343,7 +2343,8 @@ export function createPrismaAdminProviderRepository(
                 { providerModelId: modelId },
                 { rerankerProviderModelId: modelId },
                 { chatTitleProviderModelId: modelId },
-                { chatPdfProviderModelId: modelId }
+                { chatPdfProviderModelId: modelId },
+                { chatPdfNativeProviderModelId: modelId }
               ]
             }
           }),
@@ -2498,13 +2499,14 @@ export function createPrismaAdminProviderRepository(
           });
           // Clear only the deleted deployment's roles; other assignments
           // remain valid, including their explicit configuration timestamps.
-          for (const field of ["providerModelId", "rerankerProviderModelId", "chatPdfProviderModelId", "chatTitleProviderModelId"] as const) {
+          for (const field of ["providerModelId", "rerankerProviderModelId", "chatPdfProviderModelId", "chatPdfNativeProviderModelId", "chatTitleProviderModelId"] as const) {
             await tx.systemModelPolicy.updateMany({
               data: {
                 [field]: null,
                 ...(field === "providerModelId" ? { reasoningEffort: null } : {}),
                 ...(field === "chatTitleProviderModelId" ? { chatTitleReasoningEffort: null } : {}),
                 ...(field === "chatPdfProviderModelId" ? { chatPdfReasoningEffort: null } : {}),
+                ...(field === "chatPdfNativeProviderModelId" ? { chatPdfNativeReasoningEffort: null } : {}),
                 updatedByUserId: null,
                 version: { increment: 1 }
               },

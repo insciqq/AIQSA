@@ -1,3 +1,4 @@
+import { reportedTokenCount } from "../../domain/usage";
 import type {
   AdminUsageDashboard,
   AdminUsageGroupRecord,
@@ -21,6 +22,7 @@ export type AdminUsageAggregateSums = Readonly<{
 }>;
 
 export type AdminUsageAggregateSource = Readonly<{
+  incompleteUsageCount: number;
   _count: Readonly<{
     _all: number;
   }>;
@@ -67,41 +69,32 @@ export type AdminUsageAggregationInput = Readonly<{
 }>;
 
 function emptyUsageTotals(): AdminUsageTokenTotals {
-  return {
-    cachedInputTokens: 0,
-    cacheWriteInputTokens: 0,
-    inputTokens: 0,
-    lastUsedAt: null,
-    outputTokens: 0,
-    reasoningTokens: 0,
-    runCount: 0,
-    totalTokens: 0
-  };
-}
-
-function numberOrZero(value: number | null | undefined): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return { cachedInputTokens: null, cacheWriteInputTokens: null, inputTokens: null,
+    lastUsedAt: null, outputTokens: null, reasoningTokens: null, runCount: 0,
+    incompleteUsageCount: 0, totalTokens: null };
 }
 
 function usageTotalsFromAggregate(input: {
   count: number;
+  incompleteUsageCount: number;
   lastUsedAt: Date | null;
   sums: AdminUsageAggregateSums;
 }): AdminUsageTokenTotals {
-  const inputTokens = numberOrZero(input.sums.inputTokens);
-  const outputTokens = numberOrZero(input.sums.outputTokens);
-  const totalTokens = numberOrZero(input.sums.totalTokens);
-
   return {
-    cachedInputTokens: numberOrZero(input.sums.cachedInputTokens),
-    cacheWriteInputTokens: numberOrZero(input.sums.cacheWriteInputTokens),
-    inputTokens,
+    cachedInputTokens: reportedTokenCount(input.sums.cachedInputTokens),
+    cacheWriteInputTokens: reportedTokenCount(input.sums.cacheWriteInputTokens),
+    inputTokens: reportedTokenCount(input.sums.inputTokens),
+    outputTokens: reportedTokenCount(input.sums.outputTokens),
+    reasoningTokens: reportedTokenCount(input.sums.reasoningTokens),
+    totalTokens: reportedTokenCount(input.sums.totalTokens),
     lastUsedAt: serializeAdminDate(input.lastUsedAt),
-    outputTokens,
-    reasoningTokens: numberOrZero(input.sums.reasoningTokens),
     runCount: input.count,
-    totalTokens: totalTokens > 0 ? totalTokens : inputTokens + outputTokens
+    incompleteUsageCount: input.incompleteUsageCount
   };
+}
+
+function sumKnown(left: number | null, right: number | null): number | null {
+  return left === null && right === null ? null : reportedTokenCount((left ?? 0) + (right ?? 0));
 }
 
 function addUsageTotals(left: AdminUsageTokenTotals, right: AdminUsageTokenTotals): AdminUsageTokenTotals {
@@ -113,20 +106,21 @@ function addUsageTotals(left: AdminUsageTokenTotals, right: AdminUsageTokenTotal
       : left.lastUsedAt ?? right.lastUsedAt;
 
   return {
-    cachedInputTokens: left.cachedInputTokens + right.cachedInputTokens,
-    cacheWriteInputTokens: left.cacheWriteInputTokens + right.cacheWriteInputTokens,
-    inputTokens: left.inputTokens + right.inputTokens,
+    cachedInputTokens: sumKnown(left.cachedInputTokens, right.cachedInputTokens),
+    cacheWriteInputTokens: sumKnown(left.cacheWriteInputTokens, right.cacheWriteInputTokens),
+    inputTokens: sumKnown(left.inputTokens, right.inputTokens),
     lastUsedAt,
-    outputTokens: left.outputTokens + right.outputTokens,
-    reasoningTokens: left.reasoningTokens + right.reasoningTokens,
+    outputTokens: sumKnown(left.outputTokens, right.outputTokens),
+    reasoningTokens: sumKnown(left.reasoningTokens, right.reasoningTokens),
     runCount: left.runCount + right.runCount,
-    totalTokens: left.totalTokens + right.totalTokens
+    incompleteUsageCount: left.incompleteUsageCount + right.incompleteUsageCount,
+    totalTokens: sumKnown(left.totalTokens, right.totalTokens)
   };
 }
 
 function compareUsageTotals(left: AdminUsageTokenTotals, right: AdminUsageTokenTotals): number {
   return (
-    right.totalTokens - left.totalTokens ||
+    (right.totalTokens ?? 0) - (left.totalTokens ?? 0) ||
     right.runCount - left.runCount ||
     (right.lastUsedAt ? new Date(right.lastUsedAt).getTime() : 0) -
       (left.lastUsedAt ? new Date(left.lastUsedAt).getTime() : 0)
@@ -140,6 +134,7 @@ export function serializeAdminUsageDashboard(input: AdminUsageAggregationInput):
     const providerModel = {
       ...usageTotalsFromAggregate({
         count: row._count._all,
+        incompleteUsageCount: row.incompleteUsageCount,
         lastUsedAt: row._max.createdAt,
         sums: row._sum
       }),
@@ -159,6 +154,7 @@ export function serializeAdminUsageDashboard(input: AdminUsageAggregationInput):
       row.userId,
       usageTotalsFromAggregate({
         count: row._count._all,
+        incompleteUsageCount: row.incompleteUsageCount,
         lastUsedAt: row._max.createdAt,
         sums: row._sum
       })
@@ -192,7 +188,7 @@ export function serializeAdminUsageDashboard(input: AdminUsageAggregationInput):
         addUsageTotals(groupTotals.get(membership.groupId) ?? emptyUsageTotals(), userTotals)
       );
 
-      if (userTotals.totalTokens > 0) {
+      if (userTotals.lastUsedAt !== null) {
         groupContributors.get(membership.groupId)?.add(user.id);
       }
     }

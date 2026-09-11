@@ -1,5 +1,5 @@
+import { memoryReportedUsage as reportedUsage } from "../../execution/usage";
 import type { PrismaClient } from "@prisma/client";
-import { normalizeTokenUsage } from "../../../../domain/usage";
 import { prisma } from "../../../prisma";
 import { MemoryCoordinatorError } from "../../coordinator/errors";
 import type {
@@ -70,22 +70,6 @@ const unavailableUsage: MemoryReportedUsage = Object.freeze({
   totalTokens: null
 });
 
-function reportedUsage(value: Parameters<typeof normalizeTokenUsage>[0]): MemoryReportedUsage {
-  const usage = normalizeTokenUsage(value);
-  const estimated = "estimatedCostMicros" in value
-    ? value.estimatedCostMicros
-    : null;
-  return {
-    cachedInputTokens: usage.cachedInputTokens,
-    completeness: "COMPLETE",
-    estimatedCostMicros: typeof estimated === "number" &&
-      Number.isSafeInteger(estimated) && estimated >= 0 ? estimated : null,
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    reasoningTokens: usage.reasoningTokens,
-    totalTokens: usage.totalTokens
-  };
-}
 
 function authorityGate(error: unknown) {
   if (error instanceof MemoryExecutionError) {

@@ -48,6 +48,8 @@ export type ProviderStructuredOutputRequest = Readonly<{
 }>;
 
 export type ProviderStructuredOutputOptions = Readonly<{
+  /** Server-owned admission/accounting barrier at the physical request boundary. */
+  beforeDispatch?(): Promise<void>;
   onProviderResponseId?(providerResponseId: string | null): void;
   onUsage?(usage: ModelRunUsage): void;
   signal?: AbortSignal;

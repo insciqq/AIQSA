@@ -3,6 +3,7 @@ import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { geminiInteractionsToolBridge } from "../tools/bridges";
 import {
   providerAttachmentPreviewMediaType,
+  usesNativePdfInput,
   providerAttachmentPreviewText,
   providerAttachmentText
 } from "./attachmentPayload";
@@ -171,7 +172,7 @@ function latestUserContent(
       continue;
     }
 
-    if (attachment.kind === "pdf" && request.modelCapabilities.nativePdfInput) {
+    if (usesNativePdfInput(attachment, request.modelCapabilities)) {
       content.push(pdfContent(attachment, options.preview));
       continue;
     }

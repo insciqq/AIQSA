@@ -1541,6 +1541,15 @@ describe("message run actions", () => {
     expect(actions.setNotice).not.toHaveBeenCalled();
   });
 
+  it("retains typed context rejection with the restored composer draft", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "context_too_large", message: "Request did not fit." }, { status: 400 })));
+    const actions = useMessageRunActionsForTest({ activeChat: chat(), attachments: [], draft: "Large request" });
+    await actions.submitComposer();
+    expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
+      draft: "Large request", contextRejectionGeneration: expect.any(Number), operationErrorRetryable: true
+    });
+  });
+
   it("leaves the composer empty when an accepted run fails", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
     const actions = useMessageRunActionsForTest({

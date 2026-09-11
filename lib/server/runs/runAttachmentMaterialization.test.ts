@@ -75,7 +75,7 @@ describe("run attachment materialization", () => {
     })).rejects.toMatchObject({ code: "attachment_object_read_failed" });
   });
 
-  it("restores the exact run-owned PDF artifact without exposing private artifact references", async () => {
+  it.each([true, false])("restores prepared text when answer native-PDF support is %s", async (nativePdfInput) => {
     const encoded = encodeChatPdfArtifact({ text: "Accepted document text.", pageCount: 2 });
     const source = { ...attachment("pdf", "pdf", 100), checksum: "a".repeat(64), extractedText: null,
       preparedPdf: { byteSize: encoded.body.length, checksum: encoded.checksum, pageCount: 2,
@@ -83,15 +83,29 @@ describe("run attachment materialization", () => {
     const store = repository([source]);
     const getObject = vi.fn(async (storageKey: string) => ({ storageKey, contentType: "application/json", body: encoded.body }));
     const result = await loadProviderAttachments({ repository: store, storage: { getObject } }, "user", ["pdf"], {
-      capabilities: baseCapabilities, limits: limits(), runId: "accepted-run"
+      capabilities: { ...baseCapabilities, nativePdfInput }, limits: limits(), runId: "accepted-run"
     });
     expect(store.loadAttachments).toHaveBeenCalledWith("user", ["pdf"], undefined, "accepted-run");
+    expect(result[0]?.pdfDelivery).toBe("prepared_text");
+    expect(result[0]?.base64Data).toBeUndefined();
+    expect(getObject).toHaveBeenCalledOnce();
     expect(result[0]?.extractedText).toBe("Accepted document text.");
     expect(result[0]).not.toHaveProperty("preparedPdf");
     expect(JSON.stringify(result)).not.toContain("chat-pdf/accepted");
     await expect(loadProviderAttachments({ repository: store, storage: { getObject } }, "user", ["pdf"], {
-      capabilities: baseCapabilities, limits: limits()
+      capabilities: { ...baseCapabilities, nativePdfInput }, limits: limits()
     })).rejects.toMatchObject({ code: "attachment_object_read_failed" });
+  });
+
+  it("does not resolve PDF policy for an image-only request", async () => {
+    const resolvePdfRoute = vi.fn(async () => { throw new Error("pdf_processing_configuration_incomplete"); });
+    const image = attachment("image", "image", 3);
+    const getObject = vi.fn(async () => ({ body: Buffer.from("abc"), contentType: "image/png", storageKey: "private/image" }));
+    const result = await loadProviderAttachments({ repository: repository([image]), storage: { getObject } }, "user", [image.id], {
+      capabilities: baseCapabilities, limits: limits(), resolvePdfRoute
+    });
+    expect(result[0]?.dataUrl).toBe("data:image/png;base64,YWJj");
+    expect(resolvePdfRoute).not.toHaveBeenCalled();
   });
 
   it.each(["processing", "failed"])("rejects a %s attachment before object reads", async (status) => {

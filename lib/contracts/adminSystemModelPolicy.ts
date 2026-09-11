@@ -2,6 +2,8 @@ import type { AdminModelDefaultCandidate } from "./adminModelPolicy";
 import { normalizeImageModelConfiguration, normalizeImageGenerationParameters, type ImageModelConfiguration, type ImageGenerationParameters } from "./imageGeneration";
 
 export type SystemModelVerificationRole = "chat_titles" | "memory" | "direct_pdf" | "vision" | "embedding" | "reranker" | "image";
+export type ChatPdfProcessingMode = "prefer_chat_model" | "use_pdf_reader" | "read_page_images";
+export type ChatPdfFallbackMethod = "pdf_reader" | "page_images";
 
 export type AdminImageModelCandidate = AdminModelDefaultCandidate & {
   upstreamModelId: string;
@@ -75,8 +77,12 @@ export type AdminSystemModelPolicyCatalog = {
     imageParameters?: ImageGenerationParameters;
     chatTitleModel: (AdminSystemModelCandidate & { available: boolean }) | null;
     chatTitleReasoningEffort: string | null;
+    chatPdfNativeModel?: (AdminSystemModelCandidate & { available: boolean }) | null;
+    chatPdfNativeReasoningEffort?: string | null;
     chatPdfModel: (AdminSystemModelCandidate & { available: boolean }) | null;
     chatPdfReasoningEffort: string | null;
+    chatPdfProcessingMode?: ChatPdfProcessingMode;
+    chatPdfFallbackMethod?: ChatPdfFallbackMethod;
     rerankerModel: (AdminRerankerModelCandidate & { available: boolean }) | null;
     rerankerRoute?: {
       entries: AdminRerankerRouteEntry[];
@@ -194,6 +200,16 @@ export function decodeAdminSystemModelPolicyResponse(
   const rerankerModel = policy.rerankerModel;
   const rerankerRoute = policy.rerankerRoute;
   const updatedBy = policy.updatedBy;
+  const chatPdfProcessingMode = policy.chatPdfProcessingMode ?? "prefer_chat_model";
+  const chatPdfFallbackMethod = policy.chatPdfFallbackMethod ?? "page_images";
+  if (Object.hasOwn(policy, "chatPdfNativeModel") !== Object.hasOwn(policy, "chatPdfNativeReasoningEffort") ||
+    !["prefer_chat_model", "use_pdf_reader", "read_page_images"].includes(String(chatPdfProcessingMode)) ||
+    !["pdf_reader", "page_images"].includes(String(chatPdfFallbackMethod)) ||
+    policy.chatPdfProcessingMode === null || policy.chatPdfFallbackMethod === null ||
+    (policy.chatPdfNativeModel !== undefined && policy.chatPdfNativeModel !== null &&
+      (!record(policy.chatPdfNativeModel) || typeof policy.chatPdfNativeModel.available !== "boolean" || !candidate(policy.chatPdfNativeModel))) ||
+    (policy.chatPdfNativeReasoningEffort !== undefined && policy.chatPdfNativeReasoningEffort !== null && !boundedText(policy.chatPdfNativeReasoningEffort, 32)) ||
+    (!policy.chatPdfNativeModel && policy.chatPdfNativeReasoningEffort != null)) return null;
   if ((policy.chatTitleModel !== null && (!record(policy.chatTitleModel) ||
       typeof policy.chatTitleModel.available !== "boolean" || !candidate(policy.chatTitleModel))) ||
     !(policy.chatTitleReasoningEffort === null || boundedText(policy.chatTitleReasoningEffort, 32)) ||
@@ -242,6 +258,12 @@ export function decodeAdminSystemModelPolicyResponse(
         chatTitleReasoningEffort: policy.chatTitleReasoningEffort as string | null,
         chatPdfModel: policy.chatPdfModel as AdminSystemModelPolicyCatalog["policy"]["chatPdfModel"],
         chatPdfReasoningEffort: policy.chatPdfReasoningEffort as string | null,
+        ...(Object.hasOwn(policy, "chatPdfNativeModel") ? {
+          chatPdfNativeModel: policy.chatPdfNativeModel as AdminSystemModelPolicyCatalog["policy"]["chatPdfNativeModel"],
+          chatPdfNativeReasoningEffort: policy.chatPdfNativeReasoningEffort as string | null
+        } : {}),
+        ...(Object.hasOwn(policy, "chatPdfProcessingMode") ? { chatPdfProcessingMode: chatPdfProcessingMode as ChatPdfProcessingMode } : {}),
+        ...(Object.hasOwn(policy, "chatPdfFallbackMethod") ? { chatPdfFallbackMethod: chatPdfFallbackMethod as ChatPdfFallbackMethod } : {}),
         reasoningEffort: reasoningEffort as string | null,
         rerankerModel: rerankerModel as
           (AdminRerankerModelCandidate & { available: boolean }) | null,

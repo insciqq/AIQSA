@@ -256,13 +256,13 @@ export type KnowledgeBaseRetrievalEvidence = Readonly<{
 export type KnowledgeEmbeddingExecutionEvidence = Readonly<{
   bindingOrdinals: readonly number[];
   durationMs: number;
-  inputTokens: number;
+  inputTokens: number | null;
   modelId: string;
   provider: string;
   providerModelId: string;
   requestId: string | null;
   status: "complete" | "error";
-  totalTokens: number;
+  totalTokens: number | null;
 }>;
 
 export type KnowledgeHybridPassage = Readonly<{

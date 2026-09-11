@@ -63,7 +63,7 @@ describe("McpSettingsSection", () => {
     expect(disclosure).toHaveAttribute("open");
     expect(screen.getByText(/Auto starts with a small schema-free catalog/)).toBeVisible();
     expect(screen.getByText(/Load all eagerly loads every enabled server/)).toBeVisible();
-    expect(screen.getByText(/Enabled runtimes stay asleep until a run actually needs them/)).toBeVisible();
+    expect(screen.getByText(/Enabled runtimes stay asleep until a chat or MCP Hub request needs them/)).toBeVisible();
   });
 
   it("keeps availability separate from the enable and disable actions", async () => {
@@ -86,14 +86,14 @@ describe("McpSettingsSection", () => {
     expect(card).not.toBeNull();
     const initial = within(card!);
     expect(initial.getByText("Inactive")).toBeVisible();
-    const control = initial.getByRole("switch", { name: "Use Todoist in chats" });
+    const control = initial.getByRole("switch", { name: "Enable Todoist" });
     expect(control).toHaveAttribute("aria-checked", "false");
     fireEvent.click(control);
     await waitFor(() => expect(todoist.enabled).toBe(true));
-    expect(within(card!).getByRole("switch", { name: "Use Todoist in chats" })).toHaveAttribute("aria-checked", "true");
+    expect(within(card!).getByRole("switch", { name: "Enable Todoist" })).toHaveAttribute("aria-checked", "true");
     // Persisted ready alone does not make a dormant server active.
     expect(within(card!).getByText("Inactive")).toBeVisible();
-    expect(within(card!).getByText("Use in chats")).toBeVisible();
+    expect(within(card!).getByText("Enable connection")).toBeVisible();
     fireEvent.click(control);
     await waitFor(() => expect(todoist.enabled).toBe(false));
     expect(within(card!).getByText("Inactive")).toBeVisible();
@@ -129,8 +129,8 @@ describe("McpSettingsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save personal values" }));
     await waitFor(() => expect(servers[0]?.fields[0]?.source).toBe("personal"));
 
-    fireEvent.click(await screen.findByRole("switch", { name: "Use Mem0 in chats" }));
-    fireEvent.click(screen.getByRole("switch", { name: "Use Todoist in chats" }));
+    fireEvent.click(await screen.findByRole("switch", { name: "Enable Mem0" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Enable Todoist" }));
     await waitFor(() => expect(servers.every((server) => server.enabled)).toBe(true));
 
     const patchBodies = fetchMock.mock.calls
@@ -244,7 +244,7 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
-    fireEvent.click(screen.getByRole("switch", { name: "Use Notion in chats" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Enable Notion" }));
 
     expect(await screen.findByText("Connect Notion to an external account before enabling it.")).toBeVisible();
     const reconnect = screen.getByRole("link", { name: "Reconnect" });
@@ -281,7 +281,7 @@ describe("McpSettingsSection", () => {
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: `Server ${MCP_RUN_PLAN_LIMITS.maxEnabledServers}` });
     fireEvent.click(screen.getByRole("switch", {
-      name: `Use Server ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} in chats`
+      name: `Enable Server ${MCP_RUN_PLAN_LIMITS.maxEnabledServers}`
     }));
 
     expect(screen.getByText(
@@ -310,7 +310,7 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Candidate" });
-    fireEvent.click(screen.getByRole("switch", { name: "Use Candidate in chats" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Enable Candidate" }));
 
     await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     expect(screen.queryByText(/above the .*tool run limit/)).not.toBeInTheDocument();
@@ -337,7 +337,7 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Candidate" });
-    fireEvent.click(screen.getByRole("switch", { name: "Use Candidate in chats" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Enable Candidate" }));
 
     await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     expect(screen.queryByText(/above the .*tool run limit/)).not.toBeInTheDocument();
@@ -358,7 +358,7 @@ describe("McpSettingsSection", () => {
     expect(idle).toHaveAttribute("data-tone", "neutral");
     expect(idle.closest("p")).toHaveTextContent("Inactive · 1 tool");
     expect(idle.closest("p")).toHaveAttribute("aria-live", "polite");
-    expect(screen.getAllByText("Use in chats")).toHaveLength(3);
+    expect(screen.getAllByText("Enable connection")).toHaveLength(3);
   });
 
   it("omits internal failure details from ordinary settings", async () => {
@@ -395,7 +395,7 @@ describe("McpSettingsSection", () => {
     const card = heading.closest<HTMLElement>("article");
     expect(card).not.toBeNull();
     expect(within(card!).getByText("Inactive")).toBeVisible();
-    expect(within(card!).getByRole("switch", { name: "Use Notion in chats" })).toHaveAttribute("aria-checked", "true");
+    expect(within(card!).getByRole("switch", { name: "Enable Notion" })).toHaveAttribute("aria-checked", "true");
     expect(within(card!).getByText("Needs authorization")).toHaveAttribute("data-tone", "warn");
     expect(within(card!).getByRole("link", { name: "Connect" })).toBeVisible();
   });

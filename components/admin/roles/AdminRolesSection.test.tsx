@@ -130,9 +130,15 @@ function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSetti
         if (body.expectedVersion !== roles.policy.version) {
           return Response.json({ error: "system_model_policy_stale" }, { status: 409 });
         }
-        const pick = (id: unknown) => [...roles.titleCandidates, ...roles.candidates, ...roles.verificationCandidates].find((item) => item.id === id) ?? null;
+        const pick = (id: unknown) => [...roles.titleCandidates, ...roles.candidates, ...roles.documentCandidates, ...roles.verificationCandidates].find((item) => item.id === id) ?? null;
         roles = { ...roles, policy: {
           ...roles.policy, version: roles.policy.version + 1,
+          ...(Object.hasOwn(body, "chatPdfProcessingMode") ? { chatPdfProcessingMode: body.chatPdfProcessingMode as "prefer_chat_model" | "use_pdf_reader" | "read_page_images" } : {}),
+          ...(Object.hasOwn(body, "chatPdfFallbackMethod") ? { chatPdfFallbackMethod: body.chatPdfFallbackMethod as "pdf_reader" | "page_images" } : {}),
+          ...(Object.hasOwn(body, "chatPdfNativeProviderModelId") ? {
+            chatPdfNativeModel: body.chatPdfNativeProviderModelId ? { ...pick(body.chatPdfNativeProviderModelId)!, available: true } : null,
+            chatPdfNativeReasoningEffort: body.chatPdfNativeReasoningEffort as string | null
+          } : {}),
           ...(Object.hasOwn(body, "providerModelId") ? {
             reasoningEffort: body.reasoningEffort as string | null,
             systemModel: body.providerModelId ? { ...pick(body.providerModelId)!, available: true } : null
@@ -316,6 +322,36 @@ describe("AdminRolesSection", () => {
     expect(screen.getByTestId("admin-reranker-fallbacks")).toHaveTextContent("Fallbacks: OpenRouter / Cohere 4 Pro");
   });
 
+  it("preserves both reader assignments when changing PDF modes and shows only the applicable fallback", async () => {
+    const roles = rolesCatalog();
+    const native = { ...luna, id: "native-pdf", displayName: "Native PDF model", pdfInput: "verified" as const };
+    const image = { ...luna, id: "page-images", displayName: "Page image model", visionInput: "verified" as const };
+    roles.documentCandidates = [native, image];
+    roles.policy.chatPdfProcessingMode = "prefer_chat_model";
+    roles.policy.chatPdfFallbackMethod = "page_images";
+    const calls = server(roles);
+    renderSection();
+    for (const [label, name] of [["PDF reader deployment", "Native PDF model"], ["Page-image reader deployment", "Page image model"]]) {
+      fireEvent.click(await screen.findByRole("button", { name: label }));
+      fireEvent.click(within(screen.getByRole("dialog", { name: label })).getByRole("option", { name: new RegExp(name) }));
+      await waitFor(() => expect(screen.getByRole("button", { name: label })).toHaveTextContent(name));
+    }
+    fireEvent.change(screen.getByLabelText("Fallback method"), { target: { value: "pdf_reader" } });
+    await waitFor(() => expect(screen.getByLabelText("Fallback method")).toHaveValue("pdf_reader"));
+    fireEvent.change(screen.getByLabelText("Processing mode"), { target: { value: "read_page_images" } });
+    await waitFor(() => expect(screen.queryByLabelText("Fallback method")).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "PDF reader deployment" })).toHaveTextContent("Native PDF model");
+    expect(screen.getByRole("button", { name: "Page-image reader deployment" })).toHaveTextContent("Page image model");
+    fireEvent.change(screen.getByLabelText("Processing mode"), { target: { value: "prefer_chat_model" } });
+    await waitFor(() => expect(screen.getByLabelText("Fallback method")).toHaveValue("pdf_reader"));
+    const patches = calls.filter((call) => call.method === "PATCH").map((call) => call.body);
+    expect(patches).toEqual(expect.arrayContaining([
+      expect.objectContaining({ chatPdfNativeProviderModelId: "native-pdf", chatPdfNativeReasoningEffort: null }),
+      expect.objectContaining({ chatPdfProviderModelId: "page-images", chatPdfReasoningEffort: null })
+    ]));
+    expect(patches.slice(2).every((patch) => !Object.hasOwn(patch!, "chatPdfNativeProviderModelId") && !Object.hasOwn(patch!, "chatPdfProviderModelId"))).toBe(true);
+  });
+
   it("edits reasoning for both working roles and selects a PDF reader without a second switch", async () => {
     const roles = rolesCatalog();
     const reader = { ...luna, visionInput: "verified" as const };
@@ -323,12 +359,12 @@ describe("AdminRolesSection", () => {
     roles.verificationCandidates = [reader];
     const calls = server(roles);
     renderSection();
-    const picker = await screen.findByRole("button", { name: "PDF reading in chats deployment" });
+    const picker = await screen.findByRole("button", { name: "Page-image reader deployment" });
     expect(screen.queryByRole("switch", { name: "Send pages there" })).not.toBeInTheDocument();
     fireEvent.click(picker);
-    fireEvent.click(within(screen.getByRole("dialog", { name: "PDF reading in chats deployment" })).getByRole("option", { name: /GPT Luna/ }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Page-image reader deployment" })).getByRole("option", { name: /GPT Luna/ }));
     await waitFor(() => expect(screen.getByTestId("admin-role-chat-pdf-status")).toHaveTextContent("Working"));
-    for (const [id, label] of [["admin-role-memory", "System model reasoning"], ["admin-role-chat-pdf", "Chat PDF reasoning"]]) {
+    for (const [id, label] of [["admin-role-memory", "System model reasoning"], ["admin-role-chat-pdf-images", "Page-image reader reasoning"]]) {
       fireEvent.click(within(screen.getByTestId(id!)).getByText("Advanced"));
       const reasoning = screen.getByRole("combobox", { name: label! });
       expect(reasoning).toBeEnabled();

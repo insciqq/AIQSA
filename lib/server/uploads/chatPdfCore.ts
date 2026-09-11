@@ -1,3 +1,4 @@
+import type { ChatPdfRoute } from "../../contracts/chatPdfPreparation";
 import { createHash } from "node:crypto";
 import { ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS, PDF_PROCESSING_MAX_PAGES } from "../../contracts/uploads";
 import { planAdaptivePdfPages, type AdaptivePdfPlan } from "../parsing/adaptivePdf";
@@ -79,7 +80,7 @@ export type ChatPdfWorkPlan = Readonly<{
     crops: readonly ParsedBoundingBox[];
     key: string;
     page: number;
-    route: "native_only" | "vision_required";
+    route: "native_only" | "vision_required" | "pdf_required";
   }>[];
   version: 1;
 }>;
@@ -171,7 +172,7 @@ export function createChatPdfCore(options: Readonly<{
       validateChatPdfSource(input.bytes, input.admission);
       const config = getPdfExtractionConfig();
       const maxPages = Math.min(PDF_PROCESSING_MAX_PAGES, config.maxPages);
-      const { pageCount } = await inspect({ bytes: input.bytes, mode: "system_model_vision",
+      const { pageCount } = await inspect({ bytes: input.bytes, mode: input.admission.route === "system_pdf" ? "system_model_direct_pdf" : "system_model_vision",
         signal: input.signal }, { maxPages });
       if (input.admission.pageCount !== null && pageCount !== input.admission.pageCount) {
         throw new ChatPdfPreparationError("pdf_preparation_invalid");
@@ -187,7 +188,10 @@ export function createChatPdfCore(options: Readonly<{
       let geometry: NativePdfGeometry | null = null;
       let docling: ParsedDocument | null = null;
       let adaptive: AdaptivePdfPlan | null = null;
-      if (input.admission.route !== "local_text" && isSharedPdfOcrParserVersion(versions.parserVersion)) {
+      if (input.admission.route === "system_pdf") {
+        // Every page is transcribed through the frozen native-PDF reader.
+        // Native text cannot silently bypass the selected input method.
+      } else if (input.admission.route !== "local_text" && isSharedPdfOcrParserVersion(versions.parserVersion)) {
         const local = await planPdfOcrSource({ bytes: input.bytes, maxBlocks, maxCharacters, maxPages,
           pageCount, parserVersion: versions.parserVersion, signal: input.signal }, { extractGeometry, parseDocling });
         geometry = local.geometry;
@@ -212,7 +216,8 @@ export function createChatPdfCore(options: Readonly<{
       const compatibilityKey = chatPdfCompatibilityKey(input.admission, versions);
       const units = Array.from({ length: pageCount }, (_, index) => {
         const page = index + 1;
-        const route = input.admission.route === "local_text" ? "native_only" as const
+        const route = input.admission.route === "system_pdf" ? "pdf_required" as const
+          : input.admission.route === "local_text" ? "native_only" as const
           : adaptive?.pages[index]?.route ?? "vision_required" as const;
         const metrics = geometry?.quality.pages[index];
         const crops = route === "vision_required" && geometry && metrics
@@ -239,8 +244,29 @@ export function createChatPdfCore(options: Readonly<{
       const unit = input.plan.units[input.page - 1];
       if (!snapshot || input.admission.route === "local_text" || input.admission.route === "direct_pdf" ||
         input.plan.compatibilityKey !== chatPdfCompatibilityKey(input.admission, input.plan) ||
-        !unit || unit.page !== input.page || unit.route !== "vision_required") {
+        !unit || unit.page !== input.page || unit.route !== (input.admission.route === "system_pdf" ? "pdf_required" : "vision_required")) {
         throw new ChatPdfPreparationError("pdf_preparation_invalid");
+      }
+      if (input.admission.route === "system_pdf") {
+        if (!snapshot.model.capabilities.nativePdfInput) throw new ChatPdfPreparationError("pdf_preparation_invalid");
+        const batch = await prepare({ bytes: input.bytes, mode: "system_model_direct_pdf",
+          pageStart: input.page, pageEnd: input.page, signal: input.signal }, { maxPages: PDF_PROCESSING_MAX_PAGES });
+        aborted(input.signal);
+        if (batch.kind !== "pdf" || batch.pageStart !== input.page || batch.pageEnd !== input.page) {
+          throw new ChatPdfPreparationError("pdf_preparation_invalid");
+        }
+        const promptVersion = input.plan.promptVersion;
+        if (promptVersion !== 6 && promptVersion !== 8) throw new ChatPdfPreparationError("pdf_preparation_invalid");
+        const prompt = modelPdfTranscriptionPrompt({ mode: "system_model_direct_pdf",
+          pageStart: input.page, pageEnd: input.page, promptVersion });
+        const specification = { batch, mode: "system_model_direct_pdf" as const, prompt, snapshot,
+          supplement: null, visionDetail: "original" as const };
+        const request = modelPdfProviderRequest(specification);
+        request.chatId = "chat-pdf-transcription";
+        if (!applyProviderRequestContextBudget({ request }).ok) {
+          throw new ChatPdfPreparationError("pdf_preparation_context_limit");
+        }
+        return { request, requestDigest: digestPreparedPdfBatch({ ...specification, profileRevisionId: unit.key }) };
       }
       if (isSharedPdfOcrParserVersion(input.plan.parserVersion)) {
         const prepared = await preparePdfOcrPage({ bytes: input.bytes,
@@ -315,13 +341,17 @@ export function createChatPdfCore(options: Readonly<{
         }
         return document;
       }
-      const required = input.plan.units.filter((unit) => unit.route === "vision_required");
+      const required = input.plan.units.filter((unit) => unit.route !== "native_only");
       if (input.results.length !== required.length || new Set(input.results.map(({ page }) => page)).size !== required.length ||
         required.some((unit) => !input.results.some(({ page }) => page === unit.page))) {
         throw new ChatPdfPreparationError("pdf_preparation_invalid");
       }
       const pages = [...input.results].sort((a, b) => a.page - b.page).flatMap(({ page, text }) =>
-        decodeChatPdfPage(page, text, input.plan.parserVersion));
+        decodeChatPdfPage(page, text, input.plan.parserVersion, input.admission.route));
+      if (input.admission.route === "system_pdf") return modelPdfPagesToDocument({
+        maxBlocks: input.plan.maxBlocks, maxCharacters: input.plan.maxCharacters,
+        mode: "system_model_direct_pdf", pageCount: input.plan.pageCount, pages, tableContinuationMarkers: true
+      });
       if (isSharedPdfOcrParserVersion(input.plan.parserVersion)) return assemblePdfOcrDocument({
         parserVersion: input.plan.parserVersion,
         local: { ...input.local, plan: input.plan.adaptive }, maxBlocks: input.plan.maxBlocks,
@@ -338,7 +368,10 @@ export function createChatPdfCore(options: Readonly<{
   };
 }
 
-export function decodeChatPdfPage(page: number, text: string, parserVersion: number = CHAT_PDF_PARSER_VERSION) {
+export function decodeChatPdfPage(page: number, text: string, parserVersion: number = CHAT_PDF_PARSER_VERSION,
+  route: ChatPdfRoute = "system_vision") {
+  if (route === "system_pdf") return decodeModelPdfBatchOutput({ mode: "system_model_direct_pdf",
+    pageStart: page, pageEnd: page, text });
   if (isSharedPdfOcrParserVersion(parserVersion)) return decodePdfOcrPage(page, text);
   if (text.length > CHAT_PDF_PAGE_OUTPUT_MAX_CHARACTERS) {
     throw new ChatPdfPreparationError("pdf_preparation_invalid", true);

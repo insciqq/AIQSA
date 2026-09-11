@@ -20,6 +20,7 @@ import { buildOpenAIResponsesRequestPreview } from "../providers/openaiResponses
 import { buildOpenRouterChatRequest, buildOpenRouterChatRequestPreview } from "../providers/openRouterChatRequest";
 import { createFetchOpenRouterChatClient, createOpenRouterChatAdapter } from "../providers/openRouterChat";
 import { ProviderRequestTimeoutError } from "../providers/network";
+import { ProviderSearchExecutionError } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import type {
@@ -1381,7 +1382,7 @@ const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
 };
 
 describe("run execution", () => {
-  it.each(["before_dispatch", "after_first_call"] as const)("applies MCP revocation %s without stale schema exposure or extra calls", async (when) => {
+  it.each(["before_dispatch", "during_runtime_preparation", "after_first_call"] as const)("applies MCP revocation %s without stale schema exposure or extra calls", async (when) => {
     const namespacedName = "mcp_tracker_write";
     const fingerprint = "access-fingerprint";
     const mcp: McpRunPlanSnapshot = { version: 1, servers: [{ serverId: "tracker", serverName: "Tracker", revisionId: "rev", fingerprint }],
@@ -1395,7 +1396,14 @@ describe("run execution", () => {
     };
     const prepare: NonNullable<RunExecutionInput["mcp"]>["prepare"] = async () => ({ ok: true, snapshot: mcp,
       bindings: [{ serverId: "tracker", fingerprint, runtimeGenerationId: `generation-${fingerprint}` }] });
-    const callTool = vi.fn(async () => { granted = false; return { isError: false, text: ["Written once"], structuredContent: null, unsupportedContentTypes: [] }; });
+    const effect = vi.fn();
+    const callTool = vi.fn<NonNullable<RunExecutionInput["mcpRuntime"]>["callTool"]>(async (input) => {
+      if (when === "during_runtime_preparation") granted = false;
+      await input.beforeDispatch?.();
+      effect();
+      granted = false;
+      return { isError: false, text: ["Written once"], structuredContent: null, unsupportedContentTypes: [] };
+    });
     const repository = createRepository();
     const egress = createMemoryEgressRecorder();
     const adapter = createAdapter(async function* (request) {
@@ -1412,6 +1420,7 @@ describe("run execution", () => {
       mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true }, memoryEgress: egress.service,
       prepared: preparedData({ mcp, modelId: "gpt-tool-model", provider: "openai" }), repository: repository.repository })).text();
     expect(callTool).toHaveBeenCalledTimes(when === "before_dispatch" ? 0 : 1);
+    expect(effect).toHaveBeenCalledTimes(when === "after_first_call" ? 1 : 0);
     if (when === "before_dispatch") expect(egress.blocked).toEqual(expect.arrayContaining([expect.objectContaining({ errorCode: "mcp_tool_access_denied" })]));
     expect(mcp.tools).toHaveLength(1);
   });
@@ -3013,8 +3022,11 @@ describe("run execution", () => {
     const adapter = createAdapter(async function* () {
       providerCallCount += 1;
       if (providerCallCount === 1) return providerResult({
-        finalText: JSON.stringify(plannedDraftOutput("Supported answer"))
+        finalText: JSON.stringify(plannedDraftOutput("Supported answer")),
+        usage: { inputTokens: 5, outputTokens: 3 }
       });
+      yield { type: "usage", data: { inputTokens: 4, outputTokens: 0 } };
+      yield { type: "usage", data: { inputTokens: 7 } };
       throw new Error("private_provider_failure");
     });
 
@@ -3043,6 +3055,10 @@ describe("run execution", () => {
       "prepare", "dispatch", "settle",
       "prepare", "dispatch", "settle"
     ]);
+    expect(repository.recordedRunUsageEvents.at(-1)?.usageAttributions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelId: "openai-answer-model", provider: "openai", operationCount: 2,
+        usage: expect.objectContaining({ completeness: "partial", inputTokens: 12, outputTokens: 3, totalTokens: 15 }) })
+    ]));
   });
 
   it("settles a focused retrieval deadline as a technical retrieval failure", async () => {
@@ -3775,11 +3791,11 @@ describe("run execution", () => {
     expect(repository.completeRuns[0]?.usageAttributions).toEqual([
       {
         estimatedCostMicros: null,
-        modelId: "openai-answer-model",
+        operationCount: 2, modelId: "openai-answer-model",
         provider: "openai",
         usage: {
-          cachedInputTokens: 0,
-          cacheWriteInputTokens: 0,
+          completeness: "complete", cachedInputTokens: null,
+          cacheWriteInputTokens: null,
           inputTokens: 6,
           outputTokens: 8,
           reasoningTokens: 1,
@@ -3788,11 +3804,11 @@ describe("run execution", () => {
       },
       {
         estimatedCostMicros: null,
-        modelId: "perplexity/sonar-pro-search",
+        operationCount: 1, modelId: "perplexity/sonar-pro-search",
         provider: "openrouter",
         usage: {
-          cachedInputTokens: 0,
-          cacheWriteInputTokens: 0,
+          completeness: "complete", cachedInputTokens: null,
+          cacheWriteInputTokens: null,
           inputTokens: 3,
           outputTokens: 4,
           reasoningTokens: 0,
@@ -4548,7 +4564,7 @@ describe("run execution", () => {
       namespacedName,
       revisionId: "revision-jira",
       serverId: "server-jira"
-    }]);
+    }], expect.any(AbortSignal));
     expect(route).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ goals, timeoutMs: 60_000 }));
     expect(appendMcpDiscoveryEpoch).toHaveBeenCalledTimes(goals.length);
     expect(discovery.epochs.map((epoch) => epoch.goal)).toEqual(goals);
@@ -4606,7 +4622,8 @@ describe("run execution", () => {
   it.each(["unexpected", "reported", "cancelled", "output_limit", "request_rejected"] as const)(
     "settles Auto discovery %s with safe errors and reported usage", async (outcome) => {
     const discovery: McpDiscoveryState = {
-      catalog: { servers: [], version: 1 },
+      catalog: { servers: [{ namespace: "issues", revisionId: "revision-issues", serverId: "server-issues",
+            serverName: "Issues", description: "Manage issues", tools: [{ namespacedName: "mcp_issues_create", originalName: "create", description: "Create an issue" }] }], version: 1 },
       epochs: [],
       version: 2
     };
@@ -4919,7 +4936,7 @@ describe("run execution", () => {
     });
     expect(JSON.stringify(providerRequests[1]?.providerToolMessages)).toContain("SAFE_MCP_RESULT");
     expect(callTool).toHaveBeenCalledOnce();
-    expect(prepare).toHaveBeenCalledOnce();
+    expect(prepare).toHaveBeenCalledTimes(2);
     expect(events.some((event) =>
       event.type === "token" && event.data.delta.includes("SUPPRESSED_PLANNER_DRAFT_CANARY")
     )).toBe(true);
@@ -5070,7 +5087,7 @@ describe("run execution", () => {
       ? ["egress-1", "egress-3"]
       : ["egress-1", "egress-2", "egress-3"]);
     expect(egress.failed).toEqual([]);
-    expect(prepare).toHaveBeenCalledOnce();
+    expect(prepare).toHaveBeenCalledWith("user-1", { allowedServerIds: ["server-blocked"] });
     expect(providerRequests).toHaveLength(2);
     expect(providerRequests[1]).toMatchObject({ toolChoice: "auto" });
     expect(repository.completeRuns[0]?.finalText).toBe("Dispatch stayed blocked");
@@ -5404,6 +5421,40 @@ describe("run execution", () => {
     }
   });
 
+  it("persists partial Search usage when Stop interrupts its provider call", async () => {
+    const repository = createRepository();
+    let answerRounds = 0;
+    const adapter = createAdapter(async function* () {
+      answerRounds += 1;
+      return providerResult({
+        finalText: "",
+        toolCalls: [{ arguments: { query: "current sources" }, id: "tool-call-1", name: "search_engine_1" }],
+        usage: usage(2, 1, 0)
+      });
+    });
+    const searchAdapter: ProviderSearchAdapter = {
+      buildRequestPreview: () => ({}),
+      async search() {
+        expect(activeRunControllerRegistry.abort("run-1")).toBe(true);
+        throw new ProviderSearchExecutionError({ artifacts: [], code: "search_interrupted", usage: { inputTokens: 7 } });
+      }
+    };
+    const prepared = preparedData({
+      modelId: "openai-answer-model", provider: "openai", searchPlan: perplexityClientSearchPlan()
+    });
+    await createRunExecutionResponse(executionInput({
+      adapter, prepared, repository: repository.repository, searchAdapter
+    })).text();
+    expect(answerRounds).toBe(1);
+    expect(repository.completeRuns).toEqual([]);
+    expect(repository.recordedRunUsageEvents.at(-1)?.usageAttributions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        modelId: "perplexity/sonar-pro-search", provider: "openrouter", operationCount: 1,
+        usage: expect.objectContaining({ inputTokens: 7, outputTokens: null, totalTokens: null, completeness: "partial" })
+      })
+    ]));
+  });
+
   it("retains completed and partial answer usage with Search when a later tool round fails", async () => {
     let answerRounds = 0;
     const repository = createRepository();
@@ -5464,8 +5515,8 @@ describe("run execution", () => {
       completeness: "terminal",
       roundIndex: 1,
       usage: {
-        cachedInputTokens: 0,
-        cacheWriteInputTokens: 0,
+        completeness: "complete", cachedInputTokens: null,
+        cacheWriteInputTokens: null,
         inputTokens: 2,
         outputTokens: 1,
         reasoningTokens: 0,
@@ -5476,8 +5527,8 @@ describe("run execution", () => {
       completeness: "partial",
       roundIndex: 2,
       usage: {
-        cachedInputTokens: 0,
-        cacheWriteInputTokens: 0,
+        completeness: "partial", cachedInputTokens: null,
+        cacheWriteInputTokens: null,
         inputTokens: 4,
         outputTokens: 1,
         reasoningTokens: 0,
@@ -5493,11 +5544,12 @@ describe("run execution", () => {
     expect(repository.recordedRunUsageEvents.at(-1)?.usageAttributions).toEqual([
       {
         estimatedCostMicros: null,
+        operationCount: 2,
         modelId: "openai-answer-model",
         provider: "openai",
         usage: {
-          cachedInputTokens: 0,
-          cacheWriteInputTokens: 0,
+          completeness: "partial", cachedInputTokens: null,
+          cacheWriteInputTokens: null,
           inputTokens: 6,
           outputTokens: 2,
           reasoningTokens: 0,
@@ -5506,11 +5558,12 @@ describe("run execution", () => {
       },
       {
         estimatedCostMicros: null,
+        operationCount: 1,
         modelId: "perplexity/sonar-pro-search",
         provider: "openrouter",
         usage: {
-          cachedInputTokens: 0,
-          cacheWriteInputTokens: 0,
+          completeness: "complete", cachedInputTokens: null,
+          cacheWriteInputTokens: null,
           inputTokens: 3,
           outputTokens: 2,
           reasoningTokens: 0,

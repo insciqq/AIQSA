@@ -13,21 +13,23 @@ export function createChatPdfModelRoleResolver(
   loadRole = loadInstallationAnswerProviderRole
 ) {
   return {
-    async resolve(): Promise<SystemModelRoleResolution> {
+    async resolve(method: "pdf_reader" | "page_images" = "page_images"): Promise<SystemModelRoleResolution> {
       const policy = await db.systemModelPolicy.findUnique({
-        select: { chatPdfProviderModelId: true, chatPdfReasoningEffort: true, version: true },
+        select: { chatPdfProviderModelId: true, chatPdfReasoningEffort: true,
+          chatPdfNativeProviderModelId: true, chatPdfNativeReasoningEffort: true, version: true },
         where: { id: "installation" }
       });
-      if (!policy?.chatPdfProviderModelId) return { ok: false, code: SYSTEM_MODEL_ABSENT };
+      const providerModelId = method === "pdf_reader" ? policy?.chatPdfNativeProviderModelId : policy?.chatPdfProviderModelId;
+      if (!policy || !providerModelId) return { ok: false, code: SYSTEM_MODEL_ABSENT };
       try {
-        const role = await loadRole(db, { providerModelId: policy.chatPdfProviderModelId });
-        const effort = policy.chatPdfReasoningEffort;
-        if (!systemModelRoleEligible(role, "vision") || effort !== null &&
+        const role = await loadRole(db, { providerModelId });
+        const effort = (method === "pdf_reader" ? policy.chatPdfNativeReasoningEffort : policy.chatPdfReasoningEffort) ?? null;
+        if (!systemModelRoleEligible(role, method === "pdf_reader" ? "direct_pdf" : "vision") || effort !== null &&
           !supportsConfiguredReasoningEffort(role.snapshot.model, role.snapshot.providerFamily, effort)) {
           return { ok: false, code: SYSTEM_MODEL_UNAVAILABLE };
         }
         return { ok: true, credentialScope: "installation", policyVersion: policy.version,
-          providerModelId: policy.chatPdfProviderModelId, reasoningEffort: effort, role };
+          providerModelId, reasoningEffort: effort, role };
       } catch (error) {
         if (error instanceof ProviderAdmissionError) return { ok: false, code: SYSTEM_MODEL_UNAVAILABLE };
         throw error;

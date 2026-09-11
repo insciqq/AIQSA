@@ -3,7 +3,7 @@ import type { RequestAuthResolver } from "../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 import { resolveProjectAccess } from "../projects/access";
 import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
-import { createChatPdfRouteResolver } from "./chatPdfAdmission";
+import { ChatPdfPolicyUnavailableError, createChatPdfRouteResolver } from "./chatPdfAdmission";
 
 export function createChatPdfPreviewHandler(deps: Readonly<{ prisma: PrismaClient; resolveAuth: RequestAuthResolver }>) {
   return async (request: Request): Promise<Response> => {
@@ -37,7 +37,10 @@ export function createChatPdfPreviewHandler(deps: Readonly<{ prisma: PrismaClien
       });
       return route ? Response.json({ route, version: 1 }, { headers: { "Cache-Control": "no-store" } })
         : Response.json({ error: "model_not_available" }, { status: 404 });
-    } catch {
+    } catch (error) {
+      if (error instanceof ChatPdfPolicyUnavailableError) {
+        return Response.json({ error: error.code }, { status: 422 });
+      }
       return Response.json({ error: "model_not_available" }, { status: 409 });
     }
   };

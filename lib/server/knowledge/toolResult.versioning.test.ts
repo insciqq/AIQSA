@@ -7,10 +7,12 @@ import {
   type KnowledgeRetrievedPassageEvidence
 } from "./retrievalTypes";
 import {
+  aggregateKnowledgeUsage,
   compactKnowledgeToolExecutionResult,
   decodeKnowledgeRetrievalEvidence,
   knowledgeToolResultContent,
   knowledgeToolResultText,
+  knowledgeUsageAttributionsFromToolResult,
   rehydratePersistedKnowledgeToolExecutionResult
 } from "./toolResult";
 import {
@@ -201,6 +203,25 @@ function searchUnavailableEvidence(): KnowledgeRetrievalEvidence {
 }
 
 describe("Knowledge result contract versioning", () => {
+  it("retains unavailable embedding attempts beside reported counts after serialization", () => {
+    const base = currentEvidence();
+    const successful = base.embeddingExecutions[0]!;
+    const failed = { ...successful, bindingOrdinals: [1], inputTokens: null, totalTokens: null, status: "error" as const };
+    const evidence = currentEvidence({
+      candidateCount: 2,
+      bases: [...base.bases, { ...base.bases[0]!, ordinal: 1, knowledgeBaseId: "private-base-2" }],
+      embeddingExecutions: [successful, failed]
+    });
+    const result = JSON.parse(JSON.stringify(executionResult(evidence))) as ToolExecutionResult;
+    expect(knowledgeUsageAttributionsFromToolResult(result)).toHaveLength(2);
+    expect(knowledgeUsageAttributionsFromToolResult(result)[1]?.usage).toEqual({
+      inputTokens: null, totalTokens: null
+    });
+    expect(aggregateKnowledgeUsage(evidence.embeddingExecutions)).toMatchObject({
+      inputTokens: 1, totalTokens: 1, outputTokens: null, completeness: "partial"
+    });
+  });
+
   it("keeps the legacy V1 provider bytes and does not invent a Source alias while decoding", () => {
     const legacy = legacyEvidence();
 

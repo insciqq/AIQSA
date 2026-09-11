@@ -11,6 +11,7 @@ import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { openRouterChatToolBridge } from "../tools/bridges";
 import {
   providerAttachmentPreviewFilename,
+  usesNativePdfInput,
   providerAttachmentPreviewText,
   providerAttachmentText
 } from "./attachmentPayload";
@@ -155,7 +156,7 @@ function buildUserContent(
   let hasNativePdf = false;
 
   for (const attachment of request.attachments) {
-    if (attachment.kind === "pdf" && request.modelCapabilities.nativePdfInput) {
+    if (usesNativePdfInput(attachment, request.modelCapabilities)) {
       hasNativePdf = true;
       continue;
     }
@@ -181,7 +182,7 @@ function buildUserContent(
     });
 
     for (const attachment of request.attachments) {
-      if (attachment.kind === "pdf" && request.modelCapabilities.nativePdfInput) {
+      if (usesNativePdfInput(attachment, request.modelCapabilities)) {
         contentParts.push(pdfContent(attachment, options.redactFiles, options.preview));
       }
 

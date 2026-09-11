@@ -221,7 +221,7 @@ describe("native Gemini structured output", () => {
     await expect(adapter.execute(request, options)).resolves.toEqual({ ok: true });
     expect(client.createInteraction).toHaveBeenCalledExactlyOnceWith(buildGeminiInteractionsStructuredOutputRequest(model, request), options);
     expect(client.streamInteraction).not.toHaveBeenCalled();
-    expect(onUsage).toHaveBeenCalledExactlyOnceWith({ cacheWriteInputTokens: 0, cachedInputTokens: 3, inputTokens: 10, outputTokens: 12, reasoningTokens: 7, totalTokens: 22 });
+    expect(onUsage).toHaveBeenCalledExactlyOnceWith({ completeness: "complete", cacheWriteInputTokens: null, cachedInputTokens: 3, inputTokens: 10, outputTokens: 12, reasoningTokens: 7, totalTokens: 22 });
     expect(onProviderResponseId).toHaveBeenCalledExactlyOnceWith("interaction-test-1");
     expect(JSON.stringify([onUsage.mock.calls, onProviderResponseId.mock.calls])).not.toContain("PRIVATE_THOUGHT_SIGNATURE");
   });

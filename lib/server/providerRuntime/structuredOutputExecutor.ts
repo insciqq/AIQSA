@@ -132,12 +132,13 @@ export function createAcceptedStructuredOutputSnapshotExecutor(
     );
     const baseFetch = options.createFetch?.(binding.snapshot.connection) ??
       createProviderSafeFetch({ configuration: binding.snapshot.connection });
-    const fetchFn: typeof fetch = binding.authenticationMode === "none"
-      ? async (fetchRequest, init) => {
-          await binding.lockCredential(true);
-          return baseFetch(fetchRequest, init);
-        }
-      : baseFetch;
+    const fetchFn: typeof fetch = async (fetchRequest, init) => {
+      if (binding.authenticationMode === "none") await binding.lockCredential(true);
+      executionOptions.signal?.throwIfAborted();
+      await executionOptions.beforeDispatch?.();
+      executionOptions.signal?.throwIfAborted();
+      return baseFetch(fetchRequest, init);
+    };
     const runtime = createProviderRuntimeBinding({
       options: { allowFake: false, fetchFn, ...(options.disableRequestRetries ? { disableRequestRetries: true } : {}) },
       secret: binding.authenticationMode === "none"

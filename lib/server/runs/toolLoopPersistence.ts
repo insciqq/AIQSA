@@ -1,6 +1,6 @@
 import type { ModelRunStatus } from "@prisma/client";
 import type { SearchPlan } from "../../domain/search";
-import type { NormalizedTokenUsage } from "../../domain/usage";
+import { mergeTokenUsage, normalizeTokenUsage, type NormalizedTokenUsage, type TokenUsageField } from "../../domain/usage";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { KnowledgePlan } from "../../contracts/knowledge";
 import type { KnowledgeBudgetPolicy } from "../knowledge/knowledgeBudget";
@@ -218,14 +218,15 @@ export function snapshotToolLoopJson(value: unknown, maxBytes: number): ToolLoop
 }
 
 function normalizedUsage(value: unknown): NormalizedTokenUsage | null {
-  if (!isRecord(value) || Object.keys(value).length !== 6) return null;
+  if (!isRecord(value) || ![6, 7].includes(Object.keys(value).length)) return null;
+  if (Object.keys(value).length === 7 && !["complete", "partial", "unavailable"].includes(String(value.completeness))) return null;
   if (!normalizedUsageFields.every((field) =>
-    Object.hasOwn(value, field) && Number.isSafeInteger(value[field]) && Number(value[field]) >= 0)) {
+    Object.hasOwn(value, field) && (value[field] === null || Number.isSafeInteger(value[field]) && Number(value[field]) >= 0))) {
     return null;
   }
-  return Object.fromEntries(
-    normalizedUsageFields.map((field) => [field, Number(value[field])])
-  ) as NormalizedTokenUsage;
+  const normalized = normalizeTokenUsage(value);
+  if (value.completeness !== undefined && value.completeness !== normalized.completeness) return null;
+  return normalized;
 }
 
 function answerRoundUsage(value: unknown, checkpointRound: number): PersistedAnswerRoundUsage[] | null {
@@ -233,7 +234,7 @@ function answerRoundUsage(value: unknown, checkpointRound: number): PersistedAns
   const entries: PersistedAnswerRoundUsage[] = [];
   const cumulativeUsage = Object.fromEntries(
     normalizedUsageFields.map((field) => [field, 0])
-  ) as NormalizedTokenUsage;
+  ) as Record<TokenUsageField, number>;
   let previousRound = 0;
   for (const candidate of value) {
     if (!isRecord(candidate) || Object.keys(candidate).length !== 3 ||
@@ -247,7 +248,7 @@ function answerRoundUsage(value: unknown, checkpointRound: number): PersistedAns
     const usage = normalizedUsage(candidate.usage);
     if (!usage) return null;
     for (const field of normalizedUsageFields) {
-      const next = cumulativeUsage[field] + usage[field];
+      const next = cumulativeUsage[field] + (usage[field] ?? 0);
       if (!Number.isSafeInteger(next)) return null;
       cumulativeUsage[field] = next;
     }
@@ -306,7 +307,7 @@ export function toolLoopCheckpoint(input: Readonly<{
 }
 
 function sameUsage(left: NormalizedTokenUsage, right: NormalizedTokenUsage): boolean {
-  return left.cachedInputTokens === right.cachedInputTokens &&
+  return left.completeness === right.completeness && left.cachedInputTokens === right.cachedInputTokens &&
     left.cacheWriteInputTokens === right.cacheWriteInputTokens &&
     left.inputTokens === right.inputTokens && left.outputTokens === right.outputTokens &&
     left.reasoningTokens === right.reasoningTokens && left.totalTokens === right.totalTokens;
@@ -332,7 +333,7 @@ export function mergeAnswerRoundUsage(
         ? current
         : null;
     }
-    current[index] = entry;
+    current[index] = { ...entry, usage: mergeTokenUsage(existing.usage, entry.usage) };
   } else {
     current.push(entry);
     current.sort((left, right) => left.roundIndex - right.roundIndex);

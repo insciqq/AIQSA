@@ -34,6 +34,7 @@ export function ConnectedAppsSection({
   const busyConnectionId = current ? state.busyConnectionId : null;
   const error = current ? state.error : null;
   const loadState = current ? state.loadState : "loading";
+  const lastRevoked = apps.find((app) => app.connectionId === state.lastRevokedConnectionId);
 
   useEffect(() => {
     activateConnectedApps(accountId);
@@ -58,10 +59,10 @@ export function ConnectedAppsSection({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-base font-semibold text-ink" id="connected-apps-list-heading">
-            Personal Memory access
+            External app permissions
           </h3>
           <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-secondary">
-            These external apps can use your AIQSA Personal Memory. They are separate from the MCP servers AIQSA calls inside chats.
+            Review the apps you have authorized to use MCP Hub or Personal Memory. Each permission can be revoked separately.
           </p>
         </div>
         <UiV2Button
@@ -76,15 +77,17 @@ export function ConnectedAppsSection({
       <div className="mt-4 border-l-2 border-caution/45 bg-caution/[0.05] px-3 py-2 text-xs leading-5 text-ink-secondary">
         <p className="flex items-start gap-2">
           <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-caution" aria-hidden="true" />
-          <span>A connected app can read, add, change, and delete all your Personal Memory facts. Chat history is not shared.</span>
+          <span>MCP Hub permission allows apps to use your enabled tools, including permitted changes to external data. Personal Memory permission allows apps to read, add, change, and delete all your Personal Memory facts. Chat history is not shared.</span>
         </p>
-        <p className="mt-1 pl-5">Revoking access stops future calls and keeps your stored Memory facts.</p>
+        <p className="mt-1 pl-5">Revoking a permission stops future calls and keeps your MCP connections and stored Memory facts.</p>
       </div>
 
-      {current && state.lastRevokedConnectionId ? (
+      {current && lastRevoked ? (
         <p className="mt-4 flex items-center gap-2 text-sm text-positive" role="status">
           <CircleCheck className="size-4 shrink-0" aria-hidden="true" />
-          Access revoked. Stored Memory facts were kept.
+          {lastRevoked.capability === "mcp:hub"
+            ? "MCP Hub access revoked. Your MCP connections were kept."
+            : "Personal Memory access revoked. Stored Memory facts were kept."}
         </p>
       ) : null}
 
@@ -107,14 +110,15 @@ export function ConnectedAppsSection({
         <div className="mt-6 border-y border-trace-subtle px-4 py-6 text-center">
           <p className="text-sm font-medium text-ink">No connected apps</p>
           <p className="mt-1 text-xs leading-5 text-ink-muted">
-            Add this AIQSA installation&apos;s <code className="font-mono">/mcp</code> URL in a compatible client, then sign in and approve access.
+            Open MCP &amp; tools to connect an external agent to MCP Hub. For Personal Memory, add this installation&apos;s <code className="font-mono">/mcp</code> URL in your client, then sign in and approve access.
           </p>
         </div>
       ) : (
-        <ul aria-label="Apps connected to Personal Memory" className="mt-5 border-b border-trace-subtle">
+        <ul aria-label="External app permissions" className="mt-5 border-b border-trace-subtle">
           {apps.map((app) => {
             const active = app.state === "ACTIVE";
             const busy = busyConnectionId === app.connectionId;
+            const permission = app.capability === "mcp:hub" ? "MCP Hub" : "Personal Memory";
             return (
               <li className="border-t border-trace-subtle px-3 py-5" key={app.connectionId}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -135,6 +139,7 @@ export function ConnectedAppsSection({
                       </span>
                     </div>
                     <p className="mt-1 break-all font-mono text-xs text-ink-muted">{app.clientOrigin}</p>
+                    <p className="mt-2 text-sm font-medium text-ink-secondary">{permission}</p>
                     <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-muted">
                       <span className="flex items-center gap-1.5">
                         <ShieldCheck className="size-3.5" aria-hidden="true" />
@@ -147,13 +152,13 @@ export function ConnectedAppsSection({
                     </div>
                     {!active && app.revokedAt ? (
                       <p className="mt-2 text-xs text-ink-muted">
-                        Revoked <time dateTime={app.revokedAt}>{timestamp(app.revokedAt)}</time> · Memory retained
+                        Revoked <time dateTime={app.revokedAt}>{timestamp(app.revokedAt)}</time> · {app.capability === "mcp:hub" ? "MCP connections retained" : "Memory retained"}
                       </p>
                     ) : null}
                   </div>
                   {active ? (
                     <UiV2Button
-                      aria-label={`Revoke ${app.clientName} access`}
+                      aria-label={`Revoke ${app.clientName} ${permission} access`}
                       busy={busy}
                       disabled={Boolean(busyConnectionId)}
                       icon="lock"

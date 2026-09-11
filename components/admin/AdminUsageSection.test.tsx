@@ -17,6 +17,7 @@ const catalog: AdminCatalog = {
 
 function emptyTotals() {
   return {
+    incompleteUsageCount: 0,
     cachedInputTokens: 0,
     cacheWriteInputTokens: 0,
     inputTokens: 0,
@@ -110,7 +111,7 @@ describe("AdminUsageSection", () => {
     expect(within(summary).getByTestId("usage-total-tokens")).toHaveTextContent(
       new Intl.NumberFormat(undefined).format(1000)
     );
-    expect(summary).toHaveTextContent("2 retained runs with reported usage across 1 user and 1 group");
+    expect(summary).toHaveTextContent("2 retained runs with usage records across 1 user and 1 group");
     expect(summary).toHaveTextContent("Input tokens600");
     expect(summary).toHaveTextContent("Cached input120");
     expect(summary).toHaveTextContent("Cache write30");
@@ -191,7 +192,7 @@ describe("AdminUsageSection", () => {
     render(<AdminUsageSection catalog={catalog} usage={usage} />);
 
     expect(screen.getByRole("region", { name: "Usage summary" })).toHaveTextContent(
-      "2 retained runs with reported usage across 2 users and 2 groups"
+      "2 retained runs with usage records across 2 users and 2 groups"
     );
   });
 

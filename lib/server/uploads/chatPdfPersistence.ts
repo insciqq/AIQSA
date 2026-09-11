@@ -62,7 +62,9 @@ export async function insertChatPdfAdmissions(tx: Prisma.TransactionClient, inpu
       credentialVersionId: admitted.snapshot?.credentialVersionId ?? null,
       modelRunId: input.runId, pageCount: admitted.pageCount,
       completedPages: admitted.route === "direct_pdf" ? admitted.pageCount ?? 0 : 0,
-      policyVersion: admitted.policyVersion,
+      policyVersion: admitted.policyVersion, processingMode: admitted.mode ?? null,
+      fallbackMethod: admitted.fallbackMethod ?? null, answerModelName: admitted.answerModelName ?? null,
+      readerModelName: admitted.route === "direct_pdf" ? null : admitted.snapshot?.modelDisplayName ?? null,
       providerModelId: admitted.snapshot?.providerModelId ?? null,
       route: admitted.route, sourceByteSize: admitted.byteSize, sourceChecksum: admitted.sourceChecksum,
       state: admitted.route === "direct_pdf" ? "ready" : "checking"
@@ -87,9 +89,13 @@ export async function storeChatPdfAdmissionResult(tx: Prisma.TransactionClient, 
 
 export function chatPdfAdmissionFromRow(row: Readonly<{
   attachmentId: string; bindingAuthority: unknown; bindingSnapshot: unknown; pageCount: number | null;
+  processingMode?: string | null; fallbackMethod?: string | null; answerModelName?: string | null;
   policyVersion: number | null; route: string; sourceByteSize: number; sourceChecksum: string;
 }>): ChatPdfAttachmentAdmission {
   return { attachmentId: row.attachmentId,
+    ...(row.processingMode ? { mode: row.processingMode as NonNullable<ChatPdfAttachmentAdmission["mode"]> } : {}),
+    ...(row.fallbackMethod ? { fallbackMethod: row.fallbackMethod as NonNullable<ChatPdfAttachmentAdmission["fallbackMethod"]> } : {}),
+    ...(row.answerModelName ? { answerModelName: row.answerModelName } : {}),
     authority: row.bindingAuthority as SearchProbeBinding | null,
     byteSize: row.sourceByteSize, pageCount: row.pageCount, policyVersion: row.policyVersion,
     route: row.route as ChatPdfRoute,

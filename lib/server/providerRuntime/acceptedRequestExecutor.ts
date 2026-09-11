@@ -1,3 +1,5 @@
+import { mergeTokenUsage } from "../../domain/usage";
+import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { decryptProviderCredentialSecret } from "../providers/credentialSecrets";
 import {
@@ -51,7 +53,7 @@ export function createAcceptedProviderRequestExecutor(
   return async (
     executionSnapshot: ProviderExecutionSnapshot,
     request: ProviderRunRequest,
-    executionOptions: ProviderRunOptions = {}
+    executionOptions: ProviderRunOptions & { onUsage?(usage: ModelRunUsage): void } = {}
   ): Promise<ProviderRunResult> => {
     const snapshot = normalizeProviderExecutionSnapshot(executionSnapshot);
     if (
@@ -117,8 +119,17 @@ export function createAcceptedProviderRequestExecutor(
       snapshot
     });
     const stream = runtime.adapter.stream(request, executionOptions);
+    let usage: ModelRunUsage = {};
     let next = await stream.next();
-    while (!next.done) next = await stream.next();
-    return next.value;
+    while (!next.done) {
+      if (next.value.type === "usage") {
+        usage = mergeTokenUsage(usage, next.value.data);
+        executionOptions.onUsage?.(usage);
+      }
+      next = await stream.next();
+    }
+    usage = mergeTokenUsage(usage, next.value.usage);
+    executionOptions.onUsage?.(usage);
+    return { ...next.value, usage };
   };
 }

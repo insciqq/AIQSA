@@ -197,6 +197,7 @@ async function startFixture(options: FixtureOptions = {}): Promise<Fixture> {
 function createSession(
   fixture: Fixture,
   input: Readonly<{
+    authProvider?: OAuthClientProvider;
     fetch?: FetchLike;
     limits?: Partial<McpClientSessionLimits>;
     onInventoryStale?: () => void;
@@ -206,6 +207,7 @@ function createSession(
 ): McpClientSession {
   const fetchImplementation: FetchLike = input.fetch ?? ((url, init) => fetch(url, init));
   return new McpClientSession({
+    ...(input.authProvider ? { authProvider: input.authProvider } : {}),
     fetch: fetchImplementation,
     headers: { "X-AIQSA-Static": "static-secret" },
     limits: { ...defaultLimits, ...input.limits },
@@ -218,6 +220,55 @@ function createSession(
 
 afterEach(async () => {
   await Promise.all([...openFixtures].map((fixture) => fixture.close()));
+});
+
+describe("MCP business call replay fence", () => {
+  it.each([401, 403])("does not repeat an executed call after HTTP %s, with a prototype-based OAuth provider", async (status) => {
+    let executions = 0;
+    let posts = 0;
+    const fixture = await startFixture({ callTool: () => {
+      executions += 1;
+      return { content: [{ type: "text", text: "written" }] };
+    } });
+    class Provider implements OAuthClientProvider {
+      readonly accessToken = "fixture-access-token";
+      readonly redirectUrl = "http://localhost/oauth/callback";
+      readonly clientMetadata = { redirect_uris: [this.redirectUrl] };
+      tokens() { return { access_token: this.accessToken, token_type: "Bearer" }; }
+      clientInformation() { return { client_id: "fixture-client" }; }
+      saveTokens() { throw new Error("Business calls must not refresh authorization"); }
+      redirectToAuthorization() { throw new Error("Business calls must not redirect authorization"); }
+      saveCodeVerifier() { throw new Error("Business calls must not start authorization"); }
+      codeVerifier(): string { throw new Error("Business calls must not exchange authorization"); }
+    }
+    const session = createSession(fixture, {
+      authProvider: new Provider(),
+      async fetch(url, init) {
+        const request = new Request(url, init);
+        const body = request.method === "POST" ? await request.clone().json() : null;
+        const response = await fetch(request);
+        if (body?.method !== "tools/call") return response;
+        posts += 1;
+        await response.body?.cancel();
+        return new Response("private lost result", {
+          headers: { "www-authenticate": status === 403
+            ? 'Bearer error="insufficient_scope", scope="write"'
+            : 'Bearer error="invalid_token"' },
+          status
+        });
+      }
+    });
+    try {
+      await session.initialize();
+      await session.listAllTools();
+      await expect(session.callTool("echo", {})).rejects.toMatchObject({
+        code: "mcp_authorization_required", httpStatus: status, operation: "call_tool"
+      });
+      expect(executions).toBe(1);
+      expect(posts).toBe(1);
+      expect(fixture.requestHeaders.some((request) => request.authorization === "Bearer fixture-access-token")).toBe(true);
+    } finally { await session.close(); }
+  });
 });
 
 describe("MCP tool argument schema validation", () => {

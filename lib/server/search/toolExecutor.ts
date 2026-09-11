@@ -1,3 +1,4 @@
+import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
 import type { ValidatedSearchQuery } from "../../domain/search";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import {
@@ -45,6 +46,15 @@ type SearchExecutionResult = SearchExecutionEvidence;
 
 type SearchFailureEvidence = NonNullable<SearchExecutionEvidence["failure"]>;
 
+/** Carries accounting from every settled engine while cancellation still stops
+ * the caller before another tool or answer request can be dispatched. */
+export class SearchToolCancelledError extends Error {
+  constructor(readonly result: ToolExecutionResult, cause: unknown) {
+    super("search_cancelled", { cause });
+    this.name = "AbortError";
+  }
+}
+
 export type SearchPlanToolRouter = Readonly<{
   accepts(name: string): boolean;
   execute(
@@ -61,7 +71,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function zeroUsage(): ModelRunUsage {
-  return { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 };
+  return normalizeTokenUsage({});
 }
 
 function normalizedFailureCode(value: unknown): string {
@@ -304,7 +314,7 @@ async function executeOne(input: Readonly<{
   signal?: AbortSignal;
 }>): Promise<SearchExecutionResult> {
   const invocationId = `${input.call.id}:${input.option.optionId}`.slice(0, 500);
-  if (!input.runtime || !input.option.modelId) {
+  if (!input.runtime || !input.option.modelId || input.signal?.aborted) {
     return {
       displayName: searchDisplayName(input.option),
       failure: { code: "search_runtime_not_available" },
@@ -359,7 +369,6 @@ async function executeOne(input: Readonly<{
         : {})
     };
   } catch (error) {
-    if (input.signal?.aborted) throw error;
     const timedOut = timeoutController.signal.aborted;
     const providerFailure = isProviderSearchExecutionError(error) ? error : null;
     const failure: SearchFailureEvidence = timedOut
@@ -385,7 +394,7 @@ async function executeOne(input: Readonly<{
       revisionId: input.option.revisionId,
       sources: [],
       status: "error",
-      usage: providerFailure?.usage ?? zeroUsage()
+      usage: normalizeTokenUsage({ ...providerFailure?.usage, completeness: "partial" })
     };
   } finally {
     clearTimeout(timeout);
@@ -394,14 +403,7 @@ async function executeOne(input: Readonly<{
 }
 
 function aggregateSearchUsage(executions: readonly SearchExecutionEvidence[]): ModelRunUsage {
-  return executions.reduce((usage, execution) => ({
-    inputTokens: usage.inputTokens + execution.usage.inputTokens,
-    outputTokens: usage.outputTokens + execution.usage.outputTokens,
-    reasoningTokens: usage.reasoningTokens + execution.usage.reasoningTokens,
-    totalTokens: (usage.totalTokens ?? usage.inputTokens + usage.outputTokens) +
-      (execution.usage.totalTokens ??
-        execution.usage.inputTokens + execution.usage.outputTokens)
-  }), zeroUsage());
+  return sumTokenUsage(executions.map((execution) => execution.usage));
 }
 
 function searchToolExecutionResult(input: Readonly<{
@@ -540,6 +542,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
       return routeForName(name) !== undefined;
     },
     async execute(call, _request, options) {
+      options?.signal?.throwIfAborted();
       const route = routeForName(call.name);
       if (!route) throw new Error("search_tool_not_selected");
       const queryLimit = Math.min(
@@ -587,11 +590,15 @@ export function createSearchPlanToolRouter(input: Readonly<{
         runtime: input.runtimes[option.optionId],
         ...(options?.signal ? { signal: options.signal } : {})
       })));
-      return fitDurableSearchToolResult({
+      const result = fitDurableSearchToolResult({
         call,
         executions,
         name: call.name
       });
+      if (options?.signal?.aborted) {
+        throw new SearchToolCancelledError(result, options.signal.reason);
+      }
+      return result;
     },
     optionIdsForTool(name) {
       return routeForName(name)?.options.map((option) => option.optionId) ?? [];

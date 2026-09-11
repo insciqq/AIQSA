@@ -10,8 +10,22 @@ import { createChatPdfModelRoleResolver } from "../providerRuntime/chatPdfModelR
 import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import type { SearchProbeBinding } from "../search/probeBinding";
 
+export type ChatPdfProcessingMode = "prefer_chat_model" | "use_pdf_reader" | "read_page_images";
+export type ChatPdfFallbackMethod = "pdf_reader" | "page_images";
+
+export class ChatPdfPolicyUnavailableError extends Error {
+  readonly code = "pdf_processing_configuration_incomplete" as const;
+  constructor() {
+    super("pdf_processing_configuration_incomplete");
+    this.name = "ChatPdfPolicyUnavailableError";
+  }
+}
+
 export type ChatPdfRouteAdmission = Readonly<{
   authority: SearchProbeBinding | null;
+  fallbackMethod?: ChatPdfFallbackMethod;
+  mode?: ChatPdfProcessingMode;
+  answerModelName?: string;
   policyVersion: number | null;
   route: ChatPdfRoute;
   snapshot: ProviderExecutionSnapshot | null;
@@ -26,26 +40,41 @@ export type ChatPdfAttachmentAdmission = ChatPdfRouteAdmission & Readonly<{
 
 export function resolveChatPdfRoute(input: Readonly<{
   answer: ProviderAdmissionRole;
+  fallbackMethod?: ChatPdfFallbackMethod;
+  mode?: ChatPdfProcessingMode;
   system: SystemModelRoleResolution | null;
+  policyVersion?: number;
+  strictPolicy?: boolean;
 }>): ChatPdfRouteAdmission {
   const answer = input.answer;
-  if (answer.snapshot.model.capabilities.nativePdfInput) return {
-    authority: answer.authority ?? null, policyVersion: null,
+  const mode = input.mode ?? "prefer_chat_model";
+  const policyBinding = input.strictPolicy || input.mode ? { mode, fallbackMethod: input.fallbackMethod ?? "page_images" as const,
+    answerModelName: answer.snapshot.modelDisplayName } : {};
+  if (mode === "prefer_chat_model" && answer.snapshot.model.capabilities.nativePdfInput) return {
+    authority: answer.authority ?? null, policyVersion: input.policyVersion ?? null,
+    ...policyBinding,
     route: "direct_pdf", snapshot: answer.snapshot
   };
-  if (input.system?.ok && input.system.role.verifiedVisionInput === true) {
+  const method = mode === "use_pdf_reader" ? "pdf_reader" : mode === "read_page_images" ? "page_images"
+    : input.fallbackMethod ?? "page_images";
+  if (input.system?.ok && (method === "pdf_reader"
+    ? input.system.role.snapshot.model.capabilities.nativePdfInput === true
+    : input.system.role.verifiedVisionInput === true)) {
     return {
       authority: input.system.role.authority ?? null,
+      ...policyBinding,
       policyVersion: input.system.policyVersion,
-      route: "system_vision",
+      route: method === "pdf_reader" ? "system_pdf" : "system_vision",
       snapshot: applySystemModelReasoningEffort(input.system.role.snapshot, input.system.reasoningEffort)
     };
   }
-  if (answer.verifiedVisionInput === true) return {
-    authority: answer.authority ?? null, policyVersion: null,
+  if (input.strictPolicy || input.mode) throw new ChatPdfPolicyUnavailableError();
+  // Historical resolver calls retain their old routes; new admission is always explicit.
+  if (mode === "prefer_chat_model" && answer.verifiedVisionInput === true) return {
+    authority: answer.authority ?? null, policyVersion: null, ...policyBinding,
     route: "selected_model_vision", snapshot: answer.snapshot
   };
-  return { authority: null, policyVersion: null, route: "local_text", snapshot: null };
+  return { authority: null, policyVersion: null, ...policyBinding, route: "local_text", snapshot: null };
 }
 
 export function chatPdfFingerprint(value: unknown): string {
@@ -63,17 +92,22 @@ export function createChatPdfRouteResolver(db: Prisma.TransactionClient) {
   const system = createChatPdfModelRoleResolver(db);
   return {
     async resolve(answer: ProviderAdmissionRole): Promise<ChatPdfRouteAdmission> {
-      if (answer.snapshot.model.capabilities.nativePdfInput) {
-        return resolveChatPdfRoute({ answer, system: null });
-      }
       const policy = await db.systemModelPolicy.findUnique({
-        select: { version: true },
+        select: { chatPdfFallbackMethod: true, chatPdfProcessingMode: true, version: true },
         where: { id: "installation" }
       });
-      const resolved = await system.resolve();
+      const mode = policy?.chatPdfProcessingMode === "USE_PDF_READER" ? "use_pdf_reader" :
+        policy?.chatPdfProcessingMode === "READ_PAGE_IMAGES" ? "read_page_images" : "prefer_chat_model";
+      const fallbackMethod = policy?.chatPdfFallbackMethod === "PDF_READER" ? "pdf_reader" : "page_images";
+      if (!policy) throw new ChatPdfPolicyUnavailableError();
+      if (mode === "prefer_chat_model" && answer.snapshot.model.capabilities.nativePdfInput) {
+        return resolveChatPdfRoute({ answer, fallbackMethod, mode, policyVersion: policy.version, strictPolicy: true, system: null });
+      }
+      const resolved = await system.resolve(mode === "use_pdf_reader" ? "pdf_reader" :
+        mode === "read_page_images" ? "page_images" : fallbackMethod);
       // The installation save is optimistic and affects future admissions.
       // Re-read under the admission transaction before freezing this result.
-      return resolveChatPdfRoute({ answer, system: resolved?.ok &&
+      return resolveChatPdfRoute({ answer, fallbackMethod, mode, policyVersion: policy.version, strictPolicy: true, system: resolved?.ok &&
         resolved.policyVersion === policy?.version ? resolved : null });
     }
   };

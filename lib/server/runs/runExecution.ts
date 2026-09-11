@@ -1,6 +1,7 @@
 import { filterMcpProviderRequest } from "../mcp/toolAccessProjection";
 import { imageDispatchMustStop } from "../images/errors";
 import { imageGenerationTool, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
+import { dispatchMcpTool } from "../mcp/toolExecutor";
 import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
 import type { ChatUpdateDataWire } from "../../contracts/chats";
 import { isMcpAutoDiscoveryFailureCode, isToolSynthesisFailure } from "../../contracts/runs";
@@ -15,7 +16,7 @@ import {
   type ModelRunSseEvent,
   type ModelRunUsage
 } from "../../domain/modelRunEvents";
-import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
+import { mergeTokenUsage, normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
 import { validateRunAccess } from "../auth/entitlements";
 import { isProviderDeadlineExceededError } from "../providers/network";
 import { openRouterRoutingFailureCode, openRouterRoutingFailureMessage } from "../providers/responseFailure";
@@ -63,6 +64,7 @@ import {
 import { providerToolBridges } from "../tools/bridges";
 import {
   createSearchPlanToolRouter,
+  SearchToolCancelledError,
   searchExecutionPreviewCount,
   searchExecutionsFromToolResult,
   type SearchExecutionEvidence
@@ -98,6 +100,7 @@ import type {
 } from "../knowledge/providerDispatchLifecycle";
 import {
   executeKnowledgeAnswerGroundingV8,
+  type KnowledgeAnswerOperationExecutionOptionsV8,
   type KnowledgeAnswerOperationExecutionV8
 } from "../knowledge/answerGroundingExecutionV5";
 import { executeKnowledgeAnswerGroundingV21 } from
@@ -276,6 +279,7 @@ export type RunExecutionInput = Readonly<{
   mcpRuntime?: Readonly<{
     callTool(input: {
       arguments: Record<string, unknown>;
+      beforeDispatch?(): Promise<void>;
       generationId: string;
       inputSchema: Record<string, unknown>;
       name: string;
@@ -434,12 +438,7 @@ class RunPipelineError extends Error {
 }
 
 function zeroUsage(): ModelRunUsage {
-  return {
-    inputTokens: 0,
-    outputTokens: 0,
-    reasoningTokens: 0,
-    totalTokens: 0
-  };
+  return normalizeTokenUsage({});
 }
 
 function groupedUsageAttributions(attributions: readonly RunUsageAttribution[]): RunUsageAttribution[] {
@@ -450,10 +449,13 @@ function groupedUsageAttributions(attributions: readonly RunUsageAttribution[]):
     const current = grouped.get(key);
     if (current) {
       current.usages.push(attribution.usage);
+      current.operationCount = current.operationCount == null || attribution.operationCount == null
+        ? null : current.operationCount + attribution.operationCount;
       continue;
     }
 
     grouped.set(key, {
+      operationCount: attribution.operationCount ?? null,
       modelId: attribution.modelId,
       provider: attribution.provider,
       usage: attribution.usage,
@@ -465,22 +467,6 @@ function groupedUsageAttributions(attributions: readonly RunUsageAttribution[]):
     ...attribution,
     usage: sumTokenUsage(usages)
   }));
-}
-
-function hasReportedUsage(usage: ModelRunUsage | undefined): usage is ModelRunUsage {
-  if (!usage) {
-    return false;
-  }
-
-  const normalized = sumTokenUsage([usage]);
-  return (
-    normalized.cachedInputTokens > 0 ||
-    normalized.cacheWriteInputTokens > 0 ||
-    normalized.inputTokens > 0 ||
-    normalized.outputTokens > 0 ||
-    normalized.reasoningTokens > 0 ||
-    normalized.totalTokens > 0
-  );
 }
 
 function toolExecutionErrorResult(
@@ -734,11 +720,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       }
 
       function rememberReportedUsage(provider: string, modelId: string, usage: ModelRunUsage): void {
-        if (!hasReportedUsage(usage)) {
-          return;
-        }
-
         reportedUsageAttributions.push({
+          operationCount: 1,
           modelId,
           provider,
           usage
@@ -832,10 +815,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           let next = await providerStream.next();
 
           while (!next.done) {
+            if (next.value.type === "usage") {
+              lastReportedUsage = mergeTokenUsage(lastReportedUsage ?? {}, next.value.data);
+            }
             tokenBuffer.throwIfFailed();
             throwIfAborted(signal);
             if (next.value.type === "usage") {
-              lastReportedUsage = next.value.data;
               next = await providerStream.next();
               continue;
             }
@@ -843,12 +828,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             next = await providerStream.next();
           }
 
-          rememberReportedUsage(request.provider, request.modelId, next.value.usage);
-          return next.value;
+          const usage = mergeTokenUsage(lastReportedUsage ?? {}, next.value.usage);
+          rememberReportedUsage(request.provider, request.modelId, usage);
+          return { ...next.value, usage };
         } catch (error) {
-          if (lastReportedUsage) {
-            rememberReportedUsage(request.provider, request.modelId, lastReportedUsage);
-          }
+          rememberReportedUsage(request.provider, request.modelId,
+            normalizeTokenUsage({ ...(lastReportedUsage ?? {}), completeness: "partial" }));
           throw error;
         }
       }
@@ -1302,7 +1287,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       }
 
       async function executeKnowledgeStructuredOutput(
-        operation: ProviderStructuredOutputRequest
+        operation: ProviderStructuredOutputRequest,
+        executionOptions: KnowledgeAnswerOperationExecutionOptionsV8
       ): Promise<KnowledgeAnswerOperationExecutionV8> {
         const dispatchRequest = providerNeutralKnowledgeRequest(operation);
         const operationSignal = AbortSignal.any([
@@ -1328,16 +1314,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               userId: input.userId
             })
           : null;
+        let reportedUsage: ModelRunUsage = normalizeTokenUsage({});
+        let operationCompleted = false;
         try {
           let providerResponseId: string | null = null;
-          let reportedUsage: ModelRunUsage = {
-            cachedInputTokens: 0,
-            cacheWriteInputTokens: 0,
-            inputTokens: 0,
-            outputTokens: 0,
-            reasoningTokens: 0,
-            totalTokens: 0
-          };
           let output: Readonly<Record<string, unknown>>;
           if (input.structuredOutputAdapter) {
             output = await input.structuredOutputAdapter.execute(operation, {
@@ -1345,7 +1325,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 providerResponseId = value;
               },
               onUsage(value) {
-                reportedUsage = value;
+                reportedUsage = mergeTokenUsage(reportedUsage, value);
+                executionOptions.onUsage?.(reportedUsage);
               },
               signal: operationSignal,
               timeoutMs: 120_000
@@ -1358,14 +1339,18 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             while (!next.done) {
               const eventResponseId = providerResponseIdFromEvent(next.value);
               if (eventResponseId) providerResponseId = eventResponseId;
-              if (next.value.type === "usage") reportedUsage = next.value.data;
+              if (next.value.type === "usage") {
+                reportedUsage = mergeTokenUsage(reportedUsage, next.value.data);
+                executionOptions.onUsage?.(reportedUsage);
+              }
               next = await stream.next();
             }
+            reportedUsage = mergeTokenUsage(reportedUsage, next.value.usage);
+            executionOptions.onUsage?.(reportedUsage);
             if ((next.value.toolCalls?.length ?? 0) > 0) {
               throw new Error("structured_output_tools_forbidden");
             }
             providerResponseId = next.value.providerResponseId ?? providerResponseId;
-            reportedUsage = next.value.usage;
             output = parseProviderStructuredOutputObject(next.value.finalText);
           }
           if (providerResponseId) await publishProviderResponseId(providerResponseId);
@@ -1375,6 +1360,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
               "Provider dispatch evidence could not be completed."
             );
           }
+          operationCompleted = true;
           return Object.freeze({
             output,
             providerResponseId,
@@ -1388,6 +1374,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             ).catch(() => undefined);
           }
           throw error;
+        } finally {
+          rememberReportedUsage(normalizedRequest.provider, normalizedRequest.modelId,
+            normalizeTokenUsage({ ...reportedUsage, ...(operationCompleted ? {} : { completeness: "partial" }) }));
         }
       }
 
@@ -1471,10 +1460,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
         } as const;
         if (evidenceAnswer) {
           const evidenceInput = { ...executionInput, executionPolicy: groundingExecutionPolicy!,
-            repairFeedbackVersion: normalizedRequest.knowledgeReviewRepairFeedbackVersion,
-            onOperationAccepted(operation: { usage: ModelRunUsage }) {
-              rememberReportedUsage(normalizedRequest.provider, normalizedRequest.modelId, operation.usage);
-            } };
+            repairFeedbackVersion: normalizedRequest.knowledgeReviewRepairFeedbackVersion };
           const operationResult = normalizedRequest.knowledgeAnswerWorkflowVersion === 9 || normalizedRequest.knowledgeAnswerWorkflowVersion === 10 || normalizedRequest.knowledgeAnswerWorkflowVersion === 11
             ? await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...evidenceInput,
                 workflowVersion: normalizedRequest.knowledgeAnswerWorkflowVersion === 10 || normalizedRequest.knowledgeAnswerWorkflowVersion === 11 ? normalizedRequest.knowledgeAnswerWorkflowVersion : undefined,
@@ -1523,13 +1509,6 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           provider: normalizedRequest.provider,
           usage: operation.usage
         }));
-        for (const operation of operationResult.operations) {
-          rememberReportedUsage(
-            normalizedRequest.provider,
-            normalizedRequest.modelId,
-            operation.usage
-          );
-        }
         const usage = sumTokenUsage(usageAttributions.map((entry) => entry.usage));
         return Object.freeze({
           contracts: operationResult.contracts,
@@ -1805,7 +1784,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   );
                 }
                 for (const execution of executions) {
-                  if (hasReportedUsage(execution.usage)) {
+                  if (execution.usage) {
                     rememberReportedUsage(execution.provider, execution.modelId ?? "search", execution.usage);
                   }
                   await persistPlanSearchExecution({
@@ -2188,11 +2167,15 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     throw new Error("mcp_run_binding_unavailable");
                   }
                   const activeRuntime = runtime();
-                  result = mcpToolExecutionResult(call, await activeRuntime.callTool({
+                  result = mcpToolExecutionResult(call, await dispatchMcpTool({
                     arguments: call.arguments,
+                    async assertCurrent() {
+                      const failure = await currentMcpDispatchFailureCode(route, generationId);
+                      if (failure) throw mcpDispatchError(failure);
+                    },
+                    callTool: (runtimeInput) => activeRuntime.callTool(runtimeInput),
                     generationId,
-                    inputSchema: route.tool.inputSchema,
-                    name: route.originalName,
+                    route,
                     signal: context.signal
                   }));
                 }
@@ -2201,6 +2184,12 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                   throw new Error("memory_egress_receipt_conflict");
                 }
               } catch (error) {
+                if (error instanceof SearchToolCancelledError) {
+                  for (const execution of searchExecutionsFromToolResult(error.result)) {
+                    rememberReportedUsage(execution.provider, execution.modelId ?? "search", execution.usage);
+                  }
+                  usageAccountedToolCallIds.add(claim.call.id);
+                }
                 if (externalReceipt) {
                   await input.memoryEgress!.failDispatch(
                     externalReceipt.id,
@@ -2301,11 +2290,13 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             });
           },
           onUsage: async (usage, roundRequest, context) => {
-            rememberReportedUsage(roundRequest.provider, roundRequest.modelId, usage);
+            const reported = normalizeTokenUsage({ ...usage,
+              ...(context.completeness === "partial" ? { completeness: "partial" } : {}) });
+            rememberReportedUsage(roundRequest.provider, roundRequest.modelId, reported);
             await persistReportedUsageForIncompleteRun({
               completeness: context.completeness,
               roundIndex: context.round,
-              usage: normalizeTokenUsage(usage)
+              usage: reported
             });
           },
           parallelToolCalls: normalizedRequest.modelCapabilities.parallelToolCalls === true,

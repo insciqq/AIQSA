@@ -262,11 +262,12 @@ describe("Memory learning provider runtime", () => {
         providerResponseId: "response-1",
         toolCalls: [],
         usage: {
-          cacheWriteInputTokens: 0,
-          cachedInputTokens: 0,
+          cacheWriteInputTokens: null,
+          cachedInputTokens: null,
+          completeness: "complete",
           inputTokens: 3,
           outputTokens: 2,
-          reasoningTokens: 0,
+          reasoningTokens: null,
           totalTokens: 5
         }
       });

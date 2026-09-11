@@ -1069,9 +1069,12 @@ describe("Knowledge answer grounding V5 execution", () => {
     const recorder = lifecycleRecorder();
     let calls = 0;
     const execute = vi.fn<Parameters<typeof executeKnowledgeAnswerGroundingV8>[0]["execute"]>(
-      async () => {
+      async (_request, options) => {
         calls += 1;
-        if (calls === 2) throw selectorError;
+        if (calls === 2) {
+          options?.onUsage?.({ inputTokens: 7 });
+          throw selectorError;
+        }
         return {
           output: {
             claims: [{
@@ -1096,6 +1099,9 @@ describe("Knowledge answer grounding V5 execution", () => {
       reason
     });
     expect(recorder.settle).toHaveBeenCalledTimes(2);
+    expect(recorder.settle.mock.calls[1]?.[1].usage).toMatchObject({
+      inputTokens: 7, outputTokens: null, totalTokens: null, completeness: "partial"
+    });
   });
 
   it("settles malformed draft and selector payloads as private failure markers", async () => {

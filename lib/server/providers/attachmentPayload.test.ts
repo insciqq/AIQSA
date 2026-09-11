@@ -1,3 +1,7 @@
+import { buildOpenAIResponsesRequest } from "./openaiResponsesRequest";
+import { buildOpenRouterChatRequest } from "./openRouterChatRequest";
+import { buildAnthropicMessagesRequest } from "./anthropicMessages";
+import { buildGeminiInteractionsRequest } from "./geminiInteractionsRequest";
 import { describe, expect, it } from "vitest";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import {
@@ -6,7 +10,7 @@ import {
   providerAttachmentText,
   truncateProviderAttachmentText
 } from "./attachmentPayload";
-import type { ProviderAttachment, ProviderModelCapabilities } from "./types";
+import type { ProviderAttachment, ProviderModelCapabilities, ProviderRunRequest } from "./types";
 
 const textCapabilities: ProviderModelCapabilities = {
   nativePdfInput: false,
@@ -32,6 +36,24 @@ function attachment(overrides: Partial<ProviderAttachment>): ProviderAttachment 
 }
 
 describe("provider attachment payload helpers", () => {
+  it.each([
+    ["Responses", buildOpenAIResponsesRequest], ["OpenRouter", buildOpenRouterChatRequest],
+    ["Anthropic", buildAnthropicMessagesRequest], ["Gemini", buildGeminiInteractionsRequest]
+  ] as const)("sends only prepared text to a native-PDF-capable %s answer model", (_name, build) => {
+    const file = attachment({ kind: "pdf", mimeType: "application/pdf", fileName: "report.pdf",
+      pdfDelivery: "prepared_text", base64Data: "ORIGINAL_PDF_CANARY", extractedText: "PREPARED_TEXT_CANARY" });
+    const request: ProviderRunRequest = { attachments: [file], attachmentIds: [file.id],
+      content: { blocks: [{ type: "text", text: "Read the report" }] }, chatId: "chat",
+      modelId: "fixture", provider: "fake", modelCapabilities: { ...textCapabilities, nativePdfInput: true },
+      params: {}, prompt: { system: null, developer: null }, searchPlan: { mode: "all_selected", options: [] },
+      knowledgePlan: { baseIds: [], sourceIds: [], mode: "none", version: 1 }, toolMode: "none" };
+    const payload = JSON.stringify(build(request));
+    expect(payload).toContain("PREPARED_TEXT_CANARY");
+    expect(payload).not.toContain("ORIGINAL_PDF_CANARY");
+    expect(providerAttachmentBudgetTokens({ attachments: [file], modelCapabilities: request.modelCapabilities }))
+      .toBe(estimateApproxTokens(providerAttachmentText(file)));
+  });
+
   it("uses the verified PDF count independently of binary size and prefers it to legacy processing", () => {
     for (const byteSize of [1024, 19_088_864]) {
       expect(providerAttachmentBudgetTokens({

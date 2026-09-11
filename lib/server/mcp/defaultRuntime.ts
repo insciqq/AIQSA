@@ -100,20 +100,26 @@ const defaultMcpSemanticRouter = createMcpSemanticRouter({
 async function prepareExactMcpRunPlan(
   userId: string,
   serverIds: readonly string[],
-  toolNames?: readonly string[]
+  toolNames?: readonly string[],
+  signal?: AbortSignal
 ) {
   let coordinator: McpRuntimeCoordinator | null = null;
   const currentCoordinator = () => {
     coordinator ??= getDefaultMcpRuntimeCoordinator();
     return coordinator;
   };
-  await currentCoordinator().ensureUserServersReady(userId, serverIds);
+  signal?.throwIfAborted();
+  await currentCoordinator().ensureUserServersReady(userId, serverIds, signal);
+  signal?.throwIfAborted();
   return prepareMcpRunPlan({
     allowedServerIds: serverIds,
     ...(toolNames ? { allowedToolNames: toolNames } : {}),
     isGenerationLive: (generationId) => currentCoordinator().hasLiveGeneration(generationId),
     load: () => loadRunPlan(userId, serverIds),
-    reconcile: () => currentCoordinator().reconcileNow(userId)
+    reconcile: async () => {
+      signal?.throwIfAborted();
+      await currentCoordinator().reconcileNow(userId);
+    }
   });
 }
 
@@ -144,11 +150,12 @@ export const defaultMcpRunPlan = {
       namespacedName: string;
       revisionId: string;
       serverId: string;
-    }>[]
+    }>[],
+    signal?: AbortSignal
   ) {
     const serverIds = [...new Set(tools.map((tool) => tool.serverId))];
     const toolNames = tools.map((tool) => tool.namespacedName);
-    const plan = await prepareExactMcpRunPlan(userId, serverIds, toolNames);
+    const plan = await prepareExactMcpRunPlan(userId, serverIds, toolNames, signal);
     if (!plan.ok) return plan;
     const revisions = new Map(plan.snapshot.servers.map((server) => [server.serverId, server.revisionId]));
     if (tools.some((tool) => revisions.get(tool.serverId) !== tool.revisionId)) {
@@ -163,6 +170,20 @@ export const defaultMcpRunPlan = {
       };
     }
     return plan;
+  },
+  inspect(userId: string, tools: readonly Readonly<{
+    namespacedName: string;
+    revisionId: string;
+    serverId: string;
+  }>[]) {
+    const serverIds = [...new Set(tools.map((tool) => tool.serverId))];
+    return prepareMcpRunPlan({
+      allowedServerIds: serverIds,
+      allowedToolNames: tools.map((tool) => tool.namespacedName),
+      isGenerationLive: (generationId) => (globalThis as McpRuntimeGlobal)
+        .__aiqsaMcpRuntimeCoordinator?.hasLiveGeneration(generationId) ?? false,
+      load: () => loadRunPlan(userId, serverIds)
+    });
   },
   async prepare(
     userId: string,

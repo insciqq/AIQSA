@@ -1,4 +1,5 @@
 import { textFromContentBlocks, type ModelRunSseEvent, type ModelRunUsage } from "../../domain/modelRunEvents";
+import { normalizeTokenUsage } from "../../domain/usage";
 import {
   defaultAnthropicMessagesParams,
   maxOutputTokensFromParams,
@@ -26,6 +27,7 @@ import {
 } from "./network";
 import {
   providerAttachmentPreviewMediaType,
+  usesNativePdfInput,
   providerAttachmentPreviewText,
   providerAttachmentText
 } from "./attachmentPayload";
@@ -254,7 +256,7 @@ function buildUserContent(
   const text = textFromContentBlocks(request.content);
 
   for (const attachment of request.attachments) {
-    if (attachment.kind === "pdf" && request.modelCapabilities.nativePdfInput) {
+    if (usesNativePdfInput(attachment, request.modelCapabilities)) {
       content.push(pdfDocumentBlock(attachment, options.redactFiles));
     }
   }
@@ -267,7 +269,7 @@ function buildUserContent(
   }
 
   for (const attachment of request.attachments) {
-    if (attachment.kind === "pdf" && request.modelCapabilities.nativePdfInput) {
+    if (usesNativePdfInput(attachment, request.modelCapabilities)) {
       continue;
     }
 
@@ -736,11 +738,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
       let model: string | undefined;
       let stopReason: string | undefined;
       let continuationCount = 0;
-      let usage: ModelRunUsage = {
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0
-      };
+      let usage: ModelRunUsage = normalizeTokenUsage({});
       let webSearchUsage: AnthropicWebSearchUsage = {
         present: false,
         requests: 0
@@ -765,11 +763,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
         let attemptMessageId: string | undefined;
         let attemptModel: string | undefined;
         let attemptStopReason: string | undefined;
-        let attemptUsage: ModelRunUsage = {
-          inputTokens: 0,
-          outputTokens: 0,
-          reasoningTokens: 0
-        };
+        let attemptUsage: ModelRunUsage = normalizeTokenUsage({});
         let attemptWebSearchUsage: AnthropicWebSearchUsage = {
           present: false,
           requests: 0
@@ -826,7 +820,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
             };
             if (objectValue(message?.usage)) {
               yield {
-                data: addAnthropicMessageUsage(usage, attemptUsage),
+                data: continuationCount === 0 ? attemptUsage : addAnthropicMessageUsage(usage, attemptUsage),
                 type: "usage"
               };
             }
@@ -1121,7 +1115,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
             }
             if (objectValue(event.usage)) {
               yield {
-                data: addAnthropicMessageUsage(usage, attemptUsage),
+                data: continuationCount === 0 ? attemptUsage : addAnthropicMessageUsage(usage, attemptUsage),
                 type: "usage"
               };
             }
@@ -1148,7 +1142,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
           .map(([, value]) => value.block);
         const providerToolCallMessage = { content: assistantContent, role: "assistant" };
         const toolCalls = anthropicMessagesToolBridge.parseToolCalls(providerToolCallMessage);
-        usage = addAnthropicMessageUsage(usage, attemptUsage);
+        usage = continuationCount === 0 ? attemptUsage : addAnthropicMessageUsage(usage, attemptUsage);
         if (hostedSearch) {
           webSearchUsage = addAnthropicWebSearchUsage(
             webSearchUsage,

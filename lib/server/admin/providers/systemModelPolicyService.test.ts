@@ -554,6 +554,29 @@ describe("administrator system model policy service", () => {
     });
   });
 
+  it.each([false, true])("validates each PDF reader against its own input method (native support: %s)", async (nativePdfInput) => {
+    const loadRole = vi.fn().mockResolvedValue({ verifiedVisionInput: true,
+      snapshot: { model: { capabilities: { nativePdfInput, reasoning: false } } } });
+    const update = vi.fn();
+    const tx = { $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]), systemModelPolicy: { update },
+      user: { findFirst: vi.fn().mockResolvedValue({ id: "admin" }) } };
+    const prisma = { $transaction: async (operation: (store: typeof tx) => Promise<void>) => operation(tx) } as unknown as PrismaClient;
+    const service = createAdminSystemModelPolicyService(prisma, { loadRole });
+    const pending = service.update({ expectedVersion: 3, userId: "admin", chatPdfNativeProviderModelId: "reader",
+      chatPdfNativeReasoningEffort: null, chatPdfProviderModelId: "reader", chatPdfReasoningEffort: null });
+    if (nativePdfInput) {
+      await pending;
+      expect(update).toHaveBeenCalledWith({ where: { id: "installation" }, data: {
+        chatPdfNativeProviderModelId: "reader", chatPdfNativeReasoningEffort: null,
+        chatPdfProviderModelId: "reader", chatPdfReasoningEffort: null,
+        updatedByUserId: "admin", version: { increment: 1 }
+      } });
+    } else {
+      await expect(pending).rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
+      expect(update).not.toHaveBeenCalled();
+    }
+  });
+
   it("preserves never-configured reranker state on a utility-only update", async () => {
     const loadRole = vi.fn().mockResolvedValue({
       verifiedStructuredOutput: true, verifiedForcedToolCall: true,

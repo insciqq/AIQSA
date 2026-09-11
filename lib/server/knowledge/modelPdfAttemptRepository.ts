@@ -1,3 +1,5 @@
+import { decodeTokenUsage, TOKEN_USAGE_FIELDS } from "../../domain/usage";
+import { storedTokenUsage } from "../usage";
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
@@ -55,30 +57,14 @@ function exactAttempt(
 }
 
 function decodedUsage(value: unknown): ModelRunUsage | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const fields = ["inputTokens", "outputTokens", "reasoningTokens"] as const;
-  if (fields.some((field) => !Number.isSafeInteger(record[field]) || Number(record[field]) < 0)) {
-    return null;
-  }
-  const optional = ["cachedInputTokens", "cacheWriteInputTokens", "totalTokens"] as const;
-  if (optional.some((field) => record[field] !== undefined &&
-    (!Number.isSafeInteger(record[field]) || Number(record[field]) < 0)) ||
-    record.estimatedCostMicros !== null && record.estimatedCostMicros !== undefined &&
-    (!Number.isSafeInteger(record.estimatedCostMicros) ||
-      Number(record.estimatedCostMicros) < 0)) return null;
-  return {
-    cachedInputTokens: Number(record.cachedInputTokens ?? 0),
-    cacheWriteInputTokens: Number(record.cacheWriteInputTokens ?? 0),
-    estimatedCostMicros: record.estimatedCostMicros === undefined
-      ? null
-      : record.estimatedCostMicros as number | null,
-    inputTokens: Number(record.inputTokens),
-    outputTokens: Number(record.outputTokens),
-    reasoningTokens: Number(record.reasoningTokens),
-    totalTokens: Number(record.totalTokens ??
-      Number(record.inputTokens) + Number(record.outputTokens))
-  };
+  const decoded = decodeTokenUsage(value);
+  if (!decoded || typeof value !== "object" || value === null) return null;
+  const data = value as Record<string, unknown>;
+  const allowed = new Set<string>([...TOKEN_USAGE_FIELDS, "estimatedCostMicros", "completeness"]);
+  if (Object.keys(data).some((key) => !allowed.has(key)) || (data.estimatedCostMicros != null &&
+    (!Number.isSafeInteger(data.estimatedCostMicros) || Number(data.estimatedCostMicros) < 0))) return null;
+  return { ...decoded, ...(data.estimatedCostMicros !== undefined
+    ? { estimatedCostMicros: data.estimatedCostMicros as number | null } : {}) };
 }
 
 function settledBatch(
@@ -270,8 +256,7 @@ export function createKnowledgeModelPdfAttemptRepository(prisma: PrismaClient) {
           }
           await tx.usageEvent.create({
             data: {
-              cachedInputTokens: normalized.cachedInputTokens,
-              cacheWriteInputTokens: normalized.cacheWriteInputTokens,
+              ...storedTokenUsage(normalized),
               estimatedCostMicros,
               inputTokens: normalized.inputTokens,
               knowledgePdfProcessingAttemptId: input.attemptId,

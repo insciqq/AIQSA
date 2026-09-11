@@ -1,4 +1,4 @@
-import type { AiqsaMcpToolCallResult } from "./clientSession";
+import { validateMcpToolArguments, type AiqsaMcpToolCallResult } from "./clientSession";
 import type { McpRunPlanSnapshot, McpRunPlanTool } from "./runPlan";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 
@@ -8,6 +8,48 @@ export type McpRunToolRoute = Readonly<{
   serverId: string;
   tool: McpRunPlanTool;
 }>;
+
+export type McpToolRuntimeCall = (input: Readonly<{
+  arguments: Record<string, unknown>;
+  beforeDispatch(): Promise<void>;
+  generationId: string;
+  inputSchema: Record<string, unknown>;
+  name: string;
+  signal?: AbortSignal;
+}>) => Promise<AiqsaMcpToolCallResult>;
+
+/** The adapters retain their receipts; this boundary owns one authorized call. */
+export async function dispatchMcpTool(input: Readonly<{
+  arguments: Record<string, unknown>;
+  assertCurrent(): Promise<void>;
+  callTool: McpToolRuntimeCall;
+  generationId: string;
+  onDispatch?(): void;
+  route: McpRunToolRoute;
+  signal?: AbortSignal;
+}>): Promise<AiqsaMcpToolCallResult> {
+  const assertCurrent = async () => {
+    input.signal?.throwIfAborted();
+    await input.assertCurrent();
+    input.signal?.throwIfAborted();
+  };
+  await assertCurrent();
+  validateMcpToolArguments(input.route.tool.inputSchema, input.arguments);
+  let dispatched = false;
+  return input.callTool({
+    arguments: input.arguments,
+    async beforeDispatch() {
+      if (dispatched) throw new Error("mcp_call_already_dispatched");
+      dispatched = true;
+      await assertCurrent();
+      input.onDispatch?.();
+    },
+    generationId: input.generationId,
+    inputSchema: input.route.tool.inputSchema,
+    name: input.route.originalName,
+    signal: input.signal
+  });
+}
 
 export function mcpRunTools(snapshot: McpRunPlanSnapshot | undefined): RunTool[] {
   return (snapshot?.tools ?? []).map((tool) => ({

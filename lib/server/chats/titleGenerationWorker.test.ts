@@ -25,7 +25,8 @@ describe("background chat title worker", () => {
     expect(execute).toHaveBeenCalledExactlyOnceWith(work.providerSnapshot,
       expect.objectContaining({ maxOutputTokens: 64, name: "chat_title", reasoningEffort: null }),
       expect.objectContaining({ timeoutMs: 8_000 }));
-    expect(repository.recordUsage).toHaveBeenCalledExactlyOnceWith(work, usage);
+    expect(repository.recordUsage).toHaveBeenCalledExactlyOnceWith(work, { ...usage,
+      cachedInputTokens: null, cacheWriteInputTokens: null, completeness: outcome === "failed" ? "partial" : "complete" });
     expect(repository.finish).toHaveBeenCalledExactlyOnceWith(work, outcome === "generated" ? "Network transport comparison" : null);
     expect(repository.recordUsage.mock.invocationCallOrder[0]).toBeLessThan(repository.finish.mock.invocationCallOrder[0]!);
   });

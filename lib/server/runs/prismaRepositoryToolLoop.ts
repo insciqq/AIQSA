@@ -15,7 +15,7 @@ import {
   workspaceRunOutputDirectory
 } from "../../domain/workspace";
 import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION } from "../workspace/config";
-import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
+import { normalizeTokenUsage, sumEstimatedCostMicros, sumTokenUsage } from "../../domain/usage";
 import { decodeKnowledgePlan } from "../../contracts/knowledge";
 import {
   searchAdapterKinds,
@@ -1784,10 +1784,7 @@ export function createPrismaRunToolLoopOperations(
         usage: normalizeTokenUsage(attribution.usage)
       }));
       const usage = sumTokenUsage(usageAttributions.map((attribution) => attribution.usage));
-      const estimatedCostMicros = usageAttributions.reduce(
-        (total, attribution) => total + (attribution.estimatedCostMicros ?? 0),
-        0
-      );
+      const estimatedCostMicros = sumEstimatedCostMicros(usageAttributions.map((attribution) => attribution.estimatedCostMicros));
 
       return prismaClient.$transaction(async (tx) => {
         const run = await lockToolLoopRun(tx, input);
@@ -1822,7 +1819,8 @@ export function createPrismaRunToolLoopOperations(
             outputTokens: usage.outputTokens,
             reasoningTokens: usage.reasoningTokens,
             ...(nextCheckpoint ? { toolLoopState: json(nextCheckpoint) } : {}),
-            totalTokens: usage.totalTokens
+            totalTokens: usage.totalTokens,
+            usageCompleteness: usage.completeness === "complete" ? "COMPLETE" : usage.completeness === "partial" ? "PARTIAL" : "UNAVAILABLE"
           },
           where: {
             chatId: input.chatId,
@@ -1847,9 +1845,10 @@ export function createPrismaRunToolLoopOperations(
           await tx.usageEvent.createMany({
             data: usageAttributions.map((attribution) => ({
               chatId: input.chatId,
+              operationCount: attribution.operationCount ?? null,
               cachedInputTokens: attribution.usage.cachedInputTokens,
               cacheWriteInputTokens: attribution.usage.cacheWriteInputTokens,
-              estimatedCostMicros: attribution.estimatedCostMicros ?? 0,
+              estimatedCostMicros: attribution.estimatedCostMicros ?? null,
               inputTokens: attribution.usage.inputTokens,
               modelId: attribution.modelId,
               modelRunId: input.runId,
@@ -1857,6 +1856,7 @@ export function createPrismaRunToolLoopOperations(
               provider: attribution.provider,
               reasoningTokens: attribution.usage.reasoningTokens,
               totalTokens: attribution.usage.totalTokens,
+              usageCompleteness: attribution.usage.completeness === "complete" ? "COMPLETE" : attribution.usage.completeness === "partial" ? "PARTIAL" : "UNAVAILABLE",
               userId: input.userId
             }))
           });
@@ -1922,10 +1922,7 @@ export function createPrismaRunToolLoopOperations(
         usageAttributions.length > 0
           ? sumTokenUsage(usageAttributions.map((attribution) => attribution.usage))
           : null;
-      const estimatedCostMicros = usageAttributions.reduce(
-        (total, attribution) => total + (attribution.estimatedCostMicros ?? 0),
-        0
-      );
+      const estimatedCostMicros = sumEstimatedCostMicros(usageAttributions.map((attribution) => attribution.estimatedCostMicros));
 
       return prismaClient.$transaction(async (tx) => {
         const [run] = await tx.$queryRaw<
@@ -1974,7 +1971,8 @@ export function createPrismaRunToolLoopOperations(
                   inputTokens: usage.inputTokens,
                   outputTokens: usage.outputTokens,
                   reasoningTokens: usage.reasoningTokens,
-                  totalTokens: usage.totalTokens
+                  totalTokens: usage.totalTokens,
+                  usageCompleteness: usage.completeness === "complete" ? "COMPLETE" : usage.completeness === "partial" ? "PARTIAL" : "UNAVAILABLE"
                 }
               : {})
           },
@@ -2016,9 +2014,10 @@ export function createPrismaRunToolLoopOperations(
           await tx.usageEvent.createMany({
             data: usageAttributions.map((attribution) => ({
               chatId: run.chatId,
+              operationCount: attribution.operationCount ?? null,
               cachedInputTokens: attribution.usage.cachedInputTokens,
               cacheWriteInputTokens: attribution.usage.cacheWriteInputTokens,
-              estimatedCostMicros: attribution.estimatedCostMicros ?? 0,
+              estimatedCostMicros: attribution.estimatedCostMicros ?? null,
               inputTokens: attribution.usage.inputTokens,
               modelId: attribution.modelId,
               modelRunId: input.runId,
@@ -2026,6 +2025,7 @@ export function createPrismaRunToolLoopOperations(
               provider: attribution.provider,
               reasoningTokens: attribution.usage.reasoningTokens,
               totalTokens: attribution.usage.totalTokens,
+              usageCompleteness: attribution.usage.completeness === "complete" ? "COMPLETE" : attribution.usage.completeness === "partial" ? "PARTIAL" : "UNAVAILABLE",
               userId: run.userId
             }))
           });

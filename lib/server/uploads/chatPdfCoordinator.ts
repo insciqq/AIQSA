@@ -1,3 +1,4 @@
+import { mergeTokenUsage, normalizeTokenUsage } from "../../domain/usage";
 import type { ParsedDocument } from "../parsing/types";
 import { isSharedPdfOcrParserVersion } from "../parsing/pdfOcrPipeline";
 import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
@@ -121,7 +122,7 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
     if (attempts.some((attempt) => attempt.state === "settled" && (!attempt.resultArtifactId || attempt.errorCode))) {
       throw new ChatPdfPreparationError("pdf_preparation_invalid", true);
     }
-    const pending = plan.units.find((unit) => unit.route === "vision_required" &&
+    const pending = plan.units.find((unit) => unit.route !== "native_only" &&
       !attempts.some((attempt) => attempt.page === unit.page && attempt.state === "settled"));
     if (pending) {
       const object = await deps.storage.getObject(preparation.attachment.storageKey, {
@@ -135,7 +136,7 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
       if (reserved.kind === "settled") {
         const settled = await readArtifact<{ page: number; text: string }>(reserved.resultArtifactId, admission.attachmentId, signal);
         if (settled.page !== pending.page) throw new ChatPdfPreparationError("pdf_preparation_invalid");
-        decodeChatPdfPage(pending.page, settled.text, plan.parserVersion);
+        decodeChatPdfPage(pending.page, settled.text, plan.parserVersion, admission.route);
         await deps.repository.completedPages(claim, preparation.id);
         return;
       }
@@ -151,11 +152,17 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
       const providerSignal = AbortSignal.any([signal, AbortSignal.timeout(responseTimeoutMs)]);
       // Accounting also runs for a late provider resolution after Stop/deadline.
       // Only the live, leased continuation may accept it as a page result.
+      let observedUsage = normalizeTokenUsage({});
       const operation = deps.execute(admission.snapshot, prepared.request, {
+        onUsage(value) { observedUsage = mergeTokenUsage(observedUsage, value); },
         signal: providerSignal, timeoutMs: responseTimeoutMs
       }).then(async (result) => {
-        await deps.attempts.recordUsage(dispatch, result.usage);
-        return result;
+        const usage = mergeTokenUsage(observedUsage, result.usage);
+        await deps.attempts.recordUsage(dispatch, usage);
+        return { ...result, usage };
+      }, async (error: unknown) => {
+        await deps.attempts.recordUsage(dispatch, normalizeTokenUsage({ ...observedUsage, completeness: "partial" }));
+        throw error;
       });
       let result;
       try {
@@ -171,7 +178,7 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
         throw new ChatPdfPreparationError(code, true);
       }
       try {
-        decodeChatPdfPage(pending.page, result.finalText, plan.parserVersion);
+        decodeChatPdfPage(pending.page, result.finalText, plan.parserVersion, admission.route);
       } catch {
         await deps.attempts.settle(dispatch, { errorCode: "pdf_transcription_failed",
           resultArtifactId: null, usage: result.usage });

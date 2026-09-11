@@ -23,7 +23,7 @@ function dashboardFixture(): AdminDashboard {
     navigation: { advancedConfigured: true, attention: { activeUsersWithoutModelAccess: 0, openInvites: 0, pendingUsers: 0 }, teamConfigured: false },
     usage: {
       byGroup: [], byUser: [],
-      totals: { cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 0, lastUsedAt: null, outputTokens: 0, reasoningTokens: 0, runCount: 0, totalTokens: 0 }
+      totals: { incompleteUsageCount: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 0, lastUsedAt: null, outputTokens: 0, reasoningTokens: 0, runCount: 0, totalTokens: 0 }
     },
     users: []
   };

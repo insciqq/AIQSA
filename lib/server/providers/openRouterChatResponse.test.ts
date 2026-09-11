@@ -91,6 +91,7 @@ describe("OpenRouter Chat response normalization", () => {
     expect(openRouterProviderResponseId(response)).toBe("or-json-1");
     expect(openRouterProviderResponseId({ id: 42 })).toBeUndefined();
     expect(extractOpenRouterUsage(response)).toEqual({
+      completeness: "complete",
       cachedInputTokens: 4,
       cacheWriteInputTokens: 3,
       inputTokens: 11,
@@ -111,7 +112,7 @@ describe("OpenRouter Chat response normalization", () => {
     });
   });
 
-  it("prefers prompt/completion token fields and falls back to normalized zero usage", () => {
+  it("prefers prompt/completion fields and preserves unavailable usage", () => {
     expect(
       extractOpenRouterUsage({
         usage: {
@@ -130,6 +131,7 @@ describe("OpenRouter Chat response normalization", () => {
         }
       })
     ).toEqual({
+      completeness: "complete",
       cachedInputTokens: 5,
       cacheWriteInputTokens: 2,
       inputTokens: 13,
@@ -138,12 +140,13 @@ describe("OpenRouter Chat response normalization", () => {
       totalTokens: 20
     });
     expect(extractOpenRouterUsage({ usage: { completion_tokens: -2, prompt_tokens: Number.NaN } })).toEqual({
-      cachedInputTokens: 0,
-      cacheWriteInputTokens: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      reasoningTokens: 0,
-      totalTokens: 0
+      completeness: "unavailable",
+      cachedInputTokens: null,
+      cacheWriteInputTokens: null,
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      totalTokens: null
     });
   });
 
@@ -556,7 +559,7 @@ describe("OpenRouter Chat response normalization", () => {
       providerResponseId: "chunk-id",
       usage: {
         cachedInputTokens: 2,
-        cacheWriteInputTokens: 0,
+        cacheWriteInputTokens: null,
         inputTokens: 7,
         outputTokens: 3,
         reasoningTokens: 2,
@@ -903,7 +906,7 @@ describe("OpenRouter Chat response normalization", () => {
     });
   });
 
-  it("uses the response header id and sparse zero usage when the stream ends without JSON", async () => {
+  it("uses the response header id and unavailable usage when the stream ends without JSON", async () => {
     const normalized = await collect(
       streamOpenRouterSseResponse(
         sseResponse(["data: [DONE]\n\n"], { "x-generation-id": "header-only-id" }),
@@ -941,9 +944,10 @@ describe("OpenRouter Chat response normalization", () => {
       providerResponseId: "header-only-id",
       toolCalls: [],
       usage: {
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0
+        cachedInputTokens: null, cacheWriteInputTokens: null, completeness: "unavailable", totalTokens: null,
+        inputTokens: null,
+        outputTokens: null,
+        reasoningTokens: null
       }
     });
   });

@@ -198,6 +198,7 @@ const dashboard: AdminDashboard = {
   usage: {
     byGroup: [
       {
+        incompleteUsageCount: 0,
         archivedAt: null,
         cachedInputTokens: 40,
         cacheWriteInputTokens: 5,
@@ -213,6 +214,7 @@ const dashboard: AdminDashboard = {
         userCount: 1
       },
       {
+        incompleteUsageCount: 0,
         archivedAt: null,
         cachedInputTokens: 0,
         cacheWriteInputTokens: 0,
@@ -230,6 +232,7 @@ const dashboard: AdminDashboard = {
     ],
     byUser: [
       {
+        incompleteUsageCount: 0,
         cachedInputTokens: 40,
         cacheWriteInputTokens: 5,
         displayName: "Active User",
@@ -246,6 +249,7 @@ const dashboard: AdminDashboard = {
         outputTokens: 500,
         providerModels: [
           {
+            incompleteUsageCount: 0,
             cachedInputTokens: 40,
             cacheWriteInputTokens: 5,
             inputTokens: 300,
@@ -264,6 +268,7 @@ const dashboard: AdminDashboard = {
         userId: "active-1"
       },
       {
+        incompleteUsageCount: 0,
         cachedInputTokens: 0,
         cacheWriteInputTokens: 0,
         displayName: "Admin User",
@@ -280,6 +285,7 @@ const dashboard: AdminDashboard = {
       }
     ],
     totals: {
+      incompleteUsageCount: 0,
       cachedInputTokens: 40,
       cacheWriteInputTokens: 5,
       inputTokens: 300,
@@ -386,6 +392,7 @@ const emptyDashboard: AdminDashboard = {
     byGroup: [],
     byUser: [],
     totals: {
+      incompleteUsageCount: 0,
       cachedInputTokens: 0,
       cacheWriteInputTokens: 0,
       inputTokens: 0,
@@ -1009,7 +1016,7 @@ describe("AdminPanel", () => {
     const mobileGroups = within(groups).getByTestId("admin-usage-groups-mobile");
     const mobileUsers = within(users).getByTestId("admin-usage-users-mobile");
 
-    expect(within(usage).getByText("Total tokens")).toBeInTheDocument();
+    expect(within(usage).getByText("Reported tokens")).toBeInTheDocument();
     expect(within(mobileGroups).getByText("operators")).toBeInTheDocument();
     expect(within(mobileGroups).getByText("reviewers")).toBeInTheDocument();
     expect(within(mobileUsers).getByText("Active User")).toBeInTheDocument();

@@ -19,7 +19,7 @@ Assistant publication must preserve direct Skill audience coverage. Project publ
 
 Answer recommendations and purpose-specific System Model assignments are independent and grant no entitlement. Each system role uses its configured deployment and installation credential without substitution. Consolidated administration does not merge domain ownership: Knowledge activation creates an immutable profile with explicit reprocessing/reindexing, while Personal Memory retains owner-scoped entitlement and generation rules.
 
-Inbound Personal Memory MCP is separate from outbound MCP configuration. Its grant resolves the current active account at each call; clients cannot select another owner. Facts-only calls create no synthetic chat/run/history state. Utility execution evidence is content-free.
+Inbound MCP grants resolve the current active account; clients cannot select another owner. Memory calls and Hub discovery/dispatch create no synthetic chat/run/history state. Hub uses existing outbound MCP configuration and runtime authority. Utility execution evidence is content-free.
 
 The Control Center attention list is read-only aggregation of already-authorized administrator projections. Unavailable sources are named without failing the whole list; entries contain human copy and navigation only, never raw failures, secrets, or private identifiers.
 

@@ -718,6 +718,7 @@ describe("workspace actions", () => {
         chat: {
           ...apiChatDetail(state.chatA, [message({ id: "old-leaf" })]),
           usageStats: {
+            incompleteRunCount: 0,
             activeBranchMessageCount: 1,
             cachedInputTokens: 1,
             cacheWriteInputTokens: 0,
@@ -732,6 +733,7 @@ describe("workspace actions", () => {
         chat: {
           ...apiChatDetail(state.chatA, [message({ id: "new-leaf" })]),
           usageStats: {
+            incompleteRunCount: 0,
             activeBranchMessageCount: 1,
             cachedInputTokens: 2,
             cacheWriteInputTokens: 0,
@@ -1772,6 +1774,7 @@ describe("workspace actions", () => {
       messages: tail,
       sourceUpdatedAt: summary.updatedAt,
       usageStats: {
+        incompleteRunCount: 0,
         activeBranchMessageCount: 4,
         cachedInputTokens: 12,
         cacheWriteInputTokens: 3,
@@ -1808,6 +1811,7 @@ describe("workspace actions", () => {
         loading: false
       },
       usageStats: {
+        incompleteRunCount: 0,
         activeBranchMessageCount: 4,
         cachedInputTokens: 12,
         cacheWriteInputTokens: 3,

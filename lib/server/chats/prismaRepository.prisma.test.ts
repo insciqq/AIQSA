@@ -122,6 +122,14 @@ describe("Prisma-backed chat repository", () => {
           status: "complete"
         }
       });
+      const contextSnapshot = { approximateInputTokens: 6000, contextWindow: 10000, droppedMessages: 4,
+        loadedTools: 3, maxOutputTokens: 1024, modelId: "fake-qsa", phase: "after_answer", provider: "fake",
+        safetyMarginTokens: 1000, version: 1 };
+      await prisma.modelRun.create({ data: { assistantMessageId: assistantMessage.id, chatId: created!.id,
+        modelId: "fake-qsa", provider: "fake", normalizedRequest: {}, status: "complete", userId,
+        userMessageId: userMessage.id, events: { create: { sequence: 0, eventType: "artifact",
+          payload: { artifactType: "context_status", payload: contextSnapshot } } }
+      } });
       const updated = await repository.updateChat({
         activeLeafMessageId: assistantMessage.id,
         chatId: created?.id ?? "",
@@ -142,6 +150,7 @@ describe("Prisma-backed chat repository", () => {
         repository.getChat({ chatId: created?.id ?? "", userId })
       ).resolves.toMatchObject({
         messageCount: 2,
+        contextStats: { session: contextSnapshot, sessionMessageId: assistantMessage.id },
         messages: [{ id: userMessage.id }, { id: assistantMessage.id }],
         usageStats: {
           activeBranchMessageCount: 2
@@ -736,7 +745,8 @@ describe("Prisma-backed chat repository", () => {
         usageStats: {
           activeBranchMessageCount: 2,
           cachedInputTokens: 3,
-          totalTokens: 12
+          incompleteRunCount: 1,
+          totalTokens: 0
         }
       });
       const activeMessage = detail?.messages.find(({ id }) => id === activeAssistant.id);

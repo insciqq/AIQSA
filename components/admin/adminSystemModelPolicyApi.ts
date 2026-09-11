@@ -2,6 +2,8 @@ import type { ImageGenerationParameters } from "@/lib/contracts/imageGeneration"
 import {
   decodeAdminSystemModelPolicyResponse,
   type AdminSystemModelPolicyCatalog,
+  type ChatPdfFallbackMethod,
+  type ChatPdfProcessingMode,
   type SystemModelVerificationRole
 } from "@/lib/contracts/adminSystemModelPolicy";
 
@@ -48,8 +50,12 @@ export function updateAdminSystemModelPolicy(input: Readonly<{
   imageParameters?: ImageGenerationParameters;
   chatTitleProviderModelId?: string | null;
   chatTitleReasoningEffort?: string | null;
+  chatPdfNativeProviderModelId?: string | null;
+  chatPdfNativeReasoningEffort?: string | null;
   chatPdfProviderModelId?: string | null;
   chatPdfReasoningEffort?: string | null;
+  chatPdfProcessingMode?: ChatPdfProcessingMode;
+  chatPdfFallbackMethod?: ChatPdfFallbackMethod;
   expectedVersion: number;
   /** Omit both utility fields to preserve the independent utility role. */
   providerModelId?: string | null;

@@ -15,6 +15,7 @@ export function createToolHiveMcpSessionFactory(input: Readonly<{
 }>): McpRuntimeSessionFactory {
   return {
     async create(launch) {
+      launch.signal?.throwIfAborted();
       if (!launch.toolHive) return input.directSessions.create(launch);
       const local = launch.toolHive;
       const session: { current?: McpRuntimeSession } = {};
@@ -25,6 +26,7 @@ export function createToolHiveMcpSessionFactory(input: Readonly<{
           generationToken: local.generationToken,
           image: local.image
         }, {
+          signal: launch.signal,
           probe: async (url) => {
             await launch.onConnecting?.();
             const candidate = await input.directSessions.create({
@@ -41,6 +43,7 @@ export function createToolHiveMcpSessionFactory(input: Readonly<{
         });
       } catch (error) {
         await session.current?.close().catch(() => undefined);
+        if (launch.signal?.aborted) await input.driver.deleteOwnedWorkload(local.generationToken).catch(() => undefined);
         throw error;
       }
       if (!session.current) throw new Error("mcp_toolhive_session_unavailable");

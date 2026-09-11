@@ -22,7 +22,7 @@ export function useChatPdfRoutePreview(target: Target | null): ChatPdfRoute | nu
           headers: { "content-type": "application/json" }, method: "POST",
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]) });
         const body = response.ok ? await response.json() : null;
-        const route = body?.version === 1 && ["direct_pdf", "system_vision", "selected_model_vision", "local_text"].includes(body.route)
+        const route = body?.version === 1 && ["direct_pdf", "system_pdf", "system_vision", "selected_model_vision", "local_text"].includes(body.route)
           ? body.route as ChatPdfRoute : null;
         if (active) setResolved(route ? { key: key!, route } : null);
       } catch { if (active) setResolved(null); }

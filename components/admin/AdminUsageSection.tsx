@@ -40,7 +40,7 @@ function hasReportedUsage(usage: AdminUsageTokenTotals): boolean {
     usage.outputTokens,
     usage.reasoningTokens,
     usage.totalTokens
-  ].some((value) => value > 0);
+  ].some((value) => value !== null && value > 0);
 }
 
 function UsageFact({ label, value }: Readonly<{ label: string; value: string }>) {
@@ -93,14 +93,17 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
             >
               {formatNumber(usage.totals.totalTokens)}
             </p>
-            <p className="mt-1 text-sm text-ink-secondary">Total tokens</p>
+            <p className="mt-1 text-sm text-ink-secondary">Reported tokens</p>
             <p className="mt-4 max-w-sm text-xs leading-5 text-ink-muted">
-              {countLabel(usage.totals.runCount, "retained run")} with reported usage across{" "}
+              {countLabel(usage.totals.runCount, "retained run")} with usage records across{" "}
               {countLabel(usersWithUsage.length, "user")} and {countLabel(groupsWithUsage.length, "group")}.
             </p>
           </div>
 
           <dl className="grid min-w-0 grid-cols-2 sm:grid-cols-3">
+            {usage.totals.incompleteUsageCount > 0 && <p className="col-span-full px-3 py-2 text-xs text-ink-muted" role="status">
+              Known totals; {countLabel(usage.totals.incompleteUsageCount, "usage record")} incomplete or unavailable.
+            </p>}
             <UsageFact label="Input tokens" value={formatNumber(usage.totals.inputTokens)} />
             <UsageFact label="Cached input" value={formatNumber(usage.totals.cachedInputTokens)} />
             <UsageFact label="Cache write" value={formatNumber(usage.totals.cacheWriteInputTokens)} />
@@ -117,8 +120,8 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
       <div className="mt-4 max-w-5xl text-xs leading-5 text-ink-muted">
         <p className="font-medium text-ink-secondary">How to read these numbers</p>
         <p className="mt-1">
-          This view uses provider-reported usage rows. Failed or cancelled runs appear only when the provider reported
-          usage before termination. Run counts cover retained run records; token totals can also include older detached
+          This view sums provider-reported counts, including usage retained before failure or cancellation.
+          Missing counts remain unavailable. Run counts cover retained run records; token totals can also include older detached
           usage. Group totals follow current membership: a user in multiple groups is counted once in each group, so
           this is attribution, not billing reconciliation.
         </p>
@@ -207,7 +210,7 @@ export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
             <div className="min-w-0">
               <h3 className={sectionHeadingClass}>Usage by user</h3>
               <p className="mt-1 text-xs leading-5 text-ink-muted">
-                Retained runs with reported usage, ordered by total tokens.
+                Retained runs with usage records, ordered by reported tokens.
               </p>
             </div>
             <p className="shrink-0 font-mono text-xs tabular-nums text-ink-muted">

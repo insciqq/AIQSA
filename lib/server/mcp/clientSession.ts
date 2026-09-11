@@ -575,6 +575,10 @@ function normalizeCallResult(
 
 export class McpClientSession {
   private readonly pingContext = new AsyncLocalStorage<{ requestId?: string | number }>();
+  /** Prevent the SDK from replaying a potentially side-effecting tools/call
+   * after an upstream 401. Token refresh is still allowed for initialize and
+   * inventory requests; a business call must surface the original ambiguity. */
+  private readonly callContext = new AsyncLocalStorage<{ sent: boolean }>();
   private readonly client: Client;
   private readonly defaultRequestTimeoutMs: number;
   private initializePromise: Promise<void> | null = null;
@@ -599,16 +603,32 @@ export class McpClientSession {
     const guardedFetch = this.responseGuard.wrapFetch(options.fetch);
     const transport = new StreamableHTTPClientTransport(new URL(options.url.toString()), {
       ...(options.authProvider ? { authProvider: options.authProvider } : {}),
-      fetch: (url, init) => {
+      fetch: async (url, init) => {
         const context = this.pingContext.getStore();
-        if (context && typeof init?.body === "string") {
+        const call = this.callContext.getStore();
+        let businessRequest = false;
+        if (typeof init?.body === "string") {
           try {
             const request: unknown = JSON.parse(init.body);
-            if (isRecord(request) && request.method === "ping" &&
+            businessRequest = isRecord(request) && request.method === "tools/call";
+            if (context && isRecord(request) && request.method === "ping" &&
               (typeof request.id === "string" || typeof request.id === "number")) context.requestId = request.id;
           } catch { /* OAuth transport may send form data during the same request. */ }
         }
-        return guardedFetch(url, init);
+        // Fence physical requests, including retries initiated inside the SDK.
+        // Do not clone OAuthClientProvider: its methods may live on a prototype.
+        if (call && businessRequest) {
+          if (call.sent) throw sessionError("mcp_call_failed", "call_tool");
+          call.sent = true;
+        }
+        const response = await guardedFetch(url, init);
+        if (call && businessRequest && (response.status === 401 || response.status === 403)) {
+          // The SDK adapts OAuthClientProvider and can refresh/step up then
+          // resend. A server may already have executed this operation.
+          await response.body?.cancel().catch(() => undefined);
+          throw sessionError("mcp_authorization_required", "call_tool", false, response.status);
+        }
+        return response;
       },
       requestInit: { headers: staticHeaders }
     });
@@ -883,14 +903,14 @@ export class McpClientSession {
     const validatedArguments = argumentSnapshot.value;
 
     try {
-      const result = await this.guardedRequest(
-        "call_tool",
-        sdkOptions.timeout,
-        () => this.client.callTool(
-          { arguments: validatedArguments, name },
-          sdkOptions
-        )
-      );
+      const result = await this.callContext.run({ sent: false }, () => this.guardedRequest(
+          "call_tool",
+          sdkOptions.timeout,
+          () => this.client.callTool(
+            { arguments: validatedArguments, name },
+            sdkOptions
+          )
+        ));
       const resultSnapshot = jsonSnapshot(result, "mcp_call_result_invalid", "call_tool");
       if (resultSnapshot.bytes > this.limits.maxToolResultBytes) {
         throw sessionError("mcp_call_result_too_large", "call_tool");

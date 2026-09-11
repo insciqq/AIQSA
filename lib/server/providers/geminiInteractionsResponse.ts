@@ -1,6 +1,6 @@
 import { safeExternalHref } from "../../domain/links";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
-import { normalizeTokenUsage } from "../../domain/usage";
+import { mergeTokenUsage, normalizeTokenUsage, reportedTokenCount } from "../../domain/usage";
 import { geminiInteractionsToolBridge } from "../tools/bridges";
 import {
   assertBoundedStructuredTextLength,
@@ -103,11 +103,6 @@ function nonNegativeInteger(value: unknown): number | null {
     : null;
 }
 
-function tokenCount(value: unknown): number {
-  const count = nonNegativeInteger(value);
-  return count ?? 0;
-}
-
 function statusValue(value: unknown): string | null {
   return typeof value === "string" && interactionStatuses.has(value) ? value : null;
 }
@@ -118,15 +113,18 @@ function usageRecord(value: unknown): Record<string, unknown> | null {
 
 export function extractGeminiInteractionsUsage(value: unknown): ModelRunUsage {
   const usage = usageRecord(value) ?? {};
-  const thoughtTokens = tokenCount(usage.total_thought_tokens);
-  const outputTokens = tokenCount(usage.total_output_tokens) + thoughtTokens;
+  const thoughtTokens = reportedTokenCount(usage.total_thought_tokens);
+  const responseTokens = reportedTokenCount(usage.total_output_tokens);
+  const outputTokens = responseTokens === null && thoughtTokens === null ? null
+    : (responseTokens ?? 0) + (thoughtTokens ?? 0);
 
   return normalizeTokenUsage({
-    cachedInputTokens: tokenCount(usage.total_cached_tokens),
-    inputTokens: tokenCount(usage.total_input_tokens),
+    cachedInputTokens: usage.total_cached_tokens,
+    inputTokens: usage.total_input_tokens,
     outputTokens,
     reasoningTokens: thoughtTokens,
-    totalTokens: tokenCount(usage.total_tokens)
+    totalTokens: usage.total_tokens,
+    ...(outputTokens !== null && (responseTokens === null || thoughtTokens === null) ? { completeness: "partial" } : {})
   });
 }
 
@@ -1088,7 +1086,7 @@ export async function* parseGeminiInteractionsSse(
 
     const cumulativeUsage = totalUsageFromEvent(parsed);
     if (cumulativeUsage !== undefined) {
-      usage = extractGeminiInteractionsUsage(cumulativeUsage);
+      usage = mergeTokenUsage(usage, extractGeminiInteractionsUsage(cumulativeUsage));
     }
 
     if (eventType === "interaction.created") {
@@ -1269,7 +1267,7 @@ export async function* parseGeminiInteractionsSse(
         }
       }
       if (parsed.usage !== undefined) {
-        usage = extractGeminiInteractionsUsage(parsed.usage);
+        usage = mergeTokenUsage(usage, extractGeminiInteractionsUsage(parsed.usage));
       }
       if (parsed.usage !== undefined || cumulativeUsage !== undefined) {
         yield { data: usage, type: "usage" };
@@ -1345,7 +1343,7 @@ export async function* parseGeminiInteractionsSse(
         }
       }
       if (interaction.usage !== undefined) {
-        usage = extractGeminiInteractionsUsage(interaction.usage);
+        usage = mergeTokenUsage(usage, extractGeminiInteractionsUsage(interaction.usage));
         yield { data: usage, type: "usage" };
       } else if (cumulativeUsage !== undefined) {
         yield { data: usage, type: "usage" };

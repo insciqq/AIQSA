@@ -1,3 +1,4 @@
+import { memoryReportedUsage as reportedUsage } from "../execution/usage";
 import type { PrismaClient } from "@prisma/client";
 import {
   MEMORY_ACTION_INTENT_JSON_SCHEMA,
@@ -6,7 +7,6 @@ import {
   decodeMemoryActionIntent,
   type MemoryActionIntent
 } from "../../../contracts/memoryActionIntent";
-import { normalizeTokenUsage } from "../../../domain/usage";
 import type { ModelRunUsage } from "../../../domain/modelRunEvents";
 import { prisma } from "../../prisma";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
@@ -114,18 +114,6 @@ const unavailableUsage: MemoryReportedUsage = Object.freeze({
   totalTokens: null
 });
 
-function reportedUsage(usage: ModelRunUsage): MemoryReportedUsage {
-  const normalized = normalizeTokenUsage(usage);
-  return {
-    cachedInputTokens: normalized.cachedInputTokens,
-    completeness: "COMPLETE",
-    estimatedCostMicros: null,
-    inputTokens: normalized.inputTokens,
-    outputTokens: normalized.outputTokens,
-    reasoningTokens: normalized.reasoningTokens,
-    totalTokens: normalized.totalTokens
-  };
-}
 
 function controlTool(): RunTool {
   return {

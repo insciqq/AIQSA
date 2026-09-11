@@ -9,12 +9,11 @@ import {
 } from "./runFinalization";
 
 const rawUsage: ModelRunUsage = {
-  cachedInputTokens: -2,
-  cacheWriteInputTokens: 3.8,
-  inputTokens: 10.9,
-  outputTokens: 5.7,
-  reasoningTokens: 2.9,
-  totalTokens: 0
+  cachedInputTokens: 0,
+  cacheWriteInputTokens: 3,
+  inputTokens: 10,
+  outputTokens: 5,
+  reasoningTokens: 2
 };
 
 function completionInput(repository: Pick<RunRepository, "completeRun" | "loadModelPricing">) {
@@ -71,6 +70,7 @@ describe("run finalization", () => {
 
     expect(loadModelPricing).toHaveBeenCalledWith("fake", "fake-qsa");
     expect(usage).toEqual({
+      completeness: "complete",
       cachedInputTokens: 0,
       cacheWriteInputTokens: 3,
       estimatedCostMicros: null,
@@ -98,6 +98,7 @@ describe("run finalization", () => {
     );
 
     expect(usage).toEqual({
+      completeness: "complete",
       cachedInputTokens: 0,
       cacheWriteInputTokens: 3,
       estimatedCostMicros: 49,
@@ -122,6 +123,7 @@ describe("run finalization", () => {
     const result = await finalizeRunCompletion(completionInput(repository));
 
     const usage = {
+      completeness: "complete",
       cachedInputTokens: 0,
       cacheWriteInputTokens: 3,
       estimatedCostMicros: 49,
@@ -147,7 +149,8 @@ describe("run finalization", () => {
           modelId: "fake-qsa",
           provider: "fake",
           usage: {
-            cachedInputTokens: 0,
+            completeness: "complete",
+      cachedInputTokens: 0,
             cacheWriteInputTokens: 3,
             inputTokens: 10,
             outputTokens: 5,

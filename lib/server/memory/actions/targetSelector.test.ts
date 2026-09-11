@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   MEMORY_TARGET_SELECTION_NAME,
   MEMORY_TARGET_SELECTION_SYSTEM_PROMPT,
+  MemoryTargetSelectionProviderError,
   createMemoryTargetSelector,
   decodeMemoryTargetSelection,
   memoryTargetCandidateMapHash,
@@ -86,6 +87,26 @@ const request = {
 };
 
 describe("Memory target selector", () => {
+  it.each([false, true])("retains reported usage after provider failure (cancelled=%s)", async (cancelled) => {
+    const deps = dependencies(null);
+    const controller = new AbortController();
+    deps.provider.run.mockImplementationOnce(async () => {
+      if (cancelled) controller.abort();
+      throw new MemoryTargetSelectionProviderError({ inputTokens: 0, completeness: "partial" },
+        new Error("provider_interrupted"));
+    });
+    await expect(createMemoryTargetSelector(deps as never).select({
+      ...request, signal: controller.signal
+    })).resolves.toMatchObject({ status: "UNAVAILABLE" });
+    expect(deps.provider.run).toHaveBeenCalledOnce();
+    expect(deps.settle).toHaveBeenCalledWith("user-1", "binding-selector", expect.objectContaining({
+      state: cancelled ? "CANCELLED" : "FAILED",
+      usage: expect.objectContaining({
+        inputTokens: 0, outputTokens: null, totalTokens: null, completeness: "PARTIAL"
+      })
+    }));
+  });
+
   it("requires broad or under-specified multi-target commands to remain ambiguous", () => {
     expect(MEMORY_TARGET_SELECTION_SYSTEM_PROMPT).toContain("across the board");
     expect(MEMORY_TARGET_SELECTION_SYSTEM_PROMPT).toContain("one of");

@@ -1,3 +1,4 @@
+import { normalizeTokenUsage } from "../lib/domain/usage";
 import { existsSync, readFileSync } from "node:fs";
 import sharp from "sharp";
 import type { ValidatedSearchQuery } from "../lib/domain/search";
@@ -135,7 +136,9 @@ async function complete(
 }
 
 function tokenCount(result: ProviderRunResult): number {
-  return result.usage.totalTokens ?? result.usage.inputTokens + result.usage.outputTokens;
+  const total = normalizeTokenUsage(result.usage).totalTokens;
+  if (total === null) throw new Error("deepseek_smoke_usage_unavailable");
+  return total;
 }
 
 function safeFailureCode(error: unknown): string {
@@ -303,8 +306,9 @@ async function main(): Promise<void> {
     checks.search = search.findings.length > 0 &&
       search.sourceAttribution === "provider_unavailable" &&
       search.sources.length === 0;
-    aggregateTokens += search.usage.totalTokens ??
-      search.usage.inputTokens + search.usage.outputTokens;
+    const searchTokens = normalizeTokenUsage(search.usage).totalTokens;
+    if (searchTokens === null) throw new Error("deepseek_smoke_usage_unavailable");
+    aggregateTokens += searchTokens;
     if (!checks.search) throw new Error("deepseek_smoke_search_mismatch");
 
     console.log(JSON.stringify({

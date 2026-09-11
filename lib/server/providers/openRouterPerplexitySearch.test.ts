@@ -135,11 +135,11 @@ describe("OpenRouter Perplexity search adapter", () => {
         stage: "tool_search"
       },
       usage: {
-        cachedInputTokens: 0,
-        cacheWriteInputTokens: 0,
+        cachedInputTokens: null,
+        cacheWriteInputTokens: null,
         inputTokens: 11,
         outputTokens: 5,
-        reasoningTokens: 0,
+        reasoningTokens: null,
         totalTokens: 16
       }
     });

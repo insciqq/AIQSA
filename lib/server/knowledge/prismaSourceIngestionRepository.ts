@@ -1,3 +1,4 @@
+import { storedTokenUsage } from "../usage";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma";
@@ -821,10 +822,9 @@ export function createPrismaKnowledgeSourceIngestionRepository(
         if (inserted > 0) {
           await tx.usageEvent.create({
             data: {
-              inputTokens: input.batch.usage.inputTokens ?? 0,
+              ...storedTokenUsage(input.batch.usage),
               modelId: input.batch.modelId,
               provider: input.batch.provider,
-              totalTokens: input.batch.usage.totalTokens ?? input.batch.usage.inputTokens ?? 0,
               userId: input.ownerUserId
             }
           });

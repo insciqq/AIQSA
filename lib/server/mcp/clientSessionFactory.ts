@@ -17,6 +17,7 @@ export function createMcpClientSessionFactory(input: Readonly<{
 }>): McpRuntimeSessionFactory {
   return {
     async create(launch) {
+      launch.signal?.throwIfAborted();
       let url: URL;
       try {
         if (!launch.url || launch.toolHive) throw new Error("invalid direct launch");
@@ -49,7 +50,9 @@ export function createMcpClientSessionFactory(input: Readonly<{
         url
       });
       try {
-        await session.initialize({ timeoutMs: launch.startupTimeoutMs });
+        launch.signal?.throwIfAborted();
+        await session.initialize({ signal: launch.signal, timeoutMs: launch.startupTimeoutMs });
+        launch.signal?.throwIfAborted();
       } catch (error) {
         await session.close();
         throw error;

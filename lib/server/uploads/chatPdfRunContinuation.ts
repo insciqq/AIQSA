@@ -1,5 +1,4 @@
 import type { ProviderRuntimeResolver } from "../providerRuntime/runtimeResolver";
-import type { ParsedDocument } from "../parsing/types";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import { loadProviderAttachments } from "../runs/runAttachmentMaterialization";
@@ -9,7 +8,7 @@ import { createRunExecutionResponse, type RunExecutionInput } from "../runs/runE
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "../runs/preparingRunMaterialization";
 import type { CreatedRun, PreparingRunAdmissionInput, PreparingRunAdmissionResult, RunRepository } from "../runs/runRepositoryContract";
-import { ChatPdfPreparationError, decodeChatPdfArtifact } from "./chatPdfCore";
+import { ChatPdfPreparationError } from "./chatPdfCore";
 import type { ChatPdfCoordinatorDependencies } from "./chatPdfCoordinator";
 import type { createChatPdfRepository } from "./chatPdfPersistence";
 import type { StorageAdapter } from "./storage";
@@ -95,13 +94,7 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
         artifact.sourceChecksum !== row.sourceChecksum || artifact.route !== row.route) {
         throw new ChatPdfPreparationError("pdf_preparation_invalid");
       }
-      const object = await deps.storage.getObject(artifact.storageKey, { maxBytes: artifact.byteSize, signal });
-      const document = decodeChatPdfArtifact(object.body, artifact) as ParsedDocument;
-      if (typeof document?.text !== "string" || document.pageCount !== row.pageCount) {
-        throw new ChatPdfPreparationError("pdf_preparation_invalid");
-      }
-      original.extractedText = document.text;
-      original.status = "ready";
+      original.preparedPdf = artifact;
     }
     const attachments = await loadProviderAttachments({ repository: { loadAttachments: async () => records }, storage: deps.storage },
       claim.userId, prepared.normalizedRequest.attachmentIds, { capabilities: prepared.normalizedRequest.modelCapabilities,

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { mcpRunTools, mcpToolExecutionResult, resolveMcpRunTool } from "./toolExecutor";
+import { describe, expect, it, vi } from "vitest";
+import { dispatchMcpTool, mcpRunTools, mcpToolExecutionResult, resolveMcpRunTool, type McpToolRuntimeCall } from "./toolExecutor";
 import type { McpRunPlanSnapshot } from "./runPlan";
 
 const snapshot: McpRunPlanSnapshot = {
@@ -24,6 +24,36 @@ const snapshot: McpRunPlanSnapshot = {
 };
 
 describe("MCP run tool executor helpers", () => {
+  it("blocks a revoked grant after asynchronous runtime preparation and never repeats dispatch", async () => {
+    let granted = true;
+    const effect = vi.fn();
+    const assertCurrent = vi.fn(async () => { if (!granted) throw new Error("access_revoked"); });
+    const callTool = vi.fn<McpToolRuntimeCall>(async (input) => {
+      granted = false;
+      await input.beforeDispatch();
+      effect();
+      return { isError: false, structuredContent: null, text: [], unsupportedContentTypes: [] };
+    });
+    await expect(dispatchMcpTool({ arguments: { title: "Ship" }, assertCurrent, callTool,
+      generationId: "generation-1", route: resolveMcpRunTool(snapshot, snapshot.tools[0]!.namespacedName)!
+    })).rejects.toThrow("access_revoked");
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(effect).not.toHaveBeenCalled();
+    granted = true;
+    await expect(callTool.mock.calls[0]![0].beforeDispatch()).rejects.toThrow("mcp_call_already_dispatched");
+  });
+
+  it("rejects arguments before runtime dispatch and preserves a known upstream error without retry", async () => {
+    const error = { isError: true, structuredContent: null, text: ["Operation refused"], unsupportedContentTypes: [] };
+    const callTool = vi.fn<McpToolRuntimeCall>(async (input) => { await input.beforeDispatch(); return error; });
+    const input = { assertCurrent: async () => {}, callTool, generationId: "generation-1",
+      route: resolveMcpRunTool(snapshot, snapshot.tools[0]!.namespacedName)! };
+    await expect(dispatchMcpTool({ ...input, arguments: { title: 12 } })).rejects.toThrow();
+    expect(callTool).not.toHaveBeenCalled();
+    await expect(dispatchMcpTool({ ...input, arguments: { title: "Ship" } })).resolves.toBe(error);
+    expect(callTool).toHaveBeenCalledOnce();
+  });
+
   it("exposes only immutable namespaced snapshot tools and exact routes", () => {
     expect(mcpRunTools(snapshot)).toEqual([{
       capability: "mcp",

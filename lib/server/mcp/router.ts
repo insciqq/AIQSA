@@ -2,15 +2,13 @@ import { declaredModelOutputTokenLimit } from "../providers/providerModelCapabil
 import { isProviderDeadlineExceededError } from "../providers/network";
 import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
-import { textFromContentBlocks } from "../../domain/modelRunEvents";
-import { sumTokenUsage } from "../../domain/usage";
+import { mergeTokenUsage, normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
 import {
   MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS,
   MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS,
   isMcpAutoDiscoveryOutputTokens,
   MCP_RUN_PLAN_LIMITS
 } from "../../contracts/mcp";
-import type { ProviderRunRequest } from "../providers/types";
 import type {
   ProviderStructuredOutputOptions,
   ProviderStructuredOutputRequest
@@ -63,6 +61,18 @@ export type McpSemanticRouterResult = Readonly<{
   usageAttribution: McpRouterUsageAttribution | null;
 }>;
 
+export type McpRouterContext = Readonly<{
+  currentText?: string;
+  messages?: readonly Readonly<{ role: "user" | "assistant"; text: string }>[];
+}>;
+
+export type McpRouterAttemptRecorder = (role: ProviderAdmissionRole) => Promise<Readonly<{
+  settle(input: Readonly<{
+    state: "COMPLETE" | "ERROR" | "UNKNOWN";
+    usage: ModelRunUsage | null;
+  }>): Promise<void>;
+}>>;
+
 export type McpSemanticRouter = Readonly<{
   route(input: Readonly<{
     activeToolNames: ReadonlySet<string>;
@@ -70,7 +80,10 @@ export type McpSemanticRouter = Readonly<{
     goals: readonly string[];
     limit: number;
     maxOutputTokens?: number | null;
-    request: Pick<ProviderRunRequest, "content" | "context">;
+    /** External discovery supplies durable accounting and current grant checks. */
+    recordAttempt?: McpRouterAttemptRecorder;
+    beforeDispatch?(): Promise<void>;
+    context?: McpRouterContext;
     signal?: AbortSignal;
     timeoutMs?: number;
   }>): Promise<McpSemanticRouterResult>;
@@ -109,22 +122,12 @@ function routingGoals(goals: readonly string[]): string[] {
   }))];
 }
 
-function branchContext(
-  request: Pick<ProviderRunRequest, "content" | "context">,
-  currentUserText: string
-) {
-  const messages = (request.context?.messages ?? []).filter(
-    (message) => message.purpose === undefined
-  );
-  const last = messages.at(-1);
-  if (last?.role === "user" &&
-    textFromContentBlocks(last.content).trim() === currentUserText.trim()) {
-    messages.pop();
-  }
+function branchContext(context: McpRouterContext | undefined) {
+  const messages = context?.messages ?? [];
   let remaining = MAX_BRANCH_TEXT_CHARACTERS;
   return messages.slice(-MAX_BRANCH_MESSAGES).reverse().flatMap((message) => {
     if (remaining <= 0) return [];
-    const text = bounded(textFromContentBlocks(message.content), remaining);
+    const text = bounded(message.text, remaining);
     remaining -= text.length;
     return text ? [{ role: message.role, text }] : [];
   }).reverse();
@@ -166,10 +169,10 @@ export function buildMcpRouterPrompt(input: Readonly<{
   goals: readonly string[];
   limit: number;
   previousAttempt?: McpRouterSelection;
-  request: Pick<ProviderRunRequest, "content" | "context">;
+  context?: McpRouterContext;
 }>): Readonly<{ systemPrompt: string; userPrompt: string }> {
   const currentUserText = bounded(
-    textFromContentBlocks(input.request.content),
+    input.context?.currentText ?? "",
     MAX_CURRENT_TEXT_CHARACTERS
   );
   return {
@@ -187,7 +190,7 @@ export function buildMcpRouterPrompt(input: Readonly<{
       "Do not infer access, endpoints, credentials, schemas, or tools that are not present."
     ].join(" "),
     userPrompt: JSON.stringify({
-      branch_context: branchContext(input.request, currentUserText),
+      branch_context: branchContext(input.context),
       current_user_text: currentUserText,
       goals: routingGoals(input.goals),
       integrations: compactCatalog(input.catalog, input.activeToolNames),
@@ -293,7 +296,7 @@ function buildMcpRouterStructuredRequest(input: Readonly<{
   goals: readonly string[];
   limit: number;
   previousAttempt?: McpRouterSelection;
-  request: Pick<ProviderRunRequest, "content" | "context">;
+  context?: McpRouterContext;
 }>): McpRouterStructuredRequest | null {
   const maxOutputTokens = input.maxOutputTokens === undefined
     ? MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.defaultTokens : input.maxOutputTokens;
@@ -353,7 +356,7 @@ function buildMcpRouterStructuredRequest(input: Readonly<{
         goals,
         limit,
         ...(input.previousAttempt ? { previousAttempt: input.previousAttempt } : {}),
-        request: input.request
+        context: input.context
       })
     }
   };
@@ -418,19 +421,49 @@ export function createMcpSemanticRouter(dependencies: Readonly<{
           if (timeoutMs < 1) {
             throw new McpSemanticRouterError("mcp_router_timeout");
           }
-          const output = await dependencies.executeStructuredOutput(
-            resolution.role,
-            {
-              ...attempt.request,
-              reasoningEffort: resolution.reasoningEffort
-            },
-            {
-              onUsage(value) { usages.push(value); },
-              ...(input.signal ? { signal: input.signal } : {}),
-              timeoutMs
+          let receipt: Awaited<ReturnType<McpRouterAttemptRecorder>> | undefined;
+          let attemptUsage: ModelRunUsage | null = null;
+          let dispatched = false;
+          let state: "COMPLETE" | "ERROR" | "UNKNOWN" = "UNKNOWN";
+          try {
+            const output = await dependencies.executeStructuredOutput(
+              resolution.role,
+              {
+                ...attempt.request,
+                reasoningEffort: resolution.reasoningEffort
+              },
+              {
+                async beforeDispatch() {
+                  // Accounted external discovery admits one physical request per
+                  // attempt; any correction is a separate bounded attempt below.
+                  if (input.recordAttempt && dispatched) throw new McpSemanticRouterError("mcp_router_request_failed");
+                  input.signal?.throwIfAborted();
+                  await input.beforeDispatch?.();
+                  receipt = await input.recordAttempt?.(resolution.role);
+                  await input.beforeDispatch?.();
+                  input.signal?.throwIfAborted();
+                  dispatched = true;
+                },
+                onUsage(value) { attemptUsage = mergeTokenUsage(attemptUsage ?? {}, value); },
+                ...(input.signal ? { signal: input.signal } : {}),
+                timeoutMs
+              }
+            );
+            state = "ERROR";
+            const selection = decodeMcpRouterToolSelection(output, allowed, attempt.limit);
+            state = "COMPLETE";
+            return selection;
+          } catch (error) {
+            if (!dispatched || attemptUsage !== null) state = "ERROR";
+            throw error;
+          } finally {
+            if (dispatched || attemptUsage !== null) {
+              attemptUsage = normalizeTokenUsage({ ...(attemptUsage ?? {}),
+                ...(state !== "COMPLETE" ? { completeness: "partial" } : {}) });
+              usages.push(attemptUsage);
             }
-          );
-          return decodeMcpRouterToolSelection(output, allowed, attempt.limit);
+            await receipt?.settle({ state, usage: attemptUsage });
+          }
         };
         const first = await executeAttempt(structured);
         let selected = first;

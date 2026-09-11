@@ -1,5 +1,5 @@
+import { memoryReportedUsage as providerUsage } from "../execution/usage";
 import type { PrismaClient } from "@prisma/client";
-import { normalizeTokenUsage } from "../../../domain/usage";
 import {
   createAcceptedEmbeddingRuntime,
   type AcceptedEmbeddingRuntimeEvidence
@@ -749,20 +749,6 @@ function rerankerUsage(result: RerankResult): MemoryReportedUsage {
   };
 }
 
-function providerUsage(
-  usage: Parameters<typeof normalizeTokenUsage>[0]
-): MemoryReportedUsage {
-  const normalized = normalizeTokenUsage(usage);
-  return {
-    cachedInputTokens: normalized.cachedInputTokens,
-    completeness: "COMPLETE",
-    estimatedCostMicros: null,
-    inputTokens: normalized.inputTokens,
-    outputTokens: normalized.outputTokens,
-    reasoningTokens: normalized.reasoningTokens,
-    totalTokens: normalized.totalTokens
-  };
-}
 
 function boundedResponseId(value: string | null): string | null {
   return value && value.length <= 256 &&

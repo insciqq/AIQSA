@@ -1,6 +1,7 @@
+import { storedTokenUsage } from "../usage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
-import { estimateCostMicros, normalizeTokenUsage } from "../../domain/usage";
+import { estimateCostMicros, normalizeTokenUsage, sumEstimatedCostMicros, sumTokenUsage } from "../../domain/usage";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import type { ChatTitleWork } from "./titleGeneration";
 
@@ -86,13 +87,13 @@ export function createChatTitleRepository(client: PrismaClient) {
 
     async recordUsage(work: ChatTitleWork, reported: ModelRunUsage): Promise<void> {
       const usage = normalizeTokenUsage(reported);
-      if (usage.totalTokens === 0) return;
+      if (usage.completeness === "unavailable") return;
       await client.$transaction(async (tx) => {
-        const [event] = await tx.$queryRaw<Array<{ id: string; inputTokens: number | null }>>(Prisma.sql`
-          SELECT "id", "inputTokens" FROM "UsageEvent"
+        const [event] = await tx.$queryRaw<Array<{ id: string; usageCompleteness: string }>>(Prisma.sql`
+          SELECT "id", "usageCompleteness" FROM "UsageEvent"
           WHERE "chatTitleGenerationId" = ${work.runId} FOR UPDATE
         `);
-        if (!event || event.inputTokens !== null) return;
+        if (!event || event.usageCompleteness !== "UNAVAILABLE") return;
         const pricing = await tx.providerModel.findUnique({
           where: { id: work.providerSnapshot.providerModelId },
           select: { inputTokenPriceMicros: true, outputTokenPriceMicros: true }
@@ -100,18 +101,21 @@ export function createChatTitleRepository(client: PrismaClient) {
         const estimatedCostMicros = pricing &&
           (pricing.inputTokenPriceMicros > 0 || pricing.outputTokenPriceMicros > 0)
           ? estimateCostMicros(usage, pricing) : null;
-        await tx.usageEvent.update({ where: { id: event.id }, data: { ...usage, estimatedCostMicros } });
+        await tx.usageEvent.update({ where: { id: event.id }, data: { ...storedTokenUsage(usage), estimatedCostMicros } });
         // The title receipt is separate from answer settlement. Enrichment can
         // neither reopen its terminal state nor replace the answer's events.
-        await tx.modelRun.updateMany({ where: { id: work.runId, userId: work.userId, status: "complete" }, data: {
-          inputTokens: { increment: usage.inputTokens }, cachedInputTokens: { increment: usage.cachedInputTokens },
-          cacheWriteInputTokens: { increment: usage.cacheWriteInputTokens }, outputTokens: { increment: usage.outputTokens },
-          reasoningTokens: { increment: usage.reasoningTokens }, totalTokens: { increment: usage.totalTokens },
-          ...(estimatedCostMicros === null ? {} : { estimatedCostMicros: { increment: estimatedCostMicros } })
-        } });
+        const answer = await tx.modelRun.findUnique({ where: { id: work.runId } });
+        if (answer && answer.userId === work.userId && answer.status === "complete") {
+          const total = sumTokenUsage([{ ...answer, completeness:
+            answer.usageCompleteness === "COMPLETE" ? "complete" :
+              answer.usageCompleteness === "PARTIAL" ? "partial" : "unavailable" }, usage]);
+          await tx.modelRun.updateMany({ where: { id: work.runId, userId: work.userId, status: "complete" },
+            data: { ...storedTokenUsage(total), estimatedCostMicros:
+              sumEstimatedCostMicros([answer.estimatedCostMicros, estimatedCostMicros]) } });
+        }
         await tx.chat.updateMany({ where: { id: work.chatId, userId: work.userId }, data: {
-          totalInputTokens: { increment: usage.inputTokens }, totalOutputTokens: { increment: usage.outputTokens },
-          totalReasoningTokens: { increment: usage.reasoningTokens }
+          totalInputTokens: { increment: usage.inputTokens ?? 0 }, totalOutputTokens: { increment: usage.outputTokens ?? 0 },
+          totalReasoningTokens: { increment: usage.reasoningTokens ?? 0 }
         } });
       });
     },

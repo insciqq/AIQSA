@@ -170,7 +170,7 @@ describe("durable optional title work", () => {
       await Promise.all([repository.finish(work, "TCP and UDP compared"), repository.finish(work, "TCP and UDP compared")]);
       expect((await chat(work.chatId)).title).toBe("TCP and UDP compared");
       expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: work.runId } })).toMatchObject({ status: "complete", inputTokens: 30, outputTokens: 35, totalTokens: 65 });
-      expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: secondRun.id } })).toMatchObject({ totalTokens: 0 });
+      expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: secondRun.id } })).toMatchObject({ totalTokens: null });
       expect(await prisma.usageEvent.count({ where: { chatTitleGenerationId: work.runId } })).toBe(1);
       expect(await job(work.runId)).toMatchObject({ status: "settled", providerSnapshot: null, answerText: "", questionText: "" });
       const receipt = await prisma.usageEvent.findUniqueOrThrow({ where: { chatTitleGenerationId: work.runId } });
@@ -180,6 +180,23 @@ describe("durable optional title work", () => {
       expect(await prisma.usageEvent.findUniqueOrThrow({ where: { id: receipt.id } })).toMatchObject({
         chatTitleGeneration: true, chatTitleGenerationId: null, totalTokens: 15
       });
+    });
+  });
+
+  it.each(["zero", "partial"] as const)("seals %s title usage without counting it twice", async (kind) => {
+    await fixture(async (work) => {
+      await repository.enqueue(work, expiry());
+      expect(await repository.take(new Date())).toMatchObject({ runId: work.runId });
+      const reported = kind === "zero" ? { inputTokens: 0, outputTokens: 0 } : { outputTokens: 0 };
+      await Promise.all([repository.recordUsage(work, reported), repository.recordUsage(work, reported)]);
+      await repository.recordUsage(work, { inputTokens: 99, outputTokens: 99 });
+      const receipt = await prisma.usageEvent.findUniqueOrThrow({ where: { chatTitleGenerationId: work.runId } });
+      expect(receipt).toMatchObject({ inputTokens: kind === "zero" ? 0 : null, outputTokens: 0,
+        totalTokens: kind === "zero" ? 0 : null, usageCompleteness: kind === "zero" ? "COMPLETE" : "PARTIAL" });
+      await expect(prisma.usageEvent.update({ where: { id: receipt.id }, data: { inputTokens: 99 } }))
+        .rejects.toThrow("chat_title_usage_immutable");
+      expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: work.runId } }))
+        .toMatchObject({ inputTokens: 20, outputTokens: 30, totalTokens: 50 });
     });
   });
 

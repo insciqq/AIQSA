@@ -1,5 +1,5 @@
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
-import { estimateCostMicros, normalizeTokenUsage, type ModelTokenPricing } from "../../domain/usage";
+import { estimateCostMicros, normalizeTokenUsage, sumEstimatedCostMicros, type ModelTokenPricing } from "../../domain/usage";
 import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import type { KnowledgeAnswerContractVersions } from "../knowledge/answerGroundingV5";
@@ -65,6 +65,7 @@ export async function usageAttributionsWithEstimatedCost(
 ): Promise<RunUsageAttribution[]> {
   return Promise.all(
     attributions.map(async (attribution) => ({
+      ...(attribution.operationCount !== undefined ? { operationCount: attribution.operationCount } : {}),
       estimatedCostMicros: (
         await usageWithEstimatedCost(repository, {
           modelId: attribution.modelId,
@@ -153,12 +154,11 @@ export async function finalizeRunCompletion(input: Readonly<{
         ]
   );
   const attributedCosts = usageAttributions
-    .map((attribution) => attribution.estimatedCostMicros)
-    .filter((value): value is number => typeof value === "number");
+    .map((attribution) => attribution.estimatedCostMicros);
   const usage = {
     ...normalizeTokenUsage(input.result.usage),
     estimatedCostMicros:
-      attributedCosts.length > 0 ? attributedCosts.reduce((total, value) => total + value, 0) : null
+      sumEstimatedCostMicros(attributedCosts)
   };
   const completed = await input.repository.completeRun({
     assistantMessageId: input.run.assistantMessageId,

@@ -1,7 +1,8 @@
+import { sumTokenUsage } from "../../domain/usage";
 import { chatTitleMetadataSelect, chatTitlePending } from "./titleMetadata";
 import { decodeThreadGeneratedImage } from "../../contracts/imageGeneration";
 import { projectGroundingDisplay } from "../runs/runOutputEvents";
-import { decodeSessionContextStatus, type SessionContextStatus } from "../../contracts/sessionStatus";
+import { decodeSessionContextStatus } from "../../contracts/sessionStatus";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
 import { Prisma } from "@prisma/client";
 import {
@@ -106,7 +107,8 @@ import {
 const assistantRunDetailSelect = {
   chatPdfPreparation: { select: { retryable: true, state: true } },
   chatPdfAttachments: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: {
-    completedPages: true, pageCount: true, retryable: true, route: true, state: true
+    completedPages: true, pageCount: true, retryable: true, route: true, state: true,
+    readerModelName: true, answerModelName: true
   } },
   answerStartedAt: true,
   assistantId: true,
@@ -215,19 +217,20 @@ const sessionStatusEventsSelect = {
 };
 
 function latestSessionStatus(messages: readonly {
+  id: string;
   role: string;
   assistantModelRuns?: readonly { events?: readonly { payload: unknown }[] }[];
   branchSourceModelRun?: { events?: readonly { payload: unknown }[] } | null;
-}[]): SessionContextStatus | null {
+}[]): Pick<ChatContextStats, "session" | "sessionMessageId"> {
   const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
   const run = lastAssistant?.assistantModelRuns?.[0] ?? lastAssistant?.branchSourceModelRun;
   for (const event of run?.events ?? []) {
     if (isRecord(event.payload) && event.payload.artifactType === "context_status") {
       const status = decodeSessionContextStatus(event.payload.payload);
-      if (status) return status;
+      if (status && lastAssistant) return { session: status, sessionMessageId: lastAssistant.id };
     }
   }
-  return null;
+  return { session: null, sessionMessageId: null };
 }
 
 const lightweightMessageSelect = {
@@ -240,6 +243,7 @@ const lightweightMessageSelect = {
       inputTokens: true,
       outputTokens: true,
       status: true,
+      usageCompleteness: true,
       totalTokens: true
     },
     take: 1
@@ -374,12 +378,13 @@ type ToolActivityRun = {
 
 type UsageStatsMessage = {
   assistantModelRuns: {
-    cachedInputTokens: number;
-    cacheWriteInputTokens: number;
-    inputTokens: number;
-    outputTokens: number;
+    cachedInputTokens: number | null;
+    cacheWriteInputTokens: number | null;
+    inputTokens: number | null;
+    outputTokens: number | null;
     status: string;
-    totalTokens: number;
+    usageCompleteness: "COMPLETE" | "PARTIAL" | "UNAVAILABLE";
+    totalTokens: number | null;
   }[];
   id: string;
   parentMessageId: string | null;
@@ -679,29 +684,20 @@ function summarizeChatUsageStats(input: {
   messages: UsageStatsMessage[];
 }): ChatUsageStats {
   const activeMessages = activeBranchPath(input.messages, input.activeLeafMessageId);
-  const completedRuns = activeMessages.flatMap((message) => {
-    if (message.role !== "assistant") {
-      return [];
-    }
-
-    const run = message.assistantModelRuns[0];
-    return run?.status === "complete" ? [run] : [];
+  const runs = activeMessages.flatMap((message) => {
+    const run = message.role === "assistant" ? message.assistantModelRuns[0] : null;
+    return run && ["complete", "error", "cancelled"].includes(run.status) ? [run] : [];
   });
-
-  return completedRuns.reduce<ChatUsageStats>(
-    (total, run) => ({
-      activeBranchMessageCount: total.activeBranchMessageCount,
-      cachedInputTokens: total.cachedInputTokens + run.cachedInputTokens,
-      cacheWriteInputTokens: total.cacheWriteInputTokens + run.cacheWriteInputTokens,
-      totalTokens: total.totalTokens + (run.totalTokens > 0 ? run.totalTokens : run.inputTokens + run.outputTokens)
-    }),
-    {
-      activeBranchMessageCount: activeMessages.length,
-      cachedInputTokens: 0,
-      cacheWriteInputTokens: 0,
-      totalTokens: 0
-    }
-  );
+  const total = sumTokenUsage(runs.map((run) => ({ ...run,
+    completeness: run.usageCompleteness === "COMPLETE" ? "complete" :
+      run.usageCompleteness === "PARTIAL" ? "partial" : "unavailable" })));
+  return {
+    activeBranchMessageCount: activeMessages.length,
+    incompleteRunCount: runs.filter((run) => run.usageCompleteness !== "COMPLETE").length,
+    cachedInputTokens: total.cachedInputTokens,
+    cacheWriteInputTokens: total.cacheWriteInputTokens,
+    totalTokens: total.totalTokens
+  };
 }
 
 function serializeHydratedMessage(
@@ -798,7 +794,7 @@ function serializeChatDetail(input: {
     id: chat.id,
     contextStats: {
       approximateActiveBranchInputTokens: input.contextInputTokens,
-      session: latestSessionStatus(activeBranchPath(input.lightweightMessages, chat.activeLeafMessageId))
+      ...latestSessionStatus(activeBranchPath(input.lightweightMessages, chat.activeLeafMessageId))
     },
     ...(chat.continuationSource ? { hasContinuationSource: true } : {}),
     messageCount: chat._count.messages,
@@ -1474,7 +1470,7 @@ export async function loadChatBranchSnapshotStats(
         tx,
         activeMessages
       ),
-      session: latestSessionStatus(activeMessages)
+      ...latestSessionStatus(activeMessages)
     },
     usageStats: summarizeChatUsageStats({
       activeLeafMessageId: input.activeLeafMessageId,

@@ -1,3 +1,4 @@
+import type { ChatUsageStats } from "../contracts/chats";
 import type { GroundingDisplay } from "./groundingDisplay";
 import type { TokenUsage } from "./usage";
 import type { SessionContextStatus } from "../contracts/sessionStatus";
@@ -22,12 +23,7 @@ export type ModelRunChatUpdateData = {
     pinned: boolean;
     title: string;
     updatedAt: string;
-    usageStats?: {
-      activeBranchMessageCount: number;
-      cachedInputTokens: number;
-      cacheWriteInputTokens: number;
-      totalTokens: number;
-    } | null;
+    usageStats?: ChatUsageStats | null;
     workspace?: {
       available: boolean;
       enabled: boolean;

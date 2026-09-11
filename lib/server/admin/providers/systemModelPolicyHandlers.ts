@@ -75,7 +75,8 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
       const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", "rerankerProviderModelId",
-        "chatTitleProviderModelId", "chatTitleReasoningEffort", "chatPdfProviderModelId", "chatPdfReasoningEffort", "imageProviderModelId", "imageParameters"];
+        "chatTitleProviderModelId", "chatTitleReasoningEffort", "chatPdfProviderModelId", "chatPdfReasoningEffort",
+        "chatPdfProcessingMode", "chatPdfFallbackMethod", "chatPdfNativeProviderModelId", "chatPdfNativeReasoningEffort", "imageProviderModelId", "imageParameters"];
       const textOrNull = (entry: unknown, limit: number) => entry === null ||
         typeof entry === "string" && entry.trim() === entry && entry.length > 0 && entry.length <= limit &&
         !/[\u0000-\u001f\u007f]/u.test(entry);
@@ -84,17 +85,24 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const hasImageUpdate = record(value) && Object.hasOwn(value, "imageProviderModelId");
       const hasTitleModelUpdate = record(value) && Object.hasOwn(value, "chatTitleProviderModelId");
       const hasPdfModelUpdate = record(value) && Object.hasOwn(value, "chatPdfProviderModelId");
+      const hasPdfNativeUpdate = record(value) && Object.hasOwn(value, "chatPdfNativeProviderModelId");
+      const hasPdfPolicyUpdate = record(value) && (Object.hasOwn(value, "chatPdfProcessingMode") || Object.hasOwn(value, "chatPdfFallbackMethod"));
       if (!record(value) || Object.keys(value).some((key) => !allowed.includes(key)) ||
         !Number.isSafeInteger(value.expectedVersion) || Number(value.expectedVersion) < 1 ||
-        !hasUtilityUpdate && !hasRerankerUpdate && !hasTitleModelUpdate && !hasPdfModelUpdate && !hasImageUpdate ||
+        !hasUtilityUpdate && !hasRerankerUpdate && !hasTitleModelUpdate && !hasPdfModelUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate ||
         hasImageUpdate !== Object.hasOwn(value, "imageParameters") ||
         hasImageUpdate && (!textOrNull(value.imageProviderModelId, 256) || !record(value.imageParameters)) ||
         hasUtilityUpdate !== Object.hasOwn(value, "reasoningEffort") ||
         hasTitleModelUpdate !== Object.hasOwn(value, "chatTitleReasoningEffort") ||
         hasTitleModelUpdate && (!textOrNull(value.chatTitleProviderModelId, 256) || !textOrNull(value.chatTitleReasoningEffort, 32)) ||
         hasPdfModelUpdate !== Object.hasOwn(value, "chatPdfReasoningEffort") ||
+        hasPdfNativeUpdate !== Object.hasOwn(value, "chatPdfNativeReasoningEffort") ||
+        hasPdfNativeUpdate && (!textOrNull(value.chatPdfNativeProviderModelId, 256) || !textOrNull(value.chatPdfNativeReasoningEffort, 32)) ||
+        value.chatPdfNativeProviderModelId === null && value.chatPdfNativeReasoningEffort !== null ||
         hasUtilityUpdate && (!textOrNull(value.providerModelId, 256) || !textOrNull(value.reasoningEffort, 32)) ||
         hasPdfModelUpdate && (!textOrNull(value.chatPdfProviderModelId, 256) || !textOrNull(value.chatPdfReasoningEffort, 32)) ||
+        hasPdfPolicyUpdate && (Object.hasOwn(value, "chatPdfProcessingMode") && !["prefer_chat_model", "use_pdf_reader", "read_page_images"].includes(String(value.chatPdfProcessingMode)) ||
+          Object.hasOwn(value, "chatPdfFallbackMethod") && !["pdf_reader", "page_images"].includes(String(value.chatPdfFallbackMethod))) ||
         hasRerankerUpdate && !textOrNull(value.rerankerProviderModelId, 256) ||
         value.providerModelId === null && value.reasoningEffort !== null ||
         value.chatTitleProviderModelId === null && value.chatTitleReasoningEffort !== null ||
@@ -111,6 +119,14 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
           ...(hasPdfModelUpdate ? {
             chatPdfProviderModelId: value.chatPdfProviderModelId as string | null,
             chatPdfReasoningEffort: value.chatPdfReasoningEffort as string | null
+          } : {}),
+          ...(hasPdfNativeUpdate ? {
+            chatPdfNativeProviderModelId: value.chatPdfNativeProviderModelId as string | null,
+            chatPdfNativeReasoningEffort: value.chatPdfNativeReasoningEffort as string | null
+          } : {}),
+          ...(hasPdfPolicyUpdate ? {
+            ...(Object.hasOwn(value, "chatPdfProcessingMode") ? { chatPdfProcessingMode: value.chatPdfProcessingMode as "prefer_chat_model" | "use_pdf_reader" | "read_page_images" } : {}),
+            ...(Object.hasOwn(value, "chatPdfFallbackMethod") ? { chatPdfFallbackMethod: value.chatPdfFallbackMethod as "pdf_reader" | "page_images" } : {})
           } : {}),
           expectedVersion: Number(value.expectedVersion),
           ...(hasUtilityUpdate ? {

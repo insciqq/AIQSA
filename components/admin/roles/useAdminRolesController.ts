@@ -38,8 +38,12 @@ export type AdminRolePatch = Readonly<{
   imageParameters?: ImageGenerationParameters;
   chatTitleProviderModelId?: string | null;
   chatTitleReasoningEffort?: string | null;
+  chatPdfNativeProviderModelId?: string | null;
+  chatPdfNativeReasoningEffort?: string | null;
   chatPdfProviderModelId?: string | null;
   chatPdfReasoningEffort?: string | null;
+  chatPdfProcessingMode?: "prefer_chat_model" | "use_pdf_reader" | "read_page_images";
+  chatPdfFallbackMethod?: "pdf_reader" | "page_images";
   providerModelId?: string | null;
   reasoningEffort?: string | null;
   rerankerProviderModelId?: string | null;
@@ -57,7 +61,7 @@ export type AdminRolesController = Readonly<{
   /** Immediate apply for independent roles; `undo` reverts through the same PATCH. */
   assign(patch: AdminRolePatch, undo: AdminRolePatch | null): Promise<boolean>;
   busy: boolean;
-  checkAndAssign(role: "chat_titles" | "memory" | "vision", id: string): Promise<boolean>;
+  checkAndAssign(role: "chat_titles" | "memory" | "vision" | "direct_pdf", id: string): Promise<boolean>;
   checkDocument(mode: KnowledgeModelMode, id: string): Promise<boolean>;
   checking: Readonly<{ id: string; role: AdminSystemModelEligibilityRole }> | null;
   error: string | null;
@@ -250,7 +254,7 @@ export function useAdminRolesController({
     return true;
   }, [invalidateReads, reportError, setPolicy]);
 
-  const checkAndAssign = useCallback(async (role: "chat_titles" | "memory" | "vision", id: string): Promise<boolean> => {
+  const checkAndAssign = useCallback(async (role: "chat_titles" | "memory" | "vision" | "direct_pdf", id: string): Promise<boolean> => {
     const previous = policyRef.current?.policy;
     if (!previous || !await check(role, id)) return false;
     if (role === "chat_titles") return assign(
@@ -258,6 +262,11 @@ export function useAdminRolesController({
         policyRef.current?.titleCandidates.find((candidate) => candidate.id === id)
       ) },
       { chatTitleProviderModelId: previous.chatTitleModel?.id ?? null, chatTitleReasoningEffort: previous.chatTitleReasoningEffort }
+    );
+    if (role === "direct_pdf") return assign(
+      { chatPdfNativeProviderModelId: id, chatPdfNativeReasoningEffort: null },
+      { chatPdfNativeProviderModelId: previous.chatPdfNativeModel?.id ?? null,
+        chatPdfNativeReasoningEffort: previous.chatPdfNativeReasoningEffort ?? null }
     );
     return role === "memory"
       ? assign(

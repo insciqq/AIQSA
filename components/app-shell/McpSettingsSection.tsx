@@ -6,6 +6,7 @@ import {
 } from "@/lib/contracts/mcp";
 import { UiV2Button, UiV2Icon, UiV2Monogram, UiV2Switch } from "@/components/ui-v2";
 import { useEffect, useState } from "react";
+import { McpHubConnection } from "./McpHubConnection";
 import {
   disconnectUserMcpServer,
   McpSettingsApiError,
@@ -318,12 +319,12 @@ function ServerRow({
             />
           ) : (
             <div className="v2-settings-server-preference">
-              <span className="v2-settings-field-note">Use in chats</span>
+              <span className="v2-settings-field-note">Enable connection</span>
               <UiV2Switch
                 aria-busy={busy === "toggle" || undefined}
                 checked={server.enabled}
                 disabled={busy !== null}
-                label={`Use ${server.name} in chats`}
+                label={`Enable ${server.name}`}
                 onChange={toggle}
               />
             </div>
@@ -490,7 +491,7 @@ export function McpSettingsSection({
             {enabledCount && enabledToolCount ? ` · ${toolCountLabel(enabledToolCount)}` : ""}
           </span>
           <span className="v2-settings-row-description">
-            Enabled servers join your private tool catalog; a chat uses them only in Auto or Load all mode. Policy, secrets, and the full inventory stay with the administrator.
+            Enabled servers join your private tool catalog for chats and authorized MCP Hub apps. A chat uses them in Auto or Load all mode. Policy, secrets, and the full inventory stay with the administrator.
           </span>
         </div>
         <div className="v2-settings-row-control">
@@ -562,6 +563,7 @@ export function McpSettingsSection({
       ) : null}
 
       {/* Footnote: how a chat consumes the enabled catalog (A13). */}
+      <McpHubConnection />
       <details className="v2-settings-footnote">
         <summary className="v2-focusable">How tools use data</summary>
         <div className="v2-settings-disclosure-body">
@@ -569,7 +571,7 @@ export function McpSettingsSection({
           <p>Load all eagerly loads every enabled server for that chat; Off loads none.</p>
           <p>
             You can enable up to {MCP_RUN_PLAN_LIMITS.maxEnabledServers} servers. Enabled runtimes stay asleep
-            until a run actually needs them.
+            until a chat or MCP Hub request needs them.
           </p>
         </div>
       </details>

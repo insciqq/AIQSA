@@ -178,7 +178,7 @@ describe("review-driven Knowledge retrieval", () => {
       expect.objectContaining({ results: [expect.any(Object), receipt] }));
     expect(knowledgeRefinementUsageAfter([...f.calls.values()], [])).toEqual([{
       provider: "test", modelId: "embedding-model",
-      usage: { inputTokens: 2, outputTokens: 0, reasoningTokens: 0, totalTokens: 2 }
+      usage: { inputTokens: 2, totalTokens: 2 }
     }]);
 
     await refineKnowledgeEvidence(recovered);

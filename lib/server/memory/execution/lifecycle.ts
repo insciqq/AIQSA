@@ -33,6 +33,7 @@ const safeProviderId = /^[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,255}$/u;
 
 export type MemoryReportedUsage = Readonly<{
   cachedInputTokens: number | null;
+  cacheWriteInputTokens?: number | null;
   completeness: "COMPLETE" | "PARTIAL" | "UNAVAILABLE";
   estimatedCostMicros: number | null;
   inputTokens: number | null;
@@ -100,12 +101,13 @@ function validateUsage(usage: MemoryReportedUsage): void {
     usage.outputTokens,
     usage.reasoningTokens,
     usage.totalTokens,
-    usage.estimatedCostMicros
+    usage.estimatedCostMicros,
+    usage.cacheWriteInputTokens ?? null
   ];
   if (values.some((value) => !validNullableCount(value))) {
     return memoryExecutionFailure("memory_execution_usage_invalid");
   }
-  const tokenValues = values.slice(0, 5);
+  const tokenValues = [usage.inputTokens, usage.outputTokens, usage.totalTokens];
   if (
     (usage.completeness !== "UNAVAILABLE" &&
       usage.completeness !== "PARTIAL" &&
@@ -137,6 +139,7 @@ function validateSettlement(input: MemoryExecutionSettlementInput): void {
 function usageFromBinding(binding: MemoryExecutionBindingRecord): MemoryReportedUsage {
   return {
     cachedInputTokens: binding.cachedInputTokens,
+    cacheWriteInputTokens: binding.cacheWriteInputTokens,
     completeness: binding.usageCompleteness,
     estimatedCostMicros: binding.estimatedCostMicros,
     inputTokens: binding.inputTokens,
@@ -150,6 +153,7 @@ function sameUsage(left: MemoryReportedUsage, right: MemoryReportedUsage): boole
   return left.completeness === right.completeness &&
     left.inputTokens === right.inputTokens &&
     left.cachedInputTokens === right.cachedInputTokens &&
+    (left.cacheWriteInputTokens ?? null) === (right.cacheWriteInputTokens ?? null) &&
     left.outputTokens === right.outputTokens &&
     left.reasoningTokens === right.reasoningTokens &&
     left.totalTokens === right.totalTokens &&
@@ -165,6 +169,7 @@ function usageCanRecover(
   const pairs = [
     [prior.inputTokens, recovered.inputTokens],
     [prior.cachedInputTokens, recovered.cachedInputTokens],
+    [prior.cacheWriteInputTokens ?? null, recovered.cacheWriteInputTokens ?? null],
     [prior.outputTokens, recovered.outputTokens],
     [prior.reasoningTokens, recovered.reasoningTokens],
     [prior.totalTokens, recovered.totalTokens],
@@ -176,6 +181,7 @@ function usageCanRecover(
 function usageData(usage: MemoryReportedUsage) {
   return {
     cachedInputTokens: usage.cachedInputTokens,
+    cacheWriteInputTokens: usage.cacheWriteInputTokens ?? null,
     estimatedCostMicros: usage.estimatedCostMicros,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
@@ -212,7 +218,7 @@ async function assertDurableUsage(
   const event = await storedUsageEvent(tx, binding.userId, binding.id);
   if (
     !event ||
-    event.cacheWriteInputTokens !== null ||
+    event.cacheWriteInputTokens !== (expected.cacheWriteInputTokens ?? null) ||
     event.inputTokens !== expected.inputTokens ||
     event.cachedInputTokens !== expected.cachedInputTokens ||
     event.outputTokens !== expected.outputTokens ||
@@ -269,7 +275,8 @@ async function createUsageEvent(
   await tx.usageEvent.create({
     data: {
       cachedInputTokens: usage.cachedInputTokens,
-      cacheWriteInputTokens: null,
+      cacheWriteInputTokens: usage.cacheWriteInputTokens ?? null,
+      usageCompleteness: usage.completeness,
       estimatedCostMicros: usage.estimatedCostMicros,
       inputTokens: usage.inputTokens,
       memoryExecutionBindingId: binding.id,
@@ -752,6 +759,8 @@ export function createPrismaMemoryExecutionLifecycle(
         await tx.usageEvent.update({
           data: {
             cachedInputTokens: input.usage.cachedInputTokens,
+            cacheWriteInputTokens: input.usage.cacheWriteInputTokens ?? null,
+            usageCompleteness: input.usage.completeness,
             estimatedCostMicros: input.usage.estimatedCostMicros,
             inputTokens: input.usage.inputTokens,
             outputTokens: input.usage.outputTokens,

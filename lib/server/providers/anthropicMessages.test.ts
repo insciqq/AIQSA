@@ -1155,11 +1155,11 @@ describe("Anthropic Messages adapter", () => {
           provider: "anthropic",
           stopReason,
           text: "Usable partial answer",
-          usage: { input_tokens: 4, output_tokens: 3, reasoning_tokens: 0 }
+          usage: { input_tokens: 4, output_tokens: 3, reasoning_tokens: null }
         },
         finalText: "Usable partial answer",
         providerResponseId: `msg-${stopReason}`,
-        usage: { inputTokens: 4, outputTokens: 3, reasoningTokens: 0, totalTokens: 7 }
+        usage: { inputTokens: 4, outputTokens: 3, reasoningTokens: null, totalTokens: 7 }
       });
     }
   );
@@ -1195,7 +1195,7 @@ describe("Anthropic Messages adapter", () => {
           text: "Terminal-only shape"
         },
         finalText: "Terminal-only shape",
-        usage: { inputTokens: 2, outputTokens: 1, reasoningTokens: 0, totalTokens: 3 }
+        usage: { inputTokens: 2, outputTokens: 1, reasoningTokens: null, totalTokens: 3 }
       }
     });
   });

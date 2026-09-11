@@ -1,3 +1,4 @@
+import { mergeTokenUsage, normalizeTokenUsage } from "../../domain/usage";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { prisma } from "../prisma";
 import { createAcceptedStructuredOutputSnapshotExecutor } from "../providerRuntime/structuredOutputExecutor";
@@ -20,13 +21,15 @@ export function createChatTitleWorker(input: Readonly<{
         try {
           if (!signal.aborted && await input.repository.isCurrent(work)) {
             const result = await input.execute(work.providerSnapshot, buildChatTitleRequest(work), {
-              onUsage: (value) => { usage = value; },
+              onUsage: (value) => { usage = mergeTokenUsage(usage ?? {}, value); },
               signal: AbortSignal.any([signal, AbortSignal.timeout(CHAT_TITLE_GENERATION_TIMEOUT_MS)]),
               timeoutMs: CHAT_TITLE_GENERATION_TIMEOUT_MS
             });
             title = normalizeGeneratedChatTitle(result.title);
           }
-        } catch { /* Optional naming never changes the originating answer's outcome. */ }
+        } catch {
+          if (usage) usage = normalizeTokenUsage({ ...normalizeTokenUsage(usage), completeness: "partial" });
+        }
         // Preserve paid accounting even for invalid output, revocation, rename,
         // or failure to apply the title. This operation is independently idempotent.
         if (usage) await input.repository.recordUsage(work, usage);

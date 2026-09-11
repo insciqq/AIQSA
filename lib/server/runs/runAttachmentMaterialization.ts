@@ -240,7 +240,7 @@ function requiresBinaryMaterialization(
   capabilities: ProviderModelCapabilities
 ): boolean {
   return (record.kind === "image" && capabilities.vision) ||
-    (record.kind === "pdf" && capabilities.nativePdfInput);
+    (record.kind === "pdf" && capabilities.nativePdfInput && !record.preparedPdf && !record.workspaceOriginalOnly);
 }
 
 type MaterializationPlanEntry = Readonly<{
@@ -362,6 +362,7 @@ function providerAttachment(
   overrides: Partial<Pick<ProviderAttachment, "base64Data" | "dataUrl" | "extractedText">> = {}
 ): ProviderAttachment {
   return {
+    ...(record.preparedPdf || record.workspaceOriginalOnly ? { pdfDelivery: "prepared_text" as const } : {}),
     byteSize: record.byteSize,
     extractedText: record.extractedText,
     fileName: record.fileName,
@@ -500,6 +501,7 @@ export async function loadProviderAttachments(
   options: Readonly<{
     capabilities: ProviderModelCapabilities;
     pdfRoute?: ChatPdfRouteAdmission;
+    resolvePdfRoute?: () => Promise<ChatPdfRouteAdmission>;
     onPdfAdmissions?: (admissions: ChatPdfAttachmentAdmission[]) => void;
     limits: RunAttachmentLimits;
     projectId?: string;
@@ -545,6 +547,8 @@ export async function loadProviderAttachments(
     });
   }
   const records = orderedAttachmentRecords(loadedRecords, attachmentIds);
+  const pdfRoute = records.some((record) => record.kind === "pdf")
+    ? options.pdfRoute ?? await options.resolvePdfRoute?.() : undefined;
   for (const record of records) {
     if (record.workspaceOriginalOnly) {
       if (!options.runId || !options.workspaceEnabled || record.kind !== "pdf" || record.preparedPdf) {
@@ -567,9 +571,9 @@ export async function loadProviderAttachments(
   records.forEach((record) => validateAttachmentReadiness(
     record,
     options.capabilities,
-    options.workspaceEnabled === true, options.pdfRoute
+    options.workspaceEnabled === true, pdfRoute
   ));
-  const plan = materializationPlan(records, options.capabilities, options.limits, options.pdfRoute);
+  const plan = materializationPlan(records, options.capabilities, options.limits, pdfRoute);
   if (plan.binaryById.size === 0) {
     return records.map((record) => providerAttachment(record));
   }
@@ -600,7 +604,7 @@ export async function loadProviderAttachments(
       }
 
       try {
-        results[index] = await materializeOne(deps.storage!, entry, internalController.signal, options.pdfRoute, pdfAdmissions);
+        results[index] = await materializeOne(deps.storage!, entry, internalController.signal, pdfRoute, pdfAdmissions);
       } catch (error) {
         if (firstError === undefined) {
           firstError = error;
