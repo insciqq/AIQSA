@@ -109,7 +109,7 @@ test("Skill availability refreshes owner repair and privacy-safe recipient cards
     await expect(editor).toBeVisible();
     await expect(editor.getByRole("button", { name: "Use in chat", exact: true })).toHaveCount(0);
     await editor.locator('button[aria-controls="assistant-setup-skills"]').click();
-    await expect(editor.getByRole("checkbox", { name: `${skill.name} Order 1`, exact: true })).toBeEnabled();
+    await expect(editor.getByRole("checkbox", { name: `${skill.name} · unavailable Order 1`, exact: true })).toBeEnabled();
 
     const recipientCard = recipient.getByTestId(`assistant-card-${assistantId}`);
     await expect(recipientCard).toContainText("Required Skills are not available to you.");
@@ -211,10 +211,10 @@ test("Assistant Skill discovery spans pages, retries failures and preserves orde
     await openLibrary(page);
     await page.getByTestId(`assistant-card-${assistantId}`).getByRole("button", { name: "Edit setup", exact: true }).click();
     await editor.locator('button[aria-controls="assistant-setup-skills"]').click();
-    await expect(editor.getByRole("checkbox", { name: `${oldest.name} Order 8`, exact: true })).toBeChecked();
+    await expect(editor.getByRole("checkbox", { name: `${oldest.name} · unavailable Order 8`, exact: true })).toBeChecked();
     // Removal deletes the row, so there is no unchecked input left to await.
-    await editor.getByRole("checkbox", { name: `${oldest.name} Order 8`, exact: true }).click();
-    await expect(editor.getByRole("checkbox", { name: `${oldest.name} Order 8`, exact: true })).toHaveCount(0);
+    await editor.getByRole("checkbox", { name: `${oldest.name} · unavailable Order 8`, exact: true }).click();
+    await expect(editor.getByRole("checkbox", { name: `${oldest.name} · unavailable Order 8`, exact: true })).toHaveCount(0);
     await editor.getByTestId("assistant-editor-save").click();
     await expect(editor.getByTestId("assistant-library-notice")).toContainText("Saved. Future runs use these changes.");
     const repaired = (await (await page.request.get(`/api/me/assistants/${assistantId}`)).json()).assistant;

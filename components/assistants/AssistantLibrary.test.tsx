@@ -147,11 +147,12 @@ describe("Assistant Library subviews", () => {
       publishableWorkspaces: [], viewer: { canPublishInstallation: false } }));
     vi.stubGlobal("fetch", fetchMock);
     const current = editor({ draft: draft({ skillIds: ["older", "revoked"] }), options: {
-      ...editor().options, selectedSkills: [{ id: "older", name: "Older workflow" }, { id: "revoked", name: "Unavailable Skill" }]
+      ...editor().options, selectedSkills: [{ id: "older", name: "Older workflow", available: false }, { id: "revoked", name: "Unavailable Skill", available: false }]
     } });
     render(<AssistantLibrary view={view({ editor: current, task: "editor" })} />);
     const row = screen.getByText("Skills", { exact: true }).closest("section")!;
     fireEvent.click(within(row).getByRole("button", { name: "Change" }));
+    expect(within(row).getByRole("checkbox", { name: /Older workflow · unavailable/ })).toBeChecked();
     expect(within(row).getByRole("checkbox", { name: /Older workflow/ })).toBeChecked();
     fireEvent.click(within(row).getByRole("checkbox", { name: /Unavailable Skill/ }));
     expect(current.onChange).toHaveBeenCalledWith({ skillIds: ["older"] });

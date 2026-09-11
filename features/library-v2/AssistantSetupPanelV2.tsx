@@ -108,9 +108,10 @@ export function AssistantSetupPanelV2({
   const selectedSearchLabels = draft.searchOptionIds.map((id) =>
     options.searchOptions.find((item) => item.id === id)?.label ?? "Unavailable Search source"
   );
-  const selectedSkillLabels = draft.skillIds.map((id) =>
-    options.selectedSkills.find((item) => item.id === id)?.name ?? "Selected Skill"
-  );
+  const selectedSkillLabels = draft.skillIds.map((id) => {
+    const skill = options.selectedSkills.find((item) => item.id === id);
+    return `${skill?.name ?? "Selected Skill"}${skill?.available === false ? " · unavailable" : ""}`;
+  });
   const capabilityLine = selectedModel ? [
     selectedModel.capabilities.reasoning ? "Reasoning" : null,
     selectedModel.capabilities.toolCalling ? "tools" : null,

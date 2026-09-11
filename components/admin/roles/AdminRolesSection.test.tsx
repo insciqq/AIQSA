@@ -223,10 +223,10 @@ const patchesTo = (calls: Call[], url: string) => calls.filter((call) => call.ur
 afterEach(() => vi.unstubAllGlobals());
 
 describe("AdminRolesSection", () => {
-  it("focuses the exact system role from an Overview target", async () => {
+  it.each([["reranker", "reranker"], ["chat_titles", "chat-titles"]])("focuses the %s system role from an Overview target", async (resource, row) => {
     server();
-    renderSection(groups, "reranker");
-    await waitFor(() => expect(screen.getByTestId("admin-role-reranker")).toHaveFocus());
+    renderSection(groups, resource);
+    await waitFor(() => expect(screen.getByTestId(`admin-role-${row}`)).toHaveFocus());
   });
 
   it("preserves edited defaults and Knowledge fields across a background refresh", async () => {

@@ -4,13 +4,14 @@ import { estimateCostMicros, normalizeTokenUsage } from "../../domain/usage";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import type { ChatTitleWork } from "./titleGeneration";
 
-const clearedInput = { answerText: "", expectedTitle: "", questionText: "", reasoningEffort: null, providerSnapshot: Prisma.DbNull };
+const clearedInput = { answerText: "", credentialVersionId: null, expectedTitle: "", questionText: "", reasoningEffort: null, providerSnapshot: Prisma.DbNull };
 
 export function createChatTitleRepository(client: PrismaClient) {
   return {
     async enqueue(work: ChatTitleWork, expiresAt: Date): Promise<void> {
       await client.chatTitleGeneration.createMany({
-        data: { ...work, expiresAt, providerSnapshot: JSON.parse(JSON.stringify(work.providerSnapshot)) as Prisma.InputJsonValue },
+        data: { ...work, expiresAt, credentialVersionId: work.providerSnapshot.credentialVersionId,
+          providerSnapshot: JSON.parse(JSON.stringify(work.providerSnapshot)) as Prisma.InputJsonValue },
         skipDuplicates: true
       });
     },
@@ -51,7 +52,7 @@ export function createChatTitleRepository(client: PrismaClient) {
         if (job.chat.archived || job.chat.permanentDeletionAt || job.chat.projectId ||
           job.chat.userId !== job.userId || job.chat.user?.status !== "active" ||
           job.chat.title !== job.expectedTitle || job.chat.titleRevision !== job.titleRevision ||
-          !job.providerSnapshot) {
+          !job.providerSnapshot || !job.credentialVersionId) {
           await tx.chatTitleGeneration.update({ where: { runId: job.runId },
             data: { ...clearedInput, finishedAt: now, status: "skipped" } });
           return "skipped";

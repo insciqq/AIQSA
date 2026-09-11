@@ -1,4 +1,5 @@
 import { MEMORY_DEFAULTS_MIGRATION, memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql } from "./memory-defaults-adoption";
+import { CHAT_TITLE_CREDENTIAL_MIGRATION, chatTitleCredentialAdoptionFixtureSql, chatTitleCredentialAdoptionProofSql } from "./chat-title-credential-adoption";
 import { CHAT_TITLE_ROLE_MIGRATION, chatTitleRoleAdoptionFixtureSql, chatTitleRoleAdoptionProofSql, chatTitleRoleClearProofSql } from "./system-model-roles-adoption";
 import { GEMINI_GROUNDING_MIGRATION, geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql } from "./gemini-grounding-adoption";
 import { MEMORY_CONFIGURATION_WAIT_MIGRATION, memoryConfigurationAdoptionFixtureSql, memoryConfigurationAdoptionProofSql } from "./memory-configuration-adoption";
@@ -7389,6 +7390,8 @@ function main(
     chatTitleRoleAdoptionFixtureSql(), chatTitleRoleAdoptionProofSql(), chatTitleRoleClearProofSql());
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_DEFAULTS_MIGRATION,
     memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, CHAT_TITLE_CREDENTIAL_MIGRATION,
+    chatTitleCredentialAdoptionFixtureSql, chatTitleCredentialAdoptionProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

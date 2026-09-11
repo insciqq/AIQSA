@@ -81,7 +81,7 @@ export type AssistantEditorOptions = {
   models: AssistantEditorModelOption[];
   onRetryKnowledge(): void;
   searchOptions: { id: string; label: string }[];
-  selectedSkills: { id: string; name: string }[];
+  selectedSkills: { id: string; name: string; available?: boolean }[];
 };
 
 export type AssistantEditorView = {

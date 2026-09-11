@@ -577,14 +577,14 @@ describe("assistantLibraryController", () => {
     useAssistantLibraryStore.getState().patch({ open: true });
     mocks.fetchAssistantDetail.mockResolvedValue({ ok: true, data: {
       ...detail(), content: { ...content(), skillIds: ["off-page", "revoked"] },
-      skills: [{ id: "off-page", name: "Older workflow" }, { id: "revoked", name: "Unavailable Skill" }]
+      skills: [{ id: "off-page", name: "Older workflow", available: false }, { id: "revoked", name: "Unavailable Skill", available: false }]
     } });
     const input = controllerInput();
     const actions = createAssistantLibraryActions(input);
     await actions.openAssistantEditor("assistant-1");
     const editor = () => buildAssistantLibraryView(input, actions, useAssistantLibraryStore.getState())!.editor!;
     expect(editor().options.selectedSkills).toEqual([
-      { id: "off-page", name: "Older workflow" }, { id: "revoked", name: "Unavailable Skill" }
+      { id: "off-page", name: "Older workflow", available: false }, { id: "revoked", name: "Unavailable Skill", available: false }
     ]);
     editor().onChange({ description: "Keep this draft" });
     input.skills = [{ id: "next-page", name: "Page two", description: "", archived: false,
@@ -594,7 +594,7 @@ describe("assistantLibraryController", () => {
     input.skills = [];
     editor().onChange({ skillIds: ["off-page", "next-page"] });
     expect(editor().options.selectedSkills).toEqual([
-      { id: "off-page", name: "Older workflow" }, { id: "next-page", name: "Page two" }
+      { id: "off-page", name: "Older workflow", available: false }, { id: "next-page", name: "Page two", available: true }
     ]);
     expect(editor().draft.description).toBe("Keep this draft");
     expect(editor().draft.skillIds).toEqual(["off-page", "next-page"]);

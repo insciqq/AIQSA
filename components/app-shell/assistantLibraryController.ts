@@ -396,9 +396,9 @@ export function createAssistantLibraryActions(input: AssistantLibraryControllerI
       fieldErrors: null,
       expectedVersion: detail.version ?? null,
       publications: detail.publications ?? null,
-      selectedSkills: draft.skillIds.map((id) => ({
-        id, name: detail.skills?.find((skill) => skill.id === id)?.name ?? "Unavailable Skill"
-      })),
+      selectedSkills: draft.skillIds.map((id) =>
+        detail.skills?.find((skill) => skill.id === id) ?? { id, name: "Unavailable Skill", available: false }
+      ),
       saving: false
     };
   }
@@ -819,10 +819,13 @@ export function buildAssistantLibraryView(
             }
             current.patchEditor({
               draft,
-              selectedSkills: draft.skillIds.map((id) => ({ id, name:
-                input.skills.find((skill) => skill.id === id)?.name ??
-                current.editor!.selectedSkills.find((skill) => skill.id === id)?.name ?? "Selected Skill"
-              })),
+              selectedSkills: draft.skillIds.map((id) => {
+                const selected = current.editor!.selectedSkills.find((skill) => skill.id === id);
+                if (selected) return selected;
+                const skill = input.skills.find((skill) => skill.id === id);
+                return skill ? { id, name: skill.name, available: !skill.archived }
+                  : { id, name: "Selected Skill" };
+              }),
               error: null,
               fieldErrors: null
             });

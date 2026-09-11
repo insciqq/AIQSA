@@ -15,6 +15,10 @@ export function mcpToolAccessSummary(policy: McpToolAccessPolicy | undefined): s
   return `Restricted · ${users}, ${groups}`;
 }
 
+function policyKey(policy: McpToolAccessPolicy): string {
+  return JSON.stringify([policy.restricted, [...policy.userIds].sort(), [...policy.groupIds].sort()]);
+}
+
 export function AdminMcpToolAccessEditor({ controller, groups, name, onClose, server, users }: Readonly<{
   controller: AdminMcpController;
   groups: readonly AdminGroup[];
@@ -28,6 +32,7 @@ export function AdminMcpToolAccessEditor({ controller, groups, name, onClose, se
   };
   const [draft, setDraft] = useState<McpToolAccessPolicy>(currentPolicy);
   const [expectedUpdatedAt, setExpectedUpdatedAt] = useState(server.updatedAt);
+  const [expectedPolicy, setExpectedPolicy] = useState(() => policyKey(currentPolicy()));
   const [query, setQuery] = useState("");
   const [error, setError] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -35,13 +40,15 @@ export function AdminMcpToolAccessEditor({ controller, groups, name, onClose, se
   const headingId = useId();
   useEffect(() => { heading.current?.focus(); }, []);
   const disabled = saving || controller.state.busy || Boolean(server.archivedAt);
-  const changedElsewhere = server.updatedAt !== expectedUpdatedAt;
+  // Recipient deletion cascades grants without updating the MCP server row.
+  const changedElsewhere = server.updatedAt !== expectedUpdatedAt || policyKey(currentPolicy()) !== expectedPolicy;
   const search = query.trim().toLocaleLowerCase();
   const matches = (value: string) => !search || value.toLocaleLowerCase().includes(search);
   const selectedGroups = groups.filter((group) => draft.groupIds.includes(group.id));
   const selectedUsers = users.filter((user) => draft.userIds.includes(user.id));
   const missingUsers = draft.userIds.filter((id) => !users.some((user) => user.id === id));
   const missingGroups = draft.groupIds.filter((id) => !groups.some((group) => group.id === id));
+  const missingRecipients = missingUsers.length > 0 || missingGroups.length > 0;
   const candidateGroups = groups.filter((group) => !draft.groupIds.includes(group.id) && matches(group.name));
   const candidateUsers = users.filter((user) => !draft.userIds.includes(user.id) && matches(`${user.displayName} ${user.email ?? ""}`));
   const toggle = (field: "groupIds" | "userIds", id: string) => setDraft((value) => ({
@@ -49,6 +56,7 @@ export function AdminMcpToolAccessEditor({ controller, groups, name, onClose, se
     [field]: value[field].includes(id) ? value[field].filter((candidate) => candidate !== id) : [...value[field], id]
   }));
   const save = async () => {
+    if (disabled || changedElsewhere || missingRecipients) return;
     setSaving(true);
     setError(false);
     try {
@@ -117,10 +125,10 @@ export function AdminMcpToolAccessEditor({ controller, groups, name, onClose, se
       {error ? <p className="mt-3 text-xs text-critical" role="alert">Access could not be saved. Your selections are kept. Refresh server data to check for changes.</p> : null}
       {changedElsewhere ? <p className="mt-3 text-xs text-caution" role="alert">This server changed while you were editing. Load its saved access before making further changes.</p> : null}
       <div className="mt-4 flex flex-wrap gap-2">
-        <UiV2Button busy={saving} disabled={disabled || changedElsewhere} onClick={() => void save()} tone="primary" type="button">Save access</UiV2Button>
+        <UiV2Button busy={saving} disabled={disabled || changedElsewhere || missingRecipients} onClick={() => void save()} tone="primary" type="button">Save access</UiV2Button>
         <UiV2Button disabled={saving} onClick={onClose} tone="ghost" type="button">Cancel</UiV2Button>
         {error ? <UiV2Button disabled={disabled} onClick={() => void controller.actions.refresh()} tone="ghost" type="button">Refresh server data</UiV2Button> : null}
-        {changedElsewhere ? <UiV2Button disabled={disabled} onClick={() => { setDraft(currentPolicy()); setExpectedUpdatedAt(server.updatedAt); setError(false); }} tone="ghost" type="button">Load saved access</UiV2Button> : null}
+        {changedElsewhere ? <UiV2Button disabled={disabled} onClick={() => { setDraft(currentPolicy()); setExpectedUpdatedAt(server.updatedAt); setExpectedPolicy(policyKey(currentPolicy())); setError(false); }} tone="ghost" type="button">Load saved access</UiV2Button> : null}
       </div>
     </section>
   );

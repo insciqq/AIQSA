@@ -2377,6 +2377,7 @@ model ProviderCredential {
 
 model ProviderCredentialVersion {
   chatPdfPreparations ChatPdfAttachmentPreparation[]
+  chatTitleGenerations ChatTitleGeneration[]
   id                          String                         @id @default(uuid())
   credentialId                String
   version                     Int
@@ -2788,6 +2789,7 @@ model ChatTitleGeneration {
   answerText       String
   reasoningEffort  String?
   providerSnapshot Json?
+  credentialVersionId String?
   status           ChatTitleGenerationStatus @default(pending)
   createdAt        DateTime                  @default(now())
   expiresAt        DateTime
@@ -2796,9 +2798,11 @@ model ChatTitleGeneration {
   chat             Chat                      @relation(fields: [chatId], references: [id], onDelete: Cascade, onUpdate: Restrict)
   modelRun         ModelRun                  @relation(fields: [userId, chatId, runId], references: [userId, chatId, id], onDelete: Cascade, onUpdate: Restrict)
   usageEvent       UsageEvent?
+  credentialVersion ProviderCredentialVersion? @relation(fields: [credentialVersionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
 
   @@unique([userId, chatId, runId])
   @@index([status, createdAt])
+  @@index([credentialVersionId])
 }
 
 model ModelRun {

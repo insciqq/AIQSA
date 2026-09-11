@@ -257,15 +257,19 @@ const activeRunStatuses = ["preparing", "in_progress", "queued", "streaming"] as
 async function countBlockingProviderRunBindings(tx: Prisma.TransactionClient, target: Readonly<{
   connectionId?: string; credentialId?: string; providerModelId?: string;
 }>): Promise<number> {
-  const [ordinary, documents] = await Promise.all([
+  const [ordinary, documents, titles] = await Promise.all([
     tx.providerRunBinding.count({ where: target }),
     tx.chatPdfAttachmentPreparation.count({ where: {
       ...(target.providerModelId ? { providerModelId: target.providerModelId } : {}),
       ...(target.connectionId ? { providerModel: { connectionId: target.connectionId } } : {}),
       ...(target.credentialId ? { credentialVersion: { credentialId: target.credentialId } } : {})
+    } }),
+    tx.chatTitleGeneration.count({ where: {
+      status: { in: ["pending", "dispatched"] },
+      AND: Object.entries(target).map(([field, value]) => ({ providerSnapshot: { path: [field], equals: value } }))
     } })
   ]);
-  return ordinary + documents;
+  return ordinary + documents + titles;
 }
 
 async function cleanupProviderReferences(
@@ -302,6 +306,9 @@ async function cleanupProviderReferences(
     WHERE NOT EXISTS (
       SELECT 1 FROM "ChatPdfAttachmentPreparation" AS pdf
       WHERE pdf."credentialVersionId" = version."id"
+    ) AND NOT EXISTS (
+      SELECT 1 FROM "ChatTitleGeneration" AS title
+      WHERE title."credentialVersionId" = version."id"
     ) AND NOT EXISTS (
       SELECT 1 FROM "ProviderCredential" AS credential
       WHERE credential."id" = version."credentialId"

@@ -476,7 +476,7 @@ export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult
   };
 }
 
-export type AssistantAvailabilityReason = "model_access" | "search_access" | "tools_access" | "skills_access" | "knowledge_access";
+export type AssistantAvailabilityReason = "model_access" | "search_access" | "tools_access" | "skills_access" | "knowledge_access" | "knowledge_not_ready" | "knowledge_unavailable";
 
 export type AssistantAvailabilityDependency = {
   kind: "mcp" | "model" | "search";
@@ -558,7 +558,7 @@ export type AssistantDetail = {
   pinned: boolean;
   publications?: AssistantPublicationView[];
   content: AssistantContent;
-  skills?: { id: string; name: string }[];
+  skills?: { id: string; name: string; available?: boolean }[];
   version?: number;
 };
 
@@ -587,7 +587,8 @@ function decodeAvailability(value: unknown): AssistantAvailability | null {
   if (
     value.ok === false &&
     (value.reason === "model_access" || value.reason === "search_access" || value.reason === "tools_access" ||
-      value.reason === "skills_access" || value.reason === "knowledge_access")
+      value.reason === "skills_access" || value.reason === "knowledge_access" ||
+      value.reason === "knowledge_not_ready" || value.reason === "knowledge_unavailable")
   ) {
     let dependencies: AssistantAvailabilityDependency[] | undefined;
     if (value.dependencies !== undefined) {
@@ -816,13 +817,14 @@ export function decodeAssistantDetail(value: unknown): AssistantDetail | null {
   }
 
   if (value.version !== undefined && typeof value.version !== "number") return null;
-  let skills: { id: string; name: string }[] | undefined;
+  let skills: AssistantDetail["skills"];
   if (value.skills !== undefined) {
     if (!Array.isArray(value.skills)) return null;
     skills = [];
     for (const skill of value.skills) {
       if (!isRecord(skill) || !boundedId(skill.id) || !nonEmptyString(skill.name)) return null;
-      skills.push({ id: skill.id, name: skill.name });
+      if (skill.available !== undefined && typeof skill.available !== "boolean") return null;
+      skills.push({ id: skill.id, name: skill.name, ...(skill.available === undefined ? {} : { available: skill.available }) });
     }
     if (
       skills.length !== content.skillIds.length ||

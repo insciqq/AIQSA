@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { WorkspaceChatSummary } from "./types";
 import { shellFetch, subscribeToSessionExpired } from "./shellApi";
 import { useWorkspaceStore } from "./workspaceStore";
@@ -11,26 +11,27 @@ export function useChatTitleReconciliation(input: Readonly<{
 }>): void {
   const pendingIds = input.chats.filter((chat) => !chat.projectId && chat.titlePending)
     .map((chat) => chat.id).sort().join("\0");
+  const syncPending = useRef<(ids: readonly string[]) => void>(() => undefined);
   useEffect(() => {
-    if (!pendingIds) return;
     const controller = new AbortController();
-    const pending = new Set(pendingIds.split("\0"));
-    const deadline = Date.now() + 360_000;
+    const pending = new Map<string, number>();
     let delay = 1_000;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let polling = false;
     let request: AbortController | null = null;
     const halt = () => { clearTimeout(timer); controller.abort(); };
     const schedule = () => {
-      if (!controller.signal.aborted && pending.size && Date.now() < deadline && document.visibilityState === "visible") {
-        timer = setTimeout(() => { void poll(); }, delay);
+      if (timer || polling || controller.signal.aborted || document.visibilityState !== "visible") return;
+      if ([...pending.values()].some((deadline) => Date.now() < deadline)) {
+        timer = setTimeout(() => { timer = undefined; void poll(); }, delay);
       }
     };
     const poll = async () => {
       if (polling || controller.signal.aborted || document.visibilityState !== "visible") return;
       polling = true;
       try {
-        for (const chatId of pending) {
+        for (const [chatId, deadline] of pending) {
+          if (Date.now() >= deadline) continue;
           if (controller.signal.aborted || document.visibilityState !== "visible") break;
           const before = useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId);
           if (!before?.titlePending) { pending.delete(chatId); continue; }
@@ -46,9 +47,10 @@ export function useChatTitleReconciliation(input: Readonly<{
               typeof value.title !== "string" || !value.title || typeof value.pending !== "boolean") continue;
             if (controller.signal.aborted) break;
             const current = useWorkspaceStore.getState();
-            // A rename or another summary update during this request wins.
-            // A subsequent poll can read its current title without restoring a stale one.
-            if (current.chats.find((chat) => chat.id === chatId) !== before) continue;
+            // A rename wins, while unrelated changes to controls or messages
+            // must not discard a completed title. Merge only title metadata.
+            const currentChat = current.chats.find((chat) => chat.id === chatId);
+            if (!currentChat?.titlePending || currentChat.projectId || currentChat.title !== before.title) continue;
             const title = value.title;
             const titlePending = value.pending;
             useWorkspaceStore.setState((state) => ({
@@ -68,12 +70,28 @@ export function useChatTitleReconciliation(input: Readonly<{
     };
     const visibility = () => {
       clearTimeout(timer);
+      timer = undefined;
       if (document.visibilityState !== "visible") request?.abort();
-      if (!polling) schedule();
+      else {
+        // A hidden tab may outlive the job. Give every pending title a fresh
+        // bounded foreground window so its terminal state can still arrive.
+        for (const chatId of pending.keys()) pending.set(chatId, Date.now() + 360_000);
+        schedule();
+      }
+    };
+    syncPending.current = (ids) => {
+      const selected = new Set(ids);
+      for (const chatId of pending.keys()) if (!selected.has(chatId)) pending.delete(chatId);
+      if (!pending.size) delay = 1_000;
+      for (const chatId of ids) if (!pending.has(chatId)) pending.set(chatId, Date.now() + 360_000);
+      if (!pending.size) { clearTimeout(timer); timer = undefined; }
+      schedule();
     };
     const unsubscribe = subscribeToSessionExpired(halt);
     document.addEventListener("visibilitychange", visibility);
-    schedule();
-    return () => { halt(); unsubscribe(); document.removeEventListener("visibilitychange", visibility); };
+    return () => { halt(); syncPending.current = () => undefined; unsubscribe(); document.removeEventListener("visibilitychange", visibility); };
+  }, [input.accountId]);
+  useEffect(() => {
+    syncPending.current(pendingIds ? pendingIds.split("\0") : []);
   }, [input.accountId, pendingIds]);
 }

@@ -402,12 +402,13 @@ describe("assistant wire decoders", () => {
       pinned: false,
       content,
       skills: [
-        { id: "skill-review", name: "Careful reviewer" },
-        { id: "skill-finish", name: "Action closer" }
+        { id: "skill-review", name: "Careful reviewer", available: false },
+        { id: "skill-finish", name: "Action closer", available: true }
       ]
     };
 
     expect(decodeAssistantDetail(detail)?.skills).toEqual(detail.skills);
+    expect(decodeAssistantDetail({ ...detail, skills: [{ ...detail.skills[0], available: "false" }, detail.skills[1]] })).toBeNull();
     expect(decodeAssistantDetail({
       ...detail,
       skills: [...detail.skills].reverse()

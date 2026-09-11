@@ -36,22 +36,35 @@ describe("Assistant dependency preflight", () => {
     expect(JSON.stringify(findMany.mock.calls)).not.toContain("instructions");
     expect(loadKnowledge).toHaveBeenCalledOnce();
     expect(entries.map(({ dependencyAvailability }) => dependencyAvailability)).toEqual([
-      { skills: false, knowledge: true }, { skills: false, knowledge: true }
+      { skills: false, knowledge: "ready" }, { skills: false, knowledge: "ready" }
     ]);
     expect(entries[0]!.content.skillSummaries).toEqual([
-      { id: "ready", name: "Ready workflow" }, { id: "revoked", name: "Unavailable Skill" },
-      { id: "archived", name: "Archived workflow" }
+      { id: "ready", name: "Ready workflow", available: true }, { id: "revoked", name: "Unavailable Skill", available: false },
+      { id: "archived", name: "Archived workflow", available: false }
     ]);
     expect(entries[1]!.content.skillSummaries?.map(({ id }) => id)).toEqual(["ready", "archived"]);
   });
 
-  it("marks processing-only and inaccessible Knowledge unavailable, and preserves unexpected read failures", async () => {
+  it("distinguishes authorized unready Knowledge from inaccessible Knowledge", async () => {
     loadKnowledge.mockResolvedValueOnce({ sources: [] } as never);
     expect((await withAssistantDependencyAvailability({} as never, "runner", [entry()]))[0]?.dependencyAvailability)
-      .toEqual({ skills: true, knowledge: false });
+      .toEqual({ skills: true, knowledge: "not_ready" });
     loadKnowledge.mockRejectedValueOnce(new KnowledgeRunAdmissionError());
-    expect((await withAssistantDependencyAvailability({} as never, "runner", [entry()]))[0]?.dependencyAvailability?.knowledge).toBe(false);
+    expect((await withAssistantDependencyAvailability({} as never, "runner", [entry()]))[0]?.dependencyAvailability?.knowledge).toBe("access_denied");
+  });
+
+  it("isolates a failed dependency read and continues checking other Assistants", async () => {
+    const good = entry();
+    const broken = entry({ id: "broken", content: { ...good.content,
+      knowledgeSelection: { version: 1, mode: "explicit", baseIds: ["broken-base"], sourceIds: [] } } });
+    const later = entry({ id: "later", content: { ...good.content,
+      knowledgeSelection: { version: 1, mode: "explicit", baseIds: ["later-base"], sourceIds: [] } } });
+    loadKnowledge.mockResolvedValueOnce({ sources: [{}] } as never);
     loadKnowledge.mockRejectedValueOnce(new Error("database_read_failed"));
-    await expect(withAssistantDependencyAvailability({} as never, "runner", [entry()])).rejects.toThrow("database_read_failed");
+    loadKnowledge.mockResolvedValueOnce({ sources: [{}] } as never);
+    const result = await withAssistantDependencyAvailability({} as never, "runner", [good, broken, later]);
+    expect(result.map(({ id, dependencyAvailability }) => [id, dependencyAvailability?.knowledge]))
+      .toEqual([["assistant", "ready"], ["broken", "unavailable"], ["later", "ready"]]);
+    expect(JSON.stringify(result)).not.toContain("database_read_failed");
   });
 });

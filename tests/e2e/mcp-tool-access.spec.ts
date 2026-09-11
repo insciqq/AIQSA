@@ -105,6 +105,18 @@ for (const viewport of [
       await editor.getByRole("button", { name: "Save access", exact: true }).click();
       await expect(editor).toHaveCount(0);
       expect(await policy()).toMatchObject({ restricted: false, users: [{ userId }], groups: [] });
+      editor = await openEditor();
+      const beforeDeletion = await prisma.mcpServer.findUniqueOrThrow({ where: { id: serverId } });
+      await prisma.user.delete({ where: { id: userId } });
+      expect((await prisma.mcpServer.findUniqueOrThrow({ where: { id: serverId } })).updatedAt).toEqual(beforeDeletion.updatedAt);
+      await editor.getByRole("button", { name: "Save access", exact: true }).click();
+      await expect(editor.getByText(/Your selections are kept/)).toBeVisible();
+      await editor.getByRole("button", { name: "Refresh server data", exact: true }).click();
+      await expect(editor.getByRole("button", { name: "Save access", exact: true })).toBeDisabled();
+      await editor.getByRole("button", { name: "Load saved access", exact: true }).click();
+      await editor.getByRole("button", { name: "Save access", exact: true }).click();
+      await expect(editor).toHaveCount(0);
+      expect(await policy()).toMatchObject({ restricted: false, users: [], groups: [] });
       const final = await prisma.mcpServer.findUniqueOrThrow({ where: { id: serverId } });
       expect({ ...final, updatedAt: original.updatedAt }).toEqual(original);
       expect(upstreamRequests).toBe(0);

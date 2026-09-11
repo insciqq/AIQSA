@@ -181,7 +181,11 @@ function availabilityFor(
   );
   if (!failure) {
     if (content.skillIds.length > 0 && options.dependencies?.skills !== true) return { ok: false, reason: "skills_access" };
-    if (content.knowledgeSelection.mode !== "none" && options.dependencies?.knowledge !== true) return { ok: false, reason: "knowledge_access" };
+    if (content.knowledgeSelection.mode !== "none" && options.dependencies?.knowledge !== "ready") {
+      const knowledge = options.dependencies?.knowledge;
+      return { ok: false, reason: knowledge === "not_ready" ? "knowledge_not_ready"
+        : knowledge === "unavailable" ? "knowledge_unavailable" : "knowledge_access" };
+    }
     return { ok: true };
   }
 

@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { assistantUnavailabilityCopy } from "./assistantAvailabilityCopy";
 
 describe("assistantUnavailabilityCopy", () => {
+  it.each([true, false])("shows Knowledge readiness and check failures without suggesting access loss (owned: %s)", (owned) => {
+    expect(assistantUnavailabilityCopy({ owned, availability: { ok: false, reason: "knowledge_not_ready" } }))
+      .toEqual({ headline: "Knowledge is not ready yet", explanation: "Required Knowledge has no ready documents yet. Try again when the documents are ready." });
+    expect(assistantUnavailabilityCopy({ owned, availability: { ok: false, reason: "knowledge_unavailable" } }))
+      .toEqual({ headline: "Knowledge is temporarily unavailable", explanation: "Required Knowledge could not be checked. Try again later or ask an administrator to check its configuration." });
+  });
+
   it.each(["skills_access", "knowledge_access"] as const)("offers owner repair and neutral recipient copy for %s", (reason) => {
     const availability = { ok: false as const, reason };
     expect(assistantUnavailabilityCopy({ availability, owned: true })).toMatchObject({ action: { kind: "open-editor", label: "Edit setup" } });
