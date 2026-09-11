@@ -518,6 +518,15 @@ export function createPrismaMcpRuntimeRepository(input: {
                 AND session."lastSeenAt" >= ${recentActivityCutoff}
                 AND session."revokedAt" IS NULL
             )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM "InboundMcpOAuthGrant" AS hub_grant
+              WHERE hub_grant."userId" = preference."userId"
+                AND hub_grant."resourcePath" = '/mcp/hub'
+                AND hub_grant."capability" = 'mcp:hub'
+                AND hub_grant."state" = 'ACTIVE'
+                AND hub_grant."lastUsedAt" >= ${recentActivityCutoff}
+            )
         `;
       }
       const records = await client.mcpUserServer.findMany({
@@ -551,13 +560,15 @@ export function createPrismaMcpRuntimeRepository(input: {
           user: {
             status: "active",
             ...(userId ? { id: userId } : {
-              authSessions: {
-                some: {
-                  expiresAt: { gt: now },
-                  lastSeenAt: { gte: recentActivityCutoff },
-                  revokedAt: null
-                }
-              }
+              OR: [
+                { authSessions: { some: {
+                  expiresAt: { gt: now }, lastSeenAt: { gte: recentActivityCutoff }, revokedAt: null
+                } } },
+                { inboundMcpOAuthGrants: { some: {
+                  resourcePath: "/mcp/hub", capability: "mcp:hub", state: "ACTIVE",
+                  lastUsedAt: { gte: recentActivityCutoff }
+                } } }
+              ]
             })
           }
         }

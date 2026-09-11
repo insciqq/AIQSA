@@ -345,7 +345,7 @@ describe("OpenAI Responses response normalization", () => {
     expect(normalized.result.finalProviderResponsePreview.rawText).toBe(rawText);
   });
 
-  it("omits synthetic tokens for empty text and normalizes malformed usage to zero totals", () => {
+  it("omits synthetic tokens for empty text and retains only valid reported usage", () => {
     const normalized = normalizeCompletedOpenAIResponse({
       output: [{ content: [{ text: 42, type: "output_text" }], type: "message" }],
       status: "completed",
@@ -359,11 +359,12 @@ describe("OpenAI Responses response normalization", () => {
     expect(normalized.events).toEqual([]);
     expect(normalized.result.finalText).toBe("");
     expect(normalized.result.usage).toEqual({
-      cachedInputTokens: 0,
-      cacheWriteInputTokens: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      reasoningTokens: 0,
+      completeness: "partial",
+      cachedInputTokens: null,
+      cacheWriteInputTokens: null,
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
       totalTokens: 0
     });
   });
@@ -729,7 +730,7 @@ describe("OpenAI Responses response normalization", () => {
     await expect(partial.next()).resolves.toMatchObject({
       done: false,
       value: {
-        data: expect.objectContaining({ inputTokens: 2, totalTokens: 2 }),
+        data: expect.objectContaining({ inputTokens: 2, totalTokens: null, completeness: "partial" }),
         type: "usage"
       }
     });

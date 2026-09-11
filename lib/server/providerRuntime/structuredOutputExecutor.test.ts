@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { normalizeTokenUsage } from "../../domain/usage";
 import { encryptProviderCredentialSecret } from "../providers/credentialSecrets";
 import { createMcpSemanticRouter } from "../mcp/router";
 import {
@@ -139,7 +140,7 @@ const nativeRouterInput: Parameters<ReturnType<typeof createMcpSemanticRouter>["
   catalog: { version: 1 as const, servers: [{ description: "Synthetic item lookup", namespace: "sample", revisionId: "revision-1", serverId: "server-1",
     serverName: "Sample", tools: [{ description: "Look up a synthetic item", namespacedName: "mcp_sample_lookup_1234567890", originalName: "lookup" }] }] },
   goals: ["Look up the sample item"], limit: 2,
-  request: { content: { blocks: [{ type: "text", text: "Look up the sample item" }] } }
+  context: { currentText: "Look up the sample item" }
 };
 const nativeSelection = { mcp_needed: true, requirements: [{
   outcome: "Find the sample item", status: "covered", tool_ids: ["mcp_sample_lookup_1234567890"]
@@ -160,6 +161,56 @@ const routingSelection = { mcp_needed: true, requirements: [{
 }] };
 
 describe("accepted structured-output executor", () => {
+  it("records each physical discovery correction separately before transport", async () => {
+    const records: { settle: ReturnType<typeof vi.fn> }[] = [];
+    const fixture = geminiExecutorFixture(null, "v1", (_body, index) => {
+      expect(records).toHaveLength(index);
+      return Response.json({ status: "completed", steps: [{ type: "model_output", content: [{ type: "text", text: JSON.stringify(
+        index === 1 ? { mcp_needed: true, requirements: [{ outcome: "Find the sample item", status: "uncovered", tool_ids: [] }] } : nativeSelection
+      ) }] }], usage: { total_input_tokens: 10 * index, total_output_tokens: index, total_tokens: 11 * index } });
+    });
+    const recordAttempt = vi.fn(async () => {
+      const receipt = { settle: vi.fn(async () => undefined) };
+      records.push(receipt);
+      return receipt;
+    });
+    await fixture.router.route({ ...nativeRouterInput, recordAttempt });
+    expect(fixture.fetchFn).toHaveBeenCalledTimes(2);
+    expect(recordAttempt).toHaveBeenCalledTimes(2);
+    expect(recordAttempt).toHaveBeenCalledWith(fixture.admitted);
+    expect(records[0]!.settle).toHaveBeenCalledWith({ state: "COMPLETE", usage: expect.objectContaining({ totalTokens: 11 }) });
+    expect(records[1]!.settle).toHaveBeenCalledWith({ state: "COMPLETE", usage: expect.objectContaining({ totalTokens: 22 }) });
+  });
+
+  it("does not contact a provider when durable discovery admission fails", async () => {
+    const fixture = geminiExecutorFixture(nativeSelection);
+    await expect(fixture.router.route({ ...nativeRouterInput, recordAttempt: async () => {
+      throw new Error("database unavailable");
+    } })).rejects.toMatchObject({ code: "mcp_router_request_failed" });
+    expect(fixture.fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("rechecks external authority after the durable write and before transport", async () => {
+    const fixture = geminiExecutorFixture(nativeSelection);
+    const settle = vi.fn(async () => undefined);
+    let active = true;
+    await expect(fixture.router.route({ ...nativeRouterInput,
+      beforeDispatch: async () => { if (!active) throw new Error("grant revoked"); },
+      recordAttempt: async () => { active = false; return { settle }; }
+    })).rejects.toMatchObject({ code: "mcp_router_request_failed" });
+    expect(fixture.fetchFn).not.toHaveBeenCalled();
+    expect(settle).toHaveBeenCalledWith({ state: "ERROR", usage: null });
+  });
+
+  it("settles a lost physical response as unknown with no invented usage or retry", async () => {
+    const fixture = geminiExecutorFixture(null, "v1", () => { throw new Error("connection lost"); });
+    const settle = vi.fn(async () => undefined);
+    await expect(fixture.router.route({ ...nativeRouterInput, recordAttempt: async () => ({ settle }) }))
+      .rejects.toMatchObject({ code: "mcp_router_request_failed" });
+    expect(fixture.fetchFn).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledWith({ state: "UNKNOWN", usage: normalizeTokenUsage({}) });
+  });
+
   it("executes admitted Anthropic JSON through the native runtime and rechecks credential revocation before I/O", async () => {
     const base = role();
     const admitted: ProviderAdmissionRole = {
@@ -281,7 +332,9 @@ describe("accepted structured-output executor", () => {
   ])("preserves only the safe native routing failure $status/$code without repair or retry", async ({ body, status, code }) => {
     const fixture = geminiExecutorFixture(null, "v1beta", () => new Response(body, { status }));
     const error: unknown = await fixture.router.route(routingCatalogInput).catch((error: unknown) => error);
-    expect(error).toMatchObject({ code, usageAttribution: null });
+    expect(error).toMatchObject({ code, usageAttribution: {
+      modelId: "gemini-structured-test", provider: "gemini", usage: normalizeTokenUsage({})
+    } });
     expect(JSON.stringify(error)).not.toContain("PRIVATE_UPSTREAM_BODY");
     expect(fixture.fetchFn).toHaveBeenCalledOnce();
   });
@@ -291,7 +344,7 @@ describe("accepted structured-output executor", () => {
     await expect(fixture.router.route(nativeRouterInput)).resolves.toEqual({
       toolNames: ["mcp_sample_lookup_1234567890"], usageAttribution: {
         provider: "gemini", modelId: "gemini-structured-test",
-        usage: { cacheWriteInputTokens: 0, cachedInputTokens: 5, inputTokens: 20, outputTokens: 12, reasoningTokens: 4, totalTokens: 32 }
+        usage: { cacheWriteInputTokens: null, cachedInputTokens: 5, inputTokens: 20, outputTokens: 12, reasoningTokens: 4, totalTokens: 32, completeness: "complete" }
       }
     });
     expect(fixture.queryRaw).toHaveBeenCalledOnce();

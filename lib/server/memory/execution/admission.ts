@@ -67,6 +67,7 @@ export const memoryExecutionBindingSelect = {
   totalTokens: true,
   usageCompleteness: true,
   cachedInputTokens: true,
+  cacheWriteInputTokens: true,
   estimatedCostMicros: true,
   userId: true
 } satisfies Prisma.MemoryExecutionBindingSelect;

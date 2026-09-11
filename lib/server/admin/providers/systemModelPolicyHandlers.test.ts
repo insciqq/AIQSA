@@ -295,3 +295,20 @@ it("validates a title assignment pair and preserves unrelated role fields", asyn
     headers: { "content-type": "application/json" }, body: JSON.stringify(patch) }))).status).toBe(200);
   expect(service.update).toHaveBeenCalledExactlyOnceWith({ ...patch, userId: "user-1" });
 });
+
+it("validates independent native-PDF assignment pairs without changing the image reader", async () => {
+  const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
+  const handler = createAdminSystemModelPolicyHandlers({ service: service as never,
+    resolveAuth: vi.fn().mockResolvedValue(session()) as never });
+  for (const patch of [{ chatPdfNativeProviderModelId: "native" }, { chatPdfNativeReasoningEffort: "low" },
+    { chatPdfNativeProviderModelId: null, chatPdfNativeReasoningEffort: "low" },
+    { chatPdfProcessingMode: "local" }, { chatPdfFallbackMethod: "unassigned_answer" }]) {
+    expect((await handler.PATCH(new Request("http://local.test", { method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedVersion: 1, ...patch }) }))).status).toBe(400);
+  }
+  expect(service.update).not.toHaveBeenCalled();
+  const patch = { expectedVersion: 1, chatPdfNativeProviderModelId: "native", chatPdfNativeReasoningEffort: "low" };
+  expect((await handler.PATCH(new Request("http://local.test", { method: "PATCH", headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch) }))).status).toBe(200);
+  expect(service.update).toHaveBeenCalledExactlyOnceWith({ ...patch, userId: "user-1" });
+});

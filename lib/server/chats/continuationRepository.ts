@@ -1,3 +1,4 @@
+import { storedTokenUsage } from "../usage";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
@@ -189,9 +190,7 @@ export function createChatContinuationRepository(client: PrismaClient): Continua
       } });
       const data = {
         userId: source.userId, chatId: source.chatId, projectId: source.projectId, provider, modelId,
-        inputTokens: usage.inputTokens ?? null, outputTokens: usage.outputTokens ?? null,
-        reasoningTokens: usage.reasoningTokens ?? null, cachedInputTokens: usage.cachedInputTokens ?? null,
-        cacheWriteInputTokens: usage.cacheWriteInputTokens ?? null, totalTokens: usage.totalTokens ?? null,
+        ...storedTokenUsage(usage),
         estimatedCostMicros: pricing && (pricing.inputTokenPriceMicros > 0 || pricing.outputTokenPriceMicros > 0)
           ? estimateCostMicros(normalizeTokenUsage(usage), pricing) : null
       };

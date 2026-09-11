@@ -59,7 +59,7 @@ export type McpRuntimeSession = {
 };
 
 export type McpRuntimeSessionFactory = {
-  create(input: McpRuntimeLaunch & { onToolsChanged(): void }): Promise<McpRuntimeSession>;
+  create(input: McpRuntimeLaunch & { signal?: AbortSignal; onToolsChanged(): void }): Promise<McpRuntimeSession>;
 };
 
 export type McpRuntimeCoordinatorRepository = {
@@ -146,8 +146,11 @@ type RefreshRuntime = {
 };
 
 type StartingRuntime = {
+  controller: AbortController;
   fingerprint: string;
+  persistent: boolean;
   promise: Promise<void>;
+  waiters: number;
 };
 
 const DEFAULT_INTERVAL_MS = 30_000;
@@ -340,7 +343,8 @@ export class McpRuntimeCoordinator {
     await this.#runPromise;
   }
 
-  async ensureUserServersReady(userId: string, serverIds: readonly string[]): Promise<void> {
+  async ensureUserServersReady(userId: string, serverIds: readonly string[], signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     const uniqueServerIds = [...new Set(serverIds)];
     if (uniqueServerIds.length === 0) return;
     const launches = await this.#repository.synchronizeDesired({
@@ -349,12 +353,15 @@ export class McpRuntimeCoordinator {
       serverIds: uniqueServerIds,
       userId
     });
-    await this.#reconcileLaunches(launches);
+    signal?.throwIfAborted();
+    await this.#reconcileLaunches(launches, signal);
+    signal?.throwIfAborted();
     await this.#drainUnused();
   }
 
   async callTool(input: {
     arguments: Record<string, unknown>;
+    beforeDispatch?(): Promise<void>;
     generationId: string;
     inputSchema: Record<string, unknown>;
     name: string;
@@ -367,6 +374,9 @@ export class McpRuntimeCoordinator {
     }
     validateMcpToolArguments(input.inputSchema, input.arguments);
     await this.#repository.touchLastUsed(input.generationId, this.#now());
+    input.signal?.throwIfAborted();
+    await input.beforeDispatch?.();
+    input.signal?.throwIfAborted();
     try {
       const result = await runtime.session.callTool({
         arguments: input.arguments,
@@ -559,8 +569,9 @@ export class McpRuntimeCoordinator {
     for (const generationId of this.#live.keys()) this.operationalStatus(generationId);
   }
 
-  async #reconcileLaunches(launches: McpRuntimeLaunch[]): Promise<void> {
+  async #reconcileLaunches(launches: McpRuntimeLaunch[], signal?: AbortSignal): Promise<void> {
     await mapLimit(launches, MAX_PARALLEL_STARTS, async (launch) => {
+      signal?.throwIfAborted();
       const live = this.#live.get(launch.generationId);
       if (live && isClosedSession(live.session)) {
         await this.#evictFailedRuntime(
@@ -581,31 +592,59 @@ export class McpRuntimeCoordinator {
         this.#discardHealthProbe(launch.generationId, live);
         await live.session.close().catch(() => undefined);
       }
-      await this.#start(launch);
+      signal?.throwIfAborted();
+      await this.#start(launch, signal);
     });
   }
 
-  #start(launch: McpRuntimeLaunch): Promise<void> {
+  #start(launch: McpRuntimeLaunch, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     const active = this.#starts.get(launch.generationId);
     if (active) {
       return active.fingerprint === launch.fingerprint
-        ? active.promise
-        : active.promise.then(() => this.#start(launch));
+        ? this.#waitForStart(active, signal)
+        : this.#waitForStart(active, signal).then(() => this.#start(launch, signal));
     }
     const starting: StartingRuntime = {
+      controller: new AbortController(),
       fingerprint: launch.fingerprint,
-      promise: Promise.resolve()
+      persistent: false,
+      promise: Promise.resolve(),
+      waiters: 0
     };
-    starting.promise = this.#performStart(launch).finally(() => {
+    starting.promise = this.#performStart(launch, starting.controller.signal).finally(() => {
       if (this.#starts.get(launch.generationId) === starting) {
         this.#starts.delete(launch.generationId);
       }
     });
     this.#starts.set(launch.generationId, starting);
-    return starting.promise;
+    return this.#waitForStart(starting, signal);
   }
 
-  async #performStart(launch: McpRuntimeLaunch): Promise<void> {
+  #waitForStart(starting: StartingRuntime, signal?: AbortSignal): Promise<void> {
+    if (!signal) {
+      starting.persistent = true;
+      return starting.promise;
+    }
+    starting.waiters += 1;
+    return new Promise<void>((resolve, reject) => {
+      let finished = false;
+      const finish = (error?: unknown) => {
+        if (finished) return;
+        finished = true;
+        signal.removeEventListener("abort", abort);
+        starting.waiters -= 1;
+        if (signal.aborted && !starting.persistent && starting.waiters === 0) starting.controller.abort();
+        if (error) reject(error); else resolve();
+      };
+      const abort = () => finish(signal.reason ?? new Error("mcp_request_cancelled"));
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+      starting.promise.then(() => finish(), (error) => finish(error));
+    });
+  }
+
+  async #performStart(launch: McpRuntimeLaunch, signal: AbortSignal): Promise<void> {
     const live = this.#live.get(launch.generationId);
     if (live && isClosedSession(live.session)) {
       await this.#evictFailedRuntime(
@@ -631,13 +670,17 @@ export class McpRuntimeCoordinator {
 
     let session: McpRuntimeSession | null = null;
     try {
+      signal.throwIfAborted();
       session = await this.#sessions.create({
         ...launch,
+        signal,
         onToolsChanged: () => {
           void this.#refresh(launch.generationId, launch.fingerprint, true);
         }
       });
-      const tools = await session.listTools();
+      signal.throwIfAborted();
+      const tools = await session.listTools(signal);
+      signal.throwIfAborted();
       const protocolSuccessAt = this.#now().getTime();
       if (isClosedSession(session)) throw new Error("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, launch.redactionValues, session);
@@ -649,6 +692,7 @@ export class McpRuntimeCoordinator {
         inventory: { tools: effectiveTools, version: 1 },
         now: this.#now()
       });
+      signal.throwIfAborted();
       if (!accepted) {
         await session.close().catch(() => undefined);
         return;
@@ -672,7 +716,8 @@ export class McpRuntimeCoordinator {
       const errorCode = session
         ? fatalResponseErrorCode(session) ?? stableRuntimeError(error)
         : stableRuntimeError(error);
-      await session?.close().catch(() => undefined);
+      if (signal.aborted && session?.dispose) await session.dispose().catch(() => undefined);
+      else await session?.close().catch(() => undefined);
       await this.#repository.markFailed({
         errorCode,
         fingerprint: launch.fingerprint,

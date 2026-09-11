@@ -1,4 +1,16 @@
 import type { McpJsonObject } from "./mcp";
+import { z } from "zod";
+
+/** Consume only the public canonical resource URL from OAuth metadata. */
+export const mcpHubResourceMetadataSchema = z.object({
+  resource: z.string().max(2_048).refine((value) => {
+    try {
+      const url = new URL(value);
+      return ["https:", "http:"].includes(url.protocol) && url.pathname === "/mcp/hub" &&
+        !url.username && !url.password && !url.search && !url.hash;
+    } catch { return false; }
+  })
+});
 
 export type McpHubToolDescriptor = Readonly<{
   annotations?: Readonly<{

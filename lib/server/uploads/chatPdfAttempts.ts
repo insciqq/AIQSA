@@ -1,3 +1,4 @@
+import { storedTokenUsage } from "../usage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { estimateCostMicros, normalizeTokenUsage } from "../../domain/usage";
@@ -102,19 +103,17 @@ export function createChatPdfAttempts(prisma: PrismaClient) {
     async recordUsage(dispatch: ChatPdfDispatch, reported: ModelRunUsage): Promise<void> {
       await prisma.$transaction(async (tx) => {
         const [event] = await tx.$queryRaw<Array<{
-          id: string; inputTokens: number | null; providerModelId: string | null;
+          id: string; providerModelId: string | null; usageCompleteness: string;
         }>>(Prisma.sql`
-          SELECT "id", "inputTokens", "providerModelId" FROM "UsageEvent"
+          SELECT "id", "providerModelId", "usageCompleteness" FROM "UsageEvent"
           WHERE "id" = ${dispatch.usageEventId} FOR UPDATE
         `);
         // Aggregate deletion owns removal of its accounting rows. If only the
         // attachment was deleted, replace the detached receipt's nulls once
         // without reviving any run or document.
-        if (!event) return;
+        if (!event || event.usageCompleteness !== "UNAVAILABLE") return;
         const normalized = normalizeTokenUsage(reported);
-        // Ordinary adapters use an all-zero result when usage is absent. A
-        // non-empty page transcription cannot establish a zero-token charge.
-        if (normalized.totalTokens === 0) return;
+        if (normalized.completeness === "unavailable") return;
         const pricing = event.providerModelId ? await tx.providerModel.findUnique({
           where: { id: event.providerModelId },
           select: { inputTokenPriceMicros: true, outputTokenPriceMicros: true }
@@ -122,8 +121,8 @@ export function createChatPdfAttempts(prisma: PrismaClient) {
         const estimatedCostMicros = pricing &&
           (pricing.inputTokenPriceMicros > 0 || pricing.outputTokenPriceMicros > 0)
           ? estimateCostMicros(normalized, pricing) : null;
-        const usage = { ...normalized, estimatedCostMicros };
-        if (event.inputTokens === null) await tx.usageEvent.update({
+        const usage = { ...storedTokenUsage(normalized), estimatedCostMicros };
+        await tx.usageEvent.update({
           where: { id: event.id }, data: usage
         });
       });

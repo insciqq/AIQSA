@@ -11,7 +11,9 @@ vi.mock("../providerRuntime/admission", async (original) => ({
 vi.mock("../projects/access", () => ({ resolveProjectAccess: vi.fn() }));
 
 function fixture() {
-  const tx = { systemModelPolicy: { findUnique: vi.fn(async () => null) },
+  const tx = { systemModelPolicy: { findUnique: vi.fn(async () => ({
+    version: 1, chatPdfProcessingMode: "PREFER_CHAT_MODEL", chatPdfFallbackMethod: "PAGE_IMAGES"
+  })) },
     projectModelBinding: { findUnique: vi.fn(async () => null) } };
   const db = { $transaction: vi.fn(async (operation: (client: typeof tx) => unknown) => operation(tx)) };
   const auth = createTestAuth({ user: { id: "owner", role: "user" } });
@@ -26,7 +28,7 @@ function fixture() {
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(loadProviderAdmissionPlan).mockResolvedValue({ answer: { snapshot: {
-    model: { capabilities: { nativePdfInput: false } }
+    model: { capabilities: { nativePdfInput: true } }
   } } } as Awaited<ReturnType<typeof loadProviderAdmissionPlan>>);
 });
 
@@ -35,11 +37,21 @@ describe("private PDF route preview", () => {
     const h = fixture(); const response = await h.handler(h.request());
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.json()).toEqual({ version: 1, route: "local_text" });
+    expect(await response.json()).toEqual({ version: 1, route: "direct_pdf" });
     expect(loadProviderAdmissionPlan).toHaveBeenCalledWith(h.tx, {
       userId: "owner", providerConnectionId: "connection", providerModelId: "model",
       searchPlan: { mode: "all_selected", optionIds: [] }
     });
+  });
+
+  it("reports missing fallback configuration without selecting local extraction", async () => {
+    const h = fixture();
+    vi.mocked(loadProviderAdmissionPlan).mockResolvedValueOnce({ answer: { snapshot: {
+      model: { capabilities: { nativePdfInput: false } }
+    } } } as Awaited<ReturnType<typeof loadProviderAdmissionPlan>>);
+    const response = await h.handler(h.request());
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ error: "pdf_processing_configuration_incomplete" });
   });
 
   it("rejects unauthenticated and oversized identifiers before catalog access", async () => {

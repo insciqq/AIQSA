@@ -36,7 +36,7 @@ describe("persisted tool execution result codec", () => {
       name: call.name,
       rawPreview: { providerResponseId: "search-response-1", requestPreview: { query: "current news" } },
       status: "complete" as const,
-      usage: { inputTokens: 3, outputTokens: 4, reasoningTokens: 0, totalTokens: 7 }
+      usage: { cachedInputTokens: null, cacheWriteInputTokens: null, completeness: "complete" as const, inputTokens: 3, outputTokens: 4, reasoningTokens: 0, totalTokens: 7 }
     };
 
     const snapshot = snapshotToolExecutionResult(result, 32_000);
@@ -79,7 +79,7 @@ describe("persisted tool execution result codec", () => {
       revisionId: "revision-1",
       sources: [{ rank: 1, title: "Source", url: "https://example.com/source" }],
       status: "complete",
-      usage: { inputTokens: 3, outputTokens: 4, reasoningTokens: 0, totalTokens: 7 }
+      usage: { cachedInputTokens: null, cacheWriteInputTokens: null, completeness: "complete" as const, inputTokens: 3, outputTokens: 4, reasoningTokens: 0, totalTokens: 7 }
     };
     const result = {
       callId: call.id,
@@ -173,7 +173,7 @@ describe("persisted tool execution result codec", () => {
         providerCall: true
       },
       status: "error" as const,
-      usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 }
+      usage: { cachedInputTokens: null, cacheWriteInputTokens: null, completeness: "unavailable" as const, inputTokens: null, outputTokens: null, reasoningTokens: null, totalTokens: null }
     };
 
     const snapshot = snapshotToolExecutionResult(

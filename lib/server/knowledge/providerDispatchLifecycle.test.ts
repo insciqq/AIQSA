@@ -144,7 +144,8 @@ describe("Knowledge provider dispatch lifecycle", () => {
     expect(persistence.settle).toHaveBeenCalledWith(expect.objectContaining({
       actualUsage: {
         cachedInputTokens: 2,
-        cacheWriteInputTokens: 0,
+        cacheWriteInputTokens: null,
+        completeness: "complete",
         estimatedCostMicros: null,
         inputTokens: 12,
         outputTokens: 4,

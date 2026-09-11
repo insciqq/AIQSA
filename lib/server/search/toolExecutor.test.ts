@@ -11,6 +11,7 @@ import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { ModelToolCall } from "../tools/types";
 import {
   createSearchPlanToolRouter,
+  SearchToolCancelledError,
   searchExecutionsFromToolResult
 } from "./toolExecutor";
 import { MAX_SEARCH_FINDINGS_BYTES, type SearchSource } from "./evidence";
@@ -957,6 +958,40 @@ describe("Search plan tool router", () => {
     );
     controller.abort(new Error("run_cancelled"));
 
-    await expect(execution).rejects.toThrow("run_cancelled");
+    await expect(execution).rejects.toMatchObject({
+      name: "AbortError", message: "search_cancelled", cause: { message: "run_cancelled" }
+    });
+  });
+
+  it("preserves completed and partial engine usage when fan-out is cancelled", async () => {
+    const controller = new AbortController();
+    const interrupted: ProviderRuntimeBinding = {
+      ...hangingRuntime(),
+      searchAdapter: {
+        buildRequestPreview: () => ({}),
+        async search() {
+          controller.abort(new Error("run_cancelled"));
+          throw new ProviderSearchExecutionError({
+            artifacts: [], code: "search_interrupted", usage: { inputTokens: 7 }
+          });
+        }
+      }
+    };
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [option("complete"), option("partial")] },
+      runtimes: { complete: runtime(), partial: interrupted }
+    })!;
+    const error: unknown = await router.execute(call(router.tools[0]!.name), answerRequest(), {
+      signal: controller.signal
+    }).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(SearchToolCancelledError);
+    if (!(error instanceof SearchToolCancelledError)) throw new Error("expected_cancellation");
+    expect(searchExecutionsFromToolResult(error.result).map(({ usage }) => usage)).toMatchObject([
+      { inputTokens: 2, outputTokens: 3, totalTokens: 5, completeness: "complete" },
+      { inputTokens: 7, outputTokens: null, totalTokens: null, completeness: "partial" }
+    ]);
+    expect(error.result.usage).toMatchObject({
+      inputTokens: 9, outputTokens: 3, totalTokens: 5, completeness: "partial"
+    });
   });
 });

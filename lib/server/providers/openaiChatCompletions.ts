@@ -1,5 +1,5 @@
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
-import { normalizeTokenUsage } from "../../domain/usage";
+import { mergeTokenUsage, normalizeTokenUsage } from "../../domain/usage";
 import {
   invalidProviderToolArguments,
   type ModelToolCall
@@ -199,25 +199,23 @@ export function extractOpenAIChatUsage(
 
   return normalizeTokenUsage({
     cachedInputTokens:
-      openAIChatNumber(openAIChatValueAtPath(usage, ["prompt_tokens_details", "cached_tokens"])) ||
-      openAIChatNumber(openAIChatValueAtPath(usage, ["input_tokens_details", "cached_tokens"])),
+      openAIChatValueAtPath(usage, ["prompt_tokens_details", "cached_tokens"]) ??
+      openAIChatValueAtPath(usage, ["input_tokens_details", "cached_tokens"]),
     ...(options.includeCacheWrite
       ? {
           cacheWriteInputTokens:
-            openAIChatNumber(usage.cache_write_tokens) ||
-            openAIChatNumber(usage.cache_write_input_tokens) ||
-            openAIChatNumber(usage.cache_creation_input_tokens) ||
-            openAIChatNumber(openAIChatValueAtPath(usage, ["prompt_tokens_details", "cache_write_tokens"])) ||
-            openAIChatNumber(openAIChatValueAtPath(usage, ["input_tokens_details", "cache_write_tokens"]))
+            usage.cache_write_tokens ?? usage.cache_write_input_tokens ?? usage.cache_creation_input_tokens ??
+            openAIChatValueAtPath(usage, ["prompt_tokens_details", "cache_write_tokens"]) ??
+            openAIChatValueAtPath(usage, ["input_tokens_details", "cache_write_tokens"])
         }
       : {}),
-    inputTokens: openAIChatNumber(usage.prompt_tokens) || openAIChatNumber(usage.input_tokens),
-    outputTokens: openAIChatNumber(usage.completion_tokens) || openAIChatNumber(usage.output_tokens),
+    inputTokens: usage.prompt_tokens ?? usage.input_tokens,
+    outputTokens: usage.completion_tokens ?? usage.output_tokens,
     reasoningTokens:
-      (options.includeTopLevelReasoning ? openAIChatNumber(usage.reasoning_tokens) : 0) ||
-      openAIChatNumber(openAIChatValueAtPath(usage, ["completion_tokens_details", "reasoning_tokens"])) ||
-      openAIChatNumber(openAIChatValueAtPath(usage, ["output_tokens_details", "reasoning_tokens"])),
-    totalTokens: openAIChatNumber(usage.total_tokens)
+      (options.includeTopLevelReasoning ? usage.reasoning_tokens : undefined) ??
+      openAIChatValueAtPath(usage, ["completion_tokens_details", "reasoning_tokens"]) ??
+      openAIChatValueAtPath(usage, ["output_tokens_details", "reasoning_tokens"]),
+    totalTokens: usage.total_tokens
   });
 }
 
@@ -475,11 +473,7 @@ export async function* streamOpenAIChatSseResponse<
     maxChars: streamLimits.maxOutputChars,
     retainedTextKind: "visible_output"
   });
-  let usage: ModelRunUsage = {
-    inputTokens: 0,
-    outputTokens: 0,
-    reasoningTokens: 0
-  };
+  let usage: ModelRunUsage = normalizeTokenUsage({});
   let rawUsage: unknown = null;
   let summaryEmitted = false;
   let terminalSeen = false;
@@ -514,6 +508,10 @@ export async function* streamOpenAIChatSseResponse<
     }
 
     if (profile.responseError(parsed)) {
+      if (isOpenAIChatRecord(parsed.usage)) {
+        usage = normalizeTokenUsage({ ...mergeTokenUsage(usage, profile.extractUsage(parsed)), completeness: "partial" });
+        yield { data: usage, type: "usage" };
+      }
       throw new Error(profile.streamError);
     }
 
@@ -532,7 +530,7 @@ export async function* streamOpenAIChatSseResponse<
 
     if (isOpenAIChatRecord(parsed.usage)) {
       rawUsage = parsed.usage;
-      usage = profile.extractUsage(parsed);
+      usage = mergeTokenUsage(usage, profile.extractUsage(parsed));
       yield { data: usage, type: "usage" };
     }
 

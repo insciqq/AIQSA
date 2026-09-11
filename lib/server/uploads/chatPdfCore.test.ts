@@ -55,9 +55,43 @@ describe("chat PDF admission and artifacts", () => {
     expect(resolveChatPdfRoute({ answer: role(true), system: null }).route).toBe("selected_model_vision");
     expect(resolveChatPdfRoute({ answer: role(), system: { ...system, role: role() } }).route)
       .toBe("local_text");
+    expect(resolveChatPdfRoute({ answer: role(true, true), mode: "read_page_images", system }).route)
+      .toBe("system_vision");
+    expect(() => resolveChatPdfRoute({ answer: role(true), mode: "use_pdf_reader", strictPolicy: true, system: null }))
+      .toThrow("pdf_processing_configuration_incomplete");
     const selected = role(true);
     expect(resolveChatPdfRoute({ answer: selected, system: null }).snapshot)
       .toBe(selected.snapshot);
+  });
+
+  it.each([
+    ["prefer_chat_model", "pdf_reader", true, "direct_pdf"],
+    ["prefer_chat_model", "page_images", true, "direct_pdf"],
+    ["prefer_chat_model", "pdf_reader", false, "system_pdf"],
+    ["prefer_chat_model", "page_images", false, "system_vision"],
+    ["use_pdf_reader", "page_images", true, "system_pdf"],
+    ["use_pdf_reader", "page_images", false, "system_pdf"],
+    ["read_page_images", "pdf_reader", true, "system_vision"],
+    ["read_page_images", "pdf_reader", false, "system_vision"]
+  ] as const)("freezes %s with %s fallback and answer PDF support %s as %s", (mode, fallbackMethod, native, route) => {
+    const initialAnswer = role(true, native);
+    const answer = { ...initialAnswer, snapshot: { ...initialAnswer.snapshot, modelDisplayName: "Answer" } };
+    const initialReader = role(true, true);
+    const reader = { ...initialReader, snapshot: { ...initialReader.snapshot, modelDisplayName: "Reader", providerModelId: "reader" } };
+    const system = { credentialScope: "installation" as const, ok: true as const,
+      policyVersion: 7, providerModelId: "reader", reasoningEffort: null, role: reader };
+    const result = resolveChatPdfRoute({ answer, fallbackMethod, mode, policyVersion: 7, strictPolicy: true, system });
+    expect(result).toMatchObject({ answerModelName: "Answer", fallbackMethod, mode, policyVersion: 7, route });
+    expect(result.snapshot?.providerModelId).toBe(route === "direct_pdf" ? "model" : "reader");
+    if (route !== "direct_pdf") expect(() => resolveChatPdfRoute({ answer, fallbackMethod, mode, system: null }))
+      .toThrow("pdf_processing_configuration_incomplete");
+  });
+
+  it("rejects a reader whose verified input method differs from the selected fallback", () => {
+    const system = { credentialScope: "installation" as const, ok: true as const,
+      policyVersion: 2, providerModelId: "reader", reasoningEffort: null, role: role(true, false) };
+    expect(() => resolveChatPdfRoute({ answer: role(true), mode: "prefer_chat_model", fallbackMethod: "pdf_reader", system }))
+      .toThrow("pdf_processing_configuration_incomplete");
   });
 
   it("does not confuse a twenty-page advisory with routing or safety limits", () => {
@@ -80,6 +114,31 @@ describe("chat PDF admission and artifacts", () => {
 });
 
 describe("chat PDF adaptive preparation", () => {
+  it("prepares every native-reader page as an isolated PDF and requires complete transcription coverage", async () => {
+    const bytes = await source();
+    const reader = role(false, true);
+    const admitted: ChatPdfAttachmentAdmission = { ...admission(bytes), mode: "use_pdf_reader",
+      route: "system_pdf", policyVersion: 2, snapshot: reader.snapshot, authority: reader.authority ?? null };
+    const extractGeometry = vi.fn();
+    const parseDocling = vi.fn();
+    const core = createChatPdfCore({ extractGeometry, parseDocling });
+    const planned = await core.plan({ admission: admitted, bytes, onPageCount: vi.fn() });
+    expect(planned.plan.units.map((unit) => unit.route)).toEqual(["pdf_required", "pdf_required"]);
+    expect(extractGeometry).not.toHaveBeenCalled();
+    expect(parseDocling).not.toHaveBeenCalled();
+    const prepared = await core.page({ admission: admitted, bytes, ...planned, page: 2 });
+    expect(prepared.request).toMatchObject({ modelId: "fixture-model", toolChoice: "none", tools: [],
+      modelCapabilities: { nativePdfInput: true }, searchPlan: { options: [] } });
+    expect(prepared.request.attachments).toHaveLength(1);
+    const pdf = prepared.request.attachments[0]!;
+    expect(pdf.kind).toBe("pdf");
+    expect(pdf.dataUrl).toBeUndefined();
+    expect((await PDFDocument.load(Buffer.from(pdf.base64Data!, "base64"))).getPageCount()).toBe(1);
+    const results = [pageResult(1, "First page"), pageResult(2, "Second page")];
+    expect(core.assemble({ admission: admitted, ...planned, results }).text).toContain("Second page");
+    expect(() => core.assemble({ admission: admitted, ...planned, results: results.slice(0, 1) })).toThrow();
+  }, 20_000);
+
   it("retains accepted legacy preparation and its prompt instead of mixing parser generations", async () => {
     const bytes = await source();
     const admitted = admission(bytes);

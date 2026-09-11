@@ -128,13 +128,13 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
       const now = time("2026-09-03T01:00:00.000Z");
       // No new fields: this is the previous release's grant/family/token writer shape.
       const grant = await prisma.inboundMcpOAuthGrant.create({
-        data: { userId, oauthClientId: client.id }
+        data: { userId, oauthClientId: client.id, createdAt: now, connectedAt: now }
       });
       const legacyCode = await prisma.inboundMcpOAuthAuthorizationCode.create({ data: {
         grantId: grant.id, oauthClientId: client.id, grantRevision: grant.revision,
         codeHash: hashToken(randomUUID()), codeChallenge: CHALLENGE,
         issuer: ISSUER, resource: RESOURCE, redirectUri: REDIRECT_URI,
-        expiresAt: time("2026-09-03T01:05:00.000Z")
+        createdAt: now, expiresAt: time("2026-09-03T01:05:00.000Z")
       } });
       expect(await repository.approveAuthorization({
         capability: "mcp:hub", resource: `${RESOURCE}/hub`, clientRecordId: client.id,
@@ -152,12 +152,13 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
         where: { id: legacyCode.id }, data: { resourcePath: "/mcp/hub", capability: "mcp:hub" }
       })).rejects.toThrow();
       const family = await prisma.inboundMcpOAuthTokenFamily.create({ data: {
+        createdAt: now,
         grantId: grant.id, grantRevision: grant.revision, issuer: ISSUER, resource: RESOURCE,
         inactivityExpiresAt: time("2026-10-03T01:00:00.000Z")
       } });
       const tokenHash = hashToken(randomUUID());
       const token = await prisma.inboundMcpOAuthToken.create({ data: {
-        familyId: family.id, kind: "ACCESS", tokenHash, expiresAt: time("2026-09-03T02:00:00.000Z")
+        createdAt: now, familyId: family.id, kind: "ACCESS", tokenHash, expiresAt: time("2026-09-03T02:00:00.000Z")
       } });
       const query = { issuer: ISSUER, resource: RESOURCE, now, tokenHash };
       expect(await repository.resolveAccessToken(query)).toMatchObject({ capability: "memory:facts", userId });
@@ -174,7 +175,7 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
       } })).rejects.toThrow();
       const refreshTokenHash = hashToken(randomUUID());
       await prisma.inboundMcpOAuthToken.create({ data: {
-        familyId: family.id, kind: "REFRESH", tokenHash: refreshTokenHash, expiresAt: family.inactivityExpiresAt
+        createdAt: now, familyId: family.id, kind: "REFRESH", tokenHash: refreshTokenHash, expiresAt: family.inactivityExpiresAt
       } });
       const rotation = { issuer: ISSUER, resource: RESOURCE, clientId, now,
         presentedRefreshTokenHash: refreshTokenHash, nextRefreshTokenHash: hashToken(randomUUID()),

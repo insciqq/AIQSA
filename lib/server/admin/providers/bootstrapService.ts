@@ -75,7 +75,7 @@ export function createAdminProviderBootstrap(input: {
           ...(pdf ? { chatPdfProviderModelId: pdf.id, chatPdfReasoningEffort: null } : {}),
           ...(reranker ? { rerankerProviderModelId: reranker.id } : {}) });
         if (memory) result.defaults.push(`System model: ${memory.displayName}`);
-        if (pdf) result.defaults.push(`PDF reading in chats: ${pdf.displayName}`);
+        if (pdf) result.defaults.push(`Page-image reader: ${pdf.displayName}`);
         if (reranker) result.defaults.push(`Reranking: ${reranker.displayName}`);
         if (image) result.defaults.push(`Image generation: ${image.displayName}`);
       }

@@ -606,7 +606,7 @@ function runAppendOnlyMigrationProbe(
   database: string,
   committed: readonly string[],
 ): void {
-  const probeParent = join(repositoryRoot, ".aiqsa");
+  const probeParent = join(repositoryRoot, "test-results");
   const parentExisted = existsSync(probeParent);
   mkdirSync(probeParent, { recursive: true, mode: 0o700 });
   const probeRoot = mkdtempSync(join(probeParent, "migration-contract-"));
@@ -656,7 +656,7 @@ function runKnowledgeProfileBackfillProof(
 ): void {
   const profileIndex = committed.indexOf(KNOWLEDGE_PROFILE_MIGRATION);
   assert.ok(profileIndex > 0, "Knowledge profile migration is missing from ordered history");
-  const probeParent = join(repositoryRoot, ".aiqsa");
+  const probeParent = join(repositoryRoot, "test-results");
   const parentExisted = existsSync(probeParent);
   mkdirSync(probeParent, { recursive: true, mode: 0o700 });
   const probeRoot = mkdtempSync(join(probeParent, "knowledge-profile-backfill-"));
@@ -773,7 +773,7 @@ function runKnowledgeSourceMigrationProof(
     sourceIndex + 1,
     "Knowledge snapshot trigger fix must immediately follow the Source migration",
   );
-  const probeParent = join(repositoryRoot, ".aiqsa");
+  const probeParent = join(repositoryRoot, "test-results");
   const parentExisted = existsSync(probeParent);
   mkdirSync(probeParent, { recursive: true, mode: 0o700 });
   const probeRoot = mkdtempSync(join(probeParent, "knowledge-source-migration-"));
@@ -903,7 +903,7 @@ function runKnowledgeReadReceiptMigrationProof(
 ): void {
   const receiptIndex = committed.indexOf(KNOWLEDGE_READ_RECEIPT_MIGRATION);
   assert.ok(receiptIndex > 0, "Knowledge read receipt migration is missing from ordered history");
-  const probeParent = join(repositoryRoot, ".aiqsa");
+  const probeParent = join(repositoryRoot, "test-results");
   const parentExisted = existsSync(probeParent);
   mkdirSync(probeParent, { recursive: true, mode: 0o700 });
   const probeRoot = mkdtempSync(join(probeParent, "knowledge-read-receipt-migration-"));
@@ -1422,7 +1422,7 @@ function runKnowledgeH2DurableDispatchMigrationProof(
     nonMissingClosureAdmissionV1Index > globalScopeClosureV2Index,
     "Knowledge non-missing Closure admission V1 migration is missing",
   );
-  const probeParent = join(repositoryRoot, ".aiqsa");
+  const probeParent = join(repositoryRoot, "test-results");
   const parentExisted = existsSync(probeParent);
   mkdirSync(probeParent, { recursive: true, mode: 0o700 });
   const probeRoot = mkdtempSync(join(probeParent, "knowledge-h2-migration-"));
@@ -4285,7 +4285,7 @@ function runKnowledgeH4StrategyExecutionMigrationProof(
   assert.ok(h3Index > 0, "Knowledge H3 operation semantics migration is missing");
   assert.ok(h4Index > h3Index, "Knowledge H4 strategy execution migration is missing");
   assert.ok(cleanupIndex > h4Index, "Knowledge Basic runtime cleanup migration is missing");
-  const probeParent = join(repositoryRoot, ".aiqsa");
+  const probeParent = join(repositoryRoot, "test-results");
   const parentExisted = existsSync(probeParent);
   mkdirSync(probeParent, { recursive: true, mode: 0o700 });
   const probeRoot = mkdtempSync(join(probeParent, "knowledge-h4-migration-"));
@@ -7202,7 +7202,7 @@ function runMemoryVNextRetrievalCutoverMigrationProof(
 ): void {
   const cutoverIndex = committed.indexOf(MEMORY_VNEXT_RETRIEVAL_CUTOVER_MIGRATION);
   assert.ok(cutoverIndex > 0, "Memory vNext retrieval cutover migration is missing");
-  const probeParent = join(repositoryRoot, ".aiqsa");
+  const probeParent = join(repositoryRoot, "test-results");
   const parentExisted = existsSync(probeParent);
   mkdirSync(probeParent, { recursive: true, mode: 0o700 });
   const probeRoot = mkdtempSync(join(probeParent, "memory-vnext-cutover-"));
@@ -7392,6 +7392,20 @@ function main(
     memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, CHAT_TITLE_CREDENTIAL_MIGRATION,
     chatTitleCredentialAdoptionFixtureSql, chatTitleCredentialAdoptionProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, "20260912060000_chat_pdf_native_reader",
+    `INSERT INTO "ProviderConnection" (id, "displayName", family, "updatedAt")
+       VALUES ('pdf-policy-provider', 'Fixture provider', 'fake', now());
+     INSERT INTO "ProviderModel" (id, "connectionId", provider, "modelId", "displayName", capabilities, "defaultParams", "updatedAt")
+       VALUES ('pdf-policy-reader', 'pdf-policy-provider', 'fake', 'fixture', 'Fixture reader', '{}', '{}', now());
+     UPDATE "SystemModelPolicy" SET "chatPdfProviderModelId" = 'pdf-policy-reader', "chatPdfReasoningEffort" = 'low',
+       "chatPdfProcessingMode" = 'PREFER_CHAT_MODEL', "chatPdfFallbackMethod" = 'PAGE_IMAGES', version = 11 WHERE id = 'installation';`,
+    `DO $$ BEGIN
+       IF NOT EXISTS (SELECT 1 FROM "SystemModelPolicy" WHERE id = 'installation'
+         AND "chatPdfProviderModelId" = 'pdf-policy-reader' AND "chatPdfReasoningEffort" = 'low'
+         AND "chatPdfProcessingMode" = 'PREFER_CHAT_MODEL' AND "chatPdfFallbackMethod" = 'PAGE_IMAGES' AND version = 11
+         AND "chatPdfNativeProviderModelId" IS NULL AND "chatPdfNativeReasoningEffort" IS NULL)
+       THEN RAISE EXCEPTION 'pdf_reader_assignment_not_preserved'; END IF;
+     END $$;`);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

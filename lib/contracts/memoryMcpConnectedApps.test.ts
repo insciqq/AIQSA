@@ -59,6 +59,9 @@ describe("Memory MCP Connected Apps contracts", () => {
     expect(decodeMemoryMcpConnectedAppsResponse({ apps: [activeApp, hub] })).toEqual({ apps: [activeApp, hub] });
     expect(decodeMemoryMcpConnectedAppsResponse({ apps: [{ ...activeApp, capability: "mcp:hub" }] })).toBeNull();
     expect(decodeMemoryMcpConnectedAppsResponse({ apps: [{ ...hub, capability: "memory:facts" }] })).toBeNull();
+    expect(decodeMemoryMcpConnectedAppsResponse({ apps: [{ ...hub, capability: undefined }] })).toBeNull();
+    expect(decodeMemoryMcpConnectedAppsResponse({ apps: [{ ...hub, resourcePath: undefined }] })).toBeNull();
+    expect(decodeMemoryMcpConnectedAppsResponse({ apps: [{ ...hub, capability: undefined, resourcePath: undefined }] })).toBeNull();
   });
 
   it("validates the opaque revoke target", () => {

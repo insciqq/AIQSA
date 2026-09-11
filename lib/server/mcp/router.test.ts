@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
+import { mcpChatDiscoveryContext } from "./chatDiscoveryContext";
 import type { McpCapabilityCatalog } from "./runPlan";
 import {
   buildMcpRouterPrompt,
@@ -170,7 +171,7 @@ describe("semantic MCP router", () => {
     const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => ({
       ...resolution(), reasoningEffort: reasoning ? "high" : null
     }) });
-    const input = { activeToolNames: new Set<string>(), catalog: largeCatalog, goals: ["Read data"], limit: 10, request: request() };
+    const input = { activeToolNames: new Set<string>(), catalog: largeCatalog, goals: ["Read data"], limit: 10, context: mcpChatDiscoveryContext(request()) };
     await expect(router.route({ ...input, maxOutputTokens: null })).rejects.toMatchObject({
       code: "mcp_router_output_limit", usageAttribution: { usage: { outputTokens: 1024 } }
     });
@@ -197,7 +198,7 @@ describe("semantic MCP router", () => {
     }
     const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => resolved });
     await expect(router.route({ activeToolNames: new Set(), catalog, goals: ["Read data"], limit: 10,
-      maxOutputTokens: 32768, request: request() })).rejects.toMatchObject({ code: "mcp_router_model_output_limit" });
+      maxOutputTokens: 32768, context: mcpChatDiscoveryContext(request()) })).rejects.toMatchObject({ code: "mcp_router_model_output_limit" });
     expect(executeStructuredOutput).not.toHaveBeenCalled();
   });
 
@@ -215,7 +216,7 @@ describe("semantic MCP router", () => {
     try {
       const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => resolution() });
       await expect(router.route({ activeToolNames: new Set(), catalog, goals: ["Read data"], limit: 10,
-        maxOutputTokens: 4096, timeoutMs: 20_000, request: request() })).resolves.toMatchObject({ toolNames: [jiraTool] });
+        maxOutputTokens: 4096, timeoutMs: 20_000, context: mcpChatDiscoveryContext(request()) })).resolves.toMatchObject({ toolNames: [jiraTool] });
       expect(executeStructuredOutput.mock.calls.map((call) => call[1].maxOutputTokens)).toEqual([4096, 4096]);
     } finally { now.mockRestore(); }
   });
@@ -229,7 +230,7 @@ describe("semantic MCP router", () => {
     try {
       const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => resolution() });
       await expect(router.route({ activeToolNames: new Set(), catalog, goals: ["Read data"], limit: 10,
-        maxOutputTokens: 4096, timeoutMs: 20_000, request: request() })).rejects.toMatchObject({ code: "mcp_router_timeout" });
+        maxOutputTokens: 4096, timeoutMs: 20_000, context: mcpChatDiscoveryContext(request()) })).rejects.toMatchObject({ code: "mcp_router_timeout" });
       expect(executeStructuredOutput).toHaveBeenCalledOnce();
     } finally { now.mockRestore(); }
   });
@@ -256,7 +257,7 @@ describe("semantic MCP router", () => {
     const routed = router.route({
       activeToolNames: new Set(), catalog,
       goals: ["Create an issue, a pull request, and a calendar event"],
-      limit: 2, request: request()
+      limit: 2, context: mcpChatDiscoveryContext(request())
     });
     const usageAttribution = {
       modelId: "gpt-router", provider: "openai",
@@ -282,7 +283,7 @@ describe("semantic MCP router", () => {
     const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel });
 
     await expect(router.route({
-      activeToolNames: new Set(), catalog, goals, limit: 5, request: request()
+      activeToolNames: new Set(), catalog, goals, limit: 5, context: mcpChatDiscoveryContext(request())
     })).rejects.toMatchObject({ code: "mcp_router_request_failed", usageAttribution: null });
     expect(executeStructuredOutput).not.toHaveBeenCalled();
     expect(resolveSystemModel).not.toHaveBeenCalled();
@@ -325,7 +326,7 @@ describe("semantic MCP router", () => {
         catalog,
         goals,
         limit: 5,
-        request: request(),
+        context: mcpChatDiscoveryContext(request()),
         signal: controller.signal
       });
       const usageAttribution = {
@@ -349,6 +350,33 @@ describe("semantic MCP router", () => {
     }
   );
 
+  it.each(["complete", "cancelled", "unavailable"] as const)("accounts cumulative discovery snapshots once when %s", async (outcome) => {
+    const controller = new AbortController();
+    const settle = vi.fn(async () => undefined);
+    const router = createMcpSemanticRouter({
+      resolveSystemModel: async () => resolution(),
+      executeStructuredOutput: async (_role, _request, options) => {
+        await options?.beforeDispatch?.();
+        if (outcome !== "unavailable") {
+          options?.onUsage?.({ inputTokens: 10, cachedInputTokens: 0 });
+          options?.onUsage?.({ outputTokens: 2 });
+          options?.onUsage?.({ outputTokens: 3 });
+        }
+        if (outcome !== "complete") { controller.abort(); throw new Error("Interrupted"); }
+        return { mcp_needed: true, requirements: [{ outcome: "Create an issue", status: "covered", tool_ids: [jiraTool] }] };
+      }
+    });
+    const routed = router.route({ activeToolNames: new Set(), catalog, goals: ["Create an issue"], limit: 5,
+      recordAttempt: async () => ({ settle }), signal: controller.signal });
+    const usage = outcome === "unavailable"
+      ? { inputTokens: null, outputTokens: null, totalTokens: null, completeness: "unavailable" }
+      : { inputTokens: 10, outputTokens: 3, totalTokens: 13, cachedInputTokens: 0, completeness: outcome === "complete" ? "complete" : "partial" };
+    if (outcome === "complete") await expect(routed).resolves.toMatchObject({ usageAttribution: { usage } });
+    else await expect(routed).rejects.toMatchObject({ code: "mcp_router_cancelled", usageAttribution: { usage } });
+    expect(settle).toHaveBeenCalledExactlyOnceWith({ state: outcome === "complete" ? "COMPLETE" : outcome === "cancelled" ? "ERROR" : "UNKNOWN",
+      usage: expect.objectContaining(usage) });
+  });
+
   it("retains first-attempt usage when the corrective request fails before reporting usage", async () => {
     const executeStructuredOutput = vi.fn()
       .mockImplementationOnce(async (_role, _request, options) => {
@@ -369,14 +397,14 @@ describe("semantic MCP router", () => {
       catalog,
       goals: ["Create an issue"],
       limit: 5,
-      request: request()
+      context: mcpChatDiscoveryContext(request())
     })).rejects.toMatchObject({
       code: "mcp_router_request_failed",
       message: "mcp_router_request_failed",
       usageAttribution: {
         modelId: "gpt-router",
         provider: "openai",
-        usage: { inputTokens: 12, outputTokens: 3, reasoningTokens: 0 }
+        usage: expect.objectContaining({ inputTokens: 12, outputTokens: 3, reasoningTokens: 0 })
       }
     });
   });
@@ -418,13 +446,13 @@ describe("semantic MCP router", () => {
       catalog,
       goals: [goal],
       limit: 5,
-      request: request(),
+      context: mcpChatDiscoveryContext(request()),
     })).resolves.toEqual({
       toolNames: [selected],
       usageAttribution: {
         modelId: "gpt-router",
         provider: "openai",
-        usage: { inputTokens: 12, outputTokens: 3, reasoningTokens: 0 }
+        usage: expect.objectContaining({ inputTokens: 12, outputTokens: 3, reasoningTokens: 0 })
       }
     });
   });
@@ -444,7 +472,7 @@ describe("semantic MCP router", () => {
       catalog,
       goals: ["Just explain the architecture; do not perform an action"],
       limit: 5,
-      request: request()
+      context: mcpChatDiscoveryContext(request())
     })).resolves.toEqual({ toolNames: [], usageAttribution: null });
   });
 
@@ -454,7 +482,7 @@ describe("semantic MCP router", () => {
       catalog,
       goals: ["Create the issue"],
       limit: 5,
-      request: request()
+      context: mcpChatDiscoveryContext(request())
     });
     const serialized = `${prompt.systemPrompt}\n${prompt.userPrompt}`;
 
@@ -496,7 +524,7 @@ describe("semantic MCP router", () => {
       catalog,
       goals: ["Create an issue"],
       limit: 5,
-      request: request()
+      context: mcpChatDiscoveryContext(request())
     });
 
     await expect(route()).rejects.toEqual(
@@ -522,7 +550,7 @@ describe("semantic MCP router", () => {
       catalog,
       goals: ["Create an issue"],
       limit: 5,
-      request: request()
+      context: mcpChatDiscoveryContext(request())
     };
 
     await expect(absent.route(input)).rejects.toEqual(

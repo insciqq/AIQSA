@@ -103,7 +103,7 @@ describe("provider automatic setup", () => {
   it("fills empty roles after exact model checks and runs a real Search check", async () => {
     const value = fixture();
     expect(await value.run()).toMatchObject({ state: "completed", search: "ready", defaults: [
-      "Chat: GPT-5.6 Terra", "System model: GPT-5.6 Terra", "PDF reading in chats: GPT-5.6 Terra"
+      "Chat: GPT-5.6 Terra", "System model: GPT-5.6 Terra", "Page-image reader: GPT-5.6 Terra"
     ] });
     expect(value.chatUpdate).toHaveBeenCalledWith({ expectedVersion: 1, providerModelId: "model-terra", reasoningEffort: null, userId: "operator" });
     expect(value.rolesUpdate).toHaveBeenCalledWith({ expectedVersion: 1, providerModelId: "model-terra", reasoningEffort: null,

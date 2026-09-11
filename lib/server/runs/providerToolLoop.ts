@@ -1,3 +1,4 @@
+import { mergeTokenUsage } from "../../domain/usage";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
@@ -225,27 +226,25 @@ export async function runProviderToolLoop(
             await emitText(next.value.data.delta);
             emittedText += next.value.data.delta;
           } else if (next.value.type === "usage") {
-            lastReportedUsage = next.value.data;
+            lastReportedUsage = mergeTokenUsage(lastReportedUsage ?? {}, next.value.data);
           } else {
             await input.onEvent?.(next.value);
           }
           next = await stream.next();
         }
       } catch (error) {
-        if (lastReportedUsage) {
-          try {
-            await input.onUsage?.(lastReportedUsage, roundRequest, {
-              completeness: "partial",
-              round
-            });
-          } catch {
-            // Usage persistence is secondary once the provider round has
-            // already failed and must not replace its causal classification.
-          }
+        try {
+          await input.onUsage?.(lastReportedUsage ?? {}, roundRequest, {
+            completeness: "partial",
+            round
+          });
+        } catch {
+          // Usage persistence is secondary once the provider round has
+          // already failed and must not replace its causal classification.
         }
         throw error;
       }
-      const result = next.value;
+      const result = { ...next.value, usage: mergeTokenUsage(lastReportedUsage ?? {}, next.value.usage) };
       let publicationFailed = false;
       let publicationError: unknown;
       try {

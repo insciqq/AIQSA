@@ -634,6 +634,7 @@ export function createPrismaRunRepository(
           ? input.usageAttributions
           : [
               {
+                operationCount: 1,
                 estimatedCostMicros: input.estimatedCostMicros,
                 modelId: input.modelId,
                 provider: input.provider,
@@ -700,13 +701,15 @@ export function createPrismaRunRepository(
             cachedInputTokens: usage.cachedInputTokens,
             cacheWriteInputTokens: usage.cacheWriteInputTokens,
             errorPayload: Prisma.JsonNull,
-            estimatedCostMicros: input.estimatedCostMicros ?? 0,
+            estimatedCostMicros: input.estimatedCostMicros ?? null,
             inputTokens: usage.inputTokens,
             outputTokens: usage.outputTokens,
             providerResponseId: input.providerResponseId ?? existingRun?.providerResponseId ?? null,
             reasoningTokens: usage.reasoningTokens,
             status: "complete",
-            totalTokens: usage.totalTokens
+            totalTokens: usage.totalTokens,
+            usageCompleteness: usage.completeness === "complete" ? "COMPLETE" :
+              usage.completeness === "partial" ? "PARTIAL" : "UNAVAILABLE"
           },
           where: {
             id: input.runId
@@ -755,9 +758,10 @@ export function createPrismaRunRepository(
         await tx.usageEvent.createMany({
           data: usageAttributions.map((attribution) => ({
             chatId: input.chatId,
+            operationCount: attribution.operationCount ?? null,
             cachedInputTokens: attribution.usage.cachedInputTokens,
             cacheWriteInputTokens: attribution.usage.cacheWriteInputTokens,
-            estimatedCostMicros: attribution.estimatedCostMicros ?? 0,
+            estimatedCostMicros: attribution.estimatedCostMicros ?? null,
             inputTokens: attribution.usage.inputTokens,
             modelId: attribution.modelId,
             modelRunId: input.runId,
@@ -765,6 +769,8 @@ export function createPrismaRunRepository(
             provider: attribution.provider,
             reasoningTokens: attribution.usage.reasoningTokens,
             totalTokens: attribution.usage.totalTokens,
+            usageCompleteness: attribution.usage.completeness === "complete" ? "COMPLETE" :
+              attribution.usage.completeness === "partial" ? "PARTIAL" : "UNAVAILABLE",
             ...(existingRun.projectId ? { projectId: existingRun.projectId } : {}),
             userId: input.userId
           }))
@@ -772,13 +778,13 @@ export function createPrismaRunRepository(
         await tx.chat.update({
           data: {
             totalInputTokens: {
-              increment: usage.inputTokens
+              increment: usage.inputTokens ?? 0
             },
             totalOutputTokens: {
-              increment: usage.outputTokens
+              increment: usage.outputTokens ?? 0
             },
             totalReasoningTokens: {
-              increment: usage.reasoningTokens
+              increment: usage.reasoningTokens ?? 0
             }
           },
           where: {
@@ -1289,7 +1295,8 @@ export function createPrismaRunRepository(
           chatId: true,
           chatPdfPreparation: { select: { retryable: true, state: true } },
           chatPdfAttachments: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: {
-            completedPages: true, pageCount: true, retryable: true, route: true, state: true
+            completedPages: true, pageCount: true, retryable: true, route: true, state: true,
+            readerModelName: true, answerModelName: true
           } },
           id: true,
           status: true
@@ -1357,7 +1364,8 @@ export function createPrismaRunRepository(
                 select: {
                   chatPdfPreparation: { select: { retryable: true, state: true } },
                   chatPdfAttachments: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: {
-                    completedPages: true, pageCount: true, retryable: true, route: true, state: true
+                    completedPages: true, pageCount: true, retryable: true, route: true, state: true,
+                    readerModelName: true, answerModelName: true
                   } },
                   answerStartedAt: true,
                   assistantId: true,
@@ -1752,25 +1760,30 @@ export function createPrismaRunRepository(
           estimatedCostMicros: true,
           inputTokens: true,
           modelId: true,
+          operationCount: true,
           outputTokens: true,
           provider: true,
           reasoningTokens: true,
-          totalTokens: true
+          totalTokens: true,
+          usageCompleteness: true
         },
         where: { chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false, modelRunId: input.runId, userId: input.userId }
       });
       return rows.map((row) => ({
         estimatedCostMicros: row.estimatedCostMicros,
         modelId: row.modelId,
+        operationCount: row.operationCount,
         provider: row.provider,
         recordedAt: row.createdAt.toISOString(),
         usage: {
-          cachedInputTokens: row.cachedInputTokens ?? 0,
-          cacheWriteInputTokens: row.cacheWriteInputTokens ?? 0,
-          inputTokens: row.inputTokens ?? 0,
-          outputTokens: row.outputTokens ?? 0,
-          reasoningTokens: row.reasoningTokens ?? 0,
-          totalTokens: row.totalTokens ?? 0
+          cachedInputTokens: row.cachedInputTokens,
+          cacheWriteInputTokens: row.cacheWriteInputTokens,
+          inputTokens: row.inputTokens,
+          outputTokens: row.outputTokens,
+          reasoningTokens: row.reasoningTokens,
+          totalTokens: row.totalTokens,
+          completeness: row.usageCompleteness === "COMPLETE" ? "complete" :
+            row.usageCompleteness === "PARTIAL" ? "partial" : "unavailable"
         }
       }));
     },

@@ -11,6 +11,7 @@ import type { McpDraftValidationInput, McpDraftValidationOutcome } from "./draft
 import { createPrismaMcpRepository } from "./prismaRepository";
 import { createPrismaMcpOAuthRepository } from "./oauthRepository";
 import { McpOAuthService } from "./oauthService";
+import { createPrismaMcpRuntimeRepository } from "./runtimeRepository";
 
 const userIds: string[] = [];
 const groupIds: string[] = [];
@@ -175,6 +176,52 @@ describe("atomic MCP endpoint correction", () => {
 });
 
 describe("MCP Test & Save persistence", () => {
+  it("keeps an already-requested runtime for recent Hub activity without a browser session", async () => {
+    const f = await fixture();
+    await f.repository.setGrant({ serverId: f.serverId, userId: f.userId,
+      groupId: null, canUse: true, personalSlotKeys: [] });
+    expect(await f.repository.updateUserServer({ serverId: f.serverId, userId: f.userId, enabled: true }))
+      .toMatchObject({ kind: "ok" });
+    const client = await prisma.inboundMcpOAuthClient.create({ data: {
+      clientId: `https://client.example/${randomUUID()}`, clientName: "Runtime activity fixture",
+      clientOrigin: "https://client.example", redirectUris: ["http://localhost/callback"],
+      applicationType: "NATIVE", kind: "CLIENT_ID_METADATA_DOCUMENT", metadataFingerprint: "a".repeat(64)
+    } });
+    try {
+      const now = new Date();
+      const grant = await prisma.inboundMcpOAuthGrant.create({ data: {
+        oauthClientId: client.id, userId: f.userId, resourcePath: "/mcp/hub", capability: "mcp:hub",
+        lastUsedAt: now
+      } });
+      const runtime = createPrismaMcpRuntimeRepository({ prisma, encryptionKey: () => Buffer.alloc(32, 1) });
+      const requested = () => runtime.synchronizeDesired({ now, onDemand: true, serverIds: [f.serverId], userId: f.userId });
+      // Recent OAuth use keeps existing demand alive, but never creates it.
+      await runtime.synchronizeDesired({ now });
+      expect((await prisma.mcpUserServer.findFirstOrThrow({ where: { userId: f.userId, serverId: f.serverId } }))
+        .desiredRuntimeGenerationId).toBeNull();
+      const launches = await requested();
+      expect(launches).toHaveLength(1);
+      const reconcile = async (at = now) => (await runtime.synchronizeDesired({ now: at }))
+        .filter((launch) => launch.generationId === launches[0]!.generationId);
+      expect(await reconcile()).toHaveLength(1);
+      expect(await prisma.authSession.count({ where: { userId: f.userId } })).toBe(0);
+      expect(await reconcile(new Date(now.getTime() + 16 * 60_000))).toHaveLength(0);
+      await requested();
+      await prisma.inboundMcpOAuthGrant.update({ where: { id: grant.id }, data: { state: "REVOKED", revokedAt: now } });
+      expect(await reconcile()).toHaveLength(0);
+      await requested();
+      await prisma.inboundMcpOAuthGrant.create({ data: {
+        oauthClientId: client.id, userId: f.userId, lastUsedAt: now,
+        resourcePath: "/mcp", capability: "memory:facts"
+      } });
+      expect(await reconcile()).toHaveLength(0);
+    } finally {
+      await prisma.mcpUserServer.updateMany({ where: { userId: f.userId }, data: { desiredRuntimeGenerationId: null } });
+      await prisma.mcpRuntimeGeneration.deleteMany({ where: { userServer: { userId: f.userId } } });
+      await prisma.inboundMcpOAuthClient.delete({ where: { id: client.id } });
+    }
+  });
+
   it("applies tool switches without another check, preserving the pending endpoint, keys and immutable revisions", async () => {
     const { repository, server, serverId, validate } = await fixture();
     const original = await prisma.mcpServer.findUniqueOrThrow({ where: { id: serverId } });

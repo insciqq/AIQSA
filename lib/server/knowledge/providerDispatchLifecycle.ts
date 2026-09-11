@@ -63,6 +63,7 @@ function attemptUsage(
 ): KnowledgeProviderAttemptUsage {
   const normalized = normalizeTokenUsage(usage);
   return Object.freeze({
+    completeness: normalized.completeness,
     cachedInputTokens: normalized.cachedInputTokens,
     cacheWriteInputTokens: normalized.cacheWriteInputTokens,
     estimatedCostMicros: usage.estimatedCostMicros ?? null,

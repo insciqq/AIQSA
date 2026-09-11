@@ -1,6 +1,7 @@
+import { memoryReportedUsage } from "./usage";
 import type { PrismaClient } from "@prisma/client";
 import type { ModelRunUsage } from "../../../domain/modelRunEvents";
-import { normalizeTokenUsage } from "../../../domain/usage";
+import { mergeTokenUsage, normalizeTokenUsage } from "../../../domain/usage";
 import { createAcceptedStructuredOutputSnapshotExecutor } from
   "../../providerRuntime/structuredOutputExecutor";
 import type { ProviderConnectionConfiguration } from "../../providers/providerConfiguration";
@@ -77,21 +78,6 @@ export const unavailableMemoryReportedUsage: MemoryReportedUsage = Object.freeze
   totalTokens: null
 });
 
-export function memoryReportedUsage(
-  value: ModelRunUsage | null
-): MemoryReportedUsage {
-  if (value === null) return unavailableMemoryReportedUsage;
-  const usage = normalizeTokenUsage(value);
-  return {
-    cachedInputTokens: usage.cachedInputTokens,
-    completeness: "COMPLETE",
-    estimatedCostMicros: null,
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    reasoningTokens: usage.reasoningTokens,
-    totalTokens: usage.totalTokens
-  };
-}
 
 function reasoningEffort(
   snapshot: MemorySecretFreeExecutionSnapshot
@@ -129,7 +115,7 @@ export function createAcceptedMemoryStructuredOutputProvider(
           },
           {
             onProviderResponseId: (value) => { providerResponseId = value; },
-            onUsage: (value) => { usage = value; },
+            onUsage: (value) => { usage = mergeTokenUsage(usage ?? {}, value); },
             signal,
             // Interactive Memory is bounded by its administrator-selected
             // outer AbortSignal. Keep this transport ceiling at the product
@@ -141,7 +127,9 @@ export function createAcceptedMemoryStructuredOutputProvider(
       } catch (error) {
         throw new MemoryStructuredOutputProviderError(
           providerResponseId,
-          usage,
+          usage === null ? null : normalizeTokenUsage({
+            ...normalizeTokenUsage(usage), completeness: "partial"
+          }),
           { cause: error }
         );
       }
@@ -283,3 +271,5 @@ export async function probeMemoryStructuredOutputAuthority(input: Readonly<{
     }
   );
 }
+
+export { memoryReportedUsage } from "./usage";

@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
+import { normalizeTokenUsage } from "../../domain/usage";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { loadAdminUsageQueryRows } from "../auth/adminUsageQueries";
 import { mcpRuntimeFingerprint } from "../mcp/access";
@@ -374,7 +375,7 @@ function completionInput(input: {
     finalText: "Completed answer",
     modelId: "fake-qsa",
     provider: "fake",
-    usage: {
+    usage: { completeness: "complete" as const,
       cachedInputTokens: 0,
       cacheWriteInputTokens: 0,
       inputTokens: 2,
@@ -3049,6 +3050,41 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
+  it("preserves absent, partial and reported-zero receipts through cancellation, replay and aggregate queries", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const active = await createActiveRun(repository, userId, "Incomplete usage");
+      const usageAttributions = [
+        { modelId: "unavailable", provider: "fake", operationCount: 1, usage: normalizeTokenUsage({}) },
+        { modelId: "partial", provider: "fake", operationCount: 1, usage: normalizeTokenUsage({ inputTokens: 7 }) },
+        { modelId: "zero", provider: "fake", operationCount: 1, usage: normalizeTokenUsage({ inputTokens: 0, outputTokens: 0 }) }
+      ];
+      const input = { chatId: active.chatId, runId: active.runId, usageAttributions, userId };
+      expect(await repository.recordRunUsageEvents(input)).toBe(true);
+      await repository.cancelRun({ runId: active.runId, userId, payload: { code: "cancelled", message: "Stopped" } });
+      expect(await repository.recordRunUsageEvents(input)).toBe(true);
+      const receipts = await repository.loadRunUsageAttributions({ runId: active.runId, userId });
+      expect(receipts).toHaveLength(3);
+      for (const attribution of usageAttributions) {
+        expect(receipts.find((row) => row.modelId === attribution.modelId)).toMatchObject({
+          ...attribution, estimatedCostMicros: null
+        });
+      }
+      expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: active.runId } })).toMatchObject({
+        status: "cancelled", inputTokens: 7, outputTokens: 0, totalTokens: 0,
+        reasoningTokens: null, cachedInputTokens: null, cacheWriteInputTokens: null,
+        usageCompleteness: "PARTIAL", estimatedCostMicros: null
+      });
+      const chat = await createPrismaChatRepository(prisma).getChat({ chatId: active.chatId, userId });
+      expect(chat?.usageStats).toMatchObject({ totalTokens: 0, incompleteRunCount: 1, cachedInputTokens: null, cacheWriteInputTokens: null });
+      const aggregate = await loadAdminUsageQueryRows(prisma);
+      expect(aggregate.userRows.find((row) => row.userId === userId)).toMatchObject({
+        _count: { _all: 1 }, incompleteUsageCount: 2,
+        _sum: { inputTokens: 7, outputTokens: 0, totalTokens: 0, reasoningTokens: null }
+      });
+    });
+  });
+
   it("records split provider usage on a non-complete run without incrementing completed chat totals", async () => {
     await withRunUser(async ({ userId }) => {
       const repository = createPrismaRunRepository(prisma);
@@ -3277,7 +3313,7 @@ describe("Prisma-backed run repository", () => {
         userId
       })).resolves.toBe("started");
 
-      const partialUsage = {
+      const partialUsage = { completeness: "complete" as const,
         cachedInputTokens: 0,
         cacheWriteInputTokens: 0,
         inputTokens: 2,
@@ -3673,7 +3709,7 @@ describe("Prisma-backed run repository", () => {
         modelId: "fake-qsa",
         provider: "fake",
         runId,
-        usage: {
+        usage: { completeness: "complete" as const,
           cachedInputTokens: 4,
           cacheWriteInputTokens: 1,
           inputTokens: 1,

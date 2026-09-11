@@ -1,3 +1,4 @@
+import { decodeTokenUsage, type TokenUsageCompleteness } from "../../domain/usage";
 import { decodeKnowledgeCoverageLimitationsV1 } from "./searchFailure";
 import { decodeKnowledgeEvidenceAnswerSnapshot, isKnowledgeEvidenceAnswerOperation } from "./evidenceAnswerSnapshot";
 import { createHash } from "node:crypto";
@@ -74,6 +75,7 @@ const providerUsageKeys = [
 ] as const;
 
 export type KnowledgeProviderAttemptUsage = Readonly<{
+  completeness?: TokenUsageCompleteness;
   cachedInputTokens: number | null;
   cacheWriteInputTokens: number | null;
   estimatedCostMicros: number | null;
@@ -621,10 +623,11 @@ function deepFreeze<T>(value: T): T {
 export function decodeKnowledgeProviderAttemptUsage(
   value: unknown
 ): KnowledgeProviderAttemptUsage | null {
-  if (!record(value) || !exactKeys(value, providerUsageKeys) ||
+  if (!record(value) || !exactKeys(value, value.completeness === undefined ? providerUsageKeys : [...providerUsageKeys, "completeness"]) ||
+    (value.completeness !== undefined && !decodeTokenUsage(value)) ||
     providerUsageKeys.some((key) => value[key] !== null && !integer(value[key]))) return null;
-  return deepFreeze(Object.fromEntries(providerUsageKeys.map((key) => [key, value[key]])) as
-    KnowledgeProviderAttemptUsage);
+  return deepFreeze({ ...Object.fromEntries(providerUsageKeys.map((key) => [key, value[key]])),
+    ...(value.completeness === undefined ? {} : { completeness: value.completeness }) } as KnowledgeProviderAttemptUsage);
 }
 
 function compactUserSafeMetadata(value: string, maximum = 240): string {

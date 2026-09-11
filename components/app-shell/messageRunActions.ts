@@ -720,6 +720,7 @@ export function useMessageRunActions({
       )
     ];
     let sendOutcome: "cancelled" | "failed" | "succeeded" = "failed";
+    let sendContextTooLarge = false;
     let sendFailureMessage: string | null = null;
     let sendFailureLive = true;
     let sendFailureHandled = false;
@@ -902,6 +903,7 @@ export function useMessageRunActions({
         }
       });
       sendOutcome = result.cancelled ? "cancelled" : result.failed ? "failed" : "succeeded";
+      sendContextTooLarge = result.failureCode === "context_too_large";
       sendFailureMessage = result.failureMessage ?? null;
       sendRejectionMessage = result.rejectionMessage ?? null;
       sendRunId = result.runId;
@@ -939,7 +941,8 @@ export function useMessageRunActions({
           ? sendRejectionMessage ?? sendFailureMessage ?? "Send failed. Your draft was preserved."
           : null,
         sendFailureLive,
-        sendRunId
+        sendRunId,
+        sendContextTooLarge
       );
     }
   }

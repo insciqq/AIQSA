@@ -124,7 +124,7 @@ describe("provider structured output", () => {
       await expect(adapter.execute(request, { onUsage, onProviderResponseId })).rejects.toMatchObject({
         code: "structured_output_output_limit_exceeded"
       });
-      expect(onUsage).toHaveBeenCalledExactlyOnceWith({ cacheWriteInputTokens: 0, inputTokens: 10, cachedInputTokens: 3,
+      expect(onUsage).toHaveBeenCalledExactlyOnceWith({ completeness: "complete", cacheWriteInputTokens: null, inputTokens: 10, cachedInputTokens: 3,
         outputTokens: 64, reasoningTokens: 60, totalTokens: 74 });
       expect(onProviderResponseId).toHaveBeenCalledExactlyOnceWith("bounded-response-1");
       expect(create).toHaveBeenCalledOnce();

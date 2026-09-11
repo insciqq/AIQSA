@@ -7,6 +7,7 @@ import {
 import { maxOutputTokensFromParams } from "../../domain/providerParams";
 import { takeUtf16SafePrefix } from "../../domain/utf16";
 import {
+  usesNativePdfInput,
   providerAttachmentBudgetTokens,
   providerAttachmentTextLabel,
   truncateProviderAttachmentText
@@ -313,7 +314,7 @@ function textModeAttachment(
   capabilities: ProviderModelCapabilities
 ): boolean {
   return attachment.kind === "document" ||
-    (attachment.kind === "pdf" && !capabilities.nativePdfInput);
+    (attachment.kind === "pdf" && !usesNativePdfInput(attachment, capabilities));
 }
 
 function fitTextToTokenBudget(text: string, tokenBudget: number): string {

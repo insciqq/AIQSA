@@ -1,3 +1,4 @@
+import { normalizeTokenUsage } from "../../domain/usage";
 import { createHash } from "node:crypto";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { EmbeddingAdapterError, type EmbeddingAdapter } from "../providers/embeddings";
@@ -298,7 +299,7 @@ function errorResult(call: ModelToolCall, code: string, message?: string): ToolE
     name: call.name,
     rawPreview: { providerCall: false },
     status: "error",
-    usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 }
+    usage: normalizeTokenUsage({})
   };
 }
 
@@ -365,7 +366,7 @@ function budgetRejectionResult(
       providerCall: false
     },
     status: "error",
-    usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 }
+    usage: normalizeTokenUsage({})
   };
 }
 
@@ -888,10 +889,13 @@ function operationActualUsage(
   policy: KnowledgeBudgetPolicy
 ): KnowledgeBudgetResourceActual {
   const embeddingTokens = evidence.embeddingExecutions.reduce((total, execution) =>
-    total + (execution.status === "complete" ? execution.totalTokens : 0), 0);
+    total + (execution.totalTokens ?? 0), 0);
+  const unknownEmbeddingUsage = evidence.embeddingExecutions.some((execution) => execution.totalTokens === null);
   return Object.freeze({
     candidateCount: evidence.candidateCount,
-    costMicros: estimatedKnowledgeEmbeddingCostMicros(policy, embeddingTokens),
+    // This is a spending guard, not a billed cost. An unreported receipt
+    // consumes the remaining allowance instead of granting free follow-up work.
+    costMicros: unknownEmbeddingUsage ? policy.maxEstimatedCostMicros : estimatedKnowledgeEmbeddingCostMicros(policy, embeddingTokens),
     latencyMs: evidence.durationMs,
     queryEmbeddingCalls: evidence.embeddingExecutions.length,
     retrievedTokens: Math.ceil(evidence.results.reduce((total, result) =>
@@ -1675,13 +1679,13 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           embeddingExecutions.push({
             bindingOrdinals: group.bindings.map((binding) => binding.ordinal),
             durationMs: elapsedSince(embeddingStartedAt),
-            inputTokens: result.usage.inputTokens ?? 0,
+            inputTokens: result.usage.inputTokens ?? null,
             modelId: runtime.configuration.upstreamModelId,
             provider: runtime.provider,
             providerModelId: runtime.providerModelId,
             requestId: result.requestId,
             status: "complete",
-            totalTokens: result.usage.totalTokens ?? result.usage.inputTokens ?? 0
+            totalTokens: result.usage.totalTokens ?? null
           });
           for (const binding of group.bindings) {
             for (const vector of result.vectors) {
@@ -1701,7 +1705,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
             embeddingExecutions.push({
               bindingOrdinals: group.bindings.map((binding) => binding.ordinal),
               durationMs: elapsedSince(embeddingStartedAt),
-              inputTokens: 0,
+              inputTokens: null,
               modelId: runtime?.configuration.upstreamModelId ??
                 group.snapshot.model.upstreamModelId,
               provider: runtime?.provider ?? group.snapshot.providerFamily,
@@ -1709,7 +1713,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
                 group.bindings[0]!.embeddingProviderModelId,
               requestId: null,
               status: "error",
-              totalTokens: 0
+              totalTokens: null
             });
             continue;
           }

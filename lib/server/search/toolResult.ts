@@ -1,3 +1,4 @@
+import { decodeTokenUsage } from "../../domain/usage";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { mergeSearchEvidence } from "../../domain/search";
 import type { ToolExecutionResult } from "../tools/types";
@@ -49,30 +50,11 @@ function nonNegativeNumber(value: unknown): value is number {
 }
 
 function decodedUsage(value: unknown): ModelRunUsage | undefined {
-  if (!isRecord(value) ||
-    !nonNegativeNumber(value.inputTokens) ||
-    !nonNegativeNumber(value.outputTokens) ||
-    !nonNegativeNumber(value.reasoningTokens) ||
-    (value.cachedInputTokens !== undefined && !nonNegativeNumber(value.cachedInputTokens)) ||
-    (value.cacheWriteInputTokens !== undefined && !nonNegativeNumber(value.cacheWriteInputTokens)) ||
-    (value.totalTokens !== undefined && !nonNegativeNumber(value.totalTokens)) ||
-    (value.estimatedCostMicros !== undefined && value.estimatedCostMicros !== null &&
-      !nonNegativeNumber(value.estimatedCostMicros))) {
-    return undefined;
-  }
-  return {
-    ...(value.cachedInputTokens !== undefined ? { cachedInputTokens: value.cachedInputTokens } : {}),
-    ...(value.cacheWriteInputTokens !== undefined
-      ? { cacheWriteInputTokens: value.cacheWriteInputTokens }
-      : {}),
-    ...(value.estimatedCostMicros !== undefined
-      ? { estimatedCostMicros: value.estimatedCostMicros }
-      : {}),
-    inputTokens: value.inputTokens,
-    outputTokens: value.outputTokens,
-    reasoningTokens: value.reasoningTokens,
-    ...(value.totalTokens !== undefined ? { totalTokens: value.totalTokens } : {})
-  };
+  const usage = decodeTokenUsage(value);
+  if (!usage || !isRecord(value) || (value.estimatedCostMicros != null &&
+    !nonNegativeNumber(value.estimatedCostMicros))) return undefined;
+  return { ...usage, ...(value.estimatedCostMicros !== undefined
+    ? { estimatedCostMicros: value.estimatedCostMicros as number | null } : {}) };
 }
 
 function normalizedFailureCode(value: unknown): string {

@@ -104,7 +104,7 @@ function harness(input: {
     touchLastUsed: vi.fn(async () => undefined)
   };
   const createSession = vi.fn(async (
-    options: McpRuntimeLaunch & { onToolsChanged(): void }
+    options: McpRuntimeLaunch & { signal?: AbortSignal; onToolsChanged(): void }
   ) => {
     if (input.createError) throw input.createError;
     listChanged = options.onToolsChanged;
@@ -135,6 +135,45 @@ function harness(input: {
 }
 
 describe("MCP runtime coordinator", () => {
+  it("aborts a cold start when its only request is cancelled", async () => {
+    const test = harness();
+    test.createSession.mockImplementation(async ({ signal }) => new Promise<never>((_resolve, reject) => {
+      signal!.addEventListener("abort", () => reject(new Error("cancelled startup")), { once: true });
+    }));
+    const controller = new AbortController();
+    const pending = test.coordinator.ensureUserServersReady("user-1", ["server-1"], controller.signal);
+    const rejected = expect(pending).rejects.toBeDefined();
+    await vi.waitFor(() => expect(test.createSession).toHaveBeenCalledOnce());
+    const startup = test.createSession.mock.calls[0]![0].signal!;
+    controller.abort();
+    await rejected;
+    expect(startup.aborted).toBe(true);
+    await vi.waitFor(() => expect(test.repository.markFailed).toHaveBeenCalledOnce());
+    expect(test.repository.markReady).not.toHaveBeenCalled();
+    expect(test.session.callTool).not.toHaveBeenCalled();
+    await test.coordinator.stop();
+  });
+
+  it("keeps a shared cold start alive for a second active request", async () => {
+    const test = harness();
+    const gate = deferred<McpRuntimeSession>();
+    test.createSession.mockImplementation(async () => gate.promise);
+    const first = new AbortController();
+    const second = new AbortController();
+    const cancelled = test.coordinator.ensureUserServersReady("user-1", ["server-1"], first.signal);
+    const rejected = expect(cancelled).rejects.toBeDefined();
+    const retained = test.coordinator.ensureUserServersReady("user-1", ["server-1"], second.signal);
+    await vi.waitFor(() => expect(test.createSession).toHaveBeenCalledOnce());
+    first.abort();
+    await rejected;
+    expect(test.createSession.mock.calls[0]![0].signal!.aborted).toBe(false);
+    gate.resolve(test.session);
+    await retained;
+    expect(test.repository.markReady).toHaveBeenCalledOnce();
+    expect(test.repository.markFailed).not.toHaveBeenCalled();
+    await test.coordinator.stop();
+  });
+
   afterEach(() => vi.useRealTimers());
 
   it("renews unsupported-ping sessions with bounded protocol inventory and never publishes newly returned tools", async () => {
@@ -471,6 +510,33 @@ describe("MCP runtime coordinator", () => {
 
     expect(test.session.callTool).not.toHaveBeenCalled();
     expect(test.repository.touchLastUsed).not.toHaveBeenCalled();
+    await test.coordinator.stop();
+  });
+
+  it("checks current caller authority after awaiting runtime persistence and before tool I/O", async () => {
+    const test = harness();
+    await test.coordinator.reconcileNow();
+    let allowed = true;
+    vi.mocked(test.repository.touchLastUsed).mockImplementationOnce(async () => { allowed = false; });
+    const beforeDispatch = vi.fn(async () => { if (!allowed) throw new Error("authority_revoked"); });
+    await expect(test.coordinator.callTool({
+      arguments: {}, beforeDispatch, generationId: "generation-1", inputSchema: { type: "object" }, name: "echo"
+    })).rejects.toThrow("authority_revoked");
+    expect(beforeDispatch).toHaveBeenCalledOnce();
+    expect(test.session.callTool).not.toHaveBeenCalled();
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+    await test.coordinator.stop();
+  });
+
+  it("does not dispatch when cancelled during runtime persistence", async () => {
+    const test = harness();
+    await test.coordinator.reconcileNow();
+    const controller = new AbortController();
+    vi.mocked(test.repository.touchLastUsed).mockImplementationOnce(async () => { controller.abort(); });
+    await expect(test.coordinator.callTool({
+      arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "echo", signal: controller.signal
+    })).rejects.toMatchObject({ name: "AbortError" });
+    expect(test.session.callTool).not.toHaveBeenCalled();
     await test.coordinator.stop();
   });
 

@@ -3502,6 +3502,7 @@ async function settlePreparingAttemptExecutions(
               : "memory_preparing_execution_abandoned",
           estimatedCostMicros: null,
           inputTokens: null,
+          cacheWriteInputTokens: null,
           outputTokens: null,
           providerResponseId: null,
           reasoningTokens: null,
@@ -3530,7 +3531,8 @@ async function settlePreparingAttemptExecutions(
       await tx.usageEvent.create({
         data: {
           cachedInputTokens: open ? null : binding.cachedInputTokens,
-          cacheWriteInputTokens: null,
+          cacheWriteInputTokens: open ? null : binding.cacheWriteInputTokens,
+          usageCompleteness: open ? "UNAVAILABLE" : binding.usageCompleteness,
           estimatedCostMicros: open ? null : binding.estimatedCostMicros,
           inputTokens: open ? null : binding.inputTokens,
           memoryExecutionBindingId: binding.id,

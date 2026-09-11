@@ -1,3 +1,4 @@
+import { memoryReportedUsage as reportedUsage } from "../execution/usage";
 import type { PrismaClient } from "@prisma/client";
 import {
   MEMORY_QUERY_RESOLUTION_JSON_SCHEMA,
@@ -9,7 +10,6 @@ import {
   type MemoryQueryConstraintKind,
   type MemoryQueryResolution
 } from "../../../contracts/memoryQueryResolution";
-import { normalizeTokenUsage } from "../../../domain/usage";
 import type { ModelRunUsage } from "../../../domain/modelRunEvents";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import type { ProviderRunRequest } from "../../providers/types";
@@ -142,18 +142,6 @@ const unavailableUsage: MemoryReportedUsage = Object.freeze({
   totalTokens: null
 });
 
-function reportedUsage(usage: ModelRunUsage): MemoryReportedUsage {
-  const normalized = normalizeTokenUsage(usage);
-  return {
-    cachedInputTokens: normalized.cachedInputTokens,
-    completeness: "COMPLETE",
-    estimatedCostMicros: null,
-    inputTokens: normalized.inputTokens,
-    outputTokens: normalized.outputTokens,
-    reasoningTokens: normalized.reasoningTokens,
-    totalTokens: normalized.totalTokens
-  };
-}
 
 function resolverTool(): RunTool {
   return {

@@ -5,6 +5,24 @@ import { createChatPdfModelRoleResolver } from "./chatPdfModelRole";
 import { createSystemModelRoleResolver } from "./systemModelRole";
 
 describe("independent Memory and document assignments", () => {
+  it("resolves independent PDF and image assignments and rejects unsupported native input", async () => {
+    const policy = { chatPdfNativeProviderModelId: "native", chatPdfNativeReasoningEffort: "low",
+      chatPdfProviderModelId: "images", chatPdfReasoningEffort: "high", version: 8 };
+    const db = { systemModelPolicy: { findUnique: async () => policy } } as unknown as PrismaClient;
+    const loadRole = vi.fn(async (_db: unknown, { providerModelId }: { providerModelId: string }) => ({
+      verifiedVisionInput: providerModelId === "images",
+      snapshot: { providerModelId, providerFamily: "openrouter", model: {
+        adapterKind: "openrouter_chat_completions", upstreamModelId: "google/gemini-3.8-flash",
+        capabilities: { nativePdfInput: providerModelId === "native", reasoning: true }, defaultParams: {}
+      } }
+    }) as unknown as ProviderAdmissionRole);
+    const resolver = createChatPdfModelRoleResolver(db, loadRole);
+    expect(await resolver.resolve("pdf_reader")).toMatchObject({ ok: true, providerModelId: "native", reasoningEffort: "low", policyVersion: 8 });
+    expect(await resolver.resolve("page_images")).toMatchObject({ ok: true, providerModelId: "images", reasoningEffort: "high", policyVersion: 8 });
+    policy.chatPdfNativeProviderModelId = "images";
+    expect(await resolver.resolve("pdf_reader")).toEqual({ ok: false, code: "system_model_unavailable" });
+  });
+
   it.each(["low", "high"])("admits configured %s reasoning without a redundant capability list", async (effort) => {
     const db = { systemModelPolicy: { findUnique: vi.fn(async () => ({
       providerModelId: "semantic", reasoningEffort: effort, chatPdfProviderModelId: "document",

@@ -73,7 +73,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       }],
       invites: [],
       navigation: { advancedConfigured: false, attention: { activeUsersWithoutModelAccess: 0, openInvites: 0, pendingUsers: 0 }, teamConfigured: false },
-      usage: { byGroup: [], byUser: [], totals: { cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 0, lastUsedAt: null, outputTokens: 0, reasoningTokens: 0, runCount: 0, totalTokens: 0 } },
+      usage: { byGroup: [], byUser: [], totals: { incompleteUsageCount: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 0, lastUsedAt: null, outputTokens: 0, reasoningTokens: 0, runCount: 0, totalTokens: 0 } },
       users: []
     } }));
     await signInWithLocalToken(page);

@@ -93,14 +93,15 @@ export type AdminInviteRecord = {
 export type AdminInviteEmailDelivery = "failed" | "not_requested" | "sent" | "unavailable";
 
 export type AdminUsageTokenTotals = {
-  cachedInputTokens: number;
-  cacheWriteInputTokens: number;
-  inputTokens: number;
+  cachedInputTokens: number | null;
+  cacheWriteInputTokens: number | null;
+  inputTokens: number | null;
   lastUsedAt: string | null;
-  outputTokens: number;
-  reasoningTokens: number;
+  outputTokens: number | null;
+  reasoningTokens: number | null;
   runCount: number;
-  totalTokens: number;
+  incompleteUsageCount: number;
+  totalTokens: number | null;
 };
 
 export type AdminUsageProviderModelRecord = AdminUsageTokenTotals & {

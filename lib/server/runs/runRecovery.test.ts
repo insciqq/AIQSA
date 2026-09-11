@@ -292,7 +292,7 @@ function recoveredKnowledgeV5Finalization(finalText = "Recovered grounded answer
       supportedClaimCount: 1,
       unsupportedClaimCount: 0,
       usage: {
-        draft: {
+        draft: { completeness: "complete" as const,
           cachedInputTokens: 0,
           cacheWriteInputTokens: 0,
           estimatedCostMicros: null,
@@ -301,7 +301,7 @@ function recoveredKnowledgeV5Finalization(finalText = "Recovered grounded answer
           reasoningTokens: 0,
           totalTokens: 15
         },
-        selector: {
+        selector: { completeness: "complete" as const,
           cachedInputTokens: 0,
           cacheWriteInputTokens: 0,
           estimatedCostMicros: null,
@@ -866,7 +866,7 @@ function knowledgeProviderDispatchRecorder(
     attempt: {
       acceptedRequest: null,
       acceptedResult: null,
-      actualUsage: state === "settled" ? {
+      actualUsage: state === "settled" ? { completeness: "complete" as const,
         cachedInputTokens: 0,
         cacheWriteInputTokens: 0,
         estimatedCostMicros: null,
@@ -880,7 +880,7 @@ function knowledgeProviderDispatchRecorder(
       contractVersion: null,
       dispatchedAt: state === "reserved" ? null : new Date("2026-07-12T09:01:00.000Z"),
       evidenceReceiptHash: null,
-      estimatedUsage: {
+      estimatedUsage: { completeness: "complete" as const,
         cachedInputTokens: 0,
         cacheWriteInputTokens: 0,
         estimatedCostMicros: null,
@@ -1330,7 +1330,7 @@ function checkpoint(
     : [{
         completeness: "terminal" as const,
         roundIndex,
-        usage: {
+        usage: { completeness: "complete" as const,
           cachedInputTokens: 0,
           cacheWriteInputTokens: 0,
           inputTokens: 0,
@@ -1863,9 +1863,9 @@ describe("run recovery", () => {
       estimatedCostMicros: 80,
       providerResponseId: "response-new",
       runId,
-      usage: {
-        cachedInputTokens: 0,
-        cacheWriteInputTokens: 0,
+      usage: { completeness: "complete" as const,
+        cachedInputTokens: null,
+        cacheWriteInputTokens: null,
         estimatedCostMicros: 80,
         inputTokens: 2,
         outputTokens: 3,
@@ -2036,7 +2036,7 @@ describe("run recovery", () => {
     const acceptedResult = { version: 1, blocks: [{ id: "B1", kind: "paragraph", text: "Recovered supported fact.", evidenceHandles: ["K1"] }] };
     const settledAt = new Date("2026-07-12T09:02:00.000Z");
     const stored: StoredKnowledgeEvidenceDispatch = { ...dispatch.dispatch, attempt: {
-      ...dispatch.dispatch.attempt, acceptedRequest, acceptedResult, actualUsage: {
+      ...dispatch.dispatch.attempt, acceptedRequest, acceptedResult, actualUsage: { completeness: "complete" as const,
         inputTokens: 5, outputTokens: 3, totalTokens: 8, cachedInputTokens: 0, cacheWriteInputTokens: 0, reasoningTokens: 0, estimatedCostMicros: null
       }, contractVersion: acceptedRequest.contractVersion, dispatchedAt: new Date("2026-07-12T09:01:00.000Z"), evidenceReceiptHash: dispatch.draft.manifestHash,
       leaseExpiresAt: null, leaseToken: null, providerResponseId: "settled-compose-response", purpose: acceptedRequest.operation,
@@ -2068,6 +2068,58 @@ describe("run recovery", () => {
     else expect(repairRequest).not.toHaveProperty("repairFeedbackVersion");
     expect(groundKnowledgeEvidenceAnswer).toHaveBeenCalledOnce();
     expect(requests[0]?.toolChoice).toBe("none");
+  });
+
+  it.each(["error", "cancelled"] as const)("retains settled compose and partial review usage when recovery is %s", async (outcome) => {
+    const fixture = focusedKnowledgeProviderRecoveryFixture();
+    const dispatch = knowledgeProviderDispatchRecorder("dispatch");
+    const acceptedRequest = createKnowledgeEvidenceAnswerSnapshotV2({
+      evidenceReceiptHash: dispatch.draft.manifestHash,
+      executionPolicy: resolveKnowledgeGroundingExecutionPolicyV1({ inheritedReasoningEffort: "medium",
+        modelCapabilities: { ...fixture.normalizedRequest.modelCapabilities, reasoning: true } }),
+      operation: "knowledge_evidence_compose_v2", workflowVersion: 11,
+      transport: "provider_neutral_json",
+      ...knowledgeEvidenceAnswerDraftPromptV2({ request: "remember this", evidenceManifest: dispatch.draft.message })
+    });
+    const acceptedResult = { version: 1,
+      blocks: [{ id: "B1", kind: "paragraph", text: "Recovered fact.", evidenceHandles: ["K1"] }] };
+    const settledAt = new Date("2026-07-12T09:02:00.000Z");
+    const stored: StoredKnowledgeEvidenceDispatch = { ...dispatch.dispatch, attempt: {
+      ...dispatch.dispatch.attempt, acceptedRequest, acceptedResult,
+      actualUsage: { completeness: "complete", inputTokens: 5, outputTokens: 3, totalTokens: 8,
+        cachedInputTokens: null, cacheWriteInputTokens: null, reasoningTokens: null, estimatedCostMicros: null },
+      contractVersion: acceptedRequest.contractVersion, dispatchedAt: settledAt,
+      evidenceReceiptHash: dispatch.draft.manifestHash, leaseExpiresAt: null, leaseToken: null,
+      providerResponseId: "settled-compose", purpose: acceptedRequest.operation,
+      requestHash: knowledgeAnswerHash(acceptedRequest), resultHash: knowledgeAnswerHash(acceptedResult),
+      resultAcceptedAt: settledAt, settledAt, state: "settled"
+    } };
+    vi.mocked(dispatch.lifecycle.inspect).mockImplementation(async ({ ordinal }) => ordinal === 1 ? stored : null);
+    const runRegistry = registry();
+    const stream = vi.fn(async function* (): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+      yield { type: "usage", data: { inputTokens: 4, outputTokens: 0 } };
+      yield { type: "usage", data: { inputTokens: 7 } };
+      if (outcome === "cancelled") runRegistry.abort(runId);
+      throw new Error("synthetic_review_failure");
+    });
+    const harness = createHarness({ controls: [control({ providerResponseId: null })], registry: runRegistry,
+      knowledgeProviderDispatch: dispatch.lifecycle, providerDispatchRecoveryRequest: fixture.normalizedRequest,
+      groundKnowledgeEvidenceAnswer: async () => recoveredKnowledgeV5Finalization(),
+      providers: { openai: { buildRequestPreview: () => ({}), stream } }
+    });
+    harness.repository.loadRunUsageAttributions = async () => [{ operationCount: 1, modelId: "gpt-test", provider: "openai",
+      usage: { inputTokens: 11, outputTokens: 1 }, recordedAt: "2026-07-12T09:00:00.000Z" }];
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(stream).toHaveBeenCalledOnce();
+    expect(dispatch.lifecycle.prepare).toHaveBeenCalledOnce();
+    expect(harness.state.usageAttributions.at(-1)).toEqual([expect.objectContaining({
+      modelId: "gpt-test", provider: "openai", operationCount: 3, estimatedCostMicros: null,
+      usage: expect.objectContaining({ completeness: "partial", inputTokens: 23, outputTokens: 4, totalTokens: 27 })
+    })]);
+    expect(harness.state.completed).toBeNull();
+    expect(harness.state.failed).toHaveLength(outcome === "error" ? 1 : 0);
   });
 
   it.each([{
@@ -2816,7 +2868,7 @@ describe("run recovery", () => {
         ...dispatch.dispatch.attempt,
         acceptedRequest,
         acceptedResult: acceptedDraft,
-        actualUsage: {
+        actualUsage: { completeness: "complete" as const,
           cachedInputTokens: 0,
           cacheWriteInputTokens: 0,
           estimatedCostMicros: null,
@@ -4364,12 +4416,12 @@ describe("run recovery", () => {
         runId,
         usageAttributions: [
           {
-            estimatedCostMicros: 110,
+            operationCount: 1, estimatedCostMicros: 110,
             modelId: "gpt-test",
             provider: "openai",
-            usage: {
-              cachedInputTokens: 0,
-              cacheWriteInputTokens: 0,
+            usage: { completeness: "complete" as const,
+              cachedInputTokens: null,
+              cacheWriteInputTokens: null,
               inputTokens: 7,
               outputTokens: 2,
               reasoningTokens: 1,
@@ -4911,7 +4963,7 @@ describe("run recovery", () => {
         content: [{ type: "text", text: `settled result ${index + 1}` }], status: "complete" }, toolLoopPersistenceLimits.resultBytes)
     }));
     const answerRoundUsage: PersistedAnswerRoundUsage[] = Array.from({ length: 8 }, (_, index) => ({
-      completeness: "terminal", roundIndex: index + 1, usage: {
+      completeness: "terminal", roundIndex: index + 1, usage: { completeness: "complete" as const,
         cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2
       }
     }));
@@ -7036,7 +7088,7 @@ describe("run recovery", () => {
       expect.objectContaining({ name: recoveryToolName })
     ]));
     expect(runtimeCall).toHaveBeenCalledTimes(1);
-    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledTimes(2);
     expect(materialize).not.toHaveBeenCalled();
     expect(route).not.toHaveBeenCalled();
     expect(appendEpoch).not.toHaveBeenCalled();
@@ -7169,7 +7221,7 @@ describe("run recovery", () => {
       namespacedName: recoveryToolName,
       revisionId: "revision-1",
       serverId: "server-1"
-    }]);
+    }], expect.any(AbortSignal));
     expect(appendEpoch).toHaveBeenCalledTimes(goals.length);
     expect(discovery.epochs.map((epoch) => epoch.goal)).toEqual(goals);
     expect(requests[0]?.tools).toEqual(expect.arrayContaining([
@@ -7345,7 +7397,8 @@ describe("run recovery", () => {
         ...(outcome === "output_limit" ? { toolBudgets: { mcpAutoDiscoveryMaxOutputTokens: 32768, maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8 } } : {}),
         mcp: { servers: [], tools: [], version: 1 },
         mcpDiscovery: {
-          catalog: { servers: [], version: 1 },
+          catalog: { servers: [{ namespace: "issues", revisionId: "revision-issues", serverId: "server-issues",
+            serverName: "Issues", description: "Manage issues", tools: [{ namespacedName: "mcp_issues_create", originalName: "create", description: "Create an issue" }] }], version: 1 },
           epochs: [],
           version: 2
         }
@@ -7487,7 +7540,7 @@ describe("run recovery", () => {
         answerRoundUsage: [{
           completeness: "terminal",
           roundIndex: 1,
-          usage: {
+          usage: { completeness: "complete" as const,
             cachedInputTokens: 0,
             cacheWriteInputTokens: 0,
             inputTokens: 7,
@@ -7551,7 +7604,7 @@ describe("run recovery", () => {
         {
           completeness: "terminal",
           roundIndex: 1,
-          usage: {
+          usage: { completeness: "complete" as const,
             cachedInputTokens: 0,
             cacheWriteInputTokens: 0,
             inputTokens: 7,
@@ -7563,7 +7616,7 @@ describe("run recovery", () => {
         {
           completeness: "partial",
           roundIndex: 2,
-          usage: {
+          usage: { completeness: "complete" as const,
             cachedInputTokens: 0,
             cacheWriteInputTokens: 0,
             inputTokens: 2,
@@ -7630,7 +7683,7 @@ describe("run recovery", () => {
       answerRoundUsage: [{
         completeness: "partial",
         roundIndex: 1,
-        usage: {
+        usage: { completeness: "complete" as const,
           cachedInputTokens: 0,
           cacheWriteInputTokens: 0,
           inputTokens: 9,

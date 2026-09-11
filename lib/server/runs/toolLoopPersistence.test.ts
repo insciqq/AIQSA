@@ -33,7 +33,7 @@ describe("tool-loop persistence values", () => {
     const partial = {
       completeness: "partial" as const,
       roundIndex: 2,
-      usage: {
+      usage: { completeness: "complete" as const,
         cachedInputTokens: 1,
         cacheWriteInputTokens: 0,
         inputTokens: 7,
@@ -59,7 +59,7 @@ describe("tool-loop persistence values", () => {
   });
 
   it("rejects malformed, duplicate, and out-of-bound round usage evidence", () => {
-    const usage = {
+    const usage = { completeness: "complete" as const,
       cachedInputTokens: 0,
       cacheWriteInputTokens: 0,
       inputTokens: 1,
@@ -111,7 +111,7 @@ describe("tool-loop persistence values", () => {
   });
 
   it("keeps usage evidence for 200 tool rounds plus final synthesis", () => {
-    const usage = {
+    const usage = { completeness: "complete" as const,
       cachedInputTokens: 0,
       cacheWriteInputTokens: 0,
       inputTokens: 1,

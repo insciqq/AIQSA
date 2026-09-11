@@ -411,7 +411,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     accountId: session.accountId, chatId: session.activeChatId,
     leafMessageId: latestMessage?.id ?? null, eligible: continuationEligible,
     recommended: Boolean(composer.composerContextStats?.session?.phase === "after_answer" &&
-      (composerContextGauge(composer.composerContextStats).fraction ?? 0) >= 0.7),
+      ((composer.composerContextStats.session.droppedMessages > 0) ||
+        (composerContextGauge(composer.composerContextStats).inputBudgetFraction ?? 0) >= 0.7)),
     onOpen: (chat) => workspace.pane.actions.openContinuedChat?.(chat)
   });
   const projectHeaderFolders = useMemo(

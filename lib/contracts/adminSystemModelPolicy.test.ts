@@ -38,6 +38,16 @@ describe("administrator system model policy contract", () => {
     expect(decodeAdminSystemModelPolicyResponse(response)).toEqual(response);
   });
 
+  it.each([
+    { chatPdfProcessingMode: "invalid" }, { chatPdfFallbackMethod: "invalid" },
+    { chatPdfProcessingMode: null }, { chatPdfFallbackMethod: null },
+    { chatPdfNativeModel: null, chatPdfNativeReasoningEffort: "low" },
+    { chatPdfNativeModel: { ...response.systemModelPolicy.candidates[0], available: "yes" } }
+  ])("rejects invalid PDF policy instead of selecting a default: %j", (patch) => {
+    expect(decodeAdminSystemModelPolicyResponse({ systemModelPolicy: { ...response.systemModelPolicy,
+      policy: { ...response.systemModelPolicy.policy, ...patch } } })).toBeNull();
+  });
+
   it("rejects malformed availability and principal fields", () => {
     expect(decodeAdminSystemModelPolicyResponse({
       systemModelPolicy: {

@@ -369,7 +369,8 @@ describe("provider tool loop", () => {
 
     expect(operations).toEqual(["publication", "usage"]);
     expect(onUsage).toHaveBeenCalledWith(
-      { inputTokens: 7, outputTokens: 3, reasoningTokens: 1 },
+      { cachedInputTokens: null, cacheWriteInputTokens: null, completeness: "complete",
+        inputTokens: 7, outputTokens: 3, reasoningTokens: 1, totalTokens: 10 },
       expect.objectContaining({ modelId: "gpt-test", provider: "openai" }),
       { completeness: "terminal", round: 1 }
     );
@@ -408,7 +409,8 @@ describe("provider tool loop", () => {
     });
 
     expect(onUsage).toHaveBeenCalledWith(
-      { inputTokens: 5, outputTokens: 2, reasoningTokens: 1, totalTokens: 7 },
+      { cachedInputTokens: null, cacheWriteInputTokens: null, completeness: "complete",
+        inputTokens: 5, outputTokens: 2, reasoningTokens: 1, totalTokens: 7 },
       expect.objectContaining({ modelId: "gpt-test", provider: "openai" }),
       { completeness: "partial", round: 1 }
     );

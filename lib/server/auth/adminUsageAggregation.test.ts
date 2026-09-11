@@ -15,6 +15,7 @@ type AggregateFixture = Readonly<{
 
 function aggregate(fixture: AggregateFixture): AdminUsageAggregateSource {
   return {
+    incompleteUsageCount: 0,
     _count: {
       _all: fixture.count
     },
@@ -37,7 +38,19 @@ function providerModelAggregate(
 }
 
 describe("admin usage aggregation", () => {
-  it("serializes exact totals, zero/null fallbacks, current multi-group attribution, and archived groups", () => {
+  it("exposes incomplete usage while retaining known sums and explicit zero", () => {
+    const row = aggregate({ count: 1, lastUsedAt: new Date("2026-07-12T10:00:00.000Z"),
+      sums: { inputTokens: 0, outputTokens: 4, totalTokens: 4 }, userId: "known" });
+    const unknown = aggregate({ count: 1, lastUsedAt: row._max.createdAt, sums: {}, userId: "unknown" });
+    const result = serializeAdminUsageDashboard({ groups: [], providerModelRows: [],
+      userRows: [{ ...row, incompleteUsageCount: 1 }, { ...unknown, incompleteUsageCount: 2 }],
+      users: ["known", "unknown"].map((id) => ({ id, displayName: id, email: null, groups: [] })) });
+    expect(result.totals).toMatchObject({ inputTokens: 0, outputTokens: 4, totalTokens: 4,
+      cachedInputTokens: null, cacheWriteInputTokens: null, reasoningTokens: null, incompleteUsageCount: 3 });
+    expect(result.byUser.find((user) => user.userId === "unknown")).toMatchObject({ totalTokens: null, incompleteUsageCount: 2 });
+  });
+
+  it("preserves reported zero, missing fields, current multi-group attribution, and archived groups", () => {
     const result = serializeAdminUsageDashboard({
       groups: [
         {
@@ -186,6 +199,7 @@ describe("admin usage aggregation", () => {
     expect(result).toEqual({
       byGroup: [
         {
+          incompleteUsageCount: 0,
           archivedAt: null,
           cachedInputTokens: 1,
           cacheWriteInputTokens: 3,
@@ -197,13 +211,14 @@ describe("admin usage aggregation", () => {
           outputTokens: 11,
           reasoningTokens: 2,
           runCount: 3,
-          totalTokens: 40,
+          totalTokens: 25,
           userCount: 2
         },
         {
+          incompleteUsageCount: 0,
           archivedAt: "2026-07-01T00:00:00.000Z",
           cachedInputTokens: 1,
-          cacheWriteInputTokens: 0,
+          cacheWriteInputTokens: null,
           contributingUsers: 1,
           groupId: "group-archived",
           inputTokens: 10,
@@ -212,43 +227,46 @@ describe("admin usage aggregation", () => {
           outputTokens: 5,
           reasoningTokens: 2,
           runCount: 2,
-          totalTokens: 15,
+          totalTokens: 0,
           userCount: 1
         },
         {
+          incompleteUsageCount: 0,
           archivedAt: null,
-          cachedInputTokens: 0,
-          cacheWriteInputTokens: 0,
+          cachedInputTokens: null,
+          cacheWriteInputTokens: null,
           contributingUsers: 0,
           groupId: "group-empty",
-          inputTokens: 0,
+          inputTokens: null,
           lastUsedAt: null,
           name: "Empty group",
-          outputTokens: 0,
-          reasoningTokens: 0,
+          outputTokens: null,
+          reasoningTokens: null,
           runCount: 0,
-          totalTokens: 0,
+          totalTokens: null,
           userCount: 0
         },
         {
+          incompleteUsageCount: 0,
           archivedAt: null,
-          cachedInputTokens: 0,
-          cacheWriteInputTokens: 0,
+          cachedInputTokens: null,
+          cacheWriteInputTokens: null,
           contributingUsers: 0,
           groupId: "group-zero",
-          inputTokens: 0,
+          inputTokens: null,
           lastUsedAt: null,
           name: "Zero group",
-          outputTokens: 0,
-          reasoningTokens: 0,
+          outputTokens: null,
+          reasoningTokens: null,
           runCount: 0,
-          totalTokens: 0,
+          totalTokens: null,
           userCount: 1
         }
       ],
       byUser: [
         {
-          cachedInputTokens: 0,
+          incompleteUsageCount: 0,
+          cachedInputTokens: null,
           cacheWriteInputTokens: 3,
           displayName: "Bob",
           email: null,
@@ -264,26 +282,28 @@ describe("admin usage aggregation", () => {
           outputTokens: 6,
           providerModels: [
             {
-              cachedInputTokens: 0,
+              incompleteUsageCount: 0,
+              cachedInputTokens: null,
               cacheWriteInputTokens: 3,
               inputTokens: 4,
               lastUsedAt: "2026-07-12T13:00:00.000Z",
               modelId: "b-model",
               outputTokens: 6,
               provider: "openrouter",
-              reasoningTokens: 0,
+              reasoningTokens: null,
               runCount: 1,
               totalTokens: 25
             }
           ],
-          reasoningTokens: 0,
+          reasoningTokens: null,
           runCount: 1,
           totalTokens: 25,
           userId: "user-b"
         },
         {
+          incompleteUsageCount: 0,
           cachedInputTokens: 1,
-          cacheWriteInputTokens: 0,
+          cacheWriteInputTokens: null,
           displayName: "Alice",
           email: "alice@example.com",
           groups: [
@@ -303,8 +323,9 @@ describe("admin usage aggregation", () => {
           outputTokens: 5,
           providerModels: [
             {
+              incompleteUsageCount: 0,
               cachedInputTokens: 1,
-              cacheWriteInputTokens: 0,
+              cacheWriteInputTokens: null,
               inputTokens: 7,
               lastUsedAt: "2026-07-12T10:00:00.000Z",
               modelId: "a-model",
@@ -315,26 +336,28 @@ describe("admin usage aggregation", () => {
               totalTokens: 10
             },
             {
-              cachedInputTokens: 0,
-              cacheWriteInputTokens: 0,
+              incompleteUsageCount: 0,
+              cachedInputTokens: null,
+              cacheWriteInputTokens: null,
               inputTokens: 3,
               lastUsedAt: "2026-07-12T11:00:00.000Z",
               modelId: "z-model",
               outputTokens: 2,
               provider: "openai",
-              reasoningTokens: 0,
+              reasoningTokens: null,
               runCount: 1,
-              totalTokens: 5
+              totalTokens: 0
             }
           ],
           reasoningTokens: 2,
           runCount: 2,
-          totalTokens: 15,
+          totalTokens: 0,
           userId: "user-a"
         },
         {
-          cachedInputTokens: 0,
-          cacheWriteInputTokens: 0,
+          incompleteUsageCount: 0,
+          cachedInputTokens: null,
+          cacheWriteInputTokens: null,
           displayName: "Zero",
           email: "zero@example.com",
           groups: [
@@ -344,17 +367,18 @@ describe("admin usage aggregation", () => {
               role: "member"
             }
           ],
-          inputTokens: 0,
+          inputTokens: null,
           lastUsedAt: null,
-          outputTokens: 0,
+          outputTokens: null,
           providerModels: [],
-          reasoningTokens: 0,
+          reasoningTokens: null,
           runCount: 0,
-          totalTokens: 0,
+          totalTokens: null,
           userId: "user-zero"
         }
       ],
       totals: {
+        incompleteUsageCount: 0,
         cachedInputTokens: 1,
         cacheWriteInputTokens: 3,
         inputTokens: 14,
@@ -362,7 +386,7 @@ describe("admin usage aggregation", () => {
         outputTokens: 11,
         reasoningTokens: 2,
         runCount: 3,
-        totalTokens: 40
+        totalTokens: 25
       }
     });
   });

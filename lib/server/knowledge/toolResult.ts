@@ -1,5 +1,5 @@
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
-import { normalizeTokenUsage } from "../../domain/usage";
+import { sumTokenUsage } from "../../domain/usage";
 import { decodeKnowledgeCitationHandle } from "../../contracts/knowledge";
 import type { ToolExecutionResult } from "../tools/types";
 import {
@@ -279,10 +279,10 @@ function decodeEmbedding(value: unknown): KnowledgeEmbeddingExecutionEvidence | 
     bindingOrdinals.some((ordinal) =>
       ordinal === null || ordinal >= KNOWLEDGE_SCOPE_MAX_BINDINGS) ||
     new Set(bindingOrdinals).size !== bindingOrdinals.length ||
-    durationMs === null || inputTokens === null || !modelId || !provider || !providerModelId ||
+    durationMs === null || (inputTokens === null && value.inputTokens !== null) || !modelId || !provider || !providerModelId ||
     requestId === null && value.requestId !== null ||
     (value.status !== "complete" && value.status !== "error") ||
-    totalTokens === null
+    (totalTokens === null && value.totalTokens !== null)
   ) return null;
   return {
     bindingOrdinals: bindingOrdinals as number[],
@@ -1563,48 +1563,24 @@ export function knowledgeUsageAttributionsFromToolResult(
 ): KnowledgeRetrievalUsageAttribution[] {
   const evidence = evidenceFromPreview(result);
   if (!evidence) return [];
-  return [
-    ...evidence.embeddingExecutions.flatMap((execution) => execution.status === "complete"
-      ? [{
-          modelId: execution.modelId,
-          provider: execution.provider,
-          usage: {
-            inputTokens: execution.inputTokens,
-            outputTokens: 0,
-            reasoningTokens: 0,
-            totalTokens: execution.totalTokens
-          }
-        }]
-      : []),
-  ];
+  return evidence.embeddingExecutions.map((execution) => ({
+    modelId: execution.modelId,
+    provider: execution.provider,
+    usage: {
+      inputTokens: execution.inputTokens,
+      totalTokens: execution.totalTokens
+    }
+  }));
 }
 
 export function aggregateKnowledgeUsage(
   executions: readonly KnowledgeEmbeddingExecutionEvidence[]
 ): ModelRunUsage {
-  const usages: ModelRunUsage[] = executions.flatMap((execution) =>
-    execution.status === "complete" ? [{
-      inputTokens: execution.inputTokens,
-      outputTokens: 0,
-      reasoningTokens: 0,
-      totalTokens: execution.totalTokens
-    }] : []);
-  const normalized = usages.map(normalizeTokenUsage);
-  return normalized.reduce<ModelRunUsage>((total, usage) => ({
-    cachedInputTokens: (total.cachedInputTokens ?? 0) + usage.cachedInputTokens,
-    cacheWriteInputTokens: (total.cacheWriteInputTokens ?? 0) + usage.cacheWriteInputTokens,
-    inputTokens: total.inputTokens + usage.inputTokens,
-    outputTokens: total.outputTokens + usage.outputTokens,
-    reasoningTokens: total.reasoningTokens + usage.reasoningTokens,
-    totalTokens: (total.totalTokens ?? 0) + usage.totalTokens
-  }), {
-    cachedInputTokens: 0,
-    cacheWriteInputTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    reasoningTokens: 0,
-    totalTokens: 0
-  });
+  const usages: ModelRunUsage[] = executions.map((execution) => ({
+    inputTokens: execution.inputTokens,
+    totalTokens: execution.totalTokens
+  }));
+  return sumTokenUsage(usages);
 }
 
 export function knowledgeToolResultContent(

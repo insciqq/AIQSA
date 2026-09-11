@@ -262,6 +262,7 @@ describe("composer session store", () => {
       editingError: null,
       editingMessageId: null,
       latestUploadGeneration: 0,
+      contextRejectionGeneration: null,
       operationError: null,
       operationErrorLive: true,
       operationErrorRetryable: false,
@@ -272,6 +273,22 @@ describe("composer session store", () => {
       workspaceEnabled: false,
       workspaceInitialized: false
     });
+  });
+
+  it("keeps a context rejection with the restored draft and clears it for edits and later sends", () => {
+    const key = composerSessionKey("context-rejection");
+    const store = useComposerSessionStore.getState();
+    store.activateSession(key);
+    store.setDraft("too much context");
+    const first = store.beginSend(key)!;
+    store.finishSend(first, "failed", "Context did not fit", true, null, true);
+    expect(session(key)).toMatchObject({ draft: "too much context", contextRejectionGeneration: first.generation });
+    store.setDraft("shorter");
+    expect(session(key).contextRejectionGeneration).toBeNull();
+    const second = store.beginSend(key)!;
+    store.setDraft("new draft while waiting");
+    store.finishSend(second, "failed", "Context did not fit", true, null, true);
+    expect(session(key)).toMatchObject({ draft: "new draft while waiting", contextRejectionGeneration: null });
   });
 
   it("snapshots and transfers blank Workspace intent with the accepted send", () => {

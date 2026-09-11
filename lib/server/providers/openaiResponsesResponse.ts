@@ -81,10 +81,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function numberValue(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
 export function openAIResponseStatus(response: OpenAIResponseRecord): string {
   const status = stringValue(response.status);
   return status && responseStatuses.has(status) ? status : "unknown";
@@ -167,12 +163,12 @@ export function extractOpenAIUsage(response: OpenAIResponseRecord): ModelRunUsag
   const usage = typeof response.usage === "object" && response.usage !== null ? response.usage : {};
 
   return normalizeTokenUsage({
-    cachedInputTokens: numberValue(valueAtPath(usage, ["input_tokens_details", "cached_tokens"])),
-    cacheWriteInputTokens: numberValue(valueAtPath(usage, ["input_tokens_details", "cache_write_tokens"])),
-    inputTokens: numberValue(valueAtPath(usage, ["input_tokens"])),
-    outputTokens: numberValue(valueAtPath(usage, ["output_tokens"])),
-    reasoningTokens: numberValue(valueAtPath(usage, ["output_tokens_details", "reasoning_tokens"])),
-    totalTokens: numberValue(valueAtPath(usage, ["total_tokens"]))
+    cachedInputTokens: valueAtPath(usage, ["input_tokens_details", "cached_tokens"]),
+    cacheWriteInputTokens: valueAtPath(usage, ["input_tokens_details", "cache_write_tokens"]),
+    inputTokens: valueAtPath(usage, ["input_tokens"]),
+    outputTokens: valueAtPath(usage, ["output_tokens"]),
+    reasoningTokens: valueAtPath(usage, ["output_tokens_details", "reasoning_tokens"]),
+    totalTokens: valueAtPath(usage, ["total_tokens"])
   });
 }
 

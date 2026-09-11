@@ -1,7 +1,7 @@
+import { memoryReportedUsage as reportedUsage } from "../execution/usage";
 import type { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import type { ModelRunUsage } from "../../../domain/modelRunEvents";
-import { normalizeTokenUsage } from "../../../domain/usage";
 import { prisma } from "../../prisma";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import type { ProviderRunRequest } from "../../providers/types";
@@ -129,6 +129,13 @@ type TargetSelectionProvider = Readonly<{
   ): Promise<MemoryLearningProviderResult>;
 }>;
 
+export class MemoryTargetSelectionProviderError extends Error {
+  constructor(readonly usage: ModelRunUsage | null, cause: unknown) {
+    super("memory_target_selector_provider_failed", { cause });
+    this.name = "MemoryTargetSelectionProviderError";
+  }
+}
+
 export type MemoryTargetSelectionRequest = Readonly<{
   candidates: readonly Readonly<{ handle: string; statement: string }>[];
   currentUserText: string;
@@ -145,18 +152,6 @@ const unavailableUsage: MemoryReportedUsage = Object.freeze({
   totalTokens: null
 });
 
-function reportedUsage(usage: ModelRunUsage): MemoryReportedUsage {
-  const normalized = normalizeTokenUsage(usage);
-  return {
-    cachedInputTokens: normalized.cachedInputTokens,
-    completeness: "COMPLETE",
-    estimatedCostMicros: null,
-    inputTokens: normalized.inputTokens,
-    outputTokens: normalized.outputTokens,
-    reasoningTokens: normalized.reasoningTokens,
-    totalTokens: normalized.totalTokens
-  };
-}
 
 export function decodeMemoryTargetSelection(
   value: unknown,
@@ -414,14 +409,16 @@ export function createMemoryTargetSelector(input: Readonly<{
             : null,
           status: "READY"
         };
-      } catch {
+      } catch (error) {
         if (bindingId && !settled) {
           await input.execution.lifecycle.settle(request.userId, bindingId, {
             acceptedOutputHash: null,
             errorCode: "memory_target_selector_unavailable",
             providerResponseId: null,
             state: request.signal.aborted ? "CANCELLED" : "FAILED",
-            usage: unavailableUsage
+            usage: error instanceof MemoryTargetSelectionProviderError
+              ? reportedUsage(error.usage)
+              : unavailableUsage
           }).catch(() => undefined);
         }
         return {
@@ -442,8 +439,7 @@ export function createAcceptedMemoryTargetSelectionProvider(
     MemoryTargetSelectionRequest
   >(client, {
     buildRequest: providerRequest,
-    callError: (_usage, cause) =>
-      new Error("memory_target_selector_provider_failed", { cause }),
+    callError: (usage, cause) => new MemoryTargetSelectionProviderError(usage, cause),
     invalidRuntimeError: "memory_target_selector_runtime_invalid"
   });
   return Object.freeze({ run });

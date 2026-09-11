@@ -1,6 +1,6 @@
 "use client";
 
-import { CHAT_PDF_LOCAL_TEXT_MULTIPLE_NOTICE, CHAT_PDF_LOCAL_TEXT_NOTICE, CHAT_PDF_LONG_DOCUMENT_NOTICE,
+import { chatPdfRouteDescription, CHAT_PDF_LOCAL_TEXT_MULTIPLE_NOTICE, CHAT_PDF_LOCAL_TEXT_NOTICE, CHAT_PDF_LONG_DOCUMENT_NOTICE,
   type ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
 import { canRetryMcpAutoDiscoveryFailure, isMcpAutoDiscoveryFailureCode, isToolSynthesisFailure } from "@/lib/contracts/runs";
@@ -281,6 +281,7 @@ export function RunAnswerV2({
           {process}
           {pdfPreparation?.length ? (
             <div className="v2-pdf-preparation" data-testid="pdf-preparation-notices">
+              {[...new Set(pdfPreparation.map(chatPdfRouteDescription))].map((description) => <p key={description}>{description}</p>)}
               {presentation.kind === "activity" && presentation.activity?.kind === "preparing" && onStop ? (
                 <UiV2Button icon="stop" onClick={onStop}>Stop</UiV2Button>
               ) : null}

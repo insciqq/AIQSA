@@ -76,6 +76,8 @@ export type ProviderModelCapabilities = {
 };
 
 export type ProviderAttachment = {
+  /** Frozen preprocessing wins over the answer model's native PDF capability. */
+  pdfDelivery?: "prepared_text";
   byteSize: number;
   base64Data?: string;
   dataUrl?: string;

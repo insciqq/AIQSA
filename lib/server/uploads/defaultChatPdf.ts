@@ -67,10 +67,9 @@ function createDefaultChatPdf() {
       const snapshot = job.snapshot as unknown as ChatPdfRunSnapshot;
       if (snapshot?.version !== 1 || !snapshot.prepared?.chatPdfAdmissions?.length ||
         snapshot.prepared.normalizedRequest.chatId !== input.chatId) return null;
-      if (snapshot.prepared.assistant) {
-        return { assistantId: snapshot.prepared.assistant.assistantId,
-          skillIds: snapshot.prepared.manualSkillIds ?? [] };
-      }
+      // Retry keeps the admitted reader and answer bindings. The repository
+      // revalidates Assistant provenance, grants and exact provider authority
+      // for the new sibling; changing an Assistant cannot silently reroute it.
       try {
         const runtime = await providerRuntimeResolver.resolve(job.modelRunId, "answer");
         return { adapter: runtime.adapter, ...(runtime.toolBridge ? { toolBridge: runtime.toolBridge } : {}),

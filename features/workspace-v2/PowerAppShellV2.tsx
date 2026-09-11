@@ -395,6 +395,7 @@ export function PowerAppShellV2({
   const reasoningEffort = useComposerControlStore((state) => state.reasoningEffort);
   const reasoningMode = useComposerControlStore((state) => state.reasoningMode);
   const selectedAssistant = useComposerControlStore((state) => state.selectedAssistant);
+  const mcpSelection = useComposerControlStore((state) => state.mcpSelection);
   const knowledgeSelection = useComposerControlStore((state) => state.knowledgeSelection);
   const knowledgePlanSource = useComposerControlStore((state) => state.knowledgePlanSource);
   const selectedKnowledgeBaseIds = useComposerControlStore((state) => state.selectedKnowledgeBaseIds);
@@ -586,6 +587,13 @@ export function PowerAppShellV2({
     projectSettingsFolderId,
     renderActiveLeafId,
     runSurface: activeRunSurface,
+    contextRejectionGeneration: composerSession.contextRejectionGeneration,
+    requestConfiguration: {
+      selectedAssistant, selectedSkills, knowledgeSelection, mcpSelection, reasoningEffort,
+      reasoningMode, searchPlanMode, selectedSearchOptionIds, temperature, backgroundMode, streamMode,
+      workspaceEnabled: chats.find((chat) => chat.id === activeChatId)?.workspace?.enabled ?? composerSession.workspaceEnabled,
+      memoryMode: chats.find((chat) => chat.id === activeChatId)?.memoryMode ?? activeComposerSessionKey
+    },
     selectedAssistantPromptCharacterCount: selectedAssistant?.promptCharacterCount ?? null,
     selectedSkillPromptCharacterCount: selectedSkills.reduce(
       (total, skill) => total + skill.promptCharacterCount,

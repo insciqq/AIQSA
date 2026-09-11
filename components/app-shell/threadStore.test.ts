@@ -119,6 +119,7 @@ describe("thread store", () => {
       activeLeafId: "a1",
       messages: [message({ id: "a1", parentMessageId: null, role: "assistant" })],
       usageStats: {
+        incompleteRunCount: 0,
         activeBranchMessageCount: 1,
         cachedInputTokens: 2,
         cacheWriteInputTokens: 3,

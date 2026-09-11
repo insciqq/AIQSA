@@ -917,6 +917,7 @@ describe("Prisma-backed admin dashboard queries", () => {
       const providerModelRows = usageRows.providerModelRows.filter((row) => row.userId === user.id);
 
       expect(userRow).toEqual({
+        incompleteUsageCount: 2,
         _count: {
           _all: 0
         },
@@ -976,6 +977,7 @@ describe("Prisma-backed admin dashboard queries", () => {
 
       const usageUser = dashboard.usage.byUser.find((candidate) => candidate.userId === user.id);
       expect(usageUser).toMatchObject({
+        incompleteUsageCount: 2,
         cachedInputTokens: 7,
         cacheWriteInputTokens: 2,
         inputTokens: 17,

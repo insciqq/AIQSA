@@ -25,6 +25,7 @@ function fakeRepository(input: {
 } = {}) {
   const mutations: string[] = [];
   const repository: RetentionRepository = {
+    async maintainMcpHub() { return { dispatches: { expired: 0, removed: 0 }, discoveryAttempts: { expired: 0, removed: 0 } }; },
     async claimAttachmentDeletionJobs() {
       mutations.push("claim-jobs");
       return input.claims ?? [];

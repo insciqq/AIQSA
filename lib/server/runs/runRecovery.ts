@@ -1,6 +1,7 @@
 import { filterMcpProviderRequest } from "../mcp/toolAccessProjection";
 import { imageDispatchMustStop } from "../images/errors";
 import { imageGenerationTool, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
+import { dispatchMcpTool } from "../mcp/toolExecutor";
 import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
 import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1 } from "../knowledge/evidenceAnswerExecutionV1";
 import { knowledgeRefinementUsageAfter, refineKnowledgeEvidence } from "./knowledgeEvidenceRefinement";
@@ -14,7 +15,7 @@ import { textMessageContent } from "../../domain/content";
 import { knowledgeSearchFailureCode, knowledgeSearchFailureMessage, knowledgeSearchFailureToolResult,
   knowledgeSearchFailureFromToolResult, knowledgeScopeLimitedMessage, isKnowledgeSearchFailureCode, type KnowledgeSearchFailureCode } from "../knowledge/searchFailure";
 import {
-  normalizeTokenUsage,
+  decodeTokenUsage, mergeTokenUsage, normalizeTokenUsage,
   subtractTokenUsage,
   sumTokenUsage
 } from "../../domain/usage";
@@ -63,6 +64,7 @@ import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import { providerToolBridges } from "../tools/bridges";
 import {
   createSearchPlanToolRouter,
+  SearchToolCancelledError,
   searchExecutionPreviewCount,
   searchExecutionsFromToolResult,
   type SearchExecutionEvidence
@@ -270,6 +272,7 @@ export type RunRecoveryRepository = Pick<
 export type RunRecoveryMcpRuntime = Readonly<{
   callTool(input: {
     arguments: Record<string, unknown>;
+    beforeDispatch?(): Promise<void>;
     generationId: string;
     inputSchema: Record<string, unknown>;
     name: string;
@@ -568,18 +571,10 @@ async function persistRecoveredPlanSearchExecution(input: Readonly<{
 }
 
 function reportedUsage(refreshed: ProviderRunRefreshResult): ModelRunUsage | null {
-  if (refreshed.result) {
-    return refreshed.result.usage;
-  }
-
-  for (let index = refreshed.events.length - 1; index >= 0; index -= 1) {
-    const event = refreshed.events[index];
-    if (event?.type === "usage") {
-      return event.data;
-    }
-  }
-
-  return null;
+  let usage: ModelRunUsage | null = null;
+  for (const event of refreshed.events) if (event.type === "usage") usage = mergeTokenUsage(usage ?? {}, event.data);
+  if (refreshed.result) return mergeTokenUsage(usage ?? {}, refreshed.result.usage);
+  return usage ? normalizeTokenUsage({ ...usage, ...(refreshed.terminal ? { completeness: "partial" } : {}) }) : null;
 }
 
 async function recoveredUsageAttributions(
@@ -587,15 +582,12 @@ async function recoveredUsageAttributions(
   control: Readonly<{ modelId: string; provider: string }>,
   usage: ModelRunUsage | null
 ) {
-  if (!usage) {
-    return [];
-  }
-
   return usageAttributionsWithEstimatedCost(deps.repository, [
     {
+      operationCount: 1,
       modelId: control.modelId,
       provider: control.provider,
-      usage
+      usage: usage ?? normalizeTokenUsage({})
     }
   ]);
 }
@@ -604,6 +596,7 @@ function groupedUsageAttributions(
   attributions: readonly RunUsageAttribution[]
 ): RunUsageAttribution[] {
   const grouped = new Map<string, {
+    operationCount: number | null;
     modelId: string;
     provider: string;
     usages: ModelRunUsage[];
@@ -611,14 +604,20 @@ function groupedUsageAttributions(
   for (const attribution of attributions) {
     const key = `${attribution.provider}\u0000${attribution.modelId}`;
     const existing = grouped.get(key);
-    if (existing) existing.usages.push(attribution.usage);
+    if (existing) {
+      existing.usages.push(attribution.usage);
+      existing.operationCount = existing.operationCount === null || attribution.operationCount == null
+        ? null : existing.operationCount + attribution.operationCount;
+    }
     else grouped.set(key, {
+      operationCount: attribution.operationCount ?? null,
       modelId: attribution.modelId,
       provider: attribution.provider,
       usages: [attribution.usage]
     });
   }
   return [...grouped.values()].map((entry) => ({
+    operationCount: entry.operationCount,
     modelId: entry.modelId,
     provider: entry.provider,
     usage: sumTokenUsage(entry.usages)
@@ -626,21 +625,11 @@ function groupedUsageAttributions(
 }
 
 function hasTokenUsage(usage: ModelRunUsage): boolean {
-  const normalized = normalizeTokenUsage(usage);
-  return normalized.cachedInputTokens > 0 || normalized.cacheWriteInputTokens > 0 ||
-    normalized.inputTokens > 0 || normalized.outputTokens > 0 ||
-    normalized.reasoningTokens > 0 || normalized.totalTokens > 0;
+  return normalizeTokenUsage(usage).completeness !== "unavailable";
 }
 
 function hasValidUsageEvidence(usage: ModelRunUsage): boolean {
-  const required = [usage.inputTokens, usage.outputTokens, usage.reasoningTokens];
-  const optional = [
-    usage.cachedInputTokens,
-    usage.cacheWriteInputTokens,
-    usage.totalTokens
-  ];
-  return required.every((value) => Number.isSafeInteger(value) && value >= 0) &&
-    optional.every((value) => value === undefined || Number.isSafeInteger(value) && value >= 0);
+  return decodeTokenUsage(usage) !== null;
 }
 
 function usageAttributionsWithoutAnswerRounds(
@@ -656,6 +645,9 @@ function usageAttributionsWithoutAnswerRounds(
   const answerKey = `${answer.provider}\u0000${answer.modelId}`;
   const answerAttribution = grouped.find((attribution) =>
     `${attribution.provider}\u0000${attribution.modelId}` === answerKey);
+  const remainderCount = answerAttribution?.operationCount == null ? null
+    : answerAttribution.operationCount - answerRoundUsage.length;
+  if (remainderCount !== null && remainderCount < 0) return null;
   const answerTotal = sumTokenUsage(answerRoundUsage.map((entry) => entry.usage));
   const remainder = subtractTokenUsage(
     answerAttribution?.usage ?? sumTokenUsage([]),
@@ -666,8 +658,8 @@ function usageAttributionsWithoutAnswerRounds(
   return [
     ...grouped.filter((attribution) =>
       `${attribution.provider}\u0000${attribution.modelId}` !== answerKey),
-    ...(hasTokenUsage(remainder)
-      ? [{ modelId: answer.modelId, provider: answer.provider, usage: remainder }]
+    ...(remainderCount !== 0 && (remainderCount !== null || hasTokenUsage(remainder))
+      ? [{ operationCount: remainderCount, modelId: answer.modelId, provider: answer.provider, usage: remainder }]
       : [])
   ];
 }
@@ -1526,11 +1518,15 @@ async function executePersistedToolCall(
         throw new Error("mcp_run_binding_unavailable");
       }
       const runtime = context.runtime();
-      result = mcpToolExecutionResult(call, await runtime.callTool({
+      result = mcpToolExecutionResult(call, await dispatchMcpTool({
         arguments: call.arguments,
+        async assertCurrent() {
+          const failure = await currentRecoveryMcpDispatchFailure(context, call.name, generationId);
+          if (failure) throw mcpDispatchError(failure);
+        },
+        callTool: (runtimeInput) => runtime.callTool(runtimeInput),
         generationId,
-        inputSchema: route.tool.inputSchema,
-        name: route.originalName,
+        route,
         signal
       }));
     }
@@ -1539,6 +1535,14 @@ async function executePersistedToolCall(
       throw new Error("memory_egress_receipt_conflict");
     }
   } catch (error) {
+    if (error instanceof SearchToolCancelledError) {
+      await recordRecoveredSearchResult({
+        context,
+        includeUsage: claim.call.usageAccountedAt == null,
+        modelRunToolCallId: claim.call.id,
+        result: error.result
+      });
+    }
     if (externalReceipt) {
       await context.deps.memoryEgress!.failDispatch(
         externalReceipt.id,
@@ -1687,6 +1691,7 @@ async function recoverCheckpointedToolLoop(
     return [
       ...usageAttributions,
       ...answerRoundUsage.map((entry) => ({
+        operationCount: 1,
         modelId: run.modelId,
         provider: run.provider,
         usage: entry.usage
@@ -2111,7 +2116,7 @@ async function recoverCheckpointedToolLoop(
       const entry: PersistedAnswerRoundUsage = {
         completeness,
         roundIndex: round,
-        usage: normalizeTokenUsage(usage)
+        usage: normalizeTokenUsage({ ...usage, ...(completeness === "partial" ? { completeness: "partial" } : {}) })
       };
       const merged = mergeAnswerRoundUsage(answerRoundUsage, entry, round);
       if (!merged) {
@@ -3457,7 +3462,25 @@ async function recoverKnowledgeAnswerGrounding(
       );
     }
   };
-  const execute = async (
+  const observedOperationUsage = new Map<number, ModelRunUsage>();
+  let activeOperationOrdinal = 0;
+  const accountingLifecycle: KnowledgeProviderDispatchLifecycle = {
+    ...deps.knowledgeProviderDispatch!,
+    async inspect(operation) {
+      activeOperationOrdinal = operation.ordinal;
+      const dispatch = await deps.knowledgeProviderDispatch!.inspect(operation);
+      if (dispatch?.attempt.actualUsage) observedOperationUsage.set(operation.ordinal, dispatch.attempt.actualUsage);
+      return dispatch;
+    },
+    async recover(operation) {
+      const recovery = await deps.knowledgeProviderDispatch!.recover(operation);
+      if (recovery.kind === "settled" && recovery.dispatch.attempt.actualUsage) {
+        observedOperationUsage.set(operation.ordinal, recovery.dispatch.attempt.actualUsage);
+      }
+      return recovery;
+    }
+  };
+  const executeRequest = async (
     operation: ProviderStructuredOutputRequest,
     options: KnowledgeAnswerOperationExecutionOptionsV8
   ): Promise<KnowledgeAnswerOperationExecutionV8> => {
@@ -3471,6 +3494,8 @@ async function recoverKnowledgeAnswerGrounding(
       }
       const refreshed = await runtime.adapter.refresh(options.providerResponseId);
       if (!refreshed.terminal) throw new KnowledgeAnswerOperationDeferredError();
+      const usage = reportedUsage(refreshed);
+      if (usage) options.onUsage?.(usage);
       if (!refreshed.result || (refreshed.result.toolCalls?.length ?? 0) > 0) {
         throw new Error("structured_output_recovery_invalid");
       }
@@ -3488,20 +3513,14 @@ async function recoverKnowledgeAnswerGrounding(
         throw new Error("structured_output_not_supported");
       }
       let providerResponseId: string | null = null;
-      let operationUsage: ModelRunUsage = {
-        cachedInputTokens: 0,
-        cacheWriteInputTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        totalTokens: 0
-      };
+      let operationUsage: ModelRunUsage = normalizeTokenUsage({});
       const output = await runtime.structuredOutputAdapter.execute(operation, {
         onProviderResponseId(value) {
           providerResponseId = value;
         },
         onUsage(value) {
-          operationUsage = value;
+          operationUsage = mergeTokenUsage(operationUsage, value);
+          options.onUsage?.(operationUsage);
         },
         signal: operationSignal,
         timeoutMs: 120_000
@@ -3518,10 +3537,12 @@ async function recoverKnowledgeAnswerGrounding(
     let providerResponseId: string | null = null;
     let next = await stream.next();
     while (!next.done) {
+      if (next.value.type === "usage") options.onUsage?.(next.value.data);
       const eventResponseId = providerResponseIdFromEvent(next.value);
       if (eventResponseId) providerResponseId = eventResponseId;
       next = await stream.next();
     }
+    options.onUsage?.(next.value.usage);
     if ((next.value.toolCalls?.length ?? 0) > 0) {
       throw new Error("structured_output_tools_forbidden");
     }
@@ -3532,6 +3553,24 @@ async function recoverKnowledgeAnswerGrounding(
       providerResponseId,
       usage: normalizeTokenUsage(next.value.usage)
     });
+  };
+  const execute: typeof executeRequest = async (operation, options) => {
+    const ordinal = activeOperationOrdinal;
+    let usage: ModelRunUsage = normalizeTokenUsage(observedOperationUsage.get(ordinal) ?? {});
+    try {
+      const result = await executeRequest(operation, { ...options, onUsage(value) {
+        usage = mergeTokenUsage(usage, value);
+        options.onUsage?.(usage);
+      } });
+      usage = mergeTokenUsage(usage, result.usage);
+      observedOperationUsage.set(ordinal, usage);
+      return { ...result, usage };
+    } catch (error) {
+      if (!(error instanceof KnowledgeAnswerOperationDeferredError)) {
+        observedOperationUsage.set(ordinal, normalizeTokenUsage({ ...usage, completeness: "partial" }));
+      }
+      throw error;
+    }
   };
   const workflowVersion = seed.workflowVersion;
   const groundingInput = {
@@ -3545,7 +3584,7 @@ async function recoverKnowledgeAnswerGrounding(
       input.runId,
       ...(seed.forbiddenIdentityFragments ?? seed.draft.items.map((item) => item.evidenceId))
     ],
-    lifecycle: deps.knowledgeProviderDispatch,
+    lifecycle: accountingLifecycle,
     modelRunId: input.runId,
     ...(workflowVersion === 2 || workflowVersion === 3 || workflowVersion === 4 ||
       workflowVersion === 5 || workflowVersion === 6 || workflowVersion === 7
@@ -3558,7 +3597,9 @@ async function recoverKnowledgeAnswerGrounding(
     shouldAbort: () => input.signal.aborted,
     transport: seed.transport
   } as const;
-  const operationResult = seed.workflowVersion === 9 || seed.workflowVersion === 10 || seed.workflowVersion === 11
+  const operationResult = await (async () => {
+    try {
+      return seed.workflowVersion === 9 || seed.workflowVersion === 10 || seed.workflowVersion === 11
     ? await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...groundingInput, executionPolicy: seed.executionPolicy!,
         repairFeedbackVersion: seed.repairFeedbackVersion,
         workflowVersion: seed.workflowVersion === 10 || seed.workflowVersion === 11 ? seed.workflowVersion : undefined,
@@ -3617,6 +3658,24 @@ async function recoverKnowledgeAnswerGrounding(
             }
           : undefined
       });
+    } catch (error) {
+      // Busy/deferred work remains recoverable. Terminal failure or Stop keeps
+      // every reused/observed operation without replaying the provider.
+      if (observedOperationUsage.size && !(error instanceof KnowledgeAnswerOperationDeferredError) &&
+        !(error instanceof Error && error.message === "knowledge_answer_operation_busy")) {
+        const persisted = await deps.repository.loadRunUsageAttributions({ runId: input.runId, userId: input.userId });
+        const attributions = await usageAttributionsWithEstimatedCost(deps.repository, groupedUsageAttributions([
+          ...persisted,
+          ...[...observedOperationUsage.values()].map((usage) => ({
+            operationCount: 1, modelId: input.control.modelId, provider: input.control.provider, usage
+          }))
+        ]));
+        await deps.repository.recordRunUsageEvents({ chatId: input.control.chatId, runId: input.runId,
+          userId: input.userId, usageAttributions: attributions }).catch(() => undefined);
+      }
+      throw error;
+    }
+  })();
   const latest = await loadRecoveryRunControl(
     deps,
     input.runId,

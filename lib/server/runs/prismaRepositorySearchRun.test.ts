@@ -100,6 +100,7 @@ describe("Prisma run repository search evidence", () => {
       },
       {
         assistantModelRuns: [{
+          usageCompleteness: "COMPLETE",
           cachedInputTokens: 1,
           cacheWriteInputTokens: 2,
           inputTokens: 3,
@@ -194,6 +195,7 @@ describe("Prisma run repository search evidence", () => {
       activeLeafMessageId: "assistant-active",
       contextStats: { approximateActiveBranchInputTokens: 3 },
       usageStats: {
+        incompleteRunCount: 0,
         activeBranchMessageCount: 2,
         cachedInputTokens: 1,
         cacheWriteInputTokens: 2,

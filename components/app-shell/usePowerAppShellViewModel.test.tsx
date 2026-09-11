@@ -23,7 +23,7 @@ function chat(id: string): WorkspaceChatSummary {
 }
 
 function renderViewModel(overrides: Partial<Parameters<typeof usePowerAppShellViewModel>[0]> = {}) {
-  return renderHook(() =>
+  return renderHook((input: typeof overrides) =>
     usePowerAppShellViewModel({
       activeChatId: "chat-a",
       activeChatStreaming: false,
@@ -41,8 +41,8 @@ function renderViewModel(overrides: Partial<Parameters<typeof usePowerAppShellVi
       selectedModelId: "gpt-5.5",
       selectedProvider: "openai",
       visibleMessages: [],
-      ...overrides
-    })
+      ...input
+    }), { initialProps: overrides }
   );
 }
 
@@ -110,7 +110,9 @@ describe("usePowerAppShellViewModel", () => {
       parameterControls: defaultParameterControls(), searchStrategyIds: []
     }] };
     const current = renderViewModel({ catalog, maxOutputTokens: "1024",
-      activeThreadContextStats: { approximateActiveBranchInputTokens: 1000, session: snapshot }
+      renderActiveLeafId: "answer", visibleMessages: [{ id: "answer", parentMessageId: null,
+        role: "assistant", status: "complete", content: "Answer" }],
+      activeThreadContextStats: { approximateActiveBranchInputTokens: 1000, session: snapshot, sessionMessageId: "answer" }
     });
     expect(current.result.current.composerContextStats.session).toEqual(snapshot);
     expect(current.result.current.composerContextStats.approximateInputTokens).toBe(6000);
@@ -119,6 +121,89 @@ describe("usePowerAppShellViewModel", () => {
     });
     expect(stale.result.current.composerContextStats.session).toBeUndefined();
   });
+  it("binds completed estimates to values across refresh, same-size input edits and branch changes", () => {
+    const snapshot: SessionContextStatus = {
+      approximateInputTokens: 6000, contextWindow: 10000, droppedMessages: 2, loadedTools: 4,
+      maxOutputTokens: 1024, modelId: "gpt-5.5", phase: "after_answer", provider: "openai",
+      safetyMarginTokens: 1000, version: 1
+    };
+    const input: Partial<Parameters<typeof usePowerAppShellViewModel>[0]> = {
+      catalog: { ...emptyCatalog, models: [{
+        capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
+          openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true },
+        contextWindow: 10000, defaultParams: {}, displayName: "Model", modelId: "gpt-5.5", provider: "openai",
+        parameterControls: defaultParameterControls(), searchStrategyIds: []
+      }] },
+      maxOutputTokens: "1024", renderActiveLeafId: "answer",
+      visibleMessages: [{ id: "answer", parentMessageId: null, role: "assistant", status: "complete", content: "Answer" }],
+      requestConfiguration: { assistantId: "first", skillIds: ["skill-a"], mcp: "auto" },
+      activeThreadContextStats: { approximateActiveBranchInputTokens: 1000, session: snapshot, sessionMessageId: "answer" }
+    };
+    const view = renderViewModel(input);
+    const refresh = () => ({ ...input, activeThreadContextStats: structuredClone(input.activeThreadContextStats) });
+    view.rerender(refresh());
+    expect(view.result.current.composerContextStats.session).toEqual(snapshot);
+    for (const change of [
+      { draft: "abcd" }, { draft: "wxyz" },
+      { requestConfiguration: { ...input.requestConfiguration, assistantId: "other" } },
+      { requestConfiguration: { ...input.requestConfiguration, skillIds: ["skill-b"] } },
+      { requestConfiguration: { ...input.requestConfiguration, mcp: "off" } },
+      { requestConfiguration: { ...input.requestConfiguration, workspaceEnabled: true } },
+      { maxOutputTokens: "2048" },
+      { attachments: [{ id: "text", fileName: "same.txt", kind: "document" as const, extractedText: "abcd" }] },
+      { attachments: [{ id: "text", fileName: "same.txt", kind: "document" as const, extractedText: "wxyz" }] },
+      { renderActiveLeafId: "another-answer", visibleMessages: [{ id: "another-answer", parentMessageId: null,
+        role: "assistant" as const, status: "complete" as const, content: "Answer" }] }
+    ]) {
+      view.rerender({ ...refresh(), ...change });
+      expect(view.result.current.composerContextStats.session).toBeUndefined();
+    }
+    const pending = renderViewModel({ ...input, draft: "already typed" });
+    expect(pending.result.current.composerContextStats.session).toBeUndefined();
+  });
+
+  it("keeps live and persisted status on the same request and invalidates changes made during a run", () => {
+    const snapshot: SessionContextStatus = {
+      approximateInputTokens: 6000, contextWindow: 10000, droppedMessages: 0, loadedTools: 4,
+      maxOutputTokens: 1024, modelId: "gpt-5.5", phase: "request", provider: "openai",
+      safetyMarginTokens: 1000, version: 1
+    };
+    const input: Partial<Parameters<typeof usePowerAppShellViewModel>[0]> = {
+      catalog: { ...emptyCatalog, models: [{
+        capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
+          openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true },
+        contextWindow: 10000, defaultParams: {}, displayName: "Model", modelId: "gpt-5.5", provider: "openai",
+        parameterControls: defaultParameterControls(), searchStrategyIds: []
+      }] }, maxOutputTokens: "1024", renderActiveLeafId: "answer", activeChatStreaming: true,
+      visibleMessages: [{ id: "answer", parentMessageId: null, role: "assistant", status: "streaming", content: "" }],
+      runSurface: { answerStartedAt: null, startedAt: 100, events: [
+        { type: "message_start", data: { assistantMessageId: "answer" } },
+        { type: "artifact", data: { artifactType: "context_status", payload: snapshot } }
+      ] }
+    };
+    const view = renderViewModel(input);
+    expect(view.result.current.composerContextStats.session).toEqual(snapshot);
+    const completed = { ...input, activeChatStreaming: false, runSurface: { ...input.runSurface!, events: [
+      input.runSurface!.events[0]!, { type: "artifact" as const, data: { artifactType: "context_status", payload: { ...snapshot, phase: "after_answer" } } }
+    ] } };
+    view.rerender(completed);
+    expect(view.result.current.composerContextStats.session?.phase).toBe("after_answer");
+    view.rerender({ ...completed, requestConfiguration: { skillIds: ["new-skill"] } });
+    expect(view.result.current.composerContextStats.session).toBeUndefined();
+    view.rerender({ ...completed, requestConfiguration: { skillIds: ["new-skill"] },
+      activeThreadContextStats: { approximateActiveBranchInputTokens: 1000, session: { ...snapshot, phase: "after_answer" }, sessionMessageId: "answer" } });
+    expect(view.result.current.composerContextStats.session).toBeUndefined();
+  });
+
+  it("retains a rejected-request state only for the exact rejected inputs", () => {
+    const view = renderViewModel({ draft: "rejected", contextRejectionGeneration: 1 });
+    expect(view.result.current.composerContextStats.requestRejected).toBe(true);
+    view.rerender({ draft: "rejected", contextRejectionGeneration: 1, requestConfiguration: { mcp: "off" } });
+    expect(view.result.current.composerContextStats.requestRejected).toBe(false);
+    view.rerender({ draft: "rejected", contextRejectionGeneration: 2, requestConfiguration: { mcp: "off" } });
+    expect(view.result.current.composerContextStats.requestRejected).toBe(true);
+  });
+
   it("does not mark a blank workspace as streaming while another chat runs", () => {
     const { result } = renderViewModel({
       activeChatId: null,

@@ -289,7 +289,7 @@ export function createAdminSystemModelPolicyService(
   return {
     async list(): Promise<AdminSystemModelPolicyCatalog> {
       const rerankerResolution = await resolveRerankerRole();
-      const [policy, rows, rerankerRows, resolution, chatPdfResolution, chatTitleResolution] =
+      const [policy, rows, rerankerRows, resolution, chatPdfResolution, chatTitleResolution, chatPdfNativeResolution] =
         await Promise.all([
         prisma.systemModelPolicy.findUnique({
           include: {
@@ -356,6 +356,27 @@ export function createAdminSystemModelPolicyService(
                 }
               }
             },
+            chatPdfNativeProviderModel: {
+              include: {
+                activeCredentialChecks: {
+                  select: {
+                    connectionVersion: true,
+                    credentialId: true,
+                    credentialVersionId: true,
+                    evidence: true,
+                    modelVersion: true,
+                    status: true
+                  }
+                },
+                connection: {
+                  include: {
+                    defaultCredential: {
+                      include: { activeVersion: { select: { id: true, revokedAt: true } } }
+                    }
+                  }
+                }
+              }
+            },
             rerankerProviderModel: {
               include: { connection: true }
             },
@@ -401,7 +422,8 @@ export function createAdminSystemModelPolicyService(
         }),
         resolveRole(),
         resolveChatPdfRole(),
-        resolveChatTitleRole()
+        resolveChatTitleRole(),
+        resolveChatPdfRole("pdf_reader")
       ]);
       if (!policy) throw new Error("installation_system_model_policy_missing");
       const imageRows = await prisma.providerModel.findMany({
@@ -494,10 +516,18 @@ export function createAdminSystemModelPolicyService(
               chatTitleResolution.policyVersion === policy.version
           } : null,
           chatPdfReasoningEffort: policy.chatPdfReasoningEffort ?? null,
+          chatPdfProcessingMode: (policy.chatPdfProcessingMode ?? "PREFER_CHAT_MODEL").toLowerCase() as "prefer_chat_model" | "use_pdf_reader" | "read_page_images",
+          chatPdfFallbackMethod: (policy.chatPdfFallbackMethod ?? "PAGE_IMAGES") === "PDF_READER" ? "pdf_reader" : "page_images",
           chatPdfModel: policy.chatPdfProviderModel ? {
             ...serializeSystemModel(policy.chatPdfProviderModel as SystemModelRow),
             available: chatPdfResolution.ok && chatPdfResolution.providerModelId === policy.chatPdfProviderModelId &&
               chatPdfResolution.policyVersion === policy.version
+          } : null,
+          chatPdfNativeReasoningEffort: policy.chatPdfNativeReasoningEffort ?? null,
+          chatPdfNativeModel: policy.chatPdfNativeProviderModel ? {
+            ...serializeSystemModel(policy.chatPdfNativeProviderModel as SystemModelRow),
+            available: chatPdfNativeResolution.ok && chatPdfNativeResolution.providerModelId === policy.chatPdfNativeProviderModelId &&
+              chatPdfNativeResolution.policyVersion === policy.version
           } : null,
           reasoningEffort: policy.reasoningEffort,
           rerankerModel: policy.rerankerProviderModel
@@ -591,8 +621,12 @@ export function createAdminSystemModelPolicyService(
       imageParameters?: ImageGenerationParameters;
       chatTitleProviderModelId?: string | null;
       chatTitleReasoningEffort?: string | null;
+      chatPdfNativeProviderModelId?: string | null;
+      chatPdfNativeReasoningEffort?: string | null;
       chatPdfProviderModelId?: string | null;
       chatPdfReasoningEffort?: string | null;
+      chatPdfProcessingMode?: "prefer_chat_model" | "use_pdf_reader" | "read_page_images";
+      chatPdfFallbackMethod?: "pdf_reader" | "page_images";
       expectedVersion: number;
       /** Utility fields are present together for an explicit utility-role
        * save/clear; absent preserves that independent role. */
@@ -619,10 +653,19 @@ export function createAdminSystemModelPolicyService(
       if (hasPdfUpdate !== (input.chatPdfReasoningEffort !== undefined)) {
         throw new Error("system_model_policy_update_invalid");
       }
+      const hasPdfNativeUpdate = input.chatPdfNativeProviderModelId !== undefined;
+      if (hasPdfNativeUpdate !== (input.chatPdfNativeReasoningEffort !== undefined)) {
+        throw new Error("system_model_policy_update_invalid");
+      }
+      const hasPdfPolicyUpdate = input.chatPdfProcessingMode !== undefined || input.chatPdfFallbackMethod !== undefined;
+      if (input.chatPdfProcessingMode !== undefined && !["prefer_chat_model", "use_pdf_reader", "read_page_images"].includes(input.chatPdfProcessingMode) ||
+        input.chatPdfFallbackMethod !== undefined && !["pdf_reader", "page_images"].includes(input.chatPdfFallbackMethod)) {
+        throw new Error("system_model_policy_update_invalid");
+      }
       const hasUtilityUpdate = providerModelId !== undefined;
       const hasReasoningUpdate = reasoningEffort !== undefined;
       if (hasUtilityUpdate !== hasReasoningUpdate ||
-        !hasUtilityUpdate && !hasTitleUpdate && !hasPdfUpdate && !hasImageUpdate && rerankerProviderModelId === undefined) {
+        !hasUtilityUpdate && !hasTitleUpdate && !hasPdfUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate && rerankerProviderModelId === undefined) {
         throw new Error("system_model_policy_update_invalid");
       }
       try {
@@ -712,6 +755,21 @@ export function createAdminSystemModelPolicyService(
               throw error;
             }
           }
+          if (input.chatPdfNativeProviderModelId === null && input.chatPdfNativeReasoningEffort !== null) {
+            throw new AdminSystemModelPolicyServiceError("system_model_policy_reasoning_unavailable");
+          }
+          if (input.chatPdfNativeProviderModelId) {
+            try {
+              const role = await loadRole(tx, { providerModelId: input.chatPdfNativeProviderModelId });
+              if (!systemModelRoleEligible(role, "direct_pdf") || input.chatPdfNativeReasoningEffort &&
+                !supportsReasoningEffort(role, input.chatPdfNativeReasoningEffort)) {
+                throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
+              }
+            } catch (error) {
+              if (error instanceof ProviderAdmissionError) throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
+              throw error;
+            }
+          }
           if (rerankerProviderModelId !== undefined &&
             rerankerProviderModelId !== null) {
             try {
@@ -750,6 +808,20 @@ export function createAdminSystemModelPolicyService(
               ...(hasPdfUpdate ? {
                 chatPdfProviderModelId: input.chatPdfProviderModelId,
                 chatPdfReasoningEffort: input.chatPdfReasoningEffort
+              } : {}),
+              ...(hasPdfNativeUpdate ? {
+                chatPdfNativeProviderModelId: input.chatPdfNativeProviderModelId,
+                chatPdfNativeReasoningEffort: input.chatPdfNativeReasoningEffort
+              } : {}),
+              ...(hasPdfPolicyUpdate ? {
+                ...(input.chatPdfProcessingMode !== undefined ? {
+                  chatPdfProcessingMode: input.chatPdfProcessingMode === "prefer_chat_model"
+                    ? "PREFER_CHAT_MODEL" as const
+                    : input.chatPdfProcessingMode === "use_pdf_reader" ? "USE_PDF_READER" as const : "READ_PAGE_IMAGES" as const
+                } : {}),
+                ...(input.chatPdfFallbackMethod !== undefined ? {
+                  chatPdfFallbackMethod: input.chatPdfFallbackMethod === "pdf_reader" ? "PDF_READER" as const : "PAGE_IMAGES" as const
+                } : {})
               } : {}),
               ...(hasUtilityUpdate ? {
                 providerModelId,

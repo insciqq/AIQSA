@@ -306,7 +306,7 @@ function loopbackIpLiteral(hostname: string): string | null {
     : null;
 }
 
-/** RFC 8252 permits a native loopback redirect to vary only its port. */
+/** Native loopback redirects vary only their port; CLI clients also use localhost. */
 export function registeredRedirectUriMatches(input: Readonly<{
   applicationType: "NATIVE" | "WEB";
   presented: string;
@@ -319,8 +319,10 @@ export function registeredRedirectUriMatches(input: Readonly<{
   if (!presented || !registered || presented.protocol !== "http:" ||
     registered.protocol !== "http:" || !hasSafeUrlEnvelope(presented) ||
     !hasSafeUrlEnvelope(registered)) return false;
-  const presentedHost = loopbackIpLiteral(presented.hostname);
-  const registeredHost = loopbackIpLiteral(registered.hostname);
+  const presentedHost = presented.hostname === "localhost"
+    ? "localhost" : loopbackIpLiteral(presented.hostname);
+  const registeredHost = registered.hostname === "localhost"
+    ? "localhost" : loopbackIpLiteral(registered.hostname);
   return presentedHost !== null && presentedHost === registeredHost &&
     presented.pathname === registered.pathname &&
     presented.search === registered.search;

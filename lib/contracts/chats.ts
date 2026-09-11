@@ -220,15 +220,17 @@ export type WorkspaceChatSummary = {
 };
 
 export type ChatUsageStats = {
+  incompleteRunCount: number;
   activeBranchMessageCount: number;
-  cachedInputTokens: number;
-  cacheWriteInputTokens: number;
-  totalTokens: number;
+  cachedInputTokens: number | null;
+  cacheWriteInputTokens: number | null;
+  totalTokens: number | null;
 };
 
 export type ChatContextStats = {
   approximateActiveBranchInputTokens: number;
   session?: SessionContextStatus | null;
+  sessionMessageId?: string | null;
 };
 
 export type ChatMessagePageInfo = {
@@ -543,32 +545,17 @@ function nonNegativeInteger(value: unknown): number | null {
 }
 
 function decodeUsageStats(value: unknown): ChatUsageStats | null | undefined {
-  if (value === null) {
-    return null;
-  }
-  if (!isRecord(value)) {
-    return undefined;
-  }
-
+  if (value === null) return null;
+  if (!isRecord(value)) return undefined;
   const activeBranchMessageCount = nonNegativeInteger(value.activeBranchMessageCount);
-  const cachedInputTokens = nonNegativeInteger(value.cachedInputTokens);
-  const cacheWriteInputTokens = nonNegativeInteger(value.cacheWriteInputTokens);
-  const totalTokens = nonNegativeInteger(value.totalTokens);
-  if (
-    activeBranchMessageCount === null ||
-    cachedInputTokens === null ||
-    cacheWriteInputTokens === null ||
-    totalTokens === null
-  ) {
-    return undefined;
-  }
-
-  return {
-    activeBranchMessageCount,
-    cachedInputTokens,
-    cacheWriteInputTokens,
-    totalTokens
-  };
+  const incompleteRunCount = nonNegativeInteger(value.incompleteRunCount);
+  const fields = ["cachedInputTokens", "cacheWriteInputTokens", "totalTokens"] as const;
+  if (activeBranchMessageCount === null || incompleteRunCount === null ||
+    fields.some((field) => value[field] !== null && nonNegativeInteger(value[field]) === null)) return undefined;
+  return { activeBranchMessageCount, incompleteRunCount,
+    cachedInputTokens: value.cachedInputTokens as number | null,
+    cacheWriteInputTokens: value.cacheWriteInputTokens as number | null,
+    totalTokens: value.totalTokens as number | null };
 }
 
 function isoTimestamp(value: unknown): string | null {
@@ -578,7 +565,7 @@ function isoTimestamp(value: unknown): string | null {
 }
 
 function decodeContextStats(value: unknown): ChatContextStats | null {
-  if (!isRecord(value) || !hasExactKeys(value, ["approximateActiveBranchInputTokens", ...("session" in value ? ["session"] : [])])) {
+  if (!isRecord(value) || !hasExactKeys(value, ["approximateActiveBranchInputTokens", ...("session" in value ? ["session"] : []), ...("sessionMessageId" in value ? ["sessionMessageId"] : [])])) {
     return null;
   }
   const approximateActiveBranchInputTokens = nonNegativeInteger(
@@ -586,9 +573,12 @@ function decodeContextStats(value: unknown): ChatContextStats | null {
   );
   const session = value.session == null ? null : decodeSessionContextStatus(value.session);
   if (value.session != null && session === null) return null;
+  const sessionMessageId = value.sessionMessageId === undefined ? null : nullableId(value.sessionMessageId);
+  if (sessionMessageId === undefined || (sessionMessageId !== null && !session)) return null;
   return approximateActiveBranchInputTokens === null
     ? null
-    : { approximateActiveBranchInputTokens, ...(session ? { session } : {}) };
+    : { approximateActiveBranchInputTokens, ...(session ? { session } : {}),
+        ...(sessionMessageId ? { sessionMessageId } : {}) };
 }
 
 function decodeMessagePageInfo(value: unknown): ChatMessagePageInfo | null {

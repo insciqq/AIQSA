@@ -35,7 +35,7 @@ Knowledge management shows current documents, readiness, access, and product act
 
 Assistant editing changes live future use while historical answers retain accepted identity. Skills stay text-only and explicitly selected, with Assistant-included Skills read-only and manual selections separate. Do not introduce revision machinery, executable Skills, or automatic activation through presentation changes.
 
-Keep inbound Memory clients in Connected apps, separate from outbound chat MCP servers. Consent names fact read/add/change/delete authority and excludes chat history; revocation removes access while preserving facts. MCP Active requires fresh protocol evidence, independent of permission to use it in chats. Opening Settings must not wake idle servers. Admin Test & Save validates before replacing active settings and preserves intentional disablement.
+Keep external client permissions in Connected apps and name each permission's resource in consent and revocation. Memory consent names fact read/add/change/delete authority and excludes chat history; revocation preserves facts. MCP enablement applies to chats and authorized Hub clients. MCP Active requires fresh protocol evidence, independent of enablement. Opening Settings must not wake idle servers. Admin Test & Save validates before replacing active settings and preserves intentional disablement.
 
 ## Interaction And Visual Intent
 

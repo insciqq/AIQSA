@@ -1,3 +1,4 @@
+import { storedTokenUsage } from "../usage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { EmbeddingUsage } from "../providers/embeddings";
 import { KNOWLEDGE_EMBEDDING_BATCH_SIZE } from "./chunking";
@@ -379,8 +380,8 @@ export function createPrismaKnowledgeBulkEmbeddingRepository(
           where: { id: input.usageEventId }
         });
         if (before.completeIndexes.length === input.passages.length) {
-          const inputTokens = input.usage.inputTokens ?? 0;
-          const totalTokens = input.usage.totalTokens ?? inputTokens;
+          const inputTokens = input.usage.inputTokens ?? null;
+          const totalTokens = input.usage.totalTokens ?? null;
           if (!existingUsage || existingUsage.userId !== input.ownerUserId ||
             existingUsage.provider !== input.provider ||
             existingUsage.modelId !== input.modelId ||
@@ -440,14 +441,12 @@ export function createPrismaKnowledgeBulkEmbeddingRepository(
         if (inserted.length !== input.passages.length) {
           throw new KnowledgeBulkEmbeddingError("knowledge_bulk_embedding_conflict");
         }
-        const inputTokens = input.usage.inputTokens ?? 0;
         await tx.usageEvent.create({
           data: {
             id: input.usageEventId,
-            inputTokens,
+            ...storedTokenUsage(input.usage),
             modelId: input.modelId,
             provider: input.provider,
-            totalTokens: input.usage.totalTokens ?? inputTokens,
             userId: input.ownerUserId
           }
         });

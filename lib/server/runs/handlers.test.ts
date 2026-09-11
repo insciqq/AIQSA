@@ -2140,7 +2140,7 @@ describe("model run route handlers", () => {
     expect(state.completed?.modelId).toBe("fake-qsa");
     expect(state.completed?.finalText).toBe("Fake answer: Hello QSA");
     expect(state.completed?.estimatedCostMicros).toBe(
-      state.completed!.usage.inputTokens * 2 + state.completed!.usage.outputTokens * 8
+      state.completed!.usage.inputTokens! * 2 + state.completed!.usage.outputTokens! * 8
     );
     expect(state.events).toEqual([{ sequence: 0, event: {
       type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "after_answer" }) }

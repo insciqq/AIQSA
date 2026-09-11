@@ -1,3 +1,4 @@
+import { mergeTokenUsage, normalizeTokenUsage } from "../../../domain/usage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
   ModelRunSseEvent,
@@ -246,13 +247,13 @@ async function collectProviderResult(
     let next = await stream.next();
     while (!next.done) {
       observedEvent = true;
-      if (next.value.type === "usage") lastUsage = next.value.data;
+      if (next.value.type === "usage") lastUsage = mergeTokenUsage(lastUsage ?? {}, next.value.data);
       next = await stream.next();
     }
-    return next.value;
+    return { ...next.value, usage: mergeTokenUsage(lastUsage ?? {}, next.value.usage) };
   } catch (error) {
     throw callError(
-      lastUsage,
+      lastUsage ? normalizeTokenUsage({ ...lastUsage, completeness: "partial" }) : null,
       error,
       classifyProviderFailure(error, observedEvent)
     );

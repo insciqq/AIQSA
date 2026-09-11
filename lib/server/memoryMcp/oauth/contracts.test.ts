@@ -149,26 +149,39 @@ describe("inbound Memory MCP OAuth contracts", () => {
     expect(validRedirectUri("javascript:alert(1)", "NATIVE")).toBe(false);
   });
 
-  it("allows only the RFC 8252 port exception for native loopback IP redirects", () => {
+  it.each(["127.0.0.1", "[::1]", "localhost"])("varies only the native HTTP loopback port for %s", (hostname) => {
     expect(registeredRedirectUriMatches({
       applicationType: "NATIVE",
-      presented: "http://127.0.0.1:54321/oauth/callback",
-      registered: "http://127.0.0.1:43119/oauth/callback"
+      presented: `http://${hostname}:54321/oauth/callback`,
+      registered: `http://${hostname}/oauth/callback`
     })).toBe(true);
     expect(registeredRedirectUriMatches({
       applicationType: "NATIVE",
-      presented: "http://127.0.0.1:54321/other",
-      registered: "http://127.0.0.1:43119/oauth/callback"
+      presented: `http://${hostname}:54321/other`,
+      registered: `http://${hostname}/oauth/callback`
     })).toBe(false);
     expect(registeredRedirectUriMatches({
       applicationType: "NATIVE",
-      presented: "http://localhost:54321/oauth/callback",
-      registered: "http://localhost:43119/oauth/callback"
+      presented: `http://${hostname}:54321/oauth/callback?injected=1`,
+      registered: `http://${hostname}/oauth/callback`
     })).toBe(false);
     expect(registeredRedirectUriMatches({
       applicationType: "WEB",
-      presented: "http://127.0.0.1:54321/oauth/callback",
-      registered: "http://127.0.0.1:43119/oauth/callback"
+      presented: `http://${hostname}:54321/oauth/callback`,
+      registered: `http://${hostname}/oauth/callback`
+    })).toBe(false);
+    expect(registeredRedirectUriMatches({
+      applicationType: "NATIVE",
+      presented: `https://${hostname}:54321/oauth/callback`,
+      registered: `https://${hostname}/oauth/callback`
+    })).toBe(false);
+  });
+
+  it.each(["127.0.0.1", "app.localhost", "localhost.example", "localhost."])("never aliases localhost to %s", (hostname) => {
+    expect(registeredRedirectUriMatches({
+      applicationType: "NATIVE",
+      presented: `http://${hostname}:54321/oauth/callback`,
+      registered: "http://localhost/oauth/callback"
     })).toBe(false);
   });
 

@@ -7,6 +7,7 @@ import {
   type KnowledgeDeletionDrainSummary
 } from "@/lib/server/knowledge/deletionProcessor";
 import { DEFAULT_KNOWLEDGE_TRASH_RETENTION_DAYS } from "@/lib/server/knowledge/lifecyclePolicy";
+import { createMcpHubOperationStore, type McpHubMaintenanceResult } from "../mcp/hubOperations";
 
 export const DEFAULT_EVENT_RETENTION_DAYS = 30;
 export const DEFAULT_ORPHAN_ATTACHMENT_RETENTION_DAYS = 7;
@@ -86,6 +87,7 @@ export type InboundMcpOAuthPruneResult = Readonly<{
 }>;
 
 export type RetentionRepository = {
+  maintainMcpHub(input: { cutoff: Date; dryRun: boolean; limit: number; now: Date }): Promise<McpHubMaintenanceResult>;
   claimAttachmentDeletionJobs(input: {
     claimableBefore: Date;
     limit: number;
@@ -190,6 +192,7 @@ type RetentionCount = {
 };
 
 export type PruneRetentionSummary = {
+  mcpHub: McpHubMaintenanceResult;
   attachmentDeletionJobs: {
     claimed: number;
     completed: number;
@@ -580,6 +583,7 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
 
       return deleted.count;
     },
+    maintainMcpHub: (input) => createMcpHubOperationStore(prisma).maintain(input),
     deletePrunableInboundMcpOAuth({ candidates, cutoff }) {
       return prisma.$transaction(async (tx) => {
         const authorizationCodes = candidates.authorizationCodeIds.length === 0
@@ -1320,6 +1324,7 @@ function emptySummary(input: {
       matched: input.deletionJobIds.length,
       objectsDeleted: 0
     },
+    mcpHub: { dispatches: { expired: 0, removed: 0 }, discoveryAttempts: { expired: 0, removed: 0 } },
     authCutoff: input.authCutoff.toISOString(),
     authFlowTokens: {
       deleted: 0,
@@ -1472,6 +1477,7 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     orphanInspection
   });
 
+  summary.mcpHub = await options.repository.maintainMcpHub({ cutoff: authCutoff, dryRun, limit: batchSize, now });
   if (dryRun) {
     return summary;
   }

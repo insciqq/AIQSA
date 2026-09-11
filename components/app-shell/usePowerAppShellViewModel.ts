@@ -20,7 +20,7 @@ import { STANDARD_CHAT_BASELINE_TEMPLATE } from "@/lib/domain/promptTemplates";
 import { decodeSessionContextStatus, sessionContextCapacity } from "@/lib/contracts/sessionStatus";
 import { pdfPageCountFromMetadata } from "@/lib/contracts/uploads";
 import { isRecord } from "./shellValues";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 type PowerAppShellViewModelInput = {
   activeChatId: string | null;
@@ -30,6 +30,8 @@ type PowerAppShellViewModelInput = {
   catalog: Catalog | null;
   chats: WorkspaceChatSummary[];
   draft: string;
+  requestConfiguration?: Readonly<Record<string, unknown>>;
+  contextRejectionGeneration?: number | null;
   folders: FolderSummary[];
   maxOutputTokens: string;
   pendingChatFolderId: string | null;
@@ -122,6 +124,8 @@ export function usePowerAppShellViewModel({
   catalog,
   chats,
   draft,
+  requestConfiguration,
+  contextRejectionGeneration = null,
   folders,
   maxOutputTokens,
   projectSettingsFolderId,
@@ -192,30 +196,59 @@ export function usePowerAppShellViewModel({
       currentParameterControls.maxOutputTokens.maxValue
     )
   );
-  const safeInputBudget = currentContextWindow
+  const contextLimits = useMemo(() => currentContextWindow
     ? calculateContextBudgetLimits({
         contextWindow: currentContextWindow,
         maxOutputTokens: selectedMaxOutputTokens,
         provider: currentModel?.providerFamily
-      }).budgetTokens
-    : 0;
+      })
+    : null, [currentContextWindow, currentModel?.providerFamily, selectedMaxOutputTokens]);
+  // Compare values, including identities and full draft/attachment contents.
+  // A refreshed object or equal text length is not a new accepted request.
+  const requestInputKey = JSON.stringify({
+    activeChatId, attachments, draft, renderActiveLeafId, requestConfiguration,
+    selectedAssistantPromptCharacterCount, selectedMaxOutputTokens,
+    selectedModelId, selectedProvider, selectedSkillPromptCharacterCount
+  });
+  const lastAssistant = [...visibleMessages].reverse().find((message) => message.role === "assistant");
+  const sourceKey = JSON.stringify([activeChatId, lastAssistant?.id ?? null]);
+  const [observedRequest, setObservedRequest] = useState({ sourceKey, requestInputKey });
+  if (observedRequest.sourceKey !== sourceKey) {
+    setObservedRequest({ sourceKey, requestInputKey });
+  }
+  const unchangedRequest = observedRequest.sourceKey === sourceKey &&
+    observedRequest.requestInputKey === requestInputKey && !draft && attachments.length === 0;
+  const [rejection, setRejection] = useState({ contextRejectionGeneration, requestInputKey });
+  if (rejection.contextRejectionGeneration !== contextRejectionGeneration) {
+    setRejection({ contextRejectionGeneration, requestInputKey });
+  }
+  const requestRejected = contextRejectionGeneration !== null &&
+    rejection.contextRejectionGeneration === contextRejectionGeneration && rejection.requestInputKey === requestInputKey;
+  const sessionSnapshot = activeThreadContextStats?.session;
+  const sessionMessageId = activeThreadContextStats?.sessionMessageId;
   const composerContextStats = useMemo<ComposerContextStats>(() => {
-    const lastAssistant = [...visibleMessages].reverse().find((message) => message.role === "assistant");
     const liveStart = [...runEvents].reverse().find((event) => event.type === "message_start");
     const liveStartData = isRecord(liveStart?.data) ? liveStart.data : null;
     const liveStatus = liveStartData?.assistantMessageId === lastAssistant?.id
       ? [...runEvents].reverse().find((event) => event.type === "artifact" && isRecord(event.data) && event.data.artifactType === "context_status")
       : undefined;
-    const snapshot = (isRecord(liveStatus?.data) ? decodeSessionContextStatus(liveStatus.data.payload) : null) ??
-      activeThreadContextStats?.session;
+    const liveSnapshot = isRecord(liveStatus?.data)
+      ? decodeSessionContextStatus(liveStatus.data.payload)
+      : null;
+    const onAnswerLeaf = Boolean(lastAssistant && lastAssistant.id === renderActiveLeafId);
+    const snapshot = unchangedRequest && onAnswerLeaf && !requestRejected
+      ? liveSnapshot ?? (sessionMessageId === lastAssistant?.id ? sessionSnapshot : null)
+      : null;
     if (snapshot &&
       snapshot.modelId === (currentModel?.upstreamModelId ?? currentModel?.modelId) &&
       snapshot.provider === (currentModel?.providerFamily ?? currentModel?.provider) &&
       snapshot.contextWindow === (currentContextWindow || null) &&
-      sessionContextCapacity(snapshot).budgetTokens === (currentContextWindow ? safeInputBudget : null)) {
+      sessionContextCapacity(snapshot).budgetTokens === (contextLimits?.budgetTokens ?? null)) {
       return {
         approximateInputTokens: snapshot.approximateInputTokens,
         safeInputBudgetTokens: sessionContextCapacity(snapshot).budgetTokens,
+        answerReserveTokens: snapshot.maxOutputTokens,
+        safetyMarginTokens: snapshot.safetyMarginTokens,
         session: snapshot,
         totalContextTokens: snapshot.contextWindow
       };
@@ -254,10 +287,15 @@ export function usePowerAppShellViewModel({
 
     return {
       approximateInputTokens: currentTokens,
-      safeInputBudgetTokens: currentContextWindow ? safeInputBudget : null,
+      answerReserveTokens: contextLimits?.maxOutputTokens ?? null,
+      safetyMarginTokens: contextLimits?.safetyMarginTokens ?? null,
+      safeInputBudgetTokens: contextLimits?.budgetTokens ?? null,
+      requestRejected,
       totalContextTokens: currentContextWindow || null
     };
-  }, [activeThreadContextStats, attachments, currentContextWindow, currentModel, draft, runEvents, safeInputBudget, selectedAssistantPromptCharacterCount, selectedSkillPromptCharacterCount, visibleMessages]);
+  }, [activeThreadContextStats, attachments, contextLimits, currentContextWindow, currentModel, draft,
+    lastAssistant, renderActiveLeafId, requestRejected, runEvents, selectedAssistantPromptCharacterCount,
+    selectedSkillPromptCharacterCount, sessionMessageId, sessionSnapshot, unchangedRequest, visibleMessages]);
   return {
     activeChat,
     activeChatStreaming,

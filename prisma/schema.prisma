@@ -207,6 +207,30 @@ enum InboundMcpOAuthTokenKind {
   REFRESH
 }
 
+enum McpHubDispatchState {
+  DISPATCHED
+  COMPLETE
+  ERROR
+  UNKNOWN
+}
+
+enum ChatPdfProcessingMode {
+  PREFER_CHAT_MODEL
+  USE_PDF_READER
+  READ_PAGE_IMAGES
+}
+
+enum ChatPdfFallbackMethod {
+  PDF_READER
+  PAGE_IMAGES
+}
+
+enum TokenUsageCompleteness {
+  COMPLETE
+  PARTIAL
+  UNAVAILABLE
+}
+
 enum ModelRunToolCallState {
   pending
   running
@@ -760,6 +784,8 @@ model User {
   knowledgeUploadBatches              KnowledgeUploadBatch[]
   memoryEgressPolicyUpdates           MemoryEgressAdminPolicy[]          @relation("MemoryEgressAdminPolicyUpdater")
   inboundMcpOAuthGrants               InboundMcpOAuthGrant[]
+  mcpHubDispatches                    McpHubDispatch[]
+  mcpHubDiscoveryAttempts             McpHubDiscoveryAttempt[]
   mcpGrants                           McpGrant[]
   mcpToolGrants                       McpToolUserGrant[]
   mcpActivationJobs                   McpActivationJob[]
@@ -1069,8 +1095,12 @@ model SystemModelPolicy {
   id                      String         @id
   chatTitleProviderModelId String?
   chatTitleReasoningEffort String?        @db.VarChar(32)
+  chatPdfNativeProviderModelId String?
+  chatPdfNativeReasoningEffort String? @db.VarChar(32)
   chatPdfProviderModelId   String?
   chatPdfReasoningEffort   String?        @db.VarChar(32)
+  chatPdfProcessingMode    ChatPdfProcessingMode @default(PREFER_CHAT_MODEL)
+  chatPdfFallbackMethod    ChatPdfFallbackMethod @default(PAGE_IMAGES)
   /// Memory semantic/action work and its shared structured utilities.
   providerModelId         String?
   rerankerProviderModelId String?
@@ -1082,6 +1112,7 @@ model SystemModelPolicy {
   createdAt               DateTime       @default(now())
   updatedAt               DateTime       @updatedAt
   chatTitleProviderModel  ProviderModel? @relation("ChatTitleProviderModel", fields: [chatTitleProviderModelId], references: [id], onDelete: Restrict)
+  chatPdfNativeProviderModel ProviderModel? @relation("ChatPdfNativeProviderModel", fields: [chatPdfNativeProviderModelId], references: [id], onDelete: Restrict)
   chatPdfProviderModel    ProviderModel? @relation("ChatPdfProviderModel", fields: [chatPdfProviderModelId], references: [id], onDelete: Restrict)
   providerModel           ProviderModel? @relation("SystemUtilityProviderModel", fields: [providerModelId], references: [id], onDelete: Restrict)
   rerankerProviderModel   ProviderModel? @relation("MemoryRerankerProviderModel", fields: [rerankerProviderModelId], references: [id], onDelete: Restrict)
@@ -1092,6 +1123,7 @@ model SystemModelPolicy {
   @@index([rerankerProviderModelId])
   @@index([chatTitleProviderModelId])
   @@index([chatPdfProviderModelId])
+  @@index([chatPdfNativeProviderModelId])
   @@index([updatedByUserId])
 }
 
@@ -2286,6 +2318,7 @@ model ProviderModel {
   knowledgeRunBindings        KnowledgeRunBinding[]
   knowledgeRunProfileBindings KnowledgeRunProfileBinding[]
   chatTitleRoles              SystemModelPolicy[]             @relation("ChatTitleProviderModel")
+  chatPdfNativeRoles          SystemModelPolicy[]             @relation("ChatPdfNativeProviderModel")
   chatPdfRoles                SystemModelPolicy[]             @relation("ChatPdfProviderModel")
   systemUtilityRoles          SystemModelPolicy[]             @relation("SystemUtilityProviderModel")
   imageGenerationRoles       SystemModelPolicy[]             @relation("ImageGenerationProviderModel")
@@ -2722,9 +2755,9 @@ model Message {
   provider               String?
   modelId                String?
   status                 MessageStatus     @default(complete)
-  inputTokens            Int               @default(0)
-  outputTokens           Int               @default(0)
-  reasoningTokens        Int               @default(0)
+  inputTokens            Int?
+  outputTokens           Int?
+  reasoningTokens        Int?
   errorMessage           String?
   authorUserId           String?
   authorDisplayName      String?
@@ -2821,13 +2854,14 @@ model ModelRun {
   status                       ModelRunStatus
   normalizedRequest            Json?
   providerResponseId           String?
-  inputTokens                  Int                                 @default(0)
-  cachedInputTokens            Int                                 @default(0)
-  cacheWriteInputTokens        Int                                 @default(0)
-  outputTokens                 Int                                 @default(0)
-  reasoningTokens              Int                                 @default(0)
-  totalTokens                  Int                                 @default(0)
-  estimatedCostMicros          Int                                 @default(0)
+  inputTokens                  Int?
+  cachedInputTokens            Int?
+  cacheWriteInputTokens        Int?
+  outputTokens                 Int?
+  reasoningTokens              Int?
+  totalTokens                  Int?
+  usageCompleteness             TokenUsageCompleteness              @default(UNAVAILABLE)
+  estimatedCostMicros          Int?
   errorPayload                 Json?
   toolLoopState                Json?
   answerStartedAt              DateTime?
@@ -3180,6 +3214,51 @@ model InboundMcpOAuthToken {
 
   @@index([expiresAt, kind, consumedAt])
   @@index([familyId, kind, consumedAt])
+}
+
+model McpHubDispatch {
+  id           String            @id @default(uuid())
+  userId       String
+  clientId     String            @db.VarChar(2048)
+  grantId      String            @db.VarChar(64)
+  resourcePath String            @db.VarChar(32)
+  toolId       String            @db.VarChar(128)
+  toolVersion  String            @db.VarChar(128)
+  state        McpHubDispatchState @default(DISPATCHED)
+  resultCode   String?           @db.VarChar(64)
+  createdAt    DateTime          @default(now())
+  dispatchedAt DateTime          @default(now())
+  expiresAt    DateTime          @default(dbgenerated("(CURRENT_TIMESTAMP + '00:05:00'::interval)"))
+  completedAt  DateTime?
+  revision     Int               @default(0)
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([grantId, createdAt])
+  @@index([state, createdAt])
+  @@index([state, expiresAt])
+}
+
+model McpHubDiscoveryAttempt {
+  id                  String              @id @default(uuid())
+  userId              String
+  clientId            String              @db.VarChar(2048)
+  grantId             String              @db.VarChar(64)
+  resourcePath        String              @default("/mcp/hub") @db.VarChar(32)
+  connectionId        String
+  providerModelId     String
+  credentialVersionId String
+  state               McpHubDispatchState @default(DISPATCHED)
+  createdAt           DateTime            @default(now())
+  expiresAt           DateTime            @default(dbgenerated("(CURRENT_TIMESTAMP + '00:05:00'::interval)"))
+  completedAt         DateTime?
+  revision            Int                 @default(0)
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  usageEvent          UsageEvent?
+
+  @@index([userId, createdAt])
+  @@index([state, expiresAt])
+  @@index([createdAt])
 }
 
 model McpRuntimeGeneration {
@@ -3882,6 +3961,9 @@ model SharedChatSnapshot {
 }
 
 model UsageEvent {
+  mcpHubDiscovery                  Boolean                        @default(false)
+  mcpHubDiscoveryAttemptId         String?                        @unique
+  mcpHubDiscoveryAttempt           McpHubDiscoveryAttempt?        @relation(fields: [mcpHubDiscoveryAttemptId], references: [id], onDelete: SetNull, onUpdate: Restrict)
   chatTitleGeneration             Boolean                        @default(false)
   chatTitleGenerationId           String?                        @unique
   chatTitle                       ChatTitleGeneration?           @relation(fields: [chatTitleGenerationId], references: [runId], onDelete: SetNull, onUpdate: Restrict)
@@ -3905,12 +3987,14 @@ model UsageEvent {
   knowledgeBatchIndex             Int?
   memoryExecutionBindingId        String?                        @unique
   knowledgePdfProcessingAttemptId String?                        @unique
+  operationCount                  Int?
   inputTokens                     Int?
   cachedInputTokens               Int?
   cacheWriteInputTokens           Int?
   outputTokens                    Int?
   reasoningTokens                 Int?
   totalTokens                     Int?
+  usageCompleteness               TokenUsageCompleteness             @default(UNAVAILABLE)
   estimatedCostMicros             Int?
   createdAt                       DateTime                       @default(now())
   knowledgeBase                   KnowledgeBase?                 @relation("KnowledgeUsageBase", fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
@@ -5590,6 +5674,7 @@ model MemoryExecutionBinding {
   usageCompleteness           MemoryUsageCompleteness  @default(UNAVAILABLE)
   inputTokens                 Int?
   cachedInputTokens           Int?
+  cacheWriteInputTokens       Int?
   outputTokens                Int?
   reasoningTokens             Int?
   totalTokens                 Int?
@@ -5762,6 +5847,10 @@ model ChatPdfRunPreparation {
 }
 
 model ChatPdfAttachmentPreparation {
+  processingMode String? @db.VarChar(32)
+  fallbackMethod String? @db.VarChar(32)
+  answerModelName String? @db.VarChar(256)
+  readerModelName String? @db.VarChar(256)
   id                 String    @id @default(uuid())
   modelRunId         String
   attachmentId       String

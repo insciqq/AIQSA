@@ -35,6 +35,7 @@ function emptyAdminDashboard(): AdminDashboard {
       byGroup: [],
       byUser: [],
       totals: {
+        incompleteUsageCount: 0,
         cachedInputTokens: 0,
         cacheWriteInputTokens: 0,
         inputTokens: 0,

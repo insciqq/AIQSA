@@ -1,3 +1,4 @@
+import { decodeTokenUsage, TOKEN_USAGE_FIELDS } from "../../domain/usage";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ParsedBoundingBox } from "../parsing";
 
@@ -53,39 +54,14 @@ function safeText(value: unknown, maximum: number): value is string {
 }
 
 function usage(value: unknown): ModelRunUsage | null {
-  if (!record(value) || !onlyKeys(value, [
-    "cachedInputTokens",
-    "cacheWriteInputTokens",
-    "estimatedCostMicros",
-    "inputTokens",
-    "outputTokens",
-    "reasoningTokens",
-    "totalTokens"
-  ])) return null;
-  const integer = (candidate: unknown) => Number.isSafeInteger(candidate) && Number(candidate) >= 0;
-  if (!integer(value.inputTokens) || !integer(value.outputTokens) ||
-    !integer(value.reasoningTokens) || !integer(value.totalTokens) ||
-    Number(value.totalTokens) < Number(value.inputTokens) + Number(value.outputTokens) ||
-    value.cachedInputTokens !== undefined && !integer(value.cachedInputTokens) ||
-    value.cacheWriteInputTokens !== undefined && !integer(value.cacheWriteInputTokens) ||
-    value.estimatedCostMicros !== undefined && value.estimatedCostMicros !== null &&
-      !integer(value.estimatedCostMicros)) return null;
-  return {
-    ...(value.cachedInputTokens === undefined
-      ? {} : { cachedInputTokens: Number(value.cachedInputTokens) }),
-    ...(value.cacheWriteInputTokens === undefined
-      ? {} : { cacheWriteInputTokens: Number(value.cacheWriteInputTokens) }),
-    ...(value.estimatedCostMicros === undefined
-      ? {} : {
-          estimatedCostMicros: value.estimatedCostMicros === null
-            ? null
-            : Number(value.estimatedCostMicros)
-        }),
-    inputTokens: Number(value.inputTokens),
-    outputTokens: Number(value.outputTokens),
-    reasoningTokens: Number(value.reasoningTokens),
-    totalTokens: Number(value.totalTokens)
-  };
+  const decoded = decodeTokenUsage(value);
+  if (!decoded || typeof value !== "object" || value === null) return null;
+  const data = value as Record<string, unknown>;
+  const allowed = new Set<string>([...TOKEN_USAGE_FIELDS, "estimatedCostMicros", "completeness"]);
+  if (Object.keys(data).some((key) => !allowed.has(key)) || (data.estimatedCostMicros != null &&
+    (!Number.isSafeInteger(data.estimatedCostMicros) || Number(data.estimatedCostMicros) < 0))) return null;
+  return { ...decoded, ...(data.estimatedCostMicros !== undefined
+    ? { estimatedCostMicros: data.estimatedCostMicros as number | null } : {}) };
 }
 
 function boundingBox(value: unknown): ParsedBoundingBox | null {

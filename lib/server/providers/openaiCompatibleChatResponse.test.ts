@@ -159,11 +159,12 @@ describe("OpenAI-compatible Chat Completions response", () => {
       { data: { delta: "Hel" }, type: "token" },
       {
         data: {
-          cacheWriteInputTokens: 0,
-          cachedInputTokens: 0,
+          cacheWriteInputTokens: null,
+          completeness: "complete",
+          cachedInputTokens: null,
           inputTokens: 7,
           outputTokens: 2,
-          reasoningTokens: 0,
+          reasoningTokens: null,
           totalTokens: 9
         },
         type: "usage"
@@ -176,7 +177,7 @@ describe("OpenAI-compatible Chat Completions response", () => {
       usage: {
         inputTokens: 7,
         outputTokens: 2,
-        reasoningTokens: 0,
+        reasoningTokens: null,
         totalTokens: 9
       }
     });

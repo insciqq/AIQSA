@@ -290,7 +290,7 @@ describe("OpenRouter Chat facade", () => {
       usage: {
         inputTokens: 8,
         outputTokens: 3,
-        reasoningTokens: 0
+        reasoningTokens: null
       }
     });
   });

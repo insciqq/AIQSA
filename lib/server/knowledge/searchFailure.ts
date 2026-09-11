@@ -1,3 +1,4 @@
+import { normalizeTokenUsage } from "../../domain/usage";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { knowledgeEvidenceFromToolResult } from "./toolResult";
 import { KNOWLEDGE_SEARCH_MAPPING_VERSION, KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION } from "../search/opensearch/contract";
@@ -56,7 +57,7 @@ export function knowledgeSearchFailureToolResult(call: ModelToolCall, error: unk
       stage: code.includes("projection") || code.includes("scope_changed") ? "readiness"
         : code.includes("revalidation") ? "revalidation" : "search",
       version: 1
-    } }, usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 } };
+    } }, usage: normalizeTokenUsage({}) };
 }
 export function knowledgeSearchFailureFromToolResult(result: ToolExecutionResult): KnowledgeSearchFailureCode | null {
   if (result.status !== "error") return null;

@@ -1,5 +1,5 @@
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
-import { normalizeTokenUsage } from "../../domain/usage";
+import { mergeTokenUsage, normalizeTokenUsage, type TokenUsageCompleteness } from "../../domain/usage";
 import type {
   ProviderStructuredOutputRequest
 } from "../providers/structuredOutput";
@@ -74,6 +74,7 @@ export type KnowledgeAnswerOperationExecutionV8 = Readonly<{
 }>;
 
 export type KnowledgeAnswerOperationExecutionOptionsV8 = Readonly<{
+  onUsage?(usage: ModelRunUsage): void;
   providerResponseId: string | null;
 }>;
 
@@ -95,20 +96,13 @@ export type KnowledgeAnswerGroundingExecutionV8Result = Readonly<{
 
 type OperationAcceptedResult = Readonly<Record<string, unknown>>;
 
-const zeroUsage: ModelRunUsage = Object.freeze({
-  cachedInputTokens: 0,
-  cacheWriteInputTokens: 0,
-  inputTokens: 0,
-  outputTokens: 0,
-  reasoningTokens: 0,
-  totalTokens: 0
-});
 
 function operationRecord(value: unknown): OperationAcceptedResult {
   return value as OperationAcceptedResult;
 }
 
 function storedUsage(value: Readonly<{
+  completeness?: TokenUsageCompleteness;
   cachedInputTokens: number | null;
   cacheWriteInputTokens: number | null;
   inputTokens: number | null;
@@ -116,14 +110,7 @@ function storedUsage(value: Readonly<{
   reasoningTokens: number | null;
   totalTokens: number | null;
 }>): ModelRunUsage {
-  return normalizeTokenUsage({
-    cachedInputTokens: value.cachedInputTokens ?? 0,
-    cacheWriteInputTokens: value.cacheWriteInputTokens ?? 0,
-    inputTokens: value.inputTokens ?? 0,
-    outputTokens: value.outputTokens ?? 0,
-    reasoningTokens: value.reasoningTokens ?? 0,
-    totalTokens: value.totalTokens ?? 0
-  });
+  return normalizeTokenUsage(value);
 }
 
 function exactSnapshot(
@@ -254,6 +241,7 @@ async function acceptedOperation(input: Readonly<{
   if (dispatchRequired) await input.lifecycle.dispatch(prepared);
   let execution: KnowledgeAnswerOperationExecutionV8;
   let acceptedResult: OperationAcceptedResult;
+  let reportedUsage: ModelRunUsage = normalizeTokenUsage({});
   try {
     execution = await input.execute({
         maxOutputTokens: input.acceptedRequest.maxOutputTokens,
@@ -263,8 +251,11 @@ async function acceptedOperation(input: Readonly<{
         systemPrompt: input.acceptedRequest.systemPrompt,
         userPrompt: input.acceptedRequest.userPrompt
       }, {
+        onUsage(value) { reportedUsage = mergeTokenUsage(reportedUsage, value); },
         providerResponseId: recoveryProviderResponseId
       });
+    reportedUsage = mergeTokenUsage(reportedUsage, execution.usage);
+    execution = { ...execution, usage: reportedUsage };
     acceptedResult = input.acceptedOutput(execution.output);
   } catch (error) {
     if (error instanceof KnowledgeAnswerOperationDeferredError) throw error;
@@ -292,7 +283,7 @@ async function acceptedOperation(input: Readonly<{
     execution = {
       output: Object.freeze({}),
       providerResponseId: null,
-      usage: zeroUsage
+      usage: normalizeTokenUsage({ ...reportedUsage, completeness: "partial" })
     };
     acceptedResult = input.acceptedFailure(error);
   }

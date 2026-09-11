@@ -53,6 +53,7 @@ export function deploymentLabeller(
         ...Object.values(catalog.ineligible).flat(),
         ...(catalog.policy.systemModel ? [catalog.policy.systemModel] : []),
         ...(catalog.policy.chatTitleModel ? [catalog.policy.chatTitleModel] : []),
+        ...(catalog.policy.chatPdfNativeModel ? [catalog.policy.chatPdfNativeModel] : []),
         ...(catalog.policy.chatPdfModel ? [catalog.policy.chatPdfModel] : []),
         ...(catalog.policy.rerankerModel ? [catalog.policy.rerankerModel] : []),
         ...(catalog.policy.rerankerRoute?.entries ?? [])
@@ -115,13 +116,13 @@ function ineligibleItems(
 /** Picker items for the independent generative roles. */
 export function generativeRoleItems(
   catalog: AdminSystemModelPolicyCatalog,
-  role: "chat_titles" | "memory" | "vision"
+  role: "chat_titles" | "memory" | "vision" | "direct_pdf"
 ): AdminRolePickerItem[] {
   const label = deploymentLabeller(catalog);
   const ready = role === "memory"
     ? catalog.candidates
     : role === "chat_titles" ? catalog.titleCandidates
-    : catalog.documentCandidates.filter((item) => item.visionInput === "verified");
+    : catalog.documentCandidates.filter((item) => role === "direct_pdf" ? item.pdfInput === "verified" : item.visionInput === "verified");
   const readyIds = new Set(ready.map((item) => item.id));
   return [
     ...ready.map((item): AdminRolePickerItem => ({ group: "ready", id: item.id, label: label(item) })),

@@ -41,6 +41,7 @@ export type ComposerSessionSnapshot = {
   editingMessageId: string | null;
   latestUploadGeneration: number;
   operationError: string | null;
+  contextRejectionGeneration: number | null;
   operationErrorLive: boolean;
   operationErrorRetryable: boolean;
   pendingEdit: ComposerPendingEdit | null;
@@ -113,7 +114,8 @@ type ComposerSessionStore = {
     outcome: ComposerSendOutcome,
     error?: string | null,
     operationErrorLive?: boolean,
-    runId?: string | null
+    runId?: string | null,
+    contextTooLarge?: boolean
   ): boolean;
   finishUpload(key: ComposerSessionKey, generation: number, error: string | null): boolean;
   isEditCurrent(token: ComposerEditToken): boolean;
@@ -145,6 +147,7 @@ export const emptyComposerSessionSnapshot = Object.freeze({
   editingError: null,
   editingMessageId: null,
   latestUploadGeneration: 0,
+  contextRejectionGeneration: null,
   operationError: null,
   operationErrorLive: true,
   operationErrorRetryable: false,
@@ -295,6 +298,8 @@ function patchedSession(
     ...(editingErrorChanged ? { editingError: patch.editingError ?? null } : {}),
     ...(editingMessageChanged ? { editingMessageId: patch.editingMessageId ?? null } : {}),
     ...(errorChanged ? { operationError: patch.operationError ?? null } : {}),
+    ...(attachmentsChanged || draftChanged || workspaceChanged || errorPatched
+      ? { contextRejectionGeneration: null } : {}),
     ...(workspaceChanged ? { workspaceEnabled: patch.workspaceEnabled ?? false, workspaceInitialized: true } : {}),
     ...(errorPatched ? { operationErrorLive: true, operationErrorRetryable: false } : {}),
     editRevision:
@@ -440,6 +445,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           attachments: [],
           draft: "",
           editRevision: session.editRevision + (session.draft ? 1 : 0),
+          contextRejectionGeneration: null,
           operationError: null,
           operationErrorLive: true,
           operationErrorRetryable: false,
@@ -469,6 +475,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
         [key]: {
           ...session,
           latestUploadGeneration: generation,
+          contextRejectionGeneration: null,
           operationError: null,
           operationErrorLive: true,
           operationErrorRetryable: false,
@@ -550,7 +557,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
     });
     return true;
   },
-  finishSend(token, outcome, error = null, operationErrorLive = true, runId = null) {
+  finishSend(token, outcome, error = null, operationErrorLive = true, runId = null, contextTooLarge = false) {
     const state = get();
     const sourceSession = state.sessionsByKey[token.sourceKey];
     const key =
@@ -585,6 +592,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
                 revision: session.revision + 1
               }
             : {}),
+          contextRejectionGeneration: restore && contextTooLarge ? token.generation : null,
           operationError: failedBeforeRun ? error : null,
           operationErrorLive: failedBeforeRun ? operationErrorLive : true,
           operationErrorRetryable: restore && Boolean(error),

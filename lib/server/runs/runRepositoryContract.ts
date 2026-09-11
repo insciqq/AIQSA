@@ -307,6 +307,8 @@ export type CancelRunResult =
     };
 
 export type RunUsageAttribution = {
+  /** Retained contribution count for subtracting saved answer rounds during recovery. */
+  operationCount?: number | null;
   estimatedCostMicros?: number | null;
   modelId: string;
   provider: string;

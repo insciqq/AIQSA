@@ -3,6 +3,7 @@ import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import {
   providerAttachmentPreviewFilename,
+  usesNativePdfInput,
   providerAttachmentPreviewText,
   providerAttachmentText
 } from "./attachmentPayload";
@@ -188,7 +189,7 @@ function buildInputContent(
   }
 
   for (const attachment of request.attachments) {
-    if (attachment.kind === "pdf" && request.modelCapabilities.nativePdfInput) {
+    if (usesNativePdfInput(attachment, request.modelCapabilities)) {
       content.push(pdfFileBlock(attachment, options.redactFiles, options.preview));
       continue;
     }

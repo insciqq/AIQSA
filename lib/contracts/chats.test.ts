@@ -58,6 +58,7 @@ const message = {
 };
 
 const usageStats = {
+  incompleteRunCount: 0,
   activeBranchMessageCount: 1,
   cachedInputTokens: 2,
   cacheWriteInputTokens: 3,
@@ -77,6 +78,19 @@ function detailChat(overrides: Record<string, unknown> = {}) {
 }
 
 describe("chat wire contracts", () => {
+  it("decodes the source message for a context snapshot and rejects malformed or orphan identities", () => {
+    const session = { approximateInputTokens: 6000, contextWindow: 10000, droppedMessages: 4, loadedTools: 2,
+      maxOutputTokens: 1024, modelId: "gpt-5.5", phase: "after_answer", provider: "openai",
+      safetyMarginTokens: 1000, version: 1 };
+    const decode = (stats: unknown) => decodeChatDetailResponse({
+      chat: detailChat({ messages: [message], usageStats, contextStats: stats })
+    });
+    expect(decode({ ...contextStats, session, sessionMessageId: message.id })?.contextStats)
+      .toEqual({ ...contextStats, session, sessionMessageId: message.id });
+    for (const id of [12, {}, ""]) expect(decode({ ...contextStats, session, sessionMessageId: id })).toBeNull();
+    expect(decode({ ...contextStats, sessionMessageId: message.id })).toBeNull();
+  });
+
   it("preserves authoritative activity origin and rejects unknown origins", () => {
     const call = { round: 1, serverName: "Repository Tools", status: "error", toolName: "search" };
     const decode = (origin: unknown) => decodeChatDetailResponse({

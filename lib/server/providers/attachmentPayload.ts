@@ -2,6 +2,11 @@ import { estimateApproxTokens } from "../../domain/contextBudget";
 import { pdfPageCountFromMetadata } from "../../contracts/uploads";
 import type { ProviderAttachment, ProviderModelCapabilities } from "./types";
 
+export function usesNativePdfInput(attachment: Pick<ProviderAttachment, "kind" | "pdfDelivery">,
+  capabilities: Pick<ProviderModelCapabilities, "nativePdfInput">): boolean {
+  return attachment.kind === "pdf" && attachment.pdfDelivery !== "prepared_text" && capabilities.nativePdfInput === true;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -97,7 +102,7 @@ export function providerAttachmentBudgetTokens(input: {
       return total + (input.modelCapabilities.vision ? imageProxyTokens(attachment) : 0);
     }
 
-    if (attachment.kind === "pdf" && input.modelCapabilities.nativePdfInput) {
+    if (usesNativePdfInput(attachment, input.modelCapabilities)) {
       return total + nativePdfProxyTokens(attachment);
     }
 

@@ -575,6 +575,7 @@ describe("V21 audited Knowledge answer execution", () => {
     expect(result.operations).toHaveLength(6);
     expect(resumed).toHaveBeenCalledTimes(1);
     expect(resumed.mock.calls[0]?.[1]).toEqual({
+      onUsage: expect.any(Function),
       providerResponseId: "recovered-response-6"
     });
   });
@@ -788,6 +789,7 @@ describe("V21 audited Knowledge answer execution", () => {
       expect(result.operations).toHaveLength(5);
       expect(resumed).toHaveBeenCalledTimes(6 - interruptedOrdinal);
       expect(resumed.mock.calls[0]?.[1]).toEqual({
+        onUsage: expect.any(Function),
         providerResponseId: `recovered-response-${interruptedOrdinal}`
       });
     });

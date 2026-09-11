@@ -59,7 +59,7 @@ function fixture(workspace = false) {
         pageCount: 2, route: "local_text", documentArtifactId: "document" }] } };
   const deps = {
     pdfRepository: { readArtifact: vi.fn(async () => ({ kind: "document", preparationGeneration: "run", sourceChecksum,
-      route: "local_text", storageKey: "private/document", byteSize: encoded.body.length, checksum: encoded.checksum })),
+      route: "local_text", pageCount: 2, storageKey: "private/document", byteSize: encoded.body.length, checksum: encoded.checksum })),
       markAnswerDispatched: vi.fn(async () => true) },
     providerRuntime: { resolve: vi.fn(async () => ({ adapter })) },
     repository: { loadAttachments: vi.fn(async () => [{ id: "file", checksum: sourceChecksum, byteSize: 8,
@@ -91,6 +91,20 @@ describe("accepted PDF answer continuation", () => {
     h.deps.pdfRepository.markAnswerDispatched.mockResolvedValue(false);
     await expect(h.run()).rejects.toThrow("pdf_preparation_unavailable");
     expect(createRunExecutionResponse).toHaveBeenCalledOnce();
+  });
+
+  it.each(["system_pdf", "system_vision"])("preserves %s text delivery when the answer can read native PDFs", async (route) => {
+    const h = fixture();
+    h.normalized.modelCapabilities.nativePdfInput = true;
+    h.loaded.modelRun.chatPdfAttachments[0]!.route = route;
+    const artifact = await h.deps.pdfRepository.readArtifact();
+    h.deps.pdfRepository.readArtifact.mockResolvedValue({ ...artifact, route });
+    await h.run();
+    const prepared = vi.mocked(createRunExecutionResponse).mock.calls[0]![0].prepared;
+    expect(prepared.providerRequest.attachments[0]).toMatchObject({ kind: "pdf", pdfDelivery: "prepared_text" });
+    expect(prepared.providerRequest.attachments[0]?.base64Data).toBeUndefined();
+    expect(prepared.normalizedRequest.modelId).toBe("frozen-answer");
+    expect(h.deps.storage.getObject).toHaveBeenCalledOnce();
   });
 
   it("resumes committed Memory readiness without repeating the Memory gate", async () => {

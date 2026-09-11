@@ -137,7 +137,8 @@ describe("durable MCP discovery", () => {
     expect(state.materialize).toHaveBeenCalledOnce();
     route.mockResolvedValue({ toolNames: [], usageAttribution: null });
     await executeDurableMcpDiscovery({ ...input(), call: call("next-access"), modelRunToolCallId: "next-call" });
-    expect(route.mock.calls[1]![0].catalog.servers).toEqual([]);
+    expect(route).toHaveBeenCalledOnce();
+    expect(state.materialize).toHaveBeenCalledOnce();
   });
 
   it.each(["mcp_router_gemini_invalid_request", "mcp_router_gemini_parameter_unknown", "mcp_router_request_rejected"] as const)(
@@ -353,7 +354,7 @@ describe("durable MCP discovery", () => {
       namespacedName: toolIds[0],
       revisionId: "revision-catalog",
       serverId: "server-catalog"
-    }]);
+    }], undefined);
     expect(JSON.stringify(state.materialize.mock.calls)).not.toContain(brokenToolId);
   });
 

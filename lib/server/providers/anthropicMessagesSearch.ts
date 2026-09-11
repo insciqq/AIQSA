@@ -1,5 +1,5 @@
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
-import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
+import { normalizeTokenUsage, reportedTokenCount, sumTokenUsage } from "../../domain/usage";
 import { adminSearchExecutionLimits } from "../../contracts/adminSearch";
 import { ANTHROPIC_WEB_SEARCH_TOOL_DECLARATION } from "../tools/bridges";
 import {
@@ -118,20 +118,10 @@ function nonNegativeInteger(value: unknown): number | undefined {
 }
 
 function tokenValue(value: unknown): number | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+  if (typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value)) {
     throw new Error("anthropic_usage_invalid");
   }
-  return value;
-}
-
-function safeAnthropicMessageUsage(usage: ModelRunUsage): ModelRunUsage {
-  if (Object.values(usage).some((value) =>
-    value !== undefined && value !== null &&
-    (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0))) {
-    throw new Error("anthropic_usage_invalid");
-  }
-  return usage;
+  return reportedTokenCount(value) ?? undefined;
 }
 
 export function updateAnthropicMessageUsage(
@@ -139,21 +129,20 @@ export function updateAnthropicMessageUsage(
   value: unknown
 ): ModelRunUsage {
   const usage = isRecord(value) ? value : null;
-  if (!usage) return safeAnthropicMessageUsage(previous);
+  const prior = normalizeTokenUsage(previous);
+  if (!usage) return prior;
 
   const uncachedInputTokens =
-    tokenValue(usage.input_tokens) ?? tokenValue(usage.uncached_input_tokens);
+    tokenValue(usage.input_tokens) ?? tokenValue(usage.uncached_input_tokens) ??
+    (prior.inputTokens === null ? undefined : reportedTokenCount(prior.inputTokens -
+      (prior.cachedInputTokens ?? 0) - (prior.cacheWriteInputTokens ?? 0)) ?? undefined);
   const cachedInputTokens =
-    tokenValue(usage.cache_read_input_tokens) ?? previous.cachedInputTokens ?? 0;
+    tokenValue(usage.cache_read_input_tokens) ?? prior.cachedInputTokens;
   const cacheWriteInputTokens =
-    tokenValue(usage.cache_creation_input_tokens) ?? previous.cacheWriteInputTokens ?? 0;
-  const hasInputUsage = uncachedInputTokens !== undefined ||
-    tokenValue(usage.cache_read_input_tokens) !== undefined ||
-    tokenValue(usage.cache_creation_input_tokens) !== undefined;
-  const inputTokens = hasInputUsage
-    ? (uncachedInputTokens ?? 0) + cachedInputTokens + cacheWriteInputTokens
-    : previous.inputTokens;
-  const outputTokens = tokenValue(usage.output_tokens) ?? previous.outputTokens;
+    tokenValue(usage.cache_creation_input_tokens) ?? prior.cacheWriteInputTokens;
+  const inputTokens = uncachedInputTokens === undefined && cachedInputTokens === null && cacheWriteInputTokens === null
+    ? null : (uncachedInputTokens ?? 0) + (cachedInputTokens ?? 0) + (cacheWriteInputTokens ?? 0);
+  const outputTokens = tokenValue(usage.output_tokens) ?? prior.outputTokens;
   const outputDetails = isRecord(usage.output_tokens_details)
     ? usage.output_tokens_details
     : null;
@@ -161,32 +150,42 @@ export function updateAnthropicMessageUsage(
     tokenValue(outputDetails?.thinking_tokens) ??
     tokenValue(usage.reasoning_output_tokens) ??
     tokenValue(usage.thinking_output_tokens) ??
-    previous.reasoningTokens;
+    prior.reasoningTokens;
   const totalTokens = tokenValue(usage.total_tokens);
 
-  return safeAnthropicMessageUsage(normalizeTokenUsage({
+  const incompleteInput = inputTokens !== null &&
+    (uncachedInputTokens === undefined || cachedInputTokens === null || cacheWriteInputTokens === null);
+  const malformed = [usage.input_tokens, usage.uncached_input_tokens, usage.cache_read_input_tokens,
+    usage.cache_creation_input_tokens, usage.output_tokens, outputDetails?.thinking_tokens,
+    usage.reasoning_output_tokens, usage.thinking_output_tokens, usage.total_tokens]
+    .some((count) => count != null && reportedTokenCount(count) === null);
+  return normalizeTokenUsage({
     cachedInputTokens,
     cacheWriteInputTokens,
     inputTokens,
     outputTokens,
     reasoningTokens,
-    ...(totalTokens !== undefined ? { totalTokens } : {})
-  }));
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+    ...(incompleteInput || malformed || (prior.completeness === "partial" &&
+      [usage.input_tokens ?? usage.uncached_input_tokens, usage.cache_read_input_tokens, usage.cache_creation_input_tokens]
+        .some((count) => reportedTokenCount(count) === null)) ? { completeness: "partial" } : {})
+  });
 }
 
 export function extractAnthropicMessageUsage(value: unknown): ModelRunUsage {
-  return updateAnthropicMessageUsage({
-    inputTokens: 0,
-    outputTokens: 0,
-    reasoningTokens: 0
-  }, value);
+  return updateAnthropicMessageUsage({}, value);
 }
 
 export function addAnthropicMessageUsage(
   left: ModelRunUsage,
   right: ModelRunUsage
 ): ModelRunUsage {
-  return safeAnthropicMessageUsage(sumTokenUsage([left, right]));
+  for (const field of ["inputTokens", "outputTokens", "totalTokens"] as const) {
+    if (left[field] != null && right[field] != null && !Number.isSafeInteger(left[field] + right[field])) {
+      throw new Error("anthropic_usage_invalid");
+    }
+  }
+  return sumTokenUsage([left, right]);
 }
 
 export function updateAnthropicWebSearchUsage(
@@ -681,11 +680,7 @@ export function createAnthropicMessagesSearchAdapter(
       const artifacts: ModelRunSseEvent[] = [];
       const assistantContent: Record<string, unknown>[] = [];
       let latestInspection: AnthropicSearchInspection | null = null;
-      let totalUsage: ModelRunUsage = {
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0
-      };
+      let totalUsage: ModelRunUsage = normalizeTokenUsage({});
       let totalWebSearchUsage: AnthropicWebSearchUsage = { present: false, requests: 0 };
       let latestId: string | undefined;
       let latestModel: string | undefined;
@@ -737,7 +732,7 @@ export function createAnthropicMessagesSearchAdapter(
               attemptWebSearchUsage,
               envelope.usage
             );
-            totalUsage = addAnthropicMessageUsage(totalUsage, attemptUsage);
+            totalUsage = continuationCount === 0 ? attemptUsage : addAnthropicMessageUsage(totalUsage, attemptUsage);
             totalWebSearchUsage = addAnthropicWebSearchUsage(
               totalWebSearchUsage,
               attemptWebSearchUsage

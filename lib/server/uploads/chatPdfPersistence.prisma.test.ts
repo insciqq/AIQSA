@@ -9,17 +9,18 @@ import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memor
 import { createPrismaTemporaryChatDeletionHandler } from "../memory/temporaryDeletion";
 import type { MemoryDeletionClaim } from "../memory/coordinator/types";
 import { createChatPdfAttempts } from "./chatPdfAttempts";
-import { createChatPdfRepository, chatPdfJson } from "./chatPdfPersistence";
+import { createChatPdfRepository, chatPdfJson, chatPdfAdmissionFromRow } from "./chatPdfPersistence";
 import { chatPdfCompatibilityKey, encodeChatPdfArtifact, type ChatPdfWorkPlan } from "./chatPdfCore";
 import type { ChatPdfAttachmentAdmission } from "./chatPdfAdmission";
 
+let previousPdfPolicy: Awaited<ReturnType<typeof prisma.systemModelPolicy.findUnique>> | null = null;
 const owners: string[] = [];
 const connections: string[] = [];
 const attachmentIds: string[] = [];
 const repository = createChatPdfRepository(prisma);
 const attempts = createChatPdfAttempts(prisma);
 
-async function fixture(vision = false, temporary = false, workspace = false) {
+async function fixture(vision = false, temporary = false, workspace = false, nativeReader = false) {
   const userId = randomUUID(); owners.push(userId);
   const sourceChecksum = "a".repeat(64);
   const attachmentId = randomUUID();
@@ -32,7 +33,7 @@ async function fixture(vision = false, temporary = false, workspace = false) {
     const version = await prisma.providerCredentialVersion.create({ data: {
       id: randomUUID(), credentialId: credential.id, version: 1, testEvidence: { authenticationMode: "none" }, testedAt: new Date(), activatedAt: new Date()
     } });
-    const capabilities = { nativePdfInput: false, nativeSearch: false, pdf: true, vision: true, reasoning: false };
+    const capabilities = { nativePdfInput: nativeReader, nativeSearch: false, pdf: true, vision: true, reasoning: false };
     const model = await prisma.providerModel.create({ data: {
       id: randomUUID(), connectionId: connection.id, provider: "openai_compatible", modelId: "fixture", displayName: "PDF test",
       capabilities, defaultParams: {}, inputTokenPriceMicros: 2, outputTokenPriceMicros: 8
@@ -41,12 +42,21 @@ async function fixture(vision = false, temporary = false, workspace = false) {
       credentialVersionId: version.id, modelVersion: 1, providerModelId: model.id }, snapshot: {
       version: 1, connectionDisplayName: "PDF test", modelDisplayName: "PDF test", connectionId: connection.id,
       credentialId: credential.id, credentialVersionId: version.id, providerModelId: model.id, providerFamily: "openai_compatible",
-      connection: { allowPrivateNetwork: false, apiRoot: "https://pdf.example.test/v1", authenticationMode: "none", responseTimeoutMs: 120000 },
+      connection: { allowPrivateNetwork: true, apiRoot: "http://127.0.0.1:43210/v1", authenticationMode: "none", responseTimeoutMs: 120000 },
       model: { adapterKind: "openai_responses_compatible", answerSelectable: true, capabilities, defaultParams: {}, modelClass: "answer", upstreamModelId: "fixture" }
     } };
   }
+  let policyVersion: number | null = null;
+  if (nativeReader) {
+    previousPdfPolicy = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+    policyVersion = (await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: {
+      chatPdfNativeProviderModelId: binding.snapshot!.providerModelId, chatPdfProcessingMode: "USE_PDF_READER",
+      chatPdfFallbackMethod: "PAGE_IMAGES", version: { increment: 1 }
+    } })).version;
+  }
   const admission: ChatPdfAttachmentAdmission = { ...binding, attachmentId, byteSize: 10, pageCount: 2,
-    policyVersion: null, route: vision ? "selected_model_vision" : "local_text", sourceChecksum };
+    policyVersion, route: nativeReader ? "system_pdf" : vision ? "selected_model_vision" : "local_text", sourceChecksum,
+    ...(nativeReader ? { mode: "use_pdf_reader", fallbackMethod: "page_images", answerModelName: "Frozen answer" } : {}) };
   const accepted = await prisma.$transaction(async (tx) => {
     await tx.user.create({ data: { id: userId, displayName: "PDF owner", status: "active" } });
     const chat = await tx.chat.create({ data: { title: "PDF test", userId,
@@ -81,6 +91,7 @@ async function fixture(vision = false, temporary = false, workspace = false) {
     await tx.chatPdfRunPreparation.create({ data: { modelRunId: run.id, admissionKey: run.id.replaceAll("-", "").repeat(2),
       snapshot: { version: 1, prepared: { sourceKind: "send", normalizedRequest: { chatId: chat.id } } } } });
     const preparation = await tx.chatPdfAttachmentPreparation.create({ data: {
+      policyVersion, processingMode: admission.mode, fallbackMethod: admission.fallbackMethod, answerModelName: admission.answerModelName,
       modelRunId: run.id, attachmentId, route: admission.route, sourceChecksum, sourceByteSize: 10, pageCount: 2,
       bindingSnapshot: admission.snapshot ? chatPdfJson(admission.snapshot) : Prisma.DbNull,
       bindingAuthority: admission.authority ? chatPdfJson(admission.authority) : Prisma.DbNull,
@@ -94,7 +105,7 @@ async function fixture(vision = false, temporary = false, workspace = false) {
   const plan: ChatPdfWorkPlan = { adaptive: null, compatibilityKey: chatPdfCompatibilityKey(admission),
     limits: { imageBytes: 2097152, imageCount: 3, imagePixels: 10000000, payloadBytes: 9437184 },
     maxBlocks: 100, maxCharacters: 1000, pageCount: 2, parserVersion: 14, renderVersion: 1, promptVersion: 6,
-    units: [1, 2].map((page) => ({ page, route: vision ? "vision_required" : "native_only", crops: [], key: String(page).repeat(64) })), version: 1 };
+    units: [1, 2].map((page) => ({ page, route: nativeReader ? "pdf_required" : vision ? "vision_required" : "native_only", crops: [], key: String(page).repeat(64) })), version: 1 };
   async function artifact(kind: "local" | "page" | "document") {
     const encoded = encodeChatPdfArtifact({ pageCount: 2, text: "Bounded fixture text" });
     const row = await repository.reserveArtifact(claim!, { admission, kind, pageCount: 2,
@@ -110,6 +121,13 @@ async function fixture(vision = false, temporary = false, workspace = false) {
 }
 
 afterEach(async () => {
+  if (previousPdfPolicy) {
+    const { chatPdfNativeProviderModelId, chatPdfNativeReasoningEffort, chatPdfProcessingMode, chatPdfFallbackMethod, version } = previousPdfPolicy;
+    await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: {
+      chatPdfNativeProviderModelId, chatPdfNativeReasoningEffort, chatPdfProcessingMode, chatPdfFallbackMethod, version
+    } });
+    previousPdfPolicy = null;
+  }
   for (const id of owners.splice(0)) await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL TIME ZONE 'UTC'`;
     await tx.workspaceRunBinding.deleteMany({ where: { modelRun: { userId: id } } });
@@ -136,6 +154,30 @@ afterEach(async () => {
 afterAll(() => prisma.$disconnect());
 
 describe("chat PDF database lifecycle", () => {
+  it("keeps native reader work and its policy immutable after an administrator changes future routing", async () => {
+    const h = await fixture(true, false, false, true);
+    const row = await prisma.chatPdfAttachmentPreparation.findUniqueOrThrow({ where: { id: h.preparationId } });
+    expect(chatPdfAdmissionFromRow(row)).toMatchObject(h.admission);
+    await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: {
+      chatPdfProcessingMode: "READ_PAGE_IMAGES", chatPdfNativeProviderModelId: null, version: { increment: 1 }
+    } });
+    await h.savePlan();
+    await expect(prisma.chatPdfAttachmentPreparation.update({ where: { id: h.preparationId }, data: { processingMode: "read_page_images" } }))
+      .rejects.toThrow(/chat_pdf_preparation_immutable/);
+    const reserved = await attempts.reserve(h.claim, { preparationId: h.preparationId, page: 1,
+      workKey: h.plan.units[0]!.key, requestDigest: "e".repeat(64) });
+    if (reserved.kind !== "reserved") throw new Error("reservation missing");
+    const dispatch = await attempts.dispatch(h.claim, reserved.attemptId);
+    const page = await h.artifact("page");
+    await attempts.recordUsage(dispatch, { inputTokens: 0, outputTokens: 0 });
+    await attempts.settle(dispatch, { resultArtifactId: page.id, usage: { inputTokens: 0, outputTokens: 0 } });
+    await repository.completedPages(h.claim, h.preparationId);
+    const loaded = await repository.load(h.claim);
+    expect(loaded.modelRun.chatPdfAttachments[0]).toMatchObject({ route: "system_pdf", processingMode: "use_pdf_reader", completedPages: 1 });
+    expect(await prisma.usageEvent.findUnique({ where: { id: dispatch.usageEventId } }))
+      .toMatchObject({ providerModelId: h.admission.snapshot!.providerModelId, inputTokens: 0, usageCompleteness: "COMPLETE" });
+  });
+
   it.each([false, true])("projects admitted PDF preparation as queued before answer dispatch (Workspace: %s)", async (workspace) => {
     const h = await fixture(false, false, workspace);
     const runs = createPrismaRunRepository(prisma, { memorySourceHooks: NOOP_MEMORY_SOURCE_MUTATION_HOOKS });
@@ -235,14 +277,31 @@ describe("chat PDF database lifecycle", () => {
     expect(reserved.kind).toBe("reserved"); if (reserved.kind !== "reserved") throw new Error("reservation missing");
     const dispatch = await attempts.dispatch(h.claim, reserved.attemptId);
     expect(await prisma.usageEvent.findUnique({ where: { id: dispatch.usageEventId } })).toMatchObject({ inputTokens: null, outputTokens: null, estimatedCostMicros: null });
-    await attempts.recordUsage(dispatch, { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 });
-    expect(await prisma.usageEvent.findUnique({ where: { id: dispatch.usageEventId } })).toMatchObject({ inputTokens: null, totalTokens: null });
+    await attempts.recordUsage(dispatch, {});
+    expect(await prisma.usageEvent.findUnique({ where: { id: dispatch.usageEventId } })).toMatchObject({ inputTokens: null, totalTokens: null, usageCompleteness: "UNAVAILABLE" });
     await expect(attempts.dispatch(h.claim, reserved.attemptId)).rejects.toThrow();
     const usage = { inputTokens: 30, outputTokens: 5, reasoningTokens: 0 };
     await Promise.all([attempts.recordUsage(dispatch, usage), attempts.recordUsage(dispatch, usage)]);
     expect(await prisma.usageEvent.findUnique({ where: { id: dispatch.usageEventId } })).toMatchObject({ inputTokens: 30, outputTokens: 5, totalTokens: 35 });
     expect(await attempts.reserve(h.claim, work)).toEqual({ kind: "ambiguous" });
     expect(await prisma.usageEvent.count({ where: { modelRunId: h.runId } })).toBe(1);
+  });
+
+  it.each(["zero", "partial"] as const)("preserves %s usage once, including receipts with unknown input", async (kind) => {
+    const h = await fixture(true); await h.savePlan();
+    const reserved = await attempts.reserve(h.claim, { preparationId: h.preparationId, page: 1,
+      workKey: h.plan.units[0]!.key, requestDigest: "d".repeat(64) });
+    if (reserved.kind !== "reserved") throw new Error("reservation missing");
+    const dispatch = await attempts.dispatch(h.claim, reserved.attemptId);
+    const usage = kind === "zero" ? { inputTokens: 0, outputTokens: 0, totalTokens: 0 } : { outputTokens: 0 };
+    await Promise.all([attempts.recordUsage(dispatch, usage), attempts.recordUsage(dispatch, usage)]);
+    await attempts.recordUsage(dispatch, { inputTokens: 99, outputTokens: 22 });
+    expect(await prisma.usageEvent.findUnique({ where: { id: dispatch.usageEventId } })).toMatchObject({
+      inputTokens: kind === "zero" ? 0 : null, outputTokens: 0,
+      totalTokens: kind === "zero" ? 0 : null, usageCompleteness: kind === "zero" ? "COMPLETE" : "PARTIAL"
+    });
+    await expect(prisma.usageEvent.update({ where: { id: dispatch.usageEventId }, data: { inputTokens: 99 } }))
+      .rejects.toThrow(/chat_pdf_usage_immutable/);
   });
 
   it("keeps Stop terminal, rejects late publication, and queues all private artifact deletions", async () => {

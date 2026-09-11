@@ -274,6 +274,7 @@ describe("thread actions", () => {
   it("refreshes active-branch usage after the summary-only checkout response", async () => {
     const messages = threadMessages();
     const usageStats = {
+      incompleteRunCount: 0,
       activeBranchMessageCount: 2,
       cachedInputTokens: 5,
       cacheWriteInputTokens: 3,
