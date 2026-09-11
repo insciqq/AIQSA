@@ -26,10 +26,8 @@ const nextConfig = {
     // multipart overhead). Route-specific admission, streaming concurrency,
     // content inspection, and lower operator limits remain authoritative.
     proxyClientMaxBodySize: 67_108_864 + 8_388_608,
-    // Next 16 persistent Turbopack caches can enter a CPU/RSS growth loop
-    // after broad bind-mount changes. Keep incremental in-process compilation,
-    // but rebuild the disposable dev cache on each container start.
-    turbopackFileSystemCacheForDev: false
+    // Turbopack can evict compiler memory after persisting it to disk.
+    turbopackFileSystemCacheForDev: true
   },
   output: "standalone",
   // Native sharp loads libvips through the dynamic linker. JS tracing retains
