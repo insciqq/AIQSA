@@ -1,5 +1,6 @@
 "use client";
 
+import { AdminMcpToolAccessEditor, mcpToolAccessSummary } from "./AdminMcpToolAccessEditor";
 import { adminMcpErrorMessage } from "@/components/admin/adminMcpApi";
 import { safeMcpEndpoint } from "@/lib/contracts/mcp";
 import {
@@ -203,7 +204,9 @@ function AuthorizationCard({ controller, server }: Readonly<{ controller: AdminM
   );
 }
 
-function ToolsSection({ controller, server }: Readonly<{ controller: AdminMcpController; server: AdminMcpServer }>) {
+function ToolsSection({ controller, groups, server, users }: Pick<AdminMcpServerPageProps, "controller" | "groups" | "server" | "users">) {
+  const [editingTool, setEditingTool] = useState<string | null>(null);
+  const accessTrigger = useRef<HTMLButtonElement | null>(null);
   const [query, setQuery] = useState("");
   const [onlyEnabled, setOnlyEnabled] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -273,6 +276,8 @@ function ToolsSection({ controller, server }: Readonly<{ controller: AdminMcpCon
                 <div className="min-w-0 flex-1">
                   <p className="break-words font-mono text-xs font-medium text-ink [overflow-wrap:anywhere]">{tool.name}</p>
                   {tool.description ? <p className="mt-0.5 break-words text-xs leading-5 text-ink-muted [overflow-wrap:anywhere]">{tool.description}</p> : null}
+                  <p className="mt-1 text-xs text-ink-secondary">{mcpToolAccessSummary(server.toolAccess?.find((policy) => policy.name === tool.name))}</p>
+                  <UiV2Button aria-label={`Edit access to ${tool.name}`} disabled={locked || editingTool !== null} onClick={(event) => { accessTrigger.current = event.currentTarget; setEditingTool(tool.name); }} tone="ghost" type="button">Edit access</UiV2Button>
                 </div>
                 <UiV2Switch checked={!disabledNames.has(tool.name)} disabled={locked} label={`Use ${tool.name}`} onChange={(next) => void setTool(tool.name, next)} />
               </li>
@@ -285,6 +290,7 @@ function ToolsSection({ controller, server }: Readonly<{ controller: AdminMcpCon
           </div>
         )}
       </div>
+      {editingTool ? <AdminMcpToolAccessEditor controller={controller} groups={groups} key={`${server.id}:${editingTool}`} name={editingTool} onClose={() => { setEditingTool(null); requestAnimationFrame(() => { if (accessTrigger.current?.isConnected) accessTrigger.current.focus(); else searchRef.current?.focus(); }); }} server={server} users={users} /> : null}
     </section>
   );
 }
@@ -378,7 +384,7 @@ export function AdminMcpServerPage({
 
       {server.draft.auth.mode === "oauth" ? <AuthorizationCard controller={controller} server={server} /> : null}
 
-      <ToolsSection controller={controller} server={server} />
+      <ToolsSection controller={controller} groups={groups} server={server} users={users} />
 
       <section aria-labelledby="mcp-access-heading" className="grid grid-cols-[minmax(0,1fr)] gap-2.5">
         <h3 className={sectionHeadingClass} id="mcp-access-heading">Access</h3>

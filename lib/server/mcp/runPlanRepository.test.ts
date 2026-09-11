@@ -109,7 +109,7 @@ function preference(overrides: Partial<PreferenceFixture> = {}): PreferenceFixtu
 function clientWith(records: PreferenceFixture[]) {
   const findMany = vi.fn(async () => records);
   return {
-    client: { mcpUserServer: { findMany } } as unknown as PrismaClient,
+    client: { user: { findUnique: async () => ({ status: "active", groups: [] }) }, mcpToolAccessPolicy: { findMany: async () => [] }, mcpUserServer: { findMany } } as unknown as PrismaClient,
     findMany
   };
 }
@@ -163,7 +163,7 @@ function projectGeneration(overrides: Record<string, unknown> = {}) {
 function projectClientWith(records: unknown[]) {
   const findMany = vi.fn(async () => records);
   return {
-    client: { mcpRuntimeGeneration: { findMany } } as unknown as PrismaClient,
+    client: { user: { findUnique: async () => ({ status: "active", groups: [] }) }, mcpToolAccessPolicy: { findMany: async () => [] }, mcpRuntimeGeneration: { findMany } } as unknown as PrismaClient,
     findMany
   };
 }
@@ -172,7 +172,7 @@ describe("Prisma MCP run-plan loader", () => {
   it("admits a current shared/no-auth runtime for Project scope without a personal grant", async () => {
     const { client, findMany } = projectClientWith([projectGeneration()]);
 
-    await expect(loadMcpRunPlanRecordsForProjectServers(["project-server-1"], client))
+    await expect(loadMcpRunPlanRecordsForProjectServers("user-1", ["project-server-1"], client))
       .resolves.toEqual([expect.objectContaining({
         credentialSources: ["shared"],
         enabled: true,
@@ -216,8 +216,7 @@ describe("Prisma MCP run-plan loader", () => {
       }
     }, "mcp_runtime_unavailable"]
   ])("fails Project MCP closed for %s", async (_label, override, errorCode) => {
-    const [record] = await loadMcpRunPlanRecordsForProjectServers(
-      ["project-server-1"],
+    const [record] = await loadMcpRunPlanRecordsForProjectServers("user-1", ["project-server-1"],
       projectClientWith([projectGeneration(override)]).client
     );
 
@@ -239,8 +238,7 @@ describe("Prisma MCP run-plan loader", () => {
       generation.revision.server as { archivedAt: Date | null; enabled: boolean },
       serverOverride
     );
-    const [record] = await loadMcpRunPlanRecordsForProjectServers(
-      ["project-server-1"],
+    const [record] = await loadMcpRunPlanRecordsForProjectServers("user-1", ["project-server-1"],
       projectClientWith([generation]).client
     );
 
@@ -274,8 +272,7 @@ describe("Prisma MCP run-plan loader", () => {
       }
     });
 
-    await expect(loadMcpRunPlanRecordsForProjectServers(
-      ["project-server-1"],
+    await expect(loadMcpRunPlanRecordsForProjectServers("user-1", ["project-server-1"],
       projectClientWith([invalid, runnable]).client
     )).resolves.toEqual([expect.objectContaining({
       enabled: true,

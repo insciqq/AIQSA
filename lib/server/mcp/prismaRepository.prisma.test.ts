@@ -1,3 +1,6 @@
+import { loadMcpCapabilityCatalog, loadMcpRunPlanRecordsForServers, loadMcpRunPlanRecordsForProjectServers } from "./runPlanRepository";
+import { prepareMcpRunPlan } from "./runPlan";
+import { filterMcpToolsForUser } from "./toolAccess";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdminMcpServer, McpDraftConfiguration } from "@/lib/contracts/mcp";
@@ -10,6 +13,7 @@ import { createPrismaMcpOAuthRepository } from "./oauthRepository";
 import { McpOAuthService } from "./oauthService";
 
 const userIds: string[] = [];
+const groupIds: string[] = [];
 const serverIds: string[] = [];
 const clientIds: string[] = [];
 const valid: Extract<McpDraftValidationOutcome, { kind: "ok" }> = {
@@ -28,6 +32,7 @@ const draft: McpDraftConfiguration = {
 
 afterEach(async () => {
   await prisma.user.deleteMany({ where: { id: { in: userIds.splice(0) } } });
+  await prisma.group.deleteMany({ where: { id: { in: groupIds.splice(0) } } });
   await prisma.mcpRevision.deleteMany({ where: { serverId: { in: serverIds } } });
   await prisma.mcpServer.deleteMany({ where: { id: { in: serverIds.splice(0) } } });
   await prisma.mcpOAuthClient.deleteMany({ where: { id: { in: clientIds.splice(0) } } });
@@ -332,5 +337,124 @@ describe("MCP Test & Save persistence", () => {
     expect((await repository.listAdminServers(userId)).find((row) => row.id === serverId)?.runtimeProblem).toBe("reauthorization_required");
     await prisma.mcpUserServer.update({ data: { desiredRuntimeGenerationId: null }, where: { id: preference.id } });
     expect((await repository.listAdminServers(userId)).find((row) => row.id === serverId)?.runtimeProblem).toBeNull();
+  });
+});
+
+
+describe("MCP tool access persistence", () => {
+  it("filters personal/Assistant/Project catalogs by the actor while preserving shared generations and base authority", async () => {
+    const f = await fixture();
+    const actorId = await admin();
+    for (const userId of [f.userId, actorId]) {
+      await f.repository.setGrant({ serverId: f.serverId, userId, groupId: null, canUse: true, personalSlotKeys: [] });
+      const preference = await prisma.mcpUserServer.create({ data: { serverId: f.serverId, userId, enabled: true } });
+      const generation = await prisma.mcpRuntimeGeneration.create({ data: {
+        userServerId: preference.id, revisionId: f.server.activeRevision!.id, fingerprint: hashCanonicalMcpValue(randomUUID()),
+        state: "ready", credentialSources: ["shared"], inventoryUpdatedAt: new Date(),
+        inventory: { version: 1, tools: ["search", "write"].map((name) => ({ name, description: null, inputSchema: { type: "object" }, definitionHash: "a".repeat(64) })) }
+      } });
+      await prisma.mcpUserServer.update({ where: { id: preference.id }, data: { desiredRuntimeGenerationId: generation.id } });
+    }
+    const toolsBefore = (await loadMcpCapabilityCatalog(actorId)).servers.find(({ serverId }) => serverId === f.serverId)!.tools;
+    const write = toolsBefore.find(({ originalName }) => originalName === "write")!;
+    await prisma.mcpToolAccessPolicy.create({ data: { serverId: f.serverId, toolName: "write", restricted: true, users: { create: { userId: f.userId } } } });
+    expect((await loadMcpCapabilityCatalog(actorId)).servers.find(({ serverId }) => serverId === f.serverId)!.tools.map(({ originalName }) => originalName)).toEqual(["search"]);
+    const records = await loadMcpRunPlanRecordsForServers(actorId, [f.serverId]);
+    expect(records[0]!.catalogTools!.map(({ name }) => name)).toEqual(["search"]);
+    expect(records[0]!.inventory).toMatchObject({ tools: [{ name: "search" }] });
+    const exact = await prepareMcpRunPlan({ allowedServerIds: [f.serverId], allowedToolNames: [write.namespacedName], isGenerationLive: () => true, load: async () => records });
+    expect(exact).toMatchObject({ ok: false, code: "mcp_not_ready", issues: [{ errorCode: "mcp_tool_not_available" }] });
+    expect((await loadMcpRunPlanRecordsForProjectServers(actorId, [f.serverId]))[0]!.inventory).toMatchObject({ tools: [{ name: "search" }] });
+    expect((await loadMcpRunPlanRecordsForProjectServers(f.userId, [f.serverId]))[0]!.catalogTools).toHaveLength(2);
+    const generations = await prisma.mcpRuntimeGeneration.findMany({ where: { revisionId: f.server.activeRevision!.id } });
+    for (const generation of generations) expect(generation.inventory).toMatchObject({ tools: [{ name: "search" }, { name: "write" }] });
+    const ordinary = (await f.repository.listUserServers(actorId)).find(({ id }) => id === f.serverId)!;
+    expect(ordinary.tools.map(({ name }) => name)).toEqual(["search"]);
+    expect(ordinary.knownToolCount).toBe(1);
+    expect(JSON.stringify(ordinary)).not.toContain(f.userId);
+    expect(ordinary).not.toHaveProperty("toolAccess");
+    await prisma.mcpGrant.deleteMany({ where: { serverId: f.serverId, userId: actorId } });
+    expect((await loadMcpRunPlanRecordsForServers(actorId, [f.serverId]))[0]).toMatchObject({ catalogTools: [], inventory: null, errorCode: "mcp_access_revoked" });
+    // Project shared authority survives personal server-grant loss.
+    expect((await loadMcpRunPlanRecordsForProjectServers(actorId, [f.serverId]))[0]!.catalogTools!.map(({ name }) => name)).toEqual(["search"]);
+  });
+
+  it("changes only mutable tool policy, preserves drafts and credentials, and conflicts atomically", async () => {
+    const f = await fixture();
+    const before = await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } });
+    const toolAccess = { name: "write", restricted: true, userIds: [f.userId], groupIds: [] };
+    const input = { serverId: f.serverId, expectedUpdatedAt: f.server.updatedAt, toolAccess };
+    const results = await Promise.all([f.repository.updateServer(input), f.repository.updateServer({ ...input, toolAccess: { ...toolAccess, userIds: [] } })]);
+    expect(results.map(({ kind }) => kind).sort()).toEqual(["draft_changed", "ok"]);
+    expect(f.validate).toHaveBeenCalledTimes(1);
+    const after = await prisma.mcpServer.findUniqueOrThrow({ where: { id: f.serverId } });
+    expect({ ...after, updatedAt: before.updatedAt }).toEqual(before);
+    const saved = await prisma.mcpToolAccessPolicy.findUniqueOrThrow({ where: { serverId_toolName: { serverId: f.serverId, toolName: "write" } }, include: { users: true } });
+    expect(saved.restricted).toBe(true);
+    const current = { ...input, expectedUpdatedAt: after.updatedAt.toISOString() };
+    expect(await f.repository.updateServer({ ...current, toolAccess: { ...toolAccess, userIds: [randomUUID()] } })).toMatchObject({ kind: "draft_validation_failed" });
+    expect(await f.repository.updateServer({ ...current, toolAccess: { ...toolAccess, name: "unknown_tool" } })).toMatchObject({ kind: "draft_validation_failed" });
+    expect(await prisma.mcpToolAccessPolicy.findUniqueOrThrow({ where: { id: saved.id }, include: { users: true } })).toEqual(saved);
+    const validSave = await f.repository.updateServer({ ...current, toolAccess: { ...toolAccess, userIds: [f.userId, f.userId] } });
+    expect(validSave.kind).toBe("ok");
+    if (validSave.kind !== "ok") throw new Error(validSave.kind);
+    expect(validSave.value.toolAccess).toEqual([toolAccess]);
+  });
+
+  it("enforces user/group lifecycle and leaves restricted + empty after the last recipient is deleted", async () => {
+    const f = await fixture();
+    const recipient = await admin();
+    const group = await prisma.group.create({ data: { name: `MCP editors ${randomUUID()}` } });
+    groupIds.push(group.id);
+    await prisma.userGroup.create({ data: { userId: f.userId, groupId: group.id } });
+    const policy = await prisma.mcpToolAccessPolicy.create({ data: { serverId: f.serverId, toolName: "write", restricted: true,
+      users: { create: { userId: recipient } }, groups: { create: { groupId: group.id } } } });
+    const tools = ["search", "write"].map((originalName) => ({ serverId: f.serverId, originalName }));
+    const names = async (userId: string) => (await filterMcpToolsForUser(userId, tools, prisma)).map(({ originalName }) => originalName);
+    expect(await names(f.userId)).toEqual(["search", "write"]);
+    expect(await names(recipient)).toEqual(["search", "write"]);
+    await prisma.group.update({ where: { id: group.id }, data: { archivedAt: new Date() } });
+    expect(await names(f.userId)).toEqual(["search"]);
+    expect(await names(recipient)).toEqual(["search", "write"]);
+    await prisma.group.update({ where: { id: group.id }, data: { archivedAt: null } });
+    await prisma.userGroup.delete({ where: { userId_groupId: { userId: f.userId, groupId: group.id } } });
+    expect(await names(f.userId)).toEqual(["search"]);
+    await prisma.user.update({ where: { id: recipient }, data: { status: "disabled" } });
+    expect(await names(recipient)).toEqual([]);
+    await prisma.user.delete({ where: { id: recipient } });
+    await prisma.group.delete({ where: { id: group.id } });
+    expect(await prisma.mcpToolAccessPolicy.findUniqueOrThrow({ where: { id: policy.id }, include: { users: true, groups: true } }))
+      .toMatchObject({ restricted: true, users: [], groups: [] });
+    expect(await names(f.userId)).toEqual(["search"]);
+    const full = await prisma.group.findUniqueOrThrow({ where: { systemRole: "full_access" } });
+    await prisma.userGroup.upsert({ where: { userId_groupId: { userId: f.userId, groupId: full.id } },
+      create: { userId: f.userId, groupId: full.id }, update: {} });
+    expect(await names(f.userId)).toEqual(["search"]);
+    await prisma.mcpToolGroupGrant.create({ data: { policyId: policy.id, groupId: full.id } });
+    expect(await names(f.userId)).toEqual(["search", "write"]);
+  });
+
+  it("preserves restrictions through global off/on, disappearance, Test & Save and rollback", async () => {
+    const f = await fixture();
+    const current = async () => (await f.repository.listAdminServers()).find(({ id }) => id === f.serverId)!;
+    const toolAccess = { name: "write", restricted: true, userIds: [f.userId], groupIds: [] };
+    expect((await f.repository.updateServer({ serverId: f.serverId, expectedUpdatedAt: f.server.updatedAt, toolAccess })).kind).toBe("ok");
+    for (const enabled of [false, true]) {
+      expect((await f.repository.updateServer({ serverId: f.serverId, expectedUpdatedAt: (await current()).updatedAt,
+        tool: { name: "write", enabled } })).kind).toBe("ok");
+      expect((await current()).toolAccess).toEqual([toolAccess]);
+    }
+    f.validate.mockResolvedValue({ ...valid, toolInventory: valid.toolInventory.filter(({ name }) => name !== "write") });
+    expect((await f.save(await current())).kind).toBe("ok");
+    expect((await current()).activeRevision!.validationEvidence.toolInventory.map(({ name }) => name)).toEqual(["search"]);
+    expect((await current()).toolAccess).toEqual([toolAccess]);
+    f.validate.mockResolvedValue(valid);
+    expect((await f.save(await current())).kind).toBe("ok");
+    expect((await current()).toolAccess).toEqual([toolAccess]);
+    expect((await f.repository.rollbackServer({ serverId: f.serverId, revisionId: f.server.activeRevision!.id })).kind).toBe("ok");
+    expect((await current()).toolAccess).toEqual([toolAccess]);
+    expect((await f.repository.updateServer({ serverId: f.serverId, expectedUpdatedAt: (await current()).updatedAt,
+      toolAccess: { ...toolAccess, restricted: false } })).kind).toBe("ok");
+    expect((await current()).toolAccess).toEqual([{ ...toolAccess, restricted: false }]);
   });
 });

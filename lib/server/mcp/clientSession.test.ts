@@ -1,3 +1,4 @@
+import { assertMcpToolAccess } from "./toolAccess";
 import { createServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
@@ -246,6 +247,32 @@ describe("MCP tool argument schema validation", () => {
 });
 
 describe("McpClientSession", () => {
+  it("keeps a live SDK session usable while current tool grants block subsequent external calls", async () => {
+    const externalCalls: string[] = [];
+    const fixture = await startFixture({ callTool: ({ name }) => { externalCalls.push(name); return { content: [{ type: "text", text: "Written once" }] }; } });
+    const session = createSession(fixture);
+    let recipients = [{ userId: "alice" }];
+    const client = { user: { findUnique: async () => ({ status: "active", groups: [] }) },
+      mcpToolAccessPolicy: { findMany: async () => [{ serverId: "tracker", toolName: "echo", restricted: true, users: recipients, groups: [] }] }
+    } as unknown as Parameters<typeof assertMcpToolAccess>[0];
+    const dispatch = async (userId: string) => {
+      await assertMcpToolAccess(client, userId, [{ serverId: "tracker", originalName: "echo" }]);
+      return session.callTool("echo", {});
+    };
+    try {
+      await session.initialize();
+      expect(await session.listAllTools()).toHaveLength(1);
+      await expect(dispatch("bob")).rejects.toMatchObject({ code: "mcp_tool_access_denied" });
+      expect(externalCalls).toEqual([]);
+      await expect(dispatch("alice")).resolves.toMatchObject({ isError: false });
+      recipients = [];
+      await expect(dispatch("alice")).rejects.toMatchObject({ code: "mcp_tool_access_denied" });
+      expect(externalCalls).toEqual(["echo"]);
+      expect(session.isClosed()).toBe(false);
+      expect(await session.listAllTools()).toHaveLength(1);
+    } finally { await session.close(); }
+  });
+
   it.each([200, 404])("recognizes a correlated unsupported ping over HTTP %s without closing a working session", async (status) => {
     const fixture = await startFixture();
     const session = createSession(fixture, { async fetch(url, init) {

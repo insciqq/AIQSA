@@ -1,4 +1,6 @@
 import type { ProviderRunRequest } from "../providers/types";
+import type { McpToolAccessFilter } from "./toolAccess";
+import { filterMcpCatalog } from "./toolAccessProjection";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
@@ -80,6 +82,7 @@ function materializedSelectionMatches(
 }
 
 type ExecuteDurableMcpDiscoveryInput = Readonly<{
+  filterTools: McpToolAccessFilter;
   activeDiscovery: McpDiscoveryState;
   activeSnapshot?: McpRunPlanSnapshot;
   appendEpoch: AppendMcpDiscoveryEpoch;
@@ -133,14 +136,15 @@ export async function executeDurableMcpDiscovery(
     return {
       discovery: input.activeDiscovery,
       snapshot: currentSnapshot,
-      toolResult: mcpFindToolsExecutionResult(input.call, selectedToolsFromCheckpoint({
+      toolResult: mcpFindToolsExecutionResult(input.call, await input.filterTools(input.userId, selectedToolsFromCheckpoint({
         discovery: input.activeDiscovery,
         modelRunToolCallId: input.modelRunToolCallId,
         snapshot: currentSnapshot
-      }))
+      })))
     };
   }
 
+  const catalog = await filterMcpCatalog(input.userId, input.activeDiscovery.catalog, input.filterTools);
   const activeNames = new Set(currentSnapshot.tools.map((tool) => tool.namespacedName));
   const routeLimit = Math.min(
     maxResults,
@@ -153,7 +157,7 @@ export async function executeDurableMcpDiscovery(
   try {
     routed = await input.router.route({
       activeToolNames: activeNames,
-      catalog: input.activeDiscovery.catalog,
+      catalog,
       goals: input.routingGoals ?? [parsed.goal],
       limit: routeLimit,
       maxOutputTokens: input.maxOutputTokens,
@@ -177,7 +181,7 @@ export async function executeDurableMcpDiscovery(
   }
 
   const selected = mcpCatalogToolsByNames(
-    input.activeDiscovery.catalog,
+    catalog,
     routed.toolNames
   ).filter((tool) => !activeNames.has(tool.namespacedName));
   if (selected.length !== routed.toolNames.length) {
@@ -225,11 +229,11 @@ export async function executeDurableMcpDiscovery(
   return {
     discovery: appended.discovery,
     snapshot: appended.snapshot,
-    toolResult: mcpFindToolsExecutionResult(input.call, selectedToolsFromCheckpoint({
+    toolResult: mcpFindToolsExecutionResult(input.call, await input.filterTools(input.userId, selectedToolsFromCheckpoint({
       discovery: appended.discovery,
       modelRunToolCallId: input.modelRunToolCallId,
       snapshot: appended.snapshot
-    }))
+    })))
   };
 }
 
@@ -302,11 +306,11 @@ export async function executeDurableMcpDiscoveryBatch(
     }
     toolResults.set(follower.call.id, mcpFindToolsExecutionResult(
       follower.call,
-      selectedToolsFromCheckpoint({
+      await input.filterTools(input.userId, selectedToolsFromCheckpoint({
         discovery,
         modelRunToolCallId: follower.modelRunToolCallId,
         snapshot
-      })
+      }))
     ));
   }
 

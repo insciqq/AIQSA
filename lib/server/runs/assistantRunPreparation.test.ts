@@ -1,3 +1,4 @@
+const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
 import { describe, expect, it, vi } from "vitest";
 import type { KnowledgeSelection } from "../../contracts/knowledge";
 import { textMessageContent } from "../../domain/content";
@@ -837,7 +838,7 @@ describe("assistant run admission", () => {
           resolveForRun: async () =>
             assistantResolution({ mcpServerIds: ["server-1", "server-2"] })
         },
-        mcp: { prepare }
+        mcp: { filterTools: allowMcpTools, prepare }
       }),
       {
         body: { assistantId: "assistant-1", text: "Hi" },
@@ -864,7 +865,7 @@ describe("assistant run admission", () => {
     const result = await prepareRun(
       deps({
         assistants: { resolveForRun: async () => assistantResolution() },
-        mcp: { prepare }
+        mcp: { filterTools: allowMcpTools, prepare }
       }),
       {
         body: { assistantId: "assistant-1", text: "Hi" },

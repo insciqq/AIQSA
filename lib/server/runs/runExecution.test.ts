@@ -1,3 +1,4 @@
+const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
 import { mcpAutoDiscoveryFailure, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
@@ -1380,6 +1381,41 @@ const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
 };
 
 describe("run execution", () => {
+  it.each(["before_dispatch", "after_first_call"] as const)("applies MCP revocation %s without stale schema exposure or extra calls", async (when) => {
+    const namespacedName = "mcp_tracker_write";
+    const fingerprint = "access-fingerprint";
+    const mcp: McpRunPlanSnapshot = { version: 1, servers: [{ serverId: "tracker", serverName: "Tracker", revisionId: "rev", fingerprint }],
+      tools: [{ serverId: "tracker", serverName: "Tracker", name: "write", originalName: "write", namespacedName,
+        description: "Write a record", inputSchema: { type: "object" }, definitionHash: "a".repeat(64) }] };
+    let granted = true;
+    const requests: ProviderRunRequest[] = [];
+    const filterTools: import("../mcp/toolAccess").McpToolAccessFilter = async (actorId, tools) => {
+      expect(actorId).toBe("user-1");
+      return tools.filter(() => granted);
+    };
+    const prepare: NonNullable<RunExecutionInput["mcp"]>["prepare"] = async () => ({ ok: true, snapshot: mcp,
+      bindings: [{ serverId: "tracker", fingerprint, runtimeGenerationId: `generation-${fingerprint}` }] });
+    const callTool = vi.fn(async () => { granted = false; return { isError: false, text: ["Written once"], structuredContent: null, unsupportedContentTypes: [] }; });
+    const repository = createRepository();
+    const egress = createMemoryEgressRecorder();
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length === 1) {
+        expect(request.tools?.some(({ name }) => name === namespacedName)).toBe(true);
+        if (when === "before_dispatch") granted = false;
+        return providerResult({ finalText: "", toolCalls: [{ id: "access-call", name: namespacedName, arguments: {} }] });
+      }
+      expect(request.tools?.some(({ name }) => name === namespacedName)).toBe(false);
+      return providerResult({ finalText: "Finished" });
+    });
+    await createRunExecutionResponse(executionInput({ adapter, mcp: { filterTools, prepare },
+      mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true }, memoryEgress: egress.service,
+      prepared: preparedData({ mcp, modelId: "gpt-tool-model", provider: "openai" }), repository: repository.repository })).text();
+    expect(callTool).toHaveBeenCalledTimes(when === "before_dispatch" ? 0 : 1);
+    if (when === "before_dispatch") expect(egress.blocked).toEqual(expect.arrayContaining([expect.objectContaining({ errorCode: "mcp_tool_access_denied" })]));
+    expect(mcp.tools).toHaveLength(1);
+  });
+
   it("persists completion, emits done and closes the answer stream while the title provider is held", async () => {
     const held = deferred<void>();
     const repository = createRepository();
@@ -4310,7 +4346,7 @@ describe("run execution", () => {
     const repository = createRepository();
     const response = await createRunExecutionResponse(executionInput({ prepared,
       adapter: createOpenRouterChatAdapter({ client: createFetchOpenRouterChatClient({ apiKey: "fixture", fetchFn }) }),
-      mcp: { materialize, prepare: materialize, router: { route } },
+      mcp: { filterTools: allowMcpTools, materialize, prepare: materialize, router: { route } },
       repository: { ...repository.repository, appendMcpDiscoveryEpoch }
     })).text();
     expect(fetchFn).toHaveBeenCalledOnce();
@@ -4484,7 +4520,7 @@ describe("run execution", () => {
 
     await createRunExecutionResponse(executionInput({
       adapter,
-      mcp: { materialize, prepare, router: { route } },
+      mcp: { filterTools: allowMcpTools, materialize, prepare, router: { route } },
       mcpRuntime: {
         callTool,
         async ensureAcceptedGeneration() { return true; }
@@ -4551,7 +4587,7 @@ describe("run execution", () => {
       adapter: createAdapter(async function* () {
         return providerResult({ finalText: "No integration was needed" });
       }),
-      mcp: { materialize, prepare: materialize, router: { route } },
+      mcp: { filterTools: allowMcpTools, materialize, prepare: materialize, router: { route } },
       prepared: preparedData({
         mcpDiscovery: discovery,
         modelId: "gpt-tool-model",
@@ -4603,7 +4639,7 @@ describe("run execution", () => {
           }]
         });
       }),
-      mcp: { materialize, prepare: materialize, router: { route } },
+      mcp: { filterTools: allowMcpTools, materialize, prepare: materialize, router: { route } },
       prepared: preparedData({
         mcpDiscovery: discovery,
         ...(outcome === "output_limit" ? { toolBudgets: { mcpAutoDiscoveryMaxOutputTokens: 32768, maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8 } } : {}),
@@ -4685,7 +4721,7 @@ describe("run execution", () => {
         return providerResult({ finalText: "This round must not run" });
       }),
       mcp: {
-        materialize,
+        filterTools: allowMcpTools, materialize,
         prepare: materialize,
         router: {
           route: async () => ({ toolNames: [namespacedName], usageAttribution: null })
@@ -4851,7 +4887,7 @@ describe("run execution", () => {
     const events = parseSse(await createRunExecutionResponse(executionInput({
       adapter,
       memoryEgress: egress.service,
-      mcp: { prepare, router: { route } },
+      mcp: { filterTools: allowMcpTools, prepare, router: { route } },
       mcpRuntime: {
         callTool,
         async ensureAcceptedGeneration(generationId) {
@@ -5007,7 +5043,7 @@ describe("run execution", () => {
     const events = parseSse(await createRunExecutionResponse(executionInput({
       adapter,
       memoryEgress: egress.service,
-      mcp: { prepare },
+      mcp: { filterTools: allowMcpTools, prepare },
       mcpRuntime: {
         callTool,
         async ensureAcceptedGeneration() {

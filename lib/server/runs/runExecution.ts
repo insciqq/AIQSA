@@ -1,3 +1,4 @@
+import { filterMcpProviderRequest } from "../mcp/toolAccessProjection";
 import { imageDispatchMustStop } from "../images/errors";
 import { imageGenerationTool, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
@@ -256,6 +257,7 @@ export type RunExecutionInput = Readonly<{
     }): Promise<ProviderAdmissionPlan>;
   }>;
   mcp?: Readonly<{
+    filterTools: import("../mcp/toolAccess").McpToolAccessFilter;
     materialize?(
       userId: string,
       tools: readonly Readonly<{
@@ -268,7 +270,7 @@ export type RunExecutionInput = Readonly<{
       userId: string,
       options?: Readonly<{ allowedServerIds?: readonly string[] }>
     ): Promise<import("../mcp/runPlan").McpRunPlanResult>;
-    prepareProject?(serverIds: readonly string[]): Promise<import("../mcp/runPlan").McpRunPlanResult>;
+    prepareProject?(userId: string, serverIds: readonly string[]): Promise<import("../mcp/runPlan").McpRunPlanResult>;
     router?: McpSemanticRouter;
   }>;
   mcpRuntime?: Readonly<{
@@ -1562,8 +1564,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       ): Promise<McpDispatchFailureCode | null> {
         if (!input.mcp) return process.env.NODE_ENV !== "production" ? null : "mcp_runtime_unavailable";
         try {
+          if (!(await input.mcp.filterTools(input.userId, [route.tool])).length) return "mcp_tool_access_denied";
           const current = input.prepared.project?.executionScope === "project" && input.mcp.prepareProject
-            ? await input.mcp.prepareProject([route.serverId])
+            ? await input.mcp.prepareProject(input.userId, [route.serverId])
             : input.prepared.project?.executionScope === "project"
               ? null
               : await input.mcp.prepare(input.userId, { allowedServerIds: [route.serverId] });
@@ -2113,6 +2116,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       ...(activeMcpSnapshot ? { activeSnapshot: activeMcpSnapshot } : {}),
                       appendEpoch: appendMcpDiscoveryEpoch,
                       call,
+                      filterTools: input.mcp!.filterTools,
                       materialize: materializeMcpTools,
                       maxResults: toolBudgets.maxMcpToolsPerDiscovery,
                       maxOutputTokens: toolBudgets.mcpAutoDiscoveryMaxOutputTokens,
@@ -2364,6 +2368,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                       ...(activeMcpSnapshot ? { activeSnapshot: activeMcpSnapshot } : {}),
                       appendEpoch: appendMcpDiscoveryEpoch,
                       calls: discoveryCalls,
+                      filterTools: input.mcp!.filterTools,
                       materialize: materializeMcpTools,
                       maxResults: toolBudgets.maxMcpToolsPerDiscovery,
                       maxOutputTokens: toolBudgets.mcpAutoDiscoveryMaxOutputTokens,
@@ -2451,16 +2456,19 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             }
           },
           prepareRequest: async (roundRequest, round) => {
-            const budgeted = applyProviderRequestContextBudget({
-              bridge: toolBridge,
-              request: {
+            const currentRequest = {
                 ...roundRequest,
                 ...(activeMcpDiscovery && round === 1
                   ? { parallelToolCalls: false }
                   : {}),
                 ...(activeMcpSnapshot ? { mcp: activeMcpSnapshot } : {}),
                 ...(activeMcpDiscovery ? { mcpDiscovery: activeMcpDiscovery } : {})
-              }
+            };
+            const budgeted = applyProviderRequestContextBudget({
+              bridge: toolBridge,
+              request: input.mcp
+                ? await filterMcpProviderRequest(currentRequest, input.userId, input.mcp.filterTools)
+                : currentRequest
             });
             if (!budgeted.ok) {
               throw new RunPipelineError("context_too_large", budgeted.error.message);

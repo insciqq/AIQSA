@@ -1,4 +1,4 @@
-import { mcpRuntimeErrorCode } from "@/lib/contracts/mcp";
+import { decodeMcpToolAccessPolicy, mcpRuntimeErrorCode } from "@/lib/contracts/mcp";
 import { mcpValidationIssue } from "@/lib/contracts/mcp";
 import type {
   AdminMcpCatalogResponse,
@@ -208,6 +208,11 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
     if (bodyError) return bodyError;
     if (!body) return errorJson("invalid_draft", 400);
     let tool: { enabled: boolean; name: string } | undefined;
+    const toolAccess = body.toolAccess === undefined ? undefined : decodeMcpToolAccessPolicy(body.toolAccess);
+    if (toolAccess === null || (toolAccess && (
+      typeof body.expectedUpdatedAt !== "string" ||
+      ["tool", "draft", "sharedValues", "name", "description", "enabled"].some((field) => body[field] !== undefined)
+    ))) return errorJson("invalid_draft", 400);
     if (body.tool !== undefined) {
       if (!isRecord(body.tool) || typeof body.tool.name !== "string" ||
         !body.tool.name.trim() || body.tool.name.length > 256 || typeof body.tool.enabled !== "boolean" ||
@@ -234,11 +239,12 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
     const sharedValues = typeof body.sharedValues === "undefined" ? undefined : slotValues(body.sharedValues);
     if (sharedValues === null) return errorJson("invalid_mcp_values", 400);
     if (typeof name === "undefined" && typeof description === "undefined" &&
-      typeof body.enabled === "undefined" && !draft && typeof sharedValues === "undefined" && !tool) {
+      typeof body.enabled === "undefined" && !draft && typeof sharedValues === "undefined" && !tool && !toolAccess) {
       return errorJson("invalid_draft", 400);
     }
     const { serverId } = await context.params;
     const result = await safely(() => deps.repository.updateServer({
+      ...(toolAccess ? { toolAccess } : {}),
       ...(tool ? { tool } : {}),
       ...(typeof body.expectedUpdatedAt === "string" ? { expectedUpdatedAt: body.expectedUpdatedAt } : {}),
       ...(description !== undefined ? { description } : {}),
@@ -250,7 +256,7 @@ export function createAdminMcpUpdateHandler(deps: McpHandlerDeps) {
     }));
     if (result instanceof Response) return result;
     if (result.kind !== "ok") return repositoryError(result);
-    notifyRuntimeChanged(deps);
+    if (!toolAccess) notifyRuntimeChanged(deps);
     return adminServerResponse(deps, result.value, auth.session.userId);
   };
 }

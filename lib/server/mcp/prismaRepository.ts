@@ -1,3 +1,4 @@
+import { loadMcpToolAccess } from "./toolAccess";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { mcpRuntimeErrorCode, mcpValidationIssue } from "@/lib/contracts/mcp";
@@ -52,6 +53,10 @@ import type {
 } from "./repositoryContract";
 
 const adminServerInclude = {
+  toolAccessPolicies: {
+    include: { users: true, groups: true },
+    orderBy: { toolName: "asc" as const }
+  },
   activationJob: {
     select: {
       completedAt: true,
@@ -466,6 +471,12 @@ function serializeAdminServer(
     }
   }
   return {
+    toolAccess: record.toolAccessPolicies.map((policy) => ({
+      name: policy.toolName,
+      restricted: policy.restricted,
+      userIds: policy.users.map(({ userId }) => userId).sort(),
+      groupIds: policy.groups.map(({ groupId }) => groupId).sort()
+    })),
     activation: serializeActivation(record.activationJob),
     activePersonalSlots: record.activeRevision
       ? draftFrom(record.activeRevision.configuration).slots
@@ -546,16 +557,17 @@ function toolInventory(value: Prisma.JsonValue | null): UserMcpServer["tools"] |
 }
 
 export function deriveKnownMcpToolCount(input: {
+  toolAllowed?: (name: string) => boolean;
   disabledToolNames?: readonly string[];
   revisionCreatedAt: Date;
   revisionValidationEvidence: Prisma.JsonValue;
   runtimeInventory: Prisma.JsonValue | null;
 }): number {
   const runtimeInventory = toolInventory(input.runtimeInventory);
-  if (runtimeInventory) return runtimeInventory.length;
+  if (runtimeInventory) return runtimeInventory.filter((tool) => input.toolAllowed?.(tool.name) ?? true).length;
   const disabledToolNames = new Set(input.disabledToolNames ?? []);
   return validationEvidenceFrom(input.revisionValidationEvidence, input.revisionCreatedAt)
-    .toolInventory.filter((tool) => !disabledToolNames.has(tool.name)).length;
+    .toolInventory.filter((tool) => !disabledToolNames.has(tool.name) && (input.toolAllowed?.(tool.name) ?? true)).length;
 }
 
 export function deriveMcpUserReadiness(input: {
@@ -601,6 +613,7 @@ type UserServerRecord = Prisma.McpServerGetPayload<{
 }>;
 
 function serializeUserServer(input: {
+  toolAllowed: (tool: import("./toolAccess").McpToolIdentity) => boolean;
   groupIds: string[];
   key: Buffer;
   oauthRedirectUri?: (serverId: string) => string;
@@ -697,6 +710,7 @@ function serializeUserServer(input: {
     fields,
     id: input.record.id,
     knownToolCount: deriveKnownMcpToolCount({
+      toolAllowed: (name) => input.toolAllowed({ serverId: input.record.id, originalName: name }),
       disabledToolNames: draft.disabledToolNames,
       revisionCreatedAt: input.record.activeRevision.createdAt,
       revisionValidationEvidence: input.record.activeRevision.validationEvidence,
@@ -706,7 +720,8 @@ function serializeUserServer(input: {
     oauthAvailable: draft.auth.mode === "oauth",
     oauthState: draft.auth.mode === "oauth" ? oauth?.state ?? "disconnected" : null,
     runtimeGenerationId: preference?.desiredRuntimeGeneration?.id ?? null,
-    ...readiness
+    ...readiness,
+    tools: readiness.tools.filter((tool) => input.toolAllowed({ serverId: input.record.id, originalName: tool.name }))
   };
 }
 
@@ -1142,8 +1157,10 @@ export function createPrismaMcpRepository(input: {
       if (!groupIds) return [];
       const key = encryptionKey();
       const records = await listUserServerRecords(client, userId, groupIds);
+      const toolAllowed = await loadMcpToolAccess(userId, records.map(({ id }) => id), client);
       return records.flatMap((record) => {
         const serialized = serializeUserServer({
+          toolAllowed,
           groupIds,
           key,
           record,
@@ -1770,6 +1787,7 @@ export function createPrismaMcpRepository(input: {
     },
 
     updateServer: async ({
+      toolAccess,
       tool,
       expectedUpdatedAt,
       description,
@@ -1789,6 +1807,46 @@ export function createPrismaMcpRepository(input: {
         }
         if (enabled === true && !existing.activeRevisionId) return { kind: "revision_required" as const };
         const storedDraft = draftFrom(existing.draft);
+        if (toolAccess) {
+          if (!expectedUpdatedAt || tool || draft || sharedValues || name !== undefined || description !== undefined || enabled !== undefined) {
+            return { kind: "draft_changed" as const };
+          }
+          const active = existing.activeRevisionId
+            ? await tx.mcpRevision.findUnique({ where: { id: existing.activeRevisionId } })
+            : null;
+          if (!active) return { kind: "revision_required" as const };
+          if (!validationEvidenceFrom(active.validationEvidence, active.createdAt).toolInventory
+            .some(({ name }) => name === toolAccess.name)) {
+            return { kind: "draft_validation_failed" as const, issues: [{ code: "tool_not_available", path: "toolAccess.name" }] };
+          }
+          const userIds = [...new Set(toolAccess.userIds)];
+          const groupIds = [...new Set(toolAccess.groupIds)];
+          const [users, groups] = await Promise.all([
+            tx.user.count({ where: { id: { in: userIds } } }),
+            tx.group.count({ where: { id: { in: groupIds } } })
+          ]);
+          if (users !== userIds.length || groups !== groupIds.length) {
+            return { kind: "draft_validation_failed" as const, issues: [{ code: "subject_not_found", path: "toolAccess" }] };
+          }
+          const recipients = {
+            users: { create: userIds.map((userId) => ({ userId })) },
+            groups: { create: groupIds.map((groupId) => ({ groupId })) }
+          };
+          await tx.mcpToolAccessPolicy.upsert({
+            where: { serverId_toolName: { serverId, toolName: toolAccess.name } },
+            create: { serverId, toolName: toolAccess.name, restricted: toolAccess.restricted, ...recipients },
+            update: {
+              restricted: toolAccess.restricted,
+              users: { deleteMany: {}, ...recipients.users },
+              groups: { deleteMany: {}, ...recipients.groups }
+            }
+          });
+          await tx.mcpServer.update({
+            data: { updatedAt: new Date(Math.max(Date.now(), existing.updatedAt.getTime() + 1)) },
+            where: { id: serverId }
+          });
+          return adminResult(tx, serverId, key, input.oauthValidationRedirectUri);
+        }
         if (tool) {
           if (!expectedUpdatedAt || draft || sharedValues || name !== undefined || description !== undefined || enabled !== undefined) {
             return { kind: "draft_changed" as const };
@@ -1961,6 +2019,7 @@ export function createPrismaMcpRepository(input: {
           let oauthReady = draft.auth.mode !== "oauth";
           if (draft.auth.mode === "oauth") {
             const current = serializeUserServer({
+              toolAllowed: await loadMcpToolAccess(userId, [serverId], tx),
               groupIds,
               key,
               record,
@@ -2007,6 +2066,7 @@ export function createPrismaMcpRepository(input: {
         });
         const [updated] = await listUserServerRecords(tx, userId, groupIds, serverId);
         const serialized = updated ? serializeUserServer({
+          toolAllowed: await loadMcpToolAccess(userId, [serverId], tx),
           groupIds,
           key,
           record: updated,

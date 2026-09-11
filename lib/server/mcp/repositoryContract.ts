@@ -73,6 +73,7 @@ export type McpRepository = {
     validationUserId?: string;
   }): Promise<McpRepositoryResult<AdminMcpServer>>;
   updateServer(input: {
+    toolAccess?: import("@/lib/contracts/mcp").McpToolAccessPolicy;
     tool?: { enabled: boolean; name: string };
     expectedUpdatedAt?: string;
     description?: string;

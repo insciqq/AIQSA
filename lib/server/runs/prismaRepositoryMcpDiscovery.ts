@@ -147,6 +147,7 @@ export function createPrismaMcpDiscoveryOperations(
         .map((binding) => ({ ...binding }));
       await insertAcceptedMcpRunBindings(tx, {
         bindings: newBindings,
+        tools: merged.tools.filter((tool) => input.toolIds.includes(tool.namespacedName)),
         ...(run.projectId ? { projectId: run.projectId } : {}),
         runId: input.runId,
         userId: input.userId

@@ -6,7 +6,7 @@ import { McpRunPlanConflictError } from "./runRepositoryContract";
 type ExecuteRaw = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<number>;
 
 function transaction(executeRaw: ExecuteRaw) {
-  return { $executeRaw: executeRaw } as unknown as Pick<Prisma.TransactionClient, "$executeRaw">;
+  return { $executeRaw: executeRaw } as unknown as Pick<Prisma.TransactionClient, "$executeRaw" | "user" | "mcpToolAccessPolicy">;
 }
 
 const bindings = [
@@ -27,6 +27,7 @@ describe("atomic MCP run bindings", () => {
     const executeRaw = vi.fn<ExecuteRaw>(async () => 1);
 
     await insertAcceptedMcpRunBindings(transaction(executeRaw), {
+      tools: [],
       bindings: [bindings[0]!],
       projectId: "project-1",
       runId: "run-1",
@@ -57,6 +58,7 @@ describe("atomic MCP run bindings", () => {
     const executeRaw = vi.fn<ExecuteRaw>(async () => 1);
 
     await insertAcceptedMcpRunBindings(transaction(executeRaw), {
+      tools: [],
       bindings,
       runId: "run-1",
       userId: "user-1"
@@ -83,6 +85,7 @@ describe("atomic MCP run bindings", () => {
     const executeRaw = vi.fn<ExecuteRaw>(async () => 0);
 
     await expect(insertAcceptedMcpRunBindings(transaction(executeRaw), {
+      tools: [],
       bindings: [bindings[0]!],
       runId: "run-1",
       userId: "user-1"
@@ -97,6 +100,7 @@ describe("atomic MCP run bindings", () => {
     ]) {
       const executeRaw = vi.fn<ExecuteRaw>(async () => 1);
       await expect(insertAcceptedMcpRunBindings(transaction(executeRaw), {
+      tools: [],
         bindings: [bindings[0]!, duplicate],
         runId: "run-1",
         userId: "user-1"
@@ -109,6 +113,7 @@ describe("atomic MCP run bindings", () => {
     const executeRaw = vi.fn<ExecuteRaw>(async () => 1);
 
     await insertAcceptedMcpRunBindings(transaction(executeRaw), {
+      tools: [],
       bindings: undefined,
       runId: "run-1",
       userId: "user-1"

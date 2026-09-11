@@ -1,3 +1,4 @@
+const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
 import { buildOpenAICompatibleChatRequest } from "../providers/openaiCompatibleChatRequest";
 import { WORKSPACE_BROWSER_GUIDANCE } from "../workspace/browserGuidance";
 import { buildOpenAIResponsesRequest } from "../providers/openaiResponsesRequest";
@@ -578,7 +579,7 @@ function createHarness(options: HarnessOptions = {}) {
       : {}),
     ...(options.mcpPlan ? {
       mcp: {
-        async prepare(userId, prepareOptions) {
+        filterTools: allowMcpTools, async prepare(userId, prepareOptions) {
           mcpPrepareCalls.push({
             ...(prepareOptions?.allowedServerIds
               ? { allowedServerIds: [...prepareOptions.allowedServerIds] }
@@ -1894,7 +1895,7 @@ describe("run preparation", () => {
       version: 1 as const
     }));
     const prepared = preparedFrom(await prepareRun(
-      { ...harness.deps, mcp: { catalog, prepare } },
+      { ...harness.deps, mcp: { filterTools: allowMcpTools, catalog, prepare } },
       sendInput(successBody({ modelId: "openai-tool-model", provider: "openai" }))
     ));
 
@@ -1917,7 +1918,7 @@ describe("run preparation", () => {
     const catalog = vi.fn(async () => ({ servers: [], version: 1 as const }));
 
     const off = preparedFrom(await prepareRun(
-      { ...harness.deps, mcp: { catalog, prepare } },
+      { ...harness.deps, mcp: { filterTools: allowMcpTools, catalog, prepare } },
       sendInput(successBody({
         mcp: { mode: "off" },
         modelId: "openai-tool-model",
@@ -1933,7 +1934,7 @@ describe("run preparation", () => {
     expect(prepare).not.toHaveBeenCalled();
 
     const loadAll = preparedFrom(await prepareRun(
-      { ...harness.deps, mcp: { catalog, prepare } },
+      { ...harness.deps, mcp: { filterTools: allowMcpTools, catalog, prepare } },
       sendInput(successBody({
         mcp: { mode: "load_all" },
         modelId: "openai-tool-model",
@@ -2430,7 +2431,7 @@ describe("run preparation", () => {
     const prepared = preparedFrom(await prepareRun(
       {
         ...harness.deps,
-        mcp: { catalog, prepare: prepareMcp },
+        mcp: { filterTools: allowMcpTools, catalog, prepare: prepareMcp },
         knowledgeAdmission: {
           async load(input) {
             return {

@@ -5,6 +5,7 @@ import type {
   McpToolInventoryEntry
 } from "@/lib/contracts/mcp";
 import { prisma } from "@/lib/server/prisma";
+import { loadMcpToolAccess } from "./toolAccess";
 import {
   buildMcpCapabilityCatalog,
   type McpCapabilityCatalog,
@@ -339,6 +340,26 @@ function serializeProjectRunGeneration(
   };
 }
 
+async function filterRunPlanRecords(
+  userId: string,
+  records: McpRunPlanRecord[],
+  client: PrismaClient
+): Promise<McpRunPlanRecord[]> {
+  if (!records.length) return records;
+  const allowed = await loadMcpToolAccess(userId, records.map(({ serverId }) => serverId), client);
+  return records.map((record) => ({
+    ...record,
+    catalogTools: record.catalogTools?.filter(({ name }) => allowed({ serverId: record.serverId, originalName: name })),
+    // Filter the projection, never the shared generation's inventory. Preserve
+    // malformed entries so the existing complete-inventory validator rejects them.
+    inventory: isRecord(record.inventory) && Array.isArray(record.inventory.tools)
+      ? { ...record.inventory, tools: record.inventory.tools.filter((tool) =>
+          !isRecord(tool) || typeof tool.name !== "string" ||
+          allowed({ serverId: record.serverId, originalName: tool.name })) }
+      : record.inventory
+  }));
+}
+
 export async function loadMcpRunPlanRecords(
   userId: string,
   client: PrismaClient = prisma
@@ -347,9 +368,9 @@ export async function loadMcpRunPlanRecords(
     select: runPlanPreferenceSelect,
     where: { enabled: true, userId }
   });
-  return preferences
+  return filterRunPlanRecords(userId, preferences
     .map(serializeRunPlanPreference)
-    .sort((left, right) => left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId));
+    .sort((left, right) => left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId)), client);
 }
 
 export async function loadMcpCapabilityCatalog(
@@ -375,12 +396,13 @@ export async function loadMcpRunPlanRecordsForServers(
     select: runPlanPreferenceSelect,
     where: { serverId: { in: [...serverIds] }, userId }
   });
-  return preferences
+  return filterRunPlanRecords(userId, preferences
     .map(serializeRunPlanPreference)
-    .sort((left, right) => left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId));
+    .sort((left, right) => left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId)), client);
 }
 
 export async function loadMcpRunPlanRecordsForProjectServers(
+  userId: string,
   serverIds: readonly string[],
   client: PrismaClient = prisma
 ): Promise<McpRunPlanRecord[]> {
@@ -404,10 +426,10 @@ export async function loadMcpRunPlanRecordsForProjectServers(
       selected.set(generation.userServer.serverId, generation);
     }
   }
-  return uniqueServerIds.map((serverId) => selected.get(serverId))
+  return filterRunPlanRecords(userId, uniqueServerIds.map((serverId) => selected.get(serverId))
     .filter((generation): generation is ProjectRunGenerationRecord => Boolean(generation))
     .map(serializeProjectRunGeneration)
-    .sort((left, right) => left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId));
+    .sort((left, right) => left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId)), client);
 }
 
 export function createPrismaMcpRunPlanLoader(client: PrismaClient = prisma) {
@@ -418,7 +440,7 @@ export function createPrismaMcpRunPlanLoader(client: PrismaClient = prisma) {
 }
 
 export function createPrismaMcpProjectRunPlanLoader(client: PrismaClient = prisma) {
-  return (serverIds: readonly string[]) => loadMcpRunPlanRecordsForProjectServers(serverIds, client);
+  return (userId: string, serverIds: readonly string[]) => loadMcpRunPlanRecordsForProjectServers(userId, serverIds, client);
 }
 
 export function createPrismaMcpCapabilityCatalogLoader(client: PrismaClient = prisma) {

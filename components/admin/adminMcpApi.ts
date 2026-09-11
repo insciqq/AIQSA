@@ -1,4 +1,4 @@
-import { mcpValidationIssue } from "@/lib/contracts/mcp";
+import { decodeMcpToolAccessPolicy, mcpValidationIssue } from "@/lib/contracts/mcp";
 import type {
   AdminMcpCatalogResponse,
   AdminMcpCreateRequest,
@@ -90,6 +90,8 @@ function isServer(value: unknown): value is AdminMcpServer {
   return (
     (value.runtimeProblem === undefined || value.runtimeProblem === null ||
       value.runtimeProblem === "reauthorization_required" || value.runtimeProblem === "unavailable") &&
+    (value.toolAccess === undefined || (Array.isArray(value.toolAccess) &&
+      value.toolAccess.every((policy) => decodeMcpToolAccessPolicy(policy) !== null))) &&
     validActivePersonalSlots &&
     validActiveRevision &&
     validDraftTest &&

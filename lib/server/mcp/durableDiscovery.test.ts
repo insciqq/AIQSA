@@ -1,3 +1,4 @@
+const allowMcpTools: import("./toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
 import { describe, expect, it, vi } from "vitest";
 import type { ModelToolCall } from "../tools/types";
 import { mergeMcpRunPlanSnapshots } from "./discovery";
@@ -117,12 +118,35 @@ function harness(activeCatalog: McpCapabilityCatalog = catalog) {
 }
 
 describe("durable MCP discovery", () => {
+  it("filters current rights from an old discovery catalog and immutable replay without rerouting", async () => {
+    const state = harness();
+    let granted = true;
+    const filterTools: import("./toolAccess").McpToolAccessFilter = async (_userId, tools) => tools.filter(() => granted);
+    const route = vi.fn<import("./router").McpSemanticRouter["route"]>(async () => ({ toolNames: [toolIds[0]!], usageAttribution: null }));
+    const input = () => ({ filterTools, activeDiscovery: state.discovery(), activeSnapshot: state.snapshot(),
+      appendEpoch: state.appendEpoch, materialize: state.materialize, call: call("current-access"),
+      modelRunToolCallId: "access-call", request, roundIndex: 0, router: { route }, runId: "run-1", userId: "user-1" });
+    const initial = await executeDurableMcpDiscovery(input());
+    expect(JSON.stringify(initial.toolResult)).toContain(toolIds[0]);
+    const saved = structuredClone(state.snapshot());
+    granted = false;
+    const replay = await executeDurableMcpDiscovery(input());
+    expect(JSON.stringify(replay.toolResult)).not.toContain(toolIds[0]);
+    expect(replay.snapshot).toEqual(saved);
+    expect(route).toHaveBeenCalledOnce();
+    expect(state.materialize).toHaveBeenCalledOnce();
+    route.mockResolvedValue({ toolNames: [], usageAttribution: null });
+    await executeDurableMcpDiscovery({ ...input(), call: call("next-access"), modelRunToolCallId: "next-call" });
+    expect(route.mock.calls[1]![0].catalog.servers).toEqual([]);
+  });
+
   it.each(["mcp_router_gemini_invalid_request", "mcp_router_gemini_parameter_unknown", "mcp_router_request_rejected"] as const)(
     "preserves %s safely without tool materialization, checkpoint or retry", async (reason) => {
       const state = harness();
       const route = vi.fn(async () => { throw new McpSemanticRouterError(reason); });
       await expect(executeDurableMcpDiscovery({
-        activeDiscovery: state.discovery(), appendEpoch: state.appendEpoch, call: call("provider-rejected"),
+        filterTools: allowMcpTools,
+      activeDiscovery: state.discovery(), appendEpoch: state.appendEpoch, call: call("provider-rejected"),
         materialize: state.materialize, modelRunToolCallId: "persisted-rejected", request, roundIndex: 0,
         router: { route }, runId: "run-1", userId: "user-1"
       })).rejects.toMatchObject({ ...mcpAutoDiscoveryFailure(reason), internalReason: reason });
@@ -142,6 +166,7 @@ describe("durable MCP discovery", () => {
     const onUsage = vi.fn();
     const route = vi.fn(async () => ({ toolNames: toolIds.slice(0, 2), usageAttribution }));
     const input = () => ({
+      filterTools: allowMcpTools,
       activeDiscovery: state.discovery(),
       activeSnapshot: state.snapshot(),
       appendEpoch: state.appendEpoch,
@@ -195,6 +220,7 @@ describe("durable MCP discovery", () => {
     );
 
     await expect(executeDurableMcpDiscovery({
+      filterTools: allowMcpTools,
       activeDiscovery: state.discovery(),
       appendEpoch: state.appendEpoch,
       call: call("provider-failure"),
@@ -225,7 +251,8 @@ describe("durable MCP discovery", () => {
       .mockResolvedValueOnce({ toolNames: [toolIds[1]], usageAttribution: null });
     const execute = (modelRunToolCallId: string, providerCallId: string) =>
       executeDurableMcpDiscovery({
-        activeDiscovery: state.discovery(),
+        filterTools: allowMcpTools,
+      activeDiscovery: state.discovery(),
         activeSnapshot: state.snapshot(),
         appendEpoch: state.appendEpoch,
         call: call(providerCallId, "same goal"),
@@ -257,6 +284,7 @@ describe("durable MCP discovery", () => {
     const state = harness();
     const route = vi.fn(async () => ({ toolNames: [], usageAttribution: null }));
     const input = () => ({
+      filterTools: allowMcpTools,
       activeDiscovery: state.discovery(),
       activeSnapshot: state.snapshot(),
       appendEpoch: state.appendEpoch,
@@ -306,6 +334,7 @@ describe("durable MCP discovery", () => {
     }));
 
     await expect(executeDurableMcpDiscovery({
+      filterTools: allowMcpTools,
       activeDiscovery: state.discovery(),
       activeSnapshot: state.snapshot(),
       appendEpoch: state.appendEpoch,
@@ -338,7 +367,8 @@ describe("durable MCP discovery", () => {
 
     for (let index = 0; index < 13; index += 1) {
       await executeDurableMcpDiscovery({
-        activeDiscovery: state.discovery(),
+        filterTools: allowMcpTools,
+      activeDiscovery: state.discovery(),
         activeSnapshot: state.snapshot(),
         appendEpoch: state.appendEpoch,
         call: call(`provider-${index}`),
@@ -361,6 +391,7 @@ describe("durable MCP discovery", () => {
     const rawFailure = "upstream-secret-endpoint-failed";
 
     await expect(executeDurableMcpDiscovery({
+      filterTools: allowMcpTools,
       activeDiscovery: state.discovery(),
       activeSnapshot: state.snapshot(),
       appendEpoch: state.appendEpoch,
@@ -388,6 +419,7 @@ describe("durable MCP discovery", () => {
     }));
 
     await expect(executeDurableMcpDiscovery({
+      filterTools: allowMcpTools,
       activeDiscovery: state.discovery(),
       activeSnapshot: state.snapshot(),
       appendEpoch: state.appendEpoch,
@@ -419,7 +451,8 @@ describe("durable MCP discovery", () => {
     let failure: unknown;
     try {
       await executeDurableMcpDiscovery({
-        activeDiscovery: state.discovery(),
+        filterTools: allowMcpTools,
+      activeDiscovery: state.discovery(),
         activeSnapshot: state.snapshot(),
         appendEpoch: state.appendEpoch,
         call: call("provider-materialization-exception"),

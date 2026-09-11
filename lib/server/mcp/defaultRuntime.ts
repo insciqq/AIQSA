@@ -21,6 +21,7 @@ import { prisma } from "../prisma";
 import { createSystemModelRoleResolver } from "../providerRuntime/systemModelRole";
 import { createAcceptedStructuredOutputExecutor } from "../providerRuntime/structuredOutputExecutor";
 import { createMcpSemanticRouter } from "./router";
+import { filterMcpToolsForUser } from "./toolAccess";
 
 const DEFAULT_RUNTIME_LIMITS = {
   maxListPages: 16,
@@ -116,7 +117,7 @@ async function prepareExactMcpRunPlan(
   });
 }
 
-async function prepareExactProjectMcpRunPlan(serverIds: readonly string[]) {
+async function prepareExactProjectMcpRunPlan(userId: string, serverIds: readonly string[]) {
   let coordinator: McpRuntimeCoordinator | null = null;
   const currentCoordinator = () => {
     coordinator ??= getDefaultMcpRuntimeCoordinator();
@@ -128,11 +129,12 @@ async function prepareExactProjectMcpRunPlan(serverIds: readonly string[]) {
   return prepareMcpRunPlan({
     allowedServerIds: serverIds,
     isGenerationLive: (generationId) => currentCoordinator().hasLiveGeneration(generationId),
-    load: () => loadProjectRunPlan(serverIds)
+    load: () => loadProjectRunPlan(userId, serverIds)
   });
 }
 
 export const defaultMcpRunPlan = {
+  filterTools: filterMcpToolsForUser,
   catalog(userId: string) {
     return loadCapabilityCatalog(userId);
   },
@@ -170,8 +172,8 @@ export const defaultMcpRunPlan = {
       (await loadCapabilityCatalog(userId)).servers.map((server) => server.serverId);
     return prepareExactMcpRunPlan(userId, serverIds);
   },
-  async prepareProject(serverIds: readonly string[]) {
-    return prepareExactProjectMcpRunPlan(serverIds);
+  async prepareProject(userId: string, serverIds: readonly string[]) {
+    return prepareExactProjectMcpRunPlan(userId, serverIds);
   },
   router: defaultMcpSemanticRouter
 };
