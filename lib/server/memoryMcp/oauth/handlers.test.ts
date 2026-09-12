@@ -1,5 +1,7 @@
+import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 import { getAuthConfig } from "../../auth/config";
+import { DIRECT_PEER_HEADER } from "../../auth/clientIdentity";
 import { createFixedWindowLoginRateLimiter } from "../../auth/rateLimit";
 import {
   createInboundMcpAuthorizationHandlers,
@@ -8,6 +10,11 @@ import {
   createInboundMcpTokenHandler
 } from "./handlers";
 import { inboundMcpOAuthConfiguration } from "./service";
+
+const require = createRequire(import.meta.url);
+const launcher = require("../../../../scripts/runtime-launcher.cjs") as {
+  createCurrentPeerStamp(peerAddress: string): string | null;
+};
 
 const config = getAuthConfig({
   AIQSA_APP_BASE_URL: "http://localhost:3000",
@@ -81,18 +88,74 @@ function authSession() {
 }
 
 function formRequest(url: string, body: URLSearchParams, origin = "http://localhost:3000") {
+  const requestOrigin = new URL(url).origin;
   return new Request(url, {
     body,
     headers: {
       "content-type": "application/x-www-form-urlencoded",
       origin,
-      "sec-fetch-site": origin === "http://localhost:3000" ? "same-origin" : "cross-site"
+      "sec-fetch-site": origin === requestOrigin ? "same-origin" : "cross-site"
     },
     method: "POST"
   });
 }
 
+function setDirectPeer(request: Request, peerAddress = "192.168.1.20"): Request {
+  const stamp = launcher.createCurrentPeerStamp(peerAddress);
+  if (!stamp) throw new Error("handler_direct_peer_stamp_unavailable");
+  request.headers.set(DIRECT_PEER_HEADER, stamp);
+  return request;
+}
+
 describe("inbound Memory MCP OAuth HTTP handlers", () => {
+  it("redirects a production LAN authorization response to an exact HTTP web callback", async () => {
+    const lanConfig = getAuthConfig({
+      AIQSA_APP_BASE_URL: "http://192.168.1.10:3000",
+      AIQSA_AUTH_SESSION_SECRET: "test-secret",
+      AIQSA_BIND_ADDRESS: "0.0.0.0"
+    });
+    const oauth = {
+      ...service(),
+      configuration: inboundMcpOAuthConfiguration(
+        "http://192.168.1.10:3000",
+        "production"
+      )
+    };
+    const handlers = createInboundMcpAuthorizationHandlers({
+      getConfig: () => lanConfig,
+      resolveAuth: async () => authSession(),
+      service: oauth as never
+    });
+    const url = new URL("http://192.168.1.10:3000/oauth/authorize");
+    url.search = new URLSearchParams({
+      client_id: "aiqsa_dcr_web",
+      code_challenge: "A".repeat(43),
+      code_challenge_method: "S256",
+      redirect_uri: "http://192.168.1.20/oauth/callback",
+      resource: "http://192.168.1.10:3000/mcp/hub",
+      response_type: "code",
+      scope: "mcp:hub",
+      state: "client-state"
+    }).toString();
+    const getResponse = await handlers.GET(setDirectPeer(new Request(url)));
+    expect(getResponse.status).toBe(200);
+
+    const body = new URLSearchParams(url.searchParams);
+    body.set("consent_token", `abcdefghi.${"A".repeat(43)}`);
+    body.set("decision", "approve");
+    const response = await handlers.POST(setDirectPeer(formRequest(
+      url.origin + url.pathname,
+      body,
+      url.origin
+    )));
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(
+      "http://192.168.1.20/oauth/callback?code=" +
+      `aiqsa_mc_${"A".repeat(43)}` +
+      "&state=client-state&iss=http%3A%2F%2F192.168.1.10%3A3000"
+    );
+  });
+
   it.each([undefined, "mcp:hub"])("shows explicit Hub rights and preserves scope %s in consent", async (scope) => {
     const oauth = service();
     const handlers = createInboundMcpAuthorizationHandlers({

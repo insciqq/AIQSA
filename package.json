@@ -1,6 +1,6 @@
 {
   "name": "aiqsa",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "private": true,
   "description": "Self-hosted multi-user AI workspace with multi-provider chat, MCP tools, and web search.",
   "license": "AGPL-3.0-only",
@@ -85,6 +85,7 @@
     "test:full:inner": "AIQSA_STATEFUL_TEST_TARGET=DISPOSABLE vitest run --config vitest.full.config.ts",
     "test:watch": "vitest",
     "test:e2e": "playwright test --project=chromium",
+    "test:e2e:http": "playwright test --config playwright.http.config.ts --project=chromium",
     "task:check": "node scripts/task-ledger.mjs check",
     "task:new": "node scripts/task-ledger.mjs new",
     "task:promote": "node scripts/task-ledger.mjs promote",

@@ -45,7 +45,7 @@ function createDefaultMcpRuntimeCoordinator(): McpRuntimeCoordinator {
     fetch: createMcpSafeFetch(),
     async fetchForLaunch(launch) {
       const baseFetch = createMcpSafeFetch({
-        allowInsecureHttp: launch.trustedInternalHttp === true || process.env.NODE_ENV !== "production",
+        allowInsecureHttp: true,
         allowPrivateNetwork: launch.trustedInternalHttp === true || launch.allowPrivateNetwork === true
       });
       return launch.oauthConnectionId

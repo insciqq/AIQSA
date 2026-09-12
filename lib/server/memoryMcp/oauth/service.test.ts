@@ -156,6 +156,30 @@ describe("inbound Memory MCP OAuth service", () => {
     });
   });
 
+  it("publishes HTTP issuer and resource metadata in production", () => {
+    const configuration = inboundMcpOAuthConfiguration(
+      "http://192.168.1.10:3000",
+      "production"
+    );
+    expect(configuration).toMatchObject({
+      allowLoopbackDevelopment: false,
+      authorizationEndpoint: "http://192.168.1.10:3000/oauth/authorize",
+      issuer: "http://192.168.1.10:3000",
+      registrationEndpoint: "http://192.168.1.10:3000/oauth/register",
+      resource: "http://192.168.1.10:3000/mcp",
+      tokenEndpoint: "http://192.168.1.10:3000/oauth/token"
+    });
+    expect(inboundMcpProtectedResourceMetadata(configuration, "/mcp/hub")).toMatchObject({
+      authorization_servers: ["http://192.168.1.10:3000"],
+      resource: "http://192.168.1.10:3000/mcp/hub"
+    });
+    expect(inboundMcpAuthorizationServerMetadata(configuration)).toMatchObject({
+      authorization_endpoint: "http://192.168.1.10:3000/oauth/authorize",
+      issuer: "http://192.168.1.10:3000",
+      token_endpoint: "http://192.168.1.10:3000/oauth/token"
+    });
+  });
+
   it("binds browser consent and a one-time code to owner, session, client, and PKCE", async () => {
     const { repository, service } = dependencies();
     const request = authorizationRequest();
@@ -306,6 +330,28 @@ describe("inbound Memory MCP OAuth service", () => {
     });
     expect(response).not.toHaveProperty("client_secret");
     expect(repository.createDynamicClient).toHaveBeenCalledOnce();
+  });
+
+  it("registers a web client with exact LAN HTTP callback and client URI", async () => {
+    const { repository, service } = dependencies();
+    const response = await service.registerClient({
+      application_type: "web",
+      client_name: "LAN web client",
+      client_uri: "http://192.168.1.20/client",
+      redirect_uris: ["http://192.168.1.20/oauth/callback"],
+      token_endpoint_auth_method: "none"
+    });
+    expect(response).toMatchObject({
+      application_type: "web",
+      client_uri: "http://192.168.1.20/client",
+      redirect_uris: ["http://192.168.1.20/oauth/callback"]
+    });
+    expect(repository.createDynamicClient).toHaveBeenCalledWith(expect.objectContaining({
+      applicationType: "WEB",
+      clientOrigin: "http://192.168.1.20",
+      clientUri: "http://192.168.1.20/client",
+      redirectUris: ["http://192.168.1.20/oauth/callback"]
+    }));
   });
 
   it("resolves and revokes opaque credentials through hashes", async () => {

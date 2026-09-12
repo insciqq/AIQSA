@@ -154,12 +154,14 @@ describe("MCP OAuth web handlers", () => {
     );
     const callback = createMcpOAuthCallbackHandler(handlerDeps, "user");
     const response = await callback(new Request(
-      "https://aiqsa.example.test/api/me/mcp/server-1/oauth/callback?state=fixture-state&code=secret-code",
+      "https://aiqsa.example.test/api/me/mcp/server-1/oauth/callback" +
+        "?state=fixture-state&code=secret-code&iss=https%3A%2F%2Fauth.example.test",
       { headers: { cookie: cookieHeader(startResponse) } }
     ), routeContext());
     expect(operations.completeAuthorization).toHaveBeenCalledWith({
       authorizationCode: "secret-code",
-      flow: flow()
+      flow: flow(),
+      issuer: "https://auth.example.test"
     });
     expect(settleAuthorization).toHaveBeenCalledWith({
       configurationIdentity: flow().configurationIdentity,
@@ -174,6 +176,33 @@ describe("MCP OAuth web handlers", () => {
     expect(location).toContain(`server=${SERVER_ID}`);
     expect(location).not.toContain("secret-code");
     expect(location).not.toContain("fixture-code-verifier");
+    expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+  });
+
+  it.each([
+    ["duplicate", "&iss=https%3A%2F%2Fauth.example.test&iss=https%3A%2F%2Fother.example.test"],
+    ["oversized", `&iss=${"a".repeat(8_193)}`]
+  ])("rejects a %s callback issuer before exchanging the code", async (_label, issuerQuery) => {
+    const operations = service();
+    const handlerDeps = deps({ service: operations });
+    const start = createMcpOAuthStartHandler(handlerDeps, {
+      forceReconnect: true,
+      purpose: "user"
+    });
+    const startResponse = await start(
+      new Request("https://aiqsa.example.test/api/me/mcp/server-1/oauth/reconnect", { method: "POST" }),
+      routeContext()
+    );
+    const callback = createMcpOAuthCallbackHandler(handlerDeps, "user");
+    const response = await callback(new Request(
+      "https://aiqsa.example.test/api/me/mcp/server-1/oauth/callback" +
+        `?state=fixture-state&code=secret-code${issuerQuery}`,
+      { headers: { cookie: cookieHeader(startResponse) } }
+    ), routeContext());
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toContain("oauth=failed");
+    expect(operations.completeAuthorization).not.toHaveBeenCalled();
     expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
   });
 

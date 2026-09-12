@@ -112,7 +112,7 @@ describe("inbound Memory MCP OAuth contracts", () => {
     })).toBeNull();
   });
 
-  it("requires DCR application type and enforces redirect scheme rules", () => {
+  it("requires DCR application type and accepts exact HTTP redirects", () => {
     const native = {
       application_type: "native",
       client_name: "Local CLI",
@@ -133,7 +133,21 @@ describe("inbound Memory MCP OAuth contracts", () => {
       allowLoopbackHttp: false,
       clientId: "aiqsa_dcr_client",
       value: { ...native, application_type: "web" }
-    })).toBeNull();
+    })).toMatchObject({ applicationType: "WEB" });
+    expect(decodeDynamicClientRegistration({
+      allowLoopbackHttp: false,
+      clientId: "aiqsa_dcr_web",
+      value: {
+        application_type: "web",
+        client_name: "LAN web client",
+        client_uri: "http://192.168.1.20/client",
+        redirect_uris: ["http://192.168.1.20/oauth/callback"]
+      }
+    })).toMatchObject({
+      applicationType: "WEB",
+      clientUri: "http://192.168.1.20/client",
+      redirectUris: ["http://192.168.1.20/oauth/callback"]
+    });
     expect(decodeDynamicClientRegistration({
       allowLoopbackHttp: false,
       clientId: "aiqsa_dcr_private_scheme",
@@ -147,6 +161,70 @@ describe("inbound Memory MCP OAuth contracts", () => {
     });
     expect(validRedirectUri("com.example.client:/oauth/callback", "NATIVE")).toBe(true);
     expect(validRedirectUri("javascript:alert(1)", "NATIVE")).toBe(false);
+    expect(validRedirectUri("http://192.168.1.20/oauth/callback", "WEB")).toBe(true);
+    expect(validRedirectUri("http://user@192.168.1.20/oauth/callback", "WEB")).toBe(false);
+    expect(validRedirectUri("http://192.168.1.20/oauth/callback#fragment", "WEB")).toBe(false);
+  });
+
+  it.each(["NATIVE", "WEB"] as const)(
+    "requires an exact non-loopback HTTP redirect for %s clients",
+    (applicationType) => {
+      const registered = "http://192.168.1.20:8080/oauth/callback";
+      expect(registeredRedirectUriMatches({
+        applicationType,
+        presented: registered,
+        registered
+      })).toBe(true);
+      expect(registeredRedirectUriMatches({
+        applicationType,
+        presented: "http://192.168.1.20:8081/oauth/callback",
+        registered
+      })).toBe(false);
+      expect(registeredRedirectUriMatches({
+        applicationType,
+        presented: `${registered}?injected=1`,
+        registered
+      })).toBe(false);
+      expect(registeredRedirectUriMatches({
+        applicationType,
+        presented: "http://192.168.1.21:8080/oauth/callback",
+        registered
+      })).toBe(false);
+      expect(registeredRedirectUriMatches({
+        applicationType,
+        presented: "https://192.168.1.20:8080/oauth/callback",
+        registered
+      })).toBe(false);
+    }
+  );
+
+  it("infers LAN HTTP clients as web and loopback/custom-scheme clients as native", () => {
+    const clientId = "http://client.example/oauth/client.json";
+    const base = {
+      client_id: clientId,
+      client_name: "Inferred client",
+      token_endpoint_auth_method: "none"
+    };
+    expect(decodeClientIdMetadataDocument({
+      allowLoopbackHttp: false,
+      clientId,
+      value: { ...base, redirect_uris: ["http://192.168.1.20/oauth/callback"] }
+    })).toMatchObject({ applicationType: "WEB" });
+    expect(decodeClientIdMetadataDocument({
+      allowLoopbackHttp: false,
+      clientId,
+      value: { ...base, redirect_uris: ["http://127.0.0.1:43119/oauth/callback"] }
+    })).toMatchObject({ applicationType: "NATIVE" });
+    expect(decodeClientIdMetadataDocument({
+      allowLoopbackHttp: false,
+      clientId,
+      value: { ...base, redirect_uris: ["https://localhost:43119/oauth/callback"] }
+    })).toMatchObject({ applicationType: "NATIVE" });
+    expect(decodeClientIdMetadataDocument({
+      allowLoopbackHttp: false,
+      clientId,
+      value: { ...base, redirect_uris: ["com.example.client:/oauth/callback"] }
+    })).toMatchObject({ applicationType: "NATIVE" });
   });
 
   it.each(["127.0.0.1", "[::1]", "localhost"])("varies only the native HTTP loopback port for %s", (hostname) => {
@@ -185,10 +263,11 @@ describe("inbound Memory MCP OAuth contracts", () => {
     })).toBe(false);
   });
 
-  it("allows HTTP client metadata only for an explicit loopback development case", () => {
+  it("allows public HTTP client metadata identifiers without widening loopback", () => {
     expect(validClientIdentifierUrl("https://client.example/client.json", false)).toBe(true);
+    expect(validClientIdentifierUrl("http://client.example/client.json", false)).toBe(true);
     expect(validClientIdentifierUrl("http://localhost:3001/client.json", false)).toBe(false);
     expect(validClientIdentifierUrl("http://localhost:3001/client.json", true)).toBe(true);
-    expect(validClientIdentifierUrl("http://10.0.0.4/client.json", true)).toBe(false);
+    expect(validClientIdentifierUrl("ftp://client.example/client.json", true)).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
 "use client";
 
+import { randomUUID } from "@/lib/browser/randomUUID";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { decodeChatContinuationResult } from "@/lib/contracts/chatContinuation";
 import { decodeChatDetailResponse, type ChatDetail } from "@/lib/contracts/chats";
@@ -77,7 +78,7 @@ export function useChatContinuation(input: Readonly<{
   const onContinue = async () => {
     if (!input.eligible || !input.chatId || !input.leafMessageId || operation.current) return;
     const controller = new AbortController();
-    const requestId = retry.current?.sourceKey === sourceKey ? retry.current.requestId : crypto.randomUUID();
+    const requestId = retry.current?.sourceKey === sourceKey ? retry.current.requestId : randomUUID();
     const owner = { controller, requestId, sourceKey };
     operation.current = owner;
     retry.current = { sourceKey, requestId };

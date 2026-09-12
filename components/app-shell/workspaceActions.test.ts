@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { useWorkspaceOutputReconciliation } from "./useWorkspaceOutputReconciliation";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   resetComposerSessionStoreForTest,
   resetRunSurfaceStoreForTest,
@@ -366,6 +366,11 @@ function useWorkspaceActionsForTest(input: {
 }
 
 describe("workspace actions", () => {
+  beforeEach(() => {
+    // Exercise these actions with the Crypto API exposed on non-loopback HTTP.
+    vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+  });
+
   it("starts personal chats with the remembered Workspace choice and preserves saved chat flags", async () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
     const catalog = useWorkspaceStore.getState().catalog!;

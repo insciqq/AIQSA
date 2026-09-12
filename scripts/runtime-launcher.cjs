@@ -101,38 +101,6 @@ function stampRequest(request) {
   overwritePeerHeader(request, stamp);
 }
 
-function isLoopbackHostname(hostname) {
-  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-
-  if (normalized === "localhost" || normalized.endsWith(".localhost")) {
-    return true;
-  }
-
-  const canonical = canonicalIp(normalized);
-
-  return canonical === "::1" || canonical?.startsWith("127.") === true;
-}
-
-function enabled(value) {
-  return new Set(["1", "true", "yes", "on"]).has(value?.trim().toLowerCase() ?? "");
-}
-
-function warnForDirectHttp(env) {
-  const bindAddress = env.AIQSA_BIND_ADDRESS?.trim() || "127.0.0.1";
-
-  if (enabled(env.AIQSA_TRUST_PROXY_HEADERS) || isLoopbackHostname(bindAddress)) {
-    return;
-  }
-
-  try {
-    if (new URL(env.AIQSA_APP_BASE_URL?.trim() || "http://localhost:3000").protocol === "http:") {
-      console.warn("AIQSA runtime warning: direct_http_transport");
-    }
-  } catch {
-    // Readiness reports the value-free app_base_url issue.
-  }
-}
-
 function launch(target = "runtime/server.js") {
   const originalCreateServer = http.createServer;
   let interceptionCount = 0;
@@ -171,8 +139,6 @@ function launch(target = "runtime/server.js") {
     throw new RuntimePeerBridgeError("runtime_peer_bridge_not_installed");
   }
 
-  warnForDirectHttp(process.env);
-
   return targetExports;
 }
 
@@ -197,6 +163,5 @@ module.exports = {
   createPeerStamp,
   launch,
   overwritePeerHeader,
-  stampRequest,
-  warnForDirectHttp
+  stampRequest
 };

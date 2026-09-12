@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceSecretsPanel } from "./WorkspaceSecretsPanel";
 import { requestWorkspaceSecrets } from "./workspaceSecretsApi";
 import type { WorkspaceSecretSummary } from "@/lib/contracts/workspaceSecrets";
@@ -10,6 +10,13 @@ const request = vi.mocked(requestWorkspaceSecrets);
 const saved: WorkspaceSecretSummary = { id: "10000000-0000-4000-8000-000000000001", versionId: "10000000-0000-4000-8000-000000000002",
   kind: "text", name: "Saved access", description: "Use for the fixture service", byteSize: 45,
   updatedAt: "2026-09-11T00:00:00Z", envNames: [], originalName: null, sshProtected: false };
+
+beforeEach(() => {
+  // Exercise these actions with the Crypto API exposed on non-loopback HTTP.
+  vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+});
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("WorkspaceSecretsPanel", () => {
   beforeEach(() => request.mockReset());

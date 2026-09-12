@@ -37,7 +37,7 @@ function createDefaultMcpDraftValidator(): McpDraftValidator {
   const remote = createRemoteMcpDraftValidator({
     fetch: createMcpSafeFetch(),
     fetchForDraft: (draft) => createMcpSafeFetch({
-      allowInsecureHttp: process.env.NODE_ENV !== "production",
+      allowInsecureHttp: true,
       allowPrivateNetwork: draft.source.kind === "remote" && draft.source.allowPrivateNetwork === true
     }),
     oauthProviderForDraft: async (validation) => {

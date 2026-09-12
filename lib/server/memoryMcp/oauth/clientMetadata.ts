@@ -141,7 +141,7 @@ export function createInboundMcpClientMetadataResolver(input: Readonly<{
 
   function addressAllowed(address: McpResolvedAddress, url: URL): boolean {
     const scope = networkAddressScope(address.address);
-    if (url.protocol === "https:" && scope === "public") return true;
+    if ((url.protocol === "http:" || url.protocol === "https:") && scope === "public") return true;
     return localhostException && scope === "loopback" &&
       isLoopbackHostname(url.hostname) &&
       (url.protocol === "http:" || url.protocol === "https:");
@@ -153,6 +153,7 @@ export function createInboundMcpClientMetadataResolver(input: Readonly<{
       const timeout = AbortSignal.timeout(INBOUND_MCP_CIMD_TIMEOUT_MS);
       const combinedSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
       try {
+        const clientUrl = new URL(clientId);
         const response = await fetchMetadata(clientId, {
           headers: { accept: "application/json, application/*+json" },
           method: "GET",
@@ -160,7 +161,7 @@ export function createInboundMcpClientMetadataResolver(input: Readonly<{
           signal: combinedSignal
         }, {
           addressAllowed,
-          allowInsecureHttp: localhostException
+          allowInsecureHttp: clientUrl.protocol === "http:"
         });
         if (response.status !== 200 || !isJsonContentType(response.headers.get("content-type"))) {
           await response.body?.cancel().catch(() => undefined);
