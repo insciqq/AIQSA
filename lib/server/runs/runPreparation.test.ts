@@ -4,7 +4,7 @@ import { WORKSPACE_BROWSER_GUIDANCE } from "../workspace/browserGuidance";
 import { buildOpenAIResponsesRequest } from "../providers/openaiResponsesRequest";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { KnowledgeSelection } from "../../contracts/knowledge";
+import { EMPTY_KNOWLEDGE_SELECTION, type KnowledgeSelection } from "../../contracts/knowledge";
 import { textMessageContent } from "../../domain/content";
 import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
 import type { ResolvedEntitlements } from "../auth/entitlements";
@@ -2684,6 +2684,38 @@ describe("run preparation", () => {
     expect(harness.calls).not.toContain("entitlements");
     expect(harness.calls).not.toContain("capabilities");
     expect(harness.calls).not.toContain("context:send");
+  });
+
+  it("treats an empty All my knowledge scope as Knowledge Off", async () => {
+    const harness = createHarness();
+    const result = await prepareRun(
+      {
+        ...harness.deps,
+        knowledgeAdmission: {
+          async load(input) {
+            const admitted = admittedKnowledge(input, "empty");
+            return {
+              ...admitted,
+              bindings: [],
+              exclusions: [],
+              profiles: [],
+              resolvedSourceCount: 0,
+              sources: []
+            };
+          }
+        }
+      },
+      sendInput(successBody({
+        content: textMessageContent("What is new today?"),
+        knowledgePlan: { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1 }
+      }))
+    );
+
+    if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+    const prepared = materializePreparedRunData(result.prepared);
+    expect(prepared.normalizedRequest.knowledgePlan).toEqual(EMPTY_KNOWLEDGE_SELECTION);
+    expect(prepared.knowledgeAdmissionPlan).toBeUndefined();
+    expect(prepared.providerRequest.tools?.some((tool) => tool.name === "search_knowledge") ?? false).toBe(false);
   });
 
   it("composes Knowledge, Search, and MCP without reintroducing Memory tools", async () => {

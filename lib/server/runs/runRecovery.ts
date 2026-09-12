@@ -156,6 +156,7 @@ import type { StorageAdapter } from "../uploads/storage";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
+import { normalizeWorkspaceProviderToolName } from "../workspace/toolCatalog";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import {
   finalizeRunCompletion,
@@ -2729,6 +2730,9 @@ async function recoverCheckpointedToolLoop(
         );
       },
       parallelToolCalls: run.normalizedRequest.modelCapabilities.parallelToolCalls === true,
+      normalizeToolCallName: workspaceTools.length > 0
+        ? normalizeWorkspaceProviderToolName
+        : undefined,
       projectToolResultForProvider: (result) => result,
       persistToolBatch: async ({ calls, continuation: nextContinuation, round }) => {
         await persistToolBatch(calls, nextContinuation, round);

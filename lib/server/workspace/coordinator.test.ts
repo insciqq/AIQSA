@@ -1389,7 +1389,12 @@ describe("Workspace coordinator activity projection", () => {
     expect(result.content[0]).toMatchObject({
       text: expect.stringContaining("workspace_shell_syntax_requires_shell")
     });
-    expect(result.content[0]).toMatchObject({ text: expect.stringContaining("Use sandbox_shell") });
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining(`Use ${namespacedWorkspaceToolName("sandbox_shell")}`)
+    });
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining(`but ${namespacedWorkspaceToolName("sandbox_exec")} does not`)
+    });
     expect(value.runtime.ensureSession).not.toHaveBeenCalled();
     expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
     expect(result.artifacts).toEqual([expect.objectContaining({

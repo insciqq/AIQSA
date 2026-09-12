@@ -1650,10 +1650,13 @@ export function createWorkspaceCoordinator(input: Readonly<{
         SHELL_SYNTAX.test(call.arguments.command)) {
         // Direct exec spawns `command` as one program: pipes, operators,
         // redirects, and embedded arguments belong to sandbox_shell.
+        const shellToolName = initial.toolDefinitions.find((tool) =>
+          tool.originalName === "sandbox_shell"
+        )?.namespacedName ?? "sandbox_shell";
         const rejected = executionErrorResult(
           call,
-          "This command uses shell syntax, but sandbox_exec does not invoke a shell. " +
-            "Use sandbox_shell, or pass only the program in `command` and its arguments in `args`.",
+          `This command uses shell syntax, but ${call.name} does not invoke a shell. ` +
+          `Use ${shellToolName}, or pass only the program in \`command\` and its arguments in \`args\`.`,
           "workspace_shell_syntax_requires_shell"
         );
         const entry = projectWorkspaceActivity({
