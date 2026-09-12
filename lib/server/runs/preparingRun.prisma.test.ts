@@ -27,7 +27,10 @@ import {
 import type { NormalizedRunRequest } from "../providers/types";
 import { MemorySuppressionKeyring } from "../memory/suppressionKeyring";
 import { createPrismaMemoryFactRepository } from "../memory/persistence/facts";
-import { createPrismaMemoryMutationAuthorizationRepository } from "../memory/persistence/authorizations";
+import {
+  createPrismaMemoryMutationAuthorizationRepository,
+  memoryTargetAuthorizationPayloadHash
+} from "../memory/persistence/authorizations";
 import { createPrismaMemoryScopeRepository } from "../memory/persistence/scopes";
 import { createPrismaMemorySettingsRepository } from "../memory/persistence/settings";
 import {
@@ -41,9 +44,14 @@ import { createMemoryClientRefService } from "../memory/actions/clientRef";
 import {
   MEMORY_CONTROL_VERSIONS,
   createMemoryReadOnlyControlReuseProof,
+  memoryControlAcceptedOutputHash,
+  memoryControlIntentHash,
   type MemoryReadOnlyControlReuseProof
 } from "../memory/actions/controlRuntime";
-import { createPrismaMemoryLifecycleRepository } from "../memory/lifecycle/repository";
+import {
+  createPrismaMemoryLifecycleRepository,
+  memoryLifecycleIdempotencyFingerprint
+} from "../memory/lifecycle/repository";
 import { createMemoryLifecycleService } from "../memory/lifecycle/service";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../memory/history/chunking";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../memory/history/contract";
@@ -1164,6 +1172,118 @@ describe("PREPARING run orchestration", () => {
       });
     });
   });
+
+  it.each(["own", "later-generation", "missing-receipt", "changed-settings"] as const)(
+    "finalizes only the receipt-proven FORGET generation (%s)",
+    async (variation) => {
+      await withPreparingUser(async ({ userId }) => {
+        const fixture = await createPreparingEmbeddingAuthority(userId);
+        try {
+          const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+          const fact = await saveExplicitFact(userId, scope.id, "The obsolete report format is plain text.");
+          if (!("factId" in fact)) throw new Error("forget_fact_fixture_invalid");
+          const chat = await prisma.chat.create({ data: { title: "Owned forget finalization", userId } });
+          const sourceText = "Forget the obsolete report format.";
+          const initial = normalizedRequest(chat.id, sourceText);
+          const request: NormalizedRunRequest = {
+            ...initial,
+            prompt: { ...initial.prompt, memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT }
+          };
+          const repository = createPrismaRunRepository(prisma, { memoryExecutionAuthority: fixture.authority });
+          const admitted = await repository.admitPreparingRun({
+            admissionKind: "NORMAL_SEND", chatId: chat.id, content: request.content,
+            expectedActiveLeafId: null, modelId: request.modelId, normalizedRequest: request,
+            provider: request.provider, providerRequestPreview: {}, userId
+          });
+          await repository.beginPreparingRunAttempt({
+            attemptId: admitted.attemptId, now: new Date(), runId: admitted.runId, userId
+          });
+          const intent: MemoryActionIntent = {
+            ...readOnlyRetryIntent, action: "FORGET", memoryUseful: false, queryText: null,
+            reasonCode: "forget_request", targetQuery: "the obsolete report format"
+          };
+          const execution = createPrismaMemoryExecutionService(fixture.authority, prisma);
+          const inputHash = memorySha256({ sourceText, purpose: "forget-finalization-fixture" });
+          const control = await execution.admission.bind(userId, {
+            inputHash, ordinal: 0, owner: { retrievalAttemptId: admitted.attemptId, type: "RETRIEVAL_ATTEMPT" },
+            role: "MEMORY_CONTROL", versions: MEMORY_CONTROL_VERSIONS
+          });
+          await execution.admission.start(userId, control.id);
+          await execution.lifecycle.settle(userId, control.id, {
+            acceptedOutputHash: memoryControlAcceptedOutputHash(inputHash, memoryControlIntentHash(intent)),
+            errorCode: null, providerResponseId: "forget-finalization-control", state: "SUCCEEDED",
+            usage: { cachedInputTokens: 0, completeness: "COMPLETE", estimatedCostMicros: null,
+              inputTokens: 9, outputTokens: 4, reasoningTokens: 0, totalTokens: 13 }
+          });
+          const target = { action: "FORGET" as const, expectedTargetVersionId: fact.versionId, targetFactId: fact.factId };
+          const authorizedPayloadHash = memoryTargetAuthorizationPayloadHash(target);
+          const authorization = await createPrismaMemoryMutationAuthorizationRepository(prisma).mintForControl(userId, {
+            ...target, admissionDeadlineAtMs: Date.now() + 4_000, authorizedPayloadHash,
+            bindingId: control.id, chatId: chat.id, controlIntent: intent,
+            modelRunId: admitted.runId, sourceText
+          });
+          const forgotten = await createPrismaMemoryLifecycleRepository(
+            suppressionKeyring, preparingForgetRegistry(), prisma
+          ).forget(userId, {
+            authorization: { ...target, authorizationId: authorization.id, authorizedPayloadHash },
+            expectedVersionId: fact.versionId, factId: fact.factId,
+            idempotencyFingerprint: memoryLifecycleIdempotencyFingerprint("FORGET", authorization.id),
+            idempotencyPayloadHash: memorySha256({ target, requestId: authorization.requestId }),
+            modelRunId: admitted.runId, now: new Date(), requestId: authorization.requestId
+          });
+          expect(forgotten.memoryGeneration).toBe(admitted.memoryGeneration + 1);
+          await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: fact.factId } }))
+            .resolves.toMatchObject({ currentVersionId: null, state: "FORGOTTEN" });
+          if (variation === "later-generation") {
+            await prisma.userMemorySettings.update({ where: { userId }, data: {
+              memoryGeneration: { increment: 1 }, memoryRevision: { increment: 1 }
+            } });
+          } else if (variation === "missing-receipt") {
+            await prisma.memoryOperationReceipt.deleteMany({ where: { modelRunId: admitted.runId, userId } });
+          } else if (variation === "changed-settings") {
+            await prisma.userMemorySettings.update({ where: { userId }, data: { useMemoryFacts: false } });
+          }
+          const committed = { operation: "FORGET", status: "COMMITTED", version: 1 } as const;
+          await repository.completePreparingRunAttempt({
+            attemptId: admitted.attemptId, runId: admitted.runId, userId,
+            result: {
+              budgetSnapshot: {
+                memoryActionAnswerResult: committed,
+                memoryActionResult: { operation: "FORGET", status: "COMMITTED" },
+                reason: "memory_action_only", utilityEgressMode: "CONSENTED_EXTERNAL",
+                utilityExecutions: [{ role: "MEMORY_CONTROL", state: "READY", reason: null }]
+              },
+              items: [], outcome: "EMPTY", preparedContext: null, querySnapshot: null
+            }
+          });
+          const finalize = () => repository.finalizePreparingRun({
+            attemptId: admitted.attemptId, runId: admitted.runId, userId,
+            normalizedRequest: { ...request, prompt: { ...request.prompt, memoryActionAnswerResult: committed } },
+            providerRequestPreview: { memoryActionAnswerResult: committed }
+          });
+          if (variation !== "own") {
+            await expect(finalize()).rejects.toMatchObject({ code: "memory_admission_settings_changed", retryable: true });
+            await expect(prisma.modelRunMemoryBinding.count({ where: { modelRunId: admitted.runId } })).resolves.toBe(0);
+            return;
+          }
+          await expect(finalize()).resolves.toBe(true);
+          await expect(repository.recoverPreparingRun({ now: new Date(), runId: admitted.runId, userId }))
+            .resolves.toBe("finalized");
+          await expect(prisma.memoryRetrievalAttempt.findMany({
+            select: { attemptOrdinal: true, outcome: true, state: true }, where: { modelRunId: admitted.runId }
+          })).resolves.toEqual([{ attemptOrdinal: 0, outcome: "EMPTY", state: "CONSUMED" }]);
+          const binding = await prisma.modelRunMemoryBinding.findUniqueOrThrow({ where: { modelRunId: admitted.runId } });
+          expect(binding).toMatchObject({ outcome: "EMPTY", finalizedRevisionSnapshot: forgotten.memoryRevision });
+          await expect(prisma.memoryOperationReceipt.count({ where: { modelRunId: admitted.runId, operation: "FORGET", userId } }))
+            .resolves.toBe(1);
+          await expect(prisma.modelRunMemoryItem.count({ where: { bindingId: binding.id } })).resolves.toBe(0);
+          await expect(prisma.memoryExecutionBinding.count({ where: { retrievalAttemptId: admitted.attemptId, userId } })).resolves.toBe(1);
+        } finally {
+          await fixture.cleanup();
+        }
+      });
+    }
+  );
 
   it("retries two consecutive revision drifts with one read-only control receipt", async () => {
     await withPreparingUser(async ({ userId }) => {
