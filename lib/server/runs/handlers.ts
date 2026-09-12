@@ -1,6 +1,6 @@
 import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { randomUUID } from "node:crypto";
-import { ChatPdfPolicyUnavailableError, chatPdfFingerprint } from "../uploads/chatPdfAdmission";
+import { isChatPdfPolicyUnavailableError, chatPdfFingerprint } from "../uploads/chatPdfAdmission";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
 import { chatPdfRunSnapshot } from "../uploads/chatPdfRunContinuation";
 import type { PreparingRunAdmissionResponse } from "../../contracts/runs";
@@ -577,7 +577,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     } catch (error) {
       const duplicate = await deps.chatPdf?.findAdmission(admissionKey, auth.userId);
       if (duplicate) { deps.chatPdf?.kick(); return Response.json(duplicate, { status: 202, headers: { "Cache-Control": "no-store" } }); }
-      if ((error instanceof ChatPdfPreparationError || error instanceof ChatPdfPolicyUnavailableError)) return Response.json({ error: error.code }, { status: 409 });
+      if ((error instanceof ChatPdfPreparationError || isChatPdfPolicyUnavailableError(error))) return Response.json({ error: error.code }, { status: 409 });
       if (isActiveRunConflictError(error)) {
         return activeRunInsertConflictResponse(chat.id, deps.repository, auth.userId);
       }
@@ -767,7 +767,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     } catch (error) {
       const duplicate = await deps.chatPdf?.findAdmission(admissionKey, auth.userId);
       if (duplicate) { deps.chatPdf?.kick(); return Response.json(duplicate, { status: 202, headers: { "Cache-Control": "no-store" } }); }
-      if ((error instanceof ChatPdfPreparationError || error instanceof ChatPdfPolicyUnavailableError)) return Response.json({ error: error.code }, { status: 409 });
+      if ((error instanceof ChatPdfPreparationError || isChatPdfPolicyUnavailableError(error))) return Response.json({ error: error.code }, { status: 409 });
       if (isActiveRunConflictError(error)) {
         return activeRunInsertConflictResponse(source.chat.id, deps.repository, auth.userId);
       }

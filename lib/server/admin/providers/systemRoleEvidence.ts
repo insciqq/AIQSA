@@ -1,5 +1,10 @@
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
+import { decodeForcedToolCallVerificationEvidence } from "../../providers/forcedToolCallEvidence";
+import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
+import { decodeStructuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
+import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
+import { unsupportedAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
 
 /** Called only under the active-tuple CAS. A role probe cannot revoke the
  * ordinary answer check or another capability on that same exact tuple. */
@@ -11,11 +16,24 @@ export function mergeSystemRoleEvidence(
     throw new Error("system_role_evidence_missing");
   }
   const current = previous as AdminProviderTestEvidence;
-  if (!current.compatibility || !next.compatibility || current.upstreamModelId !== next.upstreamModelId ||
+  if (!next.compatibility || current.upstreamModelId !== next.upstreamModelId ||
     JSON.stringify(current.selectedProviders) !== JSON.stringify(next.selectedProviders)) {
     throw new Error("system_role_evidence_stale");
   }
-  const result = { ...current, compatibility: { ...current.compatibility } };
+  // Quick setup can publish catalog access plus a PDF proof before a full
+  // compatibility check. Preserve those proofs when the first role is checked.
+  const verified = (proof: { upstreamModelId: string } | null) =>
+    proof?.upstreamModelId === current.upstreamModelId ? "verified" as const : "not_supported" as const;
+  const compatibility = current.compatibility ?? {
+    ...unsupportedAdminProviderCompatibilityEvidence(),
+    modelAccess: next.compatibility.modelAccess,
+    usage: next.compatibility.usage,
+    directPdf: verified(decodePdfInputVerificationEvidence(current.pdfInput)),
+    structuredOutput: verified(decodeStructuredOutputVerificationEvidence(current.structuredOutput)),
+    forcedToolCall: verified(decodeForcedToolCallVerificationEvidence(current.forcedToolCall)),
+    vision: verified(decodeVisionInputVerificationEvidence(current.visionInput))
+  };
+  const result = { ...current, compatibility: { ...compatibility } };
   const pairs = role === "memory"
     ? [["structuredOutput", "structuredOutput"], ["forcedToolCall", "forcedToolCall"]] as const
     : role === "chat_titles" ? [["structuredOutput", "structuredOutput"]] as const

@@ -122,11 +122,13 @@ test("PDF modes keep independent reader assignments through refresh and compact 
   await mode.selectOption("use_pdf_reader");
   await expect(fallback).toHaveCount(0);
   await expect(page.getByRole("button", { name: "PDF reader deployment", exact: true })).toContainText(native.displayName);
-  await expect(page.getByRole("button", { name: "Page-image reader deployment", exact: true })).toContainText(images.displayName);
+  await expect(page.getByRole("button", { name: "Page-image reader deployment", exact: true })).toHaveCount(0);
   await page.reload();
   await expect(mode).toHaveValue("use_pdf_reader");
   await mode.selectOption("read_page_images");
   await expect(mode).toBeEnabled();
+  await expect(page.getByRole("button", { name: "PDF reader deployment", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Page-image reader deployment", exact: true })).toContainText(images.displayName);
   await mode.selectOption("prefer_chat_model");
   await expect(fallback).toHaveValue("pdf_reader");
   for (const profile of [{ width: 1440, height: 900, theme: "dark" }, { width: 390, height: 844, theme: "light" }, { width: 844, height: 390, theme: "dark" }]) {

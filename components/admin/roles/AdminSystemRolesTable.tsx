@@ -5,7 +5,7 @@ import { AdminKnowledgeProcessingRows } from "@/components/admin/roles/AdminKnow
 import { AdminRolePicker } from "@/components/admin/roles/AdminRolePicker";
 import { AdminReasoningSelect as ReasoningSelect } from "@/components/admin/roles/AdminReasoningSelect";
 import { AdminStatusPill } from "@/components/admin/roles/AdminStatusPill";
-import { cardClass } from "@/components/admin/roles/rolesControls";
+import { cardClass, compactSelectClass } from "@/components/admin/roles/rolesControls";
 import {
   ADMIN_ROLE_STATUS_LABEL,
   deploymentLabeller,
@@ -44,6 +44,7 @@ function RoleRow({
   description,
   menu,
   status,
+  statusLabel,
   testId,
   title
 }: Readonly<{
@@ -51,6 +52,7 @@ function RoleRow({
   description: string;
   menu: readonly UiV2MenuAction[];
   status: AdminRoleStatus;
+  statusLabel?: string;
   testId: string;
   title: string;
 }>) {
@@ -65,7 +67,7 @@ function RoleRow({
       </div>
       <div className="order-3 col-span-2 grid gap-1.5 xl:order-2 xl:col-span-1">{children}</div>
       <div className="order-4 col-span-2 xl:order-3 xl:col-span-1 xl:pt-1.5">
-        <AdminStatusPill label={ADMIN_ROLE_STATUS_LABEL[status]} status={status} testId={`${testId}-status`} />
+        <AdminStatusPill label={statusLabel ?? ADMIN_ROLE_STATUS_LABEL[status]} status={status} testId={`${testId}-status`} />
       </div>
     </div>
   );
@@ -95,16 +97,20 @@ export function AdminSystemRolesTable({
     chatTitleProviderModelId: policy.chatTitleModel?.id ?? null,
     chatTitleReasoningEffort: policy.chatTitleReasoningEffort
   };
-  const pdfUndo = {
-    chatPdfProviderModelId: policy.chatPdfModel?.id ?? null,
-    chatPdfReasoningEffort: policy.chatPdfReasoningEffort
-  };
-  const pdfNativeUndo = {
-    chatPdfNativeProviderModelId: policy.chatPdfNativeModel?.id ?? null,
-    chatPdfNativeReasoningEffort: policy.chatPdfNativeReasoningEffort ?? null
-  };
   const pdfMode = policy.chatPdfProcessingMode ?? "prefer_chat_model";
   const pdfFallback = policy.chatPdfFallbackMethod ?? "page_images";
+  const pdfUsesNativeReader = pdfMode === "use_pdf_reader" || pdfMode === "prefer_chat_model" && pdfFallback === "pdf_reader";
+  const pdfReader = (pdfUsesNativeReader ? policy.chatPdfNativeModel : policy.chatPdfModel) ?? null;
+  const pdfReaderName = pdfUsesNativeReader ? "PDF reader" : "Page-image reader";
+  const pdfReaderReasoning = (pdfUsesNativeReader ? policy.chatPdfNativeReasoningEffort : policy.chatPdfReasoningEffort) ?? null;
+  const pdfReaderSelection = (providerModelId: string | null, reasoningEffort: string | null) => pdfUsesNativeReader
+    ? { chatPdfNativeProviderModelId: providerModelId, chatPdfNativeReasoningEffort: reasoningEffort }
+    : { chatPdfProviderModelId: providerModelId, chatPdfReasoningEffort: reasoningEffort };
+  const pdfReaderUndo = pdfReaderSelection(pdfReader?.id ?? null, pdfReaderReasoning);
+  const pdfStatus = roleStatus(pdfReader);
+  const pdfStatusLabel = pdfMode === "prefer_chat_model"
+    ? { working: "Fallback ready", unavailable: "Fallback unavailable", not_assigned: "Fallback not set" }[pdfStatus]
+    : { working: "Ready", unavailable: "Unavailable", not_assigned: "Not assigned" }[pdfStatus];
   const rerankerUndo = { rerankerProviderModelId: policy.rerankerModel?.id ?? null };
   const imageUndo = { imageProviderModelId: policy.imageModel?.id ?? null, imageParameters: policy.imageParameters ?? {} };
   const fallbacks = rerankerFallbacksLine(catalog);
@@ -201,15 +207,21 @@ export function AdminSystemRolesTable({
       </RoleRow>
 
       <RoleRow
-        title="PDF processing in chats" testId="admin-role-chat-pdf" menu={[]}
-        status={roleStatus((pdfMode === "use_pdf_reader" || pdfMode === "prefer_chat_model" && pdfFallback === "pdf_reader"
-          ? policy.chatPdfNativeModel : policy.chatPdfModel) ?? null)}
-        description="Prefer chat model sends PDFs directly when supported; otherwise it uses the selected fallback. Reader modes prepare the document before your selected chat model answers."
+        title="PDF processing in chats"
+        testId="admin-role-chat-pdf"
+        menu={[{
+          disabled: !pdfReader || busy,
+          label: "Clear reader assignment",
+          onSelect: () => void controller.assign(pdfReaderSelection(null, null), pdfReaderUndo)
+        }]}
+        status={pdfStatus}
+        statusLabel={pdfStatusLabel}
+        description="Choose how PDFs are read. Changes apply to future messages."
       >
         <label className="grid gap-1.5 text-xs text-ink-muted">
           <span>Processing mode</span>
           <select
-            className="v2-input"
+            className={compactSelectClass}
             disabled={busy}
             value={pdfMode}
             onChange={(event) => void controller.assign(
@@ -225,7 +237,7 @@ export function AdminSystemRolesTable({
         {pdfMode === "prefer_chat_model" ? <label className="grid gap-1.5 text-xs text-ink-muted">
           <span>Fallback method</span>
           <select
-            className="v2-input"
+            className={compactSelectClass}
             disabled={busy}
             value={pdfFallback}
             onChange={(event) => void controller.assign(
@@ -237,96 +249,36 @@ export function AdminSystemRolesTable({
             <option value="page_images">Read page images</option>
           </select>
         </label> : null}
-        <p className="text-xs leading-5 text-ink-muted">Configure the chosen reader below. Changes apply to future messages.</p>
-      </RoleRow>
-
-      <RoleRow
-        description="Prepares PDFs through native PDF input. Needs verified PDF support and the provider’s default key."
-        menu={[{
-          disabled: !policy.chatPdfNativeModel || busy,
-          label: "Clear assignment",
-          onSelect: () => void controller.assign(
-            { chatPdfNativeProviderModelId: null, chatPdfNativeReasoningEffort: null },
-            pdfNativeUndo
-          )
-        }]}
-        status={roleStatus(policy.chatPdfNativeModel ?? null)}
-        testId="admin-role-chat-pdf-native"
-        title="PDF reader"
-      >
-        <AdminRolePicker
-          busy={busy}
-          checkingId={checkingId}
-          items={generativeRoleItems(catalog, "direct_pdf")}
-          label="PDF reader deployment"
-          onCheck={(id) => controller.checkAndAssign("direct_pdf", id)}
-          onSelect={(id) => void controller.assign(
-            { chatPdfNativeProviderModelId: id, chatPdfNativeReasoningEffort: null },
-            pdfNativeUndo
-          )}
-          roleName="PDF reader"
-          selectedId={policy.chatPdfNativeModel?.id ?? null}
-          selectedLabel={policy.chatPdfNativeModel ? label(policy.chatPdfNativeModel) : null}
-          testId="admin-chat-pdf-native-picker"
-        />
+        <div className="mt-2 grid gap-1.5">
+          <p className="text-xs text-ink-muted">{pdfReaderName} model</p>
+          <AdminRolePicker
+            key={pdfReaderName}
+            busy={busy}
+            checkingId={checkingId}
+            items={generativeRoleItems(catalog, pdfUsesNativeReader ? "direct_pdf" : "vision")}
+            label={`${pdfReaderName} deployment`}
+            onCheck={(id) => controller.checkAndAssign(pdfUsesNativeReader ? "direct_pdf" : "vision", id)}
+            onSelect={(id) => void controller.assign(pdfReaderSelection(id, null), pdfReaderUndo)}
+            roleName={pdfReaderName}
+            selectedId={pdfReader?.id ?? null}
+            selectedLabel={pdfReader ? label(pdfReader) : null}
+            testId={pdfUsesNativeReader ? "admin-chat-pdf-native-picker" : "admin-chat-pdf-picker"}
+          />
+          <p className="text-xs leading-5 text-ink-muted">
+            {pdfMode === "prefer_chat_model"
+              ? "Used only when the chat model cannot read PDFs directly."
+              : "Reads the document before your selected chat model answers."}
+          </p>
+        </div>
         <details>
           <summary className="cursor-pointer text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">Advanced</summary>
           <div className="pt-2">
             <ReasoningSelect
               disabled={busy}
-              label="PDF reader reasoning"
-              model={policy.chatPdfNativeModel ?? null}
-              onChange={(effort) => void controller.assign(
-                { chatPdfNativeProviderModelId: policy.chatPdfNativeModel?.id ?? null, chatPdfNativeReasoningEffort: effort },
-                pdfNativeUndo
-              )}
-              value={policy.chatPdfNativeReasoningEffort ?? null}
-            />
-          </div>
-        </details>
-      </RoleRow>
-
-      <RoleRow
-        description="Prepares PDFs from page images and native text. Needs verified image input and the provider’s default key."
-        menu={[{
-          disabled: !policy.chatPdfModel || busy,
-          label: "Clear assignment",
-          onSelect: () => void controller.assign(
-            { chatPdfProviderModelId: null, chatPdfReasoningEffort: null },
-            pdfUndo
-          )
-        }]}
-        status={roleStatus(policy.chatPdfModel)}
-        testId="admin-role-chat-pdf-images"
-        title="Page-image reader"
-      >
-        <AdminRolePicker
-          busy={busy}
-          checkingId={checkingId}
-          items={generativeRoleItems(catalog, "vision")}
-          label="Page-image reader deployment"
-          onCheck={(id) => controller.checkAndAssign("vision", id)}
-          onSelect={(id) => void controller.assign(
-            { chatPdfProviderModelId: id, chatPdfReasoningEffort: null },
-            pdfUndo
-          )}
-          roleName="Page-image reader"
-          selectedId={policy.chatPdfModel?.id ?? null}
-          selectedLabel={policy.chatPdfModel ? label(policy.chatPdfModel) : null}
-          testId="admin-chat-pdf-picker"
-        />
-        <details>
-          <summary className="cursor-pointer text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">Advanced</summary>
-          <div className="pt-2">
-            <ReasoningSelect
-              disabled={busy}
-              label="Page-image reader reasoning"
-              model={policy.chatPdfModel}
-              onChange={(effort) => void controller.assign(
-                { chatPdfProviderModelId: policy.chatPdfModel?.id ?? null, chatPdfReasoningEffort: effort },
-                pdfUndo
-              )}
-              value={policy.chatPdfReasoningEffort}
+              label={`${pdfReaderName} reasoning`}
+              model={pdfReader}
+              onChange={(effort) => void controller.assign(pdfReaderSelection(pdfReader?.id ?? null, effort), pdfReaderUndo)}
+              value={pdfReaderReasoning}
             />
           </div>
         </details>

@@ -32,4 +32,30 @@ describe("independent role evidence", () => {
     expect(() => mergeSystemRoleEvidence(current, { ...current, selectedProviders: ["Changed route"] }, "memory"))
       .toThrow("system_role_evidence_stale");
   });
+  it("adds Vision proof to a quick-setup catalog check without losing its verified PDF route", () => {
+    const catalog: AdminProviderTestEvidence = {
+      method: "models_catalog", detail: "ok", upstreamModelId: current.upstreamModelId,
+      selectedProviders: current.selectedProviders, pdfInput: current.pdfInput
+    };
+    const merged = mergeSystemRoleEvidence(catalog, current, "vision");
+    expect(merged.pdfInput).toEqual(current.pdfInput);
+    expect(merged.visionInput).toEqual(current.visionInput);
+    expect(merged.compatibility).toMatchObject({ modelAccess: "verified", directPdf: "verified",
+      vision: "verified", structuredOutput: "not_supported", forcedToolCall: "not_supported", streaming: "not_supported" });
+    expect(merged).not.toHaveProperty("structuredOutput");
+    expect(merged).not.toHaveProperty("forcedToolCall");
+    expect(catalog).not.toHaveProperty("compatibility");
+  });
+  it("does not grant untested capabilities when a catalog-only deployment fails a Vision probe", () => {
+    const catalog: AdminProviderTestEvidence = {
+      method: "models_catalog", detail: "ok", upstreamModelId: current.upstreamModelId,
+      selectedProviders: current.selectedProviders
+    };
+    const merged = mergeSystemRoleEvidence(catalog, { ...current, visionInput: undefined,
+      compatibility: { ...current.compatibility!, vision: "not_supported" } }, "vision");
+    expect(merged.compatibility).toMatchObject({ modelAccess: "verified", directPdf: "not_supported",
+      vision: "not_supported", structuredOutput: "not_supported", forcedToolCall: "not_supported", streaming: "not_supported" });
+    expect(merged).not.toHaveProperty("visionInput");
+    expect(merged).not.toHaveProperty("pdfInput");
+  });
 });
