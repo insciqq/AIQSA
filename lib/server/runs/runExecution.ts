@@ -2185,6 +2185,22 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 }
               } catch (error) {
                 if (error instanceof SearchToolCancelledError) {
+                  // Search has already collected its engines' outcomes. Settle
+                  // that evidence before the cancelled run checkpoints usage.
+                  const storedResult = snapshotToolExecutionResult(error.result, toolLoopPersistenceLimits.resultBytes);
+                  if (storedResult === null) {
+                    throw new RunPipelineError("tool_call_result_invalid", "Search result could not be persisted");
+                  }
+                  const settled = await input.repository.settleToolLoopCall({
+                    callId: claim.call.id,
+                    result: storedResult,
+                    runId,
+                    state: error.result.status,
+                    userId: input.userId
+                  });
+                  if (settled !== "settled" && settled !== "reused") {
+                    throw new RunPipelineError("tool_call_settle_conflict", "Search result could not be durably settled");
+                  }
                   for (const execution of searchExecutionsFromToolResult(error.result)) {
                     rememberReportedUsage(execution.provider, execution.modelId ?? "search", execution.usage);
                   }

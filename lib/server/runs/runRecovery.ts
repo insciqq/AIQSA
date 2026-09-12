@@ -1536,6 +1536,22 @@ async function executePersistedToolCall(
     }
   } catch (error) {
     if (error instanceof SearchToolCancelledError) {
+      // Accounting requires a settled call even when Stop has already won
+      // the run's terminal state. Only already observed Search evidence is saved.
+      const stored = snapshotToolExecutionResult(error.result, toolLoopPersistenceLimits.resultBytes);
+      if (stored === null) {
+        throw new ToolLoopRecoveryError("tool_call_result_invalid", "Recovered Search result could not be persisted.");
+      }
+      const settled = await context.deps.repository.settleToolLoopCall({
+        callId: claim.call.id,
+        result: stored,
+        runId: context.run.id,
+        state: error.result.status,
+        userId: context.run.userId
+      });
+      if (settled !== "settled" && settled !== "reused") {
+        throw new ToolLoopRecoveryError("tool_call_settle_conflict", "Recovered Search result could not be durably settled.");
+      }
       await recordRecoveredSearchResult({
         context,
         includeUsage: claim.call.usageAccountedAt == null,

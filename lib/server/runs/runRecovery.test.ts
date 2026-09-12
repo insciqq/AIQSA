@@ -24,6 +24,7 @@ import type {
   ProviderSearchRequest
 } from "../providers/types";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
+import { ProviderSearchExecutionError } from "../providers/types";
 import { RunRecoveryScheduler } from "./recoveryScheduler";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
@@ -1429,6 +1430,10 @@ function installCheckpointState(
   harness.repository.loadRunUsageAttributions = async () => persistedUsage;
   const recordRunUsageEvents = harness.repository.recordRunUsageEvents;
   harness.repository.recordRunUsageEvents = async (input) => {
+    if ((input.usageAccountedToolCallIds ?? []).some((id) => {
+      const call = calls.find((candidate) => candidate.id === id);
+      return !call || !["complete", "error"].includes(call.state);
+    })) return false;
     if (input.answerRoundUsage) {
       const next = upsertAnswerRoundUsage(currentCheckpoint, input.answerRoundUsage);
       if (!next) return false;
@@ -5499,6 +5504,66 @@ describe("run recovery", () => {
       finalText: "Recovered cross-provider answer",
       usage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 }
     });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
+  it("persists partial Search usage when Stop interrupts a recovered call without replay", async () => {
+    const recoveryRegistry = registry();
+    const answerStream = vi.fn<ProviderAdapter["stream"]>();
+    const search = vi.fn<ProviderSearchAdapter["search"]>(async () => {
+      harness.setStoredRun({ status: "cancelled" });
+      expect(recoveryRegistry.abort(runId)).toBe(true);
+      throw new ProviderSearchExecutionError({
+        artifacts: [], code: "search_interrupted", usage: { inputTokens: 7 }
+      });
+    });
+    const harness = createHarness({
+      registry: recoveryRegistry,
+      providers: {
+        openai: { buildRequestPreview: () => ({}), stream: answerStream },
+        openai_compatible: { buildRequestPreview: () => ({}), stream: answerStream }
+      },
+      searchProviders: { openai_compatible: { buildRequestPreview: () => ({}), search } }
+    });
+    const storedCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { query: "current sources" },
+      mcpBinding: null,
+      toolName: "search_engine_1"
+    };
+    const checkpointState = installCheckpointState(harness, {
+      ...checkpointedRun({
+        calls: [storedCall], phase: "tools_pending",
+        providerToolMessages: [{
+          arguments: JSON.stringify(storedCall.arguments),
+          call_id: storedCall.providerCallId,
+          name: storedCall.toolName,
+          type: "function_call"
+        }]
+      }),
+      normalizedRequest: normalizedClientSearchRequest()
+    });
+    harness.repository.getRunControlForUser = async () => control(harness.state.run);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(checkpointState.calls()).toEqual([
+      expect.objectContaining({ state: "error", usageAccountedAt: expect.any(String) })
+    ]);
+    expect(harness.state.usageAttributions.at(-1)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        modelId: "search-model", provider: "openai_compatible",
+        usage: expect.objectContaining({ inputTokens: 7, outputTokens: null, totalTokens: null, completeness: "partial" })
+      })
+    ]));
+    const savedUsageCount = harness.state.usageAttributions.length;
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(harness.state.usageAttributions).toHaveLength(savedUsageCount);
+    expect(search).toHaveBeenCalledOnce();
+    expect(answerStream).not.toHaveBeenCalled();
+    expect(harness.state.run.status).toBe("cancelled");
+    expect(harness.state.completed).toBeNull();
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 

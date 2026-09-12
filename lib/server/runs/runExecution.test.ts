@@ -1125,6 +1125,10 @@ function createRepository(options: RepositoryOptions = {}) {
       if (options.usagePersistenceError) {
         throw options.usagePersistenceError;
       }
+      if ((input.usageAccountedToolCallIds ?? []).some((id) => {
+        const call = toolCalls.get(id);
+        return !call || !["complete", "error"].includes(call.state);
+      })) return false;
       recordedRunUsageEvents.push(input);
       if (input.usageAccountedToolCallIds) {
         const accounted = new Set(input.usageAccountedToolCallIds);
@@ -5447,6 +5451,9 @@ describe("run execution", () => {
     })).text();
     expect(answerRounds).toBe(1);
     expect(repository.completeRuns).toEqual([]);
+    expect([...repository.toolCalls.values()]).toEqual([
+      expect.objectContaining({ state: "error", usageAccountedAt: expect.any(String) })
+    ]);
     expect(repository.recordedRunUsageEvents.at(-1)?.usageAttributions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         modelId: "perplexity/sonar-pro-search", provider: "openrouter", operationCount: 1,

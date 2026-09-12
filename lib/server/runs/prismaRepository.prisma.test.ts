@@ -3218,7 +3218,7 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
-  it("atomically marks settled tool-call usage with the replaced run aggregate", async () => {
+  it.each(["streaming", "cancelled"] as const)("atomically marks settled tool-call usage once for a %s run", async (status) => {
     await withRunUser(async ({ userId }) => {
       const repository = createPrismaRunRepository(prisma);
       const active = await createActiveRun(repository, userId, "Tool usage checkpoint");
@@ -3247,6 +3247,22 @@ describe("Prisma-backed run repository", () => {
         runId: active.runId,
         userId
       })).resolves.toMatchObject({ kind: "claimed" });
+      if (status === "cancelled") {
+        await repository.cancelRun({ payload: cancelPayload, runId: active.runId, userId });
+      }
+      const usageAttributions = [{
+        modelId: "tool-model",
+        provider: "tool-provider",
+        usage: { inputTokens: 3, outputTokens: 0, reasoningTokens: 0, totalTokens: 3 }
+      }];
+      const usageCheckpoint = {
+        chatId: active.chatId,
+        runId: active.runId,
+        usageAccountedToolCallIds: [call.id],
+        usageAttributions,
+        userId
+      };
+      await expect(repository.recordRunUsageEvents(usageCheckpoint)).resolves.toBe(false);
       await expect(repository.settleToolLoopCall({
         callId: call.id,
         result: { status: "complete" },
@@ -3255,18 +3271,9 @@ describe("Prisma-backed run repository", () => {
         userId
       })).resolves.toBe("settled");
 
-      const usageAttributions = [{
-        modelId: "tool-model",
-        provider: "tool-provider",
-        usage: { inputTokens: 3, outputTokens: 0, reasoningTokens: 0, totalTokens: 3 }
-      }];
-      await expect(repository.recordRunUsageEvents({
-        chatId: active.chatId,
-        runId: active.runId,
-        usageAccountedToolCallIds: [call.id],
-        usageAttributions,
-        userId
-      })).resolves.toBe(true);
+      await expect(repository.recordRunUsageEvents(usageCheckpoint)).resolves.toBe(true);
+      await expect(repository.recordRunUsageEvents(usageCheckpoint)).resolves.toBe(true);
+      await expect(repository.getRunControlForUser(active.runId, userId)).resolves.toMatchObject({ status });
 
       await expect(prisma.modelRunToolCall.findUniqueOrThrow({
         select: { usageAccountedAt: true },
