@@ -1,5 +1,5 @@
 export const MEMORY_ACTION_ADMISSION_VERSION =
-  "memory-action-admission-v1" as const;
+  "memory-action-admission-v2" as const;
 
 export const MEMORY_ACTION_ADMISSION_STATES = [
   "EXPLICIT_CANDIDATE",
@@ -43,6 +43,9 @@ const unambiguousDirectivePrefixes = [
   // English.
   ["memorize"],
   ["forget"],
+  ["delete", "from", "memory"],
+  ["remove", "from", "memory"],
+  ["erase", "from", "memory"],
   ["save", "this"],
   ["save", "that"],
   ["save", "it"],
@@ -71,6 +74,7 @@ const unambiguousDirectivePrefixes = [
   ["сохрани", "это"],
   ["сохрани", "в", "памяти"],
   ["забудь"],
+  ["удали", "из", "памяти"],
   ["обнови", "мою"],
   ["обнови", "моё"],
   ["измени", "мою"],

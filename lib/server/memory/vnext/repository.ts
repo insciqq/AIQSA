@@ -66,6 +66,7 @@ type ExactEvidence = ReturnType<typeof exactEvidence>[number];
 export type MemoryVNextCommitResult = Readonly<{
   attachedEvidence: number;
   createdVersions: number;
+  replayedEvidenceIds?: readonly string[];
 }>;
 
 type ResolvedSemanticAdjudication = Readonly<
@@ -306,6 +307,36 @@ function sameValue(
     });
 }
 
+async function existingMessageSupport(
+  tx: MemoryTransaction,
+  userId: string,
+  factVersionId: string,
+  input: MemoryFactExtractionInput,
+  evidence: ExactEvidence
+): Promise<string | null> {
+  // Different spans or phrasings in one message are the same testimony for
+  // this version. Match PostgreSQL's message identity before any semantic
+  // mutation, retaining the original immutable excerpt and provenance.
+  const existing = await tx.memoryEvidence.findFirst({
+    select: { id: true, sourceMessageContentHash: true, sourceRole: true },
+    where: {
+      chatId: evidence.chatId,
+      factVersionId,
+      messageId: evidence.messageId,
+      sourceProjectionVersion: input.sourceProjectionVersion,
+      sourceType: "MESSAGE",
+      stance: "SUPPORTS",
+      userId
+    }
+  });
+  if (!existing) return null;
+  if (existing.sourceRole !== "user" ||
+    existing.sourceMessageContentHash !== evidence.sourceTextHash) {
+    throw new Error("memory_vnext_evidence_identity_conflict");
+  }
+  return existing.id;
+}
+
 async function attachEvidence(
   tx: MemoryTransaction,
   userId: string,
@@ -392,6 +423,12 @@ async function reinforceTarget(
   now: Date,
   target: LockedReinforcementTarget
 ): Promise<MemoryVNextCommitResult> {
+  const replayedEvidenceId = await existingMessageSupport(
+    tx, settings.userId, target.versionId, plan.input, evidence
+  );
+  if (replayedEvidenceId) {
+    return { attachedEvidence: 0, createdVersions: 0, replayedEvidenceIds: [replayedEvidenceId] };
+  }
   await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
   await createEvent(
     tx,
@@ -1103,8 +1140,14 @@ async function createObservation(
     fact.canonicalKey,
     candidate
   );
-  await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
   if (pending) {
+    const replayedEvidenceId = await existingMessageSupport(
+      tx, settings.userId, pending.id, plan.input, evidence[0]!
+    );
+    if (replayedEvidenceId) {
+      return { attachedEvidence: 0, createdVersions: 0, replayedEvidenceIds: [replayedEvidenceId] };
+    }
+    await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
     await createEvent(
       tx,
       claim,
@@ -1130,6 +1173,7 @@ async function createObservation(
     return { attachedEvidence: 1, createdVersions: 0 };
   }
 
+  await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
   const pendingVersionId = versionId(evidence[0]!.ingestionFingerprint);
   const proposalEventId = await createEvent(
     tx,
@@ -1185,6 +1229,7 @@ export async function commitMemoryVNextExtractionPlan(
 ): Promise<MemoryVNextCommitResult> {
   let attachedEvidence = 0;
   let createdVersions = 0;
+  const replayedEvidenceIds: string[] = [];
   for (const candidate of plan.candidates) {
     const result = await createObservation(
       tx,
@@ -1198,6 +1243,11 @@ export async function commitMemoryVNextExtractionPlan(
     );
     attachedEvidence += result.attachedEvidence;
     createdVersions += result.createdVersions;
+    replayedEvidenceIds.push(...result.replayedEvidenceIds ?? []);
   }
-  return { attachedEvidence, createdVersions };
+  return {
+    attachedEvidence,
+    createdVersions,
+    ...(replayedEvidenceIds.length > 0 ? { replayedEvidenceIds } : {})
+  };
 }

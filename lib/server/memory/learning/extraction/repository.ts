@@ -1367,7 +1367,7 @@ function deterministicCandidateFailure(error: unknown): string | null {
 async function resultingIds(
   tx: MemoryTransaction,
   userId: string,
-  evidenceFingerprint: string
+  identity: Readonly<{ evidenceFingerprint: string } | { id: string }>
 ): Promise<Readonly<{
   evidenceId: string;
   factId: string;
@@ -1375,7 +1375,7 @@ async function resultingIds(
 }> | null> {
   const evidence = await tx.memoryEvidence.findFirst({
     select: { factVersionId: true, id: true },
-    where: { evidenceFingerprint, userId }
+    where: { ...identity, userId }
   });
   if (!evidence) return null;
   const version = await tx.memoryFactVersion.findFirst({
@@ -1541,7 +1541,7 @@ async function applyPlan(
         materializedCandidate,
         evidence
       );
-      const before = await resultingIds(tx, claim.userId, fingerprint);
+      const before = await resultingIds(tx, claim.userId, { evidenceFingerprint: fingerprint });
       const committed = await commitMemoryVNextExtractionPlan(
         tx,
         settings,
@@ -1556,7 +1556,14 @@ async function applyPlan(
         now,
         semanticDecision
       );
-      const result = before ?? await resultingIds(tx, claim.userId, fingerprint);
+      // This call commits one candidate. A same-message replay may refer to
+      // an earlier immutable support with a different quote fingerprint.
+      const replayedEvidenceIds = committed.replayedEvidenceIds ?? [];
+      if (replayedEvidenceIds.length > 1) throw new Error("memory_fact_replay_result_invalid");
+      const result = before ?? await resultingIds(tx, claim.userId,
+        replayedEvidenceIds[0]
+          ? { id: replayedEvidenceIds[0] }
+          : { evidenceFingerprint: fingerprint });
       if (!result) {
         await tx.$executeRawUnsafe("ROLLBACK TO SAVEPOINT memory_fact_candidate_apply");
         await tx.$executeRawUnsafe("RELEASE SAVEPOINT memory_fact_candidate_apply");
