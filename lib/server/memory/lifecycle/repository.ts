@@ -131,7 +131,10 @@ function validateCommon(input: LifecycleMutationCommon): void {
     !sha256Pattern.test(input.idempotencyPayloadHash) ||
     (input.modelRunId != null && !boundedIdPattern.test(input.modelRunId)) ||
     (input.persistedToolCallId != null && !boundedIdPattern.test(input.persistedToolCallId)) ||
-    ((input.modelRunId == null) !== (input.persistedToolCallId == null)) ||
+    // Chat controls bind to a run without an answer-model mutation tool.
+    // A tool reference still requires its parent run; exact mutation authority
+    // is consumed and revalidated inside the transaction below.
+    (input.persistedToolCallId != null && input.modelRunId == null) ||
     !Number.isFinite(input.now.getTime())
   ) {
     return memoryPersistenceFailure("memory_input_invalid");

@@ -281,18 +281,13 @@ function extractionPlan(
     brand: "Apple",
     label: "MacBook Air",
     model: "MacBook Air"
-  }
+  },
+  additionalQuotes: readonly string[] = []
 ): MemoryFactExtractionPlan {
-  const candidateRef = `C-${memorySha256({
-    product,
-    quote,
-    state,
-    statement
-  }).slice(0, 16)}`;
   return decodeMemoryFactExtraction([{
     arguments: {
-      observations: [{
-        candidate_ref: candidateRef,
+      observations: [quote, ...additionalQuotes].map((quote) => ({
+        candidate_ref: `C-${memorySha256({ product, quote, state, statement }).slice(0, 16)}`,
         confidence_band: "HIGH",
         dependency_refs: [],
         entities: [{
@@ -339,7 +334,7 @@ function extractionPlan(
           strength: null,
           value: null
         }
-      }]
+      }))
     },
     id: `fact-call-${randomUUID()}`,
     name: MEMORY_FACT_EXTRACTION_TOOL_NAME
@@ -351,11 +346,12 @@ function preferencePlan(
   quote: string,
   statement: string,
   explicitReminder = false,
-  confidenceBand: "HIGH" | "MEDIUM" = "HIGH"
+  confidenceBand: "HIGH" | "MEDIUM" = "HIGH",
+  additionalQuotes: readonly string[] = []
 ): MemoryFactExtractionPlan {
   return decodeMemoryFactExtraction([{
     arguments: {
-      observations: [{
+      observations: [quote, ...additionalQuotes].map((quote) => ({
         candidate_ref: `C-${memorySha256({ quote, statement }).slice(0, 16)}`,
         confidence_band: confidenceBand,
         dependency_refs: [],
@@ -393,7 +389,7 @@ function preferencePlan(
         },
         temporary: false,
         value: emptyObservationValue
-      }]
+      }))
     },
     id: `fact-call-${randomUUID()}`,
     name: MEMORY_FACT_EXTRACTION_TOOL_NAME
@@ -541,13 +537,12 @@ function reinforcementPacket(
   targetVersionId: string
 ): MemorySemanticAdjudicationPacket {
   const input = memorySemanticAdjudicationInput(plan);
-  const candidate = plan.candidates[0];
   const target = plan.input.contextRefs.find(({ source }) =>
     source.factVersionId === targetVersionId);
-  if (!input || !candidate || !target) {
+  if (!input || plan.candidates.length === 0 || !target) {
     throw new Error("memory_duplicate_test_context_missing");
   }
-  const decisions: MemorySemanticAdjudication[] = [{
+  const decisions: MemorySemanticAdjudication[] = plan.candidates.map((candidate) => ({
     assertionStatus: "ASSERTED",
     candidateRef: candidate.candidateRef,
     confidenceBand: "HIGH",
@@ -558,7 +553,7 @@ function reinforcementPacket(
     subjectScope: "CURRENT_USER",
     targetRef: target.ref,
     temporalPerspective: candidate.semanticFrame.temporalPerspective
-  }];
+  }));
   return {
     decisions,
     inputHash: input.inputHash,
@@ -3014,20 +3009,21 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   });
 
-  it("converges an automatic paraphrase on an explicit fact across canonical keys", async () => {
+  it.each([false, true])("converges on an explicit fact without duplicate testimony (repeat=%s)", async (repeat) => {
     const userId = await createOwner("explicit-semantic-duplicate");
     try {
       const chat = await prisma.chat.create({
         data: { title: "Explicit semantic duplicate", userId }
       });
       const quote = "Запомни, что я люблю кофе.";
+      const expandedQuote = `${quote} Это моё предпочтение.`;
       const turn = await createTurn({
         assistantText: "Запомнил.",
         chatId: chat.id,
         createdAt: new Date("2026-08-23T11:00:00.000Z"),
         parentMessageId: null,
         userId,
-        userText: quote
+        userText: repeat ? expandedQuote : quote
       });
       await settleChat(userId, chat.id, turn);
       const explicit = await createExplicitPreferenceFact(
@@ -3043,7 +3039,9 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         source,
         quote,
         "Пользователь любит кофе.",
-        true
+        true,
+        "HIGH",
+        repeat ? [expandedQuote] : []
       );
       const explicitFact = await prisma.memoryFact.findUniqueOrThrow({
         select: { canonicalKey: true },
@@ -3076,9 +3074,10 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         where: { factVersionId: explicit.versionId, userId }
       })).resolves.toBe(2);
       await expect(prisma.memoryFactExtractionCandidateReceipt.findMany({
+        orderBy: { candidateOrdinal: "asc" },
         select: { outcome: true },
         where: { userId }
-      })).resolves.toEqual([{ outcome: "REINFORCED" }]);
+      })).resolves.toEqual(repeat ? [{ outcome: "REINFORCED" }, { outcome: "REPLAY" }] : [{ outcome: "REINFORCED" }]);
       await expect(prisma.memoryEvent.count({
         where: {
           factVersionId: explicit.versionId,
@@ -3086,6 +3085,58 @@ describe("Prisma Memory vNext source-message ingestion", () => {
           userId
         }
       })).resolves.toBe(1);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("replays equivalent spans in one message without reinforcing its testimony twice", async () => {
+    const userId = await createOwner("same-message-support");
+    try {
+      const chat = await prisma.chat.create({ data: { title: "Equivalent spans", userId } });
+      const firstQuote = "I enjoy white tea.";
+      const secondQuote = "I prefer white tea.";
+      const turn = await createTurn({
+        assistantText: "Noted.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-23T12:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: `${firstQuote} ${secondQuote}`
+      });
+      await settleChat(userId, chat.id, turn);
+      const claim = await claimFactJob(userId, turn.userMessage.id);
+      const source = await prepare(claim);
+      const plan = preferencePlan(
+        source, firstQuote, "The user prefers white tea.", false, "HIGH", [secondQuote]
+      );
+      expect(plan.candidates).toHaveLength(2);
+      expect(plan.candidates[0]!.id).not.toBe(plan.candidates[1]!.id);
+      expect(plan.candidates[0]!.canonicalKey).toBe(plan.candidates[1]!.canonicalKey);
+      const binding = await createSucceededBinding(userId, claim, source.inputHash, plan.outputHash);
+      const before = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      await expect(applyPlan(userId, claim, plan, binding)).resolves.toBe("APPLIED");
+      const evidence = await prisma.memoryEvidence.findMany({ where: { userId } });
+      expect(evidence).toHaveLength(1);
+      expect(evidence[0]).toMatchObject({
+        messageId: turn.userMessage.id,
+        safeExcerpt: firstQuote,
+        sourceMessageContentHash: memorySha256(`${firstQuote} ${secondQuote}`)
+      });
+      await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(1);
+      await expect(prisma.memoryFactVersion.count({ where: { userId } })).resolves.toBe(1);
+      await expect(prisma.memoryEvent.count({ where: { operation: "REINFORCE", userId } }))
+        .resolves.toBe(0);
+      const after = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      expect(after.memoryRevision).toBe(before.memoryRevision + 1);
+      await expect(prisma.memoryFactExtractionCandidateReceipt.findMany({
+        orderBy: { candidateOrdinal: "asc" },
+        select: { outcome: true, resultingEvidenceId: true },
+        where: { userId }
+      })).resolves.toEqual([
+        { outcome: "APPLIED", resultingEvidenceId: evidence[0]!.id },
+        { outcome: "REPLAY", resultingEvidenceId: evidence[0]!.id }
+      ]);
     } finally {
       await cleanupOwner(userId);
     }
@@ -3186,7 +3237,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   });
 
-  it("stages a Safety Lite-classified SLOT value behind relation resolution", async () => {
+  it.each([false, true])("stages a SLOT value without duplicating pending support (repeat=%s)", async (repeat) => {
     const userId = await createOwner("pending-relation");
     try {
       const chat = await prisma.chat.create({
@@ -3207,7 +3258,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         createdAt: new Date("2026-08-24T08:01:00.000Z"),
         parentMessageId: ordered.assistantMessage.id,
         userId,
-        userText: "I bought a MacBook Air."
+        userText: repeat ? "I bought a MacBook Air. I own it." : "I bought a MacBook Air."
       });
       await settleChat(userId, chat.id, purchased);
       const orderedClaim = await claimFactJob(userId, ordered.userMessage.id);
@@ -3247,7 +3298,10 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         purchasedInput,
         "I bought a MacBook Air.",
         "The user owns a MacBook Air.",
-        "owned"
+        "owned",
+        undefined,
+        undefined,
+        repeat ? ["I bought a MacBook Air. I own it."] : []
       );
       const purchasedBinding = await createSucceededBinding(
         userId,
@@ -3305,6 +3359,18 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       await expect(prisma.memoryEvidence.count({
         where: { factVersionId: fact.currentVersionId!, userId }
       })).resolves.toBe(1);
+      await expect(prisma.memoryEvidence.count({ where: { userId } })).resolves.toBe(2);
+      await expect(prisma.memoryEvent.count({ where: { operation: "REINFORCE", userId } }))
+        .resolves.toBe(0);
+      const execution = await prisma.memoryFactExtractionExecution.findFirstOrThrow({
+        select: { id: true },
+        where: { memoryJobId: purchasedClaim.id, userId }
+      });
+      await expect(prisma.memoryFactExtractionCandidateReceipt.findMany({
+        orderBy: { candidateOrdinal: "asc" },
+        select: { outcome: true },
+        where: { extractionExecutionId: execution.id, userId }
+      })).resolves.toEqual(repeat ? [{ outcome: "APPLIED" }, { outcome: "REPLAY" }] : [{ outcome: "APPLIED" }]);
     } finally {
       await cleanupOwner(userId);
     }
