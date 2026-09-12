@@ -63,6 +63,8 @@ export type ProviderToolLoopInput = Readonly<{
   ): Promise<void> | void;
   parallelToolCalls: boolean;
   prepareRequest?(request: ProviderRunRequest, round: number): Promise<ProviderRunRequest> | ProviderRunRequest;
+  /** Normalize a known provider alias against the tools advertised in this round. */
+  normalizeToolCallName?(name: string, advertisedToolNames: ReadonlySet<string>): string;
   projectToolResultForProvider?(
     result: ToolExecutionResult,
     context: Readonly<{ round: number }>
@@ -279,25 +281,34 @@ export async function runProviderToolLoop(
         };
       }
       if (calls.length === 0) return { final: result, status: "complete" as const };
+      const normalizedCalls = calls.map((call) => {
+        const name = input.normalizeToolCallName?.(call.name, advertisedToolNames) ?? call.name;
+        return name === call.name ? call : { ...call, name };
+      });
+      const normalizedResult = normalizedCalls.some((call, index) => call !== calls[index])
+        ? { ...result, toolCalls: normalizedCalls }
+        : result;
       // Validate the entire batch against this provider round before persisting
       // or executing any call. Discovery can add authority only to a later
       // request, even when a provider omits/ignores its optional parallel flag.
-      if (calls.some((call) => !advertisedToolNames.has(call.name))) {
+      const unsupportedCall = normalizedCalls.find((call) => !advertisedToolNames.has(call.name));
+      if (unsupportedCall) {
         return {
           error: {
             code: "unsupported_tool_call",
             fatal: true,
-            message: "The model requested a tool that was not available in this step."
+            message: `The model requested a tool that was not available in this step: ${unsupportedCall.name}.`,
+            toolName: unsupportedCall.name
           },
           status: "error" as const
         };
       }
       return {
-        calls,
+        calls: normalizedCalls,
         continuation: providerToolLoopContinuationAfterResult(
           input.bridge,
           effectiveContinuation,
-          result
+          normalizedResult
         ),
         parallelToolCalls: roundRequest.parallelToolCalls === true,
         status: "tool_calls" as const

@@ -15,6 +15,7 @@ export type ToolLoopIssue = Readonly<{
   message: string;
   retryable?: boolean;
   streamSafetyReport?: ProviderStreamSafetyReport;
+  toolName?: string;
 }>;
 
 export type ToolLoopToolResult<Value> =

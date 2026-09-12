@@ -178,7 +178,10 @@ import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
-import { workspaceToolNameFromNamespaced } from "../workspace/toolCatalog";
+import {
+  normalizeWorkspaceProviderToolName,
+  workspaceToolNameFromNamespaced
+} from "../workspace/toolCatalog";
 
 import { activeRunControllers, runSettlements } from "./activeRunControllerRegistry";
 export { activeRunControllerRegistry, type ActiveRunControllerRegistry } from "./activeRunControllerRegistry";
@@ -2316,6 +2319,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             });
           },
           parallelToolCalls: normalizedRequest.modelCapabilities.parallelToolCalls === true,
+          normalizeToolCallName: workspaceTools.length > 0
+            ? normalizeWorkspaceProviderToolName
+            : undefined,
           persistToolBatch: async ({ calls, continuation, round }) => {
             const persisted = await input.repository.persistToolLoopCallBatch({
               calls: calls.map((call, ordinal) => {

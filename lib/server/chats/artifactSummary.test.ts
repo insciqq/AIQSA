@@ -534,12 +534,14 @@ describe("summarizeMessageRunWorkspaceActivity", () => {
     [20, "EXPORTING", "complete", new Date(Date.now() + 60_000), "exporting"],
     [20, "COMPLETE", "complete", null, "complete"],
     [0, "FAILED", "cancelled", null, "failed"],
-    [0, "FAILED", "error", null, "failed"]
+    [0, "FAILED", "error", null, "failed"],
+    [0, "PENDING", "cancelled", null, undefined],
+    [0, "PENDING", "error", null, undefined]
   ] as const)("projects durable export eligibility %s/%s/%s", (exportAttemptCount, exportState, status, exportLeaseExpiresAt, expected) => {
     const projected = summarizeMessageRunWorkspaceActivity({ events: [], status,
       workspaceRunBinding: { exportAttemptCount, exportLeaseExpiresAt, exportState, lastExportErrorCode: null }
     });
-    expect(projected?.outputStatus).toEqual({ state: expected });
+    expect(projected?.outputStatus).toEqual(expected ? { state: expected } : undefined);
     expect(JSON.stringify(projected)).not.toMatch(/exportAttemptCount|exportLeaseExpiresAt/u);
   });
 

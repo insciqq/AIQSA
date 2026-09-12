@@ -35,24 +35,51 @@ const MAX_CATALOG_BYTES = 256 * 1_024;
  * Provider-facing guidance prepended to the official descriptions. The model
  * must not pass pipelines, operators, redirects, globs, or heredocs to direct
  * exec; that mistake produced a dev-stand failure that only sandbox_shell can
- * serve. Changing this text changes the pinned catalog hash below.
+ * serve. Guidance names are rendered from the exact provider-facing aliases
+ * so the prompt and tool schema share one callable vocabulary.
  */
-const DESCRIPTION_GUIDANCE: Partial<Record<WorkspaceMcpToolName, string>> = {
-  sandbox_exec:
-    "Executes a program directly without shell parsing: `command` is the program and `args` its " +
-    "arguments. Pipes, redirects, &&, ||, glob expansion, variable expansion and heredocs are not " +
-    "supported here; use sandbox_shell for shell syntax.",
-  sandbox_shell:
-    "Executes a command through a shell. Use it for pipes, redirects, globbing, &&, ||, heredocs " +
-    "and multi-step command lines."
-};
+function descriptionGuidance(
+  originalName: WorkspaceMcpToolName,
+  namespacedName: string
+): string | undefined {
+  if (originalName === "sandbox_exec") {
+    return "Executes a program directly without shell parsing: `command` is the program and `args` its " +
+      "arguments. Pipes, redirects, &&, ||, glob expansion, variable expansion and heredocs are not " +
+      `supported here; use ${namespacedWorkspaceToolName("sandbox_shell")} for shell syntax.`;
+  }
+  if (originalName === "sandbox_shell") {
+    return `Executes a command through a shell. Use ${namespacedName} for pipes, redirects, globbing, &&, ||, heredocs and multi-step command lines.`;
+  }
+  return undefined;
+}
 
 /** Canonical provider-facing catalog proven against microsandbox-mcp 0.6.16 plus the guidance above. */
 export const WORKSPACE_BOUND_TOOL_CATALOG_HASH =
-  "b2ed230bf721d843c1d1ea9031ef3ba5f949e91e9ad7d5243b043de594306f2e";
+  "26bae7776ac918094cb46933bf7cf431576597a9c58fff85de9ee0813e094290";
 
 export function namespacedWorkspaceToolName(originalName: WorkspaceMcpToolName): string {
   return namespacedMcpToolName(WORKSPACE_MCP_NAMESPACE, originalName);
+}
+
+/** Resolve a provider-facing alias for an original Workspace tool name. */
+export function namespacedWorkspaceToolNameFromOriginal(originalName: string): string | null {
+  return workspaceToolIsAllowed(originalName)
+    ? namespacedWorkspaceToolName(originalName)
+    : null;
+}
+
+/**
+ * Normalize a known original Workspace name only when its canonical alias is
+ * advertised in this provider round. Exact advertised names always win so a
+ * same-named tool from another source cannot be redirected.
+ */
+export function normalizeWorkspaceProviderToolName(
+  name: string,
+  advertisedToolNames: ReadonlySet<string>
+): string {
+  if (advertisedToolNames.has(name)) return name;
+  const namespacedName = namespacedWorkspaceToolNameFromOriginal(name);
+  return namespacedName && advertisedToolNames.has(namespacedName) ? namespacedName : name;
 }
 
 export function workspaceToolNameFromNamespaced(
@@ -116,11 +143,12 @@ export function bindOfficialWorkspaceTools(input: Readonly<{
     const officialDescription = typeof official.description === "string"
       ? official.description
       : "Workspace execution tool";
-    const guidance = DESCRIPTION_GUIDANCE[originalName];
+    const namespacedName = namespacedWorkspaceToolName(originalName);
+    const guidance = descriptionGuidance(originalName, namespacedName);
     return {
       description: (guidance ? `${guidance} ${officialDescription}` : officialDescription).slice(0, 4_096),
       inputSchema: sanitizedSchema(official),
-      namespacedName: namespacedWorkspaceToolName(originalName),
+      namespacedName,
       originalName
     };
   });

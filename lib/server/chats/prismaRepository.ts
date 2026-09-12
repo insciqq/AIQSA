@@ -1118,6 +1118,8 @@ function workspaceOutputStatus(run: WorkspaceActivityRun): ThreadWorkspaceOutput
   if (binding.exportState === "COMPLETE") return { state: "complete" };
   if (binding.exportState === "EXPORTING" && binding.exportLeaseExpiresAt &&
     binding.exportLeaseExpiresAt > new Date()) return { state: "exporting" };
+  if (binding.exportState === "PENDING" && binding.exportAttemptCount === 0 &&
+    (run.status === "cancelled" || run.status === "error")) return undefined;
   if (binding.exportState === "PENDING" && run.status !== "complete" &&
     run.status !== "cancelled" && run.status !== "error") return undefined;
   const retryable = run.status === "complete" &&

@@ -89,8 +89,82 @@ describe("provider tool loop", () => {
       initialRequest: request({ provider: "openrouter" }), parallelToolCalls: false, tools });
     expect(outcome).toMatchObject({ status: "failed", toolCalls: 0,
       failure: { code: mode === "duplicate" ? "provider_tool_call_id_duplicate" : "unsupported_tool_call" } });
+    if (mode === "undiscovered") {
+      expect(outcome).toMatchObject({
+        failure: {
+          message: expect.stringContaining("mcp_future_tool"),
+          toolName: "mcp_future_tool"
+        }
+      });
+    }
     expect(executeTool).not.toHaveBeenCalled();
     expect(persistToolBatch).not.toHaveBeenCalled();
+  });
+
+  it("normalizes an original Workspace name to the advertised provider alias", async () => {
+    const canonicalName = "mcp_workspace_sandbox_shell_596319da11";
+    const requests: ProviderRunRequest[] = [];
+    const persistedNames: string[] = [];
+    const executedNames: string[] = [];
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(roundRequest) {
+        requests.push(roundRequest);
+        if (requests.length === 1) {
+          return {
+            finalProviderResponsePreview: {},
+            finalText: "",
+            providerResponseId: "response-1",
+            providerToolCallMessage: [{
+              call_id: "call-shell",
+              name: "sandbox_shell",
+              type: "function_call"
+            }],
+            toolCalls: [{ arguments: { command: "pwd" }, id: "call-shell", name: "sandbox_shell" }],
+            usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
+          };
+        }
+        return {
+          finalProviderResponsePreview: {},
+          finalText: "done",
+          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
+        };
+      }
+    };
+
+    const outcome = await runProviderToolLoop({
+      adapter,
+      bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 2, maxToolRounds: 2 },
+      executeTool: async (call) => {
+        executedNames.push(call.name);
+        return {
+          status: "complete",
+          value: {
+            callId: call.id,
+            content: [{ text: "ok", type: "text" }],
+            name: call.name,
+            status: "complete"
+          }
+        };
+      },
+      initialRequest: request(),
+      normalizeToolCallName: (name, advertisedToolNames) =>
+        name === "sandbox_shell" && advertisedToolNames.has(canonicalName) ? canonicalName : name,
+      parallelToolCalls: false,
+      persistToolBatch: ({ calls }) => {
+        persistedNames.push(...calls.map((call) => call.name));
+      },
+      tools: [{ capability: "workspace", description: "Shell", inputSchema: { type: "object" }, name: canonicalName }]
+    });
+
+    expect(outcome).toMatchObject({ final: { finalText: "done" }, status: "complete", toolCalls: 1 });
+    expect(persistedNames).toEqual([canonicalName]);
+    expect(executedNames).toEqual([canonicalName]);
+    expect(requests[1]?.providerToolMessages).toEqual([
+      { call_id: "call-shell", name: canonicalName, type: "function_call" },
+      { call_id: "call-shell", output: "ok", type: "function_call_output" }
+    ]);
   });
 
   it("keeps streaming/background request controls while executing an ordered parallel batch", async () => {

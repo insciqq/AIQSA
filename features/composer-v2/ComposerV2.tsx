@@ -909,14 +909,18 @@ export function ComposerV2({
     onSelectMcp({ mode });
   }
 
-  // The Knowledge chip is a permanent entry into its picker whenever anything
-  // can be selected; the Assistant-locked state keeps only a selected label.
+  const knowledgeHasBases = (config?.knowledgeBases.length ?? 0) > 0;
+  const knowledgeDocumentCount = typeof config?.knowledgeDocumentTotal === "number"
+    ? config.knowledgeDocumentTotal
+    : (config?.knowledgeSources?.length ?? 0);
+  const knowledgeHasDocuments = knowledgeDocumentCount > 0 ||
+    (config?.knowledgeDocumentTotal === undefined &&
+      (config?.knowledgeBases ?? []).some((base) => base.documentCount > 0));
+  // The Knowledge chip is available only when the current catalog contains a
+  // selectable base or document. Assistant-locked state keeps its selected
+  // label even when the ordinary picker is unavailable.
   const knowledgeAvailable = Boolean(onSelectKnowledgeSelection || onSelectKnowledgeBaseIds) && (
-    (config?.knowledgeBases.length ?? 0) > 0 ||
-    (config?.knowledgeSources?.length ?? 0) > 0 ||
-    (config?.knowledgeDocumentTotal ?? 0) > 0 ||
-    Boolean(onSearchKnowledgeSources) ||
-    (!sharedProject && Boolean(onSelectKnowledgeSelection))
+    knowledgeHasBases || knowledgeHasDocuments
   );
   const knowledgeChipVisible = Boolean(config) && (
     knowledgeControlsLocked || knowledgeSelection.mode !== "none" ||
@@ -1534,7 +1538,7 @@ export function ComposerV2({
                   >
                     Off
                   </CapabilityRow>
-                  {!sharedProject && onSelectKnowledgeSelection ? (
+                  {!sharedProject && onSelectKnowledgeSelection && knowledgeHasDocuments ? (
                     <CapabilityRow
                       selected={knowledgeSelection.mode === "all_my_knowledge"}
                       disabled={knowledgeControlsLocked || activeRun}
