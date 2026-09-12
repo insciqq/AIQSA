@@ -15,7 +15,6 @@ type Launcher = {
   canonicalIp(value: string): string | null;
   createPeerStamp(peerAddress: string, sessionSecret: string): string | null;
   launch(target: string): Server;
-  warnForDirectHttp(env: Record<string, string | undefined>): void;
 };
 
 const require = createRequire(import.meta.url);
@@ -124,16 +123,13 @@ describe("runtime launcher", () => {
     );
   });
 
-  it("emits only a value-free warning for direct HTTP", () => {
+  it("starts direct HTTP without a transport warning", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
-    launcher.warnForDirectHttp({
-      AIQSA_APP_BASE_URL: "http://192.168.10.4:3000",
-      AIQSA_BIND_ADDRESS: "0.0.0.0",
-      AIQSA_TRUST_PROXY_HEADERS: ""
-    });
-
-    expect(warn).toHaveBeenCalledWith("AIQSA runtime warning: direct_http_transport");
-    expect(JSON.stringify(warn.mock.calls)).not.toContain("192.168.10.4");
+    vi.stubEnv("AIQSA_APP_BASE_URL", "http://192.168.10.4:3000");
+    vi.stubEnv("AIQSA_BIND_ADDRESS", "0.0.0.0");
+    vi.stubEnv("AIQSA_TRUST_PROXY_HEADERS", "");
+    const server = launcher.launch(fixture("runtime-launcher-server.cjs"));
+    expect(server).toBeInstanceOf(http.Server);
+    expect(warn).not.toHaveBeenCalled();
   });
 });

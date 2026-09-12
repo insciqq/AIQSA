@@ -226,7 +226,12 @@ export function createMcpOAuthCallbackHandler(
     }
     const errors = query.getAll("error");
     const codes = query.getAll("code");
-    if (errors.length > 1 || codes.length > 1 || (errors.length && codes.length)) return failed();
+    const issuers = query.getAll("iss");
+    if (errors.length > 1 || codes.length > 1 || issuers.length > 1 ||
+      (errors.length && codes.length) ||
+      (issuers.length === 1 && (!issuers[0] || issuers[0].length > 8_192))) {
+      return failed();
+    }
     if (errors[0]) {
       return redirect(outcomeUrl({
         appBaseUrl: config.appBaseUrl,
@@ -238,7 +243,11 @@ export function createMcpOAuthCallbackHandler(
     const authorizationCode = codes[0];
     if (!authorizationCode || authorizationCode.length > 8_192) return failed();
     try {
-      await deps.service.completeAuthorization({ authorizationCode, flow });
+      await deps.service.completeAuthorization({
+        authorizationCode,
+        flow,
+        ...(issuers[0] ? { issuer: issuers[0] } : {})
+      });
       const settled = await settleAuthorization(deps, {
         configurationIdentity: flow.configurationIdentity,
         purpose,

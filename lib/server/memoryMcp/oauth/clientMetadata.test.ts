@@ -54,6 +54,42 @@ describe("inbound Memory MCP CIMD resolver", () => {
     expect(fetchMetadata).toHaveBeenCalledOnce();
   });
 
+  it("fetches public HTTP metadata without allowing private or loopback targets", async () => {
+    const httpClientId = "http://client.example/oauth/client.json";
+    const resolver = createInboundMcpClientMetadataResolver({
+      allowLoopbackDevelopment: false,
+      appBaseUrl: "http://192.168.1.10:3000",
+      clock: () => NOW,
+      fetchMetadata: async (_clientId, _init, policy) => {
+        expect(policy.allowInsecureHttp).toBe(true);
+        expect(policy.addressAllowed(
+          { address: "93.184.216.34", family: 4 },
+          new URL(httpClientId)
+        )).toBe(true);
+        expect(policy.addressAllowed(
+          { address: "192.168.1.20", family: 4 },
+          new URL(httpClientId)
+        )).toBe(false);
+        expect(policy.addressAllowed(
+          { address: "127.0.0.1", family: 4 },
+          new URL(httpClientId)
+        )).toBe(false);
+        return Response.json(document({
+          client_id: httpClientId,
+          client_uri: "http://client.example/app",
+          redirect_uris: ["http://client.example/oauth/callback"]
+        }));
+      }
+    });
+
+    await expect(resolver.resolve(httpClientId)).resolves.toMatchObject({
+      clientId: httpClientId,
+      clientOrigin: "http://client.example",
+      clientUri: "http://client.example/app",
+      redirectUris: ["http://client.example/oauth/callback"]
+    });
+  });
+
   it("rejects redirects, non-JSON responses, oversized documents, and identity mismatch", async () => {
     for (const response of [
       new Response(null, { headers: { location: "https://other.example/client.json" }, status: 302 }),

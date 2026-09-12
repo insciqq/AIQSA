@@ -181,6 +181,11 @@ class FakeEventSource {
 
 describe("useProjectWorkspaceController shared-desk reconciliation", () => {
   beforeEach(() => {
+    // Exercise these actions with the Crypto API exposed on non-loopback HTTP.
+    vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+  });
+
+  beforeEach(() => {
     resetComposerControlStoreForTest();
     resetComposerSessionStoreForTest();
     vi.useFakeTimers();

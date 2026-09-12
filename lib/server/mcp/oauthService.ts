@@ -3,8 +3,11 @@ import {
   OAuthErrorCode,
   auth,
   discoverOAuthServerInfo,
+  parseErrorResponse,
   refreshAuthorization,
   selectClientAuthMethod,
+  specTypeSchemas,
+  validateAuthorizationResponseIssuer,
   type AuthorizationServerMetadata,
   type FetchLike,
   type OAuthClientInformationMixed,
@@ -31,6 +34,36 @@ import type {
 
 const REFRESH_SKEW_MS = 60_000;
 const MAX_AUTHORIZATION_URL_BYTES = 8 * 1_024;
+const MAX_OAUTH_TOKEN_RESPONSE_BYTES = 512 * 1_024;
+const OAUTH_TOKEN_REQUEST_TIMEOUT_MS = 30_000;
+
+async function readBoundedOAuthResponse(response: Response): Promise<string> {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_OAUTH_TOKEN_RESPONSE_BYTES) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new McpOAuthError("mcp_oauth_authorization_failed");
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let body = "";
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > MAX_OAUTH_TOKEN_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new McpOAuthError("mcp_oauth_authorization_failed");
+      }
+      body += decoder.decode(chunk.value, { stream: true });
+    }
+    return body + decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 export type McpOAuthErrorCode =
   | "mcp_oauth_authorization_failed"
@@ -410,7 +443,7 @@ export class McpOAuthService {
     now?: () => Date;
   }>) {
     this.#repository = input.repository;
-    this.allowInsecureHttp = input.allowInsecureHttp ?? process.env.NODE_ENV !== "production";
+    this.allowInsecureHttp = input.allowInsecureHttp ?? true;
     this.#fetchForPolicy = input.fetchForPolicy ?? ((policy) => createMcpSafeFetch({
       allowInsecureHttp: this.allowInsecureHttp,
       allowPrivateNetwork: policy.allowPrivateNetwork
@@ -470,6 +503,16 @@ export class McpOAuthService {
       state: input.state
     });
     try {
+      if (!client && policy.clientIdMetadataDocumentUrl?.startsWith("http:") &&
+        discovered.authorizationServerMetadata?.client_id_metadata_document_supported === true) {
+        // The pinned SDK accepts HTTP discovery and registration, but its SEP-991
+        // helper rejects HTTP URL-based client IDs before invoking the provider.
+        // The administrator-reviewed policy has already validated this exact URL,
+        // so persist it before entering the SDK flow.
+        await provider.saveClientInformation({
+          client_id: policy.clientIdMetadataDocumentUrl
+        });
+      }
       const result = await auth(provider, {
         fetchFn,
         scope: policy.requestedScopes.join(" ") || undefined,
@@ -507,6 +550,7 @@ export class McpOAuthService {
   async completeAuthorization(input: Readonly<{
     authorizationCode: string;
     flow: McpOAuthFlowBinding;
+    issuer?: string;
   }>): Promise<McpOAuthStoredConnection> {
     const loadedPolicy = await this.#repository.loadPolicy(input.flow);
     if (!loadedPolicy || loadedPolicy.configurationIdentity !== input.flow.configurationIdentity ||
@@ -536,13 +580,41 @@ export class McpOAuthService {
       service: this
     });
     try {
-      const result = await auth(provider, {
-        authorizationCode: input.authorizationCode,
-        fetchFn: this.#oauthFetch(policy),
-        scope: policy.requestedScopes.join(" ") || undefined,
-        serverUrl: policy.serverUrl
-      });
-      if (result !== "AUTHORIZED" || !provider.capturedTokens) {
+      if (this.#tokenEndpoint(client.discoveryState, policy).protocol === "http:") {
+        // SDK v2 intentionally refuses non-loopback HTTP token endpoints. AIQSA's
+        // reviewed HTTP policy uses the same client-authentication and PKCE fields
+        // through its pinned safe fetch instead.
+        const metadata = client.discoveryState.authorizationServerMetadata;
+        validateAuthorizationResponseIssuer({
+          expectedIssuer: metadata?.issuer,
+          iss: input.issuer,
+          issParameterSupported:
+            metadata?.authorization_response_iss_parameter_supported === true
+        });
+        await provider.saveTokens(await this.#requestTokens({
+          client: client.clientInformation,
+          discoveryState: client.discoveryState,
+          parameters: new URLSearchParams({
+            code: input.authorizationCode,
+            code_verifier: input.flow.codeVerifier,
+            grant_type: "authorization_code",
+            redirect_uri: policy.redirectUri
+          }),
+          policy
+        }));
+      } else {
+        const result = await auth(provider, {
+          authorizationCode: input.authorizationCode,
+          fetchFn: this.#oauthFetch(policy),
+          iss: input.issuer,
+          scope: policy.requestedScopes.join(" ") || undefined,
+          serverUrl: policy.serverUrl
+        });
+        if (result !== "AUTHORIZED") {
+          throw new McpOAuthError("mcp_oauth_authorization_failed");
+        }
+      }
+      if (!provider.capturedTokens) {
         throw new McpOAuthError("mcp_oauth_authorization_failed");
       }
       const created = await this.#repository.createConnection({
@@ -693,9 +765,8 @@ export class McpOAuthService {
     requirePolicyUrl(policy.resource, policy, this.allowInsecureHttp);
     if (policy.clientIdMetadataDocumentUrl) {
       const url = new URL(policy.clientIdMetadataDocumentUrl);
-      // URL-based client IDs are externally fetched by the authorization server and
-      // therefore remain HTTPS-only even in local development.
-      if (url.protocol !== "https:" || url.pathname === "/" || url.username || url.password || url.hash) {
+      if ((url.protocol !== "https:" && !(this.allowInsecureHttp && url.protocol === "http:")) ||
+        url.pathname === "/" || url.username || url.password || url.hash) {
         throw new McpOAuthError("mcp_oauth_policy_forbidden");
       }
     }
@@ -718,13 +789,25 @@ export class McpOAuthService {
     if (!refreshToken) throw new McpOAuthError("mcp_oauth_reauthorization_required");
     try {
       validateDiscovery(latest.client.discoveryState, latest.policy, this.allowInsecureHttp);
-      const tokens = await refreshAuthorization(latest.client.discoveryState.authorizationServerUrl, {
-        clientInformation: latest.client.clientInformation,
-        fetchFn: this.#oauthFetch(latest.policy),
-        metadata: latest.client.discoveryState.authorizationServerMetadata,
-        refreshToken,
-        resource: new URL(latest.policy.resource)
-      });
+      const tokens = this.#tokenEndpoint(latest.client.discoveryState, latest.policy).protocol === "http:"
+        ? await this.#requestTokens({
+            client: latest.client.clientInformation,
+            discoveryState: latest.client.discoveryState,
+            parameters: new URLSearchParams({
+              grant_type: "refresh_token",
+              refresh_token: refreshToken
+            }),
+            policy: latest.policy
+          }).then((refreshed) => refreshed.refresh_token
+            ? refreshed
+            : { ...refreshed, refresh_token: refreshToken })
+        : await refreshAuthorization(latest.client.discoveryState.authorizationServerUrl, {
+            clientInformation: latest.client.clientInformation,
+            fetchFn: this.#oauthFetch(latest.policy),
+            metadata: latest.client.discoveryState.authorizationServerMetadata,
+            refreshToken,
+            resource: new URL(latest.policy.resource)
+          });
       const rotated = await this.#repository.rotateTokens({
         connectionId: latest.id,
         expectedTokenVersion: latest.tokenVersion,
@@ -804,6 +887,58 @@ export class McpOAuthService {
       }
       await response.body?.cancel().catch(() => undefined);
     }
+  }
+
+  #tokenEndpoint(discoveryState: OAuthDiscoveryState, policy: McpOAuthPolicy): URL {
+    const endpoint = discoveryState.authorizationServerMetadata?.token_endpoint ??
+      new URL("/token", discoveryState.authorizationServerUrl).toString();
+    return requirePolicyUrl(endpoint, policy, this.allowInsecureHttp, {
+      authorizationServerOnly: true
+    });
+  }
+
+  async #requestTokens(input: Readonly<{
+    client: OAuthClientInformationMixed;
+    discoveryState: OAuthDiscoveryState;
+    parameters: URLSearchParams;
+    policy: McpOAuthPolicy;
+  }>): Promise<OAuthTokens> {
+    const endpoint = this.#tokenEndpoint(input.discoveryState, input.policy);
+    const headers = new Headers({
+      accept: "application/json",
+      "content-type": "application/x-www-form-urlencoded"
+    });
+    const parameters = new URLSearchParams(input.parameters);
+    parameters.set("resource", input.policy.resource);
+    const methods = input.discoveryState.authorizationServerMetadata
+      ?.token_endpoint_auth_methods_supported ?? [];
+    this.#applyClientAuthentication(
+      selectClientAuthMethod(input.client, methods),
+      input.client,
+      headers,
+      parameters
+    );
+    const response = await this.#oauthFetch(input.policy)(endpoint, {
+      body: parameters,
+      headers,
+      method: "POST",
+      signal: AbortSignal.timeout(OAUTH_TOKEN_REQUEST_TIMEOUT_MS)
+    });
+    const body = await readBoundedOAuthResponse(response);
+    if (!response.ok) throw await parseErrorResponse(body);
+    let payload: unknown;
+    try {
+      payload = JSON.parse(body);
+    } catch {
+      throw new McpOAuthError("mcp_oauth_authorization_failed");
+    }
+    const parsed = await specTypeSchemas.OAuthTokens["~standard"].validate(payload);
+    if (parsed.issues) throw new McpOAuthError("mcp_oauth_authorization_failed");
+    return {
+      ...parsed.value,
+      issuer: input.discoveryState.authorizationServerMetadata?.issuer ??
+        input.discoveryState.authorizationServerUrl
+    };
   }
 
   #applyClientAuthentication(
