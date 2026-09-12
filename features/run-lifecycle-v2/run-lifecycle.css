@@ -38,7 +38,8 @@
   font-size: 0.875rem;
 }
 
-.v2-answer-process[data-live],
+/* The standalone status is a row; an open disclosure must stack its body. */
+div.v2-answer-process[data-live],
 .v2-answer-process > summary {
   display: inline-flex;
   min-height: 1.75rem;
