@@ -38,6 +38,10 @@ import {
 } from "../../providers/rerank";
 import { RERANKER_ROUTE_POLICY_VERSION } from "../../../domain/rerankerModels";
 import { approvedRerankerDeployments } from "../../admin/providers/approvedRerankers";
+import {
+  validMemoryRerankRetrySettlement,
+  validMemoryRetrievalExecutionSequence
+} from "../../runs/prismaRepositoryPreparation";
 
 const profile: MemoryVectorProfile = Object.freeze({
   configurationFingerprint: "a".repeat(64),
@@ -316,15 +320,18 @@ describe("Memory run utility execution", () => {
       .toBe(MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT);
   });
 
-  it("retries the whole dedicated rerank on the next model without mixing batch scores", async () => {
+  it.each([0, 1, 2])("prepares dedicated batches after %i model fallbacks without mixing scores", async (fallbackDepth) => {
     vi.useFakeTimers();
     try {
-    const [voyage, cohere] = approvedRerankerDeployments;
-    if (!voyage || !cohere) throw new Error("approved reranker route missing");
+    const route = approvedRerankerDeployments.slice(0, fallbackDepth + 1);
+    const selected = route[fallbackDepth];
+    if (!selected) throw new Error("approved reranker route missing");
     const targetByBinding = new Map<string, string>();
     const bind = vi.fn(async (_userId: string, input: {
       ordinal: number;
+      inputHash: string;
       targetProviderModelId?: string;
+      versions: { pipelineVersion: string };
     }) => {
       const bindingId = `binding-${input.ordinal}`;
       targetByBinding.set(bindingId, input.targetProviderModelId ?? "");
@@ -351,7 +358,12 @@ describe("Memory run utility execution", () => {
         } as MemorySecretFreeExecutionSnapshot
       };
     });
-    const settle = vi.fn(async () => ({}));
+    const settlements = new Map<string, { errorCode: string | null; state: string }>();
+    const settle = vi.fn(async (_userId: string, bindingId: string,
+      outcome: { errorCode: string | null; state: string }) => {
+      settlements.set(bindingId, outcome);
+      return {};
+    });
     const executionService = {
       admission: { bind, start },
       lifecycle: {
@@ -373,7 +385,7 @@ describe("Memory run utility execution", () => {
               providerModelId: evidence.providerModelId
             });
             if (
-              evidence.providerModelId === voyage.providerModelId &&
+              evidence.providerModelId !== selected.providerModelId &&
               request.documents.some(({ handle }) =>
                 handle === `c${MEMORY_RERANK_AGGREGATION_MAX_CANDIDATES - 1}`)
             ) {
@@ -381,9 +393,7 @@ describe("Memory run utility execution", () => {
                 httpStatus: 503
               });
             }
-            const relevanceScore = evidence.providerModelId === voyage.providerModelId
-              ? 0.2
-              : 0.9;
+            const relevanceScore = evidence.providerModelId === selected.providerModelId ? 0.9 : 0.2;
             return {
               model: approvedRerankerDeployments.find(
                 ({ providerModelId }) => providerModelId === evidence.providerModelId
@@ -408,7 +418,7 @@ describe("Memory run utility execution", () => {
       rerankerRuntime: rerankerRuntime as never,
       resolveDedicatedRerankRoute: vi.fn(async () => ({
         policyVersion: RERANKER_ROUTE_POLICY_VERSION,
-        providerModelIds: [voyage.providerModelId, cohere.providerModelId]
+        providerModelIds: route.map(({ providerModelId }) => providerModelId)
       })),
       resolveRerankPath: vi.fn(async () => "DEDICATED" as const)
     });
@@ -429,15 +439,15 @@ describe("Memory run utility execution", () => {
 
     expect(result).toMatchObject({
       diagnostics: {
-        fallbackDepth: 1,
-        modelAttemptCount: 2,
+        fallbackDepth,
+        modelAttemptCount: fallbackDepth + 1,
         routePolicyVersion: RERANKER_ROUTE_POLICY_VERSION
       },
-      relevanceScoreFloor: null,
+      relevanceScoreFloor: selected.preset.relevanceScoreFloor,
       rerankerRoute: {
-        fallbackDepth: 1,
+        fallbackDepth,
         policyVersion: RERANKER_ROUTE_POLICY_VERSION,
-        providerModelId: cohere.providerModelId
+        providerModelId: selected.providerModelId
       },
       status: "READY"
     });
@@ -447,15 +457,22 @@ describe("Memory run utility execution", () => {
     );
     expect(result.decisions.every(({ relevanceScore }) => relevanceScore === 0.9))
       .toBe(true);
-    const primaryCallCount = calls.filter(
-      ({ providerModelId }) => providerModelId === voyage.providerModelId
-    ).length;
-    const fallbackCallCount = calls.filter(
-      ({ providerModelId }) => providerModelId === cohere.providerModelId
-    ).length;
-    expect(primaryCallCount).toBeGreaterThan(1);
-    expect(fallbackCallCount).toBe(primaryCallCount);
+    const perModelCalls = route.map((model) => calls.filter(
+      ({ providerModelId }) => providerModelId === model.providerModelId
+    ).length);
+    expect(perModelCalls[0]).toBeGreaterThan(1);
+    expect(new Set(perModelCalls).size).toBe(1);
     expect(result.externalCallCount).toBe(calls.length);
+    const bindings = bind.mock.calls.map(([, input]) => ({
+      ...settlements.get(`binding-${input.ordinal}`)!,
+      inputHash: input.inputHash,
+      logicalRole: "MEMORY_RERANK",
+      ordinal: input.ordinal,
+      pipelineVersion: input.versions.pipelineVersion,
+      providerModelId: input.targetProviderModelId!
+    }));
+    expect(validMemoryRetrievalExecutionSequence(bindings, false, true)).toBe(true);
+    expect(validMemoryRerankRetrySettlement(bindings)).toBe(true);
     } finally {
       vi.useRealTimers();
     }
