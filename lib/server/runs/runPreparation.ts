@@ -1,6 +1,6 @@
 import { imageGenerationTool, imageReferenceInstructions } from "../tools/imageGeneration";
 import type { AssistantIdentity } from "../../contracts/assistants";
-import { ChatPdfPolicyUnavailableError, type ChatPdfAttachmentAdmission, type ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
+import { isChatPdfPolicyUnavailableError, type ChatPdfAttachmentAdmission, type ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import { randomUUID } from "node:crypto";
 import { WORKSPACE_OFFICE_GUIDANCE } from "../workspace/officeGuidance";
@@ -1608,7 +1608,7 @@ export async function prepareRun(
       workspaceEnabled
     });
   } catch (error) {
-    if (error instanceof ChatPdfPolicyUnavailableError) return failure(error.code, 409,
+    if (isChatPdfPolicyUnavailableError(error)) return failure(error.code, 409,
       "PDF processing is not configured for this model. Ask an administrator to assign and verify the selected PDF reader.");
     const rejected = attachmentFailure(error);
     if (rejected) return rejected;

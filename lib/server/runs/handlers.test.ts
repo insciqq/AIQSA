@@ -1379,6 +1379,33 @@ describe("model run route handlers", () => {
     expect(state.created).toBeNull();
   });
 
+  it("returns an actionable PDF configuration error from a separately loaded resolver", async () => {
+    const { repository, state } = createMemoryRepository();
+    const adapter = createFakeProviderAdapter();
+    const stream = vi.spyOn(adapter, "stream");
+    const kick = vi.fn();
+    const POST = createSendMessageHandler({ ...authDeps, repository, providers: { fake: adapter },
+      chatPdf: { kick, findAdmission: async () => null, resolve: async () => {
+        // The process-wide coordinator and Next route bundle may load separate
+        // copies of the class. Its owned name and code remain the same.
+        throw Object.assign(new Error("pdf_processing_configuration_incomplete"), {
+          name: "ChatPdfPolicyUnavailableError", code: "pdf_processing_configuration_incomplete"
+        });
+      } }
+    });
+    const response = await POST(new Request("http://app.local/api/chats/chat-1/messages", {
+      method: "POST", headers: { cookie: authCookie() }, body: JSON.stringify({
+        provider: "fake", modelId: "fake-qsa", searchPlan: { mode: "all_selected", optionIds: [] },
+        content: { blocks: [{ attachmentId: "pdf-1", type: "file" }] }
+      })
+    }), { params: { chatId: "chat-1" } });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "pdf_processing_configuration_incomplete" });
+    expect(state.created).toBeNull();
+    expect(stream).not.toHaveBeenCalled();
+    expect(kick).not.toHaveBeenCalled();
+  });
+
   it("returns the same committed PDF run on duplicate admission without starting the answer", async () => {
     const { repository, state } = createMemoryRepository();
     const bytes = Buffer.from("%PDF-settled-original");

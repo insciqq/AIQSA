@@ -322,7 +322,7 @@ describe("AdminRolesSection", () => {
     expect(screen.getByTestId("admin-reranker-fallbacks")).toHaveTextContent("Fallbacks: OpenRouter / Cohere 4 Pro");
   });
 
-  it("preserves both reader assignments when changing PDF modes and shows only the applicable fallback", async () => {
+  it("shows the selected PDF reader and preserves both assignments across mode changes", async () => {
     const roles = rolesCatalog();
     const native = { ...luna, id: "native-pdf", displayName: "Native PDF model", pdfInput: "verified" as const };
     const image = { ...luna, id: "page-images", displayName: "Page image model", visionInput: "verified" as const };
@@ -331,25 +331,37 @@ describe("AdminRolesSection", () => {
     roles.policy.chatPdfFallbackMethod = "page_images";
     const calls = server(roles);
     renderSection();
-    for (const [label, name] of [["PDF reader deployment", "Native PDF model"], ["Page-image reader deployment", "Page image model"]]) {
+    expect(await screen.findByTestId("admin-role-chat-pdf-status")).toHaveTextContent("Fallback not set");
+    expect(screen.queryByRole("button", { name: "PDF reader deployment" })).not.toBeInTheDocument();
+    for (const [label, name] of [["Page-image reader deployment", "Page image model"], ["PDF reader deployment", "Native PDF model"]]) {
+      if (label === "PDF reader deployment") {
+        fireEvent.change(screen.getByLabelText("Fallback method"), { target: { value: "pdf_reader" } });
+        await waitFor(() => expect(screen.queryByRole("button", { name: "Page-image reader deployment" })).not.toBeInTheDocument());
+      }
       fireEvent.click(await screen.findByRole("button", { name: label }));
       fireEvent.click(within(screen.getByRole("dialog", { name: label })).getByRole("option", { name: new RegExp(name) }));
       await waitFor(() => expect(screen.getByRole("button", { name: label })).toHaveTextContent(name));
     }
-    fireEvent.change(screen.getByLabelText("Fallback method"), { target: { value: "pdf_reader" } });
-    await waitFor(() => expect(screen.getByLabelText("Fallback method")).toHaveValue("pdf_reader"));
+    expect(screen.getByTestId("admin-role-chat-pdf-status")).toHaveTextContent("Fallback ready");
     fireEvent.change(screen.getByLabelText("Processing mode"), { target: { value: "read_page_images" } });
     await waitFor(() => expect(screen.queryByLabelText("Fallback method")).not.toBeInTheDocument());
-    expect(screen.getByRole("button", { name: "PDF reader deployment" })).toHaveTextContent("Native PDF model");
+    expect(screen.queryByRole("button", { name: "PDF reader deployment" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Page-image reader deployment" })).toHaveTextContent("Page image model");
+    expect(screen.getByTestId("admin-role-chat-pdf-status")).toHaveTextContent("Ready");
+    fireEvent.change(screen.getByLabelText("Processing mode"), { target: { value: "use_pdf_reader" } });
+    expect(await screen.findByRole("button", { name: "PDF reader deployment" })).toHaveTextContent("Native PDF model");
+    expect(screen.queryByRole("button", { name: "Page-image reader deployment" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Fallback method")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Processing mode"), { target: { value: "prefer_chat_model" } });
     await waitFor(() => expect(screen.getByLabelText("Fallback method")).toHaveValue("pdf_reader"));
+    expect(screen.getByRole("button", { name: "PDF reader deployment" })).toHaveTextContent("Native PDF model");
     const patches = calls.filter((call) => call.method === "PATCH").map((call) => call.body);
     expect(patches).toEqual(expect.arrayContaining([
       expect.objectContaining({ chatPdfNativeProviderModelId: "native-pdf", chatPdfNativeReasoningEffort: null }),
       expect.objectContaining({ chatPdfProviderModelId: "page-images", chatPdfReasoningEffort: null })
     ]));
-    expect(patches.slice(2).every((patch) => !Object.hasOwn(patch!, "chatPdfNativeProviderModelId") && !Object.hasOwn(patch!, "chatPdfProviderModelId"))).toBe(true);
+    const modePatches = patches.filter((patch) => Object.hasOwn(patch!, "chatPdfProcessingMode") || Object.hasOwn(patch!, "chatPdfFallbackMethod"));
+    expect(modePatches.every((patch) => !Object.hasOwn(patch!, "chatPdfNativeProviderModelId") && !Object.hasOwn(patch!, "chatPdfProviderModelId"))).toBe(true);
   });
 
   it("edits reasoning for both working roles and selects a PDF reader without a second switch", async () => {
@@ -363,8 +375,8 @@ describe("AdminRolesSection", () => {
     expect(screen.queryByRole("switch", { name: "Send pages there" })).not.toBeInTheDocument();
     fireEvent.click(picker);
     fireEvent.click(within(screen.getByRole("dialog", { name: "Page-image reader deployment" })).getByRole("option", { name: /GPT Luna/ }));
-    await waitFor(() => expect(screen.getByTestId("admin-role-chat-pdf-status")).toHaveTextContent("Working"));
-    for (const [id, label] of [["admin-role-memory", "System model reasoning"], ["admin-role-chat-pdf-images", "Page-image reader reasoning"]]) {
+    await waitFor(() => expect(screen.getByTestId("admin-role-chat-pdf-status")).toHaveTextContent("Fallback ready"));
+    for (const [id, label] of [["admin-role-memory", "System model reasoning"], ["admin-role-chat-pdf", "Page-image reader reasoning"]]) {
       fireEvent.click(within(screen.getByTestId(id!)).getByText("Advanced"));
       const reasoning = screen.getByRole("combobox", { name: label! });
       expect(reasoning).toBeEnabled();
@@ -377,6 +389,49 @@ describe("AdminRolesSection", () => {
       { expectedVersion: 2, providerModelId: "luna", reasoningEffort: "high" },
       { expectedVersion: 3, chatPdfProviderModelId: "luna", chatPdfReasoningEffort: "high" }
     ]);
+  });
+
+  it("clears and undoes only the selected PDF reader while retaining the other reader", async () => {
+    const roles = rolesCatalog();
+    const native = { ...luna, id: "native-pdf", displayName: "Native PDF model", pdfInput: "verified" as const };
+    const image = { ...luna, id: "page-images", displayName: "Page image model", visionInput: "verified" as const };
+    roles.documentCandidates = [native, image];
+    roles.policy.chatPdfProcessingMode = "use_pdf_reader";
+    roles.policy.chatPdfNativeModel = { ...native, available: true };
+    roles.policy.chatPdfNativeReasoningEffort = "low";
+    roles.policy.chatPdfModel = { ...image, available: true };
+    const calls = server(roles);
+    const { reportNotice } = renderSection();
+
+    fireEvent.click(await screen.findByRole("button", { name: "PDF processing in chats actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Clear reader assignment" }));
+    await waitFor(() => expect(screen.getByTestId("admin-role-chat-pdf-status")).toHaveTextContent("Not assigned"));
+    const [, undo] = reportNotice.mock.calls.at(-1)!;
+    undo!.onSelect();
+    await waitFor(() => expect(screen.getByRole("button", { name: "PDF reader deployment" })).toHaveTextContent("Native PDF model"));
+    fireEvent.click(within(screen.getByTestId("admin-role-chat-pdf")).getByText("Advanced"));
+    expect(screen.getByRole("combobox", { name: "PDF reader reasoning" })).toHaveValue("low");
+    fireEvent.change(screen.getByLabelText("Processing mode"), { target: { value: "read_page_images" } });
+    expect(await screen.findByRole("button", { name: "Page-image reader deployment" })).toHaveTextContent("Page image model");
+    expect(patchesTo(calls, "/api/admin/providers/system-model-policy").slice(0, 2)).toEqual([
+      { expectedVersion: 1, chatPdfNativeProviderModelId: null, chatPdfNativeReasoningEffort: null },
+      { expectedVersion: 2, chatPdfNativeProviderModelId: "native-pdf", chatPdfNativeReasoningEffort: "low" }
+    ]);
+  });
+
+  it.each(["prefer_chat_model", "use_pdf_reader"] as const)("shows an unavailable PDF reader accurately in %s mode", async (mode) => {
+    const roles = rolesCatalog();
+    roles.policy.chatPdfProcessingMode = mode;
+    roles.policy.chatPdfFallbackMethod = "pdf_reader";
+    roles.policy.chatPdfNativeModel = { ...luna, available: false };
+    roles.policy.chatPdfNativeReasoningEffort = null;
+    roles.policy.chatPdfModel = { ...terra, available: true };
+    server(roles);
+    renderSection();
+
+    expect(await screen.findByTestId("admin-role-chat-pdf-status"))
+      .toHaveTextContent(mode === "prefer_chat_model" ? "Fallback unavailable" : "Unavailable");
+    expect(screen.queryByRole("button", { name: "Page-image reader deployment" })).not.toBeInTheDocument();
   });
 
   it("starts unconfigured Knowledge with image reading and the first eligible document model", async () => {

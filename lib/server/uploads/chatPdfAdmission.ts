@@ -21,6 +21,13 @@ export class ChatPdfPolicyUnavailableError extends Error {
   }
 }
 
+export function isChatPdfPolicyUnavailableError(error: unknown): error is ChatPdfPolicyUnavailableError {
+  // The process-wide PDF resolver can outlive the route module that catches it.
+  return typeof error === "object" && error !== null &&
+    "name" in error && error.name === "ChatPdfPolicyUnavailableError" &&
+    "code" in error && error.code === "pdf_processing_configuration_incomplete";
+}
+
 export type ChatPdfRouteAdmission = Readonly<{
   authority: SearchProbeBinding | null;
   fallbackMethod?: ChatPdfFallbackMethod;
