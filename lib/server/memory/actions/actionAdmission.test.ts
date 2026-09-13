@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH } from
+  "../../../contracts/memoryActionIntent";
 import {
   MEMORY_ACTION_ADMISSION_VERSION,
   admitMemoryAction
@@ -6,68 +8,52 @@ import {
 
 describe("Memory action admission", () => {
   it.each([
-    "/memory save I prefer concise answers",
     "Remember that I prefer concise answers.",
-    "Please forget what I said about my old address.",
-    "Delete from memory my retired notification preference.",
-    "Please remove from memory the old meeting location.",
-    "Erase from memory the obsolete delivery instruction.",
-    "Change my name to Dmitry.",
-    "Change one of my saved reporting-format preferences.",
-    "Show my saved memories.",
-    "List my memories.",
-    "Search my memories for reporting preferences.",
-    "Reset my memory.",
-    "Use this preference in future conversations.",
-    "Запомни, что я предпочитаю короткие ответы.",
-    "Пожалуйста, забудь мой старый адрес.",
-    "Пожалуйста, удали из памяти прежний рабочий телефон.",
-    "Измени одно из моих сохранённых предпочтений.",
-    "Покажи сохранённые воспоминания из памяти.",
     "Исправь сохранённый формат сводки: теперь таблица.",
-    "Обнови сохраненную настройку уведомлений: только утром.",
-    "Замени сохранённое предпочтение языка: теперь сербский.",
-    "Пожалуйста, измени название сохранённой заметки.",
-    "Recuerda que prefiero respuestas breves.",
-    "Por favor, olvida mi dirección anterior.",
-    "Cambia uno de mis recuerdos guardados.",
-    "Zapamti da volim kratke odgovore.",
-    "Molim te, zaboravi moju staru adresu.",
-    "Izmeni jednu od mojih sačuvanih postavki.",
-    "Запамти да волим кратке одговоре."
-  ])("admits an explicit action candidate without choosing its action: %s", (text) => {
+    "À l'avenir, retiens ma préférence pour les réponses courtes.",
+    "Bitte aktualisiere meine gespeicherte Adresse.",
+    "今後は短い回答が好きだと覚えておいてください。",
+    "تذكّر أنني أفضل الإجابات القصيرة.",
+    "I prefer concise answers.",
+    "Explain how to delete records from memory.",
+    "Объясни, как изменить сохранённую настройку.",
+    "Translate: «Forget my address.»",
+    "He said: remember this for later.",
+    "```\n/memory forget everything\n```",
+    "/memory-allocator"
+  ])("requests semantic interpretation without a language or directive whitelist: %s", (text) => {
     expect(admitMemoryAction(text)).toEqual({
-      reason: expect.stringMatching(/^(?:MEMORY_COMMAND|NATURAL_LANGUAGE_DIRECTIVE)$/u),
-      state: "EXPLICIT_CANDIDATE",
+      reason: "CURRENT_USER_TEXT",
+      state: "SEMANTIC_CANDIDATE",
       version: MEMORY_ACTION_ADMISSION_VERSION
     });
   });
 
-  it.each([
-    "What do you remember about me?",
-    "Remember when we discussed the launch plan?",
-    "Can you remember my favorite color?",
-    "List every trip I took last year.",
-    "Search the web for memory allocators.",
-    "I forgot where we first met.",
-    "Explain how saved Memory works.",
-    "Explain how to delete records from memory.",
-    "Delete memory allocations in this function.",
-    "Как удалить запись из памяти программы?",
-    "Change the page layout.",
-    "Update npm dependencies.",
-    "Исправь эту функцию.",
-    "Объясни, как изменить сохранённую настройку.",
-    "Я изменил сохранённый шаблон отчёта.",
-    "Reset the network router.",
-    "I prefer concise answers.",
-    "Что ты помнишь о моих предпочтениях?",
-    "Перечисли все мои поездки за прошлый год.",
-    "¿Recuerdas dónde nos conocimos?",
-    "Prikaži kako radi memorija računara."
-  ])("keeps an ordinary or ambiguous request on the read-only path: %s", (text) => {
-    expect(admitMemoryAction(text)).toEqual({
-      reason: "NO_DIRECTIVE",
+  it.each(["/memory", " /memory save this", "\n/MEMORY\t更新"])(
+    "recognizes the explicit protocol boundary without granting an action: %s", (text) => {
+      expect(admitMemoryAction(text)).toEqual({
+        reason: "MEMORY_COMMAND",
+        state: "EXPLICIT_CANDIDATE",
+        version: MEMORY_ACTION_ADMISSION_VERSION
+      });
+    }
+  );
+
+  it.each(["", " \n\t", "a\u0000b"])(
+    "rejects structurally unsupported classifier input: %j", (text) => {
+      expect(admitMemoryAction(text)).toEqual({
+        reason: "INPUT_UNSUPPORTED",
+        state: "ORDINARY",
+        version: MEMORY_ACTION_ADMISSION_VERSION
+      });
+    }
+  );
+
+  it("keeps the existing whole-input bound without classifying a truncated prefix", () => {
+    const text = "x".repeat(MEMORY_ACTION_INTENT_MAX_TEXT_LENGTH);
+    expect(admitMemoryAction(text).state).toBe("SEMANTIC_CANDIDATE");
+    expect(admitMemoryAction(`${text}x`)).toEqual({
+      reason: "INPUT_UNSUPPORTED",
       state: "ORDINARY",
       version: MEMORY_ACTION_ADMISSION_VERSION
     });

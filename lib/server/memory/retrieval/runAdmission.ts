@@ -2365,7 +2365,7 @@ export function createMemoryRunRetrievalService(
         querySafety.safeText
       );
       const actionControlRequested = !deterministicRead ||
-        actionAdmission.state === "EXPLICIT_CANDIDATE";
+        actionAdmission.state !== "ORDINARY";
       const provisionalPlan = planMemoryRetrieval({
         currentUserText: querySafety.safeText,
         now: input.now,

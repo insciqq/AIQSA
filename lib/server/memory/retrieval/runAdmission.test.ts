@@ -670,11 +670,12 @@ describe("Personal Memory v1 run admission", () => {
         [expect.objectContaining({ itemId: pattern.itemId })]
       );
       expect(result.budgetSnapshot).toMatchObject({
+        controlProviderCalls: 1,
         memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1",
         plan: { includePatterns: !history, mode: history ? "PAST_CHAT_SEARCH" : "TARGETED_CURRENT" }
       });
       expect(() => validateMemoryPreparingAttemptResult(result)).not.toThrow();
-      expect(options.control.decide).not.toHaveBeenCalled();
+      expect(options.control.decide).toHaveBeenCalledOnce();
       expect(queryResolver.resolve).not.toHaveBeenCalled();
       const authority = {
         assistantId: null, chatId: input.chatId, folderId: null,
@@ -832,7 +833,7 @@ describe("Personal Memory v1 run admission", () => {
       }]);
       expect(result.preparedContext?.text).toContain(preference.expansion.safeText);
       expect(result.budgetSnapshot).toMatchObject({
-        controlProviderCalls: 0,
+        controlProviderCalls: 1,
         memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1",
         queryResolverProviderCalls: 0,
         speculativeHybridUsed: speculative,
@@ -842,7 +843,7 @@ describe("Personal Memory v1 run admission", () => {
         expect.any(Object), expect.objectContaining({ applyResponsePreferences: true }),
         [expect.objectContaining({ itemId: preference.candidate.itemId })]
       );
-      expect(options.control.decide).not.toHaveBeenCalled();
+      expect(options.control.decide).toHaveBeenCalledOnce();
       expect(queryResolver.resolve).not.toHaveBeenCalled();
       expect(() => validateMemoryPreparingAttemptResult(result)).not.toThrow();
       expect(input.normalizedRequest.content).toEqual(
@@ -946,7 +947,7 @@ describe("Personal Memory v1 run admission", () => {
     });
   });
 
-  it("runs production ordinary reads without control or resolver calls", async () => {
+  it("classifies action intent while keeping ordinary retrieval independent of semantic read planning", async () => {
     const local = repository({
       candidates: [laneCandidate("deterministic-read")]
     });
@@ -976,26 +977,25 @@ describe("Personal Memory v1 run admission", () => {
       queryResolver
     }).retrieve(runInput("Which details did I mention?"));
 
-    expect(base.control.decide).not.toHaveBeenCalled();
-    expect(controlRefs.load).not.toHaveBeenCalled();
+    expect(base.control.decide).toHaveBeenCalledOnce();
+    expect(controlRefs.load).toHaveBeenCalledOnce();
     expect(queryResolver.resolve).not.toHaveBeenCalled();
     expect(actionExecutor.execute).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       budgetSnapshot: {
-        controlProviderCalls: 0,
+        controlProviderCalls: 1,
         memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
-        memoryActionAdmissionReason: "NO_DIRECTIVE",
-        memoryActionAdmissionState: "ORDINARY",
-        memoryActionControlRequested: false,
+        memoryActionAdmissionReason: "CURRENT_USER_TEXT",
+        memoryActionAdmissionState: "SEMANTIC_CANDIDATE",
+        memoryActionControlRequested: true,
         memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1",
         plannerFallbackReason: null,
         queryResolverExecutionStrategy: "SKIPPED",
         queryResolverProviderCalls: 0,
         utilityExecutions: expect.arrayContaining([
           expect.objectContaining({
-            externalCallCount: 0,
-            role: "MEMORY_CONTROL",
-            state: "SKIPPED"
+            externalCallCount: 1,
+            role: "MEMORY_CONTROL"
           }),
           expect.objectContaining({
             externalCallCount: 0,
@@ -1010,8 +1010,10 @@ describe("Personal Memory v1 run admission", () => {
 
   it.each([
     "Remember this phrase, then answer normally.",
-    "Исправь сохранённую копию скрипта, чтобы он запускался."
-  ])("uses strict action control without allowing a false-positive gate to mutate: %s", async (text) => {
+    "Исправь сохранённую копию скрипта, чтобы он запускался.",
+    "Traduis cette citation : « Oublie mon adresse. »",
+    "اشرح عبارة «تذكّر عنواني» دون تنفيذها."
+  ])("preserves a semantic NONE decision without a vocabulary-based dispatch shortcut: %s", async (text) => {
     const local = repository({ candidates: [laneCandidate("ordinary-after-none")] });
     const legacy = retrievalOptions(["c0"]);
     const { readUtilityPolicy: _legacyReadUtilityPolicy, ...options } = legacy;
@@ -1030,7 +1032,7 @@ describe("Personal Memory v1 run admission", () => {
     expect(result).toMatchObject({
       budgetSnapshot: {
         controlProviderCalls: 1,
-        memoryActionAdmissionState: "EXPLICIT_CANDIDATE",
+        memoryActionAdmissionState: "SEMANTIC_CANDIDATE",
         memoryActionControlRequested: true,
         memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1",
         plannerFallbackReason: null,
@@ -1041,7 +1043,11 @@ describe("Personal Memory v1 run admission", () => {
     });
   });
 
-  it("executes an explicit action plus the independent deterministic read", async () => {
+  it.each([
+    "Remember that I prefer concise answers, then tell me what style I used before.",
+    "Retiens que je préfère les réponses courtes, puis rappelle mon ancien style.",
+    "短い回答を好むことを覚えてから、以前の回答スタイルを教えてください。"
+  ])("dispatches a structured action without a language gate and retains the independent read: %s", async (text) => {
     const local = repository({ candidates: [laneCandidate("action-plus-read")] });
     const legacy = intentOptions({
       action: "SAVE" as const,
@@ -1067,11 +1073,12 @@ describe("Personal Memory v1 run admission", () => {
       ...options,
       actionExecutor,
       queryResolver
-    }).retrieve(runInput(
-      "Remember that I prefer concise answers, then tell me what style I used before."
-    ));
+    }).retrieve(runInput(text));
 
     expect(legacy.control.decide).toHaveBeenCalledOnce();
+    expect(legacy.control.decide).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ currentUserMessage: text })
+    }));
     expect(actionExecutor.execute).toHaveBeenCalledOnce();
     expect(queryResolver.resolve).not.toHaveBeenCalled();
     expect(result).toMatchObject({
@@ -1081,7 +1088,7 @@ describe("Personal Memory v1 run admission", () => {
           status: "COMMITTED",
           version: 1
         },
-        memoryActionAdmissionState: "EXPLICIT_CANDIDATE",
+        memoryActionAdmissionState: "SEMANTIC_CANDIDATE",
         memoryActionControlRequested: true,
         plannerFallbackReason: null,
         queryResolverProviderCalls: 0
@@ -3560,7 +3567,7 @@ describe("Personal Memory v1 run admission", () => {
     });
     expect(result.budgetSnapshot).toMatchObject({
       memoryActionAnswerResult: { operation: "NONE", status: "UNAVAILABLE", version: 1 },
-      memoryActionAdmissionState: "EXPLICIT_CANDIDATE",
+      memoryActionAdmissionState: "SEMANTIC_CANDIDATE",
       memoryActionControlRequested: true,
       plan: {
         filterSourceKinds: ["HISTORY"],
