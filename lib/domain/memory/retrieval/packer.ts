@@ -1,4 +1,5 @@
 import { estimateApproxTokens } from "../../contextBudget";
+import { MEMORY_MODALITIES } from "../../../contracts/memory";
 import { memoryHistoryContains } from "./historyContainment";
 import {
   MEMORY_CONTEXT_AGGREGATION_HISTORY_TARGET_TOKENS,
@@ -66,6 +67,12 @@ const toolObservationPreamble =
 
 const patternPreamble =
   "source_authority derived_pattern is a cautious derived tendency, never a hard current fact. Use it only with its attached direct supports; a newer contradictory user_saved or learned_from_user fact wins.";
+
+const factModalityPreamble = [
+  "claim_state=current means the record is current, not that an event happened or a possibility became true.",
+  "modality preserves the stored claim kind: CONSIDERATION is an option, INTENTION/PLAN is prospective, and HABIT/WORKFLOW describes recurring behavior; none proves a completed occurrence.",
+  "Every modality, including STATE and EVENT, remains constrained by uncertainty, conditions, negation and attribution in raw evidence. An absent qualifier is not proof of certainty. State missing or uncertain details as such."
+].join("\n");
 
 export const MEMORY_CONTEXT_AGGREGATION_GUIDANCE = [
   "READER-FIRST MEMORY AGGREGATION — reason only from the bounded evidence below.",
@@ -314,6 +321,7 @@ function renderedEvidence(
     evidence_handle: item.evidenceHandle,
     evidence_type: item.evidenceType,
     last_confirmed_at: renderedDate(item.lastConfirmedAt),
+    ...(item.itemType === "FACT_VERSION" ? { modality: item.modality } : {}),
     observed_at: renderedDate(item.observedAt),
     raw_safe_evidence: item.rawSafeText,
     retrieval_hint: item.retrievalHint
@@ -389,6 +397,9 @@ function render(
     plan.aggregationRequested;
   const lines = [
     contextPreamble,
+    ...(items.some(({ item }) => item.itemType === "FACT_VERSION")
+      ? [factModalityPreamble]
+      : []),
     ...(items.some(({ item }) => item.itemType === "TOOL_EVENT")
       ? [toolObservationPreamble]
       : []),
@@ -719,6 +730,10 @@ function packedItem(input: Readonly<{
     itemId: candidate.itemId,
     itemType: candidate.itemType,
     lastConfirmedAt: iso(candidate.metadata.lastConfirmedAt),
+    modality: fact && candidate.metadata.modality !== null &&
+      MEMORY_MODALITIES.includes(candidate.metadata.modality)
+      ? candidate.metadata.modality
+      : null,
     observedAt: iso(candidate.metadata.observedAt),
     patternSupportingEvidence: Object.freeze(
       (expansion.patternSupportingEvidence ?? []).map((support) => ({

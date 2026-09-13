@@ -164,6 +164,78 @@ function renderedHeader(pack: MemoryContextPack): Record<string, unknown> | null
 }
 
 describe("Personal Memory context pack", () => {
+  it("distinguishes current statements, considerations and intentions without rewriting their evidence", () => {
+    const raw = "A commuter bicycle purchase.";
+    const packs = (["STATE", "CONSIDERATION", "INTENTION", "PLAN"] as const).map((modality) => {
+      const candidate = ranked("claim");
+      const pack = packMemoryPersonalContext({
+        plan,
+        ranked: [{ ...candidate, metadata: {
+          ...candidate.metadata, modality, sourceAuthority: "DIRECT_AUTOMATIC",
+          sourceMode: "AUTOMATIC"
+        } }],
+        expanded: [expansion("claim", false, raw)]
+      });
+      expect(pack.items).toHaveLength(1);
+      expect(pack.items[0].exactSafeText).toBe(raw);
+      expect(renderedEvidence(pack)).toMatchObject([{
+        claim_state: "current",
+        modality,
+        raw_safe_evidence: raw,
+        source_authority: "learned_from_user"
+      }]);
+      return pack.text;
+    });
+    expect(new Set(packs).size).toBe(4);
+  });
+
+  it.each([
+    "Quizá asista al taller; todavía no lo he decidido.",
+    "研修への参加を検討していますが、まだ決めていません。",
+    "قد أحضر الورشة، لكنني لم أقرر بعد."
+  ])("retains qualified source testimony without a language-dependent projection: %s", (raw) => {
+    const candidate = ranked("claim");
+    const pack = packMemoryPersonalContext({
+      plan,
+      ranked: [{ ...candidate, metadata: { ...candidate.metadata, modality: "CONSIDERATION" } }],
+      expanded: [expansion("claim", false, raw)]
+    });
+    expect(renderedEvidence(pack)).toMatchObject([{
+      claim_state: "current", modality: "CONSIDERATION", raw_safe_evidence: raw
+    }]);
+    expect(pack.items[0].exactSafeText).toBe(raw);
+  });
+
+  it.each([null, "untrusted qualifier"] as const)(
+    "does not invent or export an unsupported fact modality: %s",
+    (modality) => {
+      const candidate = ranked("claim");
+      const pack = packMemoryPersonalContext({
+        plan,
+        ranked: [{ ...candidate, metadata: {
+          ...candidate.metadata, modality: modality as MemoryCandidateMetadata["modality"]
+        } }],
+        expanded: [expansion("claim")]
+      });
+      expect(renderedEvidence(pack)).toMatchObject([{
+        claim_state: "current", modality: null, raw_safe_evidence: "memory claim"
+      }]);
+      expect(pack.text).not.toContain("untrusted qualifier");
+    }
+  );
+
+  it("does not turn a history row's unrelated metadata into a typed fact", () => {
+    const candidate = ranked("history", true);
+    const pack = packMemoryPersonalContext({
+      plan: pastChatPlan,
+      ranked: [{ ...candidate, metadata: { ...candidate.metadata, modality: "STATE" } }],
+      expanded: [expansion("history", true)]
+    });
+    expect(renderedEvidence(pack)).toHaveLength(1);
+    expect(renderedEvidence(pack)[0]).toMatchObject({ claim_state: "timeline_evidence" });
+    expect(renderedEvidence(pack)[0]).not.toHaveProperty("modality");
+  });
+
   it("packs contained same-message history once while retaining distinct episodes and chats", () => {
     const question = "User: Which index did we choose?";
     const answer = `${question}\nAssistant: The cedar index.`;
@@ -286,7 +358,7 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v42");
+    expect(pack.packerVersion).toBe("memory-context-packer-v43");
   });
 
   it("labels a non-aggregation planner rewrite as a non-evidentiary answer focus", () => {
