@@ -509,7 +509,7 @@ describe("local Memory retrieval repository", () => {
     expect(expansionSql).toContain('segment_message."role" = \'user\'');
     expect(expansionSql).toContain('provenance."sourceMessageIds"');
     expect(expansionSql).toContain(
-      'array_agg(round_message."messageId" ORDER BY round_message."ordinal")'
+      'array_agg(segment_message."messageId" ORDER BY segment_message."ordinal")'
     );
   });
 

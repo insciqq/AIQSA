@@ -138,7 +138,7 @@ import {
 export type { MemoryLexicalLaneEvidence } from "./lexical/contract";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v47";
+  "memory-local-retrieval-repository-v48";
 export const MEMORY_SPECULATIVE_BASELINE_SETTLE_MS = 1_200;
 const MEMORY_NGRAM_FALLBACK_MAX_TERMS = 8;
 const MEMORY_NGRAM_FALLBACK_MAX_TERMS_PER_VARIANT = 4;
@@ -5015,7 +5015,8 @@ type RoundSegmentSelection = Readonly<{ itemId: string; segmentId: string }>;
 function segmentRoundExpansionSql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
-  selections: readonly RoundSegmentSelection[]
+  selections: readonly RoundSegmentSelection[],
+  userOnly = false
 ): Prisma.Sql {
   const userSpanJoin = Prisma.sql`
       LEFT JOIN LATERAL (
@@ -5097,12 +5098,14 @@ function segmentRoundExpansionSql(
       AND (segment."contextualKeyState" <> 'GENERATED'
         OR current_round."contextualKeyState" = 'GENERATED')
     INNER JOIN LATERAL (
-      SELECT array_agg(round_message."messageId" ORDER BY round_message."ordinal")
+      SELECT array_agg(segment_message."messageId" ORDER BY segment_message."ordinal")
         AS "sourceMessageIds"
-      FROM "MemoryRecallRoundMessage" AS round_message
-      WHERE round_message."userId" = current_round."userId"
-        AND round_message."chatId" = current_round."chatId"
-        AND round_message."roundId" = current_round."id"
+      FROM "MemoryRecallRoundSegmentMessage" AS segment_message
+      WHERE segment_message."userId" = segment."userId"
+        AND segment_message."chatId" = segment."chatId"
+        AND segment_message."roundId" = segment."roundId"
+        AND segment_message."segmentId" = segment."id"
+        ${userOnly ? Prisma.sql`AND segment_message."role" = 'user'` : Prisma.empty}
       HAVING COUNT(*) BETWEEN 1 AND ${MEMORY_RETRIEVAL_MAX_EXPANSION_SOURCE_MESSAGES}
     ) AS provenance ON TRUE
     ${userSpanJoin}
@@ -6219,10 +6222,14 @@ export function createPrismaLocalMemoryRetrievalRepository(
         )));
       }
       if (roundSelections.userSegments.length > 0) {
+        // Containment needs the provenance of the rendered user excerpt, not
+        // messages omitted from it. Canonical source/dependency fences still
+        // validate the full segment before this projection.
         queries.push(canonicalRead<UserSegmentExpandedRow>(segmentRoundExpansionSql(
           snapshot,
           plan,
-          roundSelections.userSegments
+          roundSelections.userSegments,
+          true
         )).then((rows) => rows.flatMap((row) => {
           const projected = projectUserTestimonyExpandedRow(row);
           return projected ? [projected] : [];
