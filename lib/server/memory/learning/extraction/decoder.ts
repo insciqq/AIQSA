@@ -551,7 +551,7 @@ function frameCanEnterPacket(frame: MemorySemanticFrame): boolean {
     frame.speechAct === "COMMAND" && frame.memoryDirective === "EXPLICIT_REMEMBER"
   )) return false;
   return frame.polarity === "AFFIRMED" || frame.polarity === "CORRECTION" ||
-    frame.polarity === "UNKNOWN";
+    frame.polarity === "NEGATED" || frame.polarity === "UNKNOWN";
 }
 
 function resolvedLocalDate(instant: string, timeZone: string): string {
@@ -603,7 +603,11 @@ function decodeObservation(
   if (confidenceBand === "LOW") fail("memory_fact_confidence_low");
   const sensitivity = enumValue(value.sensitivity, sensitivities, 16);
   if (sensitivity === "SECRET") fail("memory_fact_secret");
-  if (sensitivity !== "NORMAL") fail("memory_fact_unsupported");
+  // Direct personal testimony remains eligible independently of topic
+  // sensitivity. Exact-source admission and local secret checks still apply.
+  if (sensitivity !== "NORMAL" && sensitivity !== "SENSITIVE") {
+    fail("memory_fact_unsupported");
+  }
   if (!requiredBoolean(value.future_useful)) fail("memory_fact_unsupported");
   const temporary = requiredBoolean(value.temporary);
   boundedString(value.reason_code, 64);
@@ -670,6 +674,11 @@ function decodeObservation(
   const resolvedIdentity = input.identityProfile === "LEGACY_V1"
     ? legacyIdentity
     : unicodeIdentity;
+  // A negative assertion keeps its full statement meaning. A positive SLOT
+  // value (for example owned) cannot represent the negation of that value.
+  if (frame.polarity === "NEGATED" && resolvedIdentity.identityKind !== "PROPOSITION") {
+    fail("memory_fact_unsupported");
+  }
   const correction = frame.polarity === "CORRECTION" ||
     frame.changeIntent === "CORRECTION";
   if (confidenceBand === "MEDIUM" && (

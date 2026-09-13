@@ -36,6 +36,7 @@ import {
 } from "../learning/extraction/contract";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
 import { createPrismaLocalMemoryRetrievalRepository } from "./localRepository";
+import { createMemoryNativeFactSearchPlan } from "./nativeFactSearch";
 import { PostgresLegacyMemoryLexicalCandidateProvider } from
   "./lexical/postgresLegacyProvider";
 
@@ -336,6 +337,7 @@ async function createFact(input: Readonly<{
   holdUntilExpired?: boolean;
   indexed?: boolean;
   languageCode: string;
+  modality?: "EVENT" | "PREFERENCE";
   scopeAssistantId?: string;
   scopeChatId?: string;
   scopeFolderId?: string;
@@ -438,7 +440,7 @@ async function createFact(input: Readonly<{
           ? memorySha256({ domain: "memory-retrieval-test", sourceHash, versionId })
           : null,
         languageCode: input.languageCode,
-        modality: "PREFERENCE",
+        modality: input.modality ?? "PREFERENCE",
         normalizedSearchText: normalized,
         observedAt: sourceMode === "AUTOMATIC" ? fixtureNow : null,
         pipelineVersion: sourceMode === "AUTOMATIC"
@@ -2525,6 +2527,54 @@ describe("local Memory retrieval on PostgreSQL", () => {
       expect(result.laneResults.flatMap(({ candidates }) => candidates)
         .map(({ itemId }) => itemId)).not.toContain(excludedId);
     }
+  });
+
+  it("retrieves current event facts without admitting chat history or closed versions", async () => {
+    const statement = "I completed the Cedar pottery workshop.";
+    const versionId = await createFact({
+      canonicalKey: "event.cedar_workshop",
+      displayText: statement,
+      generationId: fixture.generationId,
+      languageCode: "en",
+      modality: "EVENT",
+      userId: fixture.userId
+    });
+    const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+    const plan = createMemoryNativeFactSearchPlan(statement, fixtureNow);
+    const retrieve = () => repository.retrieve({
+      assistantId: null,
+      chatId: null,
+      now: fixtureNow,
+      plan,
+      userId: fixture.userId
+    });
+    const result = await retrieve();
+    const ranked = fuseMemoryRetrievalCandidates(plan, result.laneResults, fixtureNow);
+    expect(ranked).toContainEqual(expect.objectContaining({
+      itemId: versionId,
+      itemType: "FACT_VERSION",
+      metadata: expect.objectContaining({ current: true, modality: "EVENT" })
+    }));
+    expect(result.snapshot.referenceChatHistory).toBe(false);
+    expect(result.laneResults.every(({ lane }) => lane.startsWith("FACT_"))).toBe(true);
+    const expanded = await repository.expand(result.snapshot, plan, ranked);
+    expect(expanded).toContainEqual(expect.objectContaining({
+      itemId: versionId, safeText: statement
+    }));
+
+    await prisma.$transaction(async (tx) => {
+      const version = await tx.memoryFactVersion.update({
+        data: { state: "SUPERSEDED", systemTo: new Date() },
+        where: { id: versionId }
+      });
+      await tx.memoryFact.update({
+        data: { currentVersionId: null, state: "RETRACTED" },
+        where: { id: version.factId }
+      });
+    });
+    const closed = await retrieve();
+    expect(closed.laneResults.flatMap(({ candidates }) => candidates)
+      .map(({ itemId }) => itemId)).not.toContain(versionId);
   });
 
   it("keeps exact current facts available without a search entry", async () => {

@@ -35,10 +35,12 @@ import {
 import { loadMemorySourceSnapshot } from "../../sourceState";
 import {
   MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
+  MEMORY_FACT_MAX_CONTEXT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_MESSAGES,
   MEMORY_FACT_MAX_PACKET_CANDIDATES,
   MEMORY_FACT_MAX_PRIOR_TURN_GROUPS,
+  MEMORY_FACT_MAX_TARGET_CHARACTERS,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
   memoryFactExtractionClaimIsValid,
   memoryFactExtractionIdentityProfile,
@@ -353,6 +355,9 @@ function boundedContextMessages<T extends Readonly<{
   const targetIndex = messages.findIndex((message) => message.evidenceEligible);
   const target = messages[targetIndex];
   if (!target || targetIndex !== messages.length - 1 ||
+    target.text.length > MEMORY_FACT_MAX_TARGET_CHARACTERS ||
+    messages.slice(0, targetIndex).reduce((sum, message) => sum + message.text.length, 0) >
+      MEMORY_FACT_MAX_CONTEXT_CHARACTERS ||
     messages.length > MEMORY_FACT_MAX_INPUT_MESSAGES ||
     new Set(messages.map(({ id }) => id)).size !== messages.length ||
     messages.reduce((sum, message) => sum + message.text.length, 0) >
@@ -373,7 +378,7 @@ export function boundedMemoryFactContextMessageIds(
     message.id === targetMessageId && message.role === "user");
   const targetPathIndex = snapshot.activePathMessageIds.indexOf(targetMessageId);
   if (!target || targetPathIndex < 0 ||
-    target.safeText.length > MEMORY_FACT_MAX_INPUT_CHARACTERS) return [];
+    target.safeText.length > MEMORY_FACT_MAX_TARGET_CHARACTERS) return [];
   const targetGroupIndex = snapshot.recallChunkProjection.turnGroups.findIndex(
     (group) => group.messages.some(({ id }) => id === targetMessageId)
   );
@@ -402,6 +407,7 @@ export function boundedMemoryFactContextMessageIds(
       0
     );
     if (messageCount + ids.length > MEMORY_FACT_MAX_INPUT_MESSAGES ||
+      characters - target.safeText.length + groupCharacters > MEMORY_FACT_MAX_CONTEXT_CHARACTERS ||
       characters + groupCharacters > MEMORY_FACT_MAX_INPUT_CHARACTERS) break;
     selectedGroups.unshift(ids);
     cursor = indexes[0]!;

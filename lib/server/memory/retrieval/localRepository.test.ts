@@ -2551,7 +2551,10 @@ describe("local Memory retrieval repository", () => {
       entry.failureCode === "memory_read_statement_timeout" && entry.timedOut)).toBe(true);
   });
 
-  it("admits a run-independent snapshot only for the fixed global facts plan", async () => {
+  it.each([
+    { sourceKinds: ["FACT"] as const },
+    { sourceKinds: ["EVENT", "FACT"] as const }
+  ])("admits a run-independent snapshot only for global fact versions: $sourceKinds", async ({ sourceKinds }) => {
     const mocked = mockClient(snapshotRow({
       chatFolderId: null,
       chatId: null,
@@ -2561,7 +2564,7 @@ describe("local Memory retrieval repository", () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
     const plan = planMemoryRetrieval({
       currentUserText: "What should I call you?",
-      filters: { sourceKinds: ["FACT"] },
+      filters: { sourceKinds },
       mode: "TARGETED_CURRENT",
       now,
       temporalIntent: "ANY"

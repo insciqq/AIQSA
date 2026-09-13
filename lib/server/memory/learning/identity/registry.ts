@@ -242,10 +242,11 @@ ResolvedMemoryIdentity {
     !(MEMORY_SLOT_PREDICATES as readonly string[]).includes(
       input.identity.predicateKey
     )) return fallback();
-  // Historical status can remain a source-grounded proposition but never
-  // acquires the current SLOT identity. All other authority fields are
-  // admitted by the semantic boundary (and, when required, adjudication).
-  if (input.semanticFrame.temporalPerspective === "FORMER") return fallback();
+  // Historical or negated statements retain their complete meaning instead
+  // of acquiring a positive current SLOT value. Semantic admission still
+  // requires direct evidence and, for negation, HIGH adjudication.
+  if (input.semanticFrame.temporalPerspective === "FORMER" ||
+    input.semanticFrame.polarity === "NEGATED") return fallback();
   const predicate = input.identity.predicateKey as MemorySlotPredicate;
   const value = input.value;
 

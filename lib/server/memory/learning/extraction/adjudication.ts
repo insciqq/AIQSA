@@ -8,6 +8,7 @@ import {
 } from "../../persistence/lexical";
 import type { MemoryExecutionVersions } from "../../execution";
 import {
+  MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
   type MemoryExtractedCandidate,
   type MemoryFactContextRef,
   type MemoryFactExtractionPlan,
@@ -18,7 +19,7 @@ import {
 export const MEMORY_SEMANTIC_ADJUDICATION_PIPELINE_VERSION =
   "memory-semantic-adjudication-v1";
 export const MEMORY_SEMANTIC_ADJUDICATION_POLICY_VERSION =
-  "memory-semantic-adjudication-policy-v5";
+  "memory-semantic-adjudication-policy-v6";
 export const MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION =
   "memory-semantic-adjudication-prompt-v5";
 export const MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION =
@@ -32,7 +33,7 @@ export const MEMORY_SEMANTIC_ADJUDICATION_VERSIONS: MemoryExecutionVersions =
     policyVersion: MEMORY_SEMANTIC_ADJUDICATION_POLICY_VERSION,
     promptVersion: MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION,
     retrievalConfigFingerprint: memorySha256({
-      maxCandidates: 4,
+      maxCandidates: MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
       maxContextRefs: 8,
       source: "bounded-context-one-direct-user-target-with-confidence-tier-convergence",
       version: 6
@@ -246,6 +247,7 @@ export function memoryCandidateRequiresSemanticAdjudication(
       memoryPotentialDuplicateContext(candidate.displayText, context.text))
   );
   return candidate.identityKind === "SLOT" || candidate.modality === "STATE" ||
+    candidate.semanticFrame.polarity === "NEGATED" ||
     candidate.correction === true ||
     candidate.dependencies.length > 0 ||
     candidate.entities.some((entity) => entity.contextRef !== null ||
@@ -294,7 +296,9 @@ export function memorySemanticAuthorityAdmitsCandidate(
     (frame.speechAct !== "ASSERTION" && !(
       frame.speechAct === "COMMAND" &&
       frame.memoryDirective === "EXPLICIT_REMEMBER"
-    )) || (frame.polarity !== "AFFIRMED" && frame.polarity !== "CORRECTION")) {
+    )) || (frame.polarity !== "AFFIRMED" && frame.polarity !== "CORRECTION" && !(
+      frame.polarity === "NEGATED" && candidate.identityKind === "PROPOSITION"
+    ))) {
     return false;
   }
   const requiresAdjudication = memoryCandidateRequiresSemanticAdjudication(
@@ -588,7 +592,7 @@ export const memorySemanticAdjudicationTool: RunTool = Object.freeze({
           required: decisionKeys,
           type: "object"
         },
-        maxItems: 4,
+        maxItems: MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
         type: "array"
       }
     },

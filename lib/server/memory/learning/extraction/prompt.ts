@@ -1,9 +1,11 @@
 import type { RunTool } from "../../../tools/types";
 import type { MemoryFactExtractionInput } from "./contract";
 import {
+  MEMORY_FACT_MAX_CONTEXT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_MESSAGES,
-  MEMORY_FACT_MAX_PACKET_CANDIDATES
+  MEMORY_FACT_MAX_PACKET_CANDIDATES,
+  MEMORY_FACT_MAX_TARGET_CHARACTERS
 } from "./contract";
 import {
   MEMORY_PREFERENCE_DIMENSION_PREFIXES,
@@ -379,6 +381,7 @@ export const MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT = [
   "Entity aliases require exact NAMED or NOMINAL source occurrences. PRONOMINAL, ELLIPSIS, UNKNOWN, or context-only mentions are never aliases.",
   "Use only supplied opaque refs. A subject or correction that relies on preceding context must include that context's ref in dependency_refs. A self-contained correction whose subject and corrected value are explicit in target_message uses dependency_refs []; never invent a prior-context dependency.",
   "Return zero observations only when the source contains no clear atomic, durable, future-useful fact. Hard SLOT proposals require HIGH confidence.",
+  "A directly asserted current-user personal, medical, financial, or relationship fact remains eligible when non-secret, including an explicit negative assertion. SENSITIVE describes its topic, not lack of evidence or a reason to omit it; never infer a sensitive attribute that the user did not assert.",
   "Secrets, credentials, sensitive automatic inferences, and uncertain safety classifications must not be emitted as NORMAL.",
   "reason_code and candidate_ref are bounded labels, never explanations or database identifiers."
 ].join("\n");
@@ -400,6 +403,9 @@ export function memoryFactExtractionPromptPayload(
     context.ref
   ]));
   if (targetIndex < 0 || targetIndex !== input.messages.length - 1 ||
+    input.messages[targetIndex]!.text.length > MEMORY_FACT_MAX_TARGET_CHARACTERS ||
+    input.messages.slice(0, targetIndex).reduce((sum, message) => sum + message.text.length, 0) >
+      MEMORY_FACT_MAX_CONTEXT_CHARACTERS ||
     input.messages.length > MEMORY_FACT_MAX_INPUT_MESSAGES ||
     messageCharacters > MEMORY_FACT_MAX_INPUT_CHARACTERS ||
     new Set(input.messages.map(({ id }) => id)).size !== input.messages.length ||

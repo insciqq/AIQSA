@@ -16,6 +16,7 @@ import {
   memorySemanticAdjudicationInput,
   memorySemanticAdjudicationPacketIsValid,
   memorySemanticAdjudicationPromptPayload,
+  memorySemanticAdjudicationTool,
   MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION,
   MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT,
   MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
@@ -343,6 +344,42 @@ describe("batched Memory semantic adjudication", () => {
     expect(payload).toContain('"ref":"F1"');
     expect(payload).not.toContain("private-entity-id");
     expect(payload).not.toContain("private-version-id");
+  });
+
+  it("covers every admitted observation with one bounded adjudication packet", () => {
+    const candidates = Array.from({ length: 8 }, (_, index) => candidate({
+      candidateRef: `C${index + 1}`,
+      id: String(index + 1).repeat(64)
+    }));
+    const input = memorySemanticAdjudicationInput({
+      ...plan(),
+      candidateOrdinals: candidates.map((_, index) => index),
+      candidates
+    })!;
+    const decisions = input.candidateRefs.map((candidateRef) => ({
+      assertion_status: "ASSERTED",
+      candidate_ref: candidateRef,
+      confidence_band: "HIGH",
+      entailment: "ENTAILED",
+      entity_ref: null,
+      operation: "NO_RELATION",
+      reason_code: "direct_assertion",
+      subject_scope: "CURRENT_USER",
+      target_ref: null,
+      temporal_perspective: "CURRENT"
+    }));
+    expect(input.candidateRefs).toHaveLength(8);
+    const schema = memorySemanticAdjudicationTool.inputSchema as {
+      properties: { decisions: { maxItems: number } };
+    };
+    expect(schema.properties.decisions.maxItems).toBeGreaterThanOrEqual(decisions.length);
+    const packet = decodeMemorySemanticAdjudication([{
+      arguments: { decisions },
+      id: "batch-call",
+      name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
+    }], input);
+    expect(memorySemanticAdjudicationPacketIsValid(input.plan, packet)).toBe(true);
+    expect(packet.decisions.map(({ candidateRef }) => candidateRef)).toEqual(input.candidateRefs);
   });
 
   it("decodes one strict decision per requested candidate and round-trips storage", () => {

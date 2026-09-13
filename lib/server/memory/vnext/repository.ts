@@ -8,6 +8,7 @@ import {
   memoryFactNormalizedValue,
   memoryFactObservationFingerprint,
   type MemoryExtractedCandidate,
+  type MemoryFactCandidateDependency,
   type MemoryFactExtractionInput,
   type MemoryFactExtractionPlan
 } from "../learning/extraction/contract";
@@ -55,9 +56,11 @@ type StoredVersion = Readonly<{
   validTo: Date | null;
 }>;
 
-type LockedReinforcementTarget = Readonly<{
+type LockedCurrentTarget = Readonly<{
   factId: string;
+  identityKind: "PROPOSITION" | "SLOT";
   lastConfirmedAt: Date | null;
+  sourceMode: "AUTOMATIC" | "EXPLICIT";
   versionId: string;
 }>;
 
@@ -375,16 +378,17 @@ async function attachEvidence(
   return id;
 }
 
-async function lockedReinforcementTarget(
+async function lockedCurrentTarget(
   tx: MemoryTransaction,
   userId: string,
   scopeId: string,
   versionId: string,
   now: Date
-): Promise<LockedReinforcementTarget | null> {
-  const rows = await tx.$queryRaw<LockedReinforcementTarget[]>(Prisma.sql`
+): Promise<LockedCurrentTarget | null> {
+  const rows = await tx.$queryRaw<LockedCurrentTarget[]>(Prisma.sql`
     SELECT fact."id" AS "factId", fact."lastConfirmedAt",
-      version."id" AS "versionId"
+      fact."identityKind"::text AS "identityKind",
+      version."sourceMode"::text AS "sourceMode", version."id" AS "versionId"
     FROM "MemoryFactVersion" AS version
     INNER JOIN "MemoryFact" AS fact
       ON fact."userId" = version."userId"
@@ -421,7 +425,7 @@ async function reinforceTarget(
   evidence: ExactEvidence,
   bindingId: string,
   now: Date,
-  target: LockedReinforcementTarget
+  target: Pick<LockedCurrentTarget, "factId" | "lastConfirmedAt" | "versionId">
 ): Promise<MemoryVNextCommitResult> {
   const replayedEvidenceId = await existingMessageSupport(
     tx, settings.userId, target.versionId, plan.input, evidence
@@ -777,7 +781,8 @@ async function createCrossFactRelationVersion(
   bindingId: string,
   now: Date,
   scopeId: string,
-  semanticAdjudication: ResolvedSemanticAdjudication | null
+  semanticAdjudication: ResolvedSemanticAdjudication | null,
+  correctionDependency: MemoryFactCandidateDependency | null = null
 ): Promise<MemoryVNextCommitResult> {
   await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
   const factId = randomUUID();
@@ -832,7 +837,9 @@ async function createCrossFactRelationVersion(
     tx,
     settings.userId,
     factVersionId,
-    candidate.dependencies
+    correctionDependency === null
+      ? candidate.dependencies
+      : [...candidate.dependencies, correctionDependency]
   );
   await persistMemoryCandidateEntities(tx, {
     candidate,
@@ -937,7 +944,7 @@ async function createObservation(
   const scope = await ensureGlobalMemoryScope(tx, settings);
   if (semanticAdjudication?.operation === "REINFORCE" &&
     semanticAdjudication.resolvedTargetVersionId !== null) {
-    const target = await lockedReinforcementTarget(
+    const target = await lockedCurrentTarget(
       tx,
       settings.userId,
       scope.id,
@@ -962,14 +969,68 @@ async function createObservation(
     // may materialize that exact expired version and create a fresh one.
     // Stale/non-current targets still fail its target/pointer revalidation.
   }
-  // A proposition with a model-selected target may only converge through the
-  // revalidated reinforcement path above. Other pointer operations belong to
-  // SLOT relation resolution and must not fall through into a second active
-  // proposition when the target semantics or representation are uncertain.
-  if (candidate.identityKind === "PROPOSITION" &&
-    semanticAdjudication !== null &&
-    semanticAdjudication.resolvedTargetVersionId !== null) {
-    return { attachedEvidence: 0, createdVersions: 0 };
+  // A direct current-state update retains its exact target and enters guarded
+  // relation resolution. It must not create a second active proposition or
+  // allow weaker testimony to replace an explicit or structured current fact.
+  const transitionTarget = semanticAdjudication !== null &&
+    semanticAdjudication.resolvedTargetVersionId !== null
+    ? await lockedCurrentTarget(
+        tx, settings.userId, scope.id,
+        semanticAdjudication.resolvedTargetVersionId, now
+      )
+    : null;
+  if (semanticAdjudication !== null &&
+    semanticAdjudication.resolvedTargetVersionId !== null &&
+    (candidate.identityKind === "PROPOSITION" ||
+      transitionTarget?.identityKind === "PROPOSITION")) {
+    if (candidate.confidenceBand !== "HIGH" ||
+      (candidate.semanticFrame.changeIntent !== "CORRECTION" &&
+        candidate.semanticFrame.changeIntent !== "STATE_CHANGE") ||
+      candidate.semanticFrame.temporalPerspective !== "CURRENT" ||
+      semanticAdjudication.entailment !== "ENTAILED" ||
+      semanticAdjudication.confidenceBand !== "HIGH" ||
+      semanticAdjudication.subjectScope !== "CURRENT_USER" ||
+      semanticAdjudication.assertionStatus !== "ASSERTED" ||
+      semanticAdjudication.temporalPerspective !== "CURRENT" ||
+      !["SUPERSEDE_TARGET", "MOVE_TO_DISTINCT_FACT"].includes(
+        semanticAdjudication.operation
+      )) return { attachedEvidence: 0, createdVersions: 0 };
+    const declaredTarget = await correctionTargetVersionId(
+      tx, settings.userId, candidate
+    );
+    const hasDeclaredTarget = candidate.dependencies.some(({ dependencyKind }) =>
+      dependencyKind === "CORRECTION_TARGET");
+    const correctionTarget = semanticAdjudication.resolvedTargetVersionId;
+    if (hasDeclaredTarget && declaredTarget !== correctionTarget) {
+      return { attachedEvidence: 0, createdVersions: 0 };
+    }
+    if (transitionTarget === null || transitionTarget.sourceMode !== "AUTOMATIC") {
+      return { attachedEvidence: 0, createdVersions: 0 };
+    }
+    const existing = await lockedFact(tx, settings.userId, scope.id, candidate, now);
+    if (existing.fact !== null || existing.legacyWriteBlocked) {
+      return { attachedEvidence: 0, createdVersions: 0 };
+    }
+    // A self-contained update needs no linguistic antecedent. Its exact
+    // adjudicated current target still becomes a canonical relation dependency.
+    const targetContext = plan.input.contextRefs.find(({ kind, ref, source }) =>
+      kind === "FACT_VERSION" && ref === semanticAdjudication.targetRef &&
+      source.factVersionId === correctionTarget);
+    if (!targetContext) return { attachedEvidence: 0, createdVersions: 0 };
+    const correctionDependency: MemoryFactCandidateDependency | null = hasDeclaredTarget
+      ? null
+      : {
+          dependencyKind: "CORRECTION_TARGET",
+          ref: targetContext.ref,
+          source: targetContext.source
+        };
+    if (correctionDependency !== null && !await memoryFactDependenciesAreValid(
+      tx, settings.userId, proposedVersionId, [correctionDependency]
+    )) return { attachedEvidence: 0, createdVersions: 0 };
+    return createCrossFactRelationVersion(
+      tx, settings, claim, plan, candidate, evidence[0]!, bindingId, now,
+      scope.id, semanticAdjudication, correctionDependency
+    );
   }
   const factLookup = await lockedFact(
     tx,

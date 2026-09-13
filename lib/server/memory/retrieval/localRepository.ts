@@ -138,7 +138,7 @@ import {
 export type { MemoryLexicalLaneEvidence } from "./lexical/contract";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v46";
+  "memory-local-retrieval-repository-v47";
 export const MEMORY_SPECULATIVE_BASELINE_SETTLE_MS = 1_200;
 const MEMORY_NGRAM_FALLBACK_MAX_TERMS = 8;
 const MEMORY_NGRAM_FALLBACK_MAX_TERMS_PER_VARIANT = 4;
@@ -5838,8 +5838,8 @@ function validDirectFactPlan(plan: MemoryRetrievalPlan): boolean {
   return validPlan(plan) &&
     plan.mode === "TARGETED_CURRENT" &&
     plan.temporalIntent === "ANY" &&
-    plan.filters.sourceKinds.length === 1 &&
-    plan.filters.sourceKinds[0] === "FACT" &&
+    plan.filters.sourceKinds.includes("FACT") &&
+    plan.filters.sourceKinds.every((kind) => kind === "FACT" || kind === "EVENT") &&
     plan.filters.asOf === null &&
     plan.filters.from === null &&
     plan.filters.to === null &&
