@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { settleMemoryLexicalProjectionFailure, type MemoryLexicalProjectionClaim } from "./repository";
+import { settleMemoryLexicalProjectionSuccess, settleMemoryLexicalProjectionFailure, type MemoryLexicalProjectionClaim } from "./repository";
 
 afterEach(() => vi.restoreAllMocks());
 const claim: MemoryLexicalProjectionClaim = {
@@ -35,4 +35,30 @@ describe("Memory projection retry evidence", () => {
     if (result === "rejected") expect(records[0].prisma_code).toBe("P1001");
     expect(JSON.stringify(records)).not.toMatch(/PRIVATE_DATABASE|private-generation|private-lease|private-entry|private-user/);
   });
+});
+
+
+describe("Memory projection success settlement evidence", () => {
+  it.each(["user_purge_not_final", "generation_missing", "lease_lost", "state_missing", "database"])(
+    "distinguishes local rollback from an unconfirmed transaction: %s", async failure => {
+      const records: Record<string, unknown>[] = [];
+      vi.spyOn(process.stdout, "write").mockImplementation(line => { records.push(JSON.parse(String(line))); return true; });
+      const selected = { ...claim, operation: failure === "user_purge_not_final" ? "PURGE_USER" as const : "SYNC_ENTRY" as const,
+        indexGenerationId: failure === "generation_missing" ? null : claim.indexGenerationId };
+      const error = new Prisma.PrismaClientKnownRequestError("PRIVATE_DATABASE", { clientVersion: "test", code: "P1001" });
+      const tx = { memoryLexicalProjectionEvent: {
+        count: async () => 1, updateMany: async () => ({ count: failure === "lease_lost" ? 0 : 1 })
+      }, $executeRaw: async () => 0 };
+      const client = { $transaction: async (run: (transaction: typeof tx) => Promise<void>) => {
+        if (failure === "database") throw error;
+        return run(tx);
+      } } as unknown as PrismaClient;
+      const result = settleMemoryLexicalProjectionSuccess(client, selected, new Date("2026-09-14T00:00:00Z"));
+      if (failure === "database") await expect(result).rejects.toBe(error);
+      else await expect(result).rejects.toThrow(`memory_lexical_projection_${failure}`);
+      expect(records).toEqual([expect.objectContaining({ event: "job_persistence", stage: "complete",
+        outcome: failure === "database" ? "unconfirmed" : "not_applied", level: failure === "database" ? "error" : "info" })]);
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_DATABASE");
+    }
+  );
 });

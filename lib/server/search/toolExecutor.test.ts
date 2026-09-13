@@ -15,10 +15,12 @@ import {
   searchExecutionsFromToolResult
 } from "./toolExecutor";
 import { MAX_SEARCH_FINDINGS_BYTES, type SearchSource } from "./evidence";
-import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
+import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import { runWithContext } from "../observability";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WorkspaceRuntimeError } from "../workspace/runtime";
+import { observeProviderOperation } from "../providers/providerObservability";
 
 function option(id: string, overrides: Partial<NormalizedSearchPlanOption> = {}): NormalizedSearchPlanOption {
   return {
@@ -1048,6 +1050,61 @@ describe("Search plan tool router", () => {
     expect(result.status).toBe("complete");
     expect(onOptions).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 2_000 }));
     expect(JSON.stringify(searchExecutionsFromToolResult(result))).not.toContain("requestPreview");
+  });
+
+
+  it.each([false, true])("preserves a Workspace deadline in durable Search evidence, pre-aborted=%s", async (preAborted) => {
+    const records = captureToolEvents();
+    const controller = new AbortController();
+    const reason = new WorkspaceRuntimeError("workspace_tool_timeout");
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [option("selected")] }, runtimes: { selected: hangingRuntime() }
+    });
+    if (!router) throw new Error("expected Search router");
+    if (preAborted) controller.abort(reason);
+    const work = router.execute(call(router.tools[0]!.name), answerRequest(), { signal: controller.signal })
+      .catch((error: unknown) => error);
+    if (!preAborted) controller.abort(reason);
+    const error = await work;
+    expect(error).toBeInstanceOf(SearchToolCancelledError);
+    if (!(error instanceof SearchToolCancelledError)) throw new Error("expected_search_evidence");
+    expect(error.cause).toBe(reason);
+    const stored = snapshotToolExecutionResult(error.result, toolLoopPersistenceLimits.resultBytes);
+    expect(stored).not.toBeNull();
+    const restored = parsePersistedToolExecutionResult({ id: error.result.callId, name: error.result.name }, stored);
+    if (!restored) throw new Error("expected durable Search result");
+    expect(searchExecutionsFromToolResult(restored)).toEqual([
+      expect.objectContaining({ failure: { code: "search_timeout" }, status: "error" })
+    ]);
+    expect(records().filter(record => record.event === "tool_execution" && record.stage === "result")).toContainEqual(
+      expect.objectContaining({ outcome: "failed", code: "search_timeout" })
+    );
+    expect(records().some(record => record.code === "search_cancelled")).toBe(false);
+    vi.restoreAllMocks();
+  });
+
+  it("carries the Search-owned deadline into the nested provider observation", async () => {
+    vi.useFakeTimers();
+    const records = captureToolEvents();
+    const binding = hangingRuntime();
+    const search = binding.searchAdapter!.search;
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [option("selected", { config: { timeoutMs: 5 } })] },
+      runtimes: { selected: { ...binding, searchAdapter: {
+        ...binding.searchAdapter!, search: (request, options) => observeProviderOperation({}, "search",
+          () => search(request, options), { signal: options?.signal, timeoutMs: options?.timeoutMs })
+      } } }
+    });
+    if (!router) throw new Error("expected Search router");
+    try {
+      const work = router.execute(call(router.tools[0]!.name), answerRequest());
+      await vi.advanceTimersByTimeAsync(5);
+      const result = await work;
+      expect(searchExecutionsFromToolResult(result)[0]?.failure?.code).toBe("search_timeout");
+      expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed",
+        reason: "deadline", code: "search_timeout" }));
+      expect(records().some(record => record.code === "model_run_cancelled")).toBe(false);
+    } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
   });
 
   it("propagates caller cancellation with the cancelled engine result", async () => {

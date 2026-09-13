@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getContext, runWithContext } from "../observability";
+import { observeProviderOperation } from "../providers/providerObservability";
 import { withKnowledgeToolDeadline } from "./knowledgeToolDeadline";
 
 afterEach(() => vi.restoreAllMocks());
@@ -19,10 +20,10 @@ describe("accepted Knowledge deadline", () => {
       .mockReturnValueOnce(deadlines[0].signal).mockReturnValueOnce(deadlines[1].signal);
     const parents = [new AbortController(), new AbortController()];
     const operations = parents.map((parent, index) => runWithContext({ run_id: "run-1", tool_call_id: `saved-${index}`, execution_index: index }, () =>
-      withKnowledgeToolDeadline([parent.signal], signal => new Promise<unknown>((_, reject) => {
+      withKnowledgeToolDeadline([parent.signal], signal => observeProviderOperation({}, "embedding", () => new Promise<unknown>((_, reject) => {
         expect(getContext()?.tool_call_id).toBe(`saved-${index}`);
         signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-      })).catch(error => error)));
+      }), { signal })).catch(error => error)));
     const deadlineReason = new DOMException("PRIVATE_TIMEOUT", "TimeoutError");
     const stopReason = new Error("PRIVATE_STOP");
     runWithContext({ run_id: "stop-http-run" }, () => {
@@ -40,6 +41,10 @@ describe("accepted Knowledge deadline", () => {
       { run_id: "run-1", tool_call_id: "saved-1", execution_index: 1, abort_source: "parent_signal" }
     ]);
     expect(aborts[1]).not.toHaveProperty("timeout_ms");
+    expect(records().filter(record => record.event === "provider_operation" && record.outcome !== "started")).toMatchObject([
+      { outcome: "failed", reason: "deadline", code: "operation_timed_out", tool_call_id: "saved-0" },
+      { outcome: "cancelled", reason: "cancelled", code: "model_run_cancelled", tool_call_id: "saved-1" }
+    ]);
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
   });
 

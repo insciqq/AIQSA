@@ -9,11 +9,12 @@ describe("development HTTP preload", () => {
     const result = spawnSync(process.execPath, ["--require", path.resolve("scripts/dev-bootstrap.cjs"), "-e", `
       const http = require('node:http');
       const net = require('node:net');
-      const { getContext } = require('./lib/server/observability/runtime.cjs');
+      const { getContext, announceProcess } = require('./lib/server/observability/runtime.cjs');
       const { installDevBootstrap } = require('./scripts/dev-bootstrap.cjs');
       installDevBootstrap();
+      announceProcess({ attachments: 'starting', knowledge: 'starting', mcp: 'starting' });
       const servers = [0, 1].map(() => http.createServer((req, res) => {
-        res.end(JSON.stringify({ trace: getContext()?.trace_id, peer: req.headers['x-aiqsa-runtime-peer'], secretInstalled: !!globalThis[Symbol.for('aiqsa.runtime-peer-secret.v1')] }));
+        res.end(JSON.stringify({ trace: getContext()?.trace_id, peer: req.headers['x-aiqsa-runtime-peer'], forwarded: req.headers['x-forwarded-for'], secretInstalled: !!globalThis[Symbol.for('aiqsa.runtime-peer-secret.v1')] }));
       }));
       let upgrade = false;
       servers[0].on('upgrade', (req, socket) => {
@@ -46,9 +47,12 @@ describe("development HTTP preload", () => {
       expect(item.header).not.toBe("a".repeat(32));
       expect(item.body.trace).toBe(item.header);
       expect(item.body.peer).toBe("dev-peer-unchanged");
+      expect(item.body.forwarded).toBe("");
       expect(item.body.secretInstalled).toBe(false);
     }
-    expect(records.filter((record) => record.event === "process.started")).toHaveLength(1);
+    expect(records.filter((record) => record.event === "process.started")).toEqual([
+      expect.objectContaining({ attachments: "starting", knowledge: "starting", mcp: "starting", memory: "unknown" })
+    ]);
     const logs = records.filter((record) => record.event === "http.request_completed");
     expect(logs).toHaveLength(2);
     for (const record of logs) {

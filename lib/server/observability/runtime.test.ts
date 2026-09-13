@@ -55,6 +55,11 @@ describe("bounded observability runtime", () => {
     expect(getContext()).toBeUndefined();
   });
 
+  it.each(["provider_custom_setup_failed", "provider_quick_setup_failed"])("preserves setup failure %s in serialized logs", code => {
+    expect(record("service_operation", { subsystem: "admin", stage: "publish", outcome: "failed", code }))
+      .toMatchObject({ code, outcome: "failed", level: "error" });
+  });
+
   it("generates nonzero lowercase trace ids and immutable allowlisted contexts", () => {
     for (let index = 0; index < 100; index += 1) expect(createTraceId()).toMatch(/^(?!0{32}$)[a-f0-9]{32}$/);
     runWithContext({ trace_id: "0".repeat(32), run_id: "run-1", user_id: "secret-canary" } as never, () => {

@@ -5,6 +5,11 @@ const http = require("node:http");
 module.exports = http.createServer((request, response) => {
   response.setHeader("content-type", "text/plain");
 
+  if (request.url === "/forwarded") {
+    response.end(JSON.stringify({ value: request.headers["x-forwarded-for"] }));
+    return;
+  }
+
   if (request.url === "/echo") {
     const chunks = [];
 

@@ -1,4 +1,5 @@
 import "./worker-bootstrap.cjs";
+import { maintenanceFailureCode } from "./maintenance-observability";
 import { logEvent } from "../lib/server/observability";
 import { createS3StorageAdapter } from "../lib/server/uploads/storage";
 import { prisma } from "../lib/server/prisma";
@@ -91,8 +92,8 @@ async function main(): Promise<void> {
 }
 
 void main()
-  .catch(() => {
-    logEvent("runtime_lifecycle", { subsystem: "knowledge", stage: "reconcile", outcome: "failed", code: "knowledge_restore_reconciliation_failed", action: "stop" });
+  .catch((error: unknown) => {
+    logEvent("runtime_lifecycle", { subsystem: "knowledge", stage: "reconcile", outcome: "failed", code: maintenanceFailureCode(error, "knowledge_restore_reconciliation_failed"), action: "stop" });
     process.exitCode = 1;
   })
   .finally(async () => {
