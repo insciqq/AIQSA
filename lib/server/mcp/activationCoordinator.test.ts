@@ -47,6 +47,23 @@ function repository(
 describe("MCP activation coordinator", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("reports a changed OAuth endpoint binding as stale at publication and settlement", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const storage = repository([claim()], { publishActivation: vi.fn(async () => ({
+      kind: "invalid" as const, issues: [{ code: "mcp_draft_changed", path: "auth.mode" }]
+    })) });
+    await new McpActivationCoordinator({ repository: storage, draftValidator: { async validate() {
+      return { kind: "ok", evidence: {}, resolvedArtifact: null, toolInventory: [] };
+    } } }).reconcileNow();
+    const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(records.filter(record => record.event === "job_attempt" && record.outcome !== "started" && ["publish", "fail"].includes(record.stage))).toMatchObject([
+      { stage: "publish", outcome: "stale", code: "mcp_draft_changed", level: "info" },
+      { stage: "fail", outcome: "stale", code: "mcp_draft_test_failed", level: "info" }
+    ]);
+    expect(storage.failActivation).toHaveBeenCalledOnce();
+    expect(records.some(record => record.level === "error")).toBe(false);
+  });
+
   it("observes a validator's returned failure before normalizing and persisting its issues", async () => {
     const lines: string[] = [];
     vi.spyOn(process.stdout, "write").mockImplementation((line) => { lines.push(String(line)); return true; });

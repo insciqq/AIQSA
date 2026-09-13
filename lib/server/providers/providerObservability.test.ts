@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runWithContext } from "../observability";
 import { observedFailure, observeProviderFetch, observeProviderOperation, observeProviderStream } from "./providerObservability";
@@ -74,6 +75,32 @@ describe("provider diagnostics", () => {
     expect(observedFailure(error)).toEqual({ code: "unknown", reason: "unknown" });
     expect(getter).not.toHaveBeenCalled();
     expect(observedFailure(new TypeError("PRIVATE_TYPE_ERROR_CANARY"))).toEqual({ code: "unknown", reason: "unknown" });
+  });
+
+  it("recognizes native local deadlines without reading arbitrary name getters", async () => {
+    const records = capture();
+    const signal = AbortSignal.timeout(1);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(signal.aborted).toBe(true);
+    await expect(observeProviderOperation(identity, "embedding", async () => { throw signal.reason; }, { signal }))
+      .rejects.toBe(signal.reason);
+    expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed",
+      reason: "deadline", code: "operation_timed_out", abort_source: "parent_signal" }));
+    const getter = vi.fn(() => { throw new Error("PRIVATE_GETTER"); });
+    const forged = Object.defineProperty(new Error("TimeoutError"), "name", { get: getter });
+    expect(observedFailure(forged)).toEqual({ code: "unknown", reason: "unknown" });
+    expect(getter).not.toHaveBeenCalled();
+    const stop = new AbortController();
+    stop.abort(new Error("search_timeout"));
+    expect(observedFailure(stop.signal.reason, stop.signal)).toMatchObject({ reason: "cancelled" });
+  });
+
+  it.each(["embedding_request_timed_out", "rerank_request_timed_out"])("preserves the adapter deadline code %s", async code => {
+    const records = capture();
+    const error = Object.assign(new Error("PRIVATE_ERROR"), { code });
+    await expect(observeProviderOperation(identity, "embedding", async () => { throw error; })).rejects.toBe(error);
+    expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed", reason: "deadline", code }));
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_ERROR");
   });
 
   it("uses the actual failed deadline before configured operation or request timeouts", async () => {

@@ -4,6 +4,7 @@ const { createHmac, randomBytes } = require("node:crypto");
 const http = require("node:http");
 const { isIP } = require("node:net");
 const path = require("node:path");
+const { preserveForwardedIdentity } = require("../lib/server/auth/forwardedHeaders.cjs");
 const { loadRouteResolver, wrapHttpListener } = require("../lib/server/observability/http.cjs");
 const { installProcessFailureHooks } = require("../lib/server/observability/process.cjs");
 const { announceProcess, writeEmergencyFailure } = require("../lib/server/observability/runtime.cjs");
@@ -100,6 +101,7 @@ function overwritePeerHeader(request, stamp) {
 }
 
 function stampRequest(request) {
+  preserveForwardedIdentity(request);
   const stamp = createCurrentPeerStamp(request.socket?.remoteAddress);
   overwritePeerHeader(request, stamp);
 }
@@ -146,7 +148,7 @@ function launch(target = "runtime/server.js") {
 
 if (require.main === module) {
   installProcessFailureHooks();
-  announceProcess({ attachments: "unknown", memory: "unknown", knowledge: "unknown", mcp: "unknown", workspace: "unknown", email: "unknown" });
+  announceProcess({ attachments: "starting", memory: "unknown", knowledge: "starting", mcp: "starting", workspace: "unknown", email: "unknown" });
   try {
     launch(process.argv[2]);
   } catch (error) {

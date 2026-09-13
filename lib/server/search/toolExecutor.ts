@@ -57,6 +57,15 @@ export class SearchToolCancelledError extends Error {
   }
 }
 
+class SearchDeadlineError extends Error {
+  readonly code = "search_timeout";
+  constructor() { super("search_timeout"); }
+}
+
+function parentAbortCode(signal?: AbortSignal): "search_cancelled" | "search_timeout" {
+  return observedFailure(undefined, signal).reason === "deadline" ? "search_timeout" : "search_cancelled";
+}
+
 export type SearchPlanToolRouter = Readonly<{
   accepts(name: string): boolean;
   execute(
@@ -345,15 +354,15 @@ async function executeOne(input: Readonly<{
     }
     logEvent("tool_execution", {
       tool_kind: "search", stage: "execution", engine_index: input.engineIndex,
-      outcome: !input.runtime || !input.option.modelId ? "failed" : "cancelled",
-      code: !input.runtime || !input.option.modelId ? "search_runtime_not_available" : "search_cancelled"
+      outcome: !input.runtime || !input.option.modelId || parentAbortCode(input.signal) === "search_timeout" ? "failed" : "cancelled",
+      code: !input.runtime || !input.option.modelId ? "search_runtime_not_available" : parentAbortCode(input.signal)
     });
     return failedSearchExecution({
       call: input.call,
       failure: {
         code: !input.runtime || !input.option.modelId
           ? "search_runtime_not_available"
-          : "search_cancelled"
+          : parentAbortCode(input.signal)
       },
       option: input.option
     });
@@ -374,22 +383,22 @@ async function executeOne(input: Readonly<{
   });
   const attemptController = new AbortController();
   let abortCode: "search_cancelled" | "search_timeout" | undefined;
-  const abortAttempt = (code: "search_cancelled" | "search_timeout", reason: unknown) => {
+  const abortAttempt = (code: "search_cancelled" | "search_timeout", reason: unknown, local = false) => {
     // Provider settlement may lag behind both events; keep the first cause.
     if (abortCode !== undefined) return;
     abortCode = code;
     logEvent("nested_abort", {
       layer: "search", stage: "delivery", engine_index: input.engineIndex,
-      abort_source: code === "search_timeout" ? "search_deadline" : "parent_signal",
+      abort_source: local ? "search_deadline" : "parent_signal",
       duration_ms: performance.now() - startedAt,
-      ...(code === "search_timeout" ? { timeout_ms: effectiveTimeoutMs } : {})
+      ...(local ? { timeout_ms: effectiveTimeoutMs } : {})
     });
     attemptController.abort(reason);
   };
-  const relayAbort = bindContext(() => abortAttempt("search_cancelled", input.signal?.reason));
+  const relayAbort = bindContext(() => abortAttempt(parentAbortCode(input.signal), input.signal?.reason));
   input.signal?.addEventListener("abort", relayAbort, { once: true });
   const timeout = setTimeout(
-    bindContext(() => abortAttempt("search_timeout", new Error("search_timeout"))),
+    bindContext(() => abortAttempt("search_timeout", new SearchDeadlineError(), true)),
     effectiveTimeoutMs
   );
   try {
@@ -626,7 +635,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
           call,
           executions: route.options.map((option, index) => {
             const code = !input.runtimes[option.optionId] || !option.modelId
-              ? "search_runtime_not_available" : "search_cancelled";
+              ? "search_runtime_not_available" : parentAbortCode(options.signal);
             logEvent("tool_execution", {
               tool_kind: "search", stage: "result", engine_index: index + 1,
               outcome: code === "search_cancelled" ? "cancelled" : "failed", code
@@ -717,11 +726,12 @@ export function createSearchPlanToolRouter(input: Readonly<{
       return result;
       } catch (error) {
         const cancelled = error instanceof SearchToolCancelledError;
+        const abortCode = cancelled ? parentAbortCode(options?.signal) : undefined;
         const failure = observedFailure(error);
         logEvent("tool_execution", {
-          tool_kind: "search", stage, outcome: cancelled ? "cancelled" : "failed",
-          code: cancelled ? "search_cancelled" : thrownCode ?? failure.code,
-          reason: cancelled ? "cancelled" : failure.reason,
+          tool_kind: "search", stage, outcome: abortCode === "search_cancelled" ? "cancelled" : "failed",
+          code: abortCode ?? thrownCode ?? failure.code,
+          reason: abortCode === "search_timeout" ? "deadline" : cancelled ? "cancelled" : failure.reason,
           httpStatus: failure.httpStatus,
           // A pre-aborted call has not started an execution timer.
           ...(stage === "admission" && cancelled ? {} : { duration_ms: performance.now() - startedAt })

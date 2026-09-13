@@ -565,6 +565,7 @@ describe("OpenAI-compatible embeddings", () => {
 
   it("classifies its own elapsed request deadline explicitly", async () => {
     vi.useFakeTimers();
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
       const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
         const signal = init?.signal;
@@ -588,7 +589,11 @@ describe("OpenAI-compatible embeddings", () => {
       await vi.advanceTimersByTimeAsync(5_000);
 
       await timedOut;
+      const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)));
+      expect(records).toContainEqual(expect.objectContaining({ event: "provider_operation", stage: "embedding",
+        outcome: "failed", reason: "deadline", code: "embedding_request_timed_out" }));
     } finally {
+      writer.mockRestore();
       vi.useRealTimers();
     }
   });

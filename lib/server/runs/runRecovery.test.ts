@@ -1655,6 +1655,33 @@ describe("run recovery", () => {
     resetBootOrphanSweepForTest(new Date("2026-07-12T10:00:00.000Z"));
   });
 
+  it.each(["direct", "stale", "installation"])("keeps one recovery scope through %s refresh", async entry => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const contexts: Array<ReturnType<typeof getContext>> = [];
+      const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => {
+        contexts.push(getContext());
+        return { events: [], status: "in_progress", terminal: false };
+      });
+      const harness = createHarness({ providers: { openai: providerWithRefresh(refresh) }, staleRuns: [staleControl()] });
+      harness.repository.findInstallationRecoverableRuns = async () => [{ ...staleControl(), userId }];
+      const invoke = () => entry === "direct" ? refreshProviderRunIfNeeded(harness.deps, runId, userId)
+        : entry === "stale" ? reconcileStaleRuns(harness.deps, { userId }) : reconcileInstallationRuns(harness.deps);
+      await runWithContext({ trace_id: "f".repeat(32), run_id: runId, job_id: "foreign-job" }, invoke);
+      expect(refresh).toHaveBeenCalledOnce();
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      const lifecycle = records.filter(record => record.event === "run_recovery" && record.stage === "recovery");
+      expect(lifecycle.map(record => record.outcome)).toEqual(["started", "completed"]);
+      expect(new Set(lifecycle.map(record => record.trace_id)).size).toBe(1);
+      expect(contexts[0]?.trace_id).toBe(lifecycle[0]?.trace_id);
+      expect(contexts[0]?.trace_id).not.toBe("f".repeat(32));
+      expect(contexts[0]?.job_id).toBeUndefined();
+      await invoke();
+      expect(refresh).toHaveBeenCalledTimes(2);
+      expect(contexts[1]?.trace_id).not.toBe(contexts[0]?.trace_id);
+    } finally { writer.mockRestore(); }
+  });
+
   it("observes rejected installation candidates independently under fresh run contexts", async () => {
     const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {

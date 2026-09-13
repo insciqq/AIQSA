@@ -82,12 +82,15 @@ describe("durable PDF coordinator", () => {
     const records = () => writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
     const h = harness();
     h.deps.execute.mockRejectedValue(Object.assign(new Error("PRIVATE_PROVIDER_CANARY"), { code: "provider_request_timed_out" }));
+    let recordsBeforeUsage: Record<string, unknown>[] = [];
     h.deps.attempts.recordUsage.mockImplementation(async () => {
-      expect(records()).toContainEqual(expect.objectContaining({ event: "job_attempt", stage: "dispatch", outcome: "failed", code: "provider_request_timed_out" }));
+      recordsBeforeUsage = records();
       throw new Error("PRIVATE_USAGE_DATABASE_CANARY");
     });
     h.deps.attempts.ambiguous.mockRejectedValue(new Error("PRIVATE_AMBIGUITY_DATABASE_CANARY"));
     await h.coordinator().runOne();
+    expect(h.deps.attempts.recordUsage).toHaveBeenCalledOnce();
+    expect(recordsBeforeUsage).toContainEqual(expect.objectContaining({ event: "job_attempt", stage: "dispatch", outcome: "failed", code: "provider_request_timed_out" }));
     expect(records()).toContainEqual(expect.objectContaining({ event: "job_persistence", stage: "settle", outcome: "unconfirmed" }));
     expect(h.deps.execute).toHaveBeenCalledOnce();
     expect(h.deps.fail).toHaveBeenCalledOnce();

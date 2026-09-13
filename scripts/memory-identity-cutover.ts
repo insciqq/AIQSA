@@ -1,4 +1,5 @@
 import "./worker-bootstrap.cjs";
+import { maintenanceFailureCode } from "./maintenance-observability";
 import { logEvent } from "../lib/server/observability";
 import { prisma } from "../lib/server/prisma";
 import { createPrismaMemoryIdentityCutoverRepository } from
@@ -47,8 +48,8 @@ async function main(): Promise<void> {
   console.log(JSON.stringify({ inventory, operation }));
 }
 
-void main().catch(() => {
-  logEvent("runtime_lifecycle", { subsystem: "memory", stage: "preflight", outcome: "failed", code: "memory_identity_cutover_failed", action: "stop" });
+void main().catch((error: unknown) => {
+  logEvent("runtime_lifecycle", { subsystem: "memory", stage: "preflight", outcome: "failed", code: maintenanceFailureCode(error, "memory_identity_cutover_failed"), action: "stop" });
   process.exitCode = 1;
 }).finally(async () => {
   await prisma.$disconnect().catch(() => undefined);

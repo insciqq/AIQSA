@@ -67,14 +67,16 @@ describe("Workspace cleanup failure persistence", () => {
     });
     const remove = vi.mocked(value.input.runtime.removeSession);
     const removeSession = remove.getMockImplementation()!;
+    let recordsBeforeRemoval: Record<string, unknown>[] = [];
     remove.mockImplementation(async (input) => {
-      expect(records()).toContainEqual(expect.objectContaining(preparation));
-      expect(records().filter((record) => record.stage === "cleanup" && record.outcome === "completed")).toEqual([]);
+      recordsBeforeRemoval = records();
       return removeSession(input);
     });
     await expect(runWorkspaceMaintenance(value.input)).resolves.toMatchObject({ expiredFenced: 1, cleanupCompleted: 0, cleanupFailed: 1 });
     expect(value.transaction.workspaceCleanupJob.upsert).toHaveBeenCalledOnce();
     expect(remove).toHaveBeenCalledOnce();
+    expect(recordsBeforeRemoval).toContainEqual(expect.objectContaining(preparation));
+    expect(recordsBeforeRemoval.filter(record => record.stage === "cleanup" && record.outcome === "completed")).toEqual([]);
     expect(records().filter((record) => record.stage === "cleanup" && record.outcome === "completed")).toEqual([]);
     expect(records()).toContainEqual(expect.objectContaining({ event: "job_attempt", stage: "cleanup", outcome: "failed" }));
   });

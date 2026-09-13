@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext, type LifecycleStage } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { withKnowledgeToolDeadline } from "./knowledgeToolDeadline";
@@ -696,8 +697,11 @@ async function settleToolLoopRecoveryError(
   });
 }
 
+const recoveryScope = new AsyncLocalStorage<string>();
+
 async function observeRecoveryRun(runId: string, operation: () => Promise<void>): Promise<void> {
-  return runInBackground(() => runWithContext({ run_id: runId }, async () => {
+  if (recoveryScope.getStore() === runId) return operation();
+  return runInBackground(() => runWithContext({ run_id: runId }, () => recoveryScope.run(runId, async () => {
     const started = performance.now();
     logEvent("run_recovery", { subsystem: "run_recovery", stage: "recovery", outcome: "started" });
     try {
@@ -709,7 +713,7 @@ async function observeRecoveryRun(runId: string, operation: () => Promise<void>)
         code: failure.code, prisma_code: databaseFailureCode(error), duration_ms: performance.now() - started, action: "wait" });
       throw error;
     }
-  }));
+  })));
 }
 
 function observeRecoveryWriteFailure(error: unknown, stage: LifecycleStage): void {

@@ -582,6 +582,7 @@ export async function settleMemoryLexicalProjectionSuccess(
         where: { sequence: { gt: claim.sequence }, userId: claim.userId }
       });
       if (later !== 0) {
+        notApplied = true;
         throw new Error("memory_lexical_projection_user_purge_not_final");
       }
     }
@@ -620,6 +621,7 @@ export async function settleMemoryLexicalProjectionSuccess(
       return;
     }
     if (!claim.indexGenerationId) {
+      notApplied = true;
       throw new Error("memory_lexical_projection_generation_missing");
     }
     const retired = claim.operation === "PURGE_GENERATION";

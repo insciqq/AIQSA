@@ -201,8 +201,8 @@ export async function observeMcpFetch(operation: () => Promise<Response>, signal
   });
 }
 
-// Only data properties are inspected. No message, name, stack, body or
-// user-defined getter participates in diagnostic classification.
+// Arbitrary errors expose only data properties. No raw message, name, stack,
+// body or user-defined getter participates in diagnostic classification.
 function ownValue(value: unknown, key: string): unknown {
   try {
     if (value === null || typeof value !== "object") return undefined;
@@ -222,6 +222,19 @@ export function observedFailureCode(value: unknown): ObservedFailureCode {
   return typeof code === "string" && codeSet.has(code) ? code as ObservedFailureCode : "unknown";
 }
 
+function nativeTimeout(value: unknown): boolean {
+  try {
+    // Call the native getter to check the DOMException brand. Do not read an
+    // arbitrary object's name/message/getters or infer a deadline from text.
+    return Object.getOwnPropertyDescriptor(DOMException.prototype, "name")?.get?.call(value) === "TimeoutError";
+  } catch { return false; }
+}
+
+const deadlineCodes = new Set([
+  "workspace_tool_timeout", "search_timeout", "provider_request_timed_out",
+  "embedding_request_timed_out", "rerank_request_timed_out"
+]);
+
 export function observedFailure(value: unknown, signal?: AbortSignal): Readonly<{
   code: ObservedFailureCode;
   httpStatus?: number;
@@ -238,8 +251,14 @@ export function observedFailure(value: unknown, signal?: AbortSignal): Readonly<
       code: "provider_request_timed_out", reason: "deadline", abort_source: "provider_deadline",
       timeout_ms: deadline.timeoutMs
     };
-    if (signal?.aborted && observedFailureCode(signal.reason) === "workspace_tool_timeout") {
-      return { code: "workspace_tool_timeout", reason: "deadline", abort_source: "parent_signal" };
+    const signalCode = signal?.aborted ? observedFailureCode(signal.reason) : "unknown";
+    const valueCode = observedFailureCode(value);
+    const deadlineCode = deadlineCodes.has(signalCode) ? signalCode : deadlineCodes.has(valueCode) ? valueCode : null;
+    if (deadlineCode) {
+      return { code: deadlineCode, reason: "deadline", abort_source: signal?.aborted ? "parent_signal" : undefined };
+    }
+    if (nativeTimeout(value) || signal?.aborted && nativeTimeout(signal.reason)) {
+      return { code: "operation_timed_out", reason: "deadline", abort_source: signal?.aborted ? "parent_signal" : undefined };
     }
     if (signal?.aborted) return { code: "model_run_cancelled", reason: "cancelled", abort_source: "parent_signal" };
     const capabilityReason = ownValue(value, "capabilityFailureReason");
