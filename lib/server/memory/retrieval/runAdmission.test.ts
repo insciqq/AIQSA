@@ -12,6 +12,7 @@ import type {
 } from "../../../domain/memory/retrieval";
 import {
   MEMORY_DECAY_POLICY_VERSION,
+  packMemoryPersonalContext,
   planMemoryRetrieval
 } from "../../../domain/memory/retrieval";
 import type { NormalizedRunRequest } from "../../providers/types";
@@ -2534,6 +2535,35 @@ describe("Personal Memory v1 run admission", () => {
     expect(candidates.some(({ candidate }) => candidate.itemId === "history-60")).toBe(false);
   });
 
+  it("preserves a compact history alternative through relevance preparation and bounded packing", () => {
+    const compact = {
+      ...expandedHistory("compact"), safeText: "User: The cedar index.",
+      sourceMessageIds: ["user-1"]
+    };
+    const containing = {
+      ...expandedHistory("containing"),
+      safeText: `${compact.safeText} ${"Additional context. ".repeat(90)}`,
+      sourceMessageIds: ["user-1"]
+    };
+    const plan = planMemoryRetrieval({
+      currentUserText: "Which index did we choose?", filters: { sourceKinds: ["HISTORY"] },
+      mode: "PAST_CHAT_SEARCH", now, temporalIntent: "ANY"
+    });
+    const ranked = ["compact", "containing"].map((id) => rankedHistory(id, "NORMAL"));
+    const candidates = memoryRelevanceCandidates(ranked, [compact, containing]);
+    expect(candidates.map(({ candidate }) => candidate.itemId)).toEqual(["compact", "containing"]);
+    const control = packMemoryPersonalContext({
+      plan, ranked: [ranked[0]!], expanded: [compact]
+    });
+    expect(control.items).toHaveLength(1);
+    const pack = packMemoryPersonalContext({
+      plan, ranked: candidates.map(({ candidate }) => candidate), expanded: [compact, containing],
+      maximumTokens: control.approxTokens
+    });
+    expect(pack.items.map(({ itemId }) => itemId)).toEqual(["compact"]);
+    expect(pack.approxTokens).toBeLessThanOrEqual(control.approxTokens);
+  });
+
   it("retains 180 distinct history sources for an aggregation rerank", () => {
     const history = Array.from({ length: 181 }, (_, index) => ({
       ...rankedHistory(`aggregate-${index}`, "NORMAL"),
@@ -2591,7 +2621,7 @@ describe("Personal Memory v1 run admission", () => {
     expect(expanded.every(({ selectionReason }) => selectionReason.length <= 128)).toBe(true);
   });
 
-  it("sends only distinct same-source evidence to the reranker, retaining every unique message", async () => {
+  it("retains compact candidates for ranking and packs each canonical message once", async () => {
     const question = "User: Which index did we select?";
     const round = `${question}\nAssistant: Cedar.`;
     const local = repository({
@@ -2602,12 +2632,11 @@ describe("Personal Memory v1 run admission", () => {
         separate: { ...expandedHistory("separate"), safeText: question, sourceMessageIds: ["u2"] }
       }
     });
-    const runUtilities = utilities(["c0", "c1"]);
+    const runUtilities = utilities(["c0", "c1", "c2"]);
     const result = await createMemoryRunRetrievalService(local.value, { utilities: runUtilities })
       .retrieve(runInput("Which index did we select?"));
     const rankedTexts = vi.mocked(runUtilities.rerank).mock.calls[0]![0].candidates.map(({ text }) => text);
-    expect(rankedTexts).toHaveLength(2);
-    expect(rankedTexts).toEqual(expect.arrayContaining([question, round]));
+    expect(rankedTexts).toEqual([question, round, question]);
     if (!result.items) throw new Error("Expected admitted Memory evidence");
     expect(new Set(result.items.map(({ exactItemId }) => exactItemId))).toEqual(new Set(["round", "separate"]));
   });

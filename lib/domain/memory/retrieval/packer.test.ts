@@ -196,6 +196,71 @@ describe("Personal Memory context pack", () => {
     expect(pack.items.map(({ itemId }) => itemId)).toEqual(["compact"]);
   });
 
+  it.each([false, true])("retains a compact excerpt when its container exceeds the budget (container first: %s)", (containerFirst) => {
+    const compact = {
+      ...expansion("compact", true, "User: The cedar index."),
+      sourceMessageIds: ["user-1"]
+    };
+    const containing = {
+      ...expansion("containing", true, `${compact.safeText} ${"Additional context. ".repeat(90)}`),
+      sourceMessageIds: ["user-1"]
+    };
+    const control = packMemoryPersonalContext({
+      plan: pastChatPlan, ranked: [ranked("compact", true)], expanded: [compact]
+    });
+    expect(control.items).toHaveLength(1);
+    const larger = packMemoryPersonalContext({
+      plan: pastChatPlan, ranked: [ranked("containing", true)], expanded: [containing]
+    });
+    expect(larger.items).toHaveLength(1);
+    expect(larger.approxTokens).toBeGreaterThan(control.approxTokens);
+    const pack = packMemoryPersonalContext({
+      plan: pastChatPlan,
+      ranked: (containerFirst ? ["containing", "compact"] : ["compact", "containing"])
+        .map((id) => ranked(id, true)),
+      expanded: [compact, containing], maximumTokens: control.approxTokens
+    });
+    expect(pack.items.map(({ itemId }) => itemId)).toEqual(["compact"]);
+    expect(pack.items[0]?.rawSafeText).toBe(compact.safeText);
+    expect(pack.approxTokens).toBeLessThanOrEqual(control.approxTokens);
+  });
+
+  it("replaces selected excerpts atomically and leaves room for distinct later evidence", () => {
+    const texts = {
+      first: "User: The cedar index.", second: "User: Keep the backup.",
+      following: "User: Rehearsal is on Wednesday."
+    };
+    const containing = {
+      ...expansion("containing", true, `${texts.first}\n${texts.second}`),
+      sourceMessageIds: ["user-1", "user-2"]
+    };
+    const following = {
+      ...expansion("following", true, texts.following), sourceMessageIds: ["user-3"]
+    };
+    const control = packMemoryPersonalContext({
+      plan: pastChatPlan,
+      ranked: [ranked("containing", true), ranked("following", true)],
+      expanded: [containing, following]
+    });
+    expect(control.items).toHaveLength(2);
+    const pack = packMemoryPersonalContext({
+      plan: pastChatPlan,
+      ranked: ["first", "second", "containing", "following"].map((id) => ranked(id, true)),
+      expanded: [
+        { ...expansion("first", true, texts.first), sourceMessageIds: ["user-1"] },
+        { ...expansion("second", true, texts.second), sourceMessageIds: ["user-2"] },
+        containing, following
+      ],
+      maximumTokens: control.approxTokens
+    });
+    expect(pack.items.map(({ itemId }) => itemId)).toEqual(["containing", "following"]);
+    expect(pack.items.map(({ rawSafeText }) => rawSafeText)).toEqual([
+      containing.safeText, following.safeText
+    ]);
+    expect(new Set(pack.items.map(({ evidenceHandle }) => evidenceHandle)).size).toBe(2);
+    expect(pack.approxTokens).toBeLessThanOrEqual(control.approxTokens);
+  });
+
   it("packs bounded response preferences before relevant facts/history", () => {
     const dynamic = [ranked("fact"), ranked("history", true)];
     const pack = packMemoryPersonalContext({
@@ -221,7 +286,7 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v41");
+    expect(pack.packerVersion).toBe("memory-context-packer-v42");
   });
 
   it("labels a non-aggregation planner rewrite as a non-evidentiary answer focus", () => {
