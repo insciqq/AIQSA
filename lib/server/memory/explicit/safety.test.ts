@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   memoryExplicitStatementContainsSecret,
+  memoryProjectionContainsRedaction,
+  memoryProjectionHasSourceText,
+  memoryRedactionHasSourceText,
   parseMemorySecret,
   redactMemorySecrets
 } from "./safety";
@@ -20,6 +23,33 @@ describe("explicit Memory secret screening", () => {
     expect(memoryExplicitStatementContainsSecret("Мой пароль: hunter2-secret")).toBe(false);
     expect(memoryExplicitStatementContainsSecret("API-ключ: example-secret-value")).toBe(false);
     expect(memoryExplicitStatementContainsSecret("The user said they were ready.")).toBe(false);
+  });
+
+  it.each(["private", "future", "код", "未来", "avenir"])(
+    "preserves safe source text without a semantic word filter (%#)", (value) => {
+      expect(memoryRedactionHasSourceText(value)).toBe(true);
+      expect(memoryProjectionHasSourceText(value)).toBe(true);
+      expect(memoryProjectionContainsRedaction(value)).toBe(false);
+    }
+  );
+
+  it.each(["key", "ключ", "鍵", "clé"])(
+    "preserves safe labels without deciding their meaning (%#)", (label) => {
+      const value = `${label}: sk-abcdefghijklmnopqrstuvwxyz123456`;
+      const redaction = redactMemorySecrets(value);
+      expect(redaction.redactedText).toBe(`${label}: [REDACTED:TOKEN]`);
+      expect(memoryRedactionHasSourceText(value, redaction)).toBe(true);
+      expect(memoryProjectionHasSourceText(redaction.redactedText)).toBe(true);
+    }
+  );
+
+  it.each([
+    "sk-abcdefghijklmnopqrstuvwxyz123456", "[REDACTED:TOKEN]",
+    "[REDACTED_SECRET]", "[REDACTED:PRIVATE_KEY] [REDACTED:TOKEN]", " --- "
+  ])("does not count removed values or markers as retained source (%#)", (value) => {
+    const redaction = redactMemorySecrets(value);
+    expect(memoryRedactionHasSourceText(value, redaction)).toBe(false);
+    expect(memoryProjectionHasSourceText(redaction.redactedText)).toBe(false);
   });
 
   it("does not classify canonical UUID identifiers as high-entropy credentials", () => {

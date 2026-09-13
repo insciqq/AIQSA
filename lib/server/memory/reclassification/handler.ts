@@ -12,7 +12,7 @@ import type {
 } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
 import {
-  memoryRedactionHasMeaningfulRemainder,
+  memoryRedactionHasSourceText,
   memoryValueContainsRecognizedSecret,
   redactMemorySecrets
 } from "../explicit/safety";
@@ -101,7 +101,7 @@ function localResult(
 ): MemoryReclassificationResult {
   const redaction = redactMemorySecrets(candidate.displayText);
   const secretOnly = redaction.containsSecret &&
-    !memoryRedactionHasMeaningfulRemainder(candidate.displayText, redaction);
+    !memoryRedactionHasSourceText(candidate.displayText, redaction);
   return {
     classifiedAt,
     decision: {
@@ -158,7 +158,7 @@ export function createMemoryReclassificationHandler(
             id: candidate.id,
             policyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
             projectedTextHash: projection.containsSecret &&
-              memoryRedactionHasMeaningfulRemainder(candidate.displayText, projection)
+              memoryRedactionHasSourceText(candidate.displayText, projection)
               ? memoryExecutionSha256(projection.redactedText)
               : null,
             reasonCode: result.decision.sensitivity === "SECRET"

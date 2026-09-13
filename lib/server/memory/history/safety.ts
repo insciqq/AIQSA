@@ -1,5 +1,6 @@
 import {
-  memoryRedactionHasMeaningfulRemainder,
+  memoryProjectionContainsRedaction,
+  memoryRedactionHasSourceText,
   redactMemorySecrets,
   type MemorySecretSourceMapEntry
 } from "../explicit/safety";
@@ -91,8 +92,8 @@ function projectMemoryHistoryText(
 
   const redaction = redactMemorySecrets(sourceText);
   if (
-    redaction.containsSecret &&
-    !memoryRedactionHasMeaningfulRemainder(sourceText, redaction)
+    (redaction.containsSecret || memoryProjectionContainsRedaction(sourceText)) &&
+    !memoryRedactionHasSourceText(sourceText, redaction)
   ) {
     return {
       eligible: false,

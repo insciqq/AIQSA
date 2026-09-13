@@ -186,7 +186,7 @@ describe("Memory chat digests", () => {
     expectDigestOutputInvalid({
       decisions: [],
       open_loops: [],
-      summary: "api key: sk-digestSecret1234567890",
+      summary: "sk-digestSecret1234567890",
       topics: []
     }, "safety_rejected");
     expectDigestOutputInvalid({

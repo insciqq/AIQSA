@@ -49,13 +49,13 @@ const profileIntent: MemoryActionIntent = {
 
 describe("Memory control runtime contract", () => {
   it("binds the profile decision to the current control contract versions", () => {
-    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v23");
+    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v24");
     expect(MEMORY_CONTROL_REASONING_EFFORT).toBe("low");
     expect(MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR).toBe(2_048);
     expect(MEMORY_CONTROL_VERSIONS).toMatchObject({
-      pipelineVersion: "memory-control-v23",
-      policyVersion: "memory-control-policy-v23",
-      promptVersion: "memory-control-prompt-v27",
+      pipelineVersion: "memory-control-v24",
+      policyVersion: "memory-control-policy-v24",
+      promptVersion: "memory-control-prompt-v28",
       schemaVersion: "memory-action-intent-v11"
     });
     expect(MEMORY_READ_ONLY_CONTROL_REUSE_VERSION).toBe(8);

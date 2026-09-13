@@ -13,8 +13,9 @@ export type {
 export {
   MEMORY_SECRET_FINDINGS,
   MEMORY_SECRET_REDACTION_PLACEHOLDER,
-  memoryRedactionHasMeaningfulRemainder,
-  memoryProjectionHasMeaningfulText,
+  memoryRedactionHasSourceText,
+  memoryProjectionHasSourceText,
+  memoryProjectionContainsRedaction,
   memorySecretSafeObjectKey,
   memoryValueContainsRecognizedSecret,
   parseMemorySecret,
