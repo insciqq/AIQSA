@@ -249,13 +249,13 @@ async function processHistoryJob(
   const now = new Date();
   const result = await handler.execute(claim, executionContext(now));
   const coordinator = createPrismaMemoryCoordinatorRepository(prisma);
-  await expect(coordinator.commitJobSuccess({
+  expect(await coordinator.commitJobSuccess({
     acceptedResultHash: result.acceptedResultHash,
     apply: result.apply,
     claim,
     now,
     stage: result.stage ?? null
-  })).resolves.toBe(true);
+  })).toBe(true);
   return { claim, result };
 }
 
@@ -509,7 +509,8 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
-  it("reindexes a legacy READY checkpoint locally despite a legacy classifier result", async () => {
+  it.each(["memory-history-index-v1", "memory-history-incremental-v8"])(
+    "reindexes a legacy READY checkpoint %s locally despite a legacy classifier result", async (previousPipeline) => {
     const userId = await createOwner("memory-history-checkpoint-upgrade");
     try {
       const chat = await prisma.chat.create({
@@ -543,7 +544,7 @@ describe("Memory lexical history index persistence", () => {
           chatId: source.id,
           lastIndexedMessageId: source.activeLeafMessageId,
           lastSucceededAt: new Date("2026-08-20T10:01:00.000Z"),
-          pipelineVersion: "memory-history-index-v1",
+          pipelineVersion: previousPipeline,
           sourceContentHash: source.sourceHash,
           sourceRevision: source.memorySourceRevision,
           status: "READY",
@@ -3171,6 +3172,34 @@ describe("Memory lexical history index persistence", () => {
       await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(0);
       await expect(prisma.memorySynthesisExecution.count({ where: { userId } }))
         .resolves.toBe(0);
+
+      async function assertToolCheckpointPipeline(pipelineVersion: string) {
+        await prisma.$transaction(async (tx) => {
+          await tx.chatMemoryCheckpoint.update({
+            data: { pipelineVersion },
+            where: { userId_chatId: { chatId: chat.id, userId } }
+          });
+          await tx.$executeRaw`
+            SELECT public.aiqsa_memory_assert_tool_event_source(
+              ${userId}, ${initialEvent.id}
+            )
+          `;
+        });
+      }
+      for (const pipelineVersion of [
+        "memory-history-incremental-v8",
+        MEMORY_HISTORY_INDEX_PIPELINE_VERSION
+      ]) {
+        await assertToolCheckpointPipeline(pipelineVersion);
+        await expect(prisma.memoryToolEvent.findUniqueOrThrow({
+          where: { id: initialEvent.id }
+        })).resolves.toEqual(initialEvent);
+      }
+      await expect(assertToolCheckpointPipeline("memory-history-unsupported"))
+        .rejects.toMatchObject({ code: "P2010", meta: { code: "23514" } });
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({ pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION });
 
       const retrievalNow = new Date("2026-08-28T13:00:00.000Z");
       const retrievalPlan = planMemoryRetrieval({
