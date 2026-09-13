@@ -6,7 +6,7 @@ import {
 } from "../../../contracts/memoryActionIntent";
 import {
   MEMORY_CONTROL_PIPELINE_VERSION,
-  MEMORY_CONTROL_REASONING_EFFORT,
+  MEMORY_CONTROL_REASONING_POLICY,
   MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR,
   MEMORY_CONTROL_VERSIONS,
   MEMORY_READ_ONLY_CONTROL_REUSE_VERSION,
@@ -72,13 +72,13 @@ function providerDecision(intent: MemoryActionIntent): MemoryActionControlDecisi
 
 describe("Memory control runtime contract", () => {
   it("binds the profile decision to the current control contract versions", () => {
-    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v26");
-    expect(MEMORY_CONTROL_REASONING_EFFORT).toBe("low");
+    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v29");
+    expect(MEMORY_CONTROL_REASONING_POLICY).toBe("accepted-system-model-parameters");
     expect(MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR).toBe(2_048);
     expect(MEMORY_CONTROL_VERSIONS).toMatchObject({
-      pipelineVersion: "memory-control-v26",
-      policyVersion: "memory-control-policy-v26",
-      promptVersion: "memory-control-prompt-v30",
+      pipelineVersion: "memory-control-v29",
+      policyVersion: "memory-control-policy-v28",
+      promptVersion: "memory-control-prompt-v31",
       schemaVersion: "memory-action-intent-v12"
     });
     expect(MEMORY_READ_ONLY_CONTROL_REUSE_VERSION).toBe(8);
