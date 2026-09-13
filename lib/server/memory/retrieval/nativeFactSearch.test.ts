@@ -375,7 +375,7 @@ describe("native facts-only Memory search", () => {
       recencyRequested: false,
       temporalIntent: "ANY"
     });
-    expect(retrievalInput?.plan.filters.sourceKinds).toEqual(["FACT"]);
+    expect(retrievalInput?.plan.filters.sourceKinds).toEqual(["FACT", "EVENT"]);
     expect(retrievalInput?.plan.semanticQueryVariants).toEqual([{
       kind: "ORIGINAL",
       text: "What should I call you?"

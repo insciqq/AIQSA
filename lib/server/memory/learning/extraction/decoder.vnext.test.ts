@@ -228,10 +228,56 @@ describe("Memory v5 semantic-frame decoder", () => {
     }]);
   });
 
-  it("rejects a recognized secret hallucinated inside the structured value", () => {
+  it.each(["AFFIRMED", "NEGATED"] as const)("admits direct non-secret personal testimony labeled SENSITIVE with %s polarity", (polarity) => {
+    const quote = polarity === "AFFIRMED"
+      ? "I use a hearing aid."
+      : "I do not use a hearing aid.";
+    const plan = decode(quote, [observation(quote, {
+      semantic_frame: { ...frame, polarity },
+      sensitivity: "SENSITIVE",
+      statement: quote
+    })]);
+
+    expect(plan.rejections).toEqual([]);
+    expect(plan.candidates).toHaveLength(1);
+    expect(plan.candidates[0]).toMatchObject({
+      evidence: [{ quote }],
+      semanticFrame: { polarity, subjectScope: "CURRENT_USER" },
+      sensitivity: "NORMAL",
+      statement: quote
+    });
+    if (polarity === "NEGATED") {
+      expect(memoryCandidateRequiresSemanticAdjudication(plan.candidates[0]!)).toBe(true);
+      expect(memorySemanticAuthorityAdmitsCandidate(plan.candidates[0]!, null)).toBe(false);
+    }
+  });
+
+  it.each([
+    ["SECRET", "REJECT_SECRET"],
+    ["UNCERTAIN", "REJECT_UNSUPPORTED"]
+  ])("keeps the %s classification fence", (sensitivity, reasonCode) => {
+    const quote = "I use a hearing aid.";
+    const plan = decode(quote, [observation(quote, { sensitivity, statement: quote })]);
+    expect(plan.candidates).toEqual([]);
+    expect(plan.rejections).toEqual([{ candidateOrdinal: 0, reasonCode }]);
+  });
+
+  it("does not admit a sensitive hypothetical as direct testimony", () => {
+    const quote = "I might need a hearing aid.";
+    const plan = decode(quote, [observation(quote, {
+      semantic_frame: { ...frame, assertion_status: "HYPOTHETICAL" },
+      sensitivity: "SENSITIVE",
+      statement: quote
+    })]);
+    expect(plan.candidates).toEqual([]);
+    expect(plan.rejections).toHaveLength(1);
+  });
+
+  it.each(["NORMAL", "SENSITIVE"])("rejects a recognized secret hallucinated inside a %s structured value", (sensitivity) => {
     const quote = "I prefer tea.";
     const token = `sk-${"a1".repeat(16)}`;
     const plan = decode(quote, [observation(quote, {
+      sensitivity,
       value: { ...nullValue, value: token }
     })]);
 
@@ -512,6 +558,30 @@ describe("Memory v5 semantic-frame decoder", () => {
       .toBe(true);
   });
 
+  it("retains all eight independent observations from one bounded packet", () => {
+    const statements = [
+      "I prefer early meetings.",
+      "I prefer short emails.",
+      "I prefer tea without sugar.",
+      "I prefer quiet offices.",
+      "I prefer written instructions.",
+      "I prefer weekly planning.",
+      "I prefer dark editor themes.",
+      "I prefer numbered checklists."
+    ];
+    const observations = statements.map((statement, index) => observation(statement, {
+      candidate_ref: `C${index + 1}`,
+      memory_type: "PREFERENCE",
+      statement
+    }));
+    const plan = decode(statements.join(" "), observations);
+    expect(plan.rejections).toEqual([]);
+    expect(plan.candidates.map(({ statement }) => statement)).toEqual(statements);
+    expect(plan.candidateOrdinals).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(() => decode(statements.join(" "), [...observations, observations[0]!]))
+      .toThrow();
+  });
+
   it("rejects LOW output and MEDIUM correction semantics", () => {
     const quote = "I usually choose cedar.";
     const result = decode(quote, [
@@ -531,6 +601,89 @@ describe("Memory v5 semantic-frame decoder", () => {
       { candidateOrdinal: 0, reasonCode: "REJECT_LOW_CONFIDENCE" },
       { candidateOrdinal: 1, reasonCode: "REJECT_UNSUPPORTED" }
     ]);
+  });
+
+  it.each([
+    ["I do not drink coffee.", "The user does not drink coffee."],
+    ["Я не пью кофе.", "Пользователь не пьёт кофе."]
+  ])("retains an asserted negative proposition only after semantic review: %s", (quote, statement) => {
+    const plan = decode(quote, [observation(quote, {
+      memory_type: "PREFERENCE",
+      semantic_frame: { ...frame, polarity: "NEGATED" },
+      statement
+    })]);
+    expect(plan.rejections).toEqual([]);
+    expect(plan.candidates).toHaveLength(1);
+    const candidate = plan.candidates[0]!;
+    expect(candidate).toMatchObject({
+      correction: false,
+      identityKind: "PROPOSITION",
+      semanticFrame: { polarity: "NEGATED" },
+      statement
+    });
+    expect(memoryCandidateRequiresSemanticAdjudication(candidate)).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(candidate, null)).toBe(false);
+    const admitted = {
+      assertionStatus: "ASSERTED",
+      candidateRef: candidate.candidateRef,
+      confidenceBand: "HIGH",
+      entailment: "ENTAILED",
+      entityRef: null,
+      operation: "NO_RELATION",
+      reasonCode: "direct_negative_assertion",
+      subjectScope: "CURRENT_USER",
+      targetRef: null,
+      temporalPerspective: "CURRENT"
+    } as const;
+    expect(memorySemanticAuthorityAdmitsCandidate(candidate, admitted)).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(candidate, {
+      ...admitted, entailment: "CONTRADICTED"
+    })).toBe(false);
+    expect(memorySemanticAuthorityAdmitsCandidate(candidate, {
+      ...admitted, confidenceBand: "MEDIUM"
+    })).toBe(false);
+    expect(memorySemanticAuthorityAdmitsCandidate(candidate, {
+      ...admitted, assertionStatus: "HYPOTHETICAL"
+    })).toBe(false);
+  });
+
+  it("retains a negative SLOT proposal as a proposition requiring full semantic review", () => {
+    const quote = "I do not own a MacBook Air M4.";
+    const statement = "The user does not own a MacBook Air M4.";
+    const result = decode(quote, [{
+      ...productObservation(quote, "owned", "C1"),
+      semantic_frame: { ...frame, polarity: "NEGATED" },
+      statement
+    }]);
+    expect(result.rejections).toEqual([]);
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({
+      identityKind: "PROPOSITION",
+      predicateKey: null,
+      semanticFrame: { polarity: "NEGATED" },
+      statement
+    });
+    expect(result.candidates[0]!.proposedValue).not.toHaveProperty("state");
+    expect(memoryCandidateRequiresSemanticAdjudication(result.candidates[0]!)).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(result.candidates[0]!, null)).toBe(false);
+  });
+
+  it("does not admit negative questions, quoted claims or weak testimony", () => {
+    const quote = "I do not own a MacBook Air M4.";
+    const negative = { ...frame, polarity: "NEGATED" };
+    const result = decode(quote, [
+      observation(quote, {
+        candidate_ref: "C1", semantic_frame: { ...negative, speech_act: "QUESTION" }
+      }),
+      observation(quote, {
+        candidate_ref: "C2", semantic_frame: { ...negative, assertion_status: "QUOTED" }
+      }),
+      observation(quote, {
+        candidate_ref: "C3", confidence_band: "MEDIUM", semantic_frame: negative
+      })
+    ]);
+    expect(result.candidates).toEqual([]);
+    expect(result.rejections).toHaveLength(3);
   });
 
   it.each([

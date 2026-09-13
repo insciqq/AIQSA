@@ -111,6 +111,134 @@ function snapshot(
 }
 
 describe("structured Memory relation policy", () => {
+  function propositionCorrection(): MemoryRelationSnapshot {
+    const current = version({
+      canonicalKey: "proposition:old-preference",
+      dimensionKey: null,
+      identityKind: "PROPOSITION",
+      predicateKey: null,
+      structuredValue: { statement: "The user prefers cedar layouts." },
+      subjectKey: null
+    });
+    return snapshot({
+      correctionTargetVersionId: current.versionId,
+      current,
+      pending: version({
+        canonicalKey: "proposition:corrected-preference",
+        dimensionKey: null,
+        factId: "corrected-fact",
+        identityKind: "PROPOSITION",
+        observedAt: "2026-08-24T09:30:00.000Z",
+        predicateKey: null,
+        ref: "P0",
+        semanticAdjudication: adjudication("SUPERSEDE_TARGET"),
+        semanticFrame: { ...semanticFrame, changeIntent: "CORRECTION" },
+        state: "PENDING_RELATION",
+        structuredValue: { statement: "The user prefers maple layouts." },
+        subjectKey: null,
+        versionId: "corrected-version"
+      }),
+      related: [current]
+    });
+  }
+
+  it.each(["SUPERSEDE_TARGET", "MOVE_TO_DISTINCT_FACT"] as const)(
+    "resolves an exact direct proposition correction admitted as %s",
+    (operation) => {
+      const input = propositionCorrection();
+      expect(decideMemoryFactRelation({
+        ...input,
+        pending: {
+          ...input.pending,
+          semanticAdjudication: adjudication(operation)
+        }
+      }, NOW)).toMatchObject({
+        operation: "MOVE_TO_DISTINCT_FACT",
+        targetVersionId: input.current.versionId
+      });
+    }
+  );
+
+  it("resolves a directly asserted current proposition state change", () => {
+    const input = propositionCorrection();
+    expect(decideMemoryFactRelation({
+      ...input,
+      pending: {
+        ...input.pending,
+        semanticFrame: {
+          ...semanticFrame,
+          changeIntent: "STATE_CHANGE",
+          polarity: "AFFIRMED"
+        }
+      }
+    }, NOW)).toMatchObject({
+      operation: "MOVE_TO_DISTINCT_FACT",
+      targetVersionId: input.current.versionId
+    });
+  });
+
+  it.each([
+    ["PROPOSITION", "SLOT"],
+    ["SLOT", "PROPOSITION"]
+  ] as const)("resolves a proved current update from %s to %s", (from, to) => {
+    const input = propositionCorrection();
+    const structured = {
+      dimensionKey: "format:layouts",
+      predicateKey: "preference",
+      structuredValue: { schema: "preference-v1", value: "maple" },
+      subjectKey: "person:self"
+    };
+    const current = {
+      ...input.current,
+      ...(from === "SLOT" ? structured : {}),
+      identityKind: from
+    };
+    const pending = {
+      ...input.pending,
+      ...(to === "SLOT" ? structured : {}),
+      identityKind: to
+    };
+    expect(decideMemoryFactRelation({ ...input, current, pending }, NOW))
+      .toMatchObject({ operation: "MOVE_TO_DISTINCT_FACT", targetVersionId: current.versionId });
+    expect(decideMemoryFactRelation({
+      ...input, current: { ...current, sourceMode: "EXPLICIT" }, pending
+    }, NOW).operation).toBe("CONFLICT");
+    expect(decideMemoryFactRelation({
+      ...input, current, pending: { ...pending, semanticAdjudication: null }
+    }, NOW).operation).toBe("CONFLICT");
+  });
+
+  it("keeps unproven, retrospective and protected proposition corrections in conflict", () => {
+    const input = propositionCorrection();
+    const pendingVariants: Partial<MemoryRelationVersionSnapshot>[] = [
+      { directness: "INFERRED" },
+      { semanticAdjudication: null },
+      { semanticAdjudication: { ...adjudication(), confidenceBand: "LOW" } },
+      { semanticAdjudication: { ...adjudication(), entailment: "UNKNOWN" } },
+      { semanticAdjudication: { ...adjudication(), resolvedTargetVersionId: "unrelated-version" } },
+      { semanticFrame: { ...semanticFrame, changeIntent: "NONE" } },
+      { semanticFrame: { ...semanticFrame, changeIntent: "CORRECTION", temporalPerspective: "FORMER" } }
+    ];
+    for (const pending of pendingVariants) {
+      expect(decideMemoryFactRelation({
+        ...input,
+        pending: { ...input.pending, ...pending }
+      }, NOW).operation).toBe("CONFLICT");
+    }
+    expect(decideMemoryFactRelation({
+      ...input,
+      correctionTargetVersionId: null
+    }, NOW).operation).toBe("CONFLICT");
+    expect(decideMemoryFactRelation({
+      ...input,
+      current: { ...input.current, sourceMode: "EXPLICIT" }
+    }, NOW).operation).toBe("CONFLICT");
+    expect(decideMemoryFactRelation({
+      ...input,
+      current: { ...input.current, identityKind: "SLOT", sourceMode: "EXPLICIT" }
+    }, NOW).operation).toBe("CONFLICT");
+  });
+
   it("applies an ENTAILED HIGH code-owned transition", () => {
     expect(decideMemoryFactRelation(snapshot(), NOW)).toMatchObject({
       operation: "SUPERSEDE_TARGET",

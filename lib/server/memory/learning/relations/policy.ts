@@ -5,7 +5,7 @@ import type {
 } from "../extraction/contract";
 
 export const MEMORY_FACT_RELATION_PIPELINE_VERSION = "memory-fact-relation-v2";
-export const MEMORY_FACT_RELATION_POLICY_VERSION = "memory-fact-relation-policy-v3";
+export const MEMORY_FACT_RELATION_POLICY_VERSION = "memory-fact-relation-policy-v6";
 export const MEMORY_FACT_RELATION_PROMPT_VERSION = "memory-fact-relation-prompt-v1";
 export const MEMORY_FACT_RELATION_SCHEMA_VERSION = "memory-fact-relation-schema-v1";
 
@@ -348,6 +348,24 @@ export function decideMemoryFactRelation(
       "expired_current_replaced");
   }
   const correction = snapshot.correctionTargetVersionId === current.versionId;
+  if (pending.identityKind === "PROPOSITION" || current.identityKind === "PROPOSITION") {
+    const directTransition = correction &&
+      pending.factId !== current.factId &&
+      pending.directness === "DIRECT" &&
+      pending.sourceMode === "AUTOMATIC" && current.sourceMode === "AUTOMATIC" &&
+      (pending.semanticFrame?.changeIntent === "CORRECTION" ||
+        pending.semanticFrame?.changeIntent === "STATE_CHANGE") &&
+      pending.semanticFrame.temporalPerspective === "CURRENT" &&
+      pending.semanticAdjudication?.temporalPerspective === "CURRENT" &&
+      semanticAuthorityMatches(pending, current, new Set([
+        "SUPERSEDE_TARGET", "MOVE_TO_DISTINCT_FACT"
+      ]));
+    return directTransition
+      ? decision("MOVE_TO_DISTINCT_FACT", current.versionId,
+        "direct_representation_transition")
+      : decision("CONFLICT", current.versionId,
+        "representation_transition_unproven");
+  }
   if (pending.identityKind !== "SLOT" || current.identityKind !== "SLOT" ||
     pending.predicateKey === null || pending.predicateKey !== current.predicateKey) {
     return decision("CONFLICT", current.versionId, "slot_identity_mismatch");
