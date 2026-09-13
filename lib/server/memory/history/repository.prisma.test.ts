@@ -1996,6 +1996,62 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
+  it("limits user-only expansion provenance to its rendered testimony", async () => {
+    const userId = await createOwner("memory-history-user-provenance");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Rendered testimony provenance", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "I will bring the oak display board.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T08:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "I chose the cedar display board."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: turn.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: turn.assistantMessage.id,
+          runId: turn.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(userId);
+      const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+      const now = new Date("2026-08-10T09:00:00.000Z");
+      const plan = planMemoryRetrieval({
+        currentUserText: "cedar display board",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now,
+        temporalIntent: "ANY"
+      });
+      const retrieved = await repository.retrieve({
+        assistantId: null, chatId: chat.id, now, plan, userId
+      });
+      const selected = fuseMemoryRetrievalCandidates(plan, retrieved.laneResults, now)
+        .find((candidate) => candidate.itemType === "RECALL_ROUND");
+      expect(selected?.matchedSegmentId).toBeTruthy();
+      const [conversation] = await repository.expand(retrieved.snapshot, plan, [selected!]);
+      expect(new Set(conversation?.sourceMessageIds)).toEqual(new Set([
+        turn.userMessage.id, turn.assistantMessage.id
+      ]));
+      const [testimony] = await repository.expand(retrieved.snapshot, plan, [{
+        ...selected!, historyEvidenceView: "USER_TESTIMONY"
+      }]);
+      expect(testimony?.safeText).toBe("User: I chose the cedar display board.");
+      expect(testimony?.sourceMessageIds).toEqual([turn.userMessage.id]);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it("carries cited contextual evidence and falls back to raw when a dependency drifts", async () => {
     const userId = await createOwner("memory-history-contextual-dependencies");
     try {
@@ -2307,6 +2363,12 @@ describe("Memory lexical history index persistence", () => {
           safeText: stored?.rawSafeText
         });
         expect(expanded?.safeText).toContain(query);
+        const segmentMessages = await prisma.memoryRecallRoundSegmentMessage.findMany({
+          orderBy: { ordinal: "asc" },
+          select: { messageId: true },
+          where: { segmentId: stored!.id, userId }
+        });
+        expect(expanded?.sourceMessageIds).toEqual(segmentMessages.map(({ messageId }) => messageId));
       }
 
       const rebuild = createPrismaMemoryRebuildRepository(prisma);
