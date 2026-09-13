@@ -11,6 +11,7 @@ import {
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
   memoryHistoryIndexJobFingerprint
 } from "./contract";
+import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "./toolEvents";
 
 export const MEMORY_HISTORY_BACKFILL_WINDOW = 4;
 export const MEMORY_HISTORY_BACKFILL_MAX_PARALLELISM = 16;
@@ -106,6 +107,14 @@ function checkpointMatchesSourceSql(): Prisma.Sql {
     AND checkpoint."branchGeneration" = chat."memoryBranchGeneration"
     AND checkpoint."sourceRevision" = chat."memorySourceRevision"
     AND checkpoint."lastIndexedMessageId" = chat."activeLeafMessageId"
+    AND NOT EXISTS (
+      SELECT 1
+      FROM "MemoryToolEvent" AS tool_event
+      WHERE tool_event."userId" = chat."userId"
+        AND tool_event."chatId" = chat."id"
+        AND tool_event."state" = 'ACTIVE'::"MemoryHistoryItemState"
+        AND tool_event."projectionVersion" <> ${MEMORY_TOOL_EVENT_PROJECTION_VERSION}
+    )
   `;
 }
 

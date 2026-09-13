@@ -498,7 +498,6 @@ async function loadIncrementalHistoryState(
       orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
       where: {
         chatId: source.id,
-        projectionVersion: MEMORY_TOOL_EVENT_PROJECTION_VERSION,
         state: "ACTIVE",
         userId: source.userId
       }
@@ -813,7 +812,11 @@ async function prepareWith(
   const byId = new Map(rows.map((row) => [row.id, row]));
   if (tailIds.some((id) => !byId.has(id))) return { decision: staleDecision };
 
-  const canReuseToolEvents = previousIsCurrent && incremental.mode !== "FULL_REBUILD";
+  // Reproject stale tool observations from settled calls while retaining the
+  // independent chunk/round checkpoint. Old event proof is never relabelled.
+  const canReuseToolEvents = previousIsCurrent && incremental.mode !== "FULL_REBUILD" &&
+    previous.toolEvents.every((event) =>
+      event.projectionVersion === MEMORY_TOOL_EVENT_PROJECTION_VERSION);
   const runMessageIds = canReuseToolEvents
     ? [...new Set([...tailIds, source.activeLeafMessageId])]
     : path.map(({ id }) => id);
