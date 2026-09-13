@@ -1,4 +1,5 @@
 import {
+  MEMORY_DEFAULT_IDENTITY_PROFILE,
   MEMORY_IDENTITY_PROFILES,
   type MemoryIdentityProfile
 } from "./normalization";
@@ -12,7 +13,7 @@ export function loadMemoryIdentityWriteProfile(
   environment: Readonly<Record<string, string | undefined>> = process.env
 ): MemoryIdentityProfile {
   const configured = environment[MEMORY_IDENTITY_WRITE_PROFILE_ENV]?.trim();
-  if (!configured) return "LEGACY_V1";
+  if (!configured) return MEMORY_DEFAULT_IDENTITY_PROFILE;
   if (!(MEMORY_IDENTITY_PROFILES as readonly string[]).includes(configured)) {
     throw new Error("memory_identity_profile_environment_invalid");
   }
