@@ -55,8 +55,9 @@ import type {
   ExplicitMemoryForgetUndoCandidate
 } from "./repository";
 import {
-  memoryProjectionHasMeaningfulText,
-  memoryRedactionHasMeaningfulRemainder,
+  memoryProjectionContainsRedaction,
+  memoryProjectionHasSourceText,
+  memoryRedactionHasSourceText,
   redactMemorySecrets
 } from "./safety";
 import {
@@ -296,13 +297,13 @@ type ExplicitStatementProjection = Readonly<{
 
 function requireStatement(statement: string): ExplicitStatementProjection {
   const redaction = redactMemorySecrets(statement);
-  const redactionPlaceholderOnly = statement.includes("[REDACTED:") &&
-    !memoryProjectionHasMeaningfulText(statement);
+  const redactionPlaceholderOnly = memoryProjectionContainsRedaction(statement) &&
+    !memoryProjectionHasSourceText(statement);
   if (
     statement.length > 2_000 ||
     (redaction.containsSecret &&
-      (!memoryRedactionHasMeaningfulRemainder(statement, redaction) ||
-        !memoryProjectionHasMeaningfulText(redaction.redactedText))) ||
+      (!memoryRedactionHasSourceText(statement, redaction) ||
+        !memoryProjectionHasSourceText(redaction.redactedText))) ||
     redactionPlaceholderOnly
   ) {
     return failure(redaction.containsSecret || redactionPlaceholderOnly
@@ -314,7 +315,7 @@ function requireStatement(statement: string): ExplicitStatementProjection {
     return failure("memory_statement_invalid");
   }
   return {
-    redacted: redaction.containsSecret || statement.includes("[REDACTED:"),
+    redacted: redaction.containsSecret || memoryProjectionContainsRedaction(statement),
     statement: projected
   };
 }

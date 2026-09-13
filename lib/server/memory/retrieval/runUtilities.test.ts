@@ -1613,7 +1613,7 @@ describe("Memory run utility execution", () => {
         sensitivityClass: "NORMAL",
         speakerScope: "mixed_conversation" as const,
         sourceKind: "HISTORY",
-        text: "API key sk-abcdefghijklmnopqrstuvwxyz123456"
+        text: "sk-abcdefghijklmnopqrstuvwxyz123456"
       }],
       profileRequested: false,
       query: "previous chat"
@@ -1623,6 +1623,29 @@ describe("Memory run utility execution", () => {
       status: "UNAVAILABLE"
     });
     expect(provider.run).toHaveBeenCalledTimes(2);
+
+    await service.rerank({
+      ...baseInput(),
+      candidates: [{
+        ...currentHistoryRerankCandidate,
+        authorityLevel: "PAST_CHAT",
+        current: true,
+        handle: "c0",
+        occurredFrom: null,
+        occurredTo: null,
+        sensitivityClass: "NORMAL",
+        speakerScope: "mixed_conversation" as const,
+        sourceKind: "HISTORY",
+        text: "ключ: sk-abcdefghijklmnopqrstuvwxyz123456"
+      }],
+      profileRequested: false,
+      query: "previous chat"
+    });
+    expect(provider.run).toHaveBeenCalledTimes(4);
+    expect(JSON.stringify(vi.mocked(provider.run).mock.calls))
+      .not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
+    expect(JSON.stringify(vi.mocked(provider.run).mock.calls))
+      .toContain("ключ: [REDACTED:TOKEN]");
   });
 
   it("blocks a candidate beyond the widened targeted bound before provider I/O", async () => {

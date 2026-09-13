@@ -1,6 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
-  memoryRedactionHasMeaningfulRemainder,
+  memoryRedactionHasSourceText,
   memorySecretSafeObjectKey,
   redactMemorySecrets
 } from "../explicit/safety";
@@ -124,7 +124,7 @@ function redactStructuredValue(value: Prisma.JsonValue): Prisma.JsonValue {
 function source(row: SynthesisSourceRow): MemorySynthesisSource | null {
   const redaction = redactMemorySecrets(row.displayText);
   if (redaction.containsSecret &&
-    !memoryRedactionHasMeaningfulRemainder(row.displayText, redaction)) return null;
+    !memoryRedactionHasSourceText(row.displayText, redaction)) return null;
   return Object.freeze({
     canonicalKey: row.canonicalKey,
     category: row.category,

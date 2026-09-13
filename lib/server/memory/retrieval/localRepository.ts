@@ -70,7 +70,7 @@ import {
   memoryUserTestimonyText
 } from "../history/userTestimony";
 import {
-  memoryRedactionHasMeaningfulRemainder,
+  memoryRedactionHasSourceText,
   redactMemorySecrets
 } from "../explicit/safety";
 import {
@@ -615,7 +615,7 @@ function decodeCandidate(row: CandidateRow, lane: MemoryRetrievalLane): MemoryLa
 function safeMemoryProjectionText(value: string): string | null {
   const redaction = redactMemorySecrets(value);
   if (redaction.containsSecret &&
-    !memoryRedactionHasMeaningfulRemainder(value, redaction)) return null;
+    !memoryRedactionHasSourceText(value, redaction)) return null;
   return redaction.redactedText.length <= 4_000 ? redaction.redactedText : null;
 }
 

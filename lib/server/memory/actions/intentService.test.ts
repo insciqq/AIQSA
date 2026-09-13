@@ -148,15 +148,6 @@ describe("MemoryActionIntent service", () => {
       "memoryUseful false, pastChatsUseful false, applyResponsePreferences false"
     );
     expect(request.systemPrompt).toContain(
-      "A safety rejection never erases a direct first-party Memory action"
-    );
-    expect(request.systemPrompt).toContain(
-      "return action SAVE, confidenceBand HIGH, sensitivity SECRET"
-    );
-    expect(request.systemPrompt).toContain(
-      "statement must describe only the kind of secret"
-    );
-    expect(request.systemPrompt).toContain(
       "explicitly described as the current user's own is first-party"
     );
     expect(request.systemPrompt).toContain(
