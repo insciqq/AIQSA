@@ -35,6 +35,8 @@ import {
   MEMORY_TEMPORAL_QUERY_PARSER_VERSION,
   MEMORY_NGRAM_QUERY_MAX_TERMS,
   analyzeMemoryLexicalQuery,
+  memoryLexicalQueryWindows,
+  normalizeMemoryLexicalProjection,
   memoryRetrievalEvidenceRootKey,
   memoryRetrievalLaneLimit,
   type MemoryCandidateMetadata,
@@ -107,6 +109,7 @@ import {
 import {
   MEMORY_LEXICAL_PROVIDER_MAX_CANDIDATES_PER_VARIANT,
   MEMORY_LEXICAL_PROVIDER_MAX_FINAL_CANDIDATES,
+  MEMORY_LEXICAL_PROVIDER_MAX_VARIANTS,
   assertMemoryLexicalSearchResult,
   hasAcceptedCompleteMemoryLexicalVariant,
   memoryLexicalProjectionReadinessScope,
@@ -138,7 +141,7 @@ import {
 export type { MemoryLexicalLaneEvidence } from "./lexical/contract";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v48";
+  "memory-local-retrieval-repository-v49";
 export const MEMORY_SPECULATIVE_BASELINE_SETTLE_MS = 1_200;
 const MEMORY_NGRAM_FALLBACK_MAX_TERMS = 8;
 const MEMORY_NGRAM_FALLBACK_MAX_TERMS_PER_VARIANT = 4;
@@ -2774,9 +2777,7 @@ function memorySemanticLexicalTermVariants(
   plan: MemoryRetrievalPlan,
   kind: MemorySemanticLexicalTermKind
 ): readonly Readonly<{ term: string; variantOrdinal: number }>[] {
-  const texts = plan.semanticQueryVariants.length > 0
-    ? plan.semanticQueryVariants.map(({ text }) => text)
-    : plan.lexicalQuery ? [plan.lexicalQuery] : [];
+  const texts = memorySemanticLexicalQueryTexts(plan);
   const maximumTerms = kind === "NGRAM"
     ? Math.min(MEMORY_NGRAM_QUERY_MAX_TERMS, MEMORY_NGRAM_FALLBACK_MAX_TERMS)
     : MEMORY_LEXICAL_QUERY_MAX_TERMS;
@@ -2823,6 +2824,35 @@ function memorySemanticLexicalTermVariants(
   return selectedByVariant.flat();
 }
 
+function memorySemanticLexicalQueryTexts(plan: MemoryRetrievalPlan): readonly string[] {
+  const originals = plan.semanticQueryVariants.length > 0
+    ? plan.semanticQueryVariants.map(({ text }) => text)
+    : plan.lexicalQuery ? [plan.lexicalQuery] : [];
+  const texts = [...originals];
+  const seen = new Set(originals.map(normalizeMemoryLexicalProjection));
+  const windows = originals.map((text) => {
+    const later = memoryLexicalQueryWindows(text).slice(1);
+    // If the input exceeds every available window, retain its ending before
+    // filling intermediate windows. Original and semantic variants keep their
+    // existing slots and share the unchanged term/candidate ceilings.
+    return later.length > 1 ? [later.at(-1)!, ...later.slice(0, -1)] : later;
+  });
+  for (let index = 0; texts.length < MEMORY_LEXICAL_PROVIDER_MAX_VARIANTS; index += 1) {
+    let remaining = false;
+    for (const variants of windows) {
+      const text = variants[index];
+      if (text === undefined) continue;
+      remaining = true;
+      if (seen.has(text)) continue;
+      seen.add(text);
+      texts.push(text);
+      if (texts.length === MEMORY_LEXICAL_PROVIDER_MAX_VARIANTS) break;
+    }
+    if (!remaining) break;
+  }
+  return texts;
+}
+
 function providerTermKind(
   lane: PostgresUnicodeMemoryLexicalLane
 ): MemorySemanticLexicalTermKind {
@@ -2846,9 +2876,7 @@ function memoryLexicalSearchRequest(
   }
   const readinessScope = memoryLexicalReadinessScopes.get(snapshot);
   if (!readinessScope) throw new Error("memory_retrieval_snapshot_invalid");
-  const texts = plan.semanticQueryVariants.length > 0
-    ? plan.semanticQueryVariants.map(({ text }) => text)
-    : [plan.lexicalQuery];
+  const texts = memorySemanticLexicalQueryTexts(plan);
   const termsByVariant = new Map<number, string[]>();
   for (const { term, variantOrdinal } of memorySemanticLexicalTermVariants(
     plan,
