@@ -1,5 +1,5 @@
 export const MEMORY_ACTION_ADMISSION_VERSION =
-  "memory-action-admission-v2" as const;
+  "memory-action-admission-v3" as const;
 
 export const MEMORY_ACTION_ADMISSION_STATES = [
   "EXPLICIT_CANDIDATE",
@@ -122,8 +122,10 @@ const memoryNouns = new Set([
 
 const savedNouns = new Set([
   "remembered", "saved", "guardados", "guardadas", "sačuvane", "sacuvane",
-  "sačuvanih", "sacuvanih", "сохранённые", "сохраненные", "сохранённых",
-  "сохраненных", "сачуване", "сачуваних"
+  "sačuvanih", "sacuvanih", "сачуване", "сачуваних",
+  ...["сохранённ", "сохраненн"].flatMap((stem) =>
+    ["ая", "ое", "ые", "ый", "ой", "ую", "ого", "ому", "ым", "ом", "ых", "ыми"]
+      .map((ending) => `${stem}${ending}`))
 ]);
 
 const scopedUseVerbs = new Set([
