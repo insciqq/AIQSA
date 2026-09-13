@@ -1,7 +1,5 @@
 import {
   MEMORY_DEFAULT_IDENTITY_PROFILE,
-  MEMORY_LEGACY_PROPOSITION_IDENTITY_VERSION,
-  MEMORY_LEGACY_SLOT_IDENTITY_VERSION,
   MEMORY_PROPOSITION_IDENTITY_VERSION,
   MEMORY_SLOT_IDENTITY_VERSION,
   memoryPropositionCanonicalKey,
@@ -149,9 +147,7 @@ function proposition(
     category,
     dimensionKey: null,
     identityKind: "PROPOSITION",
-    identityVersion: profile === "LEGACY_V1"
-      ? MEMORY_LEGACY_PROPOSITION_IDENTITY_VERSION
-      : MEMORY_PROPOSITION_IDENTITY_VERSION,
+    identityVersion: MEMORY_PROPOSITION_IDENTITY_VERSION,
     predicateKey: null,
     structuredValue: {
       normalizedStatement,
@@ -197,9 +193,7 @@ function slotResult(input: Readonly<{
     category: input.category,
     dimensionKey: input.dimensionKey,
     identityKind: "SLOT",
-    identityVersion: profile === "LEGACY_V1"
-      ? MEMORY_LEGACY_SLOT_IDENTITY_VERSION
-      : MEMORY_SLOT_IDENTITY_VERSION,
+    identityVersion: MEMORY_SLOT_IDENTITY_VERSION,
     predicateKey: input.predicateKey,
     structuredValue: input.structuredValue,
     subjectKey: input.subjectKey

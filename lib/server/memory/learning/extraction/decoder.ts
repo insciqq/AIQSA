@@ -20,7 +20,6 @@ import {
 import { memoryLocalDateTimeParts } from
   "../../../../domain/memory/temporal/calendar";
 import {
-  MEMORY_FACT_DURABLE_CATEGORIES,
   MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
   MEMORY_FACT_MAX_PACKET_CANDIDATES,
   memoryFactCandidateId,
@@ -42,7 +41,7 @@ import {
   memoryEntityTypeFamily
 } from "../entities/normalization";
 import {
-  memoryPropositionCanonicalKey,
+  assertMemoryIdentityWritable,
   memorySupportingPropositionCanonicalKey,
   normalizeMemoryProposition
 } from "../identity/normalization";
@@ -85,10 +84,6 @@ const changeIntents = new Set([
 ]);
 const memoryDirectives = new Set(["NONE", "EXPLICIT_REMEMBER", "UNKNOWN"]);
 
-const legacyCandidateKeys = [
-  "category", "confidence_band", "correction", "future_useful", "quote",
-  "reason_code", "response_preference", "sensitivity", "statement", "temporary"
-].sort();
 const observationKeys = [
   "candidate_ref", "confidence_band", "dependency_refs", "entities", "evidence",
   "future_useful", "identity", "memory_type", "reason_code", "semantic_frame",
@@ -670,10 +665,7 @@ function decodeObservation(
     value: valueProposal
   } as const;
   const unicodeIdentity = resolveMemoryIdentity(identityInput, "UNICODE_V2");
-  const legacyIdentity = resolveMemoryIdentity(identityInput, "LEGACY_V1");
-  const resolvedIdentity = input.identityProfile === "LEGACY_V1"
-    ? legacyIdentity
-    : unicodeIdentity;
+  const resolvedIdentity = unicodeIdentity;
   // A negative assertion keeps its full statement meaning. A positive SLOT
   // value (for example owned) cannot represent the negation of that value.
   if (frame.polarity === "NEGATED" && resolvedIdentity.identityKind !== "PROPOSITION") {
@@ -704,16 +696,8 @@ function decodeObservation(
         ...supportingInput
       }, "UNICODE_V2") ?? fail()
     : null;
-  const legacySupportingCanonicalKey = confidenceBand === "MEDIUM"
-    ? memorySupportingPropositionCanonicalKey({
-        ...supportingInput
-      }, "LEGACY_V1") ?? fail()
-    : null;
   const unicodeSupportingStatement = confidenceBand === "MEDIUM"
     ? normalizeMemoryProposition(statement, "UNICODE_V2") ?? fail()
-    : null;
-  const legacySupportingStatement = confidenceBand === "MEDIUM"
-    ? normalizeMemoryProposition(statement, "LEGACY_V1") ?? fail()
     : null;
   const supportingValue = (normalizedStatement: string) => ({
     authority: "supporting",
@@ -723,14 +707,9 @@ function decodeObservation(
   const unicodeProposedValue = unicodeSupportingStatement === null
     ? unicodeIdentity.structuredValue
     : supportingValue(unicodeSupportingStatement);
-  const legacyProposedValue = legacySupportingStatement === null
-    ? legacyIdentity.structuredValue
-    : supportingValue(legacySupportingStatement);
   const withoutId: Omit<MemoryExtractedCandidate, "id"> = {
     candidateRef,
-    canonicalKey: input.identityProfile === "LEGACY_V1"
-      ? legacySupportingCanonicalKey ?? legacyIdentity.canonicalKey
-      : unicodeSupportingCanonicalKey ?? unicodeIdentity.canonicalKey,
+    canonicalKey: unicodeSupportingCanonicalKey ?? unicodeIdentity.canonicalKey,
     category: resolvedIdentity.category,
     confidence: confidenceBand === "MEDIUM"
       ? MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE
@@ -754,16 +733,11 @@ function decodeObservation(
     identityVersion: resolvedIdentity.identityVersion,
     importance: confidenceBand === "MEDIUM" ? 0.4 : 0.65,
     languageCode: source.languageCode,
-    legacyCanonicalKey:
-      legacySupportingCanonicalKey ?? legacyIdentity.canonicalKey,
-    legacyProposedValue,
     modality: modality(memoryType),
     negated: false,
     occurredAt: temporal.occurredAt,
     predicateKey: resolvedIdentity.predicateKey,
-    proposedValue: input.identityProfile === "LEGACY_V1"
-      ? legacyProposedValue
-      : unicodeProposedValue,
+    proposedValue: unicodeProposedValue,
     quote,
     rawTemporalExpression: temporal.rawExpression,
     reasonCode: null,
@@ -789,8 +763,7 @@ function decodeObservation(
 function packetPlan(
   raw: readonly unknown[],
   input: MemoryFactExtractionInput,
-  decode: (value: unknown, input: MemoryFactExtractionInput) => MemoryExtractedCandidate,
-  requireUniqueCandidateRefs = true
+  decode: (value: unknown, input: MemoryFactExtractionInput) => MemoryExtractedCandidate
 ): MemoryFactExtractionPlan {
   const decoded: Array<{ candidate: MemoryExtractedCandidate; candidateOrdinal: number }> = [];
   const rejections: MemoryFactCandidateRejection[] = [];
@@ -798,7 +771,7 @@ function packetPlan(
   raw.forEach((value, candidateOrdinal) => {
     try {
       const candidate = decode(value, input);
-      if (requireUniqueCandidateRefs && candidateRefs.has(candidate.candidateRef)) {
+      if (candidateRefs.has(candidate.candidateRef)) {
         fail("memory_fact_candidate_ref_duplicate");
       }
       candidateRefs.add(candidate.candidateRef);
@@ -856,153 +829,13 @@ function packetPlan(
   };
 }
 
-function legacyModality(category: string): MemoryExtractedCandidate["modality"] {
-  if (category === "preferences" || category === "communication_preference") {
-    return "PREFERENCE";
-  }
-  if (category === "constraints_routines" || category === "constraint") {
-    return "CONSTRAINT";
-  }
-  if (category === "goals" || category === "goal") return "INTENTION";
-  if (category === "work" || category === "professional_role") return "WORKFLOW";
-  return "STATE";
-}
-
-function decodeLegacyCandidate(
-  value: unknown,
-  input: MemoryFactExtractionInput
-): MemoryExtractedCandidate {
-  if (!isRecord(value) || !hasExactKeys(value, legacyCandidateKeys)) fail();
-  const source = targetSource(input);
-  const statement = boundedString(value.statement, 2_000);
-  const quote = boundedString(value.quote, 2_000);
-  if (memoryExplicitStatementContainsSecret(statement) ||
-    memoryExplicitStatementContainsSecret(quote)) fail("memory_fact_secret");
-  const category = boundedString(value.category, 64);
-  if (!(MEMORY_FACT_DURABLE_CATEGORIES as readonly string[]).includes(category)) {
-    fail("memory_fact_category_unsupported");
-  }
-  const confidenceBand = enumValue(value.confidence_band, confidenceBands, 16);
-  if (confidenceBand !== "HIGH") fail("memory_fact_confidence_low");
-  if (requiredBoolean(value.temporary)) fail("memory_fact_temporary");
-  if (!requiredBoolean(value.future_useful)) fail("memory_fact_unsupported");
-  const correction = requiredBoolean(value.correction);
-  const sensitivity = enumValue(value.sensitivity, sensitivities, 16);
-  if (sensitivity === "SECRET") fail("memory_fact_secret");
-  if (sensitivity !== "NORMAL") fail("memory_fact_unsupported");
-  const responsePreference = nullableString(value.response_preference, 512);
-  if (responsePreference && memoryExplicitStatementContainsSecret(responsePreference)) {
-    fail("memory_fact_secret");
-  }
-  boundedString(value.reason_code, 64);
-  const firstOccurrence = source.text.indexOf(quote);
-  if (firstOccurrence >= 0 &&
-    source.text.indexOf(quote, firstOccurrence + quote.length) >= 0) {
-    fail("memory_fact_evidence_ambiguous");
-  }
-  const legacyCanonicalKey = memoryPropositionCanonicalKey(
-    statement,
-    "LEGACY_V1"
-  );
-  const unicodeCanonicalKey = memoryPropositionCanonicalKey(
-    statement,
-    "UNICODE_V2"
-  );
-  if (!legacyCanonicalKey || !unicodeCanonicalKey) fail();
-  const evidence = exactEvidence(input, { occurrenceIndex: 0, text: quote });
-  const semanticFrame: MemorySemanticFrame = {
-    assertionStatus: "ASSERTED",
-    changeIntent: correction ? "CORRECTION" : "NONE",
-    memoryDirective: "NONE",
-    polarity: correction ? "CORRECTION" : "AFFIRMED",
-    speechAct: "ASSERTION",
-    subjectScope: "CURRENT_USER",
-    temporalPerspective: "CURRENT"
-  };
-  const withoutId: Omit<MemoryExtractedCandidate, "id"> = {
-    candidateRef: "legacy-0",
-    canonicalKey: legacyCanonicalKey,
-    category,
-    confidence: 1,
-    confidenceBand: "HIGH",
-    correction,
-    coreEligible: responsePreference !== null,
-    coreSalience: responsePreference === null ? "NONE" : "HIGH",
-    dimensionKey: null,
-    directness: "DIRECT",
-    displayText: statement,
-    dependencies: [],
-    entities: [],
-    evidence,
-    expectedAt: null,
-    expirationIntent: "NONE",
-    expiresAt: null,
-    futureUseful: true,
-    identityProfile: "LEGACY_V1",
-    identityKind: "PROPOSITION",
-    identityVersion: "proposition-v1",
-    importance: 0.5,
-    languageCode: source.languageCode,
-    legacyCanonicalKey,
-    legacyProposedValue: responsePreference === null
-      ? { correction, statement }
-      : { correction, responsePreference, statement },
-    modality: legacyModality(category),
-    negated: false,
-    occurredAt: null,
-    predicateKey: null,
-    proposedValue: responsePreference === null
-      ? { correction, statement }
-      : { correction, responsePreference, statement },
-    quote,
-    rawTemporalExpression: null,
-    reasonCode: null,
-    responsePreference,
-    scope: { targetId: null, type: "GLOBAL_USER" },
-    semanticFrame,
-    sensitivity: "NORMAL",
-    state: "PENDING",
-    statement,
-    subjectKey: null,
-    temporary: false,
-    temporalNormalization: { kind: "NONE" },
-    temporalResolutionEvidence: null,
-    unicodeCanonicalKey,
-    unicodeProposedValue: responsePreference === null
-      ? { correction, statement }
-      : { correction, responsePreference, statement },
-    validFrom: null,
-    validTo: null
-  };
-  return { ...withoutId, id: memoryFactCandidateId(input, withoutId) };
-}
-
-/** Compatibility decoder retained only for already-recorded v1 tests and
- * archaeology. New executions never route through it. */
-export function decodeMemoryFactExtractionV1(
-  calls: readonly ModelToolCall[] | undefined,
-  input: MemoryFactExtractionInput
-): MemoryFactExtractionPlan {
-  if (!calls || calls.length !== 1 ||
-    calls[0]?.name !== MEMORY_FACT_EXTRACTION_TOOL_NAME ||
-    !isRecord(calls[0].arguments) ||
-    !hasExactKeys(calls[0].arguments, ["candidates"]) ||
-    !Array.isArray(calls[0].arguments.candidates) ||
-    calls[0].arguments.candidates.length > MEMORY_FACT_MAX_PACKET_CANDIDATES) fail();
-  return packetPlan(
-    calls[0].arguments.candidates,
-    input,
-    decodeLegacyCandidate,
-    false
-  );
-}
-
 /** Executable vNext strict packet. Candidate defects are isolated; malformed
  * call count/name/top-level shape fails the complete provider output. */
 export function decodeMemoryFactExtraction(
   calls: readonly ModelToolCall[] | undefined,
   input: MemoryFactExtractionInput
 ): MemoryFactExtractionPlan {
+  assertMemoryIdentityWritable(input.identityProfile);
   if (!calls || calls.length !== 1 ||
     calls[0]?.name !== MEMORY_FACT_EXTRACTION_TOOL_NAME ||
     !isRecord(calls[0].arguments) ||

@@ -96,7 +96,7 @@ describe("language-neutral Memory identity registry", () => {
     expect(former.identityKind).toBe("PROPOSITION");
   });
 
-  it.each(["LEGACY_V1", "UNICODE_V2"] as const)(
+  it.each(["UNICODE_V2"] as const)(
     "preserves negation as a full proposition instead of a positive SLOT in %s",
     (profile) => {
       const result = resolveMemoryIdentity({
@@ -205,14 +205,6 @@ describe("language-neutral Memory identity registry", () => {
       statement: "opaque preference",
       value: { ...emptyValue, value: "concise" }
     });
-    const legacyAscii = resolveMemoryIdentity(
-      proposal("topic:caf"),
-      "LEGACY_V1"
-    );
-    const legacyUnicode = resolveMemoryIdentity(
-      proposal("topic:cafè"),
-      "LEGACY_V1"
-    );
     const unicodeAscii = resolveMemoryIdentity(
       proposal("topic:caf"),
       "UNICODE_V2"
@@ -221,7 +213,8 @@ describe("language-neutral Memory identity registry", () => {
       proposal("topic:cafè"),
       "UNICODE_V2"
     );
-    expect(legacyUnicode.canonicalKey).toBe(legacyAscii.canonicalKey);
+    expect(() => resolveMemoryIdentity(proposal("topic:cafè"), "LEGACY_V1"))
+      .toThrow("memory_identity_profile_retired");
     expect(unicodeLabel.canonicalKey).not.toBe(unicodeAscii.canonicalKey);
     expect(unicodeLabel.identityVersion).toBe("slot-v4");
   });

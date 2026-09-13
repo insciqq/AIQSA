@@ -326,8 +326,9 @@ export type MemoryExtractedCandidate = Readonly<{
     | "slot-v4";
   importance: number;
   languageCode: MemoryTextLanguage;
-  legacyCanonicalKey: string;
-  legacyProposedValue: unknown;
+  /** Opaque values present only in already accepted historical outputs. */
+  legacyCanonicalKey?: string;
+  legacyProposedValue?: unknown;
   modality:
     | "CONSIDERATION"
     | "CONSTRAINT"

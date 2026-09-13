@@ -9,6 +9,7 @@ import {
   MEMORY_FACT_EXTRACTION_VERSIONS,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
   memoryFactExtractionInputHash,
+  memoryFactExtractionOutputHash,
   memoryFactExtractionJobFingerprint,
   type MemoryFactExtractionPlan,
   type MemoryFactExtractionInput,
@@ -545,6 +546,45 @@ describe("Memory fact extraction handler", () => {
     expect(fixture.run).not.toHaveBeenCalled();
     expect(fixture.bind).not.toHaveBeenCalled();
     expect(fixture.apply).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])("retires fresh legacy decoding but preserves accepted recovery (%s)", async (accepted) => {
+    const fixture = dependencies();
+    const { inputHash: _inputHash, ...sourceInput } = fixture.input;
+    const historical = { ...sourceInput, identityProfile: "LEGACY_V1" as const };
+    const input = { ...historical, inputHash: memoryFactExtractionInputHash(historical) };
+    const current = decodeMemoryFactExtraction(providerOutput().toolCalls, fixture.input);
+    const candidates = current.candidates.map((candidate) => ({
+      ...candidate, canonicalKey: "slot:v2:self:preference:topic:tea",
+      dimensionKey: "topic:tea", identityProfile: "LEGACY_V1" as const,
+      identityVersion: "slot-v2" as const,
+      legacyCanonicalKey: "slot:v2:self:preference:topic:tea",
+      legacyProposedValue: candidate.proposedValue
+    }));
+    const plan = { ...current, candidates, input,
+      outputHash: memoryFactExtractionOutputHash(input, candidates, current.candidateOrdinals, current.rejections) };
+    const handler = createMemoryFactExtractionHandler({
+      ...fixture.base,
+      repository: {
+        ...fixture.base.repository,
+        prepare: vi.fn(async () => ({ input })),
+        bindings: vi.fn(async () => accepted ? [{
+          acceptedOutputHash: plan.outputHash, id: "recorded-binding", inputHash: input.inputHash,
+          ordinal: 0, ...storedVersions(MEMORY_FACT_EXTRACTION_VERSIONS),
+          secretFreeExecutionSnapshot: {}, state: "SUCCEEDED" as const
+        }] : []),
+        staged: vi.fn(async () => accepted ? plan : null)
+      }
+    });
+    const legacyClaim = { ...claim(), idempotencyFingerprint: memoryFactExtractionJobFingerprint(source, "LEGACY_V1") };
+    const result = await handler.execute(legacyClaim, context());
+    expect(result.stage).toBe(accepted ? "fact_observations_committed" : "fact_identity_profile_retired");
+    expect(fixture.run).not.toHaveBeenCalled();
+    expect(fixture.bind).not.toHaveBeenCalled();
+    if (accepted) {
+      expect(result.acceptedResultHash).toBe(plan.outputHash);
+      expect(fixture.apply.mock.calls[0]?.[3]).toBe(plan);
+    } else expect(fixture.apply).not.toHaveBeenCalled();
   });
 
   it("recovers extraction separately from an uncertain adjudication binding", async () => {
