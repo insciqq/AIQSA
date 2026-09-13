@@ -2385,9 +2385,11 @@ export function createMemoryRunRetrievalService(
           utilityEgressMode: "LOCAL_ONLY"
         });
       }
+      // Classification and its reuse proof bind the exact safe source turn;
+      // search normalization can change an explicitly supplied literal value.
       const controlReuseScopeHash = memoryControlReuseScopeHash(
         input,
-        provisionalPlan.originalSanitizedQuery
+        querySafety.safeText
       );
       const cachedControl = actionControlRequested
         ? controlCache.control
@@ -2596,7 +2598,7 @@ export function createMemoryRunRetrievalService(
         }
         const context = memoryControlContext(
           input,
-          provisionalPlan.originalSanitizedQuery,
+          querySafety.safeText,
           refs
         );
         return timings.measure("controlMs", () =>
@@ -2679,7 +2681,7 @@ export function createMemoryRunRetrievalService(
       ]);
       const controlContext = memoryControlContext(
         input,
-        provisionalPlan.originalSanitizedQuery,
+        querySafety.safeText,
         controlRefs
       );
       if (actionControlRequested && controlCache.control === undefined) {
