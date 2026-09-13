@@ -36,20 +36,20 @@ import {
   type MemoryActionIntentContext
 } from "./intentService";
 
-export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v26";
-export const MEMORY_CONTROL_REASONING_EFFORT = "low" as const;
+export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v29";
+export const MEMORY_CONTROL_REASONING_POLICY = "accepted-system-model-parameters" as const;
 export const MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR = 2_048 as const;
 
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
-  policyVersion: "memory-control-policy-v26",
-  promptVersion: "memory-control-prompt-v30",
+  policyVersion: "memory-control-policy-v28",
+  promptVersion: "memory-control-prompt-v31",
   retrievalConfigFingerprint: memoryExecutionSha256({
     actionIntentSchema: MEMORY_ACTION_INTENT_NAME,
     maxCalls: 1,
-    reasoningEffort: MEMORY_CONTROL_REASONING_EFFORT,
+    reasoningPolicy: MEMORY_CONTROL_REASONING_POLICY,
     reasoningOutputTokenFloor: MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR,
-    version: 23
+    version: 25
   }),
   schemaVersion: MEMORY_ACTION_CONTROL_SCHEMA_VERSION
 });
@@ -138,13 +138,6 @@ function providerRequest(
     request.maxOutputTokens ?? 1_024,
     model.capabilities.defaultMaxOutputTokens ?? 1_024
   );
-  const configuredReasoning = typeof model.defaultParams.reasoning === "object" &&
-    model.defaultParams.reasoning !== null &&
-    !Array.isArray(model.defaultParams.reasoning)
-    ? model.defaultParams.reasoning as Readonly<Record<string, unknown>>
-    : {};
-  const lowReasoningSupported = model.capabilities.reasoning === true &&
-    model.capabilities.reasoningEfforts?.includes(MEMORY_CONTROL_REASONING_EFFORT) === true;
   return {
     attachmentIds: [],
     attachments: [],
@@ -157,16 +150,6 @@ function providerRequest(
     parallelToolCalls: false,
     params: {
       ...model.defaultParams,
-      ...(model.adapterKind === "openrouter_chat_completions"
-        ? { reasoning: { enabled: false, exclude: true } }
-        : lowReasoningSupported
-          ? {
-              reasoning: {
-                ...configuredReasoning,
-                effort: MEMORY_CONTROL_REASONING_EFFORT
-              }
-            }
-        : {}),
       background: false,
       maxOutputTokens,
       max_output_tokens: maxOutputTokens,
