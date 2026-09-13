@@ -16,7 +16,7 @@ import { memorySha256 } from "../../persistence/lexical";
 describe("Memory semantic-frame extraction prompt", () => {
   it("locks the v5 forced-strict wire shape under the current prompt policy", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v29");
+      .toBe("memory-fact-extraction-prompt-v30");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
       .toBe("memory-fact-extraction-schema-v5");
     expect(memoryFactExtractionTool).toMatchObject({

@@ -173,11 +173,10 @@ function safeProjectionShape(expansion: MemoryExpandedCandidate): boolean {
     );
 }
 
-/** Final packing is the last pure boundary before transactional admission.
- * Keep mutable ranking metadata separate from immutable projection provenance,
- * and quarantine one inconsistent candidate instead of allowing Phase B to
- * reject the complete otherwise-authoritative pack. */
-function preparingProjectionShape(
+/** Check immutable projection provenance independently of chat context sizing.
+ * Quarantine inconsistent candidates before transactional admission or native
+ * fact projection, while keeping mutable ranking metadata separate. */
+export function memoryCandidateMatchesRetrievalProjection(
   candidate: MemoryRankedCandidate,
   expansion: MemoryExpandedCandidate,
   plan: MemoryRetrievalPlan
@@ -807,9 +806,9 @@ function temporalReason(plan: MemoryRetrievalPlan): MemoryPackedItem["temporalRe
   }
 }
 
-function expandedMap(
+export function memoryRetrievalProjectionMap(
   expanded: readonly MemoryExpandedCandidate[],
-  omissionCounts: Record<string, number>
+  omissionCounts: Record<string, number> = {}
 ): Map<string, MemoryExpandedCandidate> {
   const result = new Map<string, MemoryExpandedCandidate>();
   const duplicates = new Set<string>();
@@ -882,7 +881,7 @@ export function packMemoryPersonalContext(input: Readonly<{
     : MEMORY_CONTEXT_MAX_ITEMS;
 
   const omissionCounts: Record<string, number> = {};
-  const dynamicExpansions = expandedMap(input.expanded, omissionCounts);
+  const dynamicExpansions = memoryRetrievalProjectionMap(input.expanded, omissionCounts);
   const factLimit = input.plan.profileRequested
     ? MEMORY_CONTEXT_PROFILE_MAX_FACTS
     : MEMORY_CONTEXT_MAX_DYNAMIC_FACTS;
@@ -972,7 +971,7 @@ export function packMemoryPersonalContext(input: Readonly<{
       increment(omissionCounts, "safe_expansion_missing");
       continue;
     }
-    if (!preparingProjectionShape(candidate, expansion, input.plan)) {
+    if (!memoryCandidateMatchesRetrievalProjection(candidate, expansion, input.plan)) {
       increment(omissionCounts, "preparing_projection_contract");
       continue;
     }

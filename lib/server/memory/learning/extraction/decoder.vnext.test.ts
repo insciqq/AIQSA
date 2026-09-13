@@ -533,6 +533,25 @@ describe("Memory v5 semantic-frame decoder", () => {
     ]);
   });
 
+  it.each([
+    ["My desk is on floor two. Correction: my desk is on floor five.", "The current user's desk is on floor five."],
+    ["Мой рабочий стол на втором этаже. Исправляю: мой рабочий стол на пятом этаже.", "Рабочий стол текущего пользователя находится на пятом этаже."]
+  ])("admits a self-contained correction while retaining semantic review: %s", (quote, statement) => {
+    const plan = decode(quote, [observation(quote, {
+      semantic_frame: { ...frame, change_intent: "CORRECTION", polarity: "CORRECTION" },
+      statement
+    })]);
+
+    expect(plan.rejections).toEqual([]);
+    expect(plan.candidates).toHaveLength(1);
+    expect(plan.candidates[0]).toMatchObject({ correction: true, dependencies: [], statement });
+    expect(plan.candidates[0]?.evidence).toEqual([
+      expect.objectContaining({ messageId: "message-1", quote, startOffset: 0, endOffset: quote.length })
+    ]);
+    expect(memoryCandidateRequiresSemanticAdjudication(plan.candidates[0]!)).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(plan.candidates[0]!, null)).toBe(false);
+  });
+
   it("uses assistant context only through a dependency, never as evidence", () => {
     const assistantText = "Cedar is your preferred layout option.";
     const target = "Yes, cedar is my preferred option.";
@@ -580,7 +599,7 @@ describe("Memory v5 semantic-frame decoder", () => {
     }]);
   });
 
-  it("uses structural PRONOMINAL context and never writes it as an alias", () => {
+  it.each([false, true])("retains structural PRONOMINAL context with correction=%s and never writes it as an alias", (correction) => {
     const quote = "it is returned";
     const context: MemoryFactContextRef = {
       aliases: ["MacBook"],
@@ -600,6 +619,7 @@ describe("Memory v5 semantic-frame decoder", () => {
       text: "bounded context"
     };
     const proposed = productObservation(quote, "returned") as Record<string, unknown>;
+    if (correction) proposed.semantic_frame = { ...frame, change_intent: "CORRECTION", polarity: "CORRECTION" };
     proposed.dependency_refs = ["F1"];
     proposed.entities = [{
       aliases: [],
@@ -624,9 +644,12 @@ describe("Memory v5 semantic-frame decoder", () => {
       mentionKind: "PRONOMINAL"
     });
     expect(plan.candidates[0]?.dependencies[0]).toMatchObject({
-      dependencyKind: "COREFERENCE_ANTECEDENT",
+      dependencyKind: correction ? "CORRECTION_TARGET" : "COREFERENCE_ANTECEDENT",
       ref: "F1"
     });
+    const missing = decode(quote, [{ ...proposed, dependency_refs: [] }], [context]);
+    expect(missing.candidates).toEqual([]);
+    expect(missing.rejections).toEqual([{ candidateOrdinal: 0, reasonCode: "REJECT_UNSUPPORTED" }]);
   });
 
   it("accepts a direct current-user PERSON_SELF pronoun without a context dependency", () => {
