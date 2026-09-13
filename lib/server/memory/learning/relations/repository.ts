@@ -288,7 +288,7 @@ async function loadPreparedRelation(
       where: { id: targetId, userId: job.userId }
     });
     return {
-      reason: target ? `relation_target_${target.state.toLocaleLowerCase("en-US")}` :
+      reason: target ? `relation_target_${target.state.toLowerCase()}` :
         "relation_target_missing",
       status: "TERMINAL"
     };

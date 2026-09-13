@@ -561,7 +561,7 @@ async function persistReceipt(
       outcome: "APPLIED",
       persistedToolCallId: input.persistedToolCallId,
       requestId: input.requestId,
-      resultCode: result.outcome.toLocaleLowerCase("en-US"),
+      resultCode: result.outcome.toLowerCase(),
       resultSnapshot: receiptSnapshot(result, inputPayloadHash),
       targetFactId: result.factId,
       targetVersionId: result.versionId,

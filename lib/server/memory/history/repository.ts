@@ -220,7 +220,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function canonicalTimeZone(value: unknown): string {
   if (typeof value !== "string" || value.length > 128) return "UTC";
   try {
-    return new Intl.DateTimeFormat("en-US", { timeZone: value })
+    return new Intl.DateTimeFormat(undefined, { timeZone: value })
       .resolvedOptions().timeZone;
   } catch {
     return "UTC";
