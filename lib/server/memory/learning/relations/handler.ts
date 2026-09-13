@@ -128,7 +128,7 @@ export function createMemoryRelationHandler(
             expectedSnapshotHash: snapshotHash
           }, context.now());
         },
-        stage: `relation_${decision.operation.toLocaleLowerCase("en-US")}`
+        stage: `relation_${decision.operation.toLowerCase()}`
       };
     }
   });
