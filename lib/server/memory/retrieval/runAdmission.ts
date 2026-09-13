@@ -54,7 +54,6 @@ import {
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
 } from "../admissionDeadline";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
-import { deduplicateContainedHistory } from "../../../domain/memory/retrieval/historyContainment";
 import type { MemoryExecutionAuthorityDependencies } from "../execution";
 import { memorySha256 } from "../persistence/lexical";
 import { redactMemorySecrets } from "../explicit/safety";
@@ -1734,7 +1733,9 @@ export function memoryRelevanceCandidates(
     `${candidate.itemType}:${candidate.itemId}`,
     candidate
   ]));
-  const projected = deduplicateContainedHistory(ranked, expanded).flatMap((candidate) => {
+  // Keep compact alternatives until packing can prove that their containing
+  // projections fit. Relevance preparation has no final context budget.
+  const projected = ranked.flatMap((candidate) => {
     const projection = projections.get(`${candidate.itemType}:${candidate.itemId}`);
     if (!projection) return [];
     const sourceKind = candidate.itemType === "TOOL_EVENT"
