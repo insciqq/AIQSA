@@ -33,6 +33,8 @@ import {
 } from "./toolResult";
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
+import { bindContext, logEvent } from "../observability";
+import { observedFailure } from "../providers/providerObservability";
 
 export {
   searchExecutionPreviewCount,
@@ -306,8 +308,29 @@ async function consumeProviderSearch(
   };
 }
 
+function failedSearchExecution(input: Readonly<{
+  call: ModelToolCall;
+  failure: SearchFailureEvidence;
+  option: NormalizedSearchPlanOption;
+  usage?: ModelRunUsage;
+}>): SearchExecutionResult {
+  return {
+    displayName: searchDisplayName(input.option),
+    failure: input.failure,
+    invocationId: `${input.call.id}:${input.option.optionId}`.slice(0, 500),
+    modelId: input.option.modelId,
+    optionId: input.option.optionId,
+    provider: input.option.provider,
+    revisionId: input.option.revisionId,
+    sources: [],
+    status: "error",
+    usage: input.usage ?? zeroUsage()
+  };
+}
+
 async function executeOne(input: Readonly<{
   call: ModelToolCall;
+  engineIndex: number;
   option: NormalizedSearchPlanOption;
   query: ValidatedSearchQuery;
   runtime: ProviderRuntimeBinding | undefined;
@@ -315,18 +338,25 @@ async function executeOne(input: Readonly<{
 }>): Promise<SearchExecutionResult> {
   const invocationId = `${input.call.id}:${input.option.optionId}`.slice(0, 500);
   if (!input.runtime || !input.option.modelId || input.signal?.aborted) {
-    return {
-      displayName: searchDisplayName(input.option),
-      failure: { code: "search_runtime_not_available" },
-      invocationId,
-      modelId: input.option.modelId,
-      optionId: input.option.optionId,
-      provider: input.option.provider,
-      revisionId: input.option.revisionId,
-      sources: [],
-      status: "error",
-      usage: zeroUsage()
-    };
+    if (input.signal?.aborted) {
+      logEvent("nested_abort", {
+        layer: "search", stage: "before_start", abort_source: "unknown", engine_index: input.engineIndex
+      });
+    }
+    logEvent("tool_execution", {
+      tool_kind: "search", stage: "execution", engine_index: input.engineIndex,
+      outcome: !input.runtime || !input.option.modelId ? "failed" : "cancelled",
+      code: !input.runtime || !input.option.modelId ? "search_runtime_not_available" : "search_cancelled"
+    });
+    return failedSearchExecution({
+      call: input.call,
+      failure: {
+        code: !input.runtime || !input.option.modelId
+          ? "search_runtime_not_available"
+          : "search_cancelled"
+      },
+      option: input.option
+    });
   }
   const request = queryOnlyRequest(invocationId, input.option, input.query);
   const configured = configuration(input.option);
@@ -334,11 +364,32 @@ async function executeOne(input: Readonly<{
     configured.timeoutMs,
     input.runtime.responseTimeoutMs
   );
-  const timeoutController = new AbortController();
-  const relayAbort = () => timeoutController.abort(input.signal?.reason);
+  const startedAt = performance.now();
+  logEvent("tool_deadline", {
+    tool_kind: "search", configured_timeout_ms: configured.timeoutMs, engine_index: input.engineIndex,
+    effective_timeout_ms: effectiveTimeoutMs
+  });
+  logEvent("tool_execution", {
+    tool_kind: "search", stage: "execution", outcome: "started", engine_index: input.engineIndex
+  });
+  const attemptController = new AbortController();
+  let abortCode: "search_cancelled" | "search_timeout" | undefined;
+  const abortAttempt = (code: "search_cancelled" | "search_timeout", reason: unknown) => {
+    // Provider settlement may lag behind both events; keep the first cause.
+    if (abortCode !== undefined) return;
+    abortCode = code;
+    logEvent("nested_abort", {
+      layer: "search", stage: "delivery", engine_index: input.engineIndex,
+      abort_source: code === "search_timeout" ? "search_deadline" : "parent_signal",
+      duration_ms: performance.now() - startedAt,
+      ...(code === "search_timeout" ? { timeout_ms: effectiveTimeoutMs } : {})
+    });
+    attemptController.abort(reason);
+  };
+  const relayAbort = bindContext(() => abortAttempt("search_cancelled", input.signal?.reason));
   input.signal?.addEventListener("abort", relayAbort, { once: true });
   const timeout = setTimeout(
-    () => timeoutController.abort(new Error("search_timeout")),
+    bindContext(() => abortAttempt("search_timeout", new Error("search_timeout"))),
     effectiveTimeoutMs
   );
   try {
@@ -346,9 +397,17 @@ async function executeOne(input: Readonly<{
       input.runtime,
       request,
       input.option,
-      timeoutController.signal,
+      attemptController.signal,
       effectiveTimeoutMs
     );
+    logEvent("tool_execution", {
+      tool_kind: "search", stage: "execution", engine_index: input.engineIndex,
+      duration_ms: performance.now() - startedAt,
+      outcome: result.sourceAttribution === "provider_unavailable" ? "degraded" : "completed",
+      ...(result.sourceAttribution === "provider_unavailable"
+        ? { code: "provider_sources_unavailable", action: "degrade" as const } : {}),
+      count: result.sources.length
+    });
     return {
       displayName: searchDisplayName(input.option),
       findings: result.findings,
@@ -369,10 +428,9 @@ async function executeOne(input: Readonly<{
         : {})
     };
   } catch (error) {
-    const timedOut = timeoutController.signal.aborted;
     const providerFailure = isProviderSearchExecutionError(error) ? error : null;
-    const failure: SearchFailureEvidence = timedOut
-      ? { code: "search_timeout" }
+    const failure: SearchFailureEvidence = abortCode
+      ? { code: abortCode }
       : providerFailure
         ? {
             code: normalizedFailureCode(providerFailure.code),
@@ -384,18 +442,21 @@ async function executeOne(input: Readonly<{
               : {})
           }
         : { code: normalizedFailureCode(error instanceof Error ? error.message : undefined) };
-    return {
-      displayName: searchDisplayName(input.option),
+    const observed = observedFailure(error);
+    logEvent("tool_execution", {
+      tool_kind: "search", stage: "execution", engine_index: input.engineIndex,
+      duration_ms: performance.now() - startedAt,
+      outcome: failure.code === "search_cancelled" ? "cancelled" : "failed", code: failure.code,
+      reason: abortCode === "search_timeout" ? "deadline"
+        : abortCode === "search_cancelled" ? "cancelled" : observed.reason,
+      httpStatus: observed.httpStatus
+    });
+    return failedSearchExecution({
+      call: input.call,
       failure,
-      invocationId,
-      modelId: input.option.modelId,
-      optionId: input.option.optionId,
-      provider: input.option.provider,
-      revisionId: input.option.revisionId,
-      sources: [],
-      status: "error",
+      option: input.option,
       usage: normalizeTokenUsage({ ...providerFailure?.usage, completeness: "partial" })
-    };
+    });
   } finally {
     clearTimeout(timeout);
     input.signal?.removeEventListener("abort", relayAbort);
@@ -426,7 +487,11 @@ function searchToolExecutionResult(input: Readonly<{
   };
 }
 
-function oversizedSearchExecution(execution: SearchExecutionEvidence): SearchExecutionEvidence {
+function oversizedSearchExecution(execution: SearchExecutionEvidence, engineIndex: number): SearchExecutionEvidence {
+  logEvent("tool_execution", {
+    tool_kind: "search", stage: "result", outcome: "degraded", engine_index: engineIndex,
+    code: "search_result_too_large", action: "degrade"
+  });
   return {
     displayName: execution.displayName,
     failure: { code: "search_result_too_large" },
@@ -449,6 +514,7 @@ function fitDurableSearchToolResult(input: Readonly<{
   call: ModelToolCall;
   executions: readonly SearchExecutionEvidence[];
   name: string;
+  onDegraded?(): void;
 }>): ToolExecutionResult {
   const executions = [...input.executions];
   const result = () => searchToolExecutionResult({ ...input, executions });
@@ -465,7 +531,8 @@ function fitDurableSearchToolResult(input: Readonly<{
       right.index - left.index
     );
   for (const { index } of successfulBySize) {
-    executions[index] = oversizedSearchExecution(executions[index]!);
+    input.onDegraded?.();
+    executions[index] = oversizedSearchExecution(executions[index]!, index + 1);
     candidate = result();
     if (snapshotToolExecutionResult(candidate, toolLoopPersistenceLimits.resultBytes)) {
       return candidate;
@@ -473,7 +540,8 @@ function fitDurableSearchToolResult(input: Readonly<{
   }
 
   for (const [index, execution] of executions.entries()) {
-    executions[index] = oversizedSearchExecution(execution);
+    input.onDegraded?.();
+    executions[index] = oversizedSearchExecution(execution, index + 1);
   }
   candidate = result();
   if (snapshotToolExecutionResult(candidate, toolLoopPersistenceLimits.resultBytes)) {
@@ -542,15 +610,43 @@ export function createSearchPlanToolRouter(input: Readonly<{
       return routeForName(name) !== undefined;
     },
     async execute(call, _request, options) {
-      options?.signal?.throwIfAborted();
+      const startedAt = performance.now();
+      logEvent("tool_execution", { tool_kind: "search", stage: "admission", outcome: "started" });
+      let stage: "admission" | "execution" | "result" = "admission";
+      let thrownCode: string | undefined;
+      try {
       const route = routeForName(call.name);
-      if (!route) throw new Error("search_tool_not_selected");
+      if (!route) {
+        thrownCode = "search_tool_not_selected";
+        throw new Error("search_tool_not_selected");
+      }
+      if (options?.signal?.aborted) {
+        logEvent("nested_abort", { layer: "search", stage: "before_start", abort_source: "unknown" });
+        const result = fitDurableSearchToolResult({
+          call,
+          executions: route.options.map((option, index) => {
+            const code = !input.runtimes[option.optionId] || !option.modelId
+              ? "search_runtime_not_available" : "search_cancelled";
+            logEvent("tool_execution", {
+              tool_kind: "search", stage: "result", engine_index: index + 1,
+              outcome: code === "search_cancelled" ? "cancelled" : "failed", code
+            });
+            return failedSearchExecution({ call, failure: { code }, option });
+          }),
+          name: call.name
+        });
+        throw new SearchToolCancelledError(result, options.signal.reason);
+      }
       const queryLimit = Math.min(
         ...route.options.map((option) => configuration(option).queryMaxCharacters)
       );
       const validation = validateSearchToolArguments(call.arguments, queryLimit);
       const code = validation.ok ? null : validation.code;
       if (code) {
+        logEvent("tool_execution", {
+          tool_kind: "search", stage: "admission", outcome: "failed", code, reason: "policy"
+        });
+        logEvent("tool_execution", { tool_kind: "search", stage: "result", outcome: "failed", code });
         return {
           callId: call.id,
           content: [{ text: `Search failed: ${code}`, type: "text" }],
@@ -567,6 +663,13 @@ export function createSearchPlanToolRouter(input: Readonly<{
       );
       if (exhaustedOption) {
         const limitCode = "search_invocation_limit_reached";
+        logEvent("tool_execution", {
+          tool_kind: "search", stage: "admission", outcome: "degraded",
+          code: limitCode, reason: "policy", action: "skip"
+        });
+        logEvent("tool_execution", {
+          tool_kind: "search", stage: "result", outcome: "failed", code: limitCode
+        });
         return {
           callId: call.id,
           content: [{
@@ -582,23 +685,49 @@ export function createSearchPlanToolRouter(input: Readonly<{
       for (const option of route.options) {
         invocationCounts.set(option.optionId, (invocationCounts.get(option.optionId) ?? 0) + 1);
       }
+      logEvent("tool_execution", { tool_kind: "search", stage: "admission", outcome: "completed" });
+      stage = "execution";
       const query = validation.query;
-      const executions = await Promise.all(route.options.map((option) => executeOne({
+      const executions = await Promise.all(route.options.map((option, index) => executeOne({
         call,
+        engineIndex: index + 1,
         option,
         query,
         runtime: input.runtimes[option.optionId],
         ...(options?.signal ? { signal: options.signal } : {})
       })));
+      stage = "result";
+      logEvent("tool_execution", { tool_kind: "search", stage: "result", outcome: "started" });
+      let resultDegraded = false;
       const result = fitDurableSearchToolResult({
         call,
         executions,
-        name: call.name
+        name: call.name,
+        onDegraded() { resultDegraded = true; }
       });
       if (options?.signal?.aborted) {
         throw new SearchToolCancelledError(result, options.signal.reason);
       }
+      logEvent("tool_execution", {
+        tool_kind: "search", stage: "result", duration_ms: performance.now() - startedAt,
+        outcome: result.status === "error" ? "failed"
+          : resultDegraded || executions.some((execution) => execution.status === "error" || execution.warning)
+            ? "degraded" : "completed"
+      });
       return result;
+      } catch (error) {
+        const cancelled = error instanceof SearchToolCancelledError;
+        const failure = observedFailure(error);
+        logEvent("tool_execution", {
+          tool_kind: "search", stage, outcome: cancelled ? "cancelled" : "failed",
+          code: cancelled ? "search_cancelled" : thrownCode ?? failure.code,
+          reason: cancelled ? "cancelled" : failure.reason,
+          httpStatus: failure.httpStatus,
+          // A pre-aborted call has not started an execution timer.
+          ...(stage === "admission" && cancelled ? {} : { duration_ms: performance.now() - startedAt })
+        });
+        throw error;
+      }
     },
     optionIdsForTool(name) {
       return routeForName(name)?.options.map((option) => option.optionId) ?? [];

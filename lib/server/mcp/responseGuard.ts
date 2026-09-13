@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { FetchLike } from "@modelcontextprotocol/client";
+import { beginTransportStage, transportFailureFacts } from "../providers/providerObservability";
 import {
   MCP_JSON_RPC_REQUEST_MAX_BYTES,
   McpResponseTooLargeError,
@@ -651,11 +652,15 @@ export class McpResponseGuard {
         observedBytes: contentLength,
         operation: request.operation
       });
+      if (!isSse) beginTransportStage("body", response, "mcp").finish("failed", { code: "mcp_response_too_large", category: "unknown" });
       this.triggerFatal(error, request.context ? [[request.context, error]] : []);
       cancelReaderFromResponse(response, error);
       throw error;
     }
-    if (!response.body) return response;
+    if (!response.body) {
+      if (!isSse) beginTransportStage("body", response, "mcp").finish("completed");
+      return response;
+    }
 
     return isSse
       ? this.guardSseResponse(response, request, persistentGet)
@@ -674,6 +679,7 @@ export class McpResponseGuard {
   ): Response {
     let observedBytes = 0;
     return this.wrapBody(response, request.signal, {
+      observation: beginTransportStage("body", response, "mcp"),
       finish: () => {
         // A 202 response can move the JSON-RPC result onto the persistent GET
         // stream. Keep scoped correlation until that result, timeout, or finish.
@@ -792,6 +798,7 @@ export class McpResponseGuard {
       finish(): void;
       flush?(): readonly Uint8Array[];
       transform(chunk: Uint8Array): readonly Uint8Array[];
+      observation?: ReturnType<typeof beginTransportStage>;
     }>
   ): Response {
     const reader = response.body?.getReader();
@@ -799,6 +806,12 @@ export class McpResponseGuard {
     let terminated = false;
     let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
     let localFailure: unknown;
+    const preAborted = signal?.aborted === true;
+    let receivedBytes = 0;
+    let receivedChunks = 0;
+    let lastProgressAt: number | undefined;
+    const progress = () => preAborted ? {} : ({ bytes: receivedBytes, chunks: receivedChunks,
+      last_progress_ms: lastProgressAt === undefined ? undefined : Math.max(0, performance.now() - lastProgressAt) });
 
     const release = () => {
       try {
@@ -812,10 +825,15 @@ export class McpResponseGuard {
       this.activeStreams.delete(terminate);
       callbacks.finish();
     };
-    const terminate = (reason: unknown) => {
+    const terminate = (reason: unknown, consumerCancelled = false) => {
       if (terminated) return;
       terminated = true;
       localFailure = reason;
+      if (callbacks.observation) {
+        const facts = reason instanceof McpResponseTooLargeError
+          ? { code: "mcp_response_too_large", category: "unknown" as const } : transportFailureFacts(reason, signal);
+        callbacks.observation.finish(consumerCancelled || facts.category === "aborted" ? "cancelled" : "failed", { ...progress(), ...facts });
+      }
       cleanup();
       cancelReader(reader, reason);
       try {
@@ -842,10 +860,16 @@ export class McpResponseGuard {
             if (done) {
               for (const chunk of callbacks.flush?.() ?? []) streamController.enqueue(chunk);
               terminated = true;
+              callbacks.observation?.finish("completed", progress());
               cleanup();
               release();
               streamController.close();
               return;
+            }
+            if (callbacks.observation) {
+              receivedBytes += value.byteLength;
+              receivedChunks += 1;
+              if (value.byteLength > 0) lastProgressAt = performance.now();
             }
             const chunks = callbacks.transform(value);
             for (const chunk of chunks) streamController.enqueue(chunk);
@@ -856,7 +880,7 @@ export class McpResponseGuard {
         }
       },
       cancel: (reason) => {
-        terminate(reason);
+        terminate(reason, true);
       }
     });
     return copyResponseMetadata(response, body);

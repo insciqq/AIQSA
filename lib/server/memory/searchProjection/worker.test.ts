@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MemoryOpenSearchClient } from
   "../../search/opensearch/memoryClient";
 import { OpenSearchTransportError } from
@@ -107,6 +107,28 @@ function search(
 }
 
 describe("Memory lexical projection worker", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("records the bulk failure before a failed settlement without exposing private claim fields", async () => {
+    const records: Record<string, unknown>[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation(line => { records.push(JSON.parse(String(line))); return true; });
+    const processingError = new OpenSearchTransportError("opensearch_bulk_item_failed");
+    const persistenceError = new Error("PRIVATE_DATABASE_CANARY");
+    const projectionStore = store({
+      claim: vi.fn(async () => [claim()]),
+      settleFailure: vi.fn(async () => {
+        expect(records.at(-1)).toMatchObject({ job_id: claim().id, outcome: "failed", code: "opensearch_bulk_item_failed" });
+        throw persistenceError;
+      })
+    });
+    await expect(runMemoryLexicalProjectionPass({
+      configuration: workerConfiguration, now, openSearchConfiguration, store: projectionStore,
+      search: search({ applyMutations: vi.fn(async () => { throw processingError; }) })
+    })).rejects.toBe(persistenceError);
+    expect(records).toHaveLength(2);
+    expect(JSON.stringify(records)).not.toMatch(/private-user|entry-1|lease-1|PRIVATE_DATABASE/);
+  });
+
   it("projects one canonical entry with opaque routing through one bulk request", async () => {
     const current = claim();
     const projectionStore = store({

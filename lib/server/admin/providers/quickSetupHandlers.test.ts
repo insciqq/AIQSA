@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createAdminProviderQuickSetupMutationHandler,
   createAdminProviderQuickSetupSnapshotHandler
@@ -47,6 +47,27 @@ function service(overrides: Partial<AdminProviderQuickSetupService> = {}): Admin
 }
 
 describe("provider Quick setup handlers", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("distinguishes a partial setup from its successful HTTP response without recording credentials", async () => {
+    const records: Record<string, unknown>[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation(line => { records.push(JSON.parse(String(line))); return true; });
+    const setupService = service();
+    const base = await setupService.setup({} as never);
+    if (base.outcome !== "ready") throw new Error("ready_fixture_required");
+    vi.mocked(setupService.setup).mockResolvedValue({ ...base, outcome: "partial" });
+    const response = await createAdminProviderQuickSetupMutationHandler({
+      resolveAuth: vi.fn(async () => session), service: setupService
+    })(new Request("http://localhost/api/admin/providers/quick-setup", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedState: "PRIVATE_STATE_CANARY", provider: "openai", secret: "PRIVATE_SECRET_CANARY" })
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ outcome: "partial" });
+    expect(records).toContainEqual(expect.objectContaining({ event: "service_operation", subsystem: "admin", stage: "publish", outcome: "degraded", level: "warn" }));
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+  });
+
   it("requires an active administrator for GET and POST", async () => {
     const deps = { resolveAuth: vi.fn(async () => null), service: service() };
     const getResponse = await createAdminProviderQuickSetupSnapshotHandler(deps)(

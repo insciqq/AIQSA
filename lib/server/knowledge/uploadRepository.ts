@@ -1,3 +1,5 @@
+import { logEvent } from "../observability";
+import { retainDatabaseFailure } from "../observability/databaseFailure";
 import { randomInt, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma";
@@ -178,7 +180,7 @@ async function withSourceState(
           }
         },
         where: { id: { in: sourceIds } }
-      });
+      }).catch(retainDatabaseFailure);
   const sourcesById = new Map(sources.map((source) => [source.id, source]));
   return batches.map((batch) => ({
     ...batch,
@@ -263,7 +265,7 @@ export function createPrismaKnowledgeUploadRepository(
   const serializationRetryDelay = options.serializationRetryDelay ??
     waitForSerializationRetry;
   async function readBatch(where: Prisma.KnowledgeUploadBatchWhereInput): Promise<KnowledgeUploadBatchRecord | null> {
-    const row = await client.knowledgeUploadBatch.findFirst({ include: batchInclude, where });
+    const row = await client.knowledgeUploadBatch.findFirst({ include: batchInclude, where }).catch(retainDatabaseFailure);
     return row ? (await withSourceState(client, [row]))[0]! : null;
   }
 
@@ -298,7 +300,7 @@ export function createPrismaKnowledgeUploadRepository(
           storageKey: input.storageKey,
           transport: "PROXY"
         }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count === 1 ? "ok" : "not_found";
     },
 
@@ -340,7 +342,7 @@ export function createPrismaKnowledgeUploadRepository(
           where: { id: item.id }
         });
         return { cleanup, kind: "ok" } as const;
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }),
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }).catch(retainDatabaseFailure),
       serializationRetryDelay);
     },
 
@@ -400,7 +402,7 @@ export function createPrismaKnowledgeUploadRepository(
           where: { id: item.id }
         });
         return "ok" as const;
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }),
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }).catch(retainDatabaseFailure),
       serializationRetryDelay);
     },
 
@@ -454,7 +456,7 @@ export function createPrismaKnowledgeUploadRepository(
             },
             include: batchInclude
           });
-        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }),
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }).catch(retainDatabaseFailure),
         serializationRetryDelay);
         if (!created) return { kind: "not_found" };
         return {
@@ -497,7 +499,7 @@ export function createPrismaKnowledgeUploadRepository(
           },
           id: input.itemId
         }
-      });
+      }).catch(retainDatabaseFailure);
       return item ? {
         ...item,
         knowledgeBaseId: input.knowledgeBaseId,
@@ -511,7 +513,7 @@ export function createPrismaKnowledgeUploadRepository(
         orderBy: [{ createdAt: "desc" }, { id: "asc" }],
         take: 20,
         where: { knowledgeBaseId, ownerUserId: userId }
-      });
+      }).catch(retainDatabaseFailure);
       return withSourceState(client, rows);
     },
 
@@ -537,7 +539,7 @@ export function createPrismaKnowledgeUploadRepository(
           state: { in: ["QUEUED", "UPLOADING", "STORED", "NEEDS_ATTENTION"] },
           storageKey: input.storageKey
         }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count === 1;
     },
 
@@ -566,7 +568,7 @@ export function createPrismaKnowledgeUploadRepository(
           state: { in: ["QUEUED", "UPLOADING"] },
           storageKey: input.storageKey
         }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count === 1;
     },
 
@@ -628,7 +630,7 @@ export function createPrismaKnowledgeUploadRepository(
           where: { id: item.id }
         });
         return { cleanup, kind: "ok" } as const;
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }),
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }).catch(retainDatabaseFailure),
       serializationRetryDelay);
     },
 
@@ -652,7 +654,7 @@ export function createPrismaKnowledgeUploadRepository(
       | Readonly<{ kind: "already_settled"; sourceId: string }>
       | Readonly<{ kind: "conflict" | "not_found" }>
     > {
-      return serializable(() => client.$transaction(async (tx) => {
+      const result = await serializable(() => client.$transaction(async (tx) => {
         const item = await lockItem(tx, input);
         if (!item) return { kind: "not_found" } as const;
         if (item.attemptNumber !== input.attemptNumber) return { kind: "conflict" } as const;
@@ -835,8 +837,12 @@ export function createPrismaKnowledgeUploadRepository(
           kind: "created",
           sourceId: input.sourceId
         } as const;
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }),
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }).catch(retainDatabaseFailure),
       serializationRetryDelay);
+      if (result.kind === "created") {
+        logEvent("job_enqueued", { subsystem: "knowledge", job_id: input.sourceArtifactId });
+      }
+      return result;
     },
 
     async start(input: Readonly<{
@@ -866,7 +872,7 @@ export function createPrismaKnowledgeUploadRepository(
           state: { in: ["QUEUED", "UPLOADING"] },
           transport: "MULTIPART"
         }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count === 1 ? "ok" : "not_found";
     }
   };

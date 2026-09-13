@@ -1,3 +1,5 @@
+import "./worker-bootstrap.cjs";
+import { logEvent } from "../lib/server/observability";
 import { existsSync, readFileSync } from "node:fs";
 import { createPrismaRetentionRepository, pruneRetention } from "@/lib/server/retention/prune";
 import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
@@ -205,8 +207,8 @@ async function main() {
 }
 
 main()
-  .catch((error) => {
-    console.error(error instanceof Error ? error.message : "Prune failed");
+  .catch(() => {
+    logEvent("runtime_lifecycle", { subsystem: "database", stage: "cleanup", outcome: "failed", code: "maintenance_failed", action: "stop" });
     process.exitCode = 1;
   })
   .finally(async () => {

@@ -1,3 +1,4 @@
+import { retainDatabaseFailure } from "../../observability/databaseFailure";
 import { createHash } from "node:crypto";
 import { initialModelConfiguration } from "./initialCapabilitySetup";
 import { Prisma, type PrismaClient } from "@prisma/client";
@@ -1964,7 +1965,7 @@ export function createPrismaAdminProviderQuickSetupRepository(
               maxWait: 10_000,
               timeout: 30_000
             }
-          );
+          ).catch(retainDatabaseFailure);
         } catch (error) {
           if (error instanceof QuickSetupCatalogUnavailableError) return "catalog_unavailable";
           if (
@@ -1995,7 +1996,7 @@ export function createPrismaAdminProviderQuickSetupRepository(
               maxWait: 10_000,
               timeout: 30_000
             }
-          );
+          ).catch(retainDatabaseFailure);
         } catch (error) {
           if (error instanceof QuickSetupCatalogUnavailableError) {
             return "catalog_unavailable";

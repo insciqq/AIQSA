@@ -239,6 +239,7 @@ describe("provider runtime factory", () => {
   );
 
   it("keeps native OpenAI polling alive beyond the connection response deadline", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     vi.useFakeTimers();
     vi.stubEnv("AIQSA_OPENAI_BACKGROUND_POLL_TIMEOUT_MS", "12000");
     try {
@@ -282,11 +283,52 @@ describe("provider runtime factory", () => {
         timeoutMs: 12_000
       });
       expect(fetchFn.mock.calls.length).toBeGreaterThan(1);
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+      const physicalRequests = records.filter((entry) => entry.event === "provider_request");
+      expect(physicalRequests).toHaveLength(fetchFn.mock.calls.length);
+      expect(physicalRequests.every((entry) => entry.timeout_ms === 5_000)).toBe(true);
+      expect(records).toContainEqual(expect.objectContaining({
+        event: "provider_operation", outcome: "failed", reason: "deadline", timeout_ms: 12_000
+      }));
+      expect(records).toContainEqual(expect.objectContaining({
+        event: "provider_deadline", stage: "answer", provider_timeout_ms: 5_000, effective_timeout_ms: 5_000, poll_timeout_ms: 12_000
+      }));
+      expect(records).toContainEqual(expect.objectContaining({
+        event: "nested_abort", operation: "answer", abort_source: "provider_deadline", deadline_kind: "polling", timeout_ms: 12_000,
+        connectionId: "connection-1", providerModelId: "deployment-1"
+      }));
     } finally {
+      writer.mockRestore();
       vi.unstubAllEnvs();
       vi.useRealTimers();
     }
   });
+
+  it.each([{ requested: 25, effective: 25 }, { requested: 7_000, effective: 5_000 }])(
+    "reports requested and effective operation deadlines ($requested ms) from the actual runtime clamp",
+    async ({ requested, effective }) => {
+      const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      vi.useFakeTimers();
+      try {
+        const configured = snapshot("deepseek_responses_native");
+        const fetchFn = vi.fn<typeof fetch>((_request, init) => new Promise((_resolve, reject) => {
+          init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+        }));
+        const runtime = createProviderRuntimeBinding({
+          options: { allowFake: false, fetchFn }, secret: "PRIVATE_KEY_CANARY",
+          snapshot: { ...configured, connection: { ...configured.connection, responseTimeoutMs: 5_000 } }
+        });
+        const result = collect(runtime.adapter.stream(compatibleRequest(), { timeoutMs: requested })).catch((error: unknown) => error);
+        await vi.advanceTimersByTimeAsync(effective);
+        expect(await result).toMatchObject({ code: "provider_request_timed_out", timeoutMs: effective });
+        const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+        expect(records).toContainEqual(expect.objectContaining({ event: "provider_deadline", stage: "answer", configured_timeout_ms: requested, provider_timeout_ms: 5_000, effective_timeout_ms: effective }));
+        expect(records).toContainEqual(expect.objectContaining({ event: "nested_abort", deadline_kind: "operation", abort_source: "provider_deadline", timeout_ms: effective, connectionId: "connection-1", providerModelId: "deployment-1" }));
+        expect(records).toContainEqual(expect.objectContaining({ event: "nested_abort", deadline_kind: "request", abort_source: "parent_signal", timeout_ms: effective }));
+        expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+      } finally { writer.mockRestore(); vi.useRealTimers(); }
+    }
+  );
 
   it("bounded-retries transient initial dispatch for stateless compatible Responses", async () => {
     vi.useFakeTimers();

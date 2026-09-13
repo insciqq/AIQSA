@@ -1,3 +1,6 @@
+import { ingestionFailureFields } from "./ingestionObservability";
+import { KnowledgeIngestionCoordinator } from "./ingestionCoordinator";
+import { rememberDatabaseFailure } from "../observability/databaseFailure";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { DocumentParserError, type ParsedDocument } from "../parsing";
@@ -10,7 +13,7 @@ import { createKnowledgeIngestionProcessor, type KnowledgeIngestionProcessorRepo
 import type { KnowledgeExtractionConfig } from "./knowledgeExtractionConfig";
 import { KnowledgeHierarchicalIndexPersistenceError } from "./hierarchicalIndexRepository";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
-import type { KnowledgeSourceWorkClaim } from "./ingestionTypes";
+import { KnowledgeIngestionError, type KnowledgeSourceWorkClaim } from "./ingestionTypes";
 import { encodeKnowledgeNormalizedDocument } from "./normalizedDocument";
 
 
@@ -190,6 +193,58 @@ describe("Knowledge ingestion processor", () => {
     expect(repo.completeParsing).not.toHaveBeenCalled();
   });
 
+  it("distinguishes a rejected stage write from a lost lease and preserves the database error", async () => {
+    const writer = vi.spyOn(globalThis.process.stdout, "write").mockImplementation(() => true);
+    const failure = new Error("PRIVATE_DATABASE");
+    rememberDatabaseFailure(failure, "P2028");
+    const repo = repository();
+    vi.mocked(repo.advanceSourceToParsing).mockResolvedValueOnce(false).mockRejectedValueOnce(failure);
+    const processWork = createKnowledgeIngestionProcessor({ config,
+      embeddingRuntime: { resolveForInstallation: vi.fn(), resolveForUser: vi.fn() },
+      repository: repo, storage: createMemoryStorageAdapter() });
+    try {
+      await processWork(claim("queued"));
+      await expect(processWork(claim("queued"))).rejects.toBe(failure);
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      expect(records.filter((record) => record.event === "job_persistence")).toEqual([
+        expect.objectContaining({ stage: "prepare", outcome: "not_applied" }),
+        expect.objectContaining({ stage: "prepare", outcome: "unconfirmed", prisma_code: "P2028" })
+      ]);
+      expect(records.some((record) => record.outcome === "confirmed" || record.outcome === "completed")).toBe(false);
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+    } finally { writer.mockRestore(); }
+  });
+
+  it("keeps the parser's actual timeout and HTTP status before ingestion retry mapping", async () => {
+    const writer = vi.spyOn(globalThis.process.stdout, "write").mockImplementation(() => true);
+    const storage = createMemoryStorageAdapter();
+    await storage.putObject({ body: Buffer.from("hello"), contentType: "text/plain", storageKey: "original.txt" });
+    const parserError = new DocumentParserError("parser_timeout", "docling", { httpStatus: 503, retryAfterMs: 12_000 });
+    parserError.message = "PRIVATE_PARSER_PAYLOAD";
+    const processWork = createKnowledgeIngestionProcessor({ config,
+      embeddingRuntime: { resolveForInstallation: vi.fn(), resolveForUser: vi.fn() },
+      parser: { parse: async () => { throw parserError; } }, repository: repository(), storage });
+    const queued = [claim("parsing")];
+    const retryLater = vi.fn(async ({ errorCode }: { errorCode: string }) => {
+      const last = JSON.parse(String(writer.mock.calls.at(-1)![0]));
+      expect(last).toMatchObject({ event: "job_attempt", stage: "parse", outcome: "failed",
+        code: "parser_timeout", httpStatus: 503, action: "retry" });
+      expect(errorCode).toBe("parser_unavailable");
+      return true;
+    });
+    const service = new KnowledgeIngestionCoordinator({ maxParallel: 1, process: processWork,
+      repository: { claim: async () => queued.shift() ?? null, heartbeat: async () => true,
+        reconcile: async () => false, retryLater, settleFailed: vi.fn(async () => true) } });
+    try {
+      await service.reconcileNow();
+      expect(retryLater).toHaveBeenCalledOnce();
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      expect(records).toHaveLength(4);
+      expect(records.at(-1)).toMatchObject({ event: "job_persistence", outcome: "confirmed", delay_ms: 12_000 });
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+    } finally { writer.mockRestore(); }
+  });
+
   it("writes a checksummed normalized object before committing parse completion", async () => {
     const storage = createMemoryStorageAdapter();
     await storage.putObject({ body: Buffer.from("hello"), contentType: "text/plain", storageKey: "original.txt" });
@@ -221,7 +276,7 @@ describe("Knowledge ingestion processor", () => {
       storageKey: "original.txt"
     });
     const repo = repository();
-    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const info = vi.spyOn(globalThis.process.stdout, "write").mockImplementation(() => true);
     const fallback = parsed();
     const process = createKnowledgeIngestionProcessor({
       config,
@@ -253,16 +308,14 @@ describe("Knowledge ingestion processor", () => {
         fileName: "document.pdf",
         mimeType: "application/pdf"
       }));
-      expect(info).toHaveBeenCalledWith(JSON.stringify({
-        artifactId: "artifact-1",
-        attemptNumber: 1,
-        event: "knowledge_ingestion_parser_quality_fallback",
-        knowledgeBaseId: "base-1",
-        reasonCode: "native_pdf_possible_multi_column",
-        sourceId: "document-1",
-        sourceVersionId: "version-1",
-        stage: "parsing"
+      const records = info.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      expect(records).toContainEqual(expect.objectContaining({
+        event: "job_attempt", subsystem: "knowledge", job_id: "artifact-1", attempt: 1,
+        code: "native_pdf_possible_multi_column", stage: "parse", outcome: "degraded", level: "warn"
       }));
+      for (const privateValue of ["document.pdf", "base-1", "document-1", "version-1", "original.txt"]) {
+        expect(JSON.stringify(records)).not.toContain(privateValue);
+      }
       const normalized = JSON.parse(storage.objects.get("normalized.json")!.body.toString("utf8"));
       expect(normalized.parser.attempts[0]).not.toHaveProperty("reasonCode");
     } finally {
@@ -813,14 +866,15 @@ describe("Knowledge ingestion processor", () => {
       storage
     });
 
-    await expect(process(claim("embedding", {
+    const failure = await process(claim("embedding", {
       ingestChunkCount: 1,
       normalizedTextByteSize: encoded.body.byteLength,
       normalizedTextChecksum: encoded.checksum
-    }))).rejects.toMatchObject({
-      code: expectedCode,
-      retryAfterMs,
-      retryable
+    })).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: expectedCode, retryAfterMs, retryable });
+    expect(failure).toBeInstanceOf(KnowledgeIngestionError);
+    expect(ingestionFailureFields(failure, failure as KnowledgeIngestionError)).toMatchObject({
+      code: "embedding_provider_http_error", httpStatus, stage: "embed"
     });
   });
 

@@ -1,3 +1,4 @@
+import { observeStreamParseFailure } from "./providerObservability";
 import { safeExternalHref } from "../../domain/links";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { mergeTokenUsage, normalizeTokenUsage, reportedTokenCount } from "../../domain/usage";
@@ -1067,6 +1068,7 @@ export async function* parseGeminiInteractionsSse(
     try {
       parsed = JSON.parse(event.data) as unknown;
     } catch {
+      observeStreamParseFailure(input.responseBody);
       throw new Error("gemini_interactions_stream_invalid_json");
     }
     if (!isRecord(parsed) || typeof parsed.event_type !== "string" || event.event !== parsed.event_type) {

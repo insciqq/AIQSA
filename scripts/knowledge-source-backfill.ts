@@ -1,3 +1,5 @@
+import "./worker-bootstrap.cjs";
+import { logEvent } from "../lib/server/observability";
 import { prisma } from "../lib/server/prisma";
 import {
   backfillV1KnowledgeSources,
@@ -46,11 +48,8 @@ async function main(): Promise<void> {
 }
 
 void main()
-  .catch((error: unknown) => {
-    const code = error instanceof Error && /^knowledge_[a-z0-9_]+$/u.test(error.message)
-      ? error.message
-      : "knowledge_source_backfill_failed";
-    console.error(`AIQSA Knowledge Source reconciliation blocked: ${code}`);
+  .catch(() => {
+    logEvent("runtime_lifecycle", { subsystem: "knowledge", stage: "reconcile", outcome: "failed", code: "knowledge_source_backfill_failed", action: "stop" });
     process.exitCode = 1;
   })
   .finally(async () => {

@@ -5,6 +5,12 @@ import {
 } from "./executionRegistry";
 import type { WorkspaceRuntime } from "./runtime";
 import type { WorkspaceOperation } from "./operationFence";
+import { logEvent } from "../observability";
+import { workspaceLifecycleFailure } from "./lifecycleObservability";
+
+function observeQuiescenceFailure(error: unknown): void {
+  logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "quiesce", ...workspaceLifecycleFailure(error), action: "wait" });
+}
 
 export type WorkspaceQuiescence = Readonly<{
   /** Every targeted execution is provably gone (closed, or the VM was stopped). */
@@ -39,7 +45,7 @@ export async function quiesceWorkspaceExecutions(input: Readonly<{
   // Drain completed pages, then prove the query is empty. Cap work in a
   // single settlement; an overflow or a failed transition forces a VM stop.
   for (let page = 0; proven && page < 4; page += 1) {
-    const open = await input.registry.listOpen(scope).catch(() => null);
+    const open = await input.registry.listOpen(scope).catch((error: unknown) => { observeQuiescenceFailure(error); return null; });
     if (!open) { proven = false; break; }
     if (open.length === 0) return { proven: true, stoppedVm: false };
     if (open.some((execution) => isWorkspaceSyncCleanupId(execution.runtimeExecSessionId))) {
@@ -48,7 +54,7 @@ export async function quiesceWorkspaceExecutions(input: Readonly<{
     }
     for (const execution of open) {
       await input.registry.transition({ operation: input.operation, from: ["ACTIVE"], id: execution.id, to: "TERMINATING" })
-        .catch(() => false);
+        .catch((error: unknown) => { observeQuiescenceFailure(error); return false; });
     }
     const results = await input.runtime.terminateExecutions({
       operation: input.operation,
@@ -59,18 +65,18 @@ export async function quiesceWorkspaceExecutions(input: Readonly<{
       runtimeSandboxId: input.runtimeSandboxId,
       sessionId: input.sessionId,
       signal: input.signal
-    }).catch(() => null);
+    }).catch((error: unknown) => { observeQuiescenceFailure(error); return null; });
     for (const execution of open) {
       const closed = results?.some((result) =>
         result.runtimeExecSessionId === execution.runtimeExecSessionId && result.outcome === "closed") === true;
       if (!closed || !(await input.registry.transition({
         operation: input.operation,
         from: [...WORKSPACE_EXECUTION_OPEN_STATES], id: execution.id, to: "CLOSED"
-      }).catch(() => false))) proven = false;
+      }).catch((error: unknown) => { observeQuiescenceFailure(error); return false; }))) proven = false;
     }
   }
   if (proven) {
-    const remaining = await input.registry.listOpen(scope).catch(() => null);
+    const remaining = await input.registry.listOpen(scope).catch((error: unknown) => { observeQuiescenceFailure(error); return null; });
     if (remaining?.length === 0) return { proven: true, stoppedVm: false };
   }
   try {
@@ -80,7 +86,8 @@ export async function quiesceWorkspaceExecutions(input: Readonly<{
       sessionId: input.sessionId,
       signal: input.signal
     });
-  } catch {
+  } catch (error) {
+    observeQuiescenceFailure(error);
     return { proven: false, stoppedVm: false };
   }
   try {
@@ -90,7 +97,8 @@ export async function quiesceWorkspaceExecutions(input: Readonly<{
     });
     const remaining = await input.registry.listOpen({ sessionId: input.sessionId });
     return { proven: remaining.length === 0, stoppedVm: true };
-  } catch {
+  } catch (error) {
+    observeQuiescenceFailure(error);
     return { proven: false, stoppedVm: true };
   }
 }

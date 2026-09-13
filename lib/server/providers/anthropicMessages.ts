@@ -1,3 +1,4 @@
+import { observeJsonParse, observeStreamParseFailure } from "./providerObservability";
 import { textFromContentBlocks, type ModelRunSseEvent, type ModelRunUsage } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage } from "../../domain/usage";
 import {
@@ -1221,7 +1222,7 @@ async function throwAnthropicHttpError(response: Response, signal: AbortSignal):
     const text = await readBoundedResponseText(response, { signal });
     if (response.status === 400) {
       let body: unknown;
-      try { body = JSON.parse(text); } catch { body = null; }
+      try { body = observeJsonParse(response, () => JSON.parse(text)); } catch { body = null; }
       const error = objectValue(objectValue(body)?.error);
       forcedToolUseUnsupported = error?.type === "invalid_request_error" &&
         error.message === 'tool_choice: type "tool" and "any" are not supported for this model.';
@@ -1272,7 +1273,7 @@ export function createFetchAnthropicMessagesClient(input: {
         const text = await readBoundedResponseText(response, { signal: timeout.signal });
         let parsed: unknown;
         try {
-          parsed = text ? JSON.parse(text) as unknown : null;
+          parsed = observeJsonParse(response, () => text ? JSON.parse(text) as unknown : null);
         } catch {
           throw new Error("anthropic_response_invalid_json");
         }
@@ -1324,6 +1325,7 @@ export function createFetchAnthropicMessagesClient(input: {
           try {
             parsed = JSON.parse(event.data) as unknown;
           } catch {
+            observeStreamParseFailure(response.body);
             throw new Error("anthropic_stream_truncated");
           }
           if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {

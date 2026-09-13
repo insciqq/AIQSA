@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ThreadWorkspaceActivityEntry } from "@/lib/contracts/workspace";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { runWithContext } from "../observability";
 import {
   WORKSPACE_MCP_TOOL_ALLOWLIST,
   workspaceAttachmentPath,
@@ -305,6 +306,91 @@ function fixture() {
 }
 
 describe("Workspace coordinator", () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  it.each([false, true])("records the accepted deadline and first abort source (parent=%s)", async (parent) => {
+    vi.useFakeTimers();
+    const value = fixture();
+    const controller = new AbortController();
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => { ready = resolve; });
+    vi.mocked(value.runtime.callBoundTool).mockImplementation((input) => new Promise((_resolve, reject) => {
+      input.signal!.addEventListener("abort", () => reject(input.signal!.reason), { once: true });
+      ready();
+    }));
+    const pending = runWithContext({ trace_id: "1".repeat(32), tool_call_id: "stored", execution_index: 2 }, () => value.coordinator.execute({
+      call: { arguments: { command: "PRIVATE_COMMAND_CANARY" }, id: "PRIVATE_PROVIDER_CALL_CANARY", name: value.shellToolName },
+      modelRunToolCallId: "PRIVATE_STORED_CALL_CANARY", runId: value.runId, userId: "user_1", workspace: value.workspace, signal: controller.signal
+    })).catch((error: unknown) => error);
+    await started;
+    if (parent) runWithContext({ trace_id: "2".repeat(32) }, () => controller.abort(new Error("PRIVATE_STOP_CANARY")));
+    else await vi.advanceTimersByTimeAsync(value.workspace.syncToolTimeoutSeconds * 1_000);
+    expect(await pending).toMatchObject({ code: parent ? "workspace_tool_cancelled" : "workspace_tool_timeout" });
+    expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
+    const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+    expect(records).toContainEqual(expect.objectContaining({ event: "tool_deadline", tool_kind: "workspace", configured_timeout_ms: 1_000, effective_timeout_ms: 1_000 }));
+    expect(records.filter((entry) => entry.event === "nested_abort")).toEqual([
+      expect.objectContaining({ layer: "workspace", abort_source: parent ? "parent_signal" : "workspace_deadline", deadline_kind: "operation", timeout_ms: 1_000, trace_id: "1".repeat(32), tool_call_id: "stored", execution_index: 2 })
+    ]);
+    expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "execution", outcome: parent ? "cancelled" : "failed" }));
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+  });
+
+  it("keeps the first parent observation while a later timer fires during cancellation cleanup", async () => {
+    vi.useFakeTimers();
+    const value = fixture();
+    const controller = new AbortController();
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => { ready = resolve; });
+    let finishCleanup!: () => void;
+    const cleanup = new Promise<void>((resolve) => { finishCleanup = resolve; });
+    vi.mocked(value.runtime.cancelToolCall).mockImplementation(() => cleanup);
+    vi.mocked(value.runtime.callBoundTool).mockImplementation((input) => new Promise((_resolve, reject) => {
+      input.signal!.addEventListener("abort", () => reject(input.signal!.reason), { once: true });
+      ready();
+    }));
+    const pending = runWithContext({ trace_id: "1".repeat(32), tool_call_id: "stored" }, () => value.coordinator.execute({
+      call: { arguments: { command: "PRIVATE_COMMAND_CANARY" }, id: "PRIVATE_PROVIDER_CALL_CANARY", name: value.shellToolName },
+      modelRunToolCallId: "PRIVATE_STORED_CALL_CANARY", runId: value.runId, userId: "user_1", workspace: value.workspace, signal: controller.signal
+    })).catch((error: unknown) => error);
+    await started;
+    runWithContext({ trace_id: "2".repeat(32) }, () => controller.abort(new Error("PRIVATE_STOP_CANARY")));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(value.runtime.cancelToolCall).toHaveBeenCalledOnce();
+    finishCleanup();
+    const failure = await pending;
+    expect(failure).toBeInstanceOf(WorkspaceRuntimeError);
+    const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+    expect(records.filter((entry) => entry.event === "nested_abort")).toEqual([
+      expect.objectContaining({ trace_id: "1".repeat(32), tool_call_id: "stored", abort_source: "parent_signal" })
+    ]);
+    // The execution record preserves the existing normalization independently of the first observed source.
+    expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "execution", code: (failure as WorkspaceRuntimeError).code }));
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+  });
+
+  it("reports a returned failure and a fixed rejection code without reading diagnostic fields from the payload", async () => {
+    const value = fixture();
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.mocked(value.runtime.callBoundTool).mockResolvedValueOnce({ status: "error", content: [{ type: "text", text: "PRIVATE_RESULT_CANARY" }] });
+    const run = (name: string, command: string) => value.coordinator.execute({
+      call: { arguments: { command }, id: "PRIVATE_PROVIDER_CALL_CANARY", name }, modelRunToolCallId: "PRIVATE_STORED_CALL_CANARY",
+      runId: value.runId, userId: "user_1", workspace: value.workspace
+    });
+    await expect(run(value.shellToolName, "PRIVATE_COMMAND_CANARY")).resolves.toMatchObject({ status: "error" });
+    await expect(run(namespacedWorkspaceToolName("sandbox_exec"), "echo PRIVATE_COMMAND_CANARY && pwd")).resolves.toMatchObject({ status: "error" });
+    expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
+    const results = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>).filter((entry) => entry.stage === "result");
+    expect(results).toEqual([
+      expect.objectContaining({ tool_kind: "workspace", outcome: "failed" }),
+      expect.objectContaining({ tool_kind: "workspace", outcome: "failed", code: "workspace_shell_syntax_requires_shell" })
+    ]);
+    expect(results[0]).not.toHaveProperty("code");
+    expect(JSON.stringify(results)).not.toContain("PRIVATE_");
+  });
+
   it.each(["handoff", "cancelled"] as const)("saves browser bytes after quiescence and before retirement at %s", async (mode) => {
     const value = fixture(); value.setRuntimeSandboxId("runtime_1");
     const data = JSON.stringify({ cookies: [], origins: [] });

@@ -1,4 +1,6 @@
 import { setupProgressResponse } from "./setupProgressResponse";
+import { logEvent, type LifecycleStage } from "../../observability";
+import { databaseFailureCode } from "../../observability/databaseFailure";
 import type { AdminProviderModelSaveReceipt } from "../../../contracts/adminProviderModelSave";
 import type { AdminProviderSetupProgress } from "../../../contracts/adminProviderSetupProgress";
 import type {
@@ -159,16 +161,24 @@ function serviceError(error: AdminProviderServiceError): Response {
     : undefined);
 }
 
-async function safely(operation: () => Promise<Response>): Promise<Response> {
+async function safely(operation: () => Promise<Response>, stage: LifecycleStage = "write"): Promise<Response> {
+  const started = performance.now();
   try {
-    return await operation();
+    const response = await operation();
+    logEvent("service_operation", { subsystem: "admin", stage, outcome: response.ok ? "completed" : "skipped", httpStatus: response.status, duration_ms: performance.now() - started });
+    return response;
   } catch (error) {
-    if (error instanceof AdminProviderServiceError) return serviceError(error);
+    if (error instanceof AdminProviderServiceError) {
+      const response = serviceError(error);
+      logEvent("service_operation", { subsystem: "admin", stage, code: error.code, httpStatus: response.status,
+        outcome: response.status >= 500 || response.status === 422 || error.code === "provider_test_evidence_invalid" ? "failed" : "skipped", duration_ms: performance.now() - started });
+      return response;
+    }
     if (error instanceof ProviderConfigurationError ||
       (error instanceof Error && error.message === "provider_credential_secret_invalid")) {
       return errorJson("provider_configuration_invalid", 400);
     }
-    console.error("provider_admin_action_failed");
+    logEvent("service_operation", { subsystem: "admin", stage, outcome: "failed", code: "provider_admin_action_failed", prisma_code: databaseFailureCode(error), duration_ms: performance.now() - started });
     return errorJson("provider_admin_action_failed", 500);
   }
 }
@@ -234,7 +244,7 @@ export function createAdminProviderCatalogHandler(deps: AdminProviderHandlerDeps
   return async function GET(request: Request): Promise<Response> {
     const authError = await requireAdmin(request, deps);
     if (authError) return authError;
-    return safely(() => catalog(deps.service));
+    return safely(() => catalog(deps.service), "read");
   };
 }
 

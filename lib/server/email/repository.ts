@@ -1,3 +1,4 @@
+import { retainDatabaseFailure } from "../observability/databaseFailure";
 import { Prisma, type PrismaClient, type SmtpControl } from "@prisma/client";
 import type {
   AdminEmailAttemptCode,
@@ -283,8 +284,8 @@ function completeStoredSlot(input: {
 async function lockControl(tx: SmtpTransaction): Promise<SmtpControl> {
   await tx.$queryRaw(
     Prisma.sql`SELECT "id" FROM "SmtpControl" WHERE "id" = ${SMTP_CONTROL_ID} FOR UPDATE`
-  );
-  const record = await tx.smtpControl.findUnique({ where: { id: SMTP_CONTROL_ID } });
+  ).catch(retainDatabaseFailure);
+  const record = await tx.smtpControl.findUnique({ where: { id: SMTP_CONTROL_ID } }).catch(retainDatabaseFailure);
   if (!record) throw new Error("smtp_control_missing");
   return record;
 }
@@ -319,7 +320,7 @@ export function createPrismaEmailRepository(input: {
 
   return {
     async readAdminState() {
-      const record = await prisma.smtpControl.findUnique({ where: { id: SMTP_CONTROL_ID } });
+      const record = await prisma.smtpControl.findUnique({ where: { id: SMTP_CONTROL_ID } }).catch(retainDatabaseFailure);
       if (!record) throw new Error("smtp_control_missing");
       return stateFrom(record);
     },
@@ -334,7 +335,7 @@ export function createPrismaEmailRepository(input: {
         return failure("invalid_configuration");
       }
 
-      return prisma.$transaction(async (tx) => {
+      return prisma.$transaction<EmailRepositoryResult<AdminEmailState>>(async (tx) => {
         const current = await lockControl(tx);
         if (current.draftVersion !== request.expectedDraftVersion) {
           return failure("draft_conflict");
@@ -381,13 +382,13 @@ export function createPrismaEmailRepository(input: {
             testedDraftVersion: null
           },
           where: { id: SMTP_CONTROL_ID }
-        });
+        }).catch(retainDatabaseFailure);
         return stateFrom(updated);
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async loadDraftForTest(expectedDraftVersion) {
-      const record = await prisma.smtpControl.findUnique({ where: { id: SMTP_CONTROL_ID } });
+      const record = await prisma.smtpControl.findUnique({ where: { id: SMTP_CONTROL_ID } }).catch(retainDatabaseFailure);
       if (!record) throw new Error("smtp_control_missing");
       if (record.draftVersion !== expectedDraftVersion) return failure("draft_conflict");
       const completed = completeStoredSlot({
@@ -410,15 +411,15 @@ export function createPrismaEmailRepository(input: {
           testedDraftVersion: request.code === "accepted" ? request.draftVersion : null
         },
         where: { draftVersion: request.draftVersion, id: SMTP_CONTROL_ID }
-      });
+      }).catch(retainDatabaseFailure);
       if (result.count !== 1) return failure("draft_conflict");
-      const record = await prisma.smtpControl.findUnique({ where: { id: SMTP_CONTROL_ID } });
+      const record = await prisma.smtpControl.findUnique({ where: { id: SMTP_CONTROL_ID } }).catch(retainDatabaseFailure);
       if (!record) throw new Error("smtp_control_missing");
       return stateFrom(record);
     },
 
     async activate(request) {
-      return prisma.$transaction(async (tx) => {
+      return prisma.$transaction<EmailRepositoryResult<AdminEmailState>>(async (tx) => {
         const current = await lockControl(tx);
         if (current.draftVersion !== request.expectedDraftVersion) return failure("draft_conflict");
         if (current.activeVersion !== request.expectedActiveVersion) return failure("active_conflict");
@@ -447,13 +448,13 @@ export function createPrismaEmailRepository(input: {
             ...resetHealth(activeVersion)
           },
           where: { id: SMTP_CONTROL_ID }
-        });
+        }).catch(retainDatabaseFailure);
         return stateFrom(updated);
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async enable(request) {
-      return prisma.$transaction(async (tx) => {
+      return prisma.$transaction<EmailRepositoryResult<AdminEmailState>>(async (tx) => {
         const current = await lockControl(tx);
         if (current.activeVersion !== request.expectedActiveVersion) return failure("active_conflict");
         if (current.activeConfig === null) return failure("not_configured");
@@ -474,13 +475,13 @@ export function createPrismaEmailRepository(input: {
             ...resetHealth(activeVersion)
           },
           where: { id: SMTP_CONTROL_ID }
-        });
+        }).catch(retainDatabaseFailure);
         return stateFrom(updated);
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async disable(request) {
-      return prisma.$transaction(async (tx) => {
+      return prisma.$transaction<EmailRepositoryResult<AdminEmailState>>(async (tx) => {
         const current = await lockControl(tx);
         if (current.activeVersion !== request.expectedActiveVersion) return failure("active_conflict");
         if (current.activeConfig === null) return failure("not_configured");
@@ -498,13 +499,13 @@ export function createPrismaEmailRepository(input: {
             lastFailureCode: null
           },
           where: { id: SMTP_CONTROL_ID }
-        });
+        }).catch(retainDatabaseFailure);
         return stateFrom(updated);
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async clear(request) {
-      return prisma.$transaction(async (tx) => {
+      return prisma.$transaction<EmailRepositoryResult<AdminEmailState>>(async (tx) => {
         const current = await lockControl(tx);
         if (current.draftVersion !== request.expectedDraftVersion) return failure("draft_conflict");
         if (current.activeVersion !== request.expectedActiveVersion) return failure("active_conflict");
@@ -534,13 +535,13 @@ export function createPrismaEmailRepository(input: {
             testedDraftVersion: null
           },
           where: { id: SMTP_CONTROL_ID }
-        });
+        }).catch(retainDatabaseFailure);
         return stateFrom(updated);
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async loadActiveForSend() {
-      const record = await prisma.smtpControl.findUnique({ where: { id: SMTP_CONTROL_ID } });
+      const record = await prisma.smtpControl.findUnique({ where: { id: SMTP_CONTROL_ID } }).catch(retainDatabaseFailure);
       if (!record) throw new Error("smtp_control_missing");
       if (!record.enabled) return success({ kind: "unavailable" });
       if (record.activeConfig === null) {
@@ -595,7 +596,7 @@ export function createPrismaEmailRepository(input: {
             { lastAttemptAt: { lte: request.at } }
           ]
         }
-      });
+      }).catch(retainDatabaseFailure);
       return result.count === 1;
     }
   };

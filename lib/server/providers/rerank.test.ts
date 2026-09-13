@@ -6,6 +6,7 @@ import {
   MAX_RERANK_QUERY_CHARACTERS
 } from "./rerank";
 import { normalizeProviderModelConfiguration } from "./providerConfiguration";
+import { runWithContext } from "../observability";
 
 const connection = {
   allowPrivateNetwork: false,
@@ -92,6 +93,32 @@ function strictAdapter(fetchFn: typeof fetch) {
 }
 
 describe("OpenRouter reranker adapter", () => {
+  it("reports rerank transport recovery and the final invalid-response code independently", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const fetchFn = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response("PRIVATE_ERROR_BODY_CANARY", { status: 503 }))
+        .mockResolvedValueOnce(new Response("PRIVATE_INVALID_JSON_CANARY"));
+      const observed = createOpenRouterRerankAdapter({
+        connection, model: rerankerModel(), secret: "PRIVATE_CREDENTIAL_CANARY",
+        observationIdentity: { providerFamily: "openrouter", adapterKind: "openrouter_rerank", connectionId: "rerank-connection", providerModelId: "rerank-model" },
+        network: { fetchFn, retry: { maxAttempts: 2, sleep: async () => undefined } }
+      });
+      await expect(runWithContext({ trace_id: "f".repeat(32), tool_call_id: "rerank-tool", execution_index: 2 }, () => observed.rerank({
+        query: "PRIVATE_QUERY_CANARY", documents: [{ handle: "candidate-0", text: "PRIVATE_DOCUMENT_CANARY" }]
+      }))).rejects.toMatchObject({ code: "rerank_response_invalid" });
+      expect(fetchFn).toHaveBeenCalledTimes(2);
+      const records = writer.mock.calls.flatMap(([chunk]) => { try { return [JSON.parse(String(chunk))]; } catch { return []; } });
+      expect(records.filter((entry) => entry.event === "provider_request")).toMatchObject([
+        { stage: "rerank", attempt: 1, httpStatus: 503, outcome: "failed" },
+        { stage: "rerank", attempt: 2, httpStatus: 200, outcome: "completed" }
+      ]);
+      expect(records).toContainEqual(expect.objectContaining({ event: "transport_stage", stage: "parse", category: "parse", outcome: "failed", httpStatus: 200, connectionId: "rerank-connection" }));
+      expect(records).toContainEqual(expect.objectContaining({ event: "provider_operation", stage: "rerank", code: "rerank_response_invalid", outcome: "failed", trace_id: "f".repeat(32), tool_call_id: "rerank-tool", execution_index: 2, providerModelId: "rerank-model" }));
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+    } finally { writer.mockRestore(); }
+  });
+
   it("preserves a 3000-code-point query through JSON transport", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => response());
     const constraint = "Keep the session open.";

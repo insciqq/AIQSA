@@ -8,6 +8,9 @@ import {
 import type { McpOperationalStatus } from "@/lib/contracts/mcp";
 import { redactMcpToolCallResult } from "./resultRedaction";
 import { ToolHiveClientError } from "./toolhiveClient";
+import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, type LifecycleStage } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
+import { observedFailure } from "../providers/providerObservability";
 
 export type McpRuntimeInventoryTool = {
   annotations?: Record<string, boolean | string>;
@@ -73,7 +76,7 @@ export type McpRuntimeCoordinatorRepository = {
     fingerprint: string;
     generationId: string;
     now: Date;
-  }): Promise<boolean>;
+  }): Promise<Readonly<{ applied: boolean; retryAt: Date | null }>>;
   markReady(input: {
     fingerprint: string;
     generationId: string;
@@ -207,6 +210,10 @@ function stableRuntimeError(error: unknown): string {
   return "mcp_connect_failed";
 }
 
+function runtimeStateError(code: "mcp_inventory_changed" | "mcp_session_closed" | "mcp_request_cancelled"): Error {
+  return Object.assign(new Error(code), { code });
+}
+
 function isClosedSession(session: McpRuntimeSession): boolean {
   try {
     return session.isClosed?.() === true;
@@ -252,23 +259,65 @@ export class McpRuntimeCoordinator {
   #timer: ReturnType<typeof setInterval> | null = null;
   #healthTimer: ReturnType<typeof setTimeout> | null = null;
 
+  async #write(generationId: string, stage: LifecycleStage, operation: () => Promise<boolean>): Promise<boolean> {
+    try {
+      const applied = await operation();
+      logEvent("job_persistence", { subsystem: "mcp", generation_id: generationId, stage, outcome: applied ? "confirmed" : "not_applied" });
+      return applied;
+    } catch (error) {
+      logEvent("job_persistence", { subsystem: "mcp", generation_id: generationId, stage, outcome: "unconfirmed", prisma_code: databaseFailureCode(error) });
+      throw error;
+    }
+  }
+
+  async #markFailed(input: Parameters<McpRuntimeCoordinatorRepository["markFailed"]>[0]): Promise<void> {
+    try {
+      const result = await this.#repository.markFailed(input);
+      logEvent("job_persistence", { subsystem: "mcp", generation_id: input.generationId, stage: "retry",
+        outcome: result.applied ? "confirmed" : "not_applied", code: input.errorCode, action: result.applied ? "retry" : "skip",
+        ...(result.applied && result.retryAt ? { retry_at: result.retryAt.toISOString() } : {}) });
+    } catch (error) {
+      logEvent("job_persistence", { subsystem: "mcp", generation_id: input.generationId, stage: "retry", outcome: "unconfirmed",
+        prisma_code: databaseFailureCode(error), action: "wait" });
+      throw error;
+    }
+  }
+
+  #failed(generationId: string, stage: LifecycleStage, error: unknown, cancelled = false): void {
+    const failure = observedFailure(error);
+    logEvent("job_attempt", { subsystem: "mcp", generation_id: generationId, stage,
+      outcome: cancelled ? "cancelled" : "failed", code: failure.code, prisma_code: databaseFailureCode(error), action: "stop" });
+    if (!cancelled) reportSubsystemFailure({ subsystem: "mcp", stage: "process", scope_id: generationId,
+      code: failure.code, prisma_code: databaseFailureCode(error), action: "retry" });
+  }
+
+  async #close(generationId: string, operation: () => Promise<void>): Promise<void> {
+    try { await operation(); }
+    catch (error) {
+      logEvent("runtime_lifecycle", { subsystem: "mcp", generation_id: generationId, stage: "release", outcome: "failed",
+        code: observedFailure(error).code, action: "wait" });
+    }
+  }
+
   async #evictFailedRuntime(
     generationId: string,
     runtime: LiveRuntime,
     errorCode: string,
-    cleanup: "close" | "dispose" = "dispose"
+    cleanup: "close" | "dispose" = "dispose",
+    failureObserved = false
   ): Promise<boolean> {
     if (this.#live.get(generationId) !== runtime) return false;
+    if (!failureObserved) this.#failed(generationId, "evict", { code: errorCode });
     runtime.evictionErrorCode = errorCode;
     this.#live.delete(generationId);
     this.#discardHealthProbe(generationId, runtime);
     const repositoryStateWrite = runtime.repositoryStateWrite;
-    const cleanupPromise = cleanup === "dispose"
+    const cleanupPromise = this.#close(generationId, () => cleanup === "dispose"
       ? runtime.session.dispose?.() ?? runtime.session.close()
-      : runtime.session.close();
+      : runtime.session.close());
     const failed = (async () => {
       await repositoryStateWrite?.catch(() => undefined);
-      await this.#repository.markFailed({
+      await this.#markFailed({
         errorCode,
         fingerprint: runtime.fingerprint,
         generationId,
@@ -298,7 +347,7 @@ export class McpRuntimeCoordinator {
 
   start(): void {
     if (this.#timer) return;
-    this.#timer = setInterval(() => this.kick(), this.#intervalMs);
+    this.#timer = runInBackground(() => setInterval(() => this.kick(), this.#intervalMs));
     this.#timer.unref?.();
     this.#scheduleHealthCheck();
     this.kick();
@@ -311,23 +360,23 @@ export class McpRuntimeCoordinator {
     this.#healthTimer = null;
     await this.#runPromise?.catch(() => undefined);
     await Promise.allSettled([...this.#starts.values()].map((runtime) => runtime.promise));
-    const sessions = [...this.#live.values()].map((runtime) => runtime.session);
+    const sessions = [...this.#live.entries()].map(([generationId, runtime]) => ({ generationId, session: runtime.session }));
     this.#live.clear();
     for (const probe of this.#healthProbes.values()) probe.controller?.abort();
     this.#healthProbes.clear();
-    await Promise.allSettled(sessions.map((session) => session.close()));
+    await Promise.allSettled(sessions.map(({ generationId, session }) => this.#close(generationId, () => session.close())));
   }
 
   kick(userId?: string): void {
     if (userId) this.#pendingUsers.add(userId);
     else this.#pendingAll = true;
     if (!this.#runPromise) {
-      this.#runPromise = Promise.resolve()
+      this.#runPromise = runInBackground(() => Promise.resolve()
         .then(() => this.#drainKicks())
         .finally(() => {
           this.#runPromise = null;
           if (this.#pendingAll || this.#pendingUsers.size) this.kick();
-        });
+        }));
       // Timer- and mutation-triggered kicks are best effort. Explicit
       // reconcileNow callers still observe the same rejection.
       void this.#runPromise.catch(() => undefined);
@@ -408,8 +457,10 @@ export class McpRuntimeCoordinator {
     const runtime = this.#live.get(generationId);
     if (!runtime) return this.#starts.has(generationId) ? "checking" : "inactive";
     if (isClosedSession(runtime.session)) {
-      void this.#evictFailedRuntime(generationId, runtime, closedSessionErrorCode(runtime.session))
-        .catch(() => undefined);
+      void runInBackground(() =>
+        this.#evictFailedRuntime(generationId, runtime, closedSessionErrorCode(runtime.session))
+          .catch(() => undefined)
+      );
       return "inactive";
     }
     const age = this.#now().getTime() - runtime.lastProtocolSuccessAt;
@@ -441,11 +492,11 @@ export class McpRuntimeCoordinator {
       }
     }
     if (!Number.isFinite(dueAt)) return;
-    this.#healthTimer = setTimeout(() => {
+    this.#healthTimer = runInBackground(() => setTimeout(() => {
       this.#healthTimer = null;
       for (const generationId of this.#live.keys()) this.operationalStatus(generationId);
       this.#scheduleHealthCheck();
-    }, Math.max(1, dueAt - this.#now().getTime()));
+    }, Math.max(1, dueAt - this.#now().getTime())));
     this.#healthTimer.unref?.();
   }
 
@@ -460,12 +511,12 @@ export class McpRuntimeCoordinator {
       const controller = new AbortController();
       probe.controller = controller;
       this.#activeProbes += 1;
-      void this.#probe(generationId, probe, controller).finally(() => {
+      void runInBackground(() => this.#probe(generationId, probe, controller).finally(() => {
         if (this.#healthProbes.get(generationId) === probe) this.#healthProbes.delete(generationId);
         this.#activeProbes -= 1;
         this.#drainHealthProbes();
         this.#scheduleHealthCheck();
-      });
+      }));
     }
   }
 
@@ -496,19 +547,20 @@ export class McpRuntimeCoordinator {
           assertInventoryDoesNotExposeCredentials(tools, runtime.redactionValues, runtime.session);
           const hashes = new Map(tools.map((tool) => [tool.name, tool.definitionHash]));
           for (const [name, hash] of runtime.toolDefinitionHashes) {
-            if (hashes.get(name) !== hash) throw new Error("mcp_inventory_changed");
+            if (hashes.get(name) !== hash) throw runtimeStateError("mcp_inventory_changed");
           }
           // A health response renews liveness only; it never publishes new tools.
         }),
         cancelled
       ]);
       if (this.#live.get(generationId) !== runtime || this.#healthProbes.get(generationId) !== probe) return;
-      if (isClosedSession(runtime.session)) throw new Error("mcp_session_closed");
+      if (isClosedSession(runtime.session)) throw runtimeStateError("mcp_session_closed");
       runtime.lastProtocolSuccessAt = this.#now().getTime();
     } catch (error) {
       // Eviction removes live proof immediately; cleanup does not hold a probe slot.
       if (this.#live.get(generationId) === runtime) {
-        void this.#evictFailedRuntime(generationId, runtime, stableRuntimeError(error)).catch(() => undefined);
+        this.#failed(generationId, "health", error);
+        void this.#evictFailedRuntime(generationId, runtime, stableRuntimeError(error), "dispose", true).catch(() => undefined);
       }
     } finally {
       clearTimeout(timer);
@@ -545,16 +597,23 @@ export class McpRuntimeCoordinator {
   }
 
   async #drainKicks(): Promise<void> {
-    while (this.#pendingAll || this.#pendingUsers.size) {
-      const all = this.#pendingAll;
-      const users = all ? [] : [...this.#pendingUsers];
-      this.#pendingAll = false;
-      this.#pendingUsers.clear();
-      if (all) {
-        await this.#reconcileScope(undefined);
-      } else {
-        for (const userId of users) await this.#reconcileScope(userId);
+    try {
+      while (this.#pendingAll || this.#pendingUsers.size) {
+        const all = this.#pendingAll;
+        const users = all ? [] : [...this.#pendingUsers];
+        this.#pendingAll = false;
+        this.#pendingUsers.clear();
+        if (all) {
+          await this.#reconcileScope(undefined);
+        } else {
+          for (const userId of users) await this.#reconcileScope(userId);
+        }
       }
+      reportSubsystemHealthy("mcp", "reconcile");
+    } catch (error) {
+      reportSubsystemFailure({ subsystem: "mcp", stage: "reconcile", code: observedFailure(error).code,
+        prisma_code: databaseFailureCode(error), action: "retry" });
+      throw error;
     }
   }
 
@@ -590,7 +649,7 @@ export class McpRuntimeCoordinator {
       if (live) {
         this.#live.delete(launch.generationId);
         this.#discardHealthProbe(launch.generationId, live);
-        await live.session.close().catch(() => undefined);
+        await this.#close(launch.generationId, () => live.session.close());
       }
       signal?.throwIfAborted();
       await this.#start(launch, signal);
@@ -612,11 +671,11 @@ export class McpRuntimeCoordinator {
       promise: Promise.resolve(),
       waiters: 0
     };
-    starting.promise = this.#performStart(launch, starting.controller.signal).finally(() => {
+    starting.promise = runInBackground(() => this.#performStart(launch, starting.controller.signal).finally(() => {
       if (this.#starts.get(launch.generationId) === starting) {
         this.#starts.delete(launch.generationId);
       }
-    });
+    }));
     this.#starts.set(launch.generationId, starting);
     return this.#waitForStart(starting, signal);
   }
@@ -637,7 +696,7 @@ export class McpRuntimeCoordinator {
         if (signal.aborted && !starting.persistent && starting.waiters === 0) starting.controller.abort();
         if (error) reject(error); else resolve();
       };
-      const abort = () => finish(signal.reason ?? new Error("mcp_request_cancelled"));
+      const abort = () => finish(signal.reason ?? runtimeStateError("mcp_request_cancelled"));
       signal.addEventListener("abort", abort, { once: true });
       if (signal.aborted) abort();
       starting.promise.then(() => finish(), (error) => finish(error));
@@ -658,16 +717,18 @@ export class McpRuntimeCoordinator {
     if (live) {
       this.#live.delete(launch.generationId);
       this.#discardHealthProbe(launch.generationId, live);
-      await live.session.close().catch(() => undefined);
+      await this.#close(launch.generationId, () => live.session.close());
     }
     const now = this.#now();
     if (launch.retryAt && launch.retryAt > now) return;
-    if (!(await this.#repository.markStarting({
+    if (!(await this.#write(launch.generationId, "claim", () => this.#repository.markStarting({
       fingerprint: launch.fingerprint,
       generationId: launch.generationId,
       now
-    }))) return;
+    })))) return;
 
+    const started = performance.now();
+    logEvent("job_attempt", { subsystem: "mcp", generation_id: launch.generationId, stage: "initialize", outcome: "started" });
     let session: McpRuntimeSession | null = null;
     try {
       signal.throwIfAborted();
@@ -682,22 +743,22 @@ export class McpRuntimeCoordinator {
       const tools = await session.listTools(signal);
       signal.throwIfAborted();
       const protocolSuccessAt = this.#now().getTime();
-      if (isClosedSession(session)) throw new Error("mcp_session_closed");
+      if (isClosedSession(session)) throw runtimeStateError("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, launch.redactionValues, session);
       const disabledToolNames = new Set(launch.disabledToolNames ?? []);
       const effectiveTools = effectiveRuntimeTools(tools, disabledToolNames);
-      const accepted = await this.#repository.markReady({
+      const accepted = await this.#write(launch.generationId, "complete", () => this.#repository.markReady({
         fingerprint: launch.fingerprint,
         generationId: launch.generationId,
         inventory: { tools: effectiveTools, version: 1 },
         now: this.#now()
-      });
+      }));
       signal.throwIfAborted();
       if (!accepted) {
-        await session.close().catch(() => undefined);
+        await this.#close(launch.generationId, () => session!.close());
         return;
       }
-      if (isClosedSession(session)) throw new Error("mcp_session_closed");
+      if (isClosedSession(session)) throw runtimeStateError("mcp_session_closed");
       this.#live.set(launch.generationId, {
         healthUsesToolList: false,
         toolDefinitionHashes: new Map(effectiveTools.map((tool) => [tool.name, tool.definitionHash])),
@@ -712,13 +773,16 @@ export class McpRuntimeCoordinator {
         session
       });
       this.#scheduleHealthCheck();
+      logEvent("job_attempt", { subsystem: "mcp", generation_id: launch.generationId, stage: "initialize", outcome: "completed", duration_ms: performance.now() - started });
+      reportSubsystemHealthy("mcp", "process", launch.generationId);
     } catch (error) {
+      this.#failed(launch.generationId, "initialize", error, signal.aborted);
       const errorCode = session
         ? fatalResponseErrorCode(session) ?? stableRuntimeError(error)
         : stableRuntimeError(error);
-      if (signal.aborted && session?.dispose) await session.dispose().catch(() => undefined);
-      else await session?.close().catch(() => undefined);
-      await this.#repository.markFailed({
+      if (signal.aborted && session?.dispose) await this.#close(launch.generationId, () => session!.dispose!());
+      else if (session) await this.#close(launch.generationId, () => session!.close());
+      await this.#markFailed({
         errorCode,
         fingerprint: launch.fingerprint,
         generationId: launch.generationId,
@@ -741,7 +805,7 @@ export class McpRuntimeCoordinator {
       promise: Promise.resolve(),
       rerun: false
     };
-    refresh.promise = (async () => {
+    refresh.promise = runInBackground(() => (async () => {
       do {
         refresh.rerun = false;
         if (!(await this.#performRefresh(generationId, fingerprint))) {
@@ -752,7 +816,7 @@ export class McpRuntimeCoordinator {
       if (this.#refreshes.get(generationId) === refresh) {
         this.#refreshes.delete(generationId);
       }
-    });
+    }));
     this.#refreshes.set(generationId, refresh);
     return refresh.promise;
   }
@@ -768,12 +832,13 @@ export class McpRuntimeCoordinator {
       );
       return false;
     }
+    logEvent("job_attempt", { subsystem: "mcp", generation_id: generationId, stage: "refresh", outcome: "started" });
     try {
-      const startingWrite = this.#repository.markStarting({
+      const startingWrite = this.#write(generationId, "claim", () => this.#repository.markStarting({
         fingerprint,
         generationId,
         now: this.#now()
-      });
+      }));
       live.repositoryStateWrite = startingWrite;
       let started: boolean;
       try {
@@ -784,12 +849,12 @@ export class McpRuntimeCoordinator {
       if (!started) {
         if (live.evictionErrorCode !== null) return false;
         if (this.#live.get(generationId) === live) this.#live.delete(generationId);
-        await live.session.close().catch(() => undefined);
+        await this.#close(generationId, () => live.session.close());
         return false;
       }
       if (this.#live.get(generationId) !== live) {
         if (live.evictionErrorCode !== null) return false;
-        await this.#repository.markFailed({
+        await this.#markFailed({
           errorCode: "mcp_session_closed",
           fingerprint,
           generationId,
@@ -799,16 +864,16 @@ export class McpRuntimeCoordinator {
       }
       const tools = await live.session.listTools();
       const protocolSuccessAt = this.#now().getTime();
-      if (isClosedSession(live.session)) throw new Error("mcp_session_closed");
+      if (isClosedSession(live.session)) throw runtimeStateError("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, live.redactionValues, live.session);
       const effectiveTools = effectiveRuntimeTools(tools, live.disabledToolNames);
       if (this.#live.get(generationId) !== live) return false;
-      const readinessWrite = this.#repository.markReady({
+      const readinessWrite = this.#write(generationId, "complete", () => this.#repository.markReady({
         fingerprint,
         generationId,
         inventory: { tools: effectiveTools, version: 1 },
         now: this.#now()
-      });
+      }));
       live.repositoryStateWrite = readinessWrite;
       let accepted: boolean;
       try {
@@ -818,12 +883,12 @@ export class McpRuntimeCoordinator {
       }
       if (!accepted) {
         if (this.#live.get(generationId) === live) this.#live.delete(generationId);
-        await live.session.close().catch(() => undefined);
+        await this.#close(generationId, () => live.session.close());
         return false;
       }
       if (this.#live.get(generationId) !== live) {
         if (live.evictionErrorCode !== null) return false;
-        await this.#repository.markFailed({
+        await this.#markFailed({
           errorCode: "mcp_session_closed",
           fingerprint,
           generationId,
@@ -831,14 +896,17 @@ export class McpRuntimeCoordinator {
         });
         return false;
       }
-      if (isClosedSession(live.session)) throw new Error("mcp_session_closed");
+      if (isClosedSession(live.session)) throw runtimeStateError("mcp_session_closed");
       live.enabledToolNames = new Set(effectiveTools.map((tool) => tool.name));
       live.toolDefinitionHashes = new Map(effectiveTools.map((tool) => [tool.name, tool.definitionHash]));
       live.lastProtocolSuccessAt = protocolSuccessAt;
       this.#scheduleHealthCheck();
+      logEvent("job_attempt", { subsystem: "mcp", generation_id: generationId, stage: "refresh", outcome: "completed" });
+      reportSubsystemHealthy("mcp", "process", generationId);
       return true;
     } catch (error) {
       if (live.evictionErrorCode !== null) return false;
+      this.#failed(generationId, "refresh", error);
       const fatalErrorCode = fatalResponseErrorCode(live.session);
       const errorCode = fatalErrorCode ?? stableRuntimeError(error);
       if (this.#live.get(generationId) === live) {
@@ -846,12 +914,13 @@ export class McpRuntimeCoordinator {
           generationId,
           live,
           errorCode,
-          fatalErrorCode !== null || isClosedSession(live.session) ? "dispose" : "close"
+          fatalErrorCode !== null || isClosedSession(live.session) ? "dispose" : "close",
+          true
         );
         return false;
       }
-      await live.session.close().catch(() => undefined);
-      await this.#repository.markFailed({
+      await this.#close(generationId, () => live.session.close());
+      await this.#markFailed({
         errorCode,
         fingerprint,
         generationId,
@@ -861,19 +930,26 @@ export class McpRuntimeCoordinator {
     }
   }
 
-  async #drainUnused(): Promise<void> {
-    for (const generationId of await this.#repository.listDrainedGenerationIds()) {
-      const live = this.#live.get(generationId);
-      if (!await this.#repository.deleteDrainedGeneration(generationId)) continue;
-      if (!live) continue;
-      this.#live.delete(generationId);
-      this.#discardHealthProbe(generationId, live);
-      await (live.session.dispose?.() ?? live.session.close()).catch(() => undefined);
-    }
-    await this.#repository.finalizeDeletedServers();
-    if (this.#runtimeLifecycle && this.#repository.listGenerationFingerprints) {
-      const retained = await this.#repository.listGenerationFingerprints();
-      await this.#runtimeLifecycle.cleanupOrphans(retained).catch(() => undefined);
-    }
+  #drainUnused(): Promise<void> {
+    return runInBackground(async () => {
+      for (const generationId of await this.#repository.listDrainedGenerationIds()) {
+        const live = this.#live.get(generationId);
+        if (!await this.#write(generationId, "cleanup", () => this.#repository.deleteDrainedGeneration(generationId))) continue;
+        if (!live) continue;
+        this.#live.delete(generationId);
+        this.#discardHealthProbe(generationId, live);
+        await this.#close(generationId, () => live.session.dispose?.() ?? live.session.close());
+      }
+      await this.#repository.finalizeDeletedServers();
+      if (this.#runtimeLifecycle && this.#repository.listGenerationFingerprints) {
+        const retained = await this.#repository.listGenerationFingerprints();
+        try {
+          await this.#runtimeLifecycle.cleanupOrphans(retained);
+          reportSubsystemHealthy("mcp", "cleanup");
+        } catch (error) {
+          reportSubsystemFailure({ subsystem: "mcp", stage: "cleanup", code: observedFailure(error).code, action: "retry" });
+        }
+      }
+    });
   }
 }

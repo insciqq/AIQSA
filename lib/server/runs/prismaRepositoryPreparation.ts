@@ -2,6 +2,10 @@ import { assertMcpToolAccess } from "../mcp/toolAccess";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
 import { assertChatPdfClaim, insertChatPdfAdmissions, storeChatPdfAdmissionResult } from "../uploads/chatPdfPersistence";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
+import { logEvent, runWithContext } from "../observability";
+import { observedFailure, observedFailureCode } from "../providers/providerObservability";
+import { logRunPersistence } from "./runObservability";
+import { retainRunPrismaCode } from "./prismaRepositoryObservability";
 import { randomUUID } from "node:crypto";
 import {
   Prisma,
@@ -3735,7 +3739,9 @@ export async function createDormantPreparingRun(
   materializedRequest?: PreparingRunMaterializedRequest;
 }>> {
   if (admission.project) {
-    return admitProjectRunWithClient(prismaClient, admission);
+    const created = await admitProjectRunWithClient(prismaClient, admission);
+    logEvent("run_accepted", { run_id: created.runId, kind: "project", preparation: created.deferredPdf ? "pdf" : "ready" });
+    return created;
   }
   const memoryAdmissionDeadlineAtMs =
     Date.now() + boundedMemoryAdmissionDeadlineMs(memoryAdmissionDeadlineMs);
@@ -3755,7 +3761,7 @@ export async function createDormantPreparingRun(
     // The timed-out transaction rolled back atomically. Retry only the
     // ordinary admission shape and persist a zero-item FAILED_SAFE receipt;
     // no Memory settings, index, utility, or model decision is consulted.
-    return admitPreparingRunWithClient(
+    const fallback = await admitPreparingRunWithClient(
       prismaClient,
       admission,
       memorySourceHooks,
@@ -3763,16 +3769,33 @@ export async function createDormantPreparingRun(
         memoryUnavailableFallback: true
       }
     );
+    logEvent("run_accepted", { run_id: fallback.runId,
+      kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
+      preparation: fallback.deferredPdf ? "pdf" : "ready" });
+    return fallback;
   }
+  logEvent("run_accepted", { run_id: created.runId,
+    kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
+    preparation: created.deferredPdf ? "pdf" : created.chatMemoryMode === "TEMPORARY" ? "ready" : "memory" });
   if (created.deferredPdf || created.chatMemoryMode === "TEMPORARY") return created;
   // Durable acceptance transfers cancellation from the HTTP request to the
   // run owner. Stop still aborts this controller; recovery sees an active owner
   // until Memory settlement. PDF preparation already owns its own registration.
   const registration = activeRunControllerRegistry.register(created.runId);
-  if (!registration) throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
+  if (!registration) {
+    logEvent("run_preparation", { run_id: created.runId, stage: "preparing", outcome: "failed", code: "memory_preparing_attempt_unavailable" });
+    throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
+  }
   try {
-    return await continuePreparingRunWithClient(prismaClient, { ...admission, signal: registration.signal }, created,
-      memoryRetrieval, memoryExecutionAuthority, memorySourceHooks, memoryAdmissionDeadlineAtMs);
+    return await runWithContext({ run_id: created.runId }, async () => {
+      const startedAt = Date.now();
+      logEvent("run_preparation", { run_id: created.runId, stage: "preparing", outcome: "started" });
+      const result = await continuePreparingRunWithClient(prismaClient, { ...admission, signal: registration.signal }, created,
+        memoryRetrieval, memoryExecutionAuthority, memorySourceHooks, memoryAdmissionDeadlineAtMs);
+      logEvent("run_preparation", { run_id: created.runId, stage: "preparing", outcome: "completed",
+        duration_ms: Math.max(0, Date.now() - startedAt) });
+      return result;
+    });
   } finally {
     registration.release();
   }
@@ -4068,16 +4091,24 @@ async function continuePreparingRunWithClient(
     }
     throw new MemoryPreparingRunConflictError("memory_preparing_retry_conflict", false);
   } catch (error) {
-    await settlePreparingRunFailureWithClient(prismaClient, {
-      attemptId: currentAttemptId,
-      errorCode: error instanceof MemoryPreparingRunConflictError
-        ? error.code
-        : "memory_preparing_failed",
-      message: "Memory preparation failed before provider dispatch.",
-      runId: created.runId,
-      state: "FAILED",
-      userId: admission.userId
-    }, memorySourceHooks).catch(() => false);
+    logEvent("run_preparation", { run_id: created.runId, stage: "preparing",
+      outcome: observedFailure(error, admission.signal).reason === "cancelled" ? "cancelled" : "failed",
+      code: observedFailureCode(error) });
+    try {
+      const settled = await settlePreparingRunFailureWithClient(prismaClient, {
+        attemptId: currentAttemptId,
+        errorCode: error instanceof MemoryPreparingRunConflictError
+          ? error.code
+          : "memory_preparing_failed",
+        message: "Memory preparation failed before provider dispatch.",
+        runId: created.runId,
+        state: "FAILED",
+        userId: admission.userId
+      }, memorySourceHooks).catch(retainRunPrismaCode);
+      logRunPersistence(created.runId, "preparation", settled ? "confirmed" : "not_applied");
+    } catch (settlementError) {
+      logRunPersistence(created.runId, "preparation", "unconfirmed", settlementError);
+    }
     throw error;
   }
 }

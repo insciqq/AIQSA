@@ -1,3 +1,5 @@
+import { observeJsonParse, observeProviderDeadline, observeProviderFetch, observeProviderOperation } from "./providerObservability";
+import type { ProviderStreamSafetyIdentity } from "./streamSafetyObservability";
 import {
   ProviderResponseTooLargeError,
   isProviderDeadlineExceededError,
@@ -327,6 +329,7 @@ export function createOpenRouterRerankAdapter(input: Readonly<{
   connection: ProviderConnectionConfiguration;
   model: ProviderModelConfiguration;
   network?: RerankNetworkOptions;
+  observationIdentity?: ProviderStreamSafetyIdentity;
   secret: ProviderCredentialSource;
   validation?: RerankResponseValidation;
 }>): RerankAdapter {
@@ -338,108 +341,113 @@ export function createOpenRouterRerankAdapter(input: Readonly<{
     throw new RerankAdapterError("rerank_input_invalid");
   }
   assertProviderCredentialSource(input.secret, "rerank_provider_request_failed");
-  const fetchFn = input.network?.fetchFn ?? createProviderSafeFetch({ configuration: connection });
+  const identity = input.observationIdentity ?? { adapterKind: model.adapterKind, providerFamily: "openrouter" };
+  const fetchFn = observeProviderFetch(input.network?.fetchFn ?? createProviderSafeFetch({ configuration: connection }));
   const responseMaxBytes = Math.min(
     input.network?.responseMaxBytes ?? providerResponseMaxBytes(),
     MAX_RERANK_RESPONSE_BYTES
   );
 
   return Object.freeze({
-    async rerank(request) {
-      if (!boundedInput(request.query, MAX_RERANK_QUERY_CHARACTERS) ||
-        request.instruction !== undefined && request.instruction !== null &&
-          !boundedInput(request.instruction, MAX_RERANK_INSTRUCTION_CHARACTERS)) {
-        throw new RerankAdapterError("rerank_input_invalid");
-      }
-      const documents = requestDocuments(request.documents);
-      const routing = model.openRouterRouting!;
-      const body = {
-        documents: documents.map(({ text }) => text),
-        model: model.upstreamModelId,
-        provider: {
-          allow_fallbacks: routing.mode === "automatic",
-          data_collection: "deny",
-          ...(routing.mode === "only_selected"
-            ? { only: [...routing.providers], order: [...routing.providers] }
-            : {})
-        },
-        query: request.instruction
-          ? `${request.instruction}\n\n${request.query}`
-          : request.query,
-        top_n: documents.length
-      };
-      const serialized = JSON.stringify(body);
-      if (Buffer.byteLength(serialized, "utf8") > MAX_RERANK_REQUEST_BYTES) {
-        throw new RerankAdapterError("rerank_request_too_large");
-      }
-      const timeout = withTimeoutSignal(
-        request.signal,
-        effectiveProviderResponseTimeoutMs(connection, model)
-      );
-      try {
-        const secret = await resolveProviderCredentialSource(
-          input.secret,
-          "rerank_provider_request_failed"
-        );
-        return await executeWithProviderRetry({
-          operation: async () => {
-            const response = await fetchFn(providerRequestEndpoint(
-              connection,
-              "openrouter_rerank"
-            ), {
-              body: serialized,
-              headers: {
-                accept: "application/json",
-                authorization: `Bearer ${secret}`,
-                "content-type": "application/json"
-              },
-              method: "POST",
-              redirect: "error",
-              signal: timeout.signal
-            });
-            const text = await readBoundedResponseText(response, {
-              maxBytes: responseMaxBytes,
-              signal: timeout.signal
-            });
-            if (!response.ok) {
-              throw new RerankAdapterError("rerank_provider_http_error", {
-                httpStatus: response.status,
-                retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after"))
-              });
-            }
-            let parsed: unknown;
-            try {
-              parsed = JSON.parse(text) as unknown;
-            } catch {
-              throw new RerankAdapterError("rerank_response_invalid");
-            }
-            return responseBody(
-              parsed,
-              documents,
-              model,
-              boundedIdentifier(response.headers.get("x-request-id")),
-              validation
-            );
+    rerank(request: RerankRequest) {
+      const effectiveTimeoutMs = effectiveProviderResponseTimeoutMs(connection, model);
+      observeProviderDeadline({ ...identity, stage: "rerank", provider_timeout_ms: effectiveTimeoutMs, effective_timeout_ms: effectiveTimeoutMs });
+      return observeProviderOperation(identity, "rerank", async () => {
+        if (!boundedInput(request.query, MAX_RERANK_QUERY_CHARACTERS) ||
+          request.instruction !== undefined && request.instruction !== null &&
+            !boundedInput(request.instruction, MAX_RERANK_INSTRUCTION_CHARACTERS)) {
+          throw new RerankAdapterError("rerank_input_invalid");
+        }
+        const documents = requestDocuments(request.documents);
+        const routing = model.openRouterRouting!;
+        const body = {
+          documents: documents.map(({ text }) => text),
+          model: model.upstreamModelId,
+          provider: {
+            allow_fallbacks: routing.mode === "automatic",
+            data_collection: "deny",
+            ...(routing.mode === "only_selected"
+              ? { only: [...routing.providers], order: [...routing.providers] }
+              : {})
           },
-          options: input.network?.retry,
-          shouldRetry: (error) => rerankRetryDecision(error, timeout.signal),
-          signal: timeout.signal
-        });
-      } catch (error) {
-        if (error instanceof RerankAdapterError) throw error;
-        if (error instanceof ProviderResponseTooLargeError) {
-          throw new RerankAdapterError("rerank_response_too_large");
+          query: request.instruction
+            ? `${request.instruction}\n\n${request.query}`
+            : request.query,
+          top_n: documents.length
+        };
+        const serialized = JSON.stringify(body);
+        if (Buffer.byteLength(serialized, "utf8") > MAX_RERANK_REQUEST_BYTES) {
+          throw new RerankAdapterError("rerank_request_too_large");
         }
-        if (isProviderDeadlineExceededError(error) ||
-          timeout.signal.aborted && isProviderDeadlineExceededError(timeout.signal.reason)) {
-          throw new RerankAdapterError("rerank_request_timed_out");
+        const timeout = withTimeoutSignal(
+          request.signal,
+          effectiveProviderResponseTimeoutMs(connection, model)
+        );
+        try {
+          const secret = await resolveProviderCredentialSource(
+            input.secret,
+            "rerank_provider_request_failed"
+          );
+          return await executeWithProviderRetry({
+            operation: async () => {
+              const response = await fetchFn(providerRequestEndpoint(
+                connection,
+                "openrouter_rerank"
+              ), {
+                body: serialized,
+                headers: {
+                  accept: "application/json",
+                  authorization: `Bearer ${secret}`,
+                  "content-type": "application/json"
+                },
+                method: "POST",
+                redirect: "error",
+                signal: timeout.signal
+              });
+              const text = await readBoundedResponseText(response, {
+                maxBytes: responseMaxBytes,
+                signal: timeout.signal
+              });
+              if (!response.ok) {
+                throw new RerankAdapterError("rerank_provider_http_error", {
+                  httpStatus: response.status,
+                  retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after"))
+                });
+              }
+              let parsed: unknown;
+              try {
+                parsed = observeJsonParse(response, () => JSON.parse(text) as unknown);
+              } catch {
+                throw new RerankAdapterError("rerank_response_invalid");
+              }
+              return responseBody(
+                parsed,
+                documents,
+                model,
+                boundedIdentifier(response.headers.get("x-request-id")),
+                validation
+              );
+            },
+            options: input.network?.retry,
+            shouldRetry: (error) => rerankRetryDecision(error, timeout.signal),
+            signal: timeout.signal
+          });
+        } catch (error) {
+          if (error instanceof RerankAdapterError) throw error;
+          if (error instanceof ProviderResponseTooLargeError) {
+            throw new RerankAdapterError("rerank_response_too_large");
+          }
+          if (isProviderDeadlineExceededError(error) ||
+            timeout.signal.aborted && isProviderDeadlineExceededError(timeout.signal.reason)) {
+            throw new RerankAdapterError("rerank_request_timed_out");
+          }
+          throw Object.assign(new RerankAdapterError("rerank_provider_request_failed"), {
+            retryableNetworkFailure: isRetryableProviderNetworkError(error)
+          });
+        } finally {
+          timeout.clear();
         }
-        throw Object.assign(new RerankAdapterError("rerank_provider_request_failed"), {
-          retryableNetworkFailure: isRetryableProviderNetworkError(error)
-        });
-      } finally {
-        timeout.clear();
-      }
+      }, { signal: request.signal, timeoutMs: effectiveTimeoutMs });
     }
   });
 }

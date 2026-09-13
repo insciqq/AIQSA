@@ -2,7 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { runWithContext } from "../observability";
 import { SandboxNotFoundError } from "microsandbox";
 import { workspaceAttachmentPath, workspaceSandboxName } from "@/lib/domain/workspace";
 import { getWorkspaceConfig } from "./config";
@@ -140,6 +142,24 @@ function fixture() {
 
 describe("Microsandbox Workspace lifecycle", () => {
   beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([true, false])("reports only a proven SDK timeout before the public fallback (typed=%s)", async (typed) => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    sdk.callTool.mockRejectedValueOnce(typed ? new McpError(ErrorCode.RequestTimeout, "PRIVATE_TIMEOUT_CANARY") : new Error("PRIVATE_UNKNOWN_CANARY"));
+    await expect(runWithContext({ trace_id: "1".repeat(32), tool_call_id: "stored", execution_index: 1 }, () => value.runtime.callBoundTool(callInput)))
+      .rejects.toMatchObject({ code: "workspace_tool_timeout" });
+    expect(sdk.callTool).toHaveBeenCalledOnce();
+    const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+    expect(records).toContainEqual(expect.objectContaining({ event: "tool_deadline", tool_kind: "workspace", configured_timeout_ms: config.syncToolTimeoutSeconds * 1_000,
+      effective_timeout_ms: config.syncToolTimeoutSeconds * 1_000, request_timeout_ms: config.syncToolTimeoutSeconds * 1_000 + 5_000 }));
+    expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "request", outcome: "failed", reason: typed ? "deadline" : "unknown", tool_call_id: "stored" }));
+    expect(records.filter((entry) => entry.event === "nested_abort")).toHaveLength(typed ? 1 : 0);
+    if (typed) expect(records).toContainEqual(expect.objectContaining({ event: "nested_abort", abort_source: "workspace_deadline", deadline_kind: "sdk_request", timeout_ms: config.syncToolTimeoutSeconds * 1_000 + 5_000 }));
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+  });
 
   it("delivers accepted env to separate exec, shell and long-lived commands, then removes it for the next run", async () => {
     const value = fixture();
@@ -416,6 +436,7 @@ describe("Microsandbox Workspace lifecycle", () => {
   it("keeps official MCP errors opaque and does not turn text into a retry", async () => {
     const value = fixture();
     await value.runtime.ensureSession(ensureInput);
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     sdk.callTool.mockResolvedValueOnce({ isError: true, content: [{
       type: "text", text: "status: Stopped; sandbox fixture-runtime; SDK details"
     }] });
@@ -423,6 +444,9 @@ describe("Microsandbox Workspace lifecycle", () => {
       content: [{ type: "text", text: "The Workspace operation failed." }], status: "error"
     });
     expect(sdk.callTool).toHaveBeenCalledTimes(1);
+    const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+    expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "request", outcome: "failed" }));
+    expect(JSON.stringify(records)).not.toContain("SDK details");
   });
 
   it("does not dispatch after cancellation during reconnect", async () => {

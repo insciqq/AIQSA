@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { runWithContext } from "../observability";
+import { withKnowledgeToolDeadline } from "../runs/knowledgeToolDeadline";
 import { ProviderAdmissionError } from "../providerRuntime/admission";
 import { EmbeddingAdapterError } from "../providers/embeddings";
 import { OpenSearchTransportError } from "../search/opensearch/transport";
@@ -226,7 +228,99 @@ function lexicalSearchResult() {
   };
 }
 
+function captureKnowledgeEvents() {
+  const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  return () => writer.mock.calls.flatMap(([chunk]) => {
+    try { return [JSON.parse(String(chunk)) as Record<string, unknown>]; } catch { return []; }
+  });
+}
+
+describe("Knowledge tool diagnostics", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("observes returned admission rejection without disclosing arguments or invocation IDs", async () => {
+    const records = captureKnowledgeEvents();
+    const { runtime, store } = executor();
+    const result = await runtime.preflight!({ id: "PRIVATE_INVOCATION_CANARY", name: "PRIVATE_TOOL_CANARY",
+      arguments: { query: "PRIVATE_QUERY_CANARY" } }, { request: request() });
+    expect(result.kind).toBe("rejected");
+    expect(store.loadBindings).not.toHaveBeenCalled();
+    expect(records()).toContainEqual(expect.objectContaining({
+      event: "tool_execution", stage: "result", outcome: "failed", code: "knowledge_tool_arguments_invalid"
+    }));
+    expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "admission", outcome: "failed" }));
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
+  it("reports a permitted lexical fallback before its receipt and preserves the successful result", async () => {
+    const records = captureKnowledgeEvents();
+    const { store } = automaticStore(async () => lexicalSearchResult());
+    const persist = store.persistReceipt;
+    store.persistReceipt = vi.fn(async (input) => {
+      expect(records()).toContainEqual(expect.objectContaining({
+        event: "tool_execution", stage: "execution", operation_stage: "embedding", outcome: "degraded",
+        code: "embedding_provider_http_error", httpStatus: 503, action: "degrade"
+      }));
+      return persist(input);
+    });
+    const runtime = createKnowledgeToolExecutor({
+      embeddingRuntime: { resolve: async () => {
+        throw new EmbeddingAdapterError("embedding_provider_http_error", { httpStatus: 503 });
+      } }, store
+    });
+    const result = await runtime.execute({
+      arguments: { query: "PRIVATE_QUERY_CANARY", sourceAliases: [] },
+      id: "PRIVATE_INVOCATION_CANARY", name: KNOWLEDGE_SEARCH_TOOL_NAME
+    }, { persistedToolCallId: "stored-tool-call", request: request(), runId: "run-safe", userId: "PRIVATE_USER_CANARY" });
+    expect(result.status).toBe("complete");
+    expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "result",
+      outcome: "degraded", code: "semantic_retrieval_unavailable", action: "degrade" }));
+    expect(records().some(record => record.event === "run_execution")).toBe(false);
+    expect(JSON.stringify(records())).not.toMatch(/PRIVATE_|Lexical evidence|source\.txt/);
+  });
+
+  it.each([false, true])("consumes one native deadline observer under the cancelled call context (%s)", async (preAborted) => {
+    const records = captureKnowledgeEvents();
+    const controller = new AbortController();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(new AbortController().signal);
+    let unblock!: () => void;
+    let arrived!: () => void;
+    const reached = new Promise<void>(resolve => { arrived = resolve; });
+    const { store } = automaticStore(async () => lexicalSearchResult());
+    store.assertSearchReady.mockImplementation(async () => {
+      arrived();
+      await new Promise<void>(resolve => { unblock = resolve; });
+    });
+    const resolve = vi.fn();
+    const runtime = createKnowledgeToolExecutor({ embeddingRuntime: { resolve }, store });
+    if (preAborted) controller.abort(new Error("PRIVATE_REASON_CANARY"));
+    const pending = runWithContext({ trace_id: "1".repeat(32), run_id: "accepted-run",
+      tool_call_id: "stored-tool-call", execution_index: 2 }, () => withKnowledgeToolDeadline([controller.signal], signal => runtime.execute({
+      arguments: { query: "PRIVATE_QUERY_CANARY", sourceAliases: [] }, id: "PRIVATE_INVOCATION_CANARY",
+      name: KNOWLEDGE_SEARCH_TOOL_NAME
+    }, { persistedToolCallId: "stored-tool-call", request: request(), runId: "accepted-run", userId: "private-user" }, {
+      signal
+    })));
+    if (!preAborted) {
+      await reached;
+      runWithContext({ trace_id: "2".repeat(32) }, () => controller.abort(new Error("PRIVATE_REASON_CANARY")));
+      unblock();
+    }
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(resolve).not.toHaveBeenCalled();
+    const aborts = records().filter(record => record.event === "nested_abort");
+    expect(aborts).toEqual([expect.objectContaining({
+      layer: "knowledge", stage: preAborted ? "before_start" : "delivery",
+      abort_source: preAborted ? "unknown" : "parent_signal", trace_id: "1".repeat(32),
+      run_id: "accepted-run", tool_call_id: "stored-tool-call", execution_index: 2
+    })]);
+    if (preAborted) expect(aborts[0]).not.toHaveProperty("duration_ms");
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+});
+
 describe("Knowledge executor surface", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
   it("advertises and accepts only search_knowledge for answer models", () => {
     const { runtime } = executor();
     expect(runtime.tools).toEqual([expect.objectContaining({ name: KNOWLEDGE_SEARCH_TOOL_NAME })]);
@@ -940,7 +1034,7 @@ describe("Knowledge executor surface", () => {
       throw new Error("knowledge_search_projection_incomplete");
     });
     const resolve = vi.fn();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const records = captureKnowledgeEvents();
     const runtime = createKnowledgeToolExecutor({
       embeddingRuntime: { resolve },
       store
@@ -985,12 +1079,11 @@ describe("Knowledge executor surface", () => {
     expect(persisted).not.toHaveProperty("scopeAliases");
     expect(JSON.stringify(persisted)).not.toContain("private incident phrase");
     expect(JSON.stringify(persisted)).not.toContain(acceptedBinding.knowledgeBaseId);
-    expect(warn).toHaveBeenCalledWith(JSON.stringify({
-      event: "knowledge_search_unavailable",
-      failureClass: "projection"
+    expect(records()).toContainEqual(expect.objectContaining({
+      event: "tool_execution", tool_kind: "knowledge", stage: "result",
+      outcome: "failed", code: "knowledge_search_projection_unavailable"
     }));
-    expect(warn.mock.calls.flat().join(" ")).not.toContain("private incident phrase");
-    warn.mockRestore();
+    expect(JSON.stringify(records())).not.toContain("private incident phrase");
   });
 
   it.each(["transport", "retrieval"] as const)("persists a %s backend outage with incurred embedding usage and replays it without I/O", async (failureKind) => {
@@ -1018,7 +1111,7 @@ describe("Knowledge executor surface", () => {
       provider: "openai_compatible",
       providerModelId: "embedding-model-1"
     }));
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const records = captureKnowledgeEvents();
     const runtime = createKnowledgeToolExecutor({
       embeddingRuntime: { resolve },
       store: {
@@ -1064,8 +1157,8 @@ describe("Knowledge executor surface", () => {
       results: []
     });
     expect(receipt).not.toHaveProperty("scopeAliases");
-    expect(warn).toHaveBeenCalledOnce();
-    warn.mockRestore();
+    expect(records().filter(record => record.event === "tool_execution" && record.stage === "result" &&
+      record.code === "knowledge_search_backend_unavailable")).toHaveLength(2);
   });
 
   it("settles projection drift after embedding with its actual reserved usage", async () => {
@@ -1192,7 +1285,7 @@ describe("Knowledge executor surface", () => {
       throw new OpenSearchTransportError("opensearch_unavailable");
     });
     const resolve = vi.fn();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const records = captureKnowledgeEvents();
     const runtime = createKnowledgeToolExecutor({
       embeddingRuntime: { resolve },
       store
@@ -1212,8 +1305,7 @@ describe("Knowledge executor surface", () => {
     expect(resolve).not.toHaveBeenCalled();
     expect(hybridSearch).not.toHaveBeenCalled();
     expect(persistReceipt).not.toHaveBeenCalled();
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
+    expect(records().some(record => record.outcome === "failed")).toBe(false);
   });
 
   it("keeps cancellation authoritative over a concurrent search outage", async () => {
@@ -1229,7 +1321,7 @@ describe("Knowledge executor surface", () => {
       usage: { inputTokens: 1, totalTokens: 1 },
       vectors: [Array.from({ length: 1_024 }, () => 0.03125)]
     }));
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const records = captureKnowledgeEvents();
     const runtime = createKnowledgeToolExecutor({
       embeddingRuntime: {
         resolve: vi.fn(async () => ({
@@ -1256,8 +1348,7 @@ describe("Knowledge executor surface", () => {
     expect(embed).toHaveBeenCalledOnce();
     expect(hybridSearch).toHaveBeenCalledOnce();
     expect(persistReceipt).not.toHaveBeenCalled();
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
+    expect(records().some(record => record.outcome === "failed")).toBe(false);
   });
 
   it.each([

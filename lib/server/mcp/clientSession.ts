@@ -20,6 +20,8 @@ import packageMetadata from "@/package.json";
 import { canonicalMcpJson, hashCanonicalMcpValue } from "./definitions";
 import { McpResponseGuard } from "./responseGuard";
 import { McpSafeFetchError } from "./safeFetch";
+import { logEvent } from "../observability";
+import { beginMcpToolStage, mcpToolFailure, observeMcpAbort } from "./toolObservability";
 import {
   McpResponseTooLargeError,
   type McpResponseOperation,
@@ -885,6 +887,8 @@ export class McpClientSession {
     options?: McpClientRequestOptions
   ): Promise<AiqsaMcpToolCallResult> {
     this.requireReady("call_tool");
+    const observeAbort = observeMcpAbort();
+    if (options?.signal?.aborted) observeAbort({ stage: "before_start", abort_source: "unknown", deadline_kind: "sdk_request" });
     const sdkOptions = requestOptions("call_tool", this.defaultRequestTimeoutMs, options);
     if (!TOOL_NAME_PATTERN.test(name) || !isRecord(toolArguments)) {
       throw sessionError("mcp_call_arguments_invalid", "call_tool");
@@ -901,6 +905,12 @@ export class McpClientSession {
       throw sessionError("mcp_call_arguments_too_large", "call_tool");
     }
     const validatedArguments = argumentSnapshot.value;
+    logEvent("tool_deadline", { tool_kind: "mcp", configured_timeout_ms: this.defaultRequestTimeoutMs,
+      effective_timeout_ms: sdkOptions.timeout, request_timeout_ms: sdkOptions.timeout });
+    const finish = beginMcpToolStage("request");
+    const onAbort = () => observeAbort({ stage: "delivery", abort_source: "parent_signal", deadline_kind: "sdk_request", timeout_ms: sdkOptions.timeout });
+    if (options?.signal?.aborted) observeAbort({ stage: "before_start", abort_source: "unknown", deadline_kind: "sdk_request", timeout_ms: sdkOptions.timeout });
+    else options?.signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
       const result = await this.callContext.run({ sent: false }, () => this.guardedRequest(
@@ -918,9 +928,18 @@ export class McpClientSession {
       if (!isCallResultValue(resultSnapshot.value)) {
         throw sessionError("mcp_call_result_invalid", "call_tool");
       }
-      return normalizeCallResult(resultSnapshot.value);
+      const normalized = normalizeCallResult(resultSnapshot.value);
+      finish({ outcome: normalized.isError ? "failed" : "completed" });
+      return normalized;
     } catch (error) {
-      throw requestFailure(error, "call_tool", options?.signal, "mcp_call_failed");
+      const timedOut = SdkError.isInstance(error) && error.code === SdkErrorCode.RequestTimeout;
+      if (timedOut) observeAbort({ stage: "delivery", abort_source: "mcp_deadline", deadline_kind: "sdk_request", timeout_ms: sdkOptions.timeout });
+      const failure = requestFailure(error, "call_tool", options?.signal, "mcp_call_failed");
+      const facts = timedOut ? { code: "mcp_request_timeout", reason: "deadline" as const } : mcpToolFailure(failure);
+      finish({ outcome: facts.reason === "cancelled" ? "cancelled" : "failed", ...facts });
+      throw failure;
+    } finally {
+      options?.signal?.removeEventListener("abort", onAbort);
     }
   }
 }

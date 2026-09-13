@@ -13,6 +13,7 @@ import {
   reachedToolLoopBudget,
   type ToolLoopBudgets,
   type ToolLoopCall,
+  type ToolLoopObservation,
   type ToolLoopOutcome,
   type ToolLoopProgress,
   type ToolLoopSettledCall,
@@ -33,6 +34,7 @@ export type ProviderToolLoopResume = Readonly<{
 }>;
 
 export type ProviderToolLoopInput = Readonly<{
+  toolObservation?(call: ToolLoopCall): ToolLoopObservation | undefined;
   adapter: ProviderAdapter;
   bridge: ProviderToolBridge;
   budgets: ToolLoopBudgets;
@@ -166,6 +168,7 @@ export async function runProviderToolLoop(
   };
 
   return continueToolLoop({
+    toolObservation: input.toolObservation,
     afterToolBatch: input.afterToolBatch,
     budgets: input.budgets,
     executeTool: (call, context) => input.executeTool({

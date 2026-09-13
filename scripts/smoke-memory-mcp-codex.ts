@@ -764,7 +764,13 @@ async function waitForCoordinator(
 ): Promise<void> {
   const deadline = Date.now() + APP_START_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (coordinator.output().includes("AIQSA Memory coordinator started.")) return;
+    if (coordinator.output().split("\n").some((line) => {
+      try {
+        const event = JSON.parse(line);
+        return event.event === "runtime_lifecycle" && event.role === "memory_coordinator" &&
+          event.subsystem === "memory" && event.stage === "startup" && event.outcome === "completed";
+      } catch { return false; }
+    })) return;
     if (coordinator.child.exitCode !== null) break;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   }

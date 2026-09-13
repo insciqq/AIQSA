@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { logEvent, runInBackground, runWithContext } from "../observability";
+import { databaseFailureCode, retainDatabaseFailure } from "../observability/databaseFailure";
+import { observedFailure } from "../providers/providerObservability";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { decodeKnowledgeDocumentContext } from "./documentContext";
 import { KNOWLEDGE_HIERARCHICAL_COMPATIBLE_INDEX_VERSIONS } from "./hierarchicalIndex";
@@ -357,16 +360,29 @@ async function settleProjectionFailure(
   now: Date
 ): Promise<void> {
   const terminal = claim.attemptCount >= PROJECTION_MAX_ATTEMPTS;
-  await client.knowledgeSearchProjection.updateMany({
+  const failure = observedFailure(error);
+  logEvent("job_attempt", { subsystem: "knowledge_search", stage: "projection", job_id: claim.id,
+    attempt: claim.attemptCount, outcome: "failed", code: failure.code, httpStatus: failure.httpStatus,
+    action: terminal ? "fail" : "retry" });
+  const nextAttemptAt = new Date(now.getTime() + claim.attemptCount * 30_000);
+  const settled = await client.knowledgeSearchProjection.updateMany({
     data: {
       claimToken: null,
       lastErrorCode: projectionErrorCode(error),
       leaseExpiresAt: null,
-      nextAttemptAt: new Date(now.getTime() + claim.attemptCount * 30_000),
+      nextAttemptAt,
       state: terminal ? "FAILED" : "RETRY_WAIT"
     },
     where: { claimToken: claim.claimToken, id: claim.id, state: "BUILDING" }
+  }).catch(retainDatabaseFailure).catch(error => {
+    logEvent("job_persistence", { subsystem: "knowledge_search", stage: terminal ? "fail" : "retry", job_id: claim.id,
+      outcome: "unconfirmed", prisma_code: databaseFailureCode(error) });
+    throw error;
   });
+  logEvent("job_persistence", { subsystem: "knowledge_search", stage: terminal ? "fail" : "retry", job_id: claim.id,
+    outcome: settled.count === 1 ? "confirmed" : "not_applied", code: projectionErrorCode(error),
+    action: settled.count !== 1 ? "skip" : terminal ? "fail" : "retry",
+    ...(settled.count === 1 && !terminal ? { retry_at: nextAttemptAt.toISOString() } : {}) });
 }
 
 async function settleProjectionSuccess(
@@ -390,7 +406,13 @@ async function settleProjectionSuccess(
       projectionFingerprint: claim.projectionFingerprint,
       state: "BUILDING"
     }
+  }).catch(retainDatabaseFailure).catch(error => {
+    logEvent("job_persistence", { subsystem: "knowledge_search", stage: "complete", job_id: claim.id,
+      outcome: "unconfirmed", prisma_code: databaseFailureCode(error) });
+    throw error;
   });
+  logEvent("job_persistence", { subsystem: "knowledge_search", stage: "complete", job_id: claim.id,
+    outcome: settled.count === 1 ? "confirmed" : "not_applied" });
   if (settled.count !== 1) throw new Error("knowledge_search_projection_lease_lost");
 }
 
@@ -423,7 +445,14 @@ async function settleProjectionSuccesses(
       AND projection."claimToken" = expected."claimToken"
       AND projection."projectionFingerprint" = expected."projectionFingerprint"
       AND projection."state" = 'BUILDING'::"KnowledgeSearchProjectionState"
-  `);
+  `).catch(retainDatabaseFailure).catch(error => {
+    logEvent("job_persistence", { subsystem: "knowledge_search", stage: "complete", outcome: "unconfirmed",
+      count: successes.length, prisma_code: databaseFailureCode(error) });
+    throw error;
+  });
+  // A partial batch count cannot identify which individual claim won.
+  logEvent("job_persistence", { subsystem: "knowledge_search", stage: "complete",
+    outcome: settled === successes.length ? "confirmed" : settled === 0 ? "not_applied" : "unconfirmed", count: settled });
   if (settled !== successes.length) {
     throw new Error("knowledge_search_projection_lease_lost");
   }
@@ -469,13 +498,17 @@ export async function runKnowledgeSearchProjectionPass(input: Readonly<{
   const claims = await claimKnowledgeSearchProjectionBatch(input.client, new Date(), limit);
   for (const claim of claims) {
     claimed += 1;
-    try {
-      await projectClaim({ claim, client: input.client, search });
-      projected += 1;
-    } catch (error) {
-      failed += 1;
-      await settleProjectionFailure(input.client, claim, error, new Date());
-    }
+    await runInBackground(() => runWithContext({ job_id: claim.id }, async () => {
+      logEvent("job_attempt", { subsystem: "knowledge_search", stage: "claim", outcome: "started", attempt: claim.attemptCount });
+      try {
+        await projectClaim({ claim, client: input.client, search });
+        projected += 1;
+        logEvent("job_attempt", { subsystem: "knowledge_search", stage: "projection", outcome: "completed", attempt: claim.attemptCount });
+      } catch (error) {
+        failed += 1;
+        await settleProjectionFailure(input.client, claim, error, new Date());
+      }
+    }));
   }
   return Object.freeze({ claimed, failed, projected, seeded });
 }

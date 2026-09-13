@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { retainDatabaseFailure } from "../observability/databaseFailure";
 import type { ChatPdfRoute } from "../../contracts/chatPdfPreparation";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
@@ -118,7 +119,7 @@ export function createChatPdfRepository(prisma: PrismaClient) {
                 AND j."claimToken" IS NOT NULL AND j."claimedAt" >= (${cutoff}::timestamptz AT TIME ZONE 'UTC'))
           ORDER BY a."createdAt", a."id" LIMIT 25 FOR UPDATE SKIP LOCKED
         )
-      `);
+      `).catch(retainDatabaseFailure);
     },
     async claim(now = new Date()): Promise<ChatPdfClaim | null> {
       return prisma.$transaction(async (tx) => {
@@ -139,22 +140,23 @@ export function createChatPdfRepository(prisma: PrismaClient) {
           claimToken, claimedAt: now, lastWorkedAt: now
         } });
         return { claimToken, runId: row.modelRunId, userId: row.userId };
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async heartbeat(claim: ChatPdfClaim, now = new Date()): Promise<boolean> {
       const updated = await prisma.chatPdfRunPreparation.updateMany({
         data: { claimedAt: now }, where: { modelRunId: claim.runId, claimToken: claim.claimToken,
           state: { in: ["pending", "preparing", "answer_ready"] } }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count === 1;
     },
 
-    async release(claim: ChatPdfClaim): Promise<void> {
-      await prisma.chatPdfRunPreparation.updateMany({ where: {
+    async release(claim: ChatPdfClaim): Promise<boolean> {
+      const updated = await prisma.chatPdfRunPreparation.updateMany({ where: {
         modelRunId: claim.runId, claimToken: claim.claimToken,
         state: { in: ["pending", "preparing", "answer_ready"] }
-      }, data: { claimToken: null, claimedAt: null, lastWorkedAt: new Date() } });
+      }, data: { claimToken: null, claimedAt: null, lastWorkedAt: new Date() } }).catch(retainDatabaseFailure);
+      return updated.count === 1;
     },
 
     async load(claim: ChatPdfClaim) {
@@ -169,7 +171,7 @@ export function createChatPdfRepository(prisma: PrismaClient) {
             } }
           } } }
         });
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async pageCount(claim: ChatPdfClaim, preparationId: string, count: number): Promise<void> {
@@ -189,7 +191,7 @@ export function createChatPdfRepository(prisma: PrismaClient) {
             '{pdfPageCount}', to_jsonb(${count}::int), true)
           WHERE "id" = ${row.attachmentId} AND "checksum" = ${row.sourceChecksum}
         `);
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async reserveArtifact(claim: ChatPdfClaim, input: Readonly<{
@@ -205,7 +207,7 @@ export function createChatPdfRepository(prisma: PrismaClient) {
           route: input.admission.route, sourceChecksum: input.admission.sourceChecksum,
           storageKey: `chat-pdf/${input.admission.attachmentId}/${claim.runId}/${id}.json`
         } });
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async acceptArtifact(claim: ChatPdfClaim, artifactId: string): Promise<boolean> {
@@ -215,11 +217,11 @@ export function createChatPdfRepository(prisma: PrismaClient) {
           id: artifactId, preparationGeneration: claim.runId, state: "reserved"
         }, data: { state: "ready" } });
         return updated.count === 1;
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async readArtifact(id: string, attachmentId: string) {
-      const row = await prisma.chatPdfArtifact.findFirst({ where: { id, attachmentId, state: "ready" } });
+      const row = await prisma.chatPdfArtifact.findFirst({ where: { id, attachmentId, state: "ready" } }).catch(retainDatabaseFailure);
       if (!row) throw new ChatPdfPreparationError("pdf_preparation_invalid");
       return row;
     },
@@ -228,7 +230,7 @@ export function createChatPdfRepository(prisma: PrismaClient) {
       await prisma.$transaction(async (tx) => {
         await tx.chatPdfArtifact.deleteMany({ where: { id, state: "reserved" } });
         await tx.attachmentDeletionJob.upsert({ where: { storageKey }, update: {}, create: { storageKey } });
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async savePlan(claim: ChatPdfClaim, input: Readonly<{
@@ -250,7 +252,7 @@ export function createChatPdfRepository(prisma: PrismaClient) {
           completedPages: row.route === "local_text" ? 0 : input.plan.adaptive?.nativeOnlyPageCount ?? 0
         } });
         await tx.chatPdfRunPreparation.update({ where: { modelRunId: claim.runId }, data: { state: "preparing" } });
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async completedPages(claim: ChatPdfClaim, preparationId: string): Promise<void> {
@@ -265,7 +267,7 @@ export function createChatPdfRepository(prisma: PrismaClient) {
         } });
         const completedPages = (plan.adaptive?.nativeOnlyPageCount ?? 0) + accepted;
         await tx.chatPdfAttachmentPreparation.update({ where: { id: preparationId }, data: { completedPages } });
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async beginAssembly(claim: ChatPdfClaim, preparationId: string) {
@@ -281,7 +283,7 @@ export function createChatPdfRepository(prisma: PrismaClient) {
         return tx.chatPdfPageAttempt.findMany({ where: {
           preparationId, state: "settled", resultArtifactId: { not: null }, errorCode: null
         }, orderBy: { page: "asc" } });
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async publishDocument(claim: ChatPdfClaim, preparationId: string, documentArtifactId: string): Promise<void> {
@@ -293,7 +295,7 @@ export function createChatPdfRepository(prisma: PrismaClient) {
         await tx.chatPdfAttachmentPreparation.update({ where: { id: row.id }, data: {
           completedPages: row.pageCount!, documentArtifactId, state: "ready"
         } });
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async useWorkspaceOriginal(claim: ChatPdfClaim, preparationId: string,
@@ -308,7 +310,7 @@ export function createChatPdfRepository(prisma: PrismaClient) {
           state: { in: ["checking", "preparing", "assembling"] }
         }, data: { state: "original_only", errorCode, retryable: false } });
         if (updated.count !== 1) throw new ChatPdfPreparationError("pdf_preparation_unavailable");
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async markAnswerDispatched(claim: ChatPdfClaim): Promise<boolean> {
@@ -316,7 +318,7 @@ export function createChatPdfRepository(prisma: PrismaClient) {
         where: { modelRunId: claim.runId, claimToken: claim.claimToken, state: "answer_ready",
           modelRun: { status: "streaming" } },
         data: { claimToken: null, claimedAt: null, snapshot: {}, state: "dispatched" }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count === 1;
     }
   };

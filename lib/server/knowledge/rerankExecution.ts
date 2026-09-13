@@ -7,6 +7,8 @@ import {
 } from "../providers/rerank";
 import { ProviderAdmissionError } from "../providerRuntime/admission";
 import { elapsedMilliseconds, monotonicNowMilliseconds } from "../monotonicTime";
+import { bindContext, logEvent } from "../observability";
+import { observedFailure } from "../providers/providerObservability";
 import {
   formatKnowledgeRerankCandidate,
   KNOWLEDGE_RERANK_CANDIDATE_FORMATTER_VERSION
@@ -221,6 +223,10 @@ export function createKnowledgeRerankStage(input: Readonly<{
     );
     const inputCandidateCount = candidates.length;
     if (inputCandidateCount <= 1) {
+      logEvent("tool_execution", {
+        tool_kind: "knowledge", stage: "execution", operation_stage: "rerank",
+        outcome: "completed", action: "skip", count: inputCandidateCount
+      });
       // FR-15: an empty pool or a single unique candidate never calls the
       // provider; the deterministic order is trivially complete.
       return {
@@ -253,28 +259,51 @@ export function createKnowledgeRerankStage(input: Readonly<{
       })
     }));
     const controller = new AbortController();
+    const preAborted = signal?.aborted === true;
+    const observationStartedAt = performance.now();
+    const observeAbort = (source: "parent_signal" | "knowledge_deadline") => {
+      if (controller.signal.aborted) return;
+      logEvent("nested_abort", {
+        layer: "knowledge", operation_stage: "rerank",
+        stage: preAborted ? "before_start" : "delivery",
+        abort_source: preAborted ? "unknown" : source,
+        ...(preAborted ? {} : {
+          duration_ms: performance.now() - observationStartedAt,
+          ...(source === "knowledge_deadline" ? { timeout_ms: timeoutMs } : {})
+        })
+      });
+    };
+    logEvent("tool_execution", {
+      tool_kind: "knowledge", stage: "execution", operation_stage: "rerank", outcome: "started"
+    });
+    logEvent("tool_deadline", {
+      tool_kind: "knowledge", operation_stage: "rerank",
+      configured_timeout_ms: timeoutMs, effective_timeout_ms: timeoutMs
+    });
     let deadlineFired = false;
     let timer: ReturnType<typeof setTimeout>;
     const deadline = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => {
+      timer = setTimeout(bindContext(() => {
         deadlineFired = true;
         const error = new RerankAdapterError("rerank_request_timed_out");
+        observeAbort("knowledge_deadline");
         controller.abort(error);
         // Enforce the operation deadline even if a custom adapter ignores
         // AbortSignal. The one in-flight request is still never retried.
         reject(error);
-      }, timeoutMs);
+      }), timeoutMs);
     });
     let forwardAbort: (() => void) | null = null;
     const cancellation = signal
       ? new Promise<never>((_resolve, reject) => {
-          forwardAbort = () => {
+          forwardAbort = bindContext(() => {
             const error = rerankCancellationError(signal);
+            observeAbort("parent_signal");
             controller.abort(error);
             // Cancellation is an operation-level control signal, not a
             // reranker fallback. Enforce it even if an adapter ignores abort.
             reject(error);
-          };
+          });
           if (signal.aborted) forwardAbort();
           else signal.addEventListener("abort", forwardAbort, { once: true });
         })
@@ -293,12 +322,24 @@ export function createKnowledgeRerankStage(input: Readonly<{
       ]);
     } catch (error) {
       const durationMs = elapsedMilliseconds(startedAt, now());
-      if (signal?.aborted) throw rerankCancellationError(signal);
+      if (signal?.aborted) {
+        logEvent("tool_execution", {
+          tool_kind: "knowledge", stage: "execution", operation_stage: "rerank",
+          outcome: "cancelled", reason: "cancelled",
+          ...(preAborted ? {} : { duration_ms: durationMs })
+        });
+        throw rerankCancellationError(signal);
+      }
       const timedOut = deadlineFired ||
         error instanceof RerankAdapterError && error.code === "rerank_request_timed_out";
       const fallbackReason = timedOut
         ? "rerank_request_timed_out"
         : classifiedFallbackCode(error);
+      logEvent("tool_execution", {
+        ...observedFailure(error), tool_kind: "knowledge", stage: "execution", operation_stage: "rerank",
+        duration_ms: durationMs, outcome: fallbackReason ? "degraded" : "failed",
+        action: fallbackReason ? "degrade" : "stop", ...(fallbackReason ? { code: fallbackReason } : {})
+      });
       if (!fallbackReason) throw error;
       return {
         evidence: Object.freeze({
@@ -344,6 +385,11 @@ export function createKnowledgeRerankStage(input: Readonly<{
     const relevanceScores = Object.freeze(outputOrder.map((chunkId) =>
       scores.get(chunkId) ?? null));
     const status = scores.size === candidates.length ? "complete" as const : "partial" as const;
+    logEvent("tool_execution", {
+      tool_kind: "knowledge", stage: "execution", operation_stage: "rerank", duration_ms: durationMs,
+      outcome: status === "partial" ? "degraded" : "completed",
+      ...(status === "partial" ? { action: "degrade" as const } : {}), count: scores.size
+    });
     return {
       evidence: Object.freeze({
         ...pinnedEvidenceFields(input.pin),

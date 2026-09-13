@@ -1,3 +1,5 @@
+import "./worker-bootstrap.cjs";
+import { logEvent } from "../lib/server/observability";
 import { prisma } from "../lib/server/prisma";
 import { createPrismaMemoryIdentityCutoverRepository } from
   "../lib/server/memory/learning/identity/cutover";
@@ -45,11 +47,8 @@ async function main(): Promise<void> {
   console.log(JSON.stringify({ inventory, operation }));
 }
 
-void main().catch((error: unknown) => {
-  const code = error instanceof Error && /^memory_[a-z0-9_]+$/u.test(error.message)
-    ? error.message
-    : "memory_identity_cutover_failed";
-  console.error(`AIQSA Memory identity cutover blocked: ${code}`);
+void main().catch(() => {
+  logEvent("runtime_lifecycle", { subsystem: "memory", stage: "preflight", outcome: "failed", code: "memory_identity_cutover_failed", action: "stop" });
   process.exitCode = 1;
 }).finally(async () => {
   await prisma.$disconnect().catch(() => undefined);

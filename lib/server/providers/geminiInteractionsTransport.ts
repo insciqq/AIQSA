@@ -1,3 +1,4 @@
+import { observeJsonParse } from "./providerObservability";
 import {
   ProviderResponseTooLargeError,
   providerHttpErrorMessage,
@@ -94,7 +95,7 @@ async function parseJsonResponse(
   const text = await readBoundedResponseText(response, { signal });
   let parsed: unknown;
   try {
-    parsed = text ? JSON.parse(text) as unknown : {};
+    parsed = observeJsonParse(response, () => text ? JSON.parse(text) as unknown : {});
   } catch {
     throw new Error("gemini_interactions_response_invalid_json");
   }

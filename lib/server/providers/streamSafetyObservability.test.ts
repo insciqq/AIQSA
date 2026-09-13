@@ -8,7 +8,7 @@ describe("provider stream safety observability", () => {
   });
 
   it("emits one allowlisted warning for an error and its propagated immutable report", () => {
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const warning = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const error = new ProviderStreamTooLargeError({
       maxBytes: 1024,
       observedBytes: 1025,
@@ -25,7 +25,7 @@ describe("provider stream safety observability", () => {
     expect(warnProviderStreamSafetyOnce(error.report, identity)).toBe(false);
 
     expect(warning).toHaveBeenCalledOnce();
-    expect(JSON.parse(String(warning.mock.calls[0]?.[0]))).toEqual({
+    expect(JSON.parse(String(warning.mock.calls[0]?.[0]))).toMatchObject({
       adapterKind: "anthropic_messages",
       code: "provider_stream_too_large",
       connectionId: "connection-1",

@@ -1,3 +1,4 @@
+import { databaseFailureCode } from "../../observability/databaseFailure";
 import { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryCoordinatorError } from "./errors";
@@ -245,6 +246,33 @@ describe("Prisma memory coordinator repository preflight", () => {
     });
     expect(transaction).toHaveBeenCalledTimes(8);
     expect(delays).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it("retains the Prisma code through commit policy mapping and reports each internal retry before waiting", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const failure = new Prisma.PrismaClientKnownRequestError("PRIVATE_DATABASE", {
+      clientVersion: "test", code: "P2028", meta: { query: "PRIVATE_SQL" }
+    });
+    const transaction = vi.fn(async () => { throw failure; });
+    const repo = createPrismaMemoryCoordinatorRepository({ $transaction: transaction } as never, {
+      jobCommitRetryDelay: async (ordinal) => {
+        expect(writer).toHaveBeenCalledTimes(ordinal);
+        expect(JSON.parse(String(writer.mock.calls.at(-1)![0]))).toMatchObject({
+          event: "job_persistence", stage: "complete", outcome: "unconfirmed", action: "retry", prisma_code: "P2028"
+        });
+      }
+    });
+    try {
+      const mapped = await repo.commitJobSuccess({ acceptedResultHash: "a".repeat(64), claim: jobClaim(),
+        now: new Date("2026-08-21T10:00:00.000Z"), stage: "catching_up" }).catch((error: unknown) => error);
+      expect(mapped).toBeInstanceOf(MemoryCoordinatorError);
+      expect(databaseFailureCode(mapped)).toBe("P2028");
+      expect(transaction).toHaveBeenCalledTimes(8);
+      expect(writer).toHaveBeenCalledTimes(7);
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      expect(records.every((record) => !Object.hasOwn(record, "retry_at"))).toBe(true);
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+    } finally { writer.mockRestore(); }
   });
 
   it("preserves only code-owned safe commit failures", async () => {

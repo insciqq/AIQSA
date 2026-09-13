@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { getAuthConfig } from "../auth/config";
@@ -19,6 +21,8 @@ import type {
 } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { activeRunControllerRegistry } from "./runExecution";
+import { runWithContext } from "../observability";
+import { createPrismaRunRepository } from "./prismaRepository";
 import {
   activeRunControllersForTest,
   resetBootOrphanSweepForTest
@@ -2950,7 +2954,7 @@ describe("model run route handlers", () => {
   });
 
   it("does not refresh a safety-failed run after its provider response id was published", async () => {
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const warning = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const { repository, state } = createMemoryRepository();
     const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
       events: [],
@@ -3031,7 +3035,9 @@ describe("model run route handlers", () => {
     expect(state.assistantTextWrites).toBe(1);
     expect(state.completed).toBeNull();
     expect(state.events.map(({ event }) => event.type)).not.toContain("done");
-    expect(warning).toHaveBeenCalledOnce();
+    expect(warning.mock.calls.filter(([chunk]) => {
+      try { return JSON.parse(String(chunk)).event === "provider_stream_safety_terminated"; } catch { return false; }
+    })).toHaveLength(1);
     warning.mockRestore();
   });
 
@@ -3131,7 +3137,7 @@ describe("model run route handlers", () => {
           }
         }
       )
-    ).rejects.toThrow("run_defaults_commit_failed");
+    ).resolves.toMatchObject({ status: 500 });
     expect(providerStarted).not.toHaveBeenCalled();
     expect(state.created).toBeNull();
   });
@@ -5984,5 +5990,183 @@ describe("model run route handlers", () => {
     await expect(regenerateResponse.json()).resolves.toEqual({
       error: "knowledge_base_not_available"
     });
+  });
+});
+
+describe("Stop diagnostics", () => {
+  beforeEach(() => {
+    const shared = globalThis as typeof globalThis & { [key: symbol]: unknown };
+    delete shared[Symbol.for("aiqsa.run-stop-rejections.v1")];
+  });
+
+  it("records admission and abort delivery under the Stop trace using only the repository-owned run id", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const registration = activeRunControllerRegistry.register("run-1");
+    try {
+      const { repository } = createMemoryRepository();
+      const POST = createCancelModelRunHandler({ ...authDeps, repository, providers: {} });
+      const response = await runWithContext({ trace_id: "4".repeat(32) }, () => POST(new Request(
+        "http://app.local/api/model-runs/run-1/cancel?PRIVATE_QUERY_CANARY", {
+          method: "POST", headers: { cookie: authCookie(), authorization: "Bearer PRIVATE_AUTH_CANARY" }
+        }), { params: { runId: "run-1" } }));
+      expect(response.status).toBe(200);
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+      expect(records.map(({ event }) => event)).toEqual([
+        "run_stop_requested", "run_stop_admission", "run_persistence", "run_abort_delivery"
+      ]);
+      expect(records[0]).not.toHaveProperty("run_id");
+      expect(records.slice(1).every((record) => record.run_id === "run-1")).toBe(true);
+      expect(records.every((record) => record.trace_id === "4".repeat(32))).toBe(true);
+      expect(records[1]).toMatchObject({ outcome: "accepted" });
+      expect(records[2]).toMatchObject({ stage: "cancel", outcome: "confirmed" });
+      expect(records[3]).toMatchObject({ outcome: "delivered" });
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+    } finally { registration?.release(); writer.mockRestore(); }
+  });
+
+  it("does not log a caller-controlled run id for unauthorized Stop", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const { repository } = createMemoryRepository();
+      const POST = createCancelModelRunHandler({ ...authDeps, resolveAuth: async () => null, repository, providers: {} });
+      const response = await POST(new Request("http://app.local/cancel", { method: "POST" }), {
+        params: { runId: "PRIVATE_CALLER_CONTROLLED_ID_CANARY" }
+      });
+      expect(response.status).toBe(401);
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+      expect(records).toHaveLength(2);
+      expect(records[1]).toMatchObject({ event: "run_stop_admission", outcome: "unauthorized" });
+      expect(records.every((record) => record.run_id === undefined)).toBe(true);
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+    } finally { writer.mockRestore(); }
+  });
+
+  it("bounds each rejected admission across handlers and reloads, then reports again after 30 seconds", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    let now = 1_000;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      const { repository } = createMemoryRepository();
+      const deps = { ...authDeps, repository, providers: {} };
+      const unauthorized = createCancelModelRunHandler({ ...deps, resolveAuth: async () => null });
+      const unconfigured = createCancelModelRunHandler({ ...deps, getConfig: () => ({ ...config, configured: false }) });
+      const missing = createCancelModelRunHandler(deps);
+      let sequence = 0;
+      const invoke = (POST: typeof missing) => {
+        sequence += 1;
+        return runWithContext({ trace_id: sequence.toString(16).padStart(32, "0") }, () => POST(new Request(
+          `http://app.local/PRIVATE_PATH_CANARY_${sequence}?query=PRIVATE_QUERY_CANARY`, {
+            method: "POST", headers: { cookie: authCookie() }
+          }), { params: { runId: `PRIVATE_UNVERIFIED_RUN_CANARY_${sequence}` } }));
+      };
+      const records = () => writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+      for (let index = 0; index < 10; index += 1) {
+        expect((await invoke(index % 2 ? unauthorized : unconfigured)).status).toBe(401);
+        expect((await invoke(missing)).status).toBe(404);
+      }
+      expect(records().map(({ event }) => event)).toEqual([
+        "run_stop_requested", "run_stop_admission", "run_stop_requested", "run_stop_admission"
+      ]);
+      expect(records().filter(({ event }) => event === "run_stop_admission").map(({ outcome }) => outcome))
+        .toEqual(["unauthorized", "not_found"]);
+
+      vi.resetModules();
+      const reloaded = await import("./handlers");
+      const reloadedUnauthorized = reloaded.createCancelModelRunHandler({ ...deps, resolveAuth: async () => null });
+      const reloadedMissing = reloaded.createCancelModelRunHandler(deps);
+      now = 30_999;
+      expect((await invoke(reloadedUnauthorized)).status).toBe(401);
+      expect((await invoke(reloadedMissing)).status).toBe(404);
+      expect(records()).toHaveLength(4);
+      now = 31_000;
+      expect((await invoke(reloadedUnauthorized)).status).toBe(401);
+      expect((await invoke(reloadedMissing)).status).toBe(404);
+      expect(records()).toHaveLength(8);
+      for (let index = 0; index < records().length; index += 2) {
+        expect(records()[index]?.event).toBe("run_stop_requested");
+        expect(records()[index + 1]?.event).toBe("run_stop_admission");
+        expect(records()[index]?.trace_id).toBe(records()[index + 1]?.trace_id);
+      }
+      expect(records().every((record) => record.run_id === undefined)).toBe(true);
+      expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+    } finally { clock.mockRestore(); writer.mockRestore(); }
+  });
+
+  it("keeps accepted cancellations and admission failures visible while rejection suppression is active", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const invoke = (POST: ReturnType<typeof createCancelModelRunHandler>) => POST(new Request("http://app.local/cancel", {
+        method: "POST", headers: { cookie: authCookie() }
+      }), { params: { runId: "run-1" } });
+      const { repository: rejected } = createMemoryRepository();
+      expect((await invoke(createCancelModelRunHandler({ ...authDeps, resolveAuth: async () => null,
+        repository: rejected, providers: {} }))).status).toBe(401);
+      for (let index = 0; index < 2; index += 1) {
+        const { repository } = createMemoryRepository();
+        const cancel = repository.cancelRun;
+        repository.cancelRun = async (input) => {
+          const result = await cancel(input);
+          if (result.kind !== "not_found") result.run.id = `verified-run-${index}`;
+          return result;
+        };
+        const POST = createCancelModelRunHandler({ ...authDeps, repository, providers: {} });
+        expect((await invoke(POST)).status).toBe(200);
+        expect((await invoke(POST)).status).toBe(409);
+        repository.cancelRun = async () => { throw new Error("PRIVATE_DATABASE_FAILURE_CANARY"); };
+        expect((await invoke(POST)).status).toBe(500);
+      }
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+      expect(records.filter(({ event }) => event === "run_stop_requested")).toHaveLength(7);
+      expect(records.filter(({ event }) => event === "run_stop_admission").map(({ outcome }) => outcome))
+        .toEqual(["unauthorized", "accepted", "not_cancelable", "failed", "accepted", "not_cancelable", "failed"]);
+      expect(records.filter(({ event }) => event === "run_abort_delivery").map(({ run_id }) => run_id))
+        .toEqual(["verified-run-0", "verified-run-1"]);
+      expect(records.filter(({ event }) => event === "run_http_failed")).toHaveLength(2);
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+    } finally { writer.mockRestore(); }
+  });
+});
+
+describe("run HTTP failure containment", () => {
+  it.each(["send", "regenerate", "cancel"] as const)("contains an unexpected %s auth resolver rejection", async (stage) => {
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const { repository } = createMemoryRepository();
+      const deps = { ...authDeps, repository, providers: {},
+        resolveAuth: async () => { throw new TypeError("PRIVATE_RESOLVER_MESSAGE_CANARY"); } };
+      const POST = stage === "send" ? createProductionSendMessageHandler(deps)
+        : stage === "regenerate" ? createProductionRegenerateModelRunHandler(deps) : createCancelModelRunHandler(deps);
+      const response = await POST(new Request("http://app.local/PRIVATE_PATH_CANARY", { method: "POST" }), {
+        params: { chatId: "PRIVATE_CHAT_ID_CANARY", messageId: "PRIVATE_MESSAGE_ID_CANARY", runId: "PRIVATE_RUN_ID_CANARY" }
+      });
+      expect(response.status).toBe(500);
+      expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+      expect(await response.json()).toEqual({ error: "internal_error" });
+      const records = stdout.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+      expect(records).toContainEqual(expect.objectContaining({ event: "run_http_failed", stage, code: "unknown", reason: "unknown" }));
+      expect(JSON.stringify([stdout.mock.calls, stderr.mock.calls])).not.toContain("PRIVATE_");
+    } finally { stdout.mockRestore(); stderr.mockRestore(); }
+  });
+
+  it("contains a Prisma Stop rejection and reports its proven code without the unverified run id", async () => {
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const error = new Prisma.PrismaClientInitializationError("PRIVATE_DATABASE_CONNECTION_CANARY", "test", "P1001");
+      const prisma = { $transaction: async () => { throw error; } } as unknown as PrismaClient;
+      const repository = createPrismaRunRepository(prisma);
+      const POST = createCancelModelRunHandler({ ...authDeps, repository, providers: {} });
+      const response = await POST(new Request("http://app.local/cancel", {
+        method: "POST", headers: { cookie: authCookie() }
+      }), { params: { runId: "PRIVATE_UNVERIFIED_RUN_ID_CANARY" } });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: "internal_error" });
+      const records = stdout.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+      expect(records).toContainEqual(expect.objectContaining({ event: "run_stop_admission", outcome: "failed", prisma_code: "P1001" }));
+      expect(records).toContainEqual(expect.objectContaining({ event: "run_http_failed", stage: "cancel", prisma_code: "P1001" }));
+      expect(records.every((entry) => entry.run_id === undefined)).toBe(true);
+      expect(JSON.stringify([stdout.mock.calls, stderr.mock.calls])).not.toContain("PRIVATE_");
+    } finally { stdout.mockRestore(); stderr.mockRestore(); }
   });
 });

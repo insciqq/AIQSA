@@ -5,7 +5,9 @@ import { KnowledgeAnswerContractError } from "../knowledge/grounding";
 import type { KnowledgeEvidenceAnswerExecutionV1Result } from "../knowledge/evidenceAnswerExecutionV1";
 import { KNOWLEDGE_SEARCH_TOOL_NAME } from "../knowledge/retrievalTypes";
 import { knowledgeSearchFailureCode, knowledgeSearchFailureToolResult } from "../knowledge/searchFailure";
-import { KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS, type KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import type { KnowledgeToolExecutor } from "../knowledge/toolExecutor";
+import { runWithContext } from "../observability";
+import { withKnowledgeToolDeadline } from "./knowledgeToolDeadline";
 import { knowledgeEvidenceFromToolResult, knowledgeUsageAttributionsFromToolResult } from "../knowledge/toolResult";
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import { memoryEgressRequestEvidence } from "../providers/memoryEgress";
@@ -129,7 +131,8 @@ export async function refineKnowledgeEvidence(input: Readonly<{
     if (saved.state === "running") {
       let replay: Awaited<ReturnType<NonNullable<KnowledgeToolExecutor["preflight"]>>> | null = null;
       try {
-        replay = await input.executor.preflight?.(call, context) ?? null;
+        replay = await runWithContext({ tool_call_id: saved.id, execution_index: saved.ordinal },
+          () => input.executor!.preflight?.(call, context)) ?? null;
       } catch {
         // A receipt read failure cannot authorize repeating ambiguous I/O.
       }
@@ -158,7 +161,8 @@ export async function refineKnowledgeEvidence(input: Readonly<{
     let receipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
     let result: ToolExecutionResult;
     try {
-      const admission = await input.executor.preflight?.(call, context);
+      const admission = await runWithContext({ tool_call_id: saved.id, execution_index: saved.ordinal },
+        () => input.executor!.preflight?.(call, context));
       if (admission && admission.kind !== "admitted") result = admission.result;
       else {
         if (!input.memoryEgress && process.env.NODE_ENV === "production") throw Error("memory_egress_receipt_unavailable");
@@ -169,8 +173,8 @@ export async function refineKnowledgeEvidence(input: Readonly<{
           mode: "TOOL_CALL", modelRunToolCallId: saved.id, requestEvidence: memoryEgressRequestEvidence(input.request),
           requestPreview: { argumentsHash: knowledgeAnswerHash(call.arguments), toolName: call.name },
           runId: input.runId, userId: input.userId }) : null;
-        result = await input.executor.execute(call, context, {
-          signal: AbortSignal.any([input.signal, AbortSignal.timeout(KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS)]) });
+        result = await runWithContext({ tool_call_id: saved.id, execution_index: saved.ordinal },
+          () => withKnowledgeToolDeadline([input.signal], (signal) => input.executor!.execute(call, context, { signal })));
         if (receipt && !await input.memoryEgress!.completeDispatch(receipt.id)) throw Error("memory_egress_receipt_conflict");
       }
     } catch (error) {

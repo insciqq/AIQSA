@@ -1,3 +1,4 @@
+import { rememberMemoryEnqueue } from "./enqueueObservability";
 import type {
   MemoryDeletionOperation,
   MemoryDeletionState
@@ -69,5 +70,6 @@ export async function enqueueMemoryDeletion(
     },
     select: { id: true, memoryGeneration: true, state: true }
   });
+  rememberMemoryEnqueue(tx, created.id);
   return { ...created, created: true };
 }

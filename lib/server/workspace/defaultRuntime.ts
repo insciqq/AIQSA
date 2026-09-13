@@ -2,6 +2,8 @@ import type { WorkspaceConfig } from "./config";
 import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { RemoteWorkspaceRuntime } from "./remoteRuntime";
 import { fenceDeterministicWorkspaceRuntime } from "./fencedRuntime";
+import { reportSubsystemFailure, reportSubsystemHealthy } from "../observability";
+import { observeWorkspaceHealth, workspaceLifecycleFailure } from "./lifecycleObservability";
 import {
   WorkspaceRuntimeError,
   type WorkspaceRuntime,
@@ -36,7 +38,26 @@ export function createWorkspaceRuntime(
   config: WorkspaceConfig,
   options: Readonly<{ sharedState?: boolean }> = {}
 ): WorkspaceRuntime {
-  if (config.runtimeMode === "deterministic") return fenceDeterministicWorkspaceRuntime(new DeterministicWorkspaceRuntime(config, options), options.sharedState);
-  if (config.runtimeMode === "remote") return new RemoteWorkspaceRuntime(config);
-  return new UnavailableWorkspaceRuntime();
+  let runtime: WorkspaceRuntime;
+  try {
+    runtime = config.runtimeMode === "deterministic"
+      ? fenceDeterministicWorkspaceRuntime(new DeterministicWorkspaceRuntime(config, options), options.sharedState)
+      : config.runtimeMode === "remote" ? new RemoteWorkspaceRuntime(config) : new UnavailableWorkspaceRuntime();
+    reportSubsystemHealthy("workspace", "initialize");
+  } catch (error) {
+    reportSubsystemFailure({ subsystem: "workspace", stage: "initialize", ...workspaceLifecycleFailure(error), action: "stop" });
+    throw error;
+  }
+  const health = runtime.health.bind(runtime);
+  runtime.health = async (signal) => {
+    try {
+      const result = await health(signal);
+      observeWorkspaceHealth(result, "app");
+      return result;
+    } catch (error) {
+      reportSubsystemFailure({ subsystem: "workspace", stage: "health", scope_id: "app", ...workspaceLifecycleFailure(error), action: "wait" });
+      throw error;
+    }
+  };
+  return runtime;
 }

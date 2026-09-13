@@ -1,3 +1,4 @@
+import { retainDatabaseFailure } from "../../observability/databaseFailure";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { resolveEntitlements } from "../../auth/entitlements";
 import { FULL_ACCESS_GROUP_SYSTEM_ROLE } from "../../auth/fullAccessGroup";
@@ -434,7 +435,7 @@ export function createPrismaAdminProviderCustomSetupRepository(
               maxWait: 10_000,
               timeout: 30_000
             }
-          );
+          ).catch(retainDatabaseFailure);
         } catch (error) {
           if (error instanceof CustomSetupCatalogUnavailableError) {
             return "catalog_unavailable";
