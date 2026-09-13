@@ -1,3 +1,4 @@
+import { retainDatabaseFailure } from "../../observability/databaseFailure";
 import { mergeSystemRoleEvidence } from "./systemRoleEvidence";
 import { decodeCapabilitySetupEvidence, pendingInitialCapabilityEvidence } from "./initialCapabilitySetup";
 import { decodeParallelToolCallVerificationEvidence } from "../../providers/parallelToolCallEvidence";
@@ -362,7 +363,7 @@ async function repeatableRead<Value>(
         isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
         maxWait: 10_000,
         timeout: 30_000
-      });
+      }).catch(retainDatabaseFailure);
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -387,7 +388,7 @@ async function serializable<Value>(
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
         maxWait: 10_000,
         timeout: 30_000
-      });
+      }).catch(retainDatabaseFailure);
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -2283,7 +2284,7 @@ export function createPrismaAdminProviderRepository(
           FOR SHARE
         `);
         return rows[0] ? consume(rows[0]) : null;
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async revokeCredentialVersion(input) {

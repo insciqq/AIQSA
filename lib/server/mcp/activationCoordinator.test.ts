@@ -1,13 +1,14 @@
 // @vitest-environment node
 
 import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   McpActivationCoordinator,
   type McpActivationClaim,
   type McpActivationCoordinatorRepository
 } from "./activationCoordinator";
-import type { McpDraftValidator } from "./draftValidator";
+import { McpDraftValidationUnavailableError, type McpDraftValidator } from "./draftValidator";
+import { getContext, runInBackground, runWithContext } from "../observability";
 
 const draft: McpDraftConfiguration = {
   auth: { mode: "none" },
@@ -44,6 +45,84 @@ function repository(
 }
 
 describe("MCP activation coordinator", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("observes a validator's returned failure before normalizing and persisting its issues", async () => {
+    const lines: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((line) => { lines.push(String(line)); return true; });
+    const storage = repository([claim("returned_failure")]);
+    vi.mocked(storage.failActivation).mockImplementation(async () => {
+      expect(lines.map((line) => JSON.parse(line))).toContainEqual(expect.objectContaining({
+        event: "job_attempt", stage: "validate", outcome: "failed", code: "mcp_network_failed"
+      }));
+      return true;
+    });
+    const coordinator = new McpActivationCoordinator({ repository: storage, draftValidator: {
+      async validate() { return { kind: "invalid", issues: [{ code: "mcp_network_failed", path: "PRIVATE_ISSUE_PATH" }] }; }
+    } });
+    await coordinator.reconcileNow();
+    expect(storage.failActivation).toHaveBeenCalledWith(expect.objectContaining({ errorCode: "mcp_draft_test_failed" }));
+    expect(lines.join("")).not.toContain("PRIVATE");
+  });
+
+  it.each([true, false, "reject"] as const)("observes the original validation failure before settlement=%s", async (outcome) => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const records = () => writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+    const storage = repository([claim()], { failActivation: async () => {
+      expect(records()).toContainEqual(expect.objectContaining({ event: "job_attempt", stage: "process", code: "mcp_draft_validation_unavailable", outcome: "failed" }));
+      if (outcome === "reject") throw new Error("PRIVATE_DATABASE_CANARY");
+      return outcome;
+    } });
+    const error = new McpDraftValidationUnavailableError(); error.message = "PRIVATE_ACTIVATION_CANARY";
+    await new McpActivationCoordinator({ repository: storage,
+      draftValidator: { async validate() { throw error; } }
+    }).reconcileNow();
+    expect(records()).toContainEqual(expect.objectContaining({ event: "job_persistence", stage: "fail", job_id: "activation-1",
+      outcome: outcome === "reject" ? "unconfirmed" : outcome ? "confirmed" : "not_applied" }));
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
+  it("keeps idle quiet and bounds claim failures until the same coordinator recovers", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const storage = repository([]);
+    const coordinator = new McpActivationCoordinator({ repository: storage, maxParallel: 1,
+      draftValidator: { async validate() { throw new Error("must not validate idle work"); } } });
+    await coordinator.reconcileNow(); await coordinator.reconcileNow();
+    expect(writer).not.toHaveBeenCalled();
+    vi.mocked(storage.claimActivation).mockRejectedValue(new Error("PRIVATE_CLAIM_CANARY"));
+    for (let index = 0; index < 4; index++) await coordinator.reconcileNow();
+    vi.mocked(storage.claimActivation).mockResolvedValue(null);
+    await coordinator.reconcileNow(); await coordinator.reconcileNow();
+    const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+    expect(records).toMatchObject([
+      { event: "runtime_lifecycle", subsystem: "mcp", stage: "claim", outcome: "failed" },
+      { event: "subsystem.recovered", subsystem: "mcp", stage: "claim", repeat_count: 3 }
+    ]);
+  });
+
+  it("keeps concurrent claimed activations outside their triggering request context", async () => {
+    const seen: Array<ReturnType<typeof getContext>> = [];
+    const coordinator = new McpActivationCoordinator({
+      repository: repository([claim("activation-a"), claim("activation-b")]),
+      draftValidator: { async validate() {
+        await Promise.resolve();
+        seen.push(getContext());
+        return { kind: "ok", evidence: {}, resolvedArtifact: null, toolInventory: [] };
+      } }
+    });
+    let requestTrace: string | undefined;
+    await runInBackground(() => runWithContext({ run_id: "request-run" }, async () => {
+      requestTrace = getContext()!.trace_id;
+      await coordinator.reconcileNow();
+    }));
+    expect(seen.map((context) => context?.job_id).sort()).toEqual(["activation-a", "activation-b"]);
+    expect(new Set(seen.map((context) => context?.trace_id)).size).toBe(2);
+    for (const context of seen) {
+      expect(context?.run_id).toBeUndefined();
+      expect(context?.trace_id).not.toBe(requestTrace);
+    }
+  });
+
   it("publishes only after reporting observable validator boundaries", async () => {
     const storage = repository([claim()]);
     const validator: McpDraftValidator = {

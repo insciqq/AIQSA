@@ -24,6 +24,8 @@ import type {
   MemoryLexicalProjectionStore,
   MemoryLexicalProjectionVerificationCandidate
 } from "./repository";
+import { bindContext, logEvent, reportSubsystemFailure, runInBackground, runWithContext } from "../../observability";
+import { observedFailure } from "../../providers/providerObservability";
 
 const errorCodePattern = /^[a-z0-9_]{1,64}$/u;
 
@@ -314,6 +316,18 @@ async function executeMemoryLexicalProjectionPass(
     maximumAttempts: input.configuration.maximumAttempts,
     now
   });
+  const contexts = new Map(claims.map(claim => [claim.id, runInBackground(() =>
+    runWithContext({ job_id: claim.id }, () => {
+      logEvent("job_attempt", { subsystem: "memory_search", stage: "claim", outcome: "started", attempt: claim.attemptCount });
+      return bindContext((operation: () => void | Promise<void>) => operation());
+    }))]));
+  const inClaim = (claim: MemoryLexicalProjectionClaim, operation: () => void | Promise<void>) => contexts.get(claim.id)!(operation);
+  const failedClaim = (claim: MemoryLexicalProjectionClaim, error: unknown) => {
+    const failure = observedFailure(error);
+    logEvent("job_attempt", { subsystem: "memory_search", stage: "projection", outcome: "failed",
+      attempt: claim.attemptCount, code: failure.code, httpStatus: failure.httpStatus,
+      action: claim.attemptCount >= input.configuration.maximumAttempts ? "fail" : "retry" });
+  };
   let failed = 0;
   let projected = 0;
   let purged = 0;
@@ -322,35 +336,39 @@ async function executeMemoryLexicalProjectionPass(
     mutation: MemoryOpenSearchMutation;
   }>> = [];
   for (const claim of claims) {
-    try {
-      if (claim.operation === "PURGE_USER" ||
-        claim.operation === "PURGE_GENERATION") {
-        await projectPurge({
-          claim,
-          configuration: input.openSearchConfiguration,
-          now,
-          search: input.search,
-          store: input.store
-        });
-        purged += 1;
-      } else {
-        pointMutations.push(Object.freeze({
-          claim,
-          mutation: await preparePointMutation({
+    await inClaim(claim, async () => {
+      try {
+        if (claim.operation === "PURGE_USER" ||
+          claim.operation === "PURGE_GENERATION") {
+          await projectPurge({
             claim,
             configuration: input.openSearchConfiguration,
+            now,
+            search: input.search,
             store: input.store
-          })
-        }));
+          });
+          purged += 1;
+          logEvent("job_attempt", { subsystem: "memory_search", stage: "projection", outcome: "completed", attempt: claim.attemptCount });
+        } else {
+          pointMutations.push(Object.freeze({
+            claim,
+            mutation: await preparePointMutation({
+              claim,
+              configuration: input.openSearchConfiguration,
+              store: input.store
+            })
+          }));
+        }
+      } catch (error) {
+        failed += 1;
+        failedClaim(claim, error);
+        await input.store.settleFailure(claim, {
+          errorCode: projectionErrorCode(error),
+          maximumAttempts: input.configuration.maximumAttempts,
+          now
+        });
       }
-    } catch (error) {
-      failed += 1;
-      await input.store.settleFailure(claim, {
-        errorCode: projectionErrorCode(error),
-        maximumAttempts: input.configuration.maximumAttempts,
-        now
-      });
-    }
+    });
   }
   if (pointMutations.length > 0) {
     let bulkError: unknown = null;
@@ -364,28 +382,39 @@ async function executeMemoryLexicalProjectionPass(
     }
     if (bulkError === null) {
       const settlements = await Promise.allSettled(pointMutations.map(
-        ({ claim }) => input.store.settleSuccess(claim, now)
+        ({ claim }) => inClaim(claim, () => input.store.settleSuccess(claim, now))
       ));
       for (const [index, settlement] of settlements.entries()) {
         if (settlement.status === "fulfilled") {
           projected += 1;
+          inClaim(pointMutations[index]!.claim, () => logEvent("job_attempt", {
+            subsystem: "memory_search", stage: "projection", outcome: "completed",
+            attempt: pointMutations[index]!.claim.attemptCount
+          }));
           continue;
         }
         failed += 1;
-        await input.store.settleFailure(pointMutations[index]!.claim, {
-          errorCode: projectionErrorCode(settlement.reason),
-          maximumAttempts: input.configuration.maximumAttempts,
-          now
+        const claim = pointMutations[index]!.claim;
+        await inClaim(claim, async () => {
+          failedClaim(claim, settlement.reason);
+          await input.store.settleFailure(claim, {
+            errorCode: projectionErrorCode(settlement.reason),
+            maximumAttempts: input.configuration.maximumAttempts,
+            now
+          });
         });
       }
     } else {
       const errorCode = projectionErrorCode(bulkError);
       failed += pointMutations.length;
       for (const { claim } of pointMutations) {
-        await input.store.settleFailure(claim, {
-          errorCode,
-          maximumAttempts: input.configuration.maximumAttempts,
-          now
+        await inClaim(claim, async () => {
+          failedClaim(claim, bulkError);
+          await input.store.settleFailure(claim, {
+            errorCode,
+            maximumAttempts: input.configuration.maximumAttempts,
+            now
+          });
         });
       }
     }
@@ -409,6 +438,8 @@ async function executeMemoryLexicalProjectionPass(
         else integrityFailed += 1;
       } catch (error) {
         integrityFailed += 1;
+        const failure = observedFailure(error);
+        reportSubsystemFailure({ subsystem: "memory_search", stage: "integrity", code: failure.code, httpStatus: failure.httpStatus, action: "degrade" });
         await input.store.markVerificationFailure({
           candidate,
           errorCode: projectionErrorCode(error),

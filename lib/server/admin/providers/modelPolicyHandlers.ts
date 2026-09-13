@@ -1,3 +1,5 @@
+import { logEvent, type LifecycleStage } from "../../observability";
+import { databaseFailureCode } from "../../observability/databaseFailure";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
 import {
@@ -30,13 +32,14 @@ function contentTypeIsJson(request: Request): boolean {
   return type === "application/json" || type.endsWith("+json");
 }
 
-function failure(error: unknown): Response {
+function failure(error: unknown, stage: LifecycleStage = "write"): Response {
   if (error instanceof AdminModelPolicyServiceError) {
+    logEvent("service_operation", { subsystem: "admin", stage, code: error.code, outcome: "skipped" });
     return Response.json({ error: error.code }, {
       status: error.code === "model_policy_stale" ? 409 : 400
     });
   }
-  console.error("model_policy_admin_action_failed");
+  logEvent("service_operation", { subsystem: "admin", stage, outcome: "failed", code: "model_policy_admin_action_failed", prisma_code: databaseFailureCode(error) });
   return Response.json({ error: "model_policy_admin_action_failed" }, { status: 500 });
 }
 
@@ -51,7 +54,7 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
       try {
         return Response.json({ modelPolicy: await input.service.list() });
       } catch (error) {
-        return failure(error);
+        return failure(error, "read");
       }
     },
 

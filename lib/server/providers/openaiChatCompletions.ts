@@ -1,3 +1,4 @@
+import { observeStreamParseFailure } from "./providerObservability";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { mergeTokenUsage, normalizeTokenUsage } from "../../domain/usage";
 import {
@@ -501,6 +502,7 @@ export async function* streamOpenAIChatSseResponse<
     try {
       parsed = JSON.parse(event.data) as unknown;
     } catch {
+      observeStreamParseFailure(response.body);
       throw new Error(profile.truncatedError);
     }
     if (!isOpenAIChatRecord(parsed)) {

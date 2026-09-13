@@ -20,11 +20,12 @@ import type {
 import { SESSION_COOKIE_NAME } from "./session";
 import { hashToken } from "./token";
 
-function jsonRequest(path: string, body: Record<string, unknown>): Request {
+function jsonRequest(path: string, body: Record<string, unknown>, forwardedFor?: string): Request {
   return new Request(`http://app.local${path}`, {
     body: JSON.stringify(body),
     headers: {
-      "content-type": "application/json"
+      "content-type": "application/json",
+      ...(forwardedFor === undefined ? {} : { "x-forwarded-for": forwardedFor })
     },
     method: "POST"
   });
@@ -132,6 +133,7 @@ describe("registration auth handlers", () => {
       token: "raw-invite-token"
     });
     request.headers.set("user-agent", "Invite Browser");
+    request.headers.set("x-forwarded-for", "203.0.113.1");
 
     const response = await POST(request);
 
@@ -212,7 +214,7 @@ describe("registration auth handlers", () => {
       jsonRequest("/api/auth/register", {
         displayName: "New User",
         email: " New.User@Example.COM "
-      })
+      }, "203.0.113.2")
     );
 
     expect(response.status).toBe(200);
@@ -257,12 +259,12 @@ describe("registration auth handlers", () => {
     const newResponse = await newPOST(
       jsonRequest("/api/auth/register", {
         email: "new.user@example.com"
-      })
+      }, "203.0.113.3")
     );
     const existingResponse = await existingPOST(
       jsonRequest("/api/auth/register", {
         email: "existing.user@example.com"
-      })
+      }, "203.0.113.4")
     );
 
     expect(newResponse.status).toBe(200);
@@ -520,7 +522,7 @@ describe("registration auth handlers", () => {
     await expect(valid.json()).resolves.toEqual({ error: "auth_not_configured" });
   });
 
-  it("rejects a saturated client bucket before reading the registration body", async () => {
+  it.each(["198.51.100.7", "unknown, "])("rejects a saturated registration client behind prefix %s before reading the body", async (prefix) => {
     const rateLimiter = createFixedWindowLoginRateLimiter({ clock: () => 0, maxAttempts: 1 });
     const POST = createRegisterHandler({
       getConfig: () =>
@@ -534,11 +536,11 @@ describe("registration auth handlers", () => {
       repository: createMemoryRegistrationRepository()
     });
     const first = jsonRequest("/api/auth/register", { email: "first@example.com" });
-    first.headers.set("x-forwarded-for", "203.0.113.91");
+    first.headers.set("x-forwarded-for", `${prefix}, 203.0.113.91`);
     expect((await POST(first)).status).toBe(200);
 
     const blocked = jsonRequest("/api/auth/register", { email: "second@example.com" });
-    blocked.headers.set("x-forwarded-for", "203.0.113.91");
+    blocked.headers.set("x-forwarded-for", "198.51.100.8, ::ffff:203.0.113.91");
     const originalBody = blocked.body;
     let bodyReads = 0;
     Object.defineProperty(blocked, "body", {
@@ -551,6 +553,38 @@ describe("registration auth handlers", () => {
 
     expect((await POST(blocked)).status).toBe(429);
     expect(bodyReads).toBe(0);
+  });
+
+  it.each([
+    { name: "missing", forwardedFor: null },
+    { name: "malformed", forwardedFor: "unknown" },
+    { name: "oversized", forwardedFor: `${"x".repeat(513)}, 203.0.113.20` }
+  ])("rejects $name proxy identity before registration, invitation or verification work", async ({ forwardedFor }) => {
+    const repository = createMemoryRegistrationRepository();
+    const mailer = createMemoryAuthMailer();
+    const passwordHasher = vi.fn(async () => "password-hash");
+    const rateLimiter = { check: vi.fn(), reset: vi.fn() };
+    const handlers = [
+      createRegisterHandler({ getConfig: () => proxyHandlerConfig, repository, mailer, registrationRateLimiter: rateLimiter }),
+      createInviteAcceptanceHandler({ getConfig: () => proxyHandlerConfig, repository, inviteAcceptanceRateLimiter: rateLimiter }),
+      createEmailVerificationHandler({ getConfig: () => proxyHandlerConfig, repository, passwordHasher, verificationRateLimiter: rateLimiter })
+    ];
+    for (const handler of handlers) {
+      const request = jsonRequest("/api/auth/register", { email: "test@example.com", password: "chosen-password", token: "test-token" });
+      if (forwardedFor !== null) request.headers.set("x-forwarded-for", forwardedFor);
+      const readBody = vi.fn(() => { throw new Error("body_must_not_be_read"); });
+      Object.defineProperty(request, "body", { get: readBody });
+      const response = await handler(request);
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({ error: "auth_admission_unavailable" });
+      expect(readBody).not.toHaveBeenCalled();
+    }
+    expect(rateLimiter.check).not.toHaveBeenCalled();
+    expect(passwordHasher).not.toHaveBeenCalled();
+    expect(repository.registrations).toHaveLength(0);
+    expect(repository.acceptances).toHaveLength(0);
+    expect(repository.verifications).toHaveLength(0);
+    expect(mailer.sent).toHaveLength(0);
   });
 
   it("keeps successful registration attempts in the account bucket", async () => {

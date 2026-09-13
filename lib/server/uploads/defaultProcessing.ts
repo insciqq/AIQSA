@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
+import { retainDatabaseFailure } from "../observability/databaseFailure";
 import { createS3StorageAdapter } from "./storage";
 import { createAttachmentProcessor, type AttachmentProcessingRecord } from "./processing";
 import {
@@ -153,7 +154,7 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
       `);
       if (advanced !== 1) throw new Error("attachment_fairness_cursor_lost");
       return claimed;
-    });
+    }).catch(retainDatabaseFailure);
     return row ? ({
       attemptCount: row.attemptCount,
       byteSize: row.byteSize,
@@ -177,7 +178,7 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
         claimToken: input.claimToken,
         id: input.jobId
       }
-    });
+    }).catch(retainDatabaseFailure);
     return updated.count === 1;
   },
 
@@ -194,7 +195,7 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
         claimToken: input.claimToken,
         id: input.jobId
       }
-    });
+    }).catch(retainDatabaseFailure);
     return updated.count === 1;
   },
 
@@ -224,7 +225,7 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
       if (updated.count !== 1) return false;
       await tx.attachmentProcessingJob.delete({ where: { id: input.jobId } });
       return true;
-    });
+    }).catch(retainDatabaseFailure);
   },
 
   async settleReady(input) {
@@ -254,7 +255,7 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
       if (updated.count !== 1) return false;
       await tx.attachmentProcessingJob.delete({ where: { id: input.jobId } });
       return true;
-    });
+    }).catch(retainDatabaseFailure);
   }
 };
 

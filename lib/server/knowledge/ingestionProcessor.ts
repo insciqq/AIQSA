@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { databaseFailureCode } from "../observability/databaseFailure";
+import type { LifecycleStage } from "../observability";
+import { ingestionAttempt, ingestionPersistence, ingestionStage, retainIngestionFailure } from "./ingestionObservability";
 import { ingestionConcurrency, IngestionWorkPool, mapIngestionWork } from "./ingestionConcurrency";
 import {
   createDocumentParserBoundary,
@@ -105,6 +108,18 @@ function digest(body: Buffer): string {
   return createHash("sha256").update(body).digest("hex");
 }
 
+function originalFailure(failure: KnowledgeIngestionError, error: unknown, stage: LifecycleStage): KnowledgeIngestionError {
+  const typed = isDocumentParserError(error) || error instanceof EmbeddingAdapterError ||
+    error instanceof ProviderAdmissionError || error instanceof KnowledgeModelPdfParsingError ||
+    error instanceof KnowledgeIngestionError;
+  return retainIngestionFailure(failure, {
+    code: typed ? error.code : "unknown", stage,
+    httpStatus: isDocumentParserError(error) || error instanceof EmbeddingAdapterError
+      ? error.httpStatus ?? undefined : undefined,
+    prisma_code: databaseFailureCode(error)
+  });
+}
+
 function parserFailure(error: unknown): KnowledgeIngestionError {
   if (error instanceof KnowledgeModelPdfParsingError) {
     return new KnowledgeIngestionError(error.code);
@@ -176,18 +191,9 @@ function logParserQualityDiagnostics(
   claim: KnowledgeWorkClaim,
   parsed: Awaited<ReturnType<DocumentParserBoundary["parse"]>>
 ): void {
-  for (const attempt of parsed.attempts) {
-    if (!attempt.reasonCode) continue;
-    console.info(JSON.stringify({
-      artifactId: claim.artifact.id,
-      attemptNumber: claim.attemptCount,
-      event: "knowledge_ingestion_parser_quality_fallback",
-      knowledgeBaseId: claim.knowledgeBaseId,
-      reasonCode: attempt.reasonCode,
-      sourceId: claim.sourceId,
-      sourceVersionId: claim.sourceVersionId,
-      stage: "parsing"
-    }));
+  const reasons = [...new Set(parsed.attempts.map((attempt) => attempt.reasonCode).filter(Boolean))];
+  for (const code of reasons.slice(0, 4)) {
+    ingestionAttempt(claim, { stage: "parse", outcome: "degraded", action: "degrade", code });
   }
 }
 
@@ -209,7 +215,7 @@ async function readExactObject(input: Readonly<{
     if (isStoredObjectTooLargeError(error)) {
       throw new KnowledgeIngestionError("knowledge_object_size_mismatch");
     }
-    throw new KnowledgeIngestionError("knowledge_object_read_failed", true);
+    throw originalFailure(new KnowledgeIngestionError("knowledge_object_read_failed", true), error, "read");
   }
   if (object.body.byteLength !== input.maxBytes) {
     throw new KnowledgeIngestionError("knowledge_object_size_mismatch");
@@ -321,7 +327,7 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
             userId: claim.ownerUserId
           });
     } catch (error) {
-      throw embeddingFailure(error);
+      throw originalFailure(embeddingFailure(error), error, "embed");
     }
     const pin = createKnowledgeVectorSpacePin({
       configuration: binding.configuration,
@@ -388,7 +394,7 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
         });
       } catch (error) {
         if (signal?.aborted) throw signal.reason ?? error;
-        throw embeddingFailure(error);
+        throw originalFailure(embeddingFailure(error), error, "embed");
       }
       if (result.vectors.length !== remaining.length) {
         throw new KnowledgeIngestionError("embedding_failed", true);
@@ -398,7 +404,7 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
         vector.some((value) => !Number.isFinite(value)))) {
         throw new KnowledgeIngestionError("embedding_failed", true);
       }
-      const accepted = await input.repository.persistEmbeddingBatch({
+      const accepted = await ingestionPersistence(claim, "embed", () => input.repository.persistEmbeddingBatch({
         ...knowledgeWorkIdentity(claim),
         batch: {
           batchIndex: batch.batchIndex,
@@ -414,7 +420,7 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
         now: now(),
         ownerUserId: claim.ownerUserId,
         targetDimension: claim.artifact.targetDimension
-      });
+      }), Boolean, {}, true);
       if (!accepted) throw leaseLost;
     };
     try {
@@ -429,15 +435,21 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
         }, signal);
       });
     } catch (error) {
-      if (error === leaseLost) return;
+      if (error === leaseLost) {
+        ingestionAttempt(claim, { stage: "embed", outcome: "lost_lease", action: "stop" });
+        return;
+      }
       throw error;
     }
 
-    await input.repository.activateSourceVersion({
+    const activation = await ingestionPersistence(claim, "publish", () => input.repository.activateSourceVersion({
       ...knowledgeWorkIdentity(claim),
       expectedChunkCount,
       now: now()
-    });
+    }), (result) => result === "activated");
+    if (activation !== "activated") ingestionAttempt(claim, { stage: "publish",
+      outcome: activation === "deferred" ? "waiting" : activation === "lease_lost" ? "lost_lease" : "stale",
+      action: activation === "deferred" ? "wait" : "stop" });
   }
 
   return async function processKnowledgeWork(
@@ -445,8 +457,10 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
     signal?: AbortSignal
   ): Promise<void> {
     const identity = knowledgeWorkIdentity(claim);
+    ingestionAttempt(claim, { stage: ingestionStage(claim), outcome: "started" });
     if (claim.state === "queued") {
-      await input.repository.advanceSourceToParsing({ ...identity, now: now() });
+      await ingestionPersistence(claim, "prepare", () =>
+        input.repository.advanceSourceToParsing({ ...identity, now: now() }), Boolean);
       return;
     }
     if (claim.state === "parsing") {
@@ -497,7 +511,7 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
         }
       } catch (error) {
         if (signal?.aborted) throw signal.reason ?? error;
-        throw parserFailure(error);
+        throw originalFailure(parserFailure(error), error, "parse");
       }
       logParserQualityDiagnostics(claim, parsed);
       let encoded;
@@ -516,48 +530,49 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
         if (error instanceof KnowledgeNormalizedDocumentError) throw normalizedFailure(error);
         throw error;
       }
-      if (!claim.normalizedTextStorageKey) {
+      const normalizedTextStorageKey = claim.normalizedTextStorageKey;
+      if (!normalizedTextStorageKey) {
         throw new KnowledgeIngestionError("knowledge_ingestion_failed");
       }
       try {
         await input.storage.putObject({
           body: encoded.body,
           contentType: "application/json",
-          storageKey: claim.normalizedTextStorageKey
+          storageKey: normalizedTextStorageKey
         });
-      } catch {
-        throw new KnowledgeIngestionError("knowledge_object_read_failed", true);
+      } catch (error) {
+        throw originalFailure(new KnowledgeIngestionError("knowledge_object_read_failed", true), error, "write");
       }
-      await input.repository.completeParsing({
+      await ingestionPersistence(claim, "parse", () => input.repository.completeParsing({
         ...identity,
         normalizedTextByteSize: encoded.body.byteLength,
         normalizedTextChecksum: encoded.checksum,
-        normalizedTextStorageKey: claim.normalizedTextStorageKey,
+        normalizedTextStorageKey,
         now: now(),
         pageCount: encoded.document.pageCount,
         warningCodes: encoded.document.warnings
-      });
+      }), Boolean);
       return;
     }
     if (claim.state === "chunking") {
       const { chunks, document } = await chunkPlan(claim, signal);
       let indexed: boolean;
       try {
-        indexed = await input.repository.persistHierarchicalIndex({
+        indexed = await ingestionPersistence(claim, "chunk", () => input.repository.persistHierarchicalIndex({
           ...identity,
           chunks,
           document,
           now: now()
-        });
+        }), Boolean, {}, true);
       } catch (error) {
         throw hierarchicalIndexFailure(error);
       }
       if (!indexed) return;
-      await input.repository.completeChunking({
+      await ingestionPersistence(claim, "chunk", () => input.repository.completeChunking({
         ...identity,
         chunkCount: chunks.length,
         now: now()
-      });
+      }), Boolean);
       return;
     }
     const expectedChunkCount = claim.ingestChunkCount;

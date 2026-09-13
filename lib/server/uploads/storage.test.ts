@@ -4,6 +4,7 @@ import {
   CreateMultipartUploadCommand,
   GetObjectCommand,
   PutObjectCommand,
+  S3ServiceException,
   UploadPartCommand
 } from "@aws-sdk/client-s3";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
@@ -36,6 +37,7 @@ import {
   type StoredObjectInput
 } from "./storage";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
+import { runWithContext } from "../observability";
 
 const s3Env = {
   S3_ACCESS_KEY_ID: "test-access-key",
@@ -55,12 +57,59 @@ function object(body: string, storageKey = "owned/object.bin"): StoredObjectInpu
 const temporaryRoots: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   presign.mockReset();
   s3Send.mockReset();
 
   await Promise.all(
     temporaryRoots.splice(0).map((root) => rm(root, { force: true, recursive: true }))
   );
+});
+
+describe("content-free storage operation evidence", () => {
+  it("retains an SDK refusal and status without exposing its message, key or credentials", async () => {
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const failure = new S3ServiceException({ name: "AccessDenied", $fault: "client", $metadata: { httpStatusCode: 403 }, message: "private-storage-message-canary" });
+    s3Send.mockRejectedValueOnce(failure);
+    const storage = createS3StorageAdapter({ ...s3Env, S3_SECRET_ACCESS_KEY: "private-storage-secret-canary" });
+    await expect(storage.getObject("private-storage-key-canary")).rejects.toBe(failure);
+    const records = output.mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(records).toEqual([expect.objectContaining({ event: "service_operation", subsystem: "object_storage", stage: "read", outcome: "failed", code: "AccessDenied", httpStatus: 403 })]);
+    expect(JSON.stringify(records)).not.toContain("canary");
+  });
+
+  it("reports stream completion only after EOF, with the context that opened the read", async () => {
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const source = new PassThrough();
+    s3Send.mockResolvedValueOnce({ Body: source, ContentLength: 4 });
+    const stream = await runWithContext({ trace_id: "1".repeat(32), run_id: "storage-run" }, () =>
+      createS3StorageAdapter(s3Env).getObjectStream!("private-stream-key-canary"));
+    const reader = stream.body.getReader();
+    source.write(Buffer.from("data"));
+    expect((await reader.read()).value).toEqual(Buffer.from("data"));
+    let records = output.mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(records.some((record) => record.stage === "read" && record.outcome === "completed")).toBe(false);
+    runWithContext({ trace_id: "2".repeat(32) }, () => source.end());
+    expect((await reader.read()).done).toBe(true);
+    records = output.mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(records.filter((record) => record.stage === "read")).toEqual([
+      expect.objectContaining({ outcome: "completed", trace_id: "1".repeat(32), run_id: "storage-run" })
+    ]);
+    expect(JSON.stringify(records)).not.toContain("canary");
+  });
+
+  it("does not replace a hostile rejected value while reporting an unknown cause", async () => {
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const failure = new Proxy({}, {
+      getOwnPropertyDescriptor() { throw new Error("private-descriptor-canary"); },
+      getPrototypeOf() { throw new Error("private-prototype-canary"); }
+    });
+    s3Send.mockRejectedValueOnce(failure);
+    await expect(createS3StorageAdapter(s3Env).putObject(object("private-body-canary"))).rejects.toBe(failure);
+    const records = output.mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(records).toEqual([expect.objectContaining({ stage: "write", outcome: "failed", code: "unknown" })]);
+    expect(JSON.stringify(records)).not.toContain("canary");
+  });
 });
 
 describe("memory storage bounded reads", () => {

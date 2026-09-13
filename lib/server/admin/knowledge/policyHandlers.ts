@@ -1,3 +1,5 @@
+import { logEvent, type LifecycleStage } from "../../observability";
+import { databaseFailureCode } from "../../observability/databaseFailure";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
 import {
@@ -45,17 +47,19 @@ function contentTypeIsJson(request: Request): boolean {
   return type === "application/json" || type.endsWith("+json");
 }
 
-function failure(error: unknown): Response {
+function failure(error: unknown, stage: LifecycleStage = "write"): Response {
   if (error instanceof AdminKnowledgeAnswerPolicyServiceError) {
+    logEvent("service_operation", { subsystem: "admin", stage, code: error.code, outcome: "skipped" });
     return Response.json({ error: error.code }, {
       status: error.code === "knowledge_answer_policy_stale" ||
         error.code === "knowledge_ingestion_parallelism_stale" ? 409 : 400
     });
   }
   if (error instanceof AdminKnowledgeProfileServiceError) {
+    logEvent("service_operation", { subsystem: "admin", stage, code: error.code, outcome: "skipped" });
     return Response.json({ error: error.code }, { status: 409 });
   }
-  console.error("knowledge_admin_action_failed");
+  logEvent("service_operation", { subsystem: "admin", stage, outcome: "failed", code: "knowledge_admin_action_failed", prisma_code: databaseFailureCode(error) });
   return Response.json({ error: "knowledge_admin_action_failed" }, { status: 500 });
 }
 
@@ -70,7 +74,7 @@ export function createAdminKnowledgePolicyHandlers(input: Readonly<{
       try {
         return Response.json({ knowledge: await input.service.list() });
       } catch (error) {
-        return failure(error);
+        return failure(error, "read");
       }
     },
 

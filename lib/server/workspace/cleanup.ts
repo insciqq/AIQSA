@@ -6,6 +6,9 @@ import { quiesceWorkspaceExecutions } from "./quiescence";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "./runtime";
 import { WORKSPACE_OPERATION_LEASE_MS, failWorkspaceExportsForLostDisk, lockWorkspaceSession, workspaceOperationWhere } from "./sessionOperation";
 import type { WorkspaceOperation } from "./operationFence";
+import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext, type LifecycleStage } from "../observability";
+import { retainDatabaseFailure } from "../observability/databaseFailure";
+import { workspaceLifecycleFailure } from "./lifecycleObservability";
 
 const ACTIVE_RUN_STATUSES = ["preparing", "queued", "in_progress", "streaming"] as const;
 const CLAIM_STALE_MS = 15 * 60 * 1_000;
@@ -78,14 +81,39 @@ export async function reconcileWorkspaceAfterRestore(
       }
     });
     return reset.count;
-  });
+  }).catch(retainDatabaseFailure);
 }
 
 function retryDelayMs(attemptCount: number): number {
   return Math.min(60 * 60 * 1_000, 5_000 * 2 ** Math.min(attemptCount, 8));
 }
 
-export async function runWorkspaceMaintenance(input: Readonly<{
+async function persistWorkspaceGuard(stage: LifecycleStage, operation: () => Promise<boolean>): Promise<boolean> {
+  try {
+    const applied = await operation();
+    logEvent("job_persistence", { subsystem: "workspace", stage, outcome: applied ? "confirmed" : "not_applied" });
+    return applied;
+  } catch (error) {
+    const failure = workspaceLifecycleFailure(error);
+    logEvent("job_persistence", { subsystem: "workspace", stage, code: failure.code, prisma_code: failure.prisma_code, outcome: "unconfirmed" });
+    throw error;
+  }
+}
+
+export async function runWorkspaceMaintenance(input: Parameters<typeof runWorkspaceMaintenanceOnce>[0]): Promise<WorkspaceMaintenanceSummary> {
+  return runInBackground(async () => {
+    try {
+      const result = await runWorkspaceMaintenanceOnce(input);
+      reportSubsystemHealthy("workspace", "cleanup");
+      return result;
+    } catch (error) {
+      reportSubsystemFailure({ subsystem: "workspace", stage: "cleanup", ...workspaceLifecycleFailure(error), action: "retry" });
+      throw error;
+    }
+  });
+}
+
+async function runWorkspaceMaintenanceOnce(input: Readonly<{
   config: WorkspaceConfig;
   limit?: number;
   now?: Date;
@@ -130,7 +158,7 @@ export async function runWorkspaceMaintenance(input: Readonly<{
       )
     ORDER BY ws."updatedAt" ASC, ws."id" ASC
     LIMIT ${limit}
-  `);
+  `).catch(retainDatabaseFailure);
   let staleSessionsSettled = 0;
   let staleSessionsStopped = 0;
   for (const candidate of staleSessions) {
@@ -151,8 +179,9 @@ export async function runWorkspaceMaintenance(input: Readonly<{
         where: { id: current.id }
       });
       return { ...claimed, legacyMarker };
-    });
+    }).catch(retainDatabaseFailure);
     if (!session?.operationOwner) continue;
+    logEvent("job_attempt", { subsystem: "workspace", stage: "recovery", outcome: "started" });
     const operation = { generation: session.version, owner: session.operationOwner };
     const runtimeInput = { operation, runtimeSandboxId: session.runtimeSandboxId, sessionId: session.id };
     try {
@@ -166,7 +195,7 @@ export async function runWorkspaceMaintenance(input: Readonly<{
           ...UNREGISTERED_WORKSPACE_COMMAND_FILTER,
           workspaceRunBinding: { workspaceSessionId: session.id }
         }
-      });
+      }).catch(retainDatabaseFailure);
       const quiescence = await quiesceWorkspaceExecutions({
         operation,
         unregisteredCommands,
@@ -175,12 +204,18 @@ export async function runWorkspaceMaintenance(input: Readonly<{
         runtimeSandboxId: session.runtimeSandboxId,
         sessionId: session.id
       });
-      if (!quiescence.proven) continue;
+      if (!quiescence.proven) {
+        logEvent("job_attempt", { subsystem: "workspace", stage: "quiesce", outcome: "failed", code: "workspace_execution_cleanup_failed", action: "wait" });
+        continue;
+      }
       }
       await input.runtime.retireSessionOperation(runtimeInput);
-    } catch { continue; }
+    } catch (error) {
+      logEvent("job_attempt", { subsystem: "workspace", stage: "recovery", ...workspaceLifecycleFailure(error), action: "wait" });
+      continue;
+    }
     const stoppedVm = session.runtimeSandboxId !== null;
-    const settled = await input.prisma.$transaction(async (tx) => {
+    const settled = await persistWorkspaceGuard("settle", () => input.prisma.$transaction(async (tx) => {
       const current = await lockWorkspaceSession(tx, session.id);
       if (!current || current.version !== operation.generation || current.operationOwner !== operation.owner ||
         current.runtimeSandboxId !== session.runtimeSandboxId || current.state === "DELETING") return false;
@@ -194,7 +229,7 @@ export async function runWorkspaceMaintenance(input: Readonly<{
         where: { id: session.id }
       });
       return true;
-    });
+    }).catch(retainDatabaseFailure));
     if (settled) {
       if (session.legacyMarker) staleOperationsRecovered += 1;
       else staleSessionsSettled += 1;
@@ -250,7 +285,8 @@ export async function runWorkspaceMaintenance(input: Readonly<{
       });
     }
     return candidates.length;
-  });
+  }).catch(retainDatabaseFailure);
+  if (expired > 0) logEvent("job_persistence", { subsystem: "workspace", stage: "prepare", work_stage: "cleanup", outcome: "confirmed", count: expired });
 
   const idleBefore = new Date(now.getTime() - input.config.idleTtlSeconds * 1_000);
   const idleCandidates = await input.prisma.workspaceSession.findMany({
@@ -273,7 +309,7 @@ export async function runWorkspaceMaintenance(input: Readonly<{
       operationOwner: null,
       state: { in: ["READY", "RUNNING"] }
     }
-  });
+  }).catch(retainDatabaseFailure);
   let idleStopped = 0;
   let idleFailed = 0;
   for (const candidate of idleCandidates) {
@@ -308,15 +344,16 @@ export async function runWorkspaceMaintenance(input: Readonly<{
         }
       });
       return updated.count === 1 ? operation : null;
-    });
+    }).catch(retainDatabaseFailure);
     if (!acquired) continue;
+    logEvent("job_attempt", { subsystem: "workspace", stage: "quiesce", outcome: "started" });
     const operation = acquired;
     const runtimeInput = { operation, runtimeSandboxId: candidate.runtimeSandboxId, sessionId: candidate.id };
     try {
       if (!input.runtime.claimSessionOperation || !input.runtime.retireSessionOperation) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
       await input.runtime.claimSessionOperation(runtimeInput);
       await input.runtime.retireSessionOperation(runtimeInput);
-      const settled = await input.prisma.$transaction(async (tx) => {
+      const settled = await persistWorkspaceGuard("settle", () => input.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "WorkspaceSession" WHERE "id" = ${candidate.id} FOR UPDATE`;
       if (!(await tx.workspaceSession.findFirst({ select: { id: true }, where: {
         ...workspaceOperationWhere(operation), id: candidate.id, runtimeSandboxId: candidate.runtimeSandboxId
@@ -332,16 +369,17 @@ export async function runWorkspaceMaintenance(input: Readonly<{
         where: { ...workspaceOperationWhere(operation), id: candidate.id, runtimeSandboxId: candidate.runtimeSandboxId, state: "CREATING" }
       });
       return updated.count === 1;
-      });
+      }).catch(retainDatabaseFailure));
       if (settled) idleStopped += 1;
-    } catch {
-      await input.prisma.workspaceSession.updateMany({
+    } catch (error) {
+      logEvent("job_attempt", { subsystem: "workspace", stage: "quiesce", ...workspaceLifecycleFailure(error), action: "fail" });
+      await persistWorkspaceGuard("fail", async () => (await input.prisma.workspaceSession.updateMany({
         data: {
           lastErrorCode: "workspace_idle_stop_failed",
           state: "FAILED"
         },
         where: { ...workspaceOperationWhere(operation), id: candidate.id, runtimeSandboxId: candidate.runtimeSandboxId, state: "CREATING" }
-      });
+      }).catch(retainDatabaseFailure)).count === 1);
       idleFailed += 1;
     }
   }
@@ -406,7 +444,7 @@ export async function runWorkspaceMaintenance(input: Readonly<{
             workspaceSessionId: job.workspaceSessionId
           }
         : null;
-    });
+    }).catch(retainDatabaseFailure);
     if (!claim) break;
     claims.push(claim);
   }
@@ -414,75 +452,90 @@ export async function runWorkspaceMaintenance(input: Readonly<{
   let cleanupCompleted = 0;
   let cleanupFailed = 0;
   for (const claim of claims) {
-    try {
-      const runtimeInput = { operation: claim.operation, runtimeSandboxId: claim.runtimeSandboxId, sessionId: claim.workspaceSessionId };
-      if (!input.runtime.claimSessionOperation || !input.runtime.retireSessionOperation) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
-      await input.runtime.claimSessionOperation(runtimeInput);
-      await input.runtime.removeSession({
-        operation: claim.operation,
-        runtimeSandboxId: claim.runtimeSandboxId,
-        sessionId: claim.workspaceSessionId
-      });
-      await input.runtime.retireSessionOperation(runtimeInput);
-      const completed = await input.prisma.$transaction(async (tx) => {
-        const session = await lockWorkspaceSession(tx, claim.workspaceSessionId);
-        if (!session || session.version !== claim.operation.generation || session.operationOwner !== claim.operation.owner ||
-          session.runtimeSandboxId !== claim.runtimeSandboxId || session.state !== "DELETING") return false;
-        const job = await tx.workspaceCleanupJob.findFirst({
-          select: { id: true },
-          where: {
-            claimToken: claim.claimToken,
-            id: claim.id,
-            state: "RUNNING"
-          }
+    await runInBackground(() => runWithContext({ job_id: claim.id }, async () => {
+      logEvent("job_attempt", { subsystem: "workspace", stage: "claim", outcome: "started" });
+      try {
+        const runtimeInput = { operation: claim.operation, runtimeSandboxId: claim.runtimeSandboxId, sessionId: claim.workspaceSessionId };
+        if (!input.runtime.claimSessionOperation || !input.runtime.retireSessionOperation) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+        await input.runtime.claimSessionOperation(runtimeInput);
+        await input.runtime.removeSession({
+          operation: claim.operation,
+          runtimeSandboxId: claim.runtimeSandboxId,
+          sessionId: claim.workspaceSessionId
         });
-        if (!job) return false;
-        await acknowledgeWorkspaceCommandsStopped(tx, session.id);
-        await failWorkspaceExportsForLostDisk(tx, session.id);
-        await tx.workspaceSession.update({
-          data: {
-            expiresAt: new Date(now.getTime() + input.config.retentionSeconds * 1_000),
-            lastActiveAt: now,
-            lastErrorCode: null,
-            operationOwner: null, operationExpiresAt: null,
-            runtimeSandboxId: null,
-            state: "PENDING",
-            stoppedAt: null,
-            version: { increment: 1 }
-          },
-          where: { id: claim.workspaceSessionId }
-        });
-        await tx.workspaceCleanupJob.delete({ where: { id: job.id } });
-        return true;
-      });
-      if (completed) cleanupCompleted += 1;
-    } catch {
-      await input.prisma.$transaction(async (tx) => {
-        const session = await lockWorkspaceSession(tx, claim.workspaceSessionId);
-        if (!session || session.version !== claim.operation.generation || session.operationOwner !== claim.operation.owner ||
-          session.runtimeSandboxId !== claim.runtimeSandboxId) return;
-        const job = await tx.workspaceCleanupJob.findFirst({
-          select: { attemptCount: true },
-          where: { claimToken: claim.claimToken, id: claim.id, state: "RUNNING" }
-        });
-        if (!job) return;
-        const nextAttemptAt = new Date(now.getTime() + retryDelayMs(job.attemptCount));
-        // The retry remains fenced and must acquire a higher generation at
-        // the receiver; its due time must also permit that guarded takeover.
-        await tx.workspaceSession.update({ data: { operationExpiresAt: nextAttemptAt }, where: { id: session.id } });
-        await tx.workspaceCleanupJob.updateMany({
-        data: {
-          claimedAt: null,
-          claimToken: null,
-          lastErrorCode: "workspace_remove_failed",
-          nextAttemptAt,
-          state: "FAILED"
-        },
-        where: { claimToken: claim.claimToken, id: claim.id, state: "RUNNING" }
-        });
-      });
-      cleanupFailed += 1;
-    }
+        await input.runtime.retireSessionOperation(runtimeInput);
+        logEvent("job_attempt", { subsystem: "workspace", stage: "cleanup", outcome: "completed" });
+        const completed = await persistWorkspaceGuard("complete", () => input.prisma.$transaction(async (tx) => {
+          const session = await lockWorkspaceSession(tx, claim.workspaceSessionId);
+          if (!session || session.version !== claim.operation.generation || session.operationOwner !== claim.operation.owner ||
+            session.runtimeSandboxId !== claim.runtimeSandboxId || session.state !== "DELETING") return false;
+          const job = await tx.workspaceCleanupJob.findFirst({
+            select: { id: true },
+            where: {
+              claimToken: claim.claimToken,
+              id: claim.id,
+              state: "RUNNING"
+            }
+          });
+          if (!job) return false;
+          await acknowledgeWorkspaceCommandsStopped(tx, session.id);
+          await failWorkspaceExportsForLostDisk(tx, session.id);
+          await tx.workspaceSession.update({
+            data: {
+              expiresAt: new Date(now.getTime() + input.config.retentionSeconds * 1_000),
+              lastActiveAt: now,
+              lastErrorCode: null,
+              operationOwner: null, operationExpiresAt: null,
+              runtimeSandboxId: null,
+              state: "PENDING",
+              stoppedAt: null,
+              version: { increment: 1 }
+            },
+            where: { id: claim.workspaceSessionId }
+          });
+          await tx.workspaceCleanupJob.delete({ where: { id: job.id } });
+          return true;
+        }).catch(retainDatabaseFailure));
+        if (completed) cleanupCompleted += 1;
+      } catch (error) {
+        logEvent("job_attempt", { subsystem: "workspace", stage: "cleanup", ...workspaceLifecycleFailure(error), action: "retry" });
+        try {
+          const retryAt = await input.prisma.$transaction(async (tx) => {
+            const session = await lockWorkspaceSession(tx, claim.workspaceSessionId);
+            if (!session || session.version !== claim.operation.generation || session.operationOwner !== claim.operation.owner ||
+              session.runtimeSandboxId !== claim.runtimeSandboxId) return null;
+            const job = await tx.workspaceCleanupJob.findFirst({
+              select: { attemptCount: true },
+              where: { claimToken: claim.claimToken, id: claim.id, state: "RUNNING" }
+            });
+            if (!job) return null;
+            const nextAttemptAt = new Date(now.getTime() + retryDelayMs(job.attemptCount));
+            // The retry remains fenced and must acquire a higher generation at
+            // the receiver; its due time must also permit that guarded takeover.
+            await tx.workspaceSession.update({ data: { operationExpiresAt: nextAttemptAt }, where: { id: session.id } });
+            const updated = await tx.workspaceCleanupJob.updateManyAndReturn({
+              data: {
+                claimedAt: null,
+                claimToken: null,
+                lastErrorCode: "workspace_remove_failed",
+                nextAttemptAt,
+                state: "FAILED"
+              },
+              where: { claimToken: claim.claimToken, id: claim.id, state: "RUNNING" },
+              select: { nextAttemptAt: true }
+            });
+            return updated.length === 1 ? updated[0]!.nextAttemptAt : null;
+          }).catch(retainDatabaseFailure);
+          logEvent("job_persistence", { subsystem: "workspace", stage: "retry", outcome: retryAt ? "confirmed" : "not_applied",
+            action: retryAt ? "retry" : "skip", ...(retryAt ? { retry_at: retryAt.toISOString() } : {}) });
+        } catch (writeError) {
+          const failure = workspaceLifecycleFailure(writeError);
+          logEvent("job_persistence", { subsystem: "workspace", stage: "retry", outcome: "unconfirmed", code: failure.code, prisma_code: failure.prisma_code, action: "wait" });
+          throw writeError;
+        }
+        cleanupFailed += 1;
+      }
+    }));
   }
 
   return {

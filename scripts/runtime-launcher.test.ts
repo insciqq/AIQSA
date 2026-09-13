@@ -93,6 +93,7 @@ describe("runtime launcher", () => {
         )
       ).toEqual({ status: "unavailable" });
       expect(stamp).not.toContain("forged");
+      expect(response.headers.get("x-aiqsa-trace-id")).toMatch(/^[0-9a-f]{32}$/);
       expect(http.createServer).toBe(originalCreateServer);
     } finally {
       await close(server);
@@ -112,6 +113,9 @@ describe("runtime launcher", () => {
 
       expect(await echoed.text()).toBe("multipart-payload");
       expect(await streamed.text()).toBe("first\nsecond\n");
+      expect(echoed.headers.get("x-aiqsa-trace-id")).toMatch(/^[0-9a-f]{32}$/);
+      expect(streamed.headers.get("x-aiqsa-trace-id")).toMatch(/^[0-9a-f]{32}$/);
+      expect(echoed.headers.get("x-aiqsa-trace-id")).not.toBe(streamed.headers.get("x-aiqsa-trace-id"));
     } finally {
       await close(server);
     }

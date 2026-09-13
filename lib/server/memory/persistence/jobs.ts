@@ -1,3 +1,4 @@
+import { rememberMemoryEnqueue } from "./enqueueObservability";
 import type { MemoryJobKind, MemoryJobState } from "@prisma/client";
 import { isMemoryCoordinatorJobKind } from "../coordinator/registry";
 import { memoryPersistenceFailure } from "./errors";
@@ -171,5 +172,6 @@ export async function enqueueMemoryJob(
       state: true
     }
   });
+  rememberMemoryEnqueue(tx, created.id);
   return { ...created, created: true };
 }

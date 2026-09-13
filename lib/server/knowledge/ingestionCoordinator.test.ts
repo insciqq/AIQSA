@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { rememberDatabaseFailure } from "../observability/databaseFailure";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clampKnowledgeIngestionParallelism,
   KnowledgeIngestionCoordinator
 } from "./ingestionCoordinator";
 import { KnowledgeIngestionError, type KnowledgeSourceWorkClaim } from "./ingestionTypes";
+import { getContext, reportSubsystemHealthy, runWithContext, type ObservabilityContext } from "../observability";
 
 function claim(id: string, attemptCount: number): KnowledgeSourceWorkClaim {
   return {
@@ -52,6 +54,72 @@ function claim(id: string, attemptCount: number): KnowledgeSourceWorkClaim {
 }
 
 describe("Knowledge ingestion coordinator", () => {
+  it("gives parallel owners separate work contexts while shared drains and heartbeat retain their scope", async () => {
+    const request = { trace_id: "c".repeat(32), run_id: "request-run", job_id: "request-job" };
+    const queued = ["first", "second"].map((id) => {
+      const work = claim(id, 1);
+      return { ...work, ownerUserId: `owner-${id}`, artifact: { ...work.artifact, id: `work-${id}` } };
+    });
+    const processed = new Map<string, ObservabilityContext | undefined>();
+    const resumed = new Map<string, ObservabilityContext | undefined>();
+    const beats = new Map<string, ObservabilityContext | undefined>();
+    const shared: Array<ObservabilityContext | undefined> = [];
+    let failedContext: ObservabilityContext | undefined;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let heartbeatsSeen!: () => void;
+    const heartbeats = new Promise<void>((resolve) => { heartbeatsSeen = resolve; });
+    const coordinator = new KnowledgeIngestionCoordinator({
+      heartbeatMs: 1,
+      intervalMs: 60_000,
+      maxParallel: 2,
+      async process(work) {
+        processed.set(work.artifact.id, getContext());
+        await gate;
+        resumed.set(work.artifact.id, getContext());
+        if (work.ownerUserId === "owner-first") throw new KnowledgeIngestionError("parser_rejected", false);
+      },
+      repository: {
+        async claim() {
+          shared.push(getContext());
+          return queued.shift() ?? null;
+        },
+        async heartbeat({ artifactId }) {
+          beats.set(artifactId, getContext());
+          if (beats.size === 2) heartbeatsSeen();
+          return true;
+        },
+        async reconcile() { shared.push(getContext()); return false; },
+        retryLater: vi.fn(async () => true),
+        async settleFailed() { failedContext = getContext(); return true; }
+      }
+    });
+    try {
+      runWithContext(request, () => coordinator.start());
+      const drain = runWithContext({ trace_id: "d".repeat(32), run_id: "next-request" }, () => coordinator.reconcileNow());
+      await heartbeats;
+      release();
+      await drain;
+
+      expect(processed.size).toBe(2);
+      expect(resumed).toEqual(processed);
+      expect(processed.get("work-first")?.trace_id).not.toBe(processed.get("work-second")?.trace_id);
+      for (const [jobId, context] of processed) {
+        expect(context).toEqual({ trace_id: expect.stringMatching(/^[0-9a-f]{32}$/u), job_id: jobId });
+        expect(context?.trace_id).not.toBe(request.trace_id);
+        expect(beats.get(jobId)).toEqual(context);
+      }
+      expect(failedContext).toEqual(processed.get("work-first"));
+      for (const context of shared) {
+        expect(context).toEqual({ trace_id: expect.stringMatching(/^[0-9a-f]{32}$/u) });
+        expect(context?.trace_id).not.toBe(request.trace_id);
+      }
+    } finally {
+      release();
+      coordinator.stop();
+    }
+  });
+
   it("isolates poisoned work and applies bounded retry policy per claim", async () => {
     const queued = [claim("retry", 1), claim("terminal", 3), claim("healthy", 1)];
     const retryLater = vi.fn(async () => true);
@@ -402,5 +470,142 @@ describe("Knowledge ingestion parallelism clamp", () => {
     expect(clampKnowledgeIngestionParallelism(1)).toBe(1);
     expect(clampKnowledgeIngestionParallelism(8)).toBe(8);
     expect(clampKnowledgeIngestionParallelism(64)).toBe(64);
+  });
+});
+
+
+describe("Knowledge job diagnostics", () => {
+  beforeEach(() => {
+    for (const stage of ["claim", "reconcile", "preflight", "heartbeat"] as const) reportSubsystemHealthy("knowledge", stage);
+  });
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  function capture() {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    return () => writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+  }
+
+  it("reports original processing failure before true, false, and rejected retry writes with confirmed dates only", async () => {
+    const records = capture();
+    const now = new Date("2026-09-13T12:00:00.000Z");
+    const queued = ["confirmed", "stale", "rejected"].map((id) => {
+      const work = claim(id, 1);
+      return { ...work, artifact: { ...work.artifact, id } };
+    });
+    const persistenceFailure = new Error("PRIVATE_PRISMA_PAYLOAD");
+    rememberDatabaseFailure(persistenceFailure, "P1001");
+    const service = new KnowledgeIngestionCoordinator({
+      now: () => now, maxParallel: 1,
+      process: async () => { throw new KnowledgeIngestionError("embedding_rate_limited", true, 90_000); },
+      repository: {
+        claim: async () => queued.shift() ?? null,
+        heartbeat: async () => true, reconcile: async () => false,
+        settleFailed: vi.fn(async () => true),
+        retryLater: async ({ artifactId, nextAttemptAt, errorCode }) => {
+          expect(records().at(-1)).toMatchObject({ event: "job_attempt", job_id: artifactId,
+            outcome: "failed", action: "retry", code: "embedding_rate_limited" });
+          expect(errorCode).toBe("embedding_rate_limited");
+          expect(nextAttemptAt).toEqual(new Date(now.getTime() + 90_000));
+          if (artifactId === "rejected") throw persistenceFailure;
+          return artifactId === "confirmed";
+        }
+      }
+    });
+    await runWithContext({ trace_id: "f".repeat(32), run_id: "PRIVATE_RUN" }, () => service.reconcileNow());
+    expect(records()).toHaveLength(9);
+    const writes = records().filter((record) => record.event === "job_persistence");
+    expect(writes).toEqual([
+      expect.objectContaining({ job_id: "confirmed", outcome: "confirmed", retry_at: "2026-09-13T12:01:30.000Z", delay_ms: 90_000 }),
+      expect.objectContaining({ job_id: "stale", outcome: "not_applied" }),
+      expect.objectContaining({ job_id: "rejected", outcome: "unconfirmed", prisma_code: "P1001" })
+    ]);
+    for (const write of writes.slice(1)) {
+      expect(write).not.toHaveProperty("retry_at");
+      expect(write).not.toHaveProperty("delay_ms");
+    }
+    expect(new Set(writes.map((record) => record.trace_id)).size).toBe(3);
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
+  it("bounds failing heartbeats and reports recovery once while preserving the job's live signal", async () => {
+    vi.useFakeTimers();
+    const records = capture();
+    const queued = [claim("heartbeat", 1)];
+    let release!: () => void;
+    let workSignal: AbortSignal | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const heartbeat = vi.fn().mockRejectedValueOnce(new Error("PRIVATE_HEARTBEAT"))
+      .mockRejectedValueOnce(new Error("PRIVATE_HEARTBEAT")).mockResolvedValue(true);
+    const service = new KnowledgeIngestionCoordinator({ heartbeatMs: 10, maxParallel: 1,
+      process: async (_claim, signal) => { workSignal = signal; await gate; },
+      repository: { claim: async () => queued.shift() ?? null, heartbeat, reconcile: async () => false,
+        retryLater: async () => true, settleFailed: async () => true } });
+    const pending = service.reconcileNow();
+    try {
+      await vi.advanceTimersByTimeAsync(30);
+      expect(workSignal?.aborted).toBe(false);
+      expect(heartbeat).toHaveBeenCalledTimes(3);
+      expect(records()).toHaveLength(4);
+      expect(records()).toContainEqual(expect.objectContaining({ event: "job_attempt", job_id: "artifact-1",
+        stage: "heartbeat", outcome: "degraded" }));
+      expect(records().at(-1)).toMatchObject({ event: "subsystem.recovered", stage: "heartbeat", repeat_count: 1 });
+      await vi.advanceTimersByTimeAsync(30);
+      expect(records()).toHaveLength(4);
+      expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+    } finally { release(); await pending; }
+  });
+
+  it("does not claim a successful callback confirmed any durable settlement", async () => {
+    const records = capture();
+    const queued = [claim("void", 1)];
+    const service = new KnowledgeIngestionCoordinator({ maxParallel: 1, process: async () => undefined,
+      repository: { claim: async () => queued.shift() ?? null, heartbeat: async () => true,
+        reconcile: async () => false, retryLater: async () => true, settleFailed: async () => true } });
+    await service.reconcileNow();
+    expect(records()).toHaveLength(1);
+    expect(records()[0]).toMatchObject({ event: "job_attempt", stage: "claim", outcome: "started" });
+  });
+
+  it("does not report a healthy parallel claimant as recovery from a continuing claim failure", async () => {
+    const records = capture();
+    let unavailable = true;
+    let calls = 0;
+    const service = new KnowledgeIngestionCoordinator({ maxParallel: 2, process: async () => undefined,
+      repository: {
+        claim: async () => { calls += 1; if (unavailable && calls % 2 === 1) throw new Error("PRIVATE_CLAIM"); return null; },
+        heartbeat: async () => true, reconcile: async () => false,
+        retryLater: async () => true, settleFailed: async () => true
+      }
+    });
+    for (let pass = 0; pass < 10; pass += 1) await service.reconcileNow();
+    expect(records()).toHaveLength(1);
+    unavailable = false;
+    await service.reconcileNow();
+    expect(records()).toHaveLength(2);
+    expect(records()[1]).toMatchObject({ event: "subsystem.recovered", stage: "claim", repeat_count: 9 });
+  });
+
+  it("keeps idle polls silent and observes bounded claim failures followed by one recovery", async () => {
+    const records = capture();
+    let unavailable = false;
+    const service = new KnowledgeIngestionCoordinator({ maxParallel: 1, process: async () => undefined,
+      repository: {
+        claim: async () => { if (unavailable) throw new Error("PRIVATE_CLAIM"); return null; },
+        heartbeat: async () => true, reconcile: async () => false,
+        retryLater: async () => true, settleFailed: async () => true
+      }
+    });
+    for (let pass = 0; pass < 20; pass += 1) await service.reconcileNow();
+    expect(records()).toHaveLength(0);
+    unavailable = true;
+    for (let pass = 0; pass < 20; pass += 1) await service.reconcileNow();
+    expect(records()).toHaveLength(1);
+    unavailable = false;
+    await service.reconcileNow();
+    await service.reconcileNow();
+    expect(records()).toHaveLength(2);
+    expect(records()[1]).toMatchObject({ event: "subsystem.recovered", stage: "claim", repeat_count: 19 });
+    expect(records().every((record) => !Object.hasOwn(record, "job_id") && !Object.hasOwn(record, "trace_id"))).toBe(true);
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
   });
 });

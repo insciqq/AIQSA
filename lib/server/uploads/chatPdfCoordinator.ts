@@ -1,4 +1,8 @@
 import { mergeTokenUsage, normalizeTokenUsage } from "../../domain/usage";
+import { bindContext, logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
+import { observedFailure } from "../providers/providerObservability";
+import { observeChatPdfPersistence } from "./chatPdfPersistenceObservability";
 import type { ParsedDocument } from "../parsing/types";
 import { isSharedPdfOcrParserVersion } from "../parsing/pdfOcrPipeline";
 import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
@@ -79,12 +83,15 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
         signal: writeSignal, storageKey: artifact.storageKey
       });
       signal.throwIfAborted();
-      if (!await deps.repository.acceptArtifact(claim, artifact.id)) {
+      if (!await observeChatPdfPersistence(claim.runId, "publish", () => deps.repository.acceptArtifact(claim, artifact.id))) {
         throw new ChatPdfPreparationError("pdf_preparation_unavailable");
       }
       return artifact.id;
     } catch (error) {
-      await deps.repository.abandonArtifact(artifact.id, artifact.storageKey).catch(() => undefined);
+      logEvent("job_attempt", { subsystem: "pdf", stage: "write", outcome: signal.aborted ? "cancelled"
+        : error instanceof ChatPdfPreparationError && error.code === "pdf_preparation_unavailable" ? "stale" : "failed",
+        code: observedFailure(error, signal).code, action: "release" });
+      await observeChatPdfPersistence(claim.runId, "cleanup", () => deps.repository.abandonArtifact(artifact.id, artifact.storageKey)).catch(() => undefined);
       throw error;
     }
   }
@@ -105,7 +112,7 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
         onPageCount: (pageCount) => deps.repository.pageCount(claim, preparation.id, pageCount), signal });
       const localArtifactId = await storeArtifact(claim, admission, "local", planned.plan.pageCount,
         planned.local, signal);
-      await deps.repository.savePlan(claim, { localArtifactId, plan: planned.plan, preparationId: preparation.id });
+      await observeChatPdfPersistence(claim.runId, "prepare", () => deps.repository.savePlan(claim, { localArtifactId, plan: planned.plan, preparationId: preparation.id }));
       return;
     }
     if (!preparation.localArtifactId) throw new ChatPdfPreparationError("pdf_preparation_invalid");
@@ -134,6 +141,7 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
       });
       if (reserved.kind === "ambiguous") throw new ChatPdfPreparationError("pdf_preparation_ambiguous", true);
       if (reserved.kind === "settled") {
+        logEvent("run_recovery", { subsystem: "pdf", stage: "recovery", outcome: "completed", action: "skip" });
         const settled = await readArtifact<{ page: number; text: string }>(reserved.resultArtifactId, admission.attachmentId, signal);
         if (settled.page !== pending.page) throw new ChatPdfPreparationError("pdf_preparation_invalid");
         decodeChatPdfPage(pending.page, settled.text, plan.parserVersion, admission.route);
@@ -144,7 +152,8 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
         throw new ChatPdfPreparationError("pdf_preparation_unavailable");
       }
       signal.throwIfAborted();
-      const dispatch = await deps.attempts.dispatch(claim, reserved.attemptId);
+      const dispatch = await observeChatPdfPersistence(claim.runId, "dispatch", () => deps.attempts.dispatch(claim, reserved.attemptId));
+      logEvent("job_attempt", { subsystem: "pdf", stage: "dispatch", outcome: "started" });
       const responseTimeoutMs = isSharedPdfOcrParserVersion(plan.parserVersion)
         ? effectiveProviderResponseTimeoutMs(admission.snapshot.connection,
           admission.snapshot.model.adapterKind === "fake" ? null : admission.snapshot.model)
@@ -158,10 +167,13 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
         signal: providerSignal, timeoutMs: responseTimeoutMs
       }).then(async (result) => {
         const usage = mergeTokenUsage(observedUsage, result.usage);
-        await deps.attempts.recordUsage(dispatch, usage);
+        await observeChatPdfPersistence(claim.runId, "settle", () => deps.attempts.recordUsage(dispatch, usage));
         return { ...result, usage };
       }, async (error: unknown) => {
-        await deps.attempts.recordUsage(dispatch, normalizeTokenUsage({ ...observedUsage, completeness: "partial" }));
+        const failure = observedFailure(error, providerSignal);
+        logEvent("job_attempt", { subsystem: "pdf", stage: "dispatch", outcome: signal.aborted ? "cancelled" : "failed",
+          code: failure.code, httpStatus: failure.httpStatus, action: "stop" });
+        await observeChatPdfPersistence(claim.runId, "settle", () => deps.attempts.recordUsage(dispatch, normalizeTokenUsage({ ...observedUsage, completeness: "partial" })));
         throw error;
       });
       let result;
@@ -174,23 +186,28 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
           isProviderDeadlineExceededError(error) || isRetryableProviderNetworkError(error) ||
           isRetryableProviderHttpStatus(status));
         const code = transcriptionFailure ? "pdf_transcription_failed" : "pdf_preparation_ambiguous";
-        await deps.attempts.ambiguous(dispatch, code);
+        logEvent("job_attempt", { subsystem: "pdf", stage: "process", outcome: signal.aborted ? "cancelled" : "failed", code, action: "stop" });
+        await observeChatPdfPersistence(claim.runId, "settle", () => deps.attempts.ambiguous(dispatch, code));
         throw new ChatPdfPreparationError(code, true);
       }
       try {
         decodeChatPdfPage(pending.page, result.finalText, plan.parserVersion, admission.route);
       } catch {
-        await deps.attempts.settle(dispatch, { errorCode: "pdf_transcription_failed",
-          resultArtifactId: null, usage: result.usage });
+        logEvent("job_attempt", { subsystem: "pdf", stage: "validate", outcome: "failed", code: "pdf_transcription_failed", action: "stop" });
+        await observeChatPdfPersistence(claim.runId, "settle", () => deps.attempts.settle(dispatch, { errorCode: "pdf_transcription_failed",
+          resultArtifactId: null, usage: result.usage }));
         throw new ChatPdfPreparationError("pdf_transcription_failed", true);
       }
       try {
         providerSignal.throwIfAborted();
         const resultArtifactId = await storeArtifact(claim, admission, "page", plan.pageCount,
           { page: pending.page, text: result.finalText }, signal);
-        await deps.attempts.settle(dispatch, { resultArtifactId, usage: result.usage });
-      } catch {
-        await deps.attempts.ambiguous(dispatch).catch(() => undefined);
+        await observeChatPdfPersistence(claim.runId, "settle", () => deps.attempts.settle(dispatch, { resultArtifactId, usage: result.usage }));
+      } catch (error) {
+        logEvent("job_attempt", { subsystem: "pdf", stage: "publish", outcome: signal.aborted ? "cancelled"
+          : error instanceof ChatPdfPreparationError && error.code === "pdf_preparation_unavailable" ? "stale" : "failed",
+          code: observedFailure(error, signal).code, prisma_code: databaseFailureCode(error), action: "stop" });
+        await observeChatPdfPersistence(claim.runId, "settle", () => deps.attempts.ambiguous(dispatch)).catch(() => undefined);
         throw new ChatPdfPreparationError("pdf_preparation_ambiguous", true);
       }
       await deps.repository.completedPages(claim, preparation.id);
@@ -208,7 +225,7 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
     const document: ParsedDocument = core.assemble({ admission, local, plan, results });
     signal.throwIfAborted();
     const id = await storeArtifact(claim, admission, "document", plan.pageCount, document, signal);
-    await deps.repository.publishDocument(claim, preparation.id, id);
+    await observeChatPdfPersistence(claim.runId, "publish", () => deps.repository.publishDocument(claim, preparation.id, id));
   }
 
   async function work(claim: ChatPdfClaim, loaded: ChatPdfLoadedRun, signal: AbortSignal): Promise<void> {
@@ -223,6 +240,7 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
           error instanceof DocumentParserError && ["parser_timeout", "parser_unavailable"].includes(error.code)
           ? "pdf_transcription_failed" : null;
       if (!code || !loaded.modelRun.workspaceRunBinding || signal.aborted) throw error;
+      logEvent("job_attempt", { subsystem: "pdf", stage: "process", outcome: "failed", code: observedFailure(error).code, action: "degrade" });
       if (!await deps.authorize(claim)) throw new ChatPdfPreparationError("pdf_preparation_unavailable");
       // Re-read the original before admitting the degraded outcome. Storage,
       // integrity, access and cancellation failures never become OCR failures.
@@ -232,28 +250,52 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
       });
       validateChatPdfSource(original.body, admission);
       signal.throwIfAborted();
-      await deps.repository.useWorkspaceOriginal(claim, preparation.id, code);
+      await observeChatPdfPersistence(claim.runId, "complete", () => deps.repository.useWorkspaceOriginal(claim, preparation.id, code));
+      logEvent("job_attempt", { subsystem: "pdf", stage: "process", outcome: "degraded", code, action: "degrade" });
     }
   }
 
   async function runOne(): Promise<boolean> {
-    const claim = await deps.repository.claim();
+    const claim = await runInBackground(async () => {
+      try {
+        const value = await deps.repository.claim();
+        reportSubsystemHealthy("pdf", "claim");
+        return value;
+      } catch (error) {
+        reportSubsystemFailure({ subsystem: "pdf", stage: "claim", code: observedFailure(error).code,
+          prisma_code: databaseFailureCode(error), action: "retry" });
+        throw error;
+      }
+    });
     if (!claim) return false;
+    return runInBackground(() => runWithContext({ run_id: claim.runId }, () => processClaim(claim)));
+  }
+
+  async function processClaim(claim: ChatPdfClaim): Promise<boolean> {
+    const started = performance.now();
+    logEvent("job_attempt", { subsystem: "pdf", stage: "claim", outcome: "started" });
     const registration = deps.registry.register(claim.runId);
     if (!registration) {
-      await deps.repository.release(claim);
+      logEvent("job_attempt", { subsystem: "pdf", stage: "claim", outcome: "stale", action: "release" });
+      await observeChatPdfPersistence(claim.runId, "release", () => deps.repository.release(claim));
       return false;
     }
     const lease = new AbortController();
     const signal = AbortSignal.any([lease.signal, registration.signal]);
     let heartbeatPending = false;
-    const timer = setInterval(() => {
+    const timer = setInterval(bindContext(() => {
       if (heartbeatPending) return;
       heartbeatPending = true;
       void deps.repository.heartbeat(claim).then((active) => {
-        if (!active) lease.abort();
-      }, () => lease.abort()).finally(() => { heartbeatPending = false; });
-    }, CHAT_PDF_HEARTBEAT_MS);
+        if (!active) {
+          if (!lease.signal.aborted) logEvent("job_attempt", { subsystem: "pdf", stage: "heartbeat", outcome: "lost_lease", action: "stop" });
+          lease.abort();
+        } else reportSubsystemHealthy("pdf", "heartbeat");
+      }, (error: unknown) => {
+        reportSubsystemFailure({ subsystem: "pdf", stage: "heartbeat", prisma_code: databaseFailureCode(error), action: "stop" });
+        lease.abort();
+      }).finally(() => { heartbeatPending = false; });
+    }), CHAT_PDF_HEARTBEAT_MS);
     timer.unref?.();
     try {
       const loaded = await deps.repository.load(claim);
@@ -261,17 +303,28 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
       if (!await deps.authorize(claim)) throw new ChatPdfPreparationError("pdf_preparation_unavailable");
       signal.throwIfAborted();
       if (loaded.modelRun.chatPdfAttachments.every((item) => item.state === "ready" || item.state === "original_only")) {
+        logEvent("run_recovery", { subsystem: "pdf", stage: "continuation", outcome: "started" });
         await deps.continueRun({ claim, loaded, releaseRegistry: registration.release, signal });
       } else {
         await work(claim, loaded, signal);
       }
+      logEvent("job_attempt", { subsystem: "pdf", stage: "process", outcome: "completed", duration_ms: performance.now() - started });
     } catch (error) {
-      await deps.fail(claim, error instanceof ChatPdfPreparationError ? error
-        : new ChatPdfPreparationError("pdf_preparation_failed", true));
+      logEvent("job_attempt", { subsystem: "pdf", stage: "process", outcome: registration.signal.aborted ? "cancelled" : lease.signal.aborted ? "lost_lease"
+        : error instanceof ChatPdfPreparationError && error.code === "pdf_preparation_unavailable" ? "stale" : "failed",
+        code: observedFailure(error).code, prisma_code: databaseFailureCode(error), duration_ms: performance.now() - started, action: "stop" });
+      try {
+        await deps.fail(claim, error instanceof ChatPdfPreparationError ? error
+          : new ChatPdfPreparationError("pdf_preparation_failed", true));
+      } catch (settlementError) {
+        logEvent("job_attempt", { subsystem: "pdf", stage: "fail", outcome: "failed",
+          code: observedFailure(settlementError).code, prisma_code: databaseFailureCode(settlementError), action: "wait" });
+        throw settlementError;
+      }
     } finally {
       clearInterval(timer);
       registration.release();
-      await deps.repository.release(claim);
+      await observeChatPdfPersistence(claim.runId, "release", () => deps.repository.release(claim));
     }
     return true;
   }
@@ -280,10 +333,16 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
     runOne,
     kick(): void {
       if (pumping) return;
-      pumping = (async () => {
-        await deps.repository.cleanupAbandonedArtifacts();
+      pumping = runInBackground(async () => {
+        try {
+          await deps.repository.cleanupAbandonedArtifacts();
+          reportSubsystemHealthy("pdf", "cleanup");
+        } catch (error) {
+          reportSubsystemFailure({ subsystem: "pdf", stage: "cleanup", prisma_code: databaseFailureCode(error), action: "retry" });
+          throw error;
+        }
         while (await runOne()) { /* Each claim rotates to the least recently served run. */ }
-      })().catch(() => undefined).finally(() => { pumping = null; });
+      }).catch(() => undefined).finally(() => { pumping = null; });
     }
   };
 }

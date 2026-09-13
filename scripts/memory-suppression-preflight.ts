@@ -1,3 +1,5 @@
+import "./worker-bootstrap.cjs";
+import { logEvent } from "../lib/server/observability";
 import {
   loadMemorySuppressionKeyring,
   MEMORY_SUPPRESSION_GUARDED_OPERATIONS,
@@ -14,9 +16,7 @@ function main(): void {
   const [operationValue, requiredKeyIdsValue, ...extra] = process.argv.slice(2);
   const operation = operationValue ? parseOperation(operationValue) : null;
   if (!operation || requiredKeyIdsValue === undefined || extra.length > 0) {
-    console.error(
-      "AIQSA Memory suppression preflight unavailable: memory_suppression_preflight_arguments_invalid"
-    );
+    logEvent("runtime_lifecycle", { subsystem: "memory", stage: "preflight", outcome: "failed", code: "memory_suppression_preflight_arguments_invalid", action: "stop" });
     process.exitCode = 2;
     return;
   }
@@ -30,11 +30,11 @@ function main(): void {
     operation
   );
   if (result.status === "blocked") {
-    console.error(`AIQSA Memory suppression preflight unavailable: ${result.code}`);
+    logEvent("runtime_lifecycle", { subsystem: "memory", stage: "preflight", outcome: "blocked", code: result.code, action: "stop" });
     process.exitCode = 1;
     return;
   }
-  console.error(`AIQSA Memory suppression preflight passed: ${operation}`);
+  logEvent("runtime_lifecycle", { subsystem: "memory", stage: "preflight", outcome: "completed" });
 }
 
 main();

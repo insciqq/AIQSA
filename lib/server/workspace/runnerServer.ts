@@ -18,6 +18,8 @@ import {
 import { parseWorkspaceOperation, WorkspaceOperationFence, type WorkspaceOperation } from "./operationFence";
 import { parseOutputCaptureRequest } from "./outputManifest";
 import { parseAcceptedWorkspaceSecrets, WORKSPACE_SECRETS_REQUEST_MAX_BYTES } from "./secrets/manifest";
+import { logEvent, reportSubsystemFailure, runInBackground, runWithContext, type LifecycleStage } from "../observability";
+import { observeWorkspaceHealth, workspaceLifecycleFailure } from "./lifecycleObservability";
 
 const JSON_BODY_MAX_BYTES = 2 * 1_024 * 1_024;
 const HEADER_VALUE_MAX_BYTES = 2_048;
@@ -205,19 +207,24 @@ export function createWorkspaceRunnerServer(input: Readonly<{
     return batchId;
   };
 
-  const server = createServer(async (request, response) => {
+  const server = createServer((request, response) => runInBackground(async () => {
     response.setHeader("cache-control", "no-store");
     if (!authorized(request, input.token)) {
       sendJson(response, 401, { error: "workspace_runtime_unavailable" });
       return;
     }
     const url = new URL(request.url ?? "/", "http://workspace-runner.invalid");
+    let stage: LifecycleStage = "preflight";
     try {
       if (request.method === "GET" && url.pathname === "/health") {
-        sendJson(response, 200, await input.runtime.health());
+        stage = "health";
+        const health = await input.runtime.health();
+        observeWorkspaceHealth(health, "runner");
+        sendJson(response, 200, health);
         return;
       }
       if (request.method === "GET" && url.pathname === "/v1/inventory") {
+        stage = "discover";
         if (!input.runtime.listSessions) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         if ([...url.searchParams.keys()].some((key) => key !== "cursor") || url.searchParams.getAll("cursor").length > 1) {
           throw new Error("field_invalid");
@@ -243,6 +250,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         return;
       }
       if (request.method === "POST" && url.pathname === "/v1/sessions/ensure") {
+        stage = "initialize";
         const body = await readJson(request);
         const sessionId = requiredString(body.sessionId, 128);
         if (!isWorkspaceOpaqueId(sessionId)) throw new Error("field_invalid");
@@ -273,6 +281,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         fence.run({ operation: parseWorkspaceOperation(operation), sessionId }, action);
 
       if (request.method === "POST" && suffix === "/secrets") {
+        stage = "prepare";
         const body = await readJson(request, WORKSPACE_SECRETS_REQUEST_MAX_BYTES);
         const secrets = parseAcceptedWorkspaceSecrets(body.secrets);
         const modelRunId = requiredString(body.modelRunId, 128);
@@ -285,6 +294,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       }
 
       if (request.method === "POST" && (suffix === "/operations/claim" || suffix === "/operations/retire")) {
+        stage = suffix === "/operations/claim" ? "claim" : "release";
         const body = await readJson(request);
         const claim = { operation: parseWorkspaceOperation(body.operation), runtimeSandboxId: optionalString(body.runtimeSandboxId, 256), sessionId };
         if (suffix === "/operations/claim") await fence.claim(claim);
@@ -294,6 +304,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       }
 
       if (request.method === "POST" && suffix === "/stage") {
+        stage = "prepare";
         const runtimeSandboxId = requiredString(header(request, "x-aiqsa-runtime-sandbox-id"), 256);
         const attachmentId = requiredString(header(request, "x-aiqsa-attachment-id"), 128);
         const messageId = requiredString(header(request, "x-aiqsa-message-id"), 128);
@@ -329,6 +340,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       }
 
       if (request.method === "POST" && suffix === "/stage/list") {
+        stage = "prepare";
         const body = await readJson(request);
         const attachments = decodeWorkspaceInboxIndexAttachments({ version: WORKSPACE_INBOX_INDEX_VERSION, attachments: body.attachments });
         if (!attachments) throw new Error("field_invalid");
@@ -342,6 +354,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       }
 
       if (request.method === "POST" && suffix === "/stage/finalize") {
+        stage = "prepare";
         const body = await readJson(request);
         if (!Array.isArray(body.manifests) || body.manifests.length > 1_000) {
           throw new Error("field_invalid");
@@ -368,6 +381,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       }
 
       if (request.method === "POST" && suffix === "/tools/catalog") {
+        stage = "discover";
         const body = await readJson(request);
         sendJson(response, 200, await execute(body.operation, (signal) => input.runtime.loadBoundTools({
           runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
@@ -378,23 +392,29 @@ export function createWorkspaceRunnerServer(input: Readonly<{
 
       const toolMatch = /^\/tools\/([^/]+)\/call$/u.exec(suffix);
       if (request.method === "POST" && toolMatch) {
+        stage = "dispatch";
         const toolName = decodeURIComponent(toolMatch[1]!);
         if (!workspaceToolIsAllowed(toolName)) throw new Error("field_invalid");
         const body = await readJson(request);
         const toolArguments = body.arguments;
         if (!isRecord(toolArguments)) throw new Error("field_invalid");
-        sendJson(response, 200, await execute(body.operation, (signal) => input.runtime.callBoundTool({
-          arguments: toolArguments,
-          modelRunId: requiredString(body.modelRunId, 128),
-          modelRunToolCallId: requiredString(body.modelRunToolCallId, 128),
-          originalName: toolName,
-          runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
-          sessionId, signal
-        })));
+        sendJson(response, 200, await execute(body.operation, (signal) => {
+          const modelRunId = requiredString(body.modelRunId, 128);
+          const modelRunToolCallId = requiredString(body.modelRunToolCallId, 128);
+          return runWithContext({ run_id: modelRunId, tool_call_id: modelRunToolCallId }, () => input.runtime.callBoundTool({
+            arguments: toolArguments,
+            modelRunId,
+            modelRunToolCallId,
+            originalName: toolName,
+            runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
+            sessionId, signal
+          }));
+        }));
         return;
       }
 
       if (request.method === "POST" && suffix === "/executions/terminate") {
+        stage = "quiesce";
         const body = await readJson(request);
         if (!Array.isArray(body.executions) || body.executions.length > 256) {
           throw new Error("field_invalid");
@@ -418,6 +438,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
 
       const abortMatch = /^\/tool-calls\/([^/]+)\/abort$/u.exec(suffix);
       if (request.method === "POST" && abortMatch) {
+        stage = "quiesce";
         const body = await readJson(request);
         await execute(body.operation, () => input.runtime.cancelToolCall({
           modelRunId: requiredString(body.modelRunId, 128),
@@ -430,6 +451,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       }
 
       if (request.method === "POST" && suffix === "/outputs/list") {
+        stage = "export";
         prunePending();
         const body = await readJson(request);
         const operation = parseWorkspaceOperation(body.operation);
@@ -462,6 +484,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       }
 
       if (request.method === "GET" && suffix === "/outputs/stream") {
+        stage = "export";
         prunePending();
         const opaqueFileId = url.searchParams.get("opaqueFileId") ?? "";
         const batchId = url.searchParams.get("batchId") ?? "";
@@ -492,6 +515,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       }
 
       if (request.method === "POST" && suffix === "/outputs/capture/release") {
+        stage = "release";
         const body = await readJson(request);
         const capture = parseOutputCaptureRequest({ id: body.captureId, create: false });
         if (!input.runtime.releaseOutputCapture) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
@@ -504,6 +528,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       }
 
       if (request.method === "POST" && suffix === "/outputs/release") {
+        stage = "release";
         const body = await readJson(request);
         const batchId = requiredString(body.batchId, 64);
         if (batches.get(batchId)?.sessionId === sessionId) discardBatch(batchId, "released");
@@ -512,6 +537,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       }
 
       if (request.method === "POST" && suffix === "/project/archive") {
+        stage = "export";
         prunePending();
         const body = await readJson(request);
         const operation = parseWorkspaceOperation(body.operation);
@@ -526,6 +552,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       }
 
       if (request.method === "POST" && suffix === "/stop") {
+        stage = "quiesce";
         const body = await readJson(request);
         await execute(body.operation, (signal) => input.runtime.stopSession({
           runtimeSandboxId: optionalString(body.runtimeSandboxId, 256),
@@ -536,6 +563,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       }
 
       if (request.method === "DELETE" && suffix === "") {
+        stage = "cleanup";
         const body = await readJson(request);
         await execute(body.operation, (signal) => input.runtime.removeSession({
           runtimeSandboxId: optionalString(body.runtimeSandboxId, 256),
@@ -547,10 +575,14 @@ export function createWorkspaceRunnerServer(input: Readonly<{
 
       sendJson(response, 404, { error: "workspace_runtime_unavailable" });
     } catch (error) {
+      const failure = workspaceLifecycleFailure(error);
+      const httpStatus = errorCode(error) === "workspace_operation_stale" ? 409 : 400;
+      if (stage === "health") reportSubsystemFailure({ subsystem: "workspace", stage, scope_id: "runner", ...failure, httpStatus, action: "wait" });
+      else logEvent("runtime_lifecycle", { subsystem: "workspace", stage, ...failure, httpStatus, action: "stop" });
       if (!response.headersSent) sendJson(response, errorCode(error) === "workspace_operation_stale" ? 409 : 400, { error: errorCode(error) });
       else response.destroy();
     }
-  });
+  }));
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 5_000;
   server.maxHeadersCount = 64;

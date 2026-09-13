@@ -8,6 +8,7 @@ import {
   RequestBodyTooLargeError
 } from "@/lib/server/http/requestBody";
 import { MCP_JSON_RPC_REQUEST_MAX_BYTES } from "./responseLimits";
+import { createTransportFailureObserver, observeMcpFetch, transportFailureFacts } from "../providers/providerObservability";
 
 const DEFAULT_MAX_REDIRECTS = 3;
 const MAX_CONFIGURED_REDIRECTS = 10;
@@ -288,15 +289,19 @@ async function resolvePinnedAddress(
   signal: AbortSignal
 ): Promise<McpResolvedAddress> {
   const hostname = hostnameWithoutBrackets(url);
+  const observeFailure = createTransportFailureObserver("mcp");
   let records: readonly McpResolvedAddress[];
   try {
     records = await awaitWithSignal(
       Promise.resolve().then(() => (options.lookupHostname ?? defaultLookupHostname)(hostname)),
       signal
     );
-  } catch {
+  } catch (error) {
     if (signal.aborted) throw abortReason(signal);
-    throw new McpSafeFetchError("mcp_http_dns_failed");
+    const failure = new McpSafeFetchError("mcp_http_dns_failed");
+    const facts = transportFailureFacts(error);
+    observeFailure({ category: "dns", code: facts.code === "unknown" ? failure.code : facts.code });
+    throw failure;
   }
   if (records.length === 0 || records.some((record) =>
     (record.family !== 4 && record.family !== 6) || isIP(record.address) !== record.family
@@ -341,6 +346,7 @@ function responseHeaders(rawHeaders: string[]): Headers {
 }
 
 async function defaultDispatch(input: McpPinnedHttpRequest): Promise<Response> {
+  const observeFailure = createTransportFailureObserver("mcp");
   if (input.signal.aborted) throw abortReason(input.signal);
   const request = input.url.protocol === "https:" ? httpsRequest : httpRequest;
   const hostname = hostnameWithoutBrackets(input.url);
@@ -354,12 +360,17 @@ async function defaultDispatch(input: McpPinnedHttpRequest): Promise<Response> {
   };
 
   return new Promise<Response>((resolve, reject) => {
+    let headersReceived = false;
     const rejectRequest = (cause?: unknown) => {
       const code = cause && typeof cause === "object" && "code" in cause ? cause.code : null;
       const tls = typeof code === "string" && ["CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "CERT_REVOKED", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "ERR_TLS_CERT_ALTNAME_INVALID", "ERR_SSL_WRONG_VERSION_NUMBER"].includes(code);
-      reject(input.signal.aborted
+      const failure = input.signal.aborted
         ? abortReason(input.signal)
-        : new McpSafeFetchError(tls ? "mcp_http_tls_failed" : "mcp_http_request_failed"));
+        : new McpSafeFetchError(tls ? "mcp_http_tls_failed" : "mcp_http_request_failed");
+      const facts = transportFailureFacts(cause, input.signal);
+      if (!headersReceived) observeFailure({ category: facts.category, code: facts.code === "unknown"
+        ? tls ? "mcp_http_tls_failed" : "mcp_http_request_failed" : facts.code, timeout_ms: facts.timeout_ms });
+      reject(failure);
     };
     try {
       const outgoing = request({
@@ -385,11 +396,13 @@ async function defaultDispatch(input: McpPinnedHttpRequest): Promise<Response> {
             ? Readable.toWeb(incoming) as ReadableStream<Uint8Array>
             : null;
           if (!bodyAllowed) incoming.resume();
-          resolve(new Response(body, {
+          const response = new Response(body, {
             headers: responseHeaders(incoming.rawHeaders),
             status,
             statusText: incoming.statusMessage
-          }));
+          });
+          headersReceived = true;
+          resolve(response);
         } catch {
           incoming.destroy();
           rejectRequest();
@@ -476,6 +489,15 @@ export async function mcpSafeFetch(
   input: RequestInfo | URL,
   init: RequestInit | undefined = undefined,
   options: McpSafeFetchOptions = {}
+): Promise<Response> {
+  return observeMcpFetch(() => mcpSafeFetchUnobserved(input, init, options),
+    init?.signal ?? (input instanceof Request ? input.signal : undefined));
+}
+
+async function mcpSafeFetchUnobserved(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  options: McpSafeFetchOptions
 ): Promise<Response> {
   const maxRedirects = configuredMaxRedirects(options);
   const requestBodyMaxBytes = configuredRequestBodyMaxBytes(options);

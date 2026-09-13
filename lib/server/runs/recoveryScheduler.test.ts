@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { RunRecoveryScheduler } from "./recoveryScheduler";
+import { getContext, runInBackground, runWithContext } from "../observability";
 
 function deferred() {
   let resolve!: () => void;
@@ -10,6 +11,57 @@ function deferred() {
 }
 
 describe("run recovery scheduler", () => {
+  it("keeps healthy polls quiet, bounds coordinator failures and reports one recovery", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const reconcile = vi.fn().mockResolvedValue(undefined);
+    const scheduler = new RunRecoveryScheduler({ reconcile });
+    try {
+      await scheduler.reconcileNow(); await scheduler.reconcileNow();
+      expect(writer).not.toHaveBeenCalled();
+      const error = new Error("PRIVATE_RECOVERY_CANARY");
+      reconcile.mockRejectedValue(error);
+      for (let index = 0; index < 4; index += 1) await expect(scheduler.reconcileNow()).rejects.toBe(error);
+      reconcile.mockResolvedValue(undefined);
+      await scheduler.reconcileNow(); await scheduler.reconcileNow();
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      expect(records).toMatchObject([
+        { event: "runtime_lifecycle", subsystem: "run_recovery", stage: "recovery", outcome: "failed" },
+        { event: "subsystem.recovered", subsystem: "run_recovery", stage: "recovery", repeat_count: 3 }
+      ]);
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+    } finally { await scheduler.stop(); writer.mockRestore(); }
+  });
+
+  it("isolates lazy start, periodic work and repeated kicks from request and sibling contexts", async () => {
+    vi.useFakeTimers();
+    const seen: Array<ReturnType<typeof getContext>> = [];
+    let requestTrace: string | undefined;
+    const scheduler = new RunRecoveryScheduler({
+      intervalMs: 100,
+      reconcile: async () => { seen.push(getContext()); },
+      recoverChatTitles: async () => { seen.push(getContext()); },
+      recoverWorkspaceExports: async () => { seen.push(getContext()); }
+    });
+    try {
+      await runInBackground(() => runWithContext({ run_id: "request-run" }, async () => {
+        requestTrace = getContext()!.trace_id;
+        scheduler.start();
+        await vi.advanceTimersByTimeAsync(200);
+        await scheduler.reconcileNow();
+      }));
+      expect(seen.length).toBeGreaterThan(6);
+      for (const context of seen) {
+        expect(context?.trace_id).toMatch(/^[a-f0-9]{32}$/);
+        expect(context?.trace_id).not.toBe(requestTrace);
+        expect(context?.run_id).toBeUndefined();
+      }
+      expect(new Set(seen.slice(0, 3).map((context) => context?.trace_id)).size).toBe(3);
+    } finally {
+      await scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps run and export recovery independent of a held title and drains all workers on shutdown", async () => {
     const held = deferred();
     let titleSignal: AbortSignal | undefined;

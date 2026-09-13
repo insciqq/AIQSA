@@ -1,3 +1,6 @@
+import { reportSubsystemFailure, reportSubsystemHealthy } from "../observability";
+import { databaseFailureCode, retainDatabaseFailure } from "../observability/databaseFailure";
+import { observedFailureCode } from "../providers/providerObservability";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
@@ -34,6 +37,10 @@ const RECENT_ACTIVITY_MS = 15 * 60_000;
 const DRAIN_GRACE_MS = 60_000;
 const INVENTORY_FRESH_MS = 5 * 60_000;
 
+function runtimeConfigurationError(code: "mcp_values_invalid" | "mcp_runtime_fingerprint_collision"): Error {
+  return Object.assign(new Error(code), { code });
+}
+
 type StoredValues = {
   values: Record<string, McpSlotValue>;
   version: 1;
@@ -54,16 +61,16 @@ function storedValues(
   context?: McpEnvelopeContext
 ): StoredValues {
   if (!envelope) return { values: {}, version: 1 };
-  if (!context) throw new Error("mcp_values_invalid");
+  if (!context) throw runtimeConfigurationError("mcp_values_invalid");
   const decoded = decryptMcpEnvelope<unknown>(envelope, key, context);
   if (!decoded || typeof decoded !== "object" || Array.isArray(decoded) ||
     !("version" in decoded) || decoded.version !== 1 || !("values" in decoded) ||
     !decoded.values || typeof decoded.values !== "object" || Array.isArray(decoded.values)) {
-    throw new Error("mcp_values_invalid");
+    throw runtimeConfigurationError("mcp_values_invalid");
   }
   const values: Record<string, McpSlotValue> = {};
   for (const [slotKey, value] of Object.entries(decoded.values)) {
-    if (!isSlotValue(value)) throw new Error("mcp_values_invalid");
+    if (!isSlotValue(value)) throw runtimeConfigurationError("mcp_values_invalid");
     values[slotKey] = value;
   }
   return { values, version: 1 };
@@ -74,17 +81,17 @@ function storedEffectiveSnapshot(
   key: Buffer,
   context: McpEnvelopeContext
 ): StoredEffectiveSnapshot {
-  if (!envelope) throw new Error("mcp_values_invalid");
+  if (!envelope) throw runtimeConfigurationError("mcp_values_invalid");
   const decoded = decryptMcpEnvelope<unknown>(envelope, key, context);
   if (!decoded || typeof decoded !== "object" || Array.isArray(decoded) ||
     !("version" in decoded) || decoded.version !== 1 || !("values" in decoded) ||
     !decoded.values || typeof decoded.values !== "object" || Array.isArray(decoded.values) ||
     !("plan" in decoded) || !Array.isArray(decoded.plan)) {
-    throw new Error("mcp_values_invalid");
+    throw runtimeConfigurationError("mcp_values_invalid");
   }
   const values: Record<string, McpSlotValue> = {};
   for (const [slotKey, value] of Object.entries(decoded.values)) {
-    if (!isSlotValue(value)) throw new Error("mcp_values_invalid");
+    if (!isSlotValue(value)) throw runtimeConfigurationError("mcp_values_invalid");
     values[slotKey] = value;
   }
   const slotKeys = new Set<string>();
@@ -97,7 +104,7 @@ function storedEffectiveSnapshot(
       !("valueVersion" in item) || !(item.valueVersion === null ||
         (typeof item.valueVersion === "number" && Number.isInteger(item.valueVersion) &&
           item.valueVersion >= 0)) || slotKeys.has(item.slotKey)) {
-      throw new Error("mcp_values_invalid");
+      throw runtimeConfigurationError("mcp_values_invalid");
     }
     slotKeys.add(item.slotKey);
     plan.push({
@@ -270,7 +277,10 @@ function effectiveRuntimeCandidate(input: {
         serverId: input.record.serverId,
         userId: input.record.userId
       });
-    } catch {
+      reportSubsystemHealthy("mcp", "preflight", input.record.id);
+    } catch (error) {
+      reportSubsystemFailure({ subsystem: "mcp", stage: "preflight", scope_id: input.record.id,
+        code: observedFailureCode(error), action: "skip" });
       return null;
     }
     const connection = input.record.server.oauthConnections.find((candidate) =>
@@ -418,7 +428,7 @@ export function createPrismaMcpRuntimeRepository(input: {
             some: { modelRun: { status: { in: [...ACTIVE_RUN_STATUSES] } } }
           }
         }
-      });
+      }).catch(retainDatabaseFailure);
       if (!generation || generation.revision.serverId !== generation.userServer.serverId) return null;
       const configuration = revisionConfiguration(generation.revision.configuration);
       if (!configuration || (configuration.auth.mode === "oauth") !== Boolean(generation.oauthConnectionId)) {
@@ -464,6 +474,7 @@ export function createPrismaMcpRuntimeRepository(input: {
               headers[slot.target.name] = headerValue(snapshot.values[slot.slotKey]!);
             }
           }
+          reportSubsystemHealthy("mcp", "recovery", generation.id);
           return {
             ...commonLaunch,
             allowPrivateNetwork: configuration.source.allowPrivateNetwork === true,
@@ -484,6 +495,7 @@ export function createPrismaMcpRuntimeRepository(input: {
           if (slot.target.kind !== "environment") return null;
           envVars[slot.target.name] = headerValue(snapshot.values[slot.slotKey]!);
         }
+        reportSubsystemHealthy("mcp", "recovery", generation.id);
         return {
           ...commonLaunch,
           toolHive: {
@@ -493,13 +505,23 @@ export function createPrismaMcpRuntimeRepository(input: {
             image: artifact.imageRef
           }
         };
-      } catch {
+      } catch (error) {
+        reportSubsystemFailure({ subsystem: "mcp", stage: "recovery", scope_id: generation.id,
+          code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "wait" });
         return null;
       }
     },
 
     synchronizeDesired: async ({ now, onDemand = false, serverIds, userId }) => {
-      await input.reconcileOAuthConnections?.().catch(() => undefined);
+      if (input.reconcileOAuthConnections) {
+        try {
+          await input.reconcileOAuthConnections();
+          reportSubsystemHealthy("mcp", "reconcile", "oauth_reconcile");
+        } catch (error) {
+          reportSubsystemFailure({ subsystem: "mcp", stage: "reconcile", scope_id: "oauth_reconcile",
+            code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "retry" });
+        }
+      }
       const recentActivityCutoff = new Date(now.getTime() - RECENT_ACTIVITY_MS);
       if (!userId) {
         // Eviction is observed runtime state, not a user preference mutation.
@@ -527,7 +549,7 @@ export function createPrismaMcpRuntimeRepository(input: {
                 AND hub_grant."state" = 'ACTIVE'
                 AND hub_grant."lastUsedAt" >= ${recentActivityCutoff}
             )
-        `;
+        `.catch(retainDatabaseFailure);
       }
       const records = await client.mcpUserServer.findMany({
         include: {
@@ -572,7 +594,7 @@ export function createPrismaMcpRuntimeRepository(input: {
             })
           }
         }
-      });
+      }).catch(retainDatabaseFailure);
       const key = encryptionKey();
       const launches: McpRuntimeLaunch[] = [];
       for (const record of records) {
@@ -585,7 +607,7 @@ export function createPrismaMcpRuntimeRepository(input: {
           await client.mcpUserServer.updateMany({
             data: { desiredRuntimeGenerationId: null },
             where: { id: record.id }
-          });
+          }).catch(retainDatabaseFailure);
           continue;
         }
         const generation = await client.$transaction(async (tx) => {
@@ -613,12 +635,12 @@ export function createPrismaMcpRuntimeRepository(input: {
           if (selected.userServerId !== candidate.userServerId ||
             selected.revisionId !== candidate.revisionId ||
             (selected.oauthConnectionId ?? null) !== (candidate.oauthConnectionId ?? null)) {
-            throw new Error("mcp_runtime_fingerprint_collision");
+            throw runtimeConfigurationError("mcp_runtime_fingerprint_collision");
           }
           if (selected.credentialSources.some((source) =>
             !candidate.credentialSources.includes(source as McpCredentialSource)) ||
             selected.credentialSources.length !== candidate.credentialSources.length) {
-            throw new Error("mcp_runtime_fingerprint_collision");
+            throw runtimeConfigurationError("mcp_runtime_fingerprint_collision");
           }
           if (selected.externalAccountLabel !== candidate.externalAccountLabel) {
             await tx.mcpRuntimeGeneration.update({
@@ -648,7 +670,7 @@ export function createPrismaMcpRuntimeRepository(input: {
             }
           });
           return accepted.count ? selected : null;
-        });
+        }).catch(retainDatabaseFailure);
         if (!generation) continue;
         const commonLaunch = {
           callTimeoutMs: candidate.callTimeoutMs,
@@ -707,7 +729,7 @@ export function createPrismaMcpRuntimeRepository(input: {
                 AND run."status" IN ('preparing', 'queued', 'streaming', 'in_progress')
             )
           )
-      `;
+      `.catch(retainDatabaseFailure);
       return count === 1;
     },
 
@@ -744,12 +766,12 @@ export function createPrismaMcpRuntimeRepository(input: {
                 AND run."status" IN ('preparing', 'queued', 'streaming', 'in_progress')
             )
           )
-      `;
+      `.catch(retainDatabaseFailure);
       return count === 1;
     },
 
     markFailed: async ({ errorCode, fingerprint, generationId, now }) => {
-      const count = await client.$executeRaw`
+      const rows = await client.$queryRaw<Array<{ retryAt: Date }>>`
         UPDATE "McpRuntimeGeneration" AS generation
         SET "state" = 'failed'::"McpRuntimeState",
             "errorCode" = ${errorCode},
@@ -776,13 +798,14 @@ export function createPrismaMcpRuntimeRepository(input: {
                 AND run."status" IN ('preparing', 'queued', 'streaming', 'in_progress')
             )
           )
-      `;
-      return count === 1;
+        RETURNING generation."retryAt"
+      `.catch(retainDatabaseFailure);
+      return { applied: rows.length === 1, retryAt: rows.length === 1 ? rows[0]!.retryAt : null };
     },
 
     listGenerationFingerprints: async () => {
       const [generations, activations] = await Promise.all([
-        client.mcpRuntimeGeneration.findMany({ select: { fingerprint: true } }),
+        client.mcpRuntimeGeneration.findMany({ select: { fingerprint: true } }).catch(retainDatabaseFailure),
         client.mcpActivationJob.findMany({
           select: { workloadToken: true },
           where: {
@@ -797,7 +820,7 @@ export function createPrismaMcpRuntimeRepository(input: {
               ]
             }
           }
-        })
+        }).catch(retainDatabaseFailure)
       ]);
       return [
         ...generations.map((row) => row.fingerprint),
@@ -815,7 +838,7 @@ export function createPrismaMcpRuntimeRepository(input: {
             none: { modelRun: { status: { in: [...ACTIVE_RUN_STATUSES] } } }
           }
         }
-      });
+      }).catch(retainDatabaseFailure);
       return rows.map((row) => row.id);
     },
 
@@ -828,7 +851,7 @@ export function createPrismaMcpRuntimeRepository(input: {
             none: { modelRun: { status: { in: [...ACTIVE_RUN_STATUSES] } } }
           }
         }
-      });
+      }).catch(retainDatabaseFailure);
       return deleted.count === 1;
     },
 
@@ -880,13 +903,13 @@ export function createPrismaMcpRuntimeRepository(input: {
         });
       }
       return deleted.count;
-    }),
+    }).catch(retainDatabaseFailure),
 
     touchLastUsed: async (generationId, now) => {
       await client.mcpRuntimeGeneration.updateMany({
         data: { lastUsedAt: now },
         where: { id: generationId }
-      });
+      }).catch(retainDatabaseFailure);
     }
   };
 }

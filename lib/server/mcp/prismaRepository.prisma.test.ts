@@ -201,6 +201,16 @@ describe("MCP Test & Save persistence", () => {
         .desiredRuntimeGenerationId).toBeNull();
       const launches = await requested();
       expect(launches).toHaveLength(1);
+      const launch = launches[0]!;
+      const runtimeFailure = { errorCode: "mcp_network_failed", fingerprint: launch.fingerprint, generationId: launch.generationId, now };
+      const beforeFailure = await prisma.mcpRuntimeGeneration.findUniqueOrThrow({ where: { id: launch.generationId } });
+      expect(await runtime.markFailed({ ...runtimeFailure, fingerprint: "0".repeat(64) })).toEqual({ applied: false, retryAt: null });
+      expect(await prisma.mcpRuntimeGeneration.findUniqueOrThrow({ where: { id: launch.generationId } })).toEqual(beforeFailure);
+      const failed = await runtime.markFailed(runtimeFailure);
+      const persistedFailure = await prisma.mcpRuntimeGeneration.findUniqueOrThrow({ where: { id: launch.generationId } });
+      expect(failed).toEqual({ applied: true, retryAt: persistedFailure.retryAt });
+      expect(persistedFailure).toMatchObject({ state: "failed", errorCode: "mcp_network_failed" });
+      expect(failed.retryAt!.getTime()).toBeGreaterThan(now.getTime());
       const reconcile = async (at = now) => (await runtime.synchronizeDesired({ now: at }))
         .filter((launch) => launch.generationId === launches[0]!.generationId);
       expect(await reconcile()).toHaveLength(1);

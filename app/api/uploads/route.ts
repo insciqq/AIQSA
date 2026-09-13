@@ -11,6 +11,7 @@ import { Prisma } from "@prisma/client";
 import { createAttachmentLibraryHandler } from "@/lib/server/uploads/libraryHandlers";
 import { attachmentLibraryRepository } from "@/lib/server/uploads/libraryRepository";
 import { workspaceAvailabilityService } from "@/lib/server/workspace/defaultServices";
+import { logEvent } from "@/lib/server/observability";
 
 export const runtime = "nodejs";
 
@@ -60,9 +61,13 @@ export const POST = createUploadHandler({
                 uploaderDisplayName: input.uploaderDisplayName ?? "Project member"
               }
             : { userId: input.userId })
-        }
+        },
+        include: { processingJob: { select: { id: true } } }
       });
     });
+    if (attachment.processingJob) {
+      logEvent("job_enqueued", { job_id: attachment.processingJob.id, subsystem: "attachments" });
+    }
 
     return {
       byteSize: attachment.byteSize,

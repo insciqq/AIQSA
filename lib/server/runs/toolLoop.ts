@@ -2,6 +2,14 @@ import {
   providerStreamSafetyReport,
   type ProviderStreamSafetyReport
 } from "../providers/streamSafety";
+import { bindContext, logEvent, runWithContext, type ToolKind } from "../observability";
+
+export type ToolLoopObservation = Readonly<{
+  /** Only persisted server-owned identities, never the provider's call ID. */
+  tool_call_id: string;
+  execution_index: number;
+  tool_kind?: ToolKind;
+}>;
 
 export type ToolLoopCall = Readonly<{
   arguments: unknown;
@@ -110,6 +118,7 @@ export type ToolLoopOutcome<FinalValue> =
       }>);
 
 export type ContinueToolLoopInput<Continuation, ToolValue, FinalValue> = Readonly<{
+  toolObservation?(call: ToolLoopCall): ToolLoopObservation | undefined;
   afterToolBatch?(input: Readonly<{
     continuation: Continuation;
     progress: ToolLoopProgress;
@@ -224,12 +233,27 @@ async function runBoundedOperation<Value>(input: Readonly<{
   operation(signal: AbortSignal): Promise<Value>;
   parentSignal?: AbortSignal;
   timeoutMs?: number;
+  observeTool?: boolean;
+  toolKind?: ToolKind;
 }>): Promise<BoundedOperationResult<Value>> {
   if (input.parentSignal?.aborted) {
+    if (input.observeTool) logEvent("nested_abort", { layer: "tool", stage: "before_start", abort_source: "unknown" });
     return { kind: "cancelled" };
   }
 
   const controller = new AbortController();
+  const startedAt = performance.now();
+  const observeAbort = (source: "parent_signal" | "tool_deadline") => {
+    if (!input.observeTool || controller.signal.aborted) return;
+    logEvent("nested_abort", {
+      layer: "tool", stage: "delivery", abort_source: source,
+      duration_ms: performance.now() - startedAt,
+      ...(source === "tool_deadline" ? { timeout_ms: input.timeoutMs, deadline_kind: "operation" } : {})
+    });
+  };
+  if (input.observeTool && input.toolKind && input.timeoutMs !== undefined) logEvent("tool_deadline", {
+    tool_kind: input.toolKind, outer_timeout_ms: input.timeoutMs, effective_timeout_ms: input.timeoutMs
+  });
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let removeParentListener: () => void = () => undefined;
   const races: Array<Promise<BoundedOperationResult<Value>>> = [
@@ -244,10 +268,11 @@ async function runBoundedOperation<Value>(input: Readonly<{
   if (input.parentSignal) {
     races.push(
       new Promise<BoundedOperationResult<Value>>((resolve) => {
-        const abort = () => {
+        const abort = bindContext(() => {
           resolve({ kind: "cancelled" });
+          observeAbort("parent_signal");
           controller.abort(input.parentSignal?.reason);
-        };
+        });
         input.parentSignal?.addEventListener("abort", abort, { once: true });
         removeParentListener = () => {
           input.parentSignal?.removeEventListener("abort", abort);
@@ -259,10 +284,11 @@ async function runBoundedOperation<Value>(input: Readonly<{
   if (input.timeoutMs !== undefined) {
     races.push(
       new Promise<BoundedOperationResult<Value>>((resolve) => {
-        timeout = setTimeout(() => {
+        timeout = setTimeout(bindContext(() => {
           resolve({ kind: "timeout" });
+          observeAbort("tool_deadline");
           controller.abort(new Error("operation_timeout"));
-        }, input.timeoutMs);
+        }), input.timeoutMs);
       })
     );
   }
@@ -344,6 +370,7 @@ async function settleToolCall<ToolValue>(input: Readonly<{
   parentSignal?: AbortSignal;
   round: number;
   timeoutMs?: number;
+  toolKind?: ToolKind;
 }>): Promise<ToolLoopSettledCall<ToolValue>> {
   const execution = await runBoundedOperation({
     operation: (signal) =>
@@ -353,7 +380,9 @@ async function settleToolCall<ToolValue>(input: Readonly<{
         signal
       }),
     parentSignal: input.parentSignal,
-    timeoutMs: input.timeoutMs
+    timeoutMs: input.timeoutMs,
+    observeTool: true,
+    toolKind: input.toolKind
   });
 
   let result: ToolLoopToolResult<ToolValue>;
@@ -400,6 +429,7 @@ async function settleToolBatch<ToolValue>(input: Readonly<{
   parentSignal?: AbortSignal;
   round: number;
   timeoutMs?: number;
+  toolObservation?: ContinueToolLoopInput<unknown, ToolValue, unknown>["toolObservation"];
 }>): Promise<Array<ToolLoopSettledCall<ToolValue> | undefined>> {
   const results = new Array<ToolLoopSettledCall<ToolValue> | undefined>(input.calls.length);
   let cursor = 0;
@@ -413,14 +443,18 @@ async function settleToolBatch<ToolValue>(input: Readonly<{
         return;
       }
 
-      results[ordinal] = await settleToolCall({
+      let observation: ToolLoopObservation | undefined;
+      try { observation = input.toolObservation?.(call); } catch { /* Diagnostics cannot prevent dispatch. */ }
+      const execute = () => settleToolCall({
         call,
         executeTool: input.executeTool,
         ordinal,
         parentSignal: input.parentSignal,
         round: input.round,
-        timeoutMs: input.timeoutMs
+        timeoutMs: input.timeoutMs,
+        toolKind: observation?.tool_kind
       });
+      results[ordinal] = await (observation ? runWithContext(observation, execute) : execute());
     }
   }
 
@@ -633,7 +667,8 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
       maxConcurrency: providerResult.parallelToolCalls === false ? 1 : input.budgets.maxConcurrency,
       parentSignal: input.signal,
       round: toolRound,
-      timeoutMs: input.budgets.toolCallTimeoutMs
+      timeoutMs: input.budgets.toolCallTimeoutMs,
+      toolObservation: input.toolObservation
     });
 
     const settledResults = results.filter(

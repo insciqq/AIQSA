@@ -16,6 +16,7 @@ import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { beginStorageOperation, observeStorageOperation } from "./storageObservability";
 
 export type StoredObjectInput = {
   body: Buffer;
@@ -176,6 +177,7 @@ function boundedExactWebStream(
   }>
 ): ReadableStream<Uint8Array> {
   const reader = source.getReader();
+  const finishObservation = beginStorageOperation("read");
   let observedBytes = 0;
   let settled = false;
   const abort = () => void reader.cancel(abortReason(input.signal!)).catch(() => undefined);
@@ -187,6 +189,7 @@ function boundedExactWebStream(
   };
   return new ReadableStream<Uint8Array>({
     async cancel(reason) {
+      finishObservation("cancelled");
       finish();
       await reader.cancel(reason).catch(() => undefined);
     },
@@ -198,8 +201,10 @@ function boundedExactWebStream(
         if (next.done) {
           finish();
           if (observedBytes !== input.byteSize) {
+            finishObservation("failed", { code: "stored_object_size_mismatch" });
             controller.error(new Error("stored_object_size_mismatch"));
           } else {
+            finishObservation("completed");
             controller.close();
           }
           reader.releaseLock();
@@ -215,6 +220,7 @@ function boundedExactWebStream(
             maxBytes: maximum,
             observedBytes
           });
+          finishObservation("failed", error);
           finish();
           await reader.cancel(error).catch(() => undefined);
           controller.error(error);
@@ -223,6 +229,7 @@ function boundedExactWebStream(
         }
         controller.enqueue(next.value);
       } catch (error) {
+        finishObservation("failed", error, input.signal);
         finish();
         await reader.cancel(error).catch(() => undefined);
         controller.error(input.signal?.aborted ? abortReason(input.signal) : error);
@@ -250,134 +257,146 @@ export async function getStoredObjectStream(
 export function createFileSystemStorageAdapter(root: string): StorageAdapter {
   return {
     async deleteObject(storageKey) {
-      await rm(join(root, storageKey), { force: true });
+      return observeStorageOperation("delete", async () => {
+        await rm(join(root, storageKey), { force: true });
+      });
     },
     async getObject(storageKey, options) {
-      const maxBytes = normalizedMaxBytes(options?.maxBytes);
-      const signal = options?.signal;
-      throwIfAborted(signal);
-      const path = join(root, storageKey);
-      const metadata = await stat(path);
-      throwIfAborted(signal);
-      assertWithinLimit(metadata.size, maxBytes);
+      return observeStorageOperation("read", async () => {
+        const maxBytes = normalizedMaxBytes(options?.maxBytes);
+        const signal = options?.signal;
+        throwIfAborted(signal);
+        const path = join(root, storageKey);
+        const metadata = await stat(path);
+        throwIfAborted(signal);
+        assertWithinLimit(metadata.size, maxBytes);
 
-      const stream = createReadStream(
-        path,
-        typeof maxBytes === "undefined"
-          ? undefined
-          : {
-              // Read one sentinel byte beyond the accepted boundary so a
-              // stat/open race is detected without buffering a full extra chunk.
-              end: maxBytes,
-              highWaterMark: Math.min(64 * 1024, maxBytes + 1)
-            }
-      );
+        const stream = createReadStream(
+          path,
+          typeof maxBytes === "undefined"
+            ? undefined
+            : {
+                // Read one sentinel byte beyond the accepted boundary so a
+                // stat/open race is detected without buffering a full extra chunk.
+                end: maxBytes,
+                highWaterMark: Math.min(64 * 1024, maxBytes + 1)
+              }
+        );
 
-      return {
-        body: await streamToBuffer(stream, { maxBytes, signal }),
-        contentType: "application/octet-stream",
-        storageKey
-      };
+        return {
+          body: await streamToBuffer(stream, { maxBytes, signal }),
+          contentType: "application/octet-stream",
+          storageKey
+        };
+      }, options?.signal);
     },
     async getObjectStream(storageKey, options) {
-      const maxBytes = normalizedMaxBytes(options?.maxBytes);
-      const signal = options?.signal;
-      throwIfAborted(signal);
-      const path = join(root, storageKey);
-      const metadata = await stat(path);
-      throwIfAborted(signal);
-      assertWithinLimit(metadata.size, maxBytes);
-      const source = Readable.toWeb(createReadStream(path, { signal })) as ReadableStream<Uint8Array>;
-      return {
-        body: boundedExactWebStream(source, {
+      return observeStorageOperation("prepare", async () => {
+        const maxBytes = normalizedMaxBytes(options?.maxBytes);
+        const signal = options?.signal;
+        throwIfAborted(signal);
+        const path = join(root, storageKey);
+        const metadata = await stat(path);
+        throwIfAborted(signal);
+        assertWithinLimit(metadata.size, maxBytes);
+        const source = Readable.toWeb(createReadStream(path, { signal })) as ReadableStream<Uint8Array>;
+        return {
+          body: boundedExactWebStream(source, {
+            byteSize: metadata.size,
+            maxBytes,
+            signal
+          }),
           byteSize: metadata.size,
-          maxBytes,
-          signal
-        }),
-        byteSize: metadata.size,
-        contentType: "application/octet-stream",
-        storageKey
-      };
+          contentType: "application/octet-stream",
+          storageKey
+        };
+      }, options?.signal);
     },
     async inspectObject(storageKey, options) {
-      const maxBytes = normalizedMaxBytes(options?.maxBytes);
-      const signal = options?.signal;
-      throwIfAborted(signal);
-      const path = join(root, storageKey);
-      const metadata = await stat(path);
-      throwIfAborted(signal);
-      assertWithinLimit(metadata.size, maxBytes);
-      const stream = createReadStream(
-        path,
-        typeof maxBytes === "undefined"
-          ? undefined
-          : { end: maxBytes, highWaterMark: Math.min(64 * 1_024, maxBytes + 1) }
-      );
-      return inspectStoredObjectStream(stream, {
-        contentType: "application/octet-stream",
-        maxBytes,
-        needles: options?.needles,
-        sampleBytes: options?.sampleBytes,
-        signal,
-        storageKey
-      });
+      return observeStorageOperation("read", async () => {
+        const maxBytes = normalizedMaxBytes(options?.maxBytes);
+        const signal = options?.signal;
+        throwIfAborted(signal);
+        const path = join(root, storageKey);
+        const metadata = await stat(path);
+        throwIfAborted(signal);
+        assertWithinLimit(metadata.size, maxBytes);
+        const stream = createReadStream(
+          path,
+          typeof maxBytes === "undefined"
+            ? undefined
+            : { end: maxBytes, highWaterMark: Math.min(64 * 1_024, maxBytes + 1) }
+        );
+        return inspectStoredObjectStream(stream, {
+          contentType: "application/octet-stream",
+          maxBytes,
+          needles: options?.needles,
+          sampleBytes: options?.sampleBytes,
+          signal,
+          storageKey
+        });
+      }, options?.signal);
     },
     async putObject(input) {
-      const path = join(root, input.storageKey);
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, input.body);
+      return observeStorageOperation("write", async () => {
+        const path = join(root, input.storageKey);
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, input.body);
+      });
     },
     async putObjectStream(input) {
-      if (!Number.isSafeInteger(input.byteSize) || input.byteSize < 1) {
-        throw new RangeError("invalid_stored_object_stream_size");
-      }
-      const checksum = streamChecksum(input.checksum);
-      throwIfAborted(input.signal);
-      const path = join(root, input.storageKey);
-      const temporaryPath = `${path}.upload-${randomUUID()}`;
-      await mkdir(dirname(path), { recursive: true });
-      let observedBytes = 0;
-      const meter = new Transform({
-        transform(chunk: Buffer, _encoding, callback) {
-          observedBytes += chunk.byteLength;
-          callback(
-            observedBytes > input.byteSize
-              ? new StoredObjectTooLargeError({
-                  maxBytes: input.byteSize,
-                  observedBytes
-                })
-              : null,
-            chunk
-          );
+      return observeStorageOperation("write", async () => {
+        if (!Number.isSafeInteger(input.byteSize) || input.byteSize < 1) {
+          throw new RangeError("invalid_stored_object_stream_size");
         }
-      });
-      try {
-        await pipeline(
-          Readable.fromWeb(input.body as import("node:stream/web").ReadableStream<Uint8Array>),
-          meter,
-          createWriteStream(temporaryPath, { flags: "wx" }),
-          ...(input.signal ? [{ signal: input.signal }] : [])
-        );
-        if (observedBytes !== input.byteSize) {
-          throw new Error("stored_object_size_mismatch");
-        }
-        if (checksum) {
-          const written = await inspectStoredObjectStream(createReadStream(temporaryPath), {
-            contentType: input.contentType,
-            maxBytes: input.byteSize,
-            sampleBytes: 1,
-            signal: input.signal,
-            storageKey: input.storageKey
-          });
-          if (written.byteSize !== input.byteSize || written.checksum !== checksum) throw new Error("stored_object_checksum_mismatch");
-        }
+        const checksum = streamChecksum(input.checksum);
         throwIfAborted(input.signal);
-        await rename(temporaryPath, path);
-      } catch (error) {
-        await rm(temporaryPath, { force: true }).catch(() => undefined);
-        if (input.signal?.aborted) throw abortReason(input.signal);
-        throw error;
-      }
+        const path = join(root, input.storageKey);
+        const temporaryPath = `${path}.upload-${randomUUID()}`;
+        await mkdir(dirname(path), { recursive: true });
+        let observedBytes = 0;
+        const meter = new Transform({
+          transform(chunk: Buffer, _encoding, callback) {
+            observedBytes += chunk.byteLength;
+            callback(
+              observedBytes > input.byteSize
+                ? new StoredObjectTooLargeError({
+                    maxBytes: input.byteSize,
+                    observedBytes
+                  })
+                : null,
+              chunk
+            );
+          }
+        });
+        try {
+          await pipeline(
+            Readable.fromWeb(input.body as import("node:stream/web").ReadableStream<Uint8Array>),
+            meter,
+            createWriteStream(temporaryPath, { flags: "wx" }),
+            ...(input.signal ? [{ signal: input.signal }] : [])
+          );
+          if (observedBytes !== input.byteSize) {
+            throw new Error("stored_object_size_mismatch");
+          }
+          if (checksum) {
+            const written = await inspectStoredObjectStream(createReadStream(temporaryPath), {
+              contentType: input.contentType,
+              maxBytes: input.byteSize,
+              sampleBytes: 1,
+              signal: input.signal,
+              storageKey: input.storageKey
+            });
+            if (written.byteSize !== input.byteSize || written.checksum !== checksum) throw new Error("stored_object_checksum_mismatch");
+          }
+          throwIfAborted(input.signal);
+          await rename(temporaryPath, path);
+        } catch (error) {
+          await rm(temporaryPath, { force: true }).catch(() => undefined);
+          if (input.signal?.aborted) throw abortReason(input.signal);
+          throw error;
+        }
+      }, input.signal);
     }
   };
 }
@@ -853,150 +872,170 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
   const directMultipartUpload: DirectMultipartUploadAdapter | undefined = publicClient
     ? {
         async abortMultipartUpload(input) {
-          try {
-            await client.send(new AbortMultipartUploadCommand({
-              Bucket: bucket,
-              Key: input.storageKey,
-              UploadId: input.uploadId
-            }));
-          } catch (error) {
-            const record = typeof error === "object" && error !== null
-              ? error as { $metadata?: { httpStatusCode?: number }; name?: string }
-              : null;
-            if (record?.name !== "NoSuchUpload" && record?.$metadata?.httpStatusCode !== 404) {
-              throw error;
+          return observeStorageOperation("multipart_abort", async () => {
+            try {
+              await client.send(new AbortMultipartUploadCommand({
+                Bucket: bucket,
+                Key: input.storageKey,
+                UploadId: input.uploadId
+              }));
+            } catch (error) {
+              const record = typeof error === "object" && error !== null
+                ? error as { $metadata?: { httpStatusCode?: number }; name?: string }
+                : null;
+              if (record?.name !== "NoSuchUpload" && record?.$metadata?.httpStatusCode !== 404) {
+                throw error;
+              }
             }
-          }
+          });
         },
         async completeMultipartUpload(input) {
-          await client.send(new CompleteMultipartUploadCommand({
-            Bucket: bucket,
-            Key: input.storageKey,
-            MultipartUpload: {
-              Parts: input.parts.map((part) => ({
-                ETag: part.etag,
-                PartNumber: part.partNumber
-              }))
-            },
-            UploadId: input.uploadId
-          }));
-        },
-        async createMultipartUpload(input) {
-          const created = await client.send(new CreateMultipartUploadCommand({
-            Bucket: bucket,
-            ContentType: input.contentType,
-            Key: input.storageKey
-          }));
-          if (!created.UploadId) throw new Error("multipart_upload_id_missing");
-          return { uploadId: created.UploadId };
-        },
-        async presignMultipartPart(input) {
-          if (!Number.isSafeInteger(input.partNumber) || input.partNumber < 1 ||
-            input.partNumber > 10_000 || !Number.isSafeInteger(input.expiresInSeconds) ||
-            input.expiresInSeconds < 1 || input.expiresInSeconds > 3_600) {
-            throw new RangeError("multipart_presign_input_invalid");
-          }
-          return getSignedUrl(
-            publicClient,
-            new UploadPartCommand({
+          return observeStorageOperation("multipart_complete", async () => {
+            await client.send(new CompleteMultipartUploadCommand({
               Bucket: bucket,
               Key: input.storageKey,
-              PartNumber: input.partNumber,
+              MultipartUpload: {
+                Parts: input.parts.map((part) => ({
+                  ETag: part.etag,
+                  PartNumber: part.partNumber
+                }))
+              },
               UploadId: input.uploadId
-            }),
-            { expiresIn: input.expiresInSeconds }
-          );
+            }));
+          });
+        },
+        async createMultipartUpload(input) {
+          return observeStorageOperation("multipart_start", async () => {
+            const created = await client.send(new CreateMultipartUploadCommand({
+              Bucket: bucket,
+              ContentType: input.contentType,
+              Key: input.storageKey
+            }));
+            if (!created.UploadId) throw new Error("multipart_upload_id_missing");
+            return { uploadId: created.UploadId };
+          });
+        },
+        async presignMultipartPart(input) {
+          return observeStorageOperation("multipart_sign", async () => {
+            if (!Number.isSafeInteger(input.partNumber) || input.partNumber < 1 ||
+              input.partNumber > 10_000 || !Number.isSafeInteger(input.expiresInSeconds) ||
+              input.expiresInSeconds < 1 || input.expiresInSeconds > 3_600) {
+              throw new RangeError("multipart_presign_input_invalid");
+            }
+            return getSignedUrl(
+              publicClient,
+              new UploadPartCommand({
+                Bucket: bucket,
+                Key: input.storageKey,
+                PartNumber: input.partNumber,
+                UploadId: input.uploadId
+              }),
+              { expiresIn: input.expiresInSeconds }
+            );
+          });
         }
       }
     : undefined;
 
   return {
     async deleteObject(storageKey) {
-      await client.send(
-        new DeleteObjectCommand({
-          Bucket: bucket,
-          Key: storageKey
-        })
-      );
-    },
-    async getObject(storageKey, options) {
-      const maxBytes = normalizedMaxBytes(options?.maxBytes);
-      const signal = options?.signal;
-      const output = await readOutput(storageKey, { maxBytes, signal });
-
-      return {
-        body: await s3BodyToBuffer(output.Body, { maxBytes, signal }),
-        contentType: output.ContentType ?? "application/octet-stream",
-        storageKey
-      };
-    },
-    async getObjectStream(storageKey, options) {
-      const maxBytes = normalizedMaxBytes(options?.maxBytes);
-      const signal = options?.signal;
-      const output = await readOutput(storageKey, { maxBytes, signal });
-      const byteSize = output.ContentLength;
-      if (!Number.isSafeInteger(byteSize) || Number(byteSize) < 0 || !output.Body) {
-        throw new Error("stored_object_metadata_invalid");
-      }
-      return {
-        body: boundedExactWebStream(s3BodyToWebStream(output.Body), {
-          byteSize: Number(byteSize),
-          maxBytes,
-          signal
-        }),
-        byteSize: Number(byteSize),
-        contentType: output.ContentType ?? "application/octet-stream",
-        storageKey
-      };
-    },
-    async inspectObject(storageKey, options) {
-      const maxBytes = normalizedMaxBytes(options?.maxBytes);
-      const signal = options?.signal;
-      const output = await readOutput(storageKey, { maxBytes, signal });
-      return inspectStoredObjectStream(s3BodyToStream(output.Body), {
-        contentType: output.ContentType ?? "application/octet-stream",
-        maxBytes,
-        needles: options?.needles,
-        sampleBytes: options?.sampleBytes,
-        signal,
-        storageKey
+      return observeStorageOperation("delete", async () => {
+        await client.send(
+          new DeleteObjectCommand({
+            Bucket: bucket,
+            Key: storageKey
+          })
+        );
       });
     },
+    async getObject(storageKey, options) {
+      return observeStorageOperation("read", async () => {
+        const maxBytes = normalizedMaxBytes(options?.maxBytes);
+        const signal = options?.signal;
+        const output = await readOutput(storageKey, { maxBytes, signal });
+
+        return {
+          body: await s3BodyToBuffer(output.Body, { maxBytes, signal }),
+          contentType: output.ContentType ?? "application/octet-stream",
+          storageKey
+        };
+      }, options?.signal);
+    },
+    async getObjectStream(storageKey, options) {
+      return observeStorageOperation("prepare", async () => {
+        const maxBytes = normalizedMaxBytes(options?.maxBytes);
+        const signal = options?.signal;
+        const output = await readOutput(storageKey, { maxBytes, signal });
+        const byteSize = output.ContentLength;
+        if (!Number.isSafeInteger(byteSize) || Number(byteSize) < 0 || !output.Body) {
+          throw new Error("stored_object_metadata_invalid");
+        }
+        return {
+          body: boundedExactWebStream(s3BodyToWebStream(output.Body), {
+            byteSize: Number(byteSize),
+            maxBytes,
+            signal
+          }),
+          byteSize: Number(byteSize),
+          contentType: output.ContentType ?? "application/octet-stream",
+          storageKey
+        };
+      }, options?.signal);
+    },
+    async inspectObject(storageKey, options) {
+      return observeStorageOperation("read", async () => {
+        const maxBytes = normalizedMaxBytes(options?.maxBytes);
+        const signal = options?.signal;
+        const output = await readOutput(storageKey, { maxBytes, signal });
+        return inspectStoredObjectStream(s3BodyToStream(output.Body), {
+          contentType: output.ContentType ?? "application/octet-stream",
+          maxBytes,
+          needles: options?.needles,
+          sampleBytes: options?.sampleBytes,
+          signal,
+          storageKey
+        });
+      }, options?.signal);
+    },
     async putObject(input) {
-      await client.send(
-        new PutObjectCommand({
-          Body: input.body,
-          Bucket: bucket,
-          ContentType: input.contentType,
-          Key: input.storageKey
-        })
-      );
+      return observeStorageOperation("write", async () => {
+        await client.send(
+          new PutObjectCommand({
+            Body: input.body,
+            Bucket: bucket,
+            ContentType: input.contentType,
+            Key: input.storageKey
+          })
+        );
+      });
     },
     async putObjectStream(input) {
-      if (!Number.isSafeInteger(input.byteSize) || input.byteSize < 1) {
-        throw new RangeError("invalid_stored_object_stream_size");
-      }
-      const upload = createBoundedS3UploadBody(input);
-      const abortSignal = input.signal ? AbortSignal.any([input.signal, upload.signal]) : upload.signal;
-      try {
-        const command = new PutObjectCommand({
-          Body: upload.body,
-          Bucket: bucket,
-          ContentLength: input.byteSize,
-          ContentType: input.contentType,
-          Key: input.storageKey
-        });
-        await client.send(command, { abortSignal });
-        throwIfAborted(input.signal);
-        if (!upload.verified()) throw new Error("stored_object_size_mismatch");
-      } catch (error) {
-        const failure = upload.failure();
-        if (failure) throw failure;
-        if (input.signal?.aborted) throw abortReason(input.signal);
-        throw error;
-      } finally {
-        await upload.dispose();
-      }
+      return observeStorageOperation("write", async () => {
+        if (!Number.isSafeInteger(input.byteSize) || input.byteSize < 1) {
+          throw new RangeError("invalid_stored_object_stream_size");
+        }
+        const upload = createBoundedS3UploadBody(input);
+        const abortSignal = input.signal ? AbortSignal.any([input.signal, upload.signal]) : upload.signal;
+        try {
+          const command = new PutObjectCommand({
+            Body: upload.body,
+            Bucket: bucket,
+            ContentLength: input.byteSize,
+            ContentType: input.contentType,
+            Key: input.storageKey
+          });
+          await client.send(command, { abortSignal });
+          throwIfAborted(input.signal);
+          if (!upload.verified()) throw new Error("stored_object_size_mismatch");
+        } catch (error) {
+          const failure = upload.failure();
+          if (failure) throw failure;
+          if (input.signal?.aborted) throw abortReason(input.signal);
+          throw error;
+        } finally {
+          await upload.dispose();
+        }
+      }, input.signal);
     },
     ...(directMultipartUpload ? { directMultipartUpload } : {})
   };

@@ -1,5 +1,6 @@
 import type { FetchLike } from "@modelcontextprotocol/client";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { runWithContext } from "../observability";
 import {
   McpRequestTooLargeError,
   McpResponseGuard
@@ -102,6 +103,68 @@ describe("MCP response limit configuration", () => {
 });
 
 describe("McpResponseGuard finite bodies", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("counts actual finite reads and retains call context on a later socket failure", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const guard = new McpResponseGuard({ limits: limits() });
+    const bytes = encoder.encode("PRIVATE_BODY_CANARY");
+    const failure = Object.assign(new Error("PRIVATE_SOCKET_CANARY"), { code: "ECONNRESET" });
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({ pull(controller) {
+      if (pulls++ === 0) controller.enqueue(bytes);
+      else controller.error(failure);
+    } }, { highWaterMark: 0 });
+    const request = guard.beginRequest("call_tool");
+    const response = await runWithContext({ trace_id: "1".repeat(32), tool_call_id: "stored", execution_index: 2 }, () => request.run(() =>
+      guard.wrapFetch(async () => new Response(body, { status: 206, headers: { "content-type": "application/json" } }))("https://PRIVATE_URL_CANARY.example", { body: rpcRequest("tools/call", 1), method: "POST" })));
+    await expect(runWithContext({ trace_id: "3".repeat(32) }, () => response.text())).rejects.toBe(failure);
+    request.finish();
+    const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+    expect(records).toContainEqual(expect.objectContaining({ event: "transport_stage", transport: "mcp", stage: "body", outcome: "failed", httpStatus: 206,
+      code: "ECONNRESET", category: "connect", bytes: bytes.byteLength, chunks: 1, last_progress_ms: expect.any(Number), trace_id: "1".repeat(32), tool_call_id: "stored", execution_index: 2 }));
+    expect(pulls).toBe(2);
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+  });
+
+  it("distinguishes a header size rejection from bytes actually read", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    for (const fromHeader of [true, false]) {
+      const guard = new McpResponseGuard({ limits: limits({ callToolResponseMaxBytes: 4 }) });
+      const request = guard.beginRequest("call_tool");
+      const response = request.run(() => guard.wrapFetch(async () => new Response(byteStream([encoder.encode("123456")]), {
+        headers: { "content-type": "application/json", ...(fromHeader ? { "content-length": "6" } : {}) }
+      }))("https://mcp.example", { body: rpcRequest("tools/call", 1), method: "POST" }));
+      await expect(response.then((value) => value.text())).rejects.toBeInstanceOf(McpResponseTooLargeError);
+      request.finish();
+    }
+    const failures = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>).filter((entry) => entry.event === "transport_stage" && entry.outcome === "failed");
+    expect(failures).toHaveLength(2);
+    expect(failures[0]).toMatchObject({ code: "mcp_response_too_large" });
+    expect(failures[0]).not.toHaveProperty("bytes");
+    expect(failures[0]).not.toHaveProperty("chunks");
+    expect(failures[1]).toMatchObject({ code: "mcp_response_too_large", bytes: 6, chunks: 1 });
+  });
+
+  it("omits progress counters when the finite reader is already aborted", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const guard = new McpResponseGuard({ limits: limits() });
+    const controller = new AbortController();
+    const reason = new Error("PRIVATE_PREABORT_CANARY");
+    const request = guard.beginRequest("call_tool");
+    const response = await request.run(() => guard.wrapFetch(async () => {
+      controller.abort(reason);
+      return new Response(byteStream([encoder.encode("PRIVATE_UNREAD_CANARY")]), { headers: { "content-type": "application/json" } });
+    })("https://mcp.example", { body: rpcRequest("tools/call", 1), method: "POST", signal: controller.signal }));
+    await expect(response.text()).rejects.toBe(reason);
+    request.finish();
+    const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+    const failure = records.find((entry) => entry.stage === "body" && entry.outcome === "cancelled");
+    expect(failure).toMatchObject({ transport: "mcp", category: "aborted" });
+    for (const field of ["bytes", "chunks", "last_progress_ms"]) expect(failure).not.toHaveProperty(field);
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+  });
+
   it("accepts an exact operation limit and preserves response metadata", async () => {
     const guard = new McpResponseGuard({
       limits: limits({ listToolsResponseMaxBytes: 5 })

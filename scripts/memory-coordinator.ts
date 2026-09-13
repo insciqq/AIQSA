@@ -1,3 +1,5 @@
+import "./worker-bootstrap.cjs";
+import { logEvent, reportSubsystemFailure } from "../lib/server/observability";
 import { prisma } from "../lib/server/prisma";
 import {
   startDefaultMemoryCoordinatorFeatureLocally
@@ -7,13 +9,13 @@ import { stopDefaultMemoryCoordinator } from "../lib/server/memory/coordinator/d
 async function main(): Promise<void> {
   const result = await startDefaultMemoryCoordinatorFeatureLocally();
   if (result.status === "blocked") {
-    console.error(`AIQSA Memory coordinator unavailable: ${result.code}`);
+    logEvent("runtime_lifecycle", { subsystem: "memory", stage: "startup", outcome: "blocked", code: result.code, action: "stop" });
     process.exitCode = 1;
     await prisma.$disconnect();
     return;
   }
 
-  console.error("AIQSA Memory coordinator started.");
+  logEvent("runtime_lifecycle", { subsystem: "memory", stage: "startup", outcome: "completed" });
   const keepAlive = setInterval(() => undefined, 60_000);
   await new Promise<void>((resolve) => {
     let stopping = false;
@@ -31,7 +33,7 @@ async function main(): Promise<void> {
 }
 
 void main().catch(async () => {
-  console.error("AIQSA Memory coordinator unavailable: memory_coordinator_startup_failed");
+  reportSubsystemFailure({ subsystem: "memory", stage: "startup", code: "memory_coordinator_startup_failed", action: "stop" });
   process.exitCode = 1;
   await prisma.$disconnect().catch(() => undefined);
 });

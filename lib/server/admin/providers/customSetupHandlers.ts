@@ -1,4 +1,6 @@
 import { setupProgressResponse } from "./setupProgressResponse";
+import { logEvent } from "../../observability";
+import { databaseFailureCode } from "../../observability/databaseFailure";
 import {
   ADMIN_PROVIDER_CUSTOM_AUTHENTICATION_MODES,
   ADMIN_PROVIDER_CUSTOM_PROTOCOLS,
@@ -111,12 +113,15 @@ async function safely(operation: () => Promise<Response>): Promise<Response> {
     return await operation();
   } catch (error) {
     if (error instanceof AdminProviderCustomSetupServiceError) {
-      return serviceError(error);
+      const response = serviceError(error);
+      logEvent("service_operation", { subsystem: "admin", stage: "publish", code: error.code,
+        outcome: response.status === 422 ? "failed" : "skipped", httpStatus: response.status });
+      return response;
     }
     if (configurationError(error)) {
       return errorJson("provider_configuration_invalid", 400);
     }
-    console.error("provider_custom_setup_failed");
+    logEvent("service_operation", { subsystem: "admin", stage: "publish", outcome: "failed", code: "provider_custom_setup_failed", prisma_code: databaseFailureCode(error) });
     return errorJson("provider_custom_setup_failed", 500);
   }
 }
@@ -262,12 +267,16 @@ export function createAdminProviderCustomSetupHandler(
       ...(secret === undefined ? {} : { secret }),
       ...(catalogProof === undefined ? {} : { catalogProof })
     };
-    return setupProgressResponse(request, (signal, onProgress) => safely(async () =>
-      Response.json(await deps.service.setup({
+    return setupProgressResponse(request, (signal, onProgress) => safely(async () => {
+      const result = await deps.service.setup({
         actor: auth.actor,
         onProgress,
         request: setupRequest,
         signal
-      }))));
+      });
+      logEvent("service_operation", { subsystem: "admin", stage: "publish",
+        outcome: result.outcome === "cancelled" ? "cancelled" : result.outcome === "partial" ? "degraded" : "completed" });
+      return Response.json(result);
+    }));
   };
 }

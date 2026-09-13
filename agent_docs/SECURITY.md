@@ -9,11 +9,11 @@ Private operations authenticate and reauthorize current ownership/entitlement. B
 
 Auth flows use enumeration-safe outcomes and transactional one-winner proofs. Password verification stays server-owned. Login OAuth binds provider/state/PKCE and trusted callback origins; a provider subject, not mutable email, owns later login. Provider login tokens/codes/verifiers/raw responses are neither persisted nor logged.
 
-Rate-limit identities use installation-secret, domain-separated HMACs. Ignore proxy headers without explicit trust; otherwise require the exact complete reviewed chain. Without proxy trust, the launcher authenticates the immediate socket peer. Network ranges alone do not prove identity. Multi-replica auth admission is unsupported.
+Rate-limit identities use installation-secret, domain-separated HMACs. Explicit proxy trust requires fixed reviewed hops; use their rightmost forwarded suffix and fail closed on unresolvable identity. Otherwise authenticate launcher-stamped socket peers, ignoring forwarding. Network ranges prove no identity. Multi-replica auth admission is unsupported.
 
 Secret API fields are write-only. SMTP test recipients are ephemeral and candidate configuration activates only after successful delivery. Cryptographic-purpose separation, key history, rotation, and secret backups belong to [Environment](ENV_VARIABLES.md). Raw user IDs never become OpenSearch routing/document IDs.
 
-Application and access logs are structured and content-free: no prompts/answers, queries, Skill instructions, file names/content, custom endpoints, upstream/tool bodies, Memory text, credentials, or token-bearing URLs. Provider previews omit hidden Skill text even though private accepted recovery retains it.
+Application/access logs are structured, content-free: no prompts/answers, queries, Skill instructions, filenames/content, custom endpoints, upstream/tool bodies, Memory text, credentials, token-bearing URLs. Previews omit hidden Skills; recovery retains them privately. Allowlist bounded fields; exclude raw errors. Review third-party output separately.
 
 One accepted exception is limited to exceptional operator-controlled Nginx error diagnostics: a public-share request path may include its bearer token. Treat these as capability-bearing secrets, restrict/shorten retention, redact before support, and revoke leaked shares. This grants no exception for normal access/application logs, authorization headers, provider/MCP/session credentials, or any other token surface.
 

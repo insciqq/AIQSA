@@ -24,6 +24,9 @@ import type {
   AdminProviderTestEvidence,
   AdminProviderUnassignedPolicy
 } from "../../../contracts/adminProviders";
+import { logEvent } from "../../observability";
+import { databaseFailureCode } from "../../observability/databaseFailure";
+import { observedFailure } from "../../providers/providerObservability";
 import {
   createCapabilityCheckRunner,
   type CapabilityCheckOutcome,
@@ -712,7 +715,11 @@ export function createAdminProviderService(input: Readonly<{
       let stored: "stored" | "stale";
       try { stored = await input.repository.storeActiveRefreshCas({ candidate, capabilityRole: value.capabilityRole, checkedAt, evidence,
         status: outcome.status, signal: value.signal, ...(activatedConfiguration ? { activatedConfiguration } : {}) }); }
-      catch { value.signal?.throwIfAborted(); throw new ActiveCheckpointError("save_failed"); }
+      catch (error) {
+        logEvent("job_persistence", { subsystem: "admin", stage: "progress", outcome: "unconfirmed", prisma_code: databaseFailureCode(error) });
+        value.signal?.throwIfAborted(); throw new ActiveCheckpointError("save_failed");
+      }
+      logEvent("job_persistence", { subsystem: "admin", stage: "progress", outcome: stored === "stored" ? "confirmed" : "not_applied" });
       if (stored === "stale") { pendingSetupChecks.delete(key); throw new ActiveCheckpointError("stale"); }
       pendingSetupChecks.delete(key);
       if (activatedConfiguration) {
@@ -744,13 +751,23 @@ export function createAdminProviderService(input: Readonly<{
         providerFamily: candidate.connection.family, providerModelId: candidate.model.id, secret, signal: value.signal
       });
       value.signal?.throwIfAborted();
+      logEvent("service_operation", { subsystem: "admin", stage: "probe", outcome: outcome.status === "available" ? "completed" : "failed", code: outcome.evidence.detail });
       return { kind: "stored", check: await persist(outcome, true) };
     } catch (error) {
       const saved = lastSaved ? { check: lastSaved } : {};
       if (value.signal?.aborted) return { kind: "cancelled", ...saved };
       if (error instanceof ActiveCheckpointError) return { kind: error.kind, ...saved };
+      const failure = observedFailure(error);
+      logEvent("service_operation", { subsystem: "admin", stage: "probe", outcome: "failed", code: failure.code, httpStatus: failure.httpStatus });
       if (error instanceof AdminProviderServiceError && error.code === "provider_test_evidence_invalid") throw error;
-      if (await input.repository.recordActiveRefreshFailureCas({ candidate, failedAt: now() }) === "stale") return { kind: "stale", ...saved };
+      const stored = await input.repository.recordActiveRefreshFailureCas({ candidate, failedAt: now() }).catch((error: unknown) => {
+        logEvent("job_persistence", { subsystem: "admin", stage: "fail", outcome: "unconfirmed", prisma_code: databaseFailureCode(error) });
+        throw error;
+      });
+      // A stored result may have updated zero optional health rows. Only the
+      // repository's guarded write can confirm that observational persistence.
+      if (stored === "stale") logEvent("job_persistence", { subsystem: "admin", stage: "fail", outcome: "not_applied" });
+      if (stored === "stale") return { kind: "stale", ...saved };
       return { kind: "failed", ...saved };
     }
   }

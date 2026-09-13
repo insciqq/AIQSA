@@ -1,3 +1,4 @@
+import { retainDatabaseFailure } from "../observability/databaseFailure";
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient, type WorkspaceExecutionState } from "@prisma/client";
 import { isWorkspaceRuntimeExecSessionId } from "@/lib/domain/workspace";
@@ -141,14 +142,14 @@ export function createPrismaWorkspaceExecutionRegistry(
   prisma: PrismaClient
 ): WorkspaceExecutionRegistry {
   async function guarded<T>(sessionId: string, operation: WorkspaceOperation | undefined, action: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
-    if (!operation) return action(prisma);
+    if (!operation) return action(prisma).catch(retainDatabaseFailure);
     return prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "WorkspaceSession" WHERE "id" = ${sessionId} FOR UPDATE`;
       if (!(await tx.workspaceSession.findFirst({
         select: { id: true }, where: { id: sessionId, ...workspaceOperationWhere(operation) }
       }))) throw new WorkspaceRuntimeError("workspace_operation_stale");
       return action(tx);
-    });
+    }).catch(retainDatabaseFailure);
   }
   return {
     async closeAll({ errorCode, modelRunId, operation, sessionId, to }) {
@@ -176,7 +177,7 @@ export function createPrismaWorkspaceExecutionRegistry(
             workspaceSessionId: sessionId
           }
         }
-      });
+      }).catch(retainDatabaseFailure);
       return row ? record(row) : null;
     },
     async listOpen({ modelRunId, sessionId }) {
@@ -189,7 +190,7 @@ export function createPrismaWorkspaceExecutionRegistry(
           workspaceSessionId: sessionId,
           ...(modelRunId ? { modelRunId } : {})
         }
-      });
+      }).catch(retainDatabaseFailure);
       return rows.map(record);
     },
     async register(input) {
@@ -214,7 +215,7 @@ export function createPrismaWorkspaceExecutionRegistry(
         const existing = await prisma.workspaceExecution.findUnique({
           select: RECORD_SELECT,
           where: { modelRunToolCallId: input.modelRunToolCallId }
-        });
+        }).catch(retainDatabaseFailure);
         return existing &&
           existing.modelRunId === input.modelRunId &&
           existing.workspaceSessionId === input.sessionId &&
@@ -226,7 +227,7 @@ export function createPrismaWorkspaceExecutionRegistry(
     async transition({ errorCode, from, id, operation, to }) {
       if (from.length === 0) return false;
       const terminal = to === "CLOSED" || to === "LOST";
-      const row = operation ? await prisma.workspaceExecution.findUnique({ select: { workspaceSessionId: true }, where: { id } }) : null;
+      const row = operation ? await prisma.workspaceExecution.findUnique({ select: { workspaceSessionId: true }, where: { id } }).catch(retainDatabaseFailure) : null;
       if (operation && !row) return false;
       const updated = await guarded(row?.workspaceSessionId ?? "", operation, (tx) => tx.workspaceExecution.updateMany({
         data: {

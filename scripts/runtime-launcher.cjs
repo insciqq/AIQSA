@@ -4,6 +4,9 @@ const { createHmac, randomBytes } = require("node:crypto");
 const http = require("node:http");
 const { isIP } = require("node:net");
 const path = require("node:path");
+const { loadRouteResolver, wrapHttpListener } = require("../lib/server/observability/http.cjs");
+const { installProcessFailureHooks } = require("../lib/server/observability/process.cjs");
+const { announceProcess, writeEmergencyFailure } = require("../lib/server/observability/runtime.cjs");
 
 const DIRECT_PEER_HEADER = "x-aiqsa-runtime-peer";
 const DIRECT_PEER_MAC_DOMAIN = "aiqsa:runtime-peer-stamp:v1\0";
@@ -102,6 +105,8 @@ function stampRequest(request) {
 }
 
 function launch(target = "runtime/server.js") {
+  const targetPath = path.resolve(process.cwd(), target);
+  const resolver = loadRouteResolver(path.join(path.dirname(targetPath), ".next", "routes-manifest.json"));
   const originalCreateServer = http.createServer;
   let interceptionCount = 0;
 
@@ -119,10 +124,7 @@ function launch(target = "runtime/server.js") {
       throw new RuntimePeerBridgeError("runtime_peer_bridge_listener_missing");
     }
 
-    args[listenerIndex] = function runtimePeerRequestListener(request, response) {
-      stampRequest(request);
-      return Reflect.apply(listener, this, [request, response]);
-    };
+    args[listenerIndex] = wrapHttpListener(listener, { resolver, stampRequest });
 
     return Reflect.apply(originalCreateServer, this, args);
   };
@@ -130,7 +132,7 @@ function launch(target = "runtime/server.js") {
   let targetExports;
 
   try {
-    targetExports = require(path.resolve(process.cwd(), target));
+    targetExports = require(targetPath);
   } finally {
     http.createServer = originalCreateServer;
   }
@@ -143,15 +145,17 @@ function launch(target = "runtime/server.js") {
 }
 
 if (require.main === module) {
+  installProcessFailureHooks();
+  announceProcess({ attachments: "unknown", memory: "unknown", knowledge: "unknown", mcp: "unknown", workspace: "unknown", email: "unknown" });
   try {
     launch(process.argv[2]);
   } catch (error) {
-    if (error instanceof RuntimePeerBridgeError) {
-      console.error(`AIQSA runtime failed: ${error.code}`);
-      process.exitCode = 1;
-    } else {
-      throw error;
-    }
+    writeEmergencyFailure({
+      stage: "startup",
+      outcome: "terminated",
+      code: error instanceof RuntimePeerBridgeError ? error.code : "unexpected"
+    });
+    process.exit(1);
   }
 }
 

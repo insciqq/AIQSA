@@ -1,8 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { rememberDatabaseFailure } from "../../observability/databaseFailure";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryCoordinator } from "./coordinator";
 import { MemoryCoordinatorError } from "./errors";
 import type { MemoryCoordinatorRepository } from "./prismaRepository";
 import { MemoryCoordinatorRegistry } from "./registry";
+import { getContext, reportSubsystemHealthy, runWithContext, type ObservabilityContext } from "../../observability";
 import type {
   MemoryDeletionClaim,
   MemoryJobClaim,
@@ -108,6 +110,85 @@ function coordinator(
 }
 
 describe("Memory coordinator", () => {
+  it("isolates concurrent jobs and deletion from startup, repeated kicks, and shared reconciliation", async () => {
+    const request = { trace_id: "e".repeat(32), run_id: "request-run", job_id: "request-job" };
+    const jobs = [jobClaim(), jobClaim({ id: "job-2", userId: "user-2" })];
+    const deletions = [deletionClaim({ userId: "user-3" })];
+    const processed = new Map<string, ObservabilityContext | undefined>();
+    const resumed = new Map<string, ObservabilityContext | undefined>();
+    const beats = new Map<string, ObservabilityContext | undefined>();
+    const committed = new Map<string, ObservabilityContext | undefined>();
+    const shared: Array<ObservabilityContext | undefined> = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let heartbeatsSeen!: () => void;
+    const heartbeats = new Promise<void>((resolve) => { heartbeatsSeen = resolve; });
+    const recordBeat = (id: string) => {
+      beats.set(id, getContext());
+      if (beats.size === 3) heartbeatsSeen();
+      return true;
+    };
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({
+      kind: "EMBED_ITEMS",
+      preflight: async () => ({ status: "READY" }),
+      async execute(claim) {
+        processed.set(claim.id, getContext());
+        await gate;
+        resumed.set(claim.id, getContext());
+        return { acceptedResultHash: RESULT_HASH };
+      }
+    });
+    registry.registerDeletion({
+      operation: "TEMPORARY_DELETE",
+      async execute(claim) {
+        processed.set(claim.id, getContext());
+        await gate;
+        resumed.set(claim.id, getContext());
+        return {};
+      }
+    });
+    const service = new MemoryCoordinator({
+      now: () => new Date(NOW),
+      async onDrain() { shared.push(getContext()); },
+      async reconcileWork() { shared.push(getContext()); },
+      policy: { heartbeatMs: 10, intervalMs: 60_000, leaseMs: 100, maxDeletionParallel: 1, maxJobParallel: 2 },
+      registry,
+      repository: repository({
+        async claimJob() { shared.push(getContext()); return jobs.shift() ?? null; },
+        async claimDeletion() { shared.push(getContext()); return deletions.shift() ?? null; },
+        async heartbeatJob({ claim }) { return recordBeat(claim.id); },
+        async heartbeatDeletion({ claim }) { return recordBeat(claim.id); },
+        async commitJobSuccess({ claim }) { committed.set(claim.id, getContext()); return true; },
+        async commitDeletionSuccess({ claim }) { committed.set(claim.id, getContext()); return true; }
+      })
+    });
+    try {
+      runWithContext(request, () => service.start());
+      const drain = runWithContext({ trace_id: "f".repeat(32), run_id: "next-request" }, () => service.reconcileNow());
+      await heartbeats;
+      release();
+      await drain;
+
+      expect(processed.size).toBe(3);
+      expect(resumed).toEqual(processed);
+      expect(new Set([...processed.values()].map((context) => context?.trace_id)).size).toBe(3);
+      for (const [jobId, context] of processed) {
+        expect(context).toEqual({ trace_id: expect.stringMatching(/^[0-9a-f]{32}$/u), job_id: jobId });
+        expect(context?.trace_id).not.toBe(request.trace_id);
+        expect(beats.get(jobId)).toEqual(context);
+        expect(committed.get(jobId)).toEqual(context);
+      }
+      for (const context of shared) {
+        expect(context).toEqual({ trace_id: expect.stringMatching(/^[0-9a-f]{32}$/u) });
+        expect(context?.trace_id).not.toBe(request.trace_id);
+      }
+    } finally {
+      release();
+      service.stop();
+    }
+  });
+
   it("records content-free worker liveness once at the start of an idle drain", async () => {
     const onDrain = vi.fn(async () => undefined);
     const claimDeletion = vi.fn(async () => null);
@@ -593,5 +674,239 @@ describe("Memory coordinator", () => {
     releaseJob();
     await pending;
     service.stop();
+  });
+});
+
+
+describe("Memory job diagnostics", () => {
+  beforeEach(() => {
+    for (const stage of ["claim", "discover", "reconcile", "preflight", "heartbeat", "health"] as const) {
+      reportSubsystemHealthy("memory", stage);
+    }
+  });
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  function capture() {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    return () => writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+  }
+
+  it("keeps each processing failure before its retry write and distinguishes true, false, and rejection", async () => {
+    const records = capture();
+    const queued = ["confirmed", "stale", "rejected"].map((id) => jobClaim({ id }));
+    const databaseError = new Error("PRIVATE_DATABASE_PAYLOAD");
+    rememberDatabaseFailure(databaseError, "P1001");
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({
+      kind: "EMBED_ITEMS", preflight: async () => ({ status: "READY" }),
+      execute: async () => {
+        const error = new MemoryCoordinatorError("memory_job_failed", true);
+        error.message = "PRIVATE_PROCESSING_PAYLOAD";
+        throw error;
+      }
+    });
+    const retries = new Map<string, Date>();
+    const service = coordinator(registry, repository({
+      claimJob: vi.fn(async () => queued.shift() ?? null),
+      retryJob: vi.fn(async ({ claim, nextAttemptAt }) => {
+        expect(records().at(-1)).toMatchObject({
+          event: "job_attempt", job_id: claim.id, outcome: "failed", action: "retry", code: "memory_job_failed"
+        });
+        retries.set(claim.id, nextAttemptAt);
+        if (claim.id === "rejected") throw databaseError;
+        return claim.id === "confirmed";
+      })
+    }));
+    await runWithContext({ trace_id: "a".repeat(32), run_id: "PRIVATE_REQUEST_RUN" }, () => service.reconcileNow());
+    const observed = records();
+    expect(observed).toHaveLength(9);
+    const writes = observed.filter((record) => record.event === "job_persistence");
+    expect(writes).toEqual([
+      expect.objectContaining({ job_id: "confirmed", outcome: "confirmed", delay_ms: 1000,
+        retry_at: retries.get("confirmed")!.toISOString() }),
+      expect.objectContaining({ job_id: "stale", outcome: "not_applied" }),
+      expect.objectContaining({ job_id: "rejected", outcome: "unconfirmed", prisma_code: "P1001", level: "error" })
+    ]);
+    for (const write of writes.slice(1)) {
+      expect(write).not.toHaveProperty("retry_at");
+      expect(write).not.toHaveProperty("delay_ms");
+    }
+    for (const jobId of retries.keys()) {
+      const jobRecords = observed.filter((record) => record.job_id === jobId);
+      expect(new Set(jobRecords.map((record) => record.trace_id)).size).toBe(1);
+      expect(jobRecords.every((record) => !Object.hasOwn(record, "run_id"))).toBe(true);
+    }
+    expect(new Set(writes.map((record) => record.trace_id)).size).toBe(3);
+    expect(JSON.stringify(observed)).not.toContain("PRIVATE_");
+  });
+
+  it("records success only at the guarded commit and retains lost ownership without retry", async () => {
+    const records = capture();
+    const queued = [jobClaim({ id: "success", recoveredLease: true }), jobClaim({ id: "lease-lost" })];
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({ kind: "EMBED_ITEMS", preflight: async () => ({ status: "READY" }),
+      execute: async () => ({ acceptedResultHash: RESULT_HASH }) });
+    const repo = repository({
+      claimJob: vi.fn(async () => queued.shift() ?? null),
+      commitJobSuccess: vi.fn(async ({ claim }) => claim.id === "success")
+    });
+    await coordinator(registry, repo).reconcileNow();
+    expect(records()).toHaveLength(5);
+    expect(records()).toContainEqual(expect.objectContaining({ job_id: "success", stage: "recovery", outcome: "started" }));
+    expect(records()).toContainEqual(expect.objectContaining({ job_id: "success", event: "job_persistence", stage: "complete", outcome: "confirmed" }));
+    expect(records()).toContainEqual(expect.objectContaining({ job_id: "lease-lost", event: "job_persistence", outcome: "not_applied" }));
+    expect(records().at(-1)).toMatchObject({ job_id: "lease-lost", outcome: "lost_lease", level: "info" });
+    expect(repo.retryJob).not.toHaveBeenCalled();
+    expect(repo.terminalJob).not.toHaveBeenCalled();
+  });
+
+  it("retains the processing and persistence failures when terminal settlement also fails", async () => {
+    const records = capture();
+    const queued = [jobClaim({ attemptCount: 3 })];
+    const commitFailure = new Error("PRIVATE_COMMIT");
+    const terminalFailure = new Error("PRIVATE_TERMINAL");
+    rememberDatabaseFailure(commitFailure, "P2028");
+    rememberDatabaseFailure(terminalFailure, "P1001");
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({ kind: "EMBED_ITEMS", preflight: async () => ({ status: "READY" }),
+      execute: async () => ({ acceptedResultHash: RESULT_HASH }) });
+    const repo = repository({
+      claimJob: vi.fn(async () => queued.shift() ?? null),
+      commitJobSuccess: async () => { throw commitFailure; },
+      terminalJob: async () => {
+        expect(records().at(-1)).toMatchObject({ event: "job_attempt", stage: "complete", outcome: "failed",
+          prisma_code: "P2028", action: "fail" });
+        throw terminalFailure;
+      }
+    });
+    await coordinator(registry, repo).reconcileNow();
+    expect(records()).toHaveLength(4);
+    expect(records()[1]).toMatchObject({ event: "job_persistence", stage: "complete", outcome: "unconfirmed", prisma_code: "P2028" });
+    expect(records()[3]).toMatchObject({ event: "job_persistence", stage: "fail", outcome: "unconfirmed", prisma_code: "P1001" });
+    expect(repo.retryJob).not.toHaveBeenCalled();
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
+  it("projects progress separately from publication and keeps stale processing informational", async () => {
+    const records = capture();
+    const queued = [jobClaim()];
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({ kind: "EMBED_ITEMS", preflight: async () => ({ status: "READY" }),
+      execute: async (_claim, context) => {
+        await context.setStage("authorized_apply");
+        await context.setStage("PRIVATE_STAGE");
+        throw new MemoryCoordinatorError("memory_embedding_binding_stale", false);
+      } });
+    const repo = repository({ claimJob: async () => queued.shift() ?? null });
+    await coordinator(registry, repo).reconcileNow();
+    expect(records()).toContainEqual(expect.objectContaining({ event: "job_persistence", stage: "progress",
+      work_stage: "publish", outcome: "confirmed" }));
+    expect(records()).toContainEqual(expect.objectContaining({ event: "job_persistence", stage: "progress",
+      work_stage: "progress", outcome: "confirmed" }));
+    expect(records()).toContainEqual(expect.objectContaining({ event: "job_attempt", outcome: "stale", level: "info" }));
+    expect(repo.terminalJob).toHaveBeenCalledOnce();
+    expect(records().some((record) => record.stage === "publish" && record.outcome === "confirmed")).toBe(false);
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
+  it("does not let a healthy job lane hide repeated deletion claim failures", async () => {
+    const records = capture();
+    let unavailable = true;
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({ kind: "EMBED_ITEMS", preflight: async () => ({ status: "READY" }), execute: vi.fn() });
+    registry.registerDeletion({ operation: "TEMPORARY_DELETE", execute: vi.fn() });
+    const service = coordinator(registry, repository({ claimDeletion: async () => {
+      if (unavailable) throw new Error("PRIVATE_DELETION_CLAIM");
+      return null;
+    } }));
+    for (let pass = 0; pass < 10; pass += 1) await service.reconcileNow();
+    expect(records()).toHaveLength(1);
+    unavailable = false;
+    await service.reconcileNow();
+    expect(records()).toHaveLength(2);
+    expect(records()[1]).toMatchObject({ event: "subsystem.recovered", stage: "claim", repeat_count: 9 });
+  });
+
+  it("preserves heartbeat-failure cancellation and reports recovery from the next successful owned heartbeat", async () => {
+    vi.useFakeTimers();
+    const records = capture();
+    const queued = [jobClaim({ id: "heartbeat-failure" }), jobClaim({ id: "heartbeat-recovery" })];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({ kind: "EMBED_ITEMS", preflight: async () => ({ status: "READY" }),
+      execute: async (claim, { signal }) => {
+        if (claim.id === "heartbeat-failure") await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+        else await gate;
+        return { acceptedResultHash: RESULT_HASH };
+      } });
+    const repo = repository({ claimJob: async () => queued.shift() ?? null,
+      heartbeatJob: async ({ claim }) => {
+        if (claim.id === "heartbeat-failure") throw new Error("PRIVATE_HEARTBEAT");
+        return true;
+      } });
+    const pending = coordinator(registry, repo).reconcileNow();
+    try {
+      await vi.advanceTimersByTimeAsync(25);
+      expect(records()).toContainEqual(expect.objectContaining({ event: "job_persistence", job_id: "heartbeat-failure",
+        stage: "heartbeat", outcome: "unconfirmed" }));
+      expect(records()).toContainEqual(expect.objectContaining({ event: "job_attempt", job_id: "heartbeat-failure",
+        outcome: "cancelled", level: "info" }));
+      expect(records().filter((record) => record.event === "subsystem.recovered")).toEqual([
+        expect.objectContaining({ subsystem: "memory", stage: "heartbeat" })
+      ]);
+      expect(repo.retryJob).not.toHaveBeenCalled();
+      expect(repo.terminalJob).not.toHaveBeenCalled();
+      expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+    } finally { release(); await pending; }
+  });
+
+  it("keeps blocked deletions retryable and confirms their actual next attempt", async () => {
+    const records = capture();
+    const queued = [deletionClaim({ attemptCount: 4, resumedFromBlocked: true })];
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerDeletion({ operation: "TEMPORARY_DELETE", execute: async () => {
+      throw new MemoryCoordinatorError("memory_deletion_failed", true);
+    } });
+    const retryDeletion = vi.fn(async () => true);
+    await coordinator(registry, repository({
+      claimDeletion: vi.fn(async () => queued.shift() ?? null), retryDeletion
+    })).reconcileNow();
+    expect(records()).toHaveLength(3);
+    expect(records()[1]).toMatchObject({ outcome: "blocked", action: "retry", level: "warn" });
+    expect(records()[2]).toMatchObject({ outcome: "confirmed", stage: "retry", delay_ms: 900000,
+      retry_at: new Date(NOW.getTime() + 900000).toISOString() });
+    expect(retryDeletion).toHaveBeenCalledWith(expect.objectContaining({ blocked: true }));
+  });
+
+  it("keeps idle silent, bounds repeated discovery failures, and reports one recovery without request context", async () => {
+    const records = capture();
+    const registry = new MemoryCoordinatorRegistry();
+    let unavailable = false;
+    const service = new MemoryCoordinator({
+      registry, repository: repository(), reconcileWork: async () => {
+        if (unavailable) throw new Error("PRIVATE_DISCOVERY");
+      }
+    });
+    for (let pass = 0; pass < 20; pass += 1) await service.reconcileNow();
+    expect(records()).toHaveLength(0);
+    unavailable = true;
+    for (let pass = 0; pass < 20; pass += 1) {
+      await runWithContext({ trace_id: "b".repeat(32), run_id: "PRIVATE_RUN" }, () => service.reconcileNow());
+    }
+    expect(records()).toHaveLength(1);
+    unavailable = false;
+    await service.reconcileNow();
+    await service.reconcileNow();
+    expect(records()).toHaveLength(2);
+    expect(records()[1]).toMatchObject({ event: "subsystem.recovered", subsystem: "memory", stage: "discover", repeat_count: 19 });
+    for (const record of records()) {
+      expect(record).not.toHaveProperty("run_id");
+      expect(record).not.toHaveProperty("job_id");
+      expect(record).not.toHaveProperty("trace_id");
+    }
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
   });
 });

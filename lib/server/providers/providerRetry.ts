@@ -1,4 +1,5 @@
 import { ProviderSafeFetchError } from "./providerSafeFetch";
+import { observeProviderRetry, withProviderAttempt } from "./providerObservability";
 
 export const DEFAULT_PROVIDER_REQUEST_MAX_ATTEMPTS = 4;
 
@@ -101,13 +102,20 @@ export async function executeWithProviderRetry<T>(input: Readonly<{
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      return await input.operation();
+      return await withProviderAttempt(attempt, input.operation);
     } catch (error) {
       if (input.signal.aborted) throw abortReason(input.signal);
       const decision = input.shouldRetry(error);
-      if (decision === null || attempt === maxAttempts) throw error;
+      if (decision === null || attempt === maxAttempts) {
+        observeProviderRetry(error, attempt, "stop");
+        throw error;
+      }
       const delayMs = retryDelayMs(attempt, decision.retryAfterMs, random);
-      if (delayMs === null) throw error;
+      if (delayMs === null) {
+        observeProviderRetry(error, attempt, "stop");
+        throw error;
+      }
+      observeProviderRetry(error, attempt, "retry", delayMs);
       await sleep(delayMs, input.signal);
     }
   }

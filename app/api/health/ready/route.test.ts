@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 import { DIRECT_PEER_HEADER } from "@/lib/server/auth/clientIdentity";
+import { reportReadiness, reportSubsystemHealthy } from "@/lib/server/observability";
 
 const mocks = vi.hoisted(() => ({
   checkS3Readiness: vi.fn(),
@@ -81,11 +82,16 @@ function directReadinessRequest(): Request {
 }
 
 beforeEach(() => {
+  reportSubsystemHealthy("configuration", "health");
+  reportSubsystemHealthy("database", "health");
+  reportSubsystemHealthy("object_storage", "health");
+  reportReadiness("ready");
   mocks.checkS3Readiness.mockResolvedValue(undefined);
   mocks.queryRaw.mockResolvedValue([{ result: 1 }]);
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.clearAllMocks();
 });
@@ -119,7 +125,7 @@ describe("/api/health/ready", () => {
 
   it("requires a valid runtime peer stamp before direct-mode dependency I/O", async () => {
     stubDirectEnvironment();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     const first = await GET(new Request("http://app.local/api/health/ready"));
     const second = await GET(new Request("http://app.local/api/health/ready"));
@@ -129,10 +135,29 @@ describe("/api/health/ready", () => {
     expect(second.status).toBe(503);
     expect(mocks.queryRaw).not.toHaveBeenCalled();
     expect(mocks.checkS3Readiness).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith(
-      "AIQSA readiness not ready: runtime_peer_identity"
-    );
+    const records = output.mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(records.filter((record) => record.event === "runtime_lifecycle")).toEqual([
+      expect.objectContaining({ subsystem: "configuration", stage: "health", code: "runtime_peer_identity", level: "warn" })
+    ]);
+    expect(records.filter((record) => record.event === "readiness.changed")).toEqual([
+      expect.objectContaining({ state: "not_ready", code: "runtime_peer_identity" })
+    ]);
+  });
+
+  it("reports dependency recovery once and leaves subsequent healthy probes quiet", async () => {
+    stubProductionEnvironment(ENCRYPTION_KEY);
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    mocks.queryRaw.mockRejectedValueOnce(new Error("private-database-canary"));
+    expect((await GET(new Request("http://app.local/api/health/ready"))).status).toBe(503);
+    expect((await GET(new Request("http://app.local/api/health/ready"))).status).toBe(200);
+    expect((await GET(new Request("http://app.local/api/health/ready"))).status).toBe(200);
+    const records = output.mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(records.filter((record) => record.event === "readiness.changed").map((record) => record.state)).toEqual(["not_ready", "ready"]);
+    expect(records.filter((record) => record.event === "subsystem.recovered")).toEqual([
+      expect.objectContaining({ subsystem: "database", stage: "health" })
+    ]);
+    expect(JSON.stringify(records)).not.toContain("canary");
+    expect(records.every((record) => record.trace_id === undefined)).toBe(true);
   });
 
   it("accepts an authenticated direct peer and keeps readiness output generic", async () => {

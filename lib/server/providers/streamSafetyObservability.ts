@@ -2,6 +2,7 @@ import {
   providerStreamSafetyReport,
   type ProviderStreamSafetyReport
 } from "./streamSafety";
+import { logEvent } from "../observability";
 
 export type ProviderStreamSafetyIdentity = Readonly<{
   adapterKind: string;
@@ -40,12 +41,11 @@ export function warnProviderStreamSafetyOnce(
 
   markWarningEmitted(value, report);
   try {
-    console.warn(JSON.stringify({
+    logEvent("provider_stream_safety_terminated", {
       adapterKind: identity.adapterKind,
       code: report.code,
       connectionId: identity.connectionId,
       durationMs: report.durationMs,
-      event: "provider_stream_safety_terminated",
       limit: report.limit,
       observed: report.observed,
       providerFamily: identity.providerFamily,
@@ -53,7 +53,7 @@ export function warnProviderStreamSafetyOnce(
       termination: report.termination,
       totalStreamBytes: report.totalStreamBytes,
       unit: report.unit
-    }));
+    });
   } catch {
     // Observability must never replace the typed provider failure.
   }
