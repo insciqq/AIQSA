@@ -1731,6 +1731,63 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   });
 
+  it("keeps distinct Unicode slots on default admission and pins queued identity", async () => {
+    const userId = await createOwner("identity-default-unicode");
+    const previousProfile = process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV];
+    try {
+      await expect(createPrismaMemoryIdentityCutoverRepository(prisma)
+        .assertActivationReady(userId)).resolves.toMatchObject({
+          legacyFactCount: 0,
+          readyForUnicodeWrites: true
+        });
+      const chat = await prisma.chat.create({
+        data: { title: "Distinct topic identities", userId }
+      });
+      let parentMessageId: string | null = null;
+      for (const [index, label] of ["report café", "report cafè"].entries()) {
+        delete process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV];
+        const quote = `I prefer ${label} topics.`;
+        const turn = await createTurn({
+          assistantText: "Noted.",
+          chatId: chat.id,
+          createdAt: new Date(Date.UTC(2026, 7, 30, 9, index)),
+          parentMessageId,
+          userId,
+          userText: quote
+        });
+        parentMessageId = turn.assistantMessage.id;
+        await settleChat(userId, chat.id, turn);
+        const claim = await claimFactJob(userId, turn.userMessage.id);
+        process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV] = "LEGACY_V1";
+        const input = await prepare(claim);
+        expect(input.identityProfile).toBe("UNICODE_V2");
+        const plan = slotPreferencePlan(input, quote, `topic:${label}`);
+        const binding = await createSucceededBinding(
+          userId, claim, input.inputHash, plan.outputHash
+        );
+        await expect(applyPlan(userId, claim, plan, binding))
+          .resolves.toBe("APPLIED");
+      }
+      const facts = await prisma.memoryFact.findMany({
+        select: { canonicalKey: true, identityVersion: true, state: true },
+        where: { userId }
+      });
+      expect(facts).toHaveLength(2);
+      expect(new Set(facts.map((fact) => fact.canonicalKey)).size).toBe(2);
+      expect(facts.every((fact) =>
+        fact.identityVersion === "slot-v4" && fact.state === "ACTIVE")).toBe(true);
+      await expect(prisma.memoryEvidence.count({ where: { userId } }))
+        .resolves.toBe(2);
+    } finally {
+      if (previousProfile === undefined) {
+        delete process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV];
+      } else {
+        process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV] = previousProfile;
+      }
+      await cleanupOwner(userId);
+    }
+  });
+
   it("dual-reads legacy proposition identity without rewriting the accepted key", async () => {
     const userId = await createOwner("identity-dual-read");
     const previousProfile = process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV];
