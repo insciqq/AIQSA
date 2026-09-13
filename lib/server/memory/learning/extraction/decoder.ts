@@ -521,7 +521,9 @@ function parseDependencies(input: Readonly<{
     input.frame.changeIntent === "CORRECTION";
   const coreference = input.entities.some((entity) =>
     entity.mentionKind === "PRONOMINAL" || entity.mentionKind === "ELLIPSIS");
-  if ((correction || coreference) && refs.length !== 1) {
+  // A correction may be fully grounded in the direct target. Unresolved
+  // references still need one exact context dependency and semantic review.
+  if ((coreference && refs.length !== 1) || (correction && refs.length > 1)) {
     fail("memory_fact_dependency_unsupported");
   }
   return refs.map((ref) => {
@@ -677,8 +679,6 @@ function decodeObservation(
     frame.temporalPerspective === "UNKNOWN" || correction ||
     resolvedIdentity.identityKind !== "PROPOSITION"
   )) fail("memory_fact_unsupported");
-  if (correction && !dependencies.some(({ dependencyKind }) =>
-    dependencyKind === "CORRECTION_TARGET")) fail("memory_fact_dependency_unsupported");
   if (parsedEntities.entities.some(({ entityType }) => entityType === "PERSON") &&
     resolvedIdentity.identityKind !== "PROPOSITION") {
     fail("memory_fact_entity_unsupported");
