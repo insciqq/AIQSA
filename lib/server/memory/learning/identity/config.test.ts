@@ -27,12 +27,10 @@ describe("Memory identity write profile", () => {
     }
   );
 
-  it("retains an explicitly selected historical rollback profile", () => {
-    const profile = loadMemoryIdentityWriteProfile({
+  it("rejects selecting a retired profile for new work", () => {
+    expect(() => loadMemoryIdentityWriteProfile({
       [MEMORY_IDENTITY_WRITE_PROFILE_ENV]: "LEGACY_V1"
-    });
-    expect(memoryPropositionCanonicalKey("Ёлка", profile))
-      .toBe(memoryPropositionCanonicalKey("Ёлка", "LEGACY_V1"));
+    })).toThrow("memory_identity_profile_environment_invalid");
   });
 
   it("fails closed for an unknown profile", () => {

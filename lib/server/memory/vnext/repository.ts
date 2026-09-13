@@ -31,6 +31,7 @@ import {
 import { persistMemoryCandidateEntities } from "../learning/entities/repository";
 import {
   memoryLegacyIdentityIsUnambiguous,
+  memoryRecordedLegacyIdentityKeys,
   registerMemoryIdentityCompatibility
 } from "../learning/identity/compatibility";
 
@@ -236,27 +237,34 @@ async function lockedFact(
   fact: LockedFact | null;
   legacyWriteBlocked: boolean;
 }>> {
-  await registerMemoryIdentityCompatibility(tx, {
-    containerId: scopeId,
-    legacyCanonicalKey: candidate.legacyCanonicalKey,
-    namespace: "FACT",
-    now,
-    unicodeCanonicalKey: candidate.unicodeCanonicalKey,
-    userId
+  // Only accepted historical outputs carry a legacy key. New decoders never
+  // calculate one; mapping registration consumes those recorded opaque bytes.
+  const legacyKey = candidate.legacyCanonicalKey;
+  if (legacyKey !== undefined) {
+    await registerMemoryIdentityCompatibility(tx, {
+      containerId: scopeId,
+      legacyCanonicalKey: legacyKey,
+      namespace: "FACT",
+      now,
+      unicodeCanonicalKey: candidate.unicodeCanonicalKey,
+      userId
+    });
+  }
+  const recorded = await memoryRecordedLegacyIdentityKeys(tx, {
+    containerId: scopeId, namespace: "FACT",
+    unicodeCanonicalKey: candidate.unicodeCanonicalKey, userId
   });
-  const legacyIsUnambiguous = await memoryLegacyIdentityIsUnambiguous(tx, {
-    containerId: scopeId,
-    legacyCanonicalKey: candidate.legacyCanonicalKey,
-    namespace: "FACT",
-    unicodeCanonicalKey: candidate.unicodeCanonicalKey,
-    userId
-  });
-  const canonicalKeys = candidate.legacyCanonicalKey ===
-    candidate.unicodeCanonicalKey
-    ? [candidate.unicodeCanonicalKey]
-    : legacyIsUnambiguous
-      ? [candidate.unicodeCanonicalKey, candidate.legacyCanonicalKey]
-      : [candidate.unicodeCanonicalKey];
+  const reusable = recorded.filter(({ unambiguous }) => unambiguous);
+  const legacyIsUnambiguous = legacyKey !== undefined &&
+    await memoryLegacyIdentityIsUnambiguous(tx, {
+      containerId: scopeId, legacyCanonicalKey: legacyKey, namespace: "FACT",
+      unicodeCanonicalKey: candidate.unicodeCanonicalKey, userId
+    });
+  const canonicalKeys = [...new Set([
+    candidate.unicodeCanonicalKey,
+    ...(reusable.length === 1 ? [reusable[0]!.canonicalKey] : []),
+    ...(legacyIsUnambiguous && legacyKey !== undefined ? [legacyKey] : [])
+  ])];
   const rows = await tx.$queryRaw<LockedFact[]>(Prisma.sql`
     SELECT "id", "canonicalKey", "currentVersionId", "lastConfirmedAt",
       "movedToFactId",
@@ -271,14 +279,16 @@ async function lockedFact(
     END
     FOR UPDATE
   `);
-  const fact = rows[0] ?? null;
+  const fact = rows.find((row) => row.canonicalKey === candidate.unicodeCanonicalKey) ??
+    (rows.length === 1 ? rows[0]! : null);
   return {
     fact,
     legacyWriteBlocked:
-      fact === null &&
+      (fact === null && rows.length > 1) ||
+      (fact === null &&
       candidate.identityProfile === "LEGACY_V1" &&
       candidate.legacyCanonicalKey !== candidate.unicodeCanonicalKey &&
-      !legacyIsUnambiguous
+      !legacyIsUnambiguous)
   };
 }
 

@@ -54,6 +54,7 @@ import {
   type MemoryFactSourceIdentity
 } from "./contract";
 import { commitMemoryVNextExtractionPlan } from "../../vnext/repository";
+import { memoryRecordedLegacyIdentityKeys } from "../identity/compatibility";
 import { loadMemoryFactContextRefs } from "../dependencies/context";
 import { materializeMemoryCandidateEntityIdentity } from "../entities/repository";
 import {
@@ -835,11 +836,21 @@ async function candidateIsSuppressed(
   input: MemoryFactExtractionInput,
   candidate: MemoryExtractedCandidate
 ): Promise<boolean> {
+  const scope = await tx.memoryScope.findFirst({
+    select: { id: true },
+    where: { scopeType: "GLOBAL_USER", userId: input.source.userId }
+  });
+  const recorded = scope === null ? [] : await memoryRecordedLegacyIdentityKeys(tx, {
+    containerId: scope.id, namespace: "FACT",
+    unicodeCanonicalKey: candidate.unicodeCanonicalKey, userId: input.source.userId
+  });
+  const keys = new Set([
+    candidate.unicodeCanonicalKey,
+    ...(candidate.legacyCanonicalKey === undefined ? [] : [candidate.legacyCanonicalKey]),
+    ...recorded.map(({ canonicalKey }) => canonicalKey)
+  ]);
   for (const evidence of candidate.evidence) {
-    for (const canonicalKey of new Set([
-      candidate.unicodeCanonicalKey,
-      candidate.legacyCanonicalKey
-    ])) {
+    for (const canonicalKey of keys) {
       const matches = await findMatchingMemorySuppressions(
         tx,
         keyring,

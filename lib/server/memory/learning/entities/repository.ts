@@ -15,13 +15,11 @@ import {
   memoryEntityAliases,
   memoryEntityAliasSupportFingerprint,
   memoryGroundedEntityCanonicalKey,
-  memoryGroundedEntityCanonicalKeys,
   normalizeMemoryEntityAlias,
   type MemoryEntityType
 } from "./normalization";
 import {
-  memoryLegacyIdentityIsUnambiguous,
-  registerMemoryIdentityCompatibility
+  memoryRecordedLegacyIdentityKeys
 } from "../identity/compatibility";
 
 type EntityRow = Readonly<{
@@ -177,39 +175,16 @@ async function resolveOrCreate(
   userId: string,
   entity: MemoryFactCandidateEntity,
   languageCode: string,
-  identityProfile: MemoryExtractedCandidate["identityProfile"],
   adjudicatedEntityId: string | null = null
 ): Promise<string | null> {
-  const keySet = memoryGroundedEntityCanonicalKeys(entity);
-  if (keySet) {
-    await registerMemoryIdentityCompatibility(tx, {
-      containerId: "ENTITY",
-      legacyCanonicalKey: keySet.legacyCanonicalKey,
-      namespace: "GROUNDED_ENTITY",
-      now: new Date(),
-      unicodeCanonicalKey: keySet.unicodeCanonicalKey,
-      userId
-    });
-  }
-  const legacyIsUnambiguous = keySet === null
-    ? false
-    : await memoryLegacyIdentityIsUnambiguous(tx, {
-        containerId: "ENTITY",
-        legacyCanonicalKey: keySet.legacyCanonicalKey,
-        namespace: "GROUNDED_ENTITY",
-        unicodeCanonicalKey: keySet.unicodeCanonicalKey,
-        userId
-      });
-  const canonicalKey = keySet === null
-    ? null
-    : identityProfile === "LEGACY_V1" && legacyIsUnambiguous
-      ? keySet.legacyCanonicalKey
-      : keySet.unicodeCanonicalKey;
-  const canonicalKeys = keySet === null
-    ? []
-    : legacyIsUnambiguous
-      ? [keySet.unicodeCanonicalKey, keySet.legacyCanonicalKey]
-      : [keySet.unicodeCanonicalKey];
+  const canonicalKey = memoryGroundedEntityCanonicalKey(entity);
+  const recorded = canonicalKey === null ? [] : await memoryRecordedLegacyIdentityKeys(tx, {
+    containerId: "ENTITY", namespace: "GROUNDED_ENTITY",
+    unicodeCanonicalKey: canonicalKey, userId
+  });
+  const legacyKeys = recorded.filter(({ unambiguous }) => unambiguous)
+    .map(({ canonicalKey }) => canonicalKey);
+  const canonicalKeys = canonicalKey === null ? [] : [canonicalKey, ...legacyKeys];
   const candidates = await resolutionCandidates(
     tx,
     userId,
@@ -231,19 +206,19 @@ async function resolveOrCreate(
     return context.rootId;
   }
 
-  const unicodeRoots = keySet === null
+  const unicodeRoots = canonicalKey === null
     ? []
     : [...new Set(candidates.filter((candidate) =>
-        candidate.canonicalKey === keySet.unicodeCanonicalKey &&
+        candidate.canonicalKey === canonicalKey &&
         compatibleEntityTypes(candidate.entityType, entity.entityType) &&
         candidate.aliases.length > 0)
       .map(({ rootId }) => rootId))].sort();
   if (unicodeRoots.length === 1) return unicodeRoots[0]!;
   if (unicodeRoots.length > 1) return null;
-  const canonicalRoots = keySet === null || !legacyIsUnambiguous
+  const canonicalRoots = legacyKeys.length === 0
     ? []
     : [...new Set(candidates.filter((candidate) =>
-        candidate.canonicalKey === keySet.legacyCanonicalKey &&
+        legacyKeys.includes(candidate.canonicalKey) &&
         compatibleEntityTypes(candidate.entityType, entity.entityType) &&
         candidate.aliases.length > 0)
       .map(({ rootId }) => rootId))].sort();
@@ -345,7 +320,6 @@ export async function materializeMemoryCandidateEntityIdentity(
     input.userId,
     subject,
     candidate.languageCode,
-    candidate.identityProfile,
     input.adjudicatedEntityId
   );
   if (!resolvedEntityId) throw new Error("memory_fact_candidate_invalid");
@@ -358,7 +332,7 @@ export async function materializeMemoryCandidateEntityIdentity(
         ? Object.freeze({ ...entity, contextEntityId: resolvedEntityId })
         : entity)),
     identityVersion: "slot-v3" as const,
-    legacyCanonicalKey: canonicalKey,
+    ...(candidate.legacyCanonicalKey === undefined ? {} : { legacyCanonicalKey: canonicalKey }),
     subjectEntityId: resolvedEntityId,
     subjectKey: `entity:${resolvedEntityId}`,
     unicodeCanonicalKey: canonicalKey
@@ -452,8 +426,7 @@ export async function persistMemoryCandidateEntities(
           tx,
           input.userId,
           entity,
-          input.candidate.languageCode,
-          input.candidate.identityProfile
+          input.candidate.languageCode
         )
       : await rootId(tx, input.userId, materializedSubjectId);
     if (materializedSubjectId !== null &&
