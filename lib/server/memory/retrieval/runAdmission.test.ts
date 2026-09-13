@@ -1007,7 +1007,10 @@ describe("Personal Memory v1 run admission", () => {
     });
   });
 
-  it("uses strict action control without allowing a false-positive gate to mutate", async () => {
+  it.each([
+    "Remember this phrase, then answer normally.",
+    "Исправь сохранённую копию скрипта, чтобы он запускался."
+  ])("uses strict action control without allowing a false-positive gate to mutate: %s", async (text) => {
     const local = repository({ candidates: [laneCandidate("ordinary-after-none")] });
     const legacy = retrievalOptions(["c0"]);
     const { readUtilityPolicy: _legacyReadUtilityPolicy, ...options } = legacy;
@@ -1018,7 +1021,7 @@ describe("Personal Memory v1 run admission", () => {
       ...options,
       actionExecutor,
       queryResolver
-    }).retrieve(runInput("Remember this phrase, then answer normally."));
+    }).retrieve(runInput(text));
 
     expect(legacy.control.decide).toHaveBeenCalledOnce();
     expect(actionExecutor.execute).not.toHaveBeenCalled();
