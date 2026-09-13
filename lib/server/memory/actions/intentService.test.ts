@@ -12,7 +12,7 @@ const context = {
   recentMessages: [{ role: "assistant" as const, text: "I can help." }]
 };
 
-const output = {
+const legacyOutput = {
   action: "SAVE",
   aggregationRequested: false,
   applyResponsePreferences: false,
@@ -43,177 +43,127 @@ const output = {
   thisChatOnly: false
 } as const;
 
-describe("MemoryActionIntent service", () => {
-  it("builds one bounded strict request with quoted context", () => {
-    const request = buildMemoryActionIntentRequest(context);
-    expect(request.name).toBe("MemoryActionIntent");
+const controlDecision = {
+  action: "SAVE",
+  answerRequested: false,
+  category: "preferences",
+  confidenceBand: "HIGH",
+  patternExclusionRequested: false,
+  reasonCode: "save_request",
+  referencedMemoryRef: null,
+  replacementStatement: null,
+  responsePreference: false,
+  sensitivity: "NORMAL",
+  statement: "I prefer tea.",
+  targetQuery: null,
+  thisChatOnly: false
+} as const;
+
+describe("Memory control without model read planning", () => {
+  it("accepts a pure command without requesting a generated search plan", async () => {
+    const execute = vi.fn(async (_request: ReturnType<typeof buildMemoryActionIntentRequest>) =>
+      ({ ...controlDecision }));
+    await expect(createMemoryActionIntentService({ execute }).decide(context)).resolves.toMatchObject({
+      action: "SAVE",
+      memoryUseful: false,
+      queryText: null,
+      statement: "I prefer tea."
+    });
+    const request = execute.mock.calls[0]![0];
     expect(request.schema).toMatchObject({
       additionalProperties: false,
-      required: expect.arrayContaining([
-        "action",
-        "aggregationRequested",
-        "patternExclusionRequested",
-        "profileRequested",
-        "queryDecompositions",
-        "thisChatOnly"
-      ])
+      required: expect.arrayContaining(["action", "answerRequested", "thisChatOnly"])
     });
-    expect(request.userPrompt).toContain("current_user_message");
-    expect(request.userPrompt).toContain("Please remember that I prefer tea.");
-    expect(request.systemPrompt).toContain(
-      "Call the supplied MemoryActionIntent tool exactly once"
-    );
-    expect(request.systemPrompt).toContain(
-      "JSON null value, never the quoted string \"null\""
-    );
-    expect(request.systemPrompt).toContain(
-      "LIST and SEARCH are explicit management actions over Saved Memories"
-    );
-    expect(request.systemPrompt).toContain(
-      "Never choose LIST for a conversational answer to what the assistant knows"
-    );
-    expect(request.systemPrompt).toContain("Put that management lookup in targetQuery");
-    expect(request.systemPrompt).toContain("ordinary answer requests: choose NONE");
-    expect(request.systemPrompt).toContain(
-      "current value of a changeable personal fact whose evidence must come from prior chats"
-    );
-    expect(request.systemPrompt).toContain(
-      "retrievalMode PAST_CHAT_SEARCH, temporalIntent CURRENT"
-    );
-    expect(request.systemPrompt).toContain(
-      "Cadence, rate, preference, ownership, location, relationship, plan state"
-    );
-    expect(request.systemPrompt).toContain(
-      "specific prior conversation or completed event"
-    );
-    expect(request.systemPrompt).toContain(
-      "retrievalMode PAST_CHAT_SEARCH, temporalIntent ANY"
-    );
-    expect(request.systemPrompt).toContain(
-      "Set aggregationRequested true only when answering requires combining evidence"
-    );
-    expect(request.systemPrompt).toContain(
-      "queryText a recall query for the recurring set-member predicate"
-    );
-    expect(request.systemPrompt).toContain(
-      "queryText should retrieve the X events, not Y"
-    );
-    expect(request.systemPrompt).toContain(
-      "Use queryDecompositions only for a genuinely multi-part answer"
-    );
-    expect(request.systemPrompt).toContain(
-      "one subquery for each event"
-    );
-    expect(request.systemPrompt).toContain(
-      "phrase queryText as a concise answer-focus query"
-    );
-    expect(request.systemPrompt).toContain(
-      "exact subject, predicate, and requested relation or attribute"
-    );
-    expect(request.systemPrompt).toContain(
-      "location, source or channel, destination"
-    );
-    expect(request.systemPrompt).toContain("Never insert or guess a candidate answer");
-    expect(request.systemPrompt).toContain(
-      "carry, use, or keep a personal fact or preference in future conversations"
-    );
-    expect(request.systemPrompt).toContain(
-      "A fact being stable, personal, useful, or phrased as a response preference is not itself a persistence directive"
-    );
-    expect(request.systemPrompt).toContain(
-      "'I prefer concise answers.' is a declarative fact and must be NONE"
-    );
-    expect(request.systemPrompt).toContain(
-      "Durability and scope language still do not create a persistence directive"
-    );
-    expect(request.systemPrompt).toContain(
-      "Это моё постоянное имя во всех разговорах"
-    );
-    expect(request.systemPrompt).toContain(
-      "An inexact or multiply matching target is still UPDATE with HIGH confidence"
-    );
-    expect(request.systemPrompt).toContain(
-      "preserve that quoted statement byte-for-byte in replacementStatement"
-    );
-    expect(request.systemPrompt).toContain(
-      "An inexact or multiply matching target is still FORGET with HIGH confidence"
-    );
-    expect(request.systemPrompt).toContain(
-      "never downgrade it to NONE merely because the server may need target selection"
-    );
-    expect(request.systemPrompt).toContain(
-      "For a pure SAVE, UPDATE, FORGET, LIST, SEARCH, or RESET"
-    );
-    expect(request.systemPrompt).toContain(
-      "memoryUseful false, pastChatsUseful false, applyResponsePreferences false"
-    );
-    expect(request.systemPrompt).toContain(
-      "explicitly described as the current user's own is first-party"
-    );
-    expect(request.systemPrompt).toContain(
-      "retrievalMode TARGETED_CURRENT, temporalIntent CURRENT"
-    );
-    expect(request.systemPrompt).toContain(
-      "retrievalMode PAST_CHAT_SEARCH, temporalIntent ANY"
-    );
-    expect(request.systemPrompt).toContain(
-      "CURRENT whenever the requested answer is the current state"
-    );
-    expect(request.systemPrompt).toContain(
-      "including PAST_CHAT_SEARCH over prior-chat evidence"
-    );
-    expect(request.systemPrompt).toContain(
-      "Do not use temporalIntent HISTORICAL"
-    );
-    expect(request.systemPrompt).toContain("Automatic learning is a separate later stage");
-    expect(request.systemPrompt).toContain(
-      "responsePreference classifies only the statement or replacementStatement"
-    );
-    expect(request.systemPrompt).toContain(
-      "applyResponsePreferences means that already-saved response-style preferences"
-    );
-    expect(request.systemPrompt).toContain(
-      "any action independently requests answer retrieval"
-    );
-    expect(request.systemPrompt).toContain(
-      "the user never needs to name this Memory tier"
-    );
-    expect(request.systemPrompt).toContain("This is an opt-out only");
-    expect(request.systemPrompt).toContain(
-      "profileRequested true only when the user asks for a broad inventory"
-    );
-    expect(request.systemPrompt).toContain(
-      "profileRequested true always means action NONE"
-    );
-    expect(request.systemPrompt).toContain(
-      "Расскажи всё, что ты знаешь обо мне из сохранённой памяти"
-    );
-    expect(request.systemPrompt).toContain(
-      "false for targeted identity, preference, recommendation, event, and past-conversation questions"
-    );
-    expect(request.systemPrompt).toContain(
-      "current Saved and learned facts directly"
-    );
-    expect(request.systemPrompt).toContain("meaning, not from surface wording");
-    expect(request.systemPrompt).toContain("Do not use SENSITIVE");
+    expect(Object.keys(request.schema.properties ?? {})).toHaveLength(13);
+    for (const field of ["queryText", "queryDecompositions", "entityMentions",
+      "aggregationRequested", "temporalIntent", "retrievalMode", "profileRequested"]) {
+      expect(request.schema.properties).not.toHaveProperty(field);
+    }
+  });
+
+  it("keeps a mixed update and answer with the exact source turn", async () => {
+    const execute = vi.fn(async (_request: ReturnType<typeof buildMemoryActionIntentRequest>) => ({
+      ...controlDecision,
+      action: "UPDATE",
+      answerRequested: true,
+      replacementStatement: "I prefer coffee.",
+      statement: null,
+      targetQuery: "drink preference"
+    }));
+    const currentUserMessage = "Update my drink preference to coffee.\nWhat drink fits my breakfast?";
+    await expect(createMemoryActionIntentService({ execute }).decide({
+      ...context, currentUserMessage
+    })).resolves.toMatchObject({
+      action: "UPDATE",
+      memoryUseful: true,
+      pastChatsUseful: true,
+      replacementStatement: "I prefer coffee."
+    });
+    expect(JSON.parse(execute.mock.calls[0]![0].userPrompt).current_user_message)
+      .toBe(currentUserMessage);
+  });
+
+  it("retains ordinary reads and the explicit inferred-memory opt-out", async () => {
+    const execute = vi.fn(async () => ({
+      ...controlDecision,
+      action: "NONE",
+      patternExclusionRequested: true,
+      reasonCode: "no_memory_request",
+      statement: null
+    }));
+    await expect(createMemoryActionIntentService({ execute }).decide({
+      ...context,
+      currentUserMessage: "What do you remember? Exclude inferred patterns."
+    })).resolves.toMatchObject({
+      action: "NONE",
+      memoryUseful: true,
+      pastChatsUseful: true,
+      patternExclusionRequested: true
+    });
+  });
+
+  it("rejects a fresh legacy planner packet as the new provider wire", async () => {
+    const execute = vi.fn(async () => ({ ...legacyOutput }));
+    await expect(createMemoryActionIntentService({ execute }).decide(context)).rejects.toMatchObject({
+      code: "memory_action_intent_invalid"
+    });
+  });
+});
+
+describe("MemoryActionIntent service", () => {
+  it("keeps the current turn and reference context as separate bounded data", () => {
+    const request = buildMemoryActionIntentRequest(context);
+    expect(request.name).toBe("MemoryActionIntent");
+    expect(request.maxOutputTokens).toBe(1_024);
+    expect(JSON.parse(request.userPrompt)).toEqual({
+      capabilities: context.capabilities,
+      current_user_message: context.currentUserMessage,
+      memory_refs: context.memoryRefs,
+      recent_messages: context.recentMessages
+    });
+    expect(() => buildMemoryActionIntentRequest({
+      ...context, currentUserMessage: "x".repeat(2_001)
+    })).toThrow(expect.objectContaining({ code: "memory_action_intent_invalid" }));
+    expect(() => buildMemoryActionIntentRequest({
+      ...context, memoryRefs: Array.from({ length: 21 }, () => "memory-ref")
+    })).toThrow(expect.objectContaining({ code: "memory_action_intent_invalid" }));
   });
 
   it("decodes exactly one provider result and never treats it as authority", async () => {
-    const execute = vi.fn(async () => ({ ...output }));
+    const execute = vi.fn(async () => ({ ...controlDecision }));
     const service = createMemoryActionIntentService({ execute });
     await expect(service.decide(context)).resolves.toMatchObject({ action: "SAVE" });
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
-  it("restores one exact quoted UPDATE replacement when the model shortens it", async () => {
+  it("preserves the complete selected literal replacement among quoted states", async () => {
     const exact = "My cedar-grid reporting-format preference is visual summaries.";
     const service = createMemoryActionIntentService({
       execute: vi.fn(async () => ({
-        ...output,
+        ...controlDecision,
         action: "UPDATE",
         reasonCode: "update_request",
-        replacementStatement:
-          "My cedar-grid reporting preference is visual summaries.",
+        replacementStatement: exact,
         statement: null,
         targetQuery: "cedar-grid reporting preference"
       }))
@@ -222,7 +172,7 @@ describe("MemoryActionIntent service", () => {
     await expect(service.decide({
       ...context,
       currentUserMessage:
-        `Change my saved preference. Use this exact replacement statement: "${exact}"`
+        `The old note was "My reporting format is prose." Change my saved preference. Use this exact replacement statement: "${exact}"`
     })).resolves.toMatchObject({ replacementStatement: exact });
   });
 
@@ -230,7 +180,7 @@ describe("MemoryActionIntent service", () => {
     const replacementStatement = "I prefer detailed answers.";
     const service = createMemoryActionIntentService({
       execute: vi.fn(async () => ({
-        ...output,
+        ...controlDecision,
         action: "UPDATE",
         reasonCode: "update_request",
         replacementStatement,
@@ -246,6 +196,51 @@ describe("MemoryActionIntent service", () => {
     })).resolves.toMatchObject({ replacementStatement });
   });
 
+  it.each([
+    [
+      "negated old statement",
+      'The previous note was "I do not want phone calls". Replace it with: I want phone calls.',
+      "I want phone calls."
+    ],
+    [
+      "different speaker in the old statement",
+      "The previous note was “My colleague says I prefer concise answers”. Replace it with: I prefer concise answers.",
+      "I prefer concise answers."
+    ],
+    [
+      "negated old statement with guillemets",
+      "La nota anterior era «No deseo llamadas telefónicas». Sustitúyela por: Deseo llamadas telefónicas.",
+      "Deseo llamadas telefónicas."
+    ],
+    [
+      "old statement with corner quotes",
+      "The previous note was 「I do not want phone calls」. Replace it with: I want phone calls.",
+      "I want phone calls."
+    ],
+    [
+      "old statement with low and high quotes",
+      "The previous note was „I do not want phone calls“. Replace it with: I want phone calls.",
+      "I want phone calls."
+    ]
+  ])("preserves the semantic replacement beside a %s", async (
+    _label, currentUserMessage, replacementStatement
+  ) => {
+    const execute = vi.fn(async () => ({
+      ...controlDecision,
+      action: "UPDATE",
+      reasonCode: "update_request",
+      replacementStatement,
+      statement: null,
+      targetQuery: "communication preference"
+    }));
+
+    await expect(createMemoryActionIntentService({ execute }).decide({
+      ...context,
+      currentUserMessage
+    })).resolves.toMatchObject({ replacementStatement });
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
   it("fails closed for unavailable or invalid strict output", async () => {
     const unavailable = createMemoryActionIntentService({
       execute: vi.fn(async () => { throw new Error("provider down"); })
@@ -254,7 +249,7 @@ describe("MemoryActionIntent service", () => {
       code: "memory_action_intent_unavailable"
     });
     const invalid = createMemoryActionIntentService({
-      execute: vi.fn(async () => ({ ...output, action: "SAVE", statement: null }))
+      execute: vi.fn(async () => ({ ...controlDecision, action: "SAVE", statement: null }))
     });
     await expect(invalid.decide(context)).rejects.toMatchObject({
       code: "memory_action_intent_invalid"
@@ -266,7 +261,7 @@ describe("MemoryActionIntent service", () => {
 
     const conflatedSearch = createMemoryActionIntentService({
       execute: vi.fn(async () => ({
-        ...output,
+        ...controlDecision,
         action: "SEARCH",
         category: null,
         memoryUseful: true,

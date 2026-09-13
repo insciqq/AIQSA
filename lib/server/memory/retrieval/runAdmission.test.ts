@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
+import { decodeMemoryActionControlDecision } from "../../../contracts/memoryActionIntent";
 import { textMessageContent } from "../../../domain/content";
 import type {
   MemoryCandidateMetadata,
@@ -621,6 +622,47 @@ function resolveWhenAborted<T>(signal: AbortSignal, value: T): Promise<T> {
 }
 
 describe("Personal Memory v1 run admission", () => {
+  it("keeps the exact control source and full multiline retrieval separate from compatibility hints", async () => {
+    const source = "Compare the saved label Ａ cafe\u0301 with these rows:\nname\tvalue\n" +
+      "alpha\tone\n".repeat(70).trim();
+    const decoded = decodeMemoryActionControlDecision({
+      action: "NONE",
+      answerRequested: false,
+      category: null,
+      confidenceBand: "HIGH",
+      patternExclusionRequested: false,
+      reasonCode: "no_memory_request",
+      referencedMemoryRef: null,
+      replacementStatement: null,
+      responsePreference: false,
+      sensitivity: "NORMAL",
+      statement: null,
+      targetQuery: null,
+      thisChatOnly: false
+    }, source);
+    if (!decoded.ok) throw new Error("control_fixture_invalid");
+    expect(source.length).toBeGreaterThan(500);
+    expect(decoded.value.queryText?.length).toBeLessThanOrEqual(500);
+    const local = repository();
+    const { readUtilityPolicy: _legacy, ...options } = intentOptions(decoded.value);
+    const queryResolver = { resolve: vi.fn() };
+
+    await createMemoryRunRetrievalService(local.value, { ...options, queryResolver })
+      .retrieve(runInput(source));
+
+    expect(options.control.decide).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ currentUserMessage: source })
+    }));
+    expect(local.retrieve).toHaveBeenCalled();
+    for (const [input] of local.retrieve.mock.calls) {
+      expect(input.plan.originalSanitizedQuery).toBe(source.normalize("NFKC"));
+    }
+    expect(options.utilities.embedQuery).toHaveBeenCalledWith(expect.objectContaining({
+      query: source.normalize("NFKC")
+    }));
+    expect(queryResolver.resolve).not.toHaveBeenCalled();
+  });
+
   it.each([false, true].flatMap((history) => ["direct", "speculative", "lexical"].map((route) =>
     ({ history, route }))))(
     "delivers an existing supported pattern through production fact authority: %j",

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   MEMORY_ACTION_INTENT_NAME,
-  type MemoryActionIntent
+  type MemoryActionIntent,
+  type MemoryActionControlDecision
 } from "../../../contracts/memoryActionIntent";
 import {
   MEMORY_CONTROL_PIPELINE_VERSION,
@@ -12,7 +13,10 @@ import {
   MemoryControlProviderCallError,
   createMemoryControlService,
   createMemoryReadOnlyControlReuseProof,
-  decodeMemoryReadOnlyControlReuseProof
+  decodeMemoryReadOnlyControlReuseProof,
+  memoryControlAcceptedOutputHash,
+  memoryControlInputHash,
+  memoryControlIntentHash
 } from "./controlRuntime";
 import type { MemoryLearningProviderResult } from "../learning/providerRuntime";
 
@@ -47,16 +51,35 @@ const profileIntent: MemoryActionIntent = {
   thisChatOnly: false
 };
 
+function providerDecision(intent: MemoryActionIntent): MemoryActionControlDecision {
+  return {
+    action: intent.action,
+    answerRequested: intent.memoryUseful || intent.pastChatsUseful ||
+      intent.applyResponsePreferences || intent.profileRequested,
+    category: intent.category,
+    confidenceBand: intent.confidenceBand,
+    patternExclusionRequested: intent.patternExclusionRequested,
+    reasonCode: intent.reasonCode,
+    referencedMemoryRef: intent.referencedMemoryRef,
+    replacementStatement: intent.replacementStatement,
+    responsePreference: intent.responsePreference,
+    sensitivity: intent.sensitivity,
+    statement: intent.statement,
+    targetQuery: intent.targetQuery,
+    thisChatOnly: intent.thisChatOnly
+  };
+}
+
 describe("Memory control runtime contract", () => {
   it("binds the profile decision to the current control contract versions", () => {
-    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v24");
+    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v26");
     expect(MEMORY_CONTROL_REASONING_EFFORT).toBe("low");
     expect(MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR).toBe(2_048);
     expect(MEMORY_CONTROL_VERSIONS).toMatchObject({
-      pipelineVersion: "memory-control-v24",
-      policyVersion: "memory-control-policy-v24",
-      promptVersion: "memory-control-prompt-v28",
-      schemaVersion: "memory-action-intent-v11"
+      pipelineVersion: "memory-control-v26",
+      policyVersion: "memory-control-policy-v26",
+      promptVersion: "memory-control-prompt-v30",
+      schemaVersion: "memory-action-intent-v12"
     });
     expect(MEMORY_READ_ONLY_CONTROL_REUSE_VERSION).toBe(8);
   });
@@ -78,6 +101,81 @@ describe("Memory control runtime contract", () => {
       version: 8
     });
     expect(decodeMemoryReadOnlyControlReuseProof({ ...proof, version: 1 })).toBeNull();
+  });
+
+  it("binds the exact semantic UPDATE instead of restoring the quoted old state", async () => {
+    const intent: MemoryActionIntent = {
+      ...profileIntent,
+      action: "UPDATE",
+      category: "preferences",
+      memoryUseful: false,
+      profileRequested: false,
+      queryText: null,
+      reasonCode: "update_request",
+      replacementStatement: "I want phone calls.",
+      retrievalMode: "TARGETED_CURRENT",
+      targetQuery: "communication preference"
+    };
+    const context = {
+      capabilities: {
+        automaticLearning: true,
+        historyRecall: true,
+        memoryEnabled: true
+      },
+      currentUserMessage:
+        'The previous note was "I do not want phone calls". Replace it with: I want phone calls.'
+    };
+    const settle = vi.fn(async () => undefined);
+    const withAuthorizedResultCommit = vi.fn(async (
+      _userId: string,
+      _input: unknown,
+      apply: () => Promise<unknown>
+    ) => apply());
+    const run = vi.fn(async (): Promise<MemoryLearningProviderResult> => ({
+      providerResponseId: "provider-response-1",
+      toolCalls: [{ arguments: providerDecision(intent), id: "call-1", name: MEMORY_ACTION_INTENT_NAME }],
+      usage: {}
+    }));
+    const service = createMemoryControlService({
+      execution: {
+        admission: {
+          bind: vi.fn(async () => ({ id: "control-binding" })),
+          start: vi.fn(async () => ({
+            bindingId: "control-binding",
+            snapshot: {
+              logicalRole: "MEMORY_CONTROL",
+              providerExecutionSnapshot: {
+                connectionId: "connection-1",
+                credentialId: "credential-1",
+                credentialVersionId: "credential-version-1",
+                providerModelId: "model-1"
+              },
+              requiresStrictStructuredOutput: true
+            }
+          }))
+        },
+        lifecycle: { settle, withAuthorizedResultCommit }
+      } as never,
+      provider: { run }
+    });
+
+    await expect(service.decide({
+      attemptId: "attempt-1",
+      context,
+      signal: new AbortController().signal,
+      userId: "user-1"
+    })).resolves.toEqual({ bindingId: "control-binding", intent, status: "READY" });
+    const acceptedOutputHash = memoryControlAcceptedOutputHash(
+      memoryControlInputHash(context), memoryControlIntentHash(intent)
+    );
+    expect(run).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledWith("user-1", "control-binding", expect.objectContaining({
+      acceptedOutputHash,
+      state: "SUCCEEDED"
+    }));
+    expect(withAuthorizedResultCommit).toHaveBeenCalledWith(
+      "user-1", { acceptedOutputHash, bindingId: "control-binding" }, expect.any(Function)
+    );
   });
 
   it("redacts every control-provider text field before provider I/O", async () => {
@@ -261,7 +359,7 @@ describe("Memory control runtime contract", () => {
     releaseProvider({
       providerResponseId: "late-response",
       toolCalls: [{
-        arguments: profileIntent,
+        arguments: providerDecision(profileIntent),
         id: "late-call",
         name: MEMORY_ACTION_INTENT_NAME
       }],
@@ -329,7 +427,7 @@ describe("Memory control runtime contract", () => {
         run: vi.fn(async () => ({
           providerResponseId: "provider-response-1",
           toolCalls: [{
-            arguments: {
+            arguments: providerDecision({
               ...profileIntent,
               action: "SAVE",
               memoryUseful: false,
@@ -338,7 +436,7 @@ describe("Memory control runtime contract", () => {
               reasonCode: "save_request",
               retrievalMode: "TARGETED_CURRENT",
               statement: `I live in Helsinki. Token ${token}`
-            },
+            }),
             id: "call-1",
             name: MEMORY_ACTION_INTENT_NAME
           }],
