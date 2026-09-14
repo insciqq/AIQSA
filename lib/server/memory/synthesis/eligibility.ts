@@ -189,7 +189,7 @@ function directAuthorityPredicate(
   `;
 }
 
-function explicitReceiptAuthorityPredicate(
+export function memoryExplicitFactReceiptAuthorityPredicate(
   version: Prisma.Sql
 ): Prisma.Sql {
   return Prisma.sql`(
@@ -260,7 +260,7 @@ function sourceAuthorityPredicate(
           OR ${version}."observedAt" < synthesis_pause."resumedAt"
         )
     )
-    AND ${explicitReceiptAuthorityPredicate(version)}
+    AND ${memoryExplicitFactReceiptAuthorityPredicate(version)}
   `;
 }
 

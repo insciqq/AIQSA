@@ -1,16 +1,12 @@
 import { memorySha256 } from "../../persistence/lexical";
 import {
   MEMORY_DEFAULT_IDENTITY_PROFILE,
+  assertMemoryIdentityWritable,
   normalizeMemoryIdentityComponent,
   type MemoryIdentityProfile
 } from "../identity/normalization";
 
 export const MEMORY_ENTITY_RESOLUTION_VERSION = "memory-entity-resolution-v3";
-
-export type MemoryEntityCanonicalKeys = Readonly<{
-  legacyCanonicalKey: string;
-  unicodeCanonicalKey: string;
-}>;
 
 export const MEMORY_ENTITY_TYPES = Object.freeze([
   "PERSON",
@@ -69,52 +65,27 @@ export function memoryEntityTypeFamily(value: string): string | null {
 /** Creation identity is grounded only in an exact nominal source span. The
  * provider's canonical label and free-standing qualifier proposals are never
  * part of this key. */
-export function memoryGroundedEntityCanonicalKeys(input: Readonly<{
+export function memoryGroundedEntityCanonicalKey(input: Readonly<{
   entityType: string;
   mention: string | null;
   mentionKind: "NAMED" | "NOMINAL" | "PRONOMINAL" | "ELLIPSIS" | "UNKNOWN";
-}>): MemoryEntityCanonicalKeys | null {
+}>, profile: MemoryIdentityProfile = MEMORY_DEFAULT_IDENTITY_PROFILE): string | null {
+  assertMemoryIdentityWritable(profile);
   if ((input.mentionKind !== "NAMED" && input.mentionKind !== "NOMINAL") ||
     input.mention === null) return null;
   const family = memoryEntityTypeFamily(input.entityType);
   const mention = normalizeMemoryEntityAlias(input.mention);
   if (!family || !mention) return null;
-  const legacyComponent = normalizeMemoryIdentityComponent(
-    `entity-v3-${family}-mention`,
-    mention,
-    "LEGACY_V1"
-  );
-  const unicodeComponent = normalizeMemoryIdentityComponent(
-    `entity-v4-${family}-mention`,
-    mention,
-    "UNICODE_V2"
-  );
-  if (!legacyComponent || !unicodeComponent) return null;
-  return {
-    legacyCanonicalKey: `entity:v3:${family}:${legacyComponent}`,
-    unicodeCanonicalKey: `entity:v4:${family}:${unicodeComponent}`
-  };
+  const component = normalizeMemoryIdentityComponent(`entity-v4-${family}-mention`, mention);
+  return component ? `entity:v4:${family}:${component}` : null;
 }
 
-export function memoryGroundedEntityCanonicalKey(input: Readonly<{
-  entityType: string;
-  mention: string | null;
-  mentionKind: "NAMED" | "NOMINAL" | "PRONOMINAL" | "ELLIPSIS" | "UNKNOWN";
-}>, profile: MemoryIdentityProfile = MEMORY_DEFAULT_IDENTITY_PROFILE):
-string | null {
-  const keys = memoryGroundedEntityCanonicalKeys(input);
-  return keys === null
-    ? null
-    : profile === "LEGACY_V1"
-      ? keys.legacyCanonicalKey
-      : keys.unicodeCanonicalKey;
-}
-
-function entityCanonicalKeyForProfile(input: Readonly<{
+export function memoryEntityCanonicalKey(input: Readonly<{
   canonicalLabel: string;
   entityType: string;
   qualifiers?: Readonly<Record<string, string | null>>;
-}>, profile: MemoryIdentityProfile): string | null {
+}>, profile: MemoryIdentityProfile = MEMORY_DEFAULT_IDENTITY_PROFILE): string | null {
+  assertMemoryIdentityWritable(profile);
   const entityType = mappedType(input.entityType);
   const label = boundedText(input.canonicalLabel);
   if (!entityType || !label) return null;
@@ -136,8 +107,7 @@ function entityCanonicalKeyForProfile(input: Readonly<{
     profile
   );
   if (!labelComponent) return null;
-  const legacy = profile === "LEGACY_V1";
-  const version = legacy ? "v2" : "v4";
+  const version = "v4";
   const direct = [
     "entity",
     version,
@@ -148,40 +118,12 @@ function entityCanonicalKeyForProfile(input: Readonly<{
   return direct.length <= 256
     ? direct
     : `entity:${version}:${entityType.toLocaleLowerCase("und")}:h-${memorySha256({
-        domain: legacy
-          ? "aiqsa.memory.entity-key"
-          : "aiqsa.memory.entity-key-v4",
+        domain: "aiqsa.memory.entity-key-v4",
         entityType,
         label: label.toLocaleLowerCase("und"),
         qualifiers,
-        version: legacy ? 2 : 4
+        version: 4
       }).slice(0, 48)}`;
-}
-
-export function memoryEntityCanonicalKeys(input: Readonly<{
-  canonicalLabel: string;
-  entityType: string;
-  qualifiers?: Readonly<Record<string, string | null>>;
-}>): MemoryEntityCanonicalKeys | null {
-  const legacyCanonicalKey = entityCanonicalKeyForProfile(input, "LEGACY_V1");
-  const unicodeCanonicalKey = entityCanonicalKeyForProfile(input, "UNICODE_V2");
-  return legacyCanonicalKey && unicodeCanonicalKey
-    ? { legacyCanonicalKey, unicodeCanonicalKey }
-    : null;
-}
-
-export function memoryEntityCanonicalKey(input: Readonly<{
-  canonicalLabel: string;
-  entityType: string;
-  qualifiers?: Readonly<Record<string, string | null>>;
-}>, profile: MemoryIdentityProfile = MEMORY_DEFAULT_IDENTITY_PROFILE):
-string | null {
-  const keys = memoryEntityCanonicalKeys(input);
-  return keys === null
-    ? null
-    : profile === "LEGACY_V1"
-      ? keys.legacyCanonicalKey
-      : keys.unicodeCanonicalKey;
 }
 
 export function memoryEntityAliases(input: Readonly<{

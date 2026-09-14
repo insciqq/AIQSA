@@ -4,6 +4,7 @@ import {
   MEMORY_EMBEDDING_PROFILE,
   MEMORY_EMBEDDING_PROFILE_FINGERPRINT,
   memoryItemEmbeddingGenerationMatchesPin,
+  memorySafeEmbeddingText,
   renderMemoryQueryEmbeddingText
 } from "./contract";
 import { MEMORY_QUERY_EMBEDDING_VERSIONS } from "../retrieval/runUtilities";
@@ -33,6 +34,21 @@ describe("Memory embedding language-neutral contract", () => {
     const rendered = renderMemoryQueryEmbeddingText(query);
     expect(rendered).toContain(`Query: ${query}`);
     expect(rendered).toContain(MEMORY_EMBEDDING_PROFILE.queryInstruction);
+  });
+
+  it.each(["private", "future", "код", "未来", "avenir"])(
+    "embeds safe source text without semantic vocabulary filtering (%#)", (value) => {
+      expect(memorySafeEmbeddingText(value)).toBe(value);
+      expect(renderMemoryQueryEmbeddingText(value)).toContain(`Query: ${value}`);
+    }
+  );
+
+  it("embeds preserved safe text but never a removed value or marker alone", () => {
+    const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    expect(memorySafeEmbeddingText(`ключ: ${token}`)).toBe("ключ: [REDACTED:TOKEN]");
+    for (const value of [token, "[REDACTED:TOKEN]", "[REDACTED_SECRET]"]) {
+      expect(() => memorySafeEmbeddingText(value)).toThrow();
+    }
   });
 
   it("binds batch and query execution to the v3 profile", () => {

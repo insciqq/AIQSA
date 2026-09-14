@@ -214,7 +214,7 @@ function isoTimestamp(value: Date | string): string {
 function canonicalTimeZone(value: string): string {
   if (!value || value.length > 128) fail("memory_history_time_zone_invalid");
   try {
-    return new Intl.DateTimeFormat("en-US", { timeZone: value })
+    return new Intl.DateTimeFormat(undefined, { timeZone: value })
       .resolvedOptions().timeZone;
   } catch {
     return fail("memory_history_time_zone_invalid");

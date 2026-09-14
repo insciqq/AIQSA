@@ -6,6 +6,27 @@ normal AIQSA chat-history Memory path. The upstream repository, dataset, and
 revision, and SHA-256 in `upstream.json`. Generated downloads and results are
 ignored by Git.
 
+The Memory quality work also supports a separately labeled Sol judge through
+the authorized codex-lb deployment. Run answer collection without
+`--online-evaluation`, then invoke `solEvaluate.ts --ack
+DISPOSABLE_PAID_LONGMEMEVAL_SOL_JUDGE --run results/<run>`, using the disposable
+environment from personal Memory acceptance. It verifies the pinned upstream
+oracle and evaluator, loads only the pure upstream rubric function, calibrates
+on positive/negative controls, and writes `sol-evaluation.json` exclusively.
+Missing answers remain denominator failures. This uses the unchanged rubric
+with a different judge and strict yes/no decoding; it is not an official
+gpt-4o score. Compare it only with baselines using that same judge/profile.
+Repeated use of the frozen `fu09-blind-50-v1` selection makes it a regression
+set, not fresh blind evidence. No OpenAI evaluator call occurs in this mode.
+
+`memory-quality-selection.json` freezes that reused fifty and twelve additional
+reserved cases, with the matched Sol profile and comparison tolerances. Its
+`--reranker-deployment selected` mode also accepts a manually configured Voyage
+deployment, bound to the exact active installation policy and its single
+authorized route. The default remains `canonical`; historical qualification
+manifests reject this override. The selected mode and actual route are recorded
+in checkpoints and the run summary.
+
 The qualification profiles use an explicitly selected reviewed System Model
 for the answer and structured Memory roles. `gpt-5.6-luna` remains the frozen
 codex-lb comparison, while the current answer-time matrix also pins DeepSeek
@@ -39,8 +60,11 @@ fails closed instead of silently reindexing. A PostgreSQL advisory lock
 serializes each snapshot lifecycle. Every reuse validates the complete
 imported message graph, provenance, READY history checkpoints, current hybrid
 generation, and quiescent prior queries before admission. Question chats
-remain `EXCLUDED`: their terminal run and immutable usage receipts are
-retained for accounting but cannot become Memory sources, and a fresh auth
+read as `NORMAL`, then transition to `EXCLUDED` through the product lifecycle.
+The adapter waits for exclusion cleanup before any reuse: terminal runs and
+immutable usage receipts remain for accounting, while the question cannot
+become a future Memory source. Starting the question as `EXCLUDED` would disable
+the very Memory read being evaluated. A fresh auth
 session is removed after every attempt. Product and forced Dream diagnostics
 continue to use disposable one-run users because those profiles intentionally
 mutate learned state.

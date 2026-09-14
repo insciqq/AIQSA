@@ -46,6 +46,7 @@ type RelationVersionRow = Readonly<{
   factId: string;
   identityKind: "PROPOSITION" | "SLOT";
   mergedIntoVersionId: string | null;
+  modality: MemoryRelationVersionSnapshot["modality"];
   observedAt: Date | null;
   occurredAt: Date | null;
   predicateKey: string | null;
@@ -218,6 +219,7 @@ function snapshotVersion(
     factId: row.factId,
     identityKind: row.identityKind,
     mergedIntoVersionId: row.mergedIntoVersionId,
+    modality: row.modality,
     observedAt: iso(row.observedAt),
     occurredAt: iso(row.occurredAt),
     predicateKey: row.predicateKey,
@@ -242,6 +244,7 @@ const versionSelect = Prisma.sql`
   version."id" AS "versionId", version."factId",
   version."structuredValue", version."sourceMode"::text AS "sourceMode",
   version."state"::text AS "state", version."directness"::text AS "directness",
+  version."modality"::text AS "modality",
   version."observedAt",
   version."occurredAt", version."expectedAt", version."expiresAt",
   version."validFrom", version."validTo", version."systemFrom",
@@ -288,7 +291,7 @@ async function loadPreparedRelation(
       where: { id: targetId, userId: job.userId }
     });
     return {
-      reason: target ? `relation_target_${target.state.toLocaleLowerCase("en-US")}` :
+      reason: target ? `relation_target_${target.state.toLowerCase()}` :
         "relation_target_missing",
       status: "TERMINAL"
     };

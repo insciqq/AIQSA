@@ -6,8 +6,6 @@ import {
   loadLongMemEvalQualificationManifest,
   longMemEvalEvaluationRequiresStop
 } from "../benchmarks/longmemeval/qualification";
-import { currentLongMemEvalQualificationRevision } from
-  "../benchmarks/longmemeval/qualificationRevision";
 
 describe("LongMemEval frozen qualification manifest", () => {
   it("continues after incorrect labels only when the manifest disables fail-fast", () => {
@@ -121,11 +119,13 @@ describe("LongMemEval frozen qualification manifest", () => {
     expect(luna.selection).toEqual(deterministicGemini.selection);
     expect(luna.source.appCommit)
       .toBe("3e4c098975130e2829c67973632d8eb51d4ca732");
-    await expect(currentLongMemEvalQualificationRevision(process.cwd()))
-      .resolves.toEqual({
-        headCommit: finalProductionLuna.source.appCommit,
-        worktreeSha256: finalProductionLuna.source.appWorktreeSha256
-      });
+    // Historical evidence is frozen. The live runner separately enforces exact
+    // revision identity when replaying that qualification; ordinary new work
+    // must not pretend to be the historical commit to run hermetic tests.
+    expect(finalProductionLuna.source.appCommit)
+      .toBe("6e1715d31e8710c53dd13f3d2c808b4c0d8d091c");
+    expect(finalProductionLuna.source.appWorktreeSha256)
+      .toBe("4f2d3dbc684e1134233dabc804f17bd2e4c7c90b419494241cb9906ed4ab4a16");
     for (const manifest of [deepSeek, glm, gemini]) {
       expect(manifest.runtime.evaluation).toMatchObject({
         failFast: false,

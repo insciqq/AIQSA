@@ -74,6 +74,47 @@ function dependencies(input: Readonly<{
 }
 
 describe("Memory consumer service", () => {
+  it("resolves equivalent references before reading or minting exact mutation authority", async () => {
+    const deps = dependencies();
+    const refService = refs();
+    vi.mocked(refService.resolveItem).mockReturnValue({ factId: "alias", factVersionId: "alias-version" });
+    const resolveEquivalentTarget = vi.fn(async () => ({
+      factId: "internal-fact-id", factVersionId: "internal-version-id"
+    }));
+    const service = createMemoryConsumerService({
+      clock: () => now, explicitService: deps.explicitService as never,
+      lifecycleService: deps.lifecycleService as never, readResetState: deps.readResetState,
+      refs: refService, resolveEquivalentTarget, settingsService: deps.settingsService as never
+    });
+    await service.get("user-1", "opaque-alias");
+    await service.edit("user-1", "opaque-alias", { requestId: "edit-alias", statement: "Nuevo dato" });
+    await service.forget("user-1", "opaque-alias", { requestId: "forget-alias" });
+    expect(resolveEquivalentTarget).toHaveBeenCalledWith("user-1", { factId: "alias", factVersionId: "alias-version" }, now);
+    expect(deps.explicitService.get).toHaveBeenCalledWith("user-1", "internal-fact-id");
+    for (const action of ["EDIT", "FORGET"]) {
+      expect(deps.explicitService.mintAuthorization).toHaveBeenCalledWith("user-1", expect.objectContaining({
+        action, targetFactId: "internal-fact-id", expectedTargetVersionId: "internal-version-id"
+      }), expect.anything());
+    }
+    expect(deps.explicitService.update).toHaveBeenCalledWith("user-1", "internal-fact-id", expect.objectContaining({ expectedVersionId: "internal-version-id" }));
+    expect(deps.lifecycleService.forget).toHaveBeenCalledWith("user-1", "internal-fact-id", expect.objectContaining({ expectedVersionId: "internal-version-id" }));
+    vi.mocked(refService.resolveItem).mockReturnValue(null);
+    resolveEquivalentTarget.mockClear();
+    await expect(service.get("user-1", "invalid-ref")).rejects.toMatchObject({ code: "memory_not_found" });
+    expect(resolveEquivalentTarget).not.toHaveBeenCalled();
+  });
+
+  it("still rejects a changed canonical version after equivalent-reference resolution", async () => {
+    const deps = dependencies();
+    const service = createMemoryConsumerService({
+      clock: () => now, explicitService: deps.explicitService as never,
+      lifecycleService: deps.lifecycleService as never, readResetState: deps.readResetState,
+      refs: refs(), settingsService: deps.settingsService as never,
+      resolveEquivalentTarget: async () => ({ factId: "internal-fact-id", factVersionId: "older-canonical-version" })
+    });
+    await expect(service.get("user-1", "old-ref")).rejects.toMatchObject({ code: "memory_changed" });
+  });
+
   it("projects settings and items without persistence or control-plane fields", async () => {
     const deps = dependencies();
     const refService = refs();

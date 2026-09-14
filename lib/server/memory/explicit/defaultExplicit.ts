@@ -4,6 +4,7 @@ import { createPrismaLoginRateLimiter } from "../../auth/prismaRateLimit";
 import { prisma } from "../../prisma";
 import { createPrismaMemoryMutationAuthorizationRepository } from "../persistence/authorizations";
 import { createPrismaMemoryFactRepository } from "../persistence/facts";
+import { resolveMemoryExplicitEquivalentTarget } from "../persistence/explicitEquivalence";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import { loadMemorySuppressionKeyring } from "../suppressionKeyring";
 import type { ExplicitMemoryHandlerDeps } from "./handlers";
@@ -37,6 +38,7 @@ export const defaultExplicitMemoryService = createExplicitMemoryService({
   authorizationRepository,
   factRepository,
   readRepository,
+  resolveEquivalentTarget: (userId, target, now) => resolveMemoryExplicitEquivalentTarget(prisma, userId, target, now),
   scopeRepository
 });
 

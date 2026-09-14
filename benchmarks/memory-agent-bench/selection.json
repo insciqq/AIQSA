@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "preparedSha256": "d02b48bbe8adf272a714837d41a3f3aa4da0fe8d71678cf6951f5229a985900e",
+  "queryTemplateSha256": "ca4ea130355adab357ce8cd00bb11c1cdbe7cb945454764a66f1ac7f692f501d",
+  "tokenizerResources": {
+    "abbrev_types.txt": "92a3e070f43d9b4c5534758ca40ad7343b04e7e29bfe0c2eb658a39445a4f779",
+    "collocations.tab": "8e2da1225e4dd2cc9dba261ee231ccb134859e21b46006e7f472c5ee269af0cf",
+    "ortho_context.tab": "4bbcca25ed3d3f06c02402abf8419b9f033b8adc06e7b482eca4e45f81a5dc4c",
+    "sent_starters.txt": "f3f8535483e1dba487241b764945168123bca3209a9645e59acd1225dc76edac"
+  },
+  "contexts": [
+    {
+      "sha256": "e46cb14b53eedd71bf92762974a597d46b001157b6b769c03865dee9641818a1",
+      "characters": 26157,
+      "chunkHashes": [
+        "80dd682f077f41abbbe2cd5a43eb69865cceafafadaa621e60b8f036c0e3b7d5",
+        "0d171043e4b2626cb7ca3e80f358e89c432a04a2026e2de70b75d8822f32147e"
+      ]
+    },
+    {
+      "sha256": "2a44d6ad3264a775596fe6de01994d6b348280303fdd964f82288e2c476a7409",
+      "characters": 136565,
+      "chunkHashes": [
+        "c6bcc9b03befd5938f046d4ec2d56bf082994cc203d4ebe39b58d706c60c9521",
+        "80a520e1ad813f4c0299cf038b22bc4198f2410a1613848c1014ed80e85142bf",
+        "e413c7be6be8db313eb001b5fdbec9fe04d133e909ba5bae1440486504d25eec",
+        "dcc60760711763e308739d2879a6100233cbdc5d22e744a0b69f651b05f4631b",
+        "99745985df9cf0db70645ecfff47cde5f7fd3bfdbd5284f6c81ff45fa8e6a465",
+        "a3cd7e0fb9719a128893591502c8472410f99104464c8d812ccae98e302d052f",
+        "df0126129fb510d34ab256529932fcec74e0731b6a66a39fc42a875cd629c159",
+        "8c3451be0a3380cf36f0948a965437e7763acd72ed28c56a6d5cc836ccb2d35f",
+        "a0a0d1f352c1050130c5e85487f9e10ef756ae270b290a006f10e1a2bf331477"
+      ]
+    }
+  ],
+  "strata": [
+    {
+      "source": "factconsolidation_mh_6k",
+      "contextSha256": "e46cb14b53eedd71bf92762974a597d46b001157b6b769c03865dee9641818a1",
+      "questionIds": [
+        "factconsolidation_mh_6k_no6",
+        "factconsolidation_mh_6k_no8",
+        "factconsolidation_mh_6k_no9",
+        "factconsolidation_mh_6k_no11",
+        "factconsolidation_mh_6k_no18",
+        "factconsolidation_mh_6k_no19",
+        "factconsolidation_mh_6k_no21",
+        "factconsolidation_mh_6k_no25",
+        "factconsolidation_mh_6k_no28",
+        "factconsolidation_mh_6k_no42",
+        "factconsolidation_mh_6k_no55",
+        "factconsolidation_mh_6k_no58",
+        "factconsolidation_mh_6k_no59",
+        "factconsolidation_mh_6k_no74",
+        "factconsolidation_mh_6k_no79",
+        "factconsolidation_mh_6k_no84",
+        "factconsolidation_mh_6k_no85",
+        "factconsolidation_mh_6k_no93",
+        "factconsolidation_mh_6k_no94",
+        "factconsolidation_mh_6k_no97"
+      ]
+    },
+    {
+      "source": "factconsolidation_mh_32k",
+      "contextSha256": "2a44d6ad3264a775596fe6de01994d6b348280303fdd964f82288e2c476a7409",
+      "questionIds": [
+        "factconsolidation_mh_32k_no3",
+        "factconsolidation_mh_32k_no6",
+        "factconsolidation_mh_32k_no10",
+        "factconsolidation_mh_32k_no12",
+        "factconsolidation_mh_32k_no17",
+        "factconsolidation_mh_32k_no21",
+        "factconsolidation_mh_32k_no30",
+        "factconsolidation_mh_32k_no35",
+        "factconsolidation_mh_32k_no41",
+        "factconsolidation_mh_32k_no46",
+        "factconsolidation_mh_32k_no50",
+        "factconsolidation_mh_32k_no56",
+        "factconsolidation_mh_32k_no65",
+        "factconsolidation_mh_32k_no67",
+        "factconsolidation_mh_32k_no74",
+        "factconsolidation_mh_32k_no80",
+        "factconsolidation_mh_32k_no81",
+        "factconsolidation_mh_32k_no87",
+        "factconsolidation_mh_32k_no91",
+        "factconsolidation_mh_32k_no96"
+      ]
+    },
+    {
+      "source": "factconsolidation_sh_6k",
+      "contextSha256": "e46cb14b53eedd71bf92762974a597d46b001157b6b769c03865dee9641818a1",
+      "questionIds": [
+        "factconsolidation_sh_6k_no4",
+        "factconsolidation_sh_6k_no11",
+        "factconsolidation_sh_6k_no25",
+        "factconsolidation_sh_6k_no36",
+        "factconsolidation_sh_6k_no40",
+        "factconsolidation_sh_6k_no43",
+        "factconsolidation_sh_6k_no55",
+        "factconsolidation_sh_6k_no56",
+        "factconsolidation_sh_6k_no58",
+        "factconsolidation_sh_6k_no59",
+        "factconsolidation_sh_6k_no63",
+        "factconsolidation_sh_6k_no64",
+        "factconsolidation_sh_6k_no66",
+        "factconsolidation_sh_6k_no67",
+        "factconsolidation_sh_6k_no73",
+        "factconsolidation_sh_6k_no74",
+        "factconsolidation_sh_6k_no80",
+        "factconsolidation_sh_6k_no87",
+        "factconsolidation_sh_6k_no89",
+        "factconsolidation_sh_6k_no96"
+      ]
+    },
+    {
+      "source": "factconsolidation_sh_32k",
+      "contextSha256": "2a44d6ad3264a775596fe6de01994d6b348280303fdd964f82288e2c476a7409",
+      "questionIds": [
+        "factconsolidation_sh_32k_no11",
+        "factconsolidation_sh_32k_no13",
+        "factconsolidation_sh_32k_no20",
+        "factconsolidation_sh_32k_no23",
+        "factconsolidation_sh_32k_no24",
+        "factconsolidation_sh_32k_no30",
+        "factconsolidation_sh_32k_no32",
+        "factconsolidation_sh_32k_no44",
+        "factconsolidation_sh_32k_no52",
+        "factconsolidation_sh_32k_no57",
+        "factconsolidation_sh_32k_no60",
+        "factconsolidation_sh_32k_no64",
+        "factconsolidation_sh_32k_no74",
+        "factconsolidation_sh_32k_no77",
+        "factconsolidation_sh_32k_no79",
+        "factconsolidation_sh_32k_no80",
+        "factconsolidation_sh_32k_no85",
+        "factconsolidation_sh_32k_no87",
+        "factconsolidation_sh_32k_no90",
+        "factconsolidation_sh_32k_no99"
+      ]
+    }
+  ]
+}

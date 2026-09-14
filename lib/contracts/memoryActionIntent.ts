@@ -4,10 +4,10 @@ import {
   MEMORY_TEMPORAL_INTENTS
 } from "./memoryRetrieval";
 
-/** Versioned, provider-neutral output contract for the single Memory control
- * decision made by the installation System Model. Every property is required
- * on the strict JSON-Schema wire and uses null when it is not applicable. */
+/** Retained normalized intent representation, including earlier read-planning
+ * fields. Accepted outputs keep this shape and their original hashes. */
 export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v11" as const;
+export const MEMORY_ACTION_CONTROL_SCHEMA_VERSION = "memory-action-intent-v12" as const;
 export const MEMORY_ACTION_INTENT_NAME = "MemoryActionIntent" as const;
 export const MEMORY_ACTION_INTENT_MAX_SYSTEM_MODEL_CALLS = 1 as const;
 export const MEMORY_ACTION_INTENT_MAX_TARGET_SELECTION_CALLS = 1 as const;
@@ -257,9 +257,8 @@ const memoryActionIntentSchema = memoryActionIntentWireSchema.superRefine((value
 
 export type MemoryActionIntent = z.infer<typeof memoryActionIntentSchema>;
 
-/** Strict JSON Schema sent to the provider adapter. Keep all fields required;
- * nullable values represent "not applicable" so providers cannot omit a
- * control field under a permissive interpretation of the schema. */
+/** The retained intent's complete shape. Fresh provider calls use the compact
+ * action-control schema below; this representation also decodes accepted runs. */
 export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
   additionalProperties: false,
   properties: {
@@ -397,8 +396,51 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
   type: "object"
 } as const);
 
-/** Compatibility aliases make the provider-facing schema discoverable under
- * either the contract or JSON-Schema naming used by callers. */
+const memoryActionControlWireSchema = memoryActionIntentWireSchema.pick({
+  action: true,
+  category: true,
+  confidenceBand: true,
+  patternExclusionRequested: true,
+  reasonCode: true,
+  referencedMemoryRef: true,
+  replacementStatement: true,
+  responsePreference: true,
+  sensitivity: true,
+  statement: true,
+  targetQuery: true,
+  thisChatOnly: true
+}).extend({ answerRequested: z.boolean() });
+
+export type MemoryActionControlDecision = z.infer<typeof memoryActionControlWireSchema>;
+
+/** Every fresh provider field is required. Search scope, rewrites, entities and
+ * chronology are absent: ordinary retrieval belongs to the server. */
+export const MEMORY_ACTION_CONTROL_JSON_SCHEMA = Object.freeze({
+  additionalProperties: false,
+  properties: {
+    action: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.action,
+    answerRequested: { type: "boolean" },
+    category: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.category,
+    confidenceBand: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.confidenceBand,
+    patternExclusionRequested: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.patternExclusionRequested,
+    reasonCode: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.reasonCode,
+    referencedMemoryRef: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.referencedMemoryRef,
+    replacementStatement: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.replacementStatement,
+    responsePreference: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.responsePreference,
+    sensitivity: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.sensitivity,
+    statement: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.statement,
+    targetQuery: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.targetQuery,
+    thisChatOnly: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.thisChatOnly
+  },
+  required: [
+    "action", "answerRequested", "category", "confidenceBand", "patternExclusionRequested",
+    "reasonCode", "referencedMemoryRef", "replacementStatement", "responsePreference",
+    "sensitivity", "statement", "targetQuery", "thisChatOnly"
+  ],
+  type: "object"
+} as const);
+
+/** Existing callers of the retained intent schema share the same contract. */
 export const MEMORY_ACTION_INTENT_SCHEMA = MEMORY_ACTION_INTENT_JSON_SCHEMA;
 export const memoryActionIntentJsonSchema = MEMORY_ACTION_INTENT_JSON_SCHEMA;
 export const memoryActionIntentContractSchema = MEMORY_ACTION_INTENT_JSON_SCHEMA;
@@ -583,6 +625,52 @@ export function decodeMemoryActionIntent(value: unknown): MemoryActionIntentDeco
       sensitivity: intent.sensitivity === "SENSITIVE" ? "NORMAL" : intent.sensitivity
     }
   };
+}
+
+/** Fresh decisions populate the retained intent shape without model read
+ * planning. Its legacy query field is only a bounded compatibility projection;
+ * deterministic retrieval continues to use the exact sanitized source turn. */
+export function decodeMemoryActionControlDecision(
+  value: unknown,
+  currentUserMessage: string
+): MemoryActionIntentDecodeResult {
+  const invalid = { code: "memory_action_intent_invalid", ok: false } as const;
+  if (!memoryActionIntentSourceTextMatchesCurrentUser(currentUserMessage, currentUserMessage)) {
+    return invalid;
+  }
+  const wire = memoryActionControlWireSchema.safeParse(value);
+  if (!wire.success) return invalid;
+  const { answerRequested, ...action } = wire.data;
+  const readRequested = action.action === "NONE" || answerRequested;
+  let compatibilityQuery = "";
+  if (readRequested) {
+    const singleLine = currentUserMessage.replace(/[\t\r\n]/gu, " ").trim();
+    for (const character of singleLine) {
+      if (compatibilityQuery.length + character.length > MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH) break;
+      compatibilityQuery += character;
+    }
+    compatibilityQuery = compatibilityQuery.trim();
+    if (!compatibilityQuery) return invalid;
+  }
+  return decodeMemoryActionIntent({
+    ...action,
+    aggregationRequested: false,
+    applyResponsePreferences: readRequested,
+    categoryHint: null,
+    entityMentions: [],
+    memoryUseful: readRequested,
+    pastChatsUseful: readRequested,
+    profileRequested: false,
+    queryDecompositions: [],
+    queryText: readRequested ? compatibilityQuery : null,
+    recencyRequested: false,
+    retrievalMode: "TARGETED_CURRENT",
+    sensitiveDomainHint: null,
+    temporalAsOf: null,
+    temporalFrom: null,
+    temporalIntent: "CURRENT",
+    temporalTo: null
+  });
 }
 
 /** Mutation actions require evidence from the exact current direct-user turn.

@@ -49,14 +49,16 @@ import {
   normalizeMemorySearchText
 } from "../persistence/lexical";
 import type { ActiveMemoryScope } from "../persistence/scopes";
+import type { MemoryEquivalentTargetResolver } from "../persistence/explicitEquivalence";
 import type {
   ExplicitMemoryConflictEditable,
   ExplicitMemoryEditable,
   ExplicitMemoryForgetUndoCandidate
 } from "./repository";
 import {
-  memoryProjectionHasMeaningfulText,
-  memoryRedactionHasMeaningfulRemainder,
+  memoryProjectionContainsRedaction,
+  memoryProjectionHasSourceText,
+  memoryRedactionHasSourceText,
   redactMemorySecrets
 } from "./safety";
 import {
@@ -296,13 +298,13 @@ type ExplicitStatementProjection = Readonly<{
 
 function requireStatement(statement: string): ExplicitStatementProjection {
   const redaction = redactMemorySecrets(statement);
-  const redactionPlaceholderOnly = statement.includes("[REDACTED:") &&
-    !memoryProjectionHasMeaningfulText(statement);
+  const redactionPlaceholderOnly = memoryProjectionContainsRedaction(statement) &&
+    !memoryProjectionHasSourceText(statement);
   if (
     statement.length > 2_000 ||
     (redaction.containsSecret &&
-      (!memoryRedactionHasMeaningfulRemainder(statement, redaction) ||
-        !memoryProjectionHasMeaningfulText(redaction.redactedText))) ||
+      (!memoryRedactionHasSourceText(statement, redaction) ||
+        !memoryProjectionHasSourceText(redaction.redactedText))) ||
     redactionPlaceholderOnly
   ) {
     return failure(redaction.containsSecret || redactionPlaceholderOnly
@@ -314,7 +316,7 @@ function requireStatement(statement: string): ExplicitStatementProjection {
     return failure("memory_statement_invalid");
   }
   return {
-    redacted: redaction.containsSecret || statement.includes("[REDACTED:"),
+    redacted: redaction.containsSecret || memoryProjectionContainsRedaction(statement),
     statement: projected
   };
 }
@@ -477,6 +479,7 @@ export function createExplicitMemoryService(input: Readonly<{
   clock?: () => Date;
   factRepository: ExplicitMemoryFactRepository;
   readRepository: ExplicitMemoryReadRepository;
+  resolveEquivalentTarget?: MemoryEquivalentTargetResolver;
   scopeRepository: ExplicitMemoryScopeRepository;
   statementClassifier?: MemoryStatementClassifier;
 }>): ExplicitMemoryService {
@@ -484,9 +487,13 @@ export function createExplicitMemoryService(input: Readonly<{
 
   async function currentResponse(
     userId: string,
-    factId: string
+    factId: string,
+    factVersionId?: string
   ): Promise<MemoryMutationResponse> {
-    const memory = await persisted(() => input.readRepository.get(userId, factId));
+    const equivalent = factVersionId
+      ? await persisted(async () => input.resolveEquivalentTarget?.(userId, { factId, factVersionId }, clock()) ?? null)
+      : null;
+    const memory = await persisted(() => input.readRepository.get(userId, equivalent?.factId ?? factId));
     if (!memory) return failure("memory_not_found");
     return mutationResponse(memory);
   }
@@ -571,7 +578,7 @@ export function createExplicitMemoryService(input: Readonly<{
           saved.versionId
         );
       }
-      return currentResponse(userId, saved.factId);
+      return currentResponse(userId, saved.factId, saved.versionId);
     },
 
     async evidence(userId, factId, cursor) {

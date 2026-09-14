@@ -4449,7 +4449,7 @@ model ChatMemoryCheckpoint {
   id                    String                        @id @default(uuid())
   userId                String
   chatId                String
-  pipelineVersion       String                        @default("memory-history-incremental-v8") @db.VarChar(64)
+  pipelineVersion       String                        @default("memory-history-incremental-v9") @db.VarChar(64)
   branchGeneration      Int
   sourceRevision        Int
   activeLeafMessageId   String
@@ -5084,24 +5084,26 @@ model MemoryFactExtractionCandidateReceipt {
 }
 
 /// Durable, owner-scoped reservation for the single optional semantic call
-/// shared by all ambiguity resolution originating from one source message.
+/// shared by ambiguity resolution from one message or explicit fact version.
 /// The result contains only the strict decoded decision and execution receipt
 /// metadata; source text is never copied here.
 model MemoryAuxiliarySemanticCall {
-  id                 String    @id
-  userId             String
-  sourceMessageId    String
-  ownerJobId         String
-  purpose            String    @db.VarChar(64)
-  inputHash          String?   @db.VarChar(128)
-  acceptedOutputHash String?   @db.VarChar(128)
-  executionId        String?
-  result             Json?
-  createdAt          DateTime  @default(now())
-  completedAt        DateTime?
+  id                  String    @id
+  userId              String
+  sourceMessageId     String?
+  targetFactVersionId String?
+  ownerJobId          String
+  purpose             String    @db.VarChar(64)
+  inputHash           String?   @db.VarChar(128)
+  acceptedOutputHash  String?   @db.VarChar(128)
+  executionId         String?
+  result              Json?
+  createdAt           DateTime  @default(now())
+  completedAt         DateTime?
 
   @@unique([userId, id])
   @@unique([userId, sourceMessageId])
+  @@unique([userId, targetFactVersionId])
   @@unique([userId, ownerJobId])
   @@index([userId, purpose, createdAt])
 }
@@ -5424,9 +5426,6 @@ model MemorySearchEntry {
   embeddingDimension          Int?
   embeddingState              MemoryEmbeddingState     @default(NOT_APPLICABLE)
   searchVectorSimple          Unsupported("tsvector")?
-  searchVectorEnglish         Unsupported("tsvector")?
-  searchVectorRussian         Unsupported("tsvector")?
-  trigramSearchText           Unsupported("text")?
   createdAt                   DateTime                 @default(now())
   updatedAt                   DateTime                 @default(now()) @updatedAt
 

@@ -43,7 +43,7 @@ import {
   type MemoryUserTestimonySpan
 } from "../memory/history/userTestimony";
 import {
-  memoryRedactionHasMeaningfulRemainder,
+  memoryRedactionHasSourceText,
   redactMemorySecrets
 } from "../memory/explicit/safety";
 import {
@@ -454,14 +454,14 @@ type FactRetrievalContract = Readonly<{
 function safeFactProjectionText(value: string): string | null {
   const redaction = redactMemorySecrets(value);
   if (redaction.containsSecret &&
-    !memoryRedactionHasMeaningfulRemainder(value, redaction)) return null;
+    !memoryRedactionHasSourceText(value, redaction)) return null;
   return redaction.redactedText;
 }
 
 function safeHistoryProjectionText(value: string): string | null {
   const redaction = redactMemorySecrets(value);
   if (redaction.containsSecret &&
-    !memoryRedactionHasMeaningfulRemainder(value, redaction)) return null;
+    !memoryRedactionHasSourceText(value, redaction)) return null;
   return redaction.redactedText.length <= 4_000 ? redaction.redactedText : null;
 }
 

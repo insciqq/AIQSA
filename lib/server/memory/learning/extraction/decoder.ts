@@ -20,7 +20,6 @@ import {
 import { memoryLocalDateTimeParts } from
   "../../../../domain/memory/temporal/calendar";
 import {
-  MEMORY_FACT_DURABLE_CATEGORIES,
   MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
   MEMORY_FACT_MAX_PACKET_CANDIDATES,
   memoryFactCandidateId,
@@ -42,7 +41,7 @@ import {
   memoryEntityTypeFamily
 } from "../entities/normalization";
 import {
-  memoryPropositionCanonicalKey,
+  assertMemoryIdentityWritable,
   memorySupportingPropositionCanonicalKey,
   normalizeMemoryProposition
 } from "../identity/normalization";
@@ -85,10 +84,6 @@ const changeIntents = new Set([
 ]);
 const memoryDirectives = new Set(["NONE", "EXPLICIT_REMEMBER", "UNKNOWN"]);
 
-const legacyCandidateKeys = [
-  "category", "confidence_band", "correction", "future_useful", "quote",
-  "reason_code", "response_preference", "sensitivity", "statement", "temporary"
-].sort();
 const observationKeys = [
   "candidate_ref", "confidence_band", "dependency_refs", "entities", "evidence",
   "future_useful", "identity", "memory_type", "reason_code", "semantic_frame",
@@ -166,7 +161,6 @@ function rejectionCode(error: unknown): MemoryFactCandidateRejection["reasonCode
     error.code === "memory_fact_semantic_unknown") return "REJECT_AMBIGUOUS";
   if (error.code === "memory_fact_source_stale") return "REJECT_STALE_SOURCE";
   if (error.code === "memory_fact_confidence_low") return "REJECT_LOW_CONFIDENCE";
-  if (error.code === "memory_fact_temporary") return "REJECT_TEMPORARY";
   if (error.code === "memory_fact_secret") return "REJECT_SECRET";
   return "REJECT_UNSUPPORTED";
 }
@@ -340,7 +334,9 @@ function parseTemporal(
 }
 
 type ParsedEntities = Readonly<{
+  contextRefs: readonly string[];
   entities: readonly MemoryFactCandidateEntity[];
+  entityAnnotationReviewRequired: boolean;
   supportsByType: ReadonlyMap<string, ReadonlySet<string>>;
 }>;
 
@@ -349,10 +345,13 @@ function parseEntities(
   input: MemoryFactExtractionInput,
   quote: string,
   frame: MemorySemanticFrame,
-  identity: MemoryIdentityProposal
+  identity: MemoryIdentityProposal,
+  allowUnresolvedAnnotations: boolean
 ): ParsedEntities {
   if (!Array.isArray(value) || value.length > 6) fail();
   const parsed: MemoryFactCandidateEntity[] = [];
+  const contextRefs = new Set<string>();
+  let entityAnnotationReviewRequired = false;
   const supports = new Map<string, Set<string>>();
   const addSupport = (entityType: string, text: string) => {
     const current = supports.get(entityType) ?? new Set<string>();
@@ -366,6 +365,10 @@ function parseEntities(
       entity.qualifier_supports.length > 4) fail();
     const role = enumValue<MemoryFactCandidateEntity["role"]>(entity.role, entityRoles);
     const proposedType = enumValue(entity.entity_type, entityTypes);
+    if (proposedType === "PERSON" && role !== "SUBJECT") {
+      fail("memory_fact_entity_unsupported");
+    }
+    const proposedLabel = nullableString(entity.canonical_label, 512);
     const mentionKind = enumValue<MemoryFactCandidateEntity["mentionKind"]>(
       entity.mention_kind,
       mentionKinds
@@ -374,6 +377,7 @@ function parseEntities(
     const context = contextRef === null ? null : input.contextRefs.find(
       (candidate) => candidate.ref === contextRef
     ) ?? fail("memory_fact_dependency_unsupported");
+    if (context) contextRefs.add(context.ref);
     const directSelfAnnotation = proposedType === "PERSON_SELF" &&
       (frame.subjectScope === "CURRENT_USER" || frame.subjectScope === "UNKNOWN") &&
       (role === "SUBJECT" || (
@@ -384,17 +388,23 @@ function parseEntities(
       fail("memory_fact_entity_unsupported");
     }
 
-    let mention: string | null = null;
-    if (entity.mention !== null) {
-      const ref = decodeMemoryExactTextRef(entity.mention, 512);
-      const span = ref ? projectMemoryExactTextRef(quote, ref) : null;
-      if (!span) fail("memory_fact_entity_unsupported");
-      mention = span.text;
-      addSupport(proposedType, span.text);
-    }
+    let sourceSupported = true;
+    const entitySupports: string[] = [];
+    const exactAnnotation = (raw: unknown, maxLength: number): string | null => {
+      const ref = decodeMemoryExactTextRef(raw, maxLength);
+      if (!ref) fail("memory_fact_entity_unsupported");
+      const span = projectMemoryExactTextRef(quote, ref);
+      if (!span) {
+        sourceSupported = false;
+        return null;
+      }
+      return span.text;
+    };
+    const mention = entity.mention === null ? null : exactAnnotation(entity.mention, 512);
+    if (mention !== null) entitySupports.push(mention);
     if ((mentionKind === "NAMED" || mentionKind === "NOMINAL") &&
-      mention === null) fail("memory_fact_entity_unsupported");
-    if (mentionKind === "ELLIPSIS" && mention !== null) {
+      mention === null) sourceSupported = false;
+    if (mentionKind === "ELLIPSIS" && entity.mention !== null) {
       fail("memory_fact_entity_unsupported");
     }
     if ((mentionKind === "PRONOMINAL" || mentionKind === "ELLIPSIS") &&
@@ -402,14 +412,10 @@ function parseEntities(
       fail("memory_fact_dependency_unsupported");
     }
 
-    const aliases = entity.aliases.map((rawAlias) => {
-      const ref = decodeMemoryExactTextRef(rawAlias, 256);
-      const span = ref ? projectMemoryExactTextRef(quote, ref) : null;
-      if (!span) fail("memory_fact_entity_unsupported");
-      addSupport(proposedType, span.text);
-      return span.text;
-    });
-    if (aliases.length > 0 && mentionKind !== "NAMED" && mentionKind !== "NOMINAL") {
+    const aliases = entity.aliases.map((rawAlias) => exactAnnotation(rawAlias, 256))
+      .filter((alias): alias is string => alias !== null);
+    entitySupports.push(...aliases);
+    if (entity.aliases.length > 0 && mentionKind !== "NAMED" && mentionKind !== "NOMINAL") {
       fail("memory_fact_entity_unsupported");
     }
 
@@ -424,19 +430,28 @@ function parseEntities(
         if (!input.contextRefs.some((candidate) => candidate.ref === ref)) {
           fail("memory_fact_dependency_unsupported");
         }
+        contextRefs.add(ref);
       } else {
-        const ref = decodeMemoryExactTextRef(support.source, 512);
-        if (!ref || !projectMemoryExactTextRef(quote, ref)) {
-          fail("memory_fact_entity_unsupported");
-        }
+        exactAnnotation(support.source, 512);
       }
-      addSupport(proposedType, supportValue);
+      entitySupports.push(supportValue);
       if (key === "brand" || key === "model") qualifiers[key] = supportValue;
     }
 
+    if (!sourceSupported) {
+      if (!allowUnresolvedAnnotations ||
+        (mentionKind !== "NAMED" && mentionKind !== "NOMINAL")) {
+        fail("memory_fact_entity_unsupported");
+      }
+      // Entity navigation is optional for a proposition. Keep every validated
+      // source dependency, discard the unsupported annotation as a whole, and
+      // require semantic authority before the underlying statement can persist.
+      entityAnnotationReviewRequired = true;
+      continue;
+    }
+    for (const text of entitySupports) addSupport(proposedType, text);
     const entityType = memoryEntityType(proposedType);
     if (!entityType || proposedType === "PERSON_SELF") continue;
-    const proposedLabel = nullableString(entity.canonical_label, 512);
     const canonicalLabel = context?.displayName ?? proposedLabel ?? mention;
     if (!canonicalLabel) fail("memory_fact_entity_unsupported");
     parsed.push({
@@ -451,7 +466,10 @@ function parseEntities(
       role
     });
   }
-  return { entities: parsed, supportsByType: supports };
+  return {
+    contextRefs: [...contextRefs], entities: parsed,
+    entityAnnotationReviewRequired, supportsByType: supports
+  };
 }
 
 function supported(
@@ -497,7 +515,19 @@ function groundIdentity(
     identity.predicateKey === "project_status") {
     const expected = identity.predicateKey === "goal_status" ? "GOAL" : "PROJECT";
     if (!supported(supports, [expected], identity.subject.canonicalLabel)) {
-      fail("memory_fact_subject_identity_unsupported");
+      // Missing entity authority prevents a mutable SLOT, not a separately
+      // entailed proposition. Discard every ungrounded identity dimension;
+      // the original SLOT proposal still requires semantic adjudication.
+      return {
+        dimensionKey: null,
+        mode: "PROPOSITION",
+        predicateKey: null,
+        subject: {
+          canonicalLabel: null,
+          entityType: "NONE",
+          qualifiers: { brand: null, model: null }
+        }
+      };
     }
   }
   return identity;
@@ -507,21 +537,25 @@ function parseDependencies(input: Readonly<{
   entities: readonly MemoryFactCandidateEntity[];
   frame: MemorySemanticFrame;
   proposal: unknown;
+  requiredRefs: readonly string[];
   temporal: MemoryTemporalProposal;
 }>, source: MemoryFactExtractionInput): readonly MemoryFactCandidateDependency[] {
   if (!Array.isArray(input.proposal) || input.proposal.length > 3) fail();
-  const refs = input.proposal.map((dependency) => boundedString(dependency, 128));
-  if (new Set(refs).size !== refs.length) fail();
-  const contextualEntityRefs = new Set(input.entities.flatMap((entity) =>
-    entity.contextRef ? [entity.contextRef] : []));
-  if ([...contextualEntityRefs].some((ref) => !refs.includes(ref))) {
+  const proposedRefs = input.proposal.map((dependency) => boundedString(dependency, 128));
+  if (new Set(proposedRefs).size !== proposedRefs.length) fail();
+  // Every structural context reference is already validated. Derive the full
+  // source dependency set instead of requiring the model to repeat each ref.
+  const refs = [...new Set([...proposedRefs, ...input.requiredRefs])].sort();
+  if (refs.length > 3) {
     fail("memory_fact_dependency_unsupported");
   }
   const correction = input.frame.polarity === "CORRECTION" ||
     input.frame.changeIntent === "CORRECTION";
   const coreference = input.entities.some((entity) =>
     entity.mentionKind === "PRONOMINAL" || entity.mentionKind === "ELLIPSIS");
-  if ((correction || coreference) && refs.length !== 1) {
+  // A correction may be fully grounded in the direct target. Unresolved
+  // references still need one exact context dependency and semantic review.
+  if ((coreference && refs.length !== 1) || (correction && refs.length > 1)) {
     fail("memory_fact_dependency_unsupported");
   }
   return refs.map((ref) => {
@@ -549,7 +583,7 @@ function frameCanEnterPacket(frame: MemorySemanticFrame): boolean {
     frame.speechAct === "COMMAND" && frame.memoryDirective === "EXPLICIT_REMEMBER"
   )) return false;
   return frame.polarity === "AFFIRMED" || frame.polarity === "CORRECTION" ||
-    frame.polarity === "UNKNOWN";
+    frame.polarity === "NEGATED" || frame.polarity === "UNKNOWN";
 }
 
 function resolvedLocalDate(instant: string, timeZone: string): string {
@@ -601,7 +635,11 @@ function decodeObservation(
   if (confidenceBand === "LOW") fail("memory_fact_confidence_low");
   const sensitivity = enumValue(value.sensitivity, sensitivities, 16);
   if (sensitivity === "SECRET") fail("memory_fact_secret");
-  if (sensitivity !== "NORMAL") fail("memory_fact_unsupported");
+  // Direct personal testimony remains eligible independently of topic
+  // sensitivity. Exact-source admission and local secret checks still apply.
+  if (sensitivity !== "NORMAL" && sensitivity !== "SENSITIVE") {
+    fail("memory_fact_unsupported");
+  }
   if (!requiredBoolean(value.future_useful)) fail("memory_fact_unsupported");
   const temporary = requiredBoolean(value.temporary);
   boundedString(value.reason_code, 64);
@@ -616,12 +654,9 @@ function decodeObservation(
     input,
     quote,
     frame,
-    rawIdentity
+    rawIdentity,
+    confidenceBand === "HIGH" && rawIdentity.mode === "PROPOSITION"
   );
-  if (parsedEntities.entities.some(({ entityType, role }) =>
-    entityType === "PERSON" && role !== "SUBJECT")) {
-    fail("memory_fact_entity_unsupported");
-  }
   const effectiveIdentity: MemoryIdentityProposal = confidenceBand === "MEDIUM"
     ? {
         dimensionKey: null,
@@ -646,6 +681,7 @@ function decodeObservation(
     entities: parsedEntities.entities,
     frame,
     proposal: value.dependency_refs,
+    requiredRefs: parsedEntities.contextRefs,
     temporal: temporalProposal
   }, input);
   const temporal = resolveMemoryTemporal({
@@ -655,7 +691,8 @@ function decodeObservation(
   });
   if (temporalProposal.expirationIntent === "EXPLICIT" &&
     temporal.expiresAt === null) fail("memory_fact_expiration_evidence_invalid");
-  if (temporary && temporal.expiresAt === null) fail("memory_fact_temporary");
+  // Limited relevance is not a deletion instruction. Future usefulness has
+  // already been checked; only a grounded explicit TTL can set expiresAt.
   const identityInput = {
     identity: identityProposal,
     memoryType,
@@ -664,10 +701,12 @@ function decodeObservation(
     value: valueProposal
   } as const;
   const unicodeIdentity = resolveMemoryIdentity(identityInput, "UNICODE_V2");
-  const legacyIdentity = resolveMemoryIdentity(identityInput, "LEGACY_V1");
-  const resolvedIdentity = input.identityProfile === "LEGACY_V1"
-    ? legacyIdentity
-    : unicodeIdentity;
+  const resolvedIdentity = unicodeIdentity;
+  // A negative assertion keeps its full statement meaning. A positive SLOT
+  // value (for example owned) cannot represent the negation of that value.
+  if (frame.polarity === "NEGATED" && resolvedIdentity.identityKind !== "PROPOSITION") {
+    fail("memory_fact_unsupported");
+  }
   const correction = frame.polarity === "CORRECTION" ||
     frame.changeIntent === "CORRECTION";
   if (confidenceBand === "MEDIUM" && (
@@ -677,8 +716,6 @@ function decodeObservation(
     frame.temporalPerspective === "UNKNOWN" || correction ||
     resolvedIdentity.identityKind !== "PROPOSITION"
   )) fail("memory_fact_unsupported");
-  if (correction && !dependencies.some(({ dependencyKind }) =>
-    dependencyKind === "CORRECTION_TARGET")) fail("memory_fact_dependency_unsupported");
   if (parsedEntities.entities.some(({ entityType }) => entityType === "PERSON") &&
     resolvedIdentity.identityKind !== "PROPOSITION") {
     fail("memory_fact_entity_unsupported");
@@ -695,16 +732,8 @@ function decodeObservation(
         ...supportingInput
       }, "UNICODE_V2") ?? fail()
     : null;
-  const legacySupportingCanonicalKey = confidenceBand === "MEDIUM"
-    ? memorySupportingPropositionCanonicalKey({
-        ...supportingInput
-      }, "LEGACY_V1") ?? fail()
-    : null;
   const unicodeSupportingStatement = confidenceBand === "MEDIUM"
     ? normalizeMemoryProposition(statement, "UNICODE_V2") ?? fail()
-    : null;
-  const legacySupportingStatement = confidenceBand === "MEDIUM"
-    ? normalizeMemoryProposition(statement, "LEGACY_V1") ?? fail()
     : null;
   const supportingValue = (normalizedStatement: string) => ({
     authority: "supporting",
@@ -714,14 +743,9 @@ function decodeObservation(
   const unicodeProposedValue = unicodeSupportingStatement === null
     ? unicodeIdentity.structuredValue
     : supportingValue(unicodeSupportingStatement);
-  const legacyProposedValue = legacySupportingStatement === null
-    ? legacyIdentity.structuredValue
-    : supportingValue(legacySupportingStatement);
   const withoutId: Omit<MemoryExtractedCandidate, "id"> = {
     candidateRef,
-    canonicalKey: input.identityProfile === "LEGACY_V1"
-      ? legacySupportingCanonicalKey ?? legacyIdentity.canonicalKey
-      : unicodeSupportingCanonicalKey ?? unicodeIdentity.canonicalKey,
+    canonicalKey: unicodeSupportingCanonicalKey ?? unicodeIdentity.canonicalKey,
     category: resolvedIdentity.category,
     confidence: confidenceBand === "MEDIUM"
       ? MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE
@@ -735,6 +759,7 @@ function decodeObservation(
     displayText: temporalDisplayText(statement, temporal, input.timeZone),
     dependencies,
     entities: parsedEntities.entities,
+    ...(parsedEntities.entityAnnotationReviewRequired ? { entityAnnotationReviewRequired: true } : {}),
     evidence,
     expectedAt: temporal.expectedAt,
     expirationIntent: temporalProposal.expirationIntent,
@@ -745,16 +770,12 @@ function decodeObservation(
     identityVersion: resolvedIdentity.identityVersion,
     importance: confidenceBand === "MEDIUM" ? 0.4 : 0.65,
     languageCode: source.languageCode,
-    legacyCanonicalKey:
-      legacySupportingCanonicalKey ?? legacyIdentity.canonicalKey,
-    legacyProposedValue,
     modality: modality(memoryType),
     negated: false,
     occurredAt: temporal.occurredAt,
     predicateKey: resolvedIdentity.predicateKey,
-    proposedValue: input.identityProfile === "LEGACY_V1"
-      ? legacyProposedValue
-      : unicodeProposedValue,
+    proposedIdentityKind: rawIdentity.mode,
+    proposedValue: unicodeProposedValue,
     quote,
     rawTemporalExpression: temporal.rawExpression,
     reasonCode: null,
@@ -780,8 +801,7 @@ function decodeObservation(
 function packetPlan(
   raw: readonly unknown[],
   input: MemoryFactExtractionInput,
-  decode: (value: unknown, input: MemoryFactExtractionInput) => MemoryExtractedCandidate,
-  requireUniqueCandidateRefs = true
+  decode: (value: unknown, input: MemoryFactExtractionInput) => MemoryExtractedCandidate
 ): MemoryFactExtractionPlan {
   const decoded: Array<{ candidate: MemoryExtractedCandidate; candidateOrdinal: number }> = [];
   const rejections: MemoryFactCandidateRejection[] = [];
@@ -789,7 +809,7 @@ function packetPlan(
   raw.forEach((value, candidateOrdinal) => {
     try {
       const candidate = decode(value, input);
-      if (requireUniqueCandidateRefs && candidateRefs.has(candidate.candidateRef)) {
+      if (candidateRefs.has(candidate.candidateRef)) {
         fail("memory_fact_candidate_ref_duplicate");
       }
       candidateRefs.add(candidate.candidateRef);
@@ -847,153 +867,13 @@ function packetPlan(
   };
 }
 
-function legacyModality(category: string): MemoryExtractedCandidate["modality"] {
-  if (category === "preferences" || category === "communication_preference") {
-    return "PREFERENCE";
-  }
-  if (category === "constraints_routines" || category === "constraint") {
-    return "CONSTRAINT";
-  }
-  if (category === "goals" || category === "goal") return "INTENTION";
-  if (category === "work" || category === "professional_role") return "WORKFLOW";
-  return "STATE";
-}
-
-function decodeLegacyCandidate(
-  value: unknown,
-  input: MemoryFactExtractionInput
-): MemoryExtractedCandidate {
-  if (!isRecord(value) || !hasExactKeys(value, legacyCandidateKeys)) fail();
-  const source = targetSource(input);
-  const statement = boundedString(value.statement, 2_000);
-  const quote = boundedString(value.quote, 2_000);
-  if (memoryExplicitStatementContainsSecret(statement) ||
-    memoryExplicitStatementContainsSecret(quote)) fail("memory_fact_secret");
-  const category = boundedString(value.category, 64);
-  if (!(MEMORY_FACT_DURABLE_CATEGORIES as readonly string[]).includes(category)) {
-    fail("memory_fact_category_unsupported");
-  }
-  const confidenceBand = enumValue(value.confidence_band, confidenceBands, 16);
-  if (confidenceBand !== "HIGH") fail("memory_fact_confidence_low");
-  if (requiredBoolean(value.temporary)) fail("memory_fact_temporary");
-  if (!requiredBoolean(value.future_useful)) fail("memory_fact_unsupported");
-  const correction = requiredBoolean(value.correction);
-  const sensitivity = enumValue(value.sensitivity, sensitivities, 16);
-  if (sensitivity === "SECRET") fail("memory_fact_secret");
-  if (sensitivity !== "NORMAL") fail("memory_fact_unsupported");
-  const responsePreference = nullableString(value.response_preference, 512);
-  if (responsePreference && memoryExplicitStatementContainsSecret(responsePreference)) {
-    fail("memory_fact_secret");
-  }
-  boundedString(value.reason_code, 64);
-  const firstOccurrence = source.text.indexOf(quote);
-  if (firstOccurrence >= 0 &&
-    source.text.indexOf(quote, firstOccurrence + quote.length) >= 0) {
-    fail("memory_fact_evidence_ambiguous");
-  }
-  const legacyCanonicalKey = memoryPropositionCanonicalKey(
-    statement,
-    "LEGACY_V1"
-  );
-  const unicodeCanonicalKey = memoryPropositionCanonicalKey(
-    statement,
-    "UNICODE_V2"
-  );
-  if (!legacyCanonicalKey || !unicodeCanonicalKey) fail();
-  const evidence = exactEvidence(input, { occurrenceIndex: 0, text: quote });
-  const semanticFrame: MemorySemanticFrame = {
-    assertionStatus: "ASSERTED",
-    changeIntent: correction ? "CORRECTION" : "NONE",
-    memoryDirective: "NONE",
-    polarity: correction ? "CORRECTION" : "AFFIRMED",
-    speechAct: "ASSERTION",
-    subjectScope: "CURRENT_USER",
-    temporalPerspective: "CURRENT"
-  };
-  const withoutId: Omit<MemoryExtractedCandidate, "id"> = {
-    candidateRef: "legacy-0",
-    canonicalKey: legacyCanonicalKey,
-    category,
-    confidence: 1,
-    confidenceBand: "HIGH",
-    correction,
-    coreEligible: responsePreference !== null,
-    coreSalience: responsePreference === null ? "NONE" : "HIGH",
-    dimensionKey: null,
-    directness: "DIRECT",
-    displayText: statement,
-    dependencies: [],
-    entities: [],
-    evidence,
-    expectedAt: null,
-    expirationIntent: "NONE",
-    expiresAt: null,
-    futureUseful: true,
-    identityProfile: "LEGACY_V1",
-    identityKind: "PROPOSITION",
-    identityVersion: "proposition-v1",
-    importance: 0.5,
-    languageCode: source.languageCode,
-    legacyCanonicalKey,
-    legacyProposedValue: responsePreference === null
-      ? { correction, statement }
-      : { correction, responsePreference, statement },
-    modality: legacyModality(category),
-    negated: false,
-    occurredAt: null,
-    predicateKey: null,
-    proposedValue: responsePreference === null
-      ? { correction, statement }
-      : { correction, responsePreference, statement },
-    quote,
-    rawTemporalExpression: null,
-    reasonCode: null,
-    responsePreference,
-    scope: { targetId: null, type: "GLOBAL_USER" },
-    semanticFrame,
-    sensitivity: "NORMAL",
-    state: "PENDING",
-    statement,
-    subjectKey: null,
-    temporary: false,
-    temporalNormalization: { kind: "NONE" },
-    temporalResolutionEvidence: null,
-    unicodeCanonicalKey,
-    unicodeProposedValue: responsePreference === null
-      ? { correction, statement }
-      : { correction, responsePreference, statement },
-    validFrom: null,
-    validTo: null
-  };
-  return { ...withoutId, id: memoryFactCandidateId(input, withoutId) };
-}
-
-/** Compatibility decoder retained only for already-recorded v1 tests and
- * archaeology. New executions never route through it. */
-export function decodeMemoryFactExtractionV1(
-  calls: readonly ModelToolCall[] | undefined,
-  input: MemoryFactExtractionInput
-): MemoryFactExtractionPlan {
-  if (!calls || calls.length !== 1 ||
-    calls[0]?.name !== MEMORY_FACT_EXTRACTION_TOOL_NAME ||
-    !isRecord(calls[0].arguments) ||
-    !hasExactKeys(calls[0].arguments, ["candidates"]) ||
-    !Array.isArray(calls[0].arguments.candidates) ||
-    calls[0].arguments.candidates.length > MEMORY_FACT_MAX_PACKET_CANDIDATES) fail();
-  return packetPlan(
-    calls[0].arguments.candidates,
-    input,
-    decodeLegacyCandidate,
-    false
-  );
-}
-
 /** Executable vNext strict packet. Candidate defects are isolated; malformed
  * call count/name/top-level shape fails the complete provider output. */
 export function decodeMemoryFactExtraction(
   calls: readonly ModelToolCall[] | undefined,
   input: MemoryFactExtractionInput
 ): MemoryFactExtractionPlan {
+  assertMemoryIdentityWritable(input.identityProfile);
   if (!calls || calls.length !== 1 ||
     calls[0]?.name !== MEMORY_FACT_EXTRACTION_TOOL_NAME ||
     !isRecord(calls[0].arguments) ||

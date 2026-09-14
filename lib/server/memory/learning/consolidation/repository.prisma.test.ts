@@ -33,7 +33,7 @@ import {
   type MemoryFactExtractionInput,
   type MemoryFactExtractionPlan
 } from "../extraction/contract";
-import { decodeMemoryFactExtractionV1 } from "../extraction/decoder";
+import { decodeMemoryFactExtraction } from "../extraction/decoder";
 import { MEMORY_FACT_EXTRACTION_TOOL_NAME } from "../extraction/prompt";
 import { createPrismaMemoryFactExtractionRepository } from "../extraction/repository";
 import {
@@ -375,6 +375,27 @@ function consolidationRepository() {
   });
 }
 
+function preferencePacket(text: string) {
+  return { observations: [{
+    candidate_ref: "C1", confidence_band: "HIGH", dependency_refs: [], entities: [],
+    evidence: { occurrence_index: 0, text }, future_useful: true,
+    identity: {
+      dimension_key: null, mode: "PROPOSITION", predicate_key: null,
+      subject: { canonical_label: null, entity_type: "NONE", qualifiers: { brand: null, model: null } }
+    },
+    memory_type: "PREFERENCE", reason_code: "durable_preference",
+    semantic_frame: {
+      assertion_status: "ASSERTED", change_intent: "NONE", memory_directive: "NONE",
+      polarity: "AFFIRMED", speech_act: "ASSERTION", subject_scope: "CURRENT_USER",
+      temporal_perspective: "CURRENT"
+    },
+    sensitivity: "NORMAL", statement: text,
+    temporal: { expiration_intent: "NONE", normalization: { kind: "NONE" }, perspective: "CURRENT", raw_expression: null },
+    temporary: false,
+    value: { frequency: null, kind: null, limit: null, place: null, role: null, schedule: null, state: null, strength: null, value: null }
+  }] };
+}
+
 async function createCandidate(input: Readonly<{
   candidateText?: string;
   createdAt: Date;
@@ -397,26 +418,24 @@ async function createCandidate(input: Readonly<{
   if ("decision" in prepared) throw new Error(prepared.decision.errorCode);
   const extractionInput: MemoryFactExtractionInput = prepared.input;
   const candidateText = input.candidateText ?? input.text;
-  const plan = decodeMemoryFactExtractionV1([{
-    arguments: {
-      candidates: [{
-        category: "preferences",
-        confidence_band: "HIGH",
-        correction: false,
-        future_useful: true,
-        quote: candidateText,
-        reason_code: "durable_preference",
-        response_preference: candidateText,
-        sensitivity: "NORMAL",
-        statement: candidateText,
-        temporary: false
-      }]
-    },
+  const plan = decodeMemoryFactExtraction([{
+    arguments: preferencePacket(candidateText),
     id: `extract-call-${randomUUID()}`,
     name: MEMORY_FACT_EXTRACTION_TOOL_NAME
   }], extractionInput);
-  const extractedCandidate = plan.candidates[0];
-  if (!extractedCandidate) throw new Error("memory_candidate_fixture_missing");
+  const currentCandidate = plan.candidates[0];
+  if (!currentCandidate) throw new Error("memory_candidate_fixture_missing");
+  // This suite owns retained v1 candidate rows. Derive exact source evidence
+  // through the current decoder, then seed their historical storage shape with
+  // an opaque fixture key; never execute the retired language normalizer.
+  const extractedCandidate = {
+    ...currentCandidate,
+    canonicalKey: `prop:v1:${memorySha256({ fixtureText: candidateText })}`,
+    coreEligible: true,
+    coreSalience: "HIGH" as const,
+    importance: 0.5,
+    proposedValue: { correction: false, responsePreference: candidateText, statement: candidateText }
+  };
   const legacyCandidateId = memorySha256({
     candidate: {
       category: extractedCandidate.category,
@@ -988,21 +1007,8 @@ describe("Prisma Memory fact consolidation", () => {
       expect(bPrepared.input.messages
         .filter(({ evidenceEligible }) => evidenceEligible)
         .map(({ id }) => id)).toEqual([turnB.userMessage.id]);
-      const bPlan = decodeMemoryFactExtractionV1([{
-        arguments: {
-          candidates: [{
-            category: "preferences",
-            confidence_band: "HIGH",
-            correction: false,
-            future_useful: true,
-            quote: "B-during: I prefer the forbidden delayed value.",
-            reason_code: "durable_preference",
-            response_preference: "the forbidden delayed value",
-            sensitivity: "NORMAL",
-            statement: "B-during: I prefer the forbidden delayed value.",
-            temporary: false
-          }]
-        },
+      const bPlan = decodeMemoryFactExtraction([{
+        arguments: preferencePacket("B-during: I prefer the forbidden delayed value."),
         id: `extract-call-${randomUUID()}`,
         name: MEMORY_FACT_EXTRACTION_TOOL_NAME
       }], bPrepared.input);

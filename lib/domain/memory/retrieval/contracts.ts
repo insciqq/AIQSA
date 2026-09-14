@@ -362,6 +362,7 @@ export type MemoryPackedItem = Readonly<{
   itemId: string;
   itemType: MemoryRetrievalItemType;
   lastConfirmedAt: string | null;
+  modality: MemoryModality | null;
   observedAt: string | null;
   patternSupportingEvidence?: readonly Readonly<{
     documentTime: string;
