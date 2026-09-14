@@ -47,7 +47,7 @@ for (const viewport of [
     const dialog = page.getByRole("dialog", { name: "Chat context" });
     await expect(trigger).toHaveText("60%");
     await expect(dialog).toContainText("4 earlier messages are still in this chat");
-    await expect(dialog).toContainText("Files and Workspace won’t be carried over");
+    await expect(dialog).toContainText("project files are copied into the new chat. Attachments are not carried over.");
     expect(continuations).toBe(0);
     await dialog.getByRole("button", { name: "Stay here" }).click();
     await trigger.click();

@@ -44,6 +44,10 @@ export type ChatWorkspaceState = Readonly<{
   internetEnabled: boolean | null;
   sessionState: WorkspaceSessionStateWire | null;
   unavailableReason?: WorkspaceUnavailableReason;
+  continuationFiles?: Readonly<{
+    status: "none" | "pending" | "ready" | "failed";
+    reason?: string;
+  }>;
 }>;
 
 export const UNAVAILABLE_CHAT_WORKSPACE_STATE: ChatWorkspaceState = Object.freeze({
@@ -111,6 +115,17 @@ export function decodeChatWorkspaceState(value: unknown): ChatWorkspaceState | n
 
   if (value.available && value.unavailableReason !== undefined) return null;
 
+  let continuationFiles: ChatWorkspaceState["continuationFiles"];
+  if (value.continuationFiles !== undefined) {
+    if (!isRecord(value.continuationFiles) ||
+      !["none", "pending", "ready", "failed"].includes(value.continuationFiles.status as string) ||
+      (value.continuationFiles.reason !== undefined && !isBoundedString(value.continuationFiles.reason, 64))) return null;
+    continuationFiles = {
+      status: value.continuationFiles.status as "none" | "pending" | "ready" | "failed",
+      ...(value.continuationFiles.reason === undefined ? {} : { reason: value.continuationFiles.reason })
+    };
+  }
+
   return {
     available: value.available,
     enabled: value.enabled,
@@ -118,7 +133,8 @@ export function decodeChatWorkspaceState(value: unknown): ChatWorkspaceState | n
     sessionState: value.sessionState as WorkspaceSessionStateWire | null,
     ...(value.unavailableReason === undefined
       ? {}
-      : { unavailableReason: value.unavailableReason as WorkspaceUnavailableReason })
+      : { unavailableReason: value.unavailableReason as WorkspaceUnavailableReason }),
+    ...(continuationFiles ? { continuationFiles } : {})
   };
 }
 

@@ -30,6 +30,7 @@ class UnavailableWorkspaceRuntime implements WorkspaceRuntime {
   async collectOutputs(): Promise<never> { return this.unavailable(); }
   async collectBrowserSessions(): Promise<never> { return this.unavailable(); }
   async createProjectArchive(): Promise<never> { return this.unavailable(); }
+  async restoreProjectArchive(): Promise<never> { return this.unavailable(); }
   async stopSession(): Promise<never> { return this.unavailable(); }
   async removeSession(): Promise<never> { return this.unavailable(); }
 }
