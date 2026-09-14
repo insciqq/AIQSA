@@ -35,3 +35,5 @@ Sidecars are bounded helpers, never tenancy or durable-state authorities. Option
 - Parsers receive bounded documents without data credentials or durable document state. Workspace receives opaque runtime identity, bounded streams, and allowlisted tools, never application/data credentials. Guest disks are operational state outside backup authority.
 
 No new destination, credential audience, public projection, or durable store is implicit: define its privacy, failure, retention, and operator boundary. Execution semantics belong to [Run contracts](RUN_CONTRACTS.md); lifecycle and recovery operations belong to [Persistence](PERSISTENCE.md).
+
+Observability is a dependency-free server leaf shared by the CJS launcher and application bundles through a process-global AsyncLocalStorage singleton. It owns bounded stdout records and emergency stderr output, never database/provider clients, payload retention, execution policy or a second lifecycle authority.

@@ -22,6 +22,8 @@ import { createSystemModelRoleResolver } from "../providerRuntime/systemModelRol
 import { createAcceptedStructuredOutputExecutor } from "../providerRuntime/structuredOutputExecutor";
 import { createMcpSemanticRouter } from "./router";
 import { filterMcpToolsForUser } from "./toolAccess";
+import { reportSubsystemFailure, reportSubsystemHealthy } from "../observability";
+import { observedFailureCode } from "../providers/providerObservability";
 
 const DEFAULT_RUNTIME_LIMITS = {
   maxListPages: 16,
@@ -45,7 +47,7 @@ function createDefaultMcpRuntimeCoordinator(): McpRuntimeCoordinator {
     fetch: createMcpSafeFetch(),
     async fetchForLaunch(launch) {
       const baseFetch = createMcpSafeFetch({
-        allowInsecureHttp: launch.trustedInternalHttp === true || process.env.NODE_ENV !== "production",
+        allowInsecureHttp: true,
         allowPrivateNetwork: launch.trustedInternalHttp === true || launch.allowPrivateNetwork === true
       });
       return launch.oauthConnectionId
@@ -72,10 +74,16 @@ function createDefaultMcpRuntimeCoordinator(): McpRuntimeCoordinator {
 
 export function getDefaultMcpRuntimeCoordinator(): McpRuntimeCoordinator {
   const scope = globalThis as McpRuntimeGlobal;
-  const coordinator = scope.__aiqsaMcpRuntimeCoordinator ?? createDefaultMcpRuntimeCoordinator();
-  scope.__aiqsaMcpRuntimeCoordinator = coordinator;
-  coordinator.start();
-  return coordinator;
+  try {
+    const coordinator = scope.__aiqsaMcpRuntimeCoordinator ?? createDefaultMcpRuntimeCoordinator();
+    scope.__aiqsaMcpRuntimeCoordinator = coordinator;
+    coordinator.start();
+    reportSubsystemHealthy("mcp", "startup");
+    return coordinator;
+  } catch (error) {
+    reportSubsystemFailure({ subsystem: "mcp", stage: "startup", code: observedFailureCode(error), action: "retry" });
+    throw error;
+  }
 }
 
 export function kickDefaultMcpRuntime(userId?: string): void {

@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import type {
   OAuthClientInformationMixed,
   OAuthClientMetadata,
   OAuthTokens
 } from "@modelcontextprotocol/client";
-import { describe, expect, it } from "vitest";
+import { Server, type ListToolsResult } from "@modelcontextprotocol/server";
+import { describe, expect, it, vi } from "vitest";
 import {
   bindMcpOAuthPolicyResource,
   type McpOAuthPolicy,
@@ -17,12 +21,17 @@ import type {
   McpOAuthStoredConnection
 } from "./oauthRepository";
 import { McpOAuthError, McpOAuthService } from "./oauthService";
+import { McpClientSession } from "./clientSession";
+import { createMcpSafeFetch } from "./safeFetch";
 
 const SERVER_URL = "https://mcp.fixture.test/mcp";
 const AUTH_ORIGIN = "https://auth.fixture.test";
 const REDIRECT_URI = "https://aiqsa.fixture.test/api/me/mcp/server-1/oauth/callback";
 const BROKER_SERVER_URL = "https://broker.fixture.test/mcp";
 const BROKER_AUTH_ORIGIN = "https://broker-auth.fixture.test";
+const HTTP_SERVER_URL = SERVER_URL.replace("https:", "http:");
+const HTTP_AUTH_ORIGIN = AUTH_ORIGIN.replace("https:", "http:");
+const HTTP_REDIRECT_URI = REDIRECT_URI.replace("https:", "http:");
 
 function fixturePolicy(): McpOAuthPolicy {
   return {
@@ -253,14 +262,20 @@ class MemoryOAuthRepository implements McpOAuthRepository {
 
 class StandardsOAuthFixture {
   authorizationCodeVerifier: string | null = null;
+  clientSecretPost = false;
   dcrCalls = 0;
   expectedRedirectUri = REDIRECT_URI;
   foreignTokenEndpoint = false;
   invalidRefresh = false;
+  issuerResponseParameterSupported = false;
   metadataDocumentSupported = false;
+  omitRefreshTokenOnRefresh = false;
+  publicClient = false;
+  publicClientId = "http://mcp.fixture.test/client-metadata";
   refreshCalls = 0;
   revokedHints: string[] = [];
   resource = SERVER_URL;
+  tokenResponseOverride: ((body: URLSearchParams) => Response) | null = null;
 
   readonly fetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(input.toString());
@@ -274,20 +289,24 @@ class StandardsOAuthFixture {
       });
     }
     if (url.toString() === `${AUTH_ORIGIN}/.well-known/oauth-authorization-server`) {
+      const clientAuthMethod = this.publicClient
+        ? "none"
+        : this.clientSecretPost ? "client_secret_post" : "client_secret_basic";
       return Response.json({
         authorization_endpoint: `${AUTH_ORIGIN}/authorize`,
         client_id_metadata_document_supported: this.metadataDocumentSupported,
         code_challenge_methods_supported: ["S256"],
         grant_types_supported: ["authorization_code", "refresh_token"],
         issuer: AUTH_ORIGIN,
+        authorization_response_iss_parameter_supported: this.issuerResponseParameterSupported,
         registration_endpoint: `${AUTH_ORIGIN}/register`,
         response_types_supported: ["code"],
         revocation_endpoint: `${AUTH_ORIGIN}/revoke`,
-        revocation_endpoint_auth_methods_supported: ["client_secret_basic"],
+        revocation_endpoint_auth_methods_supported: [clientAuthMethod],
         token_endpoint: this.foreignTokenEndpoint
           ? "https://unreviewed.example.test/token"
           : `${AUTH_ORIGIN}/token`,
-        token_endpoint_auth_methods_supported: ["client_secret_basic"]
+        token_endpoint_auth_methods_supported: [clientAuthMethod]
       });
     }
     if (url.toString() === `${AUTH_ORIGIN}/register`) {
@@ -299,13 +318,25 @@ class StandardsOAuthFixture {
         ...body,
         client_id: "fixture-client",
         client_secret: "fixture-client-secret",
-        token_endpoint_auth_method: "client_secret_basic"
+        token_endpoint_auth_method: this.clientSecretPost
+          ? "client_secret_post"
+          : "client_secret_basic"
       }, { status: 201 });
     }
     if (url.toString() === `${AUTH_ORIGIN}/token`) {
-      expect(new Headers(init?.headers).get("authorization")).toMatch(/^Basic /u);
       const body = new URLSearchParams(String(init?.body));
+      if (this.publicClient) {
+        expect(new Headers(init?.headers).get("authorization")).toBeNull();
+        expect(body.get("client_id")).toBe(this.publicClientId);
+      } else if (this.clientSecretPost) {
+        expect(new Headers(init?.headers).get("authorization")).toBeNull();
+        expect(body.get("client_id")).toBe("fixture-client");
+        expect(body.get("client_secret")).toBe("fixture-client-secret");
+      } else {
+        expect(new Headers(init?.headers).get("authorization")).toMatch(/^Basic /u);
+      }
       expect(body.get("resource")).toBe(this.resource);
+      if (this.tokenResponseOverride) return this.tokenResponseOverride(body);
       if (body.get("grant_type") === "authorization_code") {
         expect(body.get("code")).toBe("fixture-code");
         expect(body.get("code_verifier")).toBe(this.authorizationCodeVerifier);
@@ -325,17 +356,145 @@ class StandardsOAuthFixture {
       return Response.json({
         access_token: `access-refresh-${this.refreshCalls}`,
         expires_in: 3_600,
-        refresh_token: `refresh-${this.refreshCalls + 1}`,
+        ...(this.omitRefreshTokenOnRefresh
+          ? {}
+          : { refresh_token: `refresh-${this.refreshCalls + 1}` }),
         scope: "mcp.read mcp.write",
         token_type: "Bearer"
       } satisfies OAuthTokens);
     }
     if (url.toString() === `${AUTH_ORIGIN}/revoke`) {
       const body = new URLSearchParams(String(init?.body));
+      if (this.clientSecretPost) {
+        expect(new Headers(init?.headers).get("authorization")).toBeNull();
+        expect(body.get("client_id")).toBe("fixture-client");
+        expect(body.get("client_secret")).toBe("fixture-client-secret");
+      }
       this.revokedHints.push(body.get("token_type_hint") ?? "");
       return new Response(null, { status: 200 });
     }
     return Response.json({ error: "fixture_not_found" }, { status: 404 });
+  };
+}
+
+function httpPolicy(overrides: Partial<McpOAuthPolicy> = {}): McpOAuthPolicy {
+  return {
+    ...fixturePolicy(),
+    allowedAuthorizationServerOrigins: [HTTP_AUTH_ORIGIN],
+    redirectUri: HTTP_REDIRECT_URI,
+    resource: HTTP_SERVER_URL,
+    serverUrl: HTTP_SERVER_URL,
+    ...overrides
+  };
+}
+
+function insecureHttpFixtureFetch(fixture: StandardsOAuthFixture) {
+  return async (input: string | URL, init?: RequestInit): Promise<Response> => {
+    const mapped = new URL(input.toString());
+    expect(mapped.protocol).toBe("http:");
+    mapped.protocol = "https:";
+    const response = await fixture.fetch(mapped, init);
+    if (mapped.pathname === "/token" || mapped.pathname === "/revoke") return response;
+    const body = await response.text();
+    return new Response(body ? body.replaceAll("https://", "http://") : null, {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText
+    });
+  };
+}
+
+async function startMappedHttpAuthorization(fixture: StandardsOAuthFixture) {
+  fixture.expectedRedirectUri = HTTP_REDIRECT_URI;
+  fixture.resource = HTTP_SERVER_URL;
+  const repository = new MemoryOAuthRepository(httpPolicy());
+  const service = new McpOAuthService({
+    fetchForPolicy: () => insecureHttpFixtureFetch(fixture),
+    now: () => repository.now,
+    repository
+  });
+  const started = await service.startAuthorization({
+    forceReconnect: false,
+    purpose: "user",
+    redirectUri: HTTP_REDIRECT_URI,
+    serverId: "server-1",
+    state: "mapped-http-state",
+    userId: "user-1"
+  });
+  if (started.kind !== "redirect") throw new Error("expected redirect");
+  fixture.authorizationCodeVerifier = started.flow.codeVerifier;
+  return { repository, service, started };
+}
+
+async function startInsecureHttpOAuthServer(fixture: StandardsOAuthFixture) {
+  const mcp = new Server(
+    { name: "http-oauth-fixture", version: "1.0.0" },
+    { capabilities: { tools: {} } }
+  );
+  mcp.setRequestHandler("tools/list", async (): Promise<ListToolsResult> => ({
+    tools: [{
+      description: "Read HTTP fixture state",
+      inputSchema: { type: "object" },
+      name: "read_http_fixture"
+    }]
+  }));
+  const transport = new NodeStreamableHTTPServerTransport({
+    enableJsonResponse: true,
+    sessionIdGenerator: () => "http-oauth-session"
+  });
+  await mcp.connect(transport);
+  const server = createServer((request, response) => {
+    void (async () => {
+      const requestUrl = new URL(request.url ?? "/", "http://fixture.invalid");
+      if (requestUrl.pathname === "/mcp") {
+        if (!/^Bearer access(?:-refresh-\d+)?$/u.test(request.headers.authorization ?? "")) {
+          response.statusCode = 401;
+          response.end();
+          return;
+        }
+        await transport.handleRequest(request, response);
+        return;
+      }
+      const upstreamOrigin = requestUrl.pathname.startsWith("/.well-known/oauth-protected-resource")
+        ? new URL(SERVER_URL).origin
+        : AUTH_ORIGIN;
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(request.headers)) {
+        if (Array.isArray(value)) value.forEach((entry) => headers.append(name, entry));
+        else if (value !== undefined) headers.set(name, value);
+      }
+      const upstream = await fixture.fetch(new URL(requestUrl.pathname + requestUrl.search, upstreamOrigin), {
+        ...(chunks.length ? { body: Buffer.concat(chunks) } : {}),
+        headers,
+        method: request.method
+      });
+      const body = (await upstream.text())
+        .replaceAll(new URL(SERVER_URL).origin, `http://${request.headers.host}`)
+        .replaceAll(AUTH_ORIGIN, `http://${request.headers.host}`);
+      response.statusCode = upstream.status;
+      upstream.headers.forEach((value, name) => response.setHeader(name, value));
+      response.end(body);
+    })().catch(() => {
+      response.statusCode = 500;
+      response.end();
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address() as AddressInfo;
+  return {
+    async close() {
+      await mcp.close().catch(() => undefined);
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    },
+    origin: `http://127.0.0.1:${address.port}`
   };
 }
 
@@ -545,6 +704,271 @@ function challenge(verifier: string): string {
 }
 
 describe("generic MCP OAuth service", () => {
+  it("runs the complete OAuth lifecycle over production HTTP while retaining exact-origin policy", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    let closeServer: (() => Promise<void>) | undefined;
+    try {
+      const fixture = new StandardsOAuthFixture();
+      const http = await startInsecureHttpOAuthServer(fixture);
+      closeServer = http.close;
+      const serverUrl = `${http.origin}/mcp`;
+      const redirectUri = `${http.origin}/api/me/mcp/server-1/oauth/callback`;
+      fixture.expectedRedirectUri = redirectUri;
+      fixture.resource = serverUrl;
+      const repository = new MemoryOAuthRepository(httpPolicy({
+        allowPrivateNetwork: true,
+        allowedAuthorizationServerOrigins: [http.origin],
+        redirectUri,
+        resource: serverUrl,
+        serverUrl
+      }));
+      const service = new McpOAuthService({
+        fetchForPolicy: (policy) => createMcpSafeFetch({
+          allowInsecureHttp: true,
+          allowPrivateNetwork: policy.allowPrivateNetwork
+        }),
+        now: () => repository.now,
+        repository
+      });
+
+      expect(service.allowInsecureHttp).toBe(true);
+      const started = await service.startAuthorization({
+        forceReconnect: false,
+        purpose: "user",
+        redirectUri,
+        serverId: "server-1",
+        state: "http-state",
+        userId: "user-1"
+      });
+      expect(started.kind).toBe("redirect");
+      if (started.kind !== "redirect") return;
+      const authorizationUrl = new URL(started.authorizationUrl);
+      expect(authorizationUrl.origin).toBe(http.origin);
+      expect(authorizationUrl.searchParams.get("state")).toBe("http-state");
+      expect(authorizationUrl.searchParams.get("code_challenge_method")).toBe("S256");
+      expect(authorizationUrl.searchParams.get("code_challenge"))
+        .toBe(challenge(started.flow.codeVerifier));
+
+      fixture.authorizationCodeVerifier = started.flow.codeVerifier;
+      const connection = await service.completeAuthorization({
+        authorizationCode: "fixture-code",
+        flow: started.flow
+      });
+      expect(connection.tokens).toMatchObject({
+        access_token: "access-1",
+        refresh_token: "refresh-1"
+      });
+
+      const provider = await service.createRuntimeProvider(connection.id);
+      const runtimeFetch = await service.createRuntimeFetch(
+        connection.id,
+        async () => new Response(null, { status: 204 })
+      );
+      await expect(runtimeFetch(serverUrl)).resolves.toMatchObject({ status: 204 });
+      await expect(runtimeFetch("http://unreviewed.example.test/mcp"))
+        .rejects.toMatchObject({ code: "mcp_oauth_policy_forbidden" });
+
+      repository.now = new Date(connection.expiresAt!.getTime() - 30_000);
+      await expect(provider.tokens()).resolves.toMatchObject({
+        access_token: "access-refresh-1",
+        refresh_token: "refresh-2"
+      });
+      const runtime = new McpClientSession({
+        authProvider: provider,
+        fetch: createMcpSafeFetch({ allowInsecureHttp: true, allowPrivateNetwork: true }),
+        limits: {
+          maxListPages: 2,
+          maxToolArgumentBytes: 1_024,
+          maxToolMetadataBytes: 8_192,
+          maxToolResultBytes: 8_192,
+          maxToolSchemaBytes: 4_096,
+          maxTools: 8
+        },
+        requestTimeoutMs: 2_000,
+        url: new URL(serverUrl)
+      });
+      try {
+        await runtime.initialize({ timeoutMs: 2_000 });
+        await expect(runtime.listAllTools({ timeoutMs: 2_000 }))
+          .resolves.toMatchObject([{ name: "read_http_fixture" }]);
+      } finally {
+        await runtime.close();
+      }
+      await expect(service.disconnect({
+        purpose: "user",
+        serverId: "server-1",
+        userId: "user-1"
+      })).resolves.toBe("disconnected");
+      expect(fixture.revokedHints.sort()).toEqual(["access_token", "refresh_token"]);
+    } finally {
+      await closeServer?.();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("uses an HTTP Client ID Metadata Document when the authorization server accepts it", async () => {
+    const clientDocument = "http://mcp.fixture.test/client-metadata";
+    const repository = new MemoryOAuthRepository(httpPolicy({
+      clientIdMetadataDocumentUrl: clientDocument
+    }));
+    const fixture = new StandardsOAuthFixture();
+    fixture.expectedRedirectUri = HTTP_REDIRECT_URI;
+    fixture.metadataDocumentSupported = true;
+    fixture.publicClient = true;
+    fixture.publicClientId = clientDocument;
+    fixture.resource = HTTP_SERVER_URL;
+    const service = new McpOAuthService({
+      fetchForPolicy: () => insecureHttpFixtureFetch(fixture),
+      repository
+    });
+
+    const started = await service.startAuthorization({
+      forceReconnect: false,
+      purpose: "user",
+      redirectUri: HTTP_REDIRECT_URI,
+      serverId: "server-1",
+      state: "http-cimd-state",
+      userId: "user-1"
+    });
+    expect(started.kind).toBe("redirect");
+    if (started.kind !== "redirect") return;
+    expect(started.flow.clientId).toBe(clientDocument);
+    expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe(clientDocument);
+    expect(fixture.dcrCalls).toBe(0);
+
+    fixture.authorizationCodeVerifier = started.flow.codeVerifier;
+    const connection = await service.completeAuthorization({
+      authorizationCode: "fixture-code",
+      flow: started.flow
+    });
+    expect(connection).toMatchObject({ state: "ready" });
+
+    repository.now = new Date(connection.expiresAt!.getTime() - 30_000);
+    fixture.invalidRefresh = true;
+    const provider = await service.createRuntimeProvider(connection.id);
+    await expect(provider.tokens()).rejects.toMatchObject({
+      code: "mcp_oauth_reauthorization_required"
+    });
+    expect(repository.connections.get(connection.id)?.state).toBe("reauthorization_required");
+  });
+
+  it.each(["advertised", "streamed"] as const)(
+    "rejects an oversized %s HTTP token response before parsing it",
+    async (responseKind) => {
+      const fixture = new StandardsOAuthFixture();
+      const { repository, service, started } = await startMappedHttpAuthorization(fixture);
+      fixture.tokenResponseOverride = () => {
+        if (responseKind === "advertised") {
+          return new Response("{}", {
+            headers: {
+              "content-length": String(512 * 1_024 + 1),
+              "content-type": "application/json"
+            }
+          });
+        }
+        const chunk = new Uint8Array(300 * 1_024);
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(chunk);
+            controller.enqueue(chunk);
+            controller.close();
+          }
+        }), { headers: { "content-type": "application/json" } });
+      };
+
+      await expect(service.completeAuthorization({
+        authorizationCode: "fixture-code",
+        flow: started.flow
+      })).rejects.toMatchObject({ code: "mcp_oauth_authorization_failed" });
+      expect(repository.connections.size).toBe(0);
+    }
+  );
+
+  it("rejects malformed JSON from an HTTP token endpoint", async () => {
+    const fixture = new StandardsOAuthFixture();
+    const { repository, service, started } = await startMappedHttpAuthorization(fixture);
+    fixture.tokenResponseOverride = () => new Response("{", {
+      headers: { "content-type": "application/json" }
+    });
+
+    await expect(service.completeAuthorization({
+      authorizationCode: "fixture-code",
+      flow: started.flow
+    })).rejects.toMatchObject({ code: "mcp_oauth_authorization_failed" });
+    expect(repository.connections.size).toBe(0);
+  });
+
+  it("uses client_secret_post over HTTP and preserves an unrotated refresh token", async () => {
+    const fixture = new StandardsOAuthFixture();
+    fixture.clientSecretPost = true;
+    const { repository, service, started } = await startMappedHttpAuthorization(fixture);
+    const connection = await service.completeAuthorization({
+      authorizationCode: "fixture-code",
+      flow: started.flow
+    });
+
+    fixture.omitRefreshTokenOnRefresh = true;
+    repository.now = new Date(connection.expiresAt!.getTime() - 30_000);
+    const provider = await service.createRuntimeProvider(connection.id);
+    await expect(provider.tokens()).resolves.toMatchObject({
+      access_token: "access-refresh-1",
+      refresh_token: "refresh-1"
+    });
+    expect(repository.connections.get(connection.id)?.tokens.refresh_token).toBe("refresh-1");
+
+    await expect(service.disconnect({
+      purpose: "user",
+      serverId: "server-1",
+      userId: "user-1"
+    })).resolves.toBe("disconnected");
+    expect(fixture.revokedHints.sort()).toEqual(["access_token", "refresh_token"]);
+  });
+
+  it("accepts the exact required issuer on the HTTP callback path", async () => {
+    const fixture = new StandardsOAuthFixture();
+    fixture.issuerResponseParameterSupported = true;
+    const { service, started } = await startMappedHttpAuthorization(fixture);
+
+    await expect(service.completeAuthorization({
+      authorizationCode: "fixture-code",
+      flow: started.flow,
+      issuer: HTTP_AUTH_ORIGIN
+    })).resolves.toMatchObject({ state: "ready" });
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["mismatched", "http://other-auth.fixture.test"]
+  ] as const)("rejects a %s required issuer on the HTTP callback path", async (_label, issuer) => {
+    const fixture = new StandardsOAuthFixture();
+    fixture.issuerResponseParameterSupported = true;
+    const { repository, service, started } = await startMappedHttpAuthorization(fixture);
+
+    await expect(service.completeAuthorization({
+      authorizationCode: "fixture-code",
+      flow: started.flow,
+      issuer
+    })).rejects.toMatchObject({ code: "mcp_oauth_authorization_failed" });
+    expect(repository.connections.size).toBe(0);
+  });
+
+  it("can retain an explicit HTTPS-only OAuth policy", async () => {
+    const service = new McpOAuthService({
+      allowInsecureHttp: false,
+      fetchForPolicy: () => async () => new Response(null, { status: 500 }),
+      repository: new MemoryOAuthRepository(httpPolicy())
+    });
+
+    await expect(service.startAuthorization({
+      forceReconnect: false,
+      purpose: "user",
+      redirectUri: HTTP_REDIRECT_URI,
+      serverId: "server-1",
+      state: "https-only-state",
+      userId: "user-1"
+    })).rejects.toMatchObject({ code: "mcp_oauth_policy_forbidden" });
+  });
+
   it("adopts a discovered same-origin protected resource when the draft omitted it", async () => {
     const repository = new MemoryOAuthRepository({
       ...fixturePolicy(),
@@ -706,6 +1130,7 @@ describe("generic MCP OAuth service", () => {
   it("discovers, registers, exchanges, singleflights refresh, reuses registration, and revokes", async () => {
     const repository = new MemoryOAuthRepository();
     const fixture = new StandardsOAuthFixture();
+    fixture.issuerResponseParameterSupported = true;
     const service = new McpOAuthService({
       fetchForPolicy: () => fixture.fetch,
       now: () => repository.now,
@@ -733,7 +1158,8 @@ describe("generic MCP OAuth service", () => {
 
     const connection = await service.completeAuthorization({
       authorizationCode: "fixture-code",
-      flow: started.flow
+      flow: started.flow,
+      issuer: AUTH_ORIGIN
     });
     expect(connection.externalAccountLabel).toBe("Fixture Workspace");
     expect(connection.tokens.access_token).toBe("access-1");

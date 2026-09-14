@@ -1,3 +1,4 @@
+import { randomUUID } from "@/lib/browser/randomUUID";
 import { resolveEffectiveSkillIds, SKILL_MAX_SELECTED } from "@/lib/contracts/skills";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import {
@@ -389,7 +390,7 @@ export function useMessageRunActions({
       resetThreadToLatest();
     }
 
-    const admissionId = crypto.randomUUID();
+    const admissionId = randomUUID();
     const result = await executeMessageRunLifecycle({
       activeChatIdRef,
       activeStreamAbortRef,
@@ -800,7 +801,7 @@ export function useMessageRunActions({
       }
 
       sendFailureLive = false;
-      const admissionId = crypto.randomUUID();
+      const admissionId = randomUUID();
       const result = await executeMessageRunLifecycle({
         activeChatIdRef,
         activeStreamAbortRef,
@@ -1069,7 +1070,7 @@ export function useMessageRunActions({
         resetThreadToLatest();
       }
 
-      const admissionId = crypto.randomUUID();
+      const admissionId = randomUUID();
       const result = await executeMessageRunLifecycle({
         activeChatIdRef,
         activeStreamAbortRef,
@@ -1213,7 +1214,7 @@ export function useMessageRunActions({
     updateStreamChatActiveLeaf(chatIdForRegenerate, assistantId);
     resetThreadToLatest();
 
-    const admissionId = crypto.randomUUID();
+    const admissionId = randomUUID();
     const result = await executeMessageRunLifecycle({
       activeChatIdRef,
       activeStreamAbortRef,

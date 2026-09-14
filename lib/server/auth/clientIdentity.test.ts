@@ -28,6 +28,14 @@ function directConfig() {
   });
 }
 
+function proxyConfig(trustedProxyCount = 1) {
+  return getAuthConfig({
+    AIQSA_AUTH_SESSION_SECRET: sessionSecret,
+    AIQSA_TRUSTED_PROXY_COUNT: String(trustedProxyCount),
+    AIQSA_TRUST_PROXY_HEADERS: "1"
+  });
+}
+
 function stampedRequest(peer: string, headers: HeadersInit = {}): Request {
   const stamp = launcher.createCurrentPeerStamp(peer);
 
@@ -115,12 +123,8 @@ describe("client identity", () => {
     expect(canonicalIp("::ffff:c0a8:a04")).toBe("192.168.10.4");
   });
 
-  it("keeps exact trusted-proxy identity authoritative in proxy mode", () => {
-    const config = getAuthConfig({
-      AIQSA_AUTH_SESSION_SECRET: sessionSecret,
-      AIQSA_TRUSTED_PROXY_COUNT: "2",
-      AIQSA_TRUST_PROXY_HEADERS: "1"
-    });
+  it("keeps trusted-proxy identity authoritative over the socket peer in proxy mode", () => {
+    const config = proxyConfig(2);
     const request = stampedRequest("192.168.10.25", {
       "x-forwarded-for": "198.51.100.9, 203.0.113.10"
     });
@@ -131,7 +135,71 @@ describe("client identity", () => {
     });
     expect(
       resolveLoginRateLimitIdentity(new Request("http://app.local"), config)
-    ).toEqual({ status: "not_required" });
+    ).toEqual({ status: "unavailable" });
+  });
+
+  it.each([1, 2, 8])("uses the trusted suffix behind %i proxies regardless of client prefixes", (count) => {
+    const suffix = ["203.0.113.20", ...Array.from({ length: count - 1 }, (_, index) => `192.0.2.${index + 1}`)];
+    for (const prefix of [[], ["198.51.100.7"], ["not-an-ip"], ["", "", "unknown", "198.51.100.8"]]) {
+      const request = new Request("http://app.local", {
+        headers: { "x-forwarded-for": [...prefix, ...suffix].join(", ") }
+      });
+      expect(resolveLoginRateLimitIdentity(request, proxyConfig(count))).toEqual({
+        key: "ip:203.0.113.20", status: "available"
+      });
+    }
+  });
+
+  it.each([
+    ["203.0.113.20", "203.0.113.20"],
+    ["::ffff:203.0.113.20", "203.0.113.20"],
+    ["::ffff:cb00:7114", "203.0.113.20"],
+    ["2001:0DB8:0000:0000:0000:0000:0000:0001", "2001:db8::1"]
+  ])("canonicalizes the trusted client address %s", (address, canonical) => {
+    const request = new Request("http://app.local", {
+      headers: { "x-forwarded-for": `unknown, ${address}, 2001:db8::2` }
+    });
+    expect(resolveLoginRateLimitIdentity(request, proxyConfig(2))).toEqual({
+      key: `ip:${canonical}`, status: "available"
+    });
+  });
+
+  it.each([
+    { name: "missing", value: null, count: 1 },
+    { name: "empty", value: "", count: 1 },
+    { name: "short", value: "203.0.113.20", count: 2 },
+    { name: "invalid client", value: "unknown, 192.0.2.1", count: 2 },
+    { name: "invalid proxy", value: "203.0.113.20, unknown", count: 2 },
+    { name: "empty proxy", value: "203.0.113.20, ", count: 2 },
+    { name: "client port", value: "203.0.113.20:1234", count: 1 },
+    { name: "IPv6 zone", value: "fe80::1%eth0", count: 1 },
+    { name: "oversized", value: `${"x".repeat(513)}, 203.0.113.20`, count: 1 }
+  ])("fails closed for a $name forwarded chain without using other identity headers", ({ value, count }) => {
+    const request = stampedRequest("192.168.10.25", {
+      "x-real-ip": "198.51.100.9",
+      forwarded: "for=198.51.100.9"
+    });
+    if (value !== null) request.headers.set("x-forwarded-for", value);
+    expect(resolveLoginRateLimitIdentity(request, proxyConfig(count))).toEqual({ status: "unavailable" });
+  });
+
+  it("bounds the whole header even when only the trusted suffix supplies identity", () => {
+    const suffix = ", 203.0.113.20";
+    const request = new Request("http://app.local", {
+      headers: { "x-forwarded-for": "x".repeat(512 - suffix.length) + suffix }
+    });
+    expect(resolveLoginRateLimitIdentity(request, proxyConfig())).toEqual({
+      key: "ip:203.0.113.20", status: "available"
+    });
+    request.headers.set("x-forwarded-for", "x" + request.headers.get("x-forwarded-for"));
+    expect(resolveLoginRateLimitIdentity(request, proxyConfig())).toEqual({ status: "unavailable" });
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity])("fails closed for invalid proxy count %s", (count) => {
+    const request = new Request("http://app.local", { headers: { "x-forwarded-for": "203.0.113.20" } });
+    expect(resolveLoginRateLimitIdentity(request, {
+      ...proxyConfig(), trustedProxyCount: count
+    })).toEqual({ status: "unavailable" });
   });
 
   it("fails closed for contradictory proxy and direct HTTPS topologies", () => {

@@ -68,3 +68,47 @@ describe("Prisma Knowledge upload serialization retries", () => {
     expect(transaction).toHaveBeenCalledTimes(1);
   });
 });
+
+
+describe("Knowledge upload enqueue diagnostics", () => {
+  const input = {
+    ...cancelInput, byteSize: 1, checksum: "checksum", fileName: "PRIVATE_FILENAME", mimeType: "text/plain",
+    normalizedTextStorageKey: "PRIVATE_STORAGE_KEY", sourceArtifactId: "artifact-work", sourceId: "PRIVATE_SOURCE",
+    sourceVersionId: "PRIVATE_VERSION"
+  };
+
+  it("publishes a created artifact receipt after the outer transaction and its retries complete", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    let commit!: (value: { kind: "created"; sourceId: string; cleanupStorageKey: string }) => void;
+    const transaction = vi.fn().mockRejectedValueOnce(rawSerializationFailure()).mockImplementationOnce(() =>
+      new Promise((resolve) => { commit = resolve; }));
+    const repo = createPrismaKnowledgeUploadRepository({ $transaction: transaction } as never,
+      { serializationRetryDelay: async () => undefined });
+    try {
+      const pending = repo.settle(input);
+      await vi.waitFor(() => expect(transaction).toHaveBeenCalledTimes(2));
+      expect(writer).not.toHaveBeenCalled();
+      commit({ kind: "created", sourceId: input.sourceId, cleanupStorageKey: "PRIVATE_STORAGE" });
+      await pending;
+      expect(writer).toHaveBeenCalledOnce();
+      expect(JSON.parse(String(writer.mock.calls[0]![0]))).toMatchObject({
+        event: "job_enqueued", subsystem: "knowledge", job_id: "artifact-work"
+      });
+      expect(JSON.stringify(writer.mock.calls)).not.toContain("PRIVATE_");
+    } finally { writer.mockRestore(); }
+  });
+
+  it("does not invent new work for reused or already settled artifacts or failed commits", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const failure = new Error("PRIVATE_DB");
+    const transaction = vi.fn().mockResolvedValueOnce({ kind: "reused", sourceId: input.sourceId })
+      .mockResolvedValueOnce({ kind: "already_settled", sourceId: input.sourceId }).mockRejectedValueOnce(failure);
+    const repo = createPrismaKnowledgeUploadRepository({ $transaction: transaction } as never);
+    try {
+      await repo.settle(input);
+      await repo.settle(input);
+      await expect(repo.settle(input)).rejects.toBe(failure);
+      expect(writer).not.toHaveBeenCalled();
+    } finally { writer.mockRestore(); }
+  });
+});

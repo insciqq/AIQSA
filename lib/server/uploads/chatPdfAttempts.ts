@@ -1,5 +1,6 @@
 import { storedTokenUsage } from "../usage";
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { retainDatabaseFailure } from "../observability/databaseFailure";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { estimateCostMicros, normalizeTokenUsage } from "../../domain/usage";
 import { ChatPdfPreparationError } from "./chatPdfCore";
@@ -17,14 +18,16 @@ export type ChatPdfDispatch = Readonly<{
   usageEventId: string;
 }>;
 
+type ChatPdfReservation = Readonly<
+  | { kind: "reserved"; attemptId: string }
+  | { kind: "settled"; resultArtifactId: string }
+  | { kind: "ambiguous" }
+>;
+
 export function createChatPdfAttempts(prisma: PrismaClient) {
   return {
-    async reserve(claim: ChatPdfClaim, work: ChatPdfAttemptWork): Promise<Readonly<
-      | { kind: "reserved"; attemptId: string }
-      | { kind: "settled"; resultArtifactId: string }
-      | { kind: "ambiguous" }
-    >> {
-      return prisma.$transaction(async (tx) => {
+    async reserve(claim: ChatPdfClaim, work: ChatPdfAttemptWork): Promise<ChatPdfReservation> {
+      return prisma.$transaction(async (tx): Promise<ChatPdfReservation> => {
         await assertChatPdfClaim(tx, claim);
         const preparation = await tx.chatPdfAttachmentPreparation.findFirstOrThrow({
           where: { id: work.preparationId, modelRunId: claim.runId, state: "preparing" }
@@ -60,7 +63,7 @@ export function createChatPdfAttempts(prisma: PrismaClient) {
         }
         const created = await tx.chatPdfPageAttempt.create({ data: work });
         return { kind: "reserved", attemptId: created.id };
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async dispatch(claim: ChatPdfClaim, attemptId: string): Promise<ChatPdfDispatch> {
@@ -92,16 +95,17 @@ export function createChatPdfAttempts(prisma: PrismaClient) {
           userId: claim.userId
         } });
         return { attemptId, usageEventId: usage.id };
-      });
+      }).catch(retainDatabaseFailure);
     },
 
-    async ambiguous(dispatch: ChatPdfDispatch, errorCode: "pdf_preparation_ambiguous" | "pdf_transcription_failed" = "pdf_preparation_ambiguous"): Promise<void> {
-      await prisma.chatPdfPageAttempt.updateMany({ where: { id: dispatch.attemptId, state: "dispatched" },
-        data: { state: "ambiguous", errorCode } });
+    async ambiguous(dispatch: ChatPdfDispatch, errorCode: "pdf_preparation_ambiguous" | "pdf_transcription_failed" = "pdf_preparation_ambiguous"): Promise<boolean> {
+      const updated = await prisma.chatPdfPageAttempt.updateMany({ where: { id: dispatch.attemptId, state: "dispatched" },
+        data: { state: "ambiguous", errorCode } }).catch(retainDatabaseFailure);
+      return updated.count === 1;
     },
 
-    async recordUsage(dispatch: ChatPdfDispatch, reported: ModelRunUsage): Promise<void> {
-      await prisma.$transaction(async (tx) => {
+    async recordUsage(dispatch: ChatPdfDispatch, reported: ModelRunUsage): Promise<boolean> {
+      return prisma.$transaction(async (tx) => {
         const [event] = await tx.$queryRaw<Array<{
           id: string; providerModelId: string | null; usageCompleteness: string;
         }>>(Prisma.sql`
@@ -111,9 +115,9 @@ export function createChatPdfAttempts(prisma: PrismaClient) {
         // Aggregate deletion owns removal of its accounting rows. If only the
         // attachment was deleted, replace the detached receipt's nulls once
         // without reviving any run or document.
-        if (!event || event.usageCompleteness !== "UNAVAILABLE") return;
+        if (!event || event.usageCompleteness !== "UNAVAILABLE") return false;
         const normalized = normalizeTokenUsage(reported);
-        if (normalized.completeness === "unavailable") return;
+        if (normalized.completeness === "unavailable") return false;
         const pricing = event.providerModelId ? await tx.providerModel.findUnique({
           where: { id: event.providerModelId },
           select: { inputTokenPriceMicros: true, outputTokenPriceMicros: true }
@@ -125,17 +129,18 @@ export function createChatPdfAttempts(prisma: PrismaClient) {
         await tx.usageEvent.update({
           where: { id: event.id }, data: usage
         });
-      });
+        return true;
+      }).catch(retainDatabaseFailure);
     },
 
     async settle(dispatch: ChatPdfDispatch, input: Readonly<{
       errorCode?: "pdf_preparation_invalid" | "pdf_transcription_failed";
       resultArtifactId: string | null;
       usage: ModelRunUsage;
-    }>): Promise<void> {
-      await prisma.$transaction(async (tx) => {
+    }>): Promise<boolean> {
+      return prisma.$transaction(async (tx) => {
         const attempt = await tx.chatPdfPageAttempt.findUnique({ where: { id: dispatch.attemptId } });
-        if (!attempt || attempt.state === "settled") return;
+        if (!attempt || attempt.state === "settled") return false;
         if (attempt.state !== "dispatched" && attempt.state !== "ambiguous") {
           throw new ChatPdfPreparationError("pdf_preparation_invalid");
         }
@@ -143,11 +148,12 @@ export function createChatPdfAttempts(prisma: PrismaClient) {
           errorCode: input.errorCode ?? null, resultArtifactId: input.resultArtifactId,
           settledAt: new Date(), state: "settled", usage: chatPdfJson(input.usage)
         } });
-      });
+        return true;
+      }).catch(retainDatabaseFailure);
     },
 
     async list(preparationId: string) {
-      return prisma.chatPdfPageAttempt.findMany({ where: { preparationId }, orderBy: { page: "asc" } });
+      return prisma.chatPdfPageAttempt.findMany({ where: { preparationId }, orderBy: { page: "asc" } }).catch(retainDatabaseFailure);
     }
   };
 }

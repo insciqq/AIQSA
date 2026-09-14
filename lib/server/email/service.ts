@@ -14,6 +14,7 @@ import type {
   EmailRepositoryResult
 } from "./repository";
 import type { SmtpSendOutcome, SmtpTransport } from "./smtpTransport";
+import { logEmailAttempt } from "./observability";
 
 const TEST_SUBJECT = "AIQSA email delivery configuration test";
 const TEST_TEXT = [
@@ -99,11 +100,18 @@ export function createAdminEmailService(input: {
     configuration: SmtpCompleteConfiguration,
     message: SmtpProductMessage
   ): Promise<AdminEmailAttemptCode> {
+    const started = performance.now();
     const release = attemptGate.tryAcquire();
-    if (!release) return "overloaded";
+    if (!release) {
+      logEmailAttempt("overloaded", "probe", performance.now() - started);
+      return "overloaded";
+    }
     try {
-      return outcomeCode(await input.transport.send({ configuration, message }));
+      const code = outcomeCode(await input.transport.send({ configuration, message }));
+      logEmailAttempt(code, "probe", performance.now() - started);
+      return code;
     } catch {
+      logEmailAttempt("smtp_connection_failed", "probe", performance.now() - started);
       return "smtp_connection_failed";
     } finally {
       release();

@@ -1,3 +1,5 @@
+import "./worker-bootstrap.cjs";
+import { logEvent, reportSubsystemFailure, reportSubsystemHealthy } from "../lib/server/observability";
 import { PrismaClient } from "@prisma/client";
 import {
   createPrismaMemoryLexicalProjectionStore
@@ -48,9 +50,6 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 
 function safeErrorCode(error: unknown): string {
   if (error instanceof OpenSearchTransportError) return error.code;
-  if (error instanceof Error && /^[a-z0-9_]{1,64}$/u.test(error.message)) {
-    return error.message;
-  }
   return "memory_search_worker_failed";
 }
 
@@ -58,14 +57,10 @@ async function wait(milliseconds: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function log(event: string, value: Readonly<Record<string, unknown>>): void {
-  console.info(JSON.stringify({ event, ...value }));
-}
-
 async function main(): Promise<void> {
   if (retryBlocked) {
     const retried = await store.retryBlocked({ limit: 1_000, now: new Date() });
-    log("memory_lexical_projection_retry_blocked", { retried });
+    logEvent("runtime_lifecycle", { subsystem: "memory_search", stage: "retry", outcome: "completed", count: retried });
     return;
   }
   if (integrityOnly) {
@@ -75,7 +70,6 @@ async function main(): Promise<void> {
       search,
       store
     });
-    log("memory_lexical_projection_integrity", audit);
     if (audit.mismatchedGenerations > 0 ||
       audit.integrity.blockedEvents > 0 ||
       audit.integrity.claimedEvents > 0 ||
@@ -83,8 +77,10 @@ async function main(): Promise<void> {
       audit.integrity.outstandingEvents > 0 ||
       audit.integrity.readyGenerations + audit.integrity.retiredGenerations !==
         audit.integrity.totalGenerations) {
+      logEvent("runtime_lifecycle", { subsystem: "memory_search", stage: "integrity", outcome: "failed", code: "memory_lexical_projection_integrity_failed", count: audit.mismatchedGenerations, pending_count: audit.integrity.outstandingEvents });
       throw new Error("memory_lexical_projection_integrity_failed");
     }
+    logEvent("runtime_lifecycle", { subsystem: "memory_search", stage: "integrity", outcome: "completed", count: audit.checkedGenerations });
     return;
   }
   if (rebuild) {
@@ -94,13 +90,14 @@ async function main(): Promise<void> {
       search,
       store
     });
-    log("memory_lexical_projection_rebuild", result);
+    logEvent("runtime_lifecycle", { subsystem: "memory_search", stage: "rebuild", outcome: result.failed > 0 ? "failed" : "completed", failed_count: result.failed, completed_count: result.projected });
     if (result.failed > 0 || result.integrity.blockedEvents > 0 ||
       result.integrity.claimedEvents > 0 ||
       result.integrity.degradedGenerations > 0 ||
       result.integrity.outstandingEvents > 0 ||
       result.integrity.readyGenerations + result.integrity.retiredGenerations !==
         result.integrity.totalGenerations) {
+      logEvent("runtime_lifecycle", { subsystem: "memory_search", stage: "integrity", outcome: "failed", code: "memory_lexical_projection_rebuild_failed", pending_count: result.integrity.outstandingEvents });
       throw new Error("memory_lexical_projection_rebuild_failed");
     }
     return;
@@ -121,7 +118,17 @@ async function main(): Promise<void> {
         store
       });
       indexValidated = true;
-      log("memory_lexical_projection_pass", pass);
+      if (pass.failed === 0) reportSubsystemHealthy("memory_search", "projection");
+      if (pass.claimed > 0 || pass.failed > 0) {
+        logEvent("runtime_lifecycle", { subsystem: "memory_search", stage: "projection",
+          outcome: pass.failed > 0 ? "failed" : "completed", claimed_count: pass.claimed,
+          failed_count: pass.failed, completed_count: pass.projected });
+      }
+      if (pass.integrityFailed > 0) {
+        reportSubsystemFailure({ subsystem: "memory_search", stage: "integrity", code: "memory_lexical_projection_integrity_failed", action: "degrade" });
+      } else if (runMaintenance) {
+        reportSubsystemHealthy("memory_search", "integrity");
+      }
       deferredVerificationPasses =
         nextMemoryLexicalProjectionDeferredVerificationPasses(
           deferredVerificationPasses,
@@ -130,9 +137,9 @@ async function main(): Promise<void> {
       if (once || drain && pass.claimed === 0 || stopping) {
         if (drain) {
           const integrity = await store.inspect();
-          log("memory_lexical_projection_drain_integrity", integrity);
           if (integrity.blockedEvents > 0 || integrity.claimedEvents > 0 ||
             integrity.degradedGenerations > 0 || integrity.outstandingEvents > 0) {
+            logEvent("runtime_lifecycle", { subsystem: "memory_search", stage: "integrity", outcome: "failed", code: "memory_lexical_projection_drain_incomplete", pending_count: integrity.outstandingEvents });
             throw new Error("memory_lexical_projection_drain_incomplete");
           }
         }
@@ -141,7 +148,7 @@ async function main(): Promise<void> {
       if (pass.claimed > 0) continue;
     } catch (error) {
       const code = safeErrorCode(error);
-      log("memory_lexical_projection_pass_failed", { code });
+      reportSubsystemFailure({ subsystem: "memory_search", stage: "projection", code, action: once || drain ? "stop" : "retry" });
       if (once || drain) throw error;
     }
     await wait(configuration.worker.intervalMs);
@@ -150,7 +157,7 @@ async function main(): Promise<void> {
 
 main()
   .catch((error: unknown) => {
-    console.error(safeErrorCode(error));
+    reportSubsystemFailure({ subsystem: "memory_search", stage: "shutdown", code: safeErrorCode(error), action: "stop" });
     process.exitCode = 1;
   })
   .finally(async () => {

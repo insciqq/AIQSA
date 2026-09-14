@@ -5,6 +5,8 @@ import { EmbeddingAdapterError, type EmbeddingAdapter } from "../providers/embed
 import { ProviderAdmissionError } from "../providerRuntime/admission";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { elapsedMilliseconds, monotonicNowMilliseconds } from "../monotonicTime";
+import { logEvent } from "../observability";
+import { observedFailure } from "../providers/providerObservability";
 import { OpenSearchTransportError } from "../search/opensearch/transport";
 import type {
   ModelToolCall,
@@ -293,6 +295,7 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 }
 
 function errorResult(call: ModelToolCall, code: string, message?: string): ToolExecutionResult {
+  logEvent("tool_execution", { tool_kind: "knowledge", stage: "result", outcome: "failed", code });
   return {
     callId: call.id,
     content: [{ text: message ?? `Knowledge retrieval failed: ${code}.`, type: "text" }],
@@ -319,12 +322,10 @@ const SEARCH_INFRASTRUCTURE_FAILURE_CODES: ReadonlySet<string> = new Set([
 ]);
 
 function classifiedSearchUnavailable(error: unknown): Readonly<{
-  failureClass: "backend" | "projection";
   failureCode: KnowledgeSearchUnavailableFailureCode;
 }> | null {
   if (error instanceof Error && error.message === "knowledge_search_projection_incomplete") {
     return {
-      failureClass: "projection",
       failureCode: "knowledge_search_projection_unavailable"
     };
   }
@@ -332,24 +333,20 @@ function classifiedSearchUnavailable(error: unknown): Readonly<{
       SEARCH_INFRASTRUCTURE_FAILURE_CODES.has(error.code)) ||
     (error instanceof Error && error.message === "knowledge_search_candidate_revalidation_failed")) {
     return {
-      failureClass: "backend",
       failureCode: "knowledge_search_backend_unavailable"
     };
   }
   return null;
 }
 
-function reportSearchUnavailable(failureClass: "backend" | "projection"): void {
-  console.warn(JSON.stringify({
-    event: "knowledge_search_unavailable",
-    failureClass
-  }));
-}
-
 function budgetRejectionResult(
   call: ModelToolCall,
   stopReason: KnowledgeBudgetStopReason | KnowledgeBudgetReservationStopReason
 ): ToolExecutionResult {
+  logEvent("tool_execution", {
+    tool_kind: "knowledge", stage: "result", outcome: "degraded",
+    code: "knowledge_budget_exhausted", reason: "policy", action: "skip"
+  });
   return {
     callId: call.id,
     content: [{
@@ -372,9 +369,10 @@ function budgetRejectionResult(
 
 function completedResult(
   call: ModelToolCall,
-  evidence: KnowledgeRetrievalEvidence
+  evidence: KnowledgeRetrievalEvidence,
+  status: "complete" | "error" = "complete"
 ): ToolExecutionResult {
-  return {
+  const result: ToolExecutionResult = {
     callId: call.id,
     content: knowledgeToolResultContent(evidence),
     name: call.name,
@@ -383,19 +381,28 @@ function completedResult(
       knowledgeResultVersion: evidence.version,
       providerCall: true
     },
-    status: "complete",
+    status,
     usage: aggregateKnowledgeUsage(evidence.embeddingExecutions)
   };
+  const degraded = evidence.failureCode !== undefined || evidence.rerankerBinding?.status === "degraded";
+  const rerankerFailureCode = evidence.rerankerBinding?.version === 2
+    ? evidence.rerankerBinding.fallbackReason ?? undefined
+    : evidence.rerankerBinding?.status === "degraded" ? evidence.rerankerBinding.failureCode : undefined;
+  logEvent("tool_execution", {
+    tool_kind: "knowledge", stage: "result", operation_stage: "retrieval",
+    outcome: status === "error" ? "failed" : degraded ? "degraded" : "completed",
+    code: evidence.failureCode ?? rerankerFailureCode,
+    ...(degraded && status === "complete" ? { action: "degrade" as const } : {}),
+    count: evidence.results.length
+  });
+  return result;
 }
 
 function unavailableResult(
   call: ModelToolCall,
   evidence: KnowledgeRetrievalEvidence
 ): ToolExecutionResult {
-  return {
-    ...completedResult(call, evidence),
-    status: "error"
-  };
+  return completedResult(call, evidence, "error");
 }
 
 function resultFromEvidence(
@@ -1203,14 +1210,11 @@ export function createKnowledgeToolExecutor(input: Readonly<{
       ? reservation
       : { kind: "admitted" };
   };
-  return {
-    accepts: (name) => acceptedToolNames.has(name),
-    capability: "knowledge",
-    async execute(
+  const execute = async (
       call: ModelToolCall,
       context: ToolExecutionContext,
       options?: { signal?: AbortSignal }
-    ): Promise<ToolExecutionResult> {
+    ): Promise<ToolExecutionResult> => {
       const request = parseKnowledgeExecutionRequest(call);
       if (!request) return errorResult(call, "knowledge_tool_arguments_invalid");
       const runId = context.runId;
@@ -1379,7 +1383,6 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           version: KNOWLEDGE_RESULT_VERSION
         });
         const acceptedEvidence = await persistEvidence(evidence);
-        reportSearchUnavailable(classified.failureClass);
         return unavailableResult(call, acceptedEvidence);
       };
       const persistExplicitUnavailable = async (failureCode: string) => {
@@ -1641,7 +1644,14 @@ export function createKnowledgeToolExecutor(input: Readonly<{
       } catch (error) {
         throwIfAborted(options?.signal);
         const classified = classifiedSearchUnavailable(error);
-        if (classified) return persistSearchUnavailable(classified);
+        if (classified) {
+          const failure = observedFailure(error);
+          logEvent("tool_execution", {
+            ...failure, tool_kind: "knowledge", stage: "execution", operation_stage: "retrieval",
+            outcome: "failed", code: failure.code === "unknown" ? classified.failureCode : failure.code
+          });
+          return persistSearchUnavailable(classified);
+        }
         throw error;
       }
       throwIfAborted(options?.signal);
@@ -1700,7 +1710,12 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           }
         } catch (error) {
           throwIfAborted(options?.signal);
-          if (permitsLexicalQueryDegradation(error)) {
+          const permitted = permitsLexicalQueryDegradation(error);
+          logEvent("tool_execution", {
+            ...observedFailure(error), tool_kind: "knowledge", stage: "execution", operation_stage: "embedding",
+            outcome: permitted ? "degraded" : "failed", action: permitted ? "degrade" : "stop"
+          });
+          if (permitted) {
             semanticUnavailable = true;
             embeddingExecutions.push({
               bindingOrdinals: group.bindings.map((binding) => binding.ordinal),
@@ -1727,6 +1742,12 @@ export function createKnowledgeToolExecutor(input: Readonly<{
       const rerankResolution = input.rerankerRuntime
         ? await input.rerankerRuntime.resolve()
         : null;
+      if (rerankResolution?.kind === "unavailable") {
+        logEvent("tool_execution", {
+          tool_kind: "knowledge", stage: "execution", operation_stage: "rerank",
+          outcome: "degraded", code: "reranker_model_unavailable", action: "degrade"
+        });
+      }
       const rerankExecutor: KnowledgeRerankExecutor | null =
         rerankResolution?.kind === "ready"
           ? createKnowledgeRerankStage({
@@ -1762,7 +1783,14 @@ export function createKnowledgeToolExecutor(input: Readonly<{
       } catch (error) {
         throwIfAborted(options?.signal);
         const classified = classifiedSearchUnavailable(error);
-        if (classified) return persistSearchUnavailable(classified, embeddingExecutions);
+        if (classified) {
+          const failure = observedFailure(error);
+          logEvent("tool_execution", {
+            ...failure, tool_kind: "knowledge", stage: "execution", operation_stage: "retrieval",
+            outcome: "failed", code: failure.code === "unknown" ? classified.failureCode : failure.code
+          });
+          return persistSearchUnavailable(classified, embeddingExecutions);
+        }
         throw error;
       }
       throwIfAborted(options?.signal);
@@ -1865,8 +1893,52 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         }
         throw error;
       }
+    };
+  return {
+    accepts: (name) => acceptedToolNames.has(name),
+    capability: "knowledge",
+    async execute(call, context, options) {
+      // The run owner's native deadline boundary observes this same signal.
+      const preAborted = options?.signal?.aborted === true;
+      const startedAt = performance.now();
+      logEvent("tool_execution", { tool_kind: "knowledge", stage: "execution", outcome: "started" });
+      try {
+        const result = await execute(call, context, options);
+        logEvent("tool_execution", {
+          tool_kind: "knowledge", stage: "execution",
+          outcome: result.status === "error" ? "failed" : "completed",
+          ...(preAborted ? {} : { duration_ms: performance.now() - startedAt })
+        });
+        return result;
+      } catch (error) {
+        const failure = observedFailure(error, options?.signal);
+        logEvent("tool_execution", {
+          ...failure, tool_kind: "knowledge", stage: "execution",
+          outcome: failure.reason === "cancelled" ? "cancelled" : "failed",
+          ...(preAborted ? {} : { duration_ms: performance.now() - startedAt })
+        });
+        throw error;
+      }
     },
-    preflight,
+    async preflight(call, context) {
+      const startedAt = performance.now();
+      logEvent("tool_execution", { tool_kind: "knowledge", stage: "admission", outcome: "started" });
+      try {
+        const result = await preflight(call, context);
+        logEvent("tool_execution", {
+          tool_kind: "knowledge", stage: "admission", duration_ms: performance.now() - startedAt,
+          outcome: result.kind === "rejected" ? "failed" : "completed",
+          ...(result.kind === "replayed" ? { action: "skip" as const } : {})
+        });
+        return result;
+      } catch (error) {
+        logEvent("tool_execution", {
+          ...observedFailure(error), tool_kind: "knowledge", stage: "admission",
+          outcome: "failed", duration_ms: performance.now() - startedAt
+        });
+        throw error;
+      }
+    },
     tool: knowledgeRetrievalTool,
     tools: Object.freeze([knowledgeRetrievalTool])
   };

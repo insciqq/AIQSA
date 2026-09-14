@@ -73,7 +73,7 @@ function forwardedIdentity(
   request: Request,
   trustedProxyCount: number
 ): LoginRateLimitIdentity {
-  if (trustedProxyCount < 1) {
+  if (!Number.isInteger(trustedProxyCount) || trustedProxyCount < 1) {
     return { status: "unavailable" };
   }
 
@@ -85,11 +85,13 @@ function forwardedIdentity(
 
   const entries = value.split(",");
 
-  if (entries.length !== trustedProxyCount) {
+  if (entries.length < trustedProxyCount) {
     return { status: "unavailable" };
   }
 
-  const chain = entries.map((entry) => canonicalIp(entry.trim()));
+  // Only the reviewed proxy suffix supplies identity. A client may prepend
+  // arbitrary values, including non-IP text, before the proxy-stamped entries.
+  const chain = entries.slice(-trustedProxyCount).map((entry) => canonicalIp(entry.trim()));
 
   if (chain.some((entry) => !entry)) {
     return { status: "unavailable" };
@@ -167,9 +169,7 @@ export function resolveLoginRateLimitIdentity(
   }
 
   if (config.clientIdentityMode === "trusted_proxy") {
-    const identity = forwardedIdentity(request, config.trustedProxyCount);
-
-    return identity.status === "available" ? identity : { status: "not_required" };
+    return forwardedIdentity(request, config.trustedProxyCount);
   }
 
   if (config.clientIdentityMode === "direct_peer") {

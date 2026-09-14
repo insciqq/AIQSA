@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createEmailDispatcher
 } from "./dispatcher";
@@ -9,6 +9,7 @@ import { SmtpAttemptGate } from "./service";
 import type { SmtpTransport } from "./smtpTransport";
 
 const NOW = new Date("2026-07-23T14:00:00.000Z");
+afterEach(() => vi.restoreAllMocks());
 const message = {
   kind: "verification" as const,
   subject: "Verify your AIQSA account",
@@ -47,6 +48,23 @@ function repository(overrides: Partial<EmailRepository> = {}): EmailRepository {
 }
 
 describe("email dispatcher", () => {
+  it("reports the original returned SMTP failure before a failed health write", async () => {
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const dispatcher = createEmailDispatcher({
+      repository: repository({
+        loadActiveForSend: async () => ({ ok: true, value: { kind: "ready", activeVersion: 1, configuration: configuration("private-host-canary") } }),
+        recordDeliveryOutcome: async () => { throw new Error("private-health-canary"); }
+      }),
+      transport: { send: async () => ({ kind: "failed", code: "smtp_tls_failed" }) }
+    });
+    await expect(dispatcher.send({ ...message, text: "private-email-body-canary" })).resolves.toEqual({ kind: "failed", code: "smtp_tls_failed" });
+    const records = output.mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(records).toEqual([
+      expect.objectContaining({ event: "service_operation", stage: "dispatch", outcome: "failed", code: "smtp_tls_failed" }),
+      expect.objectContaining({ event: "job_persistence", stage: "health", outcome: "unconfirmed" })
+    ]);
+    expect(JSON.stringify(records)).not.toContain("canary");
+  });
   it("gives deterministic capture absolute precedence over database and transport", async () => {
     const capture = createMemoryEmailCapture();
     const loadActiveForSend = vi.fn(async () => {

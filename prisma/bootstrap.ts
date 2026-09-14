@@ -1,6 +1,9 @@
+import "../scripts/worker-bootstrap.cjs";
+import { logEvent } from "../lib/server/observability";
 import { PrismaClient } from "@prisma/client";
 import {
   bootstrapInstallationDatabase,
+  InstallationBootstrapError,
   installationBootstrapInputFromEnv
 } from "../lib/server/bootstrap/installationBootstrap";
 import { assertAiqsaPostgresRuntime } from "../lib/server/postgresRuntimePreflight";
@@ -15,18 +18,14 @@ async function main(): Promise<void> {
     input
   );
 
-  console.log(
-    `AIQSA installation bootstrap ${result.status}: catalog models=${result.catalogModelCount}, search options=${result.catalogSearchOptionCount}`
-  );
+  logEvent("runtime_lifecycle", { subsystem: "database", stage: "initialize", outcome: "completed",
+    code: result.status === "created" ? "installation_created" : "installation_already_adopted", count: result.catalogModelCount });
 }
 
 main()
   .catch((error: unknown) => {
-    console.error(
-      error instanceof Error
-        ? error.message
-        : "AIQSA installation bootstrap failed for an unknown reason."
-    );
+    logEvent("runtime_lifecycle", { subsystem: "database", stage: "initialize", outcome: "failed",
+      code: error instanceof InstallationBootstrapError ? error.code : "installation_bootstrap_failed", action: "stop" });
     process.exitCode = 1;
   })
   .finally(async () => {

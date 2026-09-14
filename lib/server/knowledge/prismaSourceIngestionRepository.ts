@@ -1,3 +1,4 @@
+import { retainDatabaseFailure } from "../observability/databaseFailure";
 import { storedTokenUsage } from "../usage";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
@@ -576,7 +577,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
           return "activated";
         }
         return "retargeted";
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async advanceSourceToParsing(
@@ -601,7 +602,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
           sourceVersionId: identity.sourceVersionId,
           state: "processing"
         }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count === 1;
     },
 
@@ -622,7 +623,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
           nextAttemptAt: { lte: input.now },
           OR: [{ claimedAt: null }, { claimedAt: { lt: input.staleBefore } }]
         }
-      });
+      }).catch(retainDatabaseFailure);
       if (!pending) return null;
       return client.$transaction(async (tx) => {
         const cursor = await lockFairnessCursor(tx);
@@ -638,7 +639,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
         `;
         if (advanced !== 1) throw new Error("knowledge_fairness_cursor_lost");
         return claim;
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async completedBatchIndexes(
@@ -666,7 +667,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
         GROUP BY "batchIndex"
         HAVING count("passageId") = count("embeddedPassageId")
         ORDER BY "batchIndex"
-      `;
+      `.catch(retainDatabaseFailure);
       return rows.map(({ batchIndex }) => batchIndex);
     },
 
@@ -695,7 +696,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
           sourceVersionId: identity.sourceVersionId,
           state: "processing"
         }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count === 1;
     },
 
@@ -742,7 +743,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
           }
         });
         return true;
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async heartbeat(input: KnowledgeWorkIdentity & { now: Date }): Promise<boolean> {
@@ -755,7 +756,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
           sourceVersionId: identity.sourceVersionId,
           state: "processing"
         }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count === 1;
     },
 
@@ -845,7 +846,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
           where: { id: identity.artifactId }
         });
         return true;
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async persistHierarchicalIndex(input: KnowledgeWorkIdentity & {
@@ -869,7 +870,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
       }, {
         maxWait: KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_MAX_WAIT_MS,
         timeout: KNOWLEDGE_HIERARCHICAL_INDEX_TRANSACTION_TIMEOUT_MS
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async reconcile(input: { now: Date }): Promise<boolean> {
@@ -893,7 +894,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
             }
           }
         }
-      });
+      }).catch(retainDatabaseFailure);
 
       const missing = await client.$queryRaw<Array<{
         ownerUserId: string;
@@ -951,7 +952,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
           )
         ORDER BY version."id", generation."profileRevisionId"
         LIMIT 50
-      `;
+      `.catch(retainDatabaseFailure);
       if (missing.length > 0) {
         await client.knowledgeSourceIndexArtifact.createMany({
           data: missing.map((row) => {
@@ -971,9 +972,9 @@ export function createPrismaKnowledgeSourceIngestionRepository(
             };
           }),
           skipDuplicates: true
-        });
+        }).catch(retainDatabaseFailure);
       }
-      const migration = await reconcileActiveKnowledgeProfileMigrations(client, input.now);
+      const migration = await reconcileActiveKnowledgeProfileMigrations(client, input.now).catch(retainDatabaseFailure);
       return abandoned.count > 0 || missing.length > 0 ||
         knowledgeProfileMigrationChanged(migration);
     },
@@ -997,7 +998,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
           sourceVersionId: identity.sourceVersionId,
           state: "processing"
         }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count === 1;
     },
 
@@ -1079,7 +1080,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
           `;
           if (accepted[0]?.accepted) reused.push(chunk.index);
         }
-      });
+      }).catch(retainDatabaseFailure);
       return reused;
     },
 
@@ -1104,7 +1105,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
           sourceVersionId: identity.sourceVersionId,
           state: "processing"
         }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count === 1;
     }
   };

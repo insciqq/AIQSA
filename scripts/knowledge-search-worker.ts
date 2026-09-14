@@ -1,3 +1,6 @@
+import "./worker-bootstrap.cjs";
+import { logEvent, reportSubsystemFailure } from "../lib/server/observability";
+import { OpenSearchTransportError } from "../lib/server/search/opensearch/coreTransport";
 import { PrismaClient } from "@prisma/client";
 import {
   inspectKnowledgeSearchIntegrity,
@@ -44,9 +47,9 @@ async function main(): Promise<void> {
   const heartbeat = createPrismaKnowledgeSearchWorkerHeartbeat(prisma);
   if (rebuild) {
     const result = await rebuildKnowledgeSearchProjections({ client: prisma, search });
-    console.info(JSON.stringify({ event: "knowledge_search_projection_rebuild", ...result }));
+    logEvent("runtime_lifecycle", { subsystem: "knowledge_search", stage: "rebuild", outcome: result.failed > 0 ? "failed" : "completed", claimed_count: result.claimed, failed_count: result.failed, completed_count: result.projected });
     const integrity = await inspectKnowledgeSearchIntegrity({ client: prisma, search });
-    console.info(JSON.stringify({ event: "knowledge_search_integrity", ...integrity }));
+    logEvent("runtime_lifecycle", { subsystem: "knowledge_search", stage: "integrity", outcome: integrity.healthy ? "completed" : "failed", pending_count: integrity.incompleteProjectionCount });
     if (result.failed > 0 || !integrity.healthy) {
       throw new Error("knowledge_search_rebuild_integrity_failed");
     }
@@ -61,10 +64,11 @@ async function main(): Promise<void> {
       : await pass();
     await heartbeat.beat();
     heartbeatEstablished = true;
-    console.info(JSON.stringify({
-      event: "knowledge_search_projection_pass",
-      ...result
-    }));
+    if (result.claimed > 0 || result.failed > 0) {
+      logEvent("runtime_lifecycle", { subsystem: "knowledge_search", stage: "projection",
+        outcome: result.failed > 0 ? "failed" : "completed", claimed_count: result.claimed,
+        failed_count: result.failed, completed_count: result.projected });
+    }
     if (once || drain && result.claimed === 0 || stopping) return;
     if (!drain) await wait(intervalMs);
   } while (!stopping);
@@ -72,9 +76,8 @@ async function main(): Promise<void> {
 
 main()
   .catch((error: unknown) => {
-    console.error(error instanceof Error
-      ? error.message
-      : "knowledge_search_worker_failed");
+    reportSubsystemFailure({ subsystem: "knowledge_search", stage: "projection",
+      code: error instanceof OpenSearchTransportError ? error.code : "knowledge_search_worker_failed", action: "stop" });
     process.exitCode = 1;
   })
   .finally(async () => {

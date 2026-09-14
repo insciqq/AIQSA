@@ -1,3 +1,5 @@
+import { observeMemoryEnqueues } from "./enqueueObservability";
+import { retainDatabaseFailure } from "../../observability/databaseFailure";
 import { randomInt } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
@@ -197,7 +199,9 @@ export async function withLockedMemoryTransaction<T>(
   for (let attempt = 0; attempt < SERIALIZABLE_ATTEMPTS; attempt += 1) {
     const remainingMs = remainingTransactionDeadlineMs(options);
     try {
-      return await client.$transaction(async (tx) => {
+      let publishEnqueues = () => {};
+      const result = await client.$transaction(async (tx) => {
+        publishEnqueues = observeMemoryEnqueues(tx);
         await applyTransactionDeadline(tx, remainingMs);
         const settings = await lockMemorySettings(
           tx,
@@ -211,7 +215,9 @@ export async function withLockedMemoryTransaction<T>(
           maxWait: remainingMs,
           timeout: remainingMs
         })
-      });
+      }).catch(retainDatabaseFailure);
+      publishEnqueues();
+      return result;
     } catch (error) {
       if (options.deadlineAtMs !== undefined && (
         transactionDeadlineExceeded(error) ||

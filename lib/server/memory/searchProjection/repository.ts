@@ -1,3 +1,5 @@
+import { logEvent } from "../../observability";
+import { databaseFailureCode, retainDatabaseFailure } from "../../observability/databaseFailure";
 import { createHash, randomUUID } from "node:crypto";
 import {
   Prisma,
@@ -573,12 +575,14 @@ export async function settleMemoryLexicalProjectionSuccess(
   now: Date
 ): Promise<void> {
   if (!validClock(now)) throw new Error("memory_lexical_projection_clock_invalid");
+  let notApplied = false;
   await client.$transaction(async (tx) => {
     if (claim.operation === "PURGE_USER") {
       const later = await tx.memoryLexicalProjectionEvent.count({
         where: { sequence: { gt: claim.sequence }, userId: claim.userId }
       });
       if (later !== 0) {
+        notApplied = true;
         throw new Error("memory_lexical_projection_user_purge_not_final");
       }
     }
@@ -600,6 +604,7 @@ export async function settleMemoryLexicalProjectionSuccess(
       }
     });
     if (settled.count !== 1) {
+      notApplied = true;
       throw new Error("memory_lexical_projection_lease_lost");
     }
     if (claim.operation === "PURGE_USER") {
@@ -616,6 +621,7 @@ export async function settleMemoryLexicalProjectionSuccess(
       return;
     }
     if (!claim.indexGenerationId) {
+      notApplied = true;
       throw new Error("memory_lexical_projection_generation_missing");
     }
     const retired = claim.operation === "PURGE_GENERATION";
@@ -666,9 +672,15 @@ export async function settleMemoryLexicalProjectionSuccess(
             AND "enqueuedThroughSequence" >= ${claim.sequence}
         `);
     if (stateUpdated !== 1) {
+      notApplied = true;
       throw new Error("memory_lexical_projection_state_missing");
     }
+  }).catch(retainDatabaseFailure).catch(error => {
+    logEvent("job_persistence", { subsystem: "memory_search", stage: "complete", job_id: claim.id,
+      outcome: notApplied ? "not_applied" : "unconfirmed", prisma_code: databaseFailureCode(error) });
+    throw error;
   });
+  logEvent("job_persistence", { subsystem: "memory_search", stage: "complete", job_id: claim.id, outcome: "confirmed" });
 }
 
 export async function settleMemoryLexicalProjectionFailure(
@@ -708,7 +720,15 @@ export async function settleMemoryLexicalProjectionFailure(
       sequence: claim.sequence,
       state: "CLAIMED"
     }
+  }).catch(retainDatabaseFailure).catch(error => {
+    logEvent("job_persistence", { subsystem: "memory_search", stage: terminal ? "fail" : "retry", job_id: claim.id,
+      outcome: "unconfirmed", code, prisma_code: databaseFailureCode(error) });
+    throw error;
   });
+  logEvent("job_persistence", { subsystem: "memory_search", stage: terminal ? "fail" : "retry", job_id: claim.id,
+    outcome: updated.count === 1 ? "confirmed" : "not_applied", code,
+    ...(updated.count === 1 && nextAttemptAt ? { retry_at: nextAttemptAt.toISOString() } : {}),
+    action: updated.count !== 1 ? "skip" : terminal ? "fail" : "retry" });
   if (updated.count !== 1) return;
   if (claim.indexGenerationId) {
     await client.memoryLexicalProjectionState.updateMany({
@@ -722,6 +742,10 @@ export async function settleMemoryLexicalProjectionFailure(
         indexGenerationId: claim.indexGenerationId,
         userId: claim.userId
       }
+    }).catch(retainDatabaseFailure).catch(error => {
+      logEvent("job_persistence", { subsystem: "memory_search", stage: "projection", job_id: claim.id,
+        outcome: "unconfirmed", prisma_code: databaseFailureCode(error) });
+      throw error;
     });
   }
 }

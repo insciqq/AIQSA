@@ -1,3 +1,4 @@
+import { observeJsonParse } from "./providerObservability";
 import {
   ProviderResponseTooLargeError,
   providerHttpErrorMessage,
@@ -72,7 +73,7 @@ async function parseJsonResponse(
   const text = await readBoundedResponseText(response, { signal });
   let parsed: unknown;
   try {
-    parsed = text ? (JSON.parse(text) as unknown) : {};
+    parsed = observeJsonParse(response, () => text ? (JSON.parse(text) as unknown) : {});
   } catch {
     throw new Error(errors.invalidJson);
   }
@@ -95,7 +96,7 @@ async function throwHttpError(
   try {
     const text = await readBoundedResponseText(response, { signal });
     try {
-      const parsed: unknown = JSON.parse(text);
+      const parsed: unknown = observeJsonParse(response, () => JSON.parse(text));
       if (isOpenAIChatRecord(parsed)) {
         const failure = providerResponseFailure("provider_response_failed", parsed, { httpStatus: response.status, providerName });
         failureCode = "code" in failure && typeof failure.code === "string" ? failure.code : undefined;

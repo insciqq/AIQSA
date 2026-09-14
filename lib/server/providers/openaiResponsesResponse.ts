@@ -1,3 +1,4 @@
+import { observeStreamParseFailure } from "./providerObservability";
 import { providerResponseFailure } from "./responseFailure";
 import { safeExternalHref } from "../../domain/links";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
@@ -546,6 +547,7 @@ export async function* parseOpenAIResponsesSse(
     try {
       parsed = JSON.parse(event.data) as unknown;
     } catch {
+      observeStreamParseFailure(input.responseBody);
       throw new Error("openai_stream_truncated");
     }
     if (!isRecord(parsed)) {

@@ -1,3 +1,4 @@
+import { retainDatabaseFailure } from "../../observability/databaseFailure";
 import { prisma } from "../../prisma";
 import { createPrismaMemoryEmbeddingHandler } from
   "../embedding/compositeHandler";
@@ -230,7 +231,7 @@ export async function preflightDefaultMemoryCoordinator(input: Readonly<{
 }>): Promise<void> {
   assertDefaultMemoryCoordinatorRegistryComplete();
   await defaultMemoryCoordinatorRepository.preflight();
-  await preflightPrismaMemoryProviderBindings(prisma, input.encryptionKey);
+  await preflightPrismaMemoryProviderBindings(prisma, input.encryptionKey).catch(retainDatabaseFailure);
 }
 
 function createDefaultMemoryCoordinator(): MemoryCoordinator {

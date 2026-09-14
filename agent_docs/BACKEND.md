@@ -11,6 +11,10 @@ Project SSE uses session authentication and reauthorizes membership during deliv
 
 Dependency direction belongs to [Architecture](ARCHITECTURE.md), authentication threats to [Security](SECURITY.md).
 
+HTTP correlation begins at the owned Node listener with a fresh server-generated trace and response header; client headers cannot select it. Production route labels come only from the active build's manifest, and describe pathname matching rather than proof of handler execution. Unknown/dev routes never fall back to raw URLs. Accepted run and job identities correlate independent requests and recovery without changing authority or adding persistence fields. Shared coordinators and timers start outside the triggering request's context; each claimed operation owns its context.
+
+Diagnostics validate event fields at runtime. HTTP completion, operation outcome and confirmed persistence are separate facts. Output failure cannot replace the operation outcome; bounded loss reporting and synchronous emergency writes provide best-effort evidence. Process observation preserves existing exit policy; mixed third-party output is outside the writer's control.
+
 ## Control Planes
 
 Configuration transitions use optimistic concurrency and atomic validation. Never silently clamp, substitute, or partially apply a multi-resource change. Accepted runs retain their admitted configuration; edits affect future work.

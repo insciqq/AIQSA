@@ -1,3 +1,6 @@
+import { logEvent } from "../../observability";
+import { observeMemoryEnqueues } from "../persistence/enqueueObservability";
+import { databaseFailureCode, rememberDatabaseFailure, retainDatabaseFailure } from "../../observability/databaseFailure";
 import { createHash, randomInt, randomUUID } from "node:crypto";
 import {
   Prisma,
@@ -500,7 +503,7 @@ async function heartbeatJobWithAuthority(
         WHERE owner_user."id" = job."userId"
           AND owner_user."status" = 'active'::"UserStatus"
       )
-  `);
+  `).catch(retainDatabaseFailure);
   return updated === 1;
 }
 
@@ -717,11 +720,11 @@ export async function preflightPrismaMemoryJobLifecycle(
         throw new Error("memory_job_lifecycle_preflight_settlement_invalid");
       }
       throw rollback;
-    });
+    }).catch(retainDatabaseFailure);
   } catch (error) {
     if (error !== rollback) throw error;
   }
-  if ((await client.memoryJob.count({ where: { id: probeId } })) !== 0) {
+  if ((await client.memoryJob.count({ where: { id: probeId } }).catch(retainDatabaseFailure)) !== 0) {
     throw new Error("memory_job_lifecycle_preflight_residue_detected");
   }
 }
@@ -752,7 +755,7 @@ export function createPrismaMemoryCoordinatorRepository(
           FROM "MemoryDeletionOutbox"
           LIMIT 0
         `);
-      });
+      }).catch(retainDatabaseFailure);
       await (options.preflightJobLifecycle
         ? options.preflightJobLifecycle()
         : preflightPrismaMemoryJobLifecycle(client));
@@ -773,7 +776,7 @@ export function createPrismaMemoryCoordinatorRepository(
           ...claim,
           recoveredLease: priorState === "CLAIMED"
         } as MemoryJobClaim;
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async heartbeatJob(input) {
@@ -791,7 +794,7 @@ export function createPrismaMemoryCoordinatorRepository(
           state: "CLAIMED",
           userId: input.claim.userId
         }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count === 1;
     },
 
@@ -823,7 +826,7 @@ export function createPrismaMemoryCoordinatorRepository(
           await wakeCurrentMemoryShadowRebuildInTransaction(tx, input.claim.userId);
         }
         return updated.count === 1;
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async retryJob(input) {
@@ -844,7 +847,7 @@ export function createPrismaMemoryCoordinatorRepository(
           state: "CLAIMED",
           userId: input.claim.userId
         }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count === 1;
     },
 
@@ -873,7 +876,7 @@ export function createPrismaMemoryCoordinatorRepository(
           await wakeCurrentMemoryShadowRebuildInTransaction(tx, input.claim.userId);
         }
         return updated.count === 1;
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async terminalUnavailableJobs(input) {
@@ -909,7 +912,7 @@ export function createPrismaMemoryCoordinatorRepository(
               )
             )
           )
-      `);
+      `).catch(retainDatabaseFailure);
     },
 
     async commitJobSuccess(input) {
@@ -920,27 +923,37 @@ export function createPrismaMemoryCoordinatorRepository(
       }
       for (let attempt = 0; attempt < JOB_COMMIT_TRANSACTION_ATTEMPTS; attempt += 1) {
         try {
-          const commit = (tx: Prisma.TransactionClient) =>
-            commitJobSuccessWithAuthority(tx, input);
-          return await (input.claim.kind === "REBUILD_INDEX"
+          let publishEnqueues = () => {};
+          const commit = (tx: Prisma.TransactionClient) => {
+            publishEnqueues = observeMemoryEnqueues(tx);
+            return commitJobSuccessWithAuthority(tx, input);
+          };
+          const committed = await (input.claim.kind === "REBUILD_INDEX"
             ? client.$transaction(commit, {
                 timeout: REBUILD_JOB_COMMIT_TIMEOUT_MS
-              })
-            : client.$transaction(commit));
+              }).catch(retainDatabaseFailure)
+            : client.$transaction(commit).catch(retainDatabaseFailure));
+          publishEnqueues();
+          return committed;
         } catch (error) {
           if (
             attempt < JOB_COMMIT_TRANSACTION_ATTEMPTS - 1 &&
             (rollbackSafeTransactionConflict(error) ||
               rollbackSafeJobCommitTimeout(error))
           ) {
+            logEvent("job_persistence", { subsystem: "memory", job_id: input.claim.id,
+              attempt: input.claim.attemptCount, stage: "complete", outcome: "unconfirmed",
+              code: "memory_job_commit_failed", prisma_code: databaseFailureCode(error), action: "retry" });
             await (options.jobCommitRetryDelay ?? waitForJobCommitRetry)(attempt + 1);
             continue;
           }
           if (error instanceof MemoryCoordinatorError) throw error;
-          throw new MemoryCoordinatorError(
+          const failure = new MemoryCoordinatorError(
             jobCommitFailureCode(error),
             rollbackSafeJobCommitTimeout(error)
           );
+          rememberDatabaseFailure(failure, databaseFailureCode(error));
+          throw failure;
         }
       }
       return false;
@@ -955,7 +968,7 @@ export function createPrismaMemoryCoordinatorRepository(
           nextAttemptAt: { lte: input.now },
           state: "RETRYABLE_FAILED"
         }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count;
     },
 
@@ -989,7 +1002,7 @@ export function createPrismaMemoryCoordinatorRepository(
             WHERE owner_user."id" = job."userId"
               AND owner_user."status" = 'active'::"UserStatus"
           )
-      `);
+      `).catch(retainDatabaseFailure);
     },
 
     async listWaitingJobs(input) {
@@ -1010,7 +1023,7 @@ export function createPrismaMemoryCoordinatorRepository(
           AND owner_user."status" = 'active'::"UserStatus"
         ORDER BY job."updatedAt", job."id"
         LIMIT ${input.limit}
-      `);
+      `).catch(retainDatabaseFailure);
     },
 
     async resolveWaitingJob(input) {
@@ -1059,7 +1072,7 @@ export function createPrismaMemoryCoordinatorRepository(
           await wakeCurrentMemoryShadowRebuildInTransaction(tx, input.job.userId);
         }
         return updated.count === 1;
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async claimDeletion(input) {
@@ -1110,7 +1123,7 @@ export function createPrismaMemoryCoordinatorRepository(
           recoveredLease: priorState === "RUNNING",
           resumedFromBlocked: priorState === "BLOCKED_REQUIRES_ADMIN"
         } as MemoryDeletionClaim;
-      });
+      }).catch(retainDatabaseFailure);
     },
 
     async heartbeatDeletion(input) {
@@ -1123,7 +1136,7 @@ export function createPrismaMemoryCoordinatorRepository(
           state: "RUNNING",
           userId: input.claim.userId
         }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count === 1;
     },
 
@@ -1146,7 +1159,7 @@ export function createPrismaMemoryCoordinatorRepository(
           state: "RUNNING",
           userId: input.claim.userId
         }
-      });
+      }).catch(retainDatabaseFailure);
       return updated.count === 1;
     },
 
@@ -1183,7 +1196,7 @@ export function createPrismaMemoryCoordinatorRepository(
           }
         });
         return updated.count === 1;
-      });
+      }).catch(retainDatabaseFailure);
     }
   });
 }

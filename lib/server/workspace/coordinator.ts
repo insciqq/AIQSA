@@ -1,3 +1,5 @@
+import { logEvent } from "../observability";
+import { inheritWorkspaceResultCode, observeWorkspaceAbort, observeWorkspaceToolExecution, retainWorkspaceResultCode } from "./toolObservability";
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
@@ -1066,24 +1068,24 @@ function isExecSessionTool(name: string): boolean {
 function executionErrorResult(
   call: ModelToolCall,
   text: string,
-  code = "operation_failed"
+  code: "operation_failed" | "workspace_shell_syntax_requires_shell" = "operation_failed"
 ): ToolExecutionResult {
-  return {
+  return retainWorkspaceResultCode({
     callId: call.id,
     content: [{ text: JSON.stringify({ error: { code, message: text }, ok: false }), type: "text" }],
     name: call.name,
     rawPreview: { truncated: false },
     status: "error"
-  };
+  }, code);
 }
 
 function withActivity(
   result: ToolExecutionResult,
   entry: ThreadWorkspaceActivityEntry | null
 ): ToolExecutionResult {
-  return entry
+  return inheritWorkspaceResultCode(result, entry
     ? { ...result, artifacts: [...(result.artifacts ?? []), workspaceActivityEvent(entry)] }
-    : result;
+    : result);
 }
 
 function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult): ToolExecutionResult {
@@ -1643,170 +1645,184 @@ export function createWorkspaceCoordinator(input: Readonly<{
       return { quiesced: true, sessionSettled, stoppedVm: quiescence.stoppedVm };
     },
     async execute({ call, modelRunToolCallId, onActivity, runId, signal, userId, workspace }) {
-      const initial = await requireBinding(runId, userId, workspace);
-      const definitionByName = initial.toolDefinitions.find((tool) => tool.namespacedName === call.name);
-      if (definitionByName?.originalName === "sandbox_exec" &&
-        typeof call.arguments.command === "string" &&
-        SHELL_SYNTAX.test(call.arguments.command)) {
-        // Direct exec spawns `command` as one program: pipes, operators,
-        // redirects, and embedded arguments belong to sandbox_shell.
-        const rejected = executionErrorResult(
-          call,
-          "This command uses shell syntax, but sandbox_exec does not invoke a shell. " +
-            "Use sandbox_shell, or pass only the program in `command` and its arguments in `args`.",
-          "workspace_shell_syntax_requires_shell"
+      return observeWorkspaceToolExecution(async () => {
+        const initial = await requireBinding(runId, userId, workspace);
+        const definitionByName = initial.toolDefinitions.find((tool) => tool.namespacedName === call.name);
+        if (definitionByName?.originalName === "sandbox_exec" &&
+          typeof call.arguments.command === "string" &&
+          SHELL_SYNTAX.test(call.arguments.command)) {
+          // Direct exec spawns `command` as one program: pipes, operators,
+          // redirects, and embedded arguments belong to sandbox_shell.
+          const shellToolName = initial.toolDefinitions.find((tool) =>
+            tool.originalName === "sandbox_shell"
+          )?.namespacedName ?? "sandbox_shell";
+          const rejected = executionErrorResult(
+            call,
+            `This command uses shell syntax, but ${call.name} does not invoke a shell. ` +
+            `Use ${shellToolName}, or pass only the program in \`command\` and its arguments in \`args\`.`,
+            "workspace_shell_syntax_requires_shell"
+          );
+          const entry = projectWorkspaceActivity({
+            arguments: call.arguments,
+            callId: modelRunToolCallId,
+            originalName: "sandbox_exec",
+            result: rejected,
+            runId,
+            startedAt: new Date()
+          }, "settled");
+          return withActivity(rejected, entry);
+        }
+        let initializedBinding = await initializeWithLostSessionRecovery(
+          initial,
+          workspace,
+          signal,
+          onActivity
         );
-        const entry = projectWorkspaceActivity({
+        let binding = initializedBinding.binding;
+        const definition = binding.toolDefinitions.find((tool) => tool.namespacedName === call.name);
+        if (!definition || !binding.runtimeSandboxId) {
+          throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+        }
+        const startedAt = new Date();
+        // The durable owner also supplies logical command identity after cache loss.
+        const execution = isExecSessionTool(definition.originalName)
+          ? await ownedExecution(binding, call.arguments.execSessionId) : null;
+        if (isExecSessionTool(definition.originalName) && !execution) {
+          return executionErrorResult(call, "This execution does not belong to the current run.");
+        }
+        const projectionInput = {
           arguments: call.arguments,
           callId: modelRunToolCallId,
-          originalName: "sandbox_exec",
-          result: rejected,
+          execOutputs: projectionState(runId),
+          ...(execution ? { executionStartCallId: execution.modelRunToolCallId } : {}),
+          inboxNames: inboxNamesByRun.get(runId),
+          originalName: definition.originalName,
           runId,
-          startedAt: new Date()
-        }, "settled");
-        return entry ? { ...rejected, artifacts: [workspaceActivityEvent(entry)] } : rejected;
-      }
-      let initializedBinding = await initializeWithLostSessionRecovery(
-        initial,
-        workspace,
-        signal,
-        onActivity
-      );
-      let binding = initializedBinding.binding;
-      const definition = binding.toolDefinitions.find((tool) => tool.namespacedName === call.name);
-      if (!definition || !binding.runtimeSandboxId) {
-        throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
-      }
-      const startedAt = new Date();
-      // The durable owner also supplies logical command identity after cache loss.
-      const execution = isExecSessionTool(definition.originalName)
-        ? await ownedExecution(binding, call.arguments.execSessionId) : null;
-      if (isExecSessionTool(definition.originalName) && !execution) {
-        return executionErrorResult(call, "This execution does not belong to the current run.");
-      }
-      const projectionInput = {
-        arguments: call.arguments,
-        callId: modelRunToolCallId,
-        execOutputs: projectionState(runId),
-        ...(execution ? { executionStartCallId: execution.modelRunToolCallId } : {}),
-        inboxNames: inboxNamesByRun.get(runId),
-        originalName: definition.originalName,
-        runId,
-        startedAt
-      };
-      const requested = projectWorkspaceActivity(projectionInput, "running");
-      if (requested) await onActivity?.(requested).catch(() => undefined);
-      const timeout = new AbortController();
-      const timer = setTimeout(
-        () => timeout.abort(new WorkspaceRuntimeError("workspace_tool_timeout")),
-        workspace.syncToolTimeoutSeconds * 1_000
-      );
-      const combined = signal
-        ? AbortSignal.any([signal, timeout.signal])
-        : timeout.signal;
-      try {
-        if (definition.originalName === "sandbox_shell" || definition.originalName === "sandbox_exec") {
-          const registered = await input.registry.register({
-            modelRunId: binding.runId,
-            modelRunToolCallId,
-            runtimeExecSessionId: workspaceSyncCleanupId(modelRunToolCallId),
-            operation: ownedOperation(binding), sessionId: binding.sessionId
-          }).catch(() => "conflict" as const);
-          if (registered !== "registered") throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
-        }
-        const dispatch = (active: WorkspaceExecutionBinding) =>
-          input.runtime.callBoundTool({
-            arguments: call.arguments,
-            modelRunId: active.runId,
-            modelRunToolCallId,
-            originalName: definition.originalName,
-            runtimeSandboxId: active.runtimeSandboxId!,
-            operation: ownedOperation(active), sessionId: active.sessionId,
-            signal: combined
-          });
-        let result: WorkspaceToolResult;
-        try {
-          result = await dispatch(binding);
-        } catch (error) {
-          if (
-            !(error instanceof WorkspaceRuntimeError) ||
-            error.code !== "workspace_session_lost_before_dispatch" ||
-            !binding.runtimeSandboxId ||
-            combined.aborted ||
-            isExecSessionTool(definition.originalName)
-          ) {
-            throw error;
-          }
-          initialized.delete(binding.runId);
-          if (!(await input.repository.markSessionLost({
-            runtimeSandboxId: binding.runtimeSandboxId,
-            operation: ownedOperation(binding), sessionId: binding.sessionId
-          }))) {
-            throw error;
-          }
-          const fresh = await requireBinding(runId, userId, workspace);
-          initializedBinding = await initializeWithLostSessionRecovery(
-            fresh,
-            workspace,
-            combined,
-            onActivity
-          );
-          binding = initializedBinding.binding;
-          result = await dispatch(binding);
-          initializedBinding = { binding, recreated: true };
-        }
-        if (definition.originalName === "sandbox_exec_start" && result.status === "complete") {
-          const registered = await registerExecution(binding, modelRunToolCallId, result);
-          if (!registered) {
-            const rejected = executionErrorResult(
-              call,
-              "The long-running execution could not be registered and was stopped. Start it again."
-            );
-            return withActivity(rejected, projectWorkspaceActivity({
-              ...projectionInput,
-              durationMs: Date.now() - startedAt.getTime(),
-              result: rejected
-            }, "settled"));
-          }
-        }
-        // MCP close only disposes the observation handle. The durable cleanup
-        // obligation survives until terminal process/VM proof.
-        const projected = withActivity(
-          resultFromRuntime(call, result),
-          projectWorkspaceActivity({
-            ...projectionInput,
-            durationMs: Date.now() - startedAt.getTime(),
-            result: resultFromRuntime(call, result)
-          }, "settled")
+          startedAt
+        };
+        const requested = projectWorkspaceActivity(projectionInput, "running");
+        if (requested) await onActivity?.(requested).catch(() => undefined);
+        const observeAbort = observeWorkspaceAbort();
+        logEvent("tool_deadline", { tool_kind: "workspace", configured_timeout_ms: workspace.syncToolTimeoutSeconds * 1_000,
+          effective_timeout_ms: workspace.syncToolTimeoutSeconds * 1_000 });
+        const timeout = new AbortController();
+        const timer = setTimeout(
+          () => timeout.abort(new WorkspaceRuntimeError("workspace_tool_timeout")),
+          workspace.syncToolTimeoutSeconds * 1_000
         );
-        return initializedBinding.recreated
-          ? {
-              ...projected,
-              content: [{
-                text: "Workspace storage was unavailable and a clean workspace was recreated from the original attachments.",
-                type: "text"
-              }, ...projected.content]
-            }
-          : projected;
-      } catch (error) {
-        if (combined.aborted) {
-          if (binding.runtimeSandboxId) {
-            await input.runtime.cancelToolCall({
+        const combined = signal
+          ? AbortSignal.any([signal, timeout.signal])
+          : timeout.signal;
+        const onAbort = () => observeAbort({ stage: "delivery", deadline_kind: "operation",
+          abort_source: timeout.signal.aborted && combined.reason === timeout.signal.reason ? "workspace_deadline" : "parent_signal",
+          timeout_ms: workspace.syncToolTimeoutSeconds * 1_000 });
+        if (combined.aborted) observeAbort({ stage: "before_start", abort_source: "unknown", deadline_kind: "operation", timeout_ms: workspace.syncToolTimeoutSeconds * 1_000 });
+        else combined.addEventListener("abort", onAbort, { once: true });
+        try {
+          if (definition.originalName === "sandbox_shell" || definition.originalName === "sandbox_exec") {
+            const registered = await input.registry.register({
               modelRunId: binding.runId,
               modelRunToolCallId,
+              runtimeExecSessionId: workspaceSyncCleanupId(modelRunToolCallId),
+              operation: ownedOperation(binding), sessionId: binding.sessionId
+            }).catch(() => "conflict" as const);
+            if (registered !== "registered") throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+          }
+          const dispatch = (active: WorkspaceExecutionBinding) =>
+            input.runtime.callBoundTool({
+              arguments: call.arguments,
+              modelRunId: active.runId,
+              modelRunToolCallId,
+              originalName: definition.originalName,
+              runtimeSandboxId: active.runtimeSandboxId!,
+              operation: ownedOperation(active), sessionId: active.sessionId,
+              signal: combined
+            });
+          let result: WorkspaceToolResult;
+          try {
+            result = await dispatch(binding);
+          } catch (error) {
+            if (
+              !(error instanceof WorkspaceRuntimeError) ||
+              error.code !== "workspace_session_lost_before_dispatch" ||
+              !binding.runtimeSandboxId ||
+              combined.aborted ||
+              isExecSessionTool(definition.originalName)
+            ) {
+              throw error;
+            }
+            initialized.delete(binding.runId);
+            if (!(await input.repository.markSessionLost({
               runtimeSandboxId: binding.runtimeSandboxId,
               operation: ownedOperation(binding), sessionId: binding.sessionId
-            }).catch(() => undefined);
+            }))) {
+              throw error;
+            }
+            const fresh = await requireBinding(runId, userId, workspace);
+            initializedBinding = await initializeWithLostSessionRecovery(
+              fresh,
+              workspace,
+              combined,
+              onActivity
+            );
+            binding = initializedBinding.binding;
+            result = await dispatch(binding);
+            initializedBinding = { binding, recreated: true };
           }
-          if (timeout.signal.aborted) {
-            throw new WorkspaceRuntimeError("workspace_tool_timeout");
+          if (definition.originalName === "sandbox_exec_start" && result.status === "complete") {
+            const registered = await registerExecution(binding, modelRunToolCallId, result);
+            if (!registered) {
+              const rejected = executionErrorResult(
+                call,
+                "The long-running execution could not be registered and was stopped. Start it again."
+              );
+              return withActivity(rejected, projectWorkspaceActivity({
+                ...projectionInput,
+                durationMs: Date.now() - startedAt.getTime(),
+                result: rejected
+              }, "settled"));
+            }
           }
-          throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+          // MCP close only disposes the observation handle. The durable cleanup
+          // obligation survives until terminal process/VM proof.
+          const projected = withActivity(
+            resultFromRuntime(call, result),
+            projectWorkspaceActivity({
+              ...projectionInput,
+              durationMs: Date.now() - startedAt.getTime(),
+              result: resultFromRuntime(call, result)
+            }, "settled")
+          );
+          return initializedBinding.recreated
+            ? {
+                ...projected,
+                content: [{
+                  text: "Workspace storage was unavailable and a clean workspace was recreated from the original attachments.",
+                  type: "text"
+                }, ...projected.content]
+              }
+            : projected;
+        } catch (error) {
+          if (combined.aborted) {
+            if (binding.runtimeSandboxId) {
+              await input.runtime.cancelToolCall({
+                modelRunId: binding.runId,
+                modelRunToolCallId,
+                runtimeSandboxId: binding.runtimeSandboxId,
+                operation: ownedOperation(binding), sessionId: binding.sessionId
+              }).catch(() => undefined);
+            }
+            if (timeout.signal.aborted) {
+              throw new WorkspaceRuntimeError("workspace_tool_timeout");
+            }
+            throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+          }
+          throw error;
+        } finally {
+          clearTimeout(timer);
+          combined.removeEventListener("abort", onAbort);
         }
-        throw error;
-      } finally {
-        clearTimeout(timer);
-      }
+      });
     },
     async handoff(request) {
       request.signal?.throwIfAborted();

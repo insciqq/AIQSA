@@ -4,6 +4,10 @@ const { createHmac, randomBytes } = require("node:crypto");
 const http = require("node:http");
 const { isIP } = require("node:net");
 const path = require("node:path");
+const { preserveForwardedIdentity } = require("../lib/server/auth/forwardedHeaders.cjs");
+const { loadRouteResolver, wrapHttpListener } = require("../lib/server/observability/http.cjs");
+const { installProcessFailureHooks } = require("../lib/server/observability/process.cjs");
+const { announceProcess, writeEmergencyFailure } = require("../lib/server/observability/runtime.cjs");
 
 const DIRECT_PEER_HEADER = "x-aiqsa-runtime-peer";
 const DIRECT_PEER_MAC_DOMAIN = "aiqsa:runtime-peer-stamp:v1\0";
@@ -97,43 +101,14 @@ function overwritePeerHeader(request, stamp) {
 }
 
 function stampRequest(request) {
+  preserveForwardedIdentity(request);
   const stamp = createCurrentPeerStamp(request.socket?.remoteAddress);
   overwritePeerHeader(request, stamp);
 }
 
-function isLoopbackHostname(hostname) {
-  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-
-  if (normalized === "localhost" || normalized.endsWith(".localhost")) {
-    return true;
-  }
-
-  const canonical = canonicalIp(normalized);
-
-  return canonical === "::1" || canonical?.startsWith("127.") === true;
-}
-
-function enabled(value) {
-  return new Set(["1", "true", "yes", "on"]).has(value?.trim().toLowerCase() ?? "");
-}
-
-function warnForDirectHttp(env) {
-  const bindAddress = env.AIQSA_BIND_ADDRESS?.trim() || "127.0.0.1";
-
-  if (enabled(env.AIQSA_TRUST_PROXY_HEADERS) || isLoopbackHostname(bindAddress)) {
-    return;
-  }
-
-  try {
-    if (new URL(env.AIQSA_APP_BASE_URL?.trim() || "http://localhost:3000").protocol === "http:") {
-      console.warn("AIQSA runtime warning: direct_http_transport");
-    }
-  } catch {
-    // Readiness reports the value-free app_base_url issue.
-  }
-}
-
 function launch(target = "runtime/server.js") {
+  const targetPath = path.resolve(process.cwd(), target);
+  const resolver = loadRouteResolver(path.join(path.dirname(targetPath), ".next", "routes-manifest.json"));
   const originalCreateServer = http.createServer;
   let interceptionCount = 0;
 
@@ -151,10 +126,7 @@ function launch(target = "runtime/server.js") {
       throw new RuntimePeerBridgeError("runtime_peer_bridge_listener_missing");
     }
 
-    args[listenerIndex] = function runtimePeerRequestListener(request, response) {
-      stampRequest(request);
-      return Reflect.apply(listener, this, [request, response]);
-    };
+    args[listenerIndex] = wrapHttpListener(listener, { resolver, stampRequest });
 
     return Reflect.apply(originalCreateServer, this, args);
   };
@@ -162,7 +134,7 @@ function launch(target = "runtime/server.js") {
   let targetExports;
 
   try {
-    targetExports = require(path.resolve(process.cwd(), target));
+    targetExports = require(targetPath);
   } finally {
     http.createServer = originalCreateServer;
   }
@@ -171,21 +143,21 @@ function launch(target = "runtime/server.js") {
     throw new RuntimePeerBridgeError("runtime_peer_bridge_not_installed");
   }
 
-  warnForDirectHttp(process.env);
-
   return targetExports;
 }
 
 if (require.main === module) {
+  installProcessFailureHooks();
+  announceProcess({ attachments: "starting", memory: "unknown", knowledge: "starting", mcp: "starting", workspace: "unknown", email: "unknown" });
   try {
     launch(process.argv[2]);
   } catch (error) {
-    if (error instanceof RuntimePeerBridgeError) {
-      console.error(`AIQSA runtime failed: ${error.code}`);
-      process.exitCode = 1;
-    } else {
-      throw error;
-    }
+    writeEmergencyFailure({
+      stage: "startup",
+      outcome: "terminated",
+      code: error instanceof RuntimePeerBridgeError ? error.code : "unexpected"
+    });
+    process.exit(1);
   }
 }
 
@@ -197,6 +169,5 @@ module.exports = {
   createPeerStamp,
   launch,
   overwritePeerHeader,
-  stampRequest,
-  warnForDirectHttp
+  stampRequest
 };

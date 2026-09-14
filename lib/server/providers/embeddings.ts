@@ -1,3 +1,5 @@
+import { observeJsonParse, observeProviderDeadline, observeProviderFetch, observeProviderOperation } from "./providerObservability";
+import type { ProviderStreamSafetyIdentity } from "./streamSafetyObservability";
 import {
   ProviderResponseTooLargeError,
   isProviderDeadlineExceededError,
@@ -380,6 +382,7 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
   connection: ProviderConnectionConfiguration;
   model: ProviderModelConfiguration;
   network?: EmbeddingNetworkOptions;
+  observationIdentity?: ProviderStreamSafetyIdentity;
   secret: ProviderCredentialSource | null;
 }>): EmbeddingAdapter {
   const connection = normalizeProviderConnectionConfiguration(input.connection);
@@ -394,148 +397,153 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
   } else if (input.secret !== null) {
     throw new EmbeddingAdapterError("embedding_provider_request_failed");
   }
-  const fetchFn = input.network?.fetchFn ?? createProviderSafeFetch({ configuration: connection });
+  const identity = input.observationIdentity ?? { adapterKind: model.adapterKind, providerFamily: model.embedding.providerFamily };
+  const fetchFn = observeProviderFetch(input.network?.fetchFn ?? createProviderSafeFetch({ configuration: connection }));
   const responseMaxBytes = Math.min(
     input.network?.responseMaxBytes ?? providerResponseMaxBytes(),
     MAX_EMBEDDING_RESPONSE_BYTES
   );
 
   return {
-    async embed(request) {
-      const prepared = requestInputs(request.texts, request.mode, model.embedding!);
-      const timeoutMs = effectiveProviderResponseTimeoutMs(connection, model);
-      const timeout = withTimeoutSignal(request.signal, timeoutMs);
-      const providerRequestRoutes: Array<string | null> = [];
-      try {
-        const secret = authenticationMode === "bearer"
-          ? await resolveProviderCredentialSource(
-              input.secret as ProviderCredentialSource,
-              "embedding_provider_request_failed"
-            )
-          : null;
-        const headers = new Headers({
-          accept: "application/json",
-          "content-type": "application/json"
-        });
-        if (secret !== null) headers.set("authorization", `Bearer ${secret}`);
-        const executeRequest = (
-          serialized: string,
-          signal: AbortSignal,
-          pinnedOpenRouterProvider: string | null
-        ) => executeWithProviderRetry({
-          operation: async () => {
-            providerRequestRoutes.push(pinnedOpenRouterProvider);
-            const response = await fetchFn(providerRequestEndpoint(
-              connection,
-              "openai_embeddings_compatible"
-            ), {
-              body: serialized,
-              headers,
-              method: "POST",
-              redirect: "error",
-              signal
-            });
-            const text = await readBoundedResponseText(response, {
-              maxBytes: responseMaxBytes,
-              signal
-            });
-            if (!response.ok) {
-              throw new EmbeddingAdapterError("embedding_provider_http_error", {
-                httpStatus: response.status,
-                retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after"))
-              });
-            }
-            let parsed: unknown;
-            try {
-              parsed = JSON.parse(text) as unknown;
-            } catch {
-              throw new EmbeddingAdapterError("embedding_response_invalid");
-            }
-            return responseBody(
-              parsed,
-              prepared.length,
-              model,
-              boundedIdentifier(response.headers.get("x-request-id"))
-            );
-          },
-          options: input.network?.retry,
-          shouldRetry: (error) => embeddingRetryDecision(error, signal),
-          signal
-        });
-        const hedgeProviders = interactiveOpenRouterProviders(request, model);
-        if (hedgeProviders.length === 0) {
-          const result = await executeRequest(
-            serializedRequestBody(prepared, model),
-            timeout.signal,
-            null
-          );
-          return Object.freeze({
-            ...result,
-            providerRequestCount: providerRequestRoutes.length,
-            providerRequestRoutes: Object.freeze([...providerRequestRoutes])
-          });
-        }
-
-        const settled = new AbortController();
-        const hedgeSignal = AbortSignal.any([timeout.signal, settled.signal]);
+    embed(request: EmbeddingRequest) {
+      const effectiveTimeoutMs = effectiveProviderResponseTimeoutMs(connection, model);
+      observeProviderDeadline({ ...identity, stage: "embedding", provider_timeout_ms: effectiveTimeoutMs, effective_timeout_ms: effectiveTimeoutMs });
+      return observeProviderOperation(identity, "embedding", async () => {
+        const prepared = requestInputs(request.texts, request.mode, model.embedding!);
+        const timeoutMs = effectiveProviderResponseTimeoutMs(connection, model);
+        const timeout = withTimeoutSignal(request.signal, timeoutMs);
+        const providerRequestRoutes: Array<string | null> = [];
         try {
-          const result = await Promise.any(hedgeProviders.map(async (provider, index) => {
-            if (index > 0) {
-              await waitForHedge(
-                OPENROUTER_INTERACTIVE_EMBEDDING_HEDGE_DELAY_MS * index,
-                hedgeSignal
+          const secret = authenticationMode === "bearer"
+            ? await resolveProviderCredentialSource(
+                input.secret as ProviderCredentialSource,
+                "embedding_provider_request_failed"
+              )
+            : null;
+          const headers = new Headers({
+            accept: "application/json",
+            "content-type": "application/json"
+          });
+          if (secret !== null) headers.set("authorization", `Bearer ${secret}`);
+          const executeRequest = (
+            serialized: string,
+            signal: AbortSignal,
+            pinnedOpenRouterProvider: string | null
+          ) => executeWithProviderRetry({
+            operation: async () => {
+              providerRequestRoutes.push(pinnedOpenRouterProvider);
+              const response = await fetchFn(providerRequestEndpoint(
+                connection,
+                "openai_embeddings_compatible"
+              ), {
+                body: serialized,
+                headers,
+                method: "POST",
+                redirect: "error",
+                signal
+              });
+              const text = await readBoundedResponseText(response, {
+                maxBytes: responseMaxBytes,
+                signal
+              });
+              if (!response.ok) {
+                throw new EmbeddingAdapterError("embedding_provider_http_error", {
+                  httpStatus: response.status,
+                  retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after"))
+                });
+              }
+              let parsed: unknown;
+              try {
+                parsed = observeJsonParse(response, () => JSON.parse(text) as unknown);
+              } catch {
+                throw new EmbeddingAdapterError("embedding_response_invalid");
+              }
+              return responseBody(
+                parsed,
+                prepared.length,
+                model,
+                boundedIdentifier(response.headers.get("x-request-id"))
               );
-            }
-            return executeRequest(
-              serializedRequestBody(prepared, model, provider),
-              hedgeSignal,
-              provider
+            },
+            options: input.network?.retry,
+            shouldRetry: (error) => embeddingRetryDecision(error, signal),
+            signal
+          });
+          const hedgeProviders = interactiveOpenRouterProviders(request, model);
+          if (hedgeProviders.length === 0) {
+            const result = await executeRequest(
+              serializedRequestBody(prepared, model),
+              timeout.signal,
+              null
             );
-          }));
-          settled.abort(new DOMException("Embedding hedge settled", "AbortError"));
-          return Object.freeze({
-            ...result,
-            providerRequestCount: providerRequestRoutes.length,
-            providerRequestRoutes: Object.freeze([...providerRequestRoutes])
-          });
-        } catch (error) {
-          throw hedgeFailure(error);
-        } finally {
-          if (!settled.signal.aborted) {
-            settled.abort(new DOMException("Embedding hedge settled", "AbortError"));
+            return Object.freeze({
+              ...result,
+              providerRequestCount: providerRequestRoutes.length,
+              providerRequestRoutes: Object.freeze([...providerRequestRoutes])
+            });
           }
-        }
-      } catch (error) {
-        if (
-          isProviderDeadlineExceededError(error) ||
-          timeout.signal.aborted && isProviderDeadlineExceededError(timeout.signal.reason)
-        ) {
-          throw new EmbeddingAdapterError("embedding_request_timed_out", {
+
+          const settled = new AbortController();
+          const hedgeSignal = AbortSignal.any([timeout.signal, settled.signal]);
+          try {
+            const result = await Promise.any(hedgeProviders.map(async (provider, index) => {
+              if (index > 0) {
+                await waitForHedge(
+                  OPENROUTER_INTERACTIVE_EMBEDDING_HEDGE_DELAY_MS * index,
+                  hedgeSignal
+                );
+              }
+              return executeRequest(
+                serializedRequestBody(prepared, model, provider),
+                hedgeSignal,
+                provider
+              );
+            }));
+            settled.abort(new DOMException("Embedding hedge settled", "AbortError"));
+            return Object.freeze({
+              ...result,
+              providerRequestCount: providerRequestRoutes.length,
+              providerRequestRoutes: Object.freeze([...providerRequestRoutes])
+            });
+          } catch (error) {
+            throw hedgeFailure(error);
+          } finally {
+            if (!settled.signal.aborted) {
+              settled.abort(new DOMException("Embedding hedge settled", "AbortError"));
+            }
+          }
+        } catch (error) {
+          if (
+            isProviderDeadlineExceededError(error) ||
+            timeout.signal.aborted && isProviderDeadlineExceededError(timeout.signal.reason)
+          ) {
+            throw new EmbeddingAdapterError("embedding_request_timed_out", {
+              providerRequestCount: providerRequestRoutes.length,
+              providerRequestRoutes
+            });
+          }
+          if (error instanceof EmbeddingAdapterError) {
+            throw new EmbeddingAdapterError(error.code, {
+              ...(error.httpStatus !== null ? { httpStatus: error.httpStatus } : {}),
+              providerRequestCount: providerRequestRoutes.length,
+              providerRequestRoutes,
+              retryAfterMs: error.retryAfterMs
+            });
+          }
+          if (error instanceof ProviderResponseTooLargeError) {
+            throw new EmbeddingAdapterError("embedding_response_too_large", {
+              providerRequestCount: providerRequestRoutes.length,
+              providerRequestRoutes
+            });
+          }
+          throw Object.assign(new EmbeddingAdapterError("embedding_provider_request_failed", {
             providerRequestCount: providerRequestRoutes.length,
             providerRequestRoutes
-          });
+          }), { retryableNetworkFailure: isRetryableProviderNetworkError(error) });
+        } finally {
+          timeout.clear();
         }
-        if (error instanceof EmbeddingAdapterError) {
-          throw new EmbeddingAdapterError(error.code, {
-            ...(error.httpStatus !== null ? { httpStatus: error.httpStatus } : {}),
-            providerRequestCount: providerRequestRoutes.length,
-            providerRequestRoutes,
-            retryAfterMs: error.retryAfterMs
-          });
-        }
-        if (error instanceof ProviderResponseTooLargeError) {
-          throw new EmbeddingAdapterError("embedding_response_too_large", {
-            providerRequestCount: providerRequestRoutes.length,
-            providerRequestRoutes
-          });
-        }
-        throw Object.assign(new EmbeddingAdapterError("embedding_provider_request_failed", {
-          providerRequestCount: providerRequestRoutes.length,
-          providerRequestRoutes
-        }), { retryableNetworkFailure: isRetryableProviderNetworkError(error) });
-      } finally {
-        timeout.clear();
-      }
+      }, { signal: request.signal, timeoutMs: effectiveTimeoutMs });
     }
   };
 }

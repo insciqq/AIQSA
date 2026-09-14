@@ -2,6 +2,7 @@ import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { estimateCostMicros, normalizeTokenUsage, sumEstimatedCostMicros, type ModelTokenPricing } from "../../domain/usage";
 import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
+import { logRunPersistence } from "./runObservability";
 import type { KnowledgeAnswerContractVersions } from "../knowledge/answerGroundingV5";
 import type { KnowledgeAnswerV21ContractVersions } from "../knowledge/answerGroundingV21";
 import type { KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1 } from "../knowledge/answerGroundingSnapshotV40";
@@ -160,7 +161,7 @@ export async function finalizeRunCompletion(input: Readonly<{
     estimatedCostMicros:
       sumEstimatedCostMicros(attributedCosts)
   };
-  const completed = await input.repository.completeRun({
+  const completion: Parameters<RunRepository["completeRun"]>[0] = {
     assistantMessageId: input.run.assistantMessageId,
     chatId: input.run.chatId,
     estimatedCostMicros: usage.estimatedCostMicros ?? null,
@@ -174,7 +175,15 @@ export async function finalizeRunCompletion(input: Readonly<{
     usage,
     usageAttributions,
     userId: input.run.userId
-  });
+  };
+  let completed: boolean;
+  try {
+    completed = await input.repository.completeRun(completion);
+  } catch (error) {
+    logRunPersistence(input.run.runId, "complete", "unconfirmed", error);
+    throw error;
+  }
+  logRunPersistence(input.run.runId, "complete", completed ? "confirmed" : "not_applied");
 
   return completed
     ? {

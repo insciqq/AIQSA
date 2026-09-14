@@ -1,4 +1,7 @@
 import type { AdminEmailAttemptCode } from "../../contracts/email";
+import { logEvent } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
+import { logEmailAttempt } from "./observability";
 import {
   normalizeSmtpProductMessage,
   type SmtpProductMessage
@@ -54,9 +57,11 @@ async function recordDeliveryOutcomeBestEffort(
   input: Parameters<EmailRepository["recordDeliveryOutcome"]>[0]
 ): Promise<void> {
   try {
-    await repository.recordDeliveryOutcome(input);
-  } catch {
+    const confirmed = await repository.recordDeliveryOutcome(input);
+    logEvent("job_persistence", { subsystem: "email", stage: "health", outcome: confirmed ? "confirmed" : "not_applied" });
+  } catch (error) {
     // Health is observational and must not replace the authoritative delivery outcome.
+    logEvent("job_persistence", { subsystem: "email", stage: "health", outcome: "unconfirmed", prisma_code: databaseFailureCode(error) });
   }
 }
 
@@ -76,10 +81,12 @@ export function createEmailDispatcher(input: {
 
   return {
     async send(candidate) {
+      const started = performance.now();
       let message: SmtpProductMessage;
       try {
         message = normalizeSmtpProductMessage(candidate);
       } catch {
+        logEmailAttempt("smtp_invalid_input", "dispatch", performance.now() - started);
         return { code: "smtp_invalid_input", kind: "failed" };
       }
 
@@ -87,21 +94,31 @@ export function createEmailDispatcher(input: {
       if (input.testCapture) {
         try {
           await input.testCapture.capture(message);
+          logEmailAttempt("accepted", "dispatch", performance.now() - started);
           return { kind: "accepted" };
         } catch {
+          logEmailAttempt("smtp_connection_failed", "dispatch", performance.now() - started);
           return { code: "smtp_connection_failed", kind: "failed" };
         }
       }
 
-      const loaded = await input.repository.loadActiveForSend();
+      const loaded = await input.repository.loadActiveForSend().catch((error: unknown) => {
+        logEvent("service_operation", { subsystem: "email", stage: "read", outcome: "failed", code: "email_repository_failed", prisma_code: databaseFailureCode(error) });
+        throw error;
+      });
       if (!loaded.ok) {
         const code = loaded.code === "secret_unreadable"
           ? "secret_unreadable"
           : "invalid_configuration";
+        logEmailAttempt(code, "dispatch", performance.now() - started);
         return { code, kind: "failed" };
       }
-      if (loaded.value.kind === "unavailable") return { kind: "unavailable" };
+      if (loaded.value.kind === "unavailable") {
+        logEvent("service_operation", { subsystem: "email", stage: "dispatch", outcome: "skipped", code: "not_configured" });
+        return { kind: "unavailable" };
+      }
       if (loaded.value.kind === "failure") {
+        logEmailAttempt(loaded.value.code, "dispatch", performance.now() - started);
         await recordDeliveryOutcomeBestEffort(input.repository, {
           activeVersion: loaded.value.activeVersion,
           at: now(),
@@ -113,6 +130,7 @@ export function createEmailDispatcher(input: {
       const activeVersion = loaded.value.activeVersion;
       const release = attemptGate.tryAcquire();
       if (!release) {
+        logEmailAttempt("overloaded", "dispatch", performance.now() - started);
         await recordDeliveryOutcomeBestEffort(input.repository, {
           activeVersion,
           at: now(),
@@ -132,6 +150,7 @@ export function createEmailDispatcher(input: {
       } finally {
         release();
       }
+      logEmailAttempt(code, "dispatch", performance.now() - started);
       await recordDeliveryOutcomeBestEffort(input.repository, { activeVersion, at: now(), code });
       return dispatchResult(code);
     }

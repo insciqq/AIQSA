@@ -7,6 +7,8 @@ body:
     attributes:
       value: |
         Thanks for taking the time to report a problem. Please do not paste API keys, session secrets, `.env` contents, uploaded documents, or other private data.
+
+        For safe log collection and diagnosis, read the [AIQSA troubleshooting Skill](https://github.com/insciqq/AIQSA/blob/main/skills/aiqsa-troubleshooting/SKILL.md).
   - type: input
     id: version
     attributes:
@@ -47,9 +49,29 @@ body:
     attributes:
       label: Provider, model, and enabled capabilities
       description: Which provider and model were selected, and whether Search, Knowledge, Memory, MCP tools, or Workspace were enabled for the run.
+  - type: input
+    id: incident-time
+    attributes:
+      label: Approximate failure time and time zone
+      placeholder: "YYYY-MM-DD HH:MM, UTC offset or time zone"
+  - type: input
+    id: diagnostic-id
+    attributes:
+      label: Diagnostic ID (if available)
+      description: A trace_id or run_id from the affected request/run, or job_id for a background job. Leave blank if unavailable; failures can happen before a run is accepted.
+  - type: markdown
+    attributes:
+      value: |
+        From an ordinary installation directory, collect a limited window for the affected service:
+
+        ```sh
+        docker compose logs --since 30m --tail 2000 --no-color --no-log-prefix app 2>&1
+        ```
+
+        Use the incident's time window and replace `app` with the relevant service when needed. For the development stack, use `docker compose -f docker-compose.dev.yml logs --since 30m --tail 2000 --no-color --no-log-prefix app 2>&1` only if that is your selected topology. For custom Compose projects/files/profiles, retain their existing selection. Do not paste resolved Compose configuration or full Docker inspection output.
   - type: textarea
     id: logs
     attributes:
       label: Relevant logs
-      description: Output of `docker compose -f docker-compose.dev.yml logs app` around the failure, with secrets removed.
+      description: Include the relevant bounded window, with startup/restart lines and both stdout and stderr when available. Remove secrets, user content, provider/tool payloads, custom endpoints, share URLs, and raw exception messages/stacks before posting.
       render: shell

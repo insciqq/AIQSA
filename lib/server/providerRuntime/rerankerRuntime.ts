@@ -120,6 +120,12 @@ function runtimeFromSnapshot(
     adapter: createOpenRouterRerankAdapter({
       connection: snapshot.connection,
       model: configuration,
+      observationIdentity: {
+        adapterKind: configuration.adapterKind,
+        connectionId: snapshot.connectionId,
+        providerFamily: snapshot.providerFamily,
+        providerModelId: snapshot.providerModelId
+      },
       network: {
         fetchFn: options.createFetch?.(snapshot.connection) ??
           createProviderSafeFetch({ configuration: snapshot.connection }),

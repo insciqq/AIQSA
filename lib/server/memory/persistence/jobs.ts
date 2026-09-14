@@ -1,4 +1,5 @@
 import { Prisma, type MemoryJobKind, type MemoryJobState } from "@prisma/client";
+import { rememberMemoryEnqueue } from "./enqueueObservability";
 import { isMemoryCoordinatorJobKind } from "../coordinator/registry";
 import {
   MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION,
@@ -220,5 +221,6 @@ export async function enqueueMemoryJob(
       state: true
     }
   });
+  rememberMemoryEnqueue(tx, created.id);
   return { ...created, created: true };
 }

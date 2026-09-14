@@ -1,6 +1,9 @@
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
-import { decodeKnowledgeEvidenceAnswerSnapshot, type KnowledgeEvidenceAnswerSnapshot,
+import { decodeKnowledgeEvidenceAnswerSnapshot, isKnowledgeEvidenceAnswerOperation,
+  isKnowledgeEvidenceComposeOperation, type KnowledgeEvidenceAnswerSnapshot,
   type KnowledgeEvidenceAnswerOperation } from "./evidenceAnswerSnapshot";
+import { bindContext, logEvent } from "../observability";
+import { observedFailure, observedFailureCode } from "../providers/providerObservability";
 import { mergeTokenUsage, normalizeTokenUsage, type TokenUsageCompleteness } from "../../domain/usage";
 import type {
   ProviderStructuredOutputRequest
@@ -49,6 +52,7 @@ import {
   decodeKnowledgeGroundedSelectorFinalV17,
   decodeKnowledgeGroundedSelectorV17,
   knowledgeAnswerDraftPromptV21,
+  knowledgeAnswerOperationExecutionRoleV21,
   knowledgeEmptyGroundedSelectorV17,
   knowledgeGroundedSelectorPromptV17,
   knowledgeGroundedSelectorV17Fallback,
@@ -167,7 +171,58 @@ function auditFallbackReason(error: unknown): KnowledgeCoverageAuditFailureReaso
   return "coverage_audit_provider_error";
 }
 
-export async function acceptedOperation(input: Readonly<{
+function groundingFailureCode(result: OperationAcceptedResult): string | undefined {
+  // Inspect only the server-accepted failure envelope, never provider text.
+  try {
+    const kind = Object.getOwnPropertyDescriptor(result, "kind")?.value;
+    if (kind !== "draft_malformed" && kind !== "selector_failed" && kind !== "coverage_audit_failed" &&
+      kind !== "coverage_scope_failed" && kind !== "coverage_scope_completeness_failed" &&
+      kind !== "coverage_scope_closure_failed" && kind !== "failed" && kind !== "rejected") return undefined;
+    const reason = Object.getOwnPropertyDescriptor(result, "reason")?.value;
+    return observedFailureCode({ code: typeof reason === "string" ? reason : kind });
+  } catch { return undefined; }
+}
+
+type GroundingObservation = {
+  cancelled: boolean;
+  operationStage: ReturnType<typeof knowledgeAnswerOperationExecutionRoleV21> | "compose" | "verify";
+  stage: "admission" | "execution" | "result";
+};
+
+export async function acceptedOperation(input: Parameters<typeof executeAcceptedOperation>[0]) {
+  const startedAt = performance.now();
+  const operationStage = isKnowledgeEvidenceAnswerOperation(input.operation)
+    ? isKnowledgeEvidenceComposeOperation(input.operation) ? "compose" : "verify"
+    : knowledgeAnswerOperationExecutionRoleV21(input.operation);
+  const observation: GroundingObservation = { cancelled: false, operationStage, stage: "admission" };
+  const fields = {
+    tool_kind: "knowledge", operation_index: input.ordinal, operation_stage: operationStage
+  } as const;
+  logEvent("tool_execution", { ...fields, stage: "grounding", outcome: "started" });
+  try {
+    const result = await executeAcceptedOperation(input, observation);
+    const code = groundingFailureCode(result.acceptedResult);
+    // A returned settle() call is not proof of a guarded persistence write.
+    logEvent("tool_execution", {
+      ...fields, stage: "result", duration_ms: performance.now() - startedAt,
+      outcome: code === undefined ? "completed" : "degraded", code,
+      action: observation.stage === "admission" ? "skip" : code === undefined ? "none" : "degrade"
+    });
+    return result;
+  } catch (error) {
+    const deferred = error instanceof KnowledgeAnswerOperationDeferredError;
+    const failure = observedFailure(error);
+    logEvent("tool_execution", {
+      ...fields, ...failure, stage: observation.stage, duration_ms: performance.now() - startedAt,
+      outcome: observation.cancelled ? "cancelled" : deferred ? "degraded" : "failed",
+      ...(observation.cancelled ? { reason: "cancelled" as const } : {}),
+      ...(deferred ? { code: "knowledge_answer_operation_deferred", action: "wait" as const } : {})
+    });
+    throw error;
+  }
+}
+
+async function executeAcceptedOperation(input: Readonly<{
   acceptedFailure(error: unknown): OperationAcceptedResult;
   acceptedOutput(output: Readonly<Record<string, unknown>>): OperationAcceptedResult;
   acceptedRequest: KnowledgeAnswerOperationRequestSnapshotV21 | KnowledgeEvidenceAnswerSnapshot;
@@ -184,7 +239,7 @@ export async function acceptedOperation(input: Readonly<{
   ordinal: OperationOrdinal | 7 | 8;
   recoveryProviderResponseId?: string | null;
   shouldAbort(error: unknown): boolean;
-}>): Promise<Readonly<{
+}>, observation: GroundingObservation): Promise<Readonly<{
   acceptedResult: OperationAcceptedResult;
   providerResponseId: string | null;
   usage: ModelRunUsage;
@@ -276,6 +331,7 @@ export async function acceptedOperation(input: Readonly<{
   }
 
   if (dispatchRequired) await input.lifecycle.dispatch(prepared);
+  observation.stage = "execution";
   let execution: KnowledgeAnswerOperationExecutionV21;
   let acceptedResult: OperationAcceptedResult;
   let reportedUsage: ModelRunUsage = normalizeTokenUsage({});
@@ -288,7 +344,7 @@ export async function acceptedOperation(input: Readonly<{
       systemPrompt: input.acceptedRequest.systemPrompt,
       userPrompt: input.acceptedRequest.userPrompt
     }, {
-      onUsage(value) { reportedUsage = mergeTokenUsage(reportedUsage, value); },
+      onUsage: bindContext((value: ModelRunUsage) => { reportedUsage = mergeTokenUsage(reportedUsage, value); }),
       providerResponseId: recoveryProviderResponseId
     });
     reportedUsage = mergeTokenUsage(reportedUsage, execution.usage);
@@ -297,26 +353,16 @@ export async function acceptedOperation(input: Readonly<{
   } catch (error) {
     if (error instanceof KnowledgeAnswerOperationDeferredError) throw error;
     if (input.shouldAbort(error)) {
+      observation.cancelled = true;
       await input.lifecycle.markAmbiguous(prepared, {
         reason: "provider_dispatch_cancelled"
       }).catch(() => undefined);
       throw error;
     }
-    const providerStatus = typeof error === "object" && error !== null &&
-      "status" in error && typeof error.status === "number" &&
-      Number.isSafeInteger(error.status)
-      ? error.status
-      : null;
-    const providerErrorName = error instanceof Error &&
-      /^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(error.name)
-      ? error.name
-      : "UnknownError";
-    console.error(JSON.stringify({
-      event: "knowledge_answer_provider_operation_failed",
-      operation: input.operation,
-      providerErrorName,
-      providerStatus
-    }));
+    logEvent("tool_execution", {
+      ...observedFailure(error), tool_kind: "knowledge", stage: "request",
+      operation_index: input.ordinal, operation_stage: observation.operationStage, outcome: "degraded", action: "degrade"
+    });
     execution = {
       output: Object.freeze({}),
       providerResponseId: null,
@@ -324,6 +370,14 @@ export async function acceptedOperation(input: Readonly<{
     };
     acceptedResult = input.acceptedFailure(error);
   }
+  const code = groundingFailureCode(acceptedResult);
+  logEvent("tool_execution", {
+    tool_kind: "knowledge", stage: "grounding", operation_index: input.ordinal,
+    operation_stage: observation.operationStage,
+    outcome: code === undefined ? "completed" : "degraded", code,
+    ...(code === undefined ? {} : { action: "degrade" as const })
+  });
+  observation.stage = "result";
   await input.lifecycle.settle(prepared, {
     acceptedResult,
     providerResponseId: execution.providerResponseId,

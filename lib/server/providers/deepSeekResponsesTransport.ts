@@ -1,3 +1,4 @@
+import { observeJsonParse } from "./providerObservability";
 import {
   ProviderResponseTooLargeError,
   providerHttpErrorMessage,
@@ -51,7 +52,7 @@ async function parseJsonResponse(
   const text = await readBoundedResponseText(response, { signal });
   let parsed: unknown;
   try {
-    parsed = text ? JSON.parse(text) : {};
+    parsed = observeJsonParse(response, () => text ? JSON.parse(text) : {});
   } catch {
     throw new Error("deepseek_response_invalid_json");
   }

@@ -1,3 +1,6 @@
+import "./worker-bootstrap.cjs";
+import { maintenanceFailureCode } from "./maintenance-observability";
+import { logEvent } from "../lib/server/observability";
 import { prisma } from "../lib/server/prisma";
 import {
   backfillV1KnowledgeSources,
@@ -7,11 +10,11 @@ import {
 
 function batchSize(args: readonly string[]): number {
   if (args.length === 0) return 100;
-  if (args.length !== 1) throw new Error("usage: knowledge-source-backfill [--batch-size=1..1000]");
+  if (args.length !== 1) throw new Error("knowledge_source_backfill_arguments_invalid");
   const match = /^--batch-size=(\d{1,4})$/u.exec(args[0] ?? "");
   const value = Number(match?.[1]);
   if (!match || !Number.isSafeInteger(value) || value < 1 || value > 1_000) {
-    throw new Error("usage: knowledge-source-backfill [--batch-size=1..1000]");
+    throw new Error("knowledge_source_backfill_arguments_invalid");
   }
   return value;
 }
@@ -47,10 +50,7 @@ async function main(): Promise<void> {
 
 void main()
   .catch((error: unknown) => {
-    const code = error instanceof Error && /^knowledge_[a-z0-9_]+$/u.test(error.message)
-      ? error.message
-      : "knowledge_source_backfill_failed";
-    console.error(`AIQSA Knowledge Source reconciliation blocked: ${code}`);
+    logEvent("runtime_lifecycle", { subsystem: "knowledge", stage: "reconcile", outcome: "failed", code: maintenanceFailureCode(error, "knowledge_source_backfill_failed"), action: "stop" });
     process.exitCode = 1;
   })
   .finally(async () => {

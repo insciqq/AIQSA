@@ -1,5 +1,6 @@
 "use client";
 
+import { randomUUID } from "@/lib/browser/randomUUID";
 import {
   addProjectGrant,
   addProjectResource,
@@ -579,7 +580,7 @@ export function useProjectWorkspaceController(input: ControllerInput): ProjectWo
         defaultModelId: defaultResource.modelId,
         defaultProvider: defaultResource.provider,
         folderId,
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         messageCount: 0,
         pinned: false,
         projectId,

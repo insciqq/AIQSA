@@ -307,7 +307,13 @@ describe("auth route handlers", () => {
     expect(verifyPasswordCalls.every(([, passwordHash]) => typeof passwordHash === "string")).toBe(true);
   });
 
-  it("rate-limits password sprays across many distinct emails from one client bucket", async () => {
+  it.each([
+    { name: "one proxy", count: 1, prefix: "" },
+    { name: "one proxy with spoofed addresses", count: 1, prefix: "spoofed" },
+    { name: "one proxy with malformed addresses", count: 1, prefix: "malformed" },
+    { name: "two proxies with spoofed addresses", count: 2, prefix: "spoofed" },
+    { name: "two proxies with malformed addresses", count: 2, prefix: "malformed" }
+  ])("rate-limits password sprays across distinct emails through $name", async ({ count, prefix }) => {
     const loginRateLimiter = createFixedWindowLoginRateLimiter({
       clock: () => 0
     });
@@ -315,18 +321,23 @@ describe("auth route handlers", () => {
       identity: null
     });
     const POST = createPasswordLoginHandler({
-      getConfig: () => proxyConfig,
+      getConfig: () => ({ ...proxyConfig, trustedProxyCount: count }),
       loginRateLimiter,
       repository,
       verifyPassword: async () => false
     });
+    const forwardedFor = (index: number) => [
+      ...(prefix === "spoofed" ? [`198.51.100.${index + 1}`] : prefix ? ["unknown", ""] : []),
+      index % 2 ? "::ffff:203.0.113.20" : "203.0.113.20",
+      ...(count === 2 ? ["192.0.2.1"] : [])
+    ].join(", ");
 
     for (let index = 0; index < 10; index += 1) {
       const request = jsonRequest("/api/auth/login", {
         email: `spray-${index}@aiqsa.local`,
         password: "wrong-password"
       });
-      request.headers.set("x-forwarded-for", "203.0.113.20");
+      request.headers.set("x-forwarded-for", forwardedFor(index));
       const response = await POST(request);
       expect(response.status).toBe(401);
     }
@@ -335,10 +346,48 @@ describe("auth route handlers", () => {
       email: "spray-11@aiqsa.local",
       password: "wrong-password"
     });
-    blockedRequest.headers.set("x-forwarded-for", "203.0.113.20");
+    blockedRequest.headers.set("x-forwarded-for", forwardedFor(10));
     const blocked = await POST(blockedRequest);
 
     expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("retry-after")).toBe("900");
+  });
+
+  it.each([
+    { name: "missing", forwardedFor: null },
+    { name: "malformed", forwardedFor: "unknown" },
+    { name: "oversized", forwardedFor: `${"x".repeat(513)}, 203.0.113.20` }
+  ])("rejects $name proxy identity before password or bootstrap admission", async ({ forwardedFor }) => {
+    const repository = createMemoryPasswordAuthRepository({ identity: null });
+    const mailer = createMemoryAuthMailer();
+    const verifyPassword = vi.fn(async () => false);
+    const passwordHasher = vi.fn(async () => "password-hash");
+    const verifyTokenHash = vi.fn(() => false);
+    const rateLimiter = { check: vi.fn(), reset: vi.fn() };
+    const handlers = [
+      createPasswordLoginHandler({ getConfig: () => proxyConfig, repository, verifyPassword, loginRateLimiter: rateLimiter }),
+      createPasswordResetRequestHandler({ getConfig: () => proxyConfig, repository, mailer, resetRateLimiter: rateLimiter }),
+      createPasswordResetCompleteHandler({ getConfig: () => proxyConfig, repository, passwordHasher, resetCompleteRateLimiter: rateLimiter }),
+      createTokenLoginHandler({
+        getConfig: () => proxyConfig, findUserById: async () => user,
+        sessions: createMemoryAuthSessionStore({ user }), verifyTokenHash, loginRateLimiter: rateLimiter
+      })
+    ];
+    for (const handler of handlers) {
+      const request = jsonRequest("/api/auth/login", { email: "test@example.com", password: "wrong-password", token: "test-token" });
+      if (forwardedFor !== null) request.headers.set("x-forwarded-for", forwardedFor);
+      const readBody = vi.fn(() => { throw new Error("body_must_not_be_read"); });
+      Object.defineProperty(request, "body", { get: readBody });
+      const response = await handler(request);
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({ error: "auth_admission_unavailable" });
+      expect(readBody).not.toHaveBeenCalled();
+    }
+    expect(rateLimiter.check).not.toHaveBeenCalled();
+    expect(verifyPassword).not.toHaveBeenCalled();
+    expect(passwordHasher).not.toHaveBeenCalled();
+    expect(verifyTokenHash).not.toHaveBeenCalled();
+    expect(mailer.sent).toHaveLength(0);
   });
 
   it("rate-limits direct-peer password sprays without trusting forwarded headers", async () => {
@@ -881,7 +930,7 @@ describe("auth route handlers", () => {
     expect(getLoginRateLimitKey(request, true, 2)).toBe("ip:198.51.100.9");
   });
 
-  it("accepts only the exact declared forwarding chain", () => {
+  it("selects the client from the right according to the declared trusted proxy count", () => {
     const request = new Request("http://app.local/api/auth/token", {
       headers: {
         "x-forwarded-for": "198.51.100.250, 203.0.113.10, 10.0.0.1",
@@ -891,8 +940,9 @@ describe("auth route handlers", () => {
 
     expect(getLoginRateLimitKey(request, false)).toBeNull();
     expect(getLoginRateLimitKey(request, true, 3)).toBe("ip:198.51.100.250");
-    expect(getLoginRateLimitKey(request, true, 1)).toBeNull();
-    expect(getLoginRateLimitKey(request, true, 2)).toBeNull();
+    expect(getLoginRateLimitKey(request, true, 1)).toBe("ip:10.0.0.1");
+    expect(getLoginRateLimitKey(request, true, 2)).toBe("ip:203.0.113.10");
+    expect(getLoginRateLimitKey(request, true, 4)).toBeNull();
   });
 
   it("rejects malformed forwarding values and does not fall back to X-Real-IP", () => {

@@ -1,3 +1,5 @@
+import { enqueueMemoryJob } from "./jobs";
+import { enqueueMemoryDeletion } from "./deletion";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { withLockedMemoryTransaction } from "./transaction";
@@ -146,5 +148,77 @@ describe("Memory transaction admission deadline", () => {
     )).rejects.toMatchObject({
       code: "memory_admission_deadline_exceeded"
     });
+  });
+});
+
+
+describe("Memory post-commit enqueue diagnostics", () => {
+  it("emits only the committed attempt's real jobs after rollback and keeps foreign transactions silent", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    let attempts = 0;
+    let committed = false;
+    const tx = {
+      $queryRaw: vi.fn(async () => [lockedSettings]),
+      memoryJob: { findUnique: vi.fn(async () => null), create: vi.fn(async () => ({
+        id: `job-${attempts}`, memoryGenerationSnapshot: 2, memoryRevisionSnapshot: 3, state: "QUEUED"
+      })) },
+      memoryDeletionOutbox: { findUnique: vi.fn(async () => null), create: vi.fn(async () => ({
+        id: `deletion-${attempts}`, memoryGeneration: 2, state: "QUEUED"
+      })) }
+    };
+    const client = { $transaction: vi.fn(async (operation: (transaction: typeof tx) => Promise<unknown>) => {
+      attempts += 1;
+      const value = await operation(tx);
+      expect(writer).not.toHaveBeenCalled();
+      if (attempts === 1) throw prismaError("P2034", { private: "PRIVATE_SQL" });
+      committed = true;
+      return value;
+    }) } as unknown as PrismaClient;
+    try {
+      const result = await withLockedMemoryTransaction(client, "user-1", async (transaction, settings) => {
+        const job = await enqueueMemoryJob(transaction, settings, {
+          idempotencyFingerprint: "fingerprint", kind: "EMBED_ITEMS", pipelineVersion: "pipeline"
+        });
+        await enqueueMemoryDeletion(transaction, settings, {
+          operation: "TEMPORARY_DELETE", targetId: "PRIVATE_TARGET", targetType: "CHAT"
+        });
+        return job.id;
+      }, { serializationRetryDelay: async () => undefined });
+      expect(committed).toBe(true);
+      expect(result).toBe("job-2");
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      expect(records).toEqual([
+        expect.objectContaining({ event: "job_enqueued", subsystem: "memory", job_id: "job-2" }),
+        expect.objectContaining({ event: "job_enqueued", subsystem: "memory", job_id: "deletion-2" })
+      ]);
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+      writer.mockClear();
+      await enqueueMemoryJob(tx as never, lockedSettings as never, {
+        idempotencyFingerprint: "fingerprint", kind: "EMBED_ITEMS", pipelineVersion: "pipeline"
+      });
+      expect(writer).not.toHaveBeenCalled();
+    } finally { writer.mockRestore(); }
+  });
+
+  it("does not emit enqueue when the outer commit ultimately fails", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const failure = prismaError("P1001");
+    const tx = {
+      $queryRaw: vi.fn(async () => [lockedSettings]),
+      memoryJob: { findUnique: vi.fn(async () => null), create: vi.fn(async () => ({
+        id: "rolled-back-job", memoryGenerationSnapshot: 2, memoryRevisionSnapshot: 3, state: "QUEUED"
+      })) }
+    };
+    const client = { $transaction: vi.fn(async (operation: (transaction: typeof tx) => Promise<unknown>) => {
+      await operation(tx);
+      throw failure;
+    }) } as unknown as PrismaClient;
+    try {
+      await expect(withLockedMemoryTransaction(client, "user-1", (transaction, settings) =>
+        enqueueMemoryJob(transaction, settings, {
+          idempotencyFingerprint: "fingerprint", kind: "EMBED_ITEMS", pipelineVersion: "pipeline"
+        }))).rejects.toBe(failure);
+      expect(writer).not.toHaveBeenCalled();
+    } finally { writer.mockRestore(); }
   });
 });

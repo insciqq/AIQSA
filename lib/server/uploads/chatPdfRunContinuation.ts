@@ -12,6 +12,10 @@ import { ChatPdfPreparationError } from "./chatPdfCore";
 import type { ChatPdfCoordinatorDependencies } from "./chatPdfCoordinator";
 import type { createChatPdfRepository } from "./chatPdfPersistence";
 import type { StorageAdapter } from "./storage";
+import { logEvent } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
+import { observedFailure } from "../providers/providerObservability";
+import { observeChatPdfPersistence } from "./chatPdfPersistenceObservability";
 
 export type ChatPdfRunSnapshot = Readonly<{
   prepared: MaterializedPreparedRunData;
@@ -43,15 +47,16 @@ export function createChatPdfRunFailure(deps: Readonly<{
       ? "This PDF could not be read. Try a different file."
       : error.code === "pdf_preparation_context_limit" ? "This document does not fit the conversation context."
       : "Document preparation could not finish. Try again.";
-    const settled = await deps.repository.settlePreparingRunFailure({
+    const settled = await observeChatPdfPersistence(claim.runId, "fail", () => deps.repository.settlePreparingRunFailure({
       errorCode: error.code, message, retryable: error.retryable, runId: claim.runId, state: "FAILED", userId: claim.userId
-    });
+    }));
     let outcome: "failed" | "cancelled" | null = settled ? "failed" : null;
     if (!settled) {
       let run = await deps.repository.getRunControlForRecovery?.(claim.runId);
       if (run?.status === "streaming" && run.assistantMessageId &&
         await deps.repository.hasPendingPdfPreparation?.(claim.runId)) {
-        await deps.repository.failRun(claim.runId, run.assistantMessageId, { code: error.code, message });
+        const assistantMessageId = run.assistantMessageId;
+        await observeChatPdfPersistence(claim.runId, "fail", () => deps.repository.failRun(claim.runId, assistantMessageId, { code: error.code, message }));
         run = await deps.repository.getRunControlForRecovery?.(claim.runId);
       }
       if (run?.status === "cancelled") outcome = "cancelled";
@@ -60,7 +65,8 @@ export function createChatPdfRunFailure(deps: Readonly<{
     // Workspace authority is reserved at admission, before PDF preparation.
     // Terminal PDF paths must release it even when no answer executor started.
     if (outcome) await deps.workspace?.settle({ outcome, runId: claim.runId, userId: claim.userId })
-      .catch(() => undefined);
+      .catch((failure: unknown) => logEvent("runtime_lifecycle", { subsystem: "pdf", run_id: claim.runId, stage: "release",
+        outcome: "failed", code: observedFailure(failure).code, prisma_code: databaseFailureCode(failure), action: "retry" }));
   };
 }
 
@@ -117,9 +123,10 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
             expectedActiveLeafId: prepared.expectedActiveLeafId, defaults: undefined }
         : { ...common, admissionKind: "REGENERATE", preSendAssistantMessageId: snapshot.sourceMessageId ?? null,
             userMessageId: admissionResult.userMessageId, defaults: undefined };
-      created = await deps.repository.continuePdfPreparedRun({ admission, claimToken: claim.claimToken, created: admissionResult });
+      created = await observeChatPdfPersistence(claim.runId, "continuation", () => deps.repository.continuePdfPreparedRun!({ admission, claimToken: claim.claimToken, created: admissionResult }));
       prepared = applyPreparingMaterialization(prepared, created);
     } else if (loaded.modelRun.status === "streaming" && loaded.state === "answer_ready" && loaded.modelRun.normalizedRequest) {
+      logEvent("run_recovery", { subsystem: "pdf", run_id: claim.runId, stage: "continuation", outcome: "completed", action: "skip" });
       // Phase B committed before the crash, but no answer dispatch was claimed.
       const normalizedRequest = loaded.modelRun.normalizedRequest as unknown as NormalizedRunRequest;
       const request = { ...prepared.providerRequest, ...normalizedRequest };
@@ -135,10 +142,11 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
       try { searchRuntimes[option.optionId] = await deps.providerRuntime.resolve(claim.runId, "search", `search:${option.optionId}`); }
       catch (error) { if (!(error instanceof Error) || error.message !== "provider_run_binding_not_found") throw error; }
     }
-    if (!await deps.pdfRepository.markAnswerDispatched(claim)) throw new ChatPdfPreparationError("pdf_preparation_unavailable");
+    if (!await observeChatPdfPersistence(claim.runId, "dispatch", () => deps.pdfRepository.markAnswerDispatched(claim))) throw new ChatPdfPreparationError("pdf_preparation_unavailable");
     releaseRegistry();
     const response = createRunExecutionResponse({ ...deps, adapter: runtime.adapter, created, prepared,
       searchRuntimes, structuredOutputAdapter: runtime.structuredOutputAdapter, toolBridge: runtime.toolBridge, userId: claim.userId });
+    logEvent("run_recovery", { subsystem: "pdf", run_id: claim.runId, stage: "continuation", outcome: "completed", action: "complete" });
     // Answer persistence and its controller have taken ownership. Do not hold
     // the single PDF worker for the duration of an ordinary streamed answer.
     void (async () => {
@@ -146,6 +154,7 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
       if (!reader) return;
       try { while (!(await reader.read()).done) { /* Drain private SSE; browser resumes from persisted state. */ } }
       finally { reader.releaseLock(); }
-    })().catch(() => undefined);
+    })().catch((error: unknown) => logEvent("run_recovery", { subsystem: "pdf", run_id: claim.runId, stage: "drain", outcome: "failed",
+      code: observedFailure(error).code, prisma_code: databaseFailureCode(error), action: "wait" }));
   };
 }

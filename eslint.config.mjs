@@ -11,6 +11,7 @@ const eslintConfig = [
       ".aiqsa/**",
       ".next/**",
       "**/*.d.mts",
+      "**/*.d.cts",
       "benchmarks/**",
       "coverage/**",
       "node_modules/**",

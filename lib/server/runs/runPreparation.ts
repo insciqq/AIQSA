@@ -579,6 +579,10 @@ function promptWithWorkspaceContract(
   workspace: WorkspaceRunAdmissionPlan,
   attachments: readonly ProviderAttachment[]
 ): NormalizedRunRequest["prompt"] {
+  const providerToolName = (originalName: string): string =>
+    workspace.toolDefinitions.find((tool) => tool.originalName === originalName)?.namespacedName ?? originalName;
+  const shellToolName = providerToolName("sandbox_shell");
+  const execToolName = providerToolName("sandbox_exec");
   const files = attachments.slice(0, 64).map((attachment) =>
     `- ${attachment.fileName.slice(0, 256)} (${attachment.mimeType.slice(0, 128)}, ${attachment.byteSize} bytes)`
   );
@@ -594,7 +598,7 @@ function promptWithWorkspaceContract(
     `Put user-downloadable files only in ${workspace.normalized.outputDirectory}.`,
     "After changes, run appropriate tests or checks.",
     "Do not claim that a file was created or a check passed until a tool verified it.",
-    "Use sandbox_shell for pipelines, redirects, &&, ||, globbing and heredocs; sandbox_exec runs one program directly without shell parsing.",
+    `Use ${shellToolName} for pipelines, redirects, &&, ||, globbing and heredocs; ${execToolName} runs one program directly without shell parsing.`,
     "Saved personal Workspace accesses are prepared automatically for personal chats; shared Projects do not receive personal secrets. SSH is configured for noninteractive use, and saved environment variables are available in each command and its child processes. Read /workspace/SECRETS.md for text secrets, environment names and exact original file/key paths. Use the accesses needed for the user's task. Values are not automatically included in this prompt. Do not copy managed secrets or the guide into project files or downloads unless the user requests it.",
     WORKSPACE_OFFICE_GUIDANCE,
     WORKSPACE_BROWSER_GUIDANCE,
@@ -1073,7 +1077,7 @@ export async function prepareRun(
   if ("ok" in resolvedChatMode) {
     return resolvedChatMode;
   }
-  const decodedKnowledgePlan = assistantRun
+  let decodedKnowledgePlan = assistantRun
     ? { ok: true as const, plan: assistantRun.knowledgeSelection }
     : resolvedOrdinaryKnowledgePlan(body, chat);
   if (!decodedKnowledgePlan.ok) {
@@ -1115,11 +1119,21 @@ export async function prepareRun(
       throw error;
     }
     if (!knowledgeRunAdmissionHasReadySources(knowledgeAdmissionPlan)) {
-      return failure(
-        "sources_processing",
-        409,
-        "Selected Knowledge documents are still processing."
-      );
+      const emptyAllKnowledge = decodedKnowledgePlan.plan.mode === "all_my_knowledge" &&
+        knowledgeAdmissionPlan.sources !== undefined &&
+        knowledgeAdmissionPlan.sources.length === 0 &&
+        knowledgeAdmissionPlan.bindings.length === 0 &&
+        knowledgeAdmissionPlan.exclusions.length === 0;
+      if (emptyAllKnowledge) {
+        decodedKnowledgePlan = { ok: true as const, plan: EMPTY_KNOWLEDGE_SELECTION };
+        knowledgeAdmissionPlan = undefined;
+      } else {
+        return failure(
+          "sources_processing",
+          409,
+          "Selected Knowledge documents are still processing."
+        );
+      }
     }
   }
   const knowledgeRequested = decodedKnowledgePlan.plan.mode !== "none";

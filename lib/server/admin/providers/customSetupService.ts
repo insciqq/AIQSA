@@ -3,6 +3,8 @@ import type { AdminProviderCheckRun } from "../../../contracts/adminProviders";
 import { decodeCapabilitySetupEvidence, initialModelConfiguration, pendingInitialCapabilityEvidence } from "./initialCapabilitySetup";
 import { providerSetupModels } from "./setupModels";
 import { randomUUID } from "node:crypto";
+import { logEvent } from "../../observability";
+import { observedFailure } from "../../providers/providerObservability";
 import {
   ADMIN_PROVIDER_CUSTOM_DEFAULT_CAPABILITIES,
   MAX_ADMIN_PROVIDER_CUSTOM_SETUP_MODELS,
@@ -372,12 +374,15 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
             secret,
             signal: inputValue.signal
           });
-        } catch {
+        } catch (error) {
+          const failure = observedFailure(error);
+          logEvent("service_operation", { subsystem: "admin", stage: "probe", outcome: inputValue.signal?.aborted ? "cancelled" : "failed", code: failure.code, httpStatus: failure.httpStatus });
           throw new AdminProviderCustomSetupServiceError(
             "provider_custom_setup_test_failed"
           );
         }
         inputValue.signal?.throwIfAborted();
+        logEvent("service_operation", { subsystem: "admin", stage: "probe", outcome: testOutcome.status === "available" ? "completed" : "failed", code: testOutcome.evidence.detail });
         evidence.push(validatedEvidence(testOutcome, model));
         inputValue.onProgress?.({ phase: "checking", completed: index + 1, total: modelConfigurations.length });
       }

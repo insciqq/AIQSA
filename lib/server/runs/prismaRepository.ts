@@ -92,6 +92,7 @@ import type { KnowledgeFullContextPassage } from "../knowledge/fullContext";
 import type { WorkspaceAvailabilityService } from "../workspace/availability";
 import { workspaceModelSupportsTools } from "../workspace/availability";
 import { workspaceAvailabilityService as defaultWorkspaceAvailabilityService } from "../workspace/defaultServices";
+import { retainRunPrismaCode } from "./prismaRepositoryObservability";
 
 export { insertAcceptedMcpRunBindings } from "./prismaRepositoryBindings";
 
@@ -194,7 +195,7 @@ export function createPrismaRunRepository(
     const policy = await prismaClient.modelPolicy.findUnique({
       select: { memoryAdmissionTimeoutSeconds: true },
       where: { id: "installation" }
-    });
+    }).catch(retainRunPrismaCode);
     if (!policy) throw new Error("installation_model_policy_missing");
     return memoryAdmissionDeadlineMsFromPolicySeconds(
       policy.memoryAdmissionTimeoutSeconds
@@ -208,7 +209,7 @@ export function createPrismaRunRepository(
     const access = await resolveChatAccess(prismaClient, {
       chatId,
       userId
-    });
+    }).catch(retainRunPrismaCode);
     if (!access) return { chatMatched: false, messages: [] };
     const selectedLeaf =
       selector.kind === "active"
@@ -291,12 +292,12 @@ export function createPrismaRunRepository(
       FROM "selected_chat" AS chat
       LEFT JOIN "ancestor_path" AS path ON true
       ORDER BY path."depth" DESC NULLS LAST
-    `);
+    `).catch(retainRunPrismaCode);
 
     const generated = await prismaClient.attachment.findMany({
       where: { chatId, messageId: { in: rows.flatMap((row) => row.messageId ? [row.messageId] : []) }, origin: "IMAGE_OUTPUT", status: "ready" },
       select: { id: true, messageId: true, fileName: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 256
-    });
+    }).catch(retainRunPrismaCode);
     for (const row of rows) {
       const images = generated.filter((entry) => entry.messageId === row.messageId).reverse();
       if (images.length && isRecord(row.messageContent) && Array.isArray(row.messageContent.blocks)) {
@@ -318,7 +319,7 @@ export function createPrismaRunRepository(
       projectId,
       requireActive: true,
       userId
-    });
+    }).catch(retainRunPrismaCode);
     if (!access) return null;
     const project = await prismaClient.project.findUnique({
       include: {
@@ -330,7 +331,7 @@ export function createPrismaRunRepository(
         skillBindings: { select: { skillId: true } }
       },
       where: { id: projectId }
-    });
+    }).catch(retainRunPrismaCode);
     if (!project || project.status !== "ACTIVE") return null;
     const defaults = decodeProjectDefaults(project.defaults);
     const policy = decodeProjectPolicy(project.policy);
@@ -389,7 +390,7 @@ export function createPrismaRunRepository(
         status: true
       },
       where: { id: runId }
-    });
+    }).catch(retainRunPrismaCode);
     if (!run) return null;
     let project;
     let projectRecoveryInvalid = false;
@@ -415,29 +416,29 @@ export function createPrismaRunRepository(
   }
 
   return {
-    groundKnowledgeAnswer: (input) => groundKnowledgeRunAnswer(prismaClient, input),
-    groundKnowledgeAnswerV5: (input) => groundKnowledgeRunAnswerV5(prismaClient, input),
-    groundKnowledgeAnswerV21: (input) => groundKnowledgeRunAnswerV21(prismaClient, input),
-    groundKnowledgeEvidenceAnswer: (input) => groundKnowledgeEvidenceRunAnswerV1(prismaClient, input),
+    groundKnowledgeAnswer: (input) => groundKnowledgeRunAnswer(prismaClient, input).catch(retainRunPrismaCode),
+    groundKnowledgeAnswerV5: (input) => groundKnowledgeRunAnswerV5(prismaClient, input).catch(retainRunPrismaCode),
+    groundKnowledgeAnswerV21: (input) => groundKnowledgeRunAnswerV21(prismaClient, input).catch(retainRunPrismaCode),
+    groundKnowledgeEvidenceAnswer: (input) => groundKnowledgeEvidenceRunAnswerV1(prismaClient, input).catch(retainRunPrismaCode),
     loadKnowledgeFullContextDispatchRecovery: (input) =>
-      loadKnowledgeFullContextDispatchRecovery(prismaClient, input),
+      loadKnowledgeFullContextDispatchRecovery(prismaClient, input).catch(retainRunPrismaCode),
     admitPreparingRun: (input) =>
-      admitPreparingRunWithClient(prismaClient, input, memorySourceHooks),
+      admitPreparingRunWithClient(prismaClient, input, memorySourceHooks).catch(retainRunPrismaCode),
     beginPreparingRunAttempt: (input) =>
-      beginPreparingRunAttemptWithClient(prismaClient, input),
+      beginPreparingRunAttemptWithClient(prismaClient, input).catch(retainRunPrismaCode),
     completePreparingRunAttempt: (input) =>
-      completePreparingRunAttemptWithClient(prismaClient, input),
+      completePreparingRunAttemptWithClient(prismaClient, input).catch(retainRunPrismaCode),
     finalizePreparingRun: (input) =>
-      finalizePreparingRunWithClient(prismaClient, input, memoryExecutionAuthority),
+      finalizePreparingRunWithClient(prismaClient, input, memoryExecutionAuthority).catch(retainRunPrismaCode),
     hasPendingPdfPreparation: async (runId) => Boolean(await prismaClient.chatPdfRunPreparation.findFirst({
       select: { modelRunId: true }, where: { modelRunId: runId, state: { in: ["pending", "preparing", "answer_ready"] } }
-    })),
+    }).catch(retainRunPrismaCode)),
     recoverPreparingRun: (input) =>
-      recoverPreparingRunWithClient(prismaClient, input, memorySourceHooks),
+      recoverPreparingRunWithClient(prismaClient, input, memorySourceHooks).catch(retainRunPrismaCode),
     retryPreparingRunAttempt: (input) =>
-      retryPreparingRunAttemptWithClient(prismaClient, input),
+      retryPreparingRunAttemptWithClient(prismaClient, input).catch(retainRunPrismaCode),
     settlePreparingRunFailure: (input) =>
-      settlePreparingRunFailureWithClient(prismaClient, input, memorySourceHooks),
+      settlePreparingRunFailureWithClient(prismaClient, input, memorySourceHooks).catch(retainRunPrismaCode),
     ...mcpDiscoveryOperations,
     ...toolLoopOperations,
     sweepBootOrphanedRuns: async ({ createdBefore, liveRunIds }) => {
@@ -534,7 +535,7 @@ export function createPrismaRunRepository(
         }
 
         return preparedSettled + dispatchableSettled;
-      });
+      }).catch(retainRunPrismaCode);
     },
     cancelRun: async (input) => {
       return prismaClient.$transaction(async (tx) => {
@@ -625,7 +626,7 @@ export function createPrismaRunRepository(
             status: "cancelled"
           }
         } as const;
-      });
+      }).catch(retainRunPrismaCode);
     },
     completeRun: async (input) => {
       const usage = normalizeTokenUsage(input.usage);
@@ -793,12 +794,12 @@ export function createPrismaRunRepository(
         });
         await appendRunOutputEvents(tx, input.runId, input.outputEvents ?? []);
         return true;
-      });
+      }).catch(retainRunPrismaCode);
     },
     continuePdfPreparedRun: async (input) => {
       const created = await continuePdfPreparedRunWithClient(prismaClient, input,
         memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
-        await loadMemoryAdmissionDeadlineMs());
+        await loadMemoryAdmissionDeadlineMs()).catch(retainRunPrismaCode);
       return { assistantMessageId: created.assistantMessageId, runId: created.runId,
         userMessageId: created.userMessageId,
         ...(created.materializedRequest ? { materializedRequest: created.materializedRequest } : {}) };
@@ -811,7 +812,7 @@ export function createPrismaRunRepository(
         ...input,
         admissionKind: "NORMAL_SEND"
       }, memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
-        memoryAdmissionDeadlineMs);
+        memoryAdmissionDeadlineMs).catch(retainRunPrismaCode);
       return {
         assistantMessageId: created.assistantMessageId,
         ...(created.deferredPdf ? { deferredPdf: true as const } : {}),
@@ -830,7 +831,7 @@ export function createPrismaRunRepository(
         ...input,
         admissionKind: "REGENERATE"
       }, memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
-        memoryAdmissionDeadlineMs);
+        memoryAdmissionDeadlineMs).catch(retainRunPrismaCode);
       return {
         assistantMessageId: created.assistantMessageId,
         ...(created.deferredPdf ? { deferredPdf: true as const } : {}),
@@ -851,7 +852,7 @@ export function createPrismaRunRepository(
               modelRunId: input.modelRunId
             }
           }
-        });
+        }).catch(retainRunPrismaCode);
         if (existingInvocation) return;
       }
       const artifacts = isRecord(input.artifacts) ? input.artifacts : null;
@@ -866,7 +867,7 @@ export function createPrismaRunRepository(
             provider: input.provider,
             strategyId: input.strategyId
           }
-        });
+        }).catch(retainRunPrismaCode);
         if (existing) return;
       }
       await prismaClient.searchRun.create({
@@ -880,7 +881,7 @@ export function createPrismaRunRepository(
           status: input.status,
           strategyId: input.strategyId
         }
-      });
+      }).catch(retainRunPrismaCode);
     },
     failRun: async (runId, assistantMessageId, error, options) => {
       return prismaClient.$transaction(async (tx) => {
@@ -949,7 +950,7 @@ export function createPrismaRunRepository(
           }, memorySourceHooks);
         }
         return true;
-      });
+      }).catch(retainRunPrismaCode);
     },
     findOwnedChat: async (chatId, userId) => {
       const chat = await prismaClient.chat.findFirst({
@@ -976,7 +977,7 @@ export function createPrismaRunRepository(
             { projectId: { not: null } }
           ]
         }
-      });
+      }).catch(retainRunPrismaCode);
       if (!chat) return null;
       const project = chat.projectId
         ? await loadProjectRunAdmission(chat.projectId, userId)
@@ -1001,7 +1002,7 @@ export function createPrismaRunRepository(
     },
     loadProjectFirstSend: async ({ chatId, folderId, projectId, userId }) => {
       const [existing, project] = await Promise.all([
-        prismaClient.chat.findUnique({ select: { id: true }, where: { id: chatId } }),
+        prismaClient.chat.findUnique({ select: { id: true }, where: { id: chatId } }).catch(retainRunPrismaCode),
         loadProjectRunAdmission(projectId, userId)
       ]);
       if (existing || !project) return null;
@@ -1009,7 +1010,7 @@ export function createPrismaRunRepository(
         const folder = await prismaClient.projectFolder.findUnique({
           select: { id: true },
           where: { projectId_id: { id: folderId, projectId } }
-        });
+        }).catch(retainRunPrismaCode);
         if (!folder) return null;
       }
       const defaultModelId = project.defaults.providerModelId;
@@ -1017,7 +1018,7 @@ export function createPrismaRunRepository(
         ? await prismaClient.providerModel.findUnique({
             select: { connectionId: true, id: true },
             where: { id: defaultModelId }
-          })
+          }).catch(retainRunPrismaCode)
         : null;
       return {
         activeLeafMessageId: null,
@@ -1037,13 +1038,13 @@ export function createPrismaRunRepository(
     },
     loadPersonalFirstSend: async ({ chatId, folderId, memoryMode, userId }) => {
       const [existing, defaults, folder] = await Promise.all([
-        prismaClient.chat.findUnique({ select: { id: true }, where: { id: chatId } }),
-        loadChatCreationDefaults(prismaClient, userId),
+        prismaClient.chat.findUnique({ select: { id: true }, where: { id: chatId } }).catch(retainRunPrismaCode),
+        loadChatCreationDefaults(prismaClient, userId).catch(retainRunPrismaCode),
         folderId
           ? prismaClient.folder.findFirst({
               select: { defaultKnowledgePlan: true, id: true, projectMemory: true },
               where: { id: folderId, userId }
-            })
+            }).catch(retainRunPrismaCode)
           : null
       ]);
       if (existing || !defaults || (folderId && !folder)) return null;
@@ -1051,7 +1052,7 @@ export function createPrismaRunRepository(
         ? await prismaClient.providerModel.findUnique({
             select: { connectionId: true, id: true },
             where: { id: defaults.defaultProviderModelId }
-          })
+          }).catch(retainRunPrismaCode)
         : null;
       return {
         activeLeafMessageId: null,
@@ -1071,13 +1072,13 @@ export function createPrismaRunRepository(
       };
     },
     findRecentActiveRunForChat: async ({ chatId, since, userId }) => {
-      const chat = await prismaClient.chat.findUnique({ select: { projectId: true, userId: true }, where: { id: chatId } });
+      const chat = await prismaClient.chat.findUnique({ select: { projectId: true, userId: true }, where: { id: chatId } }).catch(retainRunPrismaCode);
       const access = chat?.projectId
         ? await resolveProjectAccess(prismaClient, {
             projectId: chat.projectId,
             requireActive: true,
             userId
-          })
+          }).catch(retainRunPrismaCode)
         : null;
       if (!chat || (chat.userId !== userId && (!chat.projectId || !access))) return null;
       return prismaClient.modelRun.findFirst({
@@ -1087,7 +1088,7 @@ export function createPrismaRunRepository(
         },
         orderBy: { updatedAt: "desc" },
         where: { chatId, status: { in: activeModelRunStatuses }, updatedAt: { gt: since } }
-      });
+      }).catch(retainRunPrismaCode);
     },
     findStaleActiveRunsForUser: (input) =>
       prismaClient.modelRun.findMany({
@@ -1112,7 +1113,7 @@ export function createPrismaRunRepository(
             lt: input.staleBefore
           }
         }
-      }),
+      }).catch(retainRunPrismaCode),
     findInstallationRecoverableRuns: (input) =>
       prismaClient.modelRun.findMany({
         orderBy: { updatedAt: "asc" },
@@ -1141,7 +1142,7 @@ export function createPrismaRunRepository(
           ],
           status: { in: activeModelRunStatuses }
         }
-      }),
+      }).catch(retainRunPrismaCode),
     findRegenerationSource: async (sourceMessageId, userId) => {
       const sourceMessage = await prismaClient.message.findFirst({
         include: {
@@ -1182,7 +1183,7 @@ export function createPrismaRunRepository(
           id: sourceMessageId,
           role: { in: ["assistant", "user"] }
         }
-      });
+      }).catch(retainRunPrismaCode);
 
       if (!sourceMessage) {
         return null;
@@ -1193,7 +1194,7 @@ export function createPrismaRunRepository(
         minimumProjectRole: "CONTRIBUTOR",
         requireMutable: true,
         userId
-      });
+      }).catch(retainRunPrismaCode);
       if (!access) return null;
       const project = sourceMessage.chat.projectId
         ? await loadProjectRunAdmission(sourceMessage.chat.projectId, userId)
@@ -1242,7 +1243,7 @@ export function createPrismaRunRepository(
           assistantMessageId: sourceMessage.id,
           ...(sourceMessage.chat.projectId ? {} : { userId })
         }
-      });
+      }).catch(retainRunPrismaCode);
       const answerBinding = sourceRun?.providerRunBindings[0];
 
       return {
@@ -1261,9 +1262,9 @@ export function createPrismaRunRepository(
     getRunControlForUser: async (runId, userId) => {
       const control = await loadInternalRunControl(runId);
       if (control) {
-        const chat = await prismaClient.chat.findUnique({ select: { projectId: true, userId: true }, where: { id: control.chatId } });
+        const chat = await prismaClient.chat.findUnique({ select: { projectId: true, userId: true }, where: { id: control.chatId } }).catch(retainRunPrismaCode);
         const projectAccess = chat?.projectId
-          ? await resolveProjectAccess(prismaClient, { projectId: chat.projectId, userId })
+          ? await resolveProjectAccess(prismaClient, { projectId: chat.projectId, userId }).catch(retainRunPrismaCode)
           : null;
         if (chat?.userId !== userId && !projectAccess) return null;
       }
@@ -1283,7 +1284,7 @@ export function createPrismaRunRepository(
         projectId,
         requireActive: true,
         userId
-      });
+      }).catch(retainRunPrismaCode);
       return access?.accessRevision === accessRevision &&
         access.instructionsRevision === instructionsRevision &&
         access.memoryRevision === memoryRevision &&
@@ -1302,11 +1303,11 @@ export function createPrismaRunRepository(
           status: true
         },
         where: { id: runId }
-      });
+      }).catch(retainRunPrismaCode);
       if (run) {
-        const chat = await prismaClient.chat.findUnique({ select: { projectId: true, userId: true }, where: { id: run.chatId } });
+        const chat = await prismaClient.chat.findUnique({ select: { projectId: true, userId: true }, where: { id: run.chatId } }).catch(retainRunPrismaCode);
         const projectAccess = chat?.projectId
-          ? await resolveProjectAccess(prismaClient, { projectId: chat.projectId, userId })
+          ? await resolveProjectAccess(prismaClient, { projectId: chat.projectId, userId }).catch(retainRunPrismaCode)
           : null;
         if (chat?.userId !== userId && !projectAccess) return null;
       }
@@ -1557,7 +1558,7 @@ export function createPrismaRunRepository(
             };
           })
         };
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }).catch(retainRunPrismaCode);
     },
     isSearchStrategyEnabled: async (searchOptionId) => {
       const option = await prismaClient.searchOption.findFirst({
@@ -1574,7 +1575,7 @@ export function createPrismaRunRepository(
             }
           }
         }
-      });
+      }).catch(retainRunPrismaCode);
 
       return Boolean(option);
     },
@@ -1613,7 +1614,7 @@ export function createPrismaRunRepository(
           },
           ...(projectId ? { projectId } : { userId })
         }
-      });
+      }).catch(retainRunPrismaCode);
 
       const preparedPdfs = runId ? await prismaClient.chatPdfAttachmentPreparation.findMany({ where: {
         modelRunId: runId, attachmentId: { in: attachmentIds }, route: { not: "direct_pdf" },
@@ -1621,7 +1622,7 @@ export function createPrismaRunRepository(
       }, select: { attachmentId: true, state: true, sourceChecksum: true, sourceByteSize: true,
         modelRun: { select: { workspaceRunBinding: { select: { modelRunId: true } } } }, documentArtifact: { select: {
         byteSize: true, checksum: true, pageCount: true, sourceChecksum: true, storageKey: true, state: true
-      } } } }) : [];
+      } } } }).catch(retainRunPrismaCode) : [];
       if (preparedPdfs.some((row) => !attachments.some((attachment) => attachment.id === row.attachmentId &&
         attachment.checksum?.trim() === row.sourceChecksum.trim() && attachment.byteSize === row.sourceByteSize) ||
         (row.state === "original_only"
@@ -1685,12 +1686,12 @@ export function createPrismaRunRepository(
             state: true
           },
           where: { id: { in: sources.map((source) => source.sourceArtifactId) } }
-        }),
+        }).catch(retainRunPrismaCode),
         baseIds.length > 0
           ? prismaClient.knowledgeBase.findMany({
               select: { id: true, name: true },
               where: { id: { in: baseIds } }
-            })
+            }).catch(retainRunPrismaCode)
           : []
       ]);
       const artifactById = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
@@ -1732,7 +1733,7 @@ export function createPrismaRunRepository(
       }
       return passages;
     },
-    loadEntitlements: (userId) => loadEntitlementsForUser(userId),
+    loadEntitlements: (userId) => loadEntitlementsForUser(userId).catch(retainRunPrismaCode),
     loadModelPricing: async (provider, modelId) => {
       const models = await prismaClient.providerModel.findMany({
         select: {
@@ -1741,7 +1742,7 @@ export function createPrismaRunRepository(
         },
         take: 2,
         where: { modelClass: "answer", modelId, provider }
-      });
+      }).catch(retainRunPrismaCode);
 
       return models.length === 1
         ? {
@@ -1768,7 +1769,7 @@ export function createPrismaRunRepository(
           usageCompleteness: true
         },
         where: { chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false, modelRunId: input.runId, userId: input.userId }
-      });
+      }).catch(retainRunPrismaCode);
       return rows.map((row) => ({
         estimatedCostMicros: row.estimatedCostMicros,
         modelId: row.modelId,

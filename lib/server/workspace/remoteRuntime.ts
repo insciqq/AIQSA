@@ -6,6 +6,8 @@ import {
   workspaceAttachmentPath
 } from "@/lib/domain/workspace";
 import type { WorkspaceConfig } from "./config";
+import { beginWorkspaceToolStage, observeWorkspaceAbort, workspaceToolFailure } from "./toolObservability";
+import { transportFailureFacts } from "../providers/providerObservability";
 import { parseWorkspaceOperation } from "./operationFence";
 import { parseOutputCaptureRequest } from "./outputManifest";
 import { WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, isWorkspaceBrowserSessionFilename } from "@/lib/contracts/workspaceSecrets";
@@ -171,7 +173,8 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
 
   private async request(
     path: string,
-    init: RequestInit & Readonly<{ duplex?: "half" }> = {}
+    init: RequestInit & Readonly<{ duplex?: "half" }> = {},
+    observedToolRequest?: ReturnType<typeof beginWorkspaceToolStage>
   ): Promise<Response> {
     try {
       return await fetch(new URL(path, this.baseUrl), {
@@ -185,6 +188,12 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
         redirect: "error"
       } as RequestInit);
     } catch (error) {
+      if (observedToolRequest) {
+        const facts = transportFailureFacts(error, init.signal ?? undefined);
+        observedToolRequest({ outcome: facts.category === "aborted" ? "cancelled" : "failed", code: facts.code,
+          reason: facts.category === "timeout" ? "deadline" : facts.category === "aborted" ? "cancelled"
+            : facts.category === "dns" || facts.category === "tls" || facts.category === "connect" ? "network" : "unknown" });
+      }
       if (error instanceof WorkspaceRuntimeError) throw error;
       // A caller-initiated abort is a cancellation, never a runner outage:
       // reporting it as unavailable would falsely fail the session.
@@ -353,28 +362,50 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async callBoundTool(input: Parameters<WorkspaceRuntime["callBoundTool"]>[0]): Promise<WorkspaceToolResult> {
-    const value = await this.json(
-      `/v1/sessions/${encodeURIComponent(input.sessionId)}/tools/${encodeURIComponent(input.originalName)}/call`,
-      {
-        body: JSON.stringify({
-          arguments: input.arguments,
-          modelRunId: input.modelRunId,
-          modelRunToolCallId: input.modelRunToolCallId,
-          operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId
-        }),
-        method: "POST",
-        signal: input.signal
+    const path = `/v1/sessions/${encodeURIComponent(input.sessionId)}/tools/${encodeURIComponent(input.originalName)}/call`;
+    const request = {
+      body: JSON.stringify({
+        arguments: input.arguments,
+        modelRunId: input.modelRunId,
+        modelRunToolCallId: input.modelRunToolCallId,
+        operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal: input.signal
+    };
+    const finish = beginWorkspaceToolStage("request");
+    const observeAbort = observeWorkspaceAbort();
+    const onAbort = () => observeAbort({ stage: "delivery", abort_source: "parent_signal", deadline_kind: "request" });
+    if (input.signal?.aborted) observeAbort({ stage: "before_start", abort_source: "unknown", deadline_kind: "request" });
+    else input.signal?.addEventListener("abort", onAbort, { once: true });
+    let httpStatus: number | undefined;
+    try {
+      const response = await this.request(path, request, finish);
+      httpStatus = response.status;
+      const value = await jsonResponse(response);
+      if (!response.ok) throw workspaceError(value);
+      if (
+        !isRecord(value) ||
+        !Array.isArray(value.content) ||
+        (value.status !== "complete" && value.status !== "error") ||
+        (value.execSessionId !== undefined && !isWorkspaceRuntimeExecSessionId(value.execSessionId))
+      ) {
+        throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
       }
-    );
-    if (
-      !isRecord(value) ||
-      !Array.isArray(value.content) ||
-      (value.status !== "complete" && value.status !== "error") ||
-      (value.execSessionId !== undefined && !isWorkspaceRuntimeExecSessionId(value.execSessionId))
-    ) {
-      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+      finish({ outcome: value.status === "error" ? "failed" : "completed", httpStatus });
+      return value as WorkspaceToolResult;
+    } catch (error) {
+      const facts = workspaceToolFailure(error);
+      const transport = transportFailureFacts(error, input.signal);
+      const reason = transport.category === "aborted" ? "cancelled" : transport.category === "timeout" ? "deadline"
+        : transport.category === "dns" || transport.category === "tls" || transport.category === "connect" ? "network" : facts.reason;
+      finish({ outcome: reason === "cancelled" ? "cancelled" : "failed", httpStatus,
+        code: transport.category !== "unknown" ? transport.code : facts.code, reason });
+      throw error;
+    } finally {
+      input.signal?.removeEventListener("abort", onAbort);
     }
-    return value as WorkspaceToolResult;
   }
 
   async terminateExecutions(input: Parameters<WorkspaceRuntime["terminateExecutions"]>[0]) {

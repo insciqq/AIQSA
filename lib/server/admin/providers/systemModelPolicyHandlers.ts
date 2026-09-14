@@ -1,3 +1,5 @@
+import { logEvent, type LifecycleStage } from "../../observability";
+import { databaseFailureCode } from "../../observability/databaseFailure";
 import type { ImageGenerationParameters } from "../../../contracts/imageGeneration";
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
@@ -35,15 +37,16 @@ function contentTypeIsJson(request: Request): boolean {
   return type === "application/json" || type.endsWith("+json");
 }
 
-function failure(error: unknown): Response {
+function failure(error: unknown, stage: LifecycleStage = "write"): Response {
   if (error instanceof AdminSystemModelPolicyServiceError) {
+    logEvent("service_operation", { subsystem: "admin", stage, code: error.code, outcome: error.code === "system_model_policy_verification_failed" ? "failed" : "skipped" });
     return Response.json({ error: error.code }, {
       status: error.code === "system_model_policy_stale"
         ? 409
         : error.code === "system_model_policy_verification_failed" ? 422 : 400
     });
   }
-  console.error("system_model_policy_admin_action_failed");
+  logEvent("service_operation", { subsystem: "admin", stage, outcome: "failed", code: "system_model_policy_admin_action_failed", prisma_code: databaseFailureCode(error) });
   return Response.json(
     { error: "system_model_policy_admin_action_failed" },
     { status: 500 }
@@ -61,7 +64,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       try {
         return Response.json({ systemModelPolicy: await input.service.list() });
       } catch (error) {
-        return failure(error);
+        return failure(error, "read");
       }
     },
 
