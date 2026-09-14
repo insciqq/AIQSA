@@ -25,6 +25,7 @@ import {
   type MemorySummary
 } from "../../../contracts/memory";
 import { memorySha256 } from "../persistence/lexical";
+import type { MemoryEquivalentTargetResolver } from "../persistence/explicitEquivalence";
 import {
   ExplicitMemoryServiceError,
   type ExplicitMemoryService,
@@ -40,6 +41,7 @@ import {
 } from "../settings/service";
 import {
   defaultMemoryConsumerRefService,
+  type MemoryConsumerRefOperation,
   type MemoryConsumerRefService
 } from "./ref";
 
@@ -364,10 +366,17 @@ export function createMemoryConsumerService(input: Readonly<{
   lifecycleService: MemoryLifecycleService;
   readResetState: MemoryConsumerResetStateReader;
   refs?: MemoryConsumerRefService;
+  resolveEquivalentTarget?: MemoryEquivalentTargetResolver;
   settingsService: MemorySettingsService;
 }>): MemoryConsumerService {
   const clock = input.clock ?? (() => new Date());
   const refs = input.refs ?? defaultMemoryConsumerRefService;
+
+  async function itemTarget(userId: string, ref: string, operation: MemoryConsumerRefOperation, now: Date) {
+    const target = refs.resolveItem(userId, ref, operation, now);
+    if (!target) return failure("memory_not_found");
+    return await input.resolveEquivalentTarget?.(userId, target, now) ?? target;
+  }
 
   async function currentSettings(userId: string): Promise<MemorySettingsResponse> {
     return input.settingsService.get(userId);
@@ -400,8 +409,7 @@ export function createMemoryConsumerService(input: Readonly<{
 
     edit(userId, memoryRef, editInput, context) {
       return safe(async () => {
-        const target = refs.resolveItem(userId, memoryRef, "EDIT", clock());
-        if (!target) return failure("memory_not_found");
+        const target = await itemTarget(userId, memoryRef, "EDIT", clock());
         const authorization = await input.explicitService.mintAuthorization(userId, {
           action: "EDIT",
           confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
@@ -420,8 +428,7 @@ export function createMemoryConsumerService(input: Readonly<{
 
     forget(userId, memoryRef, forgetInput, context) {
       return safe(async () => {
-        const target = refs.resolveItem(userId, memoryRef, "FORGET", clock());
-        if (!target) return failure("memory_not_found");
+        const target = await itemTarget(userId, memoryRef, "FORGET", clock());
         const authorization = await input.explicitService.mintAuthorization(userId, {
           action: "FORGET",
           confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
@@ -440,8 +447,7 @@ export function createMemoryConsumerService(input: Readonly<{
     get(userId, memoryRef) {
       return safe(async () => {
         const now = clock();
-        const target = refs.resolveItem(userId, memoryRef, "READ", now);
-        if (!target) return failure("memory_not_found");
+        const target = await itemTarget(userId, memoryRef, "READ", now);
         const detail = await input.explicitService.get(userId, target.factId);
         const currentVersionId = detail.memory.currentVersionId ??
           detail.memory.actionVersionId;

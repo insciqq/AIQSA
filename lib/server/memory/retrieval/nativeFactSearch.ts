@@ -9,7 +9,9 @@ import {
   MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR,
   applyMemoryDecay,
   fuseMemoryRetrievalCandidates,
-  packMemoryPersonalContext,
+  memoryCandidateMatchesRetrievalProjection,
+  memoryRetrievalEvidenceRootKey,
+  memoryRetrievalProjectionMap,
   planMemoryRetrieval,
   type MemoryExpandedCandidate,
   type MemoryRankedCandidate,
@@ -67,7 +69,7 @@ import {
 import { sanitizeMemoryUtilityText } from "./querySafety";
 
 export const MEMORY_NATIVE_FACT_SEARCH_VERSION =
-  "memory-native-fact-search-v1";
+  "memory-native-fact-search-v3";
 
 export type MemoryNativeFactSearchInput = Readonly<{
   limit: number;
@@ -114,7 +116,8 @@ export function createMemoryNativeFactSearchPlan(
 ): MemoryRetrievalPlan {
   return planMemoryRetrieval({
     currentUserText: query,
-    filters: { sourceKinds: ["FACT"] },
+    // EVENT is a fact-version modality, separate from chat-history sources.
+    filters: { sourceKinds: ["FACT", "EVENT"] },
     mode: "TARGETED_CURRENT",
     now,
     temporalIntent: "ANY"
@@ -374,26 +377,24 @@ export function createMemoryNativeFactSearchService(
           now,
           policyVersion: snapshot.decayPolicyVersion
         });
-        const orderedKeys = new Set(ordered.map((candidate) =>
-          `${candidate.itemType}:${candidate.itemId}`));
-        const pack = packMemoryPersonalContext({
-          expanded: finalExpansion.filter((item) =>
-            orderedKeys.has(`${item.itemType}:${item.itemId}`)),
-          plan,
-          ranked: ordered
-        });
-        const candidateByVersion = new Map(ordered.map((candidate) => [
-          candidate.itemId,
-          candidate
-        ]));
-        const selected = pack.items.flatMap((item) => {
-          const candidate = item.itemType === "FACT_VERSION"
-            ? candidateByVersion.get(item.itemId)
-            : undefined;
-          return candidate?.metadata.factId
-            ? [{ factId: candidate.metadata.factId, factVersionId: candidate.itemId }]
-            : [];
-        }).slice(0, input.limit);
+        const expansions = memoryRetrievalProjectionMap(finalExpansion);
+        const selected: { factId: string; factVersionId: string }[] = [];
+        const selectedFacts = new Set<string>();
+        const selectedEvidenceRoots = new Set<string>();
+        for (const candidate of ordered) {
+          const factId = candidate.metadata.factId;
+          const expansion = expansions.get(`${candidate.itemType}:${candidate.itemId}`);
+          if (candidate.itemType !== "FACT_VERSION" || !factId ||
+            candidate.metadata.sourceAuthority === "SYNTHESIS" || !expansion ||
+            (expansion.patternSupportingEvidence ?? []).length > 0 ||
+            !memoryCandidateMatchesRetrievalProjection(candidate, expansion, plan)) continue;
+          const evidenceRoot = memoryRetrievalEvidenceRootKey(candidate);
+          if (selectedFacts.has(factId) || selectedEvidenceRoots.has(evidenceRoot)) continue;
+          selected.push({ factId, factVersionId: candidate.itemId });
+          selectedFacts.add(factId);
+          selectedEvidenceRoots.add(evidenceRoot);
+          if (selected.length === input.limit) break;
+        }
 
         const finalSnapshot = await runBoundedMemoryRead(
           deadline,

@@ -1,0 +1,32 @@
+{
+  "repository": {
+    "url": "https://github.com/HUST-AI-HYZ/MemoryAgentBench.git",
+    "commit": "fe1735de8cf8b9908e1e3d3b5612afc815698062",
+    "license": "MIT",
+    "files": {
+      "utils/eval_other_utils.py": "d77976be409298970614d477a9d8003850caddb0510e56a7e821a037d98493a2",
+      "utils/templates.py": "148c40d48d19f155ae845482c4417ba59cfa7ae4e194019509e023bd3a8755dd",
+      "conversation_creator.py": "9a527e88c9791b37d378b59adac50d9308aac49e714f1d8ddaf3e14bb3f3bec5",
+      "LICENSE": "94d735aad92355b4880c969fa309e824eb12fdeeb271ae51cf6143866cf78cf7"
+    }
+  },
+  "dataset": {
+    "repository": "https://huggingface.co/datasets/ai-hyz/MemoryAgentBench",
+    "revision": "7ea066982b140a19337e17e60d45d4076e042faf",
+    "path": "data/Conflict_Resolution-00000-of-00001.parquet",
+    "sha256": "24d5c3f09ce0ce15625cb9f8a98f44f0d864ca6c94d7b4ad04eb697ca3a5ff45",
+    "license": "MIT"
+  },
+  "selection": {
+    "seed": "aiqsa-memory-quality-factconsolidation-v1",
+    "algorithm": "lowest sha256(seed\\0qa_pair_id), then upstream order",
+    "questionsPerStratum": 20,
+    "sources": ["factconsolidation_sh_6k", "factconsolidation_mh_6k", "factconsolidation_sh_32k", "factconsolidation_mh_32k"],
+    "contextPolicy": "complete, unchanged context; no question-directed pruning",
+    "chunkTokens": 4096,
+    "tokenizer": "o200k_base",
+    "sentenceTokenizer": "nltk-3.9.1-punkt_tab-english",
+    "queryTemplate": "factconsolidation/rag_agent",
+    "metric": "upstream substring_exact_match; semantic diagnostic reported separately"
+  }
+}

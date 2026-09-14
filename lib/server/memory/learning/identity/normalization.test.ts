@@ -43,13 +43,22 @@ describe("Memory Unicode identity normalization", () => {
       .not.toBe(normalizeMemoryIdentityComponent("fixture", right));
   });
 
+  it.each(["cafè", "東京", "مدرسة", "Ёлка", "I"])(
+    "cannot revive retired language normalization for %s", (text) => {
+      expect(() => normalizeMemoryIdentityComponent("fixture", text, "LEGACY_V1"))
+        .toThrow("memory_identity_profile_retired");
+      expect(() => normalizeMemoryProposition(text, "LEGACY_V1"))
+        .toThrow("memory_identity_profile_retired");
+    }
+  );
+
   it("versions propositions and removes the active ё substitution", () => {
     expect(normalizeMemoryProposition("Ёлка"))
       .not.toBe(normalizeMemoryProposition("Елка"));
     expect(memoryPropositionCanonicalKey("Ёлка"))
       .not.toBe(memoryPropositionCanonicalKey("Елка"));
-    expect(memoryPropositionCanonicalKey("Ёлка", "LEGACY_V1"))
-      .toBe(memoryPropositionCanonicalKey("Елка", "LEGACY_V1"));
+    expect(() => memoryPropositionCanonicalKey("Ёлка", "LEGACY_V1"))
+      .toThrow("memory_identity_profile_retired");
     expect(memoryPropositionCanonicalKey("Ёлка"))
       .toMatch(/^prop:v2:[a-f0-9]{64}$/u);
   });

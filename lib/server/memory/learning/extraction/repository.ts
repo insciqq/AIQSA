@@ -35,10 +35,12 @@ import {
 import { loadMemorySourceSnapshot } from "../../sourceState";
 import {
   MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
+  MEMORY_FACT_MAX_CONTEXT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_MESSAGES,
   MEMORY_FACT_MAX_PACKET_CANDIDATES,
   MEMORY_FACT_MAX_PRIOR_TURN_GROUPS,
+  MEMORY_FACT_MAX_TARGET_CHARACTERS,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
   memoryFactExtractionClaimIsValid,
   memoryFactExtractionIdentityProfile,
@@ -52,6 +54,7 @@ import {
   type MemoryFactSourceIdentity
 } from "./contract";
 import { commitMemoryVNextExtractionPlan } from "../../vnext/repository";
+import { memoryRecordedLegacyIdentityKeys } from "../identity/compatibility";
 import { loadMemoryFactContextRefs } from "../dependencies/context";
 import { materializeMemoryCandidateEntityIdentity } from "../entities/repository";
 import {
@@ -199,7 +202,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function canonicalTimeZone(value: unknown): string {
   if (typeof value !== "string" || !value || value.length > 64) return "UTC";
   try {
-    return new Intl.DateTimeFormat("en-US", { timeZone: value })
+    return new Intl.DateTimeFormat(undefined, { timeZone: value })
       .resolvedOptions().timeZone;
   } catch {
     return "UTC";
@@ -353,6 +356,9 @@ function boundedContextMessages<T extends Readonly<{
   const targetIndex = messages.findIndex((message) => message.evidenceEligible);
   const target = messages[targetIndex];
   if (!target || targetIndex !== messages.length - 1 ||
+    target.text.length > MEMORY_FACT_MAX_TARGET_CHARACTERS ||
+    messages.slice(0, targetIndex).reduce((sum, message) => sum + message.text.length, 0) >
+      MEMORY_FACT_MAX_CONTEXT_CHARACTERS ||
     messages.length > MEMORY_FACT_MAX_INPUT_MESSAGES ||
     new Set(messages.map(({ id }) => id)).size !== messages.length ||
     messages.reduce((sum, message) => sum + message.text.length, 0) >
@@ -373,7 +379,7 @@ export function boundedMemoryFactContextMessageIds(
     message.id === targetMessageId && message.role === "user");
   const targetPathIndex = snapshot.activePathMessageIds.indexOf(targetMessageId);
   if (!target || targetPathIndex < 0 ||
-    target.safeText.length > MEMORY_FACT_MAX_INPUT_CHARACTERS) return [];
+    target.safeText.length > MEMORY_FACT_MAX_TARGET_CHARACTERS) return [];
   const targetGroupIndex = snapshot.recallChunkProjection.turnGroups.findIndex(
     (group) => group.messages.some(({ id }) => id === targetMessageId)
   );
@@ -402,6 +408,7 @@ export function boundedMemoryFactContextMessageIds(
       0
     );
     if (messageCount + ids.length > MEMORY_FACT_MAX_INPUT_MESSAGES ||
+      characters - target.safeText.length + groupCharacters > MEMORY_FACT_MAX_CONTEXT_CHARACTERS ||
       characters + groupCharacters > MEMORY_FACT_MAX_INPUT_CHARACTERS) break;
     selectedGroups.unshift(ids);
     cursor = indexes[0]!;
@@ -829,11 +836,21 @@ async function candidateIsSuppressed(
   input: MemoryFactExtractionInput,
   candidate: MemoryExtractedCandidate
 ): Promise<boolean> {
+  const scope = await tx.memoryScope.findFirst({
+    select: { id: true },
+    where: { scopeType: "GLOBAL_USER", userId: input.source.userId }
+  });
+  const recorded = scope === null ? [] : await memoryRecordedLegacyIdentityKeys(tx, {
+    containerId: scope.id, namespace: "FACT",
+    unicodeCanonicalKey: candidate.unicodeCanonicalKey, userId: input.source.userId
+  });
+  const keys = new Set([
+    candidate.unicodeCanonicalKey,
+    ...(candidate.legacyCanonicalKey === undefined ? [] : [candidate.legacyCanonicalKey]),
+    ...recorded.map(({ canonicalKey }) => canonicalKey)
+  ]);
   for (const evidence of candidate.evidence) {
-    for (const canonicalKey of new Set([
-      candidate.unicodeCanonicalKey,
-      candidate.legacyCanonicalKey
-    ])) {
+    for (const canonicalKey of keys) {
       const matches = await findMatchingMemorySuppressions(
         tx,
         keyring,
@@ -1367,7 +1384,7 @@ function deterministicCandidateFailure(error: unknown): string | null {
 async function resultingIds(
   tx: MemoryTransaction,
   userId: string,
-  evidenceFingerprint: string
+  identity: Readonly<{ evidenceFingerprint: string } | { id: string }>
 ): Promise<Readonly<{
   evidenceId: string;
   factId: string;
@@ -1375,7 +1392,7 @@ async function resultingIds(
 }> | null> {
   const evidence = await tx.memoryEvidence.findFirst({
     select: { factVersionId: true, id: true },
-    where: { evidenceFingerprint, userId }
+    where: { ...identity, userId }
   });
   if (!evidence) return null;
   const version = await tx.memoryFactVersion.findFirst({
@@ -1541,7 +1558,7 @@ async function applyPlan(
         materializedCandidate,
         evidence
       );
-      const before = await resultingIds(tx, claim.userId, fingerprint);
+      const before = await resultingIds(tx, claim.userId, { evidenceFingerprint: fingerprint });
       const committed = await commitMemoryVNextExtractionPlan(
         tx,
         settings,
@@ -1556,7 +1573,14 @@ async function applyPlan(
         now,
         semanticDecision
       );
-      const result = before ?? await resultingIds(tx, claim.userId, fingerprint);
+      // This call commits one candidate. A same-message replay may refer to
+      // an earlier immutable support with a different quote fingerprint.
+      const replayedEvidenceIds = committed.replayedEvidenceIds ?? [];
+      if (replayedEvidenceIds.length > 1) throw new Error("memory_fact_replay_result_invalid");
+      const result = before ?? await resultingIds(tx, claim.userId,
+        replayedEvidenceIds[0]
+          ? { id: replayedEvidenceIds[0] }
+          : { evidenceFingerprint: fingerprint });
       if (!result) {
         await tx.$executeRawUnsafe("ROLLBACK TO SAVEPOINT memory_fact_candidate_apply");
         await tx.$executeRawUnsafe("RELEASE SAVEPOINT memory_fact_candidate_apply");

@@ -164,6 +164,78 @@ function renderedHeader(pack: MemoryContextPack): Record<string, unknown> | null
 }
 
 describe("Personal Memory context pack", () => {
+  it("distinguishes current statements, considerations and intentions without rewriting their evidence", () => {
+    const raw = "A commuter bicycle purchase.";
+    const packs = (["STATE", "CONSIDERATION", "INTENTION", "PLAN"] as const).map((modality) => {
+      const candidate = ranked("claim");
+      const pack = packMemoryPersonalContext({
+        plan,
+        ranked: [{ ...candidate, metadata: {
+          ...candidate.metadata, modality, sourceAuthority: "DIRECT_AUTOMATIC",
+          sourceMode: "AUTOMATIC"
+        } }],
+        expanded: [expansion("claim", false, raw)]
+      });
+      expect(pack.items).toHaveLength(1);
+      expect(pack.items[0].exactSafeText).toBe(raw);
+      expect(renderedEvidence(pack)).toMatchObject([{
+        claim_state: "current",
+        modality,
+        raw_safe_evidence: raw,
+        source_authority: "learned_from_user"
+      }]);
+      return pack.text;
+    });
+    expect(new Set(packs).size).toBe(4);
+  });
+
+  it.each([
+    "Quizá asista al taller; todavía no lo he decidido.",
+    "研修への参加を検討していますが、まだ決めていません。",
+    "قد أحضر الورشة، لكنني لم أقرر بعد."
+  ])("retains qualified source testimony without a language-dependent projection: %s", (raw) => {
+    const candidate = ranked("claim");
+    const pack = packMemoryPersonalContext({
+      plan,
+      ranked: [{ ...candidate, metadata: { ...candidate.metadata, modality: "CONSIDERATION" } }],
+      expanded: [expansion("claim", false, raw)]
+    });
+    expect(renderedEvidence(pack)).toMatchObject([{
+      claim_state: "current", modality: "CONSIDERATION", raw_safe_evidence: raw
+    }]);
+    expect(pack.items[0].exactSafeText).toBe(raw);
+  });
+
+  it.each([null, "untrusted qualifier"] as const)(
+    "does not invent or export an unsupported fact modality: %s",
+    (modality) => {
+      const candidate = ranked("claim");
+      const pack = packMemoryPersonalContext({
+        plan,
+        ranked: [{ ...candidate, metadata: {
+          ...candidate.metadata, modality: modality as MemoryCandidateMetadata["modality"]
+        } }],
+        expanded: [expansion("claim")]
+      });
+      expect(renderedEvidence(pack)).toMatchObject([{
+        claim_state: "current", modality: null, raw_safe_evidence: "memory claim"
+      }]);
+      expect(pack.text).not.toContain("untrusted qualifier");
+    }
+  );
+
+  it("does not turn a history row's unrelated metadata into a typed fact", () => {
+    const candidate = ranked("history", true);
+    const pack = packMemoryPersonalContext({
+      plan: pastChatPlan,
+      ranked: [{ ...candidate, metadata: { ...candidate.metadata, modality: "STATE" } }],
+      expanded: [expansion("history", true)]
+    });
+    expect(renderedEvidence(pack)).toHaveLength(1);
+    expect(renderedEvidence(pack)[0]).toMatchObject({ claim_state: "timeline_evidence" });
+    expect(renderedEvidence(pack)[0]).not.toHaveProperty("modality");
+  });
+
   it("packs contained same-message history once while retaining distinct episodes and chats", () => {
     const question = "User: Which index did we choose?";
     const answer = `${question}\nAssistant: The cedar index.`;
@@ -196,6 +268,71 @@ describe("Personal Memory context pack", () => {
     expect(pack.items.map(({ itemId }) => itemId)).toEqual(["compact"]);
   });
 
+  it.each([false, true])("retains a compact excerpt when its container exceeds the budget (container first: %s)", (containerFirst) => {
+    const compact = {
+      ...expansion("compact", true, "User: The cedar index."),
+      sourceMessageIds: ["user-1"]
+    };
+    const containing = {
+      ...expansion("containing", true, `${compact.safeText} ${"Additional context. ".repeat(90)}`),
+      sourceMessageIds: ["user-1"]
+    };
+    const control = packMemoryPersonalContext({
+      plan: pastChatPlan, ranked: [ranked("compact", true)], expanded: [compact]
+    });
+    expect(control.items).toHaveLength(1);
+    const larger = packMemoryPersonalContext({
+      plan: pastChatPlan, ranked: [ranked("containing", true)], expanded: [containing]
+    });
+    expect(larger.items).toHaveLength(1);
+    expect(larger.approxTokens).toBeGreaterThan(control.approxTokens);
+    const pack = packMemoryPersonalContext({
+      plan: pastChatPlan,
+      ranked: (containerFirst ? ["containing", "compact"] : ["compact", "containing"])
+        .map((id) => ranked(id, true)),
+      expanded: [compact, containing], maximumTokens: control.approxTokens
+    });
+    expect(pack.items.map(({ itemId }) => itemId)).toEqual(["compact"]);
+    expect(pack.items[0]?.rawSafeText).toBe(compact.safeText);
+    expect(pack.approxTokens).toBeLessThanOrEqual(control.approxTokens);
+  });
+
+  it("replaces selected excerpts atomically and leaves room for distinct later evidence", () => {
+    const texts = {
+      first: "User: The cedar index.", second: "User: Keep the backup.",
+      following: "User: Rehearsal is on Wednesday."
+    };
+    const containing = {
+      ...expansion("containing", true, `${texts.first}\n${texts.second}`),
+      sourceMessageIds: ["user-1", "user-2"]
+    };
+    const following = {
+      ...expansion("following", true, texts.following), sourceMessageIds: ["user-3"]
+    };
+    const control = packMemoryPersonalContext({
+      plan: pastChatPlan,
+      ranked: [ranked("containing", true), ranked("following", true)],
+      expanded: [containing, following]
+    });
+    expect(control.items).toHaveLength(2);
+    const pack = packMemoryPersonalContext({
+      plan: pastChatPlan,
+      ranked: ["first", "second", "containing", "following"].map((id) => ranked(id, true)),
+      expanded: [
+        { ...expansion("first", true, texts.first), sourceMessageIds: ["user-1"] },
+        { ...expansion("second", true, texts.second), sourceMessageIds: ["user-2"] },
+        containing, following
+      ],
+      maximumTokens: control.approxTokens
+    });
+    expect(pack.items.map(({ itemId }) => itemId)).toEqual(["containing", "following"]);
+    expect(pack.items.map(({ rawSafeText }) => rawSafeText)).toEqual([
+      containing.safeText, following.safeText
+    ]);
+    expect(new Set(pack.items.map(({ evidenceHandle }) => evidenceHandle)).size).toBe(2);
+    expect(pack.approxTokens).toBeLessThanOrEqual(control.approxTokens);
+  });
+
   it("packs bounded response preferences before relevant facts/history", () => {
     const dynamic = [ranked("fact"), ranked("history", true)];
     const pack = packMemoryPersonalContext({
@@ -221,7 +358,7 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v41");
+    expect(pack.packerVersion).toBe("memory-context-packer-v45");
   });
 
   it("labels a non-aggregation planner rewrite as a non-evidentiary answer focus", () => {

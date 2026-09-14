@@ -459,6 +459,11 @@ export function createMemoryFactExtractionHandler(
         bindingId = recovered.bindingId;
         plan = recovered.plan;
       } else {
+        // Accepted outputs recover above with their exact keys and hashes.
+        // A queued historical profile cannot authorize fresh retired decoding.
+        if (input.identityProfile !== "UNICODE_V2") {
+          return terminalResult(job, input, "fact_identity_profile_retired");
+        }
         await deps.probeAuthority(job.userId).catch((error: unknown) => {
           const decision = authorityGate(error);
           throw new MemoryCoordinatorError(decision.errorCode, true);

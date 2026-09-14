@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { enqueueMemoryJob } from "./jobs";
+import { enqueueMemoryJob, type MemoryJobEnqueueInput } from "./jobs";
 import type { LockedMemorySettings, MemoryTransaction } from "./transaction";
 
 const settings = {
@@ -26,6 +26,77 @@ const settings = {
 } satisfies LockedMemorySettings;
 
 describe("Memory job enqueue boundary", () => {
+  const explicitRelation = {
+    idempotencyFingerprint: "explicit-version-fingerprint",
+    kind: "RESOLVE_FACT_RELATIONS",
+    pipelineVersion: "memory-explicit-relation-v1",
+    targetFactVersionId: "explicit-version-1"
+  } satisfies MemoryJobEnqueueInput;
+  const directSource = {
+    activeLeafMessageId: "user-message-1",
+    branchGeneration: 0,
+    chatId: "chat-1",
+    sourceHash: "a".repeat(64),
+    sourceMessageId: "user-message-1",
+    sourceRevision: 1
+  };
+
+  it("enqueues an explicit-version comparison without manufacturing a chat source", async () => {
+    const memoryJob = {
+      create: vi.fn().mockResolvedValue({
+        id: "explicit-job", memoryGenerationSnapshot: 0,
+        memoryRevisionSnapshot: 0, state: "QUEUED"
+      }),
+      findUnique: vi.fn().mockResolvedValue(null)
+    };
+    await expect(enqueueMemoryJob(
+      { memoryJob } as unknown as MemoryTransaction, settings, explicitRelation
+    )).resolves.toMatchObject({ created: true, id: "explicit-job" });
+    const persisted = memoryJob.create.mock.calls[0]![0].data;
+    expect(persisted).toMatchObject({
+      userId: "user-1", kind: "RESOLVE_FACT_RELATIONS",
+      pipelineVersion: "memory-explicit-relation-v1",
+      targetFactVersionId: "explicit-version-1"
+    });
+    for (const field of ["chatId", "sourceMessageId", "activeLeafMessageId",
+      "sourceHash", "sourceRevision", "branchGeneration"]) {
+      expect(persisted).not.toHaveProperty(field);
+    }
+  });
+
+  it.each([
+    ["explicit comparison with a chat", { ...explicitRelation, source: directSource }],
+    ["explicit comparison without a version", { ...explicitRelation, targetFactVersionId: undefined }],
+    ["direct comparison without a source", { ...explicitRelation, pipelineVersion: "memory-fact-relation-v2" }],
+    ["unrecognized relation protocol", { ...explicitRelation, pipelineVersion: "unrecognized", source: directSource }]
+  ] satisfies Array<[string, MemoryJobEnqueueInput]>)("rejects %s before persistence", async (_name, input) => {
+    const memoryJob = { create: vi.fn(), findUnique: vi.fn() };
+    await expect(enqueueMemoryJob(
+      { memoryJob } as unknown as MemoryTransaction, settings, input
+    )).rejects.toThrow("memory_input_invalid");
+    expect(memoryJob.findUnique).not.toHaveBeenCalled();
+    expect(memoryJob.create).not.toHaveBeenCalled();
+  });
+
+  it("retains immutable explicit version ownership on replay", async () => {
+    const memoryJob = {
+      create: vi.fn(),
+      findUnique: vi.fn().mockResolvedValue({
+        ...explicitRelation, id: "explicit-job", state: "SUCCEEDED",
+        memoryGenerationSnapshot: 0, memoryRevisionSnapshot: 0,
+        chatId: null, sourceMessageId: null, activeLeafMessageId: null,
+        sourceHash: null, sourceRevision: null, branchGeneration: null
+      })
+    };
+    const tx = { memoryJob } as unknown as MemoryTransaction;
+    await expect(enqueueMemoryJob(tx, settings, explicitRelation))
+      .resolves.toMatchObject({ created: false, id: "explicit-job", state: "SUCCEEDED" });
+    await expect(enqueueMemoryJob(tx, settings, {
+      ...explicitRelation, targetFactVersionId: "replacement-version"
+    })).rejects.toThrow("memory_idempotency_conflict");
+    expect(memoryJob.create).not.toHaveBeenCalled();
+  });
+
   it("rejects retired coordinator kinds before touching the database", async () => {
     const memoryJob = {
       create: vi.fn(),

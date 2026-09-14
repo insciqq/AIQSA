@@ -45,7 +45,8 @@ import {
   MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
   MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
   memoryFactCandidateId,
-  memoryFactExtractionIdentityProfile,
+  memoryFactExtractionInputHash,
+  memoryFactExtractionJobFingerprint,
   memoryFactExtractionOutputHash,
   type MemorySemanticAdjudication,
   type MemoryFactExtractionInput,
@@ -65,9 +66,16 @@ import {
 import { MEMORY_FACT_EXTRACTION_TOOL_NAME } from "./prompt";
 import { createPrismaMemoryFactExtractionRepository } from "./repository";
 import { materializeMemoryCandidateEntityIdentity } from "../entities/repository";
+import { registerMemoryIdentityCompatibility } from "../identity/compatibility";
+import { createMemorySuppressionInTransaction } from "../../persistence/suppressions";
 import { MEMORY_IDENTITY_WRITE_PROFILE_ENV } from "../identity/config";
 import { createPrismaMemoryIdentityCutoverRepository } from
   "../identity/cutover";
+import {
+  decideMemoryFactRelation,
+  MEMORY_FACT_RELATION_PIPELINE_VERSION
+} from "../relations/policy";
+import { createPrismaMemoryRelationRepository } from "../relations/repository";
 
 const keyBytes = Buffer.from(Array.from({ length: 32 }, (_, index) => index + 101));
 const keyring = MemorySuppressionKeyring.parse(
@@ -281,18 +289,13 @@ function extractionPlan(
     brand: "Apple",
     label: "MacBook Air",
     model: "MacBook Air"
-  }
+  },
+  additionalQuotes: readonly string[] = []
 ): MemoryFactExtractionPlan {
-  const candidateRef = `C-${memorySha256({
-    product,
-    quote,
-    state,
-    statement
-  }).slice(0, 16)}`;
   return decodeMemoryFactExtraction([{
     arguments: {
-      observations: [{
-        candidate_ref: candidateRef,
+      observations: [quote, ...additionalQuotes].map((quote) => ({
+        candidate_ref: `C-${memorySha256({ product, quote, state, statement }).slice(0, 16)}`,
         confidence_band: "HIGH",
         dependency_refs: [],
         entities: [{
@@ -339,7 +342,7 @@ function extractionPlan(
           strength: null,
           value: null
         }
-      }]
+      }))
     },
     id: `fact-call-${randomUUID()}`,
     name: MEMORY_FACT_EXTRACTION_TOOL_NAME
@@ -351,14 +354,19 @@ function preferencePlan(
   quote: string,
   statement: string,
   explicitReminder = false,
-  confidenceBand: "HIGH" | "MEDIUM" = "HIGH"
+  confidenceBand: "HIGH" | "MEDIUM" = "HIGH",
+  additionalQuotes: readonly string[] = [],
+  correctionTargetRef: string | null = null,
+  polarity: "AFFIRMED" | "CORRECTION" | "NEGATED" = "AFFIRMED",
+  changeIntent: "NONE" | "CORRECTION" | "STATE_CHANGE" =
+    correctionTargetRef !== null || polarity === "CORRECTION" ? "CORRECTION" : "NONE"
 ): MemoryFactExtractionPlan {
   return decodeMemoryFactExtraction([{
     arguments: {
-      observations: [{
+      observations: [quote, ...additionalQuotes].map((quote) => ({
         candidate_ref: `C-${memorySha256({ quote, statement }).slice(0, 16)}`,
         confidence_band: confidenceBand,
-        dependency_refs: [],
+        dependency_refs: correctionTargetRef === null ? [] : [correctionTargetRef],
         entities: [],
         evidence: exactTextRef(quote),
         future_useful: true,
@@ -376,9 +384,9 @@ function preferencePlan(
         reason_code: "durable_direct_preference",
         semantic_frame: {
           assertion_status: "ASSERTED",
-          change_intent: "NONE",
+          change_intent: changeIntent,
           memory_directive: explicitReminder ? "EXPLICIT_REMEMBER" : "NONE",
-          polarity: "AFFIRMED",
+          polarity: correctionTargetRef === null ? polarity : "CORRECTION",
           speech_act: explicitReminder ? "COMMAND" : "ASSERTION",
           subject_scope: "CURRENT_USER",
           temporal_perspective: "CURRENT"
@@ -393,6 +401,60 @@ function preferencePlan(
         },
         temporary: false,
         value: emptyObservationValue
+      }))
+    },
+    id: `fact-call-${randomUUID()}`,
+    name: MEMORY_FACT_EXTRACTION_TOOL_NAME
+  }], input);
+}
+
+function scheduledPropositionPlan(
+  input: MemoryFactExtractionInput,
+  quote: string,
+  date: string,
+  changeIntent: "NONE" | "STATE_CHANGE",
+  weakSubjectType?: "GOAL" | "PROJECT",
+  entities: readonly unknown[] = []
+): MemoryFactExtractionPlan {
+  return decodeMemoryFactExtraction([{
+    arguments: {
+      observations: [{
+        candidate_ref: "C-scheduled-workshop",
+        confidence_band: "HIGH",
+        dependency_refs: [],
+        entities,
+        evidence: exactTextRef(quote),
+        future_useful: true,
+        identity: {
+          dimension_key: null,
+          mode: weakSubjectType ? "SLOT" : "PROPOSITION",
+          predicate_key: weakSubjectType === "GOAL" ? "goal_status"
+            : weakSubjectType === "PROJECT" ? "project_status" : null,
+          subject: {
+            canonical_label: null,
+            entity_type: weakSubjectType ?? "NONE",
+            qualifiers: { brand: null, model: null }
+          }
+        },
+        memory_type: "PLAN",
+        reason_code: "agreed_workshop_schedule",
+        semantic_frame: {
+          ...supportingUserAssertion,
+          change_intent: changeIntent,
+          temporal_perspective: "FUTURE"
+        },
+        sensitivity: "NORMAL",
+        statement: `The user's workshop is scheduled for ${date}.`,
+        temporal: {
+          expiration_intent: "NONE",
+          normalization: {
+            kind: "ABSOLUTE", local_date: date, local_time: null, zone: null
+          },
+          perspective: "FUTURE",
+          raw_expression: exactTextRef(date)
+        },
+        temporary: weakSubjectType !== undefined,
+        value: weakSubjectType ? { ...emptyObservationValue, state: "planned" } : emptyObservationValue
       }]
     },
     id: `fact-call-${randomUUID()}`,
@@ -403,7 +465,13 @@ function preferencePlan(
 function slotPreferencePlan(
   input: MemoryFactExtractionInput,
   quote: string,
-  dimension: string
+  dimension: string,
+  options: Readonly<{
+    changeIntent?: "NONE" | "CORRECTION" | "STATE_CHANGE";
+    polarity?: "AFFIRMED" | "NEGATED";
+    sensitivity?: "NORMAL" | "SENSITIVE";
+    value?: string;
+  }> = {}
 ): MemoryFactExtractionPlan {
   return decodeMemoryFactExtraction([{
     arguments: {
@@ -428,14 +496,14 @@ function slotPreferencePlan(
         reason_code: "durable_direct_preference",
         semantic_frame: {
           assertion_status: "ASSERTED",
-          change_intent: "NONE",
+          change_intent: options.changeIntent ?? "NONE",
           memory_directive: "NONE",
-          polarity: "AFFIRMED",
+          polarity: options.polarity ?? "AFFIRMED",
           speech_act: "ASSERTION",
           subject_scope: "CURRENT_USER",
           temporal_perspective: "CURRENT"
         },
-        sensitivity: "NORMAL",
+        sensitivity: options.sensitivity ?? "NORMAL",
         statement: quote,
         temporal: {
           expiration_intent: "NONE",
@@ -444,7 +512,7 @@ function slotPreferencePlan(
           raw_expression: null
         },
         temporary: false,
-        value: { ...emptyObservationValue, value: "concise" }
+        value: { ...emptyObservationValue, value: options.value ?? "concise" }
       }]
     },
     id: `fact-call-${randomUUID()}`,
@@ -541,13 +609,12 @@ function reinforcementPacket(
   targetVersionId: string
 ): MemorySemanticAdjudicationPacket {
   const input = memorySemanticAdjudicationInput(plan);
-  const candidate = plan.candidates[0];
   const target = plan.input.contextRefs.find(({ source }) =>
     source.factVersionId === targetVersionId);
-  if (!input || !candidate || !target) {
+  if (!input || plan.candidates.length === 0 || !target) {
     throw new Error("memory_duplicate_test_context_missing");
   }
-  const decisions: MemorySemanticAdjudication[] = [{
+  const decisions: MemorySemanticAdjudication[] = plan.candidates.map((candidate) => ({
     assertionStatus: "ASSERTED",
     candidateRef: candidate.candidateRef,
     confidenceBand: "HIGH",
@@ -558,7 +625,7 @@ function reinforcementPacket(
     subjectScope: "CURRENT_USER",
     targetRef: target.ref,
     temporalPerspective: candidate.semanticFrame.temporalPerspective
-  }];
+  }));
   return {
     decisions,
     inputHash: input.inputHash,
@@ -1045,6 +1112,458 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     await prisma.$disconnect();
   });
 
+  it.each([false, true])("persists a proposition with discarded entity annotations only with semantic authority: %s", async (admitted) => {
+    const userId = await createOwner("optional-entity-authority");
+    try {
+      const chat = await prisma.chat.create({ data: { title: "Workshop schedule", userId } });
+      const quote = "My Oriole workshop is on 2027-02-08.";
+      const turn = await createTurn({
+        assistantText: "Noted.", chatId: chat.id,
+        createdAt: new Date("2026-08-25T12:00:00.000Z"),
+        parentMessageId: null, userId, userText: quote
+      });
+      await settleChat(userId, chat.id, turn);
+      const claim = await claimFactJob(userId, turn.userMessage.id);
+      const input = await prepare(claim);
+      const plan = scheduledPropositionPlan(input, quote, "2027-02-08", "NONE", undefined, [{
+        aliases: [], canonical_label: "Oriole", context_entity_ref: null,
+        entity_type: "PROJECT", mention: exactTextRef("Oriole", 1), mention_kind: "NAMED",
+        qualifier_supports: [], role: "SUBJECT"
+      }]);
+      expect(plan.rejections).toEqual([]);
+      expect(plan.candidates).toHaveLength(1);
+      expect(memorySemanticAdjudicationInput(plan)).not.toBeNull();
+      const binding = await createSucceededBinding(userId, claim, input.inputHash, plan.outputHash);
+      await expect(applyPlan(userId, claim, plan, binding, new Date(), admitted ? undefined : null))
+        .resolves.toBe(admitted ? "APPLIED" : "EMPTY");
+      await expect(prisma.memoryFactVersion.count({ where: { userId } })).resolves.toBe(admitted ? 1 : 0);
+      await expect(prisma.memoryEntity.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memoryEntityAlias.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memoryFactExtractionCandidateReceipt.findFirstOrThrow({
+        select: { outcome: true, reasonCode: true }, where: { userId }
+      })).resolves.toEqual(admitted
+        ? { outcome: "APPLIED", reasonCode: null }
+        : { outcome: "REJECTED", reasonCode: "semantic_not_admitted" });
+      if (admitted) {
+        await expect(prisma.memoryFactVersion.findFirstOrThrow({
+          select: { expectedAt: true, state: true }, where: { userId }
+        })).resolves.toEqual({ expectedAt: new Date("2027-02-07T21:00:00.000Z"), state: "ACTIVE" });
+        await expect(prisma.memoryEvidence.findFirstOrThrow({
+          select: { safeExcerpt: true, messageId: true }, where: { userId }
+        })).resolves.toEqual({ safeExcerpt: quote, messageId: turn.userMessage.id });
+      } else {
+        await expect(prisma.memoryEvidence.count({ where: { userId } })).resolves.toBe(0);
+      }
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it.each([
+    { changeIntent: "CORRECTION", declaredDependency: true, from: "PROPOSITION", to: "PROPOSITION" },
+    { changeIntent: "CORRECTION", declaredDependency: false, from: "PROPOSITION", to: "PROPOSITION" },
+    { changeIntent: "STATE_CHANGE", declaredDependency: false, from: "PROPOSITION", to: "PROPOSITION" },
+    { changeIntent: "CORRECTION", declaredDependency: false, from: "PROPOSITION", to: "SLOT" },
+    { changeIntent: "STATE_CHANGE", declaredDependency: false, from: "SLOT", to: "PROPOSITION" }
+  ] as const)("persists an exact proposition correction for guarded relation resolution with $changeIntent and declared dependency $declaredDependency from $from to $to", async ({ changeIntent, declaredDependency, from, to }) => {
+    const userId = await createOwner("proposition-correction");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Preference correction", userId }
+      });
+      const first = await createTurn({
+        assistantText: "Noted.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-25T12:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "I prefer cedar layouts."
+      });
+      await settleChat(userId, chat.id, first);
+      const firstClaim = await claimFactJob(userId, first.userMessage.id);
+      const firstInput = await prepare(firstClaim);
+      const firstPlan = from === "PROPOSITION"
+        ? preferencePlan(firstInput, "I prefer cedar layouts.", "The user prefers cedar layouts.")
+        : slotPreferencePlan(firstInput, "I prefer cedar layouts.", "format:layouts", { value: "cedar" });
+      await applyPlan(userId, firstClaim, firstPlan, await createSucceededBinding(
+        userId, firstClaim, firstInput.inputHash, firstPlan.outputHash
+      ));
+      const original = await prisma.memoryFactVersion.findFirstOrThrow({
+        where: { state: "ACTIVE", userId }
+      });
+      const updatedPreference = changeIntent === "CORRECTION"
+        ? "Correction: I prefer maple layouts."
+        : "My preference has changed: I now prefer maple layouts.";
+      const second = await createTurn({
+        assistantText: "Noted.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-25T12:01:00.000Z"),
+        parentMessageId: first.assistantMessage.id,
+        userId,
+        userText: updatedPreference
+      });
+      await settleChat(userId, chat.id, second);
+      const claim = await claimFactJob(userId, second.userMessage.id);
+      const input = await prepare(claim);
+      const target = input.contextRefs.find(({ source }) =>
+        source.factVersionId === original.id);
+      if (!target) throw new Error("memory_test_correction_target_missing");
+      const plan = to === "PROPOSITION"
+        ? preferencePlan(
+            input, updatedPreference,
+            "The user prefers maple layouts.", false, "HIGH", [],
+            declaredDependency ? target.ref : null,
+            changeIntent === "CORRECTION" ? "CORRECTION" : "AFFIRMED", changeIntent
+          )
+        : slotPreferencePlan(input, updatedPreference, "format:layouts", {
+            changeIntent, value: "maple"
+          });
+      expect(plan.candidates).toHaveLength(1);
+      expect(plan.candidates[0]).toMatchObject({
+        correction: changeIntent === "CORRECTION",
+        identityKind: to
+      });
+      const semanticInput = memorySemanticAdjudicationInput(plan);
+      if (!semanticInput) throw new Error("memory_test_adjudication_input_missing");
+      const decisions: MemorySemanticAdjudication[] = [{
+        assertionStatus: "ASSERTED",
+        candidateRef: plan.candidates[0]!.candidateRef,
+        confidenceBand: "HIGH",
+        entailment: "ENTAILED",
+        entityRef: null,
+        operation: "SUPERSEDE_TARGET",
+        reasonCode: "direct-preference-correction",
+        subjectScope: "CURRENT_USER",
+        targetRef: target.ref,
+        temporalPerspective: "CURRENT"
+      }];
+      await expect(applyPlan(userId, claim, plan, await createSucceededBinding(
+        userId, claim, input.inputHash, plan.outputHash
+      ), new Date(), {
+        decisions,
+        inputHash: semanticInput.inputHash,
+        outputHash: memorySemanticAdjudicationOutputHash(semanticInput.inputHash, decisions)
+      })).resolves.toBe("APPLIED");
+      const proposed = await prisma.memoryFactVersion.findFirstOrThrow({
+        where: { state: "PENDING_RELATION", userId }
+      });
+      expect(proposed.factId).not.toBe(original.factId);
+      await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+        where: { id: original.id }
+      })).resolves.toMatchObject({ state: "ACTIVE", systemTo: null });
+      await expect(prisma.memoryFactVersionSourceDependency.count({
+        where: {
+          dependencyKind: "CORRECTION_TARGET",
+          sourceFactVersionId: original.id,
+          targetFactVersionId: proposed.id,
+          userId
+        }
+      })).resolves.toBe(1);
+      const now = new Date();
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+        where: { userId }
+      });
+      const relationClaim: MemoryJobClaim = {
+        ...claim,
+        id: randomUUID(),
+        kind: "RESOLVE_FACT_RELATIONS",
+        memoryGenerationSnapshot: settings.memoryGeneration,
+        memoryRevisionSnapshot: settings.memoryRevision,
+        pipelineVersion: MEMORY_FACT_RELATION_PIPELINE_VERSION,
+        targetFactVersionId: proposed.id
+      };
+      const relations = createPrismaMemoryRelationRepository(prisma);
+      const prepared = await relations.prepare(relationClaim, now);
+      if (prepared.status !== "READY") {
+        throw new Error(`memory_test_relation_not_ready:${prepared.reason}`);
+      }
+      const decision = decideMemoryFactRelation(prepared.prepared.snapshot, now);
+      expect(decision).toMatchObject({
+        operation: "MOVE_TO_DISTINCT_FACT",
+        targetVersionId: original.id
+      });
+      const relationPlan = {
+        decision,
+        executionId: null,
+        expectedSnapshotHash: prepared.prepared.snapshotHash
+      };
+      await prisma.$transaction((tx) =>
+        relations.apply(tx, relationClaim, relationPlan, now));
+      await expect(prisma.memoryFact.findUniqueOrThrow({
+        where: { id: original.factId }
+      })).resolves.toMatchObject({
+        currentVersionId: null,
+        movedToFactId: proposed.factId,
+        state: "RETRACTED"
+      });
+      await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+        where: { id: original.id }
+      })).resolves.toMatchObject({ state: "SUPERSEDED" });
+      await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+        where: { id: proposed.id }
+      })).resolves.toMatchObject({
+        movedFromVersionId: original.id,
+        state: "ACTIVE",
+        supersedesVersionId: original.id,
+        systemTo: null
+      });
+      await expect(prisma.memoryFact.findUniqueOrThrow({
+        where: { id: proposed.factId }
+      })).resolves.toMatchObject({
+        currentVersionId: proposed.id,
+        state: "ACTIVE"
+      });
+      await expect(loadPersonalEligibleFactVersionIds(
+        prisma, userId, [proposed.id]
+      )).resolves.toEqual(new Set([proposed.id]));
+      await prisma.$transaction((tx) =>
+        relations.apply(tx, relationClaim, relationPlan, now));
+      await expect(prisma.memoryFactVersion.count({
+        where: { state: "ACTIVE", userId }
+      })).resolves.toBe(1);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it.each([
+    { date: "2026-10-07", weakSubjectType: undefined },
+    { date: "2026-10-28", weakSubjectType: undefined },
+    { date: "2026-10-07", weakSubjectType: "GOAL" as const },
+    { date: "2026-10-28", weakSubjectType: "PROJECT" as const }
+  ])(
+    "retains the revised future schedule $date ($weakSubjectType) and the superseded schedule's evidence",
+    async ({ date, weakSubjectType }) => {
+      const userId = await createOwner("scheduled-proposition-revision");
+      try {
+        const chat = await prisma.chat.create({ data: { title: "Workshop schedule", userId } });
+        const initialText = "My workshop is scheduled for 2026-10-14.";
+        const first = await createTurn({
+          assistantText: "Noted.", chatId: chat.id,
+          createdAt: new Date("2026-08-25T12:00:00.000Z"),
+          parentMessageId: null, userId, userText: initialText
+        });
+        await settleChat(userId, chat.id, first);
+        const firstClaim = await claimFactJob(userId, first.userMessage.id);
+        const firstInput = await prepare(firstClaim);
+        const firstPlan = scheduledPropositionPlan(firstInput, initialText, "2026-10-14", "NONE", weakSubjectType);
+        expect(firstPlan.candidates).toHaveLength(1);
+        await applyPlan(userId, firstClaim, firstPlan, await createSucceededBinding(
+          userId, firstClaim, firstInput.inputHash, firstPlan.outputHash
+        ));
+        const original = await prisma.memoryFactVersion.findFirstOrThrow({ where: { state: "ACTIVE", userId } });
+        const revisedText = `We agreed to reschedule my workshop to ${date}.`;
+        const second = await createTurn({
+          assistantText: "Noted.", chatId: chat.id,
+          createdAt: new Date("2026-08-25T12:01:00.000Z"),
+          parentMessageId: first.assistantMessage.id, userId, userText: revisedText
+        });
+        await settleChat(userId, chat.id, second);
+        const claim = await claimFactJob(userId, second.userMessage.id);
+        const input = await prepare(claim);
+        const target = input.contextRefs.find(({ source }) => source.factVersionId === original.id);
+        if (!target) throw new Error("memory_test_schedule_target_missing");
+        const plan = scheduledPropositionPlan(input, revisedText, date, "STATE_CHANGE", weakSubjectType);
+        expect(plan.candidates).toHaveLength(1);
+        const semanticInput = memorySemanticAdjudicationInput(plan);
+        if (!semanticInput) throw new Error("memory_test_schedule_adjudication_missing");
+        const decisions: MemorySemanticAdjudication[] = [{
+          assertionStatus: "ASSERTED", candidateRef: plan.candidates[0]!.candidateRef,
+          confidenceBand: "HIGH", entailment: "ENTAILED", entityRef: null,
+          operation: "SUPERSEDE_TARGET", reasonCode: "agreed_schedule_revision",
+          subjectScope: "CURRENT_USER", targetRef: target.ref, temporalPerspective: "FUTURE"
+        }];
+        await expect(applyPlan(userId, claim, plan, await createSucceededBinding(
+          userId, claim, input.inputHash, plan.outputHash
+        ), new Date(), {
+          decisions, inputHash: semanticInput.inputHash,
+          outputHash: memorySemanticAdjudicationOutputHash(semanticInput.inputHash, decisions)
+        })).resolves.toBe("APPLIED");
+        const pending = await prisma.memoryFactVersion.findFirstOrThrow({ where: { state: "PENDING_RELATION", userId } });
+        const settings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+        const relationClaim: MemoryJobClaim = {
+          ...claim, id: randomUUID(), kind: "RESOLVE_FACT_RELATIONS",
+          memoryGenerationSnapshot: settings.memoryGeneration, memoryRevisionSnapshot: settings.memoryRevision,
+          pipelineVersion: MEMORY_FACT_RELATION_PIPELINE_VERSION, targetFactVersionId: pending.id
+        };
+        const relations = createPrismaMemoryRelationRepository(prisma);
+        const now = new Date();
+        const prepared = await relations.prepare(relationClaim, now);
+        if (prepared.status !== "READY") throw new Error("memory_test_schedule_relation_not_ready");
+        const decision = decideMemoryFactRelation(prepared.prepared.snapshot, now);
+        expect(decision).toMatchObject({ operation: "MOVE_TO_DISTINCT_FACT", targetVersionId: original.id });
+        await prisma.$transaction((tx) => relations.apply(tx, relationClaim, {
+          decision, executionId: null, expectedSnapshotHash: prepared.prepared.snapshotHash
+        }, now));
+        const active = await prisma.memoryFactVersion.findFirstOrThrow({ where: { state: "ACTIVE", userId } });
+        expect(active.id).toBe(pending.id);
+        expect(active.expectedAt?.toISOString()).toBe(plan.candidates[0]!.expectedAt);
+        expect(active.supersedesVersionId).toBe(original.id);
+        expect(active.observedAt!.getTime()).toBeGreaterThan(original.observedAt!.getTime());
+        expect(active.observedAt!.getTime()).toBeLessThan(active.expectedAt!.getTime());
+        await expect(prisma.memoryFactVersion.findUniqueOrThrow({ where: { id: original.id } }))
+          .resolves.toMatchObject({ state: "SUPERSEDED", expectedAt: original.expectedAt });
+        await expect(prisma.memoryEvidence.count({ where: { factVersionId: original.id, userId } }))
+          .resolves.toBe(1);
+        await expect(prisma.memoryFactVersion.count({ where: { state: "ACTIVE", userId } }))
+          .resolves.toBe(1);
+        await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: original.factId } }))
+          .resolves.toMatchObject({ currentVersionId: null, movedToFactId: active.factId, state: "RETRACTED" });
+        await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: active.factId } }))
+          .resolves.toMatchObject({ currentVersionId: active.id, state: "ACTIVE" });
+        // Source authority also remains valid for historical recall. Currentness
+        // is separately defined by the active version and canonical pointer.
+        await expect(loadPersonalEligibleFactVersionIds(prisma, userId, [original.id, active.id]))
+          .resolves.toEqual(new Set([original.id, active.id]));
+      } finally {
+        await cleanupOwner(userId);
+      }
+    }
+  );
+
+  it("learns an exact fact near the end of a long direct user message", async () => {
+    const userId = await createOwner("long-target");
+    try {
+      const quote = "I prefer written instructions.";
+      const text = "These notes describe background context. ".repeat(400) + quote;
+      const chat = await prisma.chat.create({
+        data: { title: "Long direct message", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "Noted.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-25T12:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: text
+      });
+      await settleChat(userId, chat.id, turn);
+      const claim = await claimFactJob(userId, turn.userMessage.id);
+      const input = await prepare(claim);
+      expect(input.messages.find(({ evidenceEligible }) => evidenceEligible)?.text).toBe(text);
+      const plan = preferencePlan(input, quote, "The user prefers written instructions.");
+      await expect(applyPlan(userId, claim, plan, await createSucceededBinding(
+        userId, claim, input.inputHash, plan.outputHash
+      ))).resolves.toBe("APPLIED");
+      await expect(prisma.memoryEvidence.findFirstOrThrow({
+        where: { userId }
+      })).resolves.toMatchObject({
+        safeExcerpt: quote,
+        sourceEndOffset: text.length,
+        sourceStartOffset: text.length - quote.length
+      });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("atomically persists all eight admitted facts from one source packet", async () => {
+    const userId = await createOwner("complete-packet");
+    try {
+      const statements = [
+        "I prefer early meetings.", "I prefer short emails.",
+        "I prefer unsweetened tea.", "I prefer quiet offices.",
+        "I prefer written instructions.", "I prefer weekly planning.",
+        "I prefer dark editor themes.", "I prefer numbered checklists."
+      ];
+      const chat = await prisma.chat.create({
+        data: { title: "Independent preferences", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "Noted.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-25T12:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: statements.join(" ")
+      });
+      await settleChat(userId, chat.id, turn);
+      const claim = await claimFactJob(userId, turn.userMessage.id);
+      const input = await prepare(claim);
+      const candidates = statements.flatMap((statement) =>
+        preferencePlan(input, statement, statement).candidates);
+      const candidateOrdinals = candidates.map((_, index) => index);
+      const plan: MemoryFactExtractionPlan = {
+        candidateOrdinals,
+        candidates,
+        input,
+        outputHash: memoryFactExtractionOutputHash(input, candidates, candidateOrdinals, []),
+        rejections: []
+      };
+      expect(candidates).toHaveLength(8);
+      const binding = await createSucceededBinding(
+        userId, claim, input.inputHash, plan.outputHash
+      );
+      await expect(applyPlan(userId, claim, plan, binding)).resolves.toBe("APPLIED");
+      await expect(prisma.memoryFactVersion.count({
+        where: { state: "ACTIVE", userId }
+      })).resolves.toBe(8);
+      await expect(prisma.memoryFactExtractionCandidateReceipt.count({
+        where: { outcome: "APPLIED", userId }
+      })).resolves.toBe(8);
+      await expect(applyPlan(userId, claim, plan, binding)).resolves.toBe("APPLIED");
+      await expect(prisma.memoryFactVersion.count({
+        where: { state: "ACTIVE", userId }
+      })).resolves.toBe(8);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it.each([
+    ["PROPOSITION", "NORMAL"],
+    ["SLOT", "NORMAL"],
+    ["SLOT", "SENSITIVE"]
+  ] as const)("persists a semantically admitted negative %s proposal labeled %s without losing its polarity", async (identityKind, sensitivity) => {
+    const userId = await createOwner("negative-preference");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Negative preference", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "Noted.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-25T12:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "I do not drink coffee."
+      });
+      await settleChat(userId, chat.id, turn);
+      const claim = await claimFactJob(userId, turn.userMessage.id);
+      const input = await prepare(claim);
+      const plan = identityKind === "PROPOSITION"
+        ? preferencePlan(
+            input, "I do not drink coffee.", "The user does not drink coffee.",
+            false, "HIGH", [], null, "NEGATED"
+          )
+        : slotPreferencePlan(input, "I do not drink coffee.", "category:drinks", {
+            polarity: "NEGATED", sensitivity, value: "coffee"
+          });
+      expect(plan.candidates).toHaveLength(1);
+      expect(memoryCandidateRequiresSemanticAdjudication(plan.candidates[0]!)).toBe(true);
+      await expect(applyPlan(userId, claim, plan, await createSucceededBinding(
+        userId, claim, input.inputHash, plan.outputHash
+      ))).resolves.toBe("APPLIED");
+      const version = await prisma.memoryFactVersion.findFirstOrThrow({
+        where: { state: "ACTIVE", userId }
+      });
+      expect(version).toMatchObject({
+        displayText: plan.candidates[0]!.displayText,
+        semanticFrame: { polarity: "NEGATED" },
+        safetyClassificationState: "CLASSIFIED",
+        sensitivityClass: "NORMAL",
+        sourceMode: "AUTOMATIC"
+      });
+      expect(version.structuredValue).toMatchObject({ schema: "generic-fact-v1" });
+      expect(version.structuredValue).not.toHaveProperty("value");
+      await expect(loadPersonalEligibleFactVersionIds(
+        prisma, userId, [version.id]
+      )).resolves.toEqual(new Set([version.id]));
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it("[E02] atomically persists the bounded adjudication result before settlement", async () => {
     const userId = await createOwner("adjudication-result-contract");
     try {
@@ -1411,219 +1930,26 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   });
 
-  it("dual-reads legacy proposition identity without rewriting the accepted key", async () => {
-    const userId = await createOwner("identity-dual-read");
+  it("keeps distinct Unicode slots on default admission and pins queued identity", async () => {
+    const userId = await createOwner("identity-default-unicode");
     const previousProfile = process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV];
     try {
-      const chat = await prisma.chat.create({
-        data: { title: "Identity dual read", userId }
-      });
-      const sourceText = "Я люблю чай Ёлка.";
-      process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV] = "LEGACY_V1";
-      const first = await createTurn({
-        assistantText: "Запомнил.",
-        chatId: chat.id,
-        createdAt: new Date("2026-08-30T10:00:00.000Z"),
-        parentMessageId: null,
-        userId,
-        userText: sourceText
-      });
-      await settleChat(userId, chat.id, first);
-      const firstClaim = await claimFactJob(userId, first.userMessage.id);
-      const firstInput = await prepare(firstClaim);
-      expect(firstInput.identityProfile).toBe("LEGACY_V1");
-      const firstPlan = preferencePlan(firstInput, sourceText, sourceText);
-      expect(firstPlan.candidates[0]).toMatchObject({
-        identityVersion: "proposition-v1"
-      });
-      const firstBinding = await createSucceededBinding(
-        userId,
-        firstClaim,
-        firstInput.inputHash,
-        firstPlan.outputHash
-      );
-      await expect(applyPlan(
-        userId,
-        firstClaim,
-        firstPlan,
-        firstBinding
-      )).resolves.toBe("APPLIED");
-
-      await prisma.$executeRaw(Prisma.sql`
-        DELETE FROM "MemoryIdentityCompatibility" WHERE "userId" = ${userId}
-      `);
-      const cutover = createPrismaMemoryIdentityCutoverRepository(prisma);
-      await expect(cutover.inventory(userId)).resolves.toMatchObject({
-        readyForUnicodeWrites: false,
-        unmappedLegacyFactCount: 1
-      });
-      await expect(cutover.reconcile(userId)).resolves.toEqual({
-        existing: 0,
-        queued: 1,
-        sourceUnavailable: 0
-      });
-      const rebuildJob = await prisma.memoryJob.findFirstOrThrow({
-        where: {
-          id: { not: firstClaim.id },
-          pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
-          sourceMessageId: first.userMessage.id,
-          userId
-        }
-      });
-      expect(memoryFactExtractionIdentityProfile(rebuildJob))
-        .toBe("UNICODE_V2");
-      await prisma.memoryJob.delete({ where: { id: rebuildJob.id } });
-
-      process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV] = "UNICODE_V2";
-      const second = await createTurn({
-        assistantText: "Ещё раз запомнил.",
-        chatId: chat.id,
-        createdAt: new Date("2026-08-30T10:01:00.000Z"),
-        parentMessageId: first.assistantMessage.id,
-        userId,
-        userText: sourceText
-      });
-      await settleChat(userId, chat.id, second);
-      const secondClaim = await claimFactJob(userId, second.userMessage.id);
-      const secondInput = await prepare(secondClaim);
-      expect(secondInput.identityProfile).toBe("UNICODE_V2");
-      const secondPlan = preferencePlan(secondInput, sourceText, sourceText);
-      expect(secondPlan.candidates[0]).toMatchObject({
-        identityVersion: "proposition-v2",
-        legacyCanonicalKey: firstPlan.candidates[0]!.canonicalKey
-      });
-      expect(secondPlan.candidates[0]!.canonicalKey)
-        .not.toBe(firstPlan.candidates[0]!.canonicalKey);
-      const secondBinding = await createSucceededBinding(
-        userId,
-        secondClaim,
-        secondInput.inputHash,
-        secondPlan.outputHash
-      );
-      await expect(applyPlan(
-        userId,
-        secondClaim,
-        secondPlan,
-        secondBinding
-      )).resolves.toBe("APPLIED");
-
-      await expect(prisma.memoryFact.findMany({
-        select: { canonicalKey: true, identityVersion: true },
-        where: { userId }
-      })).resolves.toEqual([{
-        canonicalKey: firstPlan.candidates[0]!.canonicalKey,
-        identityVersion: "proposition-v1"
-      }]);
-      await expect(prisma.memoryFactVersion.count({ where: { userId } }))
-        .resolves.toBe(1);
-      await expect(cutover.inventory(userId)).resolves.toMatchObject({
-          collidingLegacyFactKeys: 0,
-          mappedLegacyFactCount: 1,
-          unmappedLegacyFactCount: 0
+      await expect(createPrismaMemoryIdentityCutoverRepository(prisma)
+        .assertActivationReady(userId)).resolves.toMatchObject({
+          legacyFactCount: 0,
+          readyForUnicodeWrites: true
         });
-
-      const rollbackText = "I prefer exact rollback semantics.";
-      process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV] = "UNICODE_V2";
-      const unicodeFirst = await createTurn({
-        assistantText: "Noted.",
-        chatId: chat.id,
-        createdAt: new Date("2026-08-30T10:02:00.000Z"),
-        parentMessageId: second.assistantMessage.id,
-        userId,
-        userText: rollbackText
-      });
-      await settleChat(userId, chat.id, unicodeFirst);
-      const unicodeClaim = await claimFactJob(userId, unicodeFirst.userMessage.id);
-      const unicodeInput = await prepare(unicodeClaim);
-      const unicodePlan = preferencePlan(
-        unicodeInput,
-        rollbackText,
-        rollbackText
-      );
-      const unicodeBinding = await createSucceededBinding(
-        userId,
-        unicodeClaim,
-        unicodeInput.inputHash,
-        unicodePlan.outputHash
-      );
-      await expect(applyPlan(
-        userId,
-        unicodeClaim,
-        unicodePlan,
-        unicodeBinding
-      )).resolves.toBe("APPLIED");
-
-      process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV] = "LEGACY_V1";
-      const rollback = await createTurn({
-        assistantText: "Noted again.",
-        chatId: chat.id,
-        createdAt: new Date("2026-08-30T10:03:00.000Z"),
-        parentMessageId: unicodeFirst.assistantMessage.id,
-        userId,
-        userText: rollbackText
-      });
-      await settleChat(userId, chat.id, rollback);
-      const rollbackClaim = await claimFactJob(userId, rollback.userMessage.id);
-      const rollbackInput = await prepare(rollbackClaim);
-      const rollbackPlan = preferencePlan(
-        rollbackInput,
-        rollbackText,
-        rollbackText
-      );
-      expect(rollbackPlan.candidates[0]).toMatchObject({
-        identityVersion: "proposition-v1",
-        unicodeCanonicalKey: unicodePlan.candidates[0]!.canonicalKey
-      });
-      const rollbackBinding = await createSucceededBinding(
-        userId,
-        rollbackClaim,
-        rollbackInput.inputHash,
-        rollbackPlan.outputHash
-      );
-      await expect(applyPlan(
-        userId,
-        rollbackClaim,
-        rollbackPlan,
-        rollbackBinding
-      )).resolves.toBe("APPLIED");
-      await expect(prisma.memoryFact.findFirstOrThrow({
-        select: { canonicalKey: true, identityVersion: true },
-        where: { canonicalKey: unicodePlan.candidates[0]!.canonicalKey, userId }
-      })).resolves.toEqual({
-        canonicalKey: unicodePlan.candidates[0]!.canonicalKey,
-        identityVersion: "proposition-v2"
-      });
-      await expect(prisma.memoryFact.count({ where: { userId } }))
-        .resolves.toBe(2);
-    } finally {
-      if (previousProfile === undefined) {
-        delete process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV];
-      } else {
-        process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV] = previousProfile;
-      }
-      await cleanupOwner(userId);
-    }
-  });
-
-  it("stops legacy reuse after one partial-ASCII key maps to two Unicode slots", async () => {
-    const userId = await createOwner("identity-collision-stop");
-    const previousProfile = process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV];
-    try {
       const chat = await prisma.chat.create({
-        data: { title: "Identity collision stop", userId }
+        data: { title: "Distinct topic identities", userId }
       });
       let parentMessageId: string | null = null;
-      const observe = async (
-        quote: string,
-        dimension: string,
-        identityProfile: "LEGACY_V1" | "UNICODE_V2",
-        minute: number
-      ) => {
-        process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV] = identityProfile;
+      for (const [index, label] of ["report café", "report cafè"].entries()) {
+        delete process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV];
+        const quote = `I prefer ${label} topics.`;
         const turn = await createTurn({
           assistantText: "Noted.",
           chatId: chat.id,
-          createdAt: new Date(`2026-08-30T11:0${minute}:00.000Z`),
+          createdAt: new Date(Date.UTC(2026, 7, 30, 9, index)),
           parentMessageId,
           userId,
           userText: quote
@@ -1631,87 +1957,26 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         parentMessageId = turn.assistantMessage.id;
         await settleChat(userId, chat.id, turn);
         const claim = await claimFactJob(userId, turn.userMessage.id);
+        process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV] = "LEGACY_V1";
         const input = await prepare(claim);
-        expect(input.identityProfile).toBe(identityProfile);
-        const plan = slotPreferencePlan(input, quote, dimension);
+        expect(input.identityProfile).toBe("UNICODE_V2");
+        const plan = slotPreferencePlan(input, quote, `topic:${label}`);
         const binding = await createSucceededBinding(
-          userId,
-          claim,
-          input.inputHash,
-          plan.outputHash
+          userId, claim, input.inputHash, plan.outputHash
         );
         await expect(applyPlan(userId, claim, plan, binding))
           .resolves.toBe("APPLIED");
-        return plan.candidates[0]!;
-      };
-
-      const legacy = await observe(
-        "I prefer cafè topics.",
-        "topic:cafè",
-        "LEGACY_V1",
-        0
-      );
-      const accented = await observe(
-        "I prefer cafè topics.",
-        "topic:cafè",
-        "UNICODE_V2",
-        1
-      );
-      expect(accented.legacyCanonicalKey).toBe(legacy.canonicalKey);
-      await expect(prisma.memoryFact.count({ where: { userId } }))
-        .resolves.toBe(1);
-
-      const ascii = await observe(
-        "I prefer caf topics.",
-        "topic:caf",
-        "UNICODE_V2",
-        2
-      );
-      expect(ascii.legacyCanonicalKey).toBe(legacy.canonicalKey);
-      expect(ascii.canonicalKey).not.toBe(accented.canonicalKey);
-      await expect(prisma.memoryFact.count({ where: { userId } }))
-        .resolves.toBe(2);
-
-      await observe(
-        "I prefer cafè topics.",
-        "topic:cafè",
-        "UNICODE_V2",
-        3
-      );
+      }
       const facts = await prisma.memoryFact.findMany({
-        orderBy: { canonicalKey: "asc" },
-        select: { canonicalKey: true },
+        select: { canonicalKey: true, identityVersion: true, state: true },
         where: { userId }
       });
-      expect(facts.map(({ canonicalKey }) => canonicalKey).sort()).toEqual([
-        legacy.canonicalKey,
-        ascii.canonicalKey,
-        accented.canonicalKey
-      ].sort());
-
-      const blockedRollback = await observe(
-        "I prefer cafë topics.",
-        "topic:cafë",
-        "LEGACY_V1",
-        4
-      );
-      expect(blockedRollback.legacyCanonicalKey).toBe(legacy.canonicalKey);
-      expect(blockedRollback.unicodeCanonicalKey).not.toBe(
-        accented.unicodeCanonicalKey
-      );
-      await expect(prisma.memoryFact.count({ where: { userId } }))
-        .resolves.toBe(3);
-      await expect(prisma.memoryFact.count({
-        where: {
-          canonicalKey: blockedRollback.unicodeCanonicalKey,
-          userId
-        }
-      })).resolves.toBe(0);
-      await expect(createPrismaMemoryIdentityCutoverRepository(prisma)
-        .inventory(userId)).resolves.toMatchObject({
-          collidingLegacyFactKeys: 1,
-          readyForUnicodeWrites: false
-        });
+      expect(facts).toHaveLength(2);
+      expect(new Set(facts.map((fact) => fact.canonicalKey)).size).toBe(2);
+      expect(facts.every((fact) =>
+        fact.identityVersion === "slot-v4" && fact.state === "ACTIVE")).toBe(true);
+      await expect(prisma.memoryEvidence.count({ where: { userId } }))
+        .resolves.toBe(2);
     } finally {
       if (previousProfile === undefined) {
         delete process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV];
@@ -1721,6 +1986,102 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       await cleanupOwner(userId);
     }
   });
+
+  it.each(["mapped", "unmapped", "ambiguous"] as const)(
+    "recovers recorded legacy identity and bounds future lookup (%s)", async (mapping) => {
+      const userId = await createOwner(`identity-recorded-${mapping}`);
+      try {
+        const chat = await prisma.chat.create({ data: { title: "Recorded identity", userId } });
+        const text = "I prefer quiet rooms.";
+        const first = await createTurn({ assistantText: "Noted.", chatId: chat.id,
+          createdAt: new Date("2026-08-30T10:00:00Z"), parentMessageId: null, userId, userText: text });
+        await settleChat(userId, chat.id, first);
+        const admittedClaim = await claimFactJob(userId, first.userMessage.id);
+        const modernInput = await prepare(admittedClaim);
+        const decoded = preferencePlan(modernInput, text, text);
+        const { inputHash: _inputHash, ...inputFields } = modernInput;
+        const oldFields = { ...inputFields, identityProfile: "LEGACY_V1" as const };
+        const oldInput = { ...oldFields, inputHash: memoryFactExtractionInputHash(oldFields) };
+        // Seed the accepted storage boundary. No retired calculator or provider
+        // is used to manufacture a historical result in the current runtime.
+        const canonicalKey = `prop:v1:${"a".repeat(64)}`;
+        const { id: _id, ...candidateFields } = decoded.candidates[0]!;
+        const oldCandidate = { ...candidateFields, canonicalKey,
+          identityProfile: "LEGACY_V1" as const, identityVersion: "proposition-v1" as const,
+          legacyCanonicalKey: canonicalKey, legacyProposedValue: candidateFields.proposedValue };
+        const candidates = [{ ...oldCandidate, id: memoryFactCandidateId(oldInput, oldCandidate) }];
+        const oldPlan = { ...decoded, candidates, input: oldInput,
+          outputHash: memoryFactExtractionOutputHash(oldInput, candidates, decoded.candidateOrdinals, decoded.rejections) };
+        const oldClaim = { ...admittedClaim,
+          idempotencyFingerprint: memoryFactExtractionJobFingerprint(modernInput.source, "LEGACY_V1") };
+        await prisma.memoryJob.update({ where: { id: oldClaim.id },
+          data: { idempotencyFingerprint: oldClaim.idempotencyFingerprint } });
+        expect(await prepare(oldClaim)).toEqual(oldInput);
+        const oldBinding = await createSucceededBinding(userId, oldClaim, oldInput.inputHash, oldPlan.outputHash);
+        await expect(applyPlan(userId, oldClaim, oldPlan, oldBinding)).resolves.toBe("APPLIED");
+        const retained = await prisma.memoryFact.findFirstOrThrow({ where: { userId, canonicalKey } });
+        if (mapping === "unmapped") {
+          await prisma.memoryIdentityCompatibility.deleteMany({ where: { userId } });
+        } else if (mapping === "ambiguous") {
+          await prisma.$transaction((tx) => registerMemoryIdentityCompatibility(tx, {
+            containerId: retained.scopeId, legacyCanonicalKey: canonicalKey, namespace: "FACT",
+            now: new Date(), unicodeCanonicalKey: `prop:v2:${"b".repeat(64)}`, userId
+          }));
+        }
+        const second = await createTurn({ assistantText: "Noted again.", chatId: chat.id,
+          createdAt: new Date("2026-08-30T10:01:00Z"), parentMessageId: first.assistantMessage.id, userId, userText: text });
+        await settleChat(userId, chat.id, second);
+        const claim = await claimFactJob(userId, second.userMessage.id);
+        const input = await prepare(claim);
+        const plan = preferencePlan(input, text, text);
+        expect(plan.candidates[0]).not.toHaveProperty("legacyCanonicalKey");
+        expect(plan.candidates[0]).not.toHaveProperty("legacyProposedValue");
+        const binding = await createSucceededBinding(userId, claim, input.inputHash, plan.outputHash);
+        await expect(applyPlan(userId, claim, plan, binding)).resolves.toBe("APPLIED");
+        const facts = await prisma.memoryFact.findMany({ where: { userId } });
+        expect(facts).toHaveLength(mapping === "mapped" ? 1 : 2);
+        expect(facts.find(({ id }) => id === retained.id)).toMatchObject({ canonicalKey,
+          identityVersion: "proposition-v1", currentVersionId: retained.currentVersionId });
+      } finally { await cleanupOwner(userId); }
+    }
+  );
+
+  it.each(["mapped", "unmapped", "ambiguous"] as const)(
+    "does not resurrect a forgotten legacy identity (%s)", async (mapping) => {
+      const userId = await createOwner(`identity-forgotten-${mapping}`);
+      try {
+        const text = "回答は簡潔にしてください。";
+        const chat = await prisma.chat.create({ data: { title: "Suppression identity", userId } });
+        const scope = await prisma.memoryScope.create({ data: { scopeType: "GLOBAL_USER", userId } });
+        const legacyKey = `prop:v1:${"c".repeat(64)}`;
+        await prisma.memoryFact.create({ data: { id: randomUUID(), userId, scopeId: scope.id,
+          canonicalKey: legacyKey, category: "preferences", identityKind: "PROPOSITION",
+          identityVersion: "proposition-v1", state: "FORGOTTEN", forgottenAt: new Date() } });
+        await withLockedMemoryTransaction(prisma, userId, (tx, settings) =>
+          createMemorySuppressionInTransaction(tx, settings, keyring, {
+            canonicalKey: legacyKey, explicitOverrideAllowed: false, scope: "FACT", suppressionId: randomUUID()
+          }));
+        const turn = await createTurn({ assistantText: "Noted.", chatId: chat.id,
+          createdAt: new Date("2026-08-30T10:00:00Z"), parentMessageId: null, userId, userText: text });
+        await settleChat(userId, chat.id, turn);
+        const claim = await claimFactJob(userId, turn.userMessage.id);
+        const input = await prepare(claim);
+        const plan = preferencePlan(input, text, text);
+        if (mapping !== "unmapped") await prisma.$transaction(async (tx) => {
+          for (const unicodeCanonicalKey of [plan.candidates[0]!.canonicalKey,
+            ...mapping === "ambiguous" ? [`prop:v2:${"d".repeat(64)}`] : []]) {
+            await registerMemoryIdentityCompatibility(tx, { containerId: scope.id,
+              legacyCanonicalKey: legacyKey, namespace: "FACT", now: new Date(), unicodeCanonicalKey, userId });
+          }
+        });
+        const binding = await createSucceededBinding(userId, claim, input.inputHash, plan.outputHash);
+        await expect(applyPlan(userId, claim, plan, binding)).resolves.toBe("EMPTY");
+        await expect(prisma.memoryFactVersion.count({ where: { userId } })).resolves.toBe(0);
+        await expect(prisma.memoryFact.count({ where: { userId, state: "FORGOTTEN", canonicalKey: legacyKey } }))
+          .resolves.toBe(1);
+      } finally { await cleanupOwner(userId); }
+    }
+  );
 
   it("terminalizes a valid empty extraction without writing semantic rows", async () => {
     const userId = await createOwner("empty");
@@ -3014,20 +3375,21 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   });
 
-  it("converges an automatic paraphrase on an explicit fact across canonical keys", async () => {
+  it.each([false, true])("converges on an explicit fact without duplicate testimony (repeat=%s)", async (repeat) => {
     const userId = await createOwner("explicit-semantic-duplicate");
     try {
       const chat = await prisma.chat.create({
         data: { title: "Explicit semantic duplicate", userId }
       });
       const quote = "Запомни, что я люблю кофе.";
+      const expandedQuote = `${quote} Это моё предпочтение.`;
       const turn = await createTurn({
         assistantText: "Запомнил.",
         chatId: chat.id,
         createdAt: new Date("2026-08-23T11:00:00.000Z"),
         parentMessageId: null,
         userId,
-        userText: quote
+        userText: repeat ? expandedQuote : quote
       });
       await settleChat(userId, chat.id, turn);
       const explicit = await createExplicitPreferenceFact(
@@ -3043,7 +3405,9 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         source,
         quote,
         "Пользователь любит кофе.",
-        true
+        true,
+        "HIGH",
+        repeat ? [expandedQuote] : []
       );
       const explicitFact = await prisma.memoryFact.findUniqueOrThrow({
         select: { canonicalKey: true },
@@ -3076,9 +3440,10 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         where: { factVersionId: explicit.versionId, userId }
       })).resolves.toBe(2);
       await expect(prisma.memoryFactExtractionCandidateReceipt.findMany({
+        orderBy: { candidateOrdinal: "asc" },
         select: { outcome: true },
         where: { userId }
-      })).resolves.toEqual([{ outcome: "REINFORCED" }]);
+      })).resolves.toEqual(repeat ? [{ outcome: "REINFORCED" }, { outcome: "REPLAY" }] : [{ outcome: "REINFORCED" }]);
       await expect(prisma.memoryEvent.count({
         where: {
           factVersionId: explicit.versionId,
@@ -3086,6 +3451,58 @@ describe("Prisma Memory vNext source-message ingestion", () => {
           userId
         }
       })).resolves.toBe(1);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("replays equivalent spans in one message without reinforcing its testimony twice", async () => {
+    const userId = await createOwner("same-message-support");
+    try {
+      const chat = await prisma.chat.create({ data: { title: "Equivalent spans", userId } });
+      const firstQuote = "I enjoy white tea.";
+      const secondQuote = "I prefer white tea.";
+      const turn = await createTurn({
+        assistantText: "Noted.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-23T12:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: `${firstQuote} ${secondQuote}`
+      });
+      await settleChat(userId, chat.id, turn);
+      const claim = await claimFactJob(userId, turn.userMessage.id);
+      const source = await prepare(claim);
+      const plan = preferencePlan(
+        source, firstQuote, "The user prefers white tea.", false, "HIGH", [secondQuote]
+      );
+      expect(plan.candidates).toHaveLength(2);
+      expect(plan.candidates[0]!.id).not.toBe(plan.candidates[1]!.id);
+      expect(plan.candidates[0]!.canonicalKey).toBe(plan.candidates[1]!.canonicalKey);
+      const binding = await createSucceededBinding(userId, claim, source.inputHash, plan.outputHash);
+      const before = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      await expect(applyPlan(userId, claim, plan, binding)).resolves.toBe("APPLIED");
+      const evidence = await prisma.memoryEvidence.findMany({ where: { userId } });
+      expect(evidence).toHaveLength(1);
+      expect(evidence[0]).toMatchObject({
+        messageId: turn.userMessage.id,
+        safeExcerpt: firstQuote,
+        sourceMessageContentHash: memorySha256(`${firstQuote} ${secondQuote}`)
+      });
+      await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(1);
+      await expect(prisma.memoryFactVersion.count({ where: { userId } })).resolves.toBe(1);
+      await expect(prisma.memoryEvent.count({ where: { operation: "REINFORCE", userId } }))
+        .resolves.toBe(0);
+      const after = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      expect(after.memoryRevision).toBe(before.memoryRevision + 1);
+      await expect(prisma.memoryFactExtractionCandidateReceipt.findMany({
+        orderBy: { candidateOrdinal: "asc" },
+        select: { outcome: true, resultingEvidenceId: true },
+        where: { userId }
+      })).resolves.toEqual([
+        { outcome: "APPLIED", resultingEvidenceId: evidence[0]!.id },
+        { outcome: "REPLAY", resultingEvidenceId: evidence[0]!.id }
+      ]);
     } finally {
       await cleanupOwner(userId);
     }
@@ -3186,7 +3603,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   });
 
-  it("stages a Safety Lite-classified SLOT value behind relation resolution", async () => {
+  it.each([false, true])("stages a SLOT value without duplicating pending support (repeat=%s)", async (repeat) => {
     const userId = await createOwner("pending-relation");
     try {
       const chat = await prisma.chat.create({
@@ -3207,7 +3624,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         createdAt: new Date("2026-08-24T08:01:00.000Z"),
         parentMessageId: ordered.assistantMessage.id,
         userId,
-        userText: "I bought a MacBook Air."
+        userText: repeat ? "I bought a MacBook Air. I own it." : "I bought a MacBook Air."
       });
       await settleChat(userId, chat.id, purchased);
       const orderedClaim = await claimFactJob(userId, ordered.userMessage.id);
@@ -3247,7 +3664,10 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         purchasedInput,
         "I bought a MacBook Air.",
         "The user owns a MacBook Air.",
-        "owned"
+        "owned",
+        undefined,
+        undefined,
+        repeat ? ["I bought a MacBook Air. I own it."] : []
       );
       const purchasedBinding = await createSucceededBinding(
         userId,
@@ -3305,6 +3725,18 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       await expect(prisma.memoryEvidence.count({
         where: { factVersionId: fact.currentVersionId!, userId }
       })).resolves.toBe(1);
+      await expect(prisma.memoryEvidence.count({ where: { userId } })).resolves.toBe(2);
+      await expect(prisma.memoryEvent.count({ where: { operation: "REINFORCE", userId } }))
+        .resolves.toBe(0);
+      const execution = await prisma.memoryFactExtractionExecution.findFirstOrThrow({
+        select: { id: true },
+        where: { memoryJobId: purchasedClaim.id, userId }
+      });
+      await expect(prisma.memoryFactExtractionCandidateReceipt.findMany({
+        orderBy: { candidateOrdinal: "asc" },
+        select: { outcome: true },
+        where: { extractionExecutionId: execution.id, userId }
+      })).resolves.toEqual(repeat ? [{ outcome: "APPLIED" }, { outcome: "REPLAY" }] : [{ outcome: "APPLIED" }]);
     } finally {
       await cleanupOwner(userId);
     }

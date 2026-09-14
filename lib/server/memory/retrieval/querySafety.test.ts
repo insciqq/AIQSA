@@ -27,9 +27,22 @@ describe("Memory read query safety boundary", () => {
     });
   });
 
+  it.each(["key", "ключ", "鍵", "clé"])(
+    "preserves sanitized query labels without semantic filtering (%#)", (label) => {
+      expect(sanitizeMemoryUtilityText(`${label}: sk-abcdefghijklmnopqrstuvwxyz123456`))
+        .toMatchObject({ eligible: true, safeText: `${label}: [REDACTED:TOKEN]` });
+    }
+  );
+
+  it.each(["[REDACTED:TOKEN]", "[REDACTED_SECRET]"])(
+    "does not query for a marker alone (%#)", (value) => {
+      expect(sanitizeMemoryUtilityText(value)).toMatchObject({ eligible: false, safeText: "" });
+    }
+  );
+
   it("makes a secret-only query ineligible and leaves high entropy audit-only", () => {
     const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
-    expect(sanitizeMemoryUtilityText(`token ${token}`)).toMatchObject({
+    expect(sanitizeMemoryUtilityText(token)).toMatchObject({
       eligible: false,
       redacted: true,
       safeText: ""

@@ -16,8 +16,8 @@ import {
 import { memoryTargetSelectionAcceptedOutputHash } from "../actions/targetSelector";
 import { parseMemoryExecutionSnapshot } from "../execution/snapshot";
 import {
-  memoryProjectionHasMeaningfulText,
-  memoryRedactionHasMeaningfulRemainder,
+  memoryProjectionHasSourceText,
+  memoryProjectionContainsRedaction,
   redactMemorySecrets
 } from "../explicit/safety";
 import { sanitizeMemoryUtilityText } from "../retrieval/querySafety";
@@ -387,16 +387,10 @@ function controlIntentMatchesMutation(
 }
 
 function safeControlMutationStatement(value: string | null): string | null {
-  if (!value) return null;
-  const redaction = redactMemorySecrets(value);
-  if (redaction.containsSecret && (
-    !memoryRedactionHasMeaningfulRemainder(value, redaction) ||
-    !memoryProjectionHasMeaningfulText(redaction.redactedText)
-  )) return null;
-  if (value.includes("[REDACTED:") && !memoryProjectionHasMeaningfulText(value)) {
-    return null;
-  }
-  return redaction.redactedText;
+  if (!value || !memoryProjectionHasSourceText(value) ||
+    memoryProjectionContainsRedaction(value) ||
+    redactMemorySecrets(value).containsSecret) return null;
+  return value;
 }
 
 async function requireCurrentControlMutationLifecycle(

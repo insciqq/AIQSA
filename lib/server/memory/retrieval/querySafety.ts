@@ -1,6 +1,7 @@
 import type { MemorySecretFinding } from "../explicit/safety";
 import {
-  memoryRedactionHasMeaningfulRemainder,
+  memoryProjectionContainsRedaction,
+  memoryRedactionHasSourceText,
   redactMemorySecrets
 } from "../explicit/safety";
 
@@ -38,8 +39,9 @@ export function sanitizeMemoryUtilityText(value: string): MemorySanitizedUtility
   for (const span of redaction.detections) {
     findingCounts[span.finding] = (findingCounts[span.finding] ?? 0) + 1;
   }
-  const eligible = structurallyEligible && (!redaction.containsSecret ||
-    memoryRedactionHasMeaningfulRemainder(value, redaction));
+  const eligible = structurallyEligible && (
+    !(redaction.containsSecret || memoryProjectionContainsRedaction(value)) ||
+    memoryRedactionHasSourceText(value, redaction));
   return Object.freeze({
     eligible,
     findingCounts: Object.freeze(findingCounts),

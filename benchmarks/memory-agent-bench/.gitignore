@@ -1,0 +1,5 @@
+.upstream/
+.data/
+.venv/
+results/
+__pycache__/

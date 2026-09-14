@@ -4,7 +4,9 @@ import { projectMemoryHistorySafeText } from "./safety";
 describe("Memory history safety projection", () => {
   it("excludes recognizable credential formats without echoing them", () => {
     for (const value of [
-      "api key: sk-exampleToken1234567890",
+      "sk-exampleToken1234567890",
+      "[REDACTED:TOKEN]",
+      "[REDACTED_SECRET]",
       "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJvd25lciJ9.signature123456"
     ]) {
       const projection = projectMemoryHistorySafeText(value);
@@ -17,7 +19,7 @@ describe("Memory history safety projection", () => {
         safetyClass: "SECRET_TAINTED",
         safeText: null
       });
-      expect(JSON.stringify(projection)).not.toContain(value.split(": ")[1]);
+      expect(JSON.stringify(projection)).not.toContain(value);
     }
   });
 
@@ -40,6 +42,17 @@ describe("Memory history safety projection", () => {
       expect.objectContaining({ kind: "SOURCE", sourceStart: 0 })
     ]));
   });
+
+  it.each(["key", "ключ", "鍵", "clé"])(
+    "retains safe surrounding text as history without inferring a fact (%#)", (label) => {
+      const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+      expect(projectMemoryHistorySafeText(`${label}: ${token}`)).toMatchObject({
+        eligible: true,
+        providerSafeText: `${label}: [REDACTED:TOKEN]`,
+        safeText: `${label}: [REDACTED:TOKEN]`
+      });
+    }
+  );
 
   it("does not classify natural-language secret or sensitivity labels", () => {
     for (const value of [

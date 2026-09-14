@@ -28,7 +28,7 @@ function utcCalendarMilliseconds(
 export function canonicalMemoryTimeZone(value: string): string | null {
   if (typeof value !== "string" || value.length < 1 || value.length > 128) return null;
   try {
-    return new Intl.DateTimeFormat("en-US", { timeZone: value })
+    return new Intl.DateTimeFormat(undefined, { timeZone: value })
       .resolvedOptions().timeZone;
   } catch {
     return null;
@@ -38,12 +38,14 @@ export function canonicalMemoryTimeZone(value: string): string | null {
 function formatter(timeZone: string): Intl.DateTimeFormat {
   const cached = formatterCache.get(timeZone);
   if (cached) return cached;
-  const created = new Intl.DateTimeFormat("en-CA", {
+  const created = new Intl.DateTimeFormat(undefined, {
+    calendar: "iso8601",
     day: "2-digit",
     hour: "2-digit",
     hourCycle: "h23",
     minute: "2-digit",
     month: "2-digit",
+    numberingSystem: "latn",
     second: "2-digit",
     timeZone,
     year: "numeric"

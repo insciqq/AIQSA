@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { mcpToolExecutionResult } from "../../mcp/toolExecutor";
+import { snapshotToolExecutionResult } from "../../runs/toolExecutionPersistence";
 import {
   MEMORY_TOOL_EVENT_MAX_SAFE_TEXT_LENGTH,
   projectMemoryToolEvent,
@@ -28,6 +30,38 @@ function source(
 }
 
 describe("projectMemoryToolEvent", () => {
+  it.each([
+    { label: "English no-error data", payload: { error: "none" }, isError: false },
+    { label: "French no-error data", payload: { error: "aucune" }, isError: false },
+    { label: "Arabic no-error data", payload: { error: "لا يوجد" }, isError: false },
+    { label: "Japanese no-error data", payload: { error: "なし" }, isError: false },
+    { label: "numeric application code", payload: { error_code: 0 }, isError: false },
+    { label: "inspected HTTP response", payload: { status_code: 404 }, isError: false },
+    { label: "partial application report", payload: { status: "partial" }, isError: false },
+    { label: "failed invocation with no-error data", payload: { error: "none" }, isError: true },
+    { label: "failed invocation with success data", payload: { status: "complete" }, isError: true }
+  ])("uses the settled invocation for $label and preserves safe application data", ({
+    payload, isError
+  }) => {
+    const call = { arguments: {}, id: "call-1", name: "inspect_result" };
+    const result = mcpToolExecutionResult(call, {
+      isError,
+      structuredContent: { filename: "結果.csv", ...payload },
+      text: [],
+      unsupportedContentTypes: []
+    });
+    const stored = snapshotToolExecutionResult(result, 4_096);
+    expect(stored).not.toBeNull();
+    const projected = projectMemoryToolEvent(source({
+      result: stored, state: result.status, toolName: call.name
+    }));
+    expect(projected).toMatchObject({ outcome: isError ? "FAILURE" : "SUCCESS" });
+    for (const [key, value] of Object.entries(payload)) {
+      expect(projected?.structuredIdentifiers[key]).toBe(String(value));
+    }
+    expect(projected?.structuredIdentifiers.filename).toBe("結果.csv");
+  });
+
   it("projects bounded typed success metadata without copying arbitrary payloads", () => {
     const projected = projectMemoryToolEvent(source({
       result: {
@@ -61,6 +95,7 @@ describe("projectMemoryToolEvent", () => {
         error_code: "rate_limited",
         status_code: 429
       },
+      state: "error",
       toolName: "http.request"
     }));
 
@@ -76,7 +111,7 @@ describe("projectMemoryToolEvent", () => {
     expect(projected?.safeProjectedText).not.toContain("token=secret");
   });
 
-  it("classifies a settled migration error from governed result fields", () => {
+  it("preserves application diagnostics for a failed invocation", () => {
     const projected = projectMemoryToolEvent(source({
       result: {
         error_code: "duplicate_column",
@@ -84,6 +119,7 @@ describe("projectMemoryToolEvent", () => {
         operation: "migrate",
         status: "failed"
       },
+      state: "error",
       toolName: "database.migrate"
     }));
 
@@ -139,7 +175,8 @@ describe("projectMemoryToolEvent", () => {
       toolName: "filesystem.write"
     }));
 
-    expect(projected?.outcome).toBe("PARTIAL");
+    expect(projected?.outcome).toBe("SUCCESS");
+    expect(projected?.structuredIdentifiers.status).toBe("partial");
     expect(projected?.safeProjectedText).toContain("filename: migration.sql");
     expect(projected?.safeProjectedText.length).toBeLessThanOrEqual(
       MEMORY_TOOL_EVENT_MAX_SAFE_TEXT_LENGTH

@@ -11,6 +11,7 @@ import {
   decodeLongMemEvalSystemModelId,
   evaluateLongMemEvalComponentMetrics,
   longMemEvalQuestionPrompt,
+  longMemEvalRequestFailureCode,
   longMemEvalEmbeddingBatchSizeDistribution,
   longMemEvalDocumentEmbeddingModelMismatch,
   longMemEvalExpectedUtilityModelIds,
@@ -31,6 +32,21 @@ import {
   sanitizeLongMemEvalRetrievalAudit,
   selectLongMemEvalCases
 } from "./contract";
+
+describe("LongMemEval request failure evidence", () => {
+  it("retains only allowlisted transport codes and timeout classes", () => {
+    expect(longMemEvalRequestFailureCode(new TypeError("private URL or payload", {
+      cause: { code: "UND_ERR_SOCKET", message: "private diagnostics" }
+    }))).toBe("longmemeval_run_request_failed:und_err_socket");
+    expect(longMemEvalRequestFailureCode(new TypeError("private URL or payload", {
+      cause: { code: "private-value" }
+    }))).toBe("longmemeval_run_request_failed:type_error");
+    expect(longMemEvalRequestFailureCode(new DOMException("private details", "TimeoutError")))
+      .toBe("longmemeval_run_request_failed:timeout");
+    expect(longMemEvalRequestFailureCode("private details"))
+      .toBe("longmemeval_run_request_failed:unknown");
+  });
+});
 
 function fixture(questionId = "question-1") {
   return {
