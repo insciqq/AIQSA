@@ -272,6 +272,42 @@ describe("Memory intent action executor", () => {
     expect(deps.explicitService.create).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["SAVE", "API key: [REDACTED:TOKEN]"],
+    ["SAVE", "鍵: [REDACTED_SECRET]"],
+    ["UPDATE", "Mon code: [REDACTED:TOKEN]"],
+    ["UPDATE", "код: [REDACTED_SECRET]"]
+  ])("rejects a model-authored %s payload containing removed evidence (%#)", async (
+    action, statement
+  ) => {
+    const deps = dependencies();
+    const result = await createMemoryIntentActionExecutor({ ...deps, clientRefs } as never)
+      .execute(execution(intent({
+        action,
+        statement: action === "SAVE" ? statement : null,
+        replacementStatement: action === "UPDATE" ? statement : null,
+        targetQuery: action === "UPDATE" ? "code" : null
+      })));
+    expect(result).toEqual({ operation: action, status: "REJECTED" });
+    expect(deps.authorizationRepository.mintForControl).not.toHaveBeenCalled();
+    expect(deps.explicitService.create).not.toHaveBeenCalled();
+    expect(deps.explicitService.update).not.toHaveBeenCalled();
+    expect(deps.targetSelector.select).not.toHaveBeenCalled();
+  });
+
+  it("admits an independent safe fact from a mixed redacted current turn", async () => {
+    const deps = dependencies();
+    const result = await createMemoryIntentActionExecutor({ ...deps, clientRefs } as never)
+      .execute({
+        ...execution(intent({ action: "SAVE", statement: "I live in Helsinki." })),
+        currentUserText: "Remember I live in Helsinki. Token: [REDACTED:TOKEN]"
+      });
+    expect(result).toMatchObject({ operation: "SAVE", status: "COMMITTED" });
+    expect(deps.explicitService.create).toHaveBeenCalledWith("user-1",
+      expect.objectContaining({ statement: "I live in Helsinki." }), expect.anything());
+    expect(deps.authorizationRepository.mintForControl).toHaveBeenCalledOnce();
+  });
+
   it("returns 2–5 opaque candidates instead of guessing a destructive target", async () => {
     const first = memorySummaryFixture();
     const second = memorySummaryFixture({

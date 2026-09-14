@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import {
-  memoryRedactionHasMeaningfulRemainder,
+  memoryRedactionHasSourceText,
   redactMemorySecrets
 } from "../explicit/safety";
 import type { MemoryReusableFactSourceSnapshot } from
@@ -41,7 +41,7 @@ export function buildMemoryFactSearchIdentity(
   const redaction = redactMemorySecrets(input.displayText);
   if (
     redaction.containsSecret &&
-    !memoryRedactionHasMeaningfulRemainder(input.displayText, redaction)
+    !memoryRedactionHasSourceText(input.displayText, redaction)
   ) {
     return null;
   }

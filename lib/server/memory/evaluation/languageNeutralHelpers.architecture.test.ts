@@ -9,6 +9,9 @@ const activeOwners = [
   "lib/domain/memory/retrieval/unicodeDecimal.ts",
   "lib/server/memory/embedding/contract.ts",
   "lib/server/memory/history/language.ts",
+  "lib/server/memory/history/rounds.ts",
+  "lib/server/memory/history/contextualKeys.ts",
+  "lib/server/memory/history/contextualGrounding.ts",
   "lib/server/memory/operational/counters.ts",
   "lib/server/memory/operational/snapshot.ts"
 ] as const;

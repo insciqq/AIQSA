@@ -15,8 +15,10 @@ import {
   applyMemoryRecallRoundContextualKeys,
   applyMemoryRecallRoundContextualKeysWithDiagnostics,
   boundedMemoryRecallRoundEvidenceText,
+  memoryContextualGroundingHash,
   memoryContextualRoundInputs,
-  projectMemoryRecallRounds
+  projectMemoryRecallRounds,
+  type MemoryContextualRoundOutput
 } from "./rounds";
 import {
   buildMemorySafeSourceSnapshot,
@@ -146,15 +148,20 @@ describe("recall round projection", () => {
     expect(inputs[0]?.prior).toEqual([]);
     expect(inputs[1]?.prior.map((round) => round.id)).toEqual([rounds[0]?.id]);
 
+    // The generator's successful semantic-review result is the input to this
+    // projection test; model accuracy is qualified separately.
+    const supported: MemoryContextualRoundOutput = {
+      languageCode: "ru",
+      roundId: rounds[1]!.id,
+      statements: [{
+        sourceRoundIds: [rounds[0]!.id, rounds[1]!.id],
+        text: "Мария выбрала стол у окна."
+      }]
+    };
     const applied = applyMemoryRecallRoundContextualKeysWithDiagnostics(rounds, [
-      {
-        languageCode: "ru",
-        roundId: rounds[1]!.id,
-        statements: [{
-          sourceRoundIds: [rounds[0]!.id, rounds[1]!.id],
-          text: "Мария выбрала стол у окна 12 августа 2026 года."
-        }]
-      },
+      { ...supported, groundingHash: memoryContextualGroundingHash(
+        inputs[1]!, supported, "memory-contextual-test-v1"
+      ) },
       {
         languageCode: "ru",
         roundId: rounds[0]!.id,
@@ -167,8 +174,7 @@ describe("recall round projection", () => {
     const projected = applied.rounds;
 
     expect(applied.fallbackDiagnostics).toEqual(expect.arrayContaining([
-      { reason: "UNSUPPORTED_DATE", roundId: rounds[0]!.id },
-      { reason: "UNSUPPORTED_NUMBER", roundId: rounds[0]!.id }
+      { reason: "GROUNDING_INVALID", roundId: rounds[0]!.id }
     ]));
     expect(projected[0]?.contextualKeyState).toBe("RAW_FALLBACK");
     expect(projected[0]?.contextualSearchText).toContain("мария забронировала");
@@ -181,7 +187,7 @@ describe("recall round projection", () => {
     expect(projected[1]?.supportingRoundIds).toEqual([rounds[0]!.id]);
   });
 
-  it("grounds every contextual statement only in its cited raw rounds", () => {
+  it("requires semantic review and current-round citation for rewritten statements", () => {
     const { chunks, snapshot } = fixture();
     const rounds = projectMemoryRecallRounds(snapshot, chunks).map((round) => ({
       ...round,
@@ -197,7 +203,7 @@ describe("recall round projection", () => {
     }], "memory-contextual-test-v2");
     expect(currentOnly.rounds[1]?.contextualKeyState).toBe("RAW_FALLBACK");
     expect(currentOnly.fallbackDiagnostics).toContainEqual({
-      reason: "UNSUPPORTED_TOKEN",
+      reason: "GROUNDING_INVALID",
       roundId: rounds[1]!.id
     });
     expect(currentOnly.fallbackDiagnostics.some(({ roundId }) =>
@@ -218,7 +224,7 @@ describe("recall round projection", () => {
     });
   });
 
-  it("classifies unsupported entities and duplicate statements without relaxing grounding", () => {
+  it("rejects unreviewed entity changes and duplicate statements", () => {
     const { chunks, snapshot } = fixture();
     const rounds = projectMemoryRecallRounds(snapshot, chunks).map((round) => ({
       ...round,
@@ -237,8 +243,7 @@ describe("recall round projection", () => {
       "memory-contextual-test-v3"
     );
     expect(unsupportedEntity.fallbackDiagnostics).toEqual(expect.arrayContaining([
-      { reason: "UNSUPPORTED_ENTITY", roundId: rounds[1]!.id },
-      { reason: "UNSUPPORTED_TOKEN", roundId: rounds[1]!.id }
+      { reason: "GROUNDING_INVALID", roundId: rounds[1]!.id }
     ]));
 
     const duplicate = applyMemoryRecallRoundContextualKeysWithDiagnostics(
@@ -322,6 +327,9 @@ describe("recall round projection", () => {
     expect(() => decodeMemoryContextualKeyOutputs({
       rounds: [...output.rounds].reverse()
     }, firstBatch, built.handles)).toThrow("memory_contextual_key_output_invalid");
+    expect(() => decodeMemoryContextualKeyOutputs({
+      rounds: output.rounds.map((proposal) => ({ ...proposal, groundingHash: "f".repeat(64) }))
+    }, firstBatch, built.handles)).toThrow("memory_contextual_key_output_invalid");
   });
 
   it("uses the same eligible prior-round window for generation and grounding", () => {
@@ -361,13 +369,19 @@ describe("recall round projection", () => {
 
     expect(partitioned.batches[0]?.[0]?.input.prior.map(({ id }) => id))
       .toEqual(["eligible-prior"]);
-    const projected = applyMemoryRecallRoundContextualKeys(rounds, [{
+    const output: MemoryContextualRoundOutput = {
       languageCode: "ru",
       roundId: "eligible-current",
       statements: [{
         sourceRoundIds: ["eligible-prior", "eligible-current"],
         text: "Мария выбрала окно"
       }]
+    };
+    const projected = applyMemoryRecallRoundContextualKeys(rounds, [{
+      ...output,
+      groundingHash: memoryContextualGroundingHash(
+        partitioned.batches[0]![0]!.input, output, "memory-contextual-test-v1"
+      )
     }], "memory-contextual-test-v1");
     expect(projected[3]?.contextualKeyState).toBe("GENERATED");
   });
@@ -431,6 +445,11 @@ describe("recall round projection", () => {
     // Put the emoji's high surrogate at the final code unit of the left slice.
     const fillerLength = leftBoundary - contextualFraming.length - 1;
     const rawSafeText = `${"x".repeat(fillerLength)}😀${"y".repeat(2_100)}`;
+    const output: MemoryContextualRoundOutput = {
+      languageCode: "en",
+      roundId: "round-utf16",
+      statements: [{ sourceRoundIds: ["round-utf16"], text: "x" }]
+    };
     const [round] = applyMemoryRecallRoundContextualKeys([{
       contextualKeyPolicyVersion: "memory-contextual-test-v1",
       contextualKeyState: "RAW_FALLBACK" as const,
@@ -445,9 +464,10 @@ describe("recall round projection", () => {
       safetyClass: "NORMAL" as const,
       supportingRoundIds: []
     }], [{
-      languageCode: "en",
-      roundId: "round-utf16",
-      statements: [{ sourceRoundIds: ["round-utf16"], text: "x" }]
+      ...output,
+      groundingHash: memoryContextualGroundingHash({
+        current: { id: "round-utf16", rawSafeText }, prior: []
+      }, output, "memory-contextual-test-v1")
     }],
     "memory-contextual-test-v1");
 

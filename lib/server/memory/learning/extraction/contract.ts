@@ -12,9 +12,9 @@ import {
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
   "memory-fact-extraction-vnext-v8";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-extraction-policy-v11";
+  "memory-fact-extraction-policy-v19";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-extraction-prompt-v29";
+  "memory-fact-extraction-prompt-v33";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
   "memory-fact-extraction-schema-v5";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
@@ -27,15 +27,16 @@ export const MEMORY_FACT_EXTRACTION_JOB_PREFIX = "extract-facts:vnext:";
 // the only evidence source; every admitted prior message is persisted as an
 // immutable dependency when a candidate actually relies on it.
 export const MEMORY_FACT_MAX_INPUT_MESSAGES = 6;
-export const MEMORY_FACT_MAX_INPUT_CHARACTERS = 8_000;
 export const MEMORY_FACT_MAX_PRIOR_TURN_GROUPS = 2;
 export const MEMORY_FACT_MAX_CONTEXT_MESSAGES = 6;
 export const MEMORY_FACT_MAX_CONTEXT_CHARACTERS = 8_000;
+export const MEMORY_FACT_MAX_TARGET_CHARACTERS = 24_000;
+export const MEMORY_FACT_MAX_INPUT_CHARACTERS =
+  MEMORY_FACT_MAX_TARGET_CHARACTERS + MEMORY_FACT_MAX_CONTEXT_CHARACTERS;
 export const MEMORY_FACT_MAX_CONTEXT_REFS = 8;
-/** Public output cap: no more than four candidates can be accepted per turn. */
-export const MEMORY_FACT_MAX_OUTPUT_CANDIDATES = 4;
-/** Strict public and wire bound: a target message yields zero to four rows. */
+/** The extraction packet and admission share one bounded observation limit. */
 export const MEMORY_FACT_MAX_PACKET_CANDIDATES = 8;
+export const MEMORY_FACT_MAX_OUTPUT_CANDIDATES = MEMORY_FACT_MAX_PACKET_CANDIDATES;
 export const MEMORY_FACT_MAX_ACCEPTED_CANDIDATES = MEMORY_FACT_MAX_OUTPUT_CANDIDATES;
 export const MEMORY_FACT_MAX_EVIDENCE_PER_CANDIDATE = 1;
 
@@ -167,6 +168,7 @@ export const MEMORY_FACT_EXTRACTION_RETRIEVAL_CONFIG_FINGERPRINT =
     maxInputCharacters: MEMORY_FACT_MAX_INPUT_CHARACTERS,
     maxInputMessages: MEMORY_FACT_MAX_INPUT_MESSAGES,
     maxPriorTurnGroups: MEMORY_FACT_MAX_PRIOR_TURN_GROUPS,
+    maxTargetCharacters: MEMORY_FACT_MAX_TARGET_CHARACTERS,
     version: 3
   });
 
@@ -290,6 +292,10 @@ export type MemoryExtractedCandidate = Readonly<{
   confidenceBand?: MemoryFactConfidenceBand;
   correction?: boolean;
   futureUseful?: boolean;
+  /** Server-derived routing metadata; fallback must retain SLOT adjudication. */
+  proposedIdentityKind?: "PROPOSITION" | "SLOT";
+  /** Unsupported optional entity metadata was discarded; require HIGH entailment. */
+  entityAnnotationReviewRequired?: boolean;
   quote?: string;
   responsePreference?: string | null;
   statement?: string;
@@ -324,8 +330,9 @@ export type MemoryExtractedCandidate = Readonly<{
     | "slot-v4";
   importance: number;
   languageCode: MemoryTextLanguage;
-  legacyCanonicalKey: string;
-  legacyProposedValue: unknown;
+  /** Opaque values present only in already accepted historical outputs. */
+  legacyCanonicalKey?: string;
+  legacyProposedValue?: unknown;
   modality:
     | "CONSIDERATION"
     | "CONSTRAINT"
@@ -481,6 +488,8 @@ export function memoryFactCandidateId(
     confidenceBand: _confidenceBand,
     correction: _correction,
     futureUseful: _futureUseful,
+    proposedIdentityKind: _proposedIdentityKind,
+    entityAnnotationReviewRequired: _entityAnnotationReviewRequired,
     quote: _quote,
     responsePreference: _responsePreference,
     statement: _statement,

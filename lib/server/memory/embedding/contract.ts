@@ -5,8 +5,8 @@ import type { MemorySecretFreeExecutionSnapshot } from "../execution/snapshot";
 import { memoryExecutionSha256 } from "../execution/canonical";
 import { memorySha256 } from "../persistence/lexical";
 import {
-  memoryProjectionHasMeaningfulText,
-  memoryRedactionHasMeaningfulRemainder,
+  memoryProjectionHasSourceText,
+  memoryRedactionHasSourceText,
   redactMemorySecrets
 } from "../explicit/safety";
 
@@ -199,10 +199,10 @@ export type MemoryEmbeddingBatchJobIdentity = Readonly<{
 export function memorySafeEmbeddingText(value: string): string {
   const redaction = redactMemorySecrets(value);
   if (redaction.containsSecret &&
-    !memoryRedactionHasMeaningfulRemainder(value, redaction)) {
+    !memoryRedactionHasSourceText(value, redaction)) {
     throw new Error("memory_embedding_text_secret_only");
   }
-  if (!memoryProjectionHasMeaningfulText(redaction.redactedText)) {
+  if (!memoryProjectionHasSourceText(redaction.redactedText)) {
     throw new Error("memory_embedding_text_empty");
   }
   return redaction.redactedText;

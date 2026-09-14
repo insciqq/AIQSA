@@ -202,7 +202,8 @@ export const allReusableLedgerContributor: MemoryDeletionContributor = Object.fr
       UPDATE "MemoryFactVersion" AS version
       SET
         "state" = CASE
-          WHEN version."mergedIntoVersionId" IS NOT NULL
+          WHEN version."state" <> 'FORGOTTEN'::"MemoryFactVersionState"
+            AND version."mergedIntoVersionId" IS NOT NULL
             AND (
               version."id" IN (SELECT "id" FROM deletable_versions)
               OR version."mergedIntoVersionId" IN (
@@ -432,6 +433,28 @@ export const allReusableWorkContributor: MemoryDeletionContributor = Object.free
     await tx.chatMemoryCheckpoint.deleteMany({
       where: { createdAt: { lte: barrier.createdAt }, userId: target.userId }
     });
+    // Recovery also restricts its execution owner; remove it before the job
+    // cascades through bindings or the ledger deletes its target version.
+    await tx.$executeRaw(Prisma.sql`
+      DELETE FROM "MemoryAuxiliarySemanticCall" AS auxiliary
+      USING "MemoryJob" AS job
+      WHERE auxiliary."userId" = job."userId" AND auxiliary."ownerJobId" = job."id"
+        AND ${oldJobCondition(target)}
+    `);
+    // Immutable relation provenance may restrict an old execution too. Reset
+    // can remove an edge only after both of its versions are forgotten.
+    await tx.$executeRaw(Prisma.sql`
+      DELETE FROM "MemoryFactVersionRelation" AS relation
+      USING "MemoryExecutionBinding" AS binding, "MemoryJob" AS job,
+        "MemoryFactVersion" AS source, "MemoryFactVersion" AS destination
+      WHERE relation."userId" = binding."userId" AND relation."executionId" = binding."id"
+        AND binding."userId" = job."userId" AND binding."memoryJobId" = job."id"
+        AND source."userId" = relation."userId" AND source."id" = relation."sourceVersionId"
+        AND destination."userId" = relation."userId" AND destination."id" = relation."targetVersionId"
+        AND source."state" = 'FORGOTTEN'::"MemoryFactVersionState"
+        AND destination."state" = 'FORGOTTEN'::"MemoryFactVersionState"
+        AND ${oldJobCondition(target)}
+    `);
     await tx.$executeRaw(Prisma.sql`
       UPDATE "UsageEvent" AS usage
       SET "memoryExecutionBindingId" = NULL, "providerModelId" = NULL

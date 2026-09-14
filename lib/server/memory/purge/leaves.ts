@@ -11,6 +11,7 @@ import {
   suppressedMemoryHistoryPurgeSelection
 } from "../history/purge";
 import { memoryPurgeVersionCondition } from "./selection";
+import { memoryExplicitEquivalentFactIdsSql } from "../persistence/explicitEquivalence";
 import {
   allReusableIndexesContributor,
   allReusableLedgerContributor,
@@ -84,11 +85,12 @@ function candidateTargetCondition(target: MemoryPurgeTarget): Prisma.Sql {
   }
   const factTarget = target.kind === "MEMORY_FACT"
     ? Prisma.sql`
-        candidate."resolvedFactId" = ${target.targetId}
-        OR candidate."proposedCanonicalKey" = (
+        candidate."resolvedFactId" IN (${memoryExplicitEquivalentFactIdsSql(target.userId, [target.targetId])})
+        OR candidate."proposedCanonicalKey" IN (
           SELECT fact."canonicalKey"
           FROM "MemoryFact" AS fact
-          WHERE fact."userId" = ${target.userId} AND fact."id" = ${target.targetId}
+          WHERE fact."userId" = ${target.userId}
+            AND fact."id" IN (${memoryExplicitEquivalentFactIdsSql(target.userId, [target.targetId])})
         )
       `
     : Prisma.sql`
@@ -141,7 +143,7 @@ function candidateTargetCondition(target: MemoryPurgeTarget): Prisma.Sql {
 
 function feedbackTargetCondition(target: MemoryPurgeTarget): Prisma.Sql {
   if (target.kind === "MEMORY_FACT") {
-    return Prisma.sql`feedback."memoryFactId" = ${target.targetId}`;
+    return Prisma.sql`feedback."memoryFactId" IN (${memoryExplicitEquivalentFactIdsSql(target.userId, [target.targetId])})`;
   }
   if (target.kind === "AUTOMATIC_SET") {
     return Prisma.sql`
@@ -782,9 +784,9 @@ export const memoryDeletionContributors = Object.freeze([
   feedbackContributor,
   searchContributor,
   versionContentContributor,
+  allReusableWorkContributor,
   allReusableLedgerContributor,
   evidenceContributor,
-  allReusableWorkContributor,
   allReusableIndexesContributor
 ]);
 

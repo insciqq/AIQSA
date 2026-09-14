@@ -20,7 +20,7 @@ import { memoryHistoryEvidenceRootHash } from "./evidenceRoot";
 export const MEMORY_RECALL_ROUND_PROJECTION_VERSION =
   "memory-recall-round-projection-v1";
 export const MEMORY_CONTEXTUAL_KEY_POLICY_VERSION =
-  "memory-contextual-narrative-key-v3";
+  "memory-contextual-narrative-key-v4";
 export const MEMORY_CONTEXTUAL_KEY_MAX_PRIOR_GROUPS = 2;
 export const MEMORY_RECALL_ROUND_MAX_RAW_CHARACTERS = 200_000;
 export const MEMORY_RECALL_ROUND_MAX_SEARCH_CHARACTERS = 4_000;
@@ -35,6 +35,8 @@ export const MEMORY_CONTEXTUAL_FALLBACK_REASONS = Object.freeze([
   "STATEMENT_TOO_LONG",
   "SAFETY_REDACTED_OR_REJECTED",
   "SOURCE_REF_INVALID",
+  "GROUNDING_INVALID",
+  "SEMANTICALLY_UNSUPPORTED",
   "UNSUPPORTED_TOKEN",
   "UNSUPPORTED_NUMBER",
   "UNSUPPORTED_DATE",
@@ -125,6 +127,7 @@ export type MemoryContextualRoundInput = Readonly<{
 }>;
 
 export type MemoryContextualRoundOutput = Readonly<{
+  groundingHash?: string;
   languageCode: MemoryTextLanguage;
   roundId: string;
   statements: readonly Readonly<{
@@ -344,57 +347,12 @@ export function memoryContextualKeyEligibleRounds<
     (round.safetyClass === "NORMAL" || round.safetyClass === "SENSITIVE"));
 }
 
-const connectorWords = new Set([
-  "a", "an", "and", "as", "at", "by", "context", "from", "in", "is",
-  "of", "on", "or", "speaker", "the", "to", "was", "with",
-  "а", "без", "в", "для", "и", "из", "или", "как", "контекст", "на",
-  "о", "от", "по", "с", "спикер", "у"
-]);
-
-function words(value: string): readonly string[] {
-  return value.normalize("NFKC").toLocaleLowerCase("und")
-    .match(/[\p{L}\p{N}_-]+/gu) ?? [];
-}
-
-const numberTokenPattern = /\p{N}+(?:[.,:/-]\p{N}+)*/gu;
-const numericDatePattern = /\p{N}{1,4}[./-]\p{N}{1,2}(?:[./-]\p{N}{1,4})?/gu;
-const entityTokenPattern = /\p{Lu}[\p{L}\p{M}'’.-]+/gu;
-
 function normalizedStatementIdentity(value: string): string {
   return value.normalize("NFKC").toLocaleLowerCase("und")
     .replace(/\s+/gu, " ").trim();
 }
 
-function unsupportedEntityTokens(
-  statement: string,
-  sourceWords: ReadonlySet<string>
-): readonly string[] {
-  return (statement.match(entityTokenPattern) ?? []).filter((token) => {
-    const normalized = token.normalize("NFKC").toLocaleLowerCase("und");
-    return normalized.length > 1 && !connectorWords.has(normalized) &&
-      !sourceWords.has(normalized);
-  });
-}
-
-function hasUnsupportedDate(
-  statement: string,
-  source: string,
-  unsupportedNumbers: ReadonlySet<string>
-): boolean {
-  const sourceDates = new Set(source.match(numericDatePattern) ?? []);
-  if ((statement.match(numericDatePattern) ?? []).some((date) =>
-    !sourceDates.has(date))) return true;
-  const statementNumbers = statement.match(numberTokenPattern) ?? [];
-  const hasYear = statementNumbers.some((value) =>
-    /^\p{N}{4}$/u.test(value) && Number(value) >= 1_000 && Number(value) <= 2_999);
-  return hasYear && statementNumbers.some((value) =>
-    unsupportedNumbers.has(value) && (/^\p{N}{4}$/u.test(value) || Number(value) <= 31));
-}
-
-function unsupportedStatementReasons(
-  statement: string,
-  source: string
-): readonly MemoryContextualFallbackReason[] {
+function invalidStatementReasons(statement: string): readonly MemoryContextualFallbackReason[] {
   const reasons = new Set<MemoryContextualFallbackReason>();
   if (!statement.trim()) reasons.add("EMPTY_STATEMENTS");
   if (statement.length > 512) reasons.add("STATEMENT_TOO_LONG");
@@ -403,25 +361,40 @@ function unsupportedStatementReasons(
   if (!safety.eligible || safety.safeText !== statement.trim()) {
     reasons.add("SAFETY_REDACTED_OR_REJECTED");
   }
-  const sourceWords = new Set(words(source));
-  const unsupportedWords = words(statement).filter((word) =>
-    word.length > 1 && !connectorWords.has(word) && !sourceWords.has(word));
-  if (unsupportedWords.length > 0) {
-    reasons.add("UNSUPPORTED_TOKEN");
-  }
-  if (unsupportedEntityTokens(statement, sourceWords).length > 0) {
-    reasons.add("UNSUPPORTED_ENTITY");
-  }
-  const sourceNumbers = new Set(source.match(numberTokenPattern) ?? []);
-  const unsupportedNumbers = new Set((statement.match(numberTokenPattern) ?? [])
-    .filter((value) => !sourceNumbers.has(value)));
-  if (unsupportedNumbers.size > 0) {
-    reasons.add("UNSUPPORTED_NUMBER");
-  }
-  if (hasUnsupportedDate(statement, source, unsupportedNumbers)) {
-    reasons.add("UNSUPPORTED_DATE");
-  }
   return Object.freeze([...reasons]);
+}
+
+/** A complete copied source retains its speaker and negation context. A
+ * substring or a rearrangement still needs semantic review. */
+export function memoryContextualOutputIsVerbatim(
+  input: MemoryContextualRoundInput,
+  output: MemoryContextualRoundOutput
+): boolean {
+  const sources = new Map([input.current, ...input.prior].map((source) =>
+    [source.id, source.rawSafeText.trim()] as const));
+  return output.roundId === input.current.id && output.statements.length > 0 &&
+    output.statements.every((statement) => statement.sourceRoundIds.length === 1 &&
+      statement.text.trim() === sources.get(statement.sourceRoundIds[0]!));
+}
+
+/** This server-authored receipt binds accepted semantic support to the exact
+ * proposal and source snapshot. Provider schemas cannot supply this field;
+ * governed execution receipts retain the actual review decision. */
+export function memoryContextualGroundingHash(
+  input: MemoryContextualRoundInput,
+  output: MemoryContextualRoundOutput,
+  policyVersion: string
+): string {
+  return memorySha256({
+    domain: "aiqsa.memory.contextual-grounding",
+    input,
+    output: {
+      languageCode: output.languageCode,
+      roundId: output.roundId,
+      statements: output.statements
+    },
+    policyVersion
+  });
 }
 
 export function applyMemoryRecallRoundContextualKeysWithDiagnostics<
@@ -494,12 +467,15 @@ export function applyMemoryRecallRoundContextualKeysWithDiagnostics<
         continue;
       }
       if (citedIds.includes(input.current.id)) currentRoundCited = true;
-      const citedSource = citedIds.map((id) => sourceByRoundId.get(id)!).join("\n\n");
-      for (const reason of unsupportedStatementReasons(statement.text, citedSource)) {
+      for (const reason of invalidStatementReasons(statement.text)) {
         reasons.add(reason);
       }
     }
     if (!currentRoundCited) reasons.add("SOURCE_REF_INVALID");
+    if (!memoryContextualOutputIsVerbatim(input, output) &&
+      output.groundingHash !== memoryContextualGroundingHash(input, output, policyVersion)) {
+      reasons.add("GROUNDING_INVALID");
+    }
     if (reasons.size > 0) {
       for (const reason of reasons) fallbackDiagnostics.push({ reason, roundId: round.id });
       return round;

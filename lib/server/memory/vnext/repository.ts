@@ -8,10 +8,16 @@ import {
   memoryFactNormalizedValue,
   memoryFactObservationFingerprint,
   type MemoryExtractedCandidate,
+  type MemoryFactCandidateDependency,
   type MemoryFactExtractionInput,
   type MemoryFactExtractionPlan
 } from "../learning/extraction/contract";
 import type { MemorySemanticAdjudication } from "../learning/extraction/contract";
+import { decodeStoredMemorySemanticFrame } from "../learning/extraction/adjudication";
+import {
+  memoryRepresentationTransitionTimeAllowed,
+  type MemoryRelationVersionSnapshot
+} from "../learning/relations/policy";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { ensureClassifiedSearchEntry } from "../persistence/factSearchEntry";
 import { memorySafetyLiteFactClassification } from "../safetyLite";
@@ -30,6 +36,7 @@ import {
 import { persistMemoryCandidateEntities } from "../learning/entities/repository";
 import {
   memoryLegacyIdentityIsUnambiguous,
+  memoryRecordedLegacyIdentityKeys,
   registerMemoryIdentityCompatibility
 } from "../learning/identity/compatibility";
 
@@ -55,9 +62,15 @@ type StoredVersion = Readonly<{
   validTo: Date | null;
 }>;
 
-type LockedReinforcementTarget = Readonly<{
+type LockedCurrentTarget = Readonly<{
+  expectedAt: Date | null;
   factId: string;
+  identityKind: "PROPOSITION" | "SLOT";
   lastConfirmedAt: Date | null;
+  modality: MemoryRelationVersionSnapshot["modality"];
+  observedAt: Date | null;
+  semanticFrame: Prisma.JsonValue | null;
+  sourceMode: "AUTOMATIC" | "EXPLICIT";
   versionId: string;
 }>;
 
@@ -66,6 +79,7 @@ type ExactEvidence = ReturnType<typeof exactEvidence>[number];
 export type MemoryVNextCommitResult = Readonly<{
   attachedEvidence: number;
   createdVersions: number;
+  replayedEvidenceIds?: readonly string[];
 }>;
 
 type ResolvedSemanticAdjudication = Readonly<
@@ -232,27 +246,34 @@ async function lockedFact(
   fact: LockedFact | null;
   legacyWriteBlocked: boolean;
 }>> {
-  await registerMemoryIdentityCompatibility(tx, {
-    containerId: scopeId,
-    legacyCanonicalKey: candidate.legacyCanonicalKey,
-    namespace: "FACT",
-    now,
-    unicodeCanonicalKey: candidate.unicodeCanonicalKey,
-    userId
+  // Only accepted historical outputs carry a legacy key. New decoders never
+  // calculate one; mapping registration consumes those recorded opaque bytes.
+  const legacyKey = candidate.legacyCanonicalKey;
+  if (legacyKey !== undefined) {
+    await registerMemoryIdentityCompatibility(tx, {
+      containerId: scopeId,
+      legacyCanonicalKey: legacyKey,
+      namespace: "FACT",
+      now,
+      unicodeCanonicalKey: candidate.unicodeCanonicalKey,
+      userId
+    });
+  }
+  const recorded = await memoryRecordedLegacyIdentityKeys(tx, {
+    containerId: scopeId, namespace: "FACT",
+    unicodeCanonicalKey: candidate.unicodeCanonicalKey, userId
   });
-  const legacyIsUnambiguous = await memoryLegacyIdentityIsUnambiguous(tx, {
-    containerId: scopeId,
-    legacyCanonicalKey: candidate.legacyCanonicalKey,
-    namespace: "FACT",
-    unicodeCanonicalKey: candidate.unicodeCanonicalKey,
-    userId
-  });
-  const canonicalKeys = candidate.legacyCanonicalKey ===
-    candidate.unicodeCanonicalKey
-    ? [candidate.unicodeCanonicalKey]
-    : legacyIsUnambiguous
-      ? [candidate.unicodeCanonicalKey, candidate.legacyCanonicalKey]
-      : [candidate.unicodeCanonicalKey];
+  const reusable = recorded.filter(({ unambiguous }) => unambiguous);
+  const legacyIsUnambiguous = legacyKey !== undefined &&
+    await memoryLegacyIdentityIsUnambiguous(tx, {
+      containerId: scopeId, legacyCanonicalKey: legacyKey, namespace: "FACT",
+      unicodeCanonicalKey: candidate.unicodeCanonicalKey, userId
+    });
+  const canonicalKeys = [...new Set([
+    candidate.unicodeCanonicalKey,
+    ...(reusable.length === 1 ? [reusable[0]!.canonicalKey] : []),
+    ...(legacyIsUnambiguous && legacyKey !== undefined ? [legacyKey] : [])
+  ])];
   const rows = await tx.$queryRaw<LockedFact[]>(Prisma.sql`
     SELECT "id", "canonicalKey", "currentVersionId", "lastConfirmedAt",
       "movedToFactId",
@@ -267,14 +288,16 @@ async function lockedFact(
     END
     FOR UPDATE
   `);
-  const fact = rows[0] ?? null;
+  const fact = rows.find((row) => row.canonicalKey === candidate.unicodeCanonicalKey) ??
+    (rows.length === 1 ? rows[0]! : null);
   return {
     fact,
     legacyWriteBlocked:
-      fact === null &&
+      (fact === null && rows.length > 1) ||
+      (fact === null &&
       candidate.identityProfile === "LEGACY_V1" &&
       candidate.legacyCanonicalKey !== candidate.unicodeCanonicalKey &&
-      !legacyIsUnambiguous
+      !legacyIsUnambiguous)
   };
 }
 
@@ -304,6 +327,36 @@ function sameValue(
       ...memoryFactNormalizedValue(candidate),
       structuredValue
     });
+}
+
+async function existingMessageSupport(
+  tx: MemoryTransaction,
+  userId: string,
+  factVersionId: string,
+  input: MemoryFactExtractionInput,
+  evidence: ExactEvidence
+): Promise<string | null> {
+  // Different spans or phrasings in one message are the same testimony for
+  // this version. Match PostgreSQL's message identity before any semantic
+  // mutation, retaining the original immutable excerpt and provenance.
+  const existing = await tx.memoryEvidence.findFirst({
+    select: { id: true, sourceMessageContentHash: true, sourceRole: true },
+    where: {
+      chatId: evidence.chatId,
+      factVersionId,
+      messageId: evidence.messageId,
+      sourceProjectionVersion: input.sourceProjectionVersion,
+      sourceType: "MESSAGE",
+      stance: "SUPPORTS",
+      userId
+    }
+  });
+  if (!existing) return null;
+  if (existing.sourceRole !== "user" ||
+    existing.sourceMessageContentHash !== evidence.sourceTextHash) {
+    throw new Error("memory_vnext_evidence_identity_conflict");
+  }
+  return existing.id;
 }
 
 async function attachEvidence(
@@ -344,16 +397,19 @@ async function attachEvidence(
   return id;
 }
 
-async function lockedReinforcementTarget(
+async function lockedCurrentTarget(
   tx: MemoryTransaction,
   userId: string,
   scopeId: string,
   versionId: string,
   now: Date
-): Promise<LockedReinforcementTarget | null> {
-  const rows = await tx.$queryRaw<LockedReinforcementTarget[]>(Prisma.sql`
+): Promise<LockedCurrentTarget | null> {
+  const rows = await tx.$queryRaw<LockedCurrentTarget[]>(Prisma.sql`
     SELECT fact."id" AS "factId", fact."lastConfirmedAt",
-      version."id" AS "versionId"
+      fact."identityKind"::text AS "identityKind",
+      version."expectedAt", version."observedAt", version."semanticFrame",
+      version."modality"::text AS "modality",
+      version."sourceMode"::text AS "sourceMode", version."id" AS "versionId"
     FROM "MemoryFactVersion" AS version
     INNER JOIN "MemoryFact" AS fact
       ON fact."userId" = version."userId"
@@ -390,8 +446,14 @@ async function reinforceTarget(
   evidence: ExactEvidence,
   bindingId: string,
   now: Date,
-  target: LockedReinforcementTarget
+  target: Pick<LockedCurrentTarget, "factId" | "lastConfirmedAt" | "versionId">
 ): Promise<MemoryVNextCommitResult> {
+  const replayedEvidenceId = await existingMessageSupport(
+    tx, settings.userId, target.versionId, plan.input, evidence
+  );
+  if (replayedEvidenceId) {
+    return { attachedEvidence: 0, createdVersions: 0, replayedEvidenceIds: [replayedEvidenceId] };
+  }
   await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
   await createEvent(
     tx,
@@ -740,7 +802,8 @@ async function createCrossFactRelationVersion(
   bindingId: string,
   now: Date,
   scopeId: string,
-  semanticAdjudication: ResolvedSemanticAdjudication | null
+  semanticAdjudication: ResolvedSemanticAdjudication | null,
+  correctionDependency: MemoryFactCandidateDependency | null = null
 ): Promise<MemoryVNextCommitResult> {
   await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
   const factId = randomUUID();
@@ -795,7 +858,9 @@ async function createCrossFactRelationVersion(
     tx,
     settings.userId,
     factVersionId,
-    candidate.dependencies
+    correctionDependency === null
+      ? candidate.dependencies
+      : [...candidate.dependencies, correctionDependency]
   );
   await persistMemoryCandidateEntities(tx, {
     candidate,
@@ -900,7 +965,7 @@ async function createObservation(
   const scope = await ensureGlobalMemoryScope(tx, settings);
   if (semanticAdjudication?.operation === "REINFORCE" &&
     semanticAdjudication.resolvedTargetVersionId !== null) {
-    const target = await lockedReinforcementTarget(
+    const target = await lockedCurrentTarget(
       tx,
       settings.userId,
       scope.id,
@@ -925,14 +990,76 @@ async function createObservation(
     // may materialize that exact expired version and create a fresh one.
     // Stale/non-current targets still fail its target/pointer revalidation.
   }
-  // A proposition with a model-selected target may only converge through the
-  // revalidated reinforcement path above. Other pointer operations belong to
-  // SLOT relation resolution and must not fall through into a second active
-  // proposition when the target semantics or representation are uncertain.
-  if (candidate.identityKind === "PROPOSITION" &&
-    semanticAdjudication !== null &&
-    semanticAdjudication.resolvedTargetVersionId !== null) {
-    return { attachedEvidence: 0, createdVersions: 0 };
+  // A direct state or schedule update retains its exact target and enters guarded
+  // relation resolution. It must not create a second active proposition or
+  // allow weaker testimony to replace an explicit or structured current fact.
+  const transitionTarget = semanticAdjudication !== null &&
+    semanticAdjudication.resolvedTargetVersionId !== null
+    ? await lockedCurrentTarget(
+        tx, settings.userId, scope.id,
+        semanticAdjudication.resolvedTargetVersionId, now
+      )
+    : null;
+  if (semanticAdjudication !== null &&
+    semanticAdjudication.resolvedTargetVersionId !== null &&
+    (candidate.identityKind === "PROPOSITION" ||
+      transitionTarget?.identityKind === "PROPOSITION")) {
+    if (candidate.confidenceBand !== "HIGH" ||
+      (candidate.semanticFrame.changeIntent !== "CORRECTION" &&
+        candidate.semanticFrame.changeIntent !== "STATE_CHANGE") ||
+      !memoryRepresentationTransitionTimeAllowed(
+        { ...candidate, observedAt: evidence[0]!.observedAt.toISOString() },
+        transitionTarget === null ? null : {
+          expectedAt: transitionTarget.expectedAt?.toISOString() ?? null,
+          modality: transitionTarget.modality,
+          observedAt: transitionTarget.observedAt?.toISOString() ?? null,
+          semanticFrame: decodeStoredMemorySemanticFrame(transitionTarget.semanticFrame)
+        },
+        semanticAdjudication.temporalPerspective
+      ) ||
+      semanticAdjudication.entailment !== "ENTAILED" ||
+      semanticAdjudication.confidenceBand !== "HIGH" ||
+      semanticAdjudication.subjectScope !== "CURRENT_USER" ||
+      semanticAdjudication.assertionStatus !== "ASSERTED" ||
+      !["SUPERSEDE_TARGET", "MOVE_TO_DISTINCT_FACT"].includes(
+        semanticAdjudication.operation
+      )) return { attachedEvidence: 0, createdVersions: 0 };
+    const declaredTarget = await correctionTargetVersionId(
+      tx, settings.userId, candidate
+    );
+    const hasDeclaredTarget = candidate.dependencies.some(({ dependencyKind }) =>
+      dependencyKind === "CORRECTION_TARGET");
+    const correctionTarget = semanticAdjudication.resolvedTargetVersionId;
+    if (hasDeclaredTarget && declaredTarget !== correctionTarget) {
+      return { attachedEvidence: 0, createdVersions: 0 };
+    }
+    if (transitionTarget === null || transitionTarget.sourceMode !== "AUTOMATIC") {
+      return { attachedEvidence: 0, createdVersions: 0 };
+    }
+    const existing = await lockedFact(tx, settings.userId, scope.id, candidate, now);
+    if (existing.fact !== null || existing.legacyWriteBlocked) {
+      return { attachedEvidence: 0, createdVersions: 0 };
+    }
+    // A self-contained update needs no linguistic antecedent. Its exact
+    // adjudicated current target still becomes a canonical relation dependency.
+    const targetContext = plan.input.contextRefs.find(({ kind, ref, source }) =>
+      kind === "FACT_VERSION" && ref === semanticAdjudication.targetRef &&
+      source.factVersionId === correctionTarget);
+    if (!targetContext) return { attachedEvidence: 0, createdVersions: 0 };
+    const correctionDependency: MemoryFactCandidateDependency | null = hasDeclaredTarget
+      ? null
+      : {
+          dependencyKind: "CORRECTION_TARGET",
+          ref: targetContext.ref,
+          source: targetContext.source
+        };
+    if (correctionDependency !== null && !await memoryFactDependenciesAreValid(
+      tx, settings.userId, proposedVersionId, [correctionDependency]
+    )) return { attachedEvidence: 0, createdVersions: 0 };
+    return createCrossFactRelationVersion(
+      tx, settings, claim, plan, candidate, evidence[0]!, bindingId, now,
+      scope.id, semanticAdjudication, correctionDependency
+    );
   }
   const factLookup = await lockedFact(
     tx,
@@ -1103,8 +1230,14 @@ async function createObservation(
     fact.canonicalKey,
     candidate
   );
-  await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
   if (pending) {
+    const replayedEvidenceId = await existingMessageSupport(
+      tx, settings.userId, pending.id, plan.input, evidence[0]!
+    );
+    if (replayedEvidenceId) {
+      return { attachedEvidence: 0, createdVersions: 0, replayedEvidenceIds: [replayedEvidenceId] };
+    }
+    await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
     await createEvent(
       tx,
       claim,
@@ -1130,6 +1263,7 @@ async function createObservation(
     return { attachedEvidence: 1, createdVersions: 0 };
   }
 
+  await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
   const pendingVersionId = versionId(evidence[0]!.ingestionFingerprint);
   const proposalEventId = await createEvent(
     tx,
@@ -1185,6 +1319,7 @@ export async function commitMemoryVNextExtractionPlan(
 ): Promise<MemoryVNextCommitResult> {
   let attachedEvidence = 0;
   let createdVersions = 0;
+  const replayedEvidenceIds: string[] = [];
   for (const candidate of plan.candidates) {
     const result = await createObservation(
       tx,
@@ -1198,6 +1333,11 @@ export async function commitMemoryVNextExtractionPlan(
     );
     attachedEvidence += result.attachedEvidence;
     createdVersions += result.createdVersions;
+    replayedEvidenceIds.push(...result.replayedEvidenceIds ?? []);
   }
-  return { attachedEvidence, createdVersions };
+  return {
+    attachedEvidence,
+    createdVersions,
+    ...(replayedEvidenceIds.length > 0 ? { replayedEvidenceIds } : {})
+  };
 }

@@ -2,14 +2,59 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../../../prisma";
 import { memoryPropositionCanonicalKey } from "./normalization";
+import { memoryGroundedEntityCanonicalKey } from "../entities/normalization";
 import {
   memoryLegacyIdentityIsUnambiguous,
+  memoryRecordedLegacyIdentityKeys,
   registerMemoryIdentityCompatibility
 } from "./compatibility";
 import { createPrismaMemoryIdentityCutoverRepository } from "./cutover";
 
 describe("Memory identity compatibility ledger", () => {
   afterAll(async () => prisma.$disconnect());
+
+  it("resolves recorded entity keys within their namespace and fences collisions", async () => {
+    const userId = `memory-entity-identity-${randomUUID()}`;
+    await prisma.user.create({ data: {
+      displayName: "Entity identity fixture", email: `${userId}@example.test`,
+      id: userId, status: "active"
+    } });
+    try {
+      const legacyCanonicalKey = "entity:v3:product-device:caf";
+      const unicodeCanonicalKey = memoryGroundedEntityCanonicalKey({
+        entityType: "PRODUCT", mention: "cafè", mentionKind: "NAMED"
+      })!;
+      await prisma.memoryEntity.create({ data: {
+        canonicalKey: legacyCanonicalKey, displayName: "cafè", entityType: "PRODUCT",
+        id: randomUUID(), userId
+      } });
+      const lookup = { containerId: "ENTITY", namespace: "GROUNDED_ENTITY" as const,
+        unicodeCanonicalKey, userId };
+      await prisma.$transaction(async (tx) => {
+        await expect(memoryRecordedLegacyIdentityKeys(tx, lookup)).resolves.toEqual([]);
+        await registerMemoryIdentityCompatibility(tx, {
+          ...lookup, legacyCanonicalKey, now: new Date()
+        });
+        await expect(memoryRecordedLegacyIdentityKeys(tx, lookup))
+          .resolves.toEqual([{ canonicalKey: legacyCanonicalKey, unambiguous: true }]);
+        for (const invalid of [{ ...lookup, namespace: "LABEL_ENTITY" as const },
+          { ...lookup, userId: randomUUID() }, { ...lookup, containerId: randomUUID() }]) {
+          await expect(memoryRecordedLegacyIdentityKeys(tx, invalid)).resolves.toEqual([]);
+        }
+        await registerMemoryIdentityCompatibility(tx, {
+          ...lookup, legacyCanonicalKey, now: new Date(),
+          unicodeCanonicalKey: memoryGroundedEntityCanonicalKey({
+            entityType: "PRODUCT", mention: "caf", mentionKind: "NAMED"
+          })!
+        });
+        await expect(memoryRecordedLegacyIdentityKeys(tx, lookup))
+          .resolves.toEqual([{ canonicalKey: legacyCanonicalKey, unambiguous: false }]);
+      });
+      await expect(prisma.memoryEntity.findFirstOrThrow({
+        select: { canonicalKey: true, displayName: true }, where: { userId }
+      })).resolves.toEqual({ canonicalKey: legacyCanonicalKey, displayName: "cafè" });
+    } finally { await prisma.user.deleteMany({ where: { id: userId } }); }
+  });
 
   it("detects a legacy collision using aggregate content-free evidence", async () => {
     const userId = `memory-identity-${randomUUID()}`;
@@ -25,10 +70,7 @@ describe("Memory identity compatibility ledger", () => {
       const scope = await prisma.memoryScope.create({
         data: { scopeType: "GLOBAL_USER", userId }
       });
-      const legacyCanonicalKey = memoryPropositionCanonicalKey(
-        "Ёлка",
-        "LEGACY_V1"
-      )!;
+      const legacyCanonicalKey = `prop:v1:${"a".repeat(64)}`;
       const firstUnicodeKey = memoryPropositionCanonicalKey(
         "Ёлка",
         "UNICODE_V2"
@@ -51,10 +93,7 @@ describe("Memory identity compatibility ledger", () => {
       });
       await prisma.memoryFact.create({
         data: {
-          canonicalKey: memoryPropositionCanonicalKey(
-            "Derived source-set pattern",
-            "LEGACY_V1"
-          )!,
+          canonicalKey: `prop:v1:${"b".repeat(64)}`,
           category: "patterns",
           id: randomUUID(),
           identityKind: "PROPOSITION",
@@ -82,6 +121,15 @@ describe("Memory identity compatibility ledger", () => {
           userId
         })).resolves.toBe(true);
       });
+      const lookup = { containerId: scope.id, namespace: "FACT" as const,
+        unicodeCanonicalKey: firstUnicodeKey, userId };
+      await expect(prisma.$transaction((tx) => memoryRecordedLegacyIdentityKeys(tx, lookup)))
+        .resolves.toEqual([{ canonicalKey: legacyCanonicalKey, unambiguous: true }]);
+      for (const invalid of [{ ...lookup, containerId: randomUUID() },
+        { ...lookup, userId: randomUUID() }, { ...lookup, namespace: "LABEL_ENTITY" as const }]) {
+        await expect(prisma.$transaction((tx) => memoryRecordedLegacyIdentityKeys(tx, invalid)))
+          .resolves.toEqual([]);
+      }
       const cutover = createPrismaMemoryIdentityCutoverRepository(prisma);
       await expect(cutover.inventory(userId)).resolves.toMatchObject({
         collidingLegacyFactKeys: 0,
@@ -108,6 +156,8 @@ describe("Memory identity compatibility ledger", () => {
           userId
         })).resolves.toBe(false);
       });
+      await expect(prisma.$transaction((tx) => memoryRecordedLegacyIdentityKeys(tx, lookup)))
+        .resolves.toEqual([{ canonicalKey: legacyCanonicalKey, unambiguous: false }]);
       const inventory = await cutover.inventory(userId);
       expect(inventory).toMatchObject({
         collidingLegacyFactKeys: 1,

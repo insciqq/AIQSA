@@ -1,0 +1,1453 @@
+{
+  "version": 1,
+  "description": "Synthetic personal-memory user journeys fixed before engine tuning; expected outcomes are evaluator-only.",
+  "categories": [
+    "acquisition",
+    "updates",
+    "retrieval",
+    "uncertainty",
+    "management",
+    "isolation"
+  ],
+  "scenarios": [
+    {
+      "id": "acquisition-01-home",
+      "category": "acquisition",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "I live in Bristol, close enough to walk to the harbour."
+        },
+        {
+          "action": "check",
+          "question": "Which city do I live in?",
+          "expectation": "The user lives in Bristol.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "acquisition-02-concise",
+      "category": "acquisition",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Мне удобнее читать короткие ответы: сначала вывод, потом детали, только если я попрошу."
+        },
+        {
+          "action": "check",
+          "question": "Как мне лучше оформлять ответы?",
+          "expectation": "Пользователь предпочитает короткие ответы с выводом в начале; дополнительные детали по запросу.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "acquisition-03-food",
+      "category": "acquisition",
+      "language": "en",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "I'm allergic to peanuts. Keep that in mind whenever we plan food."
+        },
+        {
+          "action": "check",
+          "question": "What ingredient must my meal plans avoid?",
+          "expectation": "Avoid peanuts because the user is allergic to them.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "acquisition-04-work",
+      "category": "acquisition",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Я работаю редактором в издательстве «Тихий берег». Мою руководительницу зовут Нина."
+        },
+        {
+          "action": "check",
+          "question": "Где я работаю и как зовут мою руководительницу?",
+          "expectation": "Пользователь — редактор в издательстве «Тихий берег», руководительница Нина.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "acquisition-05-routine",
+      "category": "acquisition",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "On Tuesdays and Thursdays I take the 7:10 train to the office. Other days I work from home."
+        },
+        {
+          "action": "check",
+          "question": "Which days do I commute, and what train do I take?",
+          "expectation": "Commutes Tuesday and Thursday on the 7:10 train; other days works from home.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "acquisition-06-units",
+      "category": "acquisition",
+      "language": "ru",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "В рецептах я пользуюсь граммами, а духовка у меня показывает градусы Цельсия. Чашки и Фаренгейт мне неудобны."
+        },
+        {
+          "action": "check",
+          "question": "Какие единицы мне использовать в рецепте?",
+          "expectation": "Grams and Celsius, not cups or Fahrenheit.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "acquisition-07-many-details",
+      "category": "acquisition",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "A few things for planning my work: I start at nine, finish at five, take lunch at noon, keep Fridays free of meetings, prefer email to calls, write notes in Markdown, use a weekly calendar, and need agendas before meetings."
+        },
+        {
+          "action": "check",
+          "question": "List all eight work-planning preferences I gave you.",
+          "expectation": "Start 09:00; finish 17:00; lunch noon; no Friday meetings; email over calls; Markdown notes; weekly calendar; agendas before meetings. All eight are required.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "acquisition-08-long-message",
+      "category": "acquisition",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Я живу в Твери. Ниже длинная рабочая заметка для контекста.\nРазбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. Разбираю старые заметки о прогулках: дорожки, деревья, скамейки и меняющаяся погода. Здесь нет новых сведений обо мне. \nИ ещё личная деталь: мою собаку зовут Булочка."
+        },
+        {
+          "action": "check",
+          "question": "В каком городе я живу и как зовут мою собаку?",
+          "expectation": "Пользователь живёт в Твери; собаку зовут Булочка.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "acquisition-09-pronoun",
+      "category": "acquisition",
+      "language": "en",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "I adopted a beagle called Miso."
+        },
+        {
+          "action": "message",
+          "content": "He cannot eat chicken; the vet told us to avoid it."
+        },
+        {
+          "action": "check",
+          "question": "What should I avoid feeding Miso?",
+          "expectation": "Miso is the user's dog and should not eat chicken. Do not attribute the restriction to the user.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "acquisition-10-self-correction",
+      "category": "acquisition",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Мой офис на Садовой, дом 14 — поправлюсь, дом 41. Первый номер я перепутал."
+        },
+        {
+          "action": "check",
+          "question": "Какой номер дома у моего офиса на Садовой?",
+          "expectation": "Current correct office number is 41, not 14.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "updates-01-move",
+      "category": "updates",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "I live in Leeds."
+        },
+        {
+          "action": "message",
+          "content": "I've moved to York; that's my home now."
+        },
+        {
+          "action": "check",
+          "question": "Where do I live now?",
+          "expectation": "Current home is York. Leeds must not be presented as the current home.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "updates-02-schedule",
+      "category": "updates",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "На плавание я хожу по средам."
+        },
+        {
+          "action": "message",
+          "content": "Расписание поменялось: теперь плавание по понедельникам, по средам больше не хожу."
+        },
+        {
+          "action": "check",
+          "question": "Когда у меня теперь плавание?",
+          "expectation": "Now Mondays, no longer Wednesdays.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "updates-03-temporary-exception",
+      "category": "updates",
+      "language": "en",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "I normally prefer quiet hotels."
+        },
+        {
+          "action": "message",
+          "content": "For this one festival weekend, book something lively. My usual preference hasn't changed."
+        },
+        {
+          "action": "check",
+          "question": "What kind of hotel do I generally prefer?",
+          "expectation": "Usually quiet hotels; the lively festival weekend was only an exception.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "updates-04-correct-name",
+      "category": "updates",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Моего кота зовут Персик."
+        },
+        {
+          "action": "message",
+          "content": "Я опечатался в имени кота: правильно Перчик, не Персик."
+        },
+        {
+          "action": "check",
+          "question": "Как зовут моего кота?",
+          "expectation": "Перчик; Персик was an error.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "updates-05-history",
+      "category": "updates",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "I lived in Bath until June 2025, then moved to Exeter in July 2025, where I still live."
+        },
+        {
+          "action": "check",
+          "question": "Where did I live in May 2025, and where do I live now?",
+          "expectation": "Bath in May 2025; Exeter now.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "updates-06-older-update",
+      "category": "updates",
+      "language": "ru",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Я работаю в компании «Клён»."
+        },
+        {
+          "action": "message",
+          "content": "По выходным я играю в бадминтон.",
+          "conversation": "other"
+        },
+        {
+          "action": "message",
+          "content": "Мой любимый чай — жасминовый.",
+          "conversation": "other"
+        },
+        {
+          "action": "message",
+          "content": "Для заметок я использую обычный бумажный блокнот.",
+          "conversation": "other"
+        },
+        {
+          "action": "message",
+          "content": "На работу я обычно езжу на велосипеде.",
+          "conversation": "other"
+        },
+        {
+          "action": "message",
+          "content": "Мой кот — полосатый.",
+          "conversation": "other"
+        },
+        {
+          "action": "message",
+          "content": "Мне удобнее созваниваться после обеда.",
+          "conversation": "other"
+        },
+        {
+          "action": "message",
+          "content": "Я изучаю итальянский язык.",
+          "conversation": "other"
+        },
+        {
+          "action": "message",
+          "content": "По пятницам я занимаюсь керамикой.",
+          "conversation": "other"
+        },
+        {
+          "action": "message",
+          "content": "Я уволился из «Клёна» и теперь работаю в «Маяке»."
+        },
+        {
+          "action": "check",
+          "question": "В какой компании я сейчас работаю?",
+          "expectation": "Current employer is «Маяк», not «Клён».",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "updates-07-retraction",
+      "category": "updates",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "I prefer window seats on trains."
+        },
+        {
+          "action": "message",
+          "content": "I no longer have a seat preference. Either window or aisle is fine now."
+        },
+        {
+          "action": "check",
+          "question": "Do I currently prefer a window or aisle seat?",
+          "expectation": "No current preference; either is fine. Do not retain window as the current preference.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "updates-08-conditional",
+      "category": "updates",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Я живу в Омске."
+        },
+        {
+          "action": "message",
+          "content": "Если получу предложение о работе, перееду в Томск. Пока предложения нет, остаюсь дома."
+        },
+        {
+          "action": "check",
+          "question": "Где я живу сейчас?",
+          "expectation": "Currently Omsk. Tomsk is a conditional future possibility only.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "updates-09-parallel-roles",
+      "category": "updates",
+      "language": "en",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Nora manages my day job; Felix coordinates my volunteer group."
+        },
+        {
+          "action": "message",
+          "content": "My manager changed from Nora to Imani. Felix still coordinates the volunteer group."
+        },
+        {
+          "action": "check",
+          "question": "Who manages my job and who coordinates my volunteering?",
+          "expectation": "Imani manages the job; Felix coordinates volunteering. Do not change both roles or retain Nora as current manager.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "updates-10-deadline",
+      "category": "updates",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Дедлайн моего проекта «Атлас» — 10 октября 2026 года."
+        },
+        {
+          "action": "message",
+          "content": "По «Атласу» согласовали перенос дедлайна на 24 октября 2026 года."
+        },
+        {
+          "action": "check",
+          "question": "Когда теперь дедлайн «Атласа»?",
+          "expectation": "24 October 2026, superseding 10 October 2026.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "retrieval-01-paraphrase",
+      "category": "retrieval",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "I ride my bicycle to the office most mornings."
+        },
+        {
+          "action": "check",
+          "question": "How do I usually get to work?",
+          "expectation": "By bicycle.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "retrieval-02-cross-language",
+      "category": "retrieval",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Мой любимый способ отдыхать — пешие прогулки по лесу."
+        },
+        {
+          "action": "check",
+          "question": "What do I enjoy doing to relax?",
+          "expectation": "Walking or hiking in the forest.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "retrieval-03-combine",
+      "category": "retrieval",
+      "language": "en",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "I attend a pottery class every Saturday.",
+          "conversation": "hobbies"
+        },
+        {
+          "action": "message",
+          "content": "The pottery studio is called Blue Kiln.",
+          "conversation": "places"
+        },
+        {
+          "action": "check",
+          "question": "What is my Saturday class and where do I take it?",
+          "expectation": "Pottery at Blue Kiln.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "retrieval-04-project-detail",
+      "category": "retrieval",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Для личного проекта «Лунный мост» я выбрал SQLite, потому что он работает на одном ноутбуке."
+        },
+        {
+          "action": "check",
+          "question": "Какую базу данных я выбрал для «Лунного моста»?",
+          "expectation": "SQLite for the personal project «Лунный мост».",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "retrieval-05-similar-entities",
+      "category": "retrieval",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "My teammate Mila handles design. My brother Milo is a paramedic."
+        },
+        {
+          "action": "check",
+          "question": "Who handles design on my team?",
+          "expectation": "Mila, not Milo; Milo is the user's brother and a paramedic.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "retrieval-06-older-detail",
+      "category": "retrieval",
+      "language": "ru",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Для командировок у меня зелёный чемодан."
+        },
+        {
+          "action": "message",
+          "content": "Я люблю гречку на завтрак.",
+          "conversation": "daily"
+        },
+        {
+          "action": "message",
+          "content": "Мой рабочий стол стоит у окна.",
+          "conversation": "daily"
+        },
+        {
+          "action": "message",
+          "content": "Я пользуюсь механической клавиатурой.",
+          "conversation": "daily"
+        },
+        {
+          "action": "message",
+          "content": "По воскресеньям я поливаю растения.",
+          "conversation": "daily"
+        },
+        {
+          "action": "message",
+          "content": "Мне нравится камерная музыка.",
+          "conversation": "daily"
+        },
+        {
+          "action": "message",
+          "content": "Я читаю на русском и английском.",
+          "conversation": "daily"
+        },
+        {
+          "action": "message",
+          "content": "Письма я разбираю утром.",
+          "conversation": "daily"
+        },
+        {
+          "action": "message",
+          "content": "Я хожу в библиотеку по субботам.",
+          "conversation": "daily"
+        },
+        {
+          "action": "message",
+          "content": "У меня два монитора.",
+          "conversation": "daily"
+        },
+        {
+          "action": "message",
+          "content": "Я предпочитаю бумажные книги.",
+          "conversation": "daily"
+        },
+        {
+          "action": "message",
+          "content": "По вечерам я обычно гуляю.",
+          "conversation": "daily"
+        },
+        {
+          "action": "message",
+          "content": "На выходных я пеку хлеб.",
+          "conversation": "daily"
+        },
+        {
+          "action": "check",
+          "question": "Какого цвета мой дорожный чемодан?",
+          "expectation": "Green.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "retrieval-07-complete-list",
+      "category": "retrieval",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "For work travel, I prefer trains."
+        },
+        {
+          "action": "message",
+          "content": "I want aisle seats."
+        },
+        {
+          "action": "message",
+          "content": "I need a quiet hotel."
+        },
+        {
+          "action": "message",
+          "content": "I want breakfast included."
+        },
+        {
+          "action": "message",
+          "content": "I avoid overnight departures."
+        },
+        {
+          "action": "message",
+          "content": "I prefer digital tickets."
+        },
+        {
+          "action": "message",
+          "content": "I need a desk in the hotel room."
+        },
+        {
+          "action": "message",
+          "content": "I want a refundable booking."
+        },
+        {
+          "action": "message",
+          "content": "I prefer a direct route."
+        },
+        {
+          "action": "check",
+          "question": "List all my stated work-travel preferences.",
+          "expectation": "All nine: trains; aisle seats; quiet hotel; included breakfast; no overnight departures; digital tickets; hotel desk; refundable booking; direct route.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "retrieval-08-same-word",
+      "category": "retrieval",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Я работаю в компании «Вершина». А в походах моя любимая вершина — Белуха."
+        },
+        {
+          "action": "check",
+          "question": "Как называется мой работодатель?",
+          "expectation": "Company «Вершина», not Белуха.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "retrieval-09-new-session",
+      "category": "retrieval",
+      "language": "en",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "My preferred editor is Neovim."
+        },
+        {
+          "action": "renew-session"
+        },
+        {
+          "action": "check",
+          "question": "Which editor do I prefer?",
+          "expectation": "Neovim.",
+          "surface": "both",
+          "critical": "persistence"
+        }
+      ]
+    },
+    {
+      "id": "retrieval-10-simple-inference",
+      "category": "retrieval",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Дорога от дома до офиса занимает у меня 35 минут."
+        },
+        {
+          "action": "message",
+          "content": "Обычно мне нужно быть в офисе к 9:30."
+        },
+        {
+          "action": "check",
+          "question": "Во сколько мне выходить, чтобы без запаса успеть в офис к обычному времени?",
+          "expectation": "08:55, derived from arrival 09:30 and a 35-minute journey.",
+          "surface": "answer"
+        }
+      ]
+    },
+    {
+      "id": "uncertainty-01-unknown",
+      "category": "uncertainty",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "check",
+          "question": "What is my dog's name?",
+          "expectation": "The dog's name is unknown; do not invent a name.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "uncertainty-02-friend",
+      "category": "uncertainty",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Моя подруга Ася живёт в Калуге. Мы познакомились на выставке."
+        },
+        {
+          "action": "check",
+          "question": "В каком городе живу я?",
+          "expectation": "The user's home city is unknown. Kaluga is Asya's city, not the user's.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "uncertainty-03-quotation",
+      "category": "uncertainty",
+      "language": "en",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Please proofread this fictional character bio: 'I am a dentist living in Oslo.' It isn't about me."
+        },
+        {
+          "action": "check",
+          "question": "What is my profession and where do I live?",
+          "expectation": "Both are unknown. Dentist and Oslo belong to a fictional character.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "uncertainty-04-hypothetical",
+      "category": "uncertainty",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Представим вымышленного человека: он инженер, живёт в Самаре и любит теннис. Помоги придумать ему имя."
+        },
+        {
+          "action": "check",
+          "question": "Какая у меня профессия?",
+          "expectation": "The user's profession is unknown; engineer was a fictional person.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "uncertainty-05-negative",
+      "category": "uncertainty",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "I don't have any children."
+        },
+        {
+          "action": "check",
+          "question": "What is my daughter's name?",
+          "expectation": "The user has no children; do not invent a daughter or name.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "uncertainty-06-other-preference",
+      "category": "uncertainty",
+      "language": "ru",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Моя сестра обожает детективы. Я пока не рассказывал, что люблю читать сам."
+        },
+        {
+          "action": "check",
+          "question": "Какой жанр книг мне нравится больше всего?",
+          "expectation": "The user's favourite genre is unknown. Detective fiction belongs to the sister.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "uncertainty-07-possible-purchase",
+      "category": "uncertainty",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "I'm considering buying an electric car next year, but haven't chosen or bought one."
+        },
+        {
+          "action": "check",
+          "question": "Which electric car do I own?",
+          "expectation": "No electric car ownership or model has been established.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "uncertainty-08-visit",
+      "category": "uncertainty",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Вчера я на один день съездил в Вологду на экскурсию и вернулся домой."
+        },
+        {
+          "action": "check",
+          "question": "Можно ли сказать, что я живу в Вологде?",
+          "expectation": "No. A one-day visit does not establish residence; the home city is unknown.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "uncertainty-09-suggestion",
+      "category": "uncertainty",
+      "language": "en",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Suggest a possible weekly exercise routine for someone with a desk job."
+        },
+        {
+          "action": "message",
+          "content": "Thanks. I haven't adopted that routine; it was only an idea."
+        },
+        {
+          "action": "check",
+          "question": "What exercise routine do I currently follow?",
+          "expectation": "No current exercise routine was established. Do not turn the assistant's suggestion into a user habit.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "uncertainty-10-ambiguous",
+      "category": "uncertainty",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "У меня есть кот Барсик и пёс Ричи."
+        },
+        {
+          "action": "message",
+          "content": "Кажется, пора поменять ему корм, но пока не решил кому."
+        },
+        {
+          "action": "check",
+          "question": "Кому из моих питомцев я уже поменял корм?",
+          "expectation": "No pet has an established completed food change; the statement was undecided and ambiguous.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "management-01-explicit-save",
+      "category": "management",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Remember that my preferred language is Python and my preferred database for small projects is PostgreSQL."
+        },
+        {
+          "action": "check",
+          "question": "Which language and database do I prefer for small projects?",
+          "expectation": "Python and PostgreSQL.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "management-02-explicit-edit",
+      "category": "management",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Запомни: мой рабочий день начинается в 10 утра."
+        },
+        {
+          "action": "message",
+          "content": "Исправь сохранённое время начала моего рабочего дня на 9 утра."
+        },
+        {
+          "action": "check",
+          "question": "Во сколько начинается мой рабочий день?",
+          "expectation": "09:00, not 10:00.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "management-03-repeat",
+      "category": "management",
+      "language": "en",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Remember that my favourite fruit is mango."
+        },
+        {
+          "action": "message",
+          "content": "Remember that my favourite fruit is mango."
+        },
+        {
+          "action": "check",
+          "question": "What is my favourite fruit?",
+          "expectation": "Mango. Returned memory should not contain redundant duplicate copies of the same fact.",
+          "surface": "both",
+          "distinct": true
+        }
+      ]
+    },
+    {
+      "id": "management-04-paraphrased-repeat",
+      "category": "management",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Запомни: по будням я предпочитаю отвечать на письма утром."
+        },
+        {
+          "action": "message",
+          "content": "Сохрани ещё раз: рабочую почту в будние дни мне удобнее разбирать в первой половине дня."
+        },
+        {
+          "action": "check",
+          "question": "Когда мне удобно разбирать рабочую почту?",
+          "expectation": "Weekday mornings. Do not present redundant duplicate memories as separate preferences.",
+          "surface": "both",
+          "distinct": true
+        }
+      ]
+    },
+    {
+      "id": "management-05-forget",
+      "category": "management",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Remember that I named my desk plant Juniper Bell."
+        },
+        {
+          "action": "check",
+          "question": "What did I name my desk plant?",
+          "expectation": "Juniper Bell.",
+          "surface": "facts",
+          "bind": "plant"
+        },
+        {
+          "action": "message",
+          "content": "Forget the name of my desk plant and remove that saved memory."
+        },
+        {
+          "action": "check-reference",
+          "binding": "plant",
+          "expected": "missing",
+          "critical": "deletion"
+        },
+        {
+          "action": "check",
+          "question": "What is the name of my desk plant?",
+          "expectation": "No returned fact may assert that the user's desk plant is named Juniper Bell; that name was deleted.",
+          "surface": "facts",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "id": "management-06-selective-forget",
+      "category": "management",
+      "language": "ru",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Запомни два факта: мой любимый цвет — бирюзовый, а любимый фрукт — груша."
+        },
+        {
+          "action": "message",
+          "content": "Удали из памяти только мой любимый цвет. Любимый фрукт сохрани."
+        },
+        {
+          "action": "check",
+          "question": "Какой мой любимый фрукт?",
+          "expectation": "Pear; the fruit preference remains.",
+          "surface": "both"
+        },
+        {
+          "action": "check",
+          "question": "Какой мой любимый цвет?",
+          "expectation": "The deleted colour preference must not be returned.",
+          "surface": "facts",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "id": "management-07-learn-again",
+      "category": "management",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Remember that my favourite flower is a tulip."
+        },
+        {
+          "action": "message",
+          "content": "Forget my flower preference."
+        },
+        {
+          "action": "message",
+          "content": "Remember this new preference: my favourite flower is a daffodil."
+        },
+        {
+          "action": "check",
+          "question": "What is my favourite flower now?",
+          "expectation": "Daffodil; tulip must not be presented as current.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "management-08-forget-reindex",
+      "category": "management",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Запомни: мой любимый сорт яблок — штрейфлинг."
+        },
+        {
+          "action": "check",
+          "question": "Какой сорт яблок я люблю?",
+          "expectation": "Штрейфлинг.",
+          "surface": "facts",
+          "bind": "apples"
+        },
+        {
+          "action": "message",
+          "content": "Удали из памяти мой любимый сорт яблок."
+        },
+        {
+          "action": "rebuild"
+        },
+        {
+          "action": "renew-session"
+        },
+        {
+          "action": "check-reference",
+          "binding": "apples",
+          "expected": "missing",
+          "critical": "deletion"
+        },
+        {
+          "action": "check",
+          "question": "Какой сорт яблок я люблю?",
+          "expectation": "No returned fact may assert that the user's favourite apple variety is штрейфлинг; that preference was deleted.",
+          "surface": "facts",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "id": "management-09-learning-pause",
+      "category": "management",
+      "language": "en",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Remember that my preferred writing format is Markdown."
+        },
+        {
+          "action": "settings",
+          "learnAutomatically": false
+        },
+        {
+          "action": "message",
+          "content": "My favourite leisure activity is kite flying."
+        },
+        {
+          "action": "check",
+          "question": "Which format do I prefer for writing?",
+          "expectation": "Markdown; pausing learning must retain existing memory.",
+          "surface": "facts",
+          "critical": "persistence"
+        },
+        {
+          "action": "check",
+          "question": "What is my favourite leisure activity?",
+          "expectation": "No automatically learned kite-flying fact should be returned while learning is off.",
+          "surface": "facts",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "id": "management-10-explicit-over-auto",
+      "category": "management",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Мне нравится работать с тёмной темой."
+        },
+        {
+          "action": "message",
+          "content": "Измени сохранённое предпочтение: теперь я предпочитаю светлую тему."
+        },
+        {
+          "action": "check",
+          "question": "Какую тему интерфейса я предпочитаю?",
+          "expectation": "Light theme now, not dark.",
+          "surface": "both"
+        }
+      ]
+    },
+    {
+      "id": "isolation-01-other-owner",
+      "category": "isolation",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Remember that my pottery studio is called Amber Finch."
+        },
+        {
+          "action": "check",
+          "question": "What is the name of my pottery studio?",
+          "expectation": "The other user has no such stored memory. No facts belonging to the first owner may be returned.",
+          "surface": "facts",
+          "actor": "other",
+          "empty": true,
+          "critical": "isolation"
+        }
+      ]
+    },
+    {
+      "id": "isolation-02-two-cities",
+      "category": "isolation",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Запомни: я живу в Рязани."
+        },
+        {
+          "action": "message",
+          "content": "Запомни: я живу в Пскове.",
+          "actor": "other"
+        },
+        {
+          "action": "check",
+          "question": "Где я живу?",
+          "expectation": "First owner lives in Ryazan.",
+          "surface": "both"
+        },
+        {
+          "action": "check",
+          "question": "Где я живу?",
+          "expectation": "Other owner lives in Pskov.",
+          "surface": "both",
+          "actor": "other"
+        }
+      ]
+    },
+    {
+      "id": "isolation-03-foreign-reference",
+      "category": "isolation",
+      "language": "en",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Remember that my bicycle is a Brompton."
+        },
+        {
+          "action": "check",
+          "question": "Which bicycle do I own?",
+          "expectation": "Brompton.",
+          "surface": "facts",
+          "bind": "bicycle"
+        },
+        {
+          "action": "check-reference",
+          "binding": "bicycle",
+          "actor": "other",
+          "expected": "missing",
+          "critical": "isolation"
+        }
+      ]
+    },
+    {
+      "id": "isolation-04-same-name",
+      "category": "isolation",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Запомни: мой проект «Орион» посвящён садоводству."
+        },
+        {
+          "action": "message",
+          "content": "Запомни: мой проект «Орион» посвящён акустике.",
+          "actor": "other"
+        },
+        {
+          "action": "check",
+          "question": "Чему посвящён мой проект «Орион»?",
+          "expectation": "First owner's Orion project is gardening, not acoustics.",
+          "surface": "both"
+        },
+        {
+          "action": "check",
+          "question": "Чему посвящён мой проект «Орион»?",
+          "expectation": "Other owner's Orion project is acoustics, not gardening.",
+          "surface": "both",
+          "actor": "other"
+        }
+      ]
+    },
+    {
+      "id": "isolation-05-temporary-write",
+      "category": "isolation",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "My pet hamster is called Copper Button.",
+          "temporary": true
+        },
+        {
+          "action": "check",
+          "question": "What is my hamster's name?",
+          "expectation": "No personal fact should be learned from a temporary chat.",
+          "surface": "facts",
+          "empty": true,
+          "critical": "isolation"
+        }
+      ]
+    },
+    {
+      "id": "isolation-06-temporary-read",
+      "category": "isolation",
+      "language": "ru",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Запомни: мой любимый кафе называется «Синяя чашка»."
+        },
+        {
+          "action": "check",
+          "question": "Как называется моё любимое кафе?",
+          "expectation": "A temporary chat must not retrieve personal Memory. The name is unknown in this chat.",
+          "surface": "answer",
+          "temporary": true,
+          "critical": "isolation"
+        }
+      ]
+    },
+    {
+      "id": "isolation-07-independent-deletion",
+      "category": "isolation",
+      "language": "en",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Remember that my preferred tea is jasmine."
+        },
+        {
+          "action": "message",
+          "content": "Remember that my preferred tea is oolong.",
+          "actor": "other"
+        },
+        {
+          "action": "message",
+          "content": "Forget my tea preference."
+        },
+        {
+          "action": "check",
+          "question": "What tea do I prefer?",
+          "expectation": "The other user's oolong preference must remain intact.",
+          "surface": "facts",
+          "actor": "other",
+          "critical": "persistence"
+        },
+        {
+          "action": "check",
+          "question": "What tea do I prefer?",
+          "expectation": "First owner's deleted tea preference must not be returned.",
+          "surface": "facts",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "id": "isolation-08-login-persistence",
+      "category": "isolation",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Запомни: я использую раскладку клавиатуры Colemak."
+        },
+        {
+          "action": "renew-session"
+        },
+        {
+          "action": "check",
+          "question": "Какую раскладку клавиатуры я использую?",
+          "expectation": "Colemak.",
+          "surface": "both",
+          "critical": "persistence"
+        }
+      ]
+    },
+    {
+      "id": "isolation-09-rebuild-persistence",
+      "category": "isolation",
+      "language": "en",
+      "partition": "acceptance",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Remember that my recurring book club meets on the last Thursday of each month."
+        },
+        {
+          "action": "rebuild"
+        },
+        {
+          "action": "check",
+          "question": "When does my book club meet?",
+          "expectation": "Last Thursday of each month.",
+          "surface": "both",
+          "critical": "persistence"
+        }
+      ]
+    },
+    {
+      "id": "isolation-10-facts-without-history",
+      "category": "isolation",
+      "language": "ru",
+      "partition": "development",
+      "steps": [
+        {
+          "action": "message",
+          "content": "Запомни: для завтрака я предпочитаю овсянку с яблоком."
+        },
+        {
+          "action": "settings",
+          "referenceChatHistory": false
+        },
+        {
+          "action": "renew-session"
+        },
+        {
+          "action": "check",
+          "question": "Какой завтрак я предпочитаю?",
+          "expectation": "Oatmeal with apple; saved facts remain useful when chat-history retrieval is disabled.",
+          "surface": "both",
+          "critical": "persistence"
+        }
+      ]
+    }
+  ]
+}

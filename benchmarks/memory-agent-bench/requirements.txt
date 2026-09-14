@@ -1,0 +1,3 @@
+pyarrow==21.0.0
+tiktoken==0.11.0
+nltk==3.9.1

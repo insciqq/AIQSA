@@ -17,7 +17,7 @@ import {
   memoryOpenSearchIntegrityFingerprintMaterial
 } from "../../search/opensearch/memoryContract";
 import {
-  memoryRedactionHasMeaningfulRemainder,
+  memoryRedactionHasSourceText,
   redactMemorySecrets
 } from "../explicit/safety";
 import {
@@ -433,7 +433,7 @@ export async function loadMemoryLexicalProjectionCanonicalEntry(
         !["ACTIVE", "SUPERSEDED"].includes(version.state) ||
         version.expiresAt && version.expiresAt <= new Date()) return null;
       const redaction = redactMemorySecrets(version.displayText);
-      if (redaction.containsSecret && !memoryRedactionHasMeaningfulRemainder(
+      if (redaction.containsSecret && !memoryRedactionHasSourceText(
         version.displayText,
         redaction
       )) return null;

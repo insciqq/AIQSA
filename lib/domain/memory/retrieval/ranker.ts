@@ -104,6 +104,8 @@ function sameDate(left: Date | null, right: Date | null): boolean {
 }
 
 function sameMetadata(left: MemoryCandidateMetadata, right: MemoryCandidateMetadata): boolean {
+  // matchedEntityRole describes a lane's query match, not the fact's identity
+  // or authority. Other lanes can find the same fact without an entity match.
   return left.canonicalKey === right.canonicalKey && left.category === right.category &&
     left.confidence === right.confidence && left.conflict === right.conflict &&
     left.coreEligible === right.coreEligible && left.coreSalience === right.coreSalience &&
@@ -121,7 +123,6 @@ function sameMetadata(left: MemoryCandidateMetadata, right: MemoryCandidateMetad
     sameDate(left.lastConfirmedAt, right.lastConfirmedAt) &&
     sameDate(left.lastUsedAt, right.lastUsedAt) &&
     left.lifecycleState === right.lifecycleState &&
-    left.matchedEntityRole === right.matchedEntityRole &&
     left.modality === right.modality && sameDate(left.occurredFrom, right.occurredFrom) &&
     sameDate(left.occurredTo, right.occurredTo) &&
     sameDate(left.observedAt, right.observedAt) && sameDate(left.occurredAt, right.occurredAt) &&

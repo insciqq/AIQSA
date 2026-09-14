@@ -10,7 +10,7 @@ import {
   type LockedMemorySettings
 } from "../persistence/transaction";
 import {
-  memoryRedactionHasMeaningfulRemainder,
+  memoryRedactionHasSourceText,
   memorySecretSafeObjectKey,
   memoryValueContainsRecognizedSecret,
   redactMemorySecrets
@@ -163,7 +163,7 @@ function safeClassificationResult(
     );
   const redaction = redactMemorySecrets(candidate.displayText);
   const secretOnly = redaction.containsSecret &&
-    !memoryRedactionHasMeaningfulRemainder(candidate.displayText, redaction);
+    !memoryRedactionHasSourceText(candidate.displayText, redaction);
   const localLite = result.executionId === null &&
     result.inputHash === undefined && result.acceptedOutputHash === undefined &&
     result.providerId === "aiqsa-local-policy" &&
@@ -242,7 +242,7 @@ async function reprojectLegacyEvidence(
     // authoritative Message. Dropping this unsafe derivative makes the fact
     // ineligible until that rebuild, while leaving the Chat source untouched.
     if (row.sourceType === "MESSAGE" ||
-      !memoryRedactionHasMeaningfulRemainder(row.safeExcerpt, redaction)) {
+      !memoryRedactionHasSourceText(row.safeExcerpt, redaction)) {
       await tx.memoryEvidence.delete({ where: { id: row.id } });
       continue;
     }
