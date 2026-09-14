@@ -48,6 +48,7 @@ import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
 import { applyMemoryHistorySourceMutation } from "../history/sourceLifecycle";
 import { createPrismaMemoryLifecycleRepository } from "../lifecycle/repository";
 import { createMemoryLifecycleService } from "../lifecycle/service";
+import { MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION } from "../learning/relations/explicitPolicy";
 import {
   createPrismaMemoryMutationAuthorizationRepository
 } from "../persistence/authorizations";
@@ -2274,6 +2275,32 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       await expect(prisma.memoryJob.findUniqueOrThrow({
         where: { id: admitted.jobId }
       })).resolves.toMatchObject({ state: "QUEUED" });
+
+      // These distinct explicit saves also admit relation jobs. The fixture
+      // models their no-change settlement before expecting index activation.
+      const relationJobs = await prisma.memoryJob.findMany({
+        where: {
+          kind: "RESOLVE_FACT_RELATIONS",
+          pipelineVersion: MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION,
+          state: "QUEUED",
+          userId
+        }
+      });
+      expect(relationJobs).toHaveLength(2);
+      for (const relationJob of relationJobs) {
+        const settledAt = new Date();
+        const relationClaim = await claimRebuildJob(relationJob.id, settledAt);
+        await expect(createPrismaMemoryCoordinatorRepository(prisma)
+          .commitJobSuccess({
+            acceptedResultHash: memorySha256({
+              domain: "memory-rebuild-test-distinct-relations",
+              jobId: relationJob.id
+            }),
+            claim: relationClaim,
+            now: settledAt,
+            stage: "relations_settled"
+          })).resolves.toBe(true);
+      }
 
       await processRebuildJob(admitted.jobId, repository);
       const [after, target, source, entries] = await Promise.all([
