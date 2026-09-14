@@ -1,4 +1,5 @@
 import { decodeImageVerificationEvidence } from "../../providers/imageGenerationEvidence";
+import { decodeHostedSearchVerificationEvidence, shouldProbeHostedSearch } from "./hostedSearchCapability";
 import { createImageModelDiscovery } from "../../providers/imageModelDiscovery";
 import { hasVerifiedDedicatedProtocol } from "../../providers/systemRoleEvidence";
 import type { AdminProviderSetupProgress } from "../../../contracts/adminProviderSetupProgress";
@@ -270,6 +271,7 @@ function validateEvidence(
   );
   const pdfInput = decodePdfInputVerificationEvidence(evidence.pdfInput);
   const visionInput = decodeVisionInputVerificationEvidence(evidence.visionInput);
+  const hostedSearch = decodeHostedSearchVerificationEvidence(evidence.hostedSearch);
   const imageGeneration = decodeImageVerificationEvidence(evidence.imageGeneration);
   const imageEditing = decodeImageVerificationEvidence(evidence.imageEditing);
   const invalidImageProof = (["imageGeneration", "imageEditing"] as const).some((key) => {
@@ -294,6 +296,9 @@ function validateEvidence(
       !hasVerifiedDedicatedProtocol(evidence, model)) ||
     (hasCompatibility && !compatibility) ||
     (evidence.capabilitySetup !== undefined && !capabilitySetup) ||
+    (evidence.hostedSearch !== undefined && (!hostedSearch || model.modelClass !== "answer" ||
+      hostedSearch.adapterKind !== model.adapterKind || hostedSearch.upstreamModelId !== model.upstreamModelId)) ||
+    (capabilitySetup?.checks.hostedSearch === "verified" && !hostedSearch) ||
     (evidence.parallelToolCalls !== undefined && (!parallelToolCalls ||
       parallelToolCalls.adapterKind !== model.adapterKind || parallelToolCalls.upstreamModelId !== model.upstreamModelId)) ||
     (compatibility && (
@@ -335,6 +340,7 @@ function validateEvidence(
   }
   return {
     ...(capabilitySetup ? { capabilitySetup } : {}),
+    ...(hostedSearch ? { hostedSearch } : {}),
     ...(imageGeneration ? { imageGeneration } : {}),
     ...(imageEditing ? { imageEditing } : {}),
     ...(parallelToolCalls ? { parallelToolCalls } : {}),
@@ -787,7 +793,8 @@ export function createAdminProviderService(input: Readonly<{
     const deadline = setTimeout(
       () => controller.abort("capability_check_deadline"),
       model.modelClass === "answer" ? Math.min(INITIAL_CAPABILITY_BATCH_TIMEOUT_MS,
-        Math.min(120_000, effectiveProviderResponseTimeoutMs(connection, model)) * 8 + 5_000)
+        Math.min(120_000, effectiveProviderResponseTimeoutMs(connection, model)) *
+          (shouldProbeHostedSearch(model, connection) || candidate.priorEvidence?.hostedSearch ? 9 : 8) + 5_000)
         : effectiveProviderResponseTimeoutMs(connection, model)
     );
     const forward = () => controller.abort(value.signal?.reason);
@@ -953,7 +960,8 @@ export function createAdminProviderService(input: Readonly<{
           credentialVersionId: credential.activeVersion!.id, modelVersion: model.activeVersion,
           ...(value.reuseCurrentChecks || value.retryUnresolved ? {
             reuseEvidence: reusableCapabilitySetupEvidence(current?.evidence ?? undefined,
-              normalizeProviderModelConfiguration(model.activeConfig))
+              normalizeProviderModelConfiguration(model.activeConfig),
+              connection.activeConfig ?? undefined)
           } : {}) };
       }
     }
@@ -970,7 +978,8 @@ export function createAdminProviderService(input: Readonly<{
               check.evidence && settledUnsupportedImageCapabilities(check.evidence)) &&
             ((model.modelClass ?? model.activeConfig?.modelClass ?? "answer") !== "answer" && !check.evidence!.capabilitySetup ||
               !capabilitySetupIncomplete(reusableCapabilitySetupEvidence(check.evidence!,
-                normalizeProviderModelConfiguration(model.activeConfig)) ?? check.evidence!)));
+                normalizeProviderModelConfiguration(model.activeConfig),
+                connection!.activeConfig ?? undefined) ?? check.evidence!)));
         })
       : [];
     const run = checkRuns.start({

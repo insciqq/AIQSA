@@ -24,14 +24,22 @@ export type AdminSearchDraft = {
 export type AdminSearchReasoningPolicy = "lowest_supported" | "provider_default";
 
 export const adminSearchExecutionDefaults = Object.freeze({
-  maxOutputTokens: 4_096,
-  maxSearchCallsPerAnswer: 2,
+  /** Enough room for a source-backed answer while keeping one search call bounded. */
+  maxOutputTokens: 8_192,
+  /** A source may be revisited for query refinement, while the run-wide tool budget remains authoritative. */
+  maxSearchCallsPerAnswer: 8,
+  maxResults: 8,
+  queryMaxCharacters: 1_000,
+  timeoutMs: 120_000,
   reasoningPolicy: "lowest_supported" as const
 });
 
 export const adminSearchExecutionLimits = Object.freeze({
   maxOutputTokens: Object.freeze({ maximum: 32_768, minimum: 1_024 }),
-  maxSearchCallsPerAnswer: Object.freeze({ maximum: 4, minimum: 1 })
+  maxSearchCallsPerAnswer: Object.freeze({ maximum: 32, minimum: 1 }),
+  maxResults: Object.freeze({ maximum: 20, minimum: 1 }),
+  queryMaxCharacters: Object.freeze({ maximum: 4_000, minimum: 32 }),
+  timeoutMs: Object.freeze({ maximum: 900_000, minimum: 5_000 })
 });
 
 export type AdminSearchTestEvidence = {
@@ -121,7 +129,7 @@ export function decodeAdminSearchDraft(value: unknown): AdminSearchDraft | null 
   if (!(
     (value.adapterKind === "answer_provider_hosted" || value.adapterKind === "provider_model_client") &&
     (value.credentialMode === "answer_provider" || value.credentialMode === "provider_model") &&
-    Number.isSafeInteger(value.maxResults) &&
+    boundedInteger(value.maxResults, adminSearchExecutionLimits.maxResults.minimum, adminSearchExecutionLimits.maxResults.maximum) &&
     boundedInteger(
       value.maxOutputTokens,
       adminSearchExecutionLimits.maxOutputTokens.minimum,
@@ -139,8 +147,12 @@ export function decodeAdminSearchDraft(value: unknown): AdminSearchDraft | null 
       value.protocol === "openrouter_perplexity_chat") &&
     nullableString(value.providerModelId) &&
     Number.isSafeInteger(value.queryMaxCharacters) &&
+    Number(value.queryMaxCharacters) >= adminSearchExecutionLimits.queryMaxCharacters.minimum &&
+    Number(value.queryMaxCharacters) <= adminSearchExecutionLimits.queryMaxCharacters.maximum &&
     (value.reasoningPolicy === "lowest_supported" || value.reasoningPolicy === "provider_default") &&
-    Number.isSafeInteger(value.timeoutMs)
+    Number.isSafeInteger(value.timeoutMs) &&
+    Number(value.timeoutMs) >= adminSearchExecutionLimits.timeoutMs.minimum &&
+    Number(value.timeoutMs) <= adminSearchExecutionLimits.timeoutMs.maximum
   )) return null;
   return {
     adapterKind: value.adapterKind,

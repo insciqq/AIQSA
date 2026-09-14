@@ -92,15 +92,20 @@ describe("administrator Search contract", () => {
     expect(decodeAdminSearchDraft({
       ...currentDraft,
       maxOutputTokens: 32_768,
-      maxSearchCallsPerAnswer: 4,
+      maxSearchCallsPerAnswer: 32,
+      queryMaxCharacters: 4_000,
       reasoningPolicy: "provider_default"
     })).toMatchObject({
       maxOutputTokens: 32_768,
-      maxSearchCallsPerAnswer: 4,
+      maxSearchCallsPerAnswer: 32,
+      queryMaxCharacters: 4_000,
       reasoningPolicy: "provider_default"
     });
     expect(decodeAdminSearchDraft({ ...currentDraft, maxOutputTokens: 1_023 })).toBeNull();
-    expect(decodeAdminSearchDraft({ ...currentDraft, maxSearchCallsPerAnswer: 5 })).toBeNull();
+    expect(decodeAdminSearchDraft({ ...currentDraft, maxSearchCallsPerAnswer: 33 })).toBeNull();
+    expect(decodeAdminSearchDraft({ ...currentDraft, queryMaxCharacters: 4_001 })).toBeNull();
+    expect(decodeAdminSearchDraft({ ...currentDraft, timeoutMs: 900_001 })).toBeNull();
+    expect(decodeAdminSearchDraft({ ...currentDraft, maxResults: 21 })).toBeNull();
     expect(decodeAdminSearchDraft({ ...currentDraft, reasoningPolicy: "answer_default" })).toBeNull();
     expect(decodeAdminSearchCatalog(catalog({
       ...currentDraft,

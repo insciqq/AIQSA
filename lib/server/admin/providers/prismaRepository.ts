@@ -38,6 +38,7 @@ import { decodeStructuredOutputVerificationEvidence } from "../../providers/stru
 import { decodeForcedToolCallVerificationEvidence } from
   "../../providers/forcedToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
+import { decodeHostedSearchVerificationEvidence } from "./hostedSearchCapability";
 import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
 import { decodeImageVerificationEvidence } from "../../providers/imageGenerationEvidence";
 import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
@@ -132,6 +133,7 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
   const capabilitySetup = decodeCapabilitySetupEvidence(value.capabilitySetup);
   const parallelToolCalls = decodeParallelToolCallVerificationEvidence(value.parallelToolCalls);
   const dedicatedProbe = value.detail === "ok" && value.method !== "models_catalog";
+  const hostedSearch = dedicatedProbe ? decodeHostedSearchVerificationEvidence(value.hostedSearch) : null;
   const embedding = dedicatedProbe && isRecord(value.embedding) &&
     value.embedding.probeVersion === 1 && value.embedding.document === true && value.embedding.query === true &&
     Number.isSafeInteger(value.embedding.dimensions) && Number(value.embedding.dimensions) > 0
@@ -142,6 +144,7 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
     ? { probeVersion: 1 as const, completeScores: true as const } : null;
   return {
     ...(capabilitySetup ? { capabilitySetup } : {}),
+    ...(hostedSearch?.upstreamModelId === value.upstreamModelId ? { hostedSearch } : {}),
     ...(parallelToolCalls ? { parallelToolCalls } : {}),
     ...(compatibility ? { compatibility } : {}),
     ...(embedding ? { embedding } : {}),
@@ -596,13 +599,13 @@ async function publishProviderSearchRoute(
       ) {
         draft = {
           ...draft,
+          maxOutputTokens: current.maxOutputTokens,
           maxResults: current.maxResults,
+          maxSearchCallsPerAnswer: current.maxSearchCallsPerAnswer,
           queryMaxCharacters: current.queryMaxCharacters,
           timeoutMs: current.timeoutMs,
           ...(draft.adapterKind === "provider_model_client"
             ? {
-                maxOutputTokens: current.maxOutputTokens,
-                maxSearchCallsPerAnswer: current.maxSearchCallsPerAnswer,
                 reasoningPolicy: current.reasoningPolicy
               }
             : {})
@@ -736,11 +739,11 @@ async function synchronizeProviderSearch(
 
   const baseDraft = {
     maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
-    maxResults: 8,
+    maxResults: adminSearchExecutionDefaults.maxResults,
     maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: policy.protocol,
-    queryMaxCharacters: 500,
-    timeoutMs: 300_000
+    queryMaxCharacters: adminSearchExecutionDefaults.queryMaxCharacters,
+    timeoutMs: adminSearchExecutionDefaults.timeoutMs
   };
   const hostedDraft: AdminSearchDraft = {
     adapterKind: "answer_provider_hosted",

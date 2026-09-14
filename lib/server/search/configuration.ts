@@ -73,12 +73,20 @@ export function normalizeSearchDraft(value: unknown): AdminSearchDraft {
     ),
     protocol,
     providerModelId: providerModelId(value.providerModelId),
-    queryMaxCharacters: boundedInteger(value.queryMaxCharacters, 32, 1_000),
+    queryMaxCharacters: boundedInteger(
+      value.queryMaxCharacters,
+      adminSearchExecutionLimits.queryMaxCharacters.minimum,
+      adminSearchExecutionLimits.queryMaxCharacters.maximum
+    ),
     reasoningPolicy: enumValue<AdminSearchReasoningPolicy>(
       value.reasoningPolicy,
       ["lowest_supported", "provider_default"]
     ),
-    timeoutMs: boundedInteger(value.timeoutMs, 5_000, 900_000)
+    timeoutMs: boundedInteger(
+      value.timeoutMs,
+      adminSearchExecutionLimits.timeoutMs.minimum,
+      adminSearchExecutionLimits.timeoutMs.maximum
+    )
   };
 
   const hosted = adapterKind === "answer_provider_hosted";
@@ -172,7 +180,7 @@ export function builtInSearchDraft(input: Readonly<{
       ? "provider_model"
       : "answer_provider",
     maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
-    maxResults: 8,
+    maxResults: adminSearchExecutionDefaults.maxResults,
     maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: input.kind === "anthropic_native_web_search"
       ? "anthropic_web_search"
@@ -184,8 +192,8 @@ export function builtInSearchDraft(input: Readonly<{
         ? "openrouter_perplexity_chat"
         : "openai_responses_web_search",
     providerModelId: input.providerModelId ?? null,
-    queryMaxCharacters: 500,
+    queryMaxCharacters: adminSearchExecutionDefaults.queryMaxCharacters,
     reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
-    timeoutMs: 300_000
+    timeoutMs: adminSearchExecutionDefaults.timeoutMs
   };
 }

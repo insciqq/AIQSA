@@ -1113,6 +1113,7 @@ describe("admin Search service", () => {
   });
 
   it("applies advanced execution controls only to the broader-model route", async () => {
+    const savedHostedDraft = { ...hostedDraft, maxOutputTokens: 16_384, maxSearchCallsPerAnswer: 16 };
     const advancedDraft: AdminSearchDraft = {
       ...draft,
       maxOutputTokens: 8_192,
@@ -1130,7 +1131,7 @@ describe("admin Search service", () => {
       searchOption: {
         findUnique: vi.fn(async () => option([
           child(draft),
-          child(hostedDraft, { id: "strategy-hosted", strategyId: "physical-hosted" })
+          child(savedHostedDraft, { id: "strategy-hosted", strategyId: "physical-hosted" })
         ])),
         update: vi.fn(async () => undefined)
       },
@@ -1180,8 +1181,8 @@ describe("admin Search service", () => {
     });
     expect(strategyPublish).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        config: hostedDraft,
-        draft: hostedDraft
+        config: savedHostedDraft,
+        draft: savedHostedDraft
       }),
       where: { id: "strategy-hosted" }
     });

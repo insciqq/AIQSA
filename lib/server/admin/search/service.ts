@@ -297,7 +297,7 @@ function hostedRouteIdentity(
   return { id: generatedId, strategyId: `${option.optionId}:hosted` };
 }
 
-function hostedDraftFor(draft: AdminSearchDraft): AdminSearchDraft | null {
+function hostedDraftFor(draft: AdminSearchDraft, current: AdminSearchDraft | null = null): AdminSearchDraft | null {
   return draft.protocol === "anthropic_web_search" ||
     draft.protocol === "deepseek_responses_web_search" ||
     draft.protocol === "openai_responses_web_search" ||
@@ -306,8 +306,8 @@ function hostedDraftFor(draft: AdminSearchDraft): AdminSearchDraft | null {
         ...draft,
         adapterKind: "answer_provider_hosted",
         credentialMode: "answer_provider",
-        maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
-        maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
+        maxOutputTokens: current?.maxOutputTokens ?? adminSearchExecutionDefaults.maxOutputTokens,
+        maxSearchCallsPerAnswer: current?.maxSearchCallsPerAnswer ?? adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
         providerModelId: null,
         reasoningPolicy: "provider_default"
       }
@@ -650,11 +650,15 @@ export function createAdminSearchService(input: Readonly<{
     }
     await publishChild(tx, editable.child, editable.draft, technical, checkedEvidence);
 
-    const hostedDraft = hostedDraftFor(editable.draft);
-    if (!hostedDraft) return;
     const hostedChildren = option.strategies.filter((child) =>
       child.archivedAt === null && child.adapterKind === "answer_provider_hosted"
     );
+    // Client-only controls must not reset the hosted route when creation
+    // defaults change. The shared source limits still follow the edited draft.
+    const currentHosted = optionalDraft(hostedChildren[0]?.activeRevision?.configuration) ??
+      optionalDraft(hostedChildren[0]?.draft);
+    const hostedDraft = hostedDraftFor(editable.draft, currentHosted);
+    if (!hostedDraft) return;
     if (hostedChildren.length !== 1) {
       throw new AdminSearchServiceError("search_configuration_unavailable");
     }
