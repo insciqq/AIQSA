@@ -161,7 +161,6 @@ function rejectionCode(error: unknown): MemoryFactCandidateRejection["reasonCode
     error.code === "memory_fact_semantic_unknown") return "REJECT_AMBIGUOUS";
   if (error.code === "memory_fact_source_stale") return "REJECT_STALE_SOURCE";
   if (error.code === "memory_fact_confidence_low") return "REJECT_LOW_CONFIDENCE";
-  if (error.code === "memory_fact_temporary") return "REJECT_TEMPORARY";
   if (error.code === "memory_fact_secret") return "REJECT_SECRET";
   return "REJECT_UNSUPPORTED";
 }
@@ -335,7 +334,9 @@ function parseTemporal(
 }
 
 type ParsedEntities = Readonly<{
+  contextRefs: readonly string[];
   entities: readonly MemoryFactCandidateEntity[];
+  entityAnnotationReviewRequired: boolean;
   supportsByType: ReadonlyMap<string, ReadonlySet<string>>;
 }>;
 
@@ -344,10 +345,13 @@ function parseEntities(
   input: MemoryFactExtractionInput,
   quote: string,
   frame: MemorySemanticFrame,
-  identity: MemoryIdentityProposal
+  identity: MemoryIdentityProposal,
+  allowUnresolvedAnnotations: boolean
 ): ParsedEntities {
   if (!Array.isArray(value) || value.length > 6) fail();
   const parsed: MemoryFactCandidateEntity[] = [];
+  const contextRefs = new Set<string>();
+  let entityAnnotationReviewRequired = false;
   const supports = new Map<string, Set<string>>();
   const addSupport = (entityType: string, text: string) => {
     const current = supports.get(entityType) ?? new Set<string>();
@@ -361,6 +365,10 @@ function parseEntities(
       entity.qualifier_supports.length > 4) fail();
     const role = enumValue<MemoryFactCandidateEntity["role"]>(entity.role, entityRoles);
     const proposedType = enumValue(entity.entity_type, entityTypes);
+    if (proposedType === "PERSON" && role !== "SUBJECT") {
+      fail("memory_fact_entity_unsupported");
+    }
+    const proposedLabel = nullableString(entity.canonical_label, 512);
     const mentionKind = enumValue<MemoryFactCandidateEntity["mentionKind"]>(
       entity.mention_kind,
       mentionKinds
@@ -369,6 +377,7 @@ function parseEntities(
     const context = contextRef === null ? null : input.contextRefs.find(
       (candidate) => candidate.ref === contextRef
     ) ?? fail("memory_fact_dependency_unsupported");
+    if (context) contextRefs.add(context.ref);
     const directSelfAnnotation = proposedType === "PERSON_SELF" &&
       (frame.subjectScope === "CURRENT_USER" || frame.subjectScope === "UNKNOWN") &&
       (role === "SUBJECT" || (
@@ -379,17 +388,23 @@ function parseEntities(
       fail("memory_fact_entity_unsupported");
     }
 
-    let mention: string | null = null;
-    if (entity.mention !== null) {
-      const ref = decodeMemoryExactTextRef(entity.mention, 512);
-      const span = ref ? projectMemoryExactTextRef(quote, ref) : null;
-      if (!span) fail("memory_fact_entity_unsupported");
-      mention = span.text;
-      addSupport(proposedType, span.text);
-    }
+    let sourceSupported = true;
+    const entitySupports: string[] = [];
+    const exactAnnotation = (raw: unknown, maxLength: number): string | null => {
+      const ref = decodeMemoryExactTextRef(raw, maxLength);
+      if (!ref) fail("memory_fact_entity_unsupported");
+      const span = projectMemoryExactTextRef(quote, ref);
+      if (!span) {
+        sourceSupported = false;
+        return null;
+      }
+      return span.text;
+    };
+    const mention = entity.mention === null ? null : exactAnnotation(entity.mention, 512);
+    if (mention !== null) entitySupports.push(mention);
     if ((mentionKind === "NAMED" || mentionKind === "NOMINAL") &&
-      mention === null) fail("memory_fact_entity_unsupported");
-    if (mentionKind === "ELLIPSIS" && mention !== null) {
+      mention === null) sourceSupported = false;
+    if (mentionKind === "ELLIPSIS" && entity.mention !== null) {
       fail("memory_fact_entity_unsupported");
     }
     if ((mentionKind === "PRONOMINAL" || mentionKind === "ELLIPSIS") &&
@@ -397,14 +412,10 @@ function parseEntities(
       fail("memory_fact_dependency_unsupported");
     }
 
-    const aliases = entity.aliases.map((rawAlias) => {
-      const ref = decodeMemoryExactTextRef(rawAlias, 256);
-      const span = ref ? projectMemoryExactTextRef(quote, ref) : null;
-      if (!span) fail("memory_fact_entity_unsupported");
-      addSupport(proposedType, span.text);
-      return span.text;
-    });
-    if (aliases.length > 0 && mentionKind !== "NAMED" && mentionKind !== "NOMINAL") {
+    const aliases = entity.aliases.map((rawAlias) => exactAnnotation(rawAlias, 256))
+      .filter((alias): alias is string => alias !== null);
+    entitySupports.push(...aliases);
+    if (entity.aliases.length > 0 && mentionKind !== "NAMED" && mentionKind !== "NOMINAL") {
       fail("memory_fact_entity_unsupported");
     }
 
@@ -419,19 +430,28 @@ function parseEntities(
         if (!input.contextRefs.some((candidate) => candidate.ref === ref)) {
           fail("memory_fact_dependency_unsupported");
         }
+        contextRefs.add(ref);
       } else {
-        const ref = decodeMemoryExactTextRef(support.source, 512);
-        if (!ref || !projectMemoryExactTextRef(quote, ref)) {
-          fail("memory_fact_entity_unsupported");
-        }
+        exactAnnotation(support.source, 512);
       }
-      addSupport(proposedType, supportValue);
+      entitySupports.push(supportValue);
       if (key === "brand" || key === "model") qualifiers[key] = supportValue;
     }
 
+    if (!sourceSupported) {
+      if (!allowUnresolvedAnnotations ||
+        (mentionKind !== "NAMED" && mentionKind !== "NOMINAL")) {
+        fail("memory_fact_entity_unsupported");
+      }
+      // Entity navigation is optional for a proposition. Keep every validated
+      // source dependency, discard the unsupported annotation as a whole, and
+      // require semantic authority before the underlying statement can persist.
+      entityAnnotationReviewRequired = true;
+      continue;
+    }
+    for (const text of entitySupports) addSupport(proposedType, text);
     const entityType = memoryEntityType(proposedType);
     if (!entityType || proposedType === "PERSON_SELF") continue;
-    const proposedLabel = nullableString(entity.canonical_label, 512);
     const canonicalLabel = context?.displayName ?? proposedLabel ?? mention;
     if (!canonicalLabel) fail("memory_fact_entity_unsupported");
     parsed.push({
@@ -446,7 +466,10 @@ function parseEntities(
       role
     });
   }
-  return { entities: parsed, supportsByType: supports };
+  return {
+    contextRefs: [...contextRefs], entities: parsed,
+    entityAnnotationReviewRequired, supportsByType: supports
+  };
 }
 
 function supported(
@@ -492,7 +515,19 @@ function groundIdentity(
     identity.predicateKey === "project_status") {
     const expected = identity.predicateKey === "goal_status" ? "GOAL" : "PROJECT";
     if (!supported(supports, [expected], identity.subject.canonicalLabel)) {
-      fail("memory_fact_subject_identity_unsupported");
+      // Missing entity authority prevents a mutable SLOT, not a separately
+      // entailed proposition. Discard every ungrounded identity dimension;
+      // the original SLOT proposal still requires semantic adjudication.
+      return {
+        dimensionKey: null,
+        mode: "PROPOSITION",
+        predicateKey: null,
+        subject: {
+          canonicalLabel: null,
+          entityType: "NONE",
+          qualifiers: { brand: null, model: null }
+        }
+      };
     }
   }
   return identity;
@@ -502,14 +537,16 @@ function parseDependencies(input: Readonly<{
   entities: readonly MemoryFactCandidateEntity[];
   frame: MemorySemanticFrame;
   proposal: unknown;
+  requiredRefs: readonly string[];
   temporal: MemoryTemporalProposal;
 }>, source: MemoryFactExtractionInput): readonly MemoryFactCandidateDependency[] {
   if (!Array.isArray(input.proposal) || input.proposal.length > 3) fail();
-  const refs = input.proposal.map((dependency) => boundedString(dependency, 128));
-  if (new Set(refs).size !== refs.length) fail();
-  const contextualEntityRefs = new Set(input.entities.flatMap((entity) =>
-    entity.contextRef ? [entity.contextRef] : []));
-  if ([...contextualEntityRefs].some((ref) => !refs.includes(ref))) {
+  const proposedRefs = input.proposal.map((dependency) => boundedString(dependency, 128));
+  if (new Set(proposedRefs).size !== proposedRefs.length) fail();
+  // Every structural context reference is already validated. Derive the full
+  // source dependency set instead of requiring the model to repeat each ref.
+  const refs = [...new Set([...proposedRefs, ...input.requiredRefs])].sort();
+  if (refs.length > 3) {
     fail("memory_fact_dependency_unsupported");
   }
   const correction = input.frame.polarity === "CORRECTION" ||
@@ -617,12 +654,9 @@ function decodeObservation(
     input,
     quote,
     frame,
-    rawIdentity
+    rawIdentity,
+    confidenceBand === "HIGH" && rawIdentity.mode === "PROPOSITION"
   );
-  if (parsedEntities.entities.some(({ entityType, role }) =>
-    entityType === "PERSON" && role !== "SUBJECT")) {
-    fail("memory_fact_entity_unsupported");
-  }
   const effectiveIdentity: MemoryIdentityProposal = confidenceBand === "MEDIUM"
     ? {
         dimensionKey: null,
@@ -647,6 +681,7 @@ function decodeObservation(
     entities: parsedEntities.entities,
     frame,
     proposal: value.dependency_refs,
+    requiredRefs: parsedEntities.contextRefs,
     temporal: temporalProposal
   }, input);
   const temporal = resolveMemoryTemporal({
@@ -656,7 +691,8 @@ function decodeObservation(
   });
   if (temporalProposal.expirationIntent === "EXPLICIT" &&
     temporal.expiresAt === null) fail("memory_fact_expiration_evidence_invalid");
-  if (temporary && temporal.expiresAt === null) fail("memory_fact_temporary");
+  // Limited relevance is not a deletion instruction. Future usefulness has
+  // already been checked; only a grounded explicit TTL can set expiresAt.
   const identityInput = {
     identity: identityProposal,
     memoryType,
@@ -723,6 +759,7 @@ function decodeObservation(
     displayText: temporalDisplayText(statement, temporal, input.timeZone),
     dependencies,
     entities: parsedEntities.entities,
+    ...(parsedEntities.entityAnnotationReviewRequired ? { entityAnnotationReviewRequired: true } : {}),
     evidence,
     expectedAt: temporal.expectedAt,
     expirationIntent: temporalProposal.expirationIntent,
@@ -737,6 +774,7 @@ function decodeObservation(
     negated: false,
     occurredAt: temporal.occurredAt,
     predicateKey: resolvedIdentity.predicateKey,
+    proposedIdentityKind: rawIdentity.mode,
     proposedValue: unicodeProposedValue,
     quote,
     rawTemporalExpression: temporal.rawExpression,

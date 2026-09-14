@@ -9,6 +9,7 @@ import { prisma } from "../../prisma";
 import { isMemoryCoordinatorErrorCode, MemoryCoordinatorError } from "./errors";
 import { memorySourceJobSnapshotMatches } from "../sourceState";
 import { lockMemorySettings } from "../persistence/transaction";
+import { MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION } from "../learning/relations/explicitPolicy";
 import {
   decodeMemoryOperationalCounters,
   type MemoryOperationalCounters
@@ -248,6 +249,18 @@ function jobEligibility(
     ${ownerRange}
     AND job."kind" IN (${jobKindList(kinds)})
     AND owner_user."status" = 'active'::"UserStatus"
+    AND (
+      job."kind" <> 'RESOLVE_FACT_RELATIONS'::"MemoryJobKind"
+      OR job."pipelineVersion" <> ${MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION}
+      OR NOT EXISTS (
+        SELECT 1 FROM "MemoryJob" AS comparing
+        WHERE comparing."userId" = job."userId" AND comparing."id" <> job."id"
+          AND comparing."kind" = 'RESOLVE_FACT_RELATIONS'::"MemoryJobKind"
+          AND comparing."pipelineVersion" = ${MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION}
+          AND comparing."state" = 'CLAIMED'::"MemoryJobState"
+          AND comparing."leaseExpiresAt" > ${now}
+      )
+    )
     AND (
       (
         job."state" = 'QUEUED'::"MemoryJobState"
@@ -748,6 +761,8 @@ export function createPrismaMemoryCoordinatorRepository(
     async claimJob(input) {
       if (input.kinds.length === 0) return null;
       return client.$transaction(async (tx) => {
+        // This lock also makes the explicit-comparison lease check atomic
+        // across claimers, before any provider work runs outside the transaction.
         const lastOwner = await lockFairnessCursor(tx, JOB_CURSOR);
         const candidateCtes = jobCandidateCtes(input.kinds, input.now, lastOwner);
         const row = await claimJobFromCandidate(tx, candidateCtes, input);

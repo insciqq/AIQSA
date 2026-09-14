@@ -358,7 +358,7 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v43");
+    expect(pack.packerVersion).toBe("memory-context-packer-v45");
   });
 
   it("labels a non-aggregation planner rewrite as a non-evidentiary answer focus", () => {

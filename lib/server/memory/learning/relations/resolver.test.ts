@@ -27,6 +27,7 @@ MemoryRelationVersionSnapshot {
     factId: "fact-current",
     identityKind: "SLOT",
     mergedIntoVersionId: null,
+    modality: "STATE",
     observedAt: "2026-08-24T09:00:00.000Z",
     occurredAt: null,
     predicateKey: "product_status",

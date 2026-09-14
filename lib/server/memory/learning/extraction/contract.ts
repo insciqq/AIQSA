@@ -12,9 +12,9 @@ import {
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
   "memory-fact-extraction-vnext-v8";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-extraction-policy-v16";
+  "memory-fact-extraction-policy-v19";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-extraction-prompt-v31";
+  "memory-fact-extraction-prompt-v33";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
   "memory-fact-extraction-schema-v5";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
@@ -292,6 +292,10 @@ export type MemoryExtractedCandidate = Readonly<{
   confidenceBand?: MemoryFactConfidenceBand;
   correction?: boolean;
   futureUseful?: boolean;
+  /** Server-derived routing metadata; fallback must retain SLOT adjudication. */
+  proposedIdentityKind?: "PROPOSITION" | "SLOT";
+  /** Unsupported optional entity metadata was discarded; require HIGH entailment. */
+  entityAnnotationReviewRequired?: boolean;
   quote?: string;
   responsePreference?: string | null;
   statement?: string;
@@ -484,6 +488,8 @@ export function memoryFactCandidateId(
     confidenceBand: _confidenceBand,
     correction: _correction,
     futureUseful: _futureUseful,
+    proposedIdentityKind: _proposedIdentityKind,
+    entityAnnotationReviewRequired: _entityAnnotationReviewRequired,
     quote: _quote,
     responsePreference: _responsePreference,
     statement: _statement,

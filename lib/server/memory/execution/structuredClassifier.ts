@@ -21,12 +21,16 @@ import type { MemoryExecutionVersions } from "./compatibility";
 import { MemoryExecutionError } from "./errors";
 import {
   createPrismaMemoryExecutionLifecycle,
+  type MemoryExecutionDurableResultEvidence,
   type MemoryReportedUsage
 } from "./lifecycle";
 import type { MemoryExecutionOwner } from "./owner";
 import type { MemoryExecutionRole } from "./roles";
 import type { MemorySecretFreeExecutionSnapshot } from "./snapshot";
-import { withLockedMemoryTransaction } from "../persistence/transaction";
+import {
+  withLockedMemoryTransaction,
+  type MemoryTransaction
+} from "../persistence/transaction";
 import { MEMORY_ADMISSION_MAX_TIMEOUT_MS } from "../admissionDeadline";
 
 export const MEMORY_STRUCTURED_OUTPUT_PROVIDER_TIMEOUT_MS =
@@ -144,6 +148,14 @@ export async function executeGovernedMemoryStructuredOutput<Value>(input: Readon
   inputHash: string;
   ordinal: number;
   owner: MemoryExecutionOwner;
+  persistResult?: (
+    tx: MemoryTransaction,
+    result: MemoryExecutionDurableResultEvidence & Readonly<{
+      acceptedOutputHash: string;
+      inputHash: string;
+      value: Value;
+    }>
+  ) => Promise<void>;
   provider: MemoryStructuredOutputProvider;
   request: ProviderStructuredOutputRequest;
   role: MemoryExecutionRole;
@@ -219,13 +231,27 @@ export async function executeGovernedMemoryStructuredOutput<Value>(input: Readon
     role: input.role,
     version: 1
   });
-  const settled = await execution.lifecycle.settle(input.userId, binding.id, {
+  const settlement = {
     acceptedOutputHash,
     errorCode: null,
     providerResponseId: providerResult.providerResponseId,
-    state: "SUCCEEDED",
+    state: "SUCCEEDED" as const,
     usage: memoryReportedUsage(providerResult.usage)
-  });
+  };
+  const persistResult = input.persistResult;
+  const settled = persistResult
+    ? await execution.lifecycle.settleSucceededWithDurableResult(
+        input.userId,
+        binding.id,
+        settlement,
+        (tx, evidence) => persistResult(tx, {
+          ...evidence,
+          acceptedOutputHash,
+          inputHash: input.inputHash,
+          value
+        })
+      )
+    : await execution.lifecycle.settle(input.userId, binding.id, settlement);
   const provider = started.snapshot.providerExecutionSnapshot;
   return {
     acceptedOutputHash,
