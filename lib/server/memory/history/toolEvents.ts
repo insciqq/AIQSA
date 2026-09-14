@@ -2,7 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { projectMemoryHistorySafeText } from "./safety";
 
-export const MEMORY_TOOL_EVENT_PROJECTION_VERSION = "memory-tool-event-v1";
+export const MEMORY_TOOL_EVENT_PROJECTION_VERSION = "memory-tool-event-v2";
 export const MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS = 4_096;
 export const MEMORY_TOOL_EVENT_MAX_SAFE_TEXT_LENGTH = 2_000;
 const MEMORY_TOOL_EVENT_MAX_SEARCH_TEXT_LENGTH = 4_000;
@@ -212,33 +212,6 @@ function extractAllowedScalars(value: Prisma.JsonValue | null): Readonly<{
   };
 }
 
-function toolOutcome(
-  state: MemoryToolEventSource["state"],
-  identifiers: readonly ExtractedScalar[]
-): MemoryToolEventOutcome {
-  if (state === "error") return "FAILURE";
-  const status = identifiers.find(({ label }) => label === "status")?.value
-    .toLocaleLowerCase("und");
-  if (status && new Set([
-    "degraded", "incomplete", "partial", "partially_completed", "warning"
-  ]).has(status)) return "PARTIAL";
-  if (status && new Set([
-    "cancelled", "canceled", "error", "failed", "failure", "rejected",
-    "timed_out", "timeout", "unavailable"
-  ]).has(status)) return "FAILURE";
-  const statusCode = Number(identifiers.find(({ label }) =>
-    label === "status_code")?.value);
-  if (Number.isInteger(statusCode) && statusCode >= 400 && statusCode <= 599) {
-    return "FAILURE";
-  }
-  if (identifiers.some(({ label, value }) =>
-    label === "error_code" || label === "error" &&
-      !new Set(["0", "false", "no", "none", "null"]).has(
-        value.toLocaleLowerCase("und")
-      ))) return "FAILURE";
-  return "SUCCESS";
-}
-
 export function projectMemoryToolEvent(
   source: MemoryToolEventSource
 ): MemoryToolEventProjection | null {
@@ -259,7 +232,9 @@ export function projectMemoryToolEvent(
     !extracted.sawMeaningfulSafeScalar) return null;
   const operation = extracted.values.find(({ label }) => label === "operation")?.value ??
     source.toolName;
-  const outcome = toolOutcome(source.state, extracted.values);
+  // Application fields describe the observed data, not invocation success.
+  // The settled call owns this outcome regardless of the payload's language.
+  const outcome: MemoryToolEventOutcome = source.state === "error" ? "FAILURE" : "SUCCESS";
   const occurredAt = source.completedAt.toISOString();
   const detail = extracted.values
     .filter(({ label }) => label !== "operation")

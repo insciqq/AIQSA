@@ -3,7 +3,7 @@ import { runContextualKeyQualification } from
   "../../../../benchmarks/aiqsa-memory-contextual-key-qualification/contract";
 
 describe("contextual-key qualification", () => {
-  it("keeps strict grounding while measuring deterministic multilingual retrieval", () => {
+  it("measures fixture retrieval without claiming real-provider qualification", () => {
     const report = runContextualKeyQualification();
 
     expect(report.corpus).toEqual({
@@ -44,9 +44,7 @@ describe("contextual-key qualification", () => {
       rejectedCount: 4,
       rejectionReasonCounts: {
         DUPLICATE_STATEMENT: 1,
-        UNSUPPORTED_DATE: 1,
-        UNSUPPORTED_ENTITY: 1,
-        UNSUPPORTED_NUMBER: 2
+        GROUNDING_INVALID: 4
       }
     });
     expect(report.targetEvidence).toEqual({
@@ -60,9 +58,13 @@ describe("contextual-key qualification", () => {
       russianFallbackAtMost30Percent: true
     });
     expect(report.decision).toEqual({
-      controlledEquivalenceEnabled: false,
-      reason: "REAL_PROVIDER_EVIDENCE_UNAVAILABLE_STRICT_VALIDATOR_RETAINED",
-      validatorMode: "STRICT_SOURCE_BOUND"
+      providerQualified: false,
+      reason: "FIXTURE_EVIDENCE_ONLY_REAL_PROVIDER_QUALIFICATION_REQUIRED",
+      validatorMode: "SEMANTIC_SOURCE_BOUND"
+    });
+    expect(report.binding).toMatchObject({
+      mode: "DETERMINISTIC_NO_PROVIDER", providerSuccessRate: null,
+      semanticReview: "FIXTURE_DECISIONS"
     });
     const serialized = JSON.stringify(report);
     expect(serialized).not.toContain("Project Cedar");

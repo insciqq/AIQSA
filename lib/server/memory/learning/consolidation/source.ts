@@ -4,7 +4,7 @@ import type {
   MemoryJobGateDecision
 } from "../../coordinator/types";
 import {
-  memoryRedactionHasMeaningfulRemainder,
+  memoryRedactionHasSourceText,
   memorySecretSafeObjectKey,
   memoryValueContainsRecognizedSecret,
   redactMemorySecrets
@@ -672,7 +672,7 @@ async function loadRelatedFacts(
   for (const version of versions) {
     if (version.displayText === null || version.structuredValue === null) continue;
     const redaction = redactMemorySecrets(version.displayText);
-    if (redaction.containsSecret && !memoryRedactionHasMeaningfulRemainder(
+    if (redaction.containsSecret && !memoryRedactionHasSourceText(
       version.displayText,
       redaction
     )) continue;

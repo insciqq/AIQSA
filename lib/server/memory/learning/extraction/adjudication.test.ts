@@ -16,6 +16,7 @@ import {
   memorySemanticAdjudicationInput,
   memorySemanticAdjudicationPacketIsValid,
   memorySemanticAdjudicationPromptPayload,
+  memorySemanticAdjudicationTool,
   MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION,
   MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT,
   MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
@@ -151,7 +152,7 @@ function plan(value = candidate()): MemoryFactExtractionPlan {
 describe("batched Memory semantic adjudication", () => {
   it("makes new-fact ref nullability explicit without weakening the decoder", () => {
     expect(MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION)
-      .toBe("memory-semantic-adjudication-prompt-v5");
+      .toBe("memory-semantic-adjudication-prompt-v7");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
       .toContain("A candidate_ref is never an entity_ref or target_ref");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
@@ -343,6 +344,60 @@ describe("batched Memory semantic adjudication", () => {
     expect(payload).toContain('"ref":"F1"');
     expect(payload).not.toContain("private-entity-id");
     expect(payload).not.toContain("private-version-id");
+  });
+
+  it("distinguishes a candidate's bound dependencies from other comparison context", () => {
+    const base = plan();
+    const dependency = base.input.contextRefs[0]!;
+    const prepared = {
+      ...base,
+      candidates: [candidate({ dependencies: [{
+        dependencyKind: "RELATION_CONTEXT", ref: dependency.ref, source: dependency.source
+      }] })],
+      input: { ...base.input, contextRefs: [dependency, { ...dependency, ref: "F2" }] }
+    };
+    const payload = JSON.parse(memorySemanticAdjudicationPromptPayload(memorySemanticAdjudicationInput(prepared)!));
+    expect(payload.candidates[0].dependency_refs).toEqual(["F1"]);
+    expect(payload.context_refs.map((context: { ref: string }) => context.ref)).toEqual(["F1", "F2"]);
+    const independent = { ...prepared, candidates: [candidate()] };
+    const independentPayload = JSON.parse(memorySemanticAdjudicationPromptPayload(memorySemanticAdjudicationInput(independent)!));
+    expect(independentPayload.candidates[0].dependency_refs).toEqual([]);
+  });
+
+  it("covers every admitted observation with one bounded adjudication packet", () => {
+    const candidates = Array.from({ length: 8 }, (_, index) => candidate({
+      candidateRef: `C${index + 1}`,
+      id: String(index + 1).repeat(64)
+    }));
+    const input = memorySemanticAdjudicationInput({
+      ...plan(),
+      candidateOrdinals: candidates.map((_, index) => index),
+      candidates
+    })!;
+    const decisions = input.candidateRefs.map((candidateRef) => ({
+      assertion_status: "ASSERTED",
+      candidate_ref: candidateRef,
+      confidence_band: "HIGH",
+      entailment: "ENTAILED",
+      entity_ref: null,
+      operation: "NO_RELATION",
+      reason_code: "direct_assertion",
+      subject_scope: "CURRENT_USER",
+      target_ref: null,
+      temporal_perspective: "CURRENT"
+    }));
+    expect(input.candidateRefs).toHaveLength(8);
+    const schema = memorySemanticAdjudicationTool.inputSchema as {
+      properties: { decisions: { maxItems: number } };
+    };
+    expect(schema.properties.decisions.maxItems).toBeGreaterThanOrEqual(decisions.length);
+    const packet = decodeMemorySemanticAdjudication([{
+      arguments: { decisions },
+      id: "batch-call",
+      name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
+    }], input);
+    expect(memorySemanticAdjudicationPacketIsValid(input.plan, packet)).toBe(true);
+    expect(packet.decisions.map(({ candidateRef }) => candidateRef)).toEqual(input.candidateRefs);
   });
 
   it("decodes one strict decision per requested candidate and round-trips storage", () => {

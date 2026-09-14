@@ -1,5 +1,6 @@
 import { estimateApproxTokens } from "../../contextBudget";
-import { deduplicateContainedHistory } from "./historyContainment";
+import { MEMORY_MODALITIES } from "../../../contracts/memory";
+import { memoryHistoryContains } from "./historyContainment";
 import {
   MEMORY_CONTEXT_AGGREGATION_HISTORY_TARGET_TOKENS,
   MEMORY_CONTEXT_AGGREGATION_MAX_HISTORY_SNIPPETS,
@@ -81,6 +82,7 @@ export const MEMORY_CONTEXT_AGGREGATION_GUIDANCE = [
 type SectionedItem = Readonly<{
   chronologyGroup: string;
   chronologyTime: number | null;
+  evidenceRoot: string;
   item: MemoryPackedItem;
   selectionIndex: number;
 }>;
@@ -173,11 +175,10 @@ function safeProjectionShape(expansion: MemoryExpandedCandidate): boolean {
     );
 }
 
-/** Final packing is the last pure boundary before transactional admission.
- * Keep mutable ranking metadata separate from immutable projection provenance,
- * and quarantine one inconsistent candidate instead of allowing Phase B to
- * reject the complete otherwise-authoritative pack. */
-function preparingProjectionShape(
+/** Check immutable projection provenance independently of chat context sizing.
+ * Quarantine inconsistent candidates before transactional admission or native
+ * fact projection, while keeping mutable ranking metadata separate. */
+export function memoryCandidateMatchesRetrievalProjection(
   candidate: MemoryRankedCandidate,
   expansion: MemoryExpandedCandidate,
   plan: MemoryRetrievalPlan
@@ -314,6 +315,7 @@ function renderedEvidence(
     evidence_handle: item.evidenceHandle,
     evidence_type: item.evidenceType,
     last_confirmed_at: renderedDate(item.lastConfirmedAt),
+    ...(item.itemType === "FACT_VERSION" ? { modality: item.modality } : {}),
     observed_at: renderedDate(item.observedAt),
     raw_safe_evidence: item.rawSafeText,
     retrieval_hint: item.retrievalHint
@@ -719,6 +721,10 @@ function packedItem(input: Readonly<{
     itemId: candidate.itemId,
     itemType: candidate.itemType,
     lastConfirmedAt: iso(candidate.metadata.lastConfirmedAt),
+    modality: fact && candidate.metadata.modality !== null &&
+      MEMORY_MODALITIES.includes(candidate.metadata.modality)
+      ? candidate.metadata.modality
+      : null,
     observedAt: iso(candidate.metadata.observedAt),
     patternSupportingEvidence: Object.freeze(
       (expansion.patternSupportingEvidence ?? []).map((support) => ({
@@ -761,6 +767,7 @@ function packedItem(input: Readonly<{
   return {
     chronologyGroup: chronologyGroup(candidate),
     chronologyTime: chronologyTime(candidate, expansion),
+    evidenceRoot: memoryRetrievalEvidenceRootKey(candidate),
     item,
     selectionIndex: Number.parseInt(input.evidenceHandle.slice(1), 10) - 1
   };
@@ -807,9 +814,9 @@ function temporalReason(plan: MemoryRetrievalPlan): MemoryPackedItem["temporalRe
   }
 }
 
-function expandedMap(
+export function memoryRetrievalProjectionMap(
   expanded: readonly MemoryExpandedCandidate[],
-  omissionCounts: Record<string, number>
+  omissionCounts: Record<string, number> = {}
 ): Map<string, MemoryExpandedCandidate> {
   const result = new Map<string, MemoryExpandedCandidate>();
   const duplicates = new Set<string>();
@@ -882,7 +889,7 @@ export function packMemoryPersonalContext(input: Readonly<{
     : MEMORY_CONTEXT_MAX_ITEMS;
 
   const omissionCounts: Record<string, number> = {};
-  const dynamicExpansions = expandedMap(input.expanded, omissionCounts);
+  const dynamicExpansions = memoryRetrievalProjectionMap(input.expanded, omissionCounts);
   const factLimit = input.plan.profileRequested
     ? MEMORY_CONTEXT_PROFILE_MAX_FACTS
     : MEMORY_CONTEXT_MAX_DYNAMIC_FACTS;
@@ -948,8 +955,9 @@ export function packMemoryPersonalContext(input: Readonly<{
   let historyCount = 0;
   let dynamicFactTokens = 0;
   let historyTokens = 0;
+  let nextEvidenceOrdinal = selected.length + 1;
   for (const candidate of sourceDiversityOrder(
-    deduplicateContainedHistory(input.ranked, [...dynamicExpansions.values()]),
+    input.ranked,
     input.plan,
     dynamicExpansions
   )) {
@@ -962,17 +970,13 @@ export function packMemoryPersonalContext(input: Readonly<{
       increment(omissionCounts, "profile_history_excluded");
       continue;
     }
-    if (selected.length >= maximumItems) {
-      increment(omissionCounts, "item_limit");
-      continue;
-    }
     const identity = itemKey(candidate);
     const expansion = dynamicExpansions.get(identity);
     if (!expansion) {
       increment(omissionCounts, "safe_expansion_missing");
       continue;
     }
-    if (!preparingProjectionShape(candidate, expansion, input.plan)) {
+    if (!memoryCandidateMatchesRetrievalProjection(candidate, expansion, input.plan)) {
       increment(omissionCounts, "preparing_projection_contract");
       continue;
     }
@@ -993,6 +997,29 @@ export function packMemoryPersonalContext(input: Readonly<{
       continue;
     }
     const fact = candidate.itemType === "FACT_VERSION";
+    const contained = new Set<SectionedItem>();
+    let alreadyCovered = false;
+    if (!fact) {
+      for (const previous of selected) {
+        const previousExpansion = dynamicExpansions.get(itemKey(previous.item));
+        if (!previousExpansion) continue;
+        if (memoryHistoryContains(previousExpansion, expansion)) {
+          alreadyCovered = true;
+          break;
+        }
+        if (memoryHistoryContains(expansion, previousExpansion)) contained.add(previous);
+      }
+    }
+    if (alreadyCovered) {
+      increment(omissionCounts, "contained_history");
+      continue;
+    }
+    const retained = contained.size > 0
+      ? selected.filter((entry) => !contained.has(entry)) : selected;
+    if (retained.length >= maximumItems) {
+      increment(omissionCounts, "item_limit");
+      continue;
+    }
     if (fact && factCount >= factLimit) {
       increment(omissionCounts, input.plan.profileRequested ? "profile_fact_limit" : "fact_limit");
       continue;
@@ -1013,7 +1040,7 @@ export function packMemoryPersonalContext(input: Readonly<{
         : aggregation
           ? MEMORY_CONTEXT_AGGREGATION_MAX_SOURCE_CHATS
           : MEMORY_CONTEXT_MAX_SOURCE_CHATS;
-      if (historyCount >= historyLimit) {
+      if (historyCount - contained.size >= historyLimit) {
         increment(omissionCounts, "history_limit");
         continue;
       }
@@ -1038,7 +1065,7 @@ export function packMemoryPersonalContext(input: Readonly<{
     }
     const entry = packedItem({
       candidate,
-      evidenceHandle: `M${selected.length + 1}`,
+      evidenceHandle: `M${nextEvidenceOrdinal}`,
       expansion,
       section: fact
         ? candidate.metadata.sourceAuthority === "SYNTHESIS"
@@ -1051,7 +1078,7 @@ export function packMemoryPersonalContext(input: Readonly<{
       tier: "DYNAMIC"
     });
     const itemTokens = estimateApproxTokens(renderedEvidence(entry.item));
-    const proposed = [...selected, entry];
+    const proposed = [...retained, entry];
     const proposedHistoryTokens = fact
       ? historyTokens
       : estimateApproxTokens(renderedEvidenceLines(proposed.filter(({ item }) =>
@@ -1076,7 +1103,18 @@ export function packMemoryPersonalContext(input: Readonly<{
       increment(omissionCounts, "token_budget");
       continue;
     }
+    // A containing excerpt keeps its own rank and replaces earlier excerpts
+    // only after the complete replacement passes every pack limit.
+    if (contained.size > 0) {
+      selected.splice(0, selected.length, ...retained);
+      for (const previous of contained) {
+        selectedIdentity.delete(itemKey(previous.item));
+        selectedEvidenceRoots.delete(previous.evidenceRoot);
+      }
+      historyCount -= contained.size;
+    }
     selected.push(entry);
+    nextEvidenceOrdinal += 1;
     for (const [sourceChatId, handle] of proposedSessionHandles) {
       sourceSessionHandles.set(sourceChatId, handle);
     }

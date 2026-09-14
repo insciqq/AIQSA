@@ -13,6 +13,12 @@ import {
 } from "../rebuild/repository";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from
   "../retrieval/vector";
+import {
+  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+} from "../history/rounds";
+import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
+  "../history/segments";
 
 export const MEMORY_RETRIEVAL_CUTOVER_VERSION =
   "memory-vnext-retrieval-cutover-v1";
@@ -207,6 +213,12 @@ export function createPrismaMemoryRetrievalCutoverRepository(
             OR active."languageProfile" <> ${MEMORY_LEXICAL_ANALYSIS_PROFILE}
             OR active."normalizationVersion" <> ${MEMORY_LEXICAL_NORMALIZATION_VERSION}
             OR active."chunkingVersion" <> ${MEMORY_LEXICAL_CHUNKING_VERSION}
+            OR active."contextualKeyPolicyVersion" IS DISTINCT FROM
+              ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+            OR active."roundProjectionVersion" IS DISTINCT FROM
+              ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
+            OR active."roundSegmentProjectionVersion" IS DISTINCT FROM
+              ${MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION}
             OR active."embeddingProviderModelId" IS DISTINCT FROM
               CASE active."indexMode"
                 WHEN 'HYBRID'::"MemoryIndexMode" THEN settings."embeddingProviderModelId"

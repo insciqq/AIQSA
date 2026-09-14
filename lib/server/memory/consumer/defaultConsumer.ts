@@ -3,6 +3,7 @@ import { prisma } from "../../prisma";
 import { defaultExplicitMemoryService } from "../explicit/defaultExplicit";
 import { defaultMemoryLifecycleService } from "../lifecycle/defaultLifecycle";
 import { defaultMemorySettingsService } from "../settings/defaultSettings";
+import { resolveMemoryExplicitEquivalentTarget } from "../persistence/explicitEquivalence";
 import type { MemoryConsumerHandlerDeps } from "./handlers";
 import { createMemoryConsumerService } from "./service";
 
@@ -17,6 +18,7 @@ export function memoryResetOutboxWhere(userId: string) {
 export const defaultMemoryConsumerService = createMemoryConsumerService({
   explicitService: defaultExplicitMemoryService,
   lifecycleService: defaultMemoryLifecycleService,
+  resolveEquivalentTarget: (userId, target, now) => resolveMemoryExplicitEquivalentTarget(prisma, userId, target, now),
   readResetState: async (userId) => {
     const reset = await prisma.memoryDeletionOutbox.findFirst({
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],

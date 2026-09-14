@@ -35,6 +35,8 @@ import {
   MEMORY_TEMPORAL_QUERY_PARSER_VERSION,
   MEMORY_NGRAM_QUERY_MAX_TERMS,
   analyzeMemoryLexicalQuery,
+  memoryLexicalQueryWindows,
+  normalizeMemoryLexicalProjection,
   memoryRetrievalEvidenceRootKey,
   memoryRetrievalLaneLimit,
   type MemoryCandidateMetadata,
@@ -68,7 +70,7 @@ import {
   memoryUserTestimonyText
 } from "../history/userTestimony";
 import {
-  memoryRedactionHasMeaningfulRemainder,
+  memoryRedactionHasSourceText,
   redactMemorySecrets
 } from "../explicit/safety";
 import {
@@ -107,6 +109,7 @@ import {
 import {
   MEMORY_LEXICAL_PROVIDER_MAX_CANDIDATES_PER_VARIANT,
   MEMORY_LEXICAL_PROVIDER_MAX_FINAL_CANDIDATES,
+  MEMORY_LEXICAL_PROVIDER_MAX_VARIANTS,
   assertMemoryLexicalSearchResult,
   hasAcceptedCompleteMemoryLexicalVariant,
   memoryLexicalProjectionReadinessScope,
@@ -138,7 +141,7 @@ import {
 export type { MemoryLexicalLaneEvidence } from "./lexical/contract";
 
 export const MEMORY_LOCAL_RETRIEVAL_REPOSITORY_VERSION =
-  "memory-local-retrieval-repository-v46";
+  "memory-local-retrieval-repository-v49";
 export const MEMORY_SPECULATIVE_BASELINE_SETTLE_MS = 1_200;
 const MEMORY_NGRAM_FALLBACK_MAX_TERMS = 8;
 const MEMORY_NGRAM_FALLBACK_MAX_TERMS_PER_VARIANT = 4;
@@ -612,7 +615,7 @@ function decodeCandidate(row: CandidateRow, lane: MemoryRetrievalLane): MemoryLa
 function safeMemoryProjectionText(value: string): string | null {
   const redaction = redactMemorySecrets(value);
   if (redaction.containsSecret &&
-    !memoryRedactionHasMeaningfulRemainder(value, redaction)) return null;
+    !memoryRedactionHasSourceText(value, redaction)) return null;
   return redaction.redactedText.length <= 4_000 ? redaction.redactedText : null;
 }
 
@@ -2774,9 +2777,7 @@ function memorySemanticLexicalTermVariants(
   plan: MemoryRetrievalPlan,
   kind: MemorySemanticLexicalTermKind
 ): readonly Readonly<{ term: string; variantOrdinal: number }>[] {
-  const texts = plan.semanticQueryVariants.length > 0
-    ? plan.semanticQueryVariants.map(({ text }) => text)
-    : plan.lexicalQuery ? [plan.lexicalQuery] : [];
+  const texts = memorySemanticLexicalQueryTexts(plan);
   const maximumTerms = kind === "NGRAM"
     ? Math.min(MEMORY_NGRAM_QUERY_MAX_TERMS, MEMORY_NGRAM_FALLBACK_MAX_TERMS)
     : MEMORY_LEXICAL_QUERY_MAX_TERMS;
@@ -2823,6 +2824,35 @@ function memorySemanticLexicalTermVariants(
   return selectedByVariant.flat();
 }
 
+function memorySemanticLexicalQueryTexts(plan: MemoryRetrievalPlan): readonly string[] {
+  const originals = plan.semanticQueryVariants.length > 0
+    ? plan.semanticQueryVariants.map(({ text }) => text)
+    : plan.lexicalQuery ? [plan.lexicalQuery] : [];
+  const texts = [...originals];
+  const seen = new Set(originals.map(normalizeMemoryLexicalProjection));
+  const windows = originals.map((text) => {
+    const later = memoryLexicalQueryWindows(text).slice(1);
+    // If the input exceeds every available window, retain its ending before
+    // filling intermediate windows. Original and semantic variants keep their
+    // existing slots and share the unchanged term/candidate ceilings.
+    return later.length > 1 ? [later.at(-1)!, ...later.slice(0, -1)] : later;
+  });
+  for (let index = 0; texts.length < MEMORY_LEXICAL_PROVIDER_MAX_VARIANTS; index += 1) {
+    let remaining = false;
+    for (const variants of windows) {
+      const text = variants[index];
+      if (text === undefined) continue;
+      remaining = true;
+      if (seen.has(text)) continue;
+      seen.add(text);
+      texts.push(text);
+      if (texts.length === MEMORY_LEXICAL_PROVIDER_MAX_VARIANTS) break;
+    }
+    if (!remaining) break;
+  }
+  return texts;
+}
+
 function providerTermKind(
   lane: PostgresUnicodeMemoryLexicalLane
 ): MemorySemanticLexicalTermKind {
@@ -2846,9 +2876,7 @@ function memoryLexicalSearchRequest(
   }
   const readinessScope = memoryLexicalReadinessScopes.get(snapshot);
   if (!readinessScope) throw new Error("memory_retrieval_snapshot_invalid");
-  const texts = plan.semanticQueryVariants.length > 0
-    ? plan.semanticQueryVariants.map(({ text }) => text)
-    : [plan.lexicalQuery];
+  const texts = memorySemanticLexicalQueryTexts(plan);
   const termsByVariant = new Map<number, string[]>();
   for (const { term, variantOrdinal } of memorySemanticLexicalTermVariants(
     plan,
@@ -5015,7 +5043,8 @@ type RoundSegmentSelection = Readonly<{ itemId: string; segmentId: string }>;
 function segmentRoundExpansionSql(
   snapshot: MemoryLocalRetrievalSnapshot,
   plan: MemoryRetrievalPlan,
-  selections: readonly RoundSegmentSelection[]
+  selections: readonly RoundSegmentSelection[],
+  userOnly = false
 ): Prisma.Sql {
   const userSpanJoin = Prisma.sql`
       LEFT JOIN LATERAL (
@@ -5097,12 +5126,14 @@ function segmentRoundExpansionSql(
       AND (segment."contextualKeyState" <> 'GENERATED'
         OR current_round."contextualKeyState" = 'GENERATED')
     INNER JOIN LATERAL (
-      SELECT array_agg(round_message."messageId" ORDER BY round_message."ordinal")
+      SELECT array_agg(segment_message."messageId" ORDER BY segment_message."ordinal")
         AS "sourceMessageIds"
-      FROM "MemoryRecallRoundMessage" AS round_message
-      WHERE round_message."userId" = current_round."userId"
-        AND round_message."chatId" = current_round."chatId"
-        AND round_message."roundId" = current_round."id"
+      FROM "MemoryRecallRoundSegmentMessage" AS segment_message
+      WHERE segment_message."userId" = segment."userId"
+        AND segment_message."chatId" = segment."chatId"
+        AND segment_message."roundId" = segment."roundId"
+        AND segment_message."segmentId" = segment."id"
+        ${userOnly ? Prisma.sql`AND segment_message."role" = 'user'` : Prisma.empty}
       HAVING COUNT(*) BETWEEN 1 AND ${MEMORY_RETRIEVAL_MAX_EXPANSION_SOURCE_MESSAGES}
     ) AS provenance ON TRUE
     ${userSpanJoin}
@@ -5838,8 +5869,8 @@ function validDirectFactPlan(plan: MemoryRetrievalPlan): boolean {
   return validPlan(plan) &&
     plan.mode === "TARGETED_CURRENT" &&
     plan.temporalIntent === "ANY" &&
-    plan.filters.sourceKinds.length === 1 &&
-    plan.filters.sourceKinds[0] === "FACT" &&
+    plan.filters.sourceKinds.includes("FACT") &&
+    plan.filters.sourceKinds.every((kind) => kind === "FACT" || kind === "EVENT") &&
     plan.filters.asOf === null &&
     plan.filters.from === null &&
     plan.filters.to === null &&
@@ -6219,10 +6250,14 @@ export function createPrismaLocalMemoryRetrievalRepository(
         )));
       }
       if (roundSelections.userSegments.length > 0) {
+        // Containment needs the provenance of the rendered user excerpt, not
+        // messages omitted from it. Canonical source/dependency fences still
+        // validate the full segment before this projection.
         queries.push(canonicalRead<UserSegmentExpandedRow>(segmentRoundExpansionSql(
           snapshot,
           plan,
-          roundSelections.userSegments
+          roundSelections.userSegments,
+          true
         )).then((rows) => rows.flatMap((row) => {
           const projected = projectUserTestimonyExpandedRow(row);
           return projected ? [projected] : [];

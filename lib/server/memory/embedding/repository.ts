@@ -16,7 +16,7 @@ import {
   normalizeMemorySearchText
 } from "../persistence/lexical";
 import {
-  memoryRedactionHasMeaningfulRemainder,
+  memoryRedactionHasSourceText,
   redactMemorySecrets
 } from "../explicit/safety";
 import {
@@ -252,7 +252,7 @@ async function loadFactTarget(
   const current = rows[0];
   if (!current) return null;
   const redaction = redactMemorySecrets(current.versionDisplayText);
-  if (redaction.containsSecret && !memoryRedactionHasMeaningfulRemainder(
+  if (redaction.containsSecret && !memoryRedactionHasSourceText(
     current.versionDisplayText,
     redaction
   )) return null;

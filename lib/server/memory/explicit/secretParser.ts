@@ -155,61 +155,7 @@ const MEMORY_SECRET_POLICY = Object.freeze({
   placeholder: string;
 }>>>);
 
-const NON_MEANINGFUL_REDACTION_LABELS = new Set([
-  "api",
-  "card",
-  "code",
-  "credential",
-  "credentials",
-  "is",
-  "key",
-  "my",
-  "password",
-  "private",
-  "recovery",
-  "secret",
-  "the",
-  "token",
-  "карта",
-  "ключ",
-  "код",
-  "мой",
-  "моя",
-  "пароль",
-  "секрет",
-  "токен"
-]);
-
-const MEMORY_MUTATION_WRAPPER_WORDS = new Set([
-  ...NON_MEANINGFUL_REDACTION_LABELS,
-  "across",
-  "all",
-  "chat",
-  "chats",
-  "conversation",
-  "conversations",
-  "for",
-  "future",
-  "in",
-  "keep",
-  "please",
-  "remember",
-  "save",
-  "store",
-  "use",
-  "будущих",
-  "будущее",
-  "в",
-  "все",
-  "диалогах",
-  "диалоги",
-  "запомни",
-  "пожалуйста",
-  "сохрани",
-  "храни"
-]);
-
-const MEMORY_REDACTION_PLACEHOLDER_PATTERN = /\[REDACTED:[A-Z_]+\]/gu;
+const MEMORY_REDACTION_PLACEHOLDER_PATTERN = /\[REDACTED(?::[A-Z_]+|_SECRET)\]/gu;
 
 const ASCII_DIGITS = "0123456789";
 const ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -672,10 +618,9 @@ export function redactMemorySecrets(value: string): MemorySecretRedactionResult 
   };
 }
 
-/** True when copied source characters retain information beyond a label for
- * the removed value. Placeholders never make a secret-only projection
- * eligible on their own. */
-export function memoryRedactionHasMeaningfulRemainder(
+/** Whether exact copied source retains letters or numbers after redaction.
+ * This is a structural check, not a judgment of meaning or usefulness. */
+export function memoryRedactionHasSourceText(
   value: string,
   result: MemorySecretRedactionResult = redactMemorySecrets(value)
 ): boolean {
@@ -683,17 +628,18 @@ export function memoryRedactionHasMeaningfulRemainder(
     .filter((entry) => entry.kind === "SOURCE")
     .map((entry) => value.slice(entry.sourceStart, entry.sourceEnd))
     .join(" ");
-  const tokens = retained.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  return tokens.some((token) => !NON_MEANINGFUL_REDACTION_LABELS.has(token));
+  return memoryProjectionHasSourceText(retained);
 }
 
-/** Determines whether an already-redacted projection still carries content
- * beyond a secret label or Memory-command wrapper. */
-export function memoryProjectionHasMeaningfulText(value: string): boolean {
-  const tokens = value.replace(MEMORY_REDACTION_PLACEHOLDER_PATTERN, " ")
-    .toLowerCase()
-    .match(/[\p{L}\p{N}]+/gu) ?? [];
-  return tokens.some((token) => !MEMORY_MUTATION_WRAPPER_WORDS.has(token));
+/** Literal markers carry no source text, including when supplied as input. */
+export function memoryProjectionHasSourceText(value: string): boolean {
+  return /[\p{L}\p{N}]/u.test(
+    value.replace(MEMORY_REDACTION_PLACEHOLDER_PATTERN, " ")
+  );
+}
+
+export function memoryProjectionContainsRedaction(value: string): boolean {
+  return value.search(MEMORY_REDACTION_PLACEHOLDER_PATTERN) !== -1;
 }
 
 export function parseMemorySecret(value: string): MemorySecretParseResult {

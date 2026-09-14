@@ -509,7 +509,7 @@ describe("local Memory retrieval repository", () => {
     expect(expansionSql).toContain('segment_message."role" = \'user\'');
     expect(expansionSql).toContain('provenance."sourceMessageIds"');
     expect(expansionSql).toContain(
-      'array_agg(round_message."messageId" ORDER BY round_message."ordinal")'
+      'array_agg(segment_message."messageId" ORDER BY segment_message."ordinal")'
     );
   });
 
@@ -765,6 +765,56 @@ describe("local Memory retrieval repository", () => {
       .toBe(true);
     expect(terms.length).toBeGreaterThan(2);
     expect(terms.length).toBeLessThanOrEqual(64);
+  });
+
+  it.each([
+    ["Where is Zorula located?", "zorula"],
+    ["Где находится Ветрино?", "ветрино"]
+  ])("preserves late search terms after a long preamble: %s", (question, anchor) => {
+    const preamble = Array.from({ length: 64 }, (_, index) => `background${index}`).join(" ");
+    const plan = planMemoryRetrieval({ currentUserText: `${preamble}\n${question}`, now });
+    for (const kind of ["UNICODE", "NGRAM"] as const) {
+      const terms = memorySemanticLexicalTerms(plan, kind);
+      expect(terms).toContain(anchor);
+      expect(terms.some((term) => term.startsWith("background"))).toBe(true);
+      expect(terms.length).toBeLessThanOrEqual(kind === "UNICODE" ? 64 : 8);
+      expect(new Set(terms).size).toBe(terms.length);
+    }
+  });
+
+  it("sends the ending of an oversized query within the existing provider budgets", async () => {
+    const requests: MemoryLexicalSearchRequest[] = [];
+    const providerForLane: MemoryLexicalProviderForLane = (lane) => ({
+      backend: "POSTGRES",
+      async search(request) {
+        requests.push(request);
+        const ngram = lane.endsWith("_NGRAM");
+        return { candidates: [], evidence: {
+          backend: "POSTGRES", durationMs: 1, failureCode: null, fallbackUsed: ngram,
+          lane, matchMode: ngram ? "NGRAM" : "UNICODE", opaqueId: null,
+          projectionCaughtUp: true, projectionEventLag: null, projectionRevisionLag: null,
+          projectionVisibleAgeMs: null, rawCandidateCount: 0,
+          requestedLimit: request.finalLimit, timedOut: false
+        } };
+      }
+    });
+    const preamble = Array.from({ length: 320 }, (_, index) => `w${index}`).join(" ");
+    const currentUserText = `${preamble} Zorula location`;
+    const mocked = mockClient(snapshotRow({ referenceChatHistory: false }));
+    const result = await createPrismaLocalMemoryRetrievalRepository(mocked.client, {
+      lexicalCandidateProviderForLane: providerForLane
+    }).retrieve({ assistantId: null, chatId: "chat-1", now,
+      plan: planMemoryRetrieval({ currentUserText, now }), userId: "user-1" });
+    expect(result.lexicalState).toBe("READY");
+    expect(requests.length).toBeGreaterThan(0);
+    for (const request of requests) {
+      expect(request.variants.length).toBeLessThanOrEqual(4);
+      expect(request.variants[0]?.normalizedText).toBe(currentUserText.toLowerCase());
+      expect(request.variants.flatMap((variant) => variant.logicalTerms)
+        .map(({ value }) => value)).toContain("zorula");
+      expect(request.variants.reduce((count, variant) => count + variant.logicalTerms.length, 0))
+        .toBeLessThanOrEqual(64);
+    }
   });
 
   it("gives every bounded aggregation source one pass before preserving repeat order", () => {
@@ -2551,7 +2601,10 @@ describe("local Memory retrieval repository", () => {
       entry.failureCode === "memory_read_statement_timeout" && entry.timedOut)).toBe(true);
   });
 
-  it("admits a run-independent snapshot only for the fixed global facts plan", async () => {
+  it.each([
+    { sourceKinds: ["FACT"] as const },
+    { sourceKinds: ["EVENT", "FACT"] as const }
+  ])("admits a run-independent snapshot only for global fact versions: $sourceKinds", async ({ sourceKinds }) => {
     const mocked = mockClient(snapshotRow({
       chatFolderId: null,
       chatId: null,
@@ -2561,7 +2614,7 @@ describe("local Memory retrieval repository", () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
     const plan = planMemoryRetrieval({
       currentUserText: "What should I call you?",
-      filters: { sourceKinds: ["FACT"] },
+      filters: { sourceKinds },
       mode: "TARGETED_CURRENT",
       now,
       temporalIntent: "ANY"

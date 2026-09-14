@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  MEMORY_ACTION_CONTROL_JSON_SCHEMA,
   MEMORY_ACTION_INTENT_MAX_TARGET_SELECTION_CALLS,
+  decodeMemoryActionControlDecision,
   decodeMemoryActionIntent,
   memoryActionIntentCurrentTurnAuthorizesMutation,
   memoryActionIntentNeedsTargetSelection,
@@ -42,6 +44,84 @@ function intent(overrides: Record<string, unknown> = {}) {
     ...overrides
   };
 }
+
+function command(overrides: Record<string, unknown> = {}) {
+  return {
+    action: "SAVE",
+    answerRequested: false,
+    category: "preferences",
+    confidenceBand: "HIGH",
+    patternExclusionRequested: false,
+    reasonCode: "save_request",
+    referencedMemoryRef: null,
+    replacementStatement: null,
+    responsePreference: false,
+    sensitivity: "NORMAL",
+    statement: "I prefer tea.",
+    targetQuery: null,
+    thisChatOnly: false,
+    ...overrides
+  };
+}
+
+describe("Fresh Memory action control contract", () => {
+  it("requires exactly the compact provider fields", () => {
+    expect(Object.keys(MEMORY_ACTION_CONTROL_JSON_SCHEMA.properties).sort())
+      .toEqual([...MEMORY_ACTION_CONTROL_JSON_SCHEMA.required].sort());
+    const source = "Remember that I prefer tea.";
+    expect(decodeMemoryActionControlDecision(command(), source)).toMatchObject({
+      ok: true,
+      value: { action: "SAVE", statement: "I prefer tea.", queryText: null }
+    });
+    for (const key of MEMORY_ACTION_CONTROL_JSON_SCHEMA.required) {
+      const missing: Record<string, unknown> = command();
+      delete missing[key];
+      expect(decodeMemoryActionControlDecision(missing, source)).toMatchObject({ ok: false });
+    }
+    expect(decodeMemoryActionControlDecision(command({ queryText: "generated query" }), source))
+      .toMatchObject({ ok: false });
+    expect(decodeMemoryActionControlDecision(intent(), source)).toMatchObject({ ok: false });
+    expect(decodeMemoryActionIntent(intent())).toMatchObject({ ok: true });
+  });
+
+  it.each([
+    { statement: null },
+    { action: "UPDATE", statement: null, replacementStatement: null },
+    { action: "SEARCH", statement: null, targetQuery: null },
+    { action: "RESET", statement: "I prefer tea." },
+    { action: "LIST", statement: null, answerRequested: true },
+    { action: "SEARCH", statement: null, targetQuery: "drink", answerRequested: true },
+    { statement: "x".repeat(2_001) }
+  ])("retains action payload validation for %j", (invalid) => {
+    expect(decodeMemoryActionControlDecision(command(invalid), "A current user turn."))
+      .toMatchObject({ ok: false });
+  });
+
+  it("does not turn a source-only or malformed packet into a command", () => {
+    for (const source of ["", "bad\u0000source", "x".repeat(2_001)]) {
+      expect(decodeMemoryActionControlDecision(command(), source)).toMatchObject({ ok: false });
+    }
+    expect(decodeMemoryActionControlDecision({ statement: "I prefer tea." }, "Remember this."))
+      .toMatchObject({ ok: false });
+  });
+
+  it("keeps ordinary retrieval eligible and bounds only its compatibility query", () => {
+    const source = "x" + "😀".repeat(300);
+    const decoded = decodeMemoryActionControlDecision(command({
+      action: "NONE", statement: null, patternExclusionRequested: true
+    }), source);
+    expect(decoded).toMatchObject({
+      ok: true,
+      value: {
+        memoryUseful: true,
+        pastChatsUseful: true,
+        applyResponsePreferences: true,
+        patternExclusionRequested: true,
+        queryText: "x" + "😀".repeat(249)
+      }
+    });
+  });
+});
 
 describe("MemoryActionIntent strict contract", () => {
   it("accepts a complete nullable control decision", () => {

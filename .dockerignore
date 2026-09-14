@@ -11,6 +11,7 @@ playwright-report
 test-results
 benchmarks/**/.data
 benchmarks/**/.upstream
+benchmarks/**/.venv
 benchmarks/**/results
 benchmarks/**/.download.*
 agent_docs

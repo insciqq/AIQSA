@@ -277,6 +277,51 @@ describe("relative-rank Memory fusion", () => {
     });
   });
 
+  it("fuses the same fact when only the entity lane reports a matched role", () => {
+    const fact = candidate("shared-fact", "FACT_LEXICAL_UNICODE", 1);
+    const ranked = fuseMemoryRetrievalCandidates(plan, [{
+      lane: "FACT_ENTITY",
+      candidates: [{
+        ...fact,
+        lane: "FACT_ENTITY",
+        metadata: { ...fact.metadata, matchedEntityRole: "SUBJECT" }
+      }]
+    }, {
+      lane: "FACT_LEXICAL_UNICODE",
+      candidates: [fact]
+    }, {
+      lane: "FACT_VECTOR",
+      candidates: [{ ...fact, lane: "FACT_VECTOR" }]
+    }], now);
+
+    expect(ranked.map(({ itemId }) => itemId)).toEqual(["shared-fact"]);
+    expect(ranked[0]?.laneRanks).toEqual({
+      FACT_ENTITY: 1, FACT_LEXICAL_UNICODE: 1, FACT_VECTOR: 1
+    });
+    expect(ranked[0]?.rrfScore).toBeCloseTo(3.2 / 61);
+  });
+
+  it.each([
+    { canonicalKey: "different-key" },
+    { factId: "different-fact" },
+    { sourceChatId: "different-chat" },
+    { sourceAuthority: "EXPLICIT" as const },
+    { sensitivityClass: "SENSITIVE" as const }
+  ])("still rejects conflicting evidence metadata across entity and text lanes: %j", (change) => {
+    const fact = candidate("shared-fact", "FACT_LEXICAL_UNICODE", 1);
+    expect(fuseMemoryRetrievalCandidates(plan, [{
+      lane: "FACT_ENTITY",
+      candidates: [{
+        ...fact,
+        lane: "FACT_ENTITY",
+        metadata: { ...fact.metadata, matchedEntityRole: "SUBJECT", ...change }
+      }]
+    }, {
+      lane: "FACT_LEXICAL_UNICODE",
+      candidates: [fact]
+    }], now)).toEqual([]);
+  });
+
   it("uses versioned lane weights and authority only as deterministic tie-breakers", () => {
     const weighted = fuseMemoryRetrievalCandidates(plan, [{
       lane: "FACT_ENTITY",

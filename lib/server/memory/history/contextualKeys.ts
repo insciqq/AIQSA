@@ -17,6 +17,12 @@ import {
 import { projectMemoryHistorySafeText } from "./safety";
 import { normalizeMemoryLanguageCode } from "./language";
 import {
+  buildMemoryContextualGroundingRequest,
+  decodeMemoryContextualGrounding,
+  MemoryContextualGroundingError,
+  MEMORY_CONTEXTUAL_GROUNDING_VERSIONS
+} from "./contextualGrounding";
+import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
   memoryContextualKeyEligibleRounds,
   memoryContextualRoundInputs,
@@ -342,6 +348,10 @@ export function decodeMemoryContextualKeyOutputs(
     ]);
     const statements = candidate.statements as Array<Record<string, unknown>>;
     if (statements.some((statement) =>
+      providerSafeText((statement.text as string).trim()) === null)) {
+      return outputError("SAFETY_REDACTED_OR_REJECTED");
+    }
+    if (statements.some((statement) =>
       !Array.isArray(statement.source_refs) || statement.source_refs.length < 1 ||
       statement.source_refs.length > 3 ||
       new Set(statement.source_refs).size !== statement.source_refs.length ||
@@ -432,15 +442,54 @@ export function createPrismaMemoryContextualKeyGenerator(
             userId: generateOptions.userId,
             versions: MEMORY_CONTEXTUAL_KEY_VERSIONS
           });
-          outputs.push(...governed.value);
           executions.push({
             acceptedOutputHash: governed.acceptedOutputHash,
             bindingId: governed.bindingId
           });
+          const review = buildMemoryContextualGroundingRequest(batch, governed.value);
+          if (review.request === null) {
+            outputs.push(...governed.value);
+            continue;
+          }
+          const reviewOrdinal = ordinal;
+          ordinal += 1;
+          providerRequests += 1;
+          const grounded = await executeGovernedMemoryStructuredOutput({
+            authority,
+            client,
+            decode: (value) => decodeMemoryContextualGrounding(
+              value, review.checks, batch, governed.value
+            ),
+            inputHash: memoryExecutionSha256({
+              domain: "aiqsa.memory.contextual-grounding-input",
+              inputs: batch.map((item) => item.input),
+              outputs: governed.value,
+              versions: MEMORY_CONTEXTUAL_GROUNDING_VERSIONS
+            }),
+            ordinal: reviewOrdinal,
+            owner: { memoryJobId: generateOptions.jobId, type: "JOB" },
+            provider,
+            request: review.request,
+            role: "MEMORY_HISTORY_CLASSIFY",
+            signal: generateOptions.signal,
+            userId: generateOptions.userId,
+            versions: MEMORY_CONTEXTUAL_GROUNDING_VERSIONS
+          });
+          executions.push({
+            acceptedOutputHash: grounded.acceptedOutputHash,
+            bindingId: grounded.bindingId
+          });
+          outputs.push(...grounded.value.outputs);
+          fallbackRoundIds.push(...grounded.value.rejectedRoundIds);
+          fallbackDiagnostics.push(...grounded.value.rejectedRoundIds.map((roundId) => ({
+            reason: "SEMANTICALLY_UNSUPPORTED" as const,
+            roundId
+          })));
         } catch (error) {
           if (generateOptions.signal.aborted) throw generateOptions.signal.reason;
           fallbackRoundIds.push(...batch.map((item) => item.roundId));
-          const reason = error instanceof MemoryContextualKeyOutputError
+          const reason = error instanceof MemoryContextualKeyOutputError ||
+            error instanceof MemoryContextualGroundingError
             ? error.reason
             : error instanceof Error &&
                 error.message === "memory_contextual_key_output_invalid"

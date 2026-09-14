@@ -54,7 +54,6 @@ import {
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
 } from "../admissionDeadline";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
-import { deduplicateContainedHistory } from "../../../domain/memory/retrieval/historyContainment";
 import type { MemoryExecutionAuthorityDependencies } from "../execution";
 import { memorySha256 } from "../persistence/lexical";
 import { redactMemorySecrets } from "../explicit/safety";
@@ -1734,7 +1733,9 @@ export function memoryRelevanceCandidates(
     `${candidate.itemType}:${candidate.itemId}`,
     candidate
   ]));
-  const projected = deduplicateContainedHistory(ranked, expanded).flatMap((candidate) => {
+  // Keep compact alternatives until packing can prove that their containing
+  // projections fit. Relevance preparation has no final context budget.
+  const projected = ranked.flatMap((candidate) => {
     const projection = projections.get(`${candidate.itemType}:${candidate.itemId}`);
     if (!projection) return [];
     const sourceKind = candidate.itemType === "TOOL_EVENT"
@@ -2364,7 +2365,7 @@ export function createMemoryRunRetrievalService(
         querySafety.safeText
       );
       const actionControlRequested = !deterministicRead ||
-        actionAdmission.state === "EXPLICIT_CANDIDATE";
+        actionAdmission.state !== "ORDINARY";
       const provisionalPlan = planMemoryRetrieval({
         currentUserText: querySafety.safeText,
         now: input.now,
@@ -2384,9 +2385,11 @@ export function createMemoryRunRetrievalService(
           utilityEgressMode: "LOCAL_ONLY"
         });
       }
+      // Classification and its reuse proof bind the exact safe source turn;
+      // search normalization can change an explicitly supplied literal value.
       const controlReuseScopeHash = memoryControlReuseScopeHash(
         input,
-        provisionalPlan.originalSanitizedQuery
+        querySafety.safeText
       );
       const cachedControl = actionControlRequested
         ? controlCache.control
@@ -2595,7 +2598,7 @@ export function createMemoryRunRetrievalService(
         }
         const context = memoryControlContext(
           input,
-          provisionalPlan.originalSanitizedQuery,
+          querySafety.safeText,
           refs
         );
         return timings.measure("controlMs", () =>
@@ -2678,7 +2681,7 @@ export function createMemoryRunRetrievalService(
       ]);
       const controlContext = memoryControlContext(
         input,
-        provisionalPlan.originalSanitizedQuery,
+        querySafety.safeText,
         controlRefs
       );
       if (actionControlRequested && controlCache.control === undefined) {
