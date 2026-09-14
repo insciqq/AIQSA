@@ -38,4 +38,15 @@ export async function failWorkspaceExportsForLostDisk(
       OR: [{ lastExportErrorCode: null }, { lastExportErrorCode: { notIn: [...WORKSPACE_PERMANENT_EXPORT_ERROR_CODES] } }]
     }
   });
+  const seeds = await tx.chatContinuationWorkspaceSeed.findMany({
+    select: { id: true, storageKey: true },
+    where: { status: "RESTORED", ...(sessionId ? { newChat: { workspaceSession: { id: sessionId } } } : {}) }
+  });
+  for (const seed of seeds) {
+    await tx.chatContinuationWorkspaceSeed.update({ where: { id: seed.id }, data: {
+      status: "ABANDONED", failureCode: "workspace_restored_disk_lost", leaseToken: null, leaseExpiresAt: null
+    } });
+    if (seed.storageKey) await tx.attachmentDeletionJob.upsert({ where: { storageKey: seed.storageKey },
+      create: { storageKey: seed.storageKey }, update: {} });
+  }
 }

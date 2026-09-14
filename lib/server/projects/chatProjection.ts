@@ -11,6 +11,7 @@ import {
 
 export const projectChatSelect = {
   continuationSource: { select: { id: true } },
+  receivedWorkspaceSeeds: { select: { status: true, failureCode: true }, take: 1 },
   _count: {
     select: {
       messages: true,
@@ -96,7 +97,9 @@ export function projectChatWire(
       enabled: chat.workspaceEnabled,
       modelSupportsTools: defaults.defaultModelId !== null &&
         authority.toolCallingModelIds.has(defaults.defaultModelId),
-      session: chat.workspaceSession
+      session: chat.workspaceSession,
+      continuationSeedStatus: chat.receivedWorkspaceSeeds?.[0]?.status ?? null,
+      continuationSeedFailureCode: chat.receivedWorkspaceSeeds?.[0]?.failureCode ?? null
     })
   };
 }

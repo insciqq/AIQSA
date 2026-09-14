@@ -10,6 +10,15 @@ import { createChatContinuationHandler } from "./continuationHandlers";
 import { createPrismaChatRepository } from "./prismaRepository";
 import { scheduleTemporaryChatDeletion, temporaryRetentionDeadline } from "../memory/temporaryRetention";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
+import { getWorkspaceConfig } from "../workspace/config";
+import { DeterministicWorkspaceRuntime } from "../workspace/deterministicRuntime";
+import { createPrismaWorkspaceCoordinatorRepository } from "../workspace/coordinator";
+import { WorkspaceRuntimeError } from "../workspace/runtime";
+import { createMemoryStorageAdapter } from "@/tests/support/storage";
+import { fenceDeterministicWorkspaceRuntime } from "../workspace/fencedRuntime";
+import { runWorkspaceMaintenance } from "../workspace/cleanup";
+import { failWorkspaceExportsForLostDisk } from "../workspace/sessionOperation";
+import { createPrismaRetentionRepository } from "../retention/prune";
 
 afterAll(() => prisma.$disconnect());
 
@@ -42,6 +51,7 @@ async function fixture(run: (data: { userId: string; chatId: string; leafId: str
     await prisma.chat.update({ where: { id: chat.id }, data: { activeLeafMessageId: leafId } });
     await run({ userId, chatId: chat.id, leafId, projectId });
   } finally {
+    await prisma.workspaceSession.deleteMany({ where: { chat: { OR: [{ userId }, ...(projectId ? [{ projectId }] : [])] } } });
     if (projectId) await prisma.project.deleteMany({ where: { id: projectId } });
     // Disposable fixtures obey the temporary deletion authority used by its normal lifecycle lane.
     if (mode === "TEMPORARY") {
@@ -58,8 +68,8 @@ async function fixture(run: (data: { userId: string; chatId: string; leafId: str
   }
 }
 
-function service() {
-  const repository = createChatContinuationRepository(prisma);
+function service(deps: Parameters<typeof createChatContinuationRepository>[1] = {}) {
+  const repository = createChatContinuationRepository(prisma, deps);
   const execute = vi.fn<Parameters<typeof createChatContinuationService>[0]["execute"]>(async (_role, _request, options) => {
     options.onUsage?.({ inputTokens: 50, outputTokens: 12, reasoningTokens: 0, totalTokens: 62 });
     return { summary: "## Goal\nRelease a small feature.\n## Decisions\nKeep find_tools unchanged." };
@@ -71,6 +81,150 @@ function service() {
         snapshot: { providerFamily: "fake", model: { upstreamModelId: "fake-summary" } } } as unknown as ProviderAdmissionRole })
   }) };
 }
+
+async function workspaceSource(chatId: string) {
+  const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "1", NODE_ENV: "test" });
+  const runtime = new DeterministicWorkspaceRuntime(config);
+  const storage = createMemoryStorageAdapter();
+  await prisma.chat.update({ where: { id: chatId }, data: { workspaceEnabled: true } });
+  const sessionId = `ws_${randomUUID().replaceAll("-", "").padEnd(40, "0")}`;
+  const sandboxName = `aiqsa-ws-${sessionId}`;
+  const disk = await runtime.ensureSession({ ...config, sessionId, sandboxName, runtimeSandboxId: null, internetEnabled: false });
+  const session = await prisma.workspaceSession.create({ data: { id: sessionId, chatId, sandboxName,
+    imageRef: config.imageRef, internetEnabled: false, policyRevision: 1, runtimeSandboxId: disk.runtimeSandboxId,
+    state: "STOPPED", stoppedAt: new Date(), expiresAt: new Date(Date.now() + 3_600_000) } });
+  await runtime.callBoundTool({ sessionId, runtimeSandboxId: disk.runtimeSandboxId, modelRunId: "fixture", modelRunToolCallId: "write",
+    originalName: "sandbox_fs_write", arguments: { path: "/workspace/project/persisted.txt", content: "private file bytes" } });
+  return { runtime: fenceDeterministicWorkspaceRuntime(runtime), storage, session, config };
+}
+
+it("releases a cancellation before capture and ignores a late failure from an older attempt", () => fixture(async ({ chatId, userId, leafId }) => {
+  const w = await workspaceSource(chatId);
+  const f = service(w);
+  const source = await f.repository.loadSource({ chatId, userId, expectedLeafMessageId: leafId, requestId: randomUUID() });
+  const first = await f.repository.claim(source, randomUUID());
+  if (first.kind !== "claimed") throw new Error("claim missing");
+  await f.repository.fail(first.claim, "chat_summary_cancelled");
+  expect(await prisma.workspaceSession.findUnique({ where: { id: w.session.id } })).toMatchObject({ operationOwner: null });
+  const next = await f.repository.claim(source, randomUUID());
+  if (next.kind !== "claimed") throw new Error("claim missing");
+  await f.repository.fail(first.claim, "chat_summary_failed");
+  await expect(f.repository.captureWorkspace!(source, first.claim)).rejects.toMatchObject({ code: "chat_changed" });
+  expect(await prisma.chatContinuationWorkspaceSeed.findUnique({ where: { continuationId: next.claim.id } })).toMatchObject({ status: "CAPTURING" });
+  await f.repository.fail(next.claim, "chat_summary_cancelled");
+}));
+
+it("cleans an archive when a process dies between capture and destination creation", () => fixture(async ({ chatId, userId, leafId }) => {
+  const w = await workspaceSource(chatId);
+  const f = service(w);
+  const source = await f.repository.loadSource({ chatId, userId, expectedLeafMessageId: leafId, requestId: randomUUID() });
+  const claim = await f.repository.claim(source, randomUUID());
+  if (claim.kind !== "claimed") throw new Error("claim missing");
+  await f.repository.captureWorkspace!(source, claim.claim);
+  const seed = await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { continuationId: claim.claim.id } });
+  expect(seed.status).toBe("READY");
+  const stale = new Date(Date.now() - 240_000);
+  await prisma.chatContinuation.update({ where: { id: claim.claim.id }, data: { updatedAt: stale } });
+  await prisma.chatContinuationWorkspaceSeed.update({ where: { id: seed.id }, data: { updatedAt: stale } });
+  await runWorkspaceMaintenance({ config: w.config, prisma, runtime: w.runtime });
+  expect(await prisma.chatContinuationWorkspaceSeed.findUnique({ where: { id: seed.id } })).toMatchObject({ status: "ABANDONED" });
+  expect(await prisma.chatContinuation.findUnique({ where: { id: claim.claim.id } })).toMatchObject({ status: "failed" });
+  expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: seed.storageKey! } })).toBe(1);
+  await prisma.chatContinuationWorkspaceSeed.update({ where: { id: seed.id }, data: { storageKey: null, checksum: null, byteSize: null } });
+  await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: seed.storageKey! } });
+}));
+
+it("retries an interrupted restore, fences stale completion and never replays a settled seed", () => fixture(async ({ chatId, userId, leafId }) => {
+  const w = await workspaceSource(chatId);
+  const result = await service(w).continueChat({ chatId, userId, expectedLeafMessageId: leafId, requestId: randomUUID() });
+  if (result.status !== "complete") throw new Error("summary missing");
+  const session = await prisma.workspaceSession.create({ data: {
+    chatId: result.chatId, sandboxName: `aiqsa-ws-${randomUUID()}`, imageRef: w.session.imageRef, internetEnabled: false,
+    policyRevision: 1, expiresAt: new Date(Date.now() + 3_600_000), operationOwner: "run:destination", version: 1
+  } });
+  const repository = createPrismaWorkspaceCoordinatorRepository(prisma);
+  const input = { chatId: result.chatId, sessionId: session.id, operation: { owner: "run:destination", generation: 1 } };
+  const first = await repository.claimContinuationSeed!(input);
+  expect(first).not.toBeNull();
+  await expect(repository.claimContinuationSeed!(input)).rejects.toMatchObject({ code: "workspace_archive_restore_failed" });
+  await prisma.chatContinuationWorkspaceSeed.update({ where: { id: first!.id }, data: { leaseExpiresAt: new Date(Date.now() - 1) } });
+  const retry = await repository.claimContinuationSeed!(input);
+  expect(retry?.token).not.toBe(first!.token);
+  expect(await repository.settleContinuationSeed!({ id: first!.id, token: first!.token, status: "RESTORED" })).toBe(false);
+  expect(await repository.settleContinuationSeed!({ id: retry!.id, token: retry!.token, status: "RESTORED" })).toBe(true);
+  expect(await repository.claimContinuationSeed!(input)).toBeNull();
+  await prisma.$transaction((tx) => failWorkspaceExportsForLostDisk(tx, session.id));
+  expect(await prisma.chatContinuationWorkspaceSeed.findUnique({ where: { id: retry!.id } })).toMatchObject({
+    status: "ABANDONED", failureCode: "workspace_restored_disk_lost"
+  });
+  expect(await repository.claimContinuationSeed!(input)).toBeNull();
+}));
+
+it.each(["workspace_runtime_unavailable", "workspace_archive_limit_exceeded", "workspace_archive_invalid"] as const)(
+  "continues after %s and never tries to restore a failed capture", (code) => fixture(async ({ chatId, userId, leafId }) => {
+    const w = await workspaceSource(chatId);
+    vi.spyOn(w.runtime, "createProjectArchive").mockRejectedValueOnce(new WorkspaceRuntimeError(code));
+    const result = await service(w).continueChat({ chatId, userId, expectedLeafMessageId: leafId, requestId: randomUUID() });
+    if (result.status !== "complete") throw new Error("summary missing");
+    const seed = await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { newChatId: result.chatId } });
+    expect(seed).toMatchObject({ status: "FAILED", failureCode: code, storageKey: null });
+    expect(await prisma.workspaceSession.findUnique({ where: { id: w.session.id } })).toMatchObject({ operationOwner: null });
+    const destination = await prisma.workspaceSession.create({ data: {
+      chatId: result.chatId, sandboxName: `aiqsa-ws-${randomUUID()}`, imageRef: w.session.imageRef, internetEnabled: false,
+      policyRevision: 1, expiresAt: new Date(Date.now() + 3_600_000), operationOwner: "run:destination", version: 1
+    } });
+    await expect(createPrismaWorkspaceCoordinatorRepository(prisma).claimContinuationSeed!({
+      chatId: result.chatId, sessionId: destination.id, operation: { owner: "run:destination", generation: 1 }
+    })).resolves.toBeNull();
+  })
+);
+
+it("captures once, transfers ownership, and preserves the seed when its source is deleted", () => fixture(async ({ chatId, userId, leafId }) => {
+  const w = await workspaceSource(chatId);
+  const capture = vi.spyOn(w.runtime, "createProjectArchive");
+  const f = service(w);
+  const request = { chatId, userId, expectedLeafMessageId: leafId, requestId: randomUUID() };
+  const result = await f.continueChat(request);
+  if (result.status !== "complete") throw new Error("summary missing");
+  expect(await f.continueChat(request)).toEqual(result);
+  expect(capture).toHaveBeenCalledOnce();
+  const seed = await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { newChatId: result.chatId } });
+  expect(seed).toMatchObject({ status: "TRANSFERRED", checksum: expect.any(String), byteSize: expect.any(Number) });
+  expect(w.storage.objects.has(seed.storageKey!)).toBe(true);
+  const retention = createPrismaRetentionRepository(prisma);
+  const prematureDeletion = await prisma.attachmentDeletionJob.create({ data: { storageKey: seed.storageKey!, createdAt: new Date(0) } });
+  expect(await retention.findClaimableAttachmentDeletionJobIds({ claimableBefore: new Date(), limit: 1000 })).not.toContain(prematureDeletion.id);
+  await prisma.attachmentDeletionJob.delete({ where: { id: prematureDeletion.id } });
+  expect(f.execute.mock.calls[0]![1].userPrompt).not.toContain("private file bytes");
+  expect(await prisma.attachment.count({ where: { storageKey: seed.storageKey! } })).toBe(0);
+  await prisma.workspaceSession.delete({ where: { id: w.session.id } });
+  await prisma.chat.delete({ where: { id: chatId } });
+  expect(await prisma.chatContinuationWorkspaceSeed.findUnique({ where: { id: seed.id } })).toMatchObject({ sourceChatId: null, newChatId: result.chatId, status: "TRANSFERRED" });
+  expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: seed.storageKey! } })).toBe(0);
+  await prisma.chat.delete({ where: { id: result.chatId } });
+  expect(await prisma.chatContinuationWorkspaceSeed.findUnique({ where: { id: seed.id } })).toBeNull();
+  expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: seed.storageKey! } })).toBe(1);
+  const deletion = await prisma.attachmentDeletionJob.update({ where: { storageKey: seed.storageKey! }, data: { createdAt: new Date(0) } });
+  expect(await retention.findClaimableAttachmentDeletionJobIds({ claimableBefore: new Date(), limit: 1000 })).toContain(deletion.id);
+  await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: seed.storageKey! } });
+}));
+
+it.each(["PROJECT", "TEMPORARY"] as const)("cleans a transferred seed with its %s owner", async (mode) => {
+  let captured: { id: string; storageKey: string | null } | null = null;
+  await fixture(async ({ chatId, userId, leafId, projectId }) => {
+    const result = await service(await workspaceSource(chatId)).continueChat({ chatId, userId, expectedLeafMessageId: leafId, requestId: randomUUID() });
+    if (result.status !== "complete") throw new Error("summary missing");
+    expect(await prisma.chat.findUnique({ where: { id: result.chatId } })).toMatchObject({
+      projectId, workspaceEnabled: true, memoryMode: mode === "TEMPORARY" ? "TEMPORARY" : "EXCLUDED"
+    });
+    captured = await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { newChatId: result.chatId }, select: { id: true, storageKey: true } });
+  }, mode);
+  expect(captured).not.toBeNull();
+  const seed = captured as unknown as { id: string; storageKey: string };
+  expect(await prisma.chatContinuationWorkspaceSeed.findUnique({ where: { id: seed.id } })).toBeNull();
+  expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: seed.storageKey } })).toBe(1);
+  await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: seed.storageKey } });
+});
 
 it("serves one visible summary from the active branch, preserving source, scope, usage and authorized source navigation", () => fixture(async ({ userId, chatId, leafId }) => {
   const before = await prisma.chat.findUniqueOrThrow({ where: { id: chatId } });

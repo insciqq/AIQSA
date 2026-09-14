@@ -3,6 +3,20 @@ import { describe, expect, it, vi } from "vitest";
 import { ChatContextIndicatorV2 } from "./ChatContextIndicatorV2";
 
 describe("header context indicator", () => {
+  it.each([
+    [{ status: "pending" }, "files are waiting to be restored"],
+    [{ status: "ready" }, "files were restored in this chat"],
+    [{ status: "none" }, "had no Workspace project disk to copy"],
+    [{ status: "failed", reason: "timeout" }, "copy exceeded its time budget"],
+    [{ status: "failed", reason: "reset_consumed" }, "will not be restored again"],
+    [{ status: "failed", reason: "restored_disk_lost" }, "old copy will not be applied again"]
+  ] as const)("explains Workspace copy state %j", (continuationFiles, message) => {
+    render(<ChatContextIndicatorV2 stats={{ approximateInputTokens: 50, safeInputBudgetTokens: 1000, totalContextTokens: 2000 }} continuationFiles={continuationFiles} />);
+    fireEvent.click(screen.getByTestId("header-context-indicator"));
+    expect(screen.getByRole("dialog")).toHaveTextContent(message);
+    expect(screen.getByRole(continuationFiles.status === "failed" ? "alert" : "status")).toHaveTextContent(message);
+  });
+
   it("shows low fullness and keeps technical detail folded with keyboard dismissal", () => {
     render(<ChatContextIndicatorV2 stats={{
       approximateInputTokens: 4400, safeInputBudgetTokens: 10000, totalContextTokens: 12000,
@@ -40,7 +54,7 @@ describe("header context indicator", () => {
         provider: "fake", safetyMarginTokens: 1000, version: 1 }
     }} continuation={{ busy: false, error: null, suggested: true, onContinue, onDismiss: vi.fn(), onCancel: vi.fn() }} />);
     expect(screen.getByRole("dialog")).toHaveTextContent("4 earlier messages are still in this chat, but were omitted from the model request");
-    expect(screen.getByRole("dialog")).toHaveTextContent("Files and Workspace won’t be carried over");
+    expect(screen.getByRole("dialog")).toHaveTextContent("project files are copied into the new chat. Attachments are not carried over.");
     expect(onContinue).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Summarize and open new chat" }));
     expect(onContinue).toHaveBeenCalledTimes(1);

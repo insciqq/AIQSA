@@ -257,6 +257,7 @@ const lightweightMessageSelect = {
 const chatSummarySelect = {
   ...chatTitleMetadataSelect,
   continuationSource: { select: { id: true } },
+  receivedWorkspaceSeeds: { select: { status: true, failureCode: true }, take: 1 },
   _count: {
     select: {
       messages: true
@@ -757,7 +758,9 @@ function chatWorkspaceProjection(input: Readonly<{
     enabled: input.chat.workspaceEnabled,
     modelSupportsTools: input.modelSupportsTools ??
       workspaceModelSupportsTools(input.chat.defaultProviderModel),
-    session: input.chat.workspaceSession
+    session: input.chat.workspaceSession,
+    continuationSeedStatus: input.chat.receivedWorkspaceSeeds?.[0]?.status ?? null,
+    continuationSeedFailureCode: input.chat.receivedWorkspaceSeeds?.[0]?.failureCode ?? null
   });
 }
 
