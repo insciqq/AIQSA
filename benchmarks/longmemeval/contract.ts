@@ -38,6 +38,24 @@ export type LongMemEvalProfile = (typeof LONGMEMEVAL_PROFILES)[number];
 export type LongMemEvalSystemModelId =
   (typeof LONGMEMEVAL_SYSTEM_MODEL_IDS)[number];
 
+/** Retain transport diagnostics without copying URLs, bodies, or credentials. */
+export function longMemEvalRequestFailureCode(error: unknown): string {
+  const prefix = "longmemeval_run_request_failed";
+  if (!(error instanceof Error)) return `${prefix}:unknown`;
+  if (error.name === "TimeoutError") return `${prefix}:timeout`;
+  if (error.name === "AbortError") return `${prefix}:aborted`;
+  const cause = error.cause;
+  const code = cause && typeof cause === "object" && "code" in cause
+    ? cause.code
+    : null;
+  const allowed = ["ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT", "ENOTFOUND",
+    "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT"];
+  if (typeof code === "string" && allowed.includes(code)) {
+    return `${prefix}:${code.toLowerCase()}`;
+  }
+  return `${prefix}:${error.name === "TypeError" ? "type_error" : "unknown"}`;
+}
+
 /**
  * Runtime bindings used by the isolated paid qualification matrix.  These
  * are deliberately kept in the benchmark contract so a manifest, provider

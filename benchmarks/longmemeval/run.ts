@@ -1,3 +1,5 @@
+import { runtimeDatabaseUrl } from "./runtimeEnvironment";
+import { assertMemoryReadUtilityAudit, assertMemoryReadUtilityExecutions } from "./readUtilityAudit";
 import { createReadStream } from "node:fs";
 import {
   mkdir,
@@ -51,6 +53,8 @@ import {
 import { createPrismaAuthSessionStore } from "../../lib/server/auth/prismaSessions";
 import { createAuthSession } from "../../lib/server/auth/requestAuth";
 import { provisionActiveUser } from "../../lib/server/auth/provisioning";
+import { excludeBenchmarkQuestion } from "./queryIsolation";
+import { longMemEvalAnswerParams } from "./answerParams";
 import { defaultMemoryExecutionAuthority } from
   "../../lib/server/memory/execution/defaultAuthority";
 import { probeMemoryStructuredOutputAuthority } from
@@ -167,6 +171,7 @@ import {
   longMemEvalProductMemoryPipelineComplete,
   longMemEvalQualificationGate,
   longMemEvalQuestionPrompt,
+  longMemEvalRequestFailureCode,
   longMemEvalSettledImportTurns,
   mapConcurrentOrdered,
   mapConcurrentOrderedWaves,
@@ -202,11 +207,12 @@ import {
   decodeLongMemEvalQualificationManifestId,
   isLongMemEvalActiveQualificationManifest,
   loadLongMemEvalQualificationManifest,
+  LONGMEMEVAL_ACTIVE_QUALIFICATION_MANIFEST_IDS,
   longMemEvalEvaluationRequiresStop,
   type LongMemEvalQualificationManifest,
   type LongMemEvalQualificationManifestId
 } from "./qualification";
-import { assertLongMemEvalQualificationRevision } from
+import { assertLongMemEvalQualificationRevision, currentLongMemEvalQualificationRevision } from
   "./qualificationRevision";
 import {
   LONGMEMEVAL_PREPARED_CASE_CACHE_VERSION,
@@ -245,7 +251,7 @@ const qualificationOperatorUserId = "00000000-0000-4000-8000-000000000001";
 const qualificationMemoryJobParallelism = 8;
 const qualificationMemoryJobPerUserParallelism = 4;
 
-const openRouterQualificationSystemModelIds = new Set([
+const openRouterQualificationSystemModelIds = new Set<LongMemEvalSystemModelId>([
   "deepseek/deepseek-v4-flash-0731",
   "z-ai/glm-5.3-flash",
   "google/gemini-3.7-flash"
@@ -376,6 +382,7 @@ type CliOptions = Readonly<{
   profile: LongMemEvalProfile;
   qualificationManifestId: LongMemEvalQualificationManifestId | null;
   questionIds: readonly string[];
+  rerankerDeployment: "canonical" | "selected";
   resume: boolean;
   resumeCaseConcurrency: number | null;
   retryUnhealthy: boolean;
@@ -469,15 +476,15 @@ type ExecutionAggregate = Readonly<{
 
 type CaseSummary = Readonly<{
   answer: Readonly<{
-    costMicros: number;
-    inputTokens: number;
+    costMicros: number | null;
+    inputTokens: number | null;
     memoryContextTokens: number;
     memoryDegradationCode: string | null;
     memoryItems: number;
     memoryOutcome: string;
-    outputTokens: number;
+    outputTokens: number | null;
     runMs: number;
-    totalTokens: number;
+    totalTokens: number | null;
   }>;
   componentEvaluation: LongMemEvalComponentMetrics;
   embeddingBatchSizeDistribution: Readonly<Record<string, number>>;
@@ -524,34 +531,6 @@ type CaseFailureDiagnostics = Readonly<{
   }>[];
 }>;
 
-const deterministicReadUtilityRoles = new Set([
-  "MEMORY_CONTROL",
-  "MEMORY_QUERY_RESOLVE"
-]);
-
-function assertMemoryReadUtilityAudit(
-  policy: MemoryReadUtilityPolicy,
-  audit: LongMemEvalRetrievalAudit
-): void {
-  if (audit.memoryReadUtilityPolicy !== policy) {
-    throw new Error("longmemeval_memory_read_policy_mismatch");
-  }
-  if (policy === "DETERMINISTIC_READ_V1" &&
-    (audit.controlProviderCalls !== 0 || audit.queryResolverProviderCalls !== 0)) {
-    throw new Error("longmemeval_memory_read_utility_call_detected");
-  }
-}
-
-function assertMemoryReadUtilityExecutions(
-  policy: MemoryReadUtilityPolicy,
-  aggregates: readonly ExecutionAggregate[]
-): void {
-  if (policy === "DETERMINISTIC_READ_V1" && aggregates.some(({ role }) =>
-    deterministicReadUtilityRoles.has(role))) {
-    throw new Error("longmemeval_memory_read_utility_execution_detected");
-  }
-}
-
 class LongMemEvalCaseFailure extends Error {
   constructor(readonly diagnostics: CaseFailureDiagnostics) {
     super(diagnostics.primaryCode);
@@ -591,6 +570,7 @@ function parseCli(argv: readonly string[]): CliOptions {
   let qualificationManifestId: LongMemEvalQualificationManifestId | null = null;
   let qualificationOverridePresent = false;
   const questionIds: string[] = [];
+  let rerankerDeployment: CliOptions["rerankerDeployment"] = "canonical";
   let resume = false;
   let resumeCaseConcurrency: number | null = null;
   let retryUnhealthy = false;
@@ -660,6 +640,14 @@ function parseCli(argv: readonly string[]): CliOptions {
         break;
       case "--resume":
         resume = true;
+        break;
+      case "--reranker-deployment":
+        qualificationOverridePresent = true;
+        if (next !== "canonical" && next !== "selected") {
+          throw new Error("longmemeval_reranker_deployment_invalid");
+        }
+        rerankerDeployment = next;
+        index += 1;
         break;
       case "--resume-case-concurrency":
         resumeCaseConcurrency = boundedConcurrency(
@@ -731,6 +719,7 @@ function parseCli(argv: readonly string[]): CliOptions {
     profile,
     qualificationManifestId,
     questionIds: Object.freeze(questionIds),
+    rerankerDeployment,
     resume,
     resumeCaseConcurrency,
     retryUnhealthy,
@@ -743,11 +732,17 @@ function parseCli(argv: readonly string[]): CliOptions {
   });
 }
 
+function isActiveManifest(manifest: LongMemEvalQualificationManifest): manifest is Extract<
+  LongMemEvalQualificationManifest, { id: (typeof LONGMEMEVAL_ACTIVE_QUALIFICATION_MANIFEST_IDS)[number] }
+> {
+  return isLongMemEvalActiveQualificationManifest(manifest.id);
+}
+
 function applyQualificationManifest(
   options: CliOptions,
   manifest: LongMemEvalQualificationManifest
 ): CliOptions {
-  if (!isLongMemEvalActiveQualificationManifest(manifest.id)) {
+  if (!isActiveManifest(manifest)) {
     throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
   }
   const systemRuntime = qualificationSystemModelRuntime(
@@ -810,7 +805,7 @@ function applyQualificationManifest(
       MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS ||
     manifestMemoryAdmission.softDeadlineMs !==
       MEMORY_INTERACTIVE_SOFT_DEADLINE_MS ||
-    manifestMemoryAdmission.version !== MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION ||
+    String(manifestMemoryAdmission.version) !== MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION ||
     options.memoryReadUtilityPolicy !== manifestReadUtilityPolicy ||
     manifest.runtime.lexical.backend !== "OPENSEARCH" ||
     process.env.AIQSA_MEMORY_LEXICAL_BACKEND !== manifest.runtime.lexical.backend ||
@@ -871,7 +866,7 @@ function assertQualificationResolvedRerankerRoute(
   )) {
     throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
   }
-  if (isLongMemEvalActiveQualificationManifest(manifest.id) &&
+  if (isActiveManifest(manifest) &&
     (roles.qwen.providerOrder.length !== manifest.runtime.embedding.providerOrder.length ||
       roles.qwen.providerOrder.some((provider, index) =>
         provider !== manifest.runtime.embedding.providerOrder[index]))) {
@@ -1154,7 +1149,8 @@ async function assertDatabaseIdentity(prisma: PrismaClient): Promise<void> {
 
 async function resolveProviderRoles(
   prisma: PrismaClient,
-  systemModelId: LongMemEvalSystemModelId
+  systemModelId: LongMemEvalSystemModelId,
+  rerankerDeployment: CliOptions["rerankerDeployment"]
 ): Promise<ProviderRoles> {
   const rerankerResolver = createRerankerModelRoleResolver(prisma);
   const [systemModels, systemPolicy, memorySettings, rerankerResolution] =
@@ -1274,11 +1270,11 @@ async function resolveProviderRoles(
       provider !== qualificationEmbeddingProviderOrder[index]) ||
     systemPolicy?.providerModelId !== systemModels[0]?.id ||
     systemPolicy.reasoningEffort !== expectedSystemReasoningEffort ||
-    systemPolicy.rerankerProviderModelId !==
-      qualificationPrimaryRerankerDeployment.providerModelId ||
+    (rerankerDeployment === "canonical" && systemPolicy.rerankerProviderModelId !==
+      qualificationPrimaryRerankerDeployment.providerModelId) ||
     !rerankerResolution.ok ||
     rerankerResolution.selectedProviderModelId !==
-      qualificationPrimaryRerankerDeployment.providerModelId) {
+      systemPolicy.rerankerProviderModelId) {
     throw new Error("longmemeval_provider_roles_invalid");
   }
   const resolvedRerankerRoutes = rerankerResolution.routes ?? [{
@@ -1288,6 +1284,16 @@ async function resolveProviderRoles(
   let previousRoutePosition = -1;
   const rerankerRoute = resolvedRerankerRoutes.map(({ providerModelId, role }) => {
     const deployment = approvedRerankerDeploymentByProviderModelId(providerModelId);
+    // A manually configured deployment is a supported product path. It must
+    // remain the exact selected single route, with the same frozen model; it
+    // cannot masquerade as the canonical qualification fallback matrix.
+    if (!deployment && rerankerDeployment === "selected" &&
+      resolvedRerankerRoutes.length === 1 &&
+      providerModelId === systemPolicy.rerankerProviderModelId &&
+      role.configuration.upstreamModelId === qualificationPrimaryRerankerDeployment.preset.upstreamModelId) {
+      return Object.freeze({ id: providerModelId, relevanceScoreFloor: null,
+        upstreamModelId: role.configuration.upstreamModelId });
+    }
     const routePosition = approvedRerankerDeployments.findIndex(
       (candidate) => candidate.providerModelId === providerModelId
     );
@@ -1585,6 +1591,14 @@ async function activateImportedSession(
   imported: ImportedSession,
   profile: LongMemEvalProfile
 ): Promise<void> {
+  // Official imports already contain the complete immutable transcript. Admit
+  // that first visible snapshot as settled so history indexing starts without
+  // waiting for the periodic owner backfill. This keeps its source revision at
+  // one, matching existing verified caches. Automatic learning remains disabled
+  // by the official profile's settings.
+  const initialSettlement = profile === "official"
+    ? imported.automaticSettlement
+    : null;
   await prisma.$transaction(async (tx) => {
     const chat = await withFailureCode("longmemeval_import_chat_lock_failed", () =>
       lockMemorySourceChat(tx, {
@@ -1598,8 +1612,11 @@ async function activateImportedSession(
       applyMemorySourceMutations(tx, {
         chat,
         hooks: defaultMemorySourceMutationHooks,
-        mutations: ["NORMAL_APPEND"],
-        patch: { activeLeafMessageId: imported.activeLeafMessageId }
+        mutations: [initialSettlement ? "TERMINAL_SETTLEMENT" : "NORMAL_APPEND"],
+        patch: { activeLeafMessageId: imported.activeLeafMessageId },
+        ...(initialSettlement
+          ? { terminalSettlement: { ...initialSettlement, status: "complete" as const } }
+          : {})
       }));
   }, { timeout: 120_000 });
   if (profile !== "product" || imported.automaticSettlement === null) return;
@@ -1774,14 +1791,12 @@ async function assertPreparedQueryIsolation(
       prisma.chat.count({ where: { memoryMode: "EXCLUDED", userId } }),
       prisma.modelRun.count({
         where: {
-          chat: { memoryMode: "EXCLUDED" },
           status: { notIn: ["cancelled", "complete", "error"] },
           userId
         }
       }),
       prisma.memoryRetrievalAttempt.count({
         where: {
-          chatMemoryModeSnapshot: "EXCLUDED",
           state: { in: ["EXECUTING", "PENDING", "READY"] },
           userId
         }
@@ -2174,14 +2189,16 @@ async function assertPreparedHistorySettled(
   userId: string,
   expectedChats: number
 ): Promise<void> {
+  const sourceChats = await prisma.chat.findMany({ where: { userId, memoryMode: "NORMAL" }, select: { id: true } });
+  const chatIds = sourceChats.map(({ id }) => id);
   const [jobs, checkpoints] = await Promise.all([
     prisma.memoryJob.findMany({
       select: { kind: true, state: true },
-      where: { userId }
+      where: { userId, OR: [{ chatId: null }, { chatId: { in: chatIds } }] }
     }),
     prisma.chatMemoryCheckpoint.findMany({
       select: { status: true },
-      where: { userId }
+      where: { userId, chatId: { in: chatIds } }
     })
   ]);
   const historyJobs = jobs.filter(({ kind }) => kind === "INDEX_HISTORY");
@@ -2270,10 +2287,11 @@ async function loadReadyHybridIndex(
 }
 
 async function sourceJobs(prisma: PrismaClient, userId: string) {
+  const sourceChats = await prisma.chat.findMany({ where: { userId, memoryMode: "NORMAL" }, select: { id: true } });
   return prisma.memoryJob.findMany({
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: { attemptCount: true, errorCode: true, kind: true, state: true },
-    where: { userId }
+    where: { userId, OR: [{ chatId: null }, { chatId: { in: sourceChats.map(({ id }) => id) } }] }
   });
 }
 
@@ -2471,6 +2489,7 @@ async function waitForHistoryIndex(
   questionId: string
 ): Promise<LongMemEvalLearningEvidence> {
   const deadline = Date.now() + timeoutMs;
+  const sourceChats = await prisma.chat.findMany({ where: { userId, memoryMode: "NORMAL" }, select: { id: true } });
   let eligibleSynthesisSources: number | null = null;
   let nextProgressAt = 0;
   let quietProductObservations = 0;
@@ -2479,7 +2498,7 @@ async function waitForHistoryIndex(
       sourceJobs(prisma, userId),
       prisma.chatMemoryCheckpoint.findMany({
         select: { lastErrorCode: true, status: true },
-        where: { userId }
+        where: { userId, chatId: { in: sourceChats.map(({ id }) => id) } }
       })
     ]);
     const failures = jobs.filter(({ kind, state }) =>
@@ -2860,27 +2879,6 @@ function requestHeaders(baseUrl: URL, cookie: string, json = false): HeadersInit
   };
 }
 
-function boundedCatalogModelParams(
-  defaults: Readonly<Record<string, unknown>>,
-  maxOutputTokens: number
-): Record<string, unknown> {
-  // Catalog projections may use a provider-native alias such as `maxTokens`.
-  // Send one canonical bounded value so run-param validation never sees two
-  // conflicting aliases (the server canonicalizes it for the adapter).
-  const params = { ...defaults };
-  for (const key of [
-    "maxOutputTokens",
-    "maxTokens",
-    "max_output_tokens",
-    "max_tokens",
-    "max_completion_tokens"
-  ]) {
-    delete params[key];
-  }
-  params.maxOutputTokens = maxOutputTokens;
-  return params;
-}
-
 async function catalogSystemModel(
   baseUrl: URL,
   cookie: string,
@@ -2888,7 +2886,6 @@ async function catalogSystemModel(
   expectedUpstreamModelId: LongMemEvalSystemModelId,
   expectedProviderId: string
 ): Promise<Readonly<{
-  backgroundSupported: boolean;
   defaultParams: Readonly<Record<string, unknown>>;
   maxOutputTokens: number;
   modelId: string;
@@ -2928,11 +2925,7 @@ async function catalogSystemModel(
     controls.reasoningEffort !== null
     ? controls.reasoningEffort as Record<string, unknown>
     : {};
-  const background = typeof controls.background === "object" &&
-    controls.background !== null
-    ? controls.background as Record<string, unknown>
-    : {};
-  const maximum = typeof maxTokens.maxValue === "number" ? maxTokens.maxValue : 1024;
+  const maximum = typeof maxTokens.maxValue === "number" ? maxTokens.maxValue : 4096;
   const options = Array.isArray(reasoning.options)
     ? reasoning.options.filter((value): value is string => typeof value === "string")
     : [];
@@ -2951,7 +2944,6 @@ async function catalogSystemModel(
   // configuration and fail-closed on all three exact values; the persisted
   // execution bindings below prove which route actually handled the run.
   return Object.freeze({
-    backgroundSupported: background.supported === true,
     defaultParams: typeof model.defaultParams === "object" && model.defaultParams !== null &&
       !Array.isArray(model.defaultParams)
       ? model.defaultParams as Readonly<Record<string, unknown>>
@@ -3003,136 +2995,129 @@ async function runQuestion(
   const chat = await prisma.chat.create({
     data: {
       defaultProviderModelId: roles.system.id,
-      memoryMode: "EXCLUDED",
+      memoryMode: "NORMAL",
       title: `LongMemEval ${entry.questionId} question`,
       userId: identity.userId
     },
     select: { id: true }
   });
-  const startedAt = Date.now();
-  let response: Response;
   try {
-    response = await fetch(new URL(
-      `/api/chats/${encodeURIComponent(chat.id)}/messages`,
-      baseUrl
-    ), {
-      body: JSON.stringify({
-        content: {
-          blocks: [{
-            text: longMemEvalQuestionPrompt(entry),
-            type: "text"
-          }]
-        },
-        expectedActiveLeafId: null,
-        mcp: { mode: "off" },
-        modelId: model.modelId,
-        params: {
-          ...boundedCatalogModelParams(model.defaultParams, model.maxOutputTokens),
-          ...(model.backgroundSupported ? { background: false } : {}),
-          maxOutputTokens: model.maxOutputTokens,
-          reasoning: {
-            ...(typeof model.defaultParams.reasoning === "object" &&
-              model.defaultParams.reasoning !== null &&
-              !Array.isArray(model.defaultParams.reasoning)
-              ? model.defaultParams.reasoning as Record<string, unknown>
-              : {}),
-            effort: model.reasoningEffort
+    const startedAt = Date.now();
+    let response: Response;
+    try {
+      response = await fetch(new URL(
+        `/api/chats/${encodeURIComponent(chat.id)}/messages`,
+        baseUrl
+      ), {
+        body: JSON.stringify({
+          content: {
+            blocks: [{
+              text: longMemEvalQuestionPrompt(entry),
+              type: "text"
+            }]
           },
-          stream: true
-        },
-        provider: model.provider,
-        searchPlan: { mode: "all_selected", optionIds: [] },
-        timeZone: "UTC",
-        tools: "none"
-      }),
-      cache: "no-store",
-      headers: requestHeaders(baseUrl, identity.cookie, true),
-      method: "POST",
-      redirect: "error",
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-  } catch {
-    throw new Error("longmemeval_run_request_failed");
-  }
-  if (!response.ok) {
-    const body = await response.json().catch(() => null) as unknown;
-    const code = body && typeof body === "object" &&
-      typeof (body as { error?: unknown }).error === "string" &&
-      /^[a-z0-9_]{1,80}$/u.test((body as { error: string }).error)
-      ? (body as { error: string }).error
-      : `http_${response.status}`;
-    throw new Error(`longmemeval_run_rejected:${code}`);
-  }
-  await drain(response);
-  const deadline = Date.now() + timeoutMs;
-  let modelRun = await prisma.modelRun.findFirst({
-    include: { assistantMessage: true },
-    orderBy: { createdAt: "desc" },
-    where: { chatId: chat.id, userId: identity.userId }
-  });
-  while ((!modelRun || !terminalRunStatuses.has(modelRun.status)) && Date.now() < deadline) {
-    await sleep(1_000);
-    modelRun = await prisma.modelRun.findFirst({
+          expectedActiveLeafId: null,
+          mcp: { mode: "off" },
+          modelId: model.modelId,
+          params: longMemEvalAnswerParams(model.defaultParams, model.maxOutputTokens, model.reasoningEffort),
+          provider: model.provider,
+          searchPlan: { mode: "all_selected", optionIds: [] },
+          timeZone: "UTC",
+          tools: "none"
+        }),
+        cache: "no-store",
+        headers: requestHeaders(baseUrl, identity.cookie, true),
+        method: "POST",
+        redirect: "error",
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+    } catch (error) {
+      throw new Error(longMemEvalRequestFailureCode(error));
+    }
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as unknown;
+      const code = body && typeof body === "object" &&
+        typeof (body as { error?: unknown }).error === "string" &&
+        /^[a-z0-9_]{1,80}$/u.test((body as { error: string }).error)
+        ? (body as { error: string }).error
+        : `http_${response.status}`;
+      throw new Error(`longmemeval_run_rejected:${code}`);
+    }
+    await drain(response);
+    const deadline = Date.now() + timeoutMs;
+    let modelRun = await prisma.modelRun.findFirst({
       include: { assistantMessage: true },
       orderBy: { createdAt: "desc" },
       where: { chatId: chat.id, userId: identity.userId }
     });
+    while ((!modelRun || !terminalRunStatuses.has(modelRun.status)) && Date.now() < deadline) {
+      await sleep(1_000);
+      modelRun = await prisma.modelRun.findFirst({
+        include: { assistantMessage: true },
+        orderBy: { createdAt: "desc" },
+        where: { chatId: chat.id, userId: identity.userId }
+      });
+    }
+    if (modelRun?.status !== "complete" ||
+      modelRun.assistantMessage?.status !== "complete") {
+      throw new Error("longmemeval_run_not_complete");
+    }
+    const hypothesis = textFromContentBlocks(
+      modelRun.assistantMessage.content as { blocks?: unknown[] }
+    ).trim();
+    if (!hypothesis) throw new Error("longmemeval_answer_empty");
+    const [answerBinding, memoryBinding] = await Promise.all([
+      prisma.providerRunBinding.findUnique({
+        select: { providerModelId: true },
+        where: { modelRunId_bindingKey: { bindingKey: "answer", modelRunId: modelRun.id } }
+      }),
+      prisma.modelRunMemoryBinding.findUnique({
+        select: {
+          contextTokenCount: true,
+          degradationCode: true,
+          id: true,
+          outcome: true,
+          retrievalAttemptId: true
+        },
+        where: { modelRunId: modelRun.id }
+      })
+    ]);
+    if (answerBinding?.providerModelId !== roles.system.id || !memoryBinding) {
+      throw new Error("longmemeval_run_binding_invalid");
+    }
+    const memoryItems = await prisma.modelRunMemoryItem.count({
+      where: { bindingId: memoryBinding.id, userId: identity.userId }
+    });
+    const retrievalAttempt = await prisma.memoryRetrievalAttempt.findUnique({
+      select: { budgetSnapshot: true },
+      where: { id: memoryBinding.retrievalAttemptId }
+    });
+    if (!retrievalAttempt) throw new Error("longmemeval_retrieval_audit_missing");
+    return Object.freeze({
+      debugLocator: Object.freeze({
+        memoryBindingId: memoryBinding.id,
+        modelRunId: modelRun.id,
+        retrievalAttemptId: memoryBinding.retrievalAttemptId
+      }),
+      hypothesis,
+      retrieval: sanitizeLongMemEvalRetrievalAudit(retrievalAttempt?.budgetSnapshot),
+      summary: Object.freeze({
+        costMicros: modelRun.estimatedCostMicros,
+        inputTokens: modelRun.inputTokens,
+        memoryContextTokens: memoryBinding.contextTokenCount,
+        memoryDegradationCode: memoryBinding.degradationCode,
+        memoryItems,
+        memoryOutcome: memoryBinding.outcome,
+        outputTokens: modelRun.outputTokens,
+        runMs: Date.now() - startedAt,
+        totalTokens: modelRun.totalTokens
+      })
+    });
+  } finally {
+    // EXCLUDED disables retrieval as well as learning. Read normally, then fence
+    // this question/answer out of future sources through the product lifecycle.
+    await excludeBenchmarkQuestion(prisma, identity.userId, chat.id);
   }
-  if (modelRun?.status !== "complete" ||
-    modelRun.assistantMessage?.status !== "complete") {
-    throw new Error("longmemeval_run_not_complete");
-  }
-  const hypothesis = textFromContentBlocks(
-    modelRun.assistantMessage.content as { blocks?: unknown[] }
-  ).trim();
-  if (!hypothesis) throw new Error("longmemeval_answer_empty");
-  const [answerBinding, memoryBinding] = await Promise.all([
-    prisma.providerRunBinding.findUnique({
-      select: { providerModelId: true },
-      where: { modelRunId_bindingKey: { bindingKey: "answer", modelRunId: modelRun.id } }
-    }),
-    prisma.modelRunMemoryBinding.findUnique({
-      select: {
-        contextTokenCount: true,
-        degradationCode: true,
-        id: true,
-        outcome: true,
-        retrievalAttemptId: true
-      },
-      where: { modelRunId: modelRun.id }
-    })
-  ]);
-  if (answerBinding?.providerModelId !== roles.system.id || !memoryBinding) {
-    throw new Error("longmemeval_run_binding_invalid");
-  }
-  const memoryItems = await prisma.modelRunMemoryItem.count({
-    where: { bindingId: memoryBinding.id, userId: identity.userId }
-  });
-  const retrievalAttempt = await prisma.memoryRetrievalAttempt.findUnique({
-    select: { budgetSnapshot: true },
-    where: { id: memoryBinding.retrievalAttemptId }
-  });
-  if (!retrievalAttempt) throw new Error("longmemeval_retrieval_audit_missing");
-  return Object.freeze({
-    debugLocator: Object.freeze({
-      memoryBindingId: memoryBinding.id,
-      modelRunId: modelRun.id,
-      retrievalAttemptId: memoryBinding.retrievalAttemptId
-    }),
-    hypothesis,
-    retrieval: sanitizeLongMemEvalRetrievalAudit(retrievalAttempt?.budgetSnapshot),
-    summary: Object.freeze({
-      costMicros: modelRun.estimatedCostMicros,
-      inputTokens: modelRun.inputTokens,
-      memoryContextTokens: memoryBinding.contextTokenCount,
-      memoryDegradationCode: memoryBinding.degradationCode,
-      memoryItems,
-      memoryOutcome: memoryBinding.outcome,
-      outputTokens: modelRun.outputTokens,
-      runMs: Date.now() - startedAt,
-      totalTokens: modelRun.totalTokens
-    })
-  });
 }
 
 async function loadPackedComponentEvaluation(
@@ -4375,6 +4360,7 @@ function buildCheckpointIdentity(input: Readonly<{
           upstreamModelId: role.upstreamModelId
         }))),
       rerankerRoutePolicyVersion: RERANKER_ROUTE_POLICY_VERSION,
+      rerankerDeployment: input.options.rerankerDeployment,
       runTimeoutMs: input.options.runTimeoutMs,
       systemModelProvider: qualificationSystemModelProvider(
         input.roles.system.upstreamModelId
@@ -4424,7 +4410,7 @@ async function main(): Promise<void> {
     ? await loadLongMemEvalQualificationManifest(options.qualificationManifestId)
     : null;
   if (qualificationManifest) {
-    if (!isLongMemEvalActiveQualificationManifest(qualificationManifest.id)) {
+    if (!isActiveManifest(qualificationManifest)) {
       throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
     }
     options = applyQualificationManifest(options, qualificationManifest);
@@ -4437,6 +4423,8 @@ async function main(): Promise<void> {
     "evaluation" in qualificationManifest.runtime
     ? qualificationManifest.runtime.evaluation.failFast
     : true;
+  const sourceRevision = await currentLongMemEvalQualificationRevision(repositoryRoot,
+    ["app", "components", "lib", "prisma", "benchmarks", "package.json", "package-lock.json"]);
   const allCases = await loadDataset();
   await assertReferenceMetadata(allCases);
   if (qualificationManifest) {
@@ -4444,7 +4432,7 @@ async function main(): Promise<void> {
   }
   await mkdir(resolve(benchmarkRoot, "results"), { mode: 0o700, recursive: true });
   const summaryPath = resolve(options.outputDirectory, "run-summary.json");
-  const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
+  const prisma = new PrismaClient({ datasourceUrl: runtimeDatabaseUrl });
   try {
     await assertDatabaseIdentity(prisma);
     const cacheRuntime = Object.freeze({
@@ -4452,7 +4440,7 @@ async function main(): Promise<void> {
       migrationFingerprint: await databaseMigrationFingerprint(prisma)
     });
     const staleUsersRemoved = await deleteBenchmarkUsers(prisma);
-    const roles = await resolveProviderRoles(prisma, options.systemModelId);
+    const roles = await resolveProviderRoles(prisma, options.systemModelId, options.rerankerDeployment);
     if (qualificationManifest) {
       assertQualificationResolvedRerankerRoute(qualificationManifest, roles);
     }
@@ -4783,8 +4771,10 @@ async function main(): Promise<void> {
       required: lexicalCutoverRequired
     });
     await writeJsonAtomic(summaryPath, {
+      sourceRevision,
       activeMemoryRetrievalConfiguration: {
         ...activeMemoryRetrievalConfigurationBase,
+        rerankerDeployment: options.rerankerDeployment,
         automaticFactLearning: options.profile === "product",
         rerankerRoute: roles.rerankerRoute.map((role) => ({
           relevanceScoreFloor: role.relevanceScoreFloor,
@@ -4891,7 +4881,7 @@ async function main(): Promise<void> {
         version: LONGMEMEVAL_PREPARED_CASE_CACHE_VERSION
       },
       qualificationManifest: qualificationManifest !== null &&
-          isLongMemEvalActiveQualificationManifest(qualificationManifest.id)
+          isActiveManifest(qualificationManifest)
         ? {
             appCommit: qualificationManifest.source.appCommit,
             appWorktreeSha256: qualificationManifest.source.appWorktreeSha256,

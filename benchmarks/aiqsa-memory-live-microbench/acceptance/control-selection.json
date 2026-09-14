@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "corpusSha256": "8e3a3d879774b90a6b9372292394170b2169517461703d1afafa3da454a515a3",
+  "seed": "aiqsa-memory-quality-terra-control-v1",
+  "algorithm": "lowest sha256(seed\\0category\\0scenarioId), two development cases per category",
+  "system": "gpt-5.6-terra",
+  "answer": "gpt-5.6-terra",
+  "judge": "gpt-5.6-sol",
+  "freshSourceRepetitions": 1,
+  "minimumCorrectScenarios": 11,
+  "criticalChecksMustAllPass": true,
+  "completeHealthyExecutionRequired": true,
+  "usePrimaryLatencyLimits": true,
+  "confirmedSystemicFailureBlocks": true,
+  "cases": [
+    { "id": "acquisition-05-routine", "category": "acquisition" },
+    { "id": "acquisition-01-home", "category": "acquisition" },
+    { "id": "isolation-05-temporary-write", "category": "isolation" },
+    { "id": "isolation-04-same-name", "category": "isolation" },
+    { "id": "management-04-paraphrased-repeat", "category": "management" },
+    { "id": "management-05-forget", "category": "management" },
+    { "id": "retrieval-08-same-word", "category": "retrieval" },
+    { "id": "retrieval-05-similar-entities", "category": "retrieval" },
+    { "id": "uncertainty-04-hypothetical", "category": "uncertainty" },
+    { "id": "uncertainty-05-negative", "category": "uncertainty" },
+    { "id": "updates-07-retraction", "category": "updates" },
+    { "id": "updates-01-move", "category": "updates" }
+  ]
+}
