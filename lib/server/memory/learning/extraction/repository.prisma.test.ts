@@ -408,6 +408,60 @@ function preferencePlan(
   }], input);
 }
 
+function scheduledPropositionPlan(
+  input: MemoryFactExtractionInput,
+  quote: string,
+  date: string,
+  changeIntent: "NONE" | "STATE_CHANGE",
+  weakSubjectType?: "GOAL" | "PROJECT",
+  entities: readonly unknown[] = []
+): MemoryFactExtractionPlan {
+  return decodeMemoryFactExtraction([{
+    arguments: {
+      observations: [{
+        candidate_ref: "C-scheduled-workshop",
+        confidence_band: "HIGH",
+        dependency_refs: [],
+        entities,
+        evidence: exactTextRef(quote),
+        future_useful: true,
+        identity: {
+          dimension_key: null,
+          mode: weakSubjectType ? "SLOT" : "PROPOSITION",
+          predicate_key: weakSubjectType === "GOAL" ? "goal_status"
+            : weakSubjectType === "PROJECT" ? "project_status" : null,
+          subject: {
+            canonical_label: null,
+            entity_type: weakSubjectType ?? "NONE",
+            qualifiers: { brand: null, model: null }
+          }
+        },
+        memory_type: "PLAN",
+        reason_code: "agreed_workshop_schedule",
+        semantic_frame: {
+          ...supportingUserAssertion,
+          change_intent: changeIntent,
+          temporal_perspective: "FUTURE"
+        },
+        sensitivity: "NORMAL",
+        statement: `The user's workshop is scheduled for ${date}.`,
+        temporal: {
+          expiration_intent: "NONE",
+          normalization: {
+            kind: "ABSOLUTE", local_date: date, local_time: null, zone: null
+          },
+          perspective: "FUTURE",
+          raw_expression: exactTextRef(date)
+        },
+        temporary: weakSubjectType !== undefined,
+        value: weakSubjectType ? { ...emptyObservationValue, state: "planned" } : emptyObservationValue
+      }]
+    },
+    id: `fact-call-${randomUUID()}`,
+    name: MEMORY_FACT_EXTRACTION_TOOL_NAME
+  }], input);
+}
+
 function slotPreferencePlan(
   input: MemoryFactExtractionInput,
   quote: string,
@@ -1058,6 +1112,53 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     await prisma.$disconnect();
   });
 
+  it.each([false, true])("persists a proposition with discarded entity annotations only with semantic authority: %s", async (admitted) => {
+    const userId = await createOwner("optional-entity-authority");
+    try {
+      const chat = await prisma.chat.create({ data: { title: "Workshop schedule", userId } });
+      const quote = "My Oriole workshop is on 2027-02-08.";
+      const turn = await createTurn({
+        assistantText: "Noted.", chatId: chat.id,
+        createdAt: new Date("2026-08-25T12:00:00.000Z"),
+        parentMessageId: null, userId, userText: quote
+      });
+      await settleChat(userId, chat.id, turn);
+      const claim = await claimFactJob(userId, turn.userMessage.id);
+      const input = await prepare(claim);
+      const plan = scheduledPropositionPlan(input, quote, "2027-02-08", "NONE", undefined, [{
+        aliases: [], canonical_label: "Oriole", context_entity_ref: null,
+        entity_type: "PROJECT", mention: exactTextRef("Oriole", 1), mention_kind: "NAMED",
+        qualifier_supports: [], role: "SUBJECT"
+      }]);
+      expect(plan.rejections).toEqual([]);
+      expect(plan.candidates).toHaveLength(1);
+      expect(memorySemanticAdjudicationInput(plan)).not.toBeNull();
+      const binding = await createSucceededBinding(userId, claim, input.inputHash, plan.outputHash);
+      await expect(applyPlan(userId, claim, plan, binding, new Date(), admitted ? undefined : null))
+        .resolves.toBe(admitted ? "APPLIED" : "EMPTY");
+      await expect(prisma.memoryFactVersion.count({ where: { userId } })).resolves.toBe(admitted ? 1 : 0);
+      await expect(prisma.memoryEntity.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memoryEntityAlias.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memoryFactExtractionCandidateReceipt.findFirstOrThrow({
+        select: { outcome: true, reasonCode: true }, where: { userId }
+      })).resolves.toEqual(admitted
+        ? { outcome: "APPLIED", reasonCode: null }
+        : { outcome: "REJECTED", reasonCode: "semantic_not_admitted" });
+      if (admitted) {
+        await expect(prisma.memoryFactVersion.findFirstOrThrow({
+          select: { expectedAt: true, state: true }, where: { userId }
+        })).resolves.toEqual({ expectedAt: new Date("2027-02-07T21:00:00.000Z"), state: "ACTIVE" });
+        await expect(prisma.memoryEvidence.findFirstOrThrow({
+          select: { safeExcerpt: true, messageId: true }, where: { userId }
+        })).resolves.toEqual({ safeExcerpt: quote, messageId: turn.userMessage.id });
+      } else {
+        await expect(prisma.memoryEvidence.count({ where: { userId } })).resolves.toBe(0);
+      }
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it.each([
     { changeIntent: "CORRECTION", declaredDependency: true, from: "PROPOSITION", to: "PROPOSITION" },
     { changeIntent: "CORRECTION", declaredDependency: false, from: "PROPOSITION", to: "PROPOSITION" },
@@ -1224,6 +1325,101 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       await cleanupOwner(userId);
     }
   });
+
+  it.each([
+    { date: "2026-10-07", weakSubjectType: undefined },
+    { date: "2026-10-28", weakSubjectType: undefined },
+    { date: "2026-10-07", weakSubjectType: "GOAL" as const },
+    { date: "2026-10-28", weakSubjectType: "PROJECT" as const }
+  ])(
+    "retains the revised future schedule $date ($weakSubjectType) and the superseded schedule's evidence",
+    async ({ date, weakSubjectType }) => {
+      const userId = await createOwner("scheduled-proposition-revision");
+      try {
+        const chat = await prisma.chat.create({ data: { title: "Workshop schedule", userId } });
+        const initialText = "My workshop is scheduled for 2026-10-14.";
+        const first = await createTurn({
+          assistantText: "Noted.", chatId: chat.id,
+          createdAt: new Date("2026-08-25T12:00:00.000Z"),
+          parentMessageId: null, userId, userText: initialText
+        });
+        await settleChat(userId, chat.id, first);
+        const firstClaim = await claimFactJob(userId, first.userMessage.id);
+        const firstInput = await prepare(firstClaim);
+        const firstPlan = scheduledPropositionPlan(firstInput, initialText, "2026-10-14", "NONE", weakSubjectType);
+        expect(firstPlan.candidates).toHaveLength(1);
+        await applyPlan(userId, firstClaim, firstPlan, await createSucceededBinding(
+          userId, firstClaim, firstInput.inputHash, firstPlan.outputHash
+        ));
+        const original = await prisma.memoryFactVersion.findFirstOrThrow({ where: { state: "ACTIVE", userId } });
+        const revisedText = `We agreed to reschedule my workshop to ${date}.`;
+        const second = await createTurn({
+          assistantText: "Noted.", chatId: chat.id,
+          createdAt: new Date("2026-08-25T12:01:00.000Z"),
+          parentMessageId: first.assistantMessage.id, userId, userText: revisedText
+        });
+        await settleChat(userId, chat.id, second);
+        const claim = await claimFactJob(userId, second.userMessage.id);
+        const input = await prepare(claim);
+        const target = input.contextRefs.find(({ source }) => source.factVersionId === original.id);
+        if (!target) throw new Error("memory_test_schedule_target_missing");
+        const plan = scheduledPropositionPlan(input, revisedText, date, "STATE_CHANGE", weakSubjectType);
+        expect(plan.candidates).toHaveLength(1);
+        const semanticInput = memorySemanticAdjudicationInput(plan);
+        if (!semanticInput) throw new Error("memory_test_schedule_adjudication_missing");
+        const decisions: MemorySemanticAdjudication[] = [{
+          assertionStatus: "ASSERTED", candidateRef: plan.candidates[0]!.candidateRef,
+          confidenceBand: "HIGH", entailment: "ENTAILED", entityRef: null,
+          operation: "SUPERSEDE_TARGET", reasonCode: "agreed_schedule_revision",
+          subjectScope: "CURRENT_USER", targetRef: target.ref, temporalPerspective: "FUTURE"
+        }];
+        await expect(applyPlan(userId, claim, plan, await createSucceededBinding(
+          userId, claim, input.inputHash, plan.outputHash
+        ), new Date(), {
+          decisions, inputHash: semanticInput.inputHash,
+          outputHash: memorySemanticAdjudicationOutputHash(semanticInput.inputHash, decisions)
+        })).resolves.toBe("APPLIED");
+        const pending = await prisma.memoryFactVersion.findFirstOrThrow({ where: { state: "PENDING_RELATION", userId } });
+        const settings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+        const relationClaim: MemoryJobClaim = {
+          ...claim, id: randomUUID(), kind: "RESOLVE_FACT_RELATIONS",
+          memoryGenerationSnapshot: settings.memoryGeneration, memoryRevisionSnapshot: settings.memoryRevision,
+          pipelineVersion: MEMORY_FACT_RELATION_PIPELINE_VERSION, targetFactVersionId: pending.id
+        };
+        const relations = createPrismaMemoryRelationRepository(prisma);
+        const now = new Date();
+        const prepared = await relations.prepare(relationClaim, now);
+        if (prepared.status !== "READY") throw new Error("memory_test_schedule_relation_not_ready");
+        const decision = decideMemoryFactRelation(prepared.prepared.snapshot, now);
+        expect(decision).toMatchObject({ operation: "MOVE_TO_DISTINCT_FACT", targetVersionId: original.id });
+        await prisma.$transaction((tx) => relations.apply(tx, relationClaim, {
+          decision, executionId: null, expectedSnapshotHash: prepared.prepared.snapshotHash
+        }, now));
+        const active = await prisma.memoryFactVersion.findFirstOrThrow({ where: { state: "ACTIVE", userId } });
+        expect(active.id).toBe(pending.id);
+        expect(active.expectedAt?.toISOString()).toBe(plan.candidates[0]!.expectedAt);
+        expect(active.supersedesVersionId).toBe(original.id);
+        expect(active.observedAt!.getTime()).toBeGreaterThan(original.observedAt!.getTime());
+        expect(active.observedAt!.getTime()).toBeLessThan(active.expectedAt!.getTime());
+        await expect(prisma.memoryFactVersion.findUniqueOrThrow({ where: { id: original.id } }))
+          .resolves.toMatchObject({ state: "SUPERSEDED", expectedAt: original.expectedAt });
+        await expect(prisma.memoryEvidence.count({ where: { factVersionId: original.id, userId } }))
+          .resolves.toBe(1);
+        await expect(prisma.memoryFactVersion.count({ where: { state: "ACTIVE", userId } }))
+          .resolves.toBe(1);
+        await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: original.factId } }))
+          .resolves.toMatchObject({ currentVersionId: null, movedToFactId: active.factId, state: "RETRACTED" });
+        await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: active.factId } }))
+          .resolves.toMatchObject({ currentVersionId: active.id, state: "ACTIVE" });
+        // Source authority also remains valid for historical recall. Currentness
+        // is separately defined by the active version and canonical pointer.
+        await expect(loadPersonalEligibleFactVersionIds(prisma, userId, [original.id, active.id]))
+          .resolves.toEqual(new Set([original.id, active.id]));
+      } finally {
+        await cleanupOwner(userId);
+      }
+    }
+  );
 
   it("learns an exact fact near the end of a long direct user message", async () => {
     const userId = await createOwner("long-target");

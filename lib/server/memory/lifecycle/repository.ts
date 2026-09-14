@@ -12,6 +12,7 @@ import type { MemoryMutationAuthorizationUse } from "../persistence/authorizatio
 import { consumeMemoryMutationAuthorization } from "../persistence/authorizations";
 import { enqueueMemoryDeletion } from "../persistence/deletion";
 import { memoryPersistenceFailure } from "../persistence/errors";
+import { memoryExplicitEquivalentFactIdsSql } from "../persistence/explicitEquivalence";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { createMemorySuppressionInTransaction } from "../persistence/suppressions";
 import type { MemorySuppressionCreateInput } from "../persistence/suppressions";
@@ -44,7 +45,7 @@ type ActiveFactRow = Readonly<{
   currentSourceMode: "AUTOMATIC" | "EXPLICIT";
   currentSystemFrom: Date;
   currentVersionId: string;
-  factState: "ACTIVE" | "CONFLICTED" | "ORPHANED";
+  factState: "ACTIVE" | "CONFLICTED" | "ORPHANED" | "RETRACTED" | "FORGOTTEN";
   factId: string;
   scopeId: string;
 }>;
@@ -576,10 +577,30 @@ async function applyForgetFence(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
   keyring: MemorySuppressionKeyring,
-  facts: readonly ActiveFactRow[],
+  roots: readonly ActiveFactRow[],
   now: Date,
   deletionId: string
 ): Promise<ReadonlyMap<string, string>> {
+  const aliases = roots.length === 0 ? [] : await tx.$queryRaw<ActiveFactRow[]>(Prisma.sql`
+    SELECT fact."id" AS "factId", fact."scopeId", fact."canonicalKey", fact."category",
+      fact."state"::text AS "factState", version."id" AS "currentVersionId",
+      version."sourceMode"::text AS "currentSourceMode", version."systemFrom" AS "currentSystemFrom"
+    FROM "MemoryFact" AS fact
+    INNER JOIN LATERAL (
+      SELECT candidate.* FROM "MemoryFactVersion" AS candidate
+      WHERE candidate."userId" = fact."userId" AND candidate."factId" = fact."id"
+        AND candidate."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+        AND candidate."mergedIntoVersionId" IS NOT NULL
+        AND candidate."state" IN ('MERGED'::"MemoryFactVersionState", 'FORGOTTEN'::"MemoryFactVersionState")
+      ORDER BY candidate."systemFrom" DESC, candidate."id" DESC LIMIT 1
+    ) AS version ON TRUE
+    WHERE fact."userId" = ${settings.userId} AND fact."currentVersionId" IS NULL
+      AND fact."state" IN ('RETRACTED'::"MemoryFactState", 'FORGOTTEN'::"MemoryFactState")
+      AND fact."id" IN (${memoryExplicitEquivalentFactIdsSql(settings.userId, roots.map(({ factId }) => factId))})
+      AND fact."id" NOT IN (${Prisma.join(roots.map(({ factId }) => factId))})
+    ORDER BY fact."id" FOR UPDATE OF fact
+  `);
+  const facts = [...roots, ...aliases];
   const versions = await factVersions(tx, settings.userId, facts.map(({ factId }) => factId));
   const sources = await sourceEvidence(tx, settings.userId, versions.map(({ id }) => id));
   const latestSystemFromByFact = new Map<string, number>();

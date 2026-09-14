@@ -13,6 +13,11 @@ import {
   type MemoryFactExtractionPlan
 } from "../learning/extraction/contract";
 import type { MemorySemanticAdjudication } from "../learning/extraction/contract";
+import { decodeStoredMemorySemanticFrame } from "../learning/extraction/adjudication";
+import {
+  memoryRepresentationTransitionTimeAllowed,
+  type MemoryRelationVersionSnapshot
+} from "../learning/relations/policy";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { ensureClassifiedSearchEntry } from "../persistence/factSearchEntry";
 import { memorySafetyLiteFactClassification } from "../safetyLite";
@@ -58,9 +63,13 @@ type StoredVersion = Readonly<{
 }>;
 
 type LockedCurrentTarget = Readonly<{
+  expectedAt: Date | null;
   factId: string;
   identityKind: "PROPOSITION" | "SLOT";
   lastConfirmedAt: Date | null;
+  modality: MemoryRelationVersionSnapshot["modality"];
+  observedAt: Date | null;
+  semanticFrame: Prisma.JsonValue | null;
   sourceMode: "AUTOMATIC" | "EXPLICIT";
   versionId: string;
 }>;
@@ -398,6 +407,8 @@ async function lockedCurrentTarget(
   const rows = await tx.$queryRaw<LockedCurrentTarget[]>(Prisma.sql`
     SELECT fact."id" AS "factId", fact."lastConfirmedAt",
       fact."identityKind"::text AS "identityKind",
+      version."expectedAt", version."observedAt", version."semanticFrame",
+      version."modality"::text AS "modality",
       version."sourceMode"::text AS "sourceMode", version."id" AS "versionId"
     FROM "MemoryFactVersion" AS version
     INNER JOIN "MemoryFact" AS fact
@@ -979,7 +990,7 @@ async function createObservation(
     // may materialize that exact expired version and create a fresh one.
     // Stale/non-current targets still fail its target/pointer revalidation.
   }
-  // A direct current-state update retains its exact target and enters guarded
+  // A direct state or schedule update retains its exact target and enters guarded
   // relation resolution. It must not create a second active proposition or
   // allow weaker testimony to replace an explicit or structured current fact.
   const transitionTarget = semanticAdjudication !== null &&
@@ -996,12 +1007,20 @@ async function createObservation(
     if (candidate.confidenceBand !== "HIGH" ||
       (candidate.semanticFrame.changeIntent !== "CORRECTION" &&
         candidate.semanticFrame.changeIntent !== "STATE_CHANGE") ||
-      candidate.semanticFrame.temporalPerspective !== "CURRENT" ||
+      !memoryRepresentationTransitionTimeAllowed(
+        { ...candidate, observedAt: evidence[0]!.observedAt.toISOString() },
+        transitionTarget === null ? null : {
+          expectedAt: transitionTarget.expectedAt?.toISOString() ?? null,
+          modality: transitionTarget.modality,
+          observedAt: transitionTarget.observedAt?.toISOString() ?? null,
+          semanticFrame: decodeStoredMemorySemanticFrame(transitionTarget.semanticFrame)
+        },
+        semanticAdjudication.temporalPerspective
+      ) ||
       semanticAdjudication.entailment !== "ENTAILED" ||
       semanticAdjudication.confidenceBand !== "HIGH" ||
       semanticAdjudication.subjectScope !== "CURRENT_USER" ||
       semanticAdjudication.assertionStatus !== "ASSERTED" ||
-      semanticAdjudication.temporalPerspective !== "CURRENT" ||
       !["SUPERSEDE_TARGET", "MOVE_TO_DISTINCT_FACT"].includes(
         semanticAdjudication.operation
       )) return { attachedEvidence: 0, createdVersions: 0 };

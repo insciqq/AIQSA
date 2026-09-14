@@ -34,6 +34,7 @@ import {
   type MemoryMutationAuthorizationUse
 } from "./authorizations";
 import { memoryPersistenceFailure } from "./errors";
+import { resolveMemoryExplicitEquivalentTarget } from "./explicitEquivalence";
 import {
   memorySha256,
   memoryStableJson,
@@ -52,6 +53,7 @@ import {
   withLockedMemoryTransaction
 } from "./transaction";
 import { ensureClassifiedSearchEntry } from "./factSearchEntry";
+import { enqueueMemoryExplicitRelation } from "./jobs";
 
 export type MemoryDirectnessInput = "DIRECT" | "INFERRED" | "PARAPHRASED";
 
@@ -1145,6 +1147,7 @@ export function createPrismaMemoryFactRepository(
           transitionAt,
           activeIndex
         );
+        await enqueueMemoryExplicitRelation(tx, settings, versionId);
         return { ...result, replayed: false };
       }, { deadlineAtMs: input.authorization?.admissionDeadlineAtMs });
     },
@@ -1687,7 +1690,7 @@ export function createPrismaMemoryFactRepository(
         await authorizeExplicitMutation(tx, userId, input);
         await requireActiveOwnedMemoryScope(tx, userId, input.scopeId);
 
-        const existing = await tx.memoryFact.findFirst({
+        let existing = await tx.memoryFact.findFirst({
           select: {
             currentVersionId: true,
             id: true,
@@ -1703,6 +1706,27 @@ export function createPrismaMemoryFactRepository(
           select: typeof currentVersionSelect;
         }>>> = null;
         let revivalVersionId: string | null = null;
+        let exactEquivalentRepeat = false;
+        if (existing?.state === "RETRACTED" && input.value.sourceMode === "EXPLICIT") {
+          const alias = await tx.memoryFactVersion.findFirst({
+            orderBy: [{ systemFrom: "desc" }, { id: "desc" }],
+            select: currentVersionSelect,
+            where: { factId: existing.id, sourceMode: "EXPLICIT", state: "MERGED", userId }
+          });
+          if (!alias || versionContentHash(alias) !== inputContentHash(input.value)) {
+            return memoryPersistenceFailure("memory_fact_identity_conflict");
+          }
+          const canonical = await resolveMemoryExplicitEquivalentTarget(tx, userId, {
+            factId: existing.id, factVersionId: alias.id
+          });
+          if (!canonical) return memoryPersistenceFailure("memory_fact_identity_conflict");
+          existing = await tx.memoryFact.findFirst({
+            select: { currentVersionId: true, id: true, state: true },
+            where: { currentVersionId: canonical.factVersionId, id: canonical.factId, scopeId: input.scopeId, state: "ACTIVE", userId }
+          });
+          if (!existing) return memoryPersistenceFailure("memory_fact_version_stale");
+          exactEquivalentRepeat = true;
+        }
         if (existing?.state === "ACTIVE" && existing.currentVersionId) {
           currentVersion = await tx.memoryFactVersion.findFirst({
             select: currentVersionSelect,
@@ -1714,7 +1738,7 @@ export function createPrismaMemoryFactRepository(
             }
           });
           if (!currentVersion) return memoryPersistenceFailure("memory_fact_version_stale");
-          if (versionContentHash(currentVersion) !== inputContentHash(input.value)) {
+          if (!exactEquivalentRepeat && versionContentHash(currentVersion) !== inputContentHash(input.value)) {
             return memoryPersistenceFailure("memory_fact_identity_conflict");
           }
         } else if (existing) {
@@ -1879,6 +1903,9 @@ export function createPrismaMemoryFactRepository(
           input.evidence.observedAt,
           activeIndex
         );
+        if (input.value.sourceMode === "EXPLICIT") {
+          await enqueueMemoryExplicitRelation(tx, settings, versionId);
+        }
         return { ...result, replayed: false };
       }, { deadlineAtMs: input.authorization?.admissionDeadlineAtMs });
     }

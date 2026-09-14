@@ -49,6 +49,7 @@ import {
   normalizeMemorySearchText
 } from "../persistence/lexical";
 import type { ActiveMemoryScope } from "../persistence/scopes";
+import type { MemoryEquivalentTargetResolver } from "../persistence/explicitEquivalence";
 import type {
   ExplicitMemoryConflictEditable,
   ExplicitMemoryEditable,
@@ -478,6 +479,7 @@ export function createExplicitMemoryService(input: Readonly<{
   clock?: () => Date;
   factRepository: ExplicitMemoryFactRepository;
   readRepository: ExplicitMemoryReadRepository;
+  resolveEquivalentTarget?: MemoryEquivalentTargetResolver;
   scopeRepository: ExplicitMemoryScopeRepository;
   statementClassifier?: MemoryStatementClassifier;
 }>): ExplicitMemoryService {
@@ -485,9 +487,13 @@ export function createExplicitMemoryService(input: Readonly<{
 
   async function currentResponse(
     userId: string,
-    factId: string
+    factId: string,
+    factVersionId?: string
   ): Promise<MemoryMutationResponse> {
-    const memory = await persisted(() => input.readRepository.get(userId, factId));
+    const equivalent = factVersionId
+      ? await persisted(async () => input.resolveEquivalentTarget?.(userId, { factId, factVersionId }, clock()) ?? null)
+      : null;
+    const memory = await persisted(() => input.readRepository.get(userId, equivalent?.factId ?? factId));
     if (!memory) return failure("memory_not_found");
     return mutationResponse(memory);
   }
@@ -572,7 +578,7 @@ export function createExplicitMemoryService(input: Readonly<{
           saved.versionId
         );
       }
-      return currentResponse(userId, saved.factId);
+      return currentResponse(userId, saved.factId, saved.versionId);
     },
 
     async evidence(userId, factId, cursor) {

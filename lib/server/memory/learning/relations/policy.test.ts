@@ -22,6 +22,7 @@ function version(
     factId: "fact-1",
     identityKind: "SLOT",
     mergedIntoVersionId: null,
+    modality: "STATE",
     observedAt: "2026-08-24T09:00:00.000Z",
     occurredAt: null,
     predicateKey: "product_status",
@@ -175,6 +176,104 @@ describe("structured Memory relation policy", () => {
       operation: "MOVE_TO_DISTINCT_FACT",
       targetVersionId: input.current.versionId
     });
+  });
+
+  function scheduledRevision(expectedAt = "2026-10-28T09:00:00.000Z") {
+    const input = propositionCorrection();
+    const current = {
+      ...input.current,
+      expectedAt: "2026-10-14T09:00:00.000Z",
+      modality: "CONSTRAINT" as const,
+      semanticFrame: {
+        ...semanticFrame,
+        changeIntent: "NONE" as const,
+        temporalPerspective: "FUTURE" as const
+      }
+    };
+    const pending = {
+      ...input.pending,
+      expectedAt,
+      modality: "PLAN" as const,
+      semanticFrame: {
+        ...semanticFrame,
+        changeIntent: "STATE_CHANGE" as const,
+        temporalPerspective: "FUTURE" as const
+      },
+      semanticAdjudication: {
+        ...adjudication(),
+        temporalPerspective: "FUTURE" as const
+      }
+    };
+    return { ...input, current, pending, related: [current] };
+  }
+
+  it.each(["2026-10-07T09:00:00.000Z", "2026-10-28T09:00:00.000Z"])(
+    "replaces an exactly adjudicated schedule with its newly agreed date %s",
+    (expectedAt) => {
+      const input = scheduledRevision(expectedAt);
+      expect(decideMemoryFactRelation(input, NOW)).toMatchObject({
+        operation: "MOVE_TO_DISTINCT_FACT",
+        targetVersionId: input.current.versionId
+      });
+      // The scheduled occurrence can move earlier or later. The new testimony
+      // still arrives after the old testimony in either case.
+      expect(new Date(input.pending.observedAt!).getTime())
+        .toBeGreaterThan(new Date(input.current.observedAt!).getTime());
+    }
+  );
+
+  it("keeps actual states, unsupported dates and unproved future changes protected", () => {
+    const input = scheduledRevision();
+    const variants: MemoryRelationSnapshot[] = [
+      { ...input, current: { ...input.current, sourceMode: "EXPLICIT" } },
+      { ...input, current: { ...input.current, modality: "STATE" } },
+      { ...input, current: { ...input.current, expectedAt: null } },
+      { ...input, current: { ...input.current, expectedAt: "invalid" } },
+      { ...input, current: {
+        ...input.current,
+        semanticFrame: { ...input.current.semanticFrame, temporalPerspective: "FORMER" }
+      } },
+      { ...input, pending: { ...input.pending, modality: "STATE" } },
+      { ...input, pending: { ...input.pending, modality: "INTENTION" } },
+      { ...input, pending: { ...input.pending, modality: "CONSIDERATION" } },
+      { ...input, pending: { ...input.pending, expectedAt: null } },
+      { ...input, pending: { ...input.pending, expectedAt: "invalid" } },
+      { ...input, pending: { ...input.pending, observedAt: null } },
+      { ...input, pending: { ...input.pending, observedAt: input.current.observedAt } },
+      { ...input, pending: { ...input.pending, observedAt: "2026-08-23T09:30:00.000Z" } },
+      { ...input, pending: { ...input.pending, semanticAdjudication: null } },
+      { ...input, pending: {
+        ...input.pending,
+        semanticAdjudication: { ...input.pending.semanticAdjudication, confidenceBand: "MEDIUM" }
+      } },
+      { ...input, pending: {
+        ...input.pending,
+        semanticAdjudication: { ...input.pending.semanticAdjudication, temporalPerspective: "FORMER" }
+      } },
+      { ...input, correctionTargetVersionId: null }
+    ];
+    for (const variant of variants) {
+      expect(decideMemoryFactRelation(variant, NOW).operation).toBe("CONFLICT");
+    }
+  });
+
+  it("accepts a current adjudication of a grounded future constraint revision", () => {
+    const input = scheduledRevision();
+    expect(decideMemoryFactRelation({
+      ...input,
+      current: {
+        ...input.current,
+        modality: "PLAN",
+        semanticFrame: { ...input.current.semanticFrame, temporalPerspective: "CURRENT" }
+      },
+      pending: {
+        ...input.pending,
+        modality: "CONSTRAINT",
+        semanticAdjudication: {
+          ...input.pending.semanticAdjudication, temporalPerspective: "CURRENT"
+        }
+      }
+    }, NOW).operation).toBe("MOVE_TO_DISTINCT_FACT");
   });
 
   it.each([

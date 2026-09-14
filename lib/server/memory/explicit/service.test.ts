@@ -153,6 +153,26 @@ function scopeRepository(): ExplicitMemoryScopeRepository {
 }
 
 describe("explicit Memory service", () => {
+  it("projects a replayed SAVE through its exact equivalent version without changing the receipt", async () => {
+    const facts = factRepository();
+    vi.mocked(facts.save).mockResolvedValue({
+      eventId: "original-event", factId: "original-alias", versionId: "original-version",
+      memoryGeneration: 0, memoryRevision: 1, outcome: "CREATED", replayed: true
+    });
+    const read = readRepository();
+    const resolveEquivalentTarget = vi.fn(async () => ({ factId: "fact-1", factVersionId: "version-1" }));
+    const service = createExplicitMemoryService({
+      authorizationRepository: authorizationRepository(), clock: () => NOW,
+      factRepository: facts, readRepository: read, resolveEquivalentTarget, scopeRepository: scopeRepository()
+    });
+    await expect(service.create("user-1", {
+      mutationAuthorizationId: "authorization-1", scope: { type: "GLOBAL_USER" }, statement: STATEMENT
+    })).resolves.toMatchObject({ memory: { id: "fact-1", currentVersionId: "version-1" } });
+    expect(resolveEquivalentTarget).toHaveBeenCalledWith("user-1", { factId: "original-alias", factVersionId: "original-version" }, NOW);
+    expect(read.get).toHaveBeenCalledWith("user-1", "fact-1");
+    expect(facts.save).toHaveBeenCalledOnce();
+  });
+
   it("mints a short-lived exact statement authorization without retaining plaintext", async () => {
     const authorizations = authorizationRepository();
     const service = createExplicitMemoryService({
