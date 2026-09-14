@@ -27,7 +27,9 @@ import {
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
 import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
-  MEMORY_RECALL_ROUND_PROJECTION_VERSION
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+  memoryContextualGroundingHash,
+  memoryContextualRoundInputs
 } from "./rounds";
 import type { MemoryHistoryIndexRepository } from "./repository";
 
@@ -333,24 +335,30 @@ describe("Memory INDEX_HISTORY handler", () => {
     };
     const apply = vi.fn(async () => undefined);
     const authorizeResults = vi.fn(async () => undefined);
+    const output = {
+      languageCode: "en",
+      roundId: projectedRound.id,
+      statements: [{ sourceRoundIds: [projectedRound.id], text: "User contextual history 0" }]
+    };
+    const receipts = [{
+      acceptedOutputHash: "c".repeat(64), bindingId: "contextual-generation"
+    }, {
+      acceptedOutputHash: "d".repeat(64), bindingId: "contextual-grounding"
+    }];
     const contextualKeyGenerator = {
       generate: vi.fn(async () => ({
-        executions: [{
-          acceptedOutputHash: "c".repeat(64),
-          bindingId: "contextual-generation"
-        }],
+        executions: receipts,
         fallbackRoundIds: [],
         outputs: [{
-          languageCode: "en",
-          roundId: projectedRound.id,
-          statements: [{
-            sourceRoundIds: [projectedRound.id],
-            text: "User contextual history 0"
-          }]
+          ...output,
+          groundingHash: memoryContextualGroundingHash(
+            memoryContextualRoundInputs([projectedRound])[0]!, output,
+            MEMORY_CONTEXTUAL_KEY_POLICY_VERSION
+          )
         }],
         policyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION as
           typeof MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
-        providerRequests: 1
+        providerRequests: 2
       }))
     };
     const executionContext = context();
@@ -379,7 +387,7 @@ describe("Memory INDEX_HISTORY handler", () => {
     ]);
     expect(result.operationalCounters).toMatchObject({
       contextualGeneratedDeclared: 1,
-      contextualProviderRequests: 1,
+      contextualProviderRequests: 2,
       contextualRoundsFallback: 0,
       contextualRoundsGenerated: 1,
       historyRoundsBuilt: 0
@@ -392,10 +400,7 @@ describe("Memory INDEX_HISTORY handler", () => {
       expect.anything(),
       source.userId,
       currentClaim.id,
-      [{
-        acceptedOutputHash: "c".repeat(64),
-        bindingId: "contextual-generation"
-      }]
+      receipts
     );
     expect(apply).toHaveBeenCalledWith(
       expect.anything(),
@@ -419,7 +424,7 @@ describe("Memory INDEX_HISTORY handler", () => {
       {
         executions: [],
         fallbackDiagnostics: [{
-          reason: "UNSUPPORTED_NUMBER",
+          reason: "SEMANTICALLY_UNSUPPORTED",
           roundId: projectedRound.id
         }],
         fallbackRoundIds: [projectedRound.id],
@@ -431,7 +436,7 @@ describe("Memory INDEX_HISTORY handler", () => {
     );
 
     expect(attached.work).toMatchObject({
-      contextualFallbackReasonCounts: { UNSUPPORTED_NUMBER: 1 },
+      contextualFallbackReasonCounts: { SEMANTICALLY_UNSUPPORTED: 1 },
       contextualLanguageCounts: { fallback: { declared: 1 }, generated: {} },
       contextualRoundsFallback: 1,
       contextualRoundsGenerated: 0

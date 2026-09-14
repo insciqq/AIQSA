@@ -23,6 +23,7 @@ function item(index: number): MemoryPackedItem {
     itemId: `item-${index}`,
     itemType: "RECALL_CHUNK",
     lastConfirmedAt: null,
+    modality: null,
     observedAt: null,
     projectionKind: "CHAT_DIGEST_SAFE_TEXT",
     rawSafeText: `release-${index}`,

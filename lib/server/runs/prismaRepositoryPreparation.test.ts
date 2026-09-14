@@ -14,6 +14,7 @@ import {
   decodeMemoryPreparingSettingsSnapshot
 } from "./preparingRun";
 import {
+  MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION,
   MEMORY_RERANK_AGGREGATION_MAX_BATCHES,
   MEMORY_RERANK_MAX_ATTEMPTS
 } from "../memory/retrieval/runUtilities";
@@ -530,6 +531,77 @@ describe("Memory retrieval execution sequence", () => {
       ordinal: 1,
       state: "FAILED"
     }, retry])).toBe(true);
+  });
+});
+
+describe("dedicated reranker preparation inventory", () => {
+  function batch(route: number, index: number, state = "SUCCEEDED", errorCode: string | null = null) {
+    return {
+      errorCode,
+      inputHash: (index + 1).toString(16).padStart(64, "0"),
+      logicalRole: "MEMORY_RERANK",
+      ordinal: 2 + route * MEMORY_RERANK_AGGREGATION_MAX_BATCHES + index,
+      pipelineVersion: MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION,
+      providerModelId: `reranker-${route}`,
+      state
+    };
+  }
+
+  it.each([[false, false], [false, true], [true, false]])(
+    "accepts independent successful batches for profile=%s aggregation=%s",
+    (profile, aggregation) => {
+      const bindings = [batch(0, 0), batch(0, 1)];
+      expect(validMemoryRetrievalExecutionSequence(bindings, profile, aggregation)).toBe(true);
+      expect(validMemoryRerankRetrySettlement(bindings)).toBe(true);
+    }
+  );
+
+  it("accepts a whole-pool fallback after one batch fails on each earlier model", () => {
+    const bindings = [
+      batch(0, 0), batch(0, 1, "FAILED", "memory_reranker_transient_http_failure"),
+      batch(1, 0, "FAILED", "memory_reranker_model_unavailable"), batch(1, 1),
+      batch(2, 0), batch(2, 1)
+    ];
+    expect(validMemoryRetrievalExecutionSequence(bindings)).toBe(true);
+    expect(validMemoryRerankRetrySettlement(bindings)).toBe(true);
+  });
+
+  it("retains settled evidence when a later model becomes unavailable before binding every batch", () => {
+    const bindings = [batch(0, 0), batch(0, 1, "OUTCOME_UNKNOWN", "rerank_request_timed_out"),
+      batch(1, 1, "FAILED", "memory_reranker_runtime_unavailable")];
+    expect(validMemoryRetrievalExecutionSequence(bindings)).toBe(true);
+    expect(validMemoryRerankRetrySettlement(bindings)).toBe(true);
+  });
+
+  it.each([
+    "success-only-fallback", "permanent-error", "cancelled-primary", "changed-batch", "same-model",
+    "mixed-model", "missing-first-route", "mixed-protocol", "unidentified-input", "reused-batch-input", "skipped-route"
+  ])("rejects an invalid dedicated route: %s", (variation) => {
+    let bindings = [batch(0, 0), batch(0, 1, "FAILED", "memory_reranker_transient_http_failure"),
+      batch(1, 0), batch(1, 1)];
+    if (variation === "success-only-fallback") bindings[1] = batch(0, 1);
+    if (variation === "permanent-error") bindings[1]!.errorCode = "rerank_provider_http_error";
+    if (variation === "cancelled-primary") bindings[1]!.state = "CANCELLED";
+    if (variation === "changed-batch") bindings[2]!.inputHash = "9".repeat(64);
+    if (variation === "same-model") for (const item of bindings.slice(2)) item.providerModelId = "reranker-0";
+    if (variation === "mixed-model") bindings[1]!.providerModelId = "unrelated-reranker";
+    if (variation === "missing-first-route") bindings = bindings.slice(2);
+    if (variation === "mixed-protocol") Object.assign(bindings[1]!, { pipelineVersion: "memory-multilingual-relevance-v31" });
+    if (variation === "unidentified-input") bindings[2]!.inputHash = "";
+    if (variation === "reused-batch-input") bindings[1]!.inputHash = bindings[0]!.inputHash;
+    if (variation === "skipped-route") for (const item of bindings.slice(2)) item.ordinal += MEMORY_RERANK_AGGREGATION_MAX_BATCHES;
+    expect(validMemoryRerankRetrySettlement(bindings)).toBe(false);
+  });
+
+  it("bounds ordinals and rejects duplicate positions or mixed protocols", () => {
+    expect(validMemoryRetrievalExecutionSequence([batch(3, 0)], false, true)).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([batch(0, 0), batch(0, 0)])).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([
+      batch(0, 0), { logicalRole: "MEMORY_RERANK", ordinal: 3 }
+    ])).toBe(false);
+    expect(validMemoryRetrievalExecutionSequence([
+      { ...batch(0, 0), logicalRole: "MEMORY_CONTROL", ordinal: 0 }
+    ])).toBe(false);
   });
 });
 

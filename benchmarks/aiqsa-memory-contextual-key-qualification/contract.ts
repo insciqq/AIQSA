@@ -5,6 +5,10 @@ import {
   decodeMemoryContextualKeyOutputs
 } from "../../lib/server/memory/history/contextualKeys";
 import {
+  buildMemoryContextualGroundingRequest,
+  decodeMemoryContextualGrounding
+} from "../../lib/server/memory/history/contextualGrounding";
+import {
   applyMemoryRecallRoundContextualKeysWithDiagnostics,
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
   type MemoryContextualFallbackReason,
@@ -12,7 +16,7 @@ import {
 } from "../../lib/server/memory/history/rounds";
 import { memorySha256 } from "../../lib/server/memory/persistence/lexical";
 
-export const CONTEXTUAL_KEY_QUALIFICATION_VERSION = 1 as const;
+export const CONTEXTUAL_KEY_QUALIFICATION_VERSION = 2 as const;
 
 type DependencyClass = "CURRENT_ONLY" | "PRIOR_DEPENDENT";
 type LengthClass = "LONG" | "SHORT";
@@ -83,7 +87,7 @@ function paddedCurrent(seed: Seed, ordinal: number, base: string): Readonly<{
   };
 }
 
-function qualificationCases(): readonly QualificationCase[] {
+export function qualificationCases(): readonly QualificationCase[] {
   return Object.freeze((["CURRENT_ONLY", "PRIOR_DEPENDENT"] as const)
     .flatMap((dependencyClass) => seeds.map((seed, ordinal) => {
       const prefix = dependencyClass === "CURRENT_ONLY" ? "current" : "prior";
@@ -157,7 +161,7 @@ function decodeFixtureOutputs(
       roundId: `${candidate.id}-current`
     }));
     const built = buildMemoryContextualKeyRequest(batch);
-    return decodeMemoryContextualKeyOutputs({
+    const proposals = decodeMemoryContextualKeyOutputs({
       rounds: batchCases.map((candidate, ordinal) => ({
         handle: built.handles[ordinal],
         language_code: candidate.languageCode,
@@ -172,6 +176,12 @@ function decodeFixtureOutputs(
         }]
       }))
     }, batch, built.handles);
+    // This lane tests projection/retrieval with fixture decisions. It does not
+    // measure whether a real model generates or correctly supports these keys.
+    const review = buildMemoryContextualGroundingRequest(batch, proposals);
+    return decodeMemoryContextualGrounding({
+      decisions: review.checks.map(({ handle }) => ({ handle, support: "SUPPORTED" }))
+    }, review.checks, batch, proposals).outputs;
   }));
 }
 
@@ -355,7 +365,7 @@ function adversarialDiagnostics(): Readonly<{
     if (!generated) rejectedCount += 1;
     const reasons = new Set(applied.fallbackDiagnostics.map(({ reason }) => reason));
     for (const expected of fixture.expected) {
-      if (!reasons.has(expected)) {
+      if (!reasons.has(expected === "DUPLICATE_STATEMENT" ? expected : "GROUNDING_INVALID")) {
         throw new Error("contextual_qualification_expected_reason_missing");
       }
     }
@@ -434,7 +444,8 @@ export function runContextualKeyQualification() {
     adversarial,
     binding: Object.freeze({
       mode: "DETERMINISTIC_NO_PROVIDER" as const,
-      providerSuccessRate: null
+      providerSuccessRate: null,
+      semanticReview: "FIXTURE_DECISIONS" as const
     }),
     corpus: Object.freeze({
       caseCount: evaluated.length,
@@ -442,9 +453,9 @@ export function runContextualKeyQualification() {
       priorDependentCount: priorRanks.length
     }),
     decision: Object.freeze({
-      controlledEquivalenceEnabled: false,
-      reason: "REAL_PROVIDER_EVIDENCE_UNAVAILABLE_STRICT_VALIDATOR_RETAINED" as const,
-      validatorMode: "STRICT_SOURCE_BOUND" as const
+      providerQualified: false,
+      reason: "FIXTURE_EVIDENCE_ONLY_REAL_PROVIDER_QUALIFICATION_REQUIRED" as const,
+      validatorMode: "SEMANTIC_SOURCE_BOUND" as const
     }),
     dimensions: Object.freeze({
       byDependency: groupedOutcome(evaluated,

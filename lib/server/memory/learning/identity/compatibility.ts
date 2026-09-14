@@ -14,6 +14,54 @@ export function memoryIdentityKeyHash(canonicalKey: string): string {
   return memorySha256(canonicalKey);
 }
 
+/** Resolve recorded bytes through the owner/container-bound ledger. Never
+ * reconstruct a historical key from current text. Unmapped forgotten roots
+ * remain candidates for suppression checks, but cannot authorize identity reuse. */
+export async function memoryRecordedLegacyIdentityKeys(
+  tx: MemoryTransaction,
+  input: Readonly<{
+    containerId: string;
+    namespace: MemoryIdentityCompatibilityNamespace;
+    unicodeCanonicalKey: string;
+    userId: string;
+  }>
+): Promise<readonly Readonly<{ canonicalKey: string; unambiguous: boolean }>[]> {
+  const roots = input.namespace === "FACT"
+    ? Prisma.sql`
+        SELECT "canonicalKey", "state" = 'FORGOTTEN' AS "forgotten"
+        FROM "MemoryFact"
+        WHERE "userId" = ${input.userId} AND "scopeId" = ${input.containerId}
+          AND "identityVersion" IN ('proposition-v1', 'slot-v2')
+          AND "category" <> 'patterns'
+      `
+    : Prisma.sql`
+        SELECT "canonicalKey", FALSE AS "forgotten"
+        FROM "MemoryEntity"
+        WHERE "userId" = ${input.userId} AND ${input.containerId} = 'ENTITY'
+          AND "canonicalKey" LIKE ${input.namespace === "GROUNDED_ENTITY"
+            ? "entity:v3:%" : "entity:v2:%"}
+      `;
+  return tx.$queryRaw(Prisma.sql`
+    WITH roots AS (${roots})
+    SELECT roots."canonicalKey",
+      COUNT(DISTINCT mapping."unicodeKeyHash") = 1 AND
+        COALESCE(BOOL_OR(mapping."unicodeKeyHash" = ${memoryIdentityKeyHash(
+          input.unicodeCanonicalKey
+        )}), FALSE) AS "unambiguous"
+    FROM roots
+    LEFT JOIN "MemoryIdentityCompatibility" AS mapping
+      ON mapping."userId" = ${input.userId}
+      AND mapping."namespace" = ${input.namespace}
+      AND mapping."containerId" = ${input.containerId}
+      AND mapping."legacyKeyHash" = encode(digest(roots."canonicalKey", 'sha256'), 'hex')
+    GROUP BY roots."canonicalKey", roots."forgotten"
+    HAVING COALESCE(BOOL_OR(mapping."unicodeKeyHash" = ${memoryIdentityKeyHash(
+      input.unicodeCanonicalKey
+    )}), FALSE) OR (roots."forgotten" AND COUNT(mapping."id") = 0)
+    ORDER BY roots."canonicalKey"
+  `);
+}
+
 export async function registerMemoryIdentityCompatibility(
   tx: MemoryTransaction,
   input: Readonly<{

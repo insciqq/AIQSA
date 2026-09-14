@@ -184,6 +184,105 @@ function detail(factId: string, versionId: string) {
 }
 
 describe("native facts-only Memory search", () => {
+  it.each([
+    { count: 12, limit: 9, longStatements: false },
+    { count: 4, limit: 4, longStatements: true }
+  ])("honors the native result limit without chat context limits: %j", async ({ count, limit, longStatements }) => {
+    const candidates = Array.from({ length: count }, (_, index) => {
+      const key = String(index).padStart(2, "0");
+      return factCandidate(`fact-${key}`, `version-${key}`, "FACT_LEXICAL_UNICODE");
+    });
+    const statement = (factId: string) => longStatements
+      ? `${factId}: ${"我喜欢安静的阅读空间。".repeat(180)}`
+      : `A separate saved preference ${factId}.`;
+    const state = snapshot({ decayEnabled: true, decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION });
+    const get = vi.fn(async (_userId: string, factId: string) => {
+      const value = detail(factId, `version-${factId.slice(5)}`);
+      return { ...value, memory: { ...value.memory, displayText: statement(factId) } };
+    });
+    const scheduleTouch = vi.fn();
+    const service = createMemoryNativeFactSearchService({
+      clock: () => now,
+      explicitService: { get },
+      refs: refs(),
+      repository: {
+        expand: vi.fn(async (_snapshot: unknown, _plan: MemoryRetrievalPlan, ranked: readonly MemoryRankedCandidate[]) =>
+          ranked.map((candidate) => ({ ...expansion(candidate), safeText: statement(candidate.metadata.factId!) }))),
+        retrieve: vi.fn(async () => ({
+          core: [], laneResults: [{ candidates, lane: "FACT_LEXICAL_UNICODE" as const }],
+          lexicalEvidence: [], lexicalFailures: [], lexicalState: "READY" as const,
+          snapshot: state, vectorEvidence: [], vectorState: "DEGRADED" as const
+        })),
+        snapshot: vi.fn(async () => state)
+      } as MemoryNativeFactSearchDependencies["repository"],
+      scheduleTouch
+    });
+
+    const result = await service.search("user-1", { limit, query: "my saved preferences", requestId: "request-native-limit", signal });
+
+    expect(result.items.map(({ statement: text }) => text)).toEqual(
+      candidates.slice(0, limit).map((candidate) => statement(candidate.metadata.factId!))
+    );
+    expect(get).toHaveBeenCalledTimes(limit);
+    expect(scheduleTouch).toHaveBeenCalledWith({
+      facts: candidates.slice(0, limit).map((candidate) => ({ factId: candidate.metadata.factId, factVersionId: candidate.itemId })),
+      now, userId: "user-1"
+    });
+  });
+
+  it.each(["unsafe_text", "duplicate_identity", "wrong_source", "unexpected_pattern_support"] as const)(
+    "quarantines an invalid final projection without losing other facts: %s",
+    async (fault) => {
+      const candidates = [
+        factCandidate("fact-invalid", "version-invalid", "FACT_LEXICAL_UNICODE"),
+        factCandidate("fact-safe", "version-safe", "FACT_LEXICAL_UNICODE")
+      ];
+      const state = snapshot({ decayEnabled: true, decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION });
+      let expansionCall = 0;
+      const expand = vi.fn(async (_snapshot: unknown, _plan: MemoryRetrievalPlan, ranked: readonly MemoryRankedCandidate[]) => {
+        expansionCall += 1;
+        return ranked.flatMap((candidate) => {
+          const value = expansion(candidate);
+          if (expansionCall === 1 || candidate.metadata.factId !== "fact-invalid") return [value];
+          if (fault === "unsafe_text") return [{ ...value, safeText: "invalid\u0000projection" }];
+          if (fault === "duplicate_identity") return [value, value];
+          if (fault === "wrong_source") return [{ ...value, sourceChatId: "unrelated-chat" }];
+          return [{ ...value, patternSupportingEvidence: [{
+            itemId: "support-version", observedAt: now, safeText: "A separate direct observation.",
+            sourceAuthority: "DIRECT_AUTOMATIC" as const, sourceChatId: "support-chat", sourceRootHash: "a".repeat(64)
+          }] }];
+        });
+      });
+      const get = vi.fn(async (_userId: string, factId: string) => detail(factId, `version-${factId.slice(5)}`));
+      const scheduleTouch = vi.fn();
+      const service = createMemoryNativeFactSearchService({
+        clock: () => now,
+        explicitService: { get },
+        refs: refs(),
+        repository: {
+          expand,
+          retrieve: vi.fn(async () => ({
+            core: [], laneResults: [{ candidates, lane: "FACT_LEXICAL_UNICODE" as const }],
+            lexicalEvidence: [], lexicalFailures: [], lexicalState: "READY" as const,
+            snapshot: state, vectorEvidence: [], vectorState: "DEGRADED" as const
+          })),
+          snapshot: vi.fn(async () => state)
+        } as MemoryNativeFactSearchDependencies["repository"],
+        scheduleTouch
+      });
+
+      const result = await service.search("user-1", { limit: 1, query: "saved facts", requestId: "request-safe-projections", signal });
+
+      expect(result.items.map(({ statement }) => statement)).toEqual(["Fact fact-safe"]);
+      expect(expand).toHaveBeenCalledTimes(2);
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(get).toHaveBeenCalledWith("user-1", "fact-safe");
+      expect(scheduleTouch).toHaveBeenCalledWith({
+        facts: [{ factId: "fact-safe", factVersionId: "version-safe" }], now, userId: "user-1"
+      });
+    }
+  );
+
   it("uses native hybrid ranking for a vector-only semantic match", async () => {
     const target = factCandidate("fact-target", "version-target");
     const distractor = factCandidate("fact-distractor", "version-distractor");
@@ -276,7 +375,7 @@ describe("native facts-only Memory search", () => {
       recencyRequested: false,
       temporalIntent: "ANY"
     });
-    expect(retrievalInput?.plan.filters.sourceKinds).toEqual(["FACT"]);
+    expect(retrievalInput?.plan.filters.sourceKinds).toEqual(["FACT", "EVENT"]);
     expect(retrievalInput?.plan.semanticQueryVariants).toEqual([{
       kind: "ORIGINAL",
       text: "What should I call you?"

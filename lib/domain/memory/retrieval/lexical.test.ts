@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   analyzeMemoryLexicalQuery,
   MEMORY_LEXICAL_QUERY_ANALYSIS_VERSION,
+  memoryLexicalQueryWindows,
   normalizeMemoryLexicalProjection
 } from "./lexical";
 
@@ -44,5 +45,16 @@ describe("Memory language-neutral lexical query analysis", () => {
     expect(analyzeMemoryLexicalQuery("2025-08-27 1536").logicalTerms).toEqual([
       "2025", "08", "27", "1536"
     ]);
+  });
+
+  it("retains the complete query and bounds later Unicode windows independently", () => {
+    const first = Array.from({ length: 64 }, (_, index) => `term${index}`).join(" ");
+    const query = `${first} НОВЫЙ ${first} 東京計画`;
+    const windows = memoryLexicalQueryWindows(query);
+    expect(windows[0]).toBe(normalizeMemoryLexicalProjection(query));
+    expect(windows.slice(1).join(" ")).toBe(`новый ${first} 東京計画`);
+    expect(windows.slice(1).flatMap((text) =>
+      analyzeMemoryLexicalQuery(text).logicalTerms)).toContain("東京計画");
+    expect(memoryLexicalQueryWindows("  Café 東京計画  ")).toEqual(["café 東京計画"]);
   });
 });

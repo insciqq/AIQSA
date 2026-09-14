@@ -96,6 +96,36 @@ describe("language-neutral Memory identity registry", () => {
     expect(former.identityKind).toBe("PROPOSITION");
   });
 
+  it.each(["UNICODE_V2"] as const)(
+    "preserves negation as a full proposition instead of a positive SLOT in %s",
+    (profile) => {
+      const result = resolveMemoryIdentity({
+        identity: identity({
+          mode: "SLOT",
+          predicateKey: "product_status",
+          subject: {
+            canonicalLabel: "Birch tablet",
+            entityType: "DEVICE",
+            qualifiers: { brand: null, model: "Birch tablet" }
+          }
+        }),
+        memoryType: "STATE",
+        semanticFrame: { ...frame, polarity: "NEGATED" },
+        statement: "The user does not own a Birch tablet.",
+        value: { ...emptyValue, state: "owned" }
+      }, profile);
+      expect(result).toMatchObject({
+        dimensionKey: null,
+        identityKind: "PROPOSITION",
+        predicateKey: null,
+        structuredValue: { schema: "generic-fact-v1" },
+        subjectKey: null
+      });
+      expect(result.structuredValue.normalizedStatement).toContain("does not own");
+      expect(result.structuredValue).not.toHaveProperty("state");
+    }
+  );
+
   it("falls back conservatively when a SLOT vocabulary is incomplete", () => {
     const result = resolveMemoryIdentity({
       identity: identity({
@@ -175,14 +205,6 @@ describe("language-neutral Memory identity registry", () => {
       statement: "opaque preference",
       value: { ...emptyValue, value: "concise" }
     });
-    const legacyAscii = resolveMemoryIdentity(
-      proposal("topic:caf"),
-      "LEGACY_V1"
-    );
-    const legacyUnicode = resolveMemoryIdentity(
-      proposal("topic:cafè"),
-      "LEGACY_V1"
-    );
     const unicodeAscii = resolveMemoryIdentity(
       proposal("topic:caf"),
       "UNICODE_V2"
@@ -191,7 +213,8 @@ describe("language-neutral Memory identity registry", () => {
       proposal("topic:cafè"),
       "UNICODE_V2"
     );
-    expect(legacyUnicode.canonicalKey).toBe(legacyAscii.canonicalKey);
+    expect(() => resolveMemoryIdentity(proposal("topic:cafè"), "LEGACY_V1"))
+      .toThrow("memory_identity_profile_retired");
     expect(unicodeLabel.canonicalKey).not.toBe(unicodeAscii.canonicalKey);
     expect(unicodeLabel.identityVersion).toBe("slot-v4");
   });

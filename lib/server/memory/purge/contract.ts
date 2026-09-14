@@ -10,9 +10,11 @@ export const MEMORY_PURGE_REQUIRED_CONTRIBUTORS = Object.freeze([
   Object.freeze({ id: "feedback-records", version: "v1" }),
   Object.freeze({ id: "fact-search", version: "v1" }),
   Object.freeze({ id: "fact-version-content", version: "v1" }),
+  // Jobs own recovery and accounted executions that fact deletion can cascade.
+  // Their contributor detaches usage before the ledger removes fact versions.
+  Object.freeze({ id: "all-reusable-work", version: "v1" }),
   Object.freeze({ id: "all-reusable-ledger", version: "v1" }),
   Object.freeze({ id: "fact-evidence", version: "v1" }),
-  Object.freeze({ id: "all-reusable-work", version: "v1" }),
   Object.freeze({ id: "all-reusable-indexes", version: "v1" })
 ]);
 

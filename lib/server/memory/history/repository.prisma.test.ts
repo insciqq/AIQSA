@@ -69,6 +69,7 @@ import { createMemoryRebuildHandler } from "../rebuild/handler";
 import { createPrismaMemoryRebuildRepository } from "../rebuild/repository";
 import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from "./segments";
 import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "./toolEvents";
+import { purgeMemoryHistorySelection } from "./purge";
 
 async function mutateSource(
   userId: string,
@@ -249,13 +250,13 @@ async function processHistoryJob(
   const now = new Date();
   const result = await handler.execute(claim, executionContext(now));
   const coordinator = createPrismaMemoryCoordinatorRepository(prisma);
-  await expect(coordinator.commitJobSuccess({
+  expect(await coordinator.commitJobSuccess({
     acceptedResultHash: result.acceptedResultHash,
     apply: result.apply,
     claim,
     now,
     stage: result.stage ?? null
-  })).resolves.toBe(true);
+  })).toBe(true);
   return { claim, result };
 }
 
@@ -509,7 +510,8 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
-  it("reindexes a legacy READY checkpoint locally despite a legacy classifier result", async () => {
+  it.each(["memory-history-index-v1", "memory-history-incremental-v8"])(
+    "reindexes a legacy READY checkpoint %s locally despite a legacy classifier result", async (previousPipeline) => {
     const userId = await createOwner("memory-history-checkpoint-upgrade");
     try {
       const chat = await prisma.chat.create({
@@ -543,7 +545,7 @@ describe("Memory lexical history index persistence", () => {
           chatId: source.id,
           lastIndexedMessageId: source.activeLeafMessageId,
           lastSucceededAt: new Date("2026-08-20T10:01:00.000Z"),
-          pipelineVersion: "memory-history-index-v1",
+          pipelineVersion: previousPipeline,
           sourceContentHash: source.sourceHash,
           sourceRevision: source.memorySourceRevision,
           status: "READY",
@@ -1996,6 +1998,62 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
+  it("limits user-only expansion provenance to its rendered testimony", async () => {
+    const userId = await createOwner("memory-history-user-provenance");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "Rendered testimony provenance", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "I will bring the oak display board.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-10T08:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "I chose the cedar display board."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: turn.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: turn.assistantMessage.id,
+          runId: turn.run.id,
+          status: "complete"
+        }
+      });
+      await processHistoryJob(userId);
+      const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+      const now = new Date("2026-08-10T09:00:00.000Z");
+      const plan = planMemoryRetrieval({
+        currentUserText: "cedar display board",
+        filters: { sourceKinds: ["HISTORY"] },
+        mode: "PAST_CHAT_SEARCH",
+        now,
+        temporalIntent: "ANY"
+      });
+      const retrieved = await repository.retrieve({
+        assistantId: null, chatId: chat.id, now, plan, userId
+      });
+      const selected = fuseMemoryRetrievalCandidates(plan, retrieved.laneResults, now)
+        .find((candidate) => candidate.itemType === "RECALL_ROUND");
+      expect(selected?.matchedSegmentId).toBeTruthy();
+      const [conversation] = await repository.expand(retrieved.snapshot, plan, [selected!]);
+      expect(new Set(conversation?.sourceMessageIds)).toEqual(new Set([
+        turn.userMessage.id, turn.assistantMessage.id
+      ]));
+      const [testimony] = await repository.expand(retrieved.snapshot, plan, [{
+        ...selected!, historyEvidenceView: "USER_TESTIMONY"
+      }]);
+      expect(testimony?.safeText).toBe("User: I chose the cedar display board.");
+      expect(testimony?.sourceMessageIds).toEqual([turn.userMessage.id]);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it("carries cited contextual evidence and falls back to raw when a dependency drifts", async () => {
     const userId = await createOwner("memory-history-contextual-dependencies");
     try {
@@ -2307,6 +2365,12 @@ describe("Memory lexical history index persistence", () => {
           safeText: stored?.rawSafeText
         });
         expect(expanded?.safeText).toContain(query);
+        const segmentMessages = await prisma.memoryRecallRoundSegmentMessage.findMany({
+          orderBy: { ordinal: "asc" },
+          select: { messageId: true },
+          where: { segmentId: stored!.id, userId }
+        });
+        expect(expanded?.sourceMessageIds).toEqual(segmentMessages.map(({ messageId }) => messageId));
       }
 
       const rebuild = createPrismaMemoryRebuildRepository(prisma);
@@ -3020,6 +3084,110 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
+  it("reprojects an older tool event in an unchanged prefix without rebuilding its history", async () => {
+    const userId = await createOwner("memory-tool-projection-upgrade");
+    try {
+      const chat = await prisma.chat.create({ data: { title: "Tool projection upgrade", userId } });
+      const first = await createTurn({
+        assistantText: "The file is ready.", chatId: chat.id,
+        createdAt: new Date("2026-08-28T12:00:00Z"), parentMessageId: null,
+        userId, userText: "Create a report."
+      });
+      const call = await prisma.modelRunToolCall.create({
+        data: {
+          arguments: {}, completedAt: new Date("2026-08-28T12:00:02Z"),
+          modelRunId: first.run.id, ordinal: 0, providerCallId: "upgrade-call",
+          result: { filename: "report.csv", status: "complete" },
+          roundIndex: 0, state: "complete", toolName: "filesystem.write"
+        }
+      });
+      const last = await createTurn({
+        assistantText: "You're welcome.", chatId: chat.id,
+        createdAt: new Date("2026-08-28T12:05:00Z"),
+        parentMessageId: first.assistantMessage.id, userId, userText: "Thank you."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"], patch: { activeLeafMessageId: last.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: last.assistantMessage.id, runId: last.run.id, status: "complete"
+        }
+      });
+      await processHistoryJob(userId);
+      const initial = await prisma.memoryToolEvent.findFirstOrThrow({ where: { userId } });
+      // This fixed v1 projection has the same safe data and source proof as
+      // the old writer. Its old hash/id are retained until replacement.
+      const projectionVersion = "memory-tool-event-v1";
+      const contentHash = memorySha256({
+        occurredAt: initial.occurredAt.toISOString(), operation: initial.operation,
+        outcome: initial.outcome, projectionVersion, safeProjectedText: initial.safeProjectedText,
+        sourcePayloadHash: initial.sourcePayloadHash,
+        structuredIdentifiers: initial.structuredIdentifiers, toolName: initial.toolName
+      });
+      const legacyId = memorySha256({
+        contentHash, domain: "aiqsa.memory.tool-event", modelRunToolCallId: call.id,
+        projectionVersion, userId
+      });
+      await prisma.$transaction(async (tx) => {
+        await tx.memorySearchEntry.deleteMany({ where: { toolEventId: initial.id, userId } });
+        await tx.memoryToolEvent.delete({ where: { id: initial.id } });
+        await tx.memoryToolEvent.create({
+          data: {
+            ...initial, contentHash, id: legacyId, projectionVersion,
+            structuredIdentifiers: initial.structuredIdentifiers as Prisma.InputJsonObject
+          }
+        });
+      });
+      const legacy = await prisma.memoryToolEvent.findUniqueOrThrow({ where: { id: legacyId } });
+      const chunks = await prisma.memoryRecallChunk.findMany({ where: { userId }, orderBy: { id: "asc" } });
+      const rounds = await prisma.memoryRecallRound.findMany({ where: { userId }, orderBy: { id: "asc" } });
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      // A maintenance pass must preserve the signal before backfill sees it.
+      await prisma.$transaction((tx) => purgeMemoryHistorySelection(
+        tx, userId, { chatId: chat.id, kind: "SOURCE" }
+      ));
+      await expect(prisma.memoryToolEvent.findUnique({ where: { id: legacyId } })).resolves.toEqual(legacy);
+      await expect(readMemoryHistoryIndexingProgress(prisma, userId, true))
+        .resolves.toMatchObject({ completedChats: 0, state: "INDEXING", totalChats: 1 });
+      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 1 });
+      const claim = await claimHistoryJob(userId);
+      const prepared = await createPrismaMemoryHistoryIndexRepository(prisma).prepare(claim);
+      if ("decision" in prepared) throw new Error("tool_upgrade_preparation_rejected");
+      expect(prepared.plan.work).toMatchObject({
+        chunksBuilt: 0, messagesProjected: 0, roundsBuilt: 0, toolEventsBuilt: 1
+      });
+      const handler = createPrismaMemoryHistoryIndexHandler(prisma, normalHistoryClassifier);
+      const now = new Date();
+      const result = await handler.execute(claim, executionContext(now));
+      await expect(createPrismaMemoryCoordinatorRepository(prisma).commitJobSuccess({
+        acceptedResultHash: result.acceptedResultHash, apply: result.apply,
+        claim, now, stage: result.stage ?? null
+      })).resolves.toBe(true);
+      await expect(prisma.memoryToolEvent.findUnique({ where: { id: legacyId } }))
+        .resolves.toMatchObject({ ...legacy, invalidatedAt: now, state: "INVALIDATED" });
+      await expect(prisma.memoryToolEvent.findFirstOrThrow({ where: { state: "ACTIVE", userId } }))
+        .resolves.toMatchObject({ id: initial.id, outcome: "SUCCESS", projectionVersion: MEMORY_TOOL_EVENT_PROJECTION_VERSION });
+      await expect(prisma.memorySearchEntry.count({ where: { itemType: "TOOL_EVENT", userId } })).resolves.toBe(1);
+      await expect(prisma.memoryRecallChunk.findMany({ where: { userId }, orderBy: { id: "asc" } })).resolves.toEqual(chunks);
+      await expect(prisma.memoryRecallRound.findMany({ where: { userId }, orderBy: { id: "asc" } })).resolves.toEqual(rounds);
+      await expect(prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: call.id } })).resolves.toEqual(call);
+      await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }))
+        .resolves.toMatchObject({ memoryGeneration: settings.memoryGeneration });
+      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 0 });
+      await expect(readMemoryHistoryIndexingProgress(prisma, userId, true))
+        .resolves.toMatchObject({ completedChats: 1, state: "READY", totalChats: 1 });
+      await prisma.$transaction((tx) => purgeMemoryHistorySelection(
+        tx, userId, { chatId: chat.id, kind: "SOURCE" }
+      ));
+      await expect(prisma.memoryToolEvent.findUnique({ where: { id: legacyId } })).resolves.toBeNull();
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it("indexes, retrieves, rebuilds, corrects, and excludes safe typed tool observations", async () => {
     const userId = await createOwner("memory-tool-observation");
     const foreignUserId = await createOwner("memory-tool-observation-foreign");
@@ -3109,6 +3277,34 @@ describe("Memory lexical history index persistence", () => {
       await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(0);
       await expect(prisma.memorySynthesisExecution.count({ where: { userId } }))
         .resolves.toBe(0);
+
+      async function assertToolCheckpointPipeline(pipelineVersion: string) {
+        await prisma.$transaction(async (tx) => {
+          await tx.chatMemoryCheckpoint.update({
+            data: { pipelineVersion },
+            where: { userId_chatId: { chatId: chat.id, userId } }
+          });
+          await tx.$executeRaw`
+            SELECT public.aiqsa_memory_assert_tool_event_source(
+              ${userId}, ${initialEvent.id}
+            )
+          `;
+        });
+      }
+      for (const pipelineVersion of [
+        "memory-history-incremental-v8",
+        MEMORY_HISTORY_INDEX_PIPELINE_VERSION
+      ]) {
+        await assertToolCheckpointPipeline(pipelineVersion);
+        await expect(prisma.memoryToolEvent.findUniqueOrThrow({
+          where: { id: initialEvent.id }
+        })).resolves.toEqual(initialEvent);
+      }
+      await expect(assertToolCheckpointPipeline("memory-history-unsupported"))
+        .rejects.toMatchObject({ code: "P2010", meta: { code: "23514" } });
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({ pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION });
 
       const retrievalNow = new Date("2026-08-28T13:00:00.000Z");
       const retrievalPlan = planMemoryRetrieval({

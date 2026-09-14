@@ -66,8 +66,10 @@ import {
 import { MEMORY_DECAY_POLICY_VERSION } from "../../domain/memory/retrieval";
 import { scheduleMemoryDecayTouch } from "../memory/retrieval/decayTouch";
 import {
+  MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION,
   MEMORY_RERANK_AGGREGATION_MAX_BATCHES,
-  MEMORY_RERANK_MAX_ATTEMPTS
+  MEMORY_RERANK_MAX_ATTEMPTS,
+  MEMORY_RERANK_MAX_ROUTE_MODELS
 } from "../memory/retrieval/runUtilities";
 import {
   decodeMemoryActionFeedback,
@@ -1734,6 +1736,8 @@ const rerankBatchPrimaryOrdinals = Array.from(
 );
 const rerankExecutionOrdinalCount =
   MEMORY_RERANK_AGGREGATION_MAX_BATCHES * MEMORY_RERANK_MAX_ATTEMPTS;
+const dedicatedRerankExecutionOrdinalCount =
+  MEMORY_RERANK_AGGREGATION_MAX_BATCHES * MEMORY_RERANK_MAX_ROUTE_MODELS;
 const maximumTargetedRetrievalBindings = 2 + 4 + 1 + MEMORY_RERANK_MAX_ATTEMPTS;
 const maximumAggregationRetrievalBindings = 2 + 4 +
   rerankExecutionOrdinalCount;
@@ -1755,32 +1759,61 @@ const retrievalExecutionOrdinals = new Map<string, ReadonlySet<number>>([
   ))]
 ]);
 
+type MemoryRetrievalExecutionPosition = Readonly<{
+  logicalRole: string;
+  ordinal: number;
+  pipelineVersion?: string;
+}>;
+
+function dedicatedRerankPosition(binding: MemoryRetrievalExecutionPosition): boolean {
+  return binding.logicalRole === "MEMORY_RERANK" &&
+    binding.pipelineVersion === MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION;
+}
+
+function validRetrievalExecutionPosition(binding: MemoryRetrievalExecutionPosition): boolean {
+  if (binding.pipelineVersion === MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION) {
+    return dedicatedRerankPosition(binding) && Number.isSafeInteger(binding.ordinal) &&
+      binding.ordinal >= 2 && binding.ordinal < 2 + dedicatedRerankExecutionOrdinalCount;
+  }
+  return retrievalExecutionOrdinals.get(binding.logicalRole)?.has(binding.ordinal) === true;
+}
+
 export function validMemoryRetrievalExecutionSequence(
-  bindings: readonly Readonly<{ logicalRole: string; ordinal: number }>[],
+  bindings: readonly MemoryRetrievalExecutionPosition[],
   profileRequested = false,
   aggregationRequested = false,
   speculativeQueryResolverDeclared = false
 ): boolean {
   if (profileRequested && aggregationRequested) return false;
-  if (bindings.length > (aggregationRequested
+  const dedicated = bindings.some(dedicatedRerankPosition);
+  if (dedicated && bindings.some((binding) =>
+    binding.logicalRole === "MEMORY_RERANK" && !dedicatedRerankPosition(binding))) return false;
+  const maximumBindings = dedicated
+    ? 2 + 4 + dedicatedRerankExecutionOrdinalCount +
+      (!aggregationRequested || speculativeQueryResolverDeclared ? 1 : 0)
+    : aggregationRequested
     ? maximumAggregationRetrievalBindings + (speculativeQueryResolverDeclared ? 1 : 0)
-    : maximumTargetedRetrievalBindings)) return false;
+    : maximumTargetedRetrievalBindings;
+  if (bindings.length > maximumBindings) return false;
   const positions = bindings.map((binding) =>
     `${binding.logicalRole}:${binding.ordinal}`);
   if (new Set(positions).size !== positions.length || bindings.some((binding) =>
     !retrievalExecutionRoles.has(binding.logicalRole) ||
-    !retrievalExecutionOrdinals.get(binding.logicalRole)?.has(binding.ordinal)
+    !validRetrievalExecutionPosition(binding)
   )) return false;
   const present = new Set(positions);
-  if (!aggregationRequested && bindings.some((binding) =>
+  if (!dedicated && !aggregationRequested && bindings.some((binding) =>
     binding.logicalRole === "MEMORY_RERANK" &&
       binding.ordinal >= 2 + MEMORY_RERANK_MAX_ATTEMPTS)) return false;
   if (aggregationRequested && !speculativeQueryResolverDeclared &&
     bindings.some((binding) =>
       binding.logicalRole === "MEMORY_QUERY_RESOLVE")) return false;
-  if (profileRequested && positions.some((position) =>
-    !profileRetrievalExecutionPositions.has(position) &&
-    !(speculativeQueryResolverDeclared && position === "MEMORY_QUERY_RESOLVE:0"))) {
+  if (profileRequested && bindings.some((binding) => {
+    const position = `${binding.logicalRole}:${binding.ordinal}`;
+    return !dedicatedRerankPosition(binding) &&
+      !profileRetrievalExecutionPositions.has(position) &&
+      !(speculativeQueryResolverDeclared && position === "MEMORY_QUERY_RESOLVE:0");
+  })) {
     return false;
   }
   return (
@@ -1831,13 +1864,54 @@ export function memorySpeculativeQueryResolverInventoryDeclared(
     value.componentMetrics.plannerFallbackUsed === true;
 }
 
+type MemoryRetrievalExecutionSettlement = MemoryRetrievalExecutionPosition & Readonly<{
+  errorCode: string | null;
+  inputHash?: string;
+  providerModelId?: string | null;
+  state: string;
+}>;
+
+function validDedicatedRerankSettlement(
+  bindings: readonly MemoryRetrievalExecutionSettlement[]
+): boolean {
+  const reranks = bindings.filter((binding) => binding.logicalRole === "MEMORY_RERANK");
+  if (reranks.some((binding) => !dedicatedRerankPosition(binding) ||
+    !validRetrievalExecutionPosition(binding) || !binding.providerModelId ||
+    typeof binding.inputHash !== "string" || !/^[a-f0-9]{64}$/u.test(binding.inputHash))) return false;
+  const routes = Array.from({ length: MEMORY_RERANK_MAX_ROUTE_MODELS }, (_, index) =>
+    reranks.filter((binding) =>
+      Math.floor((binding.ordinal - 2) / MEMORY_RERANK_AGGREGATION_MAX_BATCHES) === index));
+  const routeModels = new Set<string>();
+  for (const [routeIndex, route] of routes.entries()) {
+    if (route.length === 0) continue;
+    const model = route[0]!.providerModelId!;
+    if (routeModels.has(model) || route.some((binding) => binding.providerModelId !== model) ||
+      new Set(route.map(({ inputHash }) => inputHash)).size !== route.length) return false;
+    routeModels.add(model);
+    if (routeIndex === 0) continue;
+    const previous = routes[routeIndex - 1]!;
+    const failed = previous.filter((binding) => binding.state !== "SUCCEEDED");
+    if (failed.length === 0 || failed.some((binding) => !(
+      binding.state === "FAILED" && [
+        "memory_run_utility_output_invalid", "rerank_response_invalid",
+        "memory_reranker_model_unavailable", "memory_reranker_runtime_unavailable",
+        "memory_reranker_transient_http_failure"
+      ].includes(binding.errorCode ?? "") || binding.state === "OUTCOME_UNKNOWN" && [
+        "memory_reranker_outcome_unknown", "rerank_provider_request_failed", "rerank_request_timed_out"
+      ].includes(binding.errorCode ?? "")
+    ))) return false;
+    // A fallback reranks the same complete pool on a different governed model.
+    // A successful earlier batch is repeated along with the failed batches;
+    // its success does not make that new-model batch an invalid retry.
+    if (route.some((binding) => !previous.some((prior) =>
+      prior.ordinal === binding.ordinal - MEMORY_RERANK_AGGREGATION_MAX_BATCHES &&
+      prior.inputHash === binding.inputHash))) return false;
+  }
+  return true;
+}
+
 export function validMemoryRerankRetrySettlement(
-  bindings: readonly Readonly<{
-    errorCode: string | null;
-    logicalRole: string;
-    ordinal: number;
-    state: string;
-  }>[]
+  bindings: readonly MemoryRetrievalExecutionSettlement[]
 ): boolean {
   const validGenerativePrimary = (
     primary: Readonly<{
@@ -1862,7 +1936,9 @@ export function validMemoryRerankRetrySettlement(
     primary.errorCode === "memory_reranker_transient_http_failure" ||
     primary.errorCode === "rerank_response_invalid"
   );
-  const rerankValid = rerankBatchPrimaryOrdinals.every((primaryOrdinal) =>
+  const rerankValid = bindings.some(dedicatedRerankPosition)
+    ? validDedicatedRerankSettlement(bindings)
+    : rerankBatchPrimaryOrdinals.every((primaryOrdinal) =>
     Array.from(
       { length: MEMORY_RERANK_MAX_ATTEMPTS - 1 },
       (_, index) => primaryOrdinal + index + 1
@@ -2109,6 +2185,7 @@ async function loadPreparingAttemptExecutionEvidence(
     const snapshots: MemorySecretFreeExecutionSnapshot[] = [];
     const roles: string[] = [];
     const fingerprints = new Set<string>();
+    const dedicatedRouteSnapshots = new Map<number, string>();
     for (const binding of bindings) {
       const bindingAttemptId = binding.id === reusedControlBindingId
         ? reuseProof!.sourceAttemptId
@@ -2122,7 +2199,7 @@ async function loadPreparingAttemptExecutionEvidence(
         binding.modelRunToolCallId !== null ||
         binding.relationsDetachedAt !== null ||
         !retrievalExecutionRoles.has(binding.logicalRole) ||
-        !retrievalExecutionOrdinals.get(binding.logicalRole)?.has(binding.ordinal) ||
+        !validRetrievalExecutionPosition(binding) ||
         (binding.state !== "SUCCEEDED" &&
           binding.state !== "FAILED" &&
           binding.state !== "CANCELLED" &&
@@ -2133,6 +2210,15 @@ async function loadPreparingAttemptExecutionEvidence(
       ) throw new Error("binding_invalid");
       const snapshot = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
       assertMemoryExecutionBindingLineage(binding, snapshot);
+      if (dedicatedRerankPosition(binding)) {
+        const routeIndex = Math.floor((binding.ordinal - 2) / MEMORY_RERANK_AGGREGATION_MAX_BATCHES);
+        const snapshotHash = memoryPreparingHash(snapshot);
+        const previous = dedicatedRouteSnapshots.get(routeIndex);
+        const model = snapshot.providerExecutionSnapshot.model;
+        if (model.adapterKind === "fake" || model.modelClass !== "reranker" ||
+          previous !== undefined && previous !== snapshotHash) throw new Error("rerank_route_snapshot_invalid");
+        dedicatedRouteSnapshots.set(routeIndex, snapshotHash);
+      }
       snapshots.push(snapshot);
       roles.push(binding.logicalRole);
       fingerprints.add(snapshot.acceptedUtilityEgressFingerprint);
@@ -2791,7 +2877,7 @@ function committedMutationOperation(
   }
 }
 
-async function committedMutationOwnsRevisionAdvance(
+async function committedMutationOwnsCounterAdvance(
   tx: Prisma.TransactionClient,
   attempt: Pick<
     LockedPreparingAttempt,
@@ -2849,7 +2935,7 @@ async function committedMutationOwnsRevisionAdvance(
     (operation === "SAVE" || authorization.targetFactId === receipt.targetFactId) &&
     typeof receiptGeneration === "number" &&
     Number.isSafeInteger(receiptGeneration) &&
-    receiptGeneration === attempt.memoryGenerationSnapshot &&
+    receiptGeneration === attempt.memoryGenerationSnapshot + (operation === "FORGET" ? 1 : 0) &&
     receiptGeneration === currentSettings.memoryGeneration &&
     typeof receiptRevision === "number" &&
     Number.isSafeInteger(receiptRevision) &&
@@ -3225,11 +3311,14 @@ export async function finalizePreparingRunWithClient(
     if (currentSettings) {
       const currentSnapshot = memoryPreparingSettingsSnapshot(currentSettings);
       const exactRevisionRequired = attempt.outcome === "EMPTY" && items.length === 0;
+      // Empty action results can consume their own durable counter advance.
+      // The receipt must prove the exact generation; settings and index fences still apply.
       const ownCommittedMutation = exactRevisionRequired &&
         currentSettings.memoryRevision !== attempt.retrievalRevisionSnapshot &&
-        await committedMutationOwnsRevisionAdvance(tx, attempt, currentSettings);
+        await committedMutationOwnsCounterAdvance(tx, attempt, currentSettings);
       if (
-        currentSettings.memoryGeneration !== attempt.memoryGenerationSnapshot ||
+        (currentSettings.memoryGeneration !== attempt.memoryGenerationSnapshot &&
+          !ownCommittedMutation) ||
         currentSettings.activeIndexGenerationId !== attempt.indexGenerationIdSnapshot ||
         !sameMemoryPreparingSettings(settingsSnapshot, currentSnapshot, {
           requireUtilityEgressMatch: attempt.utilityEgressMode === "CONSENTED_EXTERNAL"
