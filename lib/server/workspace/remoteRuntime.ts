@@ -42,6 +42,8 @@ function workspaceError(value: unknown): WorkspaceRuntimeError {
     case "workspace_attachment_unavailable":
     case "workspace_secrets_prepare_failed":
     case "workspace_archive_limit_exceeded":
+    case "workspace_archive_invalid":
+    case "workspace_archive_restore_failed":
     case "workspace_execution_cleanup_failed":
     case "workspace_operation_stale":
     case "workspace_output_export_failed":
@@ -529,6 +531,26 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     const metadata = outputMetadata(value);
     if (!metadata) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     return this.output(input.sessionId, metadata, input.signal);
+  }
+
+  async restoreProjectArchive(input: Parameters<NonNullable<WorkspaceRuntime["restoreProjectArchive"]>>[0]): Promise<void> {
+    const operation = parseWorkspaceOperation(input.operation);
+    const response = await this.request(`/v1/sessions/${encodeURIComponent(input.sessionId)}/project/restore`, {
+      body: input.archive,
+      duplex: "half",
+      headers: {
+        "content-length": String(input.byteSize),
+        "content-type": "application/gzip",
+        "x-aiqsa-byte-size": String(input.byteSize),
+        "x-aiqsa-checksum": input.checksum,
+        "x-aiqsa-operation": JSON.stringify(operation),
+        "x-aiqsa-runtime-sandbox-id": input.runtimeSandboxId
+      },
+      method: "POST",
+      signal: input.signal
+    });
+    const value = await jsonResponse(response);
+    if (!response.ok) throw workspaceError(value);
   }
 
   async stopSession(input: Parameters<WorkspaceRuntime["stopSession"]>[0]): Promise<void> {

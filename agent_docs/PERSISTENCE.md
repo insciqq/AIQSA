@@ -49,7 +49,7 @@ Knowledge Trash fences future use while membership/publication remains recoverab
 
 Account deletion drains owned Knowledge and Memory dependencies/staging before protected parents. Project deletion is an explicit Owner-authorized aggregate action; unlinking personal resources does not delete them. Account deletion and Project archival cannot substitute for that action. Inbound Memory OAuth revocation retains facts; account deletion removes grants/issued secrets without deleting independently registered public-client metadata. Accounting retention may preserve content-free usage without retaining grants/users indefinitely.
 
-Workspace idle stop preserves its disk. Expiry/reset/chat deletion first records exact-session cleanup; it never authorizes another sandbox's deletion. Missing disks are visibly recreated from canonical originals, not reported as surviving state. External provider/tool retention, backups, and already-sent data are outside claims of application erasure.
+Workspace idle stop preserves its disk. Expiry/reset/chat deletion first records exact-session cleanup; it never authorizes another sandbox's deletion. A continuation `project/` archive is a private, checksum-bound seed owned by the claim until the new chat is created, then by that chat; capture and restore leases are fenced, successful restore is consumed even after reset or later disk loss; only interrupted restore may retry after fencing and cleanup. Abandoned/failed/reset/deleted seeds enqueue reference-checked object cleanup. Missing disks are visibly recreated from canonical originals, not reported as surviving state. External provider/tool retention, backups, and already-sent data are outside claims of application erasure.
 
 ## Backup And Restore
 

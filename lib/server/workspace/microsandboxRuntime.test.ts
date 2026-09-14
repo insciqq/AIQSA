@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { runWithContext } from "../observability";
-import { SandboxNotFoundError } from "microsandbox";
+import { SandboxNotFoundError, SandboxNotRunningError } from "microsandbox";
 import { workspaceAttachmentPath, workspaceSandboxName } from "@/lib/domain/workspace";
 import { getWorkspaceConfig } from "./config";
 import { MicrosandboxWorkspaceRuntime } from "./microsandboxRuntime";
@@ -22,6 +22,7 @@ const sdk = vi.hoisted(() => ({
 vi.mock("microsandbox", () => ({
   Sandbox: { builder: sdk.builder, get: sdk.get, listWith: sdk.listWith },
   SandboxNotFoundError: class extends Error {},
+  SandboxNotRunningError: class extends Error {},
   NetworkPolicy: { none: () => ({}) }
 }));
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
@@ -281,6 +282,14 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(value.handle.connectOrStart).toHaveBeenCalledExactlyOnceWith({ detached: true });
     expect(sdk.callTool).toHaveBeenCalledTimes(1);
     expect(sdk.builder).not.toHaveBeenCalled();
+  });
+
+  it("treats stopping an already stopped disk as successful", async () => {
+    const value = fixture();
+    value.setState("stopped");
+    value.handle.stopWithTimeout.mockRejectedValueOnce(new SandboxNotRunningError("already stopped"));
+    await expect(value.runtime.stopSession({ ...sessionInput })).resolves.toBeUndefined();
+    expect(value.handle.stopWithTimeout).toHaveBeenCalledOnce();
   });
 
   it("reattaches after losing the runner cache without declaring disk loss", async () => {

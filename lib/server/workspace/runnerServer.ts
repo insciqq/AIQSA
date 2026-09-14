@@ -551,6 +551,22 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         return;
       }
 
+      if (request.method === "POST" && suffix === "/project/restore") {
+        stage = "restore";
+        const operationHeader = requiredString(header(request, "x-aiqsa-operation"), 2_048);
+        const operation = parseWorkspaceOperation(JSON.parse(operationHeader));
+        const runtimeSandboxId = requiredString(header(request, "x-aiqsa-runtime-sandbox-id"), 256);
+        const checksum = requiredString(header(request, "x-aiqsa-checksum"), 128);
+        if (!/^[a-f0-9]{64}$/u.test(checksum)) throw new Error("field_invalid");
+        const byteSize = integer(Number(requiredString(header(request, "x-aiqsa-byte-size"), 32)), 1, 2 * 1_024 * 1_024 * 1_024);
+        if (!input.runtime.restoreProjectArchive) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+        await execute(operation, (signal) => input.runtime.restoreProjectArchive!({
+          archive: incomingBody(request), byteSize, checksum, runtimeSandboxId, sessionId, signal
+        }));
+        sendJson(response, 200, { ok: true });
+        return;
+      }
+
       if (request.method === "POST" && suffix === "/stop") {
         stage = "quiesce";
         const body = await readJson(request);

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -248,6 +248,82 @@ function tarArchive(entries: readonly Readonly<{
     output.set(chunk, offset);
     offset += chunk.byteLength;
   }
+  return output;
+}
+
+type RestoredArchive = Readonly<{
+  directories: readonly string[];
+  files: readonly Readonly<{ path: string; content: Uint8Array }>[];
+}>;
+
+function tarNumber(bytes: Uint8Array, offset: number, length: number): number {
+  const text = new TextDecoder().decode(bytes.slice(offset, offset + length)).replace(/\0.*$/u, "").trim();
+  if (!text) return 0;
+  const value = Number.parseInt(text, 8);
+  if (!Number.isSafeInteger(value) || value < 0) throw new WorkspaceRuntimeError("workspace_archive_invalid");
+  return value;
+}
+
+/** Bounded parser for the ustar archives emitted by the workspace runtimes. */
+function parseTarGzip(archive: Uint8Array, maxUncompressedBytes: number, maxEntries: number): RestoredArchive {
+  let tar: Uint8Array;
+  try { tar = new Uint8Array(gunzipSync(archive, { maxOutputLength: maxUncompressedBytes })); } catch { throw new WorkspaceRuntimeError("workspace_archive_invalid"); }
+  if (tar.byteLength > maxUncompressedBytes) throw new WorkspaceRuntimeError("workspace_archive_limit_exceeded");
+  const directories: string[] = [];
+  const files: Array<{ path: string; content: Uint8Array }> = [];
+  const seen = new Set<string>();
+  let offset = 0;
+  while (offset + 512 <= tar.byteLength) {
+    const header = tar.slice(offset, offset + 512);
+    offset += 512;
+    if (header.every((value) => value === 0)) break;
+    const name = new TextDecoder().decode(header.slice(0, 100)).replace(/\0.*$/u, "");
+    const prefix = new TextDecoder().decode(header.slice(345, 500)).replace(/\0.*$/u, "");
+    const path = `${prefix ? `${prefix}/` : ""}${name}`.replace(/\/$/u, "");
+    if (!isSafeWorkspaceRelativePath(path) || seen.has(path)) {
+      throw new WorkspaceRuntimeError("workspace_archive_invalid");
+    }
+    seen.add(path);
+    if (seen.size > maxEntries) throw new WorkspaceRuntimeError("workspace_archive_limit_exceeded");
+    const size = tarNumber(header, 124, 12);
+    if (offset + size > tar.byteLength) throw new WorkspaceRuntimeError("workspace_archive_invalid");
+    const type = header[156] === 0 || header[156] === 0x30 ? "file" : header[156] === 0x35 ? "directory" : "unsupported";
+    if (type === "unsupported") throw new WorkspaceRuntimeError("workspace_archive_invalid");
+    if (type === "file") {
+      if (size > maxUncompressedBytes) {
+        throw new WorkspaceRuntimeError("workspace_archive_limit_exceeded");
+      }
+      files.push({ path, content: tar.slice(offset, offset + size) });
+    } else if (size !== 0) {
+      throw new WorkspaceRuntimeError("workspace_archive_invalid");
+    } else directories.push(path);
+    offset += Math.ceil(size / 512) * 512;
+    if (offset > tar.byteLength) throw new WorkspaceRuntimeError("workspace_archive_invalid");
+  }
+  if (offset === 0 || !tar.slice(Math.max(0, tar.byteLength - 1_024)).some((value) => value === 0)) {
+    throw new WorkspaceRuntimeError("workspace_archive_invalid");
+  }
+  return { directories, files };
+}
+
+async function readArchiveBody(stream: ReadableStream<Uint8Array>, expectedBytes: number, signal?: AbortSignal): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      signal?.throwIfAborted();
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > expectedBytes) throw new WorkspaceRuntimeError("workspace_archive_limit_exceeded");
+      chunks.push(next.value);
+    }
+  } finally { reader.releaseLock(); }
+  if (total !== expectedBytes) throw new WorkspaceRuntimeError("workspace_archive_invalid");
+  const output = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { output.set(chunk, offset); offset += chunk.byteLength; }
   return output;
 }
 
@@ -944,6 +1020,27 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
       opaqueFileId: hash(bytes(`${input.sessionId}\0workspace.tar.gz`)),
       relativePath: "workspace.tar.gz"
     };
+  }
+
+  async restoreProjectArchive(input: Parameters<NonNullable<WorkspaceRuntime["restoreProjectArchive"]>>[0]): Promise<void> {
+    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    if (!Number.isSafeInteger(input.byteSize) || input.byteSize <= 0 || input.byteSize > this.config.outputTotalMaxBytes) {
+      throw new WorkspaceRuntimeError("workspace_archive_limit_exceeded");
+    }
+    const archive = await readArchiveBody(input.archive, input.byteSize, input.signal);
+    if (hash(archive) !== input.checksum) throw new WorkspaceRuntimeError("workspace_archive_invalid");
+    const parsed = parseTarGzip(archive, this.config.diskMiB * 1_024 * 1_024, this.config.outputMaxFiles * 4);
+    const prefix = `${WORKSPACE_PROJECT_DIRECTORY}/`;
+    for (const path of [...session.files.keys()]) if (path.startsWith(prefix)) session.files.delete(path);
+    for (const path of [...session.directories]) if (path.startsWith(prefix) && path !== WORKSPACE_PROJECT_DIRECTORY) session.directories.delete(path);
+    for (const directory of parsed.directories) session.directories.add(`${prefix}${directory}`);
+    for (const file of parsed.files) {
+      session.files.set(`${prefix}${file.path}`, file.content.slice());
+      const segments = file.path.split("/");
+      for (let index = 1; index < segments.length; index += 1) {
+        session.directories.add(`${prefix}${segments.slice(0, index).join("/")}`);
+      }
+    }
   }
 
   async stopSession(input: Parameters<WorkspaceRuntime["stopSession"]>[0]): Promise<void> {

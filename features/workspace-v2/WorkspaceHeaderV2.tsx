@@ -16,6 +16,7 @@ import { chatMenuActionsV2 } from "@/features/navigation-v2/chatMenuActions";
 import { useRef, useState, type ReactNode } from "react";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import { ChatContextIndicatorV2 } from "./ChatContextIndicatorV2";
+import type { ChatWorkspaceState } from "@/lib/contracts/workspace";
 import type { ChatContinuationControl } from "@/components/app-shell/useChatContinuation";
 
 export type TemporaryChatHeaderMemoryV2 = Readonly<{
@@ -205,6 +206,7 @@ export function WorkspaceHeaderV2({
   active,
   contextStats,
   continuation,
+  continuationFiles,
   archiveDisabled = false,
   crumb = null,
   deleteDisabled = false,
@@ -239,6 +241,7 @@ export function WorkspaceHeaderV2({
   active: boolean;
   contextStats?: ComposerContextStats | null;
   continuation?: ChatContinuationControl | null;
+  continuationFiles?: ChatWorkspaceState["continuationFiles"];
   archiveDisabled?: boolean;
   /**
    * Folder path shown before the title, only while the chat lives in a
@@ -376,7 +379,7 @@ export function WorkspaceHeaderV2({
         ) : null}
       </div>
       <div className="v2-live-header-actions">
-        {contextStats ? <ChatContextIndicatorV2 stats={contextStats} continuation={continuation} /> : null}
+        {contextStats ? <ChatContextIndicatorV2 stats={contextStats} continuation={continuation} continuationFiles={continuationFiles} /> : null}
         {temporaryMemory ? <TemporaryChatIndicatorV2 memory={temporaryMemory} /> : null}
         {/* The account menu lives in the sidebar footer (one entry, UX audit
             F11); the header carries only the chat's own actions. */}
