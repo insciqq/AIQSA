@@ -31,7 +31,8 @@ function frame(hash: ReturnType<typeof createHash>, value: string | Buffer): voi
 }
 
 export async function currentLongMemEvalQualificationRevision(
-  repositoryRoot: string
+  repositoryRoot: string,
+  sourcePaths?: readonly string[]
 ): Promise<LongMemEvalQualificationRevision> {
   const [{ stdout: head }, { stdout: listed }] = await Promise.all([
     execFile("git", ["-C", repositoryRoot, "rev-parse", "HEAD"], {
@@ -44,7 +45,8 @@ export async function currentLongMemEvalQualificationRevision(
       "-z",
       "--cached",
       "--others",
-      "--exclude-standard"
+      "--exclude-standard",
+      ...(sourcePaths ? ["--", ...sourcePaths] : [])
     ], {
       encoding: "buffer",
       maxBuffer: 64 * 1024 * 1024

@@ -82,6 +82,7 @@
     "test": "vitest run",
     "test:benchmark:knowledge": "vitest run --config benchmarks/knowledge/vitest.config.ts",
     "test:benchmark:longmemeval": "vitest run --config benchmarks/longmemeval/vitest.config.ts",
+    "test:benchmark:memory": "vitest run --config benchmarks/aiqsa-memory-live-microbench/vitest.config.ts",
     "test:full:inner": "AIQSA_STATEFUL_TEST_TARGET=DISPOSABLE vitest run --config vitest.full.config.ts",
     "test:watch": "vitest",
     "test:e2e": "playwright test --project=chromium",
