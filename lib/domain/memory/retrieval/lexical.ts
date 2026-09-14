@@ -28,6 +28,26 @@ function uniqueTerms(value: string): string[] {
   });
 }
 
+/** Preserve the original query while making terms beyond one analysis window
+ * available to a caller's existing bounded variant budget. */
+export function memoryLexicalQueryWindows(value: string): readonly string[] {
+  const normalized = normalizeMemoryLexicalProjection(value);
+  const seen = new Set<string>();
+  const starts: number[] = [];
+  for (const match of normalized.matchAll(/[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/gu)) {
+    if (seen.has(match[0])) continue;
+    if (seen.size === MEMORY_LEXICAL_QUERY_MAX_TERMS) {
+      starts.push(match.index);
+      seen.clear();
+    }
+    seen.add(match[0]);
+  }
+  return Object.freeze([
+    normalized,
+    ...starts.map((start, index) => normalized.slice(start, starts[index + 1]).trim())
+  ]);
+}
+
 /** Language- and script-neutral query material. Providers may apply bounded
  * supplemental analysis, but this contract never selects a language analyzer. */
 export function analyzeMemoryLexicalQuery(value: string): MemoryLexicalQueryAnalysis {

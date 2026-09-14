@@ -18,7 +18,6 @@ import {
   MEMORY_RECALL_ROUND_PROJECTION_VERSION
 } from "./rounds";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
-import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "./toolEvents";
 
 export const MEMORY_HISTORY_CLEAR_MANIFEST_VERSION =
   "memory-history-clear-v1";
@@ -320,6 +319,9 @@ async function targetIds(
           OR chat."activeLeafMessageId" IS DISTINCT FROM digest."activeLeafMessageId")
       ORDER BY digest."id"
     `);
+    // A valid older projection stays until bounded history backfill replaces
+    // it. Current reads exclude it; deleting it here would erase the rebuild
+    // signal before the unchanged chat is selected by the backfill scheduler.
     const toolEvents = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT tool_event."id"
       FROM "MemoryToolEvent" AS tool_event
@@ -338,7 +340,6 @@ async function targetIds(
         AND tool_event."chatId" = ${selection.chatId}
         AND (
           tool_event."state" <> 'ACTIVE'::"MemoryHistoryItemState"
-          OR tool_event."projectionVersion" <> ${MEMORY_TOOL_EVENT_PROJECTION_VERSION}
           OR chat."id" IS NULL
           OR chat."projectId" IS NOT NULL
           OR chat."memoryMode" <> 'NORMAL'::"MemoryChatMode"

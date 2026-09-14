@@ -1,9 +1,10 @@
 import { memoryReportedUsage as reportedUsage } from "../execution/usage";
 import type { PrismaClient } from "@prisma/client";
 import {
-  MEMORY_ACTION_INTENT_JSON_SCHEMA,
+  MEMORY_ACTION_CONTROL_JSON_SCHEMA,
+  MEMORY_ACTION_CONTROL_SCHEMA_VERSION,
   MEMORY_ACTION_INTENT_NAME,
-  MEMORY_ACTION_INTENT_SCHEMA_VERSION,
+  decodeMemoryActionControlDecision,
   decodeMemoryActionIntent,
   type MemoryActionIntent
 } from "../../../contracts/memoryActionIntent";
@@ -32,26 +33,25 @@ import { memorySha256 } from "../persistence/lexical";
 import { sanitizeMemoryUtilityText } from "../retrieval/querySafety";
 import {
   buildMemoryActionIntentRequest,
-  preserveUniqueQuotedUpdateReplacement,
   type MemoryActionIntentContext
 } from "./intentService";
 
-export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v23";
-export const MEMORY_CONTROL_REASONING_EFFORT = "low" as const;
+export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v29";
+export const MEMORY_CONTROL_REASONING_POLICY = "accepted-system-model-parameters" as const;
 export const MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR = 2_048 as const;
 
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
-  policyVersion: "memory-control-policy-v23",
-  promptVersion: "memory-control-prompt-v27",
+  policyVersion: "memory-control-policy-v28",
+  promptVersion: "memory-control-prompt-v31",
   retrievalConfigFingerprint: memoryExecutionSha256({
     actionIntentSchema: MEMORY_ACTION_INTENT_NAME,
     maxCalls: 1,
-    reasoningEffort: MEMORY_CONTROL_REASONING_EFFORT,
+    reasoningPolicy: MEMORY_CONTROL_REASONING_POLICY,
     reasoningOutputTokenFloor: MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR,
-    version: 21
+    version: 25
   }),
-  schemaVersion: MEMORY_ACTION_INTENT_SCHEMA_VERSION
+  schemaVersion: MEMORY_ACTION_CONTROL_SCHEMA_VERSION
 });
 
 export type MemoryControlResult =
@@ -119,7 +119,7 @@ function controlTool(): RunTool {
   return {
     capability: "memory",
     description: "Return the one strict Personal Memory control decision for this turn.",
-    inputSchema: MEMORY_ACTION_INTENT_JSON_SCHEMA,
+    inputSchema: MEMORY_ACTION_CONTROL_JSON_SCHEMA,
     name: MEMORY_ACTION_INTENT_NAME,
     strict: true
   };
@@ -138,13 +138,6 @@ function providerRequest(
     request.maxOutputTokens ?? 1_024,
     model.capabilities.defaultMaxOutputTokens ?? 1_024
   );
-  const configuredReasoning = typeof model.defaultParams.reasoning === "object" &&
-    model.defaultParams.reasoning !== null &&
-    !Array.isArray(model.defaultParams.reasoning)
-    ? model.defaultParams.reasoning as Readonly<Record<string, unknown>>
-    : {};
-  const lowReasoningSupported = model.capabilities.reasoning === true &&
-    model.capabilities.reasoningEfforts?.includes(MEMORY_CONTROL_REASONING_EFFORT) === true;
   return {
     attachmentIds: [],
     attachments: [],
@@ -157,16 +150,6 @@ function providerRequest(
     parallelToolCalls: false,
     params: {
       ...model.defaultParams,
-      ...(model.adapterKind === "openrouter_chat_completions"
-        ? { reasoning: { enabled: false, exclude: true } }
-        : lowReasoningSupported
-          ? {
-              reasoning: {
-                ...configuredReasoning,
-                effort: MEMORY_CONTROL_REASONING_EFFORT
-              }
-            }
-        : {}),
       background: false,
       maxOutputTokens,
       max_output_tokens: maxOutputTokens,
@@ -199,10 +182,13 @@ function providerEvidence(
   };
 }
 
-function decodeProviderResult(result: MemoryLearningProviderResult): MemoryActionIntent | null {
+function decodeProviderResult(
+  result: MemoryLearningProviderResult,
+  currentUserMessage: string
+): MemoryActionIntent | null {
   const call = result.toolCalls?.[0];
   if (result.toolCalls?.length !== 1 || call?.name !== MEMORY_ACTION_INTENT_NAME) return null;
-  const decoded = decodeMemoryActionIntent(call.arguments);
+  const decoded = decodeMemoryActionControlDecision(call.arguments, currentUserMessage);
   return decoded.ok ? decoded.value : null;
 }
 
@@ -428,7 +414,7 @@ export function createMemoryControlService(input: Readonly<{
           ),
           requestInput.signal
         );
-        const decodedIntent = decodeProviderResult(result);
+        const decodedIntent = decodeProviderResult(result, safeContext.currentUserMessage);
         if (!decodedIntent) {
           await input.execution.lifecycle.settle(requestInput.userId, binding.id, {
             acceptedOutputHash: null,
@@ -439,10 +425,7 @@ export function createMemoryControlService(input: Readonly<{
           });
           return { bindingId: binding.id, reason: "memory_action_intent_invalid", status: "UNAVAILABLE" };
         }
-        const intent = sanitizeProviderIntent(preserveUniqueQuotedUpdateReplacement(
-          decodedIntent,
-          safeContext.currentUserMessage
-        ));
+        const intent = sanitizeProviderIntent(decodedIntent);
         if (!intent) {
           await input.execution.lifecycle.settle(requestInput.userId, binding.id, {
             acceptedOutputHash: null,

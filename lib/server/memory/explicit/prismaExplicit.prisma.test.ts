@@ -300,7 +300,9 @@ describe("Prisma explicit Memory API", () => {
         nextCursor: null
       });
 
-      const secret = "API key: sk-abcdefghijklmnopqrstuvwxyz123456";
+      // Refusal depends on the recognized secret span, without interpreting
+      // a natural-language label as empty source text.
+      const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
       const secretAuthorization = await saveAuthorization(
         memoryService,
         userId,

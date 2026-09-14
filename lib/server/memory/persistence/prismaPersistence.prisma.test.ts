@@ -28,6 +28,12 @@ import {
 } from "../actions/targetSelector";
 import { scheduleTemporaryChatDeletion } from "../temporaryRetention";
 import { MemorySuppressionKeyring } from "../suppressionKeyring";
+import { createPrismaExplicitMemoryRepository } from "../explicit/repository";
+import { createPrismaMemoryLifecycleRepository } from "../lifecycle/repository";
+import { createMemoryLifecycleService, MemoryControlledForgetCommittedError } from "../lifecycle/service";
+import { MEMORY_PURGE_REQUIRED_CONTRIBUTORS } from "../purge/contract";
+import { registerMemoryDeletionContributors } from "../purge/leaves";
+import { MemoryDeletionContributorRegistry } from "../purge/registry";
 import { MemoryPersistenceError } from "./errors";
 import { memorySha256 } from "./lexical";
 import {
@@ -198,6 +204,7 @@ async function createControlAuthorizedSave(
   label: string,
   options: Readonly<{
     controlIntent?: MemoryActionIntent;
+    sourceText?: string;
     mutation?: Readonly<{
       action: "EDIT" | "FORGET" | "SAVE";
       authorizedPayloadHash: string;
@@ -280,7 +287,7 @@ async function createControlAuthorizedSave(
       provider: "openai_compatible"
     }
   });
-  const sourceText = `Remember my ${label} preference.`;
+  const sourceText = options.sourceText ?? `Remember my ${label} preference.`;
   const statement = "I prefer concise answers.";
   const defaultControlIntent = {
     action: "SAVE",
@@ -1111,6 +1118,100 @@ describe("Prisma Memory persistence", () => {
       });
     } finally {
       await cleanupUser(userId);
+      await cleanupProvider?.();
+    }
+  });
+
+  it("commits and replays a run-bound controlled forget without a mutation tool", async () => {
+    const userId = await createActiveUser("control-forget");
+    const foreignUserId = await createActiveUser("control-forget-foreign");
+    let cleanupProvider: (() => Promise<void>) | undefined;
+    try {
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+      const saved = await createTestMemoryFactRepository().save(userId, saveInput(
+        scope.id,
+        `control-forget-${randomUUID()}`,
+        factValue("preference.obsolete-format", "I prefer weekly plain-text reports.", "weekly-plain-text")
+      ));
+      const controlIntent: MemoryActionIntent = {
+        action: "FORGET",
+        aggregationRequested: false,
+        applyResponsePreferences: false,
+        category: null,
+        categoryHint: null,
+        confidenceBand: "HIGH",
+        entityMentions: [],
+        memoryUseful: false,
+        patternExclusionRequested: false,
+        pastChatsUseful: false,
+        profileRequested: false,
+        queryDecompositions: [],
+        queryText: null,
+        reasonCode: "forget_request",
+        recencyRequested: false,
+        retrievalMode: "TARGETED_CURRENT",
+        referencedMemoryRef: null,
+        replacementStatement: null,
+        responsePreference: false,
+        sensitiveDomainHint: null,
+        sensitivity: "NORMAL",
+        statement: null,
+        targetQuery: "the obsolete report preference",
+        temporalAsOf: null,
+        temporalFrom: null,
+        temporalIntent: "CURRENT",
+        temporalTo: null,
+        thisChatOnly: false
+      };
+      const admitted = await createControlAuthorizedSave(userId, "forget", {
+        controlIntent,
+        sourceText: "Forget the obsolete report preference.",
+        mutation: {
+          action: "FORGET",
+          authorizedPayloadHash: memoryTargetAuthorizationPayloadHash({
+            action: "FORGET", expectedTargetVersionId: saved.versionId, targetFactId: saved.factId
+          }),
+          expectedTargetVersionId: saved.versionId,
+          targetFactId: saved.factId
+        }
+      });
+      cleanupProvider = admitted.cleanupProvider;
+      const registry = new MemoryDeletionContributorRegistry({
+        operation: "FORGET_PURGE", requirements: MEMORY_PURGE_REQUIRED_CONTRIBUTORS
+      });
+      registerMemoryDeletionContributors(registry);
+      const lifecycle = createMemoryLifecycleService({
+        authorizationRepository: createPrismaMemoryMutationAuthorizationRepository(prisma),
+        mutationRepository: createPrismaMemoryLifecycleRepository(suppressionKeyring, registry, prisma),
+        readRepository: createPrismaExplicitMemoryRepository(prisma)
+      });
+      const request = {
+        expectedVersionId: saved.versionId,
+        mutationAuthorizationId: admitted.authorization.id
+      };
+      const execution = {
+        admissionDeadlineAtMs: Date.now() + 4_000,
+        modelRunId: admitted.run.id,
+        persistedToolCallId: null
+      };
+      await expect(lifecycle.forget(foreignUserId, saved.factId, request, execution))
+        .rejects.toMatchObject({ code: "memory_intent_confirmation_required" });
+      await expect(lifecycle.forget(userId, saved.factId, request, execution))
+        .rejects.toBeInstanceOf(MemoryControlledForgetCommittedError);
+      await expect(lifecycle.forget(userId, saved.factId, request, execution))
+        .rejects.toBeInstanceOf(MemoryControlledForgetCommittedError);
+      await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: saved.factId } }))
+        .resolves.toMatchObject({ currentVersionId: null, state: "FORGOTTEN" });
+      await expect(prisma.memorySuppression.count({ where: { userId } })).resolves.toBeGreaterThan(0);
+      await expect(prisma.memoryOperationReceipt.findMany({
+        select: { modelRunId: true, persistedToolCallId: true },
+        where: { operation: "FORGET", userId }
+      })).resolves.toEqual([{ modelRunId: admitted.run.id, persistedToolCallId: null }]);
+      await expect(prisma.modelRunToolCall.count({ where: { modelRunId: admitted.run.id } }))
+        .resolves.toBe(0);
+    } finally {
+      await cleanupUser(userId);
+      await cleanupUser(foreignUserId);
       await cleanupProvider?.();
     }
   });

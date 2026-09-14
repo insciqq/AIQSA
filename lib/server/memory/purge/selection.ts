@@ -1,12 +1,13 @@
 import { Prisma } from "@prisma/client";
 import type { MemoryPurgeTarget } from "./contract";
+import { memoryExplicitEquivalentFactIdsSql } from "../persistence/explicitEquivalence";
 
 /** SQL predicate for a query whose target version alias is exactly `version`. */
 export function memoryPurgeVersionCondition(target: MemoryPurgeTarget): Prisma.Sql {
   if (target.kind === "MEMORY_FACT") {
     return Prisma.sql`
       version."userId" = ${target.userId}
-      AND version."factId" = ${target.targetId}
+      AND version."factId" IN (${memoryExplicitEquivalentFactIdsSql(target.userId, [target.targetId])})
       AND version."state" = 'FORGOTTEN'::"MemoryFactVersionState"
     `;
   }

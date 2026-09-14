@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../../prisma";
 import { memorySha256 } from "../persistence/lexical";
+import { MEMORY_OPERATIONAL_COUNTER_KEYS } from "./counters";
 import { loadMemorySemanticCutoverInventory } from "./cutover";
 import { loadMemoryOperationalSnapshot } from "./snapshot";
 
@@ -33,6 +34,46 @@ async function cleanupOwner(userId: string): Promise<void> {
 }
 
 describe("Memory operational PostgreSQL contracts", () => {
+  it("commits every current operational counter with the completed job", async () => {
+    const userId = await createOwner();
+    const jobId = randomUUID();
+    const counters = Object.fromEntries(
+      MEMORY_OPERATIONAL_COUNTER_KEYS.map((key) => [key, 1])
+    );
+    try {
+      await prisma.memoryJob.create({
+        data: {
+          id: jobId,
+          idempotencyFingerprint: memorySha256({ jobId, userId }),
+          kind: "CONSOLIDATE_CANDIDATE",
+          memoryGenerationSnapshot: 0,
+          memoryRevisionSnapshot: 0,
+          pipelineVersion: "memory-operational-test-v1",
+          state: "QUEUED",
+          userId
+        }
+      });
+      await prisma.memoryJob.update({
+        data: {
+          completedAt: new Date(),
+          operationalCounters: counters,
+          state: "SUCCEEDED"
+        },
+        where: { id: jobId }
+      });
+      const persisted = await prisma.memoryJob.findUniqueOrThrow({
+        select: { operationalCounters: true, state: true },
+        where: { id: jobId }
+      });
+      expect(persisted).toEqual({
+        operationalCounters: counters,
+        state: "SUCCEEDED"
+      });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it("reports only aggregate counters and inventories retired work", async () => {
     const userId = await createOwner();
     const jobId = randomUUID();
@@ -158,13 +199,21 @@ describe("Memory operational PostgreSQL contracts", () => {
     }
   });
 
-  it("rejects non-allowlisted durable operational values at the DB boundary", async () => {
+  it("rejects unknown or invalid durable operational values at the DB boundary", async () => {
     const userId = await createOwner();
     try {
       for (const operationalCounters of [{
         privateContent: "must-not-persist"
       }, {
         contextualGeneratedEn: 1
+      }, {
+        contextualFallbackGroundingInvalid: -1
+      }, {
+        contextualFallbackGroundingInvalid: 0.5
+      }, {
+        contextualFallbackSemanticallyUnsupported: 2_147_483_648
+      }, {
+        contextualFallbackSemanticallyUnsupported: "1"
       }]) {
         const jobId = randomUUID();
         await expect(prisma.memoryJob.create({

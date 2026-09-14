@@ -110,6 +110,20 @@ describe("automatic-learning source admission", () => {
     )).toEqual(["u2", "a2", "u3", "a3", "target"]);
   });
 
+  it("retains a long direct target without expanding the prior-context allowance", () => {
+    const longText = "This is background material. ".repeat(600) +
+      "My usual response language is French.";
+    const messages = [
+      userMessage("prior", null, "x".repeat(4_500)),
+      assistantMessage("answer", "prior", "y".repeat(3_600)),
+      userMessage("target", "answer", longText)
+    ];
+    const snapshot = sourceSnapshot(messages);
+    expect(boundedMemoryFactContextMessageIds(snapshot, "target")).toEqual(["target"]);
+    expect(snapshot.factEvidenceProjection.messages.find(({ id }) =>
+      id === "target")?.safeText).toBe(longText);
+  });
+
   it("never skips an oversized or tainted nearest group to reach older context", () => {
     const oversized = [
       userMessage("u1", null, "older user"),

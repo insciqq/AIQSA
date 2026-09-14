@@ -1,7 +1,5 @@
 import {
   MEMORY_DEFAULT_IDENTITY_PROFILE,
-  MEMORY_LEGACY_PROPOSITION_IDENTITY_VERSION,
-  MEMORY_LEGACY_SLOT_IDENTITY_VERSION,
   MEMORY_PROPOSITION_IDENTITY_VERSION,
   MEMORY_SLOT_IDENTITY_VERSION,
   memoryPropositionCanonicalKey,
@@ -149,9 +147,7 @@ function proposition(
     category,
     dimensionKey: null,
     identityKind: "PROPOSITION",
-    identityVersion: profile === "LEGACY_V1"
-      ? MEMORY_LEGACY_PROPOSITION_IDENTITY_VERSION
-      : MEMORY_PROPOSITION_IDENTITY_VERSION,
+    identityVersion: MEMORY_PROPOSITION_IDENTITY_VERSION,
     predicateKey: null,
     structuredValue: {
       normalizedStatement,
@@ -197,9 +193,7 @@ function slotResult(input: Readonly<{
     category: input.category,
     dimensionKey: input.dimensionKey,
     identityKind: "SLOT",
-    identityVersion: profile === "LEGACY_V1"
-      ? MEMORY_LEGACY_SLOT_IDENTITY_VERSION
-      : MEMORY_SLOT_IDENTITY_VERSION,
+    identityVersion: MEMORY_SLOT_IDENTITY_VERSION,
     predicateKey: input.predicateKey,
     structuredValue: input.structuredValue,
     subjectKey: input.subjectKey
@@ -242,10 +236,11 @@ ResolvedMemoryIdentity {
     !(MEMORY_SLOT_PREDICATES as readonly string[]).includes(
       input.identity.predicateKey
     )) return fallback();
-  // Historical status can remain a source-grounded proposition but never
-  // acquires the current SLOT identity. All other authority fields are
-  // admitted by the semantic boundary (and, when required, adjudication).
-  if (input.semanticFrame.temporalPerspective === "FORMER") return fallback();
+  // Historical or negated statements retain their complete meaning instead
+  // of acquiring a positive current SLOT value. Semantic admission still
+  // requires direct evidence and, for negation, HIGH adjudication.
+  if (input.semanticFrame.temporalPerspective === "FORMER" ||
+    input.semanticFrame.polarity === "NEGATED") return fallback();
   const predicate = input.identity.predicateKey as MemorySlotPredicate;
   const value = input.value;
 

@@ -23,6 +23,7 @@ function version(
     factId: "fact-1",
     identityKind: "SLOT",
     mergedIntoVersionId: null,
+    modality: "STATE",
     observedAt: NOW.toISOString(),
     occurredAt: null,
     predicateKey: "product_status",

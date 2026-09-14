@@ -153,6 +153,26 @@ function scopeRepository(): ExplicitMemoryScopeRepository {
 }
 
 describe("explicit Memory service", () => {
+  it("projects a replayed SAVE through its exact equivalent version without changing the receipt", async () => {
+    const facts = factRepository();
+    vi.mocked(facts.save).mockResolvedValue({
+      eventId: "original-event", factId: "original-alias", versionId: "original-version",
+      memoryGeneration: 0, memoryRevision: 1, outcome: "CREATED", replayed: true
+    });
+    const read = readRepository();
+    const resolveEquivalentTarget = vi.fn(async () => ({ factId: "fact-1", factVersionId: "version-1" }));
+    const service = createExplicitMemoryService({
+      authorizationRepository: authorizationRepository(), clock: () => NOW,
+      factRepository: facts, readRepository: read, resolveEquivalentTarget, scopeRepository: scopeRepository()
+    });
+    await expect(service.create("user-1", {
+      mutationAuthorizationId: "authorization-1", scope: { type: "GLOBAL_USER" }, statement: STATEMENT
+    })).resolves.toMatchObject({ memory: { id: "fact-1", currentVersionId: "version-1" } });
+    expect(resolveEquivalentTarget).toHaveBeenCalledWith("user-1", { factId: "original-alias", factVersionId: "original-version" }, NOW);
+    expect(read.get).toHaveBeenCalledWith("user-1", "fact-1");
+    expect(facts.save).toHaveBeenCalledOnce();
+  });
+
   it("mints a short-lived exact statement authorization without retaining plaintext", async () => {
     const authorizations = authorizationRepository();
     const service = createExplicitMemoryService({
@@ -405,6 +425,51 @@ describe("explicit Memory service", () => {
     expect(classifier.classify).not.toHaveBeenCalled();
     expect(facts.save).toHaveBeenCalledOnce();
   });
+
+  it.each(["key", "ключ", "鍵", "clé"])(
+    "preserves caller-authorized safe text without a classifier (%#)", async (label) => {
+      const facts = factRepository();
+      const classifier: MemoryStatementClassifier = { classify: vi.fn() };
+      const service = createExplicitMemoryService({
+        authorizationRepository: authorizationRepository(),
+        clock: () => NOW,
+        factRepository: facts,
+        readRepository: readRepository(),
+        scopeRepository: scopeRepository(),
+        statementClassifier: classifier
+      });
+      const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
+      await service.create("user-1", {
+        mutationAuthorizationId: "authorization-safe-label",
+        scope: { type: "GLOBAL_USER" },
+        statement: `${label}: ${token}`
+      });
+      expect(facts.save).toHaveBeenCalledWith("user-1", expect.objectContaining({
+        value: expect.objectContaining({ displayText: `${label}: [REDACTED:TOKEN]` })
+      }));
+      expect(JSON.stringify(vi.mocked(facts.save).mock.calls)).not.toContain(token);
+      expect(classifier.classify).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["[REDACTED:TOKEN]", "[REDACTED_SECRET]"])(
+    "rejects a marker-only manual value before authorization use (%#)", async (statement) => {
+      const facts = factRepository();
+      const authorizations = authorizationRepository();
+      const service = createExplicitMemoryService({
+        authorizationRepository: authorizations,
+        factRepository: facts,
+        readRepository: readRepository(),
+        scopeRepository: scopeRepository()
+      });
+      await expect(service.create("user-1", {
+        mutationAuthorizationId: "authorization-marker",
+        scope: { type: "GLOBAL_USER" }, statement
+      })).rejects.toEqual(new ExplicitMemoryServiceError("memory_secret_rejected"));
+      expect(authorizations.resolveForUse).not.toHaveBeenCalled();
+      expect(facts.save).not.toHaveBeenCalled();
+    }
+  );
 
   it("retains the meaningful remainder of a mixed secret statement", async () => {
     const authorizations = authorizationRepository();
@@ -848,7 +913,7 @@ describe("explicit Memory service", () => {
     await expect(service.create("user-1", {
       mutationAuthorizationId: "authorization-2",
       scope: { type: "GLOBAL_USER" },
-      statement: "API key: sk-abcdefghijklmnopqrstuvwxyz123456"
+      statement: "sk-abcdefghijklmnopqrstuvwxyz123456"
     })).rejects.toEqual(new ExplicitMemoryServiceError("memory_secret_rejected"));
     expect(facts.save).not.toHaveBeenCalled();
     expect(authorizations.resolveForUse).toHaveBeenCalledTimes(1);

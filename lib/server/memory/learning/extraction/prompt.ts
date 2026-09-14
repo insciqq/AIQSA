@@ -1,9 +1,11 @@
 import type { RunTool } from "../../../tools/types";
 import type { MemoryFactExtractionInput } from "./contract";
 import {
+  MEMORY_FACT_MAX_CONTEXT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_MESSAGES,
-  MEMORY_FACT_MAX_PACKET_CANDIDATES
+  MEMORY_FACT_MAX_PACKET_CANDIDATES,
+  MEMORY_FACT_MAX_TARGET_CHARACTERS
 } from "./contract";
 import {
   MEMORY_PREFERENCE_DIMENSION_PREFIXES,
@@ -338,6 +340,10 @@ export const MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT = [
   "Emit the language-neutral semantic_frame for every observation. Never use ASSERTED or CURRENT_USER when the source is a question, condition, hypothesis, quotation, assistant claim, or third-party claim.",
   "Do not infer ownership, current status, correction, retraction, temporal perspective, expiration intent, entity identity, or coreference. Represent uncertainty with UNKNOWN.",
   "A clear direct current-user self-identity or stable preference is eligible; 'do not infer' does not reject an attribute explicitly asserted by the current user.",
+  "Durable means useful in later interactions, not permanent. Retain directly asserted plans, scheduled activities, time-limited arrangements, and past experiences when future_useful is true; preserve their exact scope and tense.",
+  "temporary describes limited relevance and is not an instruction to delete a memory. An occurrence date or the end of an arrangement does not imply expiration. Use expiration_intent EXPLICIT only for a direct instruction to expire or forget the memory; otherwise keep NONE and preserve the temporal qualifier.",
+  "goal_status and project_status SLOT identities represent the lifecycle state of a grounded named goal or project. A deadline, scheduled date, or other detail about it is a PROPOSITION unless it independently satisfies that lifecycle SLOT. Never invent a missing entity or state to fill a SLOT.",
+  "For the date of a scheduled occurrence, use temporal_perspective FUTURE even when the agreement or rescheduling is asserted now. Revising a plan does not assert that its event has happened.",
   "A direct ordinary relationship fact such as 'my spouse is Alex' or 'I work with Sam' is CURRENT_USER relationship context, not a third-party claim. It may be retained when it describes the user's own relationship and is supported by the target message.",
   "A direct durable CURRENT_USER profession, employment role, or work identity remains eligible even when no organization is named. Without a grounded organization, represent it as a HIGH PROPOSITION with no entities and preserve the exact work meaning in statement; never invent an organization or reject the fact merely because it cannot form an employment_status SLOT.",
   "Represent a direct user-reported relationship as PROPOSITION identity and keep the relationship meaning in statement. Bind each named third party as a distinct PERSON entity with role SUBJECT, an exact NAMED mention, and source-supported aliases; never store the third party as PERSON_SELF or as a user SLOT attribute.",
@@ -377,8 +383,10 @@ export const MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT = [
   "Use structured temporal normalization only; raw_expression is an exact occurrence reference, not an interpreted timestamp.",
   "When a relative date is reliably grounded, resolve it against target_message.created_at in time_zone into the structured absolute/calendar normalization while preserving the exact original wording through raw_expression; never replace source wording or invent an event time.",
   "Entity aliases require exact NAMED or NOMINAL source occurrences. PRONOMINAL, ELLIPSIS, UNKNOWN, or context-only mentions are never aliases.",
-  "Use only supplied opaque refs. A context-resolved subject or correction must include the same ref in dependency_refs.",
+  "Use only supplied opaque refs. A subject or correction that relies on preceding context must include that context's ref in dependency_refs. A self-contained correction whose subject and corrected value are explicit in target_message uses dependency_refs []; never invent a prior-context dependency.",
+  "A continuation may rely on a prior direct-user statement that establishes the user's relation to the same named project, activity, or plan. Declare that exact context ref even when the target repeats the name instead of a pronoun. The new date, state, or change must still be asserted by target_message; do not import unrelated details or establish user ownership from assistant context.",
   "Return zero observations only when the source contains no clear atomic, durable, future-useful fact. Hard SLOT proposals require HIGH confidence.",
+  "A directly asserted current-user personal, medical, financial, or relationship fact remains eligible when non-secret, including an explicit negative assertion. SENSITIVE describes its topic, not lack of evidence or a reason to omit it; never infer a sensitive attribute that the user did not assert.",
   "Secrets, credentials, sensitive automatic inferences, and uncertain safety classifications must not be emitted as NORMAL.",
   "reason_code and candidate_ref are bounded labels, never explanations or database identifiers."
 ].join("\n");
@@ -400,6 +408,9 @@ export function memoryFactExtractionPromptPayload(
     context.ref
   ]));
   if (targetIndex < 0 || targetIndex !== input.messages.length - 1 ||
+    input.messages[targetIndex]!.text.length > MEMORY_FACT_MAX_TARGET_CHARACTERS ||
+    input.messages.slice(0, targetIndex).reduce((sum, message) => sum + message.text.length, 0) >
+      MEMORY_FACT_MAX_CONTEXT_CHARACTERS ||
     input.messages.length > MEMORY_FACT_MAX_INPUT_MESSAGES ||
     messageCharacters > MEMORY_FACT_MAX_INPUT_CHARACTERS ||
     new Set(input.messages.map(({ id }) => id)).size !== input.messages.length ||

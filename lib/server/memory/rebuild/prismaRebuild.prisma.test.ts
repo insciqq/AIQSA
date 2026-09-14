@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import type { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
@@ -1604,6 +1605,70 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         memoryGeneration: before.memoryGeneration,
         memoryRevision: before.memoryRevision + 1
       });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it.each([
+    { name: "contextual policy", drift: { contextualKeyPolicyVersion: "memory-contextual-narrative-key-v3" } },
+    { name: "missing round metadata", drift: {
+      contextualKeyPolicyVersion: null, roundProjectionVersion: null, roundSegmentProjectionVersion: null
+    } },
+    { name: "missing segment metadata", drift: { roundSegmentProjectionVersion: null } }
+  ] as const)("reconciles isolated $name drift through a new generation", async ({ drift }) => {
+    const userId = await createOwner("history-policy-drift");
+    const rebuild = createPrismaMemoryRebuildRepository(prisma);
+    // Run the real candidate SQL, but let this scheduler fixture act only on
+    // its owner even when the disposable database has other seeded accounts.
+    const scopedClient = {
+      $queryRaw: async (query: Prisma.Sql) =>
+        (await prisma.$queryRaw<Array<{ userId: string }>>(query))
+          .filter((candidate) => candidate.userId === userId),
+      $transaction: prisma.$transaction.bind(prisma),
+      memoryIndexGeneration: prisma.memoryIndexGeneration,
+      memoryJob: prisma.memoryJob,
+      userMemorySettings: prisma.userMemorySettings
+    } as unknown as typeof prisma;
+    const cutover = createPrismaMemoryRetrievalCutoverRepository(scopedClient);
+    try {
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      const now = new Date();
+      const previous = await prisma.$transaction(async (tx) => {
+        const generation = await tx.memoryIndexGeneration.create({ data: {
+          activatedAt: now,
+          chunkingVersion: MEMORY_LEXICAL_CHUNKING_VERSION,
+          contextualKeyPolicyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+          generation: 0,
+          indexMode: "LEXICAL_ONLY",
+          indexedThroughMemoryRevision: settings.memoryRevision,
+          languageProfile: MEMORY_LEXICAL_ANALYSIS_PROFILE,
+          normalizationVersion: MEMORY_LEXICAL_NORMALIZATION_VERSION,
+          readyAt: now,
+          retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION,
+          roundProjectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+          roundSegmentProjectionVersion: MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION,
+          state: "ACTIVE",
+          targetMemoryRevision: settings.memoryRevision,
+          userId,
+          ...drift
+        } });
+        await tx.userMemorySettings.update({
+          data: { activeIndexGenerationId: generation.id }, where: { userId }
+        });
+        return generation;
+      });
+      expect((await cutover.inventory(userId)).ready).toBe(false);
+      const selected = await cutover.reconcile({ limit: 100 });
+      expect(selected).toHaveLength(1);
+      expect(selected[0]).toMatchObject({ kind: "queued", jobId: expect.any(String) });
+      await processRebuildJob(selected[0]!.jobId!, rebuild);
+      const current = await cutover.inventory(userId);
+      expect(current.ready).toBe(true);
+      expect(current.activeGenerationId).not.toBe(previous.id);
+      expect(await cutover.reconcile({ limit: 100 })).toEqual([]);
+      await expect(prisma.memoryIndexGeneration.findUniqueOrThrow({ where: { id: previous.id } }))
+        .resolves.toMatchObject({ ...drift, state: "SUPERSEDED" });
     } finally {
       await cleanupOwner(userId);
     }

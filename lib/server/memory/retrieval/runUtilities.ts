@@ -73,6 +73,8 @@ export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
   "memory-query-embedding-v12";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
   "memory-multilingual-relevance-v31";
+export const MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION =
+  "memory-dedicated-rerank-route-v1";
 export const MEMORY_QUERY_EMBEDDING_MAX_ATTEMPTS = 1;
 // Remote embedding engines commonly reserve a 30-second request window. The
 // enclosing optional-role signal remains authoritative and clamps this window
@@ -161,6 +163,17 @@ const rerankVersions: MemoryExecutionVersions = Object.freeze({
     version: 31
   }),
   schemaVersion: "memory-relevance-result-v7"
+});
+
+export const MEMORY_DEDICATED_RERANK_ROUTE_VERSIONS: MemoryExecutionVersions = Object.freeze({
+  ...rerankVersions,
+  pipelineVersion: MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION,
+  retrievalConfigFingerprint: memoryExecutionSha256({
+    base: rerankVersions.retrievalConfigFingerprint,
+    batchSlotsPerModel: MEMORY_RERANK_AGGREGATION_MAX_BATCHES,
+    modelLimit: MEMORY_RERANK_MAX_ROUTE_MODELS,
+    ordinalLayout: "model_then_batch_v1"
+  })
 });
 
 export type MemoryRunUtilityUnavailable = Readonly<{
@@ -1160,7 +1173,7 @@ async function runDedicatedRerankBatch(
     input,
     "MEMORY_RERANK",
     ordinal,
-    rerankVersions,
+    targetProviderModelId === undefined ? rerankVersions : MEMORY_DEDICATED_RERANK_ROUTE_VERSIONS,
     inputHash,
     targetProviderModelId
   );

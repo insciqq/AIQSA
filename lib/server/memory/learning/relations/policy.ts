@@ -1,3 +1,4 @@
+import type { MemoryFactModality } from "@prisma/client";
 import { memorySha256 } from "../../persistence/lexical";
 import type {
   MemorySemanticAdjudication,
@@ -5,7 +6,7 @@ import type {
 } from "../extraction/contract";
 
 export const MEMORY_FACT_RELATION_PIPELINE_VERSION = "memory-fact-relation-v2";
-export const MEMORY_FACT_RELATION_POLICY_VERSION = "memory-fact-relation-policy-v3";
+export const MEMORY_FACT_RELATION_POLICY_VERSION = "memory-fact-relation-policy-v7";
 export const MEMORY_FACT_RELATION_PROMPT_VERSION = "memory-fact-relation-prompt-v1";
 export const MEMORY_FACT_RELATION_SCHEMA_VERSION = "memory-fact-relation-schema-v1";
 
@@ -33,6 +34,7 @@ export type MemoryRelationVersionSnapshot = Readonly<{
   factId: string;
   identityKind: "PROPOSITION" | "SLOT";
   mergedIntoVersionId: string | null;
+  modality: MemoryFactModality;
   observedAt: string | null;
   occurredAt: string | null;
   predicateKey: string | null;
@@ -322,6 +324,34 @@ function semanticAuthorityMatches(
     operations.has(adjudication.operation);
 }
 
+type RepresentationTransitionTime = Pick<MemoryRelationVersionSnapshot,
+  "expectedAt" | "modality" | "observedAt" | "semanticFrame">;
+
+export function memoryRepresentationTransitionTimeAllowed(
+  pending: RepresentationTransitionTime,
+  current: RepresentationTransitionTime | null,
+  adjudicatedPerspective: MemorySemanticFrame["temporalPerspective"] | null
+): boolean {
+  if (current === null) return false;
+  if (pending.semanticFrame?.temporalPerspective === "CURRENT" &&
+    adjudicatedPerspective === "CURRENT") return true;
+
+  // A newly agreed schedule is current testimony about a future occurrence.
+  // Compare testimony time, never the old and new occurrence dates: a valid
+  // revision can bring the event forward as well as postpone it.
+  const isScheduled = (version: RepresentationTransitionTime) =>
+    (version.modality === "PLAN" || version.modality === "CONSTRAINT") &&
+    (version.semanticFrame?.temporalPerspective === "CURRENT" ||
+      version.semanticFrame?.temporalPerspective === "FUTURE") &&
+    version.expectedAt !== null &&
+    Number.isFinite(new Date(version.expectedAt).getTime()) &&
+    version.observedAt !== null &&
+    Number.isFinite(new Date(version.observedAt).getTime());
+  return (adjudicatedPerspective === "CURRENT" || adjudicatedPerspective === "FUTURE") &&
+    isScheduled(pending) && isScheduled(current) &&
+    new Date(pending.observedAt!).getTime() > new Date(current.observedAt!).getTime();
+}
+
 export function decideMemoryFactRelation(
   snapshot: MemoryRelationSnapshot,
   now = new Date()
@@ -348,6 +378,25 @@ export function decideMemoryFactRelation(
       "expired_current_replaced");
   }
   const correction = snapshot.correctionTargetVersionId === current.versionId;
+  if (pending.identityKind === "PROPOSITION" || current.identityKind === "PROPOSITION") {
+    const directTransition = correction &&
+      pending.factId !== current.factId &&
+      pending.directness === "DIRECT" &&
+      pending.sourceMode === "AUTOMATIC" && current.sourceMode === "AUTOMATIC" &&
+      (pending.semanticFrame?.changeIntent === "CORRECTION" ||
+        pending.semanticFrame?.changeIntent === "STATE_CHANGE") &&
+      memoryRepresentationTransitionTimeAllowed(
+        pending, current, pending.semanticAdjudication?.temporalPerspective ?? null
+      ) &&
+      semanticAuthorityMatches(pending, current, new Set([
+        "SUPERSEDE_TARGET", "MOVE_TO_DISTINCT_FACT"
+      ]));
+    return directTransition
+      ? decision("MOVE_TO_DISTINCT_FACT", current.versionId,
+        "direct_representation_transition")
+      : decision("CONFLICT", current.versionId,
+        "representation_transition_unproven");
+  }
   if (pending.identityKind !== "SLOT" || current.identityKind !== "SLOT" ||
     pending.predicateKey === null || pending.predicateKey !== current.predicateKey) {
     return decision("CONFLICT", current.versionId, "slot_identity_mismatch");

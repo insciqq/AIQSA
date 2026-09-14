@@ -1,5 +1,9 @@
-import type { MemoryJobKind, MemoryJobState } from "@prisma/client";
+import { Prisma, type MemoryJobKind, type MemoryJobState } from "@prisma/client";
 import { isMemoryCoordinatorJobKind } from "../coordinator/registry";
+import {
+  MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION,
+  memoryExplicitRelationJobFingerprint
+} from "../learning/relations/explicitPolicy";
 import { memoryPersistenceFailure } from "./errors";
 import {
   type LockedMemorySettings,
@@ -29,6 +33,49 @@ export type MemoryJobEnqueueResult = Readonly<{
   memoryRevisionSnapshot: number;
   state: MemoryJobState;
 }>;
+
+/** Called inside the explicit write transaction, after its receipt/evidence.
+ * This existence check avoids scheduling the first isolated fact. Full source
+ * and candidate authority remains the background handler's responsibility. */
+export async function enqueueMemoryExplicitRelation(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  targetFactVersionId: string
+): Promise<void> {
+  if (!settings.useMemoryFacts) return;
+  const eligible = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT version."id"
+    FROM "MemoryFactVersion" AS version
+    JOIN "MemoryFact" AS fact ON fact."userId" = version."userId" AND fact."id" = version."factId"
+    JOIN "MemoryScope" AS scope ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
+    WHERE version."userId" = ${settings.userId} AND version."id" = ${targetFactVersionId}
+      AND fact."state" = 'ACTIVE'::"MemoryFactState" AND fact."currentVersionId" = version."id"
+      AND scope."state" = 'ACTIVE'::"MemoryScopeState" AND scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
+      AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+      AND version."state" = 'ACTIVE'::"MemoryFactVersionState" AND version."systemTo" IS NULL
+      AND version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
+      AND version."contentPurgedAt" IS NULL AND version."displayText" IS NOT NULL
+      AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
+      AND EXISTS (
+        SELECT 1 FROM "MemoryFact" AS other
+        JOIN "MemoryFactVersion" AS candidate
+          ON candidate."userId" = other."userId" AND candidate."id" = other."currentVersionId"
+        WHERE other."userId" = fact."userId" AND other."scopeId" = fact."scopeId" AND other."id" <> fact."id"
+          AND other."state" = 'ACTIVE'::"MemoryFactState"
+          AND candidate."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+          AND candidate."state" = 'ACTIVE'::"MemoryFactVersionState" AND candidate."systemTo" IS NULL
+          AND candidate."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
+          AND candidate."contentPurgedAt" IS NULL AND candidate."displayText" IS NOT NULL
+          AND (candidate."expiresAt" IS NULL OR candidate."expiresAt" > CURRENT_TIMESTAMP)
+      )
+  `);
+  if (eligible.length === 0) return;
+  await enqueueMemoryJob(tx, settings, {
+    idempotencyFingerprint: memoryExplicitRelationJobFingerprint(targetFactVersionId),
+    kind: "RESOLVE_FACT_RELATIONS", pipelineVersion: MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION,
+    targetFactVersionId
+  });
+}
 
 function validToken(value: string, maxLength: number): boolean {
   return value.trim() === value && value.length > 0 && value.length <= maxLength;
@@ -81,10 +128,12 @@ export async function enqueueMemoryJob(
       isMemoryDirectMessageExtractionPipeline(input.pipelineVersion) &&
       input.source?.sourceMessageId === undefined) ||
     (input.kind === "RESOLVE_FACT_RELATIONS" && (
-      input.pipelineVersion !== relationPipeline ||
       input.targetFactVersionId === undefined ||
       !validToken(input.targetFactVersionId, 256) ||
-      input.source?.sourceMessageId === undefined
+      (input.pipelineVersion === MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION
+        ? input.source !== undefined
+        : input.pipelineVersion !== relationPipeline ||
+          input.source?.sourceMessageId === undefined)
     )) ||
     (input.kind !== "RESOLVE_FACT_RELATIONS" &&
       input.kind !== "SYNTHESIZE_MEMORIES" &&

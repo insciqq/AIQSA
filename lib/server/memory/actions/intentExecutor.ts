@@ -5,8 +5,8 @@ import type {
 } from "../../../contracts/memoryClient";
 import type { MemoryActionIntent } from "../../../contracts/memoryActionIntent";
 import {
-  memoryProjectionHasMeaningfulText,
-  memoryRedactionHasMeaningfulRemainder,
+  memoryProjectionHasSourceText,
+  memoryProjectionContainsRedaction,
   redactMemorySecrets
 } from "../explicit/safety";
 import {
@@ -308,16 +308,10 @@ function mutationRejected(
 }
 
 function safeMutationStatement(value: string | null): string | null {
-  if (!value) return null;
-  const redaction = redactMemorySecrets(value);
-  if (redaction.containsSecret && (
-    !memoryRedactionHasMeaningfulRemainder(value, redaction) ||
-    !memoryProjectionHasMeaningfulText(redaction.redactedText)
-  )) return null;
-  if (value.includes("[REDACTED:") && !memoryProjectionHasMeaningfulText(value)) {
-    return null;
-  }
-  return redaction.redactedText;
+  if (!value || !memoryProjectionHasSourceText(value) ||
+    memoryProjectionContainsRedaction(value) ||
+    redactMemorySecrets(value).containsSecret) return null;
+  return value;
 }
 
 function mutationIntentContainsRecognizedSecret(intent: MemoryActionIntent): boolean {
@@ -430,9 +424,9 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
       }
       if (intent.action === "SAVE") {
         const statement = safeMutationStatement(intent.statement);
-        if (!statement || execution.currentUserText.includes("[REDACTED:") && (
-          !memoryProjectionHasMeaningfulText(execution.currentUserText) ||
-          !memoryProjectionHasMeaningfulText(statement)
+        if (!statement || memoryProjectionContainsRedaction(execution.currentUserText) && (
+          !memoryProjectionHasSourceText(execution.currentUserText) ||
+          !memoryProjectionHasSourceText(statement)
         )) return mutationRejected("SAVE");
         if (intent.thisChatOnly) {
           return { operation: "SAVE", statement, status: "THIS_CHAT_ONLY" };
@@ -508,9 +502,9 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
         return mutationRejected("UPDATE");
       }
       if (intent.action === "UPDATE" &&
-        execution.currentUserText.includes("[REDACTED:") && (
-          !memoryProjectionHasMeaningfulText(execution.currentUserText) ||
-          !memoryProjectionHasMeaningfulText(replacementStatement!)
+        memoryProjectionContainsRedaction(execution.currentUserText) && (
+          !memoryProjectionHasSourceText(execution.currentUserText) ||
+          !memoryProjectionHasSourceText(replacementStatement!)
         )) return mutationRejected("UPDATE");
       const resolution = await resolveTarget(
         input.explicitService,

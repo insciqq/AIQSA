@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MEMORY_RETRIEVAL_LANE_ORDER } from
@@ -7,22 +7,25 @@ import { analyzeMemoryLexicalQuery } from
   "../../../../domain/memory/retrieval/lexical";
 import { MEMORY_LEXICAL_ANALYSIS_PROFILE } from "../../persistence/lexical";
 
-const activeLexicalOwners = [
+const lexicalDirectory = "lib/server/memory/retrieval/lexical";
+const lexicalOwners = [
   "lib/domain/memory/retrieval/config.ts",
   "lib/domain/memory/retrieval/lexical.ts",
   "lib/server/memory/persistence/lexical.ts",
   "lib/server/memory/retrieval/localRepository.ts",
-  "lib/server/memory/retrieval/lexical/postgresUnicodeProvider.ts",
-  "lib/server/memory/retrieval/runAdmission.ts"
-] as const;
+  "lib/server/memory/retrieval/runAdmission.ts",
+  ...readdirSync(resolve(process.cwd(), lexicalDirectory))
+    .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
+    .map((name) => `${lexicalDirectory}/${name}`)
+];
 
 function source(path: string): string {
   return readFileSync(resolve(process.cwd(), path), "utf8");
 }
 
 describe("Memory language-neutral lexical architecture", () => {
-  it("keeps language and script classification out of active retrieval owners", () => {
-    const activeSource = activeLexicalOwners.map(source).join("\n");
+  it("keeps language and script classification out of every retrieval adapter", () => {
+    const activeSource = lexicalOwners.map(source).join("\n");
     expect(activeSource).not.toMatch(/Script=(?:Latin|Cyrillic)/u);
     expect(activeSource).not.toMatch(/(?:FACT|HISTORY_RECALL)_FTS_(?:ENGLISH|RUSSIAN)/u);
     expect(activeSource).not.toMatch(/searchVector(?:English|Russian)/u);
@@ -48,15 +51,5 @@ describe("Memory language-neutral lexical architecture", () => {
         "analysisVersion", "logicalTerms", "ngramTerms", "normalized"
       ]);
     }
-  });
-
-  it("confines language-specific PostgreSQL behavior to the rollback adapter", () => {
-    const legacy = source(
-      "lib/server/memory/retrieval/lexical/postgresLegacyProvider.ts"
-    );
-    expect(legacy).toContain("PostgresLegacyMemoryLexicalCandidateProvider");
-    expect(legacy).toMatch(/FACT_FTS_ENGLISH/u);
-    expect(legacy).toMatch(/FACT_FTS_RUSSIAN/u);
-    expect(legacy).toContain("aiqsa_memory_transliterate_ru");
   });
 });
