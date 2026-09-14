@@ -189,7 +189,9 @@ export function searchExecutionValidation(form: SearchSourceForm): Readonly<{
   );
   return {
     maxOutputTokens: maxOutputTokens === null ? "Enter a whole number from 1,024 to 32,768." : null,
-    maxSearchCallsPerAnswer: maxSearchCallsPerAnswer === null ? "Enter a whole number from 1 to 4." : null,
+    maxSearchCallsPerAnswer: maxSearchCallsPerAnswer === null
+      ? `Enter a whole number from ${adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum} to ${adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum}.`
+      : null,
     valid: maxOutputTokens !== null && maxSearchCallsPerAnswer !== null
   };
 }
@@ -214,7 +216,7 @@ export function draftForModel(
     adapterKind: "provider_model_client",
     credentialMode: "provider_model",
     maxOutputTokens: current?.maxOutputTokens ?? adminSearchExecutionDefaults.maxOutputTokens,
-    maxResults: current?.maxResults ?? 8,
+    maxResults: current?.maxResults ?? adminSearchExecutionDefaults.maxResults,
     maxSearchCallsPerAnswer: current?.maxSearchCallsPerAnswer ??
       adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: model.searchKind === "perplexity_search"
@@ -227,9 +229,9 @@ export function draftForModel(
             ? "deepseek_responses_web_search"
             : "openai_responses_web_search",
     providerModelId: model.id,
-    queryMaxCharacters: current?.queryMaxCharacters ?? 500,
+    queryMaxCharacters: current?.queryMaxCharacters ?? adminSearchExecutionDefaults.queryMaxCharacters,
     reasoningPolicy: current?.reasoningPolicy ?? adminSearchExecutionDefaults.reasoningPolicy,
-    timeoutMs: current?.timeoutMs ?? 300_000
+    timeoutMs: current?.timeoutMs ?? adminSearchExecutionDefaults.timeoutMs
   };
 }
 
@@ -238,13 +240,13 @@ export function emptySearchForm(): SearchSourceForm {
     adapterKind: "provider_model_client",
     credentialMode: "provider_model",
     maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
-    maxResults: 8,
+    maxResults: adminSearchExecutionDefaults.maxResults,
     maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
     protocol: "openai_responses_web_search",
     providerModelId: null,
-    queryMaxCharacters: 500,
+    queryMaxCharacters: adminSearchExecutionDefaults.queryMaxCharacters,
     reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
-    timeoutMs: 300_000
+    timeoutMs: adminSearchExecutionDefaults.timeoutMs
   };
   return {
     description: DEFAULT_SEARCH_DESCRIPTION,

@@ -25,4 +25,12 @@ describe("search tool query validation", () => {
     expect(validateSearchToolArguments({ query: "  latest\u0000\tnews\n today  " }, 100))
       .toMatchObject({ ok: true, query: "latest news today" });
   });
+
+  it("accepts a detailed generated query within the configured research limit", () => {
+    expect(validateSearchToolArguments({ query: "x".repeat(1_000) })).toMatchObject({ ok: true });
+    expect(validateSearchToolArguments({ query: "x".repeat(1_001) })).toMatchObject({ code: "search_query_too_long" });
+    expect(validateSearchToolArguments({ query: "x".repeat(4_000) }, 4_000)).toMatchObject({ ok: true });
+    expect(validateSearchToolArguments({ query: "x".repeat(4_001) }, 4_000)).toMatchObject({ code: "search_query_too_long" });
+    expect(validateSearchToolArguments({ query: "x" }, 4_001)).toMatchObject({ code: "search_query_arguments_invalid" });
+  });
 });

@@ -684,11 +684,11 @@ describe("Search plan tool router", () => {
       .not.toBeNull();
   });
 
-  it("compacts two-engine findings to one durable copy and rehydrates the same continuation", async () => {
+  it("compacts larger two-engine findings and rehydrates the same continuation", async () => {
     const first = option("durable-first");
     const second = option("durable-second");
-    const firstFindings = `FIRST_CANONICAL_${"a".repeat(32_000)}`;
-    const secondFindings = `SECOND_CANONICAL_${"b".repeat(32_000)}`;
+    const firstFindings = `FIRST_CANONICAL_${"a".repeat(64_000)}`;
+    const secondFindings = `SECOND_CANONICAL_${"b".repeat(64_000)}`;
     const router = createSearchPlanToolRouter({
       plan: { mode: "all_selected", options: [first, second] },
       runtimes: {
@@ -709,6 +709,8 @@ describe("Search plan tool router", () => {
     expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(
       toolLoopPersistenceLimits.resultBytes
     );
+    expect(parsePersistedToolExecutionResult({ id: result.callId, name: result.name }, snapshot))
+      .toEqual(result);
   });
 
   it("turns maximum fan-out overflow into attributable settled Search errors", async () => {
@@ -929,6 +931,37 @@ describe("Search plan tool router", () => {
     expect(searchExecutionsFromToolResult(blocked)).toEqual([]);
   });
 
+  it.each([8, 32])("permits an explicitly admitted %i-call source budget and a longer query", async (maxCalls) => {
+    const onRequest = vi.fn();
+    const selected = option("expanded", {
+      config: {
+        ...option("base").config,
+        maxSearchCallsPerAnswer: maxCalls,
+        queryMaxCharacters: 4_000
+      }
+    });
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "model_choice", options: [selected] },
+      runtimes: { expanded: runtime({ onRequest }) }
+    })!;
+    const name = router.tools[0]!.name;
+    expect(router.tools[0]?.inputSchema).toMatchObject({ properties: { query: { maxLength: 4_000 } } });
+    const longQuery = "q".repeat(4_000);
+
+    for (let index = 0; index < maxCalls; index += 1) {
+      await expect(router.execute(
+        { ...call(name, index === maxCalls - 1 ? longQuery : `query ${index}`), id: `call-${index}` },
+        answerRequest()
+      )).resolves.toMatchObject({ status: "complete" });
+    }
+    const blocked = await router.execute({ ...call(name, "excess query"), id: `call-${maxCalls}` }, answerRequest());
+
+    expect(blocked).toMatchObject({ status: "error" });
+    expect(blocked.content[0]).toMatchObject({ text: expect.stringContaining("search_invocation_limit_reached") });
+    expect(onRequest).toHaveBeenCalledTimes(maxCalls);
+    expect(onRequest.mock.calls[maxCalls - 1]?.[0].query).toBe(longQuery);
+  });
+
   it("tracks invocation budgets independently for each selected source", async () => {
     const onFirstRequest = vi.fn();
     const onSecondRequest = vi.fn();
@@ -1031,6 +1064,50 @@ describe("Search plan tool router", () => {
     expect(searchExecutionsFromToolResult(result)[0]).toMatchObject({
       failure: { code: "search_timeout" }
     });
+  });
+
+  it("rejects late successful evidence after a Search deadline while preserving provider usage", async () => {
+    vi.useFakeTimers();
+    const records = captureToolEvents();
+    try {
+      let finishSearch!: () => void;
+      const pending = new Promise<void>((resolve) => { finishSearch = resolve; });
+      const binding = runtime({ findings: "PRIVATE_LATE_FINDINGS" });
+      const search = vi.fn(async (request: ProviderSearchRequest, options?: ProviderSearchOptions) => {
+        await pending;
+        return binding.searchAdapter!.search(request, options);
+      });
+      const selected = option("late-result", { config: { ...option("base").config, timeoutMs: 5 } });
+      const router = createSearchPlanToolRouter({
+        plan: { mode: "model_choice", options: [selected] },
+        runtimes: { "late-result": { ...binding, searchAdapter: { buildRequestPreview: () => ({}), search } } }
+      })!;
+      const execution = router.execute(call(router.tools[0]!.name), answerRequest());
+
+      expect(search).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(5);
+      finishSearch();
+      const result = await execution;
+
+      expect(result.status).toBe("error");
+      expect(searchExecutionsFromToolResult(result)).toEqual([
+        expect.objectContaining({
+          failure: { code: "search_timeout" },
+          sources: [],
+          status: "error",
+          usage: expect.objectContaining({ inputTokens: 2, outputTokens: 3, totalTokens: 5 })
+        })
+      ]);
+      const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+      expect(snapshot).not.toBeNull();
+      expect(JSON.stringify(snapshot)).not.toMatch(/PRIVATE_LATE_FINDINGS|example\.com/u);
+      expect(records().some((record) => record.event === "tool_execution" &&
+        record.stage === "execution" && record.outcome === "completed")).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
   });
 
   it("uses the earlier provider-model deadline when Search allows longer", async () => {

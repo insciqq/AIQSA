@@ -7,6 +7,7 @@ import { decryptProviderCredentialSecret } from "../../providers/credentialSecre
 import { providerAuthenticationMode } from "../../providers/providerConfiguration";
 import { createProviderSafeFetch } from "../../providers/providerSafeFetch";
 import { createProviderRuntimeBinding } from "../../providers/runtimeFactory";
+import { withTimeoutSignal } from "../../providers/network";
 import type {
   ProviderModelCapabilities,
   ProviderSearchPolicy,
@@ -17,7 +18,7 @@ import { loadTechnicalProviderRole } from "../../providerRuntime/admission";
 import { validateSearchToolArguments } from "../../search/query";
 import type { AdminSearchTester } from "./service";
 
-const connectivityQuery = "Find the official OpenAI home page and return one source.";
+const connectivityQuery = "OpenAI official website";
 
 export function adminSearchProviderPolicy(input: Readonly<{
   capabilities: ProviderModelCapabilities;
@@ -149,8 +150,6 @@ export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester
         secret,
         snapshot: role.snapshot
       });
-      const deadline = AbortSignal.timeout(draft.timeoutMs);
-      const signal = parentSignal ? AbortSignal.any([parentSignal, deadline]) : deadline;
       if (!runtime.searchAdapter) throw new Error("search_adapter_not_available");
       const validatedQuery = validateSearchToolArguments(
         { query: connectivityQuery },
@@ -170,24 +169,32 @@ export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester
         searchPolicy,
         strategyId: searchPolicy.strategyId
       };
-      const result = await runtime.searchAdapter.search(searchRequest, {
-        signal,
-        timeoutMs: draft.timeoutMs
-      });
-      const normalizedSourceCount = Math.min(result.sources.length, draft.maxResults);
-      const providerSourcesUnavailable = draft.protocol === "deepseek_responses_web_search" &&
-        result.sourceAttribution === "provider_unavailable";
+      const timeoutMs = Math.min(draft.timeoutMs, runtime.responseTimeoutMs);
+      const deadline = withTimeoutSignal(parentSignal, timeoutMs, "operation");
+      try {
+        deadline.signal.throwIfAborted();
+        const result = await runtime.searchAdapter.search(searchRequest, {
+          signal: deadline.signal,
+          timeoutMs
+        });
+        deadline.signal.throwIfAborted();
+        const normalizedSourceCount = Math.min(result.sources.length, draft.maxResults);
+        const providerSourcesUnavailable = draft.protocol === "deepseek_responses_web_search" &&
+          result.sourceAttribution === "provider_unavailable";
 
-      return {
-        method: "provider_search",
-        normalizedSourceCount,
-        probeBinding: role.authority,
-        protocol: draft.protocol,
-        ...(providerSourcesUnavailable ? { sourceAttribution: "provider_unavailable" as const } : {}),
-        status: normalizedSourceCount > 0 || providerSourcesUnavailable
-          ? "available"
-          : "unavailable"
-      };
+        return {
+          method: "provider_search",
+          normalizedSourceCount,
+          probeBinding: role.authority,
+          protocol: draft.protocol,
+          ...(providerSourcesUnavailable ? { sourceAttribution: "provider_unavailable" as const } : {}),
+          status: normalizedSourceCount > 0 || providerSourcesUnavailable
+            ? "available"
+            : "unavailable"
+        };
+      } finally {
+        deadline.clear();
+      }
     }
   };
 }

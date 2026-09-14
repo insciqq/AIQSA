@@ -2,7 +2,6 @@ import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
 import type { ValidatedSearchQuery } from "../../domain/search";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import {
-  adminSearchExecutionDefaults,
   adminSearchExecutionLimits,
   type AdminSearchReasoningPolicy
 } from "../../contracts/adminSearch";
@@ -43,6 +42,18 @@ export {
 export type { SearchExecutionEvidence } from "./toolResult";
 
 const allSelectedToolName = "search_selected_engines";
+
+// Older accepted runs may contain snapshots created before these controls
+// existed. Missing fields in those snapshots retain their historical values;
+// newly admitted integrations always persist explicit controls.
+const legacySearchExecutionDefaults = Object.freeze({
+  maxOutputTokens: 4_096,
+  maxResults: 8,
+  maxSearchCallsPerAnswer: 2,
+  queryMaxCharacters: 500,
+  reasoningPolicy: "lowest_supported" as const,
+  timeoutMs: 300_000
+});
 
 type SearchExecutionResult = SearchExecutionEvidence;
 
@@ -170,23 +181,31 @@ function configuration(option: NormalizedSearchPlanOption): {
       config.maxOutputTokens,
       adminSearchExecutionLimits.maxOutputTokens.minimum,
       adminSearchExecutionLimits.maxOutputTokens.maximum,
-      adminSearchExecutionDefaults.maxOutputTokens
+      legacySearchExecutionDefaults.maxOutputTokens
     ),
-    maxResults: boundedInteger(config.maxResults, 1, 20, 8),
+    maxResults: boundedInteger(
+      config.maxResults,
+      adminSearchExecutionLimits.maxResults.minimum,
+      adminSearchExecutionLimits.maxResults.maximum,
+      legacySearchExecutionDefaults.maxResults
+    ),
     maxSearchCallsPerAnswer: boundedInteger(
       config.maxSearchCallsPerAnswer,
       adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum,
       adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum,
-      adminSearchExecutionDefaults.maxSearchCallsPerAnswer
+      legacySearchExecutionDefaults.maxSearchCallsPerAnswer
     ),
     queryMaxCharacters: Number.isSafeInteger(config.queryMaxCharacters) &&
-      Number(config.queryMaxCharacters) >= 1 && Number(config.queryMaxCharacters) <= 1_000
+      Number(config.queryMaxCharacters) >= 1 &&
+      Number(config.queryMaxCharacters) <= adminSearchExecutionLimits.queryMaxCharacters.maximum
       ? Number(config.queryMaxCharacters)
-      : 500,
+      : legacySearchExecutionDefaults.queryMaxCharacters,
     reasoningPolicy: config.reasoningPolicy === "provider_default"
       ? "provider_default"
-      : adminSearchExecutionDefaults.reasoningPolicy,
-    timeoutMs: Number.isSafeInteger(config.timeoutMs) ? Number(config.timeoutMs) : 300_000
+      : legacySearchExecutionDefaults.reasoningPolicy,
+    timeoutMs: Number.isSafeInteger(config.timeoutMs) && Number(config.timeoutMs) > 0
+      ? Number(config.timeoutMs)
+      : legacySearchExecutionDefaults.timeoutMs
   };
 }
 
@@ -409,6 +428,12 @@ async function executeOne(input: Readonly<{
       attemptController.signal,
       effectiveTimeoutMs
     );
+    // A caller cancellation may happen while another engine settles; preserve
+    // that engine's settled evidence for fan-out accounting. A local deadline,
+    // however, invalidates a result that arrived after the Search-owned timer.
+    if (abortCode === "search_timeout") {
+      throw new ProviderSearchExecutionError({ artifacts: [], code: abortCode, usage: result.usage });
+    }
     logEvent("tool_execution", {
       tool_kind: "search", stage: "execution", engine_index: input.engineIndex,
       duration_ms: performance.now() - startedAt,

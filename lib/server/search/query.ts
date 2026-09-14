@@ -1,6 +1,10 @@
 import type { ValidatedSearchQuery } from "../../domain/search";
+import {
+  adminSearchExecutionDefaults,
+  adminSearchExecutionLimits
+} from "../../contracts/adminSearch";
 
-export const DEFAULT_SEARCH_QUERY_MAX_CHARACTERS = 500;
+export const DEFAULT_SEARCH_QUERY_MAX_CHARACTERS = adminSearchExecutionDefaults.queryMaxCharacters;
 
 export type SearchQueryValidationResult =
   | Readonly<{ ok: true; query: ValidatedSearchQuery }>
@@ -17,7 +21,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function validMaxCharacters(value: number): boolean {
-  return Number.isSafeInteger(value) && value >= 1 && value <= 1_000;
+  return Number.isSafeInteger(value) &&
+    value >= 1 &&
+    value <= adminSearchExecutionLimits.queryMaxCharacters.maximum;
 }
 
 function normalizeControlCharacters(value: string): string {
@@ -34,7 +40,7 @@ function normalizeControlCharacters(value: string): string {
  */
 export function validateSearchToolArguments(
   value: unknown,
-  maxCharacters = DEFAULT_SEARCH_QUERY_MAX_CHARACTERS
+  maxCharacters: number = DEFAULT_SEARCH_QUERY_MAX_CHARACTERS
 ): SearchQueryValidationResult {
   if (!validMaxCharacters(maxCharacters) || !isRecord(value)) {
     return { code: "search_query_arguments_invalid", ok: false };

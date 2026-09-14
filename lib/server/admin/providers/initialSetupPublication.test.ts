@@ -7,9 +7,11 @@ import type { AdminProviderCustomSetupCommitPlan } from "./customSetupRepository
 import { createPrismaAdminProviderRepository } from "./prismaRepository";
 import { createAdminProviderService } from "./service";
 import type { AdminProviderDraftTesterInput } from "./tester";
+import { createCustomSetupCatalogProof } from "./customSetupCatalogProof";
 
 const NOW = new Date("2026-09-09T00:00:00Z");
 const KEY = Buffer.alloc(32, 32);
+const PROOF_KEY = "synthetic-catalog-proof-key";
 
 function fixture() {
   let plan!: AdminProviderCustomSetupCommitPlan;
@@ -83,6 +85,7 @@ function fixture() {
     return { status: "ready" as const, defaultChanged: false };
   });
   const custom = createAdminProviderCustomSetupService({ encryptionKey: () => KEY,
+    proofKey: () => PROOF_KEY,
     idFactory: () => `synthetic-${++nextId}`, now: () => NOW,
     repository: { commit }, tester: { test: async () => { throw new Error("unexpected_prepublication_probe"); } },
     finishInitialSetup: (value) => service.finishInitialSetup(value) });
@@ -96,6 +99,31 @@ const request = { allowPrivateNetwork: false, apiRoot: "https://provider.example
   perModelCapabilities: { "model-a": { contextWindow: 272_000, maxOutputTokens: 65_536 }, "model-b": { contextWindow: 128_000 } } };
 
 describe("initial setup per-model publication and retry", () => {
+  it("checks every detected codex-lb model and publishes only its successful Search capability", async () => {
+    const f = fixture();
+    const ordinaryTest = f.test.getMockImplementation()!;
+    f.test.mockImplementation(async (value) => {
+      expect(value.connection.responsesRequestIsolationDetected).toBe(true);
+      const outcome = await ordinaryTest(value);
+      const supportsSearch = value.model.upstreamModelId === "model-a";
+      return { ...outcome, evidence: { ...outcome.evidence,
+        capabilitySetup: { ...outcome.evidence.capabilitySetup!, checks: { ...outcome.evidence.capabilitySetup!.checks,
+          hostedSearch: supportsSearch ? "verified" : "incomplete" } },
+        ...(supportsSearch ? { hostedSearch: { adapterKind: "openai_responses_compatible", normalizedSourceCount: 1,
+          probeVersion: 1, upstreamModelId: value.model.upstreamModelId, verified: true } as const } : {})
+      } };
+    });
+    const catalogProof = createCustomSetupCatalogProof({ endpoint: request.apiRoot, key: PROOF_KEY, now: NOW.valueOf(),
+      responsesRequestIsolationDetected: true, secret: request.secret, userId: "admin" });
+    const result = await f.custom.setup({ actor: { sessionId: "session", userId: "admin" },
+      request: { ...request, catalogProof, modelIds: ["model-a", "model-b"] } });
+    expect(result.outcome).toBe("partial");
+    expect(f.test.mock.calls.map(([value]) => value.model.upstreamModelId)).toEqual(["model-a", "model-b"]);
+    expect(f.connection().models.map((model) => model.activeConfig?.capabilities.nativeSearch)).toEqual([true, false]);
+    expect(f.connection().activeChecks.map((check) => check.status)).toEqual(["available", "available"]);
+    expect(f.connection().activeChecks[0]!.evidence?.hostedSearch?.verified).toBe(true);
+  });
+
   it("persists three usable models, preserves each limit, then retries only the fourth without recreating ids", async () => {
     const f = fixture();
     const result = await f.custom.setup({ actor: { sessionId: "session", userId: "admin" }, request });
