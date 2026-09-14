@@ -14,6 +14,7 @@ import { memorySha256 } from "../persistence/lexical";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
+import { MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION } from "../learning/relations/explicitPolicy";
 import { createMemoryRebuildHandler } from "../rebuild/handler";
 import { createPrismaMemoryRebuildRepository } from "../rebuild/repository";
 import { ensureClassifiedSearchEntry } from "../persistence/factSearchEntry";
@@ -730,6 +731,40 @@ describe("Prisma Memory Dream synthesis", () => {
         where: { factVersionId: { in: [pattern.id, shortPattern.id] }, userId }
       });
       expect(incrementalEntries).toHaveLength(2);
+
+      // Direct fixture saves now enqueue relation work. Settle the distinct
+      // source facts without a mutation before exercising the rebuild fence.
+      const relationJobs = await prisma.memoryJob.findMany({
+        where: {
+          kind: "RESOLVE_FACT_RELATIONS",
+          pipelineVersion: MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION,
+          state: "QUEUED",
+          userId
+        }
+      });
+      expect(relationJobs).toHaveLength(sources.length - 1);
+      for (const relationJob of relationJobs) {
+        const settledAt = new Date();
+        const row = await prisma.memoryJob.update({
+          data: {
+            attemptCount: { increment: 1 },
+            leaseExpiresAt: new Date(settledAt.getTime() + 60_000),
+            leaseToken: randomUUID(),
+            state: "CLAIMED"
+          },
+          where: { id: relationJob.id }
+        });
+        await expect(createPrismaMemoryCoordinatorRepository(prisma)
+          .commitJobSuccess({
+            acceptedResultHash: memorySha256({
+              domain: "memory-synthesis-test-distinct-relations",
+              jobId: relationJob.id
+            }),
+            claim: claimFromJob(row),
+            now: settledAt,
+            stage: "relations_settled"
+          })).resolves.toBe(true);
+      }
 
       const rebuildRepository = createPrismaMemoryRebuildRepository(prisma);
       const beforeRebuild = await prisma.userMemorySettings.findUniqueOrThrow({
