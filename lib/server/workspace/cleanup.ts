@@ -9,6 +9,7 @@ import type { WorkspaceOperation } from "./operationFence";
 import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext, type LifecycleStage } from "../observability";
 import { retainDatabaseFailure } from "../observability/databaseFailure";
 import { workspaceLifecycleFailure } from "./lifecycleObservability";
+import { CHAT_SUMMARY_TIMEOUT_MS } from "../chats/continuation";
 
 const ACTIVE_RUN_STATUSES = ["preparing", "queued", "in_progress", "streaming"] as const;
 const CLAIM_STALE_MS = 15 * 60 * 1_000;
@@ -220,6 +221,21 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
       if (!current || current.version !== operation.generation || current.operationOwner !== operation.owner ||
         current.runtimeSandboxId !== session.runtimeSandboxId || current.state === "DELETING") return false;
       await acknowledgeWorkspaceCommandsStopped(tx, session.id);
+      const expiredSeeds = await tx.chatContinuationWorkspaceSeed.findMany({
+        select: { id: true, status: true, storageKey: true },
+        where: { OR: [{ sourceChatId: session.chatId }, { newChatId: session.chatId }], leaseExpiresAt: { lte: now }, status: { in: ["CAPTURING", "RESTORING"] } }
+      });
+      for (const seed of expiredSeeds) {
+        // An interrupted restore still needs its archive for the next exact
+        // initialization; only a capture abandoned before transfer is cleaned.
+        if (seed.status === "CAPTURING" && seed.storageKey) {
+          await tx.attachmentDeletionJob.upsert({ where: { storageKey: seed.storageKey }, create: { storageKey: seed.storageKey }, update: {} });
+        }
+        await tx.chatContinuationWorkspaceSeed.update({ where: { id: seed.id }, data: {
+          status: seed.status === "RESTORING" ? "TRANSFERRED" : "ABANDONED", leaseToken: null, leaseExpiresAt: null,
+          ...(seed.status === "CAPTURING" ? { failureCode: "workspace_operation_interrupted" } : {})
+        } });
+      }
       await tx.workspaceSession.update({
         data: {
           operationOwner: null, operationExpiresAt: null,
@@ -235,6 +251,38 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
       else staleSessionsSettled += 1;
       if (stoppedVm) staleSessionsStopped += 1;
     }
+  }
+
+  // A process can stop after uploading the archive and releasing the source
+  // disk, but before creating the destination. Such READY seeds have no live
+  // session lease for the recovery loop above to find.
+  const abandonedBefore = new Date(now.getTime() - CHAT_SUMMARY_TIMEOUT_MS - 60_000);
+  const orphanedSeeds = await input.prisma.chatContinuationWorkspaceSeed.findMany({
+    select: { id: true, sourceChatId: true }, orderBy: [{ updatedAt: "asc" }, { id: "asc" }], take: limit,
+    where: { newChatId: null, updatedAt: { lte: abandonedBefore },
+      status: { in: ["CAPTURING", "READY", "FAILED", "ABANDONED"] },
+      OR: [{ continuation: null }, { continuation: { status: "failed" } },
+        { continuation: { status: "running", updatedAt: { lte: abandonedBefore } } }] }
+  });
+  for (const candidate of orphanedSeeds) {
+    await input.prisma.$transaction(async (tx) => {
+      if (candidate.sourceChatId) await tx.$queryRaw`SELECT "id" FROM "Chat" WHERE "id" = ${candidate.sourceChatId} FOR UPDATE`;
+      const seed = await tx.chatContinuationWorkspaceSeed.findUnique({ where: { id: candidate.id }, include: { continuation: true } });
+      if (!seed || seed.newChatId || seed.updatedAt > abandonedBefore ||
+        (seed.continuation && (seed.continuation.status === "complete" ||
+          seed.continuation.status === "running" && seed.continuation.updatedAt > abandonedBefore))) return;
+      // CAPTURING still needs receiver fencing; never race its disk operation.
+      if (seed.continuationId && await tx.workspaceSession.count({ where: { operationOwner: `continuation:${seed.continuationId}` } })) return;
+      if (seed.continuation?.status === "running") await tx.chatContinuation.update({ where: { id: seed.continuation.id },
+        data: { status: "failed", errorCode: "chat_summary_failed" } });
+      await tx.chatContinuationWorkspaceSeed.update({ where: { id: seed.id }, data: {
+        status: "ABANDONED", failureCode: seed.failureCode ?? "workspace_operation_interrupted", leaseToken: null, leaseExpiresAt: null
+      } });
+      // Re-enqueue terminal objects as well: a writer may have died after a
+      // late upload, following an earlier source-deletion cleanup attempt.
+      if (seed.storageKey) await tx.attachmentDeletionJob.upsert({ where: { storageKey: seed.storageKey },
+        create: { storageKey: seed.storageKey }, update: {} });
+    });
   }
 
   const expired = await input.prisma.$transaction(async (tx) => {

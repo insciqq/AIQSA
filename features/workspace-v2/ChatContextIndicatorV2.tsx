@@ -6,9 +6,11 @@ import { formatTokenCount } from "@/components/app-shell/shellFormatting";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { UiV2Button } from "@/components/ui-v2";
 import type { ChatContinuationControl } from "@/components/app-shell/useChatContinuation";
+import type { ChatWorkspaceState } from "@/lib/contracts/workspace";
 
-export function ChatContextIndicatorV2({ stats, continuation }: Readonly<{
+export function ChatContextIndicatorV2({ stats, continuation, continuationFiles }: Readonly<{
   stats: ComposerContextStats; continuation?: ChatContinuationControl | null;
+  continuationFiles?: ChatWorkspaceState["continuationFiles"];
 }>) {
   const [manualOpen, setOpen] = useState(false);
   const open = manualOpen || Boolean(continuation?.suggested);
@@ -24,6 +26,17 @@ export function ChatContextIndicatorV2({ stats, continuation }: Readonly<{
   const remaining = stats.safeInputBudgetTokens === null ? null :
     Math.max(0, stats.safeInputBudgetTokens - stats.approximateInputTokens);
   const count = (value: number | null) => value === null ? "Unavailable" : formatTokenCount(value);
+  const continuationFailure = continuationFiles?.status === "failed"
+    ? continuationFiles.reason === "source_disk_missing" ? "The source Workspace disk was already gone." :
+      continuationFiles.reason === "archive_limit" ? "The project archive exceeded the Workspace limit." :
+        continuationFiles.reason === "unsupported_entries" ? "The project archive contained unsupported file types." :
+          continuationFiles.reason === "runner_unavailable" ? "The Workspace runner was unavailable." :
+            continuationFiles.reason === "timeout" ? "The Workspace copy exceeded its time budget." :
+              continuationFiles.reason === "reset_consumed" ? "Workspace was reset; the copied files will not be restored again." :
+                continuationFiles.reason === "restored_disk_lost" ? "The restored Workspace disk was lost; the old copy will not be applied again." :
+                  continuationFiles.reason === "interrupted" ? "The Workspace copy was interrupted." :
+                "The Workspace archive could not be restored."
+    : null;
 
   return (
     <span className="v2-chat-context">
@@ -55,7 +68,7 @@ export function ChatContextIndicatorV2({ stats, continuation }: Readonly<{
           {gauge.tone === "critical" ? <p role="alert">{stats.requestRejected ? "The server could not fit this request in the model context window." : "There is no safe input room for the current request."} Shorten the message, remove attachments, or continue in a new chat with a summary.</p> : null}
           {gauge.tone === "warning" ? <p>The safe input budget is nearly full. You can keep working here or continue in a new chat with a summary.</p> : null}
           {continuation ? <div className="v2-chat-context-continuation">
-            <p>Continue in a new chat with a short summary of this conversation. Files and Workspace won’t be carried over.</p>
+            <p>Continue in a new chat with a short summary of this conversation. When Workspace is on, its project files are copied into the new chat. Attachments are not carried over.</p>
             {continuation.error ? <p role="alert">{continuation.error}</p> : null}
             {continuation.busy ? <>
               <p role="status">Preparing your summary…</p>
@@ -65,6 +78,12 @@ export function ChatContextIndicatorV2({ stats, continuation }: Readonly<{
               <UiV2Button onClick={close}>Stay here</UiV2Button>
             </div>}
           </div> : null}
+          {continuationFiles ? <p role={continuationFiles.status === "failed" ? "alert" : "status"}>
+            {continuationFiles.status === "ready" ? "Workspace project files were restored in this chat." :
+              continuationFiles.status === "pending" ? "Workspace project files are waiting to be restored." :
+                continuationFiles.status === "failed" ? `Workspace starts without the previous chat’s project files. ${continuationFailure}` :
+                  "The previous chat had no Workspace project disk to copy."}
+          </p> : null}
           {stats.session?.droppedMessages ? <p>{stats.session.droppedMessages} earlier {stats.session.droppedMessages === 1 ? "message is" : "messages are"} still in this chat, but were omitted from the model request. You can continue in a new chat with a summary.</p> : null}
           <details>
             <summary>Advanced details</summary>

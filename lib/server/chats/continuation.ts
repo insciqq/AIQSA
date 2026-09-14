@@ -25,6 +25,7 @@ export type ContinuationSource = Readonly<{
   updatedAt: Date;
   userId: string;
   transcript: string;
+  workspaceEnabled: boolean;
 }>;
 export type ContinuationClaim = Readonly<{ id: string; attemptId: string }>;
 export type ContinuationRepository = Readonly<{
@@ -35,6 +36,7 @@ export type ContinuationRepository = Readonly<{
     | Readonly<{ kind: "failed" }>
   >;
   assertCurrent(source: ContinuationSource): Promise<void>;
+  captureWorkspace?(source: ContinuationSource, claim: ContinuationClaim, signal?: AbortSignal): Promise<void>;
   complete(source: ContinuationSource, claim: ContinuationClaim, summary: string): Promise<ChatContinuationResult>;
   fail(claim: ContinuationClaim, code: string): Promise<void>;
   recordUsage(input: {
@@ -108,6 +110,8 @@ export function createChatContinuationService(deps: Readonly<{
     const { claim } = claimed;
     const signal = AbortSignal.any([AbortSignal.timeout(CHAT_SUMMARY_TIMEOUT_MS), ...(input.signal ? [input.signal] : [])]);
     try {
+      signal.throwIfAborted();
+      await deps.repository.captureWorkspace?.(source, claim, signal);
       signal.throwIfAborted();
       const model = await deps.resolveSystemModel();
       if (!model.ok || model.role.modelConfiguration.capabilities.structuredOutput !== true) {

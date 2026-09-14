@@ -308,6 +308,35 @@ function fixture() {
 describe("Workspace coordinator", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
+  it.each([false, true])("settles a continuation restore before exposing tools (restore failure=%s)", async (failed) => {
+    const value = fixture();
+    Object.assign(value.repository, { claimContinuationSeed: vi.fn(async () => ({ id: "seed", token: "token", storageKey: "user_1/input",
+      byteSize: 11, checksum: createHash("sha256").update("input bytes").digest("hex") })),
+      settleContinuationSeed: vi.fn(async () => true) });
+    value.runtime.restoreProjectArchive = vi.fn(async () => undefined);
+    if (failed) vi.mocked(value.runtime.restoreProjectArchive).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_archive_invalid"));
+    const running = vi.spyOn(value.repository, "markSessionRunning");
+    await value.coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },
+      modelRunToolCallId: "call", runId: value.runId, userId: "user_1", workspace: value.workspace });
+    expect(value.runtime.restoreProjectArchive).toHaveBeenCalledTimes(failed ? 2 : 1);
+    expect(value.repository.settleContinuationSeed).toHaveBeenCalledWith(expect.objectContaining({ status: failed ? "FAILED" : "RESTORED" }));
+    expect(vi.mocked(value.repository.settleContinuationSeed!).mock.invocationCallOrder[0]).toBeLessThan(running.mock.invocationCallOrder[0]!);
+    expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
+  });
+
+  it.each(["cleanup", "settlement"])("fails closed when restore %s cannot be proven", async (failure) => {
+    const value = fixture();
+    Object.assign(value.repository, { claimContinuationSeed: vi.fn(async () => ({ id: "seed", token: "token", storageKey: "user_1/input", byteSize: 11, checksum: "a".repeat(64) })),
+      settleContinuationSeed: vi.fn(async () => failure !== "settlement") });
+    value.runtime.restoreProjectArchive = vi.fn(async () => { throw new WorkspaceRuntimeError("workspace_archive_invalid"); });
+    if (failure === "settlement") vi.mocked(value.runtime.restoreProjectArchive).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_archive_invalid")).mockResolvedValueOnce(undefined);
+    const running = vi.spyOn(value.repository, "markSessionRunning");
+    await expect(value.coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },
+      modelRunToolCallId: "call", runId: value.runId, userId: "user_1", workspace: value.workspace })).rejects.toMatchObject({ code: "workspace_execution_cleanup_failed" });
+    expect(running).not.toHaveBeenCalled();
+    expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("records the accepted deadline and first abort source (parent=%s)", async (parent) => {
     vi.useFakeTimers();
     const value = fixture();

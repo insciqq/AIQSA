@@ -487,6 +487,8 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
                 WHERE attachment."storageKey" = job."storageKey"
                 UNION ALL SELECT 1 FROM "ChatPdfArtifact" AS pdf_artifact
                 WHERE pdf_artifact."storageKey" = job."storageKey"
+                UNION ALL SELECT 1 FROM "ChatContinuationWorkspaceSeed" AS seed
+                WHERE seed."storageKey" = job."storageKey" AND seed."status" IN ('CAPTURING','READY','TRANSFERRED','RESTORING','RESTORED')
               )
               AND NOT EXISTS (
                 SELECT 1 FROM "KnowledgeDocumentVersion" AS version
@@ -657,6 +659,8 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
             WHERE attachment."storageKey" = job."storageKey"
             UNION ALL SELECT 1 FROM "ChatPdfArtifact" AS pdf_artifact
             WHERE pdf_artifact."storageKey" = job."storageKey"
+            UNION ALL SELECT 1 FROM "ChatContinuationWorkspaceSeed" AS seed
+            WHERE seed."storageKey" = job."storageKey" AND seed."status" IN ('CAPTURING','READY','TRANSFERRED','RESTORING','RESTORED')
           )
           AND NOT EXISTS (
             SELECT 1 FROM "KnowledgeDocumentVersion" AS version
