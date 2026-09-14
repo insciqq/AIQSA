@@ -2,6 +2,7 @@ import {
   DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS,
   MAX_PROVIDER_RESPONSE_TIMEOUT_MS
 } from "./providerConfiguration";
+import { beginTransportStage, createProviderAbortObserver, transportFailureFacts } from "./providerObservability";
 
 const defaultProviderResponseMaxBytes = 16 * 1024 * 1024;
 const retryableProviderHttpStatuses = new Set([
@@ -198,7 +199,11 @@ export function isProviderDeadlineExceededError(
   return error instanceof ProviderRequestTimeoutError;
 }
 
-export function withTimeoutSignal(parentSignal?: AbortSignal, timeoutMs = providerTimeoutMs()) {
+export function withTimeoutSignal(parentSignal?: AbortSignal, timeoutMs = providerTimeoutMs(),
+  deadlineKind: "request" | "polling" | "operation" = "request",
+  owner?: Parameters<typeof createProviderAbortObserver>[0]) {
+  const startedAt = performance.now();
+  const observeAbort = createProviderAbortObserver(owner);
   const timeoutController = new AbortController();
   const timeout = setTimeout(
     () => timeoutController.abort(new ProviderRequestTimeoutError(timeoutMs)),
@@ -207,10 +212,19 @@ export function withTimeoutSignal(parentSignal?: AbortSignal, timeoutMs = provid
   const signal = parentSignal
     ? AbortSignal.any([parentSignal, timeoutController.signal])
     : timeoutController.signal;
+  const onAbort = () => observeAbort({
+    stage: "delivery",
+    abort_source: timeoutController.signal.aborted && signal.reason === timeoutController.signal.reason
+      ? "provider_deadline" : parentSignal?.aborted ? "parent_signal" : "unknown",
+    duration_ms: Math.max(0, performance.now() - startedAt), timeout_ms: timeoutMs, deadline_kind: deadlineKind
+  });
+  if (signal.aborted) observeAbort({ stage: "before_start", abort_source: "unknown", timeout_ms: timeoutMs, deadline_kind: deadlineKind });
+  else signal.addEventListener("abort", onAbort, { once: true });
 
   return {
     clear() {
       clearTimeout(timeout);
+      signal.removeEventListener("abort", onAbort);
     },
     signal
   };
@@ -262,10 +276,14 @@ export async function readBoundedResponseText(
     signal?: AbortSignal;
   } = {}
 ): Promise<string> {
+  const observation = beginTransportStage("body", response);
   if (options.signal?.aborted) {
+    const facts = transportFailureFacts(options.signal.reason, options.signal);
+    observation.finish(facts.category === "aborted" ? "cancelled" : "failed", facts);
     throw abortReason(options.signal);
   }
   if (!response.body) {
+    observation.finish("completed");
     return "";
   }
 
@@ -274,6 +292,10 @@ export async function readBoundedResponseText(
   const decoder = new TextDecoder();
   const textChunks: string[] = [];
   let receivedBytes = 0;
+  let receivedChunks = 0;
+  let lastProgressAt: number | undefined;
+  const progress = () => ({ bytes: receivedBytes, chunks: receivedChunks,
+    last_progress_ms: lastProgressAt === undefined ? undefined : Math.max(0, performance.now() - lastProgressAt) });
   let needsCancellation = false;
   let failure: unknown;
 
@@ -282,10 +304,13 @@ export async function readBoundedResponseText(
       const chunk = await readWithSignal(reader, options.signal);
       if (chunk.done) {
         textChunks.push(decoder.decode());
+        observation.finish("completed", progress());
         return textChunks.join("");
       }
 
       receivedBytes += chunk.value.byteLength;
+      receivedChunks += 1;
+      if (chunk.value.byteLength > 0) lastProgressAt = performance.now();
       if (receivedBytes > maxBytes) {
         failure = new ProviderResponseTooLargeError({ maxBytes, receivedBytes });
         needsCancellation = true;
@@ -295,6 +320,8 @@ export async function readBoundedResponseText(
       textChunks.push(decoder.decode(chunk.value, { stream: true }));
     }
   } catch (error) {
+    const facts = transportFailureFacts(error, options.signal);
+    observation.finish(facts.category === "aborted" ? "cancelled" : "failed", { ...progress(), ...facts });
     failure = options.signal?.aborted ? abortReason(options.signal) : error;
     needsCancellation = true;
     throw failure;

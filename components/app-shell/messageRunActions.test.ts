@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetComposerControlStoreForTest, resetComposerSessionStoreForTest, resetMemorySettingsStoreForTest, resetRunLifecycleStoreForTest, resetRunSurfaceStoreForTest, resetThreadStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
 import { useComposerControlStore } from "./composerControlStore";
 import {
@@ -361,6 +361,11 @@ function useMessageRunActionsForTest(input: {
 }
 
 describe("message run actions", () => {
+  beforeEach(() => {
+    // Exercise these actions with the Crypto API exposed on non-loopback HTTP.
+    vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+  });
+
   it("rejects over-limit Assistant and manual Skills before admission without consuming the draft", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

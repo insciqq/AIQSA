@@ -1,3 +1,6 @@
+import "./worker-bootstrap.cjs";
+import { maintenanceFailureCode } from "./maintenance-observability";
+import { logEvent } from "../lib/server/observability";
 import { createS3StorageAdapter } from "../lib/server/uploads/storage";
 import { prisma } from "../lib/server/prisma";
 import {
@@ -85,15 +88,12 @@ async function main(): Promise<void> {
     throw new Error("knowledge_restore_reconciliation_pending");
   }
   await resetKnowledgeSearchProjections(prisma);
-  console.error("AIQSA Knowledge restore reconciliation passed.");
+  logEvent("runtime_lifecycle", { subsystem: "knowledge", stage: "reconcile", outcome: "completed" });
 }
 
 void main()
   .catch((error: unknown) => {
-    const code = error instanceof Error && /^knowledge_[a-z0-9_]+$/u.test(error.message)
-      ? error.message
-      : "knowledge_restore_reconciliation_failed";
-    console.error(`AIQSA Knowledge restore reconciliation blocked: ${code}`);
+    logEvent("runtime_lifecycle", { subsystem: "knowledge", stage: "reconcile", outcome: "failed", code: maintenanceFailureCode(error, "knowledge_restore_reconciliation_failed"), action: "stop" });
     process.exitCode = 1;
   })
   .finally(async () => {

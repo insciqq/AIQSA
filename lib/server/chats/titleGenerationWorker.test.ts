@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { chatTitleWork } from "@/tests/support/chatTitles";
 import { createChatTitleWorker } from "./titleGenerationWorker";
+import { getContext, runInBackground, runWithContext } from "../observability";
 
 function fixture() {
   const work = chatTitleWork();
@@ -13,6 +14,23 @@ function fixture() {
 }
 
 describe("background chat title worker", () => {
+  it("gives claimed title work its own run context while retaining no invoking request metadata", async () => {
+    const { repository, work } = fixture();
+    const second = { ...work, runId: "second-run", userId: "second-owner" };
+    repository.take.mockReset().mockResolvedValueOnce(work).mockResolvedValueOnce(second).mockResolvedValue(null);
+    const seen: Array<ReturnType<typeof getContext>> = [];
+    const execute = vi.fn(async () => { seen.push(getContext()); return { title: "A short title" }; });
+    let requestTrace: string | undefined;
+    await runInBackground(() => runWithContext({ run_id: "request-run" }, async () => {
+      requestTrace = getContext()!.trace_id;
+      await createChatTitleWorker({ execute, repository }).reconcile(new AbortController().signal);
+      expect(getContext()!.run_id).toBe("request-run");
+    }));
+    expect(seen.map((item) => item?.run_id)).toEqual([work.runId, second.runId]);
+    expect(new Set(seen.map((item) => item?.trace_id)).size).toBe(2);
+    for (const context of seen) expect(context?.trace_id).not.toBe(requestTrace);
+  });
+
   it.each(["generated", "invalid", "failed"] as const)("keeps reported usage before settling %s output", async (outcome) => {
     const { repository, work } = fixture();
     const usage = { inputTokens: 10, outputTokens: 3, reasoningTokens: 0, totalTokens: 13 };

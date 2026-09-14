@@ -201,15 +201,30 @@ export const openAIResponsesToolBridge: ProviderToolBridge = {
   },
   provider: "openai",
   serializeAssistantToolCalls({ calls, providerMessage }) {
-    return suppliedProviderMessages(providerMessage) ?? calls.map((call) =>
-      isRecord(call.raw) ? call.raw : {
+    const namesByCallId = new Map(calls.map((call) => [call.id, call.name]));
+    const messages = suppliedProviderMessages(providerMessage);
+    if (messages) {
+      return messages.map((message) => {
+        if (!isRecord(message) || message.type !== "function_call") return message;
+        const callId = typeof message.call_id === "string"
+          ? message.call_id
+          : typeof message.id === "string" ? message.id : undefined;
+        const name = callId ? namesByCallId.get(callId) : undefined;
+        return name && message.name !== name ? { ...message, name } : message;
+      });
+    }
+    return calls.map((call) => {
+      if (isRecord(call.raw)) {
+        return call.raw.name === call.name ? call.raw : { ...call.raw, name: call.name };
+      }
+      return {
         arguments: JSON.stringify(call.arguments),
         call_id: call.id,
         name: call.name,
         status: "completed",
         type: "function_call"
-      }
-    );
+      };
+    });
   },
   serializeHostedTools(request) {
     return usesHostedSearchRoute(

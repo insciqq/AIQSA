@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 import http, { type Server } from "node:http";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,7 +16,6 @@ type Launcher = {
   canonicalIp(value: string): string | null;
   createPeerStamp(peerAddress: string, sessionSecret: string): string | null;
   launch(target: string): Server;
-  warnForDirectHttp(env: Record<string, string | undefined>): void;
 };
 
 const require = createRequire(import.meta.url);
@@ -55,6 +55,28 @@ afterEach(() => {
 });
 
 describe("runtime launcher", () => {
+  it("announces application subsystem startup before loading the server", () => {
+    const result = spawnSync(process.execPath, ["scripts/runtime-launcher.cjs", "tests/fixtures/runtime-launcher-server.cjs"], {
+      cwd: process.cwd(), encoding: "utf8", timeout: 10_000, env: { ...process.env, NODE_OPTIONS: "" }
+    });
+    expect(result.status).toBe(0);
+    const records = result.stdout.trim().split("\n").map(line => JSON.parse(line));
+    expect(records.filter(record => record.event === "process.started")).toEqual([
+      expect.objectContaining({ attachments: "starting", knowledge: "starting", mcp: "starting", memory: "unknown" })
+    ]);
+  });
+
+  it("preserves missing forwarded identity before the server can fill it from the peer", async () => {
+    const server = launcher.launch(fixture("runtime-launcher-server.cjs"));
+    const port = await listen(server);
+    try {
+      const absent = await fetch(`http://127.0.0.1:${port}/forwarded`);
+      expect(await absent.json()).toEqual({ value: "" });
+      const forwarded = await fetch(`http://127.0.0.1:${port}/forwarded`, { headers: { "x-forwarded-for": "spoofed, 192.0.2.1" } });
+      expect(await forwarded.json()).toEqual({ value: "spoofed, 192.0.2.1" });
+    } finally { await close(server); }
+  });
+
   it("normalizes IPv4-mapped peers before signing", () => {
     expect(launcher.canonicalIp("::ffff:192.168.10.4")).toBe("192.168.10.4");
     expect(launcher.canonicalIp("::ffff:c0a8:a04")).toBe("192.168.10.4");
@@ -94,6 +116,7 @@ describe("runtime launcher", () => {
         )
       ).toEqual({ status: "unavailable" });
       expect(stamp).not.toContain("forged");
+      expect(response.headers.get("x-aiqsa-trace-id")).toMatch(/^[0-9a-f]{32}$/);
       expect(http.createServer).toBe(originalCreateServer);
     } finally {
       await close(server);
@@ -113,6 +136,9 @@ describe("runtime launcher", () => {
 
       expect(await echoed.text()).toBe("multipart-payload");
       expect(await streamed.text()).toBe("first\nsecond\n");
+      expect(echoed.headers.get("x-aiqsa-trace-id")).toMatch(/^[0-9a-f]{32}$/);
+      expect(streamed.headers.get("x-aiqsa-trace-id")).toMatch(/^[0-9a-f]{32}$/);
+      expect(echoed.headers.get("x-aiqsa-trace-id")).not.toBe(streamed.headers.get("x-aiqsa-trace-id"));
     } finally {
       await close(server);
     }
@@ -124,16 +150,13 @@ describe("runtime launcher", () => {
     );
   });
 
-  it("emits only a value-free warning for direct HTTP", () => {
+  it("starts direct HTTP without a transport warning", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
-    launcher.warnForDirectHttp({
-      AIQSA_APP_BASE_URL: "http://192.168.10.4:3000",
-      AIQSA_BIND_ADDRESS: "0.0.0.0",
-      AIQSA_TRUST_PROXY_HEADERS: ""
-    });
-
-    expect(warn).toHaveBeenCalledWith("AIQSA runtime warning: direct_http_transport");
-    expect(JSON.stringify(warn.mock.calls)).not.toContain("192.168.10.4");
+    vi.stubEnv("AIQSA_APP_BASE_URL", "http://192.168.10.4:3000");
+    vi.stubEnv("AIQSA_BIND_ADDRESS", "0.0.0.0");
+    vi.stubEnv("AIQSA_TRUST_PROXY_HEADERS", "");
+    const server = launcher.launch(fixture("runtime-launcher-server.cjs"));
+    expect(server).toBeInstanceOf(http.Server);
+    expect(warn).not.toHaveBeenCalled();
   });
 });

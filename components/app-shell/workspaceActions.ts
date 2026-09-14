@@ -1,3 +1,4 @@
+import { randomUUID } from "@/lib/browser/randomUUID";
 import {
   chatDetailFromApi,
   chatSummaryFromApi,
@@ -1067,7 +1068,7 @@ export function useWorkspaceActions({
         defaultModelId: controls.selectedModelId,
         defaultProvider: controls.selectedProvider,
         folderId,
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         memoryMode,
         messageCount: 0,
         pendingPersonalDraft: { folderId, memoryMode },

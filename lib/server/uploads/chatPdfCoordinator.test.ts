@@ -1,9 +1,11 @@
 // @vitest-environment node
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { modelPdfPageEndMarker, modelPdfPageStartMarker } from "../parsing/modelPdfOutput";
 import { createChatPdfCoordinator, type ChatPdfCoordinatorDependencies } from "./chatPdfCoordinator";
 import { ChatPdfPreparationError, encodeChatPdfArtifact } from "./chatPdfCore";
+import { getContext, runInBackground, runWithContext } from "../observability";
+import { CHAT_PDF_HEARTBEAT_MS } from "./chatPdfPersistence";
 
 function harness(workspace = false) {
   const controller = new AbortController();
@@ -40,13 +42,14 @@ function harness(workspace = false) {
         return { kind: "reserved", attemptId: "attempt" }; }),
       dispatch: vi.fn(async () => { accepted(); attempts[0]!.state = "dispatched";
         return { attemptId: "attempt", usageEventId: "usage" }; }),
-      recordUsage: vi.fn(async () => undefined),
+      recordUsage: vi.fn(async () => true),
       ambiguous: vi.fn(async (_dispatch, errorCode = "pdf_preparation_ambiguous") => {
-        if (attempts[0]?.state === "dispatched") Object.assign(attempts[0], { state: "ambiguous", errorCode }); }),
-      settle: vi.fn(async (_dispatch, result) => { attempts[0] = { ...attempts[0]!, state: "settled", ...result }; })
+        if (attempts[0]?.state !== "dispatched") return false;
+        Object.assign(attempts[0], { state: "ambiguous", errorCode }); return true; }),
+      settle: vi.fn(async (_dispatch, result) => { attempts[0] = { ...attempts[0]!, state: "settled", ...result }; return true; })
     },
     repository: {
-      claim: async () => alive ? claim : null, release: vi.fn(async () => undefined), heartbeat: async () => alive,
+      claim: async () => alive ? claim : null, release: vi.fn(async () => true), heartbeat: async () => alive,
       load: async () => ({ modelRun: { chatPdfAttachments: [row], workspaceRunBinding: workspace ? { modelRunId: "run" } : null } }),
       useWorkspaceOriginal: vi.fn(async (_claim, _id, errorCode) => {
         accepted(); Object.assign(row, { state: "original_only", errorCode, retryable: false }); }),
@@ -72,6 +75,110 @@ function harness(workspace = false) {
 }
 
 describe("durable PDF coordinator", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("observes provider failure before rejected usage and ambiguity writes without private content", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const records = () => writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+    const h = harness();
+    h.deps.execute.mockRejectedValue(Object.assign(new Error("PRIVATE_PROVIDER_CANARY"), { code: "provider_request_timed_out" }));
+    let recordsBeforeUsage: Record<string, unknown>[] = [];
+    h.deps.attempts.recordUsage.mockImplementation(async () => {
+      recordsBeforeUsage = records();
+      throw new Error("PRIVATE_USAGE_DATABASE_CANARY");
+    });
+    h.deps.attempts.ambiguous.mockRejectedValue(new Error("PRIVATE_AMBIGUITY_DATABASE_CANARY"));
+    await h.coordinator().runOne();
+    expect(h.deps.attempts.recordUsage).toHaveBeenCalledOnce();
+    expect(recordsBeforeUsage).toContainEqual(expect.objectContaining({ event: "job_attempt", stage: "dispatch", outcome: "failed", code: "provider_request_timed_out" }));
+    expect(records()).toContainEqual(expect.objectContaining({ event: "job_persistence", stage: "settle", outcome: "unconfirmed" }));
+    expect(h.deps.execute).toHaveBeenCalledOnce();
+    expect(h.deps.fail).toHaveBeenCalledOnce();
+    expect(records().every((record) => record.run_id === "run" && record.job_id === undefined)).toBe(true);
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
+  it("records the original failure before guarded original-only publication and preserves no-replay ambiguity", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const h = harness(true);
+    h.attempts.push({ state: "ambiguous", page: 1, resultArtifactId: null, errorCode: "pdf_transcription_failed" });
+    const publish = h.deps.repository.useWorkspaceOriginal.getMockImplementation()!;
+    h.deps.repository.useWorkspaceOriginal.mockImplementation(async (...args) => {
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      expect(records).toContainEqual(expect.objectContaining({ event: "job_attempt", stage: "process", outcome: "failed", code: "pdf_transcription_failed" }));
+      expect(records.some((record) => record.outcome === "degraded")).toBe(false);
+      return publish(...args);
+    });
+    await h.coordinator().runOne();
+    const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+    expect(records).toContainEqual(expect.objectContaining({ event: "job_attempt", stage: "process", outcome: "degraded", code: "pdf_transcription_failed" }));
+    expect(records).toContainEqual(expect.objectContaining({ event: "job_persistence", stage: "complete", outcome: "confirmed" }));
+    expect(h.deps.execute).not.toHaveBeenCalled();
+  });
+
+  it("does not report original-only success when its authority check rejects the degradation", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const h = harness(true);
+    h.attempts.push({ state: "ambiguous", page: 1, resultArtifactId: null, errorCode: "pdf_transcription_failed" });
+    h.deps.authorize.mockResolvedValueOnce(true).mockResolvedValue(false);
+    await h.coordinator().runOne();
+    const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+    expect(records).toContainEqual(expect.objectContaining({ event: "job_attempt", outcome: "failed", code: "pdf_transcription_failed" }));
+    expect(records).toContainEqual(expect.objectContaining({ event: "job_attempt", outcome: "stale", code: "pdf_preparation_unavailable", level: "info" }));
+    expect(records.some((record) => record.outcome === "degraded")).toBe(false);
+    expect(h.deps.repository.useWorkspaceOriginal).not.toHaveBeenCalled();
+  });
+
+  it("retains the claim context when a heartbeat loses its lease and aborts the page", async () => {
+    vi.useFakeTimers();
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const h = harness();
+      h.deps.repository.heartbeat = async () => false;
+      h.deps.execute.mockImplementation(() => new Promise(() => {}));
+      const work = h.coordinator().runOne();
+      await vi.advanceTimersByTimeAsync(CHAT_PDF_HEARTBEAT_MS);
+      await work;
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      const start = records.find((record) => record.event === "job_attempt" && record.stage === "claim");
+      expect(records).toContainEqual(expect.objectContaining({ event: "job_attempt", stage: "heartbeat", outcome: "lost_lease",
+        level: "info", run_id: "run", trace_id: start.trace_id }));
+      expect(records.every((record) => record.job_id === undefined)).toBe(true);
+      expect(h.deps.repository.publishDocument).not.toHaveBeenCalled();
+      expect(h.deps.continueRun).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("observes a failed terminal settlement and preserves the rejection and release", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const h = harness();
+    h.deps.execute.mockRejectedValue(new Error("PRIVATE_PROVIDER_CANARY"));
+    const error = new Error("PRIVATE_TERMINAL_CANARY");
+    h.deps.fail.mockRejectedValue(error);
+    await expect(h.coordinator().runOne()).rejects.toBe(error);
+    const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+    expect(records).toContainEqual(expect.objectContaining({ event: "job_attempt", stage: "fail", outcome: "failed", run_id: "run" }));
+    expect(h.deps.repository.release).toHaveBeenCalledOnce();
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+  });
+
+  it("isolates a claimed PDF run from the request which starts processing", async () => {
+    const h = harness();
+    const execute = h.deps.execute.getMockImplementation()!;
+    const seen: Array<ReturnType<typeof getContext>> = [];
+    h.deps.execute.mockImplementation(async () => { seen.push(getContext()); return execute(); });
+    let requestTrace: string | undefined;
+    await runInBackground(() => runWithContext({ run_id: "request-run" }, async () => {
+      requestTrace = getContext()!.trace_id;
+      await h.coordinator().runOne();
+      expect(getContext()!.run_id).toBe("request-run");
+    }));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.run_id).toBe("run");
+    expect(seen[0]?.trace_id).not.toBe(requestTrace);
+    expect(seen[0]?.job_id).toBeUndefined();
+  });
+
   it.each([[14, 120_000], [19, 300_000], [20, 300_000]])(
     "uses the accepted timeout policy for parser %s", async (parserVersion, timeoutMs) => {
       const h = harness();

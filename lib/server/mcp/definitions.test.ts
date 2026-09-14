@@ -157,6 +157,32 @@ describe("MCP definition validation", () => {
     });
   });
 
+  it("accepts HTTP endpoints and Client ID Metadata Documents", () => {
+    expect(validateMcpDraft({
+      ...remoteDraft("http://192.168.1.20:8080/mcp"),
+      auth: {
+        allowedAuthorizationServerOrigins: ["http://192.168.1.20:8081"],
+        clientIdMetadataDocumentUrl: "http://192.168.1.20:3000/client-metadata",
+        mode: "oauth",
+        protectedResource: "http://192.168.1.20:8080/mcp",
+        scopes: ["mcp.read"]
+      },
+      source: {
+        allowPrivateNetwork: true,
+        kind: "remote",
+        url: "http://192.168.1.20:8080/mcp"
+      }
+    })).toMatchObject({
+      ok: true,
+      value: {
+        auth: {
+          clientIdMetadataDocumentUrl: "http://192.168.1.20:3000/client-metadata"
+        },
+        source: { allowPrivateNetwork: true, url: "http://192.168.1.20:8080/mcp" }
+      }
+    });
+  });
+
   it("rejects remote URL credentials, fragments, and query data without echoing values", () => {
     const secret = "do-not-echo-this-value";
     const urls = [

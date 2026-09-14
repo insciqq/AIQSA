@@ -139,7 +139,7 @@ export function inboundMcpOAuthConfiguration(
   }
   const loopback = isLoopbackHostname(url.hostname);
   if (url.username || url.password || url.hash ||
-    url.protocol !== "https:" && !(url.protocol === "http:" && loopback && nodeEnv !== "production")) {
+    url.protocol !== "https:" && url.protocol !== "http:") {
     return failure("server_error");
   }
   const issuer = url.origin;

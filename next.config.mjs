@@ -19,6 +19,9 @@ function securityHeaders() {
 const nextConfig = {
   allowedDevOrigins: ["127.0.0.1", "localhost", "app", "aiqsa-app-1", "host.docker.internal"],
   devIndicators: false,
+  // Next's development request logger includes raw paths and query strings.
+  // The owned listener emits bounded, content-free request diagnostics.
+  logging: { incomingRequests: false },
   experimental: {
     // proxy.ts authenticates and applies the same-origin boundary before every
     // private route. Its framework-level forwarding cap must therefore cover

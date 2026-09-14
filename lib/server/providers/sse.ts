@@ -10,6 +10,7 @@ import {
   ProviderStreamTooLargeError,
   type ProviderStreamSafetySnapshot
 } from "./streamSafety";
+import { beginTransportStage, createProviderAbortObserver, observeProviderDeadline, transportFailureFacts } from "./providerObservability";
 
 export type ParsedServerSentEvent = {
   data: string;
@@ -181,7 +182,18 @@ export async function* parseSseStream(
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   const startedAt = performance.now();
+  const observation = beginTransportStage("stream", stream);
+  const observeAbort = createProviderAbortObserver();
+  observeProviderDeadline({ stream_idle_timeout_ms: limits.idleTimeoutMs, stream_absolute_timeout_ms: limits.maxDurationMs });
+  const preAborted = options.signal?.aborted === true;
   let totalStreamBytes = 0;
+  let receivedBytes = 0;
+  let chunks = 0;
+  let lastProgressAt: number | undefined;
+  const progress = () => preAborted ? {} : ({
+    bytes: receivedBytes, chunks,
+    last_progress_ms: lastProgressAt === undefined ? undefined : Math.max(0, performance.now() - lastProgressAt)
+  });
   let completed = false;
   let terminated = false;
   let fatalReason: unknown;
@@ -233,6 +245,7 @@ export async function* parseSseStream(
     }
   };
   const onParentAbort = () => {
+    if (!terminated && !completed) observeAbort({ stage: "delivery", abort_source: "parent_signal", duration_ms: elapsedMs() });
     terminate(abortReason(options.signal as AbortSignal));
   };
   const clearControls = (): void => {
@@ -262,6 +275,8 @@ export async function* parseSseStream(
     reject?.(reason);
   }
   const deadlineFailure = (): ProviderStreamDeadlineExceededError => {
+    if (!terminated && !completed) observeAbort({ stage: "delivery", abort_source: "provider_deadline", deadline_kind: "stream_absolute",
+      timeout_ms: limits.maxDurationMs, duration_ms: elapsedMs() });
     const observedDurationMs = Math.max(limits.maxDurationMs, elapsedMs());
     return new ProviderStreamDeadlineExceededError({
       maxDurationMs: limits.maxDurationMs,
@@ -324,6 +339,8 @@ export async function* parseSseStream(
 
       rejectPendingRead = rejectRead;
       idleTimer = setTimeout(() => {
+        if (!terminated && !completed) observeAbort({ stage: "delivery", abort_source: "provider_deadline", deadline_kind: "stream_idle",
+          timeout_ms: limits.idleTimeoutMs, duration_ms: elapsedMs() });
         const durationMs = elapsedMs();
         const observedIdleMs = Math.max(
           limits.idleTimeoutMs,
@@ -353,6 +370,7 @@ export async function* parseSseStream(
 
   try {
     if (options.signal?.aborted) {
+      observeAbort({ stage: "before_start", abort_source: "unknown" });
       terminate(abortReason(options.signal));
     } else if (options.signal) {
       options.signal.addEventListener("abort", onParentAbort, { once: true });
@@ -373,6 +391,9 @@ export async function* parseSseStream(
         releaseReader();
         break;
       }
+      chunks += 1;
+      receivedBytes += value.byteLength;
+      if (value.byteLength > 0) lastProgressAt = performance.now();
 
       for (let index = 0; index < value.byteLength; index += 1) {
         if ((index & 4095) === 0) {
@@ -407,12 +428,16 @@ export async function* parseSseStream(
     if (trailing) {
       yield attachProviderStreamSafetySnapshot(trailing, snapshot());
     }
+    observation.finish("completed", progress());
   } catch (error) {
+    const facts = transportFailureFacts(error, options.signal);
+    observation.finish(facts.category === "aborted" ? "cancelled" : "failed", { ...progress(), ...facts });
     if (!completed && !terminated) {
       terminate(error);
     }
     throw error;
   } finally {
+    observation.finish("cancelled", progress());
     clearControls();
     if (!completed) {
       cancelAndRelease(terminated ? fatalReason : undefined);

@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { runWithContext } from "../observability";
 import { MAX_RERANK_QUERY_CHARACTERS, RerankAdapterError, type RerankAdapter } from "../providers/rerank";
 import { decodeKnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
 import {
@@ -28,6 +29,79 @@ function candidate(chunkId: string, text = `passage for ${chunkId}`) {
 function fakeAdapter(rerank: RerankAdapter["rerank"]): RerankAdapter {
   return Object.freeze({ rerank });
 }
+
+function captureRerankEvents() {
+  const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  return () => writer.mock.calls.flatMap(([chunk]) => {
+    try { return [JSON.parse(String(chunk)) as Record<string, unknown>]; } catch { return []; }
+  });
+}
+
+describe("Knowledge rerank diagnostics", () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  it.each(["parent", "deadline"])("keeps the first %s source when both abort callbacks run before settlement", async (first) => {
+    vi.useFakeTimers();
+    const records = captureRerankEvents();
+    const parent = new AbortController();
+    const stop = () => runWithContext({ trace_id: "2".repeat(32) }, () => parent.abort(new Error("PRIVATE_STOP_CANARY")));
+    const stage = createKnowledgeRerankStage({
+      adapter: fakeAdapter(async input => {
+        input.signal?.addEventListener("abort", () => {
+          if (first === "deadline") stop();
+          else vi.advanceTimersByTime(5);
+        }, { once: true });
+        return new Promise<never>(() => undefined);
+      }), pin, query: "PRIVATE_QUERY_CANARY", timeoutMs: 5
+    });
+    const pending = runWithContext({ trace_id: "1".repeat(32), run_id: "accepted-run",
+      tool_call_id: "stored-tool-call", execution_index: 2 }, () => stage({
+      candidates: [candidate("PRIVATE_CHUNK_ONE"), candidate("PRIVATE_CHUNK_TWO")], signal: parent.signal
+    })).catch((error: unknown) => error);
+    if (first === "parent") stop();
+    else await vi.advanceTimersByTimeAsync(5);
+    expect(await pending).toBe(parent.signal.reason);
+    expect(records().filter(record => record.event === "nested_abort")).toEqual([
+      expect.objectContaining({ layer: "knowledge", operation_stage: "rerank", stage: "delivery",
+        abort_source: first === "parent" ? "parent_signal" : "knowledge_deadline",
+        trace_id: "1".repeat(32), run_id: "accepted-run", tool_call_id: "stored-tool-call", execution_index: 2 })
+    ]);
+    expect(records()).toContainEqual(expect.objectContaining({ event: "tool_deadline", operation_stage: "rerank",
+      configured_timeout_ms: 5, effective_timeout_ms: 5 }));
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not invent elapsed time or a cause for an already-aborted parent", async () => {
+    const records = captureRerankEvents();
+    const parent = new AbortController();
+    parent.abort(new Error("PRIVATE_REASON_CANARY"));
+    const rerank = vi.fn(async () => new Promise<never>(() => undefined));
+    const stage = createKnowledgeRerankStage({ adapter: fakeAdapter(rerank), pin, query: "q" });
+    await expect(stage({ candidates: [candidate("a"), candidate("b")], signal: parent.signal }))
+      .rejects.toBe(parent.signal.reason);
+    const aborts = records().filter(record => record.event === "nested_abort");
+    expect(aborts).toEqual([expect.objectContaining({ layer: "knowledge", operation_stage: "rerank",
+      stage: "before_start", abort_source: "unknown" })]);
+    expect(aborts[0]).not.toHaveProperty("duration_ms");
+    expect(aborts[0]).not.toHaveProperty("timeout_ms");
+    // Preserve the existing adapter dispatch with an aborted signal.
+    expect(rerank).toHaveBeenCalledOnce();
+  });
+
+  it("records the allowed fallback and HTTP status without evidence or provider identifiers", async () => {
+    const records = captureRerankEvents();
+    const stage = createKnowledgeRerankStage({
+      adapter: fakeAdapter(async () => { throw new RerankAdapterError("rerank_provider_http_error", { httpStatus: 503 }); }),
+      pin, query: "PRIVATE_QUERY_CANARY"
+    });
+    const result = await stage({ candidates: [candidate("PRIVATE_CHUNK_ONE"), candidate("PRIVATE_CHUNK_TWO")] });
+    expect(result.status).toBe("degraded");
+    expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution", operation_stage: "rerank",
+      stage: "execution", outcome: "degraded", httpStatus: 503, code: "rerank_provider_server_error", action: "degrade" }));
+    expect(JSON.stringify(records())).not.toMatch(/PRIVATE_|connection-1|credential-version|источник|Раздел/);
+  });
+});
 
 describe("Knowledge rerank execution stage", () => {
   it("keeps the fifteen-second wall-clock default", () => {

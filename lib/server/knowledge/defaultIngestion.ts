@@ -1,3 +1,4 @@
+import { retainDatabaseFailure } from "../observability/databaseFailure";
 import { createPrismaEmbeddingRuntime } from "../providerRuntime/embeddingRuntime";
 import { createConfiguredDoclingLayoutParser } from "../parsing/doclingLayout";
 import { prisma } from "../prisma";
@@ -27,7 +28,7 @@ function createDefaultKnowledgeIngestionCoordinator(): KnowledgeIngestionCoordin
       const policy = await prisma.knowledgeAnswerPolicy.findUnique({
         select: { ingestionParallelism: true },
         where: { id: "installation" }
-      });
+      }).catch(retainDatabaseFailure);
       return policy?.ingestionParallelism ?? KNOWLEDGE_INGESTION_PARALLELISM_DEFAULT;
     },
     process: createKnowledgeIngestionProcessor({

@@ -1,3 +1,5 @@
+import { Prisma } from "@prisma/client";
+import { databaseFailureCode } from "../observability/databaseFailure";
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { createPrismaKnowledgeSourceIngestionRepository } from "./prismaSourceIngestionRepository";
@@ -40,4 +42,19 @@ describe("Source ingestion empty-queue polling", () => {
     expect(query.mock.calls[1]![0].text).toContain('membership."removedAt" IS NULL');
     expect(execute).toHaveBeenCalledTimes(1);
   });
+});
+
+
+it("retains proven database evidence at the claim probe without changing the rejected error", async () => {
+  const failure = new Prisma.PrismaClientKnownRequestError("PRIVATE_QUERY", {
+    clientVersion: "test", code: "P1001", meta: { private: "PRIVATE_META" }
+  });
+  const findFirst = vi.fn(async () => { throw failure; });
+  const transaction = vi.fn();
+  const repository = createPrismaKnowledgeSourceIngestionRepository({
+    knowledgeSourceIndexArtifact: { findFirst }, $transaction: transaction
+  } as never);
+  await expect(repository.claim({ claimToken: "claim", now: new Date(1000), staleBefore: new Date(0) })).rejects.toBe(failure);
+  expect(databaseFailureCode(failure)).toBe("P1001");
+  expect(transaction).not.toHaveBeenCalled();
 });

@@ -4,6 +4,7 @@ import {
   type McpFatalResponseErrorCode
 } from "./clientSession";
 import { ToolHiveClientError } from "./toolhiveClient";
+import { getContext, runWithContext, type ObservabilityContext } from "../observability";
 import {
   McpRuntimeCoordinator,
   type McpRuntimeCoordinatorRepository,
@@ -90,7 +91,7 @@ function harness(input: {
     loadAcceptedGeneration: vi.fn(async () => null),
     markFailed: vi.fn(async ({ errorCode }) => {
       calls.push(`failed:${errorCode}`);
-      return true;
+      return { applied: true, retryAt: new Date(now.getTime() + 5_000) };
     }),
     markReady: vi.fn(async () => {
       calls.push("ready");
@@ -135,6 +136,111 @@ function harness(input: {
 }
 
 describe("MCP runtime coordinator", () => {
+  it.each([true, false, "reject"] as const)("retains original startup failure before retry persistence=%s", async (outcome) => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const records = () => writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+    const error = new McpClientSessionError({ code: "mcp_network_failed", operation: "initialize" });
+    error.message = "PRIVATE_STARTUP_CANARY";
+    const test = harness({ createError: error });
+    test.setLaunches([launch({ generationId: `retry-${outcome}` })]);
+    vi.mocked(test.repository.markFailed).mockImplementation(async () => {
+      expect(records()).toContainEqual(expect.objectContaining({ event: "job_attempt", stage: "initialize", outcome: "failed", code: "mcp_network_failed" }));
+      if (outcome === "reject") throw new Error("PRIVATE_RETRY_CANARY");
+      return { applied: outcome, retryAt: new Date("2026-07-22T18:00:05.000Z") };
+    });
+    try {
+      if (outcome === "reject") await expect(test.coordinator.reconcileNow()).rejects.toThrow("PRIVATE_RETRY_CANARY");
+      else await test.coordinator.reconcileNow();
+      const retry = records().find((record) => record.event === "job_persistence" && record.stage === "retry");
+      expect(retry).toMatchObject({ outcome: outcome === "reject" ? "unconfirmed" : outcome ? "confirmed" : "not_applied" });
+      expect(retry.retry_at).toBe(outcome === true ? "2026-07-22T18:00:05.000Z" : undefined);
+      expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+    } finally { await test.coordinator.stop(); writer.mockRestore(); }
+  });
+
+  it("recovers only the failed generation and keeps healthy reconcile and health polls quiet", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const test = harness();
+    const a = launch({ generationId: "failed-generation", fingerprint: "failed-fingerprint" });
+    const b = launch({ generationId: "healthy-generation", fingerprint: "healthy-fingerprint" });
+    test.setLaunches([]);
+    try {
+      await test.coordinator.reconcileNow(); await test.coordinator.reconcileNow();
+      // A previous test may have left an unscoped coordinator failure.
+      writer.mockClear();
+      await test.coordinator.reconcileNow();
+      expect(writer).not.toHaveBeenCalled();
+      test.setLaunches([a]);
+      test.createSession.mockRejectedValueOnce(new McpClientSessionError({ code: "mcp_network_failed", operation: "initialize" }));
+      await test.coordinator.reconcileNow();
+      test.setLaunches([b]);
+      await test.coordinator.reconcileNow();
+      let records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      expect(records.filter((record) => record.event === "subsystem.recovered" && record.stage === "process")).toHaveLength(0);
+      test.setLaunches([a, b]);
+      await test.coordinator.reconcileNow();
+      records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      expect(records.filter((record) => record.event === "subsystem.recovered" && record.stage === "process")).toHaveLength(1);
+      writer.mockClear();
+      await test.coordinator.reconcileNow();
+      expect(test.coordinator.operationalStatus(a.generationId)).toBe("active");
+      expect(writer).not.toHaveBeenCalled();
+    } finally { await test.coordinator.stop(); writer.mockRestore(); }
+  });
+
+  it("isolates lazy startup, repeated kicks, inventory refresh and health polling while preserving tool context", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const request = { trace_id: "1".repeat(32), run_id: "first-run", job_id: "request-job" };
+    const nextRequest = { trace_id: "2".repeat(32), run_id: "second-run" };
+    const test = harness({ now: () => new Date() });
+    const drains: Array<ObservabilityContext | undefined> = [];
+    const inventories: Array<ObservabilityContext | undefined> = [];
+    const probes: Array<ObservabilityContext | undefined> = [];
+    let callContext: ObservabilityContext | undefined;
+    const listTools = vi.mocked(test.session.listTools).getMockImplementation()!;
+    vi.mocked(test.repository.synchronizeDesired).mockImplementation(async () => {
+      drains.push(getContext());
+      return [launch()];
+    });
+    vi.mocked(test.session.listTools).mockImplementation(async (signal) => {
+      inventories.push(getContext());
+      return listTools(signal);
+    });
+    vi.mocked(test.session.ping).mockImplementation(async () => { probes.push(getContext()); });
+    vi.mocked(test.session.callTool).mockImplementation(async () => {
+      callContext = getContext();
+      return { isError: false, structuredContent: null, text: [], unsupportedContentTypes: [] };
+    });
+    try {
+      runWithContext(request, () => test.coordinator.start());
+      await test.coordinator.reconcileNow();
+      await runWithContext(nextRequest, () => test.coordinator.reconcileNow());
+      runWithContext(nextRequest, () => test.listChanged());
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await runWithContext(nextRequest, () => test.coordinator.callTool({
+        arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "echo"
+      }));
+
+      expect(drains.length).toBeGreaterThanOrEqual(3);
+      expect(inventories).toHaveLength(2);
+      expect(probes).toHaveLength(2);
+      expect(inventories[0]?.trace_id).not.toBe(inventories[1]?.trace_id);
+      expect(probes[0]?.trace_id).not.toBe(probes[1]?.trace_id);
+      expect(drains[0]?.trace_id).not.toBe(drains[1]?.trace_id);
+      for (const context of [...drains, ...inventories, ...probes]) {
+        expect(context).toEqual({ trace_id: expect.stringMatching(/^[0-9a-f]{32}$/u) });
+        expect(context?.trace_id).not.toBe(request.trace_id);
+        expect(context?.trace_id).not.toBe(nextRequest.trace_id);
+      }
+      expect(callContext).toEqual(nextRequest);
+    } finally {
+      await test.coordinator.stop();
+    }
+  });
+
   it("aborts a cold start when its only request is cancelled", async () => {
     const test = harness();
     test.createSession.mockImplementation(async ({ signal }) => new Promise<never>((_resolve, reject) => {
@@ -157,12 +263,20 @@ describe("MCP runtime coordinator", () => {
   it("keeps a shared cold start alive for a second active request", async () => {
     const test = harness();
     const gate = deferred<McpRuntimeSession>();
-    test.createSession.mockImplementation(async () => gate.promise);
+    let startupContext: ObservabilityContext | undefined;
+    test.createSession.mockImplementation(async () => {
+      startupContext = getContext();
+      return gate.promise;
+    });
     const first = new AbortController();
     const second = new AbortController();
-    const cancelled = test.coordinator.ensureUserServersReady("user-1", ["server-1"], first.signal);
+    const cancelled = runWithContext({ trace_id: "3".repeat(32), run_id: "first-run" }, () =>
+      test.coordinator.ensureUserServersReady("user-1", ["server-1"], first.signal)
+    );
     const rejected = expect(cancelled).rejects.toBeDefined();
-    const retained = test.coordinator.ensureUserServersReady("user-1", ["server-1"], second.signal);
+    const retained = runWithContext({ trace_id: "4".repeat(32), run_id: "second-run" }, () =>
+      test.coordinator.ensureUserServersReady("user-1", ["server-1"], second.signal)
+    );
     await vi.waitFor(() => expect(test.createSession).toHaveBeenCalledOnce());
     first.abort();
     await rejected;
@@ -171,6 +285,9 @@ describe("MCP runtime coordinator", () => {
     await retained;
     expect(test.repository.markReady).toHaveBeenCalledOnce();
     expect(test.repository.markFailed).not.toHaveBeenCalled();
+    expect(startupContext).toEqual({ trace_id: expect.stringMatching(/^[0-9a-f]{32}$/u) });
+    expect(startupContext?.trace_id).not.toBe("3".repeat(32));
+    expect(startupContext?.trace_id).not.toBe("4".repeat(32));
     await test.coordinator.stop();
   });
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { randomUUID } from "@/lib/browser/randomUUID";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { UiV2Button } from "@/components/ui-v2";
 import { formatAttachmentBytes } from "@/components/app-shell/attachmentLimitUsage";
@@ -29,7 +30,7 @@ type Draft = {
 
 function blankDraft(original: WorkspaceSecretSummary | null = null): Draft {
   return { original, kind: original?.kind ?? "ssh_key", name: original?.name ?? "", description: original?.description ?? "",
-    replace: !original, privateKey: "", passphrase: "", text: "", entries: [{ id: crypto.randomUUID(), name: "", value: "" }], fileName: "", base64: null };
+    replace: !original, privateKey: "", passphrase: "", text: "", entries: [{ id: randomUUID(), name: "", value: "" }], fileName: "", base64: null };
 }
 
 function content(draft: Draft): WorkspaceSecretValue {
@@ -200,7 +201,7 @@ export function WorkspaceSecretsPanel({ onBusyChange, onDirtyChange }: Readonly<
             <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Variable value {index + 1}<textarea aria-label={`Variable value ${index + 1}`} autoComplete="off" spellCheck={false} className={`${field} font-mono`} rows={2} value={entry.value} onChange={(event) => change({ entries: draft.entries.map((row) => row.id === entry.id ? { ...row, value: event.target.value } : row) })} /></label>
             {draft.entries.length > 1 ? <UiV2Button type="button" className="self-start" onClick={() => change({ entries: draft.entries.filter(({ id }) => id !== entry.id) })}>Remove variable {index + 1}</UiV2Button> : null}
           </div>)}
-          <UiV2Button type="button" className="self-start" disabled={draft.entries.length >= 64} onClick={() => change({ entries: [...draft.entries, { id: crypto.randomUUID(), name: "", value: "" }] })}>Add variable</UiV2Button>
+          <UiV2Button type="button" className="self-start" disabled={draft.entries.length >= 64} onClick={() => change({ entries: [...draft.entries, { id: randomUUID(), name: "", value: "" }] })}>Add variable</UiV2Button>
         </div> : draft.kind === "text" ? <label className="grid gap-1.5 text-xs font-medium text-ink-secondary">Secret text
           <textarea aria-label="Secret text" autoComplete="off" spellCheck={false} className={field} rows={6} required value={draft.text} onChange={(event) => change({ text: event.target.value })} />
         </label> : <><label className="grid gap-1.5 text-xs font-medium text-ink-secondary">{draft.kind === "browser_session" ? "Browser session JSON" : "Original file"}

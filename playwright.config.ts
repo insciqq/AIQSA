@@ -12,6 +12,7 @@ const workspaceDeterministicRuntime =
 export default defineConfig({
   forbidOnly: true,
   testDir: "./tests/e2e",
+  testIgnore: "**/http.spec.ts",
   outputDir,
   timeout: 30_000,
   expect: {

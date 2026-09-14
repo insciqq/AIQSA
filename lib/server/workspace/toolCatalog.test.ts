@@ -6,6 +6,8 @@ import { resolveRuntimeModulePath } from "../runtimeModulePath";
 import {
   bindOfficialWorkspaceTools,
   injectWorkspaceToolArguments,
+  namespacedWorkspaceToolNameFromOriginal,
+  normalizeWorkspaceProviderToolName,
   originalWorkspaceToolName,
   WORKSPACE_BOUND_TOOL_CATALOG_HASH
 } from "./toolCatalog";
@@ -36,6 +38,14 @@ function officialTools() {
 }
 
 describe("official Microsandbox MCP binding", () => {
+  it("keeps original Workspace names as strict aliases of advertised names", () => {
+    const shellName = namespacedWorkspaceToolNameFromOriginal("sandbox_shell");
+    expect(shellName).toBe("mcp_workspace_sandbox_shell_596319da11");
+    expect(namespacedWorkspaceToolNameFromOriginal("unknown_tool")).toBeNull();
+    expect(normalizeWorkspaceProviderToolName("sandbox_shell", new Set([shellName!]))).toBe(shellName);
+    expect(normalizeWorkspaceProviderToolName("sandbox_shell", new Set(["sandbox_shell"]))).toBe("sandbox_shell");
+  });
+
   it("loads the actual pinned catalog from a nested application working directory", () => {
     const root = process.cwd();
     const runtimePath = resolve(root, "lib/server/workspace/microsandboxRuntime.ts");
@@ -65,6 +75,9 @@ describe("official Microsandbox MCP binding", () => {
     });
     expect(catalog.tools).toHaveLength(16);
     expect(catalog.hash).toMatch(/^[a-f0-9]{64}$/u);
+    const shellTool = catalog.tools.find((tool) => tool.originalName === "sandbox_shell");
+    expect(shellTool).toBeDefined();
+    expect(shellTool!.description).toContain(shellTool!.namespacedName);
     for (const tool of catalog.tools) {
       expect(tool.inputSchema).not.toHaveProperty("properties.name");
       expect(tool.inputSchema).not.toHaveProperty("properties.toSandbox");

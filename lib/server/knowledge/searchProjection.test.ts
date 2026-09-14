@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   knowledgeSearchProjectionFingerprint
 } from "../search/opensearch/contract";
@@ -126,6 +126,27 @@ function searchFixture(overrides: Readonly<{
 }
 
 describe("Knowledge OpenSearch projection lifecycle", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(["lost", "rejected"] as const)("preserves the processing cause when retry persistence is %s", async outcome => {
+    const records: Record<string, unknown>[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation(line => { records.push(JSON.parse(String(line))); return true; });
+    const fixture = clientFixture();
+    const persistenceError = new Error("PRIVATE_DATABASE_CANARY");
+    fixture.knowledgeSearchProjection.updateMany.mockImplementation(async () => {
+      expect(records.at(-1)).toMatchObject({ event: "job_attempt", code: "opensearch_bulk_item_failed", outcome: "failed" });
+      if (outcome === "rejected") throw persistenceError;
+      return { count: 0 };
+    });
+    const { search } = searchFixture({ bulkFailure: new OpenSearchTransportError("opensearch_bulk_item_failed") });
+    const result = runKnowledgeSearchProjectionPass({ client: fixture.client, search });
+    if (outcome === "rejected") await expect(result).rejects.toBe(persistenceError);
+    else await expect(result).resolves.toMatchObject({ failed: 1 });
+    expect(records.at(-1)).toMatchObject({ event: "job_persistence", job_id: "projection-1", stage: "retry", outcome: outcome === "rejected" ? "unconfirmed" : "not_applied" });
+    expect(records.at(-1)).not.toHaveProperty("retry_at");
+    expect(JSON.stringify(records)).not.toMatch(/PRIVATE_DATABASE|Canonical PostgreSQL|owner-1|hierarchy-1/);
+  });
+
   it("repairs the same failed projection, permits search only after READY, and does not claim it twice", async () => {
     const fixture = clientFixture();
     const { mocks, search } = searchFixture();

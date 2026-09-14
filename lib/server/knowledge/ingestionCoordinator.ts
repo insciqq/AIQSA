@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
+  logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext,
+  type LifecycleStage
+} from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
+import { ingestionAttempt, ingestionFailureFields, ingestionPersistence, ingestionStage } from "./ingestionObservability";
+import {
   KnowledgeIngestionError,
   knowledgeWorkIdentity,
   type KnowledgeIngestionFailureCode,
@@ -25,6 +31,12 @@ export type KnowledgeIngestionCoordinatorRepository = Readonly<{
     now: Date;
   }): Promise<boolean>;
 }>;
+
+function reportFailure(stage: LifecycleStage, error: unknown): void {
+  reportSubsystemFailure({ subsystem: "knowledge", stage, action: "retry",
+    code: error instanceof KnowledgeIngestionError ? error.code : "knowledge_ingestion_failed",
+    prisma_code: databaseFailureCode(error) });
+}
 
 const DEFAULT_HEARTBEAT_MS = 10_000;
 const DEFAULT_INTERVAL_MS = 1_000;
@@ -66,6 +78,7 @@ function retryDelayMs(attemptCount: number, retryAfterMs: number | null): number
 
 export class KnowledgeIngestionCoordinator {
   readonly #heartbeatMs: number;
+  readonly #failedHeartbeats = new Set<AbortController>();
   readonly #intervalMs: number;
   readonly #leaseMs: number;
   readonly #maxAttempts: number;
@@ -101,11 +114,11 @@ export class KnowledgeIngestionCoordinator {
 
   start(): void {
     if (this.#timer) return;
-    this.#timer = setInterval(() => {
+    this.#timer = runInBackground(() => setInterval(() => {
       // A running drain already checks the queue until empty. Timer ticks
       // must not queue another full sweep behind a slow idle reconciliation.
       if (!this.#pending) this.#scheduleDrain();
-    }, this.#intervalMs);
+    }, this.#intervalMs));
     this.#timer.unref?.();
     this.kick();
   }
@@ -124,10 +137,10 @@ export class KnowledgeIngestionCoordinator {
   #scheduleDrain(): void {
     this.#rerun = true;
     if (this.#pending) return;
-    this.#pending = this.#drain().finally(() => {
+    this.#pending = runInBackground(() => this.#drain().finally(() => {
       this.#pending = null;
       if (this.#rerun) this.#scheduleDrain();
-    });
+    }));
   }
 
   async reconcileNow(): Promise<void> {
@@ -139,7 +152,10 @@ export class KnowledgeIngestionCoordinator {
     do {
       this.#rerun = false;
       const maxParallel = await this.#resolveMaxParallel();
-      const processed = await Promise.all(Array.from({ length: maxParallel }, () => this.#worker()));
+      let claimFailed = false;
+      const processed = await Promise.all(Array.from({ length: maxParallel }, () =>
+        this.#worker(() => { claimFailed = true; })));
+      if (!claimFailed) reportSubsystemHealthy("knowledge", "claim");
       // Queue admission remains fast. The corpus-wide repair scan runs on a
       // separate cadence unless a mutation kick or processed work can have
       // unblocked publication, migration, or another batch of missing work.
@@ -148,11 +164,14 @@ export class KnowledgeIngestionCoordinator {
       this.#reconcileRequested = false;
       try {
         if (await this.#repository.reconcile({ now: this.#now() })) {
+          logEvent("runtime_lifecycle", { subsystem: "knowledge", stage: "reconcile", outcome: "completed" });
           this.#reconcileRequested = true;
           this.#rerun = true;
         }
         this.#nextReconcileAt = this.#now().getTime() + DEFAULT_RECONCILE_INTERVAL_MS;
-      } catch {
+        reportSubsystemHealthy("knowledge", "reconcile");
+      } catch (error) {
+        reportFailure("reconcile", error);
         // A later interval owns durable reconciliation retry.
         this.#nextReconcileAt = this.#now().getTime() + this.#intervalMs;
       }
@@ -162,15 +181,18 @@ export class KnowledgeIngestionCoordinator {
   async #resolveMaxParallel(): Promise<number> {
     const source = this.#maxParallel;
     try {
-      return clampKnowledgeIngestionParallelism(
+      const value = clampKnowledgeIngestionParallelism(
         typeof source === "function" ? await source() : source
       );
-    } catch {
+      reportSubsystemHealthy("knowledge", "preflight");
+      return value;
+    } catch (error) {
+      reportFailure("preflight", error);
       return KNOWLEDGE_INGESTION_PARALLELISM_DEFAULT;
     }
   }
 
-  async #worker(): Promise<boolean> {
+  async #worker(onClaimFailure: () => void): Promise<boolean> {
     let processed = false;
     while (true) {
       const now = this.#now();
@@ -181,26 +203,51 @@ export class KnowledgeIngestionCoordinator {
           now,
           staleBefore: new Date(now.getTime() - this.#leaseMs)
         });
-      } catch {
+      } catch (error) {
+        onClaimFailure();
+        reportFailure("claim", error);
         return processed;
       }
       if (!claim) return processed;
       processed = true;
-      await this.#processClaim(claim);
+      // The processing artifact is the durable work row claimed by this coordinator.
+      await runInBackground(() => runWithContext(
+        { job_id: claim.artifact.id },
+        () => this.#processClaim(claim)
+      ));
     }
   }
 
   async #processClaim(claim: KnowledgeWorkClaim): Promise<void> {
     let leaseLost = false;
+    let processing = true;
     const identity = knowledgeWorkIdentity(claim);
+    ingestionAttempt(claim, { stage: "claim", outcome: "started" });
+    let heartbeatFailureReported = false;
     const controller = new AbortController();
     const heartbeat = setInterval(() => {
       void this.#repository.heartbeat({ ...identity, now: this.#now() }).then((accepted) => {
-        if (!accepted) {
+        heartbeatFailureReported = false;
+        if (processing) {
+          this.#failedHeartbeats.delete(controller);
+          if (this.#failedHeartbeats.size === 0) reportSubsystemHealthy("knowledge", "heartbeat");
+        }
+        if (!accepted && !leaseLost) {
           leaseLost = true;
+          if (processing) ingestionAttempt(claim, { stage: "heartbeat", outcome: "lost_lease", action: "stop" });
           controller.abort(new Error("knowledge_ingestion_lease_lost"));
         }
-      }).catch(() => undefined);
+      }).catch((error) => {
+        if (processing) {
+          this.#failedHeartbeats.add(controller);
+          reportFailure("heartbeat", error);
+        }
+        if (processing && !heartbeatFailureReported) {
+          heartbeatFailureReported = true;
+          ingestionAttempt(claim, { stage: "heartbeat", outcome: "degraded",
+            code: "knowledge_ingestion_failed", prisma_code: databaseFailureCode(error), action: "retry" });
+        }
+      });
     }, this.#heartbeatMs);
     heartbeat.unref?.();
 
@@ -211,23 +258,25 @@ export class KnowledgeIngestionCoordinator {
       const failure = error instanceof KnowledgeIngestionError
         ? error
         : new KnowledgeIngestionError("knowledge_ingestion_failed", true);
-      if (failure.retryable && claim.attemptCount < this.#maxAttempts) {
+      const retry = failure.retryable && claim.attemptCount < this.#maxAttempts;
+      ingestionAttempt(claim, { stage: ingestionStage(claim), outcome: "failed",
+        ...ingestionFailureFields(error, failure), action: retry ? "retry" : "fail" });
+      if (retry) {
         const delay = retryDelayMs(claim.attemptCount, failure.retryAfterMs);
         const now = this.#now();
-        await this.#repository.retryLater({
-          ...identity,
-          errorCode: failure.code,
-          nextAttemptAt: new Date(now.getTime() + delay),
-          now
-        }).catch(() => undefined);
+        const nextAttemptAt = new Date(now.getTime() + delay);
+        await ingestionPersistence(claim, "retry", () => this.#repository.retryLater({
+          ...identity, errorCode: failure.code, nextAttemptAt, now
+        }), Boolean, { action: "retry", code: failure.code, delay_ms: delay,
+          retry_at: Number.isFinite(nextAttemptAt.getTime()) ? nextAttemptAt.toISOString() : undefined }).catch(() => undefined);
       } else {
-        await this.#repository.settleFailed({
-          ...identity,
-          errorCode: failure.code,
-          now: this.#now()
-        }).catch(() => undefined);
+        await ingestionPersistence(claim, "fail", () => this.#repository.settleFailed({
+          ...identity, errorCode: failure.code, now: this.#now()
+        }), Boolean, { action: "fail", code: failure.code }).catch(() => undefined);
       }
     } finally {
+      processing = false;
+      this.#failedHeartbeats.delete(controller);
       clearInterval(heartbeat);
     }
   }

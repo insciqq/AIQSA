@@ -452,6 +452,26 @@ describe("Composer v2", () => {
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
   });
 
+  it("does not offer Knowledge selection when no bases or documents exist", () => {
+    const config: ComposerConfig = {
+      ...composerGalleryConfig,
+      knowledgeBases: [],
+      knowledgeDocumentTotal: 0,
+      knowledgeSources: []
+    };
+    render(<ComposerV2 {...props({
+      config,
+      initialLayer: "knowledge",
+      onSelectKnowledgeBaseIds: undefined,
+      onSelectKnowledgeSelection: vi.fn(),
+      selectedKnowledgeBaseIds: []
+    })} />);
+
+    expect(screen.queryByRole("button", { name: "Choose Knowledge" })).toBeNull();
+    expect(screen.queryByRole("menuitemradio", { name: /All my knowledge/i })).toBeNull();
+    expect(screen.getByRole("menuitemcheckbox", { name: /Knowledge/ })).toBeDisabled();
+  });
+
   it("searches eligible Sources beyond the initially loaded library page", async () => {
     const onSelectKnowledgeSelection = vi.fn();
     const onSearchKnowledgeSources = vi.fn().mockResolvedValue([{

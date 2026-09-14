@@ -1,3 +1,9 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext, type LifecycleStage } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
+import { withKnowledgeToolDeadline } from "./knowledgeToolDeadline";
+import { observedFailure, observedFailureCode } from "../providers/providerObservability";
+
 import { filterMcpProviderRequest } from "../mcp/toolAccessProjection";
 import { imageDispatchMustStop } from "../images/errors";
 import { imageGenerationTool, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
@@ -70,7 +76,6 @@ import {
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
 import {
-  KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS,
   type KnowledgeToolExecutor
 } from "../knowledge/toolExecutor";
 import type {
@@ -156,6 +161,7 @@ import type { StorageAdapter } from "../uploads/storage";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
+import { normalizeWorkspaceProviderToolName } from "../workspace/toolCatalog";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import {
   finalizeRunCompletion,
@@ -676,8 +682,12 @@ async function settleToolLoopRecoveryError(
   const attributed = await usageAttributionsWithEstimatedCost(
     deps.repository,
     groupedAttributions
-  ).catch(() => groupedAttributions);
-  await deps.repository.settleRecoveredRunError({
+  ).catch((costError: unknown) => {
+    logEvent("run_recovery", { subsystem: "run_recovery", stage: "read", outcome: "degraded",
+      code: observedFailureCode(costError), prisma_code: databaseFailureCode(costError), action: "skip" });
+    return groupedAttributions;
+  });
+  await settleRecoveredError(deps.repository, {
     error,
     outputEvents: runOutputArtifactEvents(events),
     ...(providerResponseId ? { providerResponseId } : {}),
@@ -685,6 +695,61 @@ async function settleToolLoopRecoveryError(
     usageAttributions: attributed,
     userId: run.userId
   });
+}
+
+const recoveryScope = new AsyncLocalStorage<string>();
+
+async function observeRecoveryRun(runId: string, operation: () => Promise<void>): Promise<void> {
+  if (recoveryScope.getStore() === runId) return operation();
+  return runInBackground(() => runWithContext({ run_id: runId }, () => recoveryScope.run(runId, async () => {
+    const started = performance.now();
+    logEvent("run_recovery", { subsystem: "run_recovery", stage: "recovery", outcome: "started" });
+    try {
+      await operation();
+      logEvent("run_recovery", { subsystem: "run_recovery", stage: "recovery", outcome: "completed", duration_ms: performance.now() - started });
+    } catch (error) {
+      const failure = observedFailure(error);
+      logEvent("run_recovery", { subsystem: "run_recovery", stage: "recovery", outcome: failure.reason === "cancelled" ? "cancelled" : "failed",
+        code: failure.code, prisma_code: databaseFailureCode(error), duration_ms: performance.now() - started, action: "wait" });
+      throw error;
+    }
+  })));
+}
+
+function observeRecoveryWriteFailure(error: unknown, stage: LifecycleStage): void {
+  logEvent("job_persistence", { subsystem: "run_recovery", stage, outcome: "unconfirmed",
+    code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "wait" });
+}
+
+async function persistRecoveryFailure(runId: string, error: { code: string; message: string }, operation: () => Promise<boolean>): Promise<boolean> {
+  const failure = observedFailure(error);
+  logEvent("run_recovery", { subsystem: "run_recovery", run_id: runId, stage: "process",
+    outcome: failure.reason === "cancelled" ? "cancelled" : "failed", code: failure.code, action: "fail" });
+  try {
+    const applied = await operation();
+    logEvent("job_persistence", { subsystem: "run_recovery", run_id: runId, stage: "fail", outcome: applied ? "confirmed" : "not_applied" });
+    return applied;
+  } catch (writeError) {
+    logEvent("job_persistence", { subsystem: "run_recovery", run_id: runId, stage: "fail", outcome: "unconfirmed",
+      prisma_code: databaseFailureCode(writeError), action: "wait" });
+    throw writeError;
+  }
+}
+
+function failRecoveredRun(repository: RunRecoveryDeps["repository"], ...args: Parameters<RunRecoveryDeps["repository"]["failRun"]>) {
+  return persistRecoveryFailure(args[0], args[2], () => repository.failRun(...args));
+}
+
+function settleRecoveredError(repository: RunRecoveryDeps["repository"], input: Parameters<RunRecoveryDeps["repository"]["settleRecoveredRunError"]>[0]) {
+  return persistRecoveryFailure(input.runId, input.error, () => repository.settleRecoveredRunError(input));
+}
+
+async function recoverPreparingRun(repository: RunRecoveryDeps["repository"], input: Parameters<RunRecoveryDeps["repository"]["recoverPreparingRun"]>[0]) {
+  const result = await repository.recoverPreparingRun(input);
+  logEvent("run_recovery", { subsystem: "run_recovery", run_id: input.runId, stage: "prepare",
+    outcome: result === "deferred" ? "waiting" : result === "not_preparing" ? "stale" : "completed",
+    action: result === "deferred" ? "wait" : result === "not_preparing" ? "skip" : "complete" });
+  return result;
 }
 
 type RecoverySearchExecutor = Readonly<{
@@ -790,7 +855,7 @@ async function failProjectRecoveryAuthority(
   message = "Project provider authority is no longer current."
 ): Promise<void> {
   if (!control.assistantMessageId) return;
-  await deps.repository.failRun(
+  await failRecoveredRun(deps.repository,
     runId,
     control.assistantMessageId,
     { code: "provider_admission_changed", message },
@@ -1186,6 +1251,16 @@ async function executePersistedToolCall(
   persisted: PersistedToolLoopCall,
   context: RecoveryToolContext,
   signal: AbortSignal,
+  claimCall: RunRepository["claimToolLoopCall"] = context.deps.repository.claimToolLoopCall
+): Promise<ToolLoopSettledCall<ToolExecutionResult>> {
+  return runWithContext({ tool_call_id: persisted.id, execution_index: persisted.ordinal },
+    () => executePersistedToolCallInContext(persisted, context, signal, claimCall));
+}
+
+async function executePersistedToolCallInContext(
+  persisted: PersistedToolLoopCall,
+  context: RecoveryToolContext,
+  signal: AbortSignal,
   claimCall: RunRepository["claimToolLoopCall"] =
     context.deps.repository.claimToolLoopCall
 ): Promise<ToolLoopSettledCall<ToolExecutionResult>> {
@@ -1474,16 +1549,8 @@ async function executePersistedToolCall(
         result
       });
     } else if (isRecoveredKnowledgeCall(context, call.name)) {
-      result = await context.deps.knowledgeExecutor!.execute(
-        call,
-        executionContext,
-        {
-          signal: AbortSignal.any([
-            signal,
-            AbortSignal.timeout(KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS)
-          ])
-        }
-      );
+      result = await withKnowledgeToolDeadline([signal], (knowledgeSignal) =>
+        context.deps.knowledgeExecutor!.execute(call, executionContext, { signal: knowledgeSignal }));
       recordRecoveredKnowledgeResult({
         callId: call.id,
         context,
@@ -1566,7 +1633,7 @@ async function executePersistedToolCall(
           : error instanceof Error && /^[a-z][a-z0-9_]{0,127}$/u.test(error.message)
           ? error.message
           : "external_tool_dispatch_failed"
-      ).catch(() => undefined);
+      ).catch((writeError: unknown) => observeRecoveryWriteFailure(writeError, "fail"));
     }
     if (signal.aborted) throw new ToolLoopRecoveryStopped();
     if (call.name === IMAGE_GENERATION_TOOL_NAME && imageDispatchMustStop(error)) {
@@ -1700,7 +1767,8 @@ async function recoverCheckpointedToolLoop(
       runId: run.id,
       userId: run.userId,
       workspace: savedWorkspace
-    }).catch(() => undefined);
+    }).catch((settlementError: unknown) => logEvent("run_recovery", { subsystem: "run_recovery", stage: "release", outcome: "failed",
+      code: observedFailureCode(settlementError), prisma_code: databaseFailureCode(settlementError), action: "retry" }));
   };
 
   function allUsageAttributions(): RunUsageAttribution[] {
@@ -2071,7 +2139,7 @@ async function recoverCheckpointedToolLoop(
             error instanceof ToolLoopRecoveryError
               ? error.code
               : "provider_dispatch_failed"
-          ).catch(() => undefined);
+          ).catch((writeError: unknown) => observeRecoveryWriteFailure(writeError, "fail"));
         }
         throw error;
       }
@@ -2631,6 +2699,17 @@ async function recoverCheckpointedToolLoop(
     currentProviderResponseId = null;
 
     const outcome = await runProviderToolLoop({
+      toolObservation(call) {
+        const persisted = persistedCalls.get(call.id);
+        if (!persisted) return undefined;
+        return {
+          tool_call_id: persisted.id, execution_index: persisted.ordinal,
+          tool_kind: isRecoveredSearchCall(context, call.name) ? "search"
+            : isRecoveredKnowledgeCall(context, call.name) ? "knowledge"
+            : isRecoveredWorkspaceCall(context, call.name) ? "workspace"
+            : isRecoveredMcpDiscoveryCall(context, call.name) || resolveMcpRunTool(context.activeMcpSnapshot, call.name) ? "mcp" : undefined
+        };
+      },
       adapter: egressAdapter,
       afterToolBatch: async ({ round }) => {
         const next = await deps.repository.advanceToolLoopCallBatch({
@@ -2729,6 +2808,9 @@ async function recoverCheckpointedToolLoop(
         );
       },
       parallelToolCalls: run.normalizedRequest.modelCapabilities.parallelToolCalls === true,
+      normalizeToolCallName: workspaceTools.length > 0
+        ? normalizeWorkspaceProviderToolName
+        : undefined,
       projectToolResultForProvider: (result) => result,
       persistToolBatch: async ({ calls, continuation: nextContinuation, round }) => {
         await persistToolBatch(calls, nextContinuation, round);
@@ -2805,10 +2887,16 @@ async function recoverCheckpointedToolLoop(
   } catch (error) {
     // A predecessor's live capture lease is retried on a later recovery tick;
     // it is neither provider failure nor permission to retire that owner.
-    if (error instanceof WorkspaceHandoffDeferred) return;
+    if (error instanceof WorkspaceHandoffDeferred) {
+      logEvent("run_recovery", { subsystem: "run_recovery", stage: "process", outcome: "waiting", action: "wait" });
+      return;
+    }
+    logEvent("run_recovery", { subsystem: "run_recovery", stage: "process",
+      outcome: signal.aborted || error instanceof ToolLoopRecoveryStopped ? "cancelled" : "failed",
+      code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "stop" });
     if (signal.aborted || error instanceof ToolLoopRecoveryStopped) {
       await settleRecoveredWorkspaceOnExit("cancelled");
-      await tokenBuffer?.flush().catch(() => undefined);
+      await tokenBuffer?.flush().catch((writeError: unknown) => observeRecoveryWriteFailure(writeError, "progress"));
       if (usageEvidenceTrusted) await persistCancelledUsage?.();
       return;
     }
@@ -2818,6 +2906,7 @@ async function recoverCheckpointedToolLoop(
     try {
       await tokenBuffer?.flush();
     } catch (flushError) {
+      observeRecoveryWriteFailure(flushError, "progress");
       if (!originalStreamSafetyReport) recoveryError = flushError;
     }
     const streamSafetyReport = providerStreamSafetyReport(recoveryError);
@@ -2882,8 +2971,12 @@ export async function sweepBootOrphanedRunsOnce(
       createdBefore: processBootSweepState.bootedAt,
       liveRunIds: [...deps.registry.ids()]
     })
-    .then(() => undefined)
+    .then((count) => {
+      reportSubsystemHealthy("run_recovery", "startup");
+      if (count > 0) logEvent("run_recovery", { subsystem: "run_recovery", stage: "startup", outcome: "completed", count });
+    })
     .catch((error: unknown) => {
+      reportSubsystemFailure({ subsystem: "run_recovery", stage: "startup", prisma_code: databaseFailureCode(error), action: "retry" });
       if (processBootSweepState.promise === promise) {
         processBootSweepState.promise = undefined;
       }
@@ -3184,18 +3277,18 @@ async function dispatchRecoveredReservedAnswer(input: Readonly<{
       await input.deps.memoryEgress!.failDispatch(
         receipt.id,
         error instanceof ToolLoopRecoveryError ? error.code : "provider_dispatch_failed"
-      ).catch(() => undefined);
+      ).catch((writeError: unknown) => observeRecoveryWriteFailure(writeError, "fail"));
     }
     if (!attemptSettled) {
       if (!providerDispatched) {
         await input.deps.knowledgeProviderDispatch!.release(
           input.prepared,
           "provider_dispatch_not_started"
-        ).catch(() => undefined);
+        ).catch((writeError: unknown) => observeRecoveryWriteFailure(writeError, "release"));
       } else if (!durableProviderResponseId) {
         await input.deps.knowledgeProviderDispatch!.markAmbiguous(input.prepared, {
           reason: "provider_dispatch_failed"
-        }).catch(() => undefined);
+        }).catch((writeError: unknown) => observeRecoveryWriteFailure(writeError, "settle"));
       }
     }
     if (providerDispatched && durableProviderResponseId && !attemptSettled) {
@@ -3687,7 +3780,8 @@ async function recoverKnowledgeAnswerGrounding(
           }))
         ]));
         await deps.repository.recordRunUsageEvents({ chatId: input.control.chatId, runId: input.runId,
-          userId: input.userId, usageAttributions: attributions }).catch(() => undefined);
+          userId: input.userId, usageAttributions: attributions })
+          .catch((writeError: unknown) => observeRecoveryWriteFailure(writeError, "settle"));
       }
       throw error;
     }
@@ -3789,7 +3883,7 @@ async function refreshProviderRunOnceRegistered(
       }
       const latest = await loadRecoveryRunControl(deps, runId, userId);
       if (!latest || !isRefreshableRun(latest) || !latest.assistantMessageId) return;
-      await deps.repository.failRun(
+      await failRecoveredRun(deps.repository,
         runId,
         latest.assistantMessageId,
         focusedAnswerFailure(error),
@@ -3805,7 +3899,7 @@ async function refreshProviderRunOnceRegistered(
   if (acceptedRequest?.memoryActionTools !== undefined ||
     acceptedRequest?.memoryHistoryTool !== undefined) {
     if (control.assistantMessageId) {
-      await deps.repository.failRun(
+      await failRecoveredRun(deps.repository,
         runId,
         control.assistantMessageId,
         {
@@ -3822,7 +3916,7 @@ async function refreshProviderRunOnceRegistered(
     : null;
   if (acceptedRequest?.knowledgeFocusedRequest !== undefined && !focusedRequest) {
     if (control.assistantMessageId) {
-      await deps.repository.failRun(
+      await failRecoveredRun(deps.repository,
         runId,
         control.assistantMessageId,
         focusedKnowledgeFailure("knowledge_retrieval_failed"),
@@ -3924,7 +4018,7 @@ async function refreshProviderRunOnceRegistered(
         error instanceof Error && error.message === "knowledge_answer_operation_busy") return;
       const latest = await loadRecoveryRunControl(deps, runId, userId);
       if (!latest || !isRefreshableRun(latest) || !latest.assistantMessageId) return;
-      await deps.repository.failRun(
+      await failRecoveredRun(deps.repository,
         runId,
         latest.assistantMessageId,
         focusedAnswerFailure(error),
@@ -3942,7 +4036,7 @@ async function refreshProviderRunOnceRegistered(
   }
   if (focusedRequest && (!acceptedRequest || !deps.knowledgeProviderDispatch)) {
     if (control.assistantMessageId) {
-      await deps.repository.failRun(
+      await failRecoveredRun(deps.repository,
         runId,
         control.assistantMessageId,
         focusedKnowledgeFailure("knowledge_retrieval_failed"),
@@ -3960,7 +4054,7 @@ async function refreshProviderRunOnceRegistered(
       });
     } catch (error) {
       if (control.assistantMessageId) {
-        await deps.repository.failRun(
+        await failRecoveredRun(deps.repository,
           runId,
           control.assistantMessageId,
           focusedRetrievalFailure(error),
@@ -4109,15 +4203,14 @@ async function refreshProviderRunOnceRegistered(
             }
             result = stored;
           } else {
-            const preflight = await deps.knowledgeExecutor.preflight?.(call, executionContext);
+            const preflight = await runWithContext({ tool_call_id: persisted.id, execution_index: persisted.ordinal },
+              () => deps.knowledgeExecutor!.preflight?.(call, executionContext));
             result = preflight && preflight.kind !== "admitted"
               ? preflight.result
-              : await deps.knowledgeExecutor.execute(call, executionContext, {
-                  signal: AbortSignal.any([
-                    signal,
-                    AbortSignal.timeout(KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS)
-                  ])
-                }).catch((error) => toolExecutionErrorResult(call, error, "Knowledge"));
+              : await runWithContext({ tool_call_id: persisted.id, execution_index: persisted.ordinal },
+                  () => withKnowledgeToolDeadline([signal], (knowledgeSignal) =>
+                    deps.knowledgeExecutor!.execute(call, executionContext, { signal: knowledgeSignal })))
+                .catch((error) => toolExecutionErrorResult(call, error, "Knowledge"));
             await settleFocusedResult(result);
           }
         }
@@ -4238,7 +4331,7 @@ async function refreshProviderRunOnceRegistered(
       } catch (error) {
         if (signal.aborted) return;
         if (control.assistantMessageId) {
-          await deps.repository.failRun(
+          await failRecoveredRun(deps.repository,
             runId,
             control.assistantMessageId,
             answerRecoveryStarted
@@ -4267,7 +4360,7 @@ async function refreshProviderRunOnceRegistered(
     } catch (error) {
       if (!focusedRequest) throw error;
       if (control.assistantMessageId) {
-        await deps.repository.failRun(
+        await failRecoveredRun(deps.repository,
           runId,
           control.assistantMessageId,
           focusedAnswerFailure(error),
@@ -4310,7 +4403,7 @@ async function refreshProviderRunOnceRegistered(
         }
         if (recovery.kind === "ambiguous" || recovery.kind === "released") {
           if (control.assistantMessageId) {
-            await deps.repository.failRun(
+            await failRecoveredRun(deps.repository,
               runId,
               control.assistantMessageId,
               focusedRequest
@@ -4364,7 +4457,7 @@ async function refreshProviderRunOnceRegistered(
                   "provider_dispatch_request_mismatch",
                   "The accepted provider request no longer matches its durable dispatch attempt."
                 );
-        await deps.repository.failRun(
+        await failRecoveredRun(deps.repository,
           runId,
           latest.assistantMessageId,
           { code: failure.code, message: failure.message },
@@ -4377,7 +4470,7 @@ async function refreshProviderRunOnceRegistered(
 
   if (!directlyRefreshed && !providerResponseId) {
     if (storedKnowledgeAttemptFound && control.assistantMessageId) {
-      await deps.repository.failRun(
+      await failRecoveredRun(deps.repository,
         runId,
         control.assistantMessageId,
         focusedRequest
@@ -4405,7 +4498,7 @@ async function refreshProviderRunOnceRegistered(
     (await resolveAnswerRuntime(deps, runId, control.provider))?.adapter ?? null;
   if (!directlyRefreshed && !adapter?.refresh) {
     if (storedKnowledgeAttemptFound && control.assistantMessageId) {
-      await deps.repository.failRun(
+      await failRecoveredRun(deps.repository,
         runId,
         control.assistantMessageId,
         focusedRequest
@@ -4433,7 +4526,7 @@ async function refreshProviderRunOnceRegistered(
             code: "provider_refresh_failed",
             message: error instanceof Error ? error.message : "Provider refresh failed"
           };
-      await deps.repository.failRun(
+      await failRecoveredRun(deps.repository,
         runId,
         latest.assistantMessageId,
         payload,
@@ -4516,7 +4609,7 @@ async function refreshProviderRunOnceRegistered(
       latestBeforeFinalize,
       reportedUsage(refreshed)
     );
-    await deps.repository.settleRecoveredRunError({
+    await settleRecoveredError(deps.repository, {
       error: payload,
       outputEvents: runOutputArtifactEvents(refreshed.events),
       ...(refreshedProviderResponseId
@@ -4556,7 +4649,7 @@ async function refreshProviderRunOnceRegistered(
       });
     } catch (error) {
       if (!focusedRequest) throw error;
-      await deps.repository.settleRecoveredRunError({
+      await settleRecoveredError(deps.repository, {
         error: focusedAnswerFailure(error),
         outputEvents: runOutputArtifactEvents(refreshed.events),
         ...(refreshedProviderResponseId
@@ -4586,7 +4679,7 @@ async function refreshProviderRunOnceRegistered(
     latestBeforeFinalize,
     reportedUsage(refreshed)
   );
-  await deps.repository.settleRecoveredRunError({
+  await settleRecoveredError(deps.repository, {
     error: payload,
     outputEvents: runOutputArtifactEvents(refreshed.events),
     ...(refreshedProviderResponseId
@@ -4623,8 +4716,11 @@ export async function refreshProviderRunIfNeeded(
     await existing;
     return;
   }
+  // A foreground owner remains authoritative; its healthy HTTP polls do not
+  // constitute recovery attempts.
+  if (deps.registry.has(runId)) return;
 
-  const refresh = refreshProviderRunOnce(deps, runId, userId);
+  const refresh = observeRecoveryRun(runId, () => refreshProviderRunOnce(deps, runId, userId));
   runRefreshPromises.set(runId, refresh);
   try {
     await refresh;
@@ -4650,47 +4746,54 @@ export async function reconcileInstallationRuns(
     staleBefore
   });
 
-  await Promise.allSettled(candidates.map(async (run) => {
+  await Promise.allSettled(candidates.map((run) => {
     if (deps.registry.has(run.id)) return;
-    const control = await loadRecoveryRunControl(deps, run.id, run.userId);
-    if (control && !(await projectRecoveryAuthorityAllowsProceed(
-      deps,
-      control,
-      run.id,
-      run.userId
-    ))) return;
-    if (await deps.repository.hasPendingPdfPreparation?.(run.id)) return;
-    if (run.status === "preparing") {
-      await deps.repository.recoverPreparingRun({
-        now,
+    // Observe each rejection before allSettled preserves independent progress.
+    return observeRecoveryRun(run.id, async () => {
+      const control = await loadRecoveryRunControl(deps, run.id, run.userId);
+      if (control && !(await projectRecoveryAuthorityAllowsProceed(
+        deps,
+        control,
+        run.id,
+        run.userId
+      ))) return;
+      if (await deps.repository.hasPendingPdfPreparation?.(run.id)) return;
+      if (run.status === "preparing") {
+        await recoverPreparingRun(deps.repository, {
+          now,
+          runId: run.id,
+          userId: run.userId
+        });
+        return;
+      }
+      const checkpointed = await deps.repository.loadCheckpointedToolLoopRun({
         runId: run.id,
         userId: run.userId
       });
-      return;
-    }
-    const checkpointed = await deps.repository.loadCheckpointedToolLoopRun({
-      runId: run.id,
-      userId: run.userId
+      const knowledgeAttempt = deps.knowledgeProviderDispatch
+        ? await deps.knowledgeProviderDispatch.inspect({ modelRunId: run.id, ordinal: 1 })
+        : null;
+      const adapter = (await resolveAnswerRuntime(deps, run.id, run.provider).catch((error: unknown) => {
+        logEvent("run_recovery", { subsystem: "run_recovery", stage: "preflight", outcome: "failed", code: observedFailureCode(error), action: "stop" });
+        return null;
+      }))
+        ?.adapter;
+      if (checkpointed || knowledgeAttempt || (run.providerResponseId && adapter?.refresh)) {
+        await refreshProviderRunIfNeeded(deps, run.id, run.userId);
+        return;
+      }
+      const updatedAt = run.updatedAt instanceof Date
+        ? run.updatedAt
+        : new Date(run.updatedAt);
+      if (updatedAt.getTime() >= staleBefore.getTime() || !run.assistantMessageId) return;
+      await failRecoveredRun(deps.repository, run.id, run.assistantMessageId, {
+        code: "run_orphaned",
+        message: "Run stopped reporting progress and was marked failed."
+      });
+      await deps.workspace?.settle({ outcome: "failed", runId: run.id, userId: run.userId })
+        .catch((error: unknown) => logEvent("run_recovery", { subsystem: "run_recovery", stage: "release", outcome: "failed",
+          code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "retry" }));
     });
-    const knowledgeAttempt = deps.knowledgeProviderDispatch
-      ? await deps.knowledgeProviderDispatch.inspect({ modelRunId: run.id, ordinal: 1 })
-      : null;
-    const adapter = (await resolveAnswerRuntime(deps, run.id, run.provider).catch(() => null))
-      ?.adapter;
-    if (checkpointed || knowledgeAttempt || (run.providerResponseId && adapter?.refresh)) {
-      await refreshProviderRunIfNeeded(deps, run.id, run.userId);
-      return;
-    }
-    const updatedAt = run.updatedAt instanceof Date
-      ? run.updatedAt
-      : new Date(run.updatedAt);
-    if (updatedAt.getTime() >= staleBefore.getTime() || !run.assistantMessageId) return;
-    await deps.repository.failRun(run.id, run.assistantMessageId, {
-      code: "run_orphaned",
-      message: "Run stopped reporting progress and was marked failed."
-    });
-    await deps.workspace?.settle({ outcome: "failed", runId: run.id, userId: run.userId })
-      .catch(() => undefined);
   }));
 }
 
@@ -4717,53 +4820,59 @@ export async function reconcileStaleRuns(
       continue;
     }
 
-    const control = await loadRecoveryRunControl(deps, run.id, input.userId);
-    if (control && !(await projectRecoveryAuthorityAllowsProceed(
-      deps,
-      control,
-      run.id,
-      input.userId
-    ))) continue;
+    await observeRecoveryRun(run.id, async () => {
+      const control = await loadRecoveryRunControl(deps, run.id, input.userId);
+      if (control && !(await projectRecoveryAuthorityAllowsProceed(
+        deps,
+        control,
+        run.id,
+        input.userId
+      ))) return;
 
-    if (await deps.repository.hasPendingPdfPreparation?.(run.id)) continue;
-    if (run.status === "preparing") {
-      await deps.repository.recoverPreparingRun({
-        now,
+      if (await deps.repository.hasPendingPdfPreparation?.(run.id)) return;
+      if (run.status === "preparing") {
+        await recoverPreparingRun(deps.repository, {
+          now,
+          runId: run.id,
+          userId: input.userId
+        });
+        return;
+      }
+
+      const checkpointed = await deps.repository.loadCheckpointedToolLoopRun({
         runId: run.id,
         userId: input.userId
       });
-      continue;
-    }
+      const knowledgeAttempt = deps.knowledgeProviderDispatch
+        ? await deps.knowledgeProviderDispatch.inspect({ modelRunId: run.id, ordinal: 1 })
+        : null;
+      if (checkpointed || knowledgeAttempt) {
+        await refreshProviderRunIfNeeded(deps, run.id, input.userId);
+        return;
+      }
 
-    const checkpointed = await deps.repository.loadCheckpointedToolLoopRun({
-      runId: run.id,
-      userId: input.userId
+      const adapter = (await resolveAnswerRuntime(deps, run.id, run.provider).catch((error: unknown) => {
+        logEvent("run_recovery", { subsystem: "run_recovery", stage: "preflight", outcome: "failed", code: observedFailureCode(error), action: "stop" });
+        return null;
+      }))
+        ?.adapter;
+      if (run.providerResponseId && adapter?.refresh) {
+        await refreshProviderRunIfNeeded(deps, run.id, input.userId);
+        return;
+      }
+
+      if (!run.assistantMessageId) {
+        return;
+      }
+
+      const payload = {
+        code: "run_orphaned",
+        message: "Run stopped reporting progress and was marked failed."
+      };
+      await failRecoveredRun(deps.repository, run.id, run.assistantMessageId, payload);
+      await deps.workspace?.settle({ outcome: "failed", runId: run.id, userId: input.userId })
+        .catch((error: unknown) => logEvent("run_recovery", { subsystem: "run_recovery", stage: "release", outcome: "failed",
+          code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "retry" }));
     });
-    const knowledgeAttempt = deps.knowledgeProviderDispatch
-      ? await deps.knowledgeProviderDispatch.inspect({ modelRunId: run.id, ordinal: 1 })
-      : null;
-    if (checkpointed || knowledgeAttempt) {
-      await refreshProviderRunIfNeeded(deps, run.id, input.userId);
-      continue;
-    }
-
-    const adapter = (await resolveAnswerRuntime(deps, run.id, run.provider).catch(() => null))
-      ?.adapter;
-    if (run.providerResponseId && adapter?.refresh) {
-      await refreshProviderRunIfNeeded(deps, run.id, input.userId);
-      continue;
-    }
-
-    if (!run.assistantMessageId) {
-      continue;
-    }
-
-    const payload = {
-      code: "run_orphaned",
-      message: "Run stopped reporting progress and was marked failed."
-    };
-    await deps.repository.failRun(run.id, run.assistantMessageId, payload);
-    await deps.workspace?.settle({ outcome: "failed", runId: run.id, userId: input.userId })
-      .catch(() => undefined);
   }
 }

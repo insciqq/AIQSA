@@ -317,7 +317,8 @@ function authFrom(value: unknown, source: McpSource | null, issues: McpValidatio
     }
     if (typeof value.clientIdMetadataDocumentUrl !== "undefined") {
       const url = new URL(clientIdMetadataDocumentUrlValue ?? "");
-      if (url.protocol !== "https:" || url.pathname === "/" || url.username || url.password || url.hash) {
+      if (!["http:", "https:"].includes(url.protocol) || url.pathname === "/" ||
+        url.username || url.password || url.hash) {
         throw new Error("invalid");
       }
       clientIdMetadataDocumentUrl = url.toString();

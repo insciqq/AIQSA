@@ -21,6 +21,12 @@ function Harness({ chatId = "source", leaf = "answer", eligible = true, recommen
     approximateInputTokens: 700, safeInputBudgetTokens: 1000, totalContextTokens: 1500
   }} />;
 }
+
+beforeEach(() => {
+  // Exercise these actions with the Crypto API exposed on non-loopback HTTP.
+  vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+});
+
 beforeEach(() => { localStorage.clear(); onOpen.mockClear(); });
 afterEach(() => vi.unstubAllGlobals());
 

@@ -1,3 +1,5 @@
+import { reportSubsystemFailure, reportSubsystemHealthy, type LifecycleStage } from "../../observability";
+import { databaseFailureCode, rememberDatabaseFailure, retainDatabaseFailure } from "../../observability/databaseFailure";
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
@@ -56,7 +58,7 @@ export async function listRequiredMemorySuppressionKeyIds(
     distinct: ["fingerprintKeyVersion"],
     orderBy: { fingerprintKeyVersion: "asc" },
     select: { fingerprintKeyVersion: true }
-  });
+  }).catch(retainDatabaseFailure);
   return Object.freeze(rows.map((row) => row.fingerprintKeyVersion));
 }
 
@@ -67,14 +69,18 @@ export async function startMemoryCoordinatorFeatureLocally(input: Readonly<{
   reconcileDeletionAudits?: () => Promise<void>;
   start: () => void;
 }>): Promise<MemoryCoordinatorStartupResult> {
+  let stage: LifecycleStage = "read";
   try {
     const requiredKeyIds = await input.listRequiredKeyIds();
+    reportSubsystemHealthy("memory", stage);
+    stage = "preflight";
     const preflight = preflightMemorySuppressionKeys(
       loadMemorySuppressionKeyring(input.env),
       requiredKeyIds,
       "resume"
     );
     if (preflight.status === "blocked") {
+      reportSubsystemFailure({ subsystem: "memory", stage, code: preflight.code, action: "stop" });
       return Object.freeze({
         code: preflight.code,
         missingKeyIds: preflight.missingKeyIds,
@@ -82,10 +88,18 @@ export async function startMemoryCoordinatorFeatureLocally(input: Readonly<{
       });
     }
     await input.preflight?.();
+    reportSubsystemHealthy("memory", stage);
+    stage = "cleanup";
     await input.reconcileDeletionAudits?.();
+    reportSubsystemHealthy("memory", stage);
+    stage = "startup";
     input.start();
+    reportSubsystemHealthy("memory", stage);
     return Object.freeze({ status: "ready" });
   } catch (error) {
+    reportSubsystemFailure({ subsystem: "memory", stage, action: "stop",
+      code: error instanceof MemoryCoordinatorStartupError ? error.code : "memory_coordinator_startup_failed",
+      prisma_code: databaseFailureCode(error) });
     if (error instanceof MemoryCoordinatorStartupError) {
       return Object.freeze({
         code: error.code,
@@ -127,9 +141,9 @@ export function startDefaultMemoryCoordinatorFeatureLocally(): Promise<MemoryCoo
             "memory_coordinator_registry_incomplete"
           );
         }
-        throw new MemoryCoordinatorStartupError(
-          "memory_coordinator_preflight_failed"
-        );
+        const failure = new MemoryCoordinatorStartupError("memory_coordinator_preflight_failed");
+        rememberDatabaseFailure(failure, databaseFailureCode(error));
+        throw failure;
       }
     },
     reconcileDeletionAudits: reconcileDefaultCompletedMemoryDeletionAudits,

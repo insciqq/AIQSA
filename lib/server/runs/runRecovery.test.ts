@@ -26,6 +26,8 @@ import type {
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import { ProviderSearchExecutionError } from "../providers/types";
 import { RunRecoveryScheduler } from "./recoveryScheduler";
+import { getContext, runInBackground, runWithContext } from "../observability";
+import { rememberDatabaseFailure } from "../observability/databaseFailure";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
@@ -1651,6 +1653,98 @@ describe("run recovery", () => {
 
   beforeEach(() => {
     resetBootOrphanSweepForTest(new Date("2026-07-12T10:00:00.000Z"));
+  });
+
+  it.each(["direct", "stale", "installation"])("keeps one recovery scope through %s refresh", async entry => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const contexts: Array<ReturnType<typeof getContext>> = [];
+      const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => {
+        contexts.push(getContext());
+        return { events: [], status: "in_progress", terminal: false };
+      });
+      const harness = createHarness({ providers: { openai: providerWithRefresh(refresh) }, staleRuns: [staleControl()] });
+      harness.repository.findInstallationRecoverableRuns = async () => [{ ...staleControl(), userId }];
+      const invoke = () => entry === "direct" ? refreshProviderRunIfNeeded(harness.deps, runId, userId)
+        : entry === "stale" ? reconcileStaleRuns(harness.deps, { userId }) : reconcileInstallationRuns(harness.deps);
+      await runWithContext({ trace_id: "f".repeat(32), run_id: runId, job_id: "foreign-job" }, invoke);
+      expect(refresh).toHaveBeenCalledOnce();
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      const lifecycle = records.filter(record => record.event === "run_recovery" && record.stage === "recovery");
+      expect(lifecycle.map(record => record.outcome)).toEqual(["started", "completed"]);
+      expect(new Set(lifecycle.map(record => record.trace_id)).size).toBe(1);
+      expect(contexts[0]?.trace_id).toBe(lifecycle[0]?.trace_id);
+      expect(contexts[0]?.trace_id).not.toBe("f".repeat(32));
+      expect(contexts[0]?.job_id).toBeUndefined();
+      await invoke();
+      expect(refresh).toHaveBeenCalledTimes(2);
+      expect(contexts[1]?.trace_id).not.toBe(contexts[0]?.trace_id);
+    } finally { writer.mockRestore(); }
+  });
+
+  it("observes rejected installation candidates independently under fresh run contexts", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const harness = createHarness({ providers: {} });
+      harness.repository.findInstallationRecoverableRuns = async () => ["failed-run", "recovered-run"].map((id) => ({
+        ...staleControl({ id, status: "preparing", providerResponseId: null }), userId
+      }));
+      const contexts: Array<ReturnType<typeof getContext>> = [];
+      const error = new Error("PRIVATE_DATABASE_RECOVERY_CANARY"); rememberDatabaseFailure(error, "P1001");
+      harness.repository.recoverPreparingRun = async ({ runId }) => {
+        contexts.push(getContext());
+        if (runId === "failed-run") throw error;
+        return "settled";
+      };
+      await runInBackground(() => runWithContext({ run_id: "trigger-run", job_id: "trigger-job" }, () =>
+        reconcileInstallationRuns(harness.deps, { now: new Date("2026-07-12T10:00:01.000Z") })));
+      expect(contexts.map((context) => context?.run_id)).toEqual(["failed-run", "recovered-run"]);
+      expect(new Set(contexts.map((context) => context?.trace_id)).size).toBe(2);
+      expect(contexts.every((context) => context?.job_id === undefined)).toBe(true);
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      expect(records).toContainEqual(expect.objectContaining({ event: "run_recovery", run_id: "failed-run", outcome: "failed", prisma_code: "P1001" }));
+      expect(records).toContainEqual(expect.objectContaining({ event: "run_recovery", run_id: "recovered-run", stage: "prepare", outcome: "completed" }));
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+    } finally { writer.mockRestore(); }
+  });
+
+  it.each([true, false, "reject"] as const)("observes orphan failure before persistence outcome %s", async (outcome) => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const records = () => writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      const harness = createHarness({ providers: {} });
+      harness.repository.findInstallationRecoverableRuns = async () => [{
+        ...staleControl({ providerResponseId: null, updatedAt: new Date("2026-07-12T09:00:00.000Z") }), userId
+      }];
+      harness.repository.failRun = async () => {
+        expect(records()).toContainEqual(expect.objectContaining({ event: "run_recovery", code: "run_orphaned", outcome: "failed" }));
+        if (outcome === "reject") throw new Error("PRIVATE_ORPHAN_WRITE_CANARY");
+        return outcome;
+      };
+      await reconcileInstallationRuns(harness.deps, { now: new Date("2026-07-12T10:00:01.000Z") });
+      expect(records()).toContainEqual(expect.objectContaining({ event: "job_persistence", subsystem: "run_recovery", stage: "fail",
+        outcome: outcome === "reject" ? "unconfirmed" : outcome ? "confirmed" : "not_applied" }));
+      expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+    } finally { writer.mockRestore(); }
+  });
+
+  it("observes a rejected Workspace release without undoing the recovered terminal write", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const harness = createHarness({ providers: {}, staleRuns: [staleControl({ providerResponseId: null })] });
+      const error = new Error("PRIVATE_WORKSPACE_RELEASE_CANARY"); rememberDatabaseFailure(error, "P1001");
+      const deps = { ...harness.deps, workspace: {
+        accepts: () => false, execute: vi.fn(), finalize: vi.fn(), handoff: vi.fn(),
+        recoverExports: vi.fn(async () => ({ attempted: 0, completed: 0 })),
+        settle: vi.fn(async () => { throw error; }), tools: vi.fn()
+      } satisfies NonNullable<RunRecoveryDeps["workspace"]> };
+      await reconcileStaleRuns(deps, { now: new Date("2026-07-12T10:00:01.000Z"), userId });
+      expect(harness.state.failed).toHaveLength(1);
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+      expect(records).toContainEqual(expect.objectContaining({ event: "run_recovery", stage: "release", outcome: "failed", prisma_code: "P1001" }));
+      expect(records).toContainEqual(expect.objectContaining({ event: "job_persistence", stage: "fail", outcome: "confirmed" }));
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+    } finally { writer.mockRestore(); }
   });
 
   it("discovers and reconciles unrelated runs on successive ticks while a Workspace export is held", async () => {
@@ -4699,28 +4793,32 @@ describe("run recovery", () => {
   });
 
   it("skips refresh and stale reconciliation for locally owned foreground runs", async () => {
-    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
-      events: [],
-      status: "in_progress",
-      terminal: false
-    }));
-    const harness = createHarness({
-      liveRunIds: [runId],
-      providers: {
-        openai: providerWithRefresh(refresh)
-      },
-      staleRuns: [staleControl()]
-    });
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+        events: [],
+        status: "in_progress",
+        terminal: false
+      }));
+      const harness = createHarness({
+        liveRunIds: [runId],
+        providers: {
+          openai: providerWithRefresh(refresh)
+        },
+        staleRuns: [staleControl()]
+      });
 
-    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
-    await reconcileStaleRuns(harness.deps, {
-      now: new Date("2026-07-12T10:00:00.000Z"),
-      userId
-    });
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      await reconcileStaleRuns(harness.deps, {
+        now: new Date("2026-07-12T10:00:00.000Z"),
+        userId
+      });
 
-    expect(refresh).not.toHaveBeenCalled();
-    expect(harness.state.failed).toEqual([]);
-    expect(harness.state.events).toEqual([]);
+      expect(refresh).not.toHaveBeenCalled();
+      expect(harness.state.failed).toEqual([]);
+      expect(harness.state.events).toEqual([]);
+      expect(writer).not.toHaveBeenCalled();
+    } finally { writer.mockRestore(); }
   });
 
   it("marks stale non-refreshable runs orphaned using the shared freshness threshold", async () => {
@@ -5278,7 +5376,7 @@ describe("run recovery", () => {
   });
 
   it("keeps a published-response safety failure terminal across later refresh requests", async () => {
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const warning = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     let answerRounds = 0;
     const adapter: ProviderAdapter = {
       buildRequestPreview: () => ({}),
@@ -5347,8 +5445,14 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors[0]).not.toHaveProperty("providerResponseId");
     expect(harness.state.completed).toBeNull();
     expect(harness.state.events.map(({ event }) => event.type)).not.toContain("done");
-    expect(warning).toHaveBeenCalledOnce();
-    expect(JSON.parse(String(warning.mock.calls[0]?.[0]))).toMatchObject({
+    const safetyWarnings = warning.mock.calls.flatMap(([chunk]) => {
+      try {
+        const record = JSON.parse(String(chunk));
+        return record.event === "provider_stream_safety_terminated" ? [record] : [];
+      } catch { return []; }
+    });
+    expect(safetyWarnings).toHaveLength(1);
+    expect(safetyWarnings[0]).toMatchObject({
       code: "provider_stream_too_large",
       durationMs: 88,
       limit: 512,

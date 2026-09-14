@@ -1,5 +1,6 @@
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
-import type { WorkspaceExecutionRecord, WorkspaceExecutionRegistry } from "./executionRegistry";
+import { createPrismaWorkspaceExecutionRegistry, type WorkspaceExecutionRecord, type WorkspaceExecutionRegistry } from "./executionRegistry";
 import { quiesceWorkspaceExecutions } from "./quiescence";
 import type { WorkspaceRuntime } from "./runtime";
 
@@ -34,6 +35,26 @@ function fixture(count: number) {
 }
 
 describe("Workspace terminal registry drain", () => {
+  it("observes the retained database cause before the existing VM-stop fallback", async () => {
+    const value = fixture(0);
+    const original = new Prisma.PrismaClientKnownRequestError("PRIVATE_REGISTRY_DETAIL", { code: "P2024", clientVersion: "fixture" });
+    const registry = createPrismaWorkspaceExecutionRegistry({ workspaceExecution: {
+      findMany: vi.fn().mockRejectedValueOnce(original).mockResolvedValue([]),
+      updateMany: vi.fn(async () => ({ count: 0 }))
+    } } as unknown as PrismaClient);
+    const lines: string[] = [];
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation((line) => { lines.push(String(line)); return true; });
+    vi.mocked(value.runtime.stopSession).mockImplementation(async () => {
+      expect(lines.map((line) => JSON.parse(line))).toContainEqual(expect.objectContaining({
+        event: "runtime_lifecycle", stage: "quiesce", outcome: "failed", prisma_code: "P2024"
+      }));
+    });
+    try {
+      await expect(quiesceWorkspaceExecutions({ ...value.input, registry })).resolves.toEqual({ proven: true, stoppedVm: true });
+      expect(lines.join("")).not.toContain("PRIVATE");
+    } finally { writer.mockRestore(); }
+  });
+
   it("cannot certify quiescence after visiting only the first 256 rows", async () => {
     const value = fixture(257);
     await expect(quiesceWorkspaceExecutions(value.input)).resolves.toMatchObject({ proven: true });

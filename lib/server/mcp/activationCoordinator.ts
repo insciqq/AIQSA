@@ -14,6 +14,9 @@ import {
   type McpDraftValidationStage,
   type McpDraftValidator
 } from "./draftValidator";
+import { bindContext, logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext, type LifecycleStage } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
+import { observedFailureCode } from "../providers/providerObservability";
 
 export type McpActivationClaim = Readonly<{
   draft: McpDraftConfiguration;
@@ -66,6 +69,9 @@ const DEFAULT_STALE_LEASE_MS = 60_000;
 const DEFAULT_MAX_PARALLEL = 2;
 const MAX_FAILURE_ISSUES = 20;
 const SAFE_TOKEN = /^[a-z0-9_.-]{1,128}$/u;
+const OBSERVED_STAGES: Record<McpDraftValidationStage | "publishing", LifecycleStage> = {
+  resolving: "prepare", preparing_runtime: "initialize", connecting: "dispatch", discovering_tools: "discover", publishing: "publish"
+};
 
 function safeIssues(issues: readonly McpValidationIssue[]): McpValidationIssue[] {
   return issues.slice(0, MAX_FAILURE_ISSUES).map((issue) => mcpValidationIssue(issue, "mcp_activation_validation_failed"));
@@ -113,7 +119,7 @@ export class McpActivationCoordinator {
 
   start(): void {
     if (this.#timer) return;
-    this.#timer = setInterval(() => this.kick(), this.#intervalMs);
+    this.#timer = runInBackground(() => setInterval(() => this.kick(), this.#intervalMs));
     this.#timer.unref?.();
     this.kick();
   }
@@ -127,7 +133,7 @@ export class McpActivationCoordinator {
   kick(): void {
     this.#rerun = true;
     if (this.#pending) return;
-    this.#pending = this.#drain().finally(() => {
+    this.#pending = runInBackground(() => this.#drain()).finally(() => {
       this.#pending = null;
       if (this.#rerun) this.kick();
     });
@@ -154,39 +160,48 @@ export class McpActivationCoordinator {
           now,
           staleBefore: new Date(now.getTime() - this.#staleLeaseMs)
         });
-      } catch {
+      } catch (error) {
+        reportSubsystemFailure({ subsystem: "mcp", stage: "claim", code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "retry" });
         return;
       }
+      reportSubsystemHealthy("mcp", "claim");
       if (!claim) return;
-      await this.#process(claim);
+      await runInBackground(() => runWithContext({ job_id: claim.id }, () => this.#process(claim)));
     }
   }
 
   async #process(claim: McpActivationClaim): Promise<void> {
+    const started = performance.now();
+    logEvent("job_attempt", { subsystem: "mcp", stage: "claim", outcome: "started" });
     let leaseLost = false;
-    const heartbeat = setInterval(() => {
+    const heartbeat = setInterval(bindContext(() => {
       void this.#repository.heartbeatActivation({
         id: claim.id,
         leaseId: claim.leaseId,
         now: this.#now()
       }).then((accepted) => {
-        if (!accepted) leaseLost = true;
-      }).catch(() => {
+        if (!accepted) {
+          if (!leaseLost) logEvent("job_attempt", { subsystem: "mcp", stage: "heartbeat", outcome: "lost_lease", action: "stop" });
+          leaseLost = true;
+        } else reportSubsystemHealthy("mcp", "heartbeat", claim.id);
+      }).catch((error: unknown) => {
+        reportSubsystemFailure({ subsystem: "mcp", stage: "heartbeat", scope_id: claim.id, code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "wait" });
         // A transient storage failure is retried by the next heartbeat or stale-lease reclaim.
       });
-    }, this.#heartbeatMs);
+    }), this.#heartbeatMs);
     heartbeat.unref?.();
 
     const progress = async (stage: McpDraftValidationStage | "publishing") => {
-      if (leaseLost || !await this.#repository.advanceActivation({
+      if (leaseLost || !await this.#write("progress", () => this.#repository.advanceActivation({
         id: claim.id,
         leaseId: claim.leaseId,
         now: this.#now(),
         stage
-      })) {
+      }))) {
         leaseLost = true;
         throw new McpDraftValidationAbortedError();
       }
+      logEvent("job_attempt", { subsystem: "mcp", stage: OBSERVED_STAGES[stage], outcome: "started" });
     };
 
     try {
@@ -199,6 +214,8 @@ export class McpActivationCoordinator {
         workloadToken: claim.workloadToken
       });
       if (outcome.kind === "invalid") {
+        logEvent("job_attempt", { subsystem: "mcp", stage: "validate", outcome: "failed",
+          code: observedFailureCode(outcome.issues[0]), count: outcome.issues.length, action: "fail" });
         await this.#fail(claim, "mcp_draft_test_failed", outcome.issues);
         return;
       }
@@ -209,7 +226,8 @@ export class McpActivationCoordinator {
         return;
       }
       await progress("publishing");
-      const published = await this.#repository.publishActivation({
+      let published: McpActivationPublishResult;
+      try { published = await this.#repository.publishActivation({
         claim,
         now: this.#now(),
         publication: {
@@ -218,17 +236,31 @@ export class McpActivationCoordinator {
           resolvedArtifact: outcome.resolvedArtifact,
           toolInventory: outcome.toolInventory
         }
-      });
+      }); } catch (error) {
+        logEvent("job_persistence", { subsystem: "mcp", stage: "publish", outcome: "unconfirmed", prisma_code: databaseFailureCode(error) });
+        throw error;
+      }
+      logEvent("job_persistence", { subsystem: "mcp", stage: "publish", outcome: published.kind === "published" ? "confirmed" : "not_applied" });
       if (published.kind === "invalid") {
+        const code = observedFailureCode(published.issues[0]);
+        logEvent("job_attempt", { subsystem: "mcp", stage: "publish", outcome: code === "mcp_draft_changed" ? "stale" : "failed",
+          code, count: published.issues.length, action: "fail" });
         await this.#fail(claim, "mcp_draft_test_failed", published.issues);
       } else if (published.kind === "published") {
+        logEvent("job_attempt", { subsystem: "mcp", stage: "complete", outcome: "completed", duration_ms: performance.now() - started });
         try {
           this.#onPublished?.();
-        } catch {
+        } catch (error) {
+          logEvent("job_attempt", { subsystem: "mcp", stage: "dispatch", outcome: "failed", code: observedFailureCode(error), action: "wait" });
           // Publication is durable. Periodic runtime reconciliation will catch a missed kick.
         }
-      }
+      } else logEvent("job_attempt", { subsystem: "mcp", stage: "publish", outcome: "lost_lease", action: "stop" });
     } catch (error) {
+      logEvent("job_attempt", { subsystem: "mcp", stage: "process", outcome: leaseLost ? "lost_lease"
+        : error instanceof McpDraftValidationAbortedError ? "cancelled" : "failed",
+        code: error instanceof McpDraftValidationUnavailableError ? "mcp_draft_validation_unavailable"
+          : error instanceof McpDraftValidationAbortedError ? "mcp_draft_validation_aborted" : observedFailureCode(error),
+        prisma_code: databaseFailureCode(error), duration_ms: performance.now() - started, action: "stop" });
       if (error instanceof McpDraftValidationAbortedError || leaseLost) return;
       await this.#fail(
         claim,
@@ -242,17 +274,31 @@ export class McpActivationCoordinator {
     }
   }
 
+  async #write(stage: LifecycleStage, operation: () => Promise<boolean>): Promise<boolean> {
+    try {
+      const applied = await operation();
+      logEvent("job_persistence", { subsystem: "mcp", stage, outcome: applied ? "confirmed" : "not_applied" });
+      return applied;
+    } catch (error) {
+      logEvent("job_persistence", { subsystem: "mcp", stage, outcome: "unconfirmed", prisma_code: databaseFailureCode(error) });
+      throw error;
+    }
+  }
+
   async #fail(
     claim: McpActivationClaim,
     errorCode: string,
     issues: readonly McpValidationIssue[]
   ): Promise<void> {
-    await this.#repository.failActivation({
+    logEvent("job_attempt", { subsystem: "mcp", stage: "fail",
+      outcome: issues.some((issue) => observedFailureCode(issue) === "mcp_draft_changed") ? "stale" : "failed",
+      code: errorCode, count: issues.length, action: "fail" });
+    await this.#write("fail", () => this.#repository.failActivation({
       errorCode: SAFE_TOKEN.test(errorCode) ? errorCode : "mcp_activation_failed",
       id: claim.id,
       issues: safeIssues(issues),
       leaseId: claim.leaseId,
       now: this.#now()
-    }).catch(() => undefined);
+    })).catch(() => undefined);
   }
 }

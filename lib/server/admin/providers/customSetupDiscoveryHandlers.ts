@@ -1,3 +1,4 @@
+import { logEvent } from "../../observability";
 import {
   ADMIN_PROVIDER_CUSTOM_AUTHENTICATION_MODES,
   type AdminProviderCustomAuthenticationMode,
@@ -149,8 +150,10 @@ export function createAdminProviderCustomDiscoveryHandler(
       return Response.json(result);
     } catch (error) {
       if (error instanceof AdminProviderCredentialTestError) {
+        logEvent("service_operation", { subsystem: "admin", stage: "discover", outcome: "failed", code: error.code, httpStatus: 422 });
         return errorJson("provider_custom_setup_discovery_failed", 422);
       }
+      logEvent("service_operation", { subsystem: "admin", stage: "discover", outcome: "failed", code: "provider_custom_setup_discovery_failed", httpStatus: 400 });
       return errorJson("provider_configuration_invalid", 400);
     }
   };

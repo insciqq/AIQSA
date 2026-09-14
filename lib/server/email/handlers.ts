@@ -9,6 +9,7 @@ import type {
   AdminEmailTestResponse
 } from "../../contracts/email";
 import type { RequestAuthResolver } from "../auth/requestAuth";
+import { logEvent, type LifecycleStage } from "../observability";
 import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
@@ -72,7 +73,9 @@ async function requireAdmin(request: Request, deps: AdminEmailHandlerDeps) {
   return { response: null, session };
 }
 
-function repositoryError(code: EmailRepositoryFailureCode): Response {
+function repositoryError(code: EmailRepositoryFailureCode, stage: LifecycleStage): Response {
+  logEvent("service_operation", { subsystem: "email", stage, code,
+    outcome: code === "invalid_state" || code === "secret_unreadable" || code === "encryption_unavailable" ? "failed" : "skipped" });
   switch (code) {
     case "active_conflict":
       return errorJson("email_active_conflict", 409);
@@ -92,10 +95,10 @@ function repositoryError(code: EmailRepositoryFailureCode): Response {
   }
 }
 
-function mutationResponse(result: EmailRepositoryResult<AdminEmailMutationResponse["email"]>): Response {
+function mutationResponse(result: EmailRepositoryResult<AdminEmailMutationResponse["email"]>, stage: LifecycleStage = "write"): Response {
   return result.ok
     ? Response.json({ email: result.value } satisfies AdminEmailMutationResponse)
-    : repositoryError(result.code);
+    : repositoryError(result.code, stage);
 }
 
 function draftInput(value: unknown): AdminEmailDraftInput | null {
@@ -160,7 +163,7 @@ export function createAdminEmailReadHandler(deps: AdminEmailHandlerDeps) {
   return async function GET(request: Request): Promise<Response> {
     const auth = await requireAdmin(request, deps);
     if (!auth.session) return auth.response;
-    return mutationResponse(await deps.service.read());
+    return mutationResponse(await deps.service.read(), "read");
   };
 }
 
@@ -208,7 +211,7 @@ export function createAdminEmailActionHandler(deps: AdminEmailHandlerDeps) {
           test: { code: result.value.test.code, tested: false }
         } satisfies AdminEmailTestFailedResponse, { status: 422 });
       }
-      return repositoryError(result.code);
+      return repositoryError(result.code, "publish");
     }
     if (action.action === "enable") {
       return mutationResponse(await deps.service.enable({

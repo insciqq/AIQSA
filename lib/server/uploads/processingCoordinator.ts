@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { bindContext, logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
 import type {
   AttachmentProcessingErrorCode,
   AttachmentProcessingRecord,
@@ -101,7 +103,7 @@ export class AttachmentProcessingCoordinator {
 
   start(): void {
     if (this.#timer) return;
-    this.#timer = setInterval(() => this.kick(), this.#intervalMs);
+    this.#timer = runInBackground(() => setInterval(() => this.kick(), this.#intervalMs));
     this.#timer.unref?.();
     this.kick();
   }
@@ -115,10 +117,10 @@ export class AttachmentProcessingCoordinator {
   kick(): void {
     this.#rerun = true;
     if (this.#pending) return;
-    this.#pending = this.#drain().finally(() => {
+    this.#pending = runInBackground(() => this.#drain().finally(() => {
       this.#pending = null;
       if (this.#rerun) this.kick();
-    });
+    }));
   }
 
   async reconcileNow(): Promise<void> {
@@ -143,29 +145,39 @@ export class AttachmentProcessingCoordinator {
           now,
           staleBefore: new Date(now.getTime() - this.#leaseMs)
         });
-      } catch {
+      } catch (error) {
+        reportSubsystemFailure({ subsystem: "attachments", stage: "claim", prisma_code: databaseFailureCode(error), action: "retry" });
         return;
       }
+      reportSubsystemHealthy("attachments", "claim");
       if (!claim) return;
-      await this.#processClaim(claim);
+      await runInBackground(() => runWithContext(
+        { job_id: claim.jobId },
+        () => this.#processClaim(claim)
+      ));
     }
   }
 
   async #processClaim(claim: AttachmentProcessingRecord): Promise<void> {
+    const started = performance.now();
+    logEvent("job_attempt", { subsystem: "attachments", stage: "claim", outcome: "started", attempt: claim.attemptCount });
     let leaseLost = false;
     const controller = new AbortController();
-    const heartbeat = setInterval(() => {
+    const heartbeat = setInterval(bindContext(() => {
       void this.#repository.heartbeat({
         claimToken: claim.claimToken,
         jobId: claim.jobId,
         now: this.#now()
       }).then((accepted) => {
         if (!accepted) {
+          if (!leaseLost) logEvent("job_attempt", { subsystem: "attachments", stage: "heartbeat", outcome: "lost_lease",
+            code: "attachment_processing_lease_lost", action: "stop", attempt: claim.attemptCount });
           leaseLost = true;
           controller.abort(new Error("attachment_processing_lease_lost"));
-        }
-      }).catch(() => undefined);
-    }, this.#heartbeatMs);
+        } else reportSubsystemHealthy("attachments", "heartbeat");
+      }).catch((error: unknown) => reportSubsystemFailure({ subsystem: "attachments", stage: "heartbeat",
+        prisma_code: databaseFailureCode(error), action: "wait" }));
+    }), this.#heartbeatMs);
     heartbeat.unref?.();
 
     try {
@@ -178,6 +190,8 @@ export class AttachmentProcessingCoordinator {
       }
 
       if (leaseLost) return;
+      logEvent("job_attempt", { subsystem: "attachments", stage: "process", outcome: "completed",
+        attempt: claim.attemptCount, duration_ms: performance.now() - started });
       await this.#settleReady(claim, result, controller.signal);
     } finally {
       clearInterval(heartbeat);
@@ -191,26 +205,36 @@ export class AttachmentProcessingCoordinator {
     const failure = error instanceof AttachmentProcessingError
       ? error
       : new AttachmentProcessingError("attachment_processing_failed", true);
+    logEvent("job_attempt", { subsystem: "attachments", stage: "process", outcome: "failed",
+      attempt: claim.attemptCount, code: failure.code, prisma_code: databaseFailureCode(error), action: "none" });
     if (failure.retryable && claim.attemptCount < this.#maxAttempts) {
       const delay = RETRY_DELAYS_MS[Math.min(claim.attemptCount - 1, RETRY_DELAYS_MS.length - 1)] ??
         RETRY_DELAYS_MS.at(-1)!;
       const now = this.#now();
-      await this.#repository.retryLater({
-        claimToken: claim.claimToken,
-        errorCode: failure.code,
-        jobId: claim.jobId,
-        nextAttemptAt: new Date(now.getTime() + delay),
-        now
-      }).catch(() => undefined);
+      const nextAttemptAt = new Date(now.getTime() + delay);
+      try {
+        const accepted = await this.#repository.retryLater({
+          claimToken: claim.claimToken, errorCode: failure.code, jobId: claim.jobId, nextAttemptAt, now
+        });
+        logEvent("job_persistence", { subsystem: "attachments", stage: "retry", outcome: accepted ? "confirmed" : "not_applied",
+          attempt: claim.attemptCount, code: failure.code, action: accepted ? "retry" : "skip",
+          ...(accepted ? { delay_ms: delay, retry_at: nextAttemptAt.toISOString() } : {}) });
+      } catch (writeError) {
+        logEvent("job_persistence", { subsystem: "attachments", stage: "retry", outcome: "unconfirmed",
+          attempt: claim.attemptCount, prisma_code: databaseFailureCode(writeError), action: "wait" });
+      }
       return;
     }
-    await this.#repository.settleFailed({
-      attachmentId: claim.id,
-      claimToken: claim.claimToken,
-      errorCode: failure.code,
-      jobId: claim.jobId,
-      now: this.#now()
-    }).catch(() => undefined);
+    try {
+      const accepted = await this.#repository.settleFailed({
+        attachmentId: claim.id, claimToken: claim.claimToken, errorCode: failure.code, jobId: claim.jobId, now: this.#now()
+      });
+      logEvent("job_persistence", { subsystem: "attachments", stage: "fail", outcome: accepted ? "confirmed" : "not_applied",
+        attempt: claim.attemptCount, code: failure.code, action: accepted ? "fail" : "skip" });
+    } catch (writeError) {
+      logEvent("job_persistence", { subsystem: "attachments", stage: "fail", outcome: "unconfirmed",
+        attempt: claim.attemptCount, prisma_code: databaseFailureCode(writeError), action: "wait" });
+    }
   }
 
   async #settleReady(
@@ -221,16 +245,21 @@ export class AttachmentProcessingCoordinator {
     let retryIndex = 0;
     while (!signal.aborted) {
       try {
-        await this.#repository.settleReady({
+        const accepted = await this.#repository.settleReady({
           attachmentId: claim.id,
           claimToken: claim.claimToken,
           jobId: claim.jobId,
           now: this.#now(),
           result
         });
+        logEvent("job_persistence", { subsystem: "attachments", stage: "complete", outcome: accepted ? "confirmed" : "not_applied",
+          attempt: claim.attemptCount, action: accepted ? "complete" : "skip" });
         return;
-      } catch {
+      } catch (error) {
         const delayMs = this.#settleRetryDelaysMs[retryIndex];
+        logEvent("job_persistence", { subsystem: "attachments", stage: "complete", outcome: "unconfirmed",
+          attempt: claim.attemptCount, prisma_code: databaseFailureCode(error), action: typeof delayMs === "number" ? "retry" : "wait",
+          ...(typeof delayMs === "number" ? { delay_ms: delayMs } : {}) });
         if (typeof delayMs !== "number") return;
         retryIndex += 1;
         if (!await waitForSettleRetry(delayMs, signal)) return;

@@ -4,6 +4,9 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { logEvent } from "../observability";
+import { beginWorkspaceToolStage, observeWorkspaceAbort, workspaceToolFailure } from "./toolObservability";
 import {
   Destination,
   Image,
@@ -860,9 +863,16 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     }
 
     const controller = new AbortController();
+    const observeAbort = observeWorkspaceAbort();
+    const requestTimeoutMs = this.config.syncToolTimeoutSeconds * 1_000 + 5_000;
+    const onAbort = () => observeAbort({ stage: "delivery", deadline_kind: "sdk_request", timeout_ms: requestTimeoutMs,
+      abort_source: input.signal?.aborted && controller.signal.reason === input.signal.reason ? "parent_signal" : "unknown" });
+    controller.signal.addEventListener("abort", onAbort, { once: true });
+    if (input.signal?.aborted) observeAbort({ stage: "before_start", abort_source: "unknown", deadline_kind: "sdk_request", timeout_ms: requestTimeoutMs });
     const abort = () => controller.abort(input.signal?.reason);
     input.signal?.addEventListener("abort", abort, { once: true });
     session.activeCalls.set(input.modelRunToolCallId, { controller, modelRunId: input.modelRunId });
+    let finishRequest: ReturnType<typeof beginWorkspaceToolStage> | undefined;
     try {
       const argumentsWithIdentity = injectWorkspaceToolArguments({
         arguments: input.arguments,
@@ -897,28 +907,44 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       if (input.signal?.aborted || controller.signal.aborted) {
         throw new WorkspaceRuntimeError("workspace_tool_cancelled");
       }
+      const toolTimeoutMs = input.originalName === "sandbox_shell" || input.originalName === "sandbox_exec"
+        ? this.config.syncToolTimeoutSeconds * 1_000 : input.originalName === "sandbox_exec_start" ? this.config.turnTimeoutSeconds * 1_000 : undefined;
+      logEvent("tool_deadline", { tool_kind: "workspace", configured_timeout_ms: toolTimeoutMs, effective_timeout_ms: toolTimeoutMs,
+        request_timeout_ms: requestTimeoutMs });
+      finishRequest = beginWorkspaceToolStage("request");
       const result = await mcp.client.callTool({
         arguments: boundedArguments,
         name: input.originalName
       }, undefined, {
-        maxTotalTimeout: this.config.syncToolTimeoutSeconds * 1_000 + 5_000,
+        maxTotalTimeout: requestTimeoutMs,
         signal: controller.signal,
-        timeout: this.config.syncToolTimeoutSeconds * 1_000 + 5_000
+        timeout: requestTimeoutMs
       });
       if (input.originalName === "sandbox_exec_start") {
         const id = execSessionIdFrom(result);
         if (!id) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         session.execOwners.set(id, input.modelRunId);
-        return { ...boundedMcpResult(result, this.config.toolOutputMaxBytes), execSessionId: id };
+        const normalized = { ...boundedMcpResult(result, this.config.toolOutputMaxBytes), execSessionId: id };
+        finishRequest({ outcome: normalized.status === "error" ? "failed" : "completed" });
+        return normalized;
       }
       // Closing an MCP observation cannot discharge descendant ownership.
-      return boundedMcpResult(result, this.config.toolOutputMaxBytes);
+      const normalized = boundedMcpResult(result, this.config.toolOutputMaxBytes);
+      finishRequest({ outcome: normalized.status === "error" ? "failed" : "completed" });
+      return normalized;
     } catch (error) {
+      const timedOut = error instanceof McpError && error.code === ErrorCode.RequestTimeout;
+      if (timedOut) observeAbort({ stage: "delivery", abort_source: "workspace_deadline", deadline_kind: "sdk_request", timeout_ms: requestTimeoutMs });
+      const facts = timedOut ? { code: "workspace_tool_timeout", reason: "deadline" as const } : workspaceToolFailure(error);
+      const outcome = controller.signal.aborted || facts.reason === "cancelled" ? "cancelled" : "failed";
+      if (finishRequest) finishRequest({ outcome, ...facts });
+      else logEvent("tool_execution", { tool_kind: "workspace", stage: "admission", outcome, ...facts });
       if (error instanceof WorkspaceRuntimeError) throw error;
       if (controller.signal.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
       throw new WorkspaceRuntimeError("workspace_tool_timeout");
     } finally {
       input.signal?.removeEventListener("abort", abort);
+      controller.signal.removeEventListener("abort", onAbort);
       session.activeCalls.delete(input.modelRunToolCallId);
     }
   }

@@ -1,6 +1,7 @@
 const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
 import { mcpAutoDiscoveryFailure, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { sessionStatusTool } from "../tools/sessionStatus";
@@ -23,6 +24,9 @@ import { ProviderRequestTimeoutError } from "../providers/network";
 import { ProviderSearchExecutionError } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
+import { runWithContext } from "../observability";
+import { rememberDatabaseFailure } from "../observability/databaseFailure";
+import { createPrismaRunRepository } from "./prismaRepository";
 import type {
   NormalizedRunRequest,
   ProviderAdapter,
@@ -1376,6 +1380,16 @@ function deferred<Value>() {
   return { promise, resolve };
 }
 
+function captureRunObservation() {
+  const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  return {
+    records: () => writer.mock.calls.flatMap(([chunk]) => {
+      try { return [JSON.parse(String(chunk)) as Record<string, unknown>]; } catch { return []; }
+    }),
+    restore: () => writer.mockRestore()
+  };
+}
+
 const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
   enabled: true, imageRef: "test-image", inboxIndexPath: "/workspace/inbox/index.json",
   internetEnabled: false, maxToolCalls: 20, maxToolRounds: 10, mcpVersion: "0.6.16",
@@ -2280,7 +2294,7 @@ describe("run execution", () => {
   });
 
   it("settles a stream safety failure terminally with exact safe classification and partial text", async () => {
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const warning = captureRunObservation();
     const repository = createRepository();
     const adapter = createAdapter(async function* () {
       yield { data: { delta: "partial" }, type: "token" };
@@ -2325,8 +2339,9 @@ describe("run execution", () => {
     expect(repository.persistedEvents.some(({ event }) =>
       event.type === "usage" || event.type === "done"
     )).toBe(false);
-    expect(warning).toHaveBeenCalledOnce();
-    expect(JSON.parse(String(warning.mock.calls[0]?.[0]))).toMatchObject({
+    const safetyWarnings = warning.records().filter((entry) => entry.event === "provider_stream_safety_terminated");
+    expect(safetyWarnings).toHaveLength(1);
+    expect(safetyWarnings[0]).toMatchObject({
       code: "provider_stream_too_large",
       durationMs: 123,
       limit: 64,
@@ -2334,7 +2349,7 @@ describe("run execution", () => {
       termination: "total_limit",
       totalStreamBytes: 65
     });
-    warning.mockRestore();
+    warning.restore();
   });
 
   it("persists a configured provider deadline as the primary terminal failure", async () => {
@@ -2414,7 +2429,7 @@ describe("run execution", () => {
   });
 
   it("persists an ordinary failed provider draft without executing absent tool calls", async () => {
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const warning = captureRunObservation();
     let answerRounds = 0;
     const repository = createRepository({
       usagePersistenceError: new Error("usage_persistence_unavailable")
@@ -2473,14 +2488,15 @@ describe("run execution", () => {
       },
       type: "error"
     });
-    expect(warning).toHaveBeenCalledOnce();
-    expect(JSON.parse(String(warning.mock.calls[0]?.[0]))).toMatchObject({
+    const safetyWarnings = warning.records().filter((entry) => entry.event === "provider_stream_safety_terminated");
+    expect(safetyWarnings).toHaveLength(1);
+    expect(safetyWarnings[0]).toMatchObject({
       durationMs: 20,
       limit: 128,
       observed: 129,
       totalStreamBytes: 129
     });
-    warning.mockRestore();
+    warning.restore();
   });
 
   it("does not append an error when durable cancellation wins before failure settlement", async () => {
@@ -5452,7 +5468,15 @@ describe("run execution", () => {
     expect(answerRounds).toBe(1);
     expect(repository.completeRuns).toEqual([]);
     expect([...repository.toolCalls.values()]).toEqual([
-      expect.objectContaining({ state: "error", usageAccountedAt: expect.any(String) })
+      expect.objectContaining({
+        result: expect.objectContaining({
+          rawPreview: expect.objectContaining({
+            searchExecutions: [expect.objectContaining({ failure: { code: "search_cancelled" } })]
+          })
+        }),
+        state: "error",
+        usageAccountedAt: expect.any(String)
+      })
     ]);
     expect(repository.recordedRunUsageEvents.at(-1)?.usageAttributions).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -5578,5 +5602,119 @@ describe("run execution", () => {
         }
       }
     ]);
+  });
+});
+
+describe("run execution diagnostics", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([true, false])("reports completion only when guarded persistence applies (%s)", async (completionWins) => {
+    const observation = captureRunObservation();
+    const repository = createRepository({ completionWins });
+    const traceId = "1".repeat(32);
+    const response = runWithContext({ trace_id: traceId }, () => createRunExecutionResponse(executionInput({
+      adapter: createAdapter(async function* () {
+        yield { type: "token", data: { delta: "PRIVATE_ANSWER_CANARY" } };
+        return providerResult({ finalText: "PRIVATE_ANSWER_CANARY" });
+      }),
+      repository: repository.repository
+    })));
+    await response.text();
+    const records = observation.records();
+    expect(records.filter((entry) => entry.event === "run_persistence")).toMatchObject([{
+      trace_id: traceId, run_id: "run-1", stage: "complete", outcome: completionWins ? "confirmed" : "not_applied"
+    }]);
+    expect(records.filter((entry) => entry.event === "run_execution" && entry.outcome === "completed")).toHaveLength(completionWins ? 1 : 0);
+    expect(records.every((entry) => entry.trace_id === traceId && entry.run_id === "run-1")).toBe(true);
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_ANSWER_CANARY");
+    expect(records.length).toBeLessThanOrEqual(3);
+  });
+
+  it.each(["grounding", "pricing", "write"] as const)("reports a completion write failure only after completeRun is attempted (%s)", async (stage) => {
+    const observation = captureRunObservation();
+    const error = stage === "grounding" ? new Error("PRIVATE_GROUNDING_CANARY")
+      : new Prisma.PrismaClientInitializationError("PRIVATE_DATABASE_CANARY", "test", "P1001");
+    const repository = createRepository(stage === "grounding" ? { groundingError: error } : {});
+    const database = createPrismaRunRepository({
+      providerModel: { findMany: vi.fn().mockRejectedValueOnce(error).mockResolvedValue([]) },
+      $transaction: vi.fn().mockRejectedValue(error)
+    } as unknown as PrismaClient);
+    if (stage === "pricing") repository.repository.loadModelPricing = database.loadModelPricing;
+    if (stage === "write") repository.repository.completeRun = database.completeRun;
+    const completeRun = vi.spyOn(repository.repository, "completeRun");
+    const originalFailRun: RunRepository["failRun"] = repository.repository.failRun;
+    repository.repository.failRun = vi.fn<RunRepository["failRun"]>(async (...args) => {
+      expect(observation.records()).toContainEqual(expect.objectContaining({
+        event: "run_execution", stage: "completion", outcome: "failed", prisma_code: stage === "grounding" ? "unknown" : "P1001"
+      }));
+      return originalFailRun(...args);
+    });
+    const adapter = createAdapter(async function* () {
+      yield { type: "usage", data: usage() };
+      return providerResult({ finalText: "PRIVATE_ANSWER_CANARY" });
+    });
+    const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, repository: repository.repository })).text());
+    expect(completeRun).toHaveBeenCalledTimes(stage === "write" ? 1 : 0);
+    expect(repository.failedRuns).toHaveLength(1);
+    const completionRecords = observation.records().filter((entry) => entry.event === "run_persistence" && entry.stage === "complete");
+    expect(completionRecords).toHaveLength(stage === "write" ? 1 : 0);
+    if (stage === "write") expect(completionRecords[0]).toMatchObject({ outcome: "unconfirmed", prisma_code: "P1001" });
+    expect(observation.records()).not.toContainEqual(expect.objectContaining({ event: "run_execution", outcome: "completed" }));
+    expect(events.some((entry) => entry.type === "done")).toBe(false);
+    expect(JSON.stringify(observation.records())).not.toContain("PRIVATE_");
+  });
+
+  it("keeps the original provider failure when failRun also fails and never reports a confirmed terminal", async () => {
+    const observation = captureRunObservation();
+    const repository = createRepository();
+    const databaseError = new Error("PRIVATE_SQL_VALUES_CANARY");
+    rememberDatabaseFailure(databaseError, "P1001");
+    repository.repository.failRun = vi.fn(async () => {
+      expect(observation.records()).toContainEqual(expect.objectContaining({
+        event: "run_execution", outcome: "failed", reason: "deadline", timeout_ms: 37
+      }));
+      throw databaseError;
+    });
+    const adapter = createAdapter(async function* () {
+      const timeout = new ProviderRequestTimeoutError(37);
+      timeout.message = "PRIVATE_PROVIDER_BODY_CANARY";
+      yield { type: "usage", data: usage() };
+      throw timeout;
+    });
+    const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, repository: repository.repository })).text());
+    const records = observation.records();
+    expect(records.filter((entry) => entry.event === "run_persistence")).toMatchObject([{
+      stage: "fail", outcome: "unconfirmed", prisma_code: "P1001"
+    }]);
+    expect(records.some((entry) => entry.outcome === "completed" || entry.outcome === "confirmed")).toBe(false);
+    expect(events.some((entry) => entry.type === "done")).toBe(false);
+    expect(JSON.stringify(records)).not.toMatch(/PRIVATE_SQL_VALUES_CANARY|PRIVATE_PROVIDER_BODY_CANARY/);
+  });
+
+  it("correlates a separate Stop trace while cancellation handling retains the original run trace", async () => {
+    const observation = captureRunObservation();
+    const waiting = deferred<void>();
+    const repository = createRepository();
+    const adapter = createAdapter(async function* (_request, options) {
+      const signal = options!.signal!;
+      waiting.resolve();
+      await new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+      yield { type: "token", data: { delta: "unreachable" } };
+      return providerResult();
+    });
+    const response = runWithContext({ trace_id: "2".repeat(32) }, () => createRunExecutionResponse(executionInput({
+      adapter, repository: repository.repository
+    })));
+    await waiting.promise;
+    runWithContext({ trace_id: "3".repeat(32) }, () => activeRunControllerRegistry.abort("run-1"));
+    await response.text();
+    expect(observation.records()).toContainEqual(expect.objectContaining({
+      event: "run_abort_delivery", trace_id: "3".repeat(32), run_id: "run-1", outcome: "delivered"
+    }));
+    expect(observation.records()).toContainEqual(expect.objectContaining({
+      event: "run_execution", trace_id: "2".repeat(32), run_id: "run-1", outcome: "cancelled", abort_source: "stop"
+    }));
+    expect(repository.failedRuns).toHaveLength(0);
+    expect(repository.completeRuns).toHaveLength(0);
   });
 });

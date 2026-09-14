@@ -1,3 +1,5 @@
+import "./worker-bootstrap.cjs";
+import { logEvent, reportSubsystemFailure } from "../lib/server/observability";
 import { access } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { join } from "node:path";
@@ -50,7 +52,7 @@ async function main(): Promise<void> {
   }
 
   server.listen(portValue, host, () => {
-    process.stdout.write(`AIQSA workspace runner ready on private port ${portValue}\n`);
+    logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "startup", outcome: "completed" });
   });
 
   const shutdown = () => {
@@ -62,6 +64,6 @@ async function main(): Promise<void> {
 }
 
 main().catch(() => {
-  process.stderr.write("workspace_runner_failed\n");
+  reportSubsystemFailure({ subsystem: "workspace", stage: "startup", code: "workspace_runner_failed", action: "stop" });
   process.exitCode = 1;
 });

@@ -558,7 +558,7 @@ function runBootstrapProof(database: string): void {
     NODE_ENV: "production",
   };
   const first = app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
-  assert.match(first, /installation bootstrap created:/u);
+  assert.match(first, /"code":"installation_created"/u);
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserSettings" s JOIN "User" u ON u.id = s."userId"
     WHERE u.email = 'baseline-admin@example.invalid' AND s."defaultSearchPlan" IS NULL;`), "1",
     "initial administrator inherits organization Search");
@@ -573,7 +573,7 @@ function runBootstrapProof(database: string): void {
   psqlScalar(database, `UPDATE "UserMemorySettings" SET "synthesisEnabled" = false, "decayEnabled" = false;`);
   const freshDigest = bootstrapFoundationDigest(database);
   const repeat = app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
-  assert.match(repeat, /installation bootstrap already_adopted:/u);
+  assert.match(repeat, /"code":"installation_already_adopted"/u);
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" WHERE "synthesisEnabled" OR "decayEnabled";`), "0",
     "bootstrap adoption must preserve later Memory opt-outs");
   assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "4096", "bootstrap must retain the operator's MCP output allowance");

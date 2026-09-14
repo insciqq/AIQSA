@@ -41,6 +41,7 @@ import { withTimeoutSignal } from "./network";
 import { effectiveOpenAIBackgroundPollTimeoutMs } from "./openaiBackgroundPolling";
 import type { ProviderAdapter, ProviderSearchAdapter } from "./types";
 import { warnProviderStreamSafetyOnce } from "./streamSafetyObservability";
+import { observeProviderDeadline, observeProviderFetch, observeProviderOperation, observeProviderStream } from "./providerObservability";
 import {
   assertProviderCredentialSource,
   resolveProviderCredentialSource,
@@ -281,7 +282,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
     if (input.secret !== null) {
       throw new Error("provider_credential_unexpected");
     }
-    const fetchFn = requiredFetch(input.options);
+    const fetchFn = observeProviderFetch(requiredFetch(input.options));
     if (snapshot.model.adapterKind === "openai_responses_compatible") {
       const client = createFetchOpenAIResponsesClient({
         apiKey: null,
@@ -332,7 +333,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
   }
   assertProviderCredentialSource(input.secret, "provider_credential_missing");
   const fetchFn = fetchWithPerRequestCredential(
-    requiredFetch(input.options),
+    observeProviderFetch(requiredFetch(input.options)),
     snapshot.model.adapterKind,
     input.secret
   );
@@ -510,16 +511,22 @@ function withProviderStreamSafetyObservability(
       ? Math.min(requested, responseTimeoutMs)
       : responseTimeoutMs;
   const adapter = binding.adapter;
+  const identity = {
+    adapterKind: snapshot.model.adapterKind,
+    connectionId: snapshot.connectionId,
+    providerFamily: snapshot.providerFamily,
+    providerModelId: snapshot.providerModelId
+  };
   const observedAdapter: ProviderAdapter = {
     buildRequestPreview: (request) => adapter.buildRequestPreview(request),
     ...(adapter.cancel
-      ? { cancel: (providerResponseId: string) => adapter.cancel!(providerResponseId) }
+      ? { cancel: (providerResponseId: string) => observeProviderOperation(identity, "cancel", () => adapter.cancel!(providerResponseId), { requestTimeoutMs: responseTimeoutMs }) }
       : {}),
     ...(adapter.refresh
-      ? { refresh: (providerResponseId: string) => adapter.refresh!(providerResponseId) }
+      ? { refresh: (providerResponseId: string) => observeProviderOperation(identity, "refresh", () => adapter.refresh!(providerResponseId), { requestTimeoutMs: responseTimeoutMs }) }
       : {}),
     ...(adapter.retrieve
-      ? { retrieve: (providerResponseId: string) => adapter.retrieve!(providerResponseId) }
+      ? { retrieve: (providerResponseId: string) => observeProviderOperation(identity, "retrieve", () => adapter.retrieve!(providerResponseId), { requestTimeoutMs: responseTimeoutMs }) }
       : {}),
     async *stream(request, options) {
       const timeoutMs = operationTimeoutMs(options?.timeoutMs);
@@ -529,16 +536,21 @@ function withProviderStreamSafetyObservability(
       const runTimeoutMs = useBackgroundPollTimeout
         ? binding.backgroundPollTimeoutMs ?? timeoutMs
         : timeoutMs;
+      observeProviderDeadline({ ...identity, stage: "answer", configured_timeout_ms: options?.timeoutMs,
+        provider_timeout_ms: responseTimeoutMs, effective_timeout_ms: timeoutMs,
+        poll_timeout_ms: useBackgroundPollTimeout ? runTimeoutMs : undefined });
       const timeout = withTimeoutSignal(
         options?.signal,
-        runTimeoutMs
+        runTimeoutMs,
+        useBackgroundPollTimeout ? "polling" : "operation",
+        { identity, stage: "answer" }
       );
       try {
-        return yield* adapter.stream(request, {
+        return yield* observeProviderStream(identity, adapter.stream(request, {
           ...options,
           signal: timeout.signal,
           timeoutMs
-        });
+        }), { signal: timeout.signal, timeoutMs: runTimeoutMs, requestTimeoutMs: timeoutMs });
       } catch (error) {
         warnProviderStreamSafetyOnce(error, {
           adapterKind: snapshot.model.adapterKind,
@@ -561,13 +573,15 @@ function withProviderStreamSafetyObservability(
           options?: Parameters<ProviderSearchAdapter["search"]>[1]
         ) {
           const timeoutMs = operationTimeoutMs(options?.timeoutMs);
-          const timeout = withTimeoutSignal(options?.signal, timeoutMs);
+          observeProviderDeadline({ ...identity, stage: "search", configured_timeout_ms: options?.timeoutMs,
+            provider_timeout_ms: responseTimeoutMs, effective_timeout_ms: timeoutMs });
+          const timeout = withTimeoutSignal(options?.signal, timeoutMs, "operation", { identity, stage: "search" });
           try {
-            return await binding.searchAdapter!.search(request, {
+            return await observeProviderOperation(identity, "search", () => binding.searchAdapter!.search(request, {
               ...options,
               signal: timeout.signal,
               timeoutMs
-            });
+            }), { signal: timeout.signal, timeoutMs });
           } finally {
             timeout.clear();
           }
@@ -578,13 +592,15 @@ function withProviderStreamSafetyObservability(
     ? {
         async execute(request, options) {
           const timeoutMs = operationTimeoutMs(options?.timeoutMs);
-          const timeout = withTimeoutSignal(options?.signal, timeoutMs);
+          observeProviderDeadline({ ...identity, stage: "structured_output", configured_timeout_ms: options?.timeoutMs,
+            provider_timeout_ms: responseTimeoutMs, effective_timeout_ms: timeoutMs });
+          const timeout = withTimeoutSignal(options?.signal, timeoutMs, "operation", { identity, stage: "structured_output" });
           try {
-            return await binding.structuredOutputAdapter!.execute(request, {
+            return await observeProviderOperation(identity, "structured_output", () => binding.structuredOutputAdapter!.execute(request, {
               ...options,
               signal: timeout.signal,
               timeoutMs
-            });
+            }), { signal: timeout.signal, timeoutMs });
           } finally {
             timeout.clear();
           }

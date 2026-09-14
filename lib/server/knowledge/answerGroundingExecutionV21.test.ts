@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { runWithContext } from "../observability";
 import { packKnowledgeEvidenceDispatchManifest } from "./evidenceDispatchManifest";
 import type {
   KnowledgeProviderDispatchLifecycle,
@@ -347,6 +348,89 @@ function execution(complete = false) {
   }));
 }
 
+function captureGroundingEvents() {
+  const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  return () => writer.mock.calls.flatMap(([chunk]) => {
+    try { return [JSON.parse(String(chunk)) as Record<string, unknown>]; } catch { return []; }
+  });
+}
+
+describe("Knowledge grounding diagnostics", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it.each(["status", "httpStatus", "statusCode"])("keeps the original %s before fallback settlement without provider content", async (statusField) => {
+    const records = captureGroundingEvents();
+    const recorder = lifecycleRecorder();
+    const failure = Object.assign(new Error("PRIVATE_EXCEPTION_CANARY"), {
+      code: "provider_http_request_failed", [statusField]: 503
+    });
+    const statusGetter = vi.fn(() => { throw new Error("PRIVATE_GETTER_CANARY"); });
+    if (statusField !== "status") Object.defineProperty(failure, "status", { get: statusGetter });
+    failure.name = "PrivateErrorNameCanary";
+    const settle = recorder.lifecycle.settle.getMockImplementation()!;
+    recorder.lifecycle.settle.mockImplementation(async (prepared, input) => {
+      if ((prepared as unknown as { ordinal: number }).ordinal === 2) {
+        expect(records()).toContainEqual(expect.objectContaining({
+          event: "tool_execution", stage: "request", operation_index: 2,
+          outcome: "degraded", code: "provider_http_request_failed", httpStatus: 503, action: "degrade"
+        }));
+      }
+      return settle(prepared, input);
+    });
+    let failed = false;
+    const result = await runWithContext({ trace_id: "1".repeat(32), run_id: "accepted-run" }, () =>
+      executeKnowledgeAnswerGroundingV21(pipelineInput(recorder.lifecycle, async operation => {
+        if (!failed && operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17) {
+          failed = true;
+          throw failure;
+        }
+        return { output: operation.name === KNOWLEDGE_COVERAGE_AUDITOR_OPERATION
+          ? missingAuditOutput() : outputForOperation(operation.name),
+          providerResponseId: "PRIVATE_RESPONSE_ID_CANARY", usage };
+      })));
+    expect(result.operations).toHaveLength(5);
+    expect(statusGetter).not.toHaveBeenCalled();
+    expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "result",
+      operation_stage: "selector", operation_index: 2, outcome: "degraded", code: "selector_provider_error" }));
+    expect(records().every(record => record.run_id === "accepted-run" && record.trace_id === "1".repeat(32))).toBe(true);
+    expect(JSON.stringify(records())).not.toMatch(/PRIVATE_|PrivateErrorName|Alpha preserves|Beta removes|mechanisms\.txt/);
+    expect(records().some(record => record.event === "run_execution" || record.outcome === "confirmed")).toBe(false);
+  });
+
+  it("observes a returned validation failure while the existing bounded repair succeeds", async () => {
+    const records = captureGroundingEvents();
+    const recorder = lifecycleRecorder();
+    let failed = false;
+    await executeKnowledgeAnswerGroundingV21(pipelineInput(recorder.lifecycle, async operation => {
+      const malformed = !failed && operation.name === KNOWLEDGE_GROUNDED_SELECTOR_OPERATION_V17;
+      if (malformed) failed = true;
+      return { output: malformed ? { privatePayload: "PRIVATE_RESPONSE_CANARY" } : outputForOperation(operation.name),
+        providerResponseId: "PRIVATE_PROVIDER_ID", usage };
+    }));
+    expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "grounding",
+      operation_index: 2, outcome: "degraded", code: "selector_malformed" }));
+    expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "result",
+      operation_index: 3, outcome: "completed" }));
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
+  it("does not report a completed result when settlement rejects after successful grounding", async () => {
+    const records = captureGroundingEvents();
+    const recorder = lifecycleRecorder();
+    const failure = new Error("PRIVATE_SETTLEMENT_CANARY");
+    recorder.lifecycle.settle.mockRejectedValueOnce(failure);
+    await expect(executeKnowledgeAnswerGroundingV21(
+      pipelineInput(recorder.lifecycle, execution(true))
+    )).rejects.toBe(failure);
+    expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "grounding",
+      operation_index: 1, outcome: "completed" }));
+    expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "result",
+      operation_index: 1, outcome: "failed", code: "unknown" }));
+    expect(records().some(record => record.stage === "result" && record.outcome === "completed")).toBe(false);
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+});
+
 describe("V21 audited Knowledge answer execution", () => {
   it("runs the normal Draft, Selector, Auditor order with one receipt", async () => {
     const recorder = lifecycleRecorder();
@@ -583,7 +667,7 @@ describe("V21 audited Knowledge answer execution", () => {
   it("keeps Draft text invisible after initial Selector provider failure and corrects once", async () => {
     const recorder = lifecycleRecorder();
     const providerFailure = new TypeError("selector transport failed");
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const records = captureGroundingEvents();
     let selectorFailed = false;
     const execute = vi.fn(async (operation): Promise<KnowledgeAnswerOperationExecutionV21> => {
       if (operation.name === KNOWLEDGE_ANSWER_DRAFT_OPERATION_V21) {
@@ -620,11 +704,10 @@ describe("V21 audited Knowledge answer execution", () => {
         recorder.entries.get(3)!.acceptedRequest
       );
       expect(auditRequest?.userPrompt).not.toContain("Alpha maintains ordering.");
-      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining(
-        '"operation":"knowledge_grounded_selector_v17"'
-      ));
+      expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "request",
+        operation_index: 2, outcome: "degraded" }));
     } finally {
-      consoleError.mockRestore();
+      vi.restoreAllMocks();
     }
   });
 

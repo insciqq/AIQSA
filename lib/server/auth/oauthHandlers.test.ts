@@ -28,6 +28,7 @@ const config = getAuthConfig({
   AIQSA_TRUSTED_PROXY_COUNT: "1"
 });
 const now = new Date("2026-07-18T12:00:00.000Z");
+let callbackClientOrdinal = 0;
 
 function repository(status: "account_conflict" | "active" | "not_allowed" | "pending" = "active") {
   const settleIdentity = vi.fn<OAuthIdentityRepository["settleIdentity"]>(async () =>
@@ -90,6 +91,7 @@ function callbackRequest(input: {
   code?: string;
   error?: string;
   flowToken: string;
+  forwardedFor?: string | null;
   provider: "google" | "yandex";
   sessionCookie?: string;
   state: string;
@@ -111,7 +113,11 @@ function callbackRequest(input: {
         `${OAUTH_FLOW_COOKIE_NAME}=${input.flowToken}`,
         input.sessionCookie
       ].filter(Boolean).join("; "),
-      "user-agent": "OAuth handler test"
+      "user-agent": "OAuth handler test",
+      // Unrelated flows use distinct clients; admission tests explicitly share an IP.
+      ...(input.forwardedFor === null ? {} : {
+        "x-forwarded-for": input.forwardedFor ?? `2001:db8::${(++callbackClientOrdinal).toString(16)}`
+      })
     }
   });
 }
@@ -484,7 +490,29 @@ describe("OAuth route handlers", () => {
     expect(repo.settleIdentity).not.toHaveBeenCalled();
   });
 
-  it("rate-limits repeated valid callback exchanges before another provider request", async () => {
+  it.each([
+    { name: "missing", forwardedFor: null },
+    { name: "malformed", forwardedFor: "unknown" },
+    { name: "oversized", forwardedFor: `${"x".repeat(513)}, 203.0.113.20` }
+  ])("fails a $name proxy callback identity before provider exchange", async ({ forwardedFor }) => {
+    const flow = await startFlow();
+    const exchangeCode = vi.fn();
+    const repo = repository();
+    const response = await createOAuthCallbackHandler({
+      exchangeCode, getConfig: () => config, now: () => now,
+      repository: repo.repository, sessions: createMemoryAuthSessionStore()
+    })(callbackRequest({
+      code: "authorization-code", flowToken: flow.flowToken, forwardedFor,
+      provider: "google", state: flow.location.searchParams.get("state")!
+    }), { params: { provider: "google" } });
+    expect(response.status).toBe(303);
+    expect(new URL(response.headers.get("location")!).searchParams.get("oauth")).toBe("failed");
+    expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect(exchangeCode).not.toHaveBeenCalled();
+    expect(repo.settleIdentity).not.toHaveBeenCalled();
+  });
+
+  it("rate-limits callback exchanges despite changing untrusted prefixes before another provider request", async () => {
     const firstFlow = await startFlow({ seed: "client-first" });
     const secondFlow = await startFlow({ seed: "client-second" });
     const repo = repository();
@@ -509,7 +537,7 @@ describe("OAuth route handlers", () => {
         provider: "google",
         state: flow.location.searchParams.get("state")!
       });
-      callback.headers.set("x-forwarded-for", "203.0.113.20");
+      callback.headers.set("x-forwarded-for", `${flow === firstFlow ? "unknown" : "198.51.100.7"}, 203.0.113.20`);
       return callback;
     };
 
@@ -576,7 +604,7 @@ describe("OAuth route handlers", () => {
     expect(responses.filter((response) => response.headers.has("retry-after"))).toHaveLength(1);
   });
 
-  it("bounds provider exchanges across fresh flows without a client identity bucket", async () => {
+  it("bounds provider exchanges across fresh flows from distinct clients", async () => {
     const flows = await Promise.all([
       startFlow({ seed: "provider-one" }),
       startFlow({ seed: "provider-two" }),

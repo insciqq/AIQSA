@@ -1,5 +1,6 @@
 import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { isChatPdfPolicyUnavailableError, chatPdfFingerprint } from "../uploads/chatPdfAdmission";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
 import { chatPdfRunSnapshot } from "../uploads/chatPdfRunContinuation";
@@ -57,6 +58,9 @@ import {
 import type { RunRepository } from "./runRepositoryContract";
 import { serializeRunOutcome } from "./runOutcome";
 import { MemoryPreparingRunConflictError } from "./preparingRun";
+import { logEvent, runWithContext, type EventFields } from "../observability";
+import { logRunPersistence, runDatabaseFailureCode } from "./runObservability";
+import { observedFailure } from "../providers/providerObservability";
 import type {
   CreatedRun
 } from "./runRepositoryContract";
@@ -172,11 +176,47 @@ function runPreparationFailureResponse(failure: RunPreparationFailure): Response
 }
 
 const PRIVATE_RUN_CACHE_CONTROL = "private, no-store, max-age=0";
+const STOP_REJECTION_WINDOW_MS = 30_000;
+const STOP_REJECTION_STATE = Symbol.for("aiqsa.run-stop-rejections.v1");
+type StopRejection = "unauthorized" | "not_found";
+const globalForStopRejections = globalThis as typeof globalThis & {
+  [STOP_REJECTION_STATE]?: Partial<Record<StopRejection, number>>;
+};
+
+function logStopAdmission(fields: EventFields["run_stop_admission"]): void {
+  if (fields.outcome === "unauthorized" || fields.outcome === "not_found") {
+    // Two fixed process-wide slots survive route-bundle reloads. Neither keys
+    // nor values retain unverified request identifiers or caller metadata.
+    const recent = globalForStopRejections[STOP_REJECTION_STATE] ??= {};
+    const now = performance.now();
+    const previous = recent[fields.outcome];
+    if (previous !== undefined && now - previous < STOP_REJECTION_WINDOW_MS) return;
+    recent[fields.outcome] = now;
+  }
+  // Keep the pair together so suppressing a rejected admission cannot leave
+  // one requested event per rejected request. Accepted work is never deduped.
+  logEvent("run_stop_requested", {});
+  logEvent("run_stop_admission", fields);
+}
 
 function privateModelRunJson(data: unknown, init?: ResponseInit): Response {
   const headers = new Headers(init?.headers);
   headers.set("cache-control", PRIVATE_RUN_CACHE_CONTROL);
   return Response.json(data, { ...init, headers });
+}
+
+function protectRunHandler<Context>(stage: "send" | "regenerate" | "cancel",
+  handler: (request: Request, context: Context) => Promise<Response>) {
+  return async function POST(request: Request, context: Context): Promise<Response> {
+    try {
+      return await handler(request, context);
+    } catch (error) {
+      const failure = observedFailure(error);
+      logEvent("run_http_failed", { stage, code: failure.code, reason: failure.reason,
+        prisma_code: runDatabaseFailureCode(error) });
+      return privateModelRunJson({ error: "internal_error" }, { status: 500 });
+    }
+  };
 }
 
 function modelRunErrorJson(data: ModelRunErrorResponse, init?: ResponseInit): Response {
@@ -290,31 +330,40 @@ async function acceptedRuntimeBinding(
   structuredOutputAdapter?: ProviderRuntimeBinding["structuredOutputAdapter"];
   toolBridge?: ProviderToolBridge;
 } | null> {
-  if (!deps.providerRuntime) {
-    throw new Error("provider_runtime_not_configured");
-  }
-
-  const answer = await deps.providerRuntime.resolve(runId, "answer");
-  const searchRuntimes: Record<string, ProviderRuntimeBinding> = {};
-  for (const optionId of searchOptionIds) {
+  return runWithContext({ run_id: runId }, async () => {
     try {
-      const runtime = await deps.providerRuntime.resolve(runId, "search", `search:${optionId}`);
-      searchRuntimes[optionId] = runtime;
-    } catch (error) {
-      if (!(error instanceof Error) || error.message !== "provider_run_binding_not_found") {
-        throw error;
+      if (!deps.providerRuntime) {
+        throw new Error("provider_runtime_not_configured");
       }
-    }
-  }
 
-  return {
-    adapter: answer.adapter,
-    searchRuntimes,
-    ...(answer.structuredOutputAdapter
-      ? { structuredOutputAdapter: answer.structuredOutputAdapter }
-      : {}),
-    ...(answer.toolBridge ? { toolBridge: answer.toolBridge } : {})
-  };
+      const answer = await deps.providerRuntime.resolve(runId, "answer");
+      const searchRuntimes: Record<string, ProviderRuntimeBinding> = {};
+      for (const optionId of searchOptionIds) {
+        try {
+          const runtime = await deps.providerRuntime.resolve(runId, "search", `search:${optionId}`);
+          searchRuntimes[optionId] = runtime;
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== "provider_run_binding_not_found") {
+            throw error;
+          }
+        }
+      }
+
+      return {
+        adapter: answer.adapter,
+        searchRuntimes,
+        ...(answer.structuredOutputAdapter
+          ? { structuredOutputAdapter: answer.structuredOutputAdapter }
+          : {}),
+        ...(answer.toolBridge ? { toolBridge: answer.toolBridge } : {})
+      };
+    } catch (error) {
+      const failure = observedFailure(error);
+      logEvent("run_execution", { run_id: runId, stage: "dispatch", outcome: "failed",
+        code: failure.code, reason: failure.reason });
+      throw error;
+    }
+  });
 }
 
 function expectedActiveLeafFromBody(
@@ -394,7 +443,7 @@ async function admittedPdfResponse(deps: RunHandlerDeps, created: CreatedRun, us
 }
 
 export function createSendMessageHandler(deps: RunHandlerDeps) {
-  return async function POST(
+  return protectRunHandler("send", async function POST(
     request: Request,
     context: { params: Promise<{ chatId: string }> | { chatId: string } }
   ): Promise<Response> {
@@ -658,11 +707,11 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
       userId: auth.userId
     });
-  };
+  });
 }
 
 export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
-  return async function POST(
+  return protectRunHandler("regenerate", async function POST(
     request: Request,
     context: { params: Promise<{ messageId: string }> | { messageId: string } }
   ): Promise<Response> {
@@ -844,7 +893,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       toolBridge: runtime?.toolBridge ?? preparation.toolBridge,
       userId: auth.userId
     });
-  };
+  });
 }
 
 export function createGetModelRunHandler(
@@ -903,35 +952,45 @@ export function createGetModelRunHandler(
 }
 
 export function createCancelModelRunHandler(deps: RunHandlerDeps) {
-  return async function POST(
+  return protectRunHandler("cancel", async function POST(
     request: Request,
     context: { params: Promise<{ runId: string }> | { runId: string } }
   ): Promise<Response> {
     const config = deps.getConfig?.() ?? getAuthConfig();
     if (!config.configured) {
+      logStopAdmission({ outcome: "unauthorized" });
       return privateModelRunJson({ error: "unauthorized" }, { status: 401 });
     }
 
     const auth = await deps.resolveAuth(request);
     if (!auth) {
+      logStopAdmission({ outcome: "unauthorized" });
       return privateModelRunJson({ error: "unauthorized" }, { status: 401 });
     }
 
     const params = await context.params;
-    const cancellation = await deps.repository.cancelRun({
-      payload: {
-        code: "model_run_cancelled",
-        message: "Model run cancelled"
-      },
-      runId: params.runId,
-      userId: auth.userId
-    });
+    let cancellation: Awaited<ReturnType<RunRepository["cancelRun"]>>;
+    try {
+      cancellation = await deps.repository.cancelRun({
+        payload: {
+          code: "model_run_cancelled",
+          message: "Model run cancelled"
+        },
+        runId: params.runId,
+        userId: auth.userId
+      });
+    } catch (error) {
+      logStopAdmission({ outcome: "failed", prisma_code: runDatabaseFailureCode(error) });
+      throw error;
+    }
 
     if (cancellation.kind === "not_found") {
+      logStopAdmission({ outcome: "not_found" });
       return privateModelRunJson({ error: "model_run_not_found" }, { status: 404 });
     }
 
     if (cancellation.kind === "current") {
+      logStopAdmission({ run_id: cancellation.run.id, outcome: "not_cancelable" });
       return privateModelRunJson(
         {
           error: "model_run_not_cancelable",
@@ -945,44 +1004,48 @@ export function createCancelModelRunHandler(deps: RunHandlerDeps) {
     }
 
     const run = cancellation.run;
-    const aborted = activeRunControllerRegistry.abort(run.id);
-    const settled = aborted ? activeRunControllerRegistry.settled(run.id) : null;
-    if (settled) {
-      // Stop means the run's terminal handling (tool cancellation, Workspace
-      // quiescence and session settlement) is done before the client re-reads
-      // the chat; the wait is bounded so a wedged executor cannot hang Stop.
-      await Promise.race([
-        settled,
-        new Promise<void>((resolve) => setTimeout(resolve, 20_000).unref?.())
-      ]);
-    } else if (deps.workspaceCoordinator) {
-      // PDF preparation may own a controller without an answer settlement
-      // promise. Release its Workspace reservation here as well as orphaned work.
-      await deps.workspaceCoordinator.settle({
-        outcome: "cancelled",
-        runId: run.id,
-        userId: auth.userId
-      }).catch(() => undefined);
-    }
+    logStopAdmission({ run_id: run.id, outcome: "accepted" });
+    return runWithContext({ run_id: run.id }, async () => {
+      logRunPersistence(run.id, "cancel", "confirmed");
+      const aborted = activeRunControllerRegistry.abort(run.id);
+      const settled = aborted ? activeRunControllerRegistry.settled(run.id) : null;
+      if (settled) {
+        // Stop means the run's terminal handling (tool cancellation, Workspace
+        // quiescence and session settlement) is done before the client re-reads
+        // the chat; the wait is bounded so a wedged executor cannot hang Stop.
+        await Promise.race([
+          settled,
+          new Promise<void>((resolve) => setTimeout(resolve, 20_000).unref?.())
+        ]);
+      } else if (deps.workspaceCoordinator) {
+        // PDF preparation may own a controller without an answer settlement
+        // promise. Release its Workspace reservation here as well as orphaned work.
+        await deps.workspaceCoordinator.settle({
+          outcome: "cancelled",
+          runId: run.id,
+          userId: auth.userId
+        }).catch(() => undefined);
+      }
 
-    if (run.providerResponseId) {
-      try {
-        const adapter = deps.providerRuntime
-          ? (await deps.providerRuntime.resolve(run.id, "answer")).adapter
-          : deps.providers[run.provider];
-        if (adapter?.cancel) {
-          await adapter.cancel(run.providerResponseId);
+      if (run.providerResponseId) {
+        try {
+          const adapter = deps.providerRuntime
+            ? (await deps.providerRuntime.resolve(run.id, "answer")).adapter
+            : deps.providers[run.provider];
+          if (adapter?.cancel) {
+            await adapter.cancel(run.providerResponseId);
+          }
+        } catch {
+          // Durable local cancellation already won; provider cancellation is best effort.
         }
-      } catch {
-        // Durable local cancellation already won; provider cancellation is best effort.
       }
-    }
 
-    return privateModelRunJson({
-      run: {
-        id: run.id,
-        status: "cancelled"
-      }
-    } satisfies CancelModelRunSuccessResponse);
-  };
+      return privateModelRunJson({
+        run: {
+          id: run.id,
+          status: "cancelled"
+        }
+      } satisfies CancelModelRunSuccessResponse);
+    });
+  });
 }

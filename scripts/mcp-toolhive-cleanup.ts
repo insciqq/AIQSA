@@ -1,3 +1,5 @@
+import "./worker-bootstrap.cjs";
+import { logEvent } from "../lib/server/observability";
 import { getDefaultToolHiveDriver } from "@/lib/server/mcp/defaultToolHive";
 import {
   parseToolHiveCleanupArgs,
@@ -14,7 +16,7 @@ async function main(): Promise<void> {
   await runToolHiveCleanup({ args, driver: getDefaultToolHiveDriver() });
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : "ToolHive cleanup failed");
+main().catch(() => {
+  logEvent("runtime_lifecycle", { subsystem: "mcp", stage: "cleanup", outcome: "failed", code: "mcp_cleanup_failed", action: "stop" });
   process.exitCode = 1;
 });

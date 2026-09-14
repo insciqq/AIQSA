@@ -1,3 +1,5 @@
+import { logEvent } from "../observability";
+
 /** Process-local lifecycle ownership shared by preparation, execution and Stop.
  * Global identity also spans Next route bundles. HTTP disconnect never aborts it. */
 const globalForRuns = globalThis as unknown as {
@@ -30,10 +32,13 @@ export const activeRunControllerRegistry: ActiveRunControllerRegistry = Object.f
   abort(runId: string): boolean {
     const controller = activeRunControllers.get(runId);
     if (!controller) {
+      logEvent("run_abort_delivery", { run_id: runId, outcome: "not_running", abort_source: "stop" });
       return false;
     }
 
+    const alreadyAborted = controller.signal.aborted;
     controller.abort();
+    logEvent("run_abort_delivery", { run_id: runId, outcome: alreadyAborted ? "already_aborted" : "delivered", abort_source: "stop" });
     if (activeRunControllers.get(runId) === controller) {
       activeRunControllers.delete(runId);
     }

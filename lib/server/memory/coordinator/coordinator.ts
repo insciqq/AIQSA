@@ -1,4 +1,10 @@
 import { randomUUID } from "node:crypto";
+import {
+  logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext,
+  type LifecycleStage
+} from "../../observability";
+import { databaseFailureCode } from "../../observability/databaseFailure";
+import { memoryAttempt, memoryFailureOutcome, memoryPersistence, memoryStage } from "./observability";
 import type { MemoryDeletionOperation, MemoryJobKind } from "@prisma/client";
 import {
   isMemoryCoordinatorErrorCode,
@@ -24,6 +30,12 @@ import type {
 import { decodeMemoryOperationalCounters } from "../operational/counters";
 
 const sha256 = /^[a-f0-9]{64}$/u;
+function reportFailure(stage: LifecycleStage, error: unknown): void {
+  reportSubsystemFailure({ subsystem: "memory", stage, action: "retry",
+    code: error instanceof MemoryCoordinatorError ? error.code : "memory_coordinator_failed",
+    prisma_code: databaseFailureCode(error) });
+}
+
 const safeStage = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 
 function validDate(value: Date): boolean {
@@ -51,6 +63,7 @@ function validJobResult(value: MemoryJobExecutionResult): boolean {
 
 export class MemoryCoordinator {
   readonly #activeControllers = new Set<AbortController>();
+  readonly #failedHeartbeats = new Set<AbortController>();
   readonly #now: () => Date;
   readonly #onDrain: (() => Promise<void>) | null;
   readonly #policy: MemoryCoordinatorPolicy;
@@ -123,14 +136,14 @@ export class MemoryCoordinator {
     }
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = null;
-    this.#pending = this.#drain().finally(() => {
+    this.#pending = runInBackground(() => this.#drain().finally(() => {
       this.#pending = null;
       if (this.#rerun) {
         this.kick();
       } else {
         this.#armTimer();
       }
-    });
+    }));
   }
 
   async reconcileNow(): Promise<void> {
@@ -149,23 +162,34 @@ export class MemoryCoordinator {
       this.#rerun = false;
       try {
         await this.#onDrain?.();
-      } catch {
+        if (this.#onDrain) reportSubsystemHealthy("memory", "health");
+      } catch (error) {
+        reportFailure("health", error);
         // Liveness evidence is observability, never work ownership. The next
         // idle drain retries it while durable job/deletion leases remain the
         // execution authority.
       }
       await this.#reconcileJobs();
+      let claimFailed = false;
+      let claimObserved = false;
+      const observeClaim = (success: boolean) => {
+        claimObserved = true;
+        if (!success) claimFailed = true;
+      };
       await Promise.all([
-        ...Array.from({ length: this.#policy.maxJobParallel }, () => this.#jobWorker()),
+        ...Array.from({ length: this.#policy.maxJobParallel }, () => this.#jobWorker(observeClaim)),
         ...Array.from(
           { length: this.#policy.maxDeletionParallel },
-          () => this.#deletionWorker()
+          () => this.#deletionWorker(observeClaim)
         )
       ]);
+      if (claimObserved && !claimFailed && !this.#stopped) reportSubsystemHealthy("memory", "claim");
       await this.#reconcileJobs();
       try {
         await this.#reconcileWork?.();
-      } catch {
+        if (this.#reconcileWork) reportSubsystemHealthy("memory", "discover");
+      } catch (error) {
+        reportFailure("discover", error);
         // The timer retries optional durable work discovery after existing
         // jobs and privacy-critical deletions have had their pass.
       }
@@ -184,17 +208,29 @@ export class MemoryCoordinator {
         now,
         supportedKinds: kinds
       });
-      if (unavailable && unavailable > 0) this.#rerun = true;
-      if (kinds.length === 0) return;
+      if (unavailable && unavailable > 0) {
+        this.#rerun = true;
+        logEvent("runtime_lifecycle", { subsystem: "memory", stage: "reconcile", outcome: "failed",
+          action: "fail", code: "memory_job_handler_unavailable", count: unavailable });
+      }
+      if (kinds.length === 0) {
+        reportSubsystemHealthy("memory", "reconcile");
+        return;
+      }
       const [cancelled, requeued] = await Promise.all([
         this.#repository.cancelUnavailableJobOwners({ kinds, now }),
         this.#repository.requeueDueJobs({ kinds, now })
       ]);
       if (cancelled + requeued > 0) this.#rerun = true;
+      if (cancelled > 0) logEvent("runtime_lifecycle", { subsystem: "memory", stage: "reconcile",
+        outcome: "cancelled", count: cancelled });
+      if (requeued > 0) logEvent("runtime_lifecycle", { subsystem: "memory", stage: "retry",
+        outcome: "completed", action: "retry", count: requeued });
       const waiting = await this.#repository.listWaitingJobs({
         kinds,
         limit: this.#policy.reconciliationBatchSize
       });
+      let preflightFailed = false;
       for (const job of waiting) {
         const handler = this.#registry.jobHandler(job.kind);
         if (!handler) {
@@ -210,26 +246,31 @@ export class MemoryCoordinator {
         let decision: MemoryJobGateDecision;
         try {
           decision = await handler.preflight(job);
-        } catch {
+        } catch (error) {
+          preflightFailed = true;
+          reportFailure("preflight", error);
           continue;
         }
         if (!validGateDecision(decision)) {
+          preflightFailed = true;
+          reportFailure("preflight", new MemoryCoordinatorError("memory_job_gate_invalid", false));
           continue;
         }
-        if (await this.#repository.resolveWaitingJob({
-          decision,
-          job,
-          now: this.#clock()
-        }) && decision.status !== "WAITING_FOR_CONFIGURATION") {
-          this.#rerun = true;
-        }
+        const resolve = () => this.#repository.resolveWaitingJob({ decision, job, now: this.#clock() });
+        const resolved = decision.status === "WAITING_FOR_CONFIGURATION"
+          ? await resolve()
+          : await memoryPersistence(job, "preflight", resolve);
+        if (resolved && decision.status !== "WAITING_FOR_CONFIGURATION") this.#rerun = true;
       }
-    } catch {
+      if (waiting.length > 0 && !preflightFailed) reportSubsystemHealthy("memory", "preflight");
+      reportSubsystemHealthy("memory", "reconcile");
+    } catch (error) {
+      reportFailure("reconcile", error);
       // The timer owns durable reconciliation retry. Queue contents remain authoritative.
     }
   }
 
-  async #jobWorker(): Promise<void> {
+  async #jobWorker(observeClaim: (success: boolean) => void): Promise<void> {
     let claims = 0;
     while (claims < this.#policy.maxJobClaimsPerWorkerPass) {
       if (this.#stopped) return;
@@ -247,16 +288,23 @@ export class MemoryCoordinator {
           });
           if (claim) break;
         }
-      } catch {
+        observeClaim(true);
+      } catch (error) {
+        observeClaim(false);
+        reportFailure("claim", error);
         return;
       }
       if (!claim) return;
       claims += 1;
-      await this.#processJob(claim);
+      const claimedJob = claim;
+      await runInBackground(() => runWithContext(
+        { job_id: claimedJob.id },
+        () => this.#processJob(claimedJob)
+      ));
     }
   }
 
-  async #deletionWorker(): Promise<void> {
+  async #deletionWorker(observeClaim: (success: boolean) => void): Promise<void> {
     let claims = 0;
     while (claims < this.#policy.maxDeletionClaimsPerWorkerPass) {
       if (this.#stopped) return;
@@ -271,12 +319,18 @@ export class MemoryCoordinator {
           now,
           operations
         });
-      } catch {
+        observeClaim(true);
+      } catch (error) {
+        observeClaim(false);
+        reportFailure("claim", error);
         return;
       }
       if (!claim) return;
       claims += 1;
-      await this.#processDeletion(claim);
+      await runInBackground(() => runWithContext(
+        { job_id: claim.id },
+        () => this.#processDeletion(claim)
+      ));
     }
   }
 
@@ -284,6 +338,8 @@ export class MemoryCoordinator {
     controller: AbortController;
     heartbeat: (now: Date, leaseExpiresAt: Date) => Promise<boolean>;
     lostCode: string;
+    onLostLease: () => void;
+    work: MemoryJobClaim | MemoryDeletionClaim;
   }>): ReturnType<typeof setInterval> {
     let pending = false;
     const timer = setInterval(() => {
@@ -292,16 +348,29 @@ export class MemoryCoordinator {
       let now: Date;
       try {
         now = this.#clock();
-      } catch {
+      } catch (error) {
+        reportFailure("heartbeat", error);
         input.controller.abort(new Error(input.lostCode));
         pending = false;
         return;
       }
-      void input.heartbeat(now, addMilliseconds(now, this.#policy.leaseMs))
+      void memoryPersistence(input.work, "heartbeat", () =>
+        input.heartbeat(now, addMilliseconds(now, this.#policy.leaseMs)), {}, true)
         .then((accepted) => {
-          if (!accepted) input.controller.abort(new Error(input.lostCode));
+          if (this.#activeControllers.has(input.controller)) {
+            this.#failedHeartbeats.delete(input.controller);
+            if (this.#failedHeartbeats.size === 0) reportSubsystemHealthy("memory", "heartbeat");
+          }
+          if (!accepted) {
+            input.onLostLease();
+            input.controller.abort(new Error(input.lostCode));
+          }
         })
-        .catch(() => {
+        .catch((error) => {
+          if (this.#activeControllers.has(input.controller)) {
+            this.#failedHeartbeats.add(input.controller);
+            reportFailure("heartbeat", error);
+          }
           input.controller.abort(new Error(input.lostCode));
         })
         .finally(() => {
@@ -314,6 +383,9 @@ export class MemoryCoordinator {
 
   async #processJob(claim: MemoryJobClaim): Promise<void> {
     const controller = new AbortController();
+    let leaseLost = false;
+    let stage: LifecycleStage = "preflight";
+    memoryAttempt(claim, { stage: claim.recoveredLease ? "recovery" : "claim", outcome: "started" });
     this.#activeControllers.add(controller);
     const heartbeat = this.#startHeartbeat({
       controller,
@@ -322,7 +394,9 @@ export class MemoryCoordinator {
         leaseExpiresAt,
         now
       }),
-      lostCode: "memory_job_lease_lost"
+      lostCode: "memory_job_lease_lost",
+      onLostLease: () => { leaseLost = true; },
+      work: claim
     });
     let currentStage = claim.stage;
     let releaseOwner: (() => void) | null = null;
@@ -343,30 +417,41 @@ export class MemoryCoordinator {
         throw new MemoryCoordinatorError("memory_job_gate_invalid", false);
       }
       if (decision.status !== "READY") {
-        const accepted = await this.#repository.settleJobGate({
+        memoryAttempt(claim, { stage: "preflight", code: decision.errorCode,
+          outcome: decision.status === "WAITING_FOR_CONFIGURATION" ? "waiting"
+            : decision.status === "CANCELLED" ? "cancelled" : "stale" });
+        const accepted = await memoryPersistence(claim, "preflight", () => this.#repository.settleJobGate({
           claim,
           decision,
           now: this.#clock()
-        });
-        if (!accepted) controller.abort(new Error("memory_job_lease_lost"));
+        }));
+        if (!accepted) {
+          leaseLost = true;
+          controller.abort(new Error("memory_job_lease_lost"));
+        }
         return;
       }
+      stage = "process";
       const result = await handler.execute(claim, {
         now: () => this.#clock(),
-        setStage: async (stage) => {
-          if (!safeStage.test(stage)) {
+        setStage: async (requestedStage) => {
+          if (!safeStage.test(requestedStage)) {
             throw new MemoryCoordinatorError("memory_job_stage_invalid", false);
           }
-          const accepted = await this.#repository.setJobStage({
+          stage = "progress";
+          const workStage = memoryStage(requestedStage);
+          const accepted = await memoryPersistence(claim, "progress", () => this.#repository.setJobStage({
             claim,
             now: this.#clock(),
-            stage
-          });
+            stage: requestedStage
+          }), { work_stage: workStage });
           if (!accepted) {
+            leaseLost = true;
             controller.abort(new Error("memory_job_lease_lost"));
             throw new MemoryCoordinatorError("memory_job_lease_lost", false);
           }
-          currentStage = stage;
+          currentStage = requestedStage;
+          stage = workStage;
         },
         signal: controller.signal
       });
@@ -374,28 +459,39 @@ export class MemoryCoordinator {
       if (!validJobResult(result)) {
         throw new MemoryCoordinatorError("memory_job_result_invalid", false);
       }
+      stage = "preflight";
       const commitDecision = await handler.preflight(claim);
       if (!validGateDecision(commitDecision)) {
         throw new MemoryCoordinatorError("memory_job_gate_invalid", false);
       }
       if (commitDecision.status !== "READY") {
-        const accepted = await this.#repository.settleJobGate({
+        memoryAttempt(claim, { stage: "preflight", code: commitDecision.errorCode,
+          outcome: commitDecision.status === "WAITING_FOR_CONFIGURATION" ? "waiting"
+            : commitDecision.status === "CANCELLED" ? "cancelled" : "stale" });
+        const accepted = await memoryPersistence(claim, "preflight", () => this.#repository.settleJobGate({
           claim,
           decision: commitDecision,
           now: this.#clock()
-        });
-        if (!accepted) controller.abort(new Error("memory_job_lease_lost"));
+        }));
+        if (!accepted) {
+          leaseLost = true;
+          controller.abort(new Error("memory_job_lease_lost"));
+        }
         return;
       }
-      const committed = await this.#repository.commitJobSuccess({
+      stage = "complete";
+      const committed = await memoryPersistence(claim, "complete", () => this.#repository.commitJobSuccess({
         acceptedResultHash: result.acceptedResultHash,
         apply: result.apply,
         claim,
         now: this.#clock(),
         operationalCounters: result.operationalCounters,
         stage: result.stage === undefined ? currentStage : result.stage
-      });
-      if (!committed) controller.abort(new Error("memory_job_lease_lost"));
+      }));
+      if (!committed) {
+        leaseLost = true;
+        controller.abort(new Error("memory_job_lease_lost"));
+      }
     } catch (error) {
       if (controller.signal.aborted) return;
       const failure = error instanceof MemoryCoordinatorError
@@ -406,32 +502,35 @@ export class MemoryCoordinator {
         claim.kind,
         this.#policy.maxJobAttempts
       );
-      if (failure.retryable && claim.attemptCount < maxAttempts) {
-        await this.#repository.retryJob({
-          claim,
-          errorCode: failure.code,
-          nextAttemptAt: addMilliseconds(
-            now,
-            memoryRetryDelay(this.#policy.jobRetryDelaysMs, claim.attemptCount)
-          ),
-          now
-        }).catch(() => false);
+      const retry = failure.retryable && claim.attemptCount < maxAttempts;
+      memoryAttempt(claim, { stage, outcome: memoryFailureOutcome(failure.code), code: failure.code,
+        prisma_code: databaseFailureCode(error), action: retry ? "retry" : "fail" });
+      if (retry) {
+        const delay = memoryRetryDelay(this.#policy.jobRetryDelaysMs, claim.attemptCount);
+        const nextAttemptAt = addMilliseconds(now, delay);
+        await memoryPersistence(claim, "retry", () => this.#repository.retryJob({
+          claim, errorCode: failure.code, nextAttemptAt, now
+        }), { action: "retry", code: failure.code, delay_ms: delay, retry_at: nextAttemptAt.toISOString() }).catch(() => false);
       } else {
-        await this.#repository.terminalJob({
-          claim,
-          errorCode: failure.code,
-          now
-        }).catch(() => false);
+        await memoryPersistence(claim, "fail", () => this.#repository.terminalJob({
+          claim, errorCode: failure.code, now
+        }), { action: "fail", code: failure.code }).catch(() => false);
       }
     } finally {
+      if (controller.signal.aborted) memoryAttempt(claim, { stage,
+        outcome: leaseLost ? "lost_lease" : "cancelled", action: "stop" });
       releaseOwner?.();
       clearInterval(heartbeat);
       this.#activeControllers.delete(controller);
+      this.#failedHeartbeats.delete(controller);
     }
   }
 
   async #processDeletion(claim: MemoryDeletionClaim): Promise<void> {
     const controller = new AbortController();
+    let leaseLost = false;
+    let stage: LifecycleStage = "delete";
+    memoryAttempt(claim, { stage: claim.recoveredLease ? "recovery" : "claim", outcome: "started" });
     this.#activeControllers.add(controller);
     const heartbeat = this.#startHeartbeat({
       controller,
@@ -440,7 +539,9 @@ export class MemoryCoordinator {
         leaseExpiresAt,
         now
       }),
-      lostCode: "memory_deletion_lease_lost"
+      lostCode: "memory_deletion_lease_lost",
+      onLostLease: () => { leaseLost = true; },
+      work: claim
     });
     try {
       const handler = this.#registry.deletionHandler(claim.operation);
@@ -455,12 +556,16 @@ export class MemoryCoordinator {
       if (!result || (result.apply !== undefined && typeof result.apply !== "function")) {
         throw new MemoryCoordinatorError("memory_deletion_result_invalid", true);
       }
-      const committed = await this.#repository.commitDeletionSuccess({
+      stage = "complete";
+      const committed = await memoryPersistence(claim, "complete", () => this.#repository.commitDeletionSuccess({
         apply: result.apply,
         claim,
         now: this.#clock()
-      });
-      if (!committed) controller.abort(new Error("memory_deletion_lease_lost"));
+      }));
+      if (!committed) {
+        leaseLost = true;
+        controller.abort(new Error("memory_deletion_lease_lost"));
+      }
     } catch (error) {
       if (controller.signal.aborted) return;
       const failure = error instanceof MemoryCoordinatorError
@@ -475,16 +580,18 @@ export class MemoryCoordinator {
             this.#policy.deletionFastRetryDelaysMs,
             claim.attemptCount
           );
-      await this.#repository.retryDeletion({
-        blocked,
-        claim,
-        errorCode: failure.code,
-        nextAttemptAt: addMilliseconds(now, delay),
-        now
-      }).catch(() => false);
+      memoryAttempt(claim, { stage, outcome: memoryFailureOutcome(failure.code, blocked ? "blocked" : "failed"), code: failure.code,
+        prisma_code: databaseFailureCode(error), action: "retry" });
+      const nextAttemptAt = addMilliseconds(now, delay);
+      await memoryPersistence(claim, "retry", () => this.#repository.retryDeletion({
+        blocked, claim, errorCode: failure.code, nextAttemptAt, now
+      }), { action: "retry", code: failure.code, delay_ms: delay, retry_at: nextAttemptAt.toISOString() }).catch(() => false);
     } finally {
+      if (controller.signal.aborted) memoryAttempt(claim, { stage,
+        outcome: leaseLost ? "lost_lease" : "cancelled", action: "stop" });
       clearInterval(heartbeat);
       this.#activeControllers.delete(controller);
+      this.#failedHeartbeats.delete(controller);
     }
   }
 }

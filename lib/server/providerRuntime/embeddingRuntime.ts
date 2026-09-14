@@ -114,6 +114,12 @@ export function createPrismaEmbeddingRuntime(
     const adapter = createOpenAICompatibleEmbeddingAdapter({
       connection,
       model: configuration,
+      observationIdentity: {
+        adapterKind: configuration.adapterKind,
+        connectionId: credential.connectionId,
+        providerFamily: admitted.provider,
+        providerModelId: credential.providerModelId
+      },
       network: { fetchFn },
       secret: authenticationMode === "none"
         ? null
@@ -231,6 +237,12 @@ export function createAcceptedEmbeddingRuntime(
       const adapter = createOpenAICompatibleEmbeddingAdapter({
         connection: snapshot.connection,
         model: configuration,
+        observationIdentity: {
+          adapterKind: configuration.adapterKind,
+          connectionId: snapshot.connectionId,
+          providerFamily: snapshot.providerFamily,
+          providerModelId: snapshot.providerModelId
+        },
         network: { fetchFn },
         secret: authenticationMode === "none"
           ? null

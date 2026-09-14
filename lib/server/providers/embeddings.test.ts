@@ -13,6 +13,7 @@ import {
   type ProviderModelConfiguration
 } from "./providerConfiguration";
 import { ProviderSafeFetchError } from "./providerSafeFetch";
+import { runWithContext } from "../observability";
 
 const queryTemplate = "Instruct: retrieve relevant passages\nQuery: {text}";
 const openRouterConnection = {
@@ -81,6 +82,31 @@ function errorCode(error: unknown): string | null {
 }
 
 describe("OpenAI-compatible embeddings", () => {
+  it("correlates physical retries with accepted embedding identity and omits input, credentials and upstream IDs", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const fetchFn = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response("PRIVATE_UPSTREAM_ERROR_CANARY", { status: 503 }))
+        .mockResolvedValueOnce(providerResponse([vector(4_096)]));
+      const adapter = createOpenAICompatibleEmbeddingAdapter({
+        connection: openRouterConnection, model: embeddingModel(), secret: "PRIVATE_CREDENTIAL_CANARY",
+        observationIdentity: { providerFamily: "openrouter", adapterKind: "openai_embeddings_compatible", connectionId: "embedding-connection", providerModelId: "embedding-model" },
+        network: { fetchFn, retry: { maxAttempts: 2, sleep: async () => undefined } }
+      });
+      const result = await runWithContext({ trace_id: "e".repeat(32), run_id: "embedding-run", tool_call_id: "embedding-tool", execution_index: 1 }, () =>
+        adapter.embed({ texts: ["PRIVATE_QUERY_CANARY"], mode: "query" }));
+      expect(result.providerRequestCount).toBe(2);
+      const records = writer.mock.calls.flatMap(([chunk]) => { try { return [JSON.parse(String(chunk))]; } catch { return []; } });
+      expect(records.filter((entry) => entry.event === "provider_request")).toMatchObject([
+        { stage: "embedding", attempt: 1, httpStatus: 503, outcome: "failed", trace_id: "e".repeat(32), tool_call_id: "embedding-tool", execution_index: 1, connectionId: "embedding-connection", providerModelId: "embedding-model" },
+        { stage: "embedding", attempt: 2, httpStatus: 200, outcome: "completed", connectionId: "embedding-connection" }
+      ]);
+      expect(records).toContainEqual(expect.objectContaining({ event: "provider_operation", stage: "embedding", outcome: "completed" }));
+      expect(records).toContainEqual(expect.objectContaining({ event: "provider_deadline", effective_timeout_ms: 300_000 }));
+      expect(JSON.stringify(records)).not.toMatch(/PRIVATE_|embedding-request-1|providerRequestRoutes/);
+    } finally { writer.mockRestore(); }
+  });
+
   it("requests full Qwen vectors once, truncates to 1536, normalizes, and captures usage", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => providerResponse([
       vector(4_096),
@@ -539,6 +565,7 @@ describe("OpenAI-compatible embeddings", () => {
 
   it("classifies its own elapsed request deadline explicitly", async () => {
     vi.useFakeTimers();
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
       const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
         const signal = init?.signal;
@@ -562,7 +589,11 @@ describe("OpenAI-compatible embeddings", () => {
       await vi.advanceTimersByTimeAsync(5_000);
 
       await timedOut;
+      const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)));
+      expect(records).toContainEqual(expect.objectContaining({ event: "provider_operation", stage: "embedding",
+        outcome: "failed", reason: "deadline", code: "embedding_request_timed_out" }));
     } finally {
+      writer.mockRestore();
       vi.useRealTimers();
     }
   });

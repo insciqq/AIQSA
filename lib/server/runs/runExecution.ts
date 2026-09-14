@@ -27,6 +27,10 @@ import {
   type ProviderStreamSafetyReport
 } from "../providers/streamSafety";
 import { warnProviderStreamSafetyOnce } from "../providers/streamSafetyObservability";
+import { observedFailure } from "../providers/providerObservability";
+import { logEvent, runWithContext } from "../observability";
+import { withKnowledgeToolDeadline } from "./knowledgeToolDeadline";
+import { logRunPersistence, runDatabaseFailureCode } from "./runObservability";
 import type {
   ProviderAdapter,
   ProviderConversationMessage,
@@ -70,7 +74,6 @@ import {
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
 import {
-  KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS,
   type KnowledgeToolExecutor
 } from "../knowledge/toolExecutor";
 import {
@@ -178,7 +181,10 @@ import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
-import { workspaceToolNameFromNamespaced } from "../workspace/toolCatalog";
+import {
+  normalizeWorkspaceProviderToolName,
+  workspaceToolNameFromNamespaced
+} from "../workspace/toolCatalog";
 
 import { activeRunControllers, runSettlements } from "./activeRunControllerRegistry";
 export { activeRunControllerRegistry, type ActiveRunControllerRegistry } from "./activeRunControllerRegistry";
@@ -580,6 +586,10 @@ async function persistPlanSearchExecution(input: Readonly<{
 }
 
 export function createRunExecutionResponse(input: RunExecutionInput): Response {
+  return runWithContext({ run_id: input.created.runId }, () => createBoundRunExecutionResponse(input));
+}
+
+function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
   const encoder = new TextEncoder();
   const abortController = new AbortController();
   const runId = input.created.runId;
@@ -612,14 +622,20 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      const executionStartedAt = Date.now();
+      let executionStage: "dispatch" | "execution" | "completion" = "dispatch";
+      logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "started" });
       const workspaceTurnController = normalizedRequest.workspace
         ? new AbortController()
         : null;
       const workspaceTurnTimer = workspaceTurnController && normalizedRequest.workspace
         ? setTimeout(
-            () => workspaceTurnController.abort(
-              new WorkspaceRuntimeError("workspace_tool_timeout")
-            ),
+            () => {
+              logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "failed",
+                code: "workspace_tool_timeout", reason: "deadline", abort_source: "workspace_deadline",
+                timeout_ms: normalizedRequest.workspace!.turnTimeoutSeconds * 1_000 });
+              workspaceTurnController.abort(new WorkspaceRuntimeError("workspace_tool_timeout"));
+            },
             normalizedRequest.workspace.turnTimeoutSeconds * 1_000
           )
         : null;
@@ -1101,7 +1117,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           };
           let preflightResult: ToolExecutionResult | null = null;
           try {
-            const admission = await input.knowledgeExecutor.preflight?.(call, executionContext);
+            const admission = await runWithContext({ tool_call_id: claim.call.id, execution_index: claim.call.ordinal },
+              () => input.knowledgeExecutor!.preflight?.(call, executionContext));
             if (admission && admission.kind !== "admitted") {
               preflightResult = admission.result;
             }
@@ -1139,15 +1156,10 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 })
               : null;
             try {
-              const retrievalSignal = AbortSignal.any([
-                signal,
-                AbortSignal.timeout(KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS)
-              ]);
-              result = await input.knowledgeExecutor.execute(
-                call,
-                executionContext,
-                { signal: retrievalSignal }
-              );
+              result = await runWithContext({ tool_call_id: claim.call.id, execution_index: claim.call.ordinal },
+                () => withKnowledgeToolDeadline([signal], (retrievalSignal) => input.knowledgeExecutor!.execute(
+                  call, executionContext, { signal: retrievalSignal }
+                )));
               if (receipt && !(await input.memoryEgress!.completeDispatch(receipt.id))) {
                 throw new Error("memory_egress_receipt_conflict");
               }
@@ -1755,6 +1767,17 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           }
         };
         const outcome = await continueProviderToolLoop({
+          toolObservation(call) {
+            const persisted = persistedCalls.get(call.id);
+            if (!persisted) return undefined;
+            return {
+              tool_call_id: persisted.id, execution_index: persisted.ordinal,
+              tool_kind: searchPlanRouter?.accepts(call.name) ? "search"
+                : isKnowledgeCall(call.name) ? "knowledge"
+                : isWorkspaceCall(call.name) ? "workspace"
+                : isMcpDiscoveryCall(call.name) || resolveMcpRunTool(activeMcpSnapshot, call.name) ? "mcp" : undefined
+            };
+          },
           adapter: egressAdapter,
           afterToolBatch: async ({ round }) => {
             const advanced = await input.repository.advanceToolLoopCallBatch({
@@ -2136,16 +2159,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                     { signal: context.signal }
                   );
                 } else if (isKnowledgeCall(call.name)) {
-                  result = await input.knowledgeExecutor!.execute(
-                    call,
-                    executionContext,
-                    {
-                      signal: AbortSignal.any([
-                        context.signal,
-                        AbortSignal.timeout(KNOWLEDGE_TOOL_EXECUTION_TIMEOUT_MS)
-                      ])
-                    }
-                  );
+                  result = await withKnowledgeToolDeadline([context.signal], (knowledgeSignal) =>
+                    input.knowledgeExecutor!.execute(call, executionContext, { signal: knowledgeSignal }));
                 } else if (workspace && isWorkspaceCall(call.name)) {
                   if (claim.call.workspaceBindingId !== runId) {
                     throw new Error("workspace_run_binding_unavailable");
@@ -2316,6 +2331,9 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             });
           },
           parallelToolCalls: normalizedRequest.modelCapabilities.parallelToolCalls === true,
+          normalizeToolCallName: workspaceTools.length > 0
+            ? normalizeWorkspaceProviderToolName
+            : undefined,
           persistToolBatch: async ({ calls, continuation, round }) => {
             const persisted = await input.repository.persistToolLoopCallBatch({
               calls: calls.map((call, ordinal) => {
@@ -2605,6 +2623,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           );
         }
 
+        executionStage = "execution";
         const hasClientSearch = clientToolsEnabled && normalizedRequest.searchPlan.options.some((option) =>
           option.adapterKind === "provider_model_client");
         const hasClientKnowledge = !groundedKnowledgeAnswer && clientToolsEnabled &&
@@ -2735,6 +2754,7 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
             request: lastSessionRequest
           }) }
         } as const;
+        executionStage = "completion";
         const finalization = await finalizeRunCompletion({
           outputEvents: [contextStatusEvent],
           ...(knowledgeAnswerExecution
@@ -2756,6 +2776,8 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
           await persistReportedUsageForIncompleteRun().catch(() => undefined);
           return;
         }
+        logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "completed",
+          duration_ms: Math.max(0, Date.now() - executionStartedAt) });
 
         emitTransient(controller, encoder, contextStatusEvent);
 
@@ -2796,7 +2818,20 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
       } catch (error) {
         const workspaceTurnTimedOut = workspaceTurnController?.signal.aborted === true &&
           !abortController.signal.aborted;
-        if (abortController.signal.aborted || isAbortError(error) && !workspaceTurnTimedOut) {
+        const cancelled = abortController.signal.aborted || isAbortError(error) && !workspaceTurnTimedOut;
+        const originalFailure = observedFailure(workspaceTurnTimedOut ? workspaceTurnController.signal.reason : error,
+          abortController.signal);
+        // Record the original cause before Workspace/usage/token settlement can
+        // itself fail. HTTP 200 and a provider return are not terminal proof.
+        logEvent("run_execution", {
+          run_id: runId, stage: executionStage, outcome: cancelled ? "cancelled" : "failed",
+          duration_ms: Math.max(0, Date.now() - executionStartedAt),
+          code: originalFailure.code, reason: cancelled ? "cancelled" : originalFailure.reason,
+          abort_source: abortController.signal.aborted ? "stop" : workspaceTurnTimedOut ? "workspace_deadline"
+            : originalFailure.abort_source === "provider_deadline" ? "provider_deadline" : undefined,
+          timeout_ms: originalFailure.timeout_ms, prisma_code: runDatabaseFailureCode(error)
+        });
+        if (cancelled) {
           await input.repository.cancelPendingToolLoopCalls({ runId, userId: input.userId }).catch(() => undefined);
           await settleWorkspace("cancelled");
           await tokenBuffer.flush().catch(() => undefined);
@@ -2881,24 +2916,32 @@ export function createRunExecutionResponse(input: RunExecutionInput): Response {
                 : failure instanceof Error ? failure.message : "Provider stream failed"
             };
         if (streamSafetyReport) {
+          const snapshot = input.prepared.providerAdmissionPlan.answer.snapshot;
           warnProviderStreamSafetyOnce(failure, {
-            adapterKind: "direct",
-            connectionId: "unbound",
-            providerFamily: normalizedRequest.provider,
-            providerModelId: "unbound"
+            adapterKind: snapshot.model.adapterKind,
+            connectionId: snapshot.connectionId,
+            providerFamily: snapshot.providerFamily,
+            providerModelId: snapshot.providerModelId
           });
         }
-        const failed = await input.repository.failRun(
-          runId,
-          input.created.assistantMessageId,
-          payload,
-          safetyCode || deadlineExceeded || knowledgeAnswerAttempted || routingCode ||
-            isToolSynthesisFailure(failureCode) ||
-            isMcpAutoDiscoveryFailureCode(failureCode) ||
-            failureCode === "memory_answer_model_tools_retired"
-            ? { recoveryTerminal: true }
-            : undefined
-        );
+        let failed: boolean;
+        try {
+          failed = await input.repository.failRun(
+            runId,
+            input.created.assistantMessageId,
+            payload,
+            safetyCode || deadlineExceeded || knowledgeAnswerAttempted || routingCode ||
+              isToolSynthesisFailure(failureCode) ||
+              isMcpAutoDiscoveryFailureCode(failureCode) ||
+              failureCode === "memory_answer_model_tools_retired"
+              ? { recoveryTerminal: true }
+              : undefined
+          );
+        } catch (settlementError) {
+          logRunPersistence(runId, "fail", "unconfirmed", settlementError);
+          return;
+        }
+        logRunPersistence(runId, "fail", failed ? "confirmed" : "not_applied");
         await persistReportedUsageForIncompleteRun().catch(() => undefined);
         if (failed) {
           emitTransient(controller, encoder, {

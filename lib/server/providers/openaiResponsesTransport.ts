@@ -1,3 +1,4 @@
+import { observeJsonParse } from "./providerObservability";
 import { providerResponseFailure } from "./responseFailure";
 import {
   ProviderResponseTooLargeError,
@@ -56,7 +57,7 @@ async function parseOpenAIJsonResponse(
   const text = await readBoundedResponseText(response, { signal });
   let parsed: unknown;
   try {
-    parsed = text ? JSON.parse(text) : {};
+    parsed = observeJsonParse(response, () => text ? JSON.parse(text) : {});
   } catch {
     throw new Error("openai_response_invalid_json");
   }
@@ -76,7 +77,7 @@ async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Pr
   try {
     const text = await readBoundedResponseText(response, { signal });
     try {
-      const parsed: unknown = JSON.parse(text);
+      const parsed: unknown = observeJsonParse(response, () => JSON.parse(text));
       if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
         const failure = providerResponseFailure("provider_response_failed", parsed as Record<string, unknown>);
         failureCode = "code" in failure && typeof failure.code === "string" ? failure.code : undefined;

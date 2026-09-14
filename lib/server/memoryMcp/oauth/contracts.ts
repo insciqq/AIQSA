@@ -283,7 +283,9 @@ export function validClientIdentifierUrl(
     return false;
   }
   if (url.protocol === "https:") return true;
-  return allowLoopbackHttp && url.protocol === "http:" && isLoopbackHostname(url.hostname);
+  return url.protocol === "http:" && (
+    allowLoopbackHttp || !isLoopbackHostname(url.hostname)
+  );
 }
 
 export function validRedirectUri(
@@ -292,9 +294,8 @@ export function validRedirectUri(
 ): boolean {
   const url = parsedUrl(value);
   if (!url || !hasSafeUrlEnvelope(url)) return false;
-  if (applicationType === "WEB") return url.protocol === "https:";
-  if (url.protocol === "https:") return true;
-  if (url.protocol === "http:") return isLoopbackHostname(url.hostname);
+  if (url.protocol === "https:" || url.protocol === "http:") return true;
+  if (applicationType === "WEB") return false;
   return /^[a-z][a-z0-9+.-]*:$/u.test(url.protocol) &&
     !new Set(["data:", "file:", "ftp:", "javascript:"]).has(url.protocol);
 }
@@ -328,18 +329,19 @@ export function registeredRedirectUriMatches(input: Readonly<{
     presented.search === registered.search;
 }
 
-function validClientUri(value: string | undefined, allowLoopbackHttp: boolean): boolean {
+function validClientUri(value: string | undefined): boolean {
   if (value === undefined) return true;
   const url = parsedUrl(value);
   if (!url || !hasSafeUrlEnvelope(url)) return false;
-  return url.protocol === "https:" ||
-    allowLoopbackHttp && url.protocol === "http:" && isLoopbackHostname(url.hostname);
+  return url.protocol === "https:" || url.protocol === "http:";
 }
 
 function inferredApplicationType(redirectUris: readonly string[]): "NATIVE" | "WEB" {
   return redirectUris.some((value) => {
     const url = parsedUrl(value);
-    return url?.protocol !== "https:" || isLoopbackHostname(url.hostname);
+    if (!url) return true;
+    return url.protocol !== "https:" && url.protocol !== "http:" ||
+      isLoopbackHostname(url.hostname);
   }) ? "NATIVE" : "WEB";
 }
 
@@ -358,7 +360,7 @@ function normalizedClientMetadata(input: Readonly<{
     ? decoded.data.application_type === "native" ? "NATIVE" : "WEB"
     : inferredApplicationType(decoded.data.redirect_uris);
   if (!decoded.data.redirect_uris.every((uri) => validRedirectUri(uri, applicationType)) ||
-    !validClientUri(decoded.data.client_uri, input.allowLoopbackHttp)) {
+    !validClientUri(decoded.data.client_uri)) {
     return null;
   }
   const clientIdentifierUrl = parsedUrl(input.clientId);

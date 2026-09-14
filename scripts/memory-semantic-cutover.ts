@@ -1,3 +1,5 @@
+import "./worker-bootstrap.cjs";
+import { logEvent } from "../lib/server/observability";
 import { prisma } from "../lib/server/prisma";
 import {
   decideMemorySemanticCutover,
@@ -43,9 +45,7 @@ async function main(): Promise<void> {
   const expectedArguments = process.argv.slice(2).every((value) =>
     value.startsWith("--disposition=") || value.startsWith("--window-hours="));
   if (!selectedDisposition || !hours || !expectedArguments) {
-    console.error(
-      "AIQSA Memory semantic cutover blocked: memory_cutover_arguments_invalid"
-    );
+    logEvent("runtime_lifecycle", { subsystem: "memory", stage: "preflight", outcome: "failed", code: "memory_cutover_arguments_invalid", action: "stop" });
     process.exitCode = 2;
     return;
   }
@@ -61,9 +61,7 @@ async function main(): Promise<void> {
 }
 
 void main().catch(() => {
-  console.error(
-    "AIQSA Memory semantic cutover blocked: memory_cutover_inventory_unavailable"
-  );
+  logEvent("runtime_lifecycle", { subsystem: "memory", stage: "preflight", outcome: "failed", code: "memory_cutover_inventory_unavailable", action: "stop" });
   process.exitCode = 1;
 }).finally(async () => {
   await prisma.$disconnect().catch(() => undefined);

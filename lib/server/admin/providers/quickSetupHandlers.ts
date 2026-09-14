@@ -1,4 +1,6 @@
 import { setupProgressResponse } from "./setupProgressResponse";
+import { logEvent, type LifecycleStage } from "../../observability";
+import { databaseFailureCode } from "../../observability/databaseFailure";
 import {
   ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS,
   type AdminProviderQuickSetupConnectionOverrides,
@@ -108,15 +110,20 @@ function serviceError(error: AdminProviderQuickSetupServiceError): Response {
   return errorJson(error.code, status);
 }
 
-async function safely(operation: () => Promise<Response>): Promise<Response> {
+async function safely(operation: () => Promise<Response>, stage: LifecycleStage = "publish"): Promise<Response> {
   try {
     return await operation();
   } catch (error) {
-    if (error instanceof AdminProviderQuickSetupServiceError) return serviceError(error);
+    if (error instanceof AdminProviderQuickSetupServiceError) {
+      const response = serviceError(error);
+      logEvent("service_operation", { subsystem: "admin", stage, code: error.code, httpStatus: response.status,
+        outcome: response.status === 422 ? "failed" : "skipped" });
+      return response;
+    }
     if (error instanceof ProviderConfigurationError) {
       return errorJson("provider_configuration_invalid", 400);
     }
-    console.error("provider_quick_setup_failed");
+    logEvent("service_operation", { subsystem: "admin", stage, outcome: "failed", code: "provider_quick_setup_failed", prisma_code: databaseFailureCode(error) });
     return errorJson("provider_quick_setup_failed", 500);
   }
 }
@@ -127,7 +134,7 @@ export function createAdminProviderQuickSetupSnapshotHandler(
   return async function GET(request: Request): Promise<Response> {
     const auth = await requireAdmin(request, deps);
     if (auth.response || !auth.actor) return auth.response ?? errorJson("unauthorized", 401);
-    return safely(async () => Response.json(await deps.service.getSnapshot(auth.actor)));
+    return safely(async () => Response.json(await deps.service.getSnapshot(auth.actor)), "read");
   };
 }
 
@@ -182,12 +189,16 @@ export function createAdminProviderQuickSetupMutationHandler(
       secret,
       ...(selectedModel ? { selectedModel } : {})
     };
-    return setupProgressResponse(request, (signal, onProgress) => safely(async () =>
-      Response.json(await deps.service.setup({
+    return setupProgressResponse(request, (signal, onProgress) => safely(async () => {
+      const result = await deps.service.setup({
         actor: auth.actor,
         onProgress,
         request: quickSetupRequest,
         signal
-      }))));
+      });
+      logEvent("service_operation", { subsystem: "admin", stage: "publish",
+        outcome: result.outcome === "cancelled" ? "cancelled" : result.outcome === "partial" ? "degraded" : "completed" });
+      return Response.json(result);
+    }));
   };
 }
