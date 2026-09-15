@@ -1,5 +1,6 @@
 import type { AnswerSoundId } from "@/lib/contracts/answerSound";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
+import type { ComposerSessionKey } from "@/components/app-shell/composerSessionStore";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
 import type { AssistantLibraryView } from "@/components/assistants/libraryViewContracts";
@@ -62,7 +63,7 @@ export type ShellWorkspacePaneState = {
 };
 
 export type ShellWorkspacePaneActions = {
-  openContinuedChat?(chat: ChatDetail): void;
+  openContinuedChat?(chat: ChatDetail, sourceKey: ComposerSessionKey): Promise<boolean>;
   activateChat(chat: WorkspaceChatSummary): void;
   cancelChatEdit(): void;
   cancelFolderEdit(): void;

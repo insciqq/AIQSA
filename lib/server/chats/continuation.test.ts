@@ -30,7 +30,9 @@ function fixture(transcript = "USER: Plan a trip.\nASSISTANT: Budget is 500.") {
 describe("chat continuation service", () => {
   it("uses the exact System Model, only transcript data, no tools, and records reported usage", async () => {
     const f = fixture();
-    expect(await createChatContinuationService(f)(input)).toMatchObject({ status: "complete", chatId: "new" });
+    const modelSelection = { provider: "provider", modelId: "chosen" };
+    expect(await createChatContinuationService(f)({ ...input, modelSelection })).toMatchObject({ status: "complete", chatId: "new" });
+    expect(f.repository.claim).toHaveBeenCalledWith(await f.repository.loadSource(), input.requestId, modelSelection);
     const [role, request] = f.execute.mock.calls[0]!;
     expect(role).toMatchObject({ snapshot: { providerFamily: "fake" } });
     expect(request.userPrompt).toBe((await f.repository.loadSource()).transcript);

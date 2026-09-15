@@ -66,6 +66,10 @@ export function rememberSessionExpiredDraft(input: StoredSessionExpiredDraft): v
   }
 }
 
+export function clearSessionExpiredDraftForSession(sessionKey: ComposerSessionKey): void {
+  if (storedSessionExpiredDraft()?.sessionKey === sessionKey) clearSessionExpiredDraft();
+}
+
 export function storedSessionExpiredDraft(
   now = Date.now()
 ): StoredSessionExpiredDraft | null {

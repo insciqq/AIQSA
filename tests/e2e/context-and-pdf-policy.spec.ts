@@ -129,7 +129,8 @@ for (const viewport of [
     await expect(trigger.locator(".v2-chat-context-track")).not.toHaveAttribute("stroke-dasharray");
     await trigger.click();
     await expect(dialog).toContainText("4 earlier messages are still in this chat");
-    await expect(dialog).toContainText("project files are copied into the new chat. Attachments are not carried over.");
+    await expect(dialog).toContainText("Your composer settings, unsent text and attached files come along.");
+    await expect(dialog).toContainText("Earlier messages and their attachments stay in this chat.");
     expect(continuations).toBe(0);
     await dialog.getByRole("button", { name: "Stay here" }).click();
     await trigger.click();
