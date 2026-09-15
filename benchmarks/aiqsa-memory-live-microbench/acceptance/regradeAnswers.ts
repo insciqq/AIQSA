@@ -6,13 +6,56 @@ import { loadEnvConfig } from "@next/env";
 import { textFromContentBlocks } from "../../../lib/domain/modelRunEvents";
 import { currentLongMemEvalQualificationRevision } from "../../longmemeval/qualificationRevision";
 import { assertLiveBaseUrl, assertLiveDatabaseUrl, resolveLiveOutputDirectory } from "../contract";
-import { ACCEPTANCE_ACK, ACCEPTANCE_CORPUS_SHA256, corpusFingerprint, corpusSchema, safeCode, summarizeResults, type ScenarioResult } from "./contract";
+import { ACCEPTANCE_ACK, ACCEPTANCE_ANSWER_REGRADE_PROTOCOL_VERSION, ACCEPTANCE_CORPUS_SHA256, ACCEPTANCE_SOURCE_AWARE_JUDGE_PROTOCOL_VERSION, corpusFingerprint, corpusSchema, safeCode, sourceDialogueForScenario, summarizeResults, type JudgeSourceContext, type Scenario, type ScenarioResult } from "./contract";
 import { ANSWER_JUDGE_SYSTEM, judgeAnswer } from "./answerGrading";
 import { ACTOR_JUDGE_INSTRUCTION } from "./actorGrading";
+import type { AcceptanceDriver } from "./driver";
 
-type StoredProbe = { id: string; status: string; userMessage: { content: unknown };
+export type StoredProbe = { id: string; status: string; userMessage: { content: unknown };
   assistantMessage: { status: string; content: unknown } | null };
 const plainText = (value: unknown) => textFromContentBlocks(value as { blocks?: unknown[] }).trim();
+
+export async function storedSourceContext(
+  driver: AcceptanceDriver,
+  scenario: Scenario,
+  untilOrdinal: number,
+  actor: "owner" | "other",
+  userId: string
+): Promise<JudgeSourceContext> {
+  const timestamps = new Map<number, string>();
+  const sourceSteps = scenario.steps.flatMap((step, ordinal) => ordinal >= untilOrdinal ||
+    step.action !== "message" || (step.actor ?? "owner") !== actor ? [] : [[ordinal, step] as const]);
+  if (!sourceSteps.length) return { messages: [] };
+  for (const [ordinal, step] of sourceSteps) {
+    const runs = await driver.prisma.modelRun.findMany({
+      where: { userId, chat: { memoryMode: step.temporary ? "TEMPORARY" : "NORMAL" } },
+      select: { userMessage: { select: { content: true, createdAt: true } } }
+    });
+    const sameSourceOrdinal = sourceSteps.filter(([sourceOrdinal, sourceStep]) =>
+      sourceOrdinal <= ordinal && sourceStep.temporary === step.temporary && sourceStep.content === step.content
+    ).length - 1;
+    const matching = runs.filter((run) => plainText(run.userMessage.content) === step.content)
+      .sort((left, right) => left.userMessage.createdAt.getTime() - right.userMessage.createdAt.getTime());
+    const sourceRun = matching[sameSourceOrdinal];
+    if (sourceRun) timestamps.set(ordinal, sourceRun.userMessage.createdAt.toISOString());
+  }
+  return { messages: sourceDialogueForScenario(scenario, untilOrdinal, actor, timestamps) };
+}
+
+export async function storedDeliveredEvidence(
+  driver: AcceptanceDriver,
+  userId: string,
+  runId: string
+): Promise<string[]> {
+  const binding = await driver.prisma.modelRunMemoryBinding.findUnique({
+    where: { modelRunId: runId }, select: { id: true }
+  });
+  if (!binding) return [];
+  const items = await driver.prisma.modelRunMemoryItem.findMany({
+    where: { bindingId: binding.id, userId }, orderBy: { ordinal: "asc" }, select: { includedText: true }
+  });
+  return items.map((item) => item.includedText);
+}
 
 export function uniqueStoredProbeAnswer(question: string, runs: readonly StoredProbe[]) {
   const matching = runs.filter((run) => plainText(run.userMessage.content) === question.trim());
@@ -69,15 +112,19 @@ async function main() {
     scenarios: Array<{ id: string; actors: Array<{ actor: string; userId: string }> }>;
   };
   const { AcceptanceDriver } = await import("./driver");
-  const { calibrateJudge } = await import("./evaluate");
+  const { calibrateSourceAwareJudge } = await import("./evaluate");
   const driver = new AcceptanceDriver(baseUrl, database.toString());
   const results = structuredClone(prior.results);
   let outputCreated = false;
-  const work: Array<{ scenario: (typeof selected)[number]; ordinal: number; answer: string; runId: string }> = [];
-  const regraded: Array<{ id: string; ordinal: number; runId: string; answerSha256: string }> = [];
+  const work: Array<{ scenario: (typeof selected)[number]; ordinal: number; answer: string; runId: string;
+    sourceContext: JudgeSourceContext }> = [];
+  const regraded: Array<{ id: string; ordinal: number; runId: string; answerSha256: string;
+    deliveredEvidence: string[]; sourceDialogue: JudgeSourceContext["messages"] }> = [];
   let metadata: Record<string, unknown> = { sourceReportSha256: digest(priorBytes),
     answerJudgePromptSha256: digest(ANSWER_JUDGE_SYSTEM), startedAt: new Date().toISOString(), complete: false,
     actorJudgeInstructionSha256: digest(ACTOR_JUDGE_INSTRUCTION),
+    answerRegradeProtocolVersion: ACCEPTANCE_ANSWER_REGRADE_PROTOCOL_VERSION,
+    sourceAwareJudgeProtocolVersion: ACCEPTANCE_SOURCE_AWARE_JUDGE_PROTOCOL_VERSION,
     sourceRevision: await currentLongMemEvalQualificationRevision(resolve(root, "../../.."),
       ["app", "components", "lib", "prisma", "benchmarks", "package.json", "package-lock.json"]),
     reusedOriginalAnswers: true, reusedOriginalFactVerdicts: true };
@@ -107,26 +154,35 @@ async function main() {
           select: { id: true, status: true, userMessage: { select: { content: true } },
             assistantMessage: { select: { content: true, status: true } } }
         });
-        work.push({ scenario, ordinal: check.ordinal, ...uniqueStoredProbeAnswer(step.question, runs) });
+        const stored = uniqueStoredProbeAnswer(step.question, runs);
+        const sourceContext = await storedSourceContext(driver, scenario, check.ordinal,
+          owner.actor as "owner" | "other", owner.userId);
+        const deliveredEvidence = await storedDeliveredEvidence(driver, owner.userId, stored.runId);
+        work.push({ scenario, ordinal: check.ordinal, ...stored, sourceContext: {
+          ...sourceContext,
+          deliveredEvidence
+        } });
       }
     }
     await mkdir(output, { mode: 0o700 });
     outputCreated = true;
     const identity = await driver.identity("answer-regrade.judge", false);
-    const calibration = await calibrateJudge(driver, identity, emit);
+    const calibration = await calibrateSourceAwareJudge(driver, identity, emit);
     metadata = { ...metadata, calibration };
     await save();
     if (calibration.correct !== calibration.total) throw new Error("memory_acceptance_judge_calibration_failed");
     for (const item of work) {
       const step = item.scenario.steps[item.ordinal];
       if (step?.action !== "check") throw new Error("memory_acceptance_regrade_step_invalid");
-      const verdict = await judgeAnswer(driver, identity, step, [item.answer]);
+      const verdict = await judgeAnswer(driver, identity, step, [item.answer], item.sourceContext);
       const result = results.find(({ id }) => id === item.scenario.id)!;
       const index = result.checks.findIndex((check) => check.ordinal === item.ordinal && check.surface === "answer");
       const checks = [...result.checks];
       checks[index] = { ...checks[index]!, passed: verdict.passed, reason: verdict.reason };
       results[results.indexOf(result)] = { ...result, checks };
-      regraded.push({ id: item.scenario.id, ordinal: item.ordinal, runId: item.runId, answerSha256: digest(item.answer) });
+      regraded.push({ id: item.scenario.id, ordinal: item.ordinal, runId: item.runId,
+        answerSha256: digest(item.answer), deliveredEvidence: [...(item.sourceContext.deliveredEvidence ?? [])],
+        sourceDialogue: item.sourceContext.messages });
       await save();
       emit({ event: "answer_regraded", done: regraded.length, total: work.length });
     }

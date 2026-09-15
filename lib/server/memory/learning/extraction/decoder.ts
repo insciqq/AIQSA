@@ -74,7 +74,9 @@ const speechActs = new Set(["ASSERTION", "COMMAND", "QUESTION", "OTHER", "UNKNOW
 const assertionStatuses = new Set([
   "ASSERTED", "CONDITIONAL", "HYPOTHETICAL", "QUOTED", "UNKNOWN"
 ]);
-const subjectScopes = new Set(["CURRENT_USER", "THIRD_PARTY", "ASSISTANT", "UNKNOWN"]);
+const subjectScopes = new Set([
+  "CURRENT_USER", "USER_RELATIONSHIP_CONTEXT", "THIRD_PARTY", "ASSISTANT", "UNKNOWN"
+]);
 const polarities = new Set(["AFFIRMED", "NEGATED", "CORRECTION", "RETRACTION", "UNKNOWN"]);
 const temporalPerspectives = new Set([
   "CURRENT", "FORMER", "FUTURE", "EVENT", "INTERVAL", "UNKNOWN"
@@ -553,27 +555,47 @@ function parseDependencies(input: Readonly<{
     input.frame.changeIntent === "CORRECTION";
   const coreference = input.entities.some((entity) =>
     entity.mentionKind === "PRONOMINAL" || entity.mentionKind === "ELLIPSIS");
-  // A correction may be fully grounded in the direct target. Unresolved
-  // references still need one exact context dependency and semantic review.
-  if ((coreference && refs.length !== 1) || (correction && refs.length > 1)) {
+  const coreferenceRefs = new Set(input.entities.flatMap((entity) =>
+    (entity.mentionKind === "PRONOMINAL" || entity.mentionKind === "ELLIPSIS") &&
+      entity.contextRef !== null ? [entity.contextRef] : []));
+  // Structural subject/qualifier context supports the candidate without
+  // proposing another correction target, even if the provider repeats that
+  // ref in its declarations. Preserve it while keeping the correction source
+  // singular; without a separate source, retain the structural fallback.
+  const separateCorrectionRefs = proposedRefs.filter((ref) =>
+    !input.requiredRefs.includes(ref));
+  const correctionRefs = correction
+    ? separateCorrectionRefs.length > 0
+      ? separateCorrectionRefs
+      : proposedRefs.length > 0 ? proposedRefs : input.requiredRefs
+    : [];
+  // A declared message source is not another possible pronoun antecedent.
+  // Keep exactly one structural antecedent while retaining all source fences.
+  // A correction may also be fully grounded in the direct target.
+  if ((coreference && coreferenceRefs.size !== 1) || correctionRefs.length > 1) {
     fail("memory_fact_dependency_unsupported");
   }
   return refs.map((ref) => {
     const context = source.contextRefs.find((candidate) => candidate.ref === ref);
     if (!context) fail("memory_fact_dependency_unsupported");
-    const dependencyKind: MemoryFactCandidateDependency["dependencyKind"] = correction
+    const dependencyKind: MemoryFactCandidateDependency["dependencyKind"] =
+      correctionRefs.includes(ref)
       ? "CORRECTION_TARGET"
-      : coreference
+      : coreferenceRefs.has(ref)
         ? "COREFERENCE_ANTECEDENT"
-        : input.temporal.rawExpression !== null
-          ? "TEMPORAL_CONTEXT"
-          : "RELATION_CONTEXT";
+        : correction
+          ? "RELATION_CONTEXT"
+          : input.temporal.rawExpression !== null
+            ? "TEMPORAL_CONTEXT"
+            : "RELATION_CONTEXT";
     return { dependencyKind, ref, source: context.source };
   });
 }
 
 function frameCanEnterPacket(frame: MemorySemanticFrame): boolean {
-  if (frame.subjectScope !== "CURRENT_USER" && frame.subjectScope !== "UNKNOWN") {
+  if (frame.subjectScope !== "CURRENT_USER" &&
+    frame.subjectScope !== "USER_RELATIONSHIP_CONTEXT" &&
+    frame.subjectScope !== "UNKNOWN") {
     return false;
   }
   if (frame.assertionStatus !== "ASSERTED" && frame.assertionStatus !== "UNKNOWN") {
@@ -583,7 +605,19 @@ function frameCanEnterPacket(frame: MemorySemanticFrame): boolean {
     frame.speechAct === "COMMAND" && frame.memoryDirective === "EXPLICIT_REMEMBER"
   )) return false;
   return frame.polarity === "AFFIRMED" || frame.polarity === "CORRECTION" ||
-    frame.polarity === "NEGATED" || frame.polarity === "UNKNOWN";
+    frame.polarity === "NEGATED" || frame.polarity === "RETRACTION" ||
+    frame.polarity === "UNKNOWN";
+}
+
+function groundedRelationshipSubject(
+  entities: readonly MemoryFactCandidateEntity[]
+): boolean {
+  return entities.some((entity) => entity.role === "SUBJECT" && (
+      ((entity.mentionKind === "NAMED" || entity.mentionKind === "NOMINAL") &&
+        entity.mention !== null) ||
+      ((entity.mentionKind === "PRONOMINAL" || entity.mentionKind === "ELLIPSIS") &&
+        entity.contextRef !== null && entity.contextEntityId !== null)
+    ));
 }
 
 function resolvedLocalDate(instant: string, timeZone: string): string {
@@ -626,9 +660,6 @@ function decodeObservation(
     memoryExplicitStatementContainsSecret(quote)) fail("memory_fact_secret");
   const frame = parseSemanticFrame(value.semantic_frame);
   if (!frameCanEnterPacket(frame)) fail("memory_fact_subject_unsupported");
-  if (frame.polarity === "RETRACTION" || frame.changeIntent === "RETRACTION") {
-    fail("memory_fact_retraction_requires_relation");
-  }
   const confidenceBand = enumValue<NonNullable<
     MemoryExtractedCandidate["confidenceBand"]
   >>(value.confidence_band, confidenceBands, 16);
@@ -711,7 +742,9 @@ function decodeObservation(
     frame.changeIntent === "CORRECTION";
   if (confidenceBand === "MEDIUM" && (
     frame.speechAct !== "ASSERTION" || frame.assertionStatus !== "ASSERTED" ||
-    frame.subjectScope !== "CURRENT_USER" || frame.polarity !== "AFFIRMED" ||
+    (frame.subjectScope !== "CURRENT_USER" &&
+      frame.subjectScope !== "USER_RELATIONSHIP_CONTEXT") ||
+    frame.polarity !== "AFFIRMED" ||
     frame.changeIntent !== "NONE" || frame.memoryDirective !== "NONE" ||
     frame.temporalPerspective === "UNKNOWN" || correction ||
     resolvedIdentity.identityKind !== "PROPOSITION"
@@ -720,6 +753,11 @@ function decodeObservation(
     resolvedIdentity.identityKind !== "PROPOSITION") {
     fail("memory_fact_entity_unsupported");
   }
+  if (frame.subjectScope === "USER_RELATIONSHIP_CONTEXT" && (
+    rawIdentity.mode !== "PROPOSITION" ||
+    resolvedIdentity.identityKind !== "PROPOSITION" ||
+    !groundedRelationshipSubject(parsedEntities.entities)
+  )) fail("memory_fact_entity_unsupported");
   const supportingInput = {
     expectedAt: temporal.expectedAt,
     occurredAt: temporal.occurredAt,

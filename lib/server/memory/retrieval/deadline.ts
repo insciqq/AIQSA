@@ -16,6 +16,12 @@ export const MEMORY_QUERY_RESOLVER_OPTIONAL_MAXIMUM_MS = 20_000;
 export const MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS = 2_000;
 export const MEMORY_RERANK_OPTIONAL_MAXIMUM_MS = 4_000;
 export const MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS = 20_000;
+// A timed-out control decision must still leave enough of the shared admission
+// envelope for the two authoritative local expansion passes plus synchronous
+// packing and attachment. The provider result is optional; the fresh rejoin is
+// not.
+export const MEMORY_CONTROL_READ_RESERVE_MS =
+  MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS * 2 + 1_000;
 
 const MEMORY_ADMISSION_DEADLINE_REASON = Object.freeze({
   code: "memory_admission_deadline_exceeded"
@@ -39,7 +45,7 @@ export type OptionalMemoryUtilityRole =
 const optionalUtilityBudget = Object.freeze({
   CONTROL: {
     maximumMs: MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
-    reserveMs: 0
+    reserveMs: MEMORY_CONTROL_READ_RESERVE_MS
   },
   QUERY_EMBED: {
     maximumMs: MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS,
@@ -155,10 +161,29 @@ export async function runOptionalMemoryUtility<T>(
       }), timeoutMs)
     : null;
   try {
-    // Governed utilities own their binding lifecycle and settle it before
-    // returning an unavailable result. Await that settlement after
-    // cancellation instead of racing ahead with a pending binding.
-    return await operation(controller.signal);
+    const pending = operation(controller.signal);
+    if (role !== "CONTROL") return await pending;
+    // MEMORY_CONTROL is read-only. Its service owns durable binding settlement
+    // and discards a late provider result after cancellation. Stop awaiting a
+    // non-cooperative adapter here as well, so the result can never gain action
+    // authority after its reserved read budget begins. Explicit handlers keep
+    // late resolution/rejection observed without a bare Promise.race.
+    return await new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const finish = (settle: () => void) => {
+        if (settled) return;
+        settled = true;
+        controller.signal.removeEventListener("abort", onAbort);
+        settle();
+      };
+      const onAbort = () => finish(() => reject(abortReason(controller.signal)));
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+      pending.then(
+        (value) => finish(() => resolve(value)),
+        (error) => finish(() => reject(error))
+      );
+      if (controller.signal.aborted) onAbort();
+    });
   } finally {
     if (timeout) clearTimeout(timeout);
     deadline.signal.removeEventListener("abort", forwardAbort);

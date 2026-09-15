@@ -835,6 +835,83 @@ describe("Prisma Memory entity provenance", () => {
     }
   });
 
+  it.each(["OBJECT", "MENTION"] as const)(
+    "exposes only a grounded unique object antecedent, retaining owner/source fences for %s",
+    async (role) => {
+      const userId = await createOwner("object-context");
+      const otherUserId = await createOwner("other-object-context");
+      try {
+        const quote = "I adopted a cat named Willow.";
+        const object: MemoryFactCandidateEntity = {
+          ...entityCandidate({ canonicalLabel: "Willow", entityType: "OTHER", mention: "Willow" }),
+          qualifiers: { brand: null, model: null }, role
+        };
+        const fact = await createAutomaticFactWithSupports(userId, [quote]);
+        const foreign = await createAutomaticFactWithSupports(otherUserId, [quote]);
+        await attach(userId, fact, quote, object);
+        await attach(otherUserId, foreign, quote, object);
+        const entity = await prisma.memoryEntity.findFirstOrThrow({ where: { userId } });
+        const context = () => prisma.$transaction((tx) =>
+          loadMemoryFactContextRefs(tx, { messages: [], userId }));
+        await expect(context()).resolves.toEqual([
+          expect.objectContaining({
+            aliases: role === "OBJECT" ? ["Willow"] : [],
+            entityId: role === "OBJECT" ? entity.id : null,
+            source: expect.objectContaining({ factVersionId: fact.versionId })
+          })
+        ]);
+        const source = fact.sources[0]!;
+        await prisma.memorySuppression.create({
+          data: {
+            deletionGeneration: 0,
+            fingerprintKeyVersion: "memory-entity-test-v1",
+            normalizationVersion: "memory-search-normalization-v1",
+            scope: "SOURCE_MESSAGE",
+            sourceBranchGeneration: source.branchGeneration,
+            sourceChatId: source.chatId,
+            sourceMessageId: source.messageId,
+            userId
+          }
+        });
+        await expect(context()).resolves.toEqual([]);
+      } finally {
+        await cleanupOwner(userId);
+        await cleanupOwner(otherUserId);
+      }
+    }
+  );
+
+  it.each([false, true])(
+    "keeps object antecedent ambiguity separate from subject priority: subject=%s",
+    async (hasSubject) => {
+      const userId = await createOwner("object-context-ambiguity");
+      try {
+        const quote = "My pet Willow plays beside Clover.";
+        const fact = await createAutomaticFactWithSupports(userId, [quote]);
+        for (const name of ["Willow", "Clover"]) {
+          await attach(userId, fact, quote, {
+            ...entityCandidate({ canonicalLabel: name, entityType: "OTHER", mention: name }),
+            qualifiers: { brand: null, model: null },
+            role: hasSubject && name === "Willow" ? "SUBJECT" : "OBJECT"
+          });
+        }
+        const subject = await prisma.memoryEntity.findFirstOrThrow({
+          where: { displayName: "Willow", userId }
+        });
+        await expect(prisma.$transaction((tx) =>
+          loadMemoryFactContextRefs(tx, { messages: [], userId })
+        )).resolves.toEqual([
+          expect.objectContaining({
+            entityId: hasSubject ? subject.id : null,
+            source: expect.objectContaining({ factVersionId: fact.versionId })
+          })
+        ]);
+      } finally {
+        await cleanupOwner(userId);
+      }
+    }
+  );
+
   it("[E05] keeps one support and fences alias retrieval at the final invalidation", async () => {
     const userId = await createOwner("support-fence");
     try {

@@ -11,6 +11,7 @@ export const MEMORY_PERSISTENCE_ERROR_CODES = [
   "memory_input_invalid",
   "memory_mutation_authorization_invalid",
   "memory_owner_unavailable",
+  "memory_partial_forget_ambiguous",
   "memory_plaintext_not_allowed",
   "memory_revision_conflict",
   "memory_scope_unavailable",

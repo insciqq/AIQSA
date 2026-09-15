@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { normalizeMemorySearchText } from "../../persistence/lexical";
 import { memoryExactVNextDirectAuthorityPredicate } from
   "../../persistence/eligibility";
 import type { MemoryTransaction } from "../../persistence/transaction";
@@ -25,6 +26,7 @@ type EntityRow = Readonly<{
   canonicalId: string;
   displayName: string;
   entityType: string;
+  role: "SUBJECT" | "OBJECT";
 }>;
 
 function messageRefs(
@@ -69,8 +71,10 @@ async function factEntity(
   entityId: string;
   entityType: string;
 }> | null> {
-  const [row] = await tx.$queryRaw<EntityRow[]>(Prisma.sql`
-    SELECT root."id" AS "canonicalId", root."displayName", root."entityType"
+  const rows = await tx.$queryRaw<EntityRow[]>(Prisma.sql`
+    SELECT DISTINCT root."id" AS "canonicalId", root."displayName", root."entityType",
+      link."role", CASE WHEN link."role" = 'SUBJECT'::"MemoryEntityLinkRole"
+        THEN 0 ELSE 1 END AS priority
     FROM "MemoryFactVersionEntity" AS link
     INNER JOIN "MemoryEntity" AS root
       ON root."userId" = link."userId"
@@ -80,11 +84,16 @@ async function factEntity(
       )}
     WHERE link."userId" = ${userId}
       AND link."factVersionId" = ${factVersionId}
-      AND link."role" = 'SUBJECT'::"MemoryEntityLinkRole"
-    ORDER BY root."id"
-    LIMIT 1
+      AND link."role" IN (
+        'SUBJECT'::"MemoryEntityLinkRole", 'OBJECT'::"MemoryEntityLinkRole"
+      )
+    ORDER BY priority, "canonicalId"
+    LIMIT 2
   `);
-  if (!row) return null;
+  const row = rows[0];
+  // An own action can introduce a named object for a later reference. Keep
+  // subject priority and expose that object only when its root is unique.
+  if (!row || (row.role === "OBJECT" && rows.length !== 1)) return null;
   const aliases = await loadAdmissibleMemoryEntityAliases(
     tx,
     userId,
@@ -105,16 +114,25 @@ async function factRefs(
   userId: string,
   limit: number,
   factVersionIds?: readonly string[],
-  excludedSourceMessageIds: readonly string[] = []
+  excludedSourceMessageIds: readonly string[] = [],
+  relevanceText = ""
 ): Promise<readonly MemoryFactContextRef[]> {
   if (limit <= 0) return [];
   const frozenIds = factVersionIds === undefined
     ? undefined
     : [...new Set(factVersionIds)].slice(0, limit);
   if (frozenIds?.length === 0) return [];
+  const atoms = [...new Set(normalizeMemorySearchText(relevanceText)
+    .split(/[^\p{L}\p{N}]+/u).filter((atom) => atom.length >= 2 && atom.length <= 128))].slice(0, 48);
+  const relevance = frozenIds === undefined && atoms.length > 0
+    ? Prisma.sql`ts_rank_cd(to_tsvector('simple', version."normalizedSearchText"),
+        to_tsquery('simple', ${atoms.map((atom) => `'${atom}'`).join(" | ")}))`
+    : Prisma.sql`0::real`;
   const facts = await tx.$queryRaw<ContextFact[]>(Prisma.sql`
+    WITH eligible AS (
     SELECT version."id" AS "factVersionId", version."displayText",
-      fact."subjectKey" AS "identitySubjectKey"
+      fact."subjectKey" AS "identitySubjectKey", ${relevance} AS relevance,
+      fact."pinned", fact."lastConfirmedAt", version."systemFrom"
     FROM "MemoryFactVersion" AS version
     INNER JOIN "MemoryFact" AS fact
       ON fact."userId" = version."userId" AND fact."id" = version."factId"
@@ -152,8 +170,22 @@ async function factRefs(
             )
         )
       `}
-    ORDER BY fact."pinned" DESC, fact."lastConfirmedAt" DESC NULLS LAST,
-      version."systemFrom" DESC, version."id"
+    ), relevant AS (
+      SELECT * FROM eligible WHERE relevance > 0
+      ORDER BY relevance DESC, "lastConfirmedAt" DESC NULLS LAST, "factVersionId"
+      LIMIT ${Math.ceil(limit / 2)}
+    ), recent AS (
+      SELECT * FROM eligible WHERE "factVersionId" NOT IN (SELECT "factVersionId" FROM relevant)
+      ORDER BY "pinned" DESC, "lastConfirmedAt" DESC NULLS LAST,
+        "systemFrom" DESC, "factVersionId"
+      LIMIT ${limit}
+    )
+    SELECT "factVersionId", "displayText", "identitySubjectKey" FROM (
+      SELECT *, 0 AS lane FROM relevant
+      UNION ALL SELECT *, 1 AS lane FROM recent
+    ) AS combined
+    ORDER BY lane, CASE WHEN lane = 0 THEN relevance END DESC,
+      "pinned" DESC, "lastConfirmedAt" DESC NULLS LAST, "systemFrom" DESC, "factVersionId"
     LIMIT ${limit}
   `);
   const orderedFacts = frozenIds === undefined
@@ -200,7 +232,8 @@ export async function loadMemoryFactContextRefs(
     input.userId,
     MEMORY_FACT_MAX_CONTEXT_REFS - messages.length,
     input.factVersionIds,
-    input.messages.filter(({ evidenceEligible }) => evidenceEligible).map(({ id }) => id)
+    input.messages.filter(({ evidenceEligible }) => evidenceEligible).map(({ id }) => id),
+    input.messages.filter(({ evidenceEligible }) => evidenceEligible).map(({ text }) => text).join("\n")
   );
   const bounded: MemoryFactContextRef[] = [];
   let characters = 0;

@@ -4,7 +4,8 @@ import { AcceptanceDriver, type SendResult } from "./driver";
 function fixture() {
   const answer: SendResult = { answer: "Synthetic answer", runId: "run", userMessageId: "message",
     memoryOutcome: "APPLIED", degradationCode: null, memoryItems: 1, ownerIsolation: true,
-    elapsedMs: 10, totalTokens: 5 };
+    deliveredMemoryEvidence: [], elapsedMs: 10, totalTokens: 5,
+    userMessageCreatedAt: "2026-09-14T00:00:00.000Z" };
   const driver = Object.assign(Object.create(AcceptanceDriver.prototype), {
     conversation: () => ({ id: "probe", mode: "NORMAL", leaf: null }),
     send: vi.fn().mockResolvedValue(answer),
@@ -17,6 +18,35 @@ function fixture() {
 }
 
 describe("benchmark question isolation", () => {
+  it("reports run, utility, and unlinked ancillary usage without double counting", async () => {
+    const answers = [{ modelId: "answer", status: "complete", usageCompleteness: "COMPLETE", _count: 1, _sum: { totalTokens: 12 } }];
+    const utilities = [{ logicalRole: "MEMORY_QUERY_EMBED", providerModelId: "embed", state: "SUCCEEDED", usageCompleteness: "COMPLETE", _count: 1, _sum: { totalTokens: 4 } }];
+    const ancillaryUsageEvents = [{ chatTitleGeneration: true, modelId: "title", provider: "openai", providerModelId: "title-model", usageCompleteness: "UNAVAILABLE", _count: 1, _sum: { totalTokens: null } }];
+    const driver = Object.assign(Object.create(AcceptanceDriver.prototype), {
+      ownedUserIds: ["owner"],
+      prisma: {
+        memoryExecutionBinding: { groupBy: vi.fn().mockResolvedValue(utilities) },
+        modelRun: { groupBy: vi.fn().mockResolvedValue(answers) },
+        usageEvent: { groupBy: vi.fn().mockResolvedValue(ancillaryUsageEvents) }
+      }
+    });
+
+    await expect(driver.usage()).resolves.toEqual({ answers, utilities, ancillaryUsageEvents });
+    expect(driver.prisma.modelRun.groupBy).toHaveBeenCalledWith(expect.objectContaining({
+      by: ["provider", "modelId", "status", "usageCompleteness"],
+      _sum: expect.objectContaining({ cacheWriteInputTokens: true, cachedInputTokens: true,
+        reasoningTokens: true, estimatedCostMicros: true })
+    }));
+    expect(driver.prisma.memoryExecutionBinding.groupBy).toHaveBeenCalledWith(expect.objectContaining({
+      by: ["logicalRole", "providerModelId", "state", "usageCompleteness"]
+    }));
+    expect(driver.prisma.usageEvent.groupBy).toHaveBeenCalledWith(expect.objectContaining({
+      where: { userId: { in: ["owner"] }, memoryExecutionBindingId: null, modelRunId: null },
+      _sum: expect.objectContaining({ cacheWriteInputTokens: true, cachedInputTokens: true,
+        operationCount: true, reasoningTokens: true, estimatedCostMicros: true })
+    }));
+  });
+
   it("retains an obtained answer and its cleanup failure after exclusion is proven", async () => {
     const { driver, answer } = fixture();
     const result = await driver.probe({ userId: "owner", cookie: "synthetic" }, "Question");

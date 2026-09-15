@@ -6,7 +6,7 @@ import type {
 import { memorySha256 } from "../persistence/lexical";
 
 export const MEMORY_SYNTHESIS_PIPELINE_VERSION = "memory-synthesis-v2";
-export const MEMORY_SYNTHESIS_POLICY_VERSION = "memory-synthesis-policy-v3";
+export const MEMORY_SYNTHESIS_POLICY_VERSION = "memory-synthesis-policy-v4";
 export const MEMORY_SYNTHESIS_PROMPT_VERSION = "memory-synthesis-prompt-v4";
 export const MEMORY_SYNTHESIS_SCHEMA_VERSION = "memory-synthesis-schema-v2";
 export const MEMORY_SYNTHESIS_RETRIEVAL_CONFIG_FINGERPRINT =
@@ -134,6 +134,10 @@ export type MemorySynthesisSource = Readonly<{
   sourceChatIds: readonly string[];
   sourceMessageIds: readonly string[];
   sourceMode: MemoryFactSourceMode;
+  /** Stored semantic scope, used to keep relationship subjects isolated. */
+  subjectScope?: "CURRENT_USER" | "USER_RELATIONSHIP_CONTEXT" | null;
+  /** Root entity ids linked with role SUBJECT, preserving the grounded anchor. */
+  subjectEntityIds?: readonly string[];
   structuredValue: unknown;
   subjectKey: string | null;
   versionId: string;
@@ -247,15 +251,16 @@ export function memorySynthesisPatternFingerprint(input: Readonly<{
 }
 
 function clusterKey(source: MemorySynthesisSource): string {
-  // Automatic-fact admission has already proved CURRENT_USER subject scope.
-  // Bucket those observations by owner/category/modality so Dream can discover
-  // a relationship across different predicates and mentioned entities. An
-  // explicit fact can describe somebody else, so it keeps an exact structured
-  // subject/entity anchor and falls back to its own identity when neither is
-  // available.
+  // Self automatic facts may share an owner bucket. Relationship context must
+  // retain its exact grounded subject anchor, otherwise distinct people and
+  // the owner can silently enter one Dream cluster.
   const entityAnchor = [...source.entityIds].sort()[0] ?? null;
-  const subject = source.sourceMode === "AUTOMATIC"
+  const subjectEntityAnchor = [...(source.subjectEntityIds ?? [])].sort()[0] ?? null;
+  const subject = source.sourceMode === "AUTOMATIC" &&
+    source.subjectScope !== "USER_RELATIONSHIP_CONTEXT"
     ? "owner:automatic-current-user"
+    : source.subjectScope === "USER_RELATIONSHIP_CONTEXT" && subjectEntityAnchor
+      ? `subject-entity:${subjectEntityAnchor}`
     : source.subjectKey
       ? `subject:${source.subjectKey}`
       : entityAnchor

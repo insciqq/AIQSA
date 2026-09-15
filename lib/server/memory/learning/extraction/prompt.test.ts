@@ -16,7 +16,7 @@ import { memorySha256 } from "../../persistence/lexical";
 describe("Memory semantic-frame extraction prompt", () => {
   it("locks the v5 forced-strict wire shape under the current prompt policy", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v33");
+      .toBe("memory-fact-extraction-prompt-v39");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
       .toBe("memory-fact-extraction-schema-v5");
     expect(memoryFactExtractionTool).toMatchObject({
@@ -78,6 +78,8 @@ describe("Memory semantic-frame extraction prompt", () => {
       "taste or selectiveness are not themselves a preference value",
       "limited to a local choice or episode",
       "MEDIUM PROPOSITION",
+      "pure present withdrawal",
+      "Do not invent an opposite assertion or a new value",
       "never promote it to a HIGH SLOT or global profile fact",
       "use identity mode SLOT with subject PERSON_SELF",
       "predicate_key preference",
@@ -90,7 +92,13 @@ describe("Memory semantic-frame extraction prompt", () => {
       "never invent a SLOT dimension",
       "MEDIUM observation must use PROPOSITION identity",
       "cannot propose a SLOT, current-state change, or override",
-      "named third party as a distinct PERSON entity with role SUBJECT",
+      "distinct source-grounded SUBJECT entity",
+      "USER_RELATIONSHIP_CONTEXT",
+      "close person, pet, or colleague",
+      "pet's constraint",
+      "preserve the attribution in statement",
+      "pasted public bio",
+      "arbitrary third-party dossier",
       "profession, employment role, or work identity remains eligible",
       "cannot form an employment_status SLOT",
       "structured temporal normalization",
@@ -188,7 +196,7 @@ describe("Memory semantic-frame extraction prompt", () => {
     const payload = JSON.parse(memoryFactExtractionPromptPayload(input)) as {
       context_after: unknown[];
       context_before: Array<{ context_ref: string; role: string; text: string }>;
-      supplied_context_refs: Array<{ kind: string; ref: string }>;
+      supplied_context_refs: Array<{ entity_bound: boolean; kind: string; ref: string }>;
       target_message: { context_ref: null; text: string };
     };
     expect(payload.context_before).toEqual([expect.objectContaining({
@@ -198,11 +206,18 @@ describe("Memory semantic-frame extraction prompt", () => {
     })]);
     expect(payload.context_after).toEqual([]);
     expect(payload.supplied_context_refs).toEqual([
-      expect.objectContaining({ kind: "FACT_VERSION", ref: "F1" })
+      expect.objectContaining({ entity_bound: true, kind: "FACT_VERSION", ref: "F1" })
     ]);
     expect(payload.target_message).toMatchObject({
       context_ref: null,
       text: targetText
     });
+    const unboundPayload = JSON.parse(memoryFactExtractionPromptPayload({
+      ...input,
+      contextRefs: input.contextRefs.map((context) => ({ ...context, entityId: null }))
+    })) as typeof payload;
+    expect(unboundPayload.supplied_context_refs).toEqual([
+      expect.objectContaining({ entity_bound: false, kind: "FACT_VERSION", ref: "F1" })
+    ]);
   });
 });

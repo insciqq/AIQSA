@@ -12,7 +12,8 @@ import { memoryTargetAuthorizationPayloadHash } from "../persistence/authorizati
 import { memorySha256 } from "../persistence/lexical";
 
 const now = new Date("2026-08-21T05:00:00.000Z");
-const clientRefs = createMemoryClientRefService({ encryptionKey: () => randomBytes(32) });
+const clientRefKey = randomBytes(32);
+const clientRefs = createMemoryClientRefService({ encryptionKey: () => clientRefKey });
 
 function intent(overrides: Record<string, unknown> = {}) {
   return {
@@ -69,10 +70,16 @@ function dependencies(overrides: Record<string, unknown> = {}) {
   const targetSelector = {
     assertAuthorized: vi.fn(async () => undefined),
     assertControlAuthorized: vi.fn(async () => undefined),
-    select: vi.fn(async () => ({
+    select: vi.fn(async (request: { candidates: readonly unknown[] }) => request.candidates.length === 1 ? {
+      acceptedOutputHash: "b".repeat(64),
+      bindingId: "binding-selector",
+      candidateMapHash: "c".repeat(64),
+      selectedHandle: "c0",
+      status: "READY" as const
+    } : {
       reason: "memory_target_selector_unavailable",
       status: "UNAVAILABLE" as const
-    }))
+    })
   };
   return {
     authorizationRepository,
@@ -334,6 +341,31 @@ describe("Memory intent action executor", () => {
     expect(deps.lifecycleService.forget).not.toHaveBeenCalled();
   });
 
+  it.each(["semantic", "reference"])("does not delete a compound fact on a partial %s match", async (path) => {
+    const deps = dependencies();
+    const compound = memorySummaryFixture({ displayText: "I prefer green tea. My bicycle is silver." });
+    deps.targetSearch.semantic.mockResolvedValue({ status: "READY", targets: [actionTarget(compound)] });
+    deps.explicitService.get.mockResolvedValue(memoryDetailFixture(compound) as never);
+    deps.targetSelector.select.mockResolvedValue({
+      acceptedOutputHash: "b".repeat(64), bindingId: "binding-selector",
+      candidateMapHash: "c".repeat(64), selectedHandle: null, status: "READY"
+    } as never);
+    const referencedMemoryRef = path === "reference" ? clientRefs.mint("user-1", {
+      allowedOperations: ["FORGET"], originatingRunId: "earlier-run",
+      target: { exactItemId: compound.currentVersionId!, factId: compound.id,
+        factVersionId: compound.currentVersionId, itemType: "FACT_VERSION", recallChunkId: null,
+        recallRoundId: null, sourceChatId: null, sourceMessageIds: [] }
+    }, now) : null;
+    const result = await createMemoryIntentActionExecutor({ ...deps, clientRefs } as never).execute({
+      ...execution(intent({ action: "FORGET", reasonCode: "forget_request", targetQuery: "tea preference", referencedMemoryRef })),
+      currentUserText: "Forget only my tea preference; keep my bicycle information."
+    });
+    expect(result).toMatchObject({ operation: "FORGET", status: "REJECTED" });
+    expect(deps.targetSelector.select).toHaveBeenCalledOnce();
+    expect(deps.authorizationRepository.mintForControl).not.toHaveBeenCalled();
+    expect(deps.lifecycleService.forget).not.toHaveBeenCalled();
+  });
+
   it("commits a unique semantic paraphrase target", async () => {
     const deps = dependencies();
     const result = await createMemoryIntentActionExecutor({
@@ -503,9 +535,9 @@ describe("Memory intent action executor", () => {
     expect(deps.lifecycleService.forget).not.toHaveBeenCalled();
   });
 
-  it("fails closed before a direct mutation when original control authority drifts", async () => {
+  it("fails closed before a direct mutation when linked single-target authority drifts", async () => {
     const deps = dependencies();
-    deps.targetSelector.assertControlAuthorized.mockRejectedValueOnce(new Error("policy drift"));
+    deps.targetSelector.assertAuthorized.mockRejectedValueOnce(new Error("policy drift"));
 
     await expect(createMemoryIntentActionExecutor({ ...deps, clientRefs } as never).execute(
       execution(intent({
@@ -515,7 +547,7 @@ describe("Memory intent action executor", () => {
       }))
     )).resolves.toEqual({ operation: "FORGET", status: "REJECTED" });
 
-    expect(deps.targetSelector.assertControlAuthorized).toHaveBeenCalledOnce();
+    expect(deps.targetSelector.assertAuthorized).toHaveBeenCalledOnce();
     expect(deps.authorizationRepository.mintForControl).not.toHaveBeenCalled();
     expect(deps.lifecycleService.forget).not.toHaveBeenCalled();
   });

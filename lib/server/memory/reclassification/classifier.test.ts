@@ -69,6 +69,21 @@ describe("memory reclassification classifier", () => {
     }).storageDecision).toBe("REJECT_ALLEGATION");
   });
 
+  it("allows safe relationship context with the existing sensitive normalization", () => {
+    expect(decodeMemoryReclassificationDecision({
+      category: "sensitive",
+      reason_code: "private_personal",
+      response_preference: false,
+      sensitivity: "SENSITIVE",
+      subject_scope: "USER_RELATIONSHIP_CONTEXT",
+      storage_decision: "ALLOW"
+    })).toMatchObject({
+      subjectScope: "USER_RELATIONSHIP_CONTEXT",
+      sensitivity: "NORMAL",
+      storageDecision: "ALLOW"
+    });
+  });
+
   it("keeps the statement quoted in a bounded strict request", () => {
     const request = buildMemoryReclassificationRequest("Я люблю чай", "AUTOMATIC");
     expect(request.name).toBe("memory_safety_reclassification_v1");
@@ -76,6 +91,7 @@ describe("memory reclassification classifier", () => {
     expect(request.userPrompt).toContain("Я люблю чай");
     expect(request.userPrompt).toContain("AUTOMATIC");
     expect(request.systemPrompt).toContain("otherwise storable first-party personal fact");
+    expect(request.systemPrompt).toContain("direct user-authored USER_RELATIONSHIP_CONTEXT");
     expect(() => buildMemoryReclassificationRequest("\u0000")).toThrow();
   });
 
@@ -108,7 +124,7 @@ describe("memory reclassification classifier", () => {
         storageDecision: "ALLOW"
       },
       modelId: "model-1",
-      policyVersion: "memory-safety-policy-v2:7",
+      policyVersion: "memory-safety-policy-v3:7",
       providerId: "openai"
     });
   });

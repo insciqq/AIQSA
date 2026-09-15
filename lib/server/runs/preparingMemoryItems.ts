@@ -941,11 +941,14 @@ async function resolveFact(
     authority.userId,
     input.factVersionId
   );
-  const dependencySnapshot = await factDependencies(
+  const dependencySnapshot = (await factDependencies(
     tx,
     authority.userId,
     input.factVersionId
-  );
+  )).map((dependency) => ({
+    ...dependency,
+    sourceMessageUpdatedAt: iso(dependency.sourceMessageUpdatedAt)
+  }));
   const versionSnapshot = {
     currentVersionId: row.currentVersionId,
     coreEligible: row.coreEligible,

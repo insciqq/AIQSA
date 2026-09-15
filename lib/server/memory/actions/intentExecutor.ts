@@ -197,9 +197,11 @@ async function selectedTarget(
       target: ExactTarget;
     }>
 > {
-  if (targets.length === 1) return { kind: "TARGET", target: targets[0]! };
+  if (targets.length === 1 && input.intent.action !== "FORGET") {
+    return { kind: "TARGET", target: targets[0]! };
+  }
   const bounded = targets.slice(0, 5);
-  if (!selector || bounded.length < 2) return { kind: "AMBIGUOUS", targets: bounded };
+  if (!selector || bounded.length === 0) return { kind: "AMBIGUOUS", targets: bounded };
   const candidates = bounded.map((target, index) => ({ handle: `c${index}`, target }));
   const selection = await selector.select({
     attemptId: input.attemptId,
@@ -207,7 +209,7 @@ async function selectedTarget(
     controlBindingId: input.bindingId,
     currentUserText: input.currentUserText,
     signal: input.signal,
-    targetQuery: input.intent.targetQuery ?? "",
+    targetQuery: input.intent.targetQuery ?? input.currentUserText.slice(0, 500),
     userId: input.userId
   }).catch(() => ({ reason: "memory_target_selector_unavailable", status: "UNAVAILABLE" as const }));
   assertActionAdmissionActive(input.signal);
@@ -268,7 +270,7 @@ async function resolveTarget(
     assertActionAdmissionActive(input.signal);
     const target = detail ? activeTarget(detail.memory) : null;
     return target && target.versionId === referenced.target.factVersionId
-      ? { kind: "TARGET", target }
+      ? selectedTarget(selector, [target], input)
       : { kind: "MISSING" };
   }
 
@@ -515,6 +517,7 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
         operation
       );
       if (resolution.kind === "AMBIGUOUS") {
+        if (resolution.targets.length < 2) return mutationRejected(intent.action);
         return {
           candidates: resolution.targets.map((target) =>
             resultItem(refs, execution.userId, execution.modelRunId, target, now)),

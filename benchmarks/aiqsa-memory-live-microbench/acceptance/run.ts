@@ -2,10 +2,10 @@ import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadEnvConfig } from "@next/env";
+import * as nextEnv from "@next/env";
 import { currentLongMemEvalQualificationRevision } from "../../longmemeval/qualificationRevision";
 import { assertLiveBaseUrl, assertLiveDatabaseUrl, resolveLiveOutputDirectory } from "../contract";
-import { ACCEPTANCE_ACK, ACCEPTANCE_CORPUS_SHA256, JUDGE_SYSTEM, LATENCY_LIMITS, corpusFingerprint, corpusSchema, safeCode, summarizeLatency, summarizeResults, type ScenarioResult, type Timing } from "./contract";
+import { ACCEPTANCE_ACK, ACCEPTANCE_CORPUS_SHA256, ACCEPTANCE_SOURCE_AWARE_JUDGE_PROTOCOL_VERSION, JUDGE_SYSTEM, LATENCY_LIMITS, corpusFingerprint, corpusSchema, safeCode, summarizeLatency, summarizeResults, type ScenarioResult, type Timing } from "./contract";
 import { ANSWER_JUDGE_SYSTEM } from "./answerGrading";
 import { ACTOR_JUDGE_INSTRUCTION } from "./actorGrading";
 
@@ -28,7 +28,7 @@ async function main() {
   databaseUrl.searchParams.set("connection_limit", "4");
   // Set the guarded disposable authority before importing server singletons or loading .env.
   process.env.DATABASE_URL = databaseUrl.toString();
-  loadEnvConfig(resolve(root, "../../.."), true, { info() {}, error() {} });
+  nextEnv.loadEnvConfig(resolve(root, "../../.."), true, { info() {}, error() {} });
   if (process.env.DATABASE_URL !== databaseUrl.toString()) throw new Error("memory_acceptance_database_authority_changed");
   const corpus = corpusSchema.parse(JSON.parse(await readFile(resolve(root, "corpus.json"), "utf8")));
   if (corpusFingerprint(corpus) !== ACCEPTANCE_CORPUS_SHA256) throw new Error("memory_acceptance_corpus_changed");
@@ -43,7 +43,7 @@ async function main() {
   const output = resolveLiveOutputDirectory(benchmarkRoot, options.get("--output") ?? `results/acceptance-${Date.now()}`);
   await mkdir(resolve(benchmarkRoot, "results"), { recursive: true, mode: 0o700 });
   await mkdir(output, { recursive: false, mode: 0o700 });
-  const [{ AcceptanceDriver, PROFILE, EXECUTION_LIMITS }, { calibrateJudge, evaluateScenario }] = await Promise.all([import("./driver"), import("./evaluate")]);
+  const [{ AcceptanceDriver, PROFILE, EXECUTION_LIMITS }, { calibrateJudge, calibrateSourceAwareJudge, evaluateScenario }] = await Promise.all([import("./driver"), import("./evaluate")]);
   const model = options.get("--model") ?? PROFILE.answer;
   if (model !== PROFILE.answer && model !== PROFILE.control) throw new Error("memory_acceptance_model_invalid");
   const driver = new AcceptanceDriver(baseUrl, databaseUrl.toString(), model);
@@ -59,6 +59,7 @@ async function main() {
     judgePromptSha256: (await import("node:crypto")).createHash("sha256").update(JUDGE_SYSTEM).digest("hex"),
     answerJudgePromptSha256: (await import("node:crypto")).createHash("sha256").update(ANSWER_JUDGE_SYSTEM).digest("hex"),
     actorJudgeInstructionSha256: (await import("node:crypto")).createHash("sha256").update(ACTOR_JUDGE_INSTRUCTION).digest("hex"),
+    sourceAwareJudgeProtocolVersion: ACCEPTANCE_SOURCE_AWARE_JUDGE_PROTOCOL_VERSION,
     latencyLimits: LATENCY_LIMITS, executionLimits: EXECUTION_LIMITS, caseConcurrency: 1,
     scenarioIds: selected.map(({ id }) => id), profile: { ...PROFILE, answer: model, system: model } };
   const save = async () => {
@@ -72,10 +73,13 @@ async function main() {
     if (judgeDriver !== driver) await judgeDriver.prepare();
     const judgeIdentity = await judgeDriver.identity("judge", false);
     const calibration = await calibrateJudge(judgeDriver, judgeIdentity, emit);
-    metadata = { ...metadata, profileFingerprint: driver.profileFingerprint, calibration,
+    const sourceAwareCalibration = await calibrateSourceAwareJudge(judgeDriver, judgeIdentity, emit);
+    metadata = { ...metadata, profileFingerprint: driver.profileFingerprint, calibration, sourceAwareCalibration,
       judgeProfileFingerprint: judgeDriver.profileFingerprint };
     await save();
-    if (calibration.correct !== calibration.total) throw new Error("memory_acceptance_judge_calibration_failed");
+    if (calibration.correct !== calibration.total || sourceAwareCalibration.correct !== sourceAwareCalibration.total) {
+      throw new Error("memory_acceptance_judge_calibration_failed");
+    }
     emit({ event: "calibrated", total: selected.length, corpusSha256: metadata.corpusSha256 });
     await save();
     for (const scenario of selected) {

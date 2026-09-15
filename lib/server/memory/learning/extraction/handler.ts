@@ -295,7 +295,13 @@ async function adjudicatePlan(
   const attempts = prior.filter((binding) =>
     bindingUsesVersions(binding, MEMORY_SEMANTIC_ADJUDICATION_VERSIONS));
   const pending = attempts.find(({ state }) => state === "PENDING");
-  if (attempts.some(({ state }) => state !== "PENDING")) {
+  if (attempts.some((binding) =>
+    binding.inputHash !== adjudicationInput.inputHash ||
+    (binding.state !== "PENDING" && !(
+      binding.state === "FAILED" &&
+      binding.errorCode === "memory_fact_provider_transient" &&
+      binding.acceptedOutputHash === null
+    )))) {
     const running = attempts.find(({ state }) => state === "RUNNING");
     if (running) {
       await deps.execution.lifecycle.settle(job.userId, running.id, {
@@ -363,6 +369,12 @@ async function adjudicatePlan(
       state: failure.state,
       usage: failure.usage
     });
+    // Preserve staged extraction until the coordinator retries this known-safe
+    // failure. Applying without adjudication would permanently reject facts
+    // whose authority depends on it.
+    if (failure.classification === "REPLAY_SAFE_TRANSIENT") {
+      throw new MemoryCoordinatorError(failure.errorCode, true);
+    }
     return extractionAuthority(extractionBindingId, plan);
   }
 

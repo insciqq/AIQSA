@@ -170,6 +170,37 @@ function productObservation(
   });
 }
 
+function personalContextObservation(
+  quote: string,
+  input: Readonly<{
+    confidenceBand?: "HIGH" | "MEDIUM";
+    entityType: "OTHER" | "PERSON";
+    name: string;
+    sensitivity?: "NORMAL" | "SENSITIVE";
+    statement: string;
+  }>
+): Record<string, unknown> {
+  return observation(quote, {
+    confidence_band: input.confidenceBand ?? "HIGH",
+    entities: [{
+      aliases: [textRef(input.name)],
+      canonical_label: input.name,
+      context_entity_ref: null,
+      entity_type: input.entityType,
+      mention: textRef(input.name),
+      mention_kind: "NAMED",
+      qualifier_supports: [],
+      role: "SUBJECT"
+    }],
+    semantic_frame: {
+      ...frame,
+      subject_scope: "USER_RELATIONSHIP_CONTEXT"
+    },
+    sensitivity: input.sensitivity ?? "NORMAL",
+    statement: input.statement
+  });
+}
+
 function decode(
   sourceText: string,
   observations: readonly unknown[],
@@ -596,6 +627,145 @@ describe("Memory v5 semantic-frame decoder", () => {
     });
   });
 
+  it.each([
+    {
+      entityType: "PERSON" as const,
+      name: "Ana",
+      quote: "My sister Ana works at Juniper bakery.",
+      statement: "The current user reports that their sister Ana works at Juniper bakery."
+    },
+    {
+      entityType: "OTHER" as const,
+      name: "Pepper",
+      quote: "My dog Pepper cannot use stairs during rehabilitation.",
+      sensitivity: "SENSITIVE" as const,
+      statement: "The current user reports that their dog Pepper cannot use stairs during rehabilitation."
+    },
+    {
+      entityType: "PERSON" as const,
+      name: "Noor",
+      quote: "My colleague Noor has a rotating schedule.",
+      statement: "The current user reports that their colleague Noor has a rotating schedule."
+    }
+  ])("admits grounded ordinary personal context without turning $name into the user", (sample) => {
+    const plan = decode(sample.quote, [personalContextObservation(sample.quote, sample)]);
+    expect(plan.rejections).toEqual([]);
+    const retained = plan.candidates[0]!;
+    expect(retained).toMatchObject({
+      entities: [expect.objectContaining({
+        canonicalLabel: sample.name,
+        entityType: sample.entityType,
+        role: "SUBJECT"
+      })],
+      identityKind: "PROPOSITION",
+      sensitivity: "NORMAL",
+      subjectKey: null
+    });
+    expect(memoryCandidateRequiresSemanticAdjudication(retained)).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(retained, {
+      assertionStatus: "ASSERTED",
+      candidateRef: retained.candidateRef,
+      confidenceBand: "HIGH",
+      entailment: "ENTAILED",
+      entityRef: null,
+      operation: "NO_RELATION",
+      reasonCode: "ordinary_personal_context",
+      subjectScope: "USER_RELATIONSHIP_CONTEXT",
+      targetRef: null,
+      temporalPerspective: "CURRENT"
+    })).toBe(true);
+  });
+
+  it("retains the user's attributed report as supporting personal context", () => {
+    const quote = "My brother Milo told me he works night shifts.";
+    const plan = decode(quote, [personalContextObservation(quote, {
+      confidenceBand: "MEDIUM",
+      entityType: "PERSON",
+      name: "Milo",
+      statement: "The current user reports that their brother Milo told them he works night shifts."
+    })]);
+    const retained = plan.candidates[0]!;
+    expect(retained).toMatchObject({
+      confidence: MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE,
+      confidenceBand: "MEDIUM",
+      identityKind: "PROPOSITION",
+      statement: expect.stringContaining("Milo told them")
+    });
+    expect(memorySemanticAuthorityAdmitsCandidate(retained, {
+      assertionStatus: "ASSERTED",
+      candidateRef: retained.candidateRef,
+      confidenceBand: "HIGH",
+      entailment: "ENTAILED",
+      entityRef: null,
+      operation: "NO_RELATION",
+      reasonCode: "attributed_personal_context",
+      subjectScope: "USER_RELATIONSHIP_CONTEXT",
+      targetRef: null,
+      temporalPerspective: "CURRENT"
+    })).toBe(true);
+  });
+
+  it("keeps the user's activity and related place in current-user scope", () => {
+    const quote = "My pottery class meets at Riverside Studio on Tuesdays.";
+    const plan = decode(quote, [observation(quote, {
+      entities: [{
+        aliases: [textRef("Riverside Studio")],
+        canonical_label: "Riverside Studio",
+        context_entity_ref: null,
+        entity_type: "PLACE",
+        mention: textRef("Riverside Studio"),
+        mention_kind: "NAMED",
+        qualifier_supports: [],
+        role: "OBJECT"
+      }],
+      memory_type: "PLAN",
+      statement: "The current user's pottery class meets at Riverside Studio on Tuesdays."
+    })]);
+    expect(plan.rejections).toEqual([]);
+    expect(plan.candidates[0]).toMatchObject({
+      identityKind: "PROPOSITION",
+      semanticFrame: { subjectScope: "CURRENT_USER" }
+    });
+  });
+
+  it("fails closed for standalone third-party material and ungrounded relationship subjects", () => {
+    const external = "Public bio: 'Milo works night shifts.'";
+    const quoted = personalContextObservation(external, {
+      entityType: "PERSON",
+      name: "Milo",
+      statement: "Milo works night shifts."
+    });
+    quoted.semantic_frame = {
+      ...frame,
+      assertion_status: "QUOTED",
+      subject_scope: "THIRD_PARTY"
+    };
+    expect(decode(external, [quoted]).candidates).toEqual([]);
+
+    const arbitrary = personalContextObservation(
+      "Milo works night shifts.",
+      { entityType: "PERSON", name: "Milo", statement: "Milo works night shifts." }
+    );
+    arbitrary.semantic_frame = { ...frame, subject_scope: "THIRD_PARTY" };
+    expect(decode("Milo works night shifts.", [arbitrary]).candidates).toEqual([]);
+
+    const unresolved = personalContextObservation(
+      "He works night shifts.",
+      { entityType: "PERSON", name: "He", statement: "He works night shifts." }
+    );
+    unresolved.entities = [{
+      aliases: [], canonical_label: null, context_entity_ref: null,
+      entity_type: "PERSON", mention: textRef("He"), mention_kind: "PRONOMINAL",
+      qualifier_supports: [], role: "SUBJECT"
+    }];
+    expect(decode("He works night shifts.", [unresolved]).candidates).toEqual([]);
+
+    const nonSelfSlot = productObservation("My colleague Noor owns MacBook Air M4.");
+    nonSelfSlot.semantic_frame = { ...frame, subject_scope: "USER_RELATIONSHIP_CONTEXT" };
+    expect(decode("My colleague Noor owns MacBook Air M4.", [nonSelfSlot]).candidates)
+      .toEqual([]);
+  });
+
   it("keeps a source-language profession as an open-world proposition", () => {
     const quote = "Я работаю девопсом.";
     const plan = decode(quote, [observation(quote, {
@@ -782,6 +952,57 @@ describe("Memory v5 semantic-frame decoder", () => {
     expect(memorySemanticAuthorityAdmitsCandidate(result.candidates[0]!, null)).toBe(false);
   });
 
+  it("admits a pure withdrawal only with exact retraction adjudication", () => {
+    const quote = "I withdraw my cedar layout preference.";
+    const plan = decode(quote, [observation(quote, {
+      memory_type: "PREFERENCE",
+      semantic_frame: {
+        ...frame,
+        change_intent: "RETRACTION",
+        polarity: "RETRACTION"
+      },
+      statement: "The user withdraws the cedar layout preference."
+    })]);
+    expect(plan.rejections).toEqual([]);
+    const candidate = plan.candidates[0]!;
+    expect(candidate).toMatchObject({
+      identityKind: "PROPOSITION",
+      semanticFrame: {
+        changeIntent: "RETRACTION",
+        polarity: "RETRACTION",
+        temporalPerspective: "CURRENT"
+      }
+    });
+    expect(memoryCandidateRequiresSemanticAdjudication(candidate)).toBe(true);
+    const decision = {
+      assertionStatus: "ASSERTED",
+      candidateRef: candidate.candidateRef,
+      confidenceBand: "HIGH",
+      entailment: "ENTAILED",
+      entityRef: null,
+      operation: "RETRACT_TARGET",
+      reasonCode: "pure_withdrawal",
+      subjectScope: "CURRENT_USER",
+      targetRef: "F1",
+      temporalPerspective: "CURRENT"
+    } as const;
+    expect(memorySemanticAuthorityAdmitsCandidate(candidate, decision)).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(candidate, {
+      ...decision,
+      operation: "SUPERSEDE_TARGET"
+    })).toBe(false);
+    for (const temporalPerspective of ["FORMER", "FUTURE"] as const) {
+      expect(memorySemanticAuthorityAdmitsCandidate({
+        ...candidate,
+        semanticFrame: { ...candidate.semanticFrame, temporalPerspective }
+      }, { ...decision, temporalPerspective })).toBe(false);
+    }
+    expect(memorySemanticAuthorityAdmitsCandidate({
+      ...candidate,
+      semanticFrame: { ...candidate.semanticFrame, polarity: "AFFIRMED" }
+    }, decision)).toBe(false);
+  });
+
   it("does not admit negative questions, quoted claims or weak testimony", () => {
     const quote = "I do not own a MacBook Air M4.";
     const negative = { ...frame, polarity: "NEGATED" };
@@ -919,6 +1140,112 @@ describe("Memory v5 semantic-frame decoder", () => {
     expect(derived.candidates[0]?.dependencies).toEqual(plan.candidates[0]?.dependencies);
     expect(derived.candidates[0]?.id).toBe(plan.candidates[0]?.id);
     expect(decode(quote, [{ ...proposed, dependency_refs: [] }]).candidates).toEqual([]);
+  });
+
+  it.each([false, true].flatMap(correction =>
+    ["PRONOMINAL", "ELLIPSIS"].map(mentionKind => ({ correction, mentionKind }))))(
+    "keeps one $mentionKind antecedent separate from its source with correction=$correction",
+    ({ correction, mentionKind }) => {
+      const quote = mentionKind === "PRONOMINAL" ? "It starts at noon." : "Starts at noon.";
+      const context: MemoryFactContextRef = {
+        aliases: [], displayName: "Oriole", entityId: "entity-oriole",
+        entityType: "PROJECT", identitySubjectKey: null, kind: "FACT_VERSION", ref: "F1",
+        source: { contentHash: null, factVersionId: "version-oriole", messageId: null,
+          messageUpdatedAt: null, projectionVersion: null },
+        text: "Oriole is my workshop."
+      };
+      const prior: MemoryFactContextRef = {
+        aliases: [], displayName: null, entityId: null, entityType: null,
+        identitySubjectKey: null, kind: "MESSAGE", ref: "M1",
+        source: { contentHash: memorySha256(context.text), factVersionId: null,
+          messageId: "prior-message", messageUpdatedAt: "2026-08-13T00:00:00.000Z",
+          projectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION },
+        text: context.text
+      };
+      const entity = {
+        aliases: [], canonical_label: null, context_entity_ref: "F1",
+        entity_type: "PROJECT", mention: mentionKind === "PRONOMINAL" ? textRef("It") : null,
+        mention_kind: mentionKind, qualifier_supports: [], role: "SUBJECT"
+      };
+      const proposed = observation(quote, {
+        dependency_refs: ["M1"], entities: [entity],
+        semantic_frame: { ...frame,
+          change_intent: correction ? "CORRECTION" : "NONE",
+          polarity: correction ? "CORRECTION" : "AFFIRMED" },
+        statement: "The user's Oriole workshop starts at noon."
+      });
+      const plan = decode(quote, [proposed], [context, prior]);
+      expect(plan.rejections).toEqual([]);
+      expect(plan.candidates[0]?.dependencies).toEqual([
+        { dependencyKind: "COREFERENCE_ANTECEDENT", ref: "F1", source: context.source },
+        { dependencyKind: correction ? "CORRECTION_TARGET" : "RELATION_CONTEXT",
+          ref: "M1", source: prior.source }
+      ]);
+      for (const declared of [["M1", "F1"], ["F1", "M1"]]) {
+        const repeated = decode(quote, [{ ...proposed, dependency_refs: declared }], [context, prior]);
+        expect(repeated.candidates).toEqual(plan.candidates);
+        expect(repeated.rejections).toEqual([]);
+      }
+      expect(memorySemanticAuthorityAdmitsCandidate(plan.candidates[0]!, null)).toBe(false);
+      expect(decode(quote, [proposed], [context]).candidates).toEqual([]);
+
+      const other: MemoryFactContextRef = { ...context, ref: "F2", entityId: "entity-peer",
+        source: { contentHash: null, factVersionId: "version-peer", messageId: null,
+          messageUpdatedAt: null, projectionVersion: null } };
+      expect(decode(quote, [{ ...proposed, entities: [entity,
+        { ...entity, context_entity_ref: "F2" }] }], [context, prior, other]).candidates)
+        .toEqual([]);
+    }
+  );
+
+  it("keeps one correction source separate from the named subject context", () => {
+    const quote = "My sister Ren now teaches drawing.";
+    const context: MemoryFactContextRef = {
+      aliases: [], displayName: "Ren", entityId: "entity-ren",
+      entityType: "PERSON", identitySubjectKey: null, kind: "FACT_VERSION", ref: "F1",
+      source: { contentHash: null, factVersionId: "version-ren", messageId: null,
+        messageUpdatedAt: null, projectionVersion: null },
+      text: "My sister Ren teaches music."
+    };
+    const prior: MemoryFactContextRef = {
+      aliases: [], displayName: null, entityId: null, entityType: null,
+      identitySubjectKey: null, kind: "MESSAGE", ref: "M1",
+      source: { contentHash: memorySha256(context.text), factVersionId: null,
+        messageId: "prior-message", messageUpdatedAt: "2026-08-13T00:00:00.000Z",
+        projectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION },
+      text: context.text
+    };
+    const proposed = observation(quote, {
+      statement: quote, dependency_refs: ["M1"],
+      semantic_frame: { ...frame, subject_scope: "USER_RELATIONSHIP_CONTEXT",
+        change_intent: "CORRECTION", polarity: "CORRECTION" },
+      entities: [{ aliases: [], canonical_label: "Ren", context_entity_ref: "F1",
+        entity_type: "PERSON", mention: textRef("Ren"), mention_kind: "NAMED",
+        qualifier_supports: [], role: "SUBJECT" }]
+    });
+    const plan = decode(quote, [proposed], [context, prior]);
+    expect(plan.rejections).toEqual([]);
+    expect(plan.candidates[0]).toMatchObject({
+      correction: true,
+      dependencies: [
+        { dependencyKind: "RELATION_CONTEXT", ref: "F1", source: context.source },
+        { dependencyKind: "CORRECTION_TARGET", ref: "M1", source: prior.source }
+      ],
+      entities: [{ contextEntityId: "entity-ren", role: "SUBJECT" }]
+    });
+    expect(memoryCandidateRequiresSemanticAdjudication(plan.candidates[0]!)).toBe(true);
+    for (const declared of [["M1", "F1"], ["F1", "M1"]]) {
+      const repeated = decode(quote, [{ ...proposed, dependency_refs: declared }], [context, prior]);
+      expect(repeated.candidates).toEqual(plan.candidates);
+      expect(repeated.rejections).toEqual([]);
+    }
+    const otherSource: MemoryFactContextRef = { ...prior, ref: "M2",
+      source: { contentHash: memorySha256(context.text), factVersionId: null,
+        messageId: "other-prior-message", messageUpdatedAt: "2026-08-13T00:00:00.000Z",
+        projectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION } };
+    expect(decode(quote, [{ ...proposed, dependency_refs: ["M1", "M2", "F1"] }],
+      [context, prior, otherSource]).candidates).toEqual([]);
+    expect(decode(quote, [proposed], [context]).candidates).toEqual([]);
   });
 
   it.each(["entity", "qualifier"])("closes %s context dependencies without repeated provider bookkeeping", (referenceKind) => {

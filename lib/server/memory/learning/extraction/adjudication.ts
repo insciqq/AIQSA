@@ -9,6 +9,7 @@ import {
 import type { MemoryExecutionVersions } from "../../execution";
 import {
   MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
+  MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE,
   type MemoryExtractedCandidate,
   type MemoryFactContextRef,
   type MemoryFactExtractionPlan,
@@ -19,9 +20,9 @@ import {
 export const MEMORY_SEMANTIC_ADJUDICATION_PIPELINE_VERSION =
   "memory-semantic-adjudication-v1";
 export const MEMORY_SEMANTIC_ADJUDICATION_POLICY_VERSION =
-  "memory-semantic-adjudication-policy-v10";
+  "memory-semantic-adjudication-policy-v13";
 export const MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION =
-  "memory-semantic-adjudication-prompt-v7";
+  "memory-semantic-adjudication-prompt-v12";
 export const MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION =
   "memory-semantic-adjudication-schema-v1";
 export const MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME =
@@ -36,7 +37,7 @@ export const MEMORY_SEMANTIC_ADJUDICATION_VERSIONS: MemoryExecutionVersions =
       maxCandidates: MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
       maxContextRefs: 8,
       source: "bounded-context-one-direct-user-target-with-confidence-tier-convergence",
-      version: 10
+      version: 12
     }),
     schemaVersion: MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION
   });
@@ -55,7 +56,9 @@ const operations = new Set([
   "AMBIGUOUS"
 ]);
 const entailments = new Set(["ENTAILED", "CONTRADICTED", "UNKNOWN"]);
-const subjectScopes = new Set(["CURRENT_USER", "THIRD_PARTY", "ASSISTANT", "UNKNOWN"]);
+const subjectScopes = new Set([
+  "CURRENT_USER", "USER_RELATIONSHIP_CONTEXT", "THIRD_PARTY", "ASSISTANT", "UNKNOWN"
+]);
 const assertionStatuses = new Set([
   "ASSERTED", "CONDITIONAL", "HYPOTHETICAL", "QUOTED", "UNKNOWN"
 ]);
@@ -237,6 +240,7 @@ export function memoryCandidateRequiresSemanticAdjudication(
   contextRefs: readonly MemoryFactContextRef[] = []
 ): boolean {
   if (candidate.entityAnnotationReviewRequired) return true;
+  if (candidate.semanticFrame.subjectScope === "USER_RELATIONSHIP_CONTEXT") return true;
   const factContexts = contextRefs.filter(({ kind }) => kind === "FACT_VERSION");
   if (candidate.confidenceBand === "MEDIUM") {
     return candidate.identityKind === "PROPOSITION" && factContexts.length > 0;
@@ -259,12 +263,26 @@ export function memoryCandidateRequiresSemanticAdjudication(
     criticalUnknown(candidate) || duplicateComparisonRequired;
 }
 
+function groundedRelationshipContext(candidate: MemoryExtractedCandidate): boolean {
+  return candidate.identityKind === "PROPOSITION" &&
+    candidate.proposedIdentityKind === "PROPOSITION" &&
+    candidate.directness === "DIRECT" &&
+    candidate.entities.some((entity) => entity.role === "SUBJECT" && (
+        ((entity.mentionKind === "NAMED" || entity.mentionKind === "NOMINAL") &&
+          entity.mention !== null) ||
+        ((entity.mentionKind === "PRONOMINAL" || entity.mentionKind === "ELLIPSIS") &&
+          entity.contextRef !== null && entity.contextEntityId !== null)
+      ));
+}
+
 export function memorySemanticAuthorityAdmitsCandidate(
   candidate: MemoryExtractedCandidate,
   decision: MemorySemanticAdjudication | null,
   contextRefs: readonly MemoryFactContextRef[] = []
 ): boolean {
   const frame = candidate.semanticFrame;
+  const relationshipContext = frame.subjectScope === "USER_RELATIONSHIP_CONTEXT";
+  if (relationshipContext && !groundedRelationshipContext(candidate)) return false;
   if (candidate.entityAnnotationReviewRequired && (
     candidate.confidenceBand !== "HIGH" || candidate.identityKind !== "PROPOSITION" ||
     candidate.proposedIdentityKind === "SLOT"
@@ -275,7 +293,8 @@ export function memorySemanticAuthorityAdmitsCandidate(
       candidate.identityKind === "PROPOSITION" && !candidate.coreEligible &&
       candidate.coreSalience === "NONE" && candidate.correction !== true &&
       frame.speechAct === "ASSERTION" && frame.assertionStatus === "ASSERTED" &&
-      frame.subjectScope === "CURRENT_USER" && frame.polarity === "AFFIRMED" &&
+      (frame.subjectScope === "CURRENT_USER" || relationshipContext) &&
+      frame.polarity === "AFFIRMED" &&
       frame.temporalPerspective !== "UNKNOWN" && frame.changeIntent === "NONE" &&
       frame.memoryDirective === "NONE";
     if (!baseAdmitted) return false;
@@ -286,7 +305,7 @@ export function memorySemanticAuthorityAdmitsCandidate(
     if (!requiresAdjudication) return decision === null;
     return decision !== null && decision.entailment === "ENTAILED" &&
       decision.confidenceBand === "HIGH" &&
-      decision.subjectScope === "CURRENT_USER" &&
+      decision.subjectScope === frame.subjectScope &&
       decision.assertionStatus === "ASSERTED" &&
       decision.temporalPerspective !== "UNKNOWN" &&
       (decision.operation === "NO_RELATION" || decision.operation === "REINFORCE");
@@ -302,7 +321,8 @@ export function memorySemanticAuthorityAdmitsCandidate(
     (frame.speechAct !== "ASSERTION" && !(
       frame.speechAct === "COMMAND" &&
       frame.memoryDirective === "EXPLICIT_REMEMBER"
-    )) || (frame.polarity !== "AFFIRMED" && frame.polarity !== "CORRECTION" && !(
+    )) || (frame.polarity !== "AFFIRMED" && frame.polarity !== "CORRECTION" &&
+    frame.polarity !== "RETRACTION" && !(
       frame.polarity === "NEGATED" && candidate.identityKind === "PROPOSITION"
     ))) {
     return false;
@@ -320,12 +340,25 @@ export function memorySemanticAuthorityAdmitsCandidate(
   const temporalPerspective = requiresAdjudication
     ? decision?.temporalPerspective
     : candidate.semanticFrame.temporalPerspective;
-  if (subjectScope !== "CURRENT_USER" || assertionStatus !== "ASSERTED" ||
+  const admittedSubjectScope = relationshipContext
+    ? subjectScope === "USER_RELATIONSHIP_CONTEXT"
+    : subjectScope === "CURRENT_USER";
+  if (!admittedSubjectScope || assertionStatus !== "ASSERTED" ||
     temporalPerspective === "UNKNOWN") return false;
   if (requiresAdjudication && (
     decision?.entailment !== "ENTAILED" || decision.confidenceBand !== "HIGH" ||
     decision.operation === "AMBIGUOUS"
   )) return false;
+  const withdrawal = frame.polarity === "RETRACTION" ||
+    frame.changeIntent === "RETRACTION";
+  if (withdrawal) {
+    return frame.polarity === "RETRACTION" &&
+      frame.changeIntent === "RETRACTION" &&
+      frame.temporalPerspective === "CURRENT" &&
+      decision?.temporalPerspective === "CURRENT" &&
+      decision.operation === "RETRACT_TARGET";
+  }
+  if (decision?.operation === "RETRACT_TARGET") return false;
   if (!requiresAdjudication && (
     frame.speechAct !== "ASSERTION" && !(
       frame.speechAct === "COMMAND" &&
@@ -374,6 +407,15 @@ export function memorySemanticAdjudicationOutputHash(
   });
 }
 
+function referenceDomains(contextRefs: readonly MemoryFactContextRef[]) {
+  const facts = contextRefs.filter((context) =>
+    context.kind === "FACT_VERSION" && context.source.factVersionId !== null);
+  return {
+    entityRefs: new Set(facts.filter(({ entityId }) => entityId !== null).map(({ ref }) => ref)),
+    targetRefs: new Set(facts.map(({ ref }) => ref))
+  };
+}
+
 function decodeDecision(
   value: unknown,
   input: MemorySemanticAdjudicationInput
@@ -395,9 +437,9 @@ function decodeDecision(
   const entityRef = value.entity_ref === null
     ? null
     : boundedToken(value.entity_ref, 128);
-  const contextRefs = new Set(input.plan.input.contextRefs.map(({ ref }) => ref));
-  if ((targetRef !== null && !contextRefs.has(targetRef)) ||
-    (entityRef !== null && !contextRefs.has(entityRef)) ||
+  const { entityRefs, targetRefs } = referenceDomains(input.plan.input.contextRefs);
+  if ((targetRef !== null && !targetRefs.has(targetRef)) ||
+    (entityRef !== null && !entityRefs.has(entityRef)) ||
     (targetOperations.has(operation) !== (targetRef !== null)) ||
     (operation === "NO_RELATION" && targetRef !== null) ||
     (operation === "AMBIGUOUS" && targetRef !== null)) {
@@ -514,11 +556,11 @@ export function memorySemanticAdjudicationPacketIsValid(
     packet.decisions.length !== input.candidateRefs.length) return false;
   try {
     const decisions = packet.decisions.map(decodeStoredDecision);
-    const contextRefs = new Set(plan.input.contextRefs.map(({ ref }) => ref));
+    const { entityRefs, targetRefs } = referenceDomains(plan.input.contextRefs);
     if (decisions.some((decision, index) =>
       decision.candidateRef !== input.candidateRefs[index] ||
-      (decision.targetRef !== null && !contextRefs.has(decision.targetRef)) ||
-      (decision.entityRef !== null && !contextRefs.has(decision.entityRef))) ||
+      (decision.targetRef !== null && !targetRefs.has(decision.targetRef)) ||
+      (decision.entityRef !== null && !entityRefs.has(decision.entityRef))) ||
       new Set(decisions.map(({ candidateRef }) => candidateRef)).size !==
         decisions.length) return false;
     return memorySemanticAdjudicationOutputHash(input.inputHash, decisions) ===
@@ -561,53 +603,51 @@ export function decodeStoredMemorySemanticAdjudication(
   return { decisions, inputHash: value.inputHash, outputHash: value.outputHash };
 }
 
-const nullableRef = {
-  anyOf: [
-    { maxLength: 128, minLength: 1, type: "string" },
-    { type: "null" }
-  ]
-};
-
-export const memorySemanticAdjudicationTool: RunTool = Object.freeze({
-  capability: "memory",
-  description: "Adjudicate all supplied high-risk Memory observations in one bounded call.",
-  inputSchema: {
-    additionalProperties: false,
-    properties: {
-      decisions: {
-        items: {
-          additionalProperties: false,
-          properties: {
-            assertion_status: {
-              enum: [...assertionStatuses],
-              type: "string"
+export function memorySemanticAdjudicationTool(
+  input: MemorySemanticAdjudicationInput
+): RunTool {
+  const { entityRefs, targetRefs } = referenceDomains(input.plan.input.contextRefs);
+  return Object.freeze({
+    capability: "memory",
+    description: "Adjudicate all supplied high-risk Memory observations in one bounded call.",
+    inputSchema: {
+      additionalProperties: false,
+      properties: {
+        decisions: {
+          items: {
+            additionalProperties: false,
+            properties: {
+              assertion_status: {
+                enum: [...assertionStatuses],
+                type: "string"
+              },
+              candidate_ref: { enum: [...input.candidateRefs], type: "string" },
+              confidence_band: { enum: [...confidenceBands], type: "string" },
+              entailment: { enum: [...entailments], type: "string" },
+              entity_ref: { enum: [...entityRefs, null], type: ["string", "null"] },
+              operation: { enum: [...operations], type: "string" },
+              reason_code: { maxLength: 64, minLength: 1, type: "string" },
+              subject_scope: { enum: [...subjectScopes], type: "string" },
+              target_ref: { enum: [...targetRefs, null], type: ["string", "null"] },
+              temporal_perspective: {
+                enum: [...temporalPerspectives],
+                type: "string"
+              }
             },
-            candidate_ref: { maxLength: 64, minLength: 1, type: "string" },
-            confidence_band: { enum: [...confidenceBands], type: "string" },
-            entailment: { enum: [...entailments], type: "string" },
-            entity_ref: nullableRef,
-            operation: { enum: [...operations], type: "string" },
-            reason_code: { maxLength: 64, minLength: 1, type: "string" },
-            subject_scope: { enum: [...subjectScopes], type: "string" },
-            target_ref: nullableRef,
-            temporal_perspective: {
-              enum: [...temporalPerspectives],
-              type: "string"
-            }
+            required: decisionKeys,
+            type: "object"
           },
-          required: decisionKeys,
-          type: "object"
-        },
-        maxItems: MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
-        type: "array"
-      }
+          maxItems: MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
+          type: "array"
+        }
+      },
+      required: ["decisions"],
+      type: "object"
     },
-    required: ["decisions"],
-    type: "object"
-  },
-  name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME,
-  strict: true
-});
+    name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME,
+    strict: true
+  });
+}
 
 export const MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT = [
   "You are the single bounded semantic adjudicator for Personal Memory.",
@@ -616,14 +656,21 @@ export const MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT = [
   "Use those declared dependencies to resolve a referenced person, project, item, time, or previously established relation to the current user. This resolves the target's meaning; it does not authorize a new assertion found only in prior context. Assistant-role context never establishes user ownership or another user fact.",
   "Return exactly one submit_memory_semantic_adjudications_v1 tool call with one decision for every supplied candidate_ref.",
   "Use only supplied candidate and opaque context refs. Never invent a target or entity ref.",
-  "entity_ref and target_ref may only copy a supplied context_refs.ref. A candidate_ref is never an entity_ref or target_ref.",
+  "entity_ref may only copy a FACT_VERSION context ref with entity_bound true. Otherwise use null, including when a declared MESSAGE dependency resolves the subject or time. A source reference is not an entity binding and does not require one.",
+  "target_ref may only copy a supplied FACT_VERSION context ref for the exact relation target. MESSAGE refs remain source dependencies and can never be entity_ref or target_ref. A candidate_ref is never an entity_ref or target_ref.",
   "When context_refs is empty, set entity_ref and target_ref to null. For an otherwise ENTAILED new observation with no existing target, use operation NO_RELATION.",
   "ENTAILED plus HIGH is required for a current-user hard fact or relation operation; otherwise return AMBIGUOUS with UNKNOWN or CONTRADICTED.",
   "The complete proposed_statement must be entailed by the direct target with references resolved only through its declared dependencies, preserving the same agent, possessor, subject, object, recipient, beneficiary, relation, and material qualifiers. The target itself must supply the new predicate, state, value, or change; never import unrelated details from context.",
+  MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE,
   "CURRENT_USER includes an explicitly established relation to the user's project, activity, or plan, even when a continuation names that same subject without repeating a self pronoun. A project's deadline is a fact about that project in the user's context, not a new claim that the user owns an organization or object. If that relation is unsupported or ambiguous, retain UNKNOWN.",
+  "USER_RELATIONSHIP_CONTEXT is an ordinary personal-memory proposition whose non-self subject is grounded in the direct user's message or one declared exact dependency and whose relation to the current user is explicit. It may cover a close person's work or constraint, a pet's constraint, or a colleague's schedule. It is never a non-self SLOT and never changes the user's own state.",
+  "Preserve owner, subject, source, and attribution separately. For an attributed report from a close person, keep the user's report and its uncertainty; do not convert it into independent testimony by that person or into the user's own schedule.",
+  "A public bio, external quotation, assistant statement, arbitrary third-party dossier, ungrounded entity, or unresolved pronoun is not USER_RELATIONSHIP_CONTEXT. Return AMBIGUOUS or CONTRADICTED rather than importing it.",
   "Do not turn participation in a purchase, transfer, gift, recommendation, or setup into CURRENT_USER ownership. An item obtained for a distinct recipient is not thereby owned or kept by the current user.",
-  "Questions, conditions, hypotheses, quotations, assistant claims, third-party claims, and ambiguous ownership are not current-user hard facts.",
-  "Choose SUPERSEDE_TARGET only when the direct target explicitly revises the exact existing fact: a current state change allowed by the supplied transition vocabulary, or a newly agreed schedule for the same future plan or constraint.",
+  "Questions, conditions, hypotheses, standalone quotations, assistant claims, arbitrary third-party claims, and ambiguous ownership are not current-user hard facts or user relationship context.",
+  "Choose SUPERSEDE_TARGET only when the direct target explicitly revises the exact existing fact: a current state change, a replacement current proposition, or a newly agreed schedule for the same future plan or constraint. A current permission can replace an earlier restriction when the user explicitly cancels that restriction for the same subject and activity. Broader replacement wording does not by itself make these unrelated facts; preserve distinct subjects, activities, times, and independently applicable constraints.",
+  "Choose RETRACT_TARGET only for a pure present withdrawal that explicitly cancels the exact FACT_VERSION target without asserting a replacement value. The candidate must have RETRACTION polarity and change intent. Never treat a historical, future, hypothetical, quoted, third-party, or ambiguous statement as a current withdrawal.",
+  "A withdrawal closes the target's current applicability; it does not assert the opposite and does not create a new negative fact. Copy exactly one current FACT_VERSION ref as target_ref. If the target is absent, stale, not exact, or ambiguous, return AMBIGUOUS.",
   "A revised occurrence date may move earlier or later; retain FUTURE for the scheduled occurrence. A possible future state, intention, or consideration never replaces an actual current state. Choose REINFORCE only for the same supported value.",
   "Before NO_RELATION, compare the proposed statement with every FACT_VERSION context ref. For the same durable fact, including a paraphrase, grammatical-person rewrite, translation, or compatible representation, choose REINFORCE and copy that FACT_VERSION ref as target_ref.",
   "Never use a MESSAGE context ref as target_ref. Different polarity, subject, object, material qualifier, temporal scope, or preference value is not a duplicate. If several FACT_VERSION refs are equally plausible canonical targets, return AMBIGUOUS rather than choosing one.",

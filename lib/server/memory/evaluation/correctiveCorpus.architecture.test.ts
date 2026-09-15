@@ -426,8 +426,8 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
     }).toEqual({
       adjudication: [
         "memory-semantic-adjudication-v1",
-        "memory-semantic-adjudication-policy-v10",
-        "memory-semantic-adjudication-prompt-v7",
+        "memory-semantic-adjudication-policy-v13",
+        "memory-semantic-adjudication-prompt-v12",
         "memory-semantic-adjudication-schema-v1"
       ],
       digest: [
@@ -439,21 +439,21 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
       entity: ["memory-entity-resolution-v3", "slot-v3"],
       extraction: [
         "memory-fact-extraction-vnext-v8",
-        "memory-fact-extraction-policy-v19",
-        "memory-fact-extraction-prompt-v33",
+        "memory-fact-extraction-policy-v27",
+        "memory-fact-extraction-prompt-v39",
         "memory-fact-extraction-schema-v5"
       ],
       history: "memory-history-incremental-v9",
       relation: [
         "memory-fact-relation-v2",
-        "memory-fact-relation-policy-v7",
+        "memory-fact-relation-policy-v8",
         "memory-fact-relation-prompt-v1",
         "memory-fact-relation-schema-v1"
       ],
       retrieval: "memory-personal-retrieval-v69",
       synthesis: [
         "memory-synthesis-v2",
-        "memory-synthesis-policy-v3",
+        "memory-synthesis-policy-v4",
         "memory-synthesis-prompt-v4",
         "memory-synthesis-schema-v2"
       ],

@@ -34,7 +34,8 @@ export type Conversation = { id: string; leaf: string | null; mode: "NORMAL" | "
 export type SendResult = {
   answer: string; runId: string; userMessageId: string; memoryOutcome: string;
   degradationCode: string | null; memoryItems: number; ownerIsolation: boolean;
-  elapsedMs: number; totalTokens: number | null;
+  deliveredMemoryEvidence: string[]; elapsedMs: number; totalTokens: number | null;
+  userMessageCreatedAt: string;
   cleanupFailureCode?: string;
 };
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -165,7 +166,7 @@ export class AcceptanceDriver {
     const reader = response.body.getReader();
     while (!(await reader.read()).done) { /* Consume the ordinary client stream. */ }
     const run = await this.prisma.modelRun.findFirst({ where: { chatId: chat.id, userId: identity.userId },
-      orderBy: { createdAt: "desc" }, include: { assistantMessage: true } });
+      orderBy: { createdAt: "desc" }, include: { assistantMessage: true, userMessage: { select: { createdAt: true } } } });
     if (run?.status !== "complete" || run.assistantMessage?.status !== "complete" ||
       run.assistantMessage.id === chat.leaf) throw new Error("memory_acceptance_run_incomplete");
     chat.leaf = run.assistantMessage.id;
@@ -175,7 +176,7 @@ export class AcceptanceDriver {
     ]);
     if ((!binding && chat.mode !== "TEMPORARY") || answerBinding?.providerModelId !== this.roles.modelId) throw new Error("memory_acceptance_run_binding_invalid");
     const items = binding ? await this.prisma.modelRunMemoryItem.findMany({ where: { bindingId: binding.id },
-      select: { userId: true, factVersionId: true, sourceChatIdSnapshot: true } }) : [];
+      orderBy: { ordinal: "asc" }, select: { includedText: true, userId: true, factVersionId: true, sourceChatIdSnapshot: true } }) : [];
     const factIds = items.flatMap((item) => item.factVersionId ? [item.factVersionId] : []);
     const sourceIds = [...new Set(items.flatMap((item) => item.sourceChatIdSnapshot ? [item.sourceChatIdSnapshot] : []))];
     const [foreignFacts, foreignSources] = await Promise.all([
@@ -186,9 +187,11 @@ export class AcceptanceDriver {
     if (!answer) throw new Error("memory_acceptance_answer_empty");
     return { answer, runId: run.id, userMessageId: run.userMessageId, memoryOutcome: binding?.outcome ?? "TEMPORARY",
       degradationCode: binding?.degradationCode ?? null, memoryItems: items.length,
+      deliveredMemoryEvidence: items.map((item) => item.includedText),
       ownerIsolation: (chat.mode === "TEMPORARY" ? binding === null : binding?.userId === identity.userId) &&
         items.every((item) => item.userId === identity.userId) && foreignFacts === 0 && foreignSources === 0,
-      elapsedMs: Date.now() - started, totalTokens: run.totalTokens };
+      elapsedMs: Date.now() - started, totalTokens: run.totalTokens,
+      userMessageCreatedAt: run.userMessage.createdAt.toISOString() };
   }
 
   async settle(identity: Identity, source?: { chat: Conversation; messageId: string }) {
@@ -198,16 +201,30 @@ export class AcceptanceDriver {
     while (Date.now() - started < PROFILE.settlementTimeoutMs) {
       const [jobs, deletions, projections, settings] = await Promise.all([
         this.prisma.memoryJob.findMany({ where: { userId: identity.userId },
-          select: { kind: true, state: true, errorCode: true, sourceMessageId: true, chatId: true } }),
+          select: { id: true, kind: true, state: true, errorCode: true, sourceMessageId: true, chatId: true } }),
         this.prisma.memoryDeletionOutbox.count({ where: { userId: identity.userId, state: { not: "SUCCEEDED" },
           NOT: { operation: "TEMPORARY_DELETE", state: "PENDING", nextAttemptAt: { gt: new Date() } } } }),
         this.prisma.memoryLexicalProjectionEvent.count({ where: { userId: identity.userId, state: { not: "SUCCEEDED" } } }),
         this.prisma.userMemorySettings.findUniqueOrThrow({ where: { userId: identity.userId } })
       ]);
-      const failed = jobs.find((job) => ["TERMINAL_FAILED", "CANCELLED", "STALE"].includes(job.state) &&
+      const failed = jobs.filter((job) => ["TERMINAL_FAILED", "CANCELLED", "STALE"].includes(job.state) &&
         !(job.kind === "INDEX_HISTORY" && job.state === "STALE" && job.errorCode === "memory_source_stale") &&
         !(job.chatId && this.excludedProbeIds.has(job.chatId) && ["CANCELLED", "STALE"].includes(job.state)));
-      if (failed) failureCode ??= `memory_acceptance_job_failed:${failed.kind.toLowerCase()}:${safeCode(new Error(failed.errorCode ?? "unknown"))}`;
+      for (const job of failed) {
+        if (job.kind === "EMBED_ITEMS" && job.state === "STALE" &&
+          job.errorCode === "memory_embedding_batch_target_stale") {
+          const [items, executions] = await Promise.all([
+            this.prisma.memoryEmbeddingBatchItem.count({ where: { userId: identity.userId, memoryJobId: job.id } }),
+            this.prisma.memoryExecutionBinding.count({ where: { userId: identity.userId, memoryJobId: job.id,
+              state: { notIn: ["SUCCEEDED", "FAILED", "CANCELLED", "OUTCOME_UNKNOWN"] } } })
+          ]);
+          // Deletion/merge can retire every target before batch dispatch. The
+          // handler deliberately marks this empty work STALE; no current item
+          // failed embedding. Other stale batches remain failed evidence.
+          if (items === 0 && executions === 0) continue;
+        }
+        failureCode ??= `memory_acceptance_job_failed:${job.kind.toLowerCase()}:${safeCode(new Error(job.errorCode ?? "unknown"))}`;
+      }
       const required = source?.chat.mode === "NORMAL" && settings.useMemoryFacts;
       const extractPresent = !required || !settings.learnAutomatically || jobs.some((job) =>
         job.kind === "EXTRACT_FACTS" && job.sourceMessageId === source.messageId);
@@ -292,6 +309,9 @@ export class AcceptanceDriver {
   }
 
   async rebuild(identity: Identity) {
+    // Account setup can already have queued an automatic index rebuild.
+    // Preserve its failure, or let it finish before admitting another rebuild.
+    await this.settle(identity);
     const settings = await this.prisma.userMemorySettings.findUniqueOrThrow({ where: { userId: identity.userId } });
     const repository = createPrismaMemoryRebuildRepository(this.prisma);
     const service = createMemoryRebuildService({ repository, probeEmbeddingPin: (userId) =>
@@ -315,12 +335,30 @@ export class AcceptanceDriver {
 
   async usage() {
     const where = { userId: { in: this.ownedUserIds } };
-    const [answers, utilities] = await Promise.all([
-      this.prisma.modelRun.groupBy({ by: ["status"], where, _count: true, _sum: { totalTokens: true } }),
-      this.prisma.memoryExecutionBinding.groupBy({ by: ["logicalRole", "state", "usageCompleteness"], where,
-        _count: true, _sum: { inputTokens: true, outputTokens: true, totalTokens: true, estimatedCostMicros: true } })
+    const usageSums = {
+      cacheWriteInputTokens: true,
+      cachedInputTokens: true,
+      estimatedCostMicros: true,
+      inputTokens: true,
+      outputTokens: true,
+      reasoningTokens: true,
+      totalTokens: true
+    } as const;
+    const [answers, utilities, ancillaryUsageEvents] = await Promise.all([
+      this.prisma.modelRun.groupBy({ by: ["provider", "modelId", "status", "usageCompleteness"], where,
+        _count: true, _sum: usageSums }),
+      this.prisma.memoryExecutionBinding.groupBy({
+        by: ["logicalRole", "providerModelId", "state", "usageCompleteness"], where,
+        _count: true, _sum: usageSums
+      }),
+      this.prisma.usageEvent.groupBy({
+        by: ["chatPdfPreparation", "chatTitleGeneration", "imageGeneration", "mcpHubDiscovery", "modelId", "provider", "providerModelId", "usageCompleteness"],
+        where: { ...where, memoryExecutionBindingId: null, modelRunId: null },
+        _count: true,
+        _sum: { ...usageSums, operationCount: true }
+      })
     ]);
-    return { answers, utilities };
+    return { ancillaryUsageEvents, answers, utilities };
   }
 
   async assertDatabaseAvailable() {

@@ -27,6 +27,7 @@ import {
   type MemoryFactValueInput
 } from "../persistence/facts";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
+import { loadPersonalEligibleFactVersionIds, loadPersonalMemoryEvidenceSnapshots } from "../persistence/eligibility";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import {
   MEMORY_PURGE_REQUIRED_CONTRIBUTORS
@@ -1594,6 +1595,77 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
     } finally {
       await cleanupUsers([userId]);
     }
+  });
+
+  it.each([false, true])("preserves separate source evidence or atomically refuses overlap (overlap=%s)", async (overlap) => {
+    const userId = await createActiveUser("selective-source");
+    const { explicit, lifecycle } = services(purgeRegistry());
+    const first = "My lamp is amber.";
+    const second = "My bicycle is silver.";
+    const statement = `${first} ${second}`;
+    try {
+      const chat = await prisma.chat.create({ data: {
+        defaultProviderModelId: providerTemplateIds.fakeModel, title: "Selective source", userId
+      } });
+      const message = await prisma.message.create({ data: {
+        chatId: chat.id, content: textMessageContent(statement), role: "user", status: "complete"
+      } });
+      await prisma.chat.update({ data: { activeLeafMessageId: message.id }, where: { id: chat.id } });
+      const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+      const facts = createPrismaMemoryFactRepository(keyring, prisma);
+      const saved = [];
+      for (const [ordinal, text] of [first, second].entries()) {
+        const excerpt = overlap ? statement : text;
+        const created = await facts.save(userId, {
+          evidence: { branchGeneration: 0, chatId: chat.id, kind: "MESSAGE", messageId: message.id,
+            observedAt: message.createdAt, safeExcerpt: excerpt, safeSourceHash: memorySha256(statement),
+            safetyClass: "NORMAL", sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION, sourceRole: "user" },
+          explicitSuppressionOverride: false, idempotencyFingerprint: randomUUID(), requestId: randomUUID(), scopeId: scope.id,
+          value: automaticValue(`learned.selective.${ordinal}`, text)
+        });
+        await prisma.memoryEvidence.updateMany({
+          data: { evidenceFingerprint: memorySha256({ ordinal, messageId: message.id }),
+            sourceStartOffset: statement.indexOf(excerpt), sourceEndOffset: statement.indexOf(excerpt) + excerpt.length,
+            sourceMessageContentHash: memorySha256(statement) },
+          where: { userId, factVersionId: created.versionId }
+        });
+        await classifyFactVersion(userId, created.versionId);
+        saved.push(created);
+      }
+      const [forgotten, retained] = saved;
+      const ids = saved.map(({ versionId }) => versionId);
+      expect(await loadPersonalEligibleFactVersionIds(prisma, userId, ids)).toEqual(new Set(ids));
+      const authorization = await explicit.mintAuthorization(userId, {
+        action: "FORGET", confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+        expectedTargetVersionId: forgotten!.versionId, requestNonce: "selective-forget", targetFactId: forgotten!.factId
+      });
+      const forget = () => lifecycle.forget(userId, forgotten!.factId, {
+        expectedVersionId: forgotten!.versionId, mutationAuthorizationId: authorization.mutationAuthorizationId
+      });
+      if (overlap) {
+        await expect(forget()).rejects.toMatchObject({ code: "memory_action_failed" });
+        expect(await loadPersonalEligibleFactVersionIds(prisma, userId, ids)).toEqual(new Set(ids));
+        expect(await prisma.memorySuppression.count({ where: { userId } })).toBe(0);
+        expect(await prisma.memoryDeletionOutbox.count({ where: { userId } })).toBe(0);
+      } else {
+        await expect(forget()).resolves.toMatchObject({ memory: { factState: "FORGOTTEN" } });
+        await expect(forget()).resolves.toMatchObject({ memory: { factState: "FORGOTTEN" } });
+        const support = await loadPersonalMemoryEvidenceSnapshots(prisma, userId, [retained!.versionId], { exactVNext: true });
+        expect(support).toHaveLength(1);
+        expect(await prisma.memoryFactVersion.findUniqueOrThrow({ where: { id: retained!.versionId } }))
+          .toMatchObject({ state: "ACTIVE", displayText: second });
+        const suppression = await prisma.memorySuppression.findFirstOrThrow({ where: { userId, scope: "SOURCE_MESSAGE" } });
+        expect(suppression.preservedEvidenceIds).toEqual([support[0]!.id]);
+        await expect(prisma.memorySuppression.update({ where: { id: suppression.id }, data: { preservedEvidenceIds: ["unknown-evidence"] } })).rejects.toThrow();
+        await expect(facts.save(userId, {
+          evidence: { branchGeneration: 0, chatId: chat.id, kind: "MESSAGE", messageId: message.id,
+            observedAt: message.createdAt, safeExcerpt: first, safeSourceHash: memorySha256(statement), safetyClass: "NORMAL",
+            sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION, sourceRole: "user" },
+          explicitSuppressionOverride: false, idempotencyFingerprint: randomUUID(), requestId: randomUUID(), scopeId: scope.id,
+          value: automaticValue("learned.selective.replayed", "The lamp has an amber colour.")
+        })).rejects.toMatchObject({ code: "memory_fact_suppressed" });
+      }
+    } finally { await cleanupUsers([userId]); }
   });
 
   it("suppresses the exact retained source of a forgotten automatic fact", async () => {

@@ -213,6 +213,35 @@ describe("Dream synthesis policy", () => {
     expect(plan?.clusters[0]?.sources).toHaveLength(3);
   });
 
+  it("isolates automatic relationship facts by their grounded subject", () => {
+    const ana = Array.from({ length: 3 }, (_, index) => source(index, {
+      entityIds: [`entity-ana-${index}`],
+      subjectEntityIds: ["entity-ana"],
+      subjectKey: null,
+      subjectScope: "USER_RELATIONSHIP_CONTEXT",
+      predicateKey: `ana-predicate-${index}`
+    }));
+    const noor = Array.from({ length: 3 }, (_, index) => source(index + 3, {
+      entityIds: [`entity-noor-${index}`],
+      subjectEntityIds: ["entity-noor"],
+      subjectKey: null,
+      subjectScope: "USER_RELATIONSHIP_CONTEXT",
+      predicateKey: `noor-predicate-${index}`
+    }));
+    const plan = buildMemorySynthesisPlan({
+      boundary,
+      generation: 3,
+      sources: [...ana, ...noor]
+    });
+    expect(plan?.clusters).toHaveLength(2);
+    const clusterSubjects = plan?.clusters.map(({ sources }) =>
+      new Set(sources.map(({ subjectEntityIds }) => subjectEntityIds?.[0])));
+    expect(clusterSubjects).toEqual(expect.arrayContaining([
+      new Set(["entity-ana"]),
+      new Set(["entity-noor"])
+    ]));
+  });
+
   it("does not join otherwise compatible sources across the bounded time window", () => {
     const isolated = Array.from({ length: 20 }, (_, index) => source(index, {
       entityIds: [`isolated-entity-${index}`],

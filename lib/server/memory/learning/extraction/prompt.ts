@@ -5,7 +5,8 @@ import {
   MEMORY_FACT_MAX_INPUT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_MESSAGES,
   MEMORY_FACT_MAX_PACKET_CANDIDATES,
-  MEMORY_FACT_MAX_TARGET_CHARACTERS
+  MEMORY_FACT_MAX_TARGET_CHARACTERS,
+  MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE
 } from "./contract";
 import {
   MEMORY_PREFERENCE_DIMENSION_PREFIXES,
@@ -66,7 +67,10 @@ const semanticFrame = Object.freeze({
       type: "string"
     },
     subject_scope: {
-      enum: ["CURRENT_USER", "THIRD_PARTY", "ASSISTANT", "UNKNOWN"],
+      enum: [
+        "CURRENT_USER", "USER_RELATIONSHIP_CONTEXT", "THIRD_PARTY", "ASSISTANT",
+        "UNKNOWN"
+      ],
       type: "string"
     },
     temporal_perspective: {
@@ -337,17 +341,27 @@ export const MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT = [
   "An assistant-role context message is never user testimony. A candidate that would be true only because the assistant said it must not be emitted.",
   "When a candidate relies on context_before, copy that item's opaque context_ref into dependency_refs. Never cite context text as evidence.",
   "occurrence_index is the zero-based ordinal among identical exact-text matches inside the referenced string, never a character offset; use 0 when that exact text occurs once.",
-  "Emit the language-neutral semantic_frame for every observation. Never use ASSERTED or CURRENT_USER when the source is a question, condition, hypothesis, quotation, assistant claim, or third-party claim.",
+  "Emit the language-neutral semantic_frame for every observation. Never use ASSERTED, CURRENT_USER, or USER_RELATIONSHIP_CONTEXT when the source is a question, condition, hypothesis, standalone quotation, assistant claim, or arbitrary third-party claim.",
   "Do not infer ownership, current status, correction, retraction, temporal perspective, expiration intent, entity identity, or coreference. Represent uncertainty with UNKNOWN.",
   "A clear direct current-user self-identity or stable preference is eligible; 'do not infer' does not reject an attribute explicitly asserted by the current user.",
   "Durable means useful in later interactions, not permanent. Retain directly asserted plans, scheduled activities, time-limited arrangements, and past experiences when future_useful is true; preserve their exact scope and tense.",
   "temporary describes limited relevance and is not an instruction to delete a memory. An occurrence date or the end of an arrangement does not imply expiration. Use expiration_intent EXPLICIT only for a direct instruction to expire or forget the memory; otherwise keep NONE and preserve the temporal qualifier.",
+  "A pure present withdrawal that explicitly cancels one previously held personal fact without supplying a replacement remains eligible for relation adjudication. Emit one HIGH observation with ASSERTION, ASSERTED, CURRENT, polarity RETRACTION, change_intent RETRACTION, memory_directive NONE, and the exact scope of the target: CURRENT_USER for the user's own fact or USER_RELATIONSHIP_CONTEXT for grounded non-self personal context. Preserve the exact withdrawn subject and scope in statement. Do not invent an opposite assertion or a new value.",
+  "Represent a pure withdrawal with the grounded SLOT or PROPOSITION identity of what is being withdrawn. Include an exact context dependency only when target_message relies on that context to identify the target; otherwise dependency_refs may be empty. The later adjudicator alone selects the exact current FACT_VERSION target.",
+  "When the user explicitly cancels a prior restriction and supplies a replacement current condition, emit the replacement with STATE_CHANGE (or CORRECTION for an explicit correction), preserving the cancellation in its exact evidence. This is not a pure RETRACTION: the new condition remains a useful fact. Never infer cancellation from a merely related assertion.",
   "goal_status and project_status SLOT identities represent the lifecycle state of a grounded named goal or project. A deadline, scheduled date, or other detail about it is a PROPOSITION unless it independently satisfies that lifecycle SLOT. Never invent a missing entity or state to fill a SLOT.",
   "For the date of a scheduled occurrence, use temporal_perspective FUTURE even when the agreement or rescheduling is asserted now. Revising a plan does not assert that its event has happened.",
-  "A direct ordinary relationship fact such as 'my spouse is Alex' or 'I work with Sam' is CURRENT_USER relationship context, not a third-party claim. It may be retained when it describes the user's own relationship and is supported by the target message.",
+  MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE,
+  "A direct ordinary relationship fact such as 'my spouse is Alex' or 'I work with Sam' is USER_RELATIONSHIP_CONTEXT, not an arbitrary third-party claim. This includes a close person's work or constraint, a pet's constraint, or a colleague's schedule while preserving that non-self subject.",
+  "The user's own work, activity, project, associated place, plan, or errand and its details are CURRENT_USER when the target or a declared direct-user dependency establishes that personal association. A continuation about the same activity keeps CURRENT_USER even when the grammatical subject is the activity. This scope records the user's association; it never asserts ownership of an organization or object or assigns another person's properties to the user.",
   "A direct durable CURRENT_USER profession, employment role, or work identity remains eligible even when no organization is named. Without a grounded organization, represent it as a HIGH PROPOSITION with no entities and preserve the exact work meaning in statement; never invent an organization or reject the fact merely because it cannot form an employment_status SLOT.",
-  "Represent a direct user-reported relationship as PROPOSITION identity and keep the relationship meaning in statement. Bind each named third party as a distinct PERSON entity with role SUBJECT, an exact NAMED mention, and source-supported aliases; never store the third party as PERSON_SELF or as a user SLOT attribute.",
-  "Do not retain another person's standalone profile, secrets, sensitive attributes, allegations, or facts that are not necessary to represent the current user's relationship context.",
+  "Represent USER_RELATIONSHIP_CONTEXT only as PROPOSITION identity and keep both the user's relation and the reported fact in statement. Bind each named or nominal non-self subject as a distinct source-grounded SUBJECT entity, using PERSON for people and OTHER for pets; never store it as PERSON_SELF or as a user SLOT attribute.",
+  "PERSON annotations support only role SUBJECT. Annotate the person whose fact this observation asserts; preserve other participants in statement without PERSON OBJECT or MENTION annotations. A first-person reporting or correction clause identifies the speaker, not necessarily the subject of the reported fact. Do not annotate every person in an encompassing evidence span as the subject of each observation.",
+  "For a CURRENT_USER action or event, retain directly named non-person participants as source-grounded OBJECT entities, including OTHER for a named pet. These annotations support later references without asserting current ownership or changing the actor of the event. Preserve exact names and roles; do not invent a name, relation, or entity from a pronoun alone.",
+  "For a direct statement about a close person, pet, or colleague, preserve that named subject and the current user as owner/source context. The subject's work, schedule, or constraint never becomes the user's own fact. Apply the same subject-isolation rule across people, pets, and activities.",
+  "A direct user assertion that a close person told the user something is not a standalone quotation. Keep USER_RELATIONSHIP_CONTEXT, preserve the attribution in statement, and use MEDIUM PROPOSITION when the underlying report remains uncertain; never rewrite it as independent testimony by that person or as a user fact.",
+  "An explicit current update or withdrawal of USER_RELATIONSHIP_CONTEXT may retain that scope only with the same grounded non-self subject and the exact governed target; never use it to mutate a CURRENT_USER fact or another person's fact.",
+  "A pasted public bio, quoted external text, or assistant text without the user's own contextual assertion is QUOTED or non-user testimony and must produce no observation. Do not retain an arbitrary third-party dossier, secrets, allegations, or facts unrelated to the user's personal context.",
   "A direct unquoted assertion equivalent to 'my name is X' or 'меня зовут X' is one atomic durable current-user self-identity and must produce one HIGH-confidence observation when X is present and non-secret.",
   "Do not return zero merely because an explicitly asserted name or preference value is unusual, synthetic-looking, hyphenated, non-Latin, or contains a unique label.",
   "For that direct self-name observation, use semantic_frame ASSERTION, ASSERTED, CURRENT_USER, AFFIRMED, CURRENT, change_intent NONE, and memory_directive NONE; use memory_type STATE, confidence_band HIGH, future_useful true, temporary false, sensitivity NORMAL, dependency_refs [], and entities [].",
@@ -363,7 +377,7 @@ export const MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT = [
   "For an unsplit named product mention, use the full exact mention as canonical_label with null brand and model qualifiers; the exact entity mention then grounds product identity.",
   "A question, condition, hypothesis, quotation, third-party claim, recommendation, discount, setup action, or mere neighboring product mention is never direct ownership and must not produce product_status owned.",
   "Preserve agent, possessor, recipient, beneficiary, and relationship roles exactly. An item explicitly transferred, bought, obtained, or prepared for a distinct recipient does not establish that the CURRENT_USER owns or keeps that item.",
-  "Any statement asserting CURRENT_USER ownership, possession, acquisition, or current PRODUCT, DEVICE, or SERVICE status must use the product_status SLOT shape above, never PROPOSITION. If the direct ownership requirements are not met, omit that status observation.",
+  "A statement asserting CURRENT_USER ownership, possession, or current PRODUCT, DEVICE, or SERVICE status must use the product_status SLOT shape above, never PROPOSITION. If the direct ownership requirements are not met, omit that status claim. A separately grounded action or event involving the item, including an acquisition or transfer for a distinct recipient, remains eligible as a PROPOSITION with its actor, recipient, and time preserved; it does not assert current ownership.",
   "A clear direct unquoted assertion that the CURRENT_USER presently lives permanently or has a primary residence in a named place is one residence SLOT observation; apply this rule language-neutrally.",
   "For that residence observation, use identity subject PERSON_SELF with null canonical_label and null brand/model qualifiers, predicate_key residence, dimension_key primary, memory_type STATE, and HIGH confidence.",
   "Set value.kind to primary and value.place to the grounded PLACE canonical label; set every other value field to null.",
@@ -378,11 +392,12 @@ export const MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT = [
   "Set value.value to the explicitly preferred value, set optional value.strength only when directly grounded, keep every other value field null, and use entities []; never infer or manufacture a missing preference dimension.",
   "When an otherwise eligible preference source does not explicitly supply a stable category, format, interaction, or topic dimension, use PROPOSITION identity with subject NONE, null canonical_label and brand/model qualifiers, null predicate_key and dimension_key, entities [], and every value field null; preserve the preference meaning and its exact scope in statement and never invent a SLOT dimension.",
   "For PROPOSITION identity, set predicate_key and dimension_key to null and keep unused value fields null.",
-  "Use confidence_band HIGH for a clear authoritative observation. MEDIUM is allowed only for a direct ASSERTED CURRENT_USER AFFIRMED observation that remains useful but should be supporting context rather than authoritative state.",
+  "Use confidence_band HIGH for a clear authoritative observation. MEDIUM is allowed only for a direct ASSERTED CURRENT_USER or USER_RELATIONSHIP_CONTEXT AFFIRMED observation that remains useful but should be supporting context rather than authoritative state.",
   "Every MEDIUM observation must use PROPOSITION identity, change_intent NONE, memory_directive NONE, and no correction or retraction semantics. It cannot propose a SLOT, current-state change, or override. Do not emit LOW observations.",
   "Use structured temporal normalization only; raw_expression is an exact occurrence reference, not an interpreted timestamp.",
   "When a relative date is reliably grounded, resolve it against target_message.created_at in time_zone into the structured absolute/calendar normalization while preserving the exact original wording through raw_expression; never replace source wording or invent an event time.",
   "Entity aliases require exact NAMED or NOMINAL source occurrences. PRONOMINAL, ELLIPSIS, UNKNOWN, or context-only mentions are never aliases.",
+  "A PRONOMINAL or ELLIPSIS SUBJECT in USER_RELATIONSHIP_CONTEXT must bind context_entity_ref to the exact same person or pet in supplied_context_refs with entity_bound true. A context_before MESSAGE ref can be a source dependency but has no entity binding; never substitute it for that FACT_VERSION ref. Keep any separately required MESSAGE dependency in dependency_refs. Without an unambiguous supplied entity, do not invent the subject binding.",
   "Use only supplied opaque refs. A subject or correction that relies on preceding context must include that context's ref in dependency_refs. A self-contained correction whose subject and corrected value are explicit in target_message uses dependency_refs []; never invent a prior-context dependency.",
   "A continuation may rely on a prior direct-user statement that establishes the user's relation to the same named project, activity, or plan. Declare that exact context ref even when the target repeats the name instead of a pronoun. The new date, state, or change must still be asserted by target_message; do not import unrelated details or establish user ownership from assistant context.",
   "Return zero observations only when the source contains no clear atomic, durable, future-useful fact. Hard SLOT proposals require HIGH confidence.",
@@ -444,6 +459,7 @@ export function memoryFactExtractionPromptPayload(
       .map((context) => ({
       aliases: context.aliases,
       display_name: context.displayName,
+      entity_bound: context.entityId !== null,
       entity_type: context.entityType,
       kind: context.kind,
       ref: context.ref,

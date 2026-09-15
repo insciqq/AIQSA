@@ -60,7 +60,7 @@ export const memoryDefaultsAdoptionProofSql = `
 DO $$ BEGIN
   IF (SELECT count(*) FROM "UserMemorySettings" WHERE "userId" IN (${names(resumed)})
     AND "useMemoryFacts" AND "referenceChatHistory" AND "learnAutomatically" AND "synthesisEnabled" AND "decayEnabled"
-    AND "synthesisEnabledAt" IS NOT NULL AND "synthesisPolicyVersion" = 'memory-synthesis-policy-v3'
+    AND "synthesisEnabledAt" IS NOT NULL AND "synthesisPolicyVersion" = 'memory-synthesis-policy-v4'
     AND "decayPolicyVersion" = 'memory-decay-v1' AND "memoryGeneration" = 4
     AND "memoryRevision" = 12 AND "settingsRevision" = 8) <> ${resumed.length}
     THEN RAISE EXCEPTION 'memory_existing_preferences_not_resumed'; END IF;
@@ -72,6 +72,7 @@ DO $$ BEGIN
     AND ("synthesisEnabledAt" <> '2026-09-01T00:00:00Z' OR "lastSynthesisAt" <> '2026-09-02T00:00:00Z'))
     THEN RAISE EXCEPTION 'memory_prior_synthesis_progress_changed'; END IF;
   IF NOT EXISTS (SELECT 1 FROM "UserMemorySettings" WHERE "userId" = 'memory-defaults-enabled'
+    AND "synthesisPolicyVersion" = 'memory-synthesis-policy-v4'
     AND "memoryGeneration" = 4 AND "memoryRevision" = 11 AND "settingsRevision" = 7 AND "updatedAt" = '2026-09-01T00:00:00Z')
     THEN RAISE EXCEPTION 'memory_already_enabled_reset'; END IF;
   IF (SELECT count(*) FROM "MemoryPauseInterval" pause JOIN "UserMemorySettings" s ON s."userId" = pause."userId"
@@ -96,7 +97,7 @@ INSERT INTO "UserMemorySettings" ("userId") VALUES ('memory-defaults-new') ON CO
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM "UserMemorySettings" WHERE "userId" = 'memory-defaults-new'
     AND "useMemoryFacts" AND "referenceChatHistory" AND "learnAutomatically" AND "synthesisEnabled" AND "decayEnabled"
-    AND "synthesisEnabledAt" = "createdAt" AND "synthesisPolicyVersion" = 'memory-synthesis-policy-v3'
+    AND "synthesisEnabledAt" = "createdAt" AND "synthesisPolicyVersion" = 'memory-synthesis-policy-v4'
     AND "decayPolicyVersion" = 'memory-decay-v1' AND "lastSynthesisAt" IS NULL AND "settingsRevision" = 0)
     THEN RAISE EXCEPTION 'memory_new_defaults_invalid'; END IF;
 END $$;

@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  ACCEPTANCE_CORPUS_SHA256, canonicalJson, corpusFingerprint, corpusSchema, decodeJudgement,
-  expectedChecks, judgePayload, safeCode, scenarioSchema, summarizeLatency, summarizeResults,
+  ACCEPTANCE_CORPUS_SHA256, ACCEPTANCE_SOURCE_AWARE_JUDGE_PROTOCOL_VERSION, canonicalJson, corpusFingerprint, corpusSchema, decodeJudgement,
+  expectedChecks, judgePayload, safeCode, scenarioSchema, sourceDialogueForScenario, summarizeLatency, summarizeResults,
   type ScenarioResult
 } from "./contract";
 
@@ -95,6 +95,37 @@ describe("frozen personal-memory acceptance contract", () => {
     const payload = JSON.parse(judgePayload({ action: "check", surface: "both", question: "Where do I live?", expectation: "York.", distinct: true }, "facts", ["Lives in York"]));
     expect(payload).toEqual({ expectation: "York.", question: "Where do I live?", surface: "facts", absence: false, distinct: true, values: ["Lives in York"] });
     expect(payload).not.toHaveProperty("sourceMessages");
+  });
+
+  it("adds ordered role-aware source dialogue only to the versioned source-aware protocol", () => {
+    const scenario = scenarioSchema.parse({
+      id: "source-dialogue", category: "retrieval", language: "en", partition: "development",
+      steps: [
+        { action: "message", content: "I live in Leeds." },
+        { action: "message", actor: "other", content: "I live in Quito." },
+        { action: "message", content: "I moved to York." },
+        { action: "check", question: "Where do I live now?", expectation: "York.", surface: "both" }
+      ]
+    });
+    const messages = sourceDialogueForScenario(scenario, 3, "owner", new Map([
+      [0, "2026-09-14T00:00:00.000Z"],
+      [2, "2026-09-14T00:01:00.000Z"]
+    ]));
+    const payload = JSON.parse(judgePayload(scenario.steps[3] as typeof scenario.steps[number] & { action: "check" }, "answer", ["York"], {
+      messages,
+      deliveredEvidence: ["Current home: York."]
+    }));
+    expect(payload).toMatchObject({
+      sourceAwareProtocolVersion: ACCEPTANCE_SOURCE_AWARE_JUDGE_PROTOCOL_VERSION,
+      sourceDialogue: {
+        messages: [
+          { actor: "owner", content: "I live in Leeds.", memoryMode: "NORMAL", ordinal: 0, role: "user", timestamp: "2026-09-14T00:00:00.000Z" },
+          { actor: "owner", content: "I moved to York.", memoryMode: "NORMAL", ordinal: 2, role: "user", timestamp: "2026-09-14T00:01:00.000Z" }
+        ],
+        readerAuditEvidence: ["Current home: York."]
+      }
+    });
+    expect(payload.sourceDialogue.messages).not.toContainEqual(expect.objectContaining({ actor: "other" }));
   });
 
   it("keeps latency tails and missing measurements from qualifying", () => {

@@ -12,9 +12,9 @@ import {
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
   "memory-fact-extraction-vnext-v8";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-extraction-policy-v19";
+  "memory-fact-extraction-policy-v27";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-extraction-prompt-v33";
+  "memory-fact-extraction-prompt-v39";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
   "memory-fact-extraction-schema-v5";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
@@ -22,6 +22,10 @@ export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
 export const MEMORY_FACT_SOURCE_PROJECTION_VERSION =
   "memory-fact-source-projection-v5";
 export const MEMORY_FACT_EXTRACTION_JOB_PREFIX = "extract-facts:vnext:";
+
+/** Extraction and adjudication must agree on the scope of the same assertion. */
+export const MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE =
+  "The user's own action or experience has CURRENT_USER scope, including when another person or pet participates. A relationship to someone, or that person's or pet's own state or property, has USER_RELATIONSHIP_CONTEXT scope. Classify the asserted information, not merely the type or role of a mentioned entity. Reporting another subject's property does not turn it into the user's own state or action. Preserve the actor, recipient, and ownership roles without inferring possession.";
 
 // Context is a bounded non-authoritative aid. The final direct-user target is
 // the only evidence source; every admitted prior message is persisted as an
@@ -68,7 +72,8 @@ export type MemorySemanticSpeechAct =
 export type MemorySemanticAssertionStatus =
   "ASSERTED" | "CONDITIONAL" | "HYPOTHETICAL" | "QUOTED" | "UNKNOWN";
 export type MemorySemanticSubjectScope =
-  "CURRENT_USER" | "THIRD_PARTY" | "ASSISTANT" | "UNKNOWN";
+  "CURRENT_USER" | "USER_RELATIONSHIP_CONTEXT" | "THIRD_PARTY" |
+  "ASSISTANT" | "UNKNOWN";
 export type MemorySemanticPolarity =
   "AFFIRMED" | "NEGATED" | "CORRECTION" | "RETRACTION" | "UNKNOWN";
 export type MemorySemanticTemporalPerspective =

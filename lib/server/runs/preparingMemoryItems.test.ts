@@ -175,6 +175,30 @@ describe("preparing Memory item finalization", () => {
     expect(factSql).toContain('negative_feedback."memoryFactVersionId" =');
   });
 
+  it("keeps dependency timestamps stable across a persisted JSON snapshot and rejects source changes", async () => {
+    const resolve = (updatedAt: Date | null) => {
+      const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
+        .mockResolvedValueOnce([automaticFactRow])
+        .mockResolvedValueOnce([automaticEvidenceRow()])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{
+          dependencyKind: "TEMPORAL_CONTEXT", id: "dependency-1",
+          sourceFactVersionId: null, sourceMessageContentHash: "d".repeat(64),
+          sourceMessageId: "prior-message", sourceMessageUpdatedAt: updatedAt,
+          sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION
+        }]);
+      return resolvePreparingMemoryItem(
+        { $queryRaw } as unknown as Prisma.TransactionClient, authority, null, item
+      );
+    };
+    const updatedAt = new Date("2026-08-13T00:00:00.123Z");
+    const resolved = await resolve(updatedAt);
+    const persisted = JSON.parse(JSON.stringify(resolved)) as typeof resolved;
+    expect(samePreparingMemoryItemSnapshot(persisted, await resolve(new Date(updatedAt)))).toBe(true);
+    expect(samePreparingMemoryItemSnapshot(persisted, await resolve(new Date(updatedAt.getTime() + 1)))).toBe(false);
+    expect(samePreparingMemoryItemSnapshot(persisted, await resolve(null))).toBe(false);
+  });
+
   it("redacts legacy identity metadata in the frozen diagnostic snapshot", async () => {
     const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
     const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])

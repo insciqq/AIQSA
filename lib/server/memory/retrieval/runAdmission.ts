@@ -121,7 +121,7 @@ import {
 } from "./deadline";
 
 export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
-  "memory-run-retrieval-admission-v57";
+  "memory-run-retrieval-admission-v58";
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
   "memory-retrieval-component-metrics-v19";
 
@@ -795,6 +795,7 @@ function createMemoryAdmissionDeadline(
 
 export {
   MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
+  MEMORY_CONTROL_READ_RESERVE_MS,
   MEMORY_INTERACTIVE_HARD_DEADLINE_MS,
   MEMORY_INTERACTIVE_SOFT_DEADLINE_MS,
   MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
@@ -1383,6 +1384,20 @@ function controlForAttemptEvidence(
   // authority. Its source attempt already owns any failed binding; the retry
   // records the fallback proof without claiming a second external execution.
   return { reason: control.reason, status: "UNAVAILABLE" };
+}
+
+function unavailableControlAfterFailure(error: unknown): MemoryControlResult {
+  const code = typeof error === "object" && error !== null && "code" in error &&
+    typeof error.code === "string"
+    ? error.code
+    : null;
+  return {
+    reason: code === "memory_control_timeout" ||
+      code === "memory_admission_deadline_exceeded"
+      ? "memory_action_intent_outcome_unknown"
+      : "memory_action_intent_unavailable",
+    status: "UNAVAILABLE"
+  };
 }
 
 function memoryActionAnswerResult(
@@ -2609,10 +2624,7 @@ export function createMemoryRunRetrievalService(
               signal: utilitySignal,
               userId: input.userId
             }))
-            .catch(() => ({
-              reason: "memory_action_intent_unavailable",
-              status: "UNAVAILABLE" as const
-            })));
+            .catch(unavailableControlAfterFailure));
       })().then((result) => {
         settledControl = result;
         return result;
@@ -3385,6 +3397,16 @@ export function createMemoryRunRetrievalService(
         speculativeBaselineUsed || speculativeHybridUsed || broadLexicalFallbackUsed,
         admittedSourceKinds
       );
+      if (deadline.expired()) {
+        return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
+          { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
+          {
+            result: queryResolverState.execution?.result ?? null,
+            role: "MEMORY_QUERY_RESOLVE"
+          },
+          { result: relevance, role: "MEMORY_RERANK" }
+        ]);
+      }
       const queryScopeDecision = timings.measureSync("packerMs", () => {
         const basePack = packMemoryPersonalContext({
           core: selectedCore,
@@ -3440,6 +3462,16 @@ export function createMemoryRunRetrievalService(
           })
         });
       });
+      if (deadline.expired()) {
+        return admissionDeadlineAttempt(input.expected, controlCache, input.attemptId, [
+          { result: queryEmbedding, role: "MEMORY_QUERY_EMBED" },
+          {
+            result: queryScopeDecision.execution?.result ?? null,
+            role: "MEMORY_QUERY_RESOLVE"
+          },
+          { result: relevance, role: "MEMORY_RERANK" }
+        ]);
+      }
       const queryResolutionExecution = queryScopeDecision.execution;
       const queryResolutionEvidence = queryResolutionExecution?.result ?? null;
       const resolverEvidenceSources = queryResolutionExecution?.sources ?? [];

@@ -123,6 +123,7 @@ function personalEvidenceWhere(
           OR source_suppression."sourceBranchGeneration" = support."branchGeneration")
         AND (source_suppression."expiresAt" IS NULL
           OR source_suppression."expiresAt" > CURRENT_TIMESTAMP)
+        AND NOT (support."id" = ANY(source_suppression."preservedEvidenceIds"))
     )
     AND NOT EXISTS (
       SELECT 1 FROM "MemorySourceBarrier" AS source_barrier

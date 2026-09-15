@@ -54,7 +54,7 @@ const MAX_CARDINALITY_INPUT_CHARACTERS = 256;
 const MAX_CARDINALITY = 1_000_000;
 const languageCodePattern =
   /^(?:[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*|mixed)$/u;
-const numericCandidatePattern = /(?<!\d)(?:\d{1,3}(?:[ ,]\d{3})+|\d+)(?!\d)/gu;
+const numericCandidatePattern = /(?<!\d)(?:\d{1,3}(?: \d{3})+|\d+)(?!\d)/gu;
 const singleNounPattern =
   /^[\p{Zs}\s]*[\p{L}\p{M}\u200c\u200d]+(?:['’‐‑-][\p{L}\p{M}\u200c\u200d]+)*[\p{Zs}\s]*$/u;
 
@@ -81,16 +81,12 @@ function digitCandidates(value: string): readonly CardinalCandidate[] {
   return Object.freeze(Array.from(value.matchAll(numericCandidatePattern), (match) => ({
     end: (match.index ?? 0) + match[0].length,
     start: match.index ?? 0,
-    value: Number.parseInt(match[0].replace(/[ ,]/gu, ""), 10)
+    value: Number.parseInt(match[0].replace(/ /gu, ""), 10)
   })));
 }
 
 function hasDecimal(value: string): boolean {
-  for (const match of value.matchAll(/\d+[.,]\d+/gu)) {
-    if (match[0].includes(",") && /^\d{1,3}(?:,\d{3})+$/u.test(match[0])) continue;
-    return true;
-  }
-  return false;
+  return /\d+[.,]\d+/u.test(value);
 }
 
 function rejectionFromStructure(

@@ -35,6 +35,7 @@ import {
   createMemoryRunRetrievalService,
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS,
   MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS,
+  MEMORY_CONTROL_READ_RESERVE_MS,
   MEMORY_INTERACTIVE_HARD_DEADLINE_MS,
   MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
   MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS,
@@ -1171,7 +1172,7 @@ describe("Personal Memory v1 run admission", () => {
         budgetSnapshot: {
           aggregationState: "READER_REQUIRED",
           memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
-          plannerFallbackReason: "memory_action_intent_unavailable"
+          plannerFallbackReason: "memory_action_intent_outcome_unknown"
         },
         items: [{ exactItemId: "control-timeout-local" }],
         outcome: "USED"
@@ -1180,6 +1181,184 @@ describe("Personal Memory v1 run admission", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("reserves the 15-second gate for a fresh baseline after abort-ignoring control", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const kept = laneCandidate("control-timeout-kept");
+      const stale = laneCandidate("control-timeout-stale");
+      const local = repository({
+        candidates: [kept, stale],
+        speculativeBaseline: true
+      });
+      const originalExpand = local.expand.getMockImplementation()!;
+      local.expand.mockImplementation(async (...args) => {
+        const expanded = await originalExpand(...args);
+        return local.expand.mock.calls.length === 2
+          ? expanded.filter(({ itemId }) => itemId === kept.itemId)
+          : expanded;
+      });
+      const base = intentOptions({
+        action: "SAVE" as const,
+        category: "preferences" as const,
+        memoryUseful: true,
+        reasonCode: "save_request" as const,
+        statement: "I prefer concise answers."
+      });
+      let releaseControl!: () => void;
+      const decide = vi.fn((input: Parameters<MemoryControlService["decide"]>[0]) => {
+        return new Promise<MemoryControlResult>((resolve) => {
+          releaseControl = () => void base.control.decide(input).then(resolve);
+        });
+      });
+      const actionExecutor = { execute: vi.fn() };
+      const controlCache: MemoryRunControlCache = {};
+      let settled = false;
+      const pending = createMemoryRunRetrievalService(local.value, {
+        ...base,
+        actionExecutor,
+        admissionDeadlineMs: 15_000,
+        clock: Date.now,
+        control: { decide }
+      }).retrieve({
+        ...runInput("Remember my answer preference and tell me what it is."),
+        controlCache
+      }).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(decide).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(15_000 - MEMORY_CONTROL_READ_RESERVE_MS - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(decide.mock.calls[0]?.[0].signal.aborted).toBe(true);
+      const result = await pending;
+
+      expect(result).toMatchObject({
+        budgetSnapshot: {
+          memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+          plannerFallbackReason: "memory_action_intent_outcome_unknown",
+          speculativeBaselineUsed: true,
+          utilityExecutions: expect.arrayContaining([expect.objectContaining({
+            reason: "memory_action_intent_outcome_unknown",
+            role: "MEMORY_CONTROL",
+            state: "UNAVAILABLE"
+          })])
+        },
+        items: [{ exactItemId: kept.itemId }],
+        outcome: "DEGRADED"
+      });
+      expect(result.items).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ exactItemId: stale.itemId })
+      ]));
+      expect(local.retrieveSpeculativeBaseline).toHaveBeenCalledOnce();
+      expect(local.expand).toHaveBeenCalledTimes(2);
+      expect(actionExecutor.execute).not.toHaveBeenCalled();
+      expect(controlCache.control).toEqual({
+        reason: "memory_action_intent_outcome_unknown",
+        status: "UNAVAILABLE"
+      });
+
+      releaseControl();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(actionExecutor.execute).not.toHaveBeenCalled();
+      expect(controlCache.control).toEqual({
+        reason: "memory_action_intent_outcome_unknown",
+        status: "UNAVAILABLE"
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("applies a confirmed command and keeps its answer baseline within the reserved gate", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const local = repository({
+        candidates: [laneCandidate("confirmed-command-answer")],
+        speculativeBaseline: true
+      });
+      const base = intentOptions({
+        action: "SAVE" as const,
+        category: "preferences" as const,
+        memoryUseful: true,
+        reasonCode: "save_request" as const,
+        statement: "I prefer concise answers."
+      });
+      const decide = vi.fn((input: Parameters<MemoryControlService["decide"]>[0]) =>
+        new Promise<MemoryControlResult>((resolve) => {
+          setTimeout(() => void base.control.decide(input).then(resolve), 10_000);
+        }));
+      const actionExecutor = {
+        execute: vi.fn(async () => ({
+          memoryRef: "saved-memory-ref",
+          operation: "SAVE" as const,
+          statement: "I prefer concise answers.",
+          status: "COMMITTED" as const
+        }))
+      };
+      const pending = createMemoryRunRetrievalService(local.value, {
+        ...base,
+        actionExecutor,
+        admissionDeadlineMs: 15_000,
+        clock: Date.now,
+        control: { decide }
+      }).retrieve(runInput(
+        "Remember that I prefer concise answers, then tell me what style I prefer."
+      ));
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await pending;
+
+      expect(result).toMatchObject({
+        budgetSnapshot: {
+          memoryActionAnswerResult: {
+            operation: "SAVE",
+            status: "COMMITTED",
+            version: 1
+          }
+        },
+        items: [{ exactItemId: "confirmed-command-answer" }],
+        outcome: "USED"
+      });
+      expect(actionExecutor.execute).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a failed control distinct from an unknown timed-out outcome", async () => {
+    const local = repository({
+      candidates: [laneCandidate("failed-control-answer")],
+      speculativeBaseline: true
+    });
+    const base = intentOptions({ memoryUseful: true });
+    const actionExecutor = { execute: vi.fn() };
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...base,
+      actionExecutor,
+      admissionDeadlineMs: 15_000,
+      control: { decide: vi.fn(async () => { throw new Error("provider failed"); }) }
+    }).retrieve(runInput("Remember this and also answer my question."));
+
+    expect(result).toMatchObject({
+      budgetSnapshot: {
+        plannerFallbackReason: "memory_action_intent_unavailable",
+        utilityExecutions: expect.arrayContaining([expect.objectContaining({
+          reason: "memory_action_intent_unavailable",
+          role: "MEMORY_CONTROL",
+          state: "UNAVAILABLE"
+        })])
+      },
+      items: [{ exactItemId: "failed-control-answer" }],
+      outcome: "DEGRADED"
+    });
+    expect(actionExecutor.execute).not.toHaveBeenCalled();
   });
 
   it("overlaps control and original-query embedding instead of summing their latency", async () => {
@@ -2513,7 +2692,7 @@ describe("Personal Memory v1 run admission", () => {
       await vi.advanceTimersByTimeAsync(1);
       await expect(pending).resolves.toMatchObject({
         budgetSnapshot: {
-          plannerFallbackReason: "memory_action_intent_unavailable"
+          plannerFallbackReason: "memory_action_intent_outcome_unknown"
         },
         outcome: "EMPTY"
       });
@@ -2552,7 +2731,7 @@ describe("Personal Memory v1 run admission", () => {
       await vi.advanceTimersByTimeAsync(1);
       await expect(pending).resolves.toMatchObject({
         budgetSnapshot: {
-          plannerFallbackReason: "memory_action_intent_unavailable"
+          plannerFallbackReason: "memory_action_intent_outcome_unknown"
         },
         outcome: "EMPTY"
       });
@@ -5031,6 +5210,41 @@ describe("Personal Memory v1 run admission", () => {
     ]);
     expect(result.items?.[0]?.featureSnapshot).toMatchObject({
       decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION
+    });
+  });
+
+  it("does not attach a pack when the admission deadline expires during packing", async () => {
+    const local = repository({ candidates: [laneCandidate("late-pack")] });
+    const originalExpand = local.expand.getMockImplementation()!;
+    let finalRejoinFinished = false;
+    local.expand.mockImplementation(async (...args) => {
+      const expanded = await originalExpand(...args);
+      if (local.expand.mock.calls.length === 2) finalRejoinFinished = true;
+      return expanded;
+    });
+    let deadlineClockMs = 0;
+    let postRejoinTimingReads = 0;
+    const monotonicClock = () => {
+      if (finalRejoinFinished) {
+        postRejoinTimingReads += 1;
+        if (postRejoinTimingReads === 3) deadlineClockMs = 15_000;
+      }
+      return deadlineClockMs;
+    };
+
+    const result = await createMemoryRunRetrievalService(local.value, {
+      admissionDeadlineMs: 15_000,
+      clock: () => deadlineClockMs,
+      monotonicClock,
+      utilities: utilities(["c0"])
+    }).retrieve(runInput("Which memory is useful?"));
+
+    expect(local.expand).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      budgetSnapshot: { reason: "memory_admission_deadline_exceeded" },
+      items: [],
+      outcome: "FAILED_SAFE",
+      preparedContext: null
     });
   });
 
