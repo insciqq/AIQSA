@@ -222,18 +222,44 @@ describe("structured Memory relation policy", () => {
     }
   );
 
+  it.each([
+    { currentModality: "STATE", pendingModality: "PLAN" },
+    { currentModality: "CONSTRAINT", pendingModality: "STATE" },
+    { currentModality: "STATE", pendingModality: "STATE" }
+  ] as const)("revises a future $currentModality schedule as $pendingModality", ({
+    currentModality, pendingModality
+  }) => {
+    for (const date of ["2026-10-07T09:00:00.000Z", "2026-10-28T09:00:00.000Z"]) {
+      const input = scheduledRevision(date);
+      const current = { ...input.current, modality: currentModality };
+      expect(decideMemoryFactRelation({
+        ...input,
+        current,
+        pending: { ...input.pending, modality: pendingModality },
+        related: [current]
+      }, NOW)).toMatchObject({
+        operation: "MOVE_TO_DISTINCT_FACT",
+        targetVersionId: current.versionId
+      });
+    }
+  });
+
   it("keeps actual states, unsupported dates and unproved future changes protected", () => {
     const input = scheduledRevision();
     const variants: MemoryRelationSnapshot[] = [
       { ...input, current: { ...input.current, sourceMode: "EXPLICIT" } },
-      { ...input, current: { ...input.current, modality: "STATE" } },
+      { ...input, current: { ...input.current, modality: "STATE",
+        semanticFrame: { ...input.current.semanticFrame, temporalPerspective: "CURRENT" }
+      } },
       { ...input, current: { ...input.current, expectedAt: null } },
       { ...input, current: { ...input.current, expectedAt: "invalid" } },
       { ...input, current: {
         ...input.current,
         semanticFrame: { ...input.current.semanticFrame, temporalPerspective: "FORMER" }
       } },
-      { ...input, pending: { ...input.pending, modality: "STATE" } },
+      { ...input, pending: { ...input.pending, modality: "STATE",
+        semanticFrame: { ...input.pending.semanticFrame, temporalPerspective: "CURRENT" }
+      } },
       { ...input, pending: { ...input.pending, modality: "INTENTION" } },
       { ...input, pending: { ...input.pending, modality: "CONSIDERATION" } },
       { ...input, pending: { ...input.pending, expectedAt: null } },

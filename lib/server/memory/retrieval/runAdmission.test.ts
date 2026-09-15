@@ -626,21 +626,11 @@ describe("Personal Memory v1 run admission", () => {
   it("keeps the exact control source and full multiline retrieval separate from compatibility hints", async () => {
     const source = "Compare the saved label Ａ cafe\u0301 with these rows:\nname\tvalue\n" +
       "alpha\tone\n".repeat(70).trim();
-    const decoded = decodeMemoryActionControlDecision({
+    const decoded = decodeMemoryActionControlDecision({ decision: {
       action: "NONE",
-      answerRequested: false,
-      category: null,
-      confidenceBand: "HIGH",
       patternExclusionRequested: false,
-      reasonCode: "no_memory_request",
-      referencedMemoryRef: null,
-      replacementStatement: null,
-      responsePreference: false,
-      sensitivity: "NORMAL",
-      statement: null,
-      targetQuery: null,
-      thisChatOnly: false
-    }, source);
+      reasonCode: "no_memory_request"
+    } }, source);
     if (!decoded.ok) throw new Error("control_fixture_invalid");
     expect(source.length).toBeGreaterThan(500);
     expect(decoded.value.queryText?.length).toBeLessThanOrEqual(500);

@@ -14,7 +14,7 @@ export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
   "memory-fact-extraction-policy-v27";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-extraction-prompt-v39";
+  "memory-fact-extraction-prompt-v41";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
   "memory-fact-extraction-schema-v5";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
@@ -26,6 +26,9 @@ export const MEMORY_FACT_EXTRACTION_JOB_PREFIX = "extract-facts:vnext:";
 /** Extraction and adjudication must agree on the scope of the same assertion. */
 export const MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE =
   "The user's own action or experience has CURRENT_USER scope, including when another person or pet participates. A relationship to someone, or that person's or pet's own state or property, has USER_RELATIONSHIP_CONTEXT scope. Classify the asserted information, not merely the type or role of a mentioned entity. Reporting another subject's property does not turn it into the user's own state or action. Preserve the actor, recipient, and ownership roles without inferring possession.";
+
+export const MEMORY_ASSERTED_PLAN_GUIDANCE =
+  "A directly stated personal intention or commitment is an ASSERTED plan even when it depends on a prerequisite. Preserve the complete prerequisite and prospective wording in the proposition; the asserted fact is the user's plan, not that its condition is met or its future event has happened. Use PLAN with FUTURE perspective for that prospective activity. Such a plan never replaces an actual current residence, role, schedule, or ownership merely because it describes a possible change. An imagined example, question, or conditional possibility without a stated intention or commitment remains hypothetical; do not invent a plan from it.";
 
 // Context is a bounded non-authoritative aid. The final direct-user target is
 // the only evidence source; every admitted prior message is persisted as an

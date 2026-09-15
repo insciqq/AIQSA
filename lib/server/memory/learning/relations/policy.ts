@@ -6,7 +6,7 @@ import type {
 } from "../extraction/contract";
 
 export const MEMORY_FACT_RELATION_PIPELINE_VERSION = "memory-fact-relation-v2";
-export const MEMORY_FACT_RELATION_POLICY_VERSION = "memory-fact-relation-policy-v8";
+export const MEMORY_FACT_RELATION_POLICY_VERSION = "memory-fact-relation-policy-v9";
 export const MEMORY_FACT_RELATION_PROMPT_VERSION = "memory-fact-relation-prompt-v1";
 export const MEMORY_FACT_RELATION_SCHEMA_VERSION = "memory-fact-relation-schema-v1";
 
@@ -350,8 +350,12 @@ export function memoryRepresentationTransitionTimeAllowed(
   // A newly agreed schedule is current testimony about a future occurrence.
   // Compare testimony time, never the old and new occurrence dates: a valid
   // revision can bring the event forward as well as postpone it.
+  // A future date may be expressed as an existing schedule (STATE), without
+  // asserting that the scheduled occurrence has already happened.
   const isScheduled = (version: RepresentationTransitionTime) =>
-    (version.modality === "PLAN" || version.modality === "CONSTRAINT") &&
+    (version.modality === "PLAN" || version.modality === "CONSTRAINT" ||
+      (version.modality === "STATE" &&
+        version.semanticFrame?.temporalPerspective === "FUTURE")) &&
     (version.semanticFrame?.temporalPerspective === "CURRENT" ||
       version.semanticFrame?.temporalPerspective === "FUTURE") &&
     version.expectedAt !== null &&
