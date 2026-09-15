@@ -6,13 +6,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "@/lib/domain/content";
+import { normalizeTokenUsage } from "@/lib/domain/usage";
 import {
   WORKSPACE_MCP_TOOL_ALLOWLIST, WORKSPACE_POLICY_ID,
   workspaceMessageManifestPath, workspaceRunOutputDirectory, workspaceSandboxName
 } from "@/lib/domain/workspace";
 import { hashCanonicalMcpValue } from "@/lib/server/mcp/definitions";
 import { prisma } from "@/lib/server/prisma";
-import { admitPreparingRunWithClient } from "@/lib/server/runs/prismaRepositoryPreparation";
+import { activateWorkspaceFollowupWithClient, admitPreparingRunWithClient } from "@/lib/server/runs/prismaRepositoryPreparation";
+import { createWorkspaceFollowupRepository } from "@/lib/server/runs/workspaceFollowupPersistence";
 import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import type { PreparingRunAdmissionInput } from "@/lib/server/runs/runRepositoryContract";
@@ -76,7 +78,7 @@ async function fixture() {
     imageRef: config.imageRef, internetEnabled: false, policyRevision: 1,
     runtimeSandboxId: "runtime_fixture", sandboxName: workspaceSandboxName(sessionId), state: "RUNNING"
   } });
-  const plan = async (): Promise<PreparingRunAdmissionInput> => {
+  const plan = async (): Promise<Extract<PreparingRunAdmissionInput, { admissionKind: "NORMAL_SEND" }>> => {
     const runId = randomUUID();
     const userMessageId = randomUUID();
     const assistantMessageId = randomUUID();
@@ -110,6 +112,28 @@ async function fixture() {
   return { chatId: chat.id, plan, session, userId };
 }
 
+async function publishedPredecessor() {
+  const value = await fixture();
+  await prisma.workspaceSession.update({ where: { id: value.session.id }, data: { state: "READY", runtimeSandboxId: null } });
+  const repository = createPrismaRunRepository(prisma);
+  const request = await value.plan();
+  const previous = await repository.createRun(request);
+  const completion = { ...previous, chatId: value.chatId, userId: value.userId, finalText: "File saved.",
+    provider: request.provider, modelId: request.modelId, estimatedCostMicros: null,
+    usage: normalizeTokenUsage({ inputTokens: 2, outputTokens: 1, totalTokens: 3 }) };
+  expect(await repository.publishRunAnswer!(completion)).toBe(true);
+  const nextRequest = async () => ({ ...await value.plan(), workspaceFollowup: {
+    admissionKey: randomBytes(32).toString("hex"), predecessorRunId: previous.runId, snapshot: { version: 1 }
+  } });
+  const releasePrevious = async () => {
+    // This fixture proves database transfer, not runtime quiescence. Runtime
+    // and real-file handoff remain separate coordinator/KVM evidence.
+    await prisma.workspaceSession.update({ where: { id: value.session.id }, data: { operationOwner: null, state: "STOPPED" } });
+    expect(await repository.completeRun(completion)).toBe(true);
+  };
+  return { ...value, completion, nextRequest, previous, releasePrevious, repository };
+}
+
 describe("Prisma Workspace operation admission", () => {
   let originalPolicy: Awaited<ReturnType<typeof prisma.workspacePolicy.findUnique>>;
   beforeAll(async () => {
@@ -138,6 +162,170 @@ describe("Prisma Workspace operation admission", () => {
     }, where: { id: WORKSPACE_POLICY_ID } });
     else await prisma.workspacePolicy.deleteMany({ where: { id: WORKSPACE_POLICY_ID } });
     await prisma.$disconnect();
+  });
+
+  it("keeps a waiting successor durable without acquiring the predecessor's Workspace", async () => {
+    const value = await publishedPredecessor();
+    const before = await prisma.workspaceSession.findUniqueOrThrow({ where: { id: value.session.id } });
+    const admission = await value.nextRequest();
+    const created = await admitPreparingRunWithClient(prisma, admission);
+    expect(created.deferredWorkspace).toBe(true);
+    expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: value.session.id } })).toEqual(before);
+    expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: created.runId } })).toBe(0);
+    expect(await value.repository.getRunOutcomeForUser(created.runId, value.userId)).toEqual({
+      id: created.runId, status: "queued", workspacePreparation: true
+    });
+    expect(await createWorkspaceFollowupRepository(prisma).claim()).toBeNull();
+    await expect(value.repository.getRunOutcomeForUser(created.runId, "another-user")).resolves.toBeNull();
+    await value.releasePrevious();
+    const claim = await createWorkspaceFollowupRepository(prisma).claim();
+    expect(claim?.runId).toBe(created.runId);
+    const activated = await activateWorkspaceFollowupWithClient(prisma, { admission, created, claimToken: claim!.claimToken });
+    expect(activated.deferredWorkspace).toBeUndefined();
+    expect(activated.workspaceMemorySource!.memorySourceRevision).toBe(created.workspaceMemorySource!.memorySourceRevision + 1);
+    expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: value.session.id } })).toMatchObject({
+      operationOwner: `run:${created.runId}`, version: before.version + 1
+    });
+    expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: created.runId } })).toMatchObject({ status: "preparing", workspaceWaitPending: false });
+    await expect(activateWorkspaceFollowupWithClient(prisma, { admission, created, claimToken: "lost-token" }))
+      .rejects.toMatchObject({ code: "workspace_followup_unavailable" });
+  });
+
+  it("admits only one waiting successor under concurrent submissions", async () => {
+    const value = await publishedPredecessor();
+    const attempts = await Promise.all([value.nextRequest(), value.nextRequest()]);
+    const results = await Promise.allSettled(attempts.map((request) => admitPreparingRunWithClient(prisma, request)));
+    expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(({ status }) => status === "rejected")).toHaveLength(1);
+    expect(await prisma.workspaceFollowup.count({ where: { chatId: value.chatId } })).toBe(1);
+    expect(await prisma.message.count({ where: { chatId: value.chatId } })).toBe(4);
+  });
+
+  it("prepares a waiting successor once after handoff and clears its private dispatch snapshot", async () => {
+    const value = await publishedPredecessor();
+    const admission = await value.nextRequest();
+    const created = await admitPreparingRunWithClient(prisma, admission);
+    expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: created.runId } })).toBe(0);
+    await value.releasePrevious();
+    const followups = createWorkspaceFollowupRepository(prisma);
+    const claim = await followups.claim();
+    expect(claim?.runId).toBe(created.runId);
+    await value.repository.continueWorkspacePreparedRun!({ admission, created, claimToken: claim!.claimToken });
+    expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: created.runId } }))
+      .toMatchObject({ status: "streaming", workspaceWaitPending: false });
+    expect(await prisma.memoryRetrievalAttempt.findMany({ where: { modelRunId: created.runId } }))
+      .toEqual([expect.objectContaining({ state: "CONSUMED" })]);
+    expect(await followups.markAnswerDispatched(claim!)).toBe(true);
+    expect(await prisma.workspaceFollowup.findUniqueOrThrow({ where: { modelRunId: created.runId } }))
+      .toMatchObject({ state: "dispatched", snapshot: null, admissionResult: null, claimToken: null, leaseExpiresAt: null });
+    expect(await followups.claim()).toBeNull();
+    await expect(followups.markAnswerDispatched(claim!)).rejects.toMatchObject({ code: "workspace_followup_unavailable" });
+  });
+
+  it("fences an expired waiting successor claim after another worker reclaims it", async () => {
+    const value = await publishedPredecessor();
+    const admission = await value.nextRequest();
+    const created = await admitPreparingRunWithClient(prisma, admission);
+    await value.releasePrevious();
+    const followups = createWorkspaceFollowupRepository(prisma);
+    const oldClaim = await followups.claim();
+    await prisma.workspaceFollowup.update({ where: { modelRunId: created.runId },
+      data: { leaseExpiresAt: new Date(Date.now() - 1_000) } });
+    const currentClaim = await followups.claim();
+    expect(currentClaim?.runId).toBe(created.runId);
+    expect(currentClaim?.claimToken).not.toBe(oldClaim?.claimToken);
+    expect(await followups.heartbeat(oldClaim!)).toBe(false);
+    await expect(activateWorkspaceFollowupWithClient(prisma, { admission, created, claimToken: oldClaim!.claimToken }))
+      .rejects.toMatchObject({ code: "workspace_followup_unavailable" });
+    await expect(value.repository.settlePreparingRunFailure({ workspaceClaimToken: oldClaim!.claimToken,
+      runId: created.runId, userId: value.userId, errorCode: "workspace_followup_interrupted",
+      message: "Interrupted.", state: "FAILED" })).rejects.toMatchObject({ code: "workspace_followup_unavailable" });
+    await followups.release(oldClaim!);
+    expect(await followups.load(currentClaim!)).not.toBeNull();
+    await value.repository.continueWorkspacePreparedRun!({ admission, created, claimToken: currentClaim!.claimToken });
+    expect(await followups.markAnswerDispatched(currentClaim!)).toBe(true);
+  });
+
+  it("refuses a waiting successor whose accepted branch changed before handoff", async () => {
+    const value = await publishedPredecessor();
+    const admission = await value.nextRequest();
+    const created = await admitPreparingRunWithClient(prisma, admission);
+    await value.releasePrevious();
+    await prisma.chat.update({ where: { id: value.chatId }, data: { activeLeafMessageId: value.previous.assistantMessageId } });
+    const claim = await createWorkspaceFollowupRepository(prisma).claim();
+    await expect(value.repository.continueWorkspacePreparedRun!({ admission, created, claimToken: claim!.claimToken }))
+      .rejects.toMatchObject({ code: "workspace_followup_unavailable" });
+    expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: value.session.id } }))
+      .toMatchObject({ operationOwner: null });
+    expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: created.runId } })).toBe(0);
+    expect(await value.repository.settlePreparingRunFailure({ workspaceClaimToken: claim!.claimToken,
+      runId: created.runId, userId: value.userId, errorCode: "workspace_followup_unavailable",
+      message: "Preparation unavailable.", state: "FAILED" })).toBe(true);
+    expect(await prisma.workspaceFollowup.findUniqueOrThrow({ where: { modelRunId: created.runId } }))
+      .toMatchObject({ state: "failed", snapshot: null, admissionResult: null });
+  });
+
+  it("cancels a waiting successor without changing the published answer or its Workspace owner", async () => {
+    const value = await publishedPredecessor();
+    const created = await admitPreparingRunWithClient(prisma, await value.nextRequest());
+    const cancelled = await value.repository.cancelRun({ runId: created.runId, userId: value.userId,
+      payload: { code: "cancelled", message: "Cancelled." } });
+    expect(cancelled.kind).toBe("cancelled");
+    expect(await prisma.workspaceFollowup.findUniqueOrThrow({ where: { modelRunId: created.runId } }))
+      .toMatchObject({ state: "cancelled", snapshot: null, admissionResult: null });
+    expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: value.session.id } }))
+      .toMatchObject({ operationOwner: `run:${value.previous.runId}` });
+    expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: value.previous.runId } })).toMatchObject({ status: "streaming" });
+    expect(await prisma.message.findUniqueOrThrow({ where: { id: value.previous.assistantMessageId } }))
+      .toMatchObject({ status: "complete", content: textMessageContent("File saved.") });
+    expect(await createWorkspaceFollowupRepository(prisma).claim()).toBeNull();
+  });
+
+  it.each(["account disabled", "chat archived"] as const)("settles a waiting successor without dispatch after %s", async (change) => {
+    const value = await publishedPredecessor();
+    const admission = await value.nextRequest();
+    const created = await admitPreparingRunWithClient(prisma, admission);
+    await value.releasePrevious();
+    if (change === "account disabled") await prisma.user.update({ where: { id: value.userId }, data: { status: "disabled" } });
+    else await prisma.chat.update({ where: { id: value.chatId }, data: { archived: true } });
+    const followups = createWorkspaceFollowupRepository(prisma);
+    const claim = await followups.claim();
+    expect(claim?.runId).toBe(created.runId);
+    await expect(value.repository.continueWorkspacePreparedRun!({ admission, created, claimToken: claim!.claimToken }))
+      .rejects.toMatchObject({ code: "workspace_followup_unavailable" });
+    expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: value.session.id } })).toMatchObject({ operationOwner: null });
+    expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: created.runId } })).toBe(0);
+    expect(await value.repository.settlePreparingRunFailure({ workspaceClaimToken: claim!.claimToken,
+      runId: created.runId, userId: value.userId, errorCode: "workspace_followup_unavailable",
+      message: "Preparation unavailable.", state: "FAILED" })).toBe(true);
+    expect(await prisma.workspaceFollowup.findUniqueOrThrow({ where: { modelRunId: created.runId } }))
+      .toMatchObject({ state: "failed", snapshot: null, admissionResult: null });
+    expect(await followups.hasPending()).toBe(false);
+    expect(await prisma.message.findUniqueOrThrow({ where: { id: value.previous.assistantMessageId } }))
+      .toMatchObject({ status: "complete" });
+  });
+
+  it("rejects an unrelated executor while a waiting successor owns the next turn", async () => {
+    const value = await publishedPredecessor();
+    const created = await admitPreparingRunWithClient(prisma, await value.nextRequest());
+    await value.releasePrevious();
+    const previous = await prisma.modelRun.findUniqueOrThrow({ where: { id: value.previous.runId } });
+    await expect(prisma.modelRun.create({ data: { chatId: value.chatId, userId: value.userId,
+      userMessageId: created.userMessageId, provider: "fake", modelId: "fake-qsa", status: "streaming",
+      normalizedRequest: previous.normalizedRequest ?? {} } }))
+      .rejects.toThrow(/workspace_followup_ownership_conflict/u);
+    expect(await prisma.modelRun.count({ where: { chatId: value.chatId } })).toBe(2);
+  });
+
+  it("does not deadlock admission of a waiting successor against predecessor completion", async () => {
+    const value = await publishedPredecessor();
+    const request = await value.nextRequest();
+    await prisma.workspaceSession.update({ where: { id: value.session.id }, data: { operationOwner: null, state: "STOPPED" } });
+    const results = await Promise.allSettled([
+      admitPreparingRunWithClient(prisma, request), value.repository.completeRun(value.completion)
+    ]);
+    expect(results.every(({ status }) => status === "fulfilled")).toBe(true);
+    expect(await prisma.modelRun.count({ where: { chatId: value.chatId } })).toBe(2);
   });
 
   it.each(["RUNNING", "FAILED"] as const)("refuses an unproven %s session although no ModelRun is active", async (state) => {

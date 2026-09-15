@@ -7,6 +7,12 @@ const defaultReadingContextMaxPx = 220;
 const defaultReadingContextViewportRatio = 0.42;
 
 type ScrollMetrics = Pick<HTMLElement, "clientHeight" | "scrollHeight" | "scrollTop">;
+type LayoutObservation = {
+  element: HTMLElement;
+  content: Element | null;
+  observer: ResizeObserver;
+  refresh(): void;
+};
 
 const threadMessageSelector = "[data-message-id]";
 const threadMessageContentSelector = "[data-thread-message-content]";
@@ -76,6 +82,7 @@ export function usePinnedScroll<T extends HTMLElement>({
   thresholdPx?: number;
 }) {
   const containerRef = useRef<T | null>(null);
+  const layoutObservationRef = useRef<LayoutObservation | null>(null);
   const [isPinned, setIsPinned] = useState(true);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const pinnedRef = useRef(true);
@@ -368,14 +375,28 @@ export function usePinnedScroll<T extends HTMLElement>({
     }
   }, [hasContent, readingAnchorKey, scheduleReadingAnchor]);
 
-  useLayoutEffect(() => {
-    if (!hasContent) {
+  const refreshLayout = useCallback(function refreshLayout() {
+    const element = containerRef.current;
+    if (!hasContent || !element) {
+      layoutObservationRef.current?.observer.disconnect();
+      layoutObservationRef.current = null;
       return;
     }
 
-    const element = containerRef.current;
-    if (!element) {
-      return;
+    const content = element.querySelector(".v2-conversation-document");
+    const previous = layoutObservationRef.current;
+    if (typeof ResizeObserver !== "undefined" && (!previous || previous.element !== element ||
+      previous.content !== content || previous.refresh !== refreshLayout)) {
+      previous?.observer.disconnect();
+      const observation: LayoutObservation = {
+        element, content, refresh: refreshLayout,
+        observer: new ResizeObserver(() => {
+          if (layoutObservationRef.current === observation) refreshLayout();
+        })
+      };
+      layoutObservationRef.current = observation;
+      observation.observer.observe(element, { box: "border-box" });
+      if (content) observation.observer.observe(content, { box: "border-box" });
     }
 
     if (readingAnchorKey) {
@@ -387,10 +408,16 @@ export function usePinnedScroll<T extends HTMLElement>({
     } else if (!readingAnchorPendingRef.current) {
       scheduleJumpVisibility(hasUnseenLatestMessageContent(element));
     }
-  }, [followKey, hasContent, readingAnchorKey, scheduleJumpVisibility, scheduleScrollToBottom, thresholdPx, updateReadingSpacer]);
+  }, [hasContent, readingAnchorKey, scheduleJumpVisibility, scheduleScrollToBottom, updateReadingSpacer]);
+
+  useLayoutEffect(() => {
+    refreshLayout();
+  }, [followKey, refreshLayout, thresholdPx]);
 
   useEffect(() => {
     return () => {
+      layoutObservationRef.current?.observer.disconnect();
+      layoutObservationRef.current = null;
       if (rafRef.current !== null) {
         window.cancelAnimationFrame(rafRef.current);
       }
@@ -411,6 +438,7 @@ export function usePinnedScroll<T extends HTMLElement>({
     isPinned,
     jumpToLatest: scheduleScrollToBottom,
     preserveViewportWhile,
+    refreshLayout,
     resetToLatest: scheduleScrollToBottom,
     showJumpToLatest
   };

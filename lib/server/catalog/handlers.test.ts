@@ -16,6 +16,19 @@ const auth = createTestAuth({
 });
 
 describe("catalog handler", () => {
+  it.each([undefined, true, false])("defaults Workspace on while preserving an explicit preference: %s", (preference) => {
+    const catalog = buildCurrentUserCatalog({
+      entitlements: { modelKeys: new Set(), providerKeys: new Set(), searchStrategies: new Set() },
+      models: defaultProviderModels,
+      searchStrategies: [],
+      settings: {
+        defaultControlValues: {}, defaultProviderModelId: null, defaultSearchPlan: null,
+        defaultWorkspaceEnabled: preference, showCitations: true, showReasoningBlocks: false
+      }
+    });
+    expect(catalog.defaults.workspaceEnabled).toBe(preference !== false);
+  });
+
   it.each([
     { effort: "high", personalModel: null, personal: {}, allowed: true, expected: "high" },
     { effort: "high", personalModel: null, personal: { temperature: "0.5" }, allowed: true, expected: "high" },

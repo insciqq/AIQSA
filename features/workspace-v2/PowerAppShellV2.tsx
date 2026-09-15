@@ -1,5 +1,7 @@
 "use client";
 
+import { removePermanentlyDeletedChat } from "@/components/app-shell/permanentChatDeletionReconciliation";
+import { composerContextConfigurationKey } from "@/components/app-shell/composerContextConfiguration";
 import { useChatTitleReconciliation } from "@/components/app-shell/useChatTitleReconciliation";
 
 import { decodeAnswerSoundPreferences, DEFAULT_ANSWER_SOUND } from "@/lib/contracts/answerSound";
@@ -464,6 +466,8 @@ export function PowerAppShellV2({
   );
   const activeRunChatIdsKey = useRunLifecycleStore((state) => Object.keys(state.activeStreams).sort().join("\u0000"));
   const currentRunId = activeChatStream?.runId ?? null;
+  const stoppingRunId = activeChatStream?.runId ?? activeChatInterruptedRun?.runId;
+  const stopping = useRunLifecycleStore((state) => Boolean(stoppingRunId && state.stoppingRunIds.has(stoppingRunId)));
   const soundPreferences = catalog ? decodeAnswerSoundPreferences(catalog.defaults) : null;
   const { notifyAnswerReady, primeAnswerSound, previewAnswerSound } = useAnswerNotification({
     accountId,
@@ -588,12 +592,11 @@ export function PowerAppShellV2({
     renderActiveLeafId,
     runSurface: activeRunSurface,
     contextRejectionGeneration: composerSession.contextRejectionGeneration,
-    requestConfiguration: {
-      selectedAssistant, selectedSkills, knowledgeSelection, mcpSelection, reasoningEffort,
-      reasoningMode, searchPlanMode, selectedSearchOptionIds, temperature, backgroundMode, streamMode,
+    contextConfigurationKey: composerContextConfigurationKey(useComposerControlStore.getState(), {
       workspaceEnabled: chats.find((chat) => chat.id === activeChatId)?.workspace?.enabled ?? composerSession.workspaceEnabled,
-      memoryMode: chats.find((chat) => chat.id === activeChatId)?.memoryMode ?? activeComposerSessionKey
-    },
+      memoryMode: chats.find((chat) => chat.id === activeChatId)?.pendingInitialMemoryMode ??
+        chats.find((chat) => chat.id === activeChatId)?.memoryMode ?? composerSessionModeFromKey(activeComposerSessionKey)
+    }),
     selectedAssistantPromptCharacterCount: selectedAssistant?.promptCharacterCount ?? null,
     selectedSkillPromptCharacterCount: selectedSkills.reduce(
       (total, skill) => total + skill.promptCharacterCount,
@@ -685,6 +688,7 @@ export function PowerAppShellV2({
     containerRef: threadScrollRef,
     handleScroll: handleThreadScroll,
     jumpToLatest,
+    refreshLayout: refreshThreadLayout,
     resetToLatest: resetThreadToLatest,
     showJumpToLatest
   } = usePinnedScroll<HTMLDivElement>({
@@ -877,19 +881,12 @@ export function PowerAppShellV2({
   }, [activeRunChatIdsKey, pendingComposerChatIdsKey, pruneThreadCacheEvent]);
 
   const reconcilePermanentChatDeletion = useEventCallback(async (chatId: string) => {
-    const workspace = useWorkspaceStore.getState();
-    const wasActive = workspace.activeChatId === chatId;
-    const remaining = workspace.chats.filter((chat) => chat.id !== chatId);
-    workspace.updateChats((current) => current.filter((chat) => chat.id !== chatId));
-    useThreadStore.getState().removeThread(chatId);
-    useRunSurfaceStore.getState().removeSurface(chatId);
-    useComposerSessionStore.getState().removeSession(composerSessionKey(chatId));
+    const { wasActive, nextChat } = removePermanentlyDeletedChat(chatId);
     chatDetailRequestsRef.current.delete(chatId);
     removePermanentlyDeletedArchivedChat(chatId);
     if (shareDialogTarget?.chat.id === chatId) setShareDialogTarget(null);
     if (!wasActive) return;
-    const next = remaining[0] ?? null;
-    if (next) await activateChat(next, { preserveControls: true });
+    if (nextChat) await activateChat(nextChat, { preserveControls: true });
     else activateBlankWorkspace();
   });
 
@@ -1528,6 +1525,7 @@ export function PowerAppShellV2({
     activeChatDetailError,
     activeChatDetailLoading,
     activeChatStreaming,
+    answerComplete: activeChatStream?.answerComplete === true,
     cancelMessageEdit(messageId: string) {
       const sessionStore = useComposerSessionStore.getState();
       sessionStore.cancelEdit(sessionStore.activeSessionKey, messageId);
@@ -1549,6 +1547,7 @@ export function PowerAppShellV2({
     interruptedRun: activeChatInterruptedRun,
     refreshInterruptedRun: () => refreshInterruptedRun(),
     jumpToLatest,
+    refreshLayout: refreshThreadLayout,
     hasOlderMessages: activeThreadHistory.hasOlder,
     liveArtifactSummary,
     liveWorkDurationMs: liveWorkDurationMs(activeRunSurface),
@@ -1958,6 +1957,7 @@ export function PowerAppShellV2({
     showCitations,
     showReasoningBlocks,
     stopCurrentRun,
+    stopping,
     streamMode,
     submitComposer,
     temperature,

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetComposerControlStoreForTest, resetComposerSessionStoreForTest, resetMemorySettingsStoreForTest, resetRunLifecycleStoreForTest, resetRunSurfaceStoreForTest, resetThreadStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
 import { useComposerControlStore } from "./composerControlStore";
+import { composerContextConfigurationKey } from "./composerContextConfiguration";
 import {
   composerSessionKey,
   selectComposerSession,
@@ -1208,6 +1209,9 @@ describe("message run actions", () => {
       searchPlanMode: "all_selected",
     });
 
+    const expectedContextKey = composerContextConfigurationKey(useComposerControlStore.getState(), {
+      memoryMode: "NORMAL", workspaceEnabled: false
+    });
     const submit = actions.submitComposer();
     await persistStarted;
     expect(actions.session(composerSessionKey("chat-a")).pendingSend).toMatchObject({
@@ -1215,8 +1219,11 @@ describe("message run actions", () => {
     });
     useComposerSessionStore.getState().setDraft("Newer question");
     useComposerSessionStore.getState().setAttachments([newerSearchAttachment]);
+    useComposerControlStore.getState().setMcpSelection({ mode: "off" });
     resolvePersist();
     await submit;
+
+    expect(selectRunSurface(useRunSurfaceStore.getState(), "chat-a").contextConfigurationKey).toBe(expectedContextKey);
 
     const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(String(requestInit.body))).toMatchObject({
@@ -1380,6 +1387,8 @@ describe("message run actions", () => {
 
     await actions.submitComposer();
     expect(useWorkspaceStore.getState().chats[0]?.pendingInitialMemoryMode).toBe("TEMPORARY");
+    expect(JSON.parse(selectRunSurface(useRunSurfaceStore.getState(), "chat-a").contextConfigurationKey!))
+      .toMatchObject({ memoryMode: "TEMPORARY" });
     expect(actions.session(composerSessionKey("chat-a")).draft).toBe("Temporary retry");
     await actions.submitComposer();
 
@@ -2779,6 +2788,68 @@ describe("message run actions", () => {
     expect(actions.session(composerSessionKey("chat-b"))).toMatchObject({
       draft: "Draft B"
     });
+  });
+
+  it("accepts the next send before the published answer finishes and preserves the newer draft", async () => {
+    let releasePrevious!: () => void;
+    const previousHandoff = new Promise<void>((resolve) => { releasePrevious = resolve; });
+    let published!: () => void;
+    const publication = new Promise<void>((resolve) => { published = resolve; });
+    let acknowledgeNext!: (response: Response) => void;
+    const nextResponse = new Promise<Response>((resolve) => { acknowledgeNext = resolve; });
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response(""));
+    fetchMock.mockImplementationOnce(async () => new Response(""));
+    fetchMock.mockImplementationOnce(() => nextResponse);
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      draft: "First question",
+      consumeRunStream: async ({ onMessageIds, onRunId, onAnswerComplete }) => {
+        onRunId("run-previous");
+        onMessageIds({ userMessageId: "user-previous", assistantMessageId: "answer-previous" }, "run-previous");
+        onAnswerComplete!({ assistantMessageId: "answer-previous", runId: "run-previous" });
+        published();
+        await previousHandoff;
+        return { failed: false, receivedChatUpdate: true, runId: "run-previous", terminalStatus: "complete" };
+      }
+    });
+    const firstSend = actions.submitComposer();
+    await publication;
+    expect(actions.session(actions.sourceSessionKey)).toMatchObject({ draft: "", pendingSend: null });
+    expect(useRunLifecycleStore.getState().activeStreams["chat-a"]).toMatchObject({
+      answerComplete: true, runId: "run-previous"
+    });
+    useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { draft: "Second question" });
+    const secondSend = actions.submitComposer();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const [, request] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      content: { blocks: [{ type: "text", text: "Second question" }] },
+      expectedActiveLeafId: "answer-previous"
+    });
+    const pendingSend = actions.session(actions.sourceSessionKey).pendingSend;
+    expect(pendingSend).not.toBeNull();
+    useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { draft: "Third draft" });
+    await actions.submitComposer();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    releasePrevious();
+    await firstSend;
+    expect(actions.session(actions.sourceSessionKey)).toMatchObject({ draft: "Third draft", pendingSend });
+    expect(actions.activeStreamAbortRef.current.has("chat-a")).toBe(true);
+    expect(useRunLifecycleStore.getState().activeStreams["chat-a"].answerComplete).toBeUndefined();
+    acknowledgeNext(Response.json({ version: 1, assistantMessageId: "answer-next", userMessageId: "user-next",
+      run: { id: "run-next", status: "queued", workspacePreparation: true } }, { status: 202 }));
+    await secondSend;
+    expect(actions.session(actions.sourceSessionKey)).toMatchObject({ draft: "Third draft", pendingSend: null });
+    const thread = selectThreadSnapshot(useThreadStore.getState(), "chat-a");
+    expect(thread.activeLeafId).toBe("answer-next");
+    expect(thread.messages.find(({ id }) => id === "answer-previous")).toMatchObject({ status: "complete" });
+    expect(thread.messages.find(({ id }) => id === "answer-next")).toMatchObject({
+      runId: "run-next", workspacePreparation: true
+    });
+    expect(actions.notifyAnswerReady).toHaveBeenCalledOnce();
+    // Drain the deferred canonical refresh while this test still owns its stores.
+    await vi.waitFor(() => expect(actions.refreshActiveChat).toHaveBeenCalledOnce());
   });
 
   it("remaps send message_start ids, parents, active leaf, and run id", async () => {

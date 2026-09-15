@@ -33,6 +33,49 @@ function surfaceEvents(chatId = "chat-1") {
 }
 
 describe("message run lifecycle", () => {
+  it.each(["complete", "error", "disconnect"] as const)("preserves the published answer and next producer after late %s", async (terminal) => {
+    prepareThread();
+    const activeStreamAbortRef = { current: new Map<string, AbortController>() };
+    let release!: () => void;
+    const handoff = new Promise<void>((resolve) => { release = resolve; });
+    let published!: () => void;
+    const publication = new Promise<void>((resolve) => { published = resolve; });
+    const notifyAnswerReady = vi.fn(async () => undefined);
+    const onAnswerPublished = vi.fn(() => { published(); });
+    const refreshActiveChat = vi.fn(async () => null);
+    const running = executeMessageRunLifecycle({ chatId: "chat-1", activeChatIdRef: { current: "chat-1" },
+      activeStreamAbortRef, failurePrefix: "send_failed", fetchRun: vi.fn(async () => null), notifyAnswerReady,
+      onAnswerPublished, optimisticAssistantMessageId: "assistant-optimistic", primeAnswerSound: vi.fn(async () => undefined),
+      createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }), refreshActiveChat,
+      request: async () => new Response(""), reconcileMessageIds: vi.fn(),
+      consumeRunStream: async ({ onRunId, onAnswerComplete }) => {
+        onRunId("previous");
+        onAnswerComplete!({ assistantMessageId: "assistant-optimistic", runId: "previous" });
+        await handoff;
+        if (terminal === "disconnect") throw new Error("stream_connection_lost");
+        return { failed: terminal === "error", receivedChatUpdate: false, runId: "previous", terminalStatus: terminal };
+      }
+    });
+    await publication;
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toMatchObject({ runId: "previous", answerComplete: true });
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1").messages[0]).toMatchObject({
+      status: "complete", workspaceSettling: true
+    });
+    expect(onAnswerPublished).toHaveBeenCalledExactlyOnceWith("previous");
+    const nextController = new AbortController();
+    activeStreamAbortRef.current.set("chat-1", nextController);
+    useRunLifecycleStore.getState().streamStarted({ chatId: "chat-1", runId: "next", assistantMessageId: "next-answer" });
+    release();
+    expect(await running).toMatchObject({ failed: false, cancelled: false, runId: "previous" });
+    expect(activeStreamAbortRef.current.get("chat-1")).toBe(nextController);
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toMatchObject({ runId: "next" });
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"].answerComplete).toBeUndefined();
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1").messages[0]?.status).toBe("complete");
+    expect(useRunLifecycleStore.getState().ambiguousFailures).toEqual({});
+    expect(notifyAnswerReady).toHaveBeenCalledOnce();
+    expect(refreshActiveChat).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     resetRunLifecycleStoreForTest();
     resetRunSurfaceStoreForTest();
@@ -52,6 +95,7 @@ describe("message run lifecycle", () => {
     const result = await executeMessageRunLifecycle({
       activeChatIdRef: { current: "chat-1" }, activeStreamAbortRef: { current: new Map() }, chatId: "chat-1",
       consumeRunStream, createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() } as never),
+      contextConfigurationKey: "accepted-controls",
       failurePrefix: "send_failed", fetchRun: vi.fn(), notifyAnswerReady,
       optimisticAssistantMessageId: "assistant-optimistic", primeAnswerSound: vi.fn(),
       reconcileMessageIds: ({ assistantMessageId }) => useThreadStore.getState().updateMessages("chat-1", (messages) =>
@@ -67,6 +111,9 @@ describe("message run lifecycle", () => {
       id: "assistant-committed", status: "streaming", runId: "run-1", pdfPreparation
     });
     expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toBeUndefined();
+    expect(selectRunSurface(useRunSurfaceStore.getState(), "chat-1")).toMatchObject({
+      contextConfigurationKey: "accepted-controls", contextMessageId: "assistant-committed"
+    });
     await vi.runOnlyPendingTimersAsync();
     expect(refreshActiveChat).toHaveBeenCalledWith("chat-1", { forceDetail: true, preserveControls: true });
   });

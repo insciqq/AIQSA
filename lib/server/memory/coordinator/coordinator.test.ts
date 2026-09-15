@@ -5,6 +5,12 @@ import { MemoryCoordinatorError } from "./errors";
 import type { MemoryCoordinatorRepository } from "./prismaRepository";
 import { MemoryCoordinatorRegistry } from "./registry";
 import { getContext, reportSubsystemHealthy, runWithContext, type ObservabilityContext } from "../../observability";
+import { createAdminMemoryStatusService } from "../../admin/memory/statusService";
+import { readMemoryCapabilityOperationalState } from "../settings/capabilities";
+import {
+  createPrismaMemoryWorkerHeartbeat,
+  MEMORY_WORKER_HEARTBEAT_FRESHNESS_MS
+} from "./workerHeartbeat";
 import type {
   MemoryDeletionClaim,
   MemoryJobClaim,
@@ -150,7 +156,7 @@ describe("Memory coordinator", () => {
     });
     const service = new MemoryCoordinator({
       now: () => new Date(NOW),
-      async onDrain() { shared.push(getContext()); },
+      async onWorkerHeartbeat() { shared.push(getContext()); },
       async reconcileWork() { shared.push(getContext()); },
       policy: { heartbeatMs: 10, intervalMs: 60_000, leaseMs: 100, maxDeletionParallel: 1, maxJobParallel: 2 },
       registry,
@@ -189,8 +195,8 @@ describe("Memory coordinator", () => {
     }
   });
 
-  it("records content-free worker liveness once at the start of an idle drain", async () => {
-    const onDrain = vi.fn(async () => undefined);
+  it("records content-free worker liveness at startup without making one-off drains claim availability", async () => {
+    const onWorkerHeartbeat = vi.fn(async () => undefined);
     const claimDeletion = vi.fn(async () => null);
     const registry = new MemoryCoordinatorRegistry();
     registry.registerDeletion({
@@ -199,7 +205,7 @@ describe("Memory coordinator", () => {
     });
     const service = new MemoryCoordinator({
       now: () => new Date(NOW),
-      onDrain,
+      onWorkerHeartbeat,
       policy: {
         heartbeatMs: 10,
         intervalMs: 10_000,
@@ -212,11 +218,12 @@ describe("Memory coordinator", () => {
     });
 
     await service.reconcileNow();
-    service.stop();
+    expect(onWorkerHeartbeat).not.toHaveBeenCalled();
+    service.start();
+    await service.reconcileNow();
+    await service.stop();
 
-    expect(onDrain).toHaveBeenCalledOnce();
-    expect(onDrain.mock.invocationCallOrder[0])
-      .toBeLessThan(claimDeletion.mock.invocationCallOrder[0]!);
+    expect(onWorkerHeartbeat).toHaveBeenCalledOnce();
   });
 
   it("does not turn timer ticks during a slow pass into a continuous catch-up loop", async () => {
@@ -674,6 +681,188 @@ describe("Memory coordinator", () => {
     releaseJob();
     await pending;
     service.stop();
+  });
+});
+
+describe("Memory coordinator worker liveness", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    reportSubsystemHealthy("memory", "health");
+  });
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  it("keeps admin and user liveness fresh throughout a long claimed job without claiming extra work", async () => {
+    let lastSeenAt: Date | null = null;
+    const heartbeat = createPrismaMemoryWorkerHeartbeat({
+      memoryWorkerHeartbeat: {
+        upsert: vi.fn(async ({ update }: { update: { lastSeenAt: Date } }) => {
+          lastSeenAt = update.lastSeenAt;
+        })
+      }
+    } as never, { instanceId: "fixture-worker", startedAt: NOW });
+    const onWorkerHeartbeat = vi.fn(() => heartbeat.beat());
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const execute = vi.fn(async () => {
+      await gate;
+      return { acceptedResultHash: RESULT_HASH };
+    });
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({ kind: "EMBED_ITEMS", execute, preflight: async () => ({ status: "READY" }) });
+    const repo = repository({ claimJob: vi.fn().mockResolvedValueOnce(jobClaim()).mockResolvedValue(null) });
+    const service = new MemoryCoordinator({
+      onWorkerHeartbeat,
+      policy: { intervalMs: 60_000, maxJobParallel: 1 },
+      registry,
+      repository: repo
+    });
+    const status = createAdminMemoryStatusService({ repository: {
+      read: async () => ({
+        admissionTimeout: { seconds: 30, version: 1 },
+        processing: { enabled: true, issues: [] },
+        configuredTargets: [],
+        index: { activeGenerations: [], ownerCount: 0, preparing: false,
+          rebuildCandidates: [], rebuilding: false, requiresRebuild: false },
+        inProgressCount: 1,
+        oldestQueuedAt: null,
+        queueLength: 0,
+        workerLastSeenAt: lastSeenAt
+      }),
+      startRebuild: vi.fn(),
+      updateAdmissionTimeout: vi.fn()
+    } });
+    const userState = () => readMemoryCapabilityOperationalState({
+      memoryIndexGeneration: { findFirst: vi.fn() },
+      memoryWorkerHeartbeat: { findUnique: async () => lastSeenAt ? { lastSeenAt } : null }
+    } as never, {
+      now: new Date(),
+      settings: {
+        acceptedUtilityEgressAt: null, acceptedUtilityEgressFingerprint: null, acceptedUtilityPolicyVersion: null,
+        activeIndexGenerationId: null, decayEnabled: false, decayPolicyVersion: null,
+        embeddingProviderModelId: null, learnAutomatically: true, memoryConsentRevision: 0,
+        memoryGeneration: 0, memoryRevision: 0, referenceChatHistory: true,
+        sensitiveAutomaticPolicy: "EXPLICIT_ONLY", settingsRevision: 0,
+        synthesisEnabled: true, synthesisEnabledAt: NOW, synthesisPolicyVersion: null,
+        lastSynthesisAt: null, updatedAt: NOW, useMemoryFacts: true, userId: "user-1"
+      }
+    });
+    try {
+      service.start();
+      const pending = service.reconcileNow();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(onWorkerHeartbeat).toHaveBeenCalledOnce();
+      service.start();
+      service.start();
+      for (let step = 0; step < 10; step += 1) {
+        await vi.advanceTimersByTimeAsync(30_000);
+        await expect(status.get()).resolves.toMatchObject({
+          queue: { inProgress: 1, length: 0, oldestAgeSeconds: null },
+          worker: { state: "RUNNING" }
+        });
+        await expect(userState()).resolves.toMatchObject({ workerAvailable: true });
+      }
+      expect(Date.now() - NOW.getTime()).toBeGreaterThan(MEMORY_WORKER_HEARTBEAT_FRESHNESS_MS);
+      expect(onWorkerHeartbeat).toHaveBeenCalledTimes(11);
+      expect(repo.claimJob).toHaveBeenCalledOnce();
+      expect(repo.heartbeatJob).toHaveBeenCalled();
+      expect(repo.commitJobSuccess).not.toHaveBeenCalled();
+      release();
+      await pending;
+      expect(repo.commitJobSuccess).toHaveBeenCalledOnce();
+      await service.stop();
+      const beatCount = onWorkerHeartbeat.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(MEMORY_WORKER_HEARTBEAT_FRESHNESS_MS + 1);
+      expect(onWorkerHeartbeat).toHaveBeenCalledTimes(beatCount);
+      expect(vi.getTimerCount()).toBe(0);
+      await expect(status.get()).resolves.toMatchObject({ worker: { state: "NOT_RUNNING" } });
+      await expect(userState()).resolves.toMatchObject({ workerAvailable: false });
+    } finally {
+      release();
+      await service.stop();
+    }
+  });
+
+  it("serializes slow heartbeat writes, drains one at stop and starts only one replacement loop", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const onWorkerHeartbeat = vi.fn().mockImplementationOnce(() => gate).mockResolvedValue(undefined);
+    const service = new MemoryCoordinator({
+      onWorkerHeartbeat, registry: new MemoryCoordinatorRegistry(), repository: repository()
+    });
+    try {
+      service.start();
+      service.start();
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(onWorkerHeartbeat).toHaveBeenCalledOnce();
+      const stopped = vi.fn();
+      const stopping = service.stop().then(stopped);
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(stopped).not.toHaveBeenCalled();
+      expect(onWorkerHeartbeat).toHaveBeenCalledOnce();
+      release();
+      await stopping;
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(onWorkerHeartbeat).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+      service.start();
+      service.start();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(onWorkerHeartbeat).toHaveBeenCalledTimes(4);
+      await service.stop();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { release(); await service.stop(); }
+  });
+
+  it("contains failed liveness writes while job leases and completion remain authoritative", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let signal: AbortSignal | undefined;
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({
+      kind: "EMBED_ITEMS", preflight: async () => ({ status: "READY" }),
+      execute: async (_claim, context) => {
+        signal = context.signal;
+        await gate;
+        return { acceptedResultHash: RESULT_HASH };
+      }
+    });
+    const repo = repository({ claimJob: vi.fn().mockResolvedValueOnce(jobClaim()).mockResolvedValue(null) });
+    const onWorkerHeartbeat = vi.fn()
+      .mockRejectedValueOnce(new Error("PRIVATE_HEARTBEAT_PAYLOAD"))
+      .mockRejectedValueOnce(new Error("PRIVATE_HEARTBEAT_PAYLOAD"))
+      .mockResolvedValue(undefined);
+    const contexts: Array<ObservabilityContext | undefined> = [];
+    const service = new MemoryCoordinator({
+      onWorkerHeartbeat: () => { contexts.push(getContext()); return onWorkerHeartbeat(); },
+      registry, repository: repo
+    });
+    try {
+      runWithContext({ trace_id: "b".repeat(32), run_id: "PRIVATE_REQUEST" }, () => service.start());
+      const pending = service.reconcileNow();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(onWorkerHeartbeat).toHaveBeenCalledTimes(3);
+      expect(signal?.aborted).toBe(false);
+      expect(repo.heartbeatJob).toHaveBeenCalled();
+      release();
+      await pending;
+      expect(repo.commitJobSuccess).toHaveBeenCalledOnce();
+      expect(repo.retryJob).not.toHaveBeenCalled();
+      expect(repo.terminalJob).not.toHaveBeenCalled();
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+      expect(records.filter((record) => record.stage === "health")).toEqual([
+        expect.objectContaining({ event: "runtime_lifecycle", code: "memory_coordinator_failed", outcome: "failed" }),
+        expect.objectContaining({ event: "runtime_lifecycle", code: "memory_coordinator_failed", outcome: "failed" }),
+        expect.objectContaining({ event: "subsystem.recovered", repeat_count: 1 })
+      ]);
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+      for (const context of contexts) {
+        expect(context).toEqual({ trace_id: expect.stringMatching(/^[0-9a-f]{32}$/u) });
+        expect(context?.trace_id).not.toBe("b".repeat(32));
+      }
+    } finally { release(); await service.stop(); }
   });
 });
 

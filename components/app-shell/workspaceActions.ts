@@ -12,6 +12,7 @@ import {
   responseErrorMessage
 } from "@/components/app-shell/shellFormatting";
 import {
+  clearSessionExpiredDraftForSession,
   rememberActiveChatId,
   storedActiveChatId
 } from "@/components/app-shell/shellStorage";
@@ -1323,10 +1324,16 @@ export function useWorkspaceActions({
   }
 
   return {
-    openContinuedChat: (chat: ChatDetail) => {
+    openContinuedChat: async (chat: ChatDetail, sourceKey = useComposerSessionStore.getState().activeSessionKey) => {
+      if (activeChatIdRef.current !== chatIdFromComposerSessionKey(sourceKey)) return false;
       mergeChatIntoList(chat);
       cacheChatDetail(chat);
-      return activateChat(chat);
+      const opened = await activateChat(chat, { preserveControls: true });
+      if (!opened || activeChatIdRef.current !== chat.id || useWorkspaceStore.getState().activeChatId !== chat.id) return false;
+      if (useComposerSessionStore.getState().moveUnsentInputIfTargetEmpty(sourceKey, composerSessionKey(chat.id))) {
+        clearSessionExpiredDraftForSession(sourceKey);
+      }
+      return true;
     },
     activateBlankWorkspace,
     activateChat,

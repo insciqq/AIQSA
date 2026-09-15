@@ -1,7 +1,12 @@
+import { assertInstructionPresetSelection } from "../instructions/store";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
 import { assertChatPdfClaim, insertChatPdfAdmissions, storeChatPdfAdmissionResult } from "../uploads/chatPdfPersistence";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
+import {
+  assertWorkspaceFollowupClaim, prepareWorkspaceFollowupAdmission,
+  storeWorkspaceFollowupAdmission, WorkspaceFollowupError
+} from "./workspaceFollowupPersistence";
 import { logEvent, runWithContext } from "../observability";
 import { observedFailure, observedFailureCode } from "../providers/providerObservability";
 import { logRunPersistence } from "./runObservability";
@@ -153,6 +158,7 @@ import {
   activeMessageStatuses,
   isRecord,
   json,
+  lockRunSettlementScope,
   mapActiveRunConflict,
   unique
 } from "./prismaRepositoryShared";
@@ -189,47 +195,13 @@ function assertWorkspaceAdmissionShape(
   }
 }
 
-async function insertAcceptedWorkspaceRunBinding(
-  tx: Prisma.TransactionClient,
-  input: PreparingRunAdmissionInput,
-  ids: Readonly<{
-    assistantMessageId: string;
-    runId: string;
-    userMessageId: string;
-  }>
+async function reserveAcceptedWorkspaceSession(
+  tx: Prisma.TransactionClient, plan: WorkspaceRunAdmissionPlan
 ): Promise<void> {
-  const plan = input.workspaceAdmissionPlan;
-  if (!plan) {
-    if (input.normalizedRequest.workspace || input.workspaceEnabled === true) {
-      throw new WorkspaceRunConflictError("workspace_runtime_incompatible");
-    }
-    if (input.workspaceEnabled !== undefined) {
-      await tx.chat.update({
-        data: { workspaceEnabled: false },
-        where: { id: input.chatId }
-      });
-    }
-    return;
-  }
-  assertWorkspaceAdmissionShape(input, plan);
-  if (
-    plan.runId !== ids.runId ||
-    plan.userMessageId !== ids.userMessageId ||
-    plan.assistantMessageId !== ids.assistantMessageId
-  ) {
-    throw new WorkspaceRunConflictError("workspace_runtime_incompatible");
-  }
-  const policy = await tx.workspacePolicy.findUnique({
-    select: { enabled: true, version: true },
-    where: { id: WORKSPACE_POLICY_ID }
-  });
-  if (!policy?.enabled || policy.version !== plan.policyRevision) {
-    throw new WorkspaceRunConflictError("workspace_disabled");
-  }
   const active = await tx.modelRun.count({
     where: {
-      chatId: input.chatId,
-      id: { not: ids.runId },
+      chatId: plan.chatId,
+      id: { not: plan.runId },
       status: { in: activeModelRunStatuses },
       workspaceRunBinding: { isNot: null }
     }
@@ -240,9 +212,9 @@ async function insertAcceptedWorkspaceRunBinding(
   if (!Number.isFinite(expiresAt.getTime())) {
     throw new WorkspaceRunConflictError("workspace_runtime_incompatible");
   }
-  await tx.$queryRaw`SELECT "id" FROM "WorkspaceSession" WHERE "chatId" = ${input.chatId} FOR UPDATE`;
+  await tx.$queryRaw`SELECT "id" FROM "WorkspaceSession" WHERE "chatId" = ${plan.chatId} FOR UPDATE`;
   const existing = await tx.workspaceSession.findUnique({
-    where: { chatId: input.chatId }
+    where: { chatId: plan.chatId }
   });
   if (existing) {
     if (
@@ -279,7 +251,7 @@ async function insertAcceptedWorkspaceRunBinding(
     if (liveExports > 0) throw new WorkspaceRunConflictError("workspace_busy");
     await tx.workspaceSession.update({
       data: {
-        expiresAt, lastActiveAt: new Date(), operationOwner: workspaceRunOperationOwner(ids.runId),
+        expiresAt, lastActiveAt: new Date(), operationOwner: workspaceRunOperationOwner(plan.runId),
         operationExpiresAt: null, version: { increment: 1 }
       },
       where: { id: existing.id }
@@ -287,17 +259,68 @@ async function insertAcceptedWorkspaceRunBinding(
   } else {
     await tx.workspaceSession.create({
       data: {
-        chatId: input.chatId,
+        chatId: plan.chatId,
         expiresAt,
         id: plan.sessionId,
         imageRef: plan.normalized.imageRef,
         internetEnabled: plan.normalized.internetEnabled,
-        operationOwner: workspaceRunOperationOwner(ids.runId),
+        operationOwner: workspaceRunOperationOwner(plan.runId),
         policyRevision: plan.policyRevision,
         sandboxName: plan.sandboxName,
         state: "PENDING"
       }
     });
+  }
+}
+
+async function insertAcceptedWorkspaceRunBinding(
+  tx: Prisma.TransactionClient,
+  input: PreparingRunAdmissionInput,
+  ids: Readonly<{
+    assistantMessageId: string;
+    runId: string;
+    userMessageId: string;
+  }>,
+  deferSessionClaim = false
+): Promise<void> {
+  const plan = input.workspaceAdmissionPlan;
+  if (!plan) {
+    if (input.normalizedRequest.workspace || input.workspaceEnabled === true) {
+      throw new WorkspaceRunConflictError("workspace_runtime_incompatible");
+    }
+    if (input.workspaceEnabled !== undefined) {
+      await tx.chat.update({
+        data: { workspaceEnabled: false },
+        where: { id: input.chatId }
+      });
+    }
+    return;
+  }
+  assertWorkspaceAdmissionShape(input, plan);
+  if (
+    plan.runId !== ids.runId ||
+    plan.userMessageId !== ids.userMessageId ||
+    plan.assistantMessageId !== ids.assistantMessageId
+  ) {
+    throw new WorkspaceRunConflictError("workspace_runtime_incompatible");
+  }
+  const policy = await tx.workspacePolicy.findUnique({
+    select: { enabled: true, version: true },
+    where: { id: WORKSPACE_POLICY_ID }
+  });
+  if (!policy?.enabled || policy.version !== plan.policyRevision) {
+    throw new WorkspaceRunConflictError("workspace_disabled");
+  }
+  if (deferSessionClaim) {
+    await tx.$queryRaw`SELECT "id" FROM "WorkspaceSession" WHERE "chatId" = ${input.chatId} FOR UPDATE`;
+    const existing = await tx.workspaceSession.findUnique({ where: { chatId: input.chatId } });
+    if (!input.workspaceFollowup || !existing || existing.id !== plan.sessionId ||
+      existing.sandboxName !== plan.sandboxName || existing.imageRef !== plan.normalized.imageRef ||
+      existing.internetEnabled !== plan.normalized.internetEnabled) {
+      throw new WorkspaceRunConflictError("workspace_busy");
+    }
+  } else {
+    await reserveAcceptedWorkspaceSession(tx, plan);
   }
   await tx.workspaceRunBinding.create({
     data: {
@@ -424,6 +447,8 @@ const TEMPORARY_PREPARING_SETTINGS: PreparingSettingsRow = Object.freeze({
 
 export type LockedPreparingRun = Readonly<{
   pdfPreparationRequired?: boolean;
+  workspacePreparationRequired?: boolean;
+  workspaceWaitPending: boolean;
   assistantId: string | null;
   assistantMessageId: string | null;
   assistantIdentity: Prisma.JsonValue | null;
@@ -483,11 +508,15 @@ export async function lockPreparingRun(
   runId: string,
   userId: string
 ): Promise<LockedPreparingRun | null> {
+  await lockRunSettlementScope(tx, runId);
   const [run] = await tx.$queryRaw<LockedPreparingRun[]>(Prisma.sql`
     SELECT
       "assistantId", "assistantMessageId", "assistantIdentity", "chatId", "id",
       "modelId", "normalizedRequest", "provider",
-      "status", "userId", "userMessageId",
+      "status", "userId", "userMessageId", "workspaceWaitPending",
+      EXISTS (SELECT 1 FROM "WorkspaceFollowup" f
+        WHERE f."modelRunId" = "ModelRun"."id" AND f."state" IN ('waiting','preparing'))
+        AS "workspacePreparationRequired",
       EXISTS (SELECT 1 FROM "ChatPdfRunPreparation" p
         WHERE p."modelRunId" = "ModelRun"."id" AND p."state" IN ('pending','preparing','answer_ready'))
         AS "pdfPreparationRequired"
@@ -932,6 +961,7 @@ export async function admitProjectRunWithClient(
       `);
       const lockedChat = lockedChats[0];
       if (!lockedChat || lockedChat.archived) throw new ActiveLeafConflictError();
+      const workspaceFollowup = await prepareWorkspaceFollowupAdmission(tx, input, false);
 
       let assistantMessageId: string;
       let userMessageId: string;
@@ -1070,9 +1100,10 @@ export async function admitProjectRunWithClient(
           chatId: input.chatId,
           ...(input.workspaceAdmissionPlan ? { id: input.workspaceAdmissionPlan.runId } : {}),
           modelId: input.modelId,
-          ...(input.deferredPdf ? {} : { normalizedRequest: json(input.normalizedRequest) }),
+          ...(input.deferredPdf || workspaceFollowup ? {} : { normalizedRequest: json(input.normalizedRequest) }),
           provider: input.provider,
-          status: input.deferredPdf ? "preparing" : "streaming",
+          status: input.deferredPdf || workspaceFollowup ? "preparing" : "streaming",
+          workspaceWaitPending: Boolean(workspaceFollowup),
           userId: input.userId,
           userMessageId
         }
@@ -1081,7 +1112,7 @@ export async function admitProjectRunWithClient(
         assistantMessageId,
         runId: run.id,
         userMessageId
-      });
+      }, Boolean(workspaceFollowup));
       await insertAcceptedKnowledgeRunBindings(tx, {
         plan: input.knowledgeAdmissionPlan,
         runId: run.id,
@@ -1141,6 +1172,7 @@ export async function admitProjectRunWithClient(
       // new Project runs neither read their text nor create run-item bindings.
       const admitted = {
         ...(input.deferredPdf ? { deferredPdf: true as const } : {}),
+        ...(workspaceFollowup ? { deferredWorkspace: true as const } : {}),
         assistantMessageId,
         attemptId: "",
         chatMemoryMode: "EXCLUDED" as const,
@@ -1152,6 +1184,7 @@ export async function admitProjectRunWithClient(
         userMessageId
       };
       if (input.deferredPdf) await storeChatPdfAdmissionResult(tx, run.id, admitted);
+      if (workspaceFollowup) await storeWorkspaceFollowupAdmission(tx, workspaceFollowup, input.chatId, admitted);
       return admitted;
     })
   );
@@ -1177,6 +1210,11 @@ export async function admitPreparingRunWithClient(
     repeatableReadTransaction(prismaClient, async (tx) => {
       // Match account/settings owner -> chat lock order before freezing secrets.
       if (input.workspaceAdmissionPlan) await lockWorkspaceSecretOwner(tx, input.userId);
+      else if (input.workspaceFollowup && !await lockPreparingMemoryOwner(tx, input.userId)) {
+        throw new WorkspaceFollowupError("workspace_followup_unavailable");
+      }
+      if (input.normalizedRequest.instructionPreset) await assertInstructionPresetSelection(
+        tx, input.userId, input.normalizedRequest.instructionPreset);
       const admissionNow = new Date();
       if (input.admissionKind === "NORMAL_SEND" && input.personalChat) {
         const defaults = await loadChatCreationDefaults(tx, input.userId);
@@ -1226,6 +1264,7 @@ export async function admitPreparingRunWithClient(
       if (!lockedChat || lockedChat.archived) {
         throw new ActiveLeafConflictError();
       }
+      const workspaceFollowup = await prepareWorkspaceFollowupAdmission(tx, input, lockedChat.memoryMode !== "TEMPORARY");
 
       if (input.assistant) {
         await assertAssistantRunProvenance(tx, {
@@ -1542,6 +1581,7 @@ export async function admitPreparingRunWithClient(
           modelId: input.modelId,
           provider: input.provider,
           status: "preparing",
+          workspaceWaitPending: Boolean(workspaceFollowup),
           userId: input.userId,
           userMessageId
         }
@@ -1551,7 +1591,7 @@ export async function admitPreparingRunWithClient(
         assistantMessageId,
         runId: run.id,
         userMessageId
-      });
+      }, Boolean(workspaceFollowup));
 
       await insertAcceptedKnowledgeRunBindings(tx, {
         plan: input.knowledgeAdmissionPlan,
@@ -1580,20 +1620,23 @@ export async function admitPreparingRunWithClient(
       if (input.defaults) {
         await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
       }
-      if (input.deferredPdf) {
+      if (input.deferredPdf || workspaceFollowup) {
+        const source = {
+          activeLeafMessageId: admittedSourceSnapshot.activeLeafMessageId,
+          memoryBranchGeneration: admittedSourceSnapshot.memoryBranchGeneration,
+          memorySourceRevision: admittedSourceSnapshot.memorySourceRevision,
+          preSendActiveLeafMessageId
+        };
         const admitted: PreparingRunAdmissionResult = {
           assistantMessageId, attemptId: "", chatMemoryMode: lockedChat.memoryMode,
-          deferredPdf: true, folderId: lockedChat.folderId,
+          ...(input.deferredPdf ? { deferredPdf: true as const, pdfMemorySource: source } : {}),
+          ...(workspaceFollowup ? { deferredWorkspace: true as const, workspaceMemorySource: source } : {}),
+          folderId: lockedChat.folderId,
           memoryGeneration: settings.memoryGeneration, memoryRevision: settings.memoryRevision,
-          pdfMemorySource: {
-            activeLeafMessageId: admittedSourceSnapshot.activeLeafMessageId,
-            memoryBranchGeneration: admittedSourceSnapshot.memoryBranchGeneration,
-            memorySourceRevision: admittedSourceSnapshot.memorySourceRevision,
-            preSendActiveLeafMessageId
-          },
           runId: run.id, settingsSnapshot: memoryPreparingSettingsSnapshot(settings), userMessageId
         };
-        await storeChatPdfAdmissionResult(tx, run.id, admitted);
+        if (input.deferredPdf) await storeChatPdfAdmissionResult(tx, run.id, admitted);
+        if (workspaceFollowup) await storeWorkspaceFollowupAdmission(tx, workspaceFollowup, input.chatId, admitted);
         return admitted;
       }
 
@@ -3643,6 +3686,7 @@ async function settlePreparingAttemptExecutions(
 }
 
 export type PreparingSettlementInput = Readonly<{
+  workspaceClaimToken?: string;
   retryable?: boolean;
   attemptId?: string;
   errorCode: string;
@@ -3697,13 +3741,16 @@ export async function settlePreparingRunInTransaction(
 ): Promise<boolean> {
   const run = await lockPreparingRun(tx, input.runId, input.userId);
   if (!run || run.status !== "preparing") return false;
+  if (input.workspaceClaimToken) await assertWorkspaceFollowupClaim(tx, {
+    claimToken: input.workspaceClaimToken, runId: input.runId, userId: input.userId
+  }, "settlement");
   const attempt = await lockPreparingAttempt(tx, {
     ...(input.attemptId ? { attemptId: input.attemptId } : {}),
     runId: input.runId,
     userId: input.userId
   });
   const activeAttempt = attempt && ["PENDING", "EXECUTING", "READY"].includes(attempt.state) ? attempt : null;
-  if (!activeAttempt && !run.pdfPreparationRequired) return false;
+  if (!activeAttempt && !run.pdfPreparationRequired && !run.workspacePreparationRequired) return false;
   const baseSnapshot = decodeMemoryPreparingBaseSnapshot(
     activeAttempt?.boundedPrivateBaseRequestSnapshot
   );
@@ -3734,9 +3781,15 @@ export async function settlePreparingRunInTransaction(
       errorPayload: json({ code: errorCode, message: input.message,
         ...(input.retryable !== undefined ? { retryable: input.retryable } : {}) }),
       normalizedRequest: json(normalizedRequest),
-      status: cancelled ? "cancelled" : "error"
+      status: cancelled ? "cancelled" : "error",
+      workspaceWaitPending: false
     },
     where: { id: run.id }
+  });
+  if (run.workspacePreparationRequired) await tx.workspaceFollowup.updateMany({
+    where: { modelRunId: run.id, state: { in: ["waiting", "preparing"] } },
+    data: { state: cancelled ? "cancelled" : "failed", errorCode,
+      snapshot: Prisma.DbNull, admissionResult: Prisma.DbNull, claimToken: null, leaseExpiresAt: null }
   });
   if (run.assistantMessageId) {
     await tx.message.updateMany({
@@ -3779,7 +3832,7 @@ export async function recoverPreparingRunWithClient(
     const run = await lockPreparingRun(tx, input.runId, input.userId);
     if (activeRunControllerRegistry.has(input.runId)) return "deferred";
     if (!run) return "not_preparing";
-    if (run.pdfPreparationRequired) return "deferred";
+    if (run.pdfPreparationRequired || run.workspacePreparationRequired) return "deferred";
     if (run.status !== "preparing") {
       const binding = await tx.modelRunMemoryBinding.findUnique({
         select: { id: true },
@@ -3866,7 +3919,7 @@ export async function createDormantPreparingRun(
   logEvent("run_accepted", { run_id: created.runId,
     kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
     preparation: created.deferredPdf ? "pdf" : created.chatMemoryMode === "TEMPORARY" ? "ready" : "memory" });
-  if (created.deferredPdf || created.chatMemoryMode === "TEMPORARY") return created;
+  if (created.deferredPdf || created.deferredWorkspace || created.chatMemoryMode === "TEMPORARY") return created;
   // Durable acceptance transfers cancellation from the HTTP request to the
   // run owner. Stop still aborts this controller; recovery sees an active owner
   // until Memory settlement. PDF preparation already owns its own registration.
@@ -4202,9 +4255,8 @@ async function continuePreparingRunWithClient(
   }
 }
 
-/** PDF owns the slow gate. Personal Memory receives its immutable base only
- * after the document projection and final attachment budget exist. */
-export async function continuePdfPreparedRunWithClient(
+/** Required gates settle before Personal Memory receives its immutable base. */
+async function continueDeferredPreparedRunWithClient(
   prismaClient: PrismaClient,
   input: Readonly<{
     admission: PreparingRunAdmissionInput;
@@ -4214,41 +4266,50 @@ export async function continuePdfPreparedRunWithClient(
   memoryRetrieval: MemoryRunRetrievalService,
   memoryExecutionAuthority: MemoryExecutionAuthorityDependencies,
   memorySourceHooks?: MemorySourceMutationHooks,
-  memoryAdmissionDeadlineMs = MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
+  memoryAdmissionDeadlineMs = MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS,
+  gate: "pdf" | "workspace" = "pdf"
 ): Promise<PreparingRunAdmissionResult & Readonly<{ materializedRequest?: PreparingRunMaterializedRequest }>> {
   const { admission, created } = input;
+  const failure = (kind: "unavailable" | "invalid" | "ambiguous") => gate === "pdf"
+    ? new ChatPdfPreparationError(`pdf_preparation_${kind}`, kind === "ambiguous")
+    : new WorkspaceFollowupError(kind === "ambiguous" ? "workspace_followup_interrupted" :
+      kind === "invalid" ? "workspace_followup_invalid" : "workspace_followup_unavailable");
   const admitted = await repeatableReadTransaction(prismaClient, async (tx) => {
+    if (admission.project) await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${admission.project.projectId} FOR UPDATE`;
     if (!(await lockPreparingMemoryOwner(tx, admission.userId))) {
-      throw new ChatPdfPreparationError("pdf_preparation_unavailable");
+      throw failure("unavailable");
     }
+    await tx.$queryRaw`SELECT "id" FROM "Chat" WHERE "id" = ${admission.chatId} FOR UPDATE`;
     const chat = await tx.chat.findFirst({ where: {
       id: admission.chatId, archived: false, permanentDeletionAt: null
     } });
     const run = await lockPreparingRun(tx, created.runId, admission.userId);
-    await assertChatPdfClaim(tx, { claimToken: input.claimToken, runId: created.runId, userId: admission.userId });
+    const claim = { claimToken: input.claimToken, runId: created.runId, userId: admission.userId };
+    if (gate === "pdf") await assertChatPdfClaim(tx, claim);
+    else await assertWorkspaceFollowupClaim(tx, claim);
     const pending = await tx.chatPdfAttachmentPreparation.count({ where: {
       modelRunId: created.runId, state: { notIn: ["ready", "original_only"] }
     } });
-    if (!chat || !run || run.status !== "preparing" || pending ||
+    if (!chat || !run || run.status !== "preparing" || run.workspaceWaitPending || pending ||
       chat.activeLeafMessageId !== created.assistantMessageId) {
-      throw new ChatPdfPreparationError("pdf_preparation_unavailable");
+      throw failure("unavailable");
     }
     if (admission.project || created.chatMemoryMode === "TEMPORARY") {
       // These scopes never create or read Personal Memory attempts.
       if (admission.project ? chat.projectId !== admission.project.projectId : chat.memoryMode !== "TEMPORARY") {
-        throw new ChatPdfPreparationError("pdf_preparation_unavailable");
+        throw failure("unavailable");
       }
       await tx.modelRun.update({ where: { id: created.runId }, data: {
         normalizedRequest: json(admission.normalizedRequest), status: "streaming"
       } });
       return { created, ready: null, complete: true };
     }
-    const source = created.pdfMemorySource;
+    const source = gate === "pdf" ? created.pdfMemorySource : created.workspaceMemorySource;
     if (!source || chat.userId !== admission.userId || chat.projectId ||
       chat.memoryMode !== created.chatMemoryMode || chat.folderId !== created.folderId ||
       chat.memoryBranchGeneration !== source.memoryBranchGeneration ||
       chat.memorySourceRevision !== source.memorySourceRevision) {
-      throw new ChatPdfPreparationError("pdf_preparation_unavailable");
+      throw failure("unavailable");
     }
     const existing = await lockPreparingAttempt(tx, { runId: run.id, userId: admission.userId });
     if (existing) {
@@ -4258,10 +4319,10 @@ export async function continuePdfPreparedRunWithClient(
         }))) {
         // An executing Memory attempt may already own external effects. Its
         // ordinary terminal settlement preserves those receipts; never replay.
-        throw new ChatPdfPreparationError("pdf_preparation_ambiguous", true);
+        throw failure("ambiguous");
       }
       const settingsSnapshot = decodeMemoryPreparingSettingsSnapshot(existing.settingsSnapshot);
-      if (!settingsSnapshot) throw new ChatPdfPreparationError("pdf_preparation_invalid");
+      if (!settingsSnapshot) throw failure("invalid");
       return { created: { ...created, attemptId: existing.id,
         memoryGeneration: existing.memoryGenerationSnapshot,
         memoryRevision: existing.retrievalRevisionSnapshot, settingsSnapshot },
@@ -4296,10 +4357,93 @@ export async function continuePdfPreparedRunWithClient(
     );
     if (!materializedRequest || !(await finalizePreparingRunWithClient(prismaClient, {
       ...admission, ...materializedRequest, attemptId: attempt.id, runId: created.runId
-    }, memoryExecutionAuthority))) throw new ChatPdfPreparationError("pdf_preparation_unavailable", true);
+    }, memoryExecutionAuthority))) throw failure("unavailable");
     return { ...admitted.created, materializedRequest };
   }
   return continuePreparingRunWithClient(prismaClient, admission, admitted.created,
     memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
     Date.now() + boundedMemoryAdmissionDeadlineMs(memoryAdmissionDeadlineMs));
+}
+
+export const continuePdfPreparedRunWithClient = continueDeferredPreparedRunWithClient;
+
+/** Transfer execution ownership only after the predecessor's terminal commit.
+ * No guest, provider or Memory I/O is performed inside this transaction. */
+export async function activateWorkspaceFollowupWithClient(
+  prismaClient: PrismaClient,
+  input: Readonly<{ admission: PreparingRunAdmissionInput; claimToken: string; created: PreparingRunAdmissionResult }>
+): Promise<PreparingRunAdmissionResult> {
+  const { admission } = input;
+  return repeatableReadTransaction(prismaClient, async (tx) => {
+    if (admission.project) {
+      await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${admission.project.projectId} FOR UPDATE`;
+      const access = await resolveProjectAccess(tx, { projectId: admission.project.projectId,
+        userId: admission.userId, requireActive: true, minimumRole: "CONTRIBUTOR" });
+      if (!access || access.accessRevision !== admission.project.accessRevision ||
+        access.instructionsRevision !== admission.project.instructionsRevision ||
+        access.memoryRevision !== admission.project.memoryRevision ||
+        access.policyRevision !== admission.project.policyRevision) {
+        throw new WorkspaceFollowupError("workspace_followup_unavailable");
+      }
+    }
+    if (!await lockPreparingMemoryOwner(tx, admission.userId)) throw new WorkspaceFollowupError("workspace_followup_unavailable");
+    await tx.$queryRaw`SELECT "id" FROM "Chat" WHERE "id" = ${admission.chatId} FOR UPDATE`;
+    const run = await lockPreparingRun(tx, input.created.runId, admission.userId);
+    await assertWorkspaceFollowupClaim(tx, { claimToken: input.claimToken, runId: input.created.runId, userId: admission.userId });
+    const job = await tx.workspaceFollowup.findUniqueOrThrow({ where: { modelRunId: input.created.runId },
+      include: { predecessor: { select: { status: true } } } });
+    const created = job.admissionResult as unknown as PreparingRunAdmissionResult;
+    if (!run || created?.runId !== run.id || created.assistantMessageId !== run.assistantMessageId ||
+      created.userMessageId !== run.userMessageId || run.chatId !== admission.chatId) {
+      throw new WorkspaceFollowupError("workspace_followup_invalid");
+    }
+    if (!run.workspaceWaitPending) return created;
+    if (job.deadlineAt <= new Date()) throw new WorkspaceFollowupError("workspace_followup_expired");
+    if (job.predecessor.status !== "complete") throw new WorkspaceFollowupError("workspace_followup_predecessor_failed");
+    const chat = await tx.chat.findUniqueOrThrow({ where: { id: admission.chatId } });
+    if (chat.activeLeafMessageId !== created.assistantMessageId ||
+      (admission.project ? chat.projectId !== admission.project.projectId : chat.userId !== admission.userId) ||
+      chat.memoryMode !== created.chatMemoryMode ||
+      (admission.project ? chat.projectFolderId : chat.folderId) !== created.folderId) {
+      throw new WorkspaceFollowupError("workspace_followup_unavailable");
+    }
+    const source = created.workspaceMemorySource;
+    const adjusted = source ? { ...source, memorySourceRevision: source.memorySourceRevision + job.sourceRevisionAdvance } : undefined;
+    if (!admission.project && created.chatMemoryMode !== "TEMPORARY" &&
+      (!adjusted || chat.memoryBranchGeneration !== adjusted.memoryBranchGeneration ||
+        chat.memorySourceRevision !== adjusted.memorySourceRevision)) {
+      throw new WorkspaceFollowupError("workspace_followup_unavailable");
+    }
+    if (admission.workspaceAdmissionPlan) {
+      assertWorkspaceAdmissionShape(admission, admission.workspaceAdmissionPlan);
+      if (admission.workspaceAdmissionPlan.runId !== run.id) throw new WorkspaceFollowupError("workspace_followup_invalid");
+      await reserveAcceptedWorkspaceSession(tx, admission.workspaceAdmissionPlan);
+    }
+    const activated: PreparingRunAdmissionResult = { ...created, deferredWorkspace: undefined,
+      ...(adjusted ? { workspaceMemorySource: adjusted, ...(created.deferredPdf ? { pdfMemorySource: adjusted } : {}) } : {}) };
+    await tx.modelRun.update({ where: { id: run.id }, data: { workspaceWaitPending: false } });
+    if (created.deferredPdf) {
+      await storeChatPdfAdmissionResult(tx, run.id, activated);
+      await tx.workspaceFollowup.update({ where: { modelRunId: run.id }, data: {
+        state: "released", snapshot: Prisma.DbNull, admissionResult: Prisma.DbNull, claimToken: null, leaseExpiresAt: null
+      } });
+    } else {
+      await tx.workspaceFollowup.update({ where: { modelRunId: run.id }, data: { admissionResult: json(activated) } });
+    }
+    return activated;
+  });
+}
+
+export async function continueWorkspacePreparedRunWithClient(
+  prismaClient: PrismaClient,
+  input: Readonly<{ admission: PreparingRunAdmissionInput; claimToken: string; created: PreparingRunAdmissionResult }>,
+  memoryRetrieval: MemoryRunRetrievalService,
+  memoryExecutionAuthority: MemoryExecutionAuthorityDependencies,
+  memorySourceHooks?: MemorySourceMutationHooks,
+  memoryAdmissionDeadlineMs = MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
+): Promise<PreparingRunAdmissionResult & Readonly<{ materializedRequest?: PreparingRunMaterializedRequest }>> {
+  const created = await activateWorkspaceFollowupWithClient(prismaClient, input);
+  if (created.deferredPdf) return created;
+  return continueDeferredPreparedRunWithClient(prismaClient, { ...input, created }, memoryRetrieval,
+    memoryExecutionAuthority, memorySourceHooks, memoryAdmissionDeadlineMs, "workspace");
 }

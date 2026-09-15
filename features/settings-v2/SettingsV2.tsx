@@ -170,7 +170,7 @@ export function SettingsV2({
   };
   const request = (intent: SettingsIntentV2) => {
     if (busy) return;
-    if (dirty && (activeSection === "mcp" || activeSection === "workspace_secrets")) {
+    if (dirty && (activeSection === "mcp" || activeSection === "workspace_secrets" || activeSection === "defaults")) {
       setDiscardIntent(intent);
       return;
     }
@@ -300,7 +300,7 @@ export function SettingsV2({
         </header>
         {busy || dirty ? (
           <p className="v2-settings-state" role="status">
-            {busy ? busyMessage : activeSection === "workspace_secrets" ? "Unsaved Workspace secret" : "Unsaved MCP values"}
+            {busy ? busyMessage : activeSection === "defaults" ? "Unsaved instructions" : activeSection === "workspace_secrets" ? "Unsaved Workspace secret" : "Unsaved MCP values"}
           </p>
         ) : null}
         {noticeSlot ? <div className="v2-settings-notice">{noticeSlot}</div> : null}
@@ -375,13 +375,13 @@ export function SettingsV2({
       </section>
       {discardIntent ? (
         <section
-          aria-label={activeSection === "workspace_secrets" ? "Unsaved Workspace secret" : "Unsaved MCP changes"}
+          aria-label={activeSection === "defaults" ? "Unsaved instructions" : activeSection === "workspace_secrets" ? "Unsaved Workspace secret" : "Unsaved MCP changes"}
           aria-modal="true"
           className="v2-settings-confirm"
           role="alertdialog"
         >
           <h2>Discard unsaved changes?</h2>
-          <p>{activeSection === "workspace_secrets" ? "Your unsaved Workspace secret will be lost." : "Changes to your personal MCP connection will be lost."}</p>
+          <p>{activeSection === "defaults" ? "Your unsaved instructions will be lost." : activeSection === "workspace_secrets" ? "Your unsaved Workspace secret will be lost." : "Changes to your personal MCP connection will be lost."}</p>
           <div>
             <UiV2Button onClick={() => setDiscardIntent(null)}>Keep editing</UiV2Button>
             <UiV2Button tone="destructive" onClick={confirmDiscard}>Discard changes</UiV2Button>

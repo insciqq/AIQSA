@@ -596,3 +596,12 @@ describe("provider request context budget", () => {
     expect(budgeted.request.attachments[0]!.extractedText).toBe("abcdefghij\n[truncated 16 chars]");
   });
 });
+
+it.each(["personalInstructions", "responseReminder"] as const)("reserves the complete %s and fails before trimming it", key => {
+  const input = request();
+  input.prompt = { ...input.prompt, [key]: "instruction ".repeat(500) };
+  const before = JSON.stringify(input.prompt);
+  const result = applyProviderRequestContextBudget({ request: input });
+  expect(result).toMatchObject({ ok: false, error: { code: "context_too_large" } });
+  expect(JSON.stringify(input.prompt)).toBe(before);
+});

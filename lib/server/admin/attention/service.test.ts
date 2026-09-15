@@ -184,7 +184,7 @@ const memoryOk: AdminMemoryStatus = {
   admissionTimeout: { seconds: 30, version: 1 },
   configuredTargets: [],
   index: { generation: 1, readiness: "READY" },
-  queue: { length: 0, oldestAgeSeconds: null },
+  queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
   rebuild: { state: "NOT_REQUIRED" },
   worker: { state: "RUNNING" }
 };
@@ -492,7 +492,7 @@ describe("deriveAdminAttentionItems", () => {
       memory: {
         ...memoryOk,
         index: { generation: 1, readiness: "REBUILD_REQUIRED" },
-        queue: { length: 4, oldestAgeSeconds: 10 },
+        queue: { inProgress: 2, length: 4, oldestAgeSeconds: 10 },
         rebuild: { state: "AVAILABLE" },
         worker: { state: "NOT_RUNNING" }
       }
@@ -500,7 +500,7 @@ describe("deriveAdminAttentionItems", () => {
     expect(result).toEqual([
       expect.objectContaining({
         code: "memory_worker_not_running",
-        detail: "New facts are not learned until the worker starts · 4 jobs waiting",
+        detail: "New facts are not learned until the worker starts · 2 jobs in progress · 4 jobs waiting",
         severity: "bad",
         target: { section: "retrieval" }
       }),
@@ -511,7 +511,7 @@ describe("deriveAdminAttentionItems", () => {
   it.each(["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED"] as const)(
     "reports three blocked learning jobs despite RUNNING and READY, deduplicating %s role alerts", (reason) => {
       const result = items({ systemRoles: roles({ systemModel: null }), memory: {
-        ...memoryOk, queue: { length: 3, oldestAgeSeconds: 1865 },
+        ...memoryOk, queue: { inProgress: 0, length: 3, oldestAgeSeconds: 1865 },
         processing: { enabled: true, issues: [{ stage: "LEARNING", reason, severity: "bad", count: 3, oldestAgeSeconds: 1865 }] }
       } });
       expect(result.filter((item) => item.target.resource === "memory")).toEqual([
@@ -536,7 +536,8 @@ describe("deriveAdminAttentionItems", () => {
     expect(items({ memory: { ...memoryOk,
       processing: { enabled: true, issues: [{ stage: "HISTORY", reason: "STALLED", severity: "warn", count: 4, oldestAgeSeconds: 1900 }] }
     } })).toEqual([expect.objectContaining({ severity: "warn", count: 4 })]);
-    expect(items({ memory: { ...memoryOk, queue: { length: 3, oldestAgeSeconds: 30 } } })).toEqual([]);
+    expect(items({ memory: { ...memoryOk, queue: { inProgress: 0, length: 3, oldestAgeSeconds: 30 } } })).toEqual([]);
+    expect(items({ memory: { ...memoryOk, queue: { inProgress: 2, length: 0, oldestAgeSeconds: null } } })).toEqual([]);
     expect(items({ memory: { ...memoryOk, processing: { enabled: false, issues: [] }, worker: { state: "NOT_RUNNING" } } })).toEqual([]);
   });
 

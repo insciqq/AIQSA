@@ -12,7 +12,7 @@ function response() {
       processing: { enabled: true, issues: [] },
       configuredTargets: [{ model: "Utility", provider: "Primary" }],
       index: { generation: 2, readiness: "READY" },
-      queue: { length: 0, oldestAgeSeconds: null },
+      queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
       rebuild: { state: "NOT_REQUIRED" },
       worker: { state: "RUNNING" }
     }

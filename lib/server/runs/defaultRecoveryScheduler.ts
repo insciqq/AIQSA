@@ -1,4 +1,5 @@
 import { getDefaultChatPdf } from "../uploads/defaultChatPdf";
+import { getDefaultWorkspaceFollowup } from "./defaultWorkspaceFollowup";
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { providerAdmissionService } from "../providerRuntime/defaultAdmission";
 import { knowledgeToolExecutor } from "../knowledge/defaultRetrieval";
@@ -42,6 +43,7 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
       recoverChatTitles: (signal) => titles.reconcile(signal),
       reconcile: async () => {
         getDefaultChatPdf().kick();
+        getDefaultWorkspaceFollowup().kick();
         await reconcileInstallationRuns(deps);
       },
       recoverWorkspaceExports: async (signal) => {

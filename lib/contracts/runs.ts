@@ -113,6 +113,8 @@ export const RUN_OUTCOME_RESPONSE_VERSION = 1 as const;
  * Answer content and outputs are reconciled through the chat projection.
  */
 export type RunOutcome = Readonly<{
+  answerComplete?: true;
+  workspacePreparation?: true;
   pdfPreparation?: readonly ChatPdfPreparationWire[];
   id: string;
   status: ModelRunStatus;
@@ -227,8 +229,13 @@ export function decodeRunOutcomeResponse(value: unknown): RunOutcome | null {
   const id = nonEmptyString(value.run.id);
   const status = modelRunStatus(value.run.status);
   const pdfPreparation = value.run.pdfPreparation === undefined ? undefined : decodeChatPdfPreparations(value.run.pdfPreparation);
+  if ((value.run.answerComplete !== undefined && value.run.answerComplete !== true) ||
+    (value.run.workspacePreparation !== undefined && value.run.workspacePreparation !== true) ||
+    (value.run.workspacePreparation === true && (status !== "queued" || value.run.answerComplete === true))) return null;
   return id && status && pdfPreparation !== null
-    ? { id, status, ...(pdfPreparation ? { pdfPreparation } : {}) } : null;
+    ? { id, status, ...(pdfPreparation ? { pdfPreparation } : {}),
+        ...(value.run.answerComplete === true ? { answerComplete: true } : {}),
+        ...(value.run.workspacePreparation === true ? { workspacePreparation: true } : {}) } : null;
 }
 
 export type PreparingRunAdmissionResponse = Readonly<{

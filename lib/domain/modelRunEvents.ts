@@ -112,6 +112,13 @@ export type ModelRunSseEvent =
       data: ModelRunChatUpdateData;
     }
   | {
+      type: "answer_complete";
+      data: {
+        assistantMessageId: string;
+        runId: string;
+      };
+    }
+  | {
       type: "done";
       data: {
         runId: string;

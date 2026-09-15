@@ -150,6 +150,7 @@ function blankEditorDraft(prefill?: Partial<AssistantEditorDraftState>): Assista
     category: null,
     description: "",
     developerPrompt: "",
+    responseReminder: "",
     knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
     maxOutputTokens: "",
     mcpServerIds: [],
