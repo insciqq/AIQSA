@@ -1492,6 +1492,62 @@ describe("model run route handlers", () => {
     expect(vi.mocked(repository.createRegenerationRun).mock.calls).toHaveLength(previousAdmissions);
   });
 
+  it("accepts one follow-up after answer publication and acknowledges the same durable message on retry", async () => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel, [{
+      id: "previous-answer", role: "assistant", content: { blocks: [{ type: "text", text: "File saved." }] }
+    }]);
+    repository.findRecentActiveRunForChat = async () => ({ ...activeRunRecord({
+      id: "previous-run", chatId: "chat-1", assistantMessageId: "previous-answer"
+    }), answerComplete: true });
+    const create = repository.createRun;
+    repository.createRun = vi.fn(async (input) => ({ ...await create(input), deferredWorkspace: true as const }));
+    repository.getRunOutcomeForUser = async () => ({ id: "run-1", status: "queued", workspacePreparation: true });
+    const adapter = createFakeProviderAdapter();
+    const stream = vi.spyOn(adapter, "stream");
+    const kick = vi.fn();
+    const POST = createSendMessageHandler({ ...authDeps, repository, providers: { fake: adapter }, workspaceFollowup: {
+      kick, findAdmission: async (key) => state.created?.workspaceFollowup?.admissionKey === key ? {
+        version: 1, assistantMessageId: "assistant-message-1", userMessageId: "user-message-1",
+        run: { id: "run-1", status: "queued", workspacePreparation: true }
+      } : null
+    } });
+    const request = () => new Request("http://app.local/api/chats/chat-1/messages", {
+      method: "POST", headers: { cookie: authCookie() }, body: JSON.stringify({ admissionId: "next-invocation",
+        expectedActiveLeafId: "previous-answer", provider: "fake", modelId: "fake-qsa", text: "Update that file." })
+    });
+    const first = await POST(request(), { params: { chatId: "chat-1" } });
+    expect(first.status).toBe(202);
+    const accepted = await first.json();
+    expect(accepted).toEqual({ version: 1, assistantMessageId: "assistant-message-1", userMessageId: "user-message-1",
+      run: { id: "run-1", status: "queued", workspacePreparation: true } });
+    const retry = await POST(request(), { params: { chatId: "chat-1" } });
+    expect(await retry.json()).toEqual(accepted);
+    expect(repository.createRun).toHaveBeenCalledOnce();
+    expect(state.created?.workspaceFollowup).toMatchObject({ predecessorRunId: "previous-run", snapshot: { version: 1 } });
+    expect(state.created?.expectedActiveLeafId).toBe("previous-answer");
+    expect(stream).not.toHaveBeenCalled();
+    expect(kick).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(accepted)).not.toMatch(/snapshot|predecessor|admissionKey/);
+  });
+
+  it.each(["generating", "waiting"] as const)("rejects a follow-up while the current run is %s", async (phase) => {
+    const { repository, state } = createMemoryRepository();
+    repository.findRecentActiveRunForChat = async () => ({ ...activeRunRecord({ chatId: "chat-1",
+      status: phase === "waiting" ? "preparing" : "streaming" }), ...(phase === "waiting" ? { workspaceWaitPending: true } : {}) });
+    const adapter = createFakeProviderAdapter();
+    const stream = vi.spyOn(adapter, "stream");
+    const kick = vi.fn();
+    const response = await createSendMessageHandler({ ...authDeps, repository, providers: { fake: adapter },
+      workspaceFollowup: { kick, findAdmission: async () => null } })(new Request("http://app.local/api/chats/chat-1/messages", {
+      method: "POST", headers: { cookie: authCookie() }, body: JSON.stringify({ provider: "fake", modelId: "fake-qsa", text: "Next" })
+    }), { params: { chatId: "chat-1" } });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "active_run_in_progress" });
+    expect(state.created).toBeNull();
+    expect(stream).not.toHaveBeenCalled();
+    expect(kick).not.toHaveBeenCalled();
+  });
+
   it("rejects a direct-PDF checksum mismatch before request building or provider execution", async () => {
     const directCapabilities: ProviderModelCapabilities = {
       nativePdfInput: true,

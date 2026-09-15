@@ -4,6 +4,7 @@ export type RunLifecycleSnapshot = {
   activeStreams: Record<
     string,
     {
+      answerComplete?: true;
       optimisticAssistantMessageId: string | null;
       resuming: boolean;
       runId: string | null;
@@ -21,6 +22,7 @@ export type RunLifecycleSnapshot = {
 };
 
 export type RunLifecycleTransition =
+  | { chatId: string; runId: string; type: "ANSWER_COMPLETED" }
   | {
       assistantMessageId?: string | null;
       chatId: string;
@@ -39,6 +41,7 @@ export type RunLifecycleTransition =
     }
   | {
       chatId: string;
+      runId?: string | null;
       type: "STREAM_FINISHED";
     }
   | {
@@ -68,6 +71,7 @@ export type RunLifecycleTransition =
     };
 
 export type RunLifecycleStore = RunLifecycleSnapshot & {
+  answerCompleted(input: { chatId: string; runId: string }): void;
   stopStarted(runId: string): boolean;
   stopFinished(runId: string): void;
   ambiguityCleared(input: { chatId: string }): void;
@@ -76,7 +80,7 @@ export type RunLifecycleStore = RunLifecycleSnapshot & {
   resumeStarted(input: { chatId: string; runId: string }): boolean;
   runCancelled(input: { chatId: string; runId?: string | null }): void;
   runIdReceived(input: { chatId: string; runId: string }): void;
-  streamFinished(input: { chatId: string }): void;
+  streamFinished(input: { chatId: string; runId?: string | null }): void;
   streamAmbiguous(input: { assistantMessageId: string; chatId: string; runId: string | null }): void;
   streamStarted(input: { assistantMessageId?: string | null; chatId: string; runId?: string | null }): void;
   tokensApplied(input: { assistantMessageId: string; chatId: string }): void;
@@ -109,6 +113,12 @@ export function reduceRunLifecycle(
   const next = cloneSnapshot(state);
 
   switch (transition.type) {
+    case "ANSWER_COMPLETED":
+      if (next.activeStreams[transition.chatId]?.runId === transition.runId) {
+        next.activeStreams[transition.chatId].answerComplete = true;
+      }
+      return next;
+
     case "STREAM_STARTED":
       delete next.ambiguousFailures[transition.chatId];
       next.activeStreams[transition.chatId] = {
@@ -125,12 +135,14 @@ export function reduceRunLifecycle(
       return next;
 
     case "RUN_ID_RECEIVED":
-      if (next.activeStreams[transition.chatId]) {
+      if (next.activeStreams[transition.chatId] &&
+        (!next.activeStreams[transition.chatId].runId || next.activeStreams[transition.chatId].runId === transition.runId)) {
         next.activeStreams[transition.chatId].runId = transition.runId;
       }
       return next;
 
     case "STREAM_FINISHED":
+      if (transition.runId && next.activeStreams[transition.chatId]?.runId !== transition.runId) return state;
       delete next.activeStreams[transition.chatId];
       return next;
 
@@ -138,8 +150,8 @@ export function reduceRunLifecycle(
       if (transition.runId) {
         next.cancelledRunIds.add(transition.runId);
       }
-      delete next.activeStreams[transition.chatId];
-      delete next.ambiguousFailures[transition.chatId];
+      if (!transition.runId || next.activeStreams[transition.chatId]?.runId === transition.runId) delete next.activeStreams[transition.chatId];
+      if (!transition.runId || next.ambiguousFailures[transition.chatId]?.runId === transition.runId) delete next.ambiguousFailures[transition.chatId];
       return next;
 
     case "RESUME_STARTED":
@@ -178,6 +190,9 @@ export function reduceRunLifecycle(
 
 export const useRunLifecycleStore = create<RunLifecycleStore>((set, get) => ({
   ...initialRunLifecycleSnapshot,
+  answerCompleted(input) {
+    get().dispatch({ ...input, type: "ANSWER_COMPLETED" });
+  },
   stopStarted(runId) {
     if (get().stoppingRunIds.has(runId)) return false;
     set((state) => ({ stoppingRunIds: new Set([...state.stoppingRunIds, runId]) }));

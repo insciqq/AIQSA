@@ -15,6 +15,58 @@ async function manage() {
 }
 beforeEach(() => { request.mockReset().mockResolvedValue(state); detail.mockReset().mockResolvedValue(preset); });
 describe("instruction preset editor", () => {
+  it("activates preset rows and the built-in default through the same versioned selection", async () => {
+    await manage();
+    expect(screen.queryByRole("button", { name: "Make active: Work" })).toBeNull();
+    request.mockResolvedValueOnce({ ...state, activePresetId: null, selectionVersion: 2 });
+    fireEvent.click(screen.getByRole("button", { name: "Make active: AIQSA default instructions" }));
+    await waitFor(() => expect(screen.getByLabelText("Active instructions: AIQSA default instructions")).toHaveFocus());
+    expect(screen.getByRole("button", { name: "Active instructions" })).toHaveTextContent("AIQSA default instructions");
+    expect(request).toHaveBeenLastCalledWith({ action: "select", id: null, selectionVersion: 1 });
+
+    request.mockResolvedValueOnce({ ...state, selectionVersion: 3 });
+    fireEvent.click(screen.getByRole("button", { name: "Make active: Work" }));
+    await waitFor(() => expect(screen.getByLabelText("Active instructions: Work")).toHaveFocus());
+    expect(screen.getByRole("button", { name: "Active instructions" })).toHaveTextContent("Work");
+    expect(request).toHaveBeenLastCalledWith({ action: "select", id: "preset", selectionVersion: 2 });
+    expect(screen.queryByRole("button", { name: "Make active: Work" })).toBeNull();
+  });
+
+  it("blocks duplicate activation while selection is pending", async () => {
+    await manage();
+    let resolve!: (value: typeof state) => void;
+    request.mockImplementationOnce(() => new Promise(settle => { resolve = settle; }));
+    const activate = screen.getByRole("button", { name: "Make active: AIQSA default instructions" });
+    fireEvent.click(activate);
+    expect(activate).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Active instructions" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Edit Work" })).toBeDisabled();
+    fireEvent.click(activate);
+    expect(request).toHaveBeenCalledTimes(2);
+    await act(async () => resolve(state));
+    expect(activate).toBeEnabled();
+  });
+
+  it.each([new Error("offline"), new InstructionPresetApiError("instruction_preset_conflict")])(
+    "preserves the active preset after a failed row selection and retries with reloaded authority: %s", async (failure) => {
+      await manage();
+      request.mockRejectedValueOnce(failure);
+      fireEvent.click(screen.getByRole("button", { name: "Make active: AIQSA default instructions" }));
+      await screen.findByRole("alert");
+      expect(screen.getByLabelText("Active instructions: Work")).toBeVisible();
+      expect(screen.queryByLabelText("Active instructions: AIQSA default instructions")).toBeNull();
+      expect(screen.getByRole("button", { name: "Active instructions" })).toHaveTextContent("Work");
+      request.mockResolvedValueOnce({ ...state, selectionVersion: 5 });
+      fireEvent.click(screen.getByRole("button", { name: "Reload presets" }));
+      await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+      await waitFor(() => expect(screen.getByRole("button", { name: "Make active: AIQSA default instructions" })).toBeEnabled());
+      request.mockResolvedValueOnce({ ...state, activePresetId: null, selectionVersion: 6 });
+      fireEvent.click(screen.getByRole("button", { name: "Make active: AIQSA default instructions" }));
+      await screen.findByLabelText("Active instructions: AIQSA default instructions");
+      expect(request).toHaveBeenLastCalledWith({ action: "select", id: null, selectionVersion: 5 });
+    }
+  );
+
   it("preserves the draft after a conflict and after loading the newer saved version", async () => {
     await manage(); fireEvent.click(screen.getByRole("button", { name: "Edit Work" }));
     const text = await screen.findByLabelText("System instructions");
@@ -42,6 +94,8 @@ describe("instruction preset editor", () => {
     fireEvent.keyDown(screen.getByRole("form", { name: "New instruction preset" }), { key: "s", ctrlKey: true });
     await screen.findByText(/Preset saved/);
     expect(request).toHaveBeenLastCalledWith({ action: "create", value: { name: "Writing", systemInstructions: content, responseReminder: "" } });
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(screen.getByLabelText("Active instructions: Work")).toBeVisible();
     await waitFor(() => expect(screen.getByRole("button", { name: "New preset" })).toHaveFocus());
   });
   it("confirms active deletion and explicitly selects the default", async () => {

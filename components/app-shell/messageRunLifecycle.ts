@@ -18,6 +18,8 @@ type MutableRef<T> = { current: T };
 export type ConsumeMessageRunStream = (input: {
   chatId: string;
   failurePrefix: string;
+  isCurrent?(): boolean;
+  onAnswerComplete?(input: { assistantMessageId: string; runId: string }): void;
   onMessageIds(messageIds: RunStreamMessageIds, currentRunId: string | null): void;
   onRunId(runId: string): void;
   response: Response;
@@ -56,6 +58,7 @@ type ExecuteMessageRunLifecycleInput = {
   failurePrefix: string;
   fetchRun(runId: string, chatId: string): Promise<unknown>;
   notifyAnswerReady(): Promise<void>;
+  onAnswerPublished?(runId: string): void;
   optimisticAssistantMessageId: string;
   primeAnswerSound(): Promise<void>;
   reconcileMessageIds(input: ReconcileMessageIdsInput): void;
@@ -136,6 +139,7 @@ function finishStream(input: {
   chatId: string;
   failed: boolean;
   deferred?: boolean;
+  runId: string | null;
 }) {
   const ownsAbortController =
     input.activeStreamAbortRef.current.get(input.chatId) === input.abortController;
@@ -143,7 +147,7 @@ function finishStream(input: {
   if (ownsAbortController) {
     input.activeStreamAbortRef.current.delete(input.chatId);
     useRunLifecycleStore.getState().streamFinished({
-      chatId: input.chatId
+      chatId: input.chatId, runId: input.runId
     });
   }
 
@@ -175,6 +179,7 @@ export async function executeMessageRunLifecycle({
   failurePrefix,
   fetchRun,
   notifyAnswerReady,
+  onAnswerPublished,
   optimisticAssistantMessageId,
   primeAnswerSound,
   reconcileMessageIds,
@@ -186,6 +191,7 @@ export async function executeMessageRunLifecycle({
   let cancelled = false;
   let failed = false;
   let deferred = false;
+  let answerPublished = false;
   let failureMessage: string | null = null;
   let failureCode: string | null = null;
   let receivedChatUpdate = false;
@@ -194,6 +200,7 @@ export async function executeMessageRunLifecycle({
   let serverRejectedRequest = false;
   let userFacingFailureMessage: string | null = null;
   const abortController = new AbortController();
+  const ownsStream = () => activeStreamAbortRef.current.get(chatId) === abortController;
 
   useRunSurfaceStore.getState().resetSurface(chatId, contextConfigurationKey, optimisticAssistantMessageId);
   useRunLifecycleStore.getState().streamStarted({
@@ -232,13 +239,24 @@ export async function executeMessageRunLifecycle({
         messageIds: { assistantMessageId, userMessageId: admitted.userMessageId }, optimisticAssistantMessageId });
       useRunLifecycleStore.getState().runIdReceived({ chatId, runId });
       updateStreamChatMessages(chatId, (messages) => messages.map((message) => message.id === assistantMessageId
-        ? { ...message, runId, ...(admitted.run.pdfPreparation ? { pdfPreparation: admitted.run.pdfPreparation } : {}) }
+        ? { ...message, runId, ...(admitted.run.workspacePreparation ? { workspacePreparation: true } : {}),
+            ...(admitted.run.pdfPreparation ? { pdfPreparation: admitted.run.pdfPreparation } : {}) }
         : message));
       deferred = true;
     } else {
     const streamResult = await consumeRunStream({
       chatId,
       failurePrefix,
+      isCurrent: ownsStream,
+      onAnswerComplete(published) {
+        if (published.runId !== runId || published.assistantMessageId !== assistantMessageId) return;
+        answerPublished = true;
+        updateStreamChatMessages(chatId, (messages) => messages.map((message) => message.id === assistantMessageId
+          ? { ...message, status: "complete", workspaceSettling: true } : message));
+        useRunLifecycleStore.getState().answerCompleted({ chatId, runId: published.runId });
+        onAnswerPublished?.(published.runId);
+        void notifyAnswerReady();
+      },
       onMessageIds(messageIds, currentRunId) {
         const reconciledAssistantMessageId =
           messageIds.assistantMessageId ?? assistantMessageId;
@@ -274,11 +292,11 @@ export async function executeMessageRunLifecycle({
 
     receivedChatUpdate = streamResult.receivedChatUpdate;
     runId = streamResult.runId;
-    cancelled =
+    cancelled = !answerPublished && (
       streamResult.terminalStatus === "cancelled" ||
-      runWasCancelled(abortController, runId);
-    failed = streamResult.failed && !cancelled;
-    if (runId) {
+      runWasCancelled(abortController, runId));
+    failed = !answerPublished && streamResult.failed && !cancelled;
+    if (runId && ownsStream()) {
       useRunLifecycleStore.getState().runIdReceived({ chatId, runId });
     }
 
@@ -286,7 +304,7 @@ export async function executeMessageRunLifecycle({
       await fetchRun(runId, chatId);
     }
 
-    if (!receivedChatUpdate) {
+    if (!receivedChatUpdate && ownsStream()) {
       const refreshed = await refreshActiveChat(chatId, {
         forceDetail: true,
         preserveControls: true
@@ -297,16 +315,16 @@ export async function executeMessageRunLifecycle({
         });
       }
     }
-    if (!failed && !cancelled) {
+    if (!failed && !cancelled && !answerPublished) {
       void notifyAnswerReady();
     }
     }
   } catch (error) {
     tokenBuffer.flush();
-    cancelled = runWasCancelled(abortController, runId);
-    failed = !cancelled;
+    cancelled = !answerPublished && runWasCancelled(abortController, runId);
+    failed = !answerPublished && !cancelled;
     failureMessage = cancelled ? null : userFacingFailureMessage;
-    if (activeStreamAbortRef.current.get(chatId) === abortController) {
+    if (!answerPublished && ownsStream()) {
       recordStreamFailure({
         assistantMessageId,
         cancelled,
@@ -339,9 +357,11 @@ export async function executeMessageRunLifecycle({
       cancelled,
       chatId,
       failed,
-      deferred
+      deferred,
+      runId
     });
-    if (deferred && !failed && !cancelled) {
+    if ((deferred || answerPublished) && !failed && !cancelled &&
+      !activeStreamAbortRef.current.has(chatId)) {
       // Let the successful admission clear the submitted draft first. The
       // existing keyed resume owner then polls this committed background run.
       setTimeout(() => { void refreshActiveChat(chatId, { forceDetail: true, preserveControls: true }).catch(() => undefined); }, 0);

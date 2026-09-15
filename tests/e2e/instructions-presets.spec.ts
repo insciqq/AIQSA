@@ -51,17 +51,32 @@ for (const viewport of [{ width: 1280, height: 800, theme: "dark" }, { width: 39
       await expectNoHorizontalOverflow(page);
       await panel.getByRole("button", { name: "Write", exact: true }).click();
       await textarea.scrollIntoViewIfNeeded();
+      await textarea.focus();
+      await expect.poll(() => textarea.evaluate(node => ({
+        innerOutlineColor: getComputedStyle(node).outlineColor,
+        innerShadow: getComputedStyle(node).boxShadow,
+        outerOutline: getComputedStyle(node.parentElement!).outlineWidth,
+        outerRadius: getComputedStyle(node.parentElement!).borderTopLeftRadius
+      }))).toEqual({ innerOutlineColor: "rgba(0, 0, 0, 0)", innerShadow: "none", outerOutline: "2px", outerRadius: "12px" });
       await page.screenshot({ path: testInfo.outputPath("instruction-editor.png") });
       await textarea.focus(); await textarea.press("Control+s");
       await expect(panel.getByText(/Preset saved/)).toBeVisible();
       await expect(panel.getByRole("button", { name: "New preset" })).toBeFocused();
-      await panel.getByRole("button", { name: "Active instructions" }).click();
-      await page.getByRole("menuitem", { name: "Writing", exact: true }).click();
+      expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).activeInstructionPresetId).toBeNull();
+      await panel.getByRole("button", { name: "Make active: Writing", exact: true }).click();
       await expect(panel.getByText(/Instructions updated for your next reply/)).toBeVisible();
       const saved = await prisma.instructionPreset.findFirstOrThrow({ where: { userId } });
       expect(saved.systemInstructions).toBe(longText);
       expect(saved.responseReminder).toBe(reminderText);
       expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).activeInstructionPresetId).toBe(saved.id);
+      await expect(panel.getByRole("button", { name: "Active instructions" })).toContainText("Writing");
+      await expect(panel.getByLabel("Active instructions: Writing", { exact: true })).toBeFocused();
+      await panel.getByRole("button", { name: "Make active: AIQSA default instructions", exact: true }).click();
+      await expect(panel.getByLabel("Active instructions: AIQSA default instructions", { exact: true })).toBeFocused();
+      expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).activeInstructionPresetId).toBeNull();
+      await panel.getByRole("button", { name: "Make active: Writing", exact: true }).click();
+      await expect(panel.getByLabel("Active instructions: Writing", { exact: true })).toBeFocused();
+      await page.screenshot({ path: testInfo.outputPath("instruction-preset-activation.png") });
 
       // Exercise the Assistant field and a real accepted fake-provider run while
       // the personal preset is active: only the Assistant instructions apply.
@@ -95,7 +110,10 @@ for (const viewport of [{ width: 1280, height: 800, theme: "dark" }, { width: 39
       await expect(assistantContentWithText(page, "Fake answer: Say hello")).toBeVisible({ timeout: 30_000 });
       await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0);
       const run = await prisma.modelRun.findFirstOrThrow({ where: { userId }, orderBy: { createdAt: "desc" } });
-      expect(run.normalizedRequest).toMatchObject({ prompt: { system: "Use the Assistant style.", responseReminder: "End with the Assistant next step." } });
+      expect(run.normalizedRequest).toMatchObject({ prompt: {
+        system: expect.stringMatching(/^Use the Assistant style\./u),
+        responseReminder: "End with the Assistant next step."
+      } });
       expect(run.normalizedRequest).not.toHaveProperty("instructionPreset");
       expect(JSON.stringify(run.normalizedRequest)).not.toContain(longText);
       expect(await prisma.message.count({ where: { chatId: run.chatId } })).toBe(2);
@@ -127,12 +145,15 @@ for (const viewport of [{ width: 1280, height: 800, theme: "dark" }, { width: 39
       expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).activeInstructionPresetId).toBeNull();
       await expectNoHorizontalOverflow(page); expect(pageErrors).toBe(0);
     } finally {
-      await prisma.modelRun.deleteMany({ where: { userId } });
-      await prisma.chat.updateMany({ where: { userId }, data: { activeLeafMessageId: null } });
-      await prisma.message.deleteMany({ where: { chat: { userId } } });
-      await prisma.chat.deleteMany({ where: { userId } });
-      await prisma.assistantDefinition.deleteMany({ where: { ownerUserId: userId } });
-      await prisma.user.deleteMany({ where: { id: userId } });
+      await prisma.$transaction([
+        prisma.modelRun.deleteMany({ where: { userId } }),
+        prisma.chat.updateMany({ where: { userId }, data: { activeLeafMessageId: null } }),
+        prisma.message.deleteMany({ where: { chat: { userId } } }),
+        prisma.workspaceSession.deleteMany({ where: { chat: { userId } } }),
+        prisma.chat.deleteMany({ where: { userId } }),
+        prisma.assistantDefinition.deleteMany({ where: { ownerUserId: userId } }),
+        prisma.user.deleteMany({ where: { id: userId } })
+      ]);
     }
   });
 }

@@ -38,7 +38,7 @@ export function latestResumableRunId(thread: {
     .filter(
       (candidate) =>
         candidate.role === "assistant" &&
-        candidate.status === "streaming" &&
+        (candidate.status === "streaming" || candidate.workspaceSettling) &&
         candidate.runId
     )
     .at(-1);

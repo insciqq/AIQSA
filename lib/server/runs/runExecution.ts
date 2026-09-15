@@ -201,6 +201,7 @@ export type RunExecutionRepository = Pick<
   | "claimAutomaticKnowledgeCall"
   | "claimToolLoopCall"
   | "completeRun"
+  | "publishRunAnswer"
   | "createSearchRun"
   | "failRun"
   | "getChatUpdateForRun"
@@ -625,6 +626,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
     async start(controller) {
       const executionStartedAt = Date.now();
       let executionStage: "dispatch" | "execution" | "completion" = "dispatch";
+      let answerPublished = false;
       logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "started" });
       const workspaceTurnController = normalizedRequest.workspace
         ? new AbortController()
@@ -748,6 +750,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       async function persistReportedUsageForIncompleteRun(
         answerRoundUsage?: PersistedAnswerRoundUsage
       ): Promise<void> {
+        if (answerPublished) return;
         const grouped = groupedUsageAttributions(reportedUsageAttributions);
         if (grouped.length === 0 && !answerRoundUsage && usageAccountedToolCallIds.size === 0) {
           return;
@@ -2733,25 +2736,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         await tokenBuffer.flush();
         throwIfAborted(signal);
         await assertProjectRunAccessCurrent(true);
-        if (normalizedRequest.workspace) {
-          if (!input.workspace) {
-            throw new RunPipelineError(
-              "workspace_runtime_unavailable",
-              "Workspace execution is unavailable"
-            );
-          }
-          // Capture and receiver retirement must finish before completion.
-          // The durable pending obligation is picked up independently.
-          const handoff = await input.workspace.handoff({
-            onActivity: onWorkspaceActivity,
-            runId,
-            signal,
-            userId: input.userId,
-            workspace: normalizedRequest.workspace
-          });
-          if (handoff.status !== "ready") throw new WorkspaceRuntimeError("workspace_operation_stale");
-          throwIfAborted(signal);
-          await assertProjectRunAccessCurrent(true);
+        if (normalizedRequest.workspace && !input.workspace) {
+          throw new RunPipelineError("workspace_runtime_unavailable", "Workspace execution is unavailable");
         }
         // Freeze first-turn eligibility before completion allows another send.
         // This writes a bounded durable handoff; the title provider runs only
@@ -2775,6 +2761,26 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         } as const;
         executionStage = "completion";
         const finalization = await finalizeRunCompletion({
+          ...(normalizedRequest.workspace ? { afterAnswerPublished: async (answer: { finalText: string; usage: ModelRunUsage }) => {
+            answerPublished = true;
+            if (knowledgeCitationAnswer && answer.finalText) {
+              emitTransient(controller, encoder, { data: { delta: answer.finalText }, type: "token" });
+            }
+            emitTransient(controller, encoder, contextStatusEvent);
+            emitTransient(controller, encoder, { data: answer.usage, type: "usage" });
+            emitTransient(controller, encoder, { type: "answer_complete", data: {
+              assistantMessageId: input.created.assistantMessageId, runId
+            } });
+            // The published answer is immutable. Run completion still requires
+            // captured outputs and retirement of the previous guest authority.
+            const handoff = await input.workspace!.handoff({
+              onActivity: onWorkspaceActivity, runId, signal, userId: input.userId,
+              workspace: normalizedRequest.workspace!
+            });
+            if (handoff.status !== "ready") throw new WorkspaceRuntimeError("workspace_operation_stale");
+            throwIfAborted(signal);
+            await assertProjectRunAccessCurrent(true);
+          } } : {}),
           outputEvents: [contextStatusEvent],
           ...(knowledgeAnswerExecution
             ? { knowledgeAnswerContracts: knowledgeAnswerExecution.contracts }
@@ -2798,16 +2804,16 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "completed",
           duration_ms: Math.max(0, Date.now() - executionStartedAt) });
 
-        emitTransient(controller, encoder, contextStatusEvent);
+        if (!answerPublished) emitTransient(controller, encoder, contextStatusEvent);
 
-        if (knowledgeCitationAnswer && finalization.finalText) {
+        if (!answerPublished && knowledgeCitationAnswer && finalization.finalText) {
           emitTransient(controller, encoder, {
             data: { delta: finalization.finalText },
             type: "token"
           });
         }
 
-        emitTransient(controller, encoder, {
+        if (!answerPublished) emitTransient(controller, encoder, {
           data: finalization.usage,
           type: "usage"
         });

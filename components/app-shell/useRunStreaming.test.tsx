@@ -26,6 +26,56 @@ function chat(id: string, title: string): WorkspaceChatSummary {
 }
 
 describe("run streaming", () => {
+  it("publishes the answer before EOF and keeps late predecessor events out of the next run", async () => {
+    const applyChatUpdate = vi.fn(() => false);
+    const { result } = renderHook(() => useRunStreaming({ applyChatUpdate }));
+    let writer!: ReadableStreamDefaultController<Uint8Array>;
+    const response = new Response(new ReadableStream<Uint8Array>({ start(controller) { writer = controller; } }));
+    const emit = (type: string, data: object) => writer.enqueue(new TextEncoder().encode(
+      `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`));
+    let publish!: () => void;
+    const published = new Promise<void>((resolve) => { publish = resolve; });
+    let current = true;
+    const onAnswerComplete = vi.fn(() => { publish(); });
+    const tokenBuffer = { flush: vi.fn(), push: vi.fn(), reset: vi.fn() };
+    const running = result.current.consumeRunStream({ chatId: "chat-a", failurePrefix: "send_failed",
+      isCurrent: () => current, onAnswerComplete, onRunId: vi.fn(), onMessageIds: vi.fn(), response, tokenBuffer });
+    emit("message_start", { runId: "previous", assistantMessageId: "answer" });
+    emit("token", { delta: "Finished." });
+    emit("answer_complete", { runId: "previous", assistantMessageId: "answer" });
+    await published;
+    expect(onAnswerComplete).toHaveBeenCalledWith({ runId: "previous", assistantMessageId: "answer" });
+    expect(tokenBuffer.flush).toHaveBeenCalled();
+    current = false;
+    useRunSurfaceStore.getState().resetSurface("chat-a");
+    useRunSurfaceStore.getState().appendEvent("chat-a", { type: "start", data: { runId: "next" } });
+    const nextSurface = selectRunSurface(useRunSurfaceStore.getState(), "chat-a");
+    applyChatUpdate.mockClear();
+    emit("token", { delta: "Late token" });
+    emit("message_reset", {});
+    emit("artifact", { runId: "previous", artifactType: "workspace_activity" });
+    emit("chat_update", { runId: "previous" });
+    emit("done", { runId: "previous", status: "complete" });
+    writer.close();
+    await running;
+    expect(selectRunSurface(useRunSurfaceStore.getState(), "chat-a")).toBe(nextSurface);
+    expect(applyChatUpdate).not.toHaveBeenCalled();
+    expect(tokenBuffer.push).toHaveBeenCalledExactlyOnceWith("Finished.");
+    expect(tokenBuffer.reset).not.toHaveBeenCalled();
+    expect(onAnswerComplete).toHaveBeenCalledOnce();
+  });
+
+  it("does not publish a completion for another answer", async () => {
+    const { result } = renderHook(() => useRunStreaming({ applyChatUpdate: vi.fn(() => false) }));
+    const onAnswerComplete = vi.fn();
+    await expect(result.current.consumeRunStream({ chatId: "chat-a", failurePrefix: "send_failed", onAnswerComplete,
+      onRunId: vi.fn(), onMessageIds: vi.fn(), tokenBuffer: { flush: vi.fn(), push: vi.fn() },
+      response: new Response('event: message_start\ndata: {"runId":"run","assistantMessageId":"answer"}\n\n' +
+        'event: answer_complete\ndata: {"runId":"another-run","assistantMessageId":"answer"}\n\n')
+    })).rejects.toThrow("run_answer_completion_malformed");
+    expect(onAnswerComplete).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     resetThreadStoreForTest();
     resetRunSurfaceStoreForTest();

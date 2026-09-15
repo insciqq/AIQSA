@@ -1525,6 +1525,7 @@ export function PowerAppShellV2({
     activeChatDetailError,
     activeChatDetailLoading,
     activeChatStreaming,
+    answerComplete: activeChatStream?.answerComplete === true,
     cancelMessageEdit(messageId: string) {
       const sessionStore = useComposerSessionStore.getState();
       sessionStore.cancelEdit(sessionStore.activeSessionKey, messageId);

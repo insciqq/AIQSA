@@ -31,6 +31,16 @@ function summary(payload: Record<string, unknown>): RunEventView {
 }
 
 describe("run lifecycle v2 presentation", () => {
+  it("shows Workspace waiting before document work, and leaves a published answer complete", () => {
+    expect(presentRunLifecycleV2(state({ status: "queued", runId: "next", workspacePreparation: true,
+      pdfPreparation: [{ completedPages: 0, pageCount: null, phase: "checking", retryable: false,
+        route: "local_text", limitedReadingQuality: false, longDocument: false }] })))
+      .toEqual({ kind: "activity", activity: { kind: "preparing", label: "Preparing workspace..." }, runId: "next" });
+    expect(presentRunLifecycleV2(state({ authoritativeMessageStatus: "complete", status: "complete",
+      runId: "previous", content: "File saved.", events: [summary({ stage: "compute", status: "running" })] })))
+      .toEqual({ kind: "complete", runId: "previous" });
+  });
+
   it("shows a safe live tool budget and a synthesis failure without blaming request parameters", () => {
     const event: RunEventView = { type: "artifact", data: { artifactType: "tool_budget", payload: { kind: "rounds", limit: 8 } } };
     expect(presentRunLifecycleV2(state({ events: [event] })).activity).toMatchObject({

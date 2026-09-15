@@ -1828,6 +1828,7 @@ export function createPrismaRunToolLoopOperations(
           where: {
             chatId: input.chatId,
             id: input.runId,
+            answerCompletedAt: null,
             status: {
               not: "complete"
             },

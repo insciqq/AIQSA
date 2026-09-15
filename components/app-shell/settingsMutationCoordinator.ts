@@ -193,7 +193,7 @@ function reconciledPatch(
     patch.mcpMode = settings.defaultMcpMode;
   }
   if (sent.workspaceEnabled !== undefined) {
-    patch.workspaceEnabled = settings.defaultWorkspaceEnabled ?? false;
+    patch.workspaceEnabled = settings.defaultWorkspaceEnabled ?? true;
   }
   if (sent.sendWithEnter !== undefined) {
     patch.sendWithEnter = settings.sendWithEnter;

@@ -4,6 +4,7 @@ import { prisma } from "../prisma";
 import type { SettingsValidationModel, UserSettingsUpdate } from "./handlers";
 import { createPrismaSettingsRepository } from "./prismaRepository";
 import { ANSWER_SOUNDS } from "@/lib/contracts/answerSound";
+import { provisionActiveUser } from "../auth/provisioning";
 
 function createTestSettingsRepository(validationModels: SettingsValidationModel[]) {
   const repository = createPrismaSettingsRepository(prisma);
@@ -84,17 +85,19 @@ describe("Prisma-backed settings repository", () => {
     await withSettingsUser(async ({ userId, validationModels }) => {
       await withSettingsUser(async ({ userId: otherUserId }) => {
         const repository = createTestSettingsRepository(validationModels);
-        expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).defaultWorkspaceEnabled).toBe(false);
+        expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).defaultWorkspaceEnabled).toBe(true);
         await Promise.all([
-          repository.updateSettings(userId, { defaultWorkspaceEnabled: true }),
+          repository.updateSettings(userId, { defaultWorkspaceEnabled: false }),
           repository.updateSettings(userId, { sendWithEnter: false })
         ]);
         expect(await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).toMatchObject({
-          defaultWorkspaceEnabled: true, sendWithEnter: false
+          defaultWorkspaceEnabled: false, sendWithEnter: false
         });
-        expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId: otherUserId } })).defaultWorkspaceEnabled).toBe(false);
-        expect(await repository.updateSettings(userId, { defaultWorkspaceEnabled: false })).toMatchObject({
-          kind: "updated", settings: { defaultWorkspaceEnabled: false, sendWithEnter: false }
+        expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId: otherUserId } })).defaultWorkspaceEnabled).toBe(true);
+        await prisma.$transaction((tx) => provisionActiveUser(tx, { userId }));
+        expect((await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).defaultWorkspaceEnabled).toBe(false);
+        expect(await repository.updateSettings(userId, { defaultWorkspaceEnabled: true })).toMatchObject({
+          kind: "updated", settings: { defaultWorkspaceEnabled: true, sendWithEnter: false }
         });
       });
     });

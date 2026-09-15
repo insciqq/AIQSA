@@ -706,7 +706,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   ]);
   const composerSurface = (
     <ComposerV2
-      activeRun={thread.activeChatStreaming}
+      activeRun={thread.activeChatStreaming && !thread.answerComplete}
       assistantRemovedNotice={composer.assistant.removedNotice}
       attachmentItems={attachmentItems}
       attachmentLimitUsage={attachmentUsage}
@@ -925,6 +925,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     // locally invented post-loss "error" status until refresh reconciles.
     const transportLost = transportLostForMessageV2(thread.interruptedRun, source);
     const presentation = presentRunLifecycleV2({
+      workspacePreparation: source.workspacePreparation,
       pdfPreparation: source.pdfPreparation,
       ...runTransportStateV2({
         activeChatStreaming: thread.activeChatStreaming,

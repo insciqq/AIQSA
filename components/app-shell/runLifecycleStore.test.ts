@@ -9,6 +9,14 @@ function baseState() {
 }
 
 describe("run lifecycle store transitions", () => {
+  it("does not finish, cancel, or complete a newer producer with predecessor events", () => {
+    const state = reduceRunLifecycle(baseState(), { type: "STREAM_STARTED", chatId: "chat-a", runId: "next" });
+    for (const type of ["STREAM_FINISHED", "RUN_CANCELLED", "ANSWER_COMPLETED", "RUN_ID_RECEIVED"] as const) {
+      const next = reduceRunLifecycle(state, { type, chatId: "chat-a", runId: "previous" });
+      expect(next.activeStreams["chat-a"]).toEqual(state.activeStreams["chat-a"]);
+    }
+  });
+
   it("tracks independent producers and applies metadata only to its keyed owner", () => {
     const chatA = reduceRunLifecycle(baseState(), {
       assistantMessageId: "assistant-a",
