@@ -1,3 +1,4 @@
+import { knowledgeAnswerInstructions, type KnowledgeAnswerInstructions } from "../knowledge/answerInstructions";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext, type LifecycleStage } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
@@ -2397,6 +2398,7 @@ async function recoverCheckpointedToolLoop(
           draft: dispatchDraft,
           ...(run.normalizedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: run.normalizedRequest.knowledgeAnswerWorkflowVersion } : {}),
           repairFeedbackVersion: run.normalizedRequest.knowledgeReviewRepairFeedbackVersion,
+          ...(run.normalizedRequest.prompt.responseReminder !== undefined ? { answerInstructions: knowledgeAnswerInstructions(run.normalizedRequest.prompt) } : {}),
           modelCapabilities: run.normalizedRequest.modelCapabilities,
           reasoningEffort: knowledgeGroundingInheritedReasoningEffortV1({
             acceptedReasoningEffort: run.normalizedRequest.reasoningEffort,
@@ -3301,6 +3303,7 @@ async function dispatchRecoveredReservedAnswer(input: Readonly<{
 type LoadedRecoveryControl = NonNullable<Awaited<ReturnType<typeof loadRecoveryRunControl>>>;
 
 type KnowledgeAnswerGroundingRecoverySeed = Readonly<{
+  answerInstructions?: KnowledgeAnswerInstructions;
   workflowVersion?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
   repairFeedbackVersion?: 1;
   draft: KnowledgeEvidenceDispatchManifestDraft;
@@ -3346,7 +3349,8 @@ async function recoverKnowledgeAnswerGrounding(
         throw new ToolLoopRecoveryError("knowledge_answer_contract_failed", "The saved Knowledge answer contract is invalid.");
       }
       pipeline = "evidence_answer_v1";
-      seed = Object.freeze({ workflowVersion: snapshot.workflowVersion ?? 8, draft: input.draftDispatch.draft,
+      seed = Object.freeze({ workflowVersion: snapshot.workflowVersion ?? 8,
+        ...(snapshot.answerInstructions ? { answerInstructions: snapshot.answerInstructions } : {}), draft: input.draftDispatch.draft,
         repairFeedbackVersion: "repairFeedbackVersion" in snapshot ? snapshot.repairFeedbackVersion : undefined,
         evidenceBindings: [...input.draftDispatch.items, ...input.draftDispatch.exclusions].flatMap(item => item.evidenceItemId
           ? [{ dispatchEvidenceId: item.dispatchEvidenceId, evidenceItemId: item.evidenceItemId }] : []),
@@ -3521,7 +3525,8 @@ async function recoverKnowledgeAnswerGrounding(
           operation
         }),
         personalContext: undefined,
-        prompt: { developer: null, system: operation.systemPrompt },
+        prompt: { developer: null, system: operation.systemPrompt,
+          ...(operation.responseReminder ? { responseReminder: operation.responseReminder } : {}) },
         searchPlan: { mode: "all_selected", options: [] },
         toolChoice: "none",
         toolMode: "none",
@@ -3535,7 +3540,8 @@ async function recoverKnowledgeAnswerGrounding(
         baseParams: providerNeutralBase.params,
         operation
       }),
-      prompt: { developer: null, system: operation.systemPrompt }
+      prompt: { developer: null, system: operation.systemPrompt,
+          ...(operation.responseReminder ? { responseReminder: operation.responseReminder } : {}) }
     };
   };
   const publishProviderResponseId = async (providerResponseId: string): Promise<void> => {
@@ -3684,6 +3690,7 @@ async function recoverKnowledgeAnswerGrounding(
   const workflowVersion = seed.workflowVersion;
   const groundingInput = {
     authorize,
+    ...(seed.answerInstructions ? { answerInstructions: seed.answerInstructions } : {}),
     draft: seed.draft,
     ...(seed.evidenceBindings?.length
       ? { evidenceBindings: seed.evidenceBindings }
@@ -3997,6 +4004,7 @@ async function refreshProviderRunOnceRegistered(
           draft: recovered.draft,
           ...(acceptedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: acceptedRequest.knowledgeAnswerWorkflowVersion } : {}),
           repairFeedbackVersion: acceptedRequest.knowledgeReviewRepairFeedbackVersion,
+          ...(acceptedRequest.prompt.responseReminder !== undefined ? { answerInstructions: knowledgeAnswerInstructions(acceptedRequest.prompt) } : {}),
           evidenceBindings: recovered.evidenceBindings,
           modelCapabilities: acceptedRequest.modelCapabilities,
           reasoningEffort: knowledgeGroundingInheritedReasoningEffortV1({
@@ -4308,6 +4316,7 @@ async function refreshProviderRunOnceRegistered(
             draft,
             ...(acceptedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: acceptedRequest.knowledgeAnswerWorkflowVersion } : {}),
             repairFeedbackVersion: acceptedRequest.knowledgeReviewRepairFeedbackVersion,
+            ...(acceptedRequest.prompt.responseReminder !== undefined ? { answerInstructions: knowledgeAnswerInstructions(acceptedRequest.prompt) } : {}),
             forbiddenIdentityFragments: authorization.scope?.sources.flatMap((source) => [
               source.sourceId,
               source.sourceVersionId,

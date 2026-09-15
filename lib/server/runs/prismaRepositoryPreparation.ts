@@ -1,3 +1,4 @@
+import { assertInstructionPresetSelection } from "../instructions/store";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
 import { assertChatPdfClaim, insertChatPdfAdmissions, storeChatPdfAdmissionResult } from "../uploads/chatPdfPersistence";
@@ -1177,6 +1178,8 @@ export async function admitPreparingRunWithClient(
     repeatableReadTransaction(prismaClient, async (tx) => {
       // Match account/settings owner -> chat lock order before freezing secrets.
       if (input.workspaceAdmissionPlan) await lockWorkspaceSecretOwner(tx, input.userId);
+      if (input.normalizedRequest.instructionPreset) await assertInstructionPresetSelection(
+        tx, input.userId, input.normalizedRequest.instructionPreset);
       const admissionNow = new Date();
       if (input.admissionKind === "NORMAL_SEND" && input.personalChat) {
         const defaults = await loadChatCreationDefaults(tx, input.userId);

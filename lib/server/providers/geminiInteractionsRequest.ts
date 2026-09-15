@@ -1,3 +1,4 @@
+import { withResponseReminder } from "./responseReminder";
 import { maxOutputTokensFromParams } from "../../domain/providerParams";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { geminiInteractionsToolBridge } from "../tools/bridges";
@@ -78,8 +79,8 @@ type BuildOptions = GeminiInteractionsRequestOptions & {
   preview: boolean;
 };
 
-function combineSystemInstruction(request: ProviderRunRequest): string | undefined {
-  return providerInstructionsWithPersonalContext(request);
+function combineSystemInstruction(request: ProviderRunRequest, preview = false): string | undefined {
+  return providerInstructionsWithPersonalContext(request, preview);
 }
 
 function validBase64(value: string): boolean {
@@ -410,7 +411,7 @@ function buildGeminiInteractionsBody(
   const input = conversation.map((message, index): GeminiInteractionStep => {
     if (message.role === "user" && index === latestUserIndex) {
       return {
-        content: latestUserContent(request, options),
+        content: withResponseReminder(request, latestUserContent(request, options), (text) => ({ text, type: "text" as const }), options.preview),
         type: "user_input"
       };
     }
@@ -456,7 +457,7 @@ function buildGeminiInteractionsBody(
         ? request.params.stream
         : true
   };
-  const systemInstruction = combineSystemInstruction(request);
+  const systemInstruction = combineSystemInstruction(request, options.preview);
   if (systemInstruction) {
     body.system_instruction = systemInstruction;
   }

@@ -1,3 +1,4 @@
+import { knowledgeAnswerInstructions } from "../knowledge/answerInstructions";
 import { filterMcpProviderRequest } from "../mcp/toolAccessProjection";
 import { imageDispatchMustStop } from "../images/errors";
 import { imageGenerationTool, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
@@ -1266,7 +1267,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           personalContext: undefined,
           prompt: {
             developer: null,
-            system: operation.systemPrompt
+            system: operation.systemPrompt,
+            ...(operation.responseReminder ? { responseReminder: operation.responseReminder } : {})
           },
           searchPlan: { mode: "all_selected", options: [] },
           toolChoice: "none",
@@ -1471,7 +1473,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             : "provider_neutral_json"
         } as const;
         if (evidenceAnswer) {
-          const evidenceInput = { ...executionInput, executionPolicy: groundingExecutionPolicy!,
+          const evidenceInput = { ...executionInput, ...(normalizedRequest.prompt.responseReminder !== undefined ? { answerInstructions: knowledgeAnswerInstructions(normalizedRequest.prompt) } : {}), executionPolicy: groundingExecutionPolicy!,
             repairFeedbackVersion: normalizedRequest.knowledgeReviewRepairFeedbackVersion };
           const operationResult = normalizedRequest.knowledgeAnswerWorkflowVersion === 9 || normalizedRequest.knowledgeAnswerWorkflowVersion === 10 || normalizedRequest.knowledgeAnswerWorkflowVersion === 11
             ? await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...evidenceInput,

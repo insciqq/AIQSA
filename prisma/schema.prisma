@@ -764,6 +764,7 @@ enum MemoryToolEgressDispatchState {
 }
 
 model User {
+  instructionPresets InstructionPreset[]
   chatContinuations ChatContinuation[]
   id                                  String                             @id @default(uuid())
   email                               String?                            @unique
@@ -1045,6 +1046,9 @@ model UserGroup {
 model UserSettings {
   id                      String         @id @default(uuid())
   userId                  String         @unique
+  activeInstructionPresetId String?
+  instructionSelectionVersion Int        @default(0)
+  activeInstructionPreset InstructionPreset? @relation(fields: [userId, activeInstructionPresetId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
   defaultProviderModelId  String?
   defaultFolderId         String?
   defaultSearchStrategyId String         @default("openai-native-web-search")
@@ -1064,6 +1068,23 @@ model UserSettings {
   defaultProviderModel    ProviderModel? @relation("UserDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
 
   @@index([defaultProviderModelId])
+  @@index([userId, activeInstructionPresetId])
+}
+
+model InstructionPreset {
+  id                 String @id @default(uuid())
+  userId             String
+  name               String @db.VarChar(80)
+  systemInstructions String
+  responseReminder   String @default("")
+  revision           Int @default(1)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  user               User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeSettings     UserSettings[]
+
+  @@unique([userId, id])
+  @@unique([userId, name])
 }
 
 model SearchPolicy {
@@ -1353,6 +1374,7 @@ model AssistantDefinition {
   providerModelId    String
   systemPrompt       String
   developerPrompt    String?
+  responseReminder   String                    @default("")
   runControls        Json                      @default("{}")
   searchPlan         Json
   mcpServerIds       String[]                  @default([])

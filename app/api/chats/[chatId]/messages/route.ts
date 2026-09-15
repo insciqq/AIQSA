@@ -1,6 +1,7 @@
 import { imageGenerationForStorage } from "@/lib/server/images/defaultImages";
 import { getDefaultChatPdf } from "@/lib/server/uploads/defaultChatPdf";
 import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
+import { defaultInstructionPresets } from "@/lib/server/instructions/defaultInstructions";
 import { defaultAssistantRepository } from "@/lib/server/assistants/defaultAssistants";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
@@ -39,6 +40,7 @@ export const GET: AsyncRouteHandler<ReturnType<typeof createGetChatMessagesPageH
 export const POST: AsyncRouteHandler<ReturnType<typeof createSendMessageHandler>> = createSendMessageHandler({
   allowFakeProvider: isTestModeAllowedEnv(process.env),
   assistants: defaultAssistantRepository,
+  instructions: defaultInstructionPresets,
   chatTitleGenerator: createPrismaChatTitleGenerator(),
   getConfig: () => getAuthConfig(),
   knowledgeAdmission: knowledgeRunAdmissionService,

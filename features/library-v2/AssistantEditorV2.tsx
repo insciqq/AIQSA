@@ -237,6 +237,18 @@ export function AssistantEditorV2({
               value={draft.systemPrompt}
               onChange={(event) => editor.onChange({ systemPrompt: event.currentTarget.value })}
             />
+            <details className="v2-assistant-disclosure">
+              <summary className="v2-focusable">
+                <UiV2Icon name="chevron-right" />
+                <span><strong>Response reminder (optional)</strong><small>Appended after the latest message, before this assistant responds.</small></span>
+              </summary>
+              <div className="v2-assistant-disclosure-body">
+                <label className="v2-sr-only" htmlFor="assistant-editor-reminder">Response reminder</label>
+                <textarea id="assistant-editor-reminder" disabled={locked} rows={3} maxLength={4000}
+                  value={draft.responseReminder ?? ""} onChange={event => editor.onChange({ responseReminder: event.currentTarget.value })} />
+                <small>{(draft.responseReminder ?? "").length} / 4 000</small>
+              </div>
+            </details>
           </section>
 
           <details className="v2-assistant-disclosure">

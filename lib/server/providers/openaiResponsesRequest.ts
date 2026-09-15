@@ -1,3 +1,4 @@
+import { withResponseReminder } from "./responseReminder";
 import { normalizeOpenAIResponsesParams, type OpenAIResponsesParams } from "../../domain/providerParams";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { openAIResponsesToolBridge } from "../tools/bridges";
@@ -102,8 +103,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function combineInstructions(request: ProviderRunRequest): string | undefined {
-  return providerInstructionsWithPersonalContext(request);
+function combineInstructions(request: ProviderRunRequest, preview = false): string | undefined {
+  return providerInstructionsWithPersonalContext(request, preview);
 }
 
 function attachmentTextBlock(
@@ -297,14 +298,14 @@ function buildOpenAIResponsesBody(
   const forceForeground = request.forceNonStreaming === true;
   const background = forceForeground ? false : Boolean(params.background);
   const stream = forceForeground ? false : params.stream;
-  const instructions = combineInstructions(request);
+  const instructions = combineInstructions(request, options.preview);
   const conversation = request.previousProviderResponseId
     ? []
     : textConversationForRequest(request, { redactSkillContext: options.preview });
   const input: OpenAIResponsesInputItem[] = conversation.map((message, index): OpenAIResponsesInputMessage => ({
     content:
       index === conversation.length - 1 && message.role === "user"
-        ? buildInputContent(request, options)
+        ? withResponseReminder(request, buildInputContent(request, options), (text) => ({ text, type: "input_text" as const }), options.preview)
         : [
             {
               text: message.content,

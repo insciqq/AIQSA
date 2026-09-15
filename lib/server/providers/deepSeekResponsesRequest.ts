@@ -1,3 +1,4 @@
+import { withResponseReminder } from "./responseReminder";
 import {
   normalizeDeepSeekResponsesParams,
   type DeepSeekResponsesParams
@@ -164,7 +165,7 @@ function buildBody(
   const input: Array<DeepSeekResponsesInputMessage | Record<string, unknown>> =
     conversation.map((message, index) => ({
       content: index === conversation.length - 1 && message.role === "user"
-        ? inputContent(request, options)
+        ? withResponseReminder(request, inputContent(request, options), (text) => ({ text, type: "input_text" as const }), options.preview)
         : [{
             text: message.content,
             type: message.role === "assistant" ? "output_text" as const : "input_text" as const
@@ -178,7 +179,7 @@ function buildBody(
     (tool) => deepSeekResponsesToolBridge.serializeTool(tool).tool
   );
   const tools = [...hostedTools, ...functionTools];
-  const instructions = providerInstructionsWithPersonalContext(request);
+  const instructions = providerInstructionsWithPersonalContext(request, options.preview);
   const effort = params.reasoning.effort;
   return {
     input,
