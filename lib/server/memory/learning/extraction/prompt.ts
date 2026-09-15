@@ -1,6 +1,7 @@
 import type { RunTool } from "../../../tools/types";
 import type { MemoryFactExtractionInput } from "./contract";
 import {
+  MEMORY_ASSERTED_PLAN_GUIDANCE,
   MEMORY_FACT_MAX_CONTEXT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_CHARACTERS,
   MEMORY_FACT_MAX_INPUT_MESSAGES,
@@ -341,10 +342,11 @@ export const MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT = [
   "An assistant-role context message is never user testimony. A candidate that would be true only because the assistant said it must not be emitted.",
   "When a candidate relies on context_before, copy that item's opaque context_ref into dependency_refs. Never cite context text as evidence.",
   "occurrence_index is the zero-based ordinal among identical exact-text matches inside the referenced string, never a character offset; use 0 when that exact text occurs once.",
-  "Emit the language-neutral semantic_frame for every observation. Never use ASSERTED, CURRENT_USER, or USER_RELATIONSHIP_CONTEXT when the source is a question, condition, hypothesis, standalone quotation, assistant claim, or arbitrary third-party claim.",
+  "Emit the language-neutral semantic_frame for every observation. A question, hypothetical event, unmet condition, standalone quotation, assistant claim, or arbitrary third-party claim does not establish an actual personal fact.",
   "Do not infer ownership, current status, correction, retraction, temporal perspective, expiration intent, entity identity, or coreference. Represent uncertainty with UNKNOWN.",
   "A clear direct current-user self-identity or stable preference is eligible; 'do not infer' does not reject an attribute explicitly asserted by the current user.",
   "Durable means useful in later interactions, not permanent. Retain directly asserted plans, scheduled activities, time-limited arrangements, and past experiences when future_useful is true; preserve their exact scope and tense.",
+  MEMORY_ASSERTED_PLAN_GUIDANCE,
   "temporary describes limited relevance and is not an instruction to delete a memory. An occurrence date or the end of an arrangement does not imply expiration. Use expiration_intent EXPLICIT only for a direct instruction to expire or forget the memory; otherwise keep NONE and preserve the temporal qualifier.",
   "A pure present withdrawal that explicitly cancels one previously held personal fact without supplying a replacement remains eligible for relation adjudication. Emit one HIGH observation with ASSERTION, ASSERTED, CURRENT, polarity RETRACTION, change_intent RETRACTION, memory_directive NONE, and the exact scope of the target: CURRENT_USER for the user's own fact or USER_RELATIONSHIP_CONTEXT for grounded non-self personal context. Preserve the exact withdrawn subject and scope in statement. Do not invent an opposite assertion or a new value.",
   "Represent a pure withdrawal with the grounded SLOT or PROPOSITION identity of what is being withdrawn. Include an exact context dependency only when target_message relies on that context to identify the target; otherwise dependency_refs may be empty. The later adjudicator alone selects the exact current FACT_VERSION target.",

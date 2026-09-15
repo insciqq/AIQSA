@@ -46,26 +46,23 @@ function intent(overrides: Record<string, unknown> = {}) {
 }
 
 function command(overrides: Record<string, unknown> = {}) {
-  return {
+  return { decision: {
     action: "SAVE",
     answerRequested: false,
     category: "preferences",
     confidenceBand: "HIGH",
     patternExclusionRequested: false,
     reasonCode: "save_request",
-    referencedMemoryRef: null,
-    replacementStatement: null,
     responsePreference: false,
     sensitivity: "NORMAL",
     statement: "I prefer tea.",
-    targetQuery: null,
     thisChatOnly: false,
     ...overrides
-  };
+  } };
 }
 
 describe("Fresh Memory action control contract", () => {
-  it("requires exactly the compact provider fields", () => {
+  it("requires the selected action's complete strict payload", () => {
     expect(Object.keys(MEMORY_ACTION_CONTROL_JSON_SCHEMA.properties).sort())
       .toEqual([...MEMORY_ACTION_CONTROL_JSON_SCHEMA.required].sort());
     const source = "Remember that I prefer tea.";
@@ -73,11 +70,14 @@ describe("Fresh Memory action control contract", () => {
       ok: true,
       value: { action: "SAVE", statement: "I prefer tea.", queryText: null }
     });
-    for (const key of MEMORY_ACTION_CONTROL_JSON_SCHEMA.required) {
-      const missing: Record<string, unknown> = command();
+    for (const key of Object.keys(command().decision)) {
+      const missing: Record<string, unknown> = { ...command().decision };
       delete missing[key];
-      expect(decodeMemoryActionControlDecision(missing, source)).toMatchObject({ ok: false });
+      expect(decodeMemoryActionControlDecision({ decision: missing }, source)).toMatchObject({ ok: false });
     }
+    expect(decodeMemoryActionControlDecision(command().decision, source)).toMatchObject({ ok: false });
+    expect(decodeMemoryActionControlDecision({ ...command(), extra: true }, source))
+      .toMatchObject({ ok: false });
     expect(decodeMemoryActionControlDecision(command({ queryText: "generated query" }), source))
       .toMatchObject({ ok: false });
     expect(decodeMemoryActionControlDecision(intent(), source)).toMatchObject({ ok: false });
@@ -85,16 +85,65 @@ describe("Fresh Memory action control contract", () => {
   });
 
   it.each([
-    { statement: null },
-    { action: "UPDATE", statement: null, replacementStatement: null },
-    { action: "SEARCH", statement: null, targetQuery: null },
-    { action: "RESET", statement: "I prefer tea." },
-    { action: "LIST", statement: null, answerRequested: true },
-    { action: "SEARCH", statement: null, targetQuery: "drink", answerRequested: true },
-    { statement: "x".repeat(2_001) }
+    command({ statement: null }),
+    command({ statement: "x".repeat(2_001) }),
+    { decision: { action: "SEARCH", reasonCode: "search_request", targetQuery: null } },
+    { decision: { action: "LIST", reasonCode: "list_request", answerRequested: true } },
+    { decision: { action: "RESET", reasonCode: "reset_request", answerRequested: false,
+      patternExclusionRequested: false, statement: "I prefer tea." } },
+    { decision: { action: "NONE", reasonCode: "none", patternExclusionRequested: false,
+      confidenceBand: "HIGH", statement: "I prefer tea." } }
   ])("retains action payload validation for %j", (invalid) => {
-    expect(decodeMemoryActionControlDecision(command(invalid), "A current user turn."))
+    expect(decodeMemoryActionControlDecision(invalid, "A current user turn."))
       .toMatchObject({ ok: false });
+  });
+
+  it.each(["UPDATE", "FORGET"] as const)("never infers confidence or a target for %s", (action) => {
+    const { statement: _statement, ...saved } = command().decision;
+    const decision: Record<string, unknown> = {
+      ...saved, action, referencedMemoryRef: null, targetQuery: "drink preference",
+      ...(action === "UPDATE" ? { replacementStatement: "I prefer coffee." } : {})
+    };
+    if (action === "FORGET") {
+      for (const key of ["category", "responsePreference", "sensitivity"]) delete decision[key];
+    }
+    const source = "Change or forget my saved drink preference.";
+    expect(decodeMemoryActionControlDecision({ decision }, source)).toMatchObject({
+      ok: true, value: { action, confidenceBand: "HIGH", targetQuery: "drink preference" }
+    });
+    for (const key of ["confidenceBand", "targetQuery", "referencedMemoryRef",
+      ...(action === "UPDATE" ? ["replacementStatement"] : [])]) {
+      const missing = { ...decision }; delete missing[key];
+      expect(decodeMemoryActionControlDecision({ decision: missing }, source))
+        .toMatchObject({ ok: false });
+    }
+    if (action === "UPDATE") {
+      expect(decodeMemoryActionControlDecision({ decision: { ...decision, replacementStatement: null } }, source))
+        .toMatchObject({ ok: false });
+    }
+    expect(decodeMemoryActionControlDecision({ decision: { ...decision, confidenceBand: "LOW" } }, source))
+      .toMatchObject({ ok: true, value: { confidenceBand: "LOW" } });
+  });
+
+  it("retains chat-only and mixed-answer SAVE without creating unrelated target fields", () => {
+    expect(decodeMemoryActionControlDecision(command({ thisChatOnly: true, answerRequested: true }),
+      "Remember my preference just here and help me choose."))
+      .toMatchObject({ ok: true, value: {
+        action: "SAVE", thisChatOnly: true, memoryUseful: true, confidenceBand: "HIGH",
+        statement: "I prefer tea.", targetQuery: null, referencedMemoryRef: null, replacementStatement: null
+      } });
+  });
+
+  it.each([
+    { action: "LIST", reasonCode: "list_request" },
+    { action: "SEARCH", reasonCode: "search_request", targetQuery: "drink" },
+    { action: "RESET", reasonCode: "reset_request", answerRequested: false, patternExclusionRequested: false }
+  ])("keeps $action inert for mutation and answer retrieval", (decision) => {
+    expect(decodeMemoryActionControlDecision({ decision }, "Manage saved entries."))
+      .toMatchObject({ ok: true, value: {
+        action: decision.action, confidenceBand: "LOW", memoryUseful: false, queryText: null,
+        statement: null, replacementStatement: null, referencedMemoryRef: null, thisChatOnly: false
+      } });
   });
 
   it("does not turn a source-only or malformed packet into a command", () => {
@@ -107,9 +156,9 @@ describe("Fresh Memory action control contract", () => {
 
   it("keeps ordinary retrieval eligible and bounds only its compatibility query", () => {
     const source = "x" + "😀".repeat(300);
-    const decoded = decodeMemoryActionControlDecision(command({
-      action: "NONE", statement: null, patternExclusionRequested: true
-    }), source);
+    const decoded = decodeMemoryActionControlDecision({ decision: {
+      action: "NONE", reasonCode: "no_memory_request", patternExclusionRequested: true
+    } }, source);
     expect(decoded).toMatchObject({
       ok: true,
       value: {
@@ -117,6 +166,8 @@ describe("Fresh Memory action control contract", () => {
         pastChatsUseful: true,
         applyResponsePreferences: true,
         patternExclusionRequested: true,
+        confidenceBand: "LOW",
+        statement: null,
         queryText: "x" + "😀".repeat(249)
       }
     });

@@ -52,34 +52,41 @@ const profileIntent: MemoryActionIntent = {
 };
 
 function providerDecision(intent: MemoryActionIntent): MemoryActionControlDecision {
-  return {
-    action: intent.action,
+  if (intent.action === "NONE") return { decision: {
+    action: "NONE", patternExclusionRequested: intent.patternExclusionRequested,
+    reasonCode: intent.reasonCode
+  } };
+  const common = {
     answerRequested: intent.memoryUseful || intent.pastChatsUseful ||
       intent.applyResponsePreferences || intent.profileRequested,
     category: intent.category,
     confidenceBand: intent.confidenceBand,
     patternExclusionRequested: intent.patternExclusionRequested,
     reasonCode: intent.reasonCode,
-    referencedMemoryRef: intent.referencedMemoryRef,
-    replacementStatement: intent.replacementStatement,
     responsePreference: intent.responsePreference,
     sensitivity: intent.sensitivity,
-    statement: intent.statement,
-    targetQuery: intent.targetQuery,
     thisChatOnly: intent.thisChatOnly
   };
+  if (intent.action === "SAVE") return { decision: {
+    ...common, action: "SAVE", statement: intent.statement
+  } };
+  if (intent.action === "UPDATE") return { decision: {
+    ...common, action: "UPDATE", referencedMemoryRef: intent.referencedMemoryRef,
+    replacementStatement: intent.replacementStatement, targetQuery: intent.targetQuery
+  } };
+  throw new Error("unsupported_control_fixture");
 }
 
 describe("Memory control runtime contract", () => {
   it("binds the profile decision to the current control contract versions", () => {
-    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v29");
+    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v30");
     expect(MEMORY_CONTROL_REASONING_POLICY).toBe("accepted-system-model-parameters");
     expect(MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR).toBe(2_048);
     expect(MEMORY_CONTROL_VERSIONS).toMatchObject({
-      pipelineVersion: "memory-control-v29",
+      pipelineVersion: "memory-control-v30",
       policyVersion: "memory-control-policy-v28",
-      promptVersion: "memory-control-prompt-v32",
-      schemaVersion: "memory-action-intent-v12"
+      promptVersion: "memory-control-prompt-v33",
+      schemaVersion: "memory-action-intent-v13"
     });
     expect(MEMORY_READ_ONLY_CONTROL_REUSE_VERSION).toBe(8);
   });

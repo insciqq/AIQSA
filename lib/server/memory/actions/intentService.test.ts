@@ -50,19 +50,25 @@ const controlDecision = {
   confidenceBand: "HIGH",
   patternExclusionRequested: false,
   reasonCode: "save_request",
-  referencedMemoryRef: null,
-  replacementStatement: null,
   responsePreference: false,
   sensitivity: "NORMAL",
   statement: "I prefer tea.",
-  targetQuery: null,
   thisChatOnly: false
 } as const;
+
+function updateDecision(overrides: Record<string, unknown> = {}) {
+  const { statement: _statement, ...common } = controlDecision;
+  return { decision: {
+    ...common, action: "UPDATE", referencedMemoryRef: null,
+    replacementStatement: "I prefer coffee.", targetQuery: "drink preference",
+    ...overrides
+  } };
+}
 
 describe("Memory control without model read planning", () => {
   it("accepts a pure command without requesting a generated search plan", async () => {
     const execute = vi.fn(async (_request: ReturnType<typeof buildMemoryActionIntentRequest>) =>
-      ({ ...controlDecision }));
+      ({ decision: controlDecision }));
     await expect(createMemoryActionIntentService({ execute }).decide(context)).resolves.toMatchObject({
       action: "SAVE",
       memoryUseful: false,
@@ -72,22 +78,22 @@ describe("Memory control without model read planning", () => {
     const request = execute.mock.calls[0]![0];
     expect(request.schema).toMatchObject({
       additionalProperties: false,
-      required: expect.arrayContaining(["action", "answerRequested", "thisChatOnly"])
+      required: ["decision"]
     });
-    expect(Object.keys(request.schema.properties ?? {})).toHaveLength(13);
+    const branches = (request.schema.properties as { decision: { anyOf: Array<{
+      properties: Record<string, unknown>; required: string[]
+    }> } }).decision.anyOf;
+    expect(branches).toHaveLength(7);
     for (const field of ["queryText", "queryDecompositions", "entityMentions",
       "aggregationRequested", "temporalIntent", "retrievalMode", "profileRequested"]) {
-      expect(request.schema.properties).not.toHaveProperty(field);
+      for (const branch of branches) expect(branch.properties).not.toHaveProperty(field);
     }
   });
 
   it("keeps a mixed update and answer with the exact source turn", async () => {
-    const execute = vi.fn(async (_request: ReturnType<typeof buildMemoryActionIntentRequest>) => ({
-      ...controlDecision,
-      action: "UPDATE",
+    const execute = vi.fn(async (_request: ReturnType<typeof buildMemoryActionIntentRequest>) => updateDecision({
       answerRequested: true,
       replacementStatement: "I prefer coffee.",
-      statement: null,
       targetQuery: "drink preference"
     }));
     const currentUserMessage = "Update my drink preference to coffee.\nWhat drink fits my breakfast?";
@@ -104,13 +110,11 @@ describe("Memory control without model read planning", () => {
   });
 
   it("retains ordinary reads and the explicit inferred-memory opt-out", async () => {
-    const execute = vi.fn(async () => ({
-      ...controlDecision,
+    const execute = vi.fn(async () => ({ decision: {
       action: "NONE",
       patternExclusionRequested: true,
-      reasonCode: "no_memory_request",
-      statement: null
-    }));
+      reasonCode: "no_memory_request"
+    } }));
     await expect(createMemoryActionIntentService({ execute }).decide({
       ...context,
       currentUserMessage: "What do you remember? Exclude inferred patterns."
@@ -150,7 +154,7 @@ describe("MemoryActionIntent service", () => {
   });
 
   it("decodes exactly one provider result and never treats it as authority", async () => {
-    const execute = vi.fn(async () => ({ ...controlDecision }));
+    const execute = vi.fn(async () => ({ decision: controlDecision }));
     const service = createMemoryActionIntentService({ execute });
     await expect(service.decide(context)).resolves.toMatchObject({ action: "SAVE" });
     expect(execute).toHaveBeenCalledTimes(1);
@@ -159,12 +163,9 @@ describe("MemoryActionIntent service", () => {
   it("preserves the complete selected literal replacement among quoted states", async () => {
     const exact = "My cedar-grid reporting-format preference is visual summaries.";
     const service = createMemoryActionIntentService({
-      execute: vi.fn(async () => ({
-        ...controlDecision,
-        action: "UPDATE",
+      execute: vi.fn(async () => updateDecision({
         reasonCode: "update_request",
         replacementStatement: exact,
-        statement: null,
         targetQuery: "cedar-grid reporting preference"
       }))
     });
@@ -179,12 +180,9 @@ describe("MemoryActionIntent service", () => {
   it("does not substitute a semantically different quoted UPDATE span", async () => {
     const replacementStatement = "I prefer detailed answers.";
     const service = createMemoryActionIntentService({
-      execute: vi.fn(async () => ({
-        ...controlDecision,
-        action: "UPDATE",
+      execute: vi.fn(async () => updateDecision({
         reasonCode: "update_request",
         replacementStatement,
-        statement: null,
         targetQuery: "answer preference"
       }))
     });
@@ -225,12 +223,9 @@ describe("MemoryActionIntent service", () => {
   ])("preserves the semantic replacement beside a %s", async (
     _label, currentUserMessage, replacementStatement
   ) => {
-    const execute = vi.fn(async () => ({
-      ...controlDecision,
-      action: "UPDATE",
+    const execute = vi.fn(async () => updateDecision({
       reasonCode: "update_request",
       replacementStatement,
-      statement: null,
       targetQuery: "communication preference"
     }));
 
@@ -249,7 +244,7 @@ describe("MemoryActionIntent service", () => {
       code: "memory_action_intent_unavailable"
     });
     const invalid = createMemoryActionIntentService({
-      execute: vi.fn(async () => ({ ...controlDecision, action: "SAVE", statement: null }))
+      execute: vi.fn(async () => ({ decision: { ...controlDecision, statement: null } }))
     });
     await expect(invalid.decide(context)).rejects.toMatchObject({
       code: "memory_action_intent_invalid"
@@ -260,16 +255,13 @@ describe("MemoryActionIntent service", () => {
     })).rejects.toMatchObject({ code: "memory_action_intent_invalid" });
 
     const conflatedSearch = createMemoryActionIntentService({
-      execute: vi.fn(async () => ({
-        ...controlDecision,
+      execute: vi.fn(async () => ({ decision: {
         action: "SEARCH",
-        category: null,
         memoryUseful: true,
         queryText: "how I like tea",
         reasonCode: "search_request",
-        statement: null,
         targetQuery: "saved tea preference"
-      }))
+      } }))
     });
     await expect(conflatedSearch.decide(context)).rejects.toMatchObject({
       code: "memory_action_intent_invalid"

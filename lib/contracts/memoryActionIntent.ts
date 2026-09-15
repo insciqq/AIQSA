@@ -7,7 +7,7 @@ import {
 /** Retained normalized intent representation, including earlier read-planning
  * fields. Accepted outputs keep this shape and their original hashes. */
 export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v11" as const;
-export const MEMORY_ACTION_CONTROL_SCHEMA_VERSION = "memory-action-intent-v12" as const;
+export const MEMORY_ACTION_CONTROL_SCHEMA_VERSION = "memory-action-intent-v13" as const;
 export const MEMORY_ACTION_INTENT_NAME = "MemoryActionIntent" as const;
 export const MEMORY_ACTION_INTENT_MAX_SYSTEM_MODEL_CALLS = 1 as const;
 export const MEMORY_ACTION_INTENT_MAX_TARGET_SELECTION_CALLS = 1 as const;
@@ -396,7 +396,7 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
   type: "object"
 } as const);
 
-const memoryActionControlWireSchema = memoryActionIntentWireSchema.pick({
+const memoryActionControlFields = memoryActionIntentWireSchema.pick({
   action: true,
   category: true,
   confidenceBand: true,
@@ -411,32 +411,75 @@ const memoryActionControlWireSchema = memoryActionIntentWireSchema.pick({
   thisChatOnly: true
 }).extend({ answerRequested: z.boolean() });
 
+const controlExplanation = memoryActionControlFields.pick({ reasonCode: true });
+const controlMutation = memoryActionControlFields.pick({
+  answerRequested: true,
+  confidenceBand: true,
+  patternExclusionRequested: true,
+  reasonCode: true,
+  thisChatOnly: true
+});
+const controlStatement = memoryActionControlFields.pick({
+  category: true, responsePreference: true, sensitivity: true
+});
+const controlTarget = memoryActionControlFields.pick({
+  referencedMemoryRef: true, targetQuery: true
+});
+const controlBranches = {
+  NONE: controlExplanation.extend({
+    action: z.literal("NONE"), patternExclusionRequested: z.boolean()
+  }),
+  SAVE: controlMutation.extend({
+    action: z.literal("SAVE"), ...controlStatement.shape,
+    statement: memoryActionControlFields.shape.statement
+  }),
+  UPDATE: controlMutation.extend({
+    action: z.literal("UPDATE"), ...controlStatement.shape, ...controlTarget.shape,
+    replacementStatement: memoryActionControlFields.shape.replacementStatement
+  }),
+  FORGET: controlMutation.extend({ action: z.literal("FORGET"), ...controlTarget.shape }),
+  LIST: controlExplanation.extend({ action: z.literal("LIST") }),
+  SEARCH: controlExplanation.extend({
+    action: z.literal("SEARCH"), targetQuery: memoryActionControlFields.shape.targetQuery
+  }),
+  RESET: controlExplanation.extend({
+    action: z.literal("RESET"), answerRequested: z.boolean(), patternExclusionRequested: z.boolean()
+  })
+};
+const memoryActionControlWireSchema = z.strictObject({
+  decision: z.discriminatedUnion("action", [
+    controlBranches.NONE, controlBranches.SAVE, controlBranches.UPDATE,
+    controlBranches.FORGET, controlBranches.LIST, controlBranches.SEARCH, controlBranches.RESET
+  ])
+});
+
 export type MemoryActionControlDecision = z.infer<typeof memoryActionControlWireSchema>;
 
-/** Every fresh provider field is required. Search scope, rewrites, entities and
- * chronology are absent: ordinary retrieval belongs to the server. */
+const controlPropertySchemas = {
+  ...MEMORY_ACTION_INTENT_JSON_SCHEMA.properties,
+  answerRequested: { type: "boolean" }
+};
+
+/** Each action has a strict, complete payload. The object root keeps the union
+ * portable across strict tool providers; ordinary retrieval belongs to the server. */
 export const MEMORY_ACTION_CONTROL_JSON_SCHEMA = Object.freeze({
   additionalProperties: false,
   properties: {
-    action: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.action,
-    answerRequested: { type: "boolean" },
-    category: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.category,
-    confidenceBand: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.confidenceBand,
-    patternExclusionRequested: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.patternExclusionRequested,
-    reasonCode: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.reasonCode,
-    referencedMemoryRef: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.referencedMemoryRef,
-    replacementStatement: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.replacementStatement,
-    responsePreference: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.responsePreference,
-    sensitivity: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.sensitivity,
-    statement: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.statement,
-    targetQuery: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.targetQuery,
-    thisChatOnly: MEMORY_ACTION_INTENT_JSON_SCHEMA.properties.thisChatOnly
+    decision: {
+      anyOf: Object.entries(controlBranches).map(([action, schema]) => ({
+        additionalProperties: false,
+        properties: Object.fromEntries(Object.keys(schema.shape).map((key) => [
+          key,
+          key === "action"
+            ? { const: action, type: "string" }
+            : controlPropertySchemas[key as keyof typeof controlPropertySchemas]
+        ])),
+        required: Object.keys(schema.shape),
+        type: "object"
+      }))
+    }
   },
-  required: [
-    "action", "answerRequested", "category", "confidenceBand", "patternExclusionRequested",
-    "reasonCode", "referencedMemoryRef", "replacementStatement", "responsePreference",
-    "sensitivity", "statement", "targetQuery", "thisChatOnly"
-  ],
+  required: ["decision"],
   type: "object"
 } as const);
 
@@ -640,7 +683,22 @@ export function decodeMemoryActionControlDecision(
   }
   const wire = memoryActionControlWireSchema.safeParse(value);
   if (!wire.success) return invalid;
-  const { answerRequested, ...action } = wire.data;
+  // Missing fields belong only to other actions. In particular, every mutation
+  // branch supplies its own confidence and applicable statement/target fields.
+  const { answerRequested, ...action } = {
+    answerRequested: false,
+    category: null,
+    confidenceBand: "LOW",
+    patternExclusionRequested: false,
+    referencedMemoryRef: null,
+    replacementStatement: null,
+    responsePreference: false,
+    sensitivity: "NORMAL",
+    statement: null,
+    targetQuery: null,
+    thisChatOnly: false,
+    ...wire.data.decision
+  };
   const readRequested = action.action === "NONE" || answerRequested;
   let compatibilityQuery = "";
   if (readRequested) {

@@ -512,7 +512,8 @@ function scheduledPropositionPlan(
   date: string,
   changeIntent: "NONE" | "STATE_CHANGE",
   weakSubjectType?: "GOAL" | "PROJECT",
-  entities: readonly unknown[] = []
+  entities: readonly unknown[] = [],
+  memoryType: "PLAN" | "STATE" = "PLAN"
 ): MemoryFactExtractionPlan {
   return decodeMemoryFactExtraction([{
     arguments: {
@@ -534,7 +535,7 @@ function scheduledPropositionPlan(
             qualifiers: { brand: null, model: null }
           }
         },
-        memory_type: "PLAN",
+        memory_type: memoryType,
         reason_code: "agreed_workshop_schedule",
         semantic_frame: {
           ...supportingUserAssertion,
@@ -1564,13 +1565,15 @@ describe("Prisma Memory vNext source-message ingestion", () => {
   });
 
   it.each([
-    { date: "2026-10-07", weakSubjectType: undefined },
-    { date: "2026-10-28", weakSubjectType: undefined },
-    { date: "2026-10-07", weakSubjectType: "GOAL" as const },
-    { date: "2026-10-28", weakSubjectType: "PROJECT" as const }
-  ])(
-    "retains the revised future schedule $date ($weakSubjectType) and the superseded schedule's evidence",
-    async ({ date, weakSubjectType }) => {
+    { date: "2026-10-07", weakSubjectType: undefined, memoryType: "PLAN" },
+    { date: "2026-10-28", weakSubjectType: undefined, memoryType: "PLAN" },
+    { date: "2026-10-07", weakSubjectType: "GOAL", memoryType: "PLAN" },
+    { date: "2026-10-28", weakSubjectType: "PROJECT", memoryType: "PLAN" },
+    { date: "2026-10-07", weakSubjectType: undefined, memoryType: "STATE" },
+    { date: "2026-10-28", weakSubjectType: undefined, memoryType: "STATE" }
+  ] as const)(
+    "retains the revised future $memoryType schedule $date ($weakSubjectType) and the superseded schedule's evidence",
+    async ({ date, weakSubjectType, memoryType }) => {
       const userId = await createOwner("scheduled-proposition-revision");
       try {
         const chat = await prisma.chat.create({ data: { title: "Workshop schedule", userId } });
@@ -1583,7 +1586,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         await settleChat(userId, chat.id, first);
         const firstClaim = await claimFactJob(userId, first.userMessage.id);
         const firstInput = await prepare(firstClaim);
-        const firstPlan = scheduledPropositionPlan(firstInput, initialText, "2026-10-14", "NONE", weakSubjectType);
+        const firstPlan = scheduledPropositionPlan(firstInput, initialText, "2026-10-14", "NONE", weakSubjectType, [], memoryType);
         expect(firstPlan.candidates).toHaveLength(1);
         await applyPlan(userId, firstClaim, firstPlan, await createSucceededBinding(
           userId, firstClaim, firstInput.inputHash, firstPlan.outputHash
@@ -1600,7 +1603,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         const input = await prepare(claim);
         const target = input.contextRefs.find(({ source }) => source.factVersionId === original.id);
         if (!target) throw new Error("memory_test_schedule_target_missing");
-        const plan = scheduledPropositionPlan(input, revisedText, date, "STATE_CHANGE", weakSubjectType);
+        const plan = scheduledPropositionPlan(input, revisedText, date, "STATE_CHANGE", weakSubjectType, [], memoryType);
         expect(plan.candidates).toHaveLength(1);
         const semanticInput = memorySemanticAdjudicationInput(plan);
         if (!semanticInput) throw new Error("memory_test_schedule_adjudication_missing");

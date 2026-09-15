@@ -176,7 +176,7 @@ function referenceKindsPlan(): MemoryFactExtractionPlan {
 describe("batched Memory semantic adjudication", () => {
   it("makes new-fact ref nullability explicit without weakening the decoder", () => {
     expect(MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION)
-      .toBe("memory-semantic-adjudication-prompt-v12");
+      .toBe("memory-semantic-adjudication-prompt-v14");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
       .toContain("A candidate_ref is never an entity_ref or target_ref");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
@@ -475,6 +475,7 @@ describe("batched Memory semantic adjudication", () => {
       identityVersion: "proposition-v1",
       predicateKey: null,
       proposedValue: null,
+      statement: "The current user owns a gift card.",
       subjectKey: null
     });
     const input = memorySemanticAdjudicationInput(plan(state));
@@ -484,6 +485,46 @@ describe("batched Memory semantic adjudication", () => {
     };
     expect(payload.candidates[0]?.proposed_statement)
       .toBe("The current user owns a gift card.");
+  });
+
+  it.each([
+    { amount: 1, date: "2024-03-02", perspective: "FUTURE", statement: "I plan to attend training tomorrow." },
+    { amount: -1, date: "2024-02-29", perspective: "FORMER", statement: "I attended training yesterday." }
+  ] as const)("preserves a relative $perspective claim and its source clock", ({
+    amount, date, perspective, statement
+  }) => {
+    const temporalNormalization = { amount, kind: "CALENDAR_OFFSET", unit: "DAY" } as const;
+    const observation = candidate({
+      displayText: `${statement} [${perspective === "FUTURE" ? "expected_date" : "event_date"}=${date}]`,
+      statement,
+      temporalNormalization,
+      semanticFrame: { ...candidate().semanticFrame, temporalPerspective: perspective }
+    });
+    const base = plan(observation);
+    const prepared = {
+      ...base,
+      input: {
+        ...base.input,
+        messages: [{
+          ...base.input.messages[0]!,
+          createdAt: "2024-03-01T23:30:00.000Z",
+          text: statement
+        }],
+        timeZone: "America/Los_Angeles"
+      }
+    };
+    const payload = JSON.parse(memorySemanticAdjudicationPromptPayload(
+      memorySemanticAdjudicationInput(prepared)!
+    ));
+    expect(payload.target_message).toBe(statement);
+    expect(payload.target_message_created_at).toBe("2024-03-01T23:30:00.000Z");
+    expect(payload.time_zone).toBe("America/Los_Angeles");
+    expect(payload.candidates[0]).toMatchObject({
+      proposed_statement: statement,
+      semantic_frame: { temporalPerspective: perspective },
+      temporal: { expiration_intent: "NONE", normalization: temporalNormalization }
+    });
+    expect(payload.candidates[0].proposed_statement).not.toContain(date);
   });
 
   it("requires one batch for a high-risk SLOT and hides database ids", () => {
