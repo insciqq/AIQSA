@@ -22,6 +22,35 @@ import { createPrismaRetentionRepository } from "../retention/prune";
 
 afterAll(() => prisma.$disconnect());
 
+it.each([
+  ["TRANSFERRED", false], ["TRANSFERRED", true],
+  ["FAILED", false], ["FAILED", true]
+] as const)("deletes both chats of a %s seed with its user (destination created first: %s)", async (status, destinationFirst) => {
+  const userId = randomUUID();
+  const sourceChatId = randomUUID();
+  const newChatId = randomUUID();
+  const seedId = randomUUID();
+  const storageKey = status === "TRANSFERRED" ? `workspace-continuation/${seedId}.tar.gz` : null;
+  await prisma.user.create({ data: { id: userId, displayName: "Continuation cascade fixture", status: "active" } });
+  try {
+    for (const id of destinationFirst ? [newChatId, sourceChatId] : [sourceChatId, newChatId]) {
+      await prisma.chat.create({ data: { id, userId, title: "Continuation cascade fixture" } });
+    }
+    await prisma.chatContinuationWorkspaceSeed.create({ data: {
+      id: seedId, sourceChatId, newChatId, status, storageKey,
+      ...(storageKey ? { checksum: "a".repeat(64), byteSize: 1 } : {})
+    } });
+    await expect(prisma.user.delete({ where: { id: userId } })).resolves.toMatchObject({ id: userId });
+    expect(await prisma.chat.count({ where: { id: { in: [sourceChatId, newChatId] } } })).toBe(0);
+    expect(await prisma.chatContinuationWorkspaceSeed.count({ where: { id: seedId } })).toBe(0);
+    if (storageKey) expect(await prisma.attachmentDeletionJob.count({ where: { storageKey } })).toBe(1);
+  } finally {
+    await prisma.chatContinuationWorkspaceSeed.deleteMany({ where: { id: seedId } });
+    await prisma.user.deleteMany({ where: { id: userId } });
+    if (storageKey) await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey } });
+  }
+});
+
 async function fixture(run: (data: { userId: string; chatId: string; leafId: string; projectId: string | null }) => Promise<void>, mode: "NORMAL" | "TEMPORARY" | "PROJECT" = "NORMAL") {
   const userId = randomUUID();
   const leafId = randomUUID();
