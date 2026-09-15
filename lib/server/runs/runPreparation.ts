@@ -144,6 +144,7 @@ export type RunPreparationDeps = Readonly<{
   images?: import("../images/service").ImageGenerationService;
   allowFakeProvider?: boolean;
   assistants?: AssistantRunResolver;
+  instructions?: Pick<import("../instructions/store").InstructionPresetStore, "resolveForRun">;
   getAttachmentLimits?: () => RunAttachmentLimits;
   knowledgeAdmission?: Readonly<{
     load(input: {
@@ -1475,6 +1476,11 @@ export async function prepareRun(
   const parameterProvider = parameterDialect(executionAdapterKind, executionProvider);
 
   const normalizedPrompt = assistantRun ? assistantPrompt(assistantRun) : standardChatPrompt(body);
+  let personalInstructions: import("../instructions/store").PersonalInstructionSnapshot | undefined;
+  if (!assistantRun && !project && deps.instructions) {
+    try { personalInstructions = await deps.instructions.resolveForRun(input.userId); }
+    catch { return failure("instruction_presets_unavailable", 409); }
+  }
   // Project Memory (both the legacy folder field and the newer Project
   // Memory facts) is dormant for Personal Memory v1. Project instructions
   // remain part of the Project contract; no memory text crosses this
@@ -1484,6 +1490,8 @@ export async function prepareRun(
     : normalizedPrompt;
   let prompt: NormalizedRunRequest["prompt"] = {
     ...scopedPrompt,
+    ...(personalInstructions ? { personalInstructions: personalInstructions.systemInstructions } : {}),
+    responseReminder: assistantRun?.responseReminder ?? personalInstructions?.responseReminder ?? "",
     memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
   };
   const sendContext =
@@ -1695,6 +1703,8 @@ export async function prepareRun(
   })).slice(-256);
   if (imagePlan) prompt = { ...prompt, system: [prompt.system, imageReferenceInstructions(imageReferences, modelCapabilities.vision === true)].filter(Boolean).join("\n\n") };
   const baseNormalizedRequest: NormalizedRunRequest = {
+    ...(personalInstructions ? { instructionPreset: { presetId: personalInstructions.presetId,
+      revision: personalInstructions.revision, selectionVersion: personalInstructions.selectionVersion } } : {}),
     ...(imagePlan ? { imagePlan, imageReferences } : {}),
     ...(modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
       modelId: executionModelId, provider: executionProvider

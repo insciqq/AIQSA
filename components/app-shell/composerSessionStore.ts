@@ -126,6 +126,7 @@ type ComposerSessionStore = {
   setDraft(value: string): void;
   setEditingDraft(value: string): void;
   startEdit(messageId: string, draft: string): void;
+  moveUnsentInputIfTargetEmpty(sourceKey: ComposerSessionKey, targetKey: ComposerSessionKey): boolean;
   transferSession(sourceKey: ComposerSessionKey, targetKey: ComposerSessionKey): boolean;
   updateUploadedAttachment(key: ComposerSessionKey, attachment: ComposerAttachment): boolean;
   updateSession(
@@ -697,6 +698,21 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
         [state.activeSessionKey]: next
       }
     });
+  },
+  moveUnsentInputIfTargetEmpty(sourceKey, targetKey) {
+    const state = get();
+    const source = state.sessionsByKey[sourceKey];
+    const target = state.sessionsByKey[targetKey] ?? newSession();
+    if (!source || sourceKey === targetKey || source.pendingSend || target.pendingSend ||
+      source.pendingUploadGenerations.length > 0 || target.pendingUploadGenerations.length > 0 ||
+      target.draft.length > 0 || target.attachments.length > 0 ||
+      source.draft.length === 0 && source.attachments.length === 0) return false;
+    set({ sessionsByKey: {
+      ...state.sessionsByKey,
+      [sourceKey]: patchedSession(source, { draft: "", attachments: [] }),
+      [targetKey]: patchedSession(target, { draft: source.draft, attachments: source.attachments })
+    } });
+    return true;
   },
   transferSession(sourceKey, targetKey) {
     const state = get();

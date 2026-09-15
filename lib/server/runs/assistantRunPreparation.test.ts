@@ -483,6 +483,18 @@ describe("ordinary Knowledge plan resolution", () => {
 });
 
 describe("assistant run admission", () => {
+  it.each(["", "Assistant reminder"])("uses only the Assistant reminder and never personal presets (%s)", async responseReminder => {
+    const instructions = { resolveForRun: vi.fn() };
+    const result = await prepareRun(deps({ instructions, assistants: { resolveForRun: async () => assistantResolution({ responseReminder }) } }),
+      { body: { assistantId: "assistant-1", text: "Review this" }, source: sendSource(), userId: "user-1" });
+    expect(instructions.resolveForRun).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.prepared.normalizedRequest.prompt.responseReminder).toBe(responseReminder);
+      expect(result.prepared.normalizedRequest.prompt.personalInstructions).toBeUndefined();
+    }
+  });
+
   it("materializes the resolved definition server-side and skips defaults persistence", async () => {
     const resolveForRun = vi.fn(async () => assistantResolution());
     const result = await prepareRun(

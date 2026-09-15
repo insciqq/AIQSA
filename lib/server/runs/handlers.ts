@@ -1,9 +1,12 @@
 import { McpToolAccessDeniedError } from "../mcp/toolAccess";
+import { InstructionPresetError } from "../instructions/store";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { isChatPdfPolicyUnavailableError, chatPdfFingerprint } from "../uploads/chatPdfAdmission";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
 import { chatPdfRunSnapshot } from "../uploads/chatPdfRunContinuation";
+import { acceptedRunSnapshot } from "./acceptedRunSnapshot";
+import { WorkspaceFollowupError } from "./workspaceFollowupPersistence";
 import type { PreparingRunAdmissionResponse } from "../../contracts/runs";
 import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "./preparingRunMaterialization";
 import { getAuthConfig, type AuthConfig } from "../auth/config";
@@ -76,9 +79,14 @@ export type {
 } from "./runRepositoryContract";
 
 export type RunHandlerDeps = {
+  workspaceFollowup?: Readonly<{
+    findAdmission(admissionKey: string, userId: string): Promise<PreparingRunAdmissionResponse | null>;
+    kick(): void;
+  }>;
   images?: import("../images/service").ImageGenerationService;
   allowFakeProvider?: boolean;
   assistants?: RunPreparationDeps["assistants"];
+  instructions?: RunPreparationDeps["instructions"];
   chatTitleGenerator?: ChatTitleGenerator;
   chatPdf?: NonNullable<RunPreparationDeps["chatPdf"]> & Readonly<{
     findAdmission(admissionKey: string, userId: string): Promise<PreparingRunAdmissionResponse | null>;
@@ -438,6 +446,7 @@ async function admittedPdfResponse(deps: RunHandlerDeps, created: CreatedRun, us
   const run = await deps.repository.getRunOutcomeForUser(created.runId, userId);
   if (!run) return Response.json({ error: "model_run_not_found" }, { status: 404 });
   deps.chatPdf?.kick();
+  deps.workspaceFollowup?.kick();
   return Response.json({ assistantMessageId: created.assistantMessageId, userMessageId: created.userMessageId,
     ...serializeRunOutcome(run) }, { status: 202, headers: { "Cache-Control": "no-store" } });
 }
@@ -471,8 +480,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
 
     const params = await context.params;
     const admissionKey = pdfAdmissionKey("send", params.chatId, auth.userId, body);
-    const duplicate = await deps.chatPdf?.findAdmission(admissionKey, auth.userId);
-    if (duplicate) { deps.chatPdf?.kick(); return Response.json(duplicate, { status: 202, headers: { "Cache-Control": "no-store" } }); }
+    const duplicate = await deps.workspaceFollowup?.findAdmission(admissionKey, auth.userId) ??
+      await deps.chatPdf?.findAdmission(admissionKey, auth.userId);
+    if (duplicate) { deps.chatPdf?.kick(); deps.workspaceFollowup?.kick(); return Response.json(duplicate, { status: 202, headers: { "Cache-Control": "no-store" } }); }
     let chat = await deps.repository.findOwnedChat(params.chatId, auth.userId);
     let personalChat: Readonly<{
       defaultProviderModelId: string | null;
@@ -551,9 +561,16 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       }
     }
 
-    const activeRunResponse = await activeRunConflictResponse(chat.id, deps.repository, auth.userId);
-    if (activeRunResponse) {
-      return activeRunResponse;
+    const activeRun = await deps.repository.findRecentActiveRunForChat({
+      chatId: chat.id, since: new Date(Date.now() - activeRunGateWindowMs), userId: auth.userId
+    });
+    const predecessorRunId = deps.workspaceFollowup && activeRun?.answerComplete && !activeRun.workspaceWaitPending &&
+      activeRun.assistantMessageId === chat.activeLeafMessageId ? activeRun.id : null;
+    if (activeRun && !predecessorRunId) {
+      return Response.json({ error: "active_run_in_progress", run: {
+        id: activeRun.id, status: activeRun.status === "preparing"
+          ? activeRun.workspaceWaitPending ? "queued" : "streaming" : activeRun.status
+      } }, { status: 409 });
     }
 
     const expectedActiveLeaf = expectedActiveLeafFromBody(body, chat.activeLeafMessageId);
@@ -582,6 +599,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     let created: CreatedRun;
     try {
       created = await deps.repository.createRun({
+        ...(predecessorRunId ? { workspaceFollowup: {
+          admissionKey, predecessorRunId, snapshot: acceptedRunSnapshot(preparedData)
+        } } : {}),
         ...deferredPdfInput(preparedData, admissionKey),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
         chatId: preparedData.normalizedRequest.chatId,
@@ -624,8 +644,11 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         userId: auth.userId
       });
     } catch (error) {
-      const duplicate = await deps.chatPdf?.findAdmission(admissionKey, auth.userId);
-      if (duplicate) { deps.chatPdf?.kick(); return Response.json(duplicate, { status: 202, headers: { "Cache-Control": "no-store" } }); }
+      const duplicate = await deps.workspaceFollowup?.findAdmission(admissionKey, auth.userId) ??
+        await deps.chatPdf?.findAdmission(admissionKey, auth.userId);
+      if (duplicate) { deps.chatPdf?.kick(); deps.workspaceFollowup?.kick(); return Response.json(duplicate, { status: 202, headers: { "Cache-Control": "no-store" } }); }
+      if (error instanceof WorkspaceFollowupError) return Response.json({ error: error.code }, { status: 409 });
+      if (error instanceof InstructionPresetError) return Response.json({ error: error.code }, { status: 409 });
       if ((error instanceof ChatPdfPreparationError || isChatPdfPolicyUnavailableError(error))) return Response.json({ error: error.code }, { status: 409 });
       if (isActiveRunConflictError(error)) {
         return activeRunInsertConflictResponse(chat.id, deps.repository, auth.userId);
@@ -677,7 +700,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
 
       throw error;
     }
-    if (created.deferredPdf) return admittedPdfResponse(deps, created, auth.userId);
+    if (created.deferredPdf || created.deferredWorkspace) return admittedPdfResponse(deps, created, auth.userId);
     preparedData = applyPreparingMaterialization(preparedData, created);
     const runtime = await acceptedRuntimeBinding(
       deps,
@@ -816,6 +839,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     } catch (error) {
       const duplicate = await deps.chatPdf?.findAdmission(admissionKey, auth.userId);
       if (duplicate) { deps.chatPdf?.kick(); return Response.json(duplicate, { status: 202, headers: { "Cache-Control": "no-store" } }); }
+      if (error instanceof InstructionPresetError) return Response.json({ error: error.code }, { status: 409 });
       if ((error instanceof ChatPdfPreparationError || isChatPdfPolicyUnavailableError(error))) return Response.json({ error: error.code }, { status: 409 });
       if (isActiveRunConflictError(error)) {
         return activeRunInsertConflictResponse(source.chat.id, deps.repository, auth.userId);

@@ -78,6 +78,15 @@ enum ModelRunStatus {
   error
 }
 
+enum WorkspaceFollowupState {
+  waiting
+  preparing
+  released
+  dispatched
+  failed
+  cancelled
+}
+
 enum SearchRunStatus {
   complete
   error
@@ -764,6 +773,7 @@ enum MemoryToolEgressDispatchState {
 }
 
 model User {
+  instructionPresets InstructionPreset[]
   chatContinuations ChatContinuation[]
   id                                  String                             @id @default(uuid())
   email                               String?                            @unique
@@ -1045,6 +1055,9 @@ model UserGroup {
 model UserSettings {
   id                      String         @id @default(uuid())
   userId                  String         @unique
+  activeInstructionPresetId String?
+  instructionSelectionVersion Int        @default(0)
+  activeInstructionPreset InstructionPreset? @relation(fields: [userId, activeInstructionPresetId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
   defaultProviderModelId  String?
   defaultFolderId         String?
   defaultSearchStrategyId String         @default("openai-native-web-search")
@@ -1052,7 +1065,7 @@ model UserSettings {
   defaultControlValues    Json           @default("{}")
   defaultKnowledgePlan    Json?
   defaultMcpMode          String         @default("auto")
-  defaultWorkspaceEnabled Boolean        @default(false)
+  defaultWorkspaceEnabled Boolean        @default(true)
   answerSoundEnabled      Boolean        @default(true)
   answerSoundId           String         @default("rise") @db.VarChar(16)
   sendWithEnter           Boolean        @default(true)
@@ -1064,6 +1077,23 @@ model UserSettings {
   defaultProviderModel    ProviderModel? @relation("UserDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
 
   @@index([defaultProviderModelId])
+  @@index([userId, activeInstructionPresetId])
+}
+
+model InstructionPreset {
+  id                 String @id @default(uuid())
+  userId             String
+  name               String @db.VarChar(80)
+  systemInstructions String
+  responseReminder   String @default("")
+  revision           Int @default(1)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  user               User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeSettings     UserSettings[]
+
+  @@unique([userId, id])
+  @@unique([userId, name])
 }
 
 model SearchPolicy {
@@ -1353,6 +1383,7 @@ model AssistantDefinition {
   providerModelId    String
   systemPrompt       String
   developerPrompt    String?
+  responseReminder   String                    @default("")
   runControls        Json                      @default("{}")
   searchPlan         Json
   mcpServerIds       String[]                  @default([])
@@ -2804,6 +2835,7 @@ model ChatContinuation {
   snapshotUpdatedAt DateTime
   actorUserId       String?
   attemptId         String   @unique
+  requestedProviderModelId String?
   status            String   @db.VarChar(16)
   errorCode         String?  @db.VarChar(64)
   newChatId         String?  @unique
@@ -2880,6 +2912,8 @@ model ChatTitleGeneration {
 }
 
 model ModelRun {
+  workspaceFollowup            WorkspaceFollowup?                  @relation("WaitingWorkspaceRun")
+  dependentWorkspaceFollowups   WorkspaceFollowup[]                 @relation("PreviousWorkspaceRun")
   chatTitleGeneration          ChatTitleGeneration?
   chatPdfPreparation           ChatPdfRunPreparation?
   chatPdfAttachments           ChatPdfAttachmentPreparation[]
@@ -2906,6 +2940,10 @@ model ModelRun {
   errorPayload                 Json?
   toolLoopState                Json?
   answerStartedAt              DateTime?
+  answerCompletedAt            DateTime?
+  /// Frozen completion accounting for recovery until the run settles.
+  answerCompletionUsage        Json?
+  workspaceWaitPending         Boolean                             @default(false)
   createdAt                    DateTime                            @default(now())
   updatedAt                    DateTime                            @updatedAt
   assistantMessage             Message?                            @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
@@ -2939,12 +2977,37 @@ model ModelRun {
   workspaceProducedAttachments Attachment[]                        @relation("WorkspaceProducedAttachment")
 
   @@unique([userId, id])
+  @@unique([chatId, id], map: "ModelRun_chatId_id_key")
   @@unique([userId, chatId, id])
   @@index([assistantId])
   @@index([chatId, createdAt])
   @@index([provider, modelId])
   @@index([status])
   @@index([userId, createdAt])
+}
+
+/// One accepted next message waiting for its predecessor to retire Workspace authority.
+model WorkspaceFollowup {
+  modelRunId            String                 @id
+  chatId                String
+  predecessorRunId      String
+  admissionKey          String                 @unique @db.Char(64)
+  state                 WorkspaceFollowupState @default(waiting)
+  snapshot              Json?
+  admissionResult       Json?
+  sourceRevisionAdvance Int                    @default(0)
+  deadlineAt            DateTime
+  claimToken            String?
+  leaseExpiresAt        DateTime?
+  errorCode             String?                @db.VarChar(64)
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  modelRun              ModelRun               @relation("WaitingWorkspaceRun", fields: [chatId, modelRunId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict)
+  predecessor           ModelRun               @relation("PreviousWorkspaceRun", fields: [chatId, predecessorRunId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@unique([chatId, modelRunId])
+  @@index([state, createdAt])
+  @@index([chatId, predecessorRunId])
 }
 
 model ModelRunSkillBinding {

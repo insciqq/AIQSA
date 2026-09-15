@@ -15,9 +15,11 @@ import type { StorageAdapter } from "../uploads/storage";
 import { WorkspaceRuntimeError, type WorkspaceOutputStream, type WorkspaceRuntime } from "../workspace/runtime";
 import { WORKSPACE_OPERATION_LEASE_MS } from "../workspace/sessionOperation";
 import { parseWorkspaceOperation } from "../workspace/operationFence";
+import { loadExposedChatModelId } from "./chatCreationDefaults";
+import { loadProjectChatDefaultAuthority } from "../projects/chatDefaults";
 
 const sourceSelect = {
-  activeLeafMessageId: true, archived: true, defaultProviderModelId: true, folderId: true,
+  activeLeafMessageId: true, archived: true, defaultProviderModelId: true, defaultKnowledgePlan: true, folderId: true,
   id: true, memoryMode: true, permanentDeletionAt: true, projectFolderId: true, projectId: true,
   title: true, updatedAt: true, userId: true, workspaceEnabled: true
 } satisfies Prisma.ChatSelect;
@@ -97,7 +99,7 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
         workspaceEnabled: chat.workspaceEnabled };
     }),
 
-    claim: (source, requestId) => client.$transaction(async (tx) => {
+    claim: (source, requestId, modelSelection) => client.$transaction(async (tx) => {
       await lockedSource(tx, currentInput(source));
       const key = { sourceChatId: source.chatId, sourceMessageId: source.leafMessageId, snapshotUpdatedAt: source.updatedAt };
       const duplicateId = await tx.chatContinuation.findUnique({ where: { attemptId: requestId } });
@@ -121,12 +123,25 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
         return { kind: "failed" };
       }
       if (existing?.attemptId === requestId) throw new ChatContinuationError("chat_summary_failed", 502);
+      // Freeze only a server-exposed selection. Polls and duplicate claims
+      // return above, so later composer changes cannot retarget this claim.
+      let requestedProviderModelId: string | null = null;
+      if (modelSelection) {
+        if (source.projectId) {
+          const authority = await loadProjectChatDefaultAuthority(tx, source.projectId);
+          if (authority.modelProviders.get(modelSelection.modelId) === modelSelection.provider) {
+            requestedProviderModelId = modelSelection.modelId;
+          }
+        } else {
+          requestedProviderModelId = await loadExposedChatModelId(tx, source.userId, modelSelection);
+        }
+      }
       const operation = existing
         ? await tx.chatContinuation.update({ where: { id: existing.id }, data: {
-            actorUserId: source.userId, attemptId: requestId, errorCode: null, status: "running"
+            actorUserId: source.userId, attemptId: requestId, errorCode: null, status: "running", requestedProviderModelId
           } })
         : await tx.chatContinuation.create({ data: {
-            ...key, actorUserId: source.userId, attemptId: requestId, status: "running"
+            ...key, actorUserId: source.userId, attemptId: requestId, status: "running", requestedProviderModelId
           } });
       const priorSeed = await tx.chatContinuationWorkspaceSeed.findUnique({ where: { continuationId: operation.id } });
       if (priorSeed) {
@@ -278,7 +293,8 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
         const deadline = chat.memoryMode === "TEMPORARY" ? temporaryRetentionDeadline(new Date()) : null;
         await tx.chat.create({ data: {
           id: newChatId, title: `Continued: ${chat.title}`.slice(0, 120),
-          defaultProviderModelId: chat.defaultProviderModelId, memoryMode: chat.memoryMode,
+          defaultProviderModelId: operation.requestedProviderModelId ?? chat.defaultProviderModelId, memoryMode: chat.memoryMode,
+          defaultKnowledgePlan: chat.defaultKnowledgePlan ?? Prisma.DbNull,
           workspaceEnabled: chat.workspaceEnabled,
           ...(chat.projectId ? {
             userId: null, projectId: chat.projectId, projectFolderId: chat.projectFolderId,

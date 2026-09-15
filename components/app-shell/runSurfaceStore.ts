@@ -3,6 +3,9 @@ import type { RunEventView } from "@/components/app-shell/types";
 import { create } from "zustand";
 
 export type RunSurfaceSnapshot = {
+  /** Controls captured at send time; survives preparation and message-id reconciliation. */
+  contextConfigurationKey?: string;
+  contextMessageId?: string;
   /** Client clock when the current round's first answer token arrived; a round reset clears it. */
   answerStartedAt: number | null;
   events: RunEventView[];
@@ -13,8 +16,9 @@ export type RunSurfaceSnapshot = {
 export type RunSurfaceStore = {
   surfacesByChatId: Record<string, RunSurfaceSnapshot>;
   appendEvent(chatId: string, event: RunEventView): void;
+  bindContextMessage(chatId: string, previousMessageId: string, messageId: string): void;
   removeSurface(chatId: string): void;
-  resetSurface(chatId: string): void;
+  resetSurface(chatId: string, contextConfigurationKey?: string, contextMessageId?: string): void;
 };
 
 export const emptyRunSurfaceSnapshot: RunSurfaceSnapshot = {
@@ -55,6 +59,7 @@ export const useRunSurfaceStore = create<RunSurfaceStore>((set) => ({
         surfacesByChatId: {
           ...state.surfacesByChatId,
           [chatId]: {
+            ...current,
             answerStartedAt: event.type === "message_reset"
               ? null
               : event.type === "token"
@@ -67,6 +72,14 @@ export const useRunSurfaceStore = create<RunSurfaceStore>((set) => ({
       };
     });
   },
+  bindContextMessage(chatId, previousMessageId, messageId) {
+    set((state) => {
+      const current = selectRunSurface(state, chatId);
+      if (current.contextMessageId !== previousMessageId) return state;
+      return { surfacesByChatId: { ...state.surfacesByChatId,
+        [chatId]: { ...current, contextMessageId: messageId } } };
+    });
+  },
   removeSurface(chatId) {
     set((state) => {
       if (!(chatId in state.surfacesByChatId)) {
@@ -77,11 +90,12 @@ export const useRunSurfaceStore = create<RunSurfaceStore>((set) => ({
       return { surfacesByChatId };
     });
   },
-  resetSurface(chatId) {
+  resetSurface(chatId, contextConfigurationKey, contextMessageId) {
     set((state) => ({
       surfacesByChatId: {
         ...state.surfacesByChatId,
-        [chatId]: { ...emptyRunSurfaceSnapshot, startedAt: Date.now() }
+        [chatId]: { ...emptyRunSurfaceSnapshot, startedAt: Date.now(),
+          ...(contextConfigurationKey ? { contextConfigurationKey, contextMessageId } : {}) }
       }
     }));
   }

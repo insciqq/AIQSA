@@ -476,7 +476,9 @@ export function createFakeProviderAdapter(): ProviderAdapter {
       return {
         model: request.modelId,
         params: request.params,
-        prompt: request.prompt,
+        prompt: { ...request.prompt,
+          ...(request.prompt.personalInstructions ? { personalInstructions: "[personal instructions omitted]" } : {}),
+          ...(request.prompt.responseReminder ? { responseReminder: "[response reminder omitted]" } : {}) },
         provider: "fake",
         replayedContext: conversationPreview(request),
         redactions: ["selected_skill_instructions"],

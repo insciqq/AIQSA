@@ -61,19 +61,21 @@ export async function startNewChat(page: Page): Promise<void> {
 }
 
 export async function turnWorkspaceOn(page: Page): Promise<void> {
-  const enabled = page.getByRole("button", { name: /^Turn off Workspace/u });
-  if (await enabled.isVisible()) {
-    await expect(enabled).toHaveAttribute("aria-pressed", "true");
-    await expect(enabled).toBeEnabled();
-    return;
-  }
-  const toggle = page.getByRole("button", { name: /^Turn on Workspace/u });
-  await expect(toggle).toBeEnabled({ timeout: 15_000 });
+  await setWorkspaceEnabled(page, true);
+}
+
+export async function setWorkspaceEnabled(page: Page, enabled: boolean): Promise<void> {
+  const details = page.getByRole("button", { name: /^Workspace details\./u });
+  const expected = enabled ? /^Workspace details\. On\./u : /^Workspace details\. Off\./u;
+  await expect(details).toBeEnabled({ timeout: 15_000 });
+  if (expected.test(await details.getAttribute("aria-label") ?? "")) return;
+  await details.click();
+  const toggle = page.getByRole("menu", { name: "Workspace", exact: true })
+    .getByRole("menuitemcheckbox", { name: enabled ? /Turn on Workspace/u : /Turn off Workspace/u });
+  await expect(toggle).toBeEnabled();
   await toggle.click();
-  await expect(page.getByRole("button", { name: /^Turn off Workspace/u })).toHaveAttribute(
-    "aria-pressed",
-    "true"
-  );
+  await expect(details).toHaveAccessibleName(expected);
+  await page.keyboard.press("Escape");
 }
 
 export async function activeChatId(page: Page): Promise<string> {

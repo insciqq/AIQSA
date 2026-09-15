@@ -236,6 +236,79 @@ describe("Gemini Interactions request builder", () => {
     ]);
   });
 
+  it.each(["image", "pdf"] as const)("preserves a large %s payload held in a two-byte string", (kind) => {
+    const base64 = Buffer.alloc(16 * 1024 * 1024, 42).toString("base64");
+    const mimeType = kind === "image" ? "image/png" : "application/pdf";
+    // Slicing away a non-ASCII prefix leaves the same valid Base64 content
+    // in V8's two-byte representation, where a whole-payload regex can overflow.
+    const payload = kind === "image" ? `data:${mimeType};base64,${base64}` : base64;
+    const twoBytePayload = (`\u0100${payload}`).slice(1);
+    const attachment = {
+      byteSize: 16 * 1024 * 1024,
+      extractedText: null,
+      fileName: "изображение или документ",
+      id: "large-attachment",
+      kind,
+      metadata: {},
+      mimeType,
+      status: "ready" as const,
+      ...(kind === "image" ? { dataUrl: twoBytePayload } : { base64Data: twoBytePayload })
+    };
+    const runRequest = request({ attachmentIds: [attachment.id], attachments: [attachment] });
+    const body = buildGeminiInteractionsRequest(runRequest);
+    const content = body.input.at(-1)?.content as Array<{ data?: string }>;
+    expect(content.at(-1)?.data).toBe(base64);
+    expect(JSON.stringify(buildGeminiInteractionsRequestPreview(runRequest))).not.toContain(base64);
+
+    const malformed = `${twoBytePayload.slice(0, -4)}AA=A`;
+    expect(() => buildGeminiInteractionsRequest(request({ attachments: [{
+      ...attachment,
+      ...(kind === "image" ? { dataUrl: malformed } : { base64Data: malformed })
+    }] }))).toThrow(`${kind}_attachment_data_invalid`);
+  });
+
+  it.each(["", "A", "AAAA=", "AA=A", "A===", "====", "AA-_", "AAAA\n", "AAАA"])(
+    "rejects malformed attachment Base64 %j", (base64) => {
+      for (const kind of ["image", "pdf"] as const) {
+        const mimeType = kind === "image" ? "image/png" : "application/pdf";
+        const attachment = {
+          byteSize: 3, extractedText: null, fileName: "attachment", id: "invalid", kind,
+          metadata: {}, mimeType, status: "ready" as const,
+          ...(kind === "image" ? { dataUrl: `data:${mimeType};base64,${base64}` } : { base64Data: base64 })
+        };
+        expect(() => buildGeminiInteractionsRequest(request({ attachments: [attachment] })))
+          .toThrow(kind === "pdf" && !base64 ? "pdf_attachment_data_unavailable" : `${kind}_attachment_data_invalid`);
+      }
+    }
+  );
+
+  it.each(["QQ==", "QUI=", "QUJD", "+/8=", "a012"])("preserves valid Base64 alphabet and padding %s", (base64) => {
+    for (const kind of ["image", "pdf"] as const) {
+      const mimeType = kind === "image" ? "image/png" : "application/pdf";
+      const body = buildGeminiInteractionsRequest(request({ attachments: [{
+        byteSize: Buffer.from(base64, "base64").length, extractedText: null, fileName: "attachment", id: "valid", kind,
+        metadata: {}, mimeType, status: "ready",
+        ...(kind === "image" ? { dataUrl: `data:${mimeType};base64,${base64}` } : { base64Data: base64 })
+      }] }));
+      expect(body.input.at(-1)?.content).toContainEqual({
+        data: base64, mime_type: mimeType, type: kind === "image" ? "image" : "document"
+      });
+    }
+  });
+
+  it.each([
+    "data:image/jpeg;base64,QUJD",
+    "data:image/png;charset=utf-8;base64,QUJD",
+    "data:image/png;BASE64,QUJD",
+    "https://example.test/image.png",
+    "data:image/png,QUJD"
+  ])("rejects an image URL with a mismatched type or invalid prefix %s", (dataUrl) => {
+    expect(() => buildGeminiInteractionsRequest(request({ attachments: [{
+      byteSize: 3, extractedText: null, fileName: "image.png", id: "wrong-type", kind: "image",
+      metadata: {}, mimeType: "image/png", status: "ready", dataUrl
+    }] }))).toThrow("image_attachment_data_invalid");
+  });
+
   it("uses extracted text without PDF bytes on the fallback route", () => {
     const base = request();
     const body = buildGeminiInteractionsRequest(request({

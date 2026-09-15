@@ -923,6 +923,7 @@ function chatUpdate(): RunChatUpdateRecord {
 
 function createRepository(options: RepositoryOptions = {}) {
   const assistantTexts: string[] = [];
+  const publishedAnswers: CompleteRunInput[] = [];
   const completeRuns: CompleteRunInput[] = [];
   const failedRuns: FailedRun[] = [];
   const groundingAnswers: string[] = [];
@@ -984,12 +985,19 @@ function createRepository(options: RepositoryOptions = {}) {
       toolCalls.set(callId, claimed);
       return { call: claimed, kind: "claimed" };
     },
+    async publishRunAnswer(input) {
+      publishedAnswers.push(input);
+      for (const event of input.outputEvents ?? []) {
+        persistedEvents.push({ event, runId: input.runId, sequence: persistedEvents.length });
+      }
+      return true;
+    },
     async completeRun(input) {
       completeRuns.push(input);
       if (options.completionWins === false) {
         return false;
       }
-      for (const event of input.outputEvents ?? []) {
+      for (const event of publishedAnswers.length ? [] : input.outputEvents ?? []) {
         persistedEvents.push({ event, runId: input.runId, sequence: persistedEvents.length });
       }
       return true;
@@ -1171,6 +1179,7 @@ function createRepository(options: RepositoryOptions = {}) {
 
   return {
     assistantTexts,
+    publishedAnswers,
     completeRuns,
     get durableProviderResponsePreview() {
       return durableProviderResponsePreview;
@@ -1520,11 +1529,36 @@ describe("run execution", () => {
     expect(requests).toHaveLength(2);
     expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(["get_session_status"]);
     expect(JSON.stringify(requests[1]?.providerToolMessages)).toContain("contextPercent");
-    expect(events.find(isContextEvent)).toMatchObject({ data: { artifactType: "context_status", payload: {
+    expect(events.filter(isContextEvent).at(-1)).toMatchObject({ data: { artifactType: "context_status", payload: {
       loadedTools: 1, phase: "after_answer", modelId: "gpt-tool-model"
     } } });
-    expect(repository.persistedEvents.filter(({ event }) => isContextEvent(event))).toHaveLength(1);
+    expect(repository.persistedEvents.filter(({ event }) => isContextEvent(event))).toHaveLength(3);
     expect(events.at(-1)?.type).toBe("done");
+  });
+
+  it("publishes the prepared request context before the first provider token and replaces it on completion", async () => {
+    const held = deferred<void>();
+    const repository = createRepository();
+    const adapter = createAdapter(async function* () {
+      await held.promise;
+      yield { type: "token" as const, data: { delta: "Final answer" } };
+      return providerResult();
+    });
+    const body = createRunExecutionResponse(executionInput({ adapter, repository: repository.repository })).text();
+    try {
+      await vi.waitFor(() => expect(repository.persistedEvents.filter(({ event }) => isContextEvent(event))).toHaveLength(1));
+      expect(repository.persistedEvents.find(({ event }) => isContextEvent(event))?.event).toMatchObject({
+        type: "artifact", data: { artifactType: "context_status", payload: { phase: "request" } }
+      });
+      expect(repository.completeRuns).toHaveLength(0);
+    } finally {
+      held.resolve();
+    }
+    const events = parseSse(await body, true);
+    expect(events.findIndex(isContextEvent)).toBeLessThan(events.findIndex((event) => event.type === "token"));
+    expect(events.filter(isContextEvent)).toMatchObject([
+      { data: { payload: { phase: "request" } } }, { data: { payload: { phase: "after_answer" } } }
+    ]);
   });
 
   it.each(["ready", "failed", "cancelled", "completion_lost"] as const)("waits for safe Workspace handoff and respects %s settlement", async (outcome) => {
@@ -1543,12 +1577,29 @@ describe("run execution", () => {
       settle: vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true })),
       tools: async () => [{ capability: "workspace" as const, description: "Fixture", inputSchema: {}, name: "workspace_fixture" }]
     };
-    const text = createRunExecutionResponse({ ...executionInput({ adapter, repository: repository.repository,
+    const response = createRunExecutionResponse({ ...executionInput({ adapter, repository: repository.repository,
       prepared: { ...prepared, normalizedRequest: { ...prepared.normalizedRequest, workspace: completionWorkspace } }
-    }), workspace }).text();
+    }), workspace });
+    let received = "";
+    const text = (async () => {
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      try {
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) return received;
+          received += decoder.decode(chunk.value, { stream: true });
+        }
+      } finally { reader.releaseLock(); }
+    })();
     try {
       await vi.waitFor(() => expect(handoff).toHaveBeenCalledOnce());
+      expect(repository.publishedAnswers).toHaveLength(1);
       expect(repository.completeRuns).toHaveLength(0);
+      await vi.waitFor(() => expect(parseSse(received)).toContainEqual({
+        type: "answer_complete", data: { assistantMessageId: "assistant-1", runId: "run-1" }
+      }));
+      expect(parseSse(received).some((event) => event.type === "done")).toBe(false);
       if (outcome === "cancelled") expect(activeRunControllerRegistry.abort("run-1")).toBe(true);
       boundary.resolve();
       const events = parseSse(await text);
@@ -1556,8 +1607,11 @@ describe("run execution", () => {
       expect(repository.completeRuns).toHaveLength(outcome === "ready" || outcome === "completion_lost" ? 1 : 0);
       expect(providerCalls).toHaveBeenCalledOnce();
       expect(workspace.finalize).not.toHaveBeenCalled();
-      if (outcome !== "ready") expect(events.some((event) => event.type === "usage")).toBe(false);
-      if (outcome === "completion_lost") expect(repository.recordedRunUsageEvents).toHaveLength(2);
+      expect(events.filter((event) => event.type === "answer_complete")).toEqual([
+        { type: "answer_complete", data: { assistantMessageId: "assistant-1", runId: "run-1" } }
+      ]);
+      expect(events.filter((event) => event.type === "usage")).toHaveLength(1);
+      if (outcome === "completion_lost") expect(repository.recordedRunUsageEvents).toHaveLength(1);
     } finally { boundary.resolve(); await text; }
   });
 
@@ -1931,10 +1985,11 @@ describe("run execution", () => {
       return providerResult();
     });
     const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, repository: repository.repository })).text());
-    expect(events.find((event) => event.type === "artifact" && event.data.artifactType === "workspace_activity")).toMatchObject({
-      data: { payload: { sequence: 0, updateId: "start" } }
-    });
-    expect(repository.persistedEvents[0]?.event).toMatchObject({ data: { payload: { sequence: 0 } } });
+    const persisted = repository.persistedEvents.find(({ event }) =>
+      event.type === "artifact" && event.data.artifactType === "workspace_activity");
+    expect(persisted?.event).toMatchObject({ data: { payload: { sequence: persisted?.sequence, updateId: "start" } } });
+    expect(events.find((event) => event.type === "artifact" && event.data.artifactType === "workspace_activity"))
+      .toEqual(persisted?.event);
   });
 
   it("preserves SSE order, batches durable text, and persists only reloadable output artifacts", async () => {

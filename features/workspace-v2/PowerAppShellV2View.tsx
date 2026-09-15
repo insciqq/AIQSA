@@ -101,6 +101,7 @@ import {
 } from "@/features/workspace-v2/runTransportPresentation";
 import { AccountSettingsRowsV2 } from "@/features/settings-v2/AccountSettingsRowsV2";
 import { ArchivedChatsPanelV2 } from "@/features/settings-v2/ArchivedChatsPanelV2";
+import { InstructionsSettingsPanel } from "@/features/settings-v2/InstructionsSettingsPanel";
 import { ChatDefaultsRowsV2 } from "@/features/settings-v2/ChatDefaultsRowsV2";
 import { DataSettingsRowsV2 } from "@/features/settings-v2/DataSettingsRowsV2";
 import { MemorySettingsRowsV2 } from "@/features/settings-v2/MemorySettingsRowsV2";
@@ -146,11 +147,13 @@ import {
 } from "./WorkspaceHeaderV2";
 import { LibrarySurfaceV2 } from "./WorkspaceWelcomeV2";
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode
 } from "react";
 
@@ -322,12 +325,16 @@ export function SkillLibraryOverlayV2({
 
 export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const { branches, composer, overlays, session, settings, thread, workspace } = props;
+  const refreshThreadLayout = thread.refreshLayout;
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
   const [projectsSurfaceOpen, setProjectsSurfaceOpen] = useState(false);
   const [mcpBusy, setMcpBusy] = useState(false);
   const [mcpDirty, setMcpDirty] = useState(false);
   const [mcpKey, setMcpKey] = useState(0);
+  const [instructionsBusy, setInstructionsBusy] = useState(false);
+  const [instructionsDirty, setInstructionsDirty] = useState(false);
+  const [instructionsKey, setInstructionsKey] = useState(0);
   const [secretsBusy, setSecretsBusy] = useState(false);
   const [secretsDirty, setSecretsDirty] = useState(false);
   const [secretsKey, setSecretsKey] = useState(0);
@@ -352,6 +359,36 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   );
   const archivedManageRef = useRef<HTMLButtonElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
+  const setComposerDockRef = useCallback((dock: HTMLDivElement | null) => {
+    composerDockRef.current = dock;
+    if (!dock) {
+      setComposerDockHeight(0);
+      return;
+    }
+    const updateHeight = () => {
+      if (composerDockRef.current === dock) {
+        setComposerDockHeight(Math.ceil(dock.getBoundingClientRect().height));
+      }
+    };
+    updateHeight();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateHeight);
+    observer?.observe(dock, { box: "border-box" });
+    const viewport = window.visualViewport;
+    viewport?.addEventListener("resize", updateHeight);
+    viewport?.addEventListener("scroll", updateHeight);
+    return () => {
+      observer?.disconnect();
+      viewport?.removeEventListener("resize", updateHeight);
+      viewport?.removeEventListener("scroll", updateHeight);
+      if (composerDockRef.current === dock) {
+        composerDockRef.current = null;
+        setComposerDockHeight(0);
+      }
+    };
+  }, []);
+  useLayoutEffect(() => {
+    refreshThreadLayout();
+  }, [composerDockHeight, refreshThreadLayout]);
   const composerLayerController = useRef<ComposerV2LayerController | null>(null);
   const previousActiveChatIdRef = useRef(session.activeChatId);
   const personalMemoryOpen = settings.memory.open;
@@ -410,10 +447,22 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const continuation = useChatContinuation({
     accountId: session.accountId, chatId: session.activeChatId,
     leafMessageId: latestMessage?.id ?? null, eligible: continuationEligible,
+    modelSelection: composer.selectedProvider && composer.selectedModelId
+      ? { provider: composer.selectedProvider, modelId: composer.selectedModelId } : undefined,
+    uploading: composer.uploading,
     recommended: Boolean(composer.composerContextStats?.session?.phase === "after_answer" &&
       ((composer.composerContextStats.session.droppedMessages > 0) ||
         (composerContextGauge(composer.composerContextStats).inputBudgetFraction ?? 0) >= 0.7)),
-    onOpen: (chat) => workspace.pane.actions.openContinuedChat?.(chat)
+    onOpen: async (chat, sourceKey) => {
+      const opened = await workspace.pane.actions.openContinuedChat?.(chat, sourceKey);
+      if (!opened) return;
+      requestAnimationFrame(() => {
+        if (useWorkspaceStore.getState().activeChatId !== chat.id) return;
+        const textarea = composerDockRef.current?.querySelector<HTMLTextAreaElement>("textarea");
+        textarea?.focus({ preventScroll: true });
+        textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
+      });
+    }
   });
   const projectHeaderFolders = useMemo(
     () => (workspace.projects.workspace?.folders ?? []).map((folder) => ({
@@ -657,7 +706,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   ]);
   const composerSurface = (
     <ComposerV2
-      activeRun={thread.activeChatStreaming}
+      activeRun={thread.activeChatStreaming && !thread.answerComplete}
       assistantRemovedNotice={composer.assistant.removedNotice}
       attachmentItems={attachmentItems}
       attachmentLimitUsage={attachmentUsage}
@@ -696,7 +745,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onSelectModel={composer.selectModel}
       onSelectSearchOptionIds={(ids) => composer.selectSearchPlan(ids, composer.searchPlanMode)}
       onSend={() => void composer.submitComposer()}
-      onStop={() => void composer.stopCurrentRun()}
+      onStop={() => void composer.stopCurrentRun(thread.currentRunId)}
+      stopping={composer.stopping}
       onUploadFiles={(files) => composer.uploadFiles(files)}
       onReuseFile={composer.reuseFile}
       runId={thread.currentRunId}
@@ -783,20 +833,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     role: message.role,
     streaming: message.status === "streaming"
   }));
-
-  useEffect(() => {
-    const dock = composerDockRef.current;
-    if (!dock) {
-      setComposerDockHeight(0);
-      return;
-    }
-    const updateHeight = () => setComposerDockHeight(Math.ceil(dock.getBoundingClientRect().height));
-    updateHeight();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(updateHeight);
-    observer.observe(dock);
-    return () => observer.disconnect();
-  }, [conversationMessages.length]);
 
   const actionsFor = (message: ThreadMessage): ConversationMessageActionsV2 => {
     const editMutationReason = thread.editingMessageId
@@ -889,6 +925,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     // locally invented post-loss "error" status until refresh reconciles.
     const transportLost = transportLostForMessageV2(thread.interruptedRun, source);
     const presentation = presentRunLifecycleV2({
+      workspacePreparation: source.workspacePreparation,
       pdfPreparation: source.pdfPreparation,
       ...runTransportStateV2({
         activeChatStreaming: thread.activeChatStreaming,
@@ -978,7 +1015,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           () => thread.handleRegenerateMessage(source.id)
         )}
         pdfPreparation={source.pdfPreparation}
-        onStop={() => void composer.stopCurrentRun()}
+        onStop={() => void composer.stopCurrentRun(presentation.runId)}
+        stopping={composer.stopping}
         presentation={presentation}
         resolveHref={resolveHref}
         renderCitation={knowledgeReference
@@ -1227,7 +1265,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           ) : projectsSurfaceOpen ? (
             <ProjectsSurfaceV2
               composerSlot={(
-                <div className="v2-project-page-composer-stack" ref={composerDockRef}>
+                <div className="v2-project-page-composer-stack" ref={setComposerDockRef}>
                   {shellNotice}
                   {composerOperationError}
                   {composerSurface}
@@ -1260,7 +1298,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               }}
             />
           ) : (
-          <section className="v2-live-workspace" data-project-context={projectContext || undefined}>
+          <section className="v2-live-workspace" data-project-context={projectContext || undefined}
+            style={conversationMessages.length > 0 && composerDockHeight > 0
+              ? { "--v2-live-dock-height": `${composerDockHeight}px` } as CSSProperties : undefined}>
             <WorkspaceHeaderV2
               active={Boolean(session.activeChatId)}
               contextStats={composer.composerContextStats}
@@ -1351,7 +1391,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             />
             <ConversationV2
               composerSlot={conversationMessages.length === 0 ? (
-                <div className="v2-live-empty-composer-stack" ref={composerDockRef}>
+                <div className="v2-live-empty-composer-stack" ref={setComposerDockRef}>
                   {shellNotice}
                   {composerOperationError}
                   {composerSurface}
@@ -1387,7 +1427,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               )}
             />
             {conversationMessages.length > 0 ? (
-              <div className="v2-live-composer-dock" data-thread-composer-dock="" ref={composerDockRef}>
+              <div className="v2-live-composer-dock" data-thread-composer-dock="" ref={setComposerDockRef}>
                 {shellNotice}
                 {composerOperationError}
                 {composerSurface}
@@ -1471,15 +1511,15 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
 
       {settings.settings.open && (!libraryOpen || personalMemoryOpen) ? (
         <SettingsV2
-          busy={mcpBusy || connectedAppsBusy || secretsBusy}
-          busyMessage={secretsBusy ? "Updating Workspace secrets…" : connectedAppsBusy ? "Revoking app access…" : "Updating MCP…"}
+          busy={mcpBusy || connectedAppsBusy || secretsBusy || instructionsBusy}
+          busyMessage={instructionsBusy ? "Updating instructions…" : secretsBusy ? "Updating Workspace secrets…" : connectedAppsBusy ? "Revoking app access…" : "Updating MCP…"}
           connectedAppsContent={(
             <ConnectedAppsSection
               accountId={session.accountId}
               onBusyChange={setConnectedAppsBusy}
             />
           )}
-          dirty={mcpDirty || secretsDirty}
+          dirty={mcpDirty || secretsDirty || instructionsDirty}
           generalSlot={(
             <>
               <AnswerSoundSettingsRowV2 composer={composer} />
@@ -1582,6 +1622,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             defaults: (
               <>
                 <SettingsDefaultModelRowV2 composer={composer} />
+                <InstructionsSettingsPanel key={`${session.accountId}:${instructionsKey}`} onBusyChange={setInstructionsBusy} onDirtyChange={setInstructionsDirty} />
                 {composer.chatDefaults ? (
                   <ChatDefaultsRowsV2
                     knowledgeBases={config?.knowledgeBases ?? []}
@@ -1617,6 +1658,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onDiscard={() => {
             setMcpDirty(false);
             setMcpKey((value) => value + 1);
+            setInstructionsDirty(false);
+            setInstructionsKey(value => value + 1);
             setSecretsDirty(false);
             setSecretsKey((value) => value + 1);
           }}

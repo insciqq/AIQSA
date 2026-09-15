@@ -1492,6 +1492,62 @@ describe("model run route handlers", () => {
     expect(vi.mocked(repository.createRegenerationRun).mock.calls).toHaveLength(previousAdmissions);
   });
 
+  it("accepts one follow-up after answer publication and acknowledges the same durable message on retry", async () => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel, [{
+      id: "previous-answer", role: "assistant", content: { blocks: [{ type: "text", text: "File saved." }] }
+    }]);
+    repository.findRecentActiveRunForChat = async () => ({ ...activeRunRecord({
+      id: "previous-run", chatId: "chat-1", assistantMessageId: "previous-answer"
+    }), answerComplete: true });
+    const create = repository.createRun;
+    repository.createRun = vi.fn(async (input) => ({ ...await create(input), deferredWorkspace: true as const }));
+    repository.getRunOutcomeForUser = async () => ({ id: "run-1", status: "queued", workspacePreparation: true });
+    const adapter = createFakeProviderAdapter();
+    const stream = vi.spyOn(adapter, "stream");
+    const kick = vi.fn();
+    const POST = createSendMessageHandler({ ...authDeps, repository, providers: { fake: adapter }, workspaceFollowup: {
+      kick, findAdmission: async (key) => state.created?.workspaceFollowup?.admissionKey === key ? {
+        version: 1, assistantMessageId: "assistant-message-1", userMessageId: "user-message-1",
+        run: { id: "run-1", status: "queued", workspacePreparation: true }
+      } : null
+    } });
+    const request = () => new Request("http://app.local/api/chats/chat-1/messages", {
+      method: "POST", headers: { cookie: authCookie() }, body: JSON.stringify({ admissionId: "next-invocation",
+        expectedActiveLeafId: "previous-answer", provider: "fake", modelId: "fake-qsa", text: "Update that file." })
+    });
+    const first = await POST(request(), { params: { chatId: "chat-1" } });
+    expect(first.status).toBe(202);
+    const accepted = await first.json();
+    expect(accepted).toEqual({ version: 1, assistantMessageId: "assistant-message-1", userMessageId: "user-message-1",
+      run: { id: "run-1", status: "queued", workspacePreparation: true } });
+    const retry = await POST(request(), { params: { chatId: "chat-1" } });
+    expect(await retry.json()).toEqual(accepted);
+    expect(repository.createRun).toHaveBeenCalledOnce();
+    expect(state.created?.workspaceFollowup).toMatchObject({ predecessorRunId: "previous-run", snapshot: { version: 1 } });
+    expect(state.created?.expectedActiveLeafId).toBe("previous-answer");
+    expect(stream).not.toHaveBeenCalled();
+    expect(kick).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(accepted)).not.toMatch(/snapshot|predecessor|admissionKey/);
+  });
+
+  it.each(["generating", "waiting"] as const)("rejects a follow-up while the current run is %s", async (phase) => {
+    const { repository, state } = createMemoryRepository();
+    repository.findRecentActiveRunForChat = async () => ({ ...activeRunRecord({ chatId: "chat-1",
+      status: phase === "waiting" ? "preparing" : "streaming" }), ...(phase === "waiting" ? { workspaceWaitPending: true } : {}) });
+    const adapter = createFakeProviderAdapter();
+    const stream = vi.spyOn(adapter, "stream");
+    const kick = vi.fn();
+    const response = await createSendMessageHandler({ ...authDeps, repository, providers: { fake: adapter },
+      workspaceFollowup: { kick, findAdmission: async () => null } })(new Request("http://app.local/api/chats/chat-1/messages", {
+      method: "POST", headers: { cookie: authCookie() }, body: JSON.stringify({ provider: "fake", modelId: "fake-qsa", text: "Next" })
+    }), { params: { chatId: "chat-1" } });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "active_run_in_progress" });
+    expect(state.created).toBeNull();
+    expect(stream).not.toHaveBeenCalled();
+    expect(kick).not.toHaveBeenCalled();
+  });
+
   it("rejects a direct-PDF checksum mismatch before request building or provider execution", async () => {
     const directCapabilities: ProviderModelCapabilities = {
       nativePdfInput: true,
@@ -2173,9 +2229,11 @@ describe("model run route handlers", () => {
     expect(state.completed?.estimatedCostMicros).toBe(
       state.completed!.usage.inputTokens! * 2 + state.completed!.usage.outputTokens! * 8
     );
-    expect(state.events).toEqual([{ sequence: 0, event: {
-      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "after_answer" }) }
-    } }]);
+    expect(state.events).toHaveLength(2);
+    expect(state.events.map(({ sequence, event }) => ({ sequence, phase: event.type === "artifact" && event.data.artifactType === "context_status"
+      ? (event.data.payload as { phase?: unknown }).phase : undefined }))).toEqual([
+      { sequence: 0, phase: "request" }, { sequence: 1, phase: "after_answer" }
+    ]);
   });
 
   it("passes accepted run defaults from the accepted send", async () => {
@@ -2544,9 +2602,11 @@ describe("model run route handlers", () => {
         reasoningTokens: 0
       }
     });
-    expect(state.events).toEqual([{ sequence: 0, event: {
-      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "after_answer" }) }
-    } }]);
+    expect(state.events).toHaveLength(2);
+    expect(state.events.map(({ sequence, event }) => ({ sequence, phase: event.type === "artifact" && event.data.artifactType === "context_status"
+      ? (event.data.payload as { phase?: unknown }).phase : undefined }))).toEqual([
+      { sequence: 0, phase: "request" }, { sequence: 1, phase: "after_answer" }
+    ]);
   });
 
   it.each([
@@ -2667,9 +2727,11 @@ describe("model run route handlers", () => {
     expect(response.status).toBe(200);
     await response.text();
     expect(state.completed?.estimatedCostMicros).toBeNull();
-    expect(state.events).toEqual([{ sequence: 0, event: {
-      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "after_answer" }) }
-    } }]);
+    expect(state.events).toHaveLength(2);
+    expect(state.events.map(({ sequence, event }) => ({ sequence, phase: event.type === "artifact" && event.data.artifactType === "context_status"
+      ? (event.data.payload as { phase?: unknown }).phase : undefined }))).toEqual([
+      { sequence: 0, phase: "request" }, { sequence: 1, phase: "after_answer" }
+    ]);
   });
 
   it("trims oldest branch context for tiny context windows and emits a truncation artifact", async () => {
@@ -2749,9 +2811,11 @@ describe("model run route handlers", () => {
     expect(truncationEvent?.type).toBe("artifact");
     expect((truncationEvent?.data as { payload?: unknown } | undefined)?.payload)
       .toMatchObject({ droppedMessages: 2 });
-    expect(state.events).toEqual([{ sequence: 0, event: {
-      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "after_answer" }) }
-    } }]);
+    expect(state.events).toHaveLength(2);
+    expect(state.events.map(({ sequence, event }) => ({ sequence, phase: event.type === "artifact" && event.data.artifactType === "context_status"
+      ? (event.data.payload as { phase?: unknown }).phase : undefined }))).toEqual([
+      { sequence: 0, phase: "request" }, { sequence: 1, phase: "after_answer" }
+    ]);
   });
 
   it("fails before run creation when irreducible context exceeds the budget", async () => {
@@ -2943,7 +3007,10 @@ describe("model run route handlers", () => {
 
     expect(liveEvents.filter((event) => event.type === "token")).toHaveLength(2);
     expect(state.assistantText).toBe("partial answer");
-    expect(state.events).toEqual([]);
+    expect(state.events).toHaveLength(1);
+    expect(state.events[0]).toMatchObject({ sequence: 0, event: {
+      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "request" }) }
+    } });
     expect(state.failed).toMatchObject({
       error: {
         code: "provider_stream_failed",
@@ -5605,7 +5672,10 @@ describe("model run route handlers", () => {
     expect(state.cancelled).toMatchObject({
       code: "model_run_cancelled"
     });
-    expect(state.events).toEqual([]);
+    expect(state.events).toHaveLength(1);
+    expect(state.events[0]).toMatchObject({ sequence: 0, event: {
+      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "request" }) }
+    } });
   });
 
   it("settles Workspace when a cancelled PDF worker has a controller but no answer settlement promise", async () => {
@@ -5893,6 +5963,7 @@ describe("model run route handlers", () => {
       { params: { messageId: "assistant-message-1" } }
     );
     expect(regenerateResponse.status).toBe(200);
+    await regenerateResponse.text();
     expect(state.regenerated?.mcpBindings).toEqual(bindings);
     expect(mcp.prepare).toHaveBeenCalledTimes(2);
     expect(mcp.prepare).toHaveBeenCalledWith(config.bootstrapUserId);
@@ -6003,6 +6074,7 @@ describe("Stop diagnostics", () => {
     const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const registration = activeRunControllerRegistry.register("run-1");
     try {
+      expect(registration).not.toBeNull();
       const { repository } = createMemoryRepository();
       const POST = createCancelModelRunHandler({ ...authDeps, repository, providers: {} });
       const response = await runWithContext({ trace_id: "4".repeat(32) }, () => POST(new Request(

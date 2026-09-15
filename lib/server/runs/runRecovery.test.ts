@@ -1575,6 +1575,44 @@ describe("run recovery", () => {
     expect(harness.state.completed).not.toBeNull();
   });
 
+  it("never refreshes a published answer after its cleanup has already failed", async () => {
+    const refresh = vi.fn();
+    const adapter = providerWithRefresh(refresh);
+    const stream = vi.spyOn(adapter, "stream");
+    const harness = createHarness({ providers: { openai: adapter },
+      controls: [control({ answerComplete: true, status: "error" })] });
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(harness.state.completed).toBeNull();
+  });
+
+  it.each(["ready", "busy"] as const)("recovers a published answer through Workspace handoff without provider replay (%s)", async (outcome) => {
+    const refresh = vi.fn();
+    const adapter = providerWithRefresh(refresh);
+    const stream = vi.spyOn(adapter, "stream");
+    const harness = createHarness({ providers: { openai: adapter } });
+    const saved = checkpointedRun({ phase: "provider_running", providerResponseId: "response-old", providerToolMessages: [] });
+    harness.repository.loadProviderDispatchRecoveryRequest = async () => ({
+      ...saved.normalizedRequest, workspace: completionWorkspace
+    });
+    const published = { assistantMessageId: "assistant-1", chatId: "chat-1", estimatedCostMicros: 17,
+      finalText: "Already published answer", modelId: "gpt-test", provider: "openai",
+      providerResponseId: "response-old", runId, usage: { inputTokens: 2, outputTokens: 3 }, userId };
+    harness.repository.loadPublishedRunAnswer = vi.fn(async () => published);
+    const handoff = vi.fn(async () => ({ status: outcome }));
+    const workspace: NonNullable<RunRecoveryDeps["workspace"]> = {
+      accepts: () => false, execute: vi.fn(), finalize: vi.fn(), handoff,
+      recoverExports: vi.fn(), settle: vi.fn(), tools: async () => []
+    };
+    await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
+    expect(handoff).toHaveBeenCalledOnce();
+    expect(stream).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(harness.state.completed).toEqual(outcome === "ready" ? published : null);
+    expect(harness.state.failed).toEqual([]);
+  });
+
   it.each(["ready", "failed", "cancelled", "busy"] as const)("waits for recovered Workspace handoff and respects %s settlement", async (outcome) => {
     const boundary = deferred();
     const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({

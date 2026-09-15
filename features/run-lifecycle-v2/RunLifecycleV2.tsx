@@ -45,14 +45,18 @@ function runningToolLabel(activity: ThreadToolActivity): string | null {
 }
 
 function RunConnectionLossV2({
-  onRefresh
+  onRefresh,
+  onStop,
+  stopping
 }: {
   onRefresh?(): MaybePromise;
+  onStop?(): void;
+  stopping: boolean;
 }) {
   const [refreshing, setRefreshing] = useState(false);
 
   async function refresh() {
-    if (!onRefresh || refreshing) return;
+    if (!onRefresh || refreshing || stopping) return;
     setRefreshing(true);
     try {
       await onRefresh();
@@ -71,12 +75,23 @@ function RunConnectionLossV2({
       <button
         className="v2-focusable"
         type="button"
-        disabled={!onRefresh || refreshing}
+        disabled={!onRefresh || refreshing || stopping}
         aria-busy={refreshing || undefined}
         onClick={() => void refresh()}
       >
         {refreshing ? "Refreshing…" : "Refresh"}
       </button>
+      {onStop ? (
+        <button
+          className="v2-focusable"
+          type="button"
+          disabled={stopping || refreshing}
+          aria-busy={stopping || undefined}
+          onClick={onStop}
+        >
+          {stopping ? "Stopping…" : "Stop answer"}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -170,6 +185,7 @@ function RunErrorV2({
 export type RunAnswerV2Props = Readonly<{
   pdfPreparation?: readonly ChatPdfPreparationWire[];
   onStop?(): void;
+  stopping?: boolean;
   actions?: ConversationMessageActionsV2;
   /** Quiet status lines between the body and the actions row. */
   actionsSlot?: ReactNode;
@@ -217,6 +233,7 @@ export function RunAnswerV2({
   presentation,
   pdfPreparation,
   onStop,
+  stopping = false,
   renderCitation,
   resolveHref,
   showReasoning = true,
@@ -252,7 +269,7 @@ export function RunAnswerV2({
   const afterContent = (
     <>
       {presentation.kind === "connection_lost" ? (
-        <RunConnectionLossV2 onRefresh={onRefresh} />
+        <RunConnectionLossV2 onRefresh={onRefresh} onStop={presentation.runId ? onStop : undefined} stopping={stopping} />
       ) : null}
       {presentation.kind === "cancelled" ? (
         <RunCancelledV2 onRegenerate={onRegenerate} />
@@ -283,7 +300,9 @@ export function RunAnswerV2({
             <div className="v2-pdf-preparation" data-testid="pdf-preparation-notices">
               {[...new Set(pdfPreparation.map(chatPdfRouteDescription))].map((description) => <p key={description}>{description}</p>)}
               {presentation.kind === "activity" && presentation.activity?.kind === "preparing" && onStop ? (
-                <UiV2Button icon="stop" onClick={onStop}>Stop</UiV2Button>
+                <UiV2Button icon="stop" onClick={onStop} disabled={stopping} aria-busy={stopping || undefined}>
+                  {stopping ? "Stopping…" : "Stop"}
+                </UiV2Button>
               ) : null}
               {pdfPreparation.some((item) => item.longDocument) ? <p>{CHAT_PDF_LONG_DOCUMENT_NOTICE}</p> : null}
               {pdfPreparation.some((item) => item.limitedReadingQuality) ? <p>{pdfPreparation.length === 1

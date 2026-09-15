@@ -1,5 +1,6 @@
 import type { AnswerSoundId } from "@/lib/contracts/answerSound";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
+import type { ComposerSessionKey } from "@/components/app-shell/composerSessionStore";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
 import type { AssistantLibraryView } from "@/components/assistants/libraryViewContracts";
@@ -62,7 +63,7 @@ export type ShellWorkspacePaneState = {
 };
 
 export type ShellWorkspacePaneActions = {
-  openContinuedChat?(chat: ChatDetail): void;
+  openContinuedChat?(chat: ChatDetail, sourceKey: ComposerSessionKey): Promise<boolean>;
   activateChat(chat: WorkspaceChatSummary): void;
   cancelChatEdit(): void;
   cancelFolderEdit(): void;
@@ -127,6 +128,8 @@ export type ShellThreadView = {
   activeChatDetailError: string | null;
   activeChatDetailLoading: boolean;
   activeChatStreaming: boolean;
+  /** A verified answer may be complete while its Workspace still settles. */
+  answerComplete?: boolean;
   /** Copies the complete visible branch of the active chat, or of `chat` when given. */
   copyVisibleThread(chat?: Readonly<{ id: string; title: string }>): Promise<void> | void;
   cancelMessageEdit(messageId: string): void;
@@ -153,6 +156,7 @@ export type ShellThreadView = {
   loadEarlierMessages(): Promise<void> | void;
   loadingOlderMessages: boolean;
   jumpToLatest(): void;
+  refreshLayout(): void;
   liveArtifactSummary: ThreadArtifactSummary | null;
   /** Send → first answer token of the run in flight (client clock); null until the answer starts. */
   liveWorkDurationMs: number | null;
@@ -269,7 +273,8 @@ export type ShellComposerView = {
   setSendWithEnter(value: boolean): void;
   showCitations: boolean;
   showReasoningBlocks: boolean;
-  stopCurrentRun(): Promise<void> | void;
+  stopCurrentRun(expectedRunId?: string | null): Promise<void> | void;
+  stopping?: boolean;
   streamMode: boolean;
   submitComposer(): Promise<void> | void;
   temperature: string;

@@ -1,3 +1,4 @@
+import { knowledgeCompositionPrompt, validKnowledgeAnswerInstructions, type KnowledgeAnswerInstructions } from "./answerInstructions";
 import { STRUCTURED_OUTPUT_LIMITS } from "../providers/structuredOutput";
 import { structuredOutputPromptFits } from "../providers/structuredOutputLimits";
 import { KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES, knowledgeAnswerCanonicalJson, knowledgeAnswerHash } from "./answerGroundingV5";
@@ -14,6 +15,7 @@ export const KNOWLEDGE_EVIDENCE_ANSWER_MAX_OUTPUT_TOKENS_V1 = 8_192;
 export type KnowledgeEvidenceAnswerSnapshotV1 = Readonly<{
   /** Omitted on accepted workflow 8 operations, whose prompts remain frozen. */
   workflowVersion?: 9 | 10;
+  answerInstructions?: KnowledgeAnswerInstructions;
   contractVersion: 1;
   draftPayloadHash: string | null;
   reviewPayloadHash: string | null;
@@ -38,6 +40,7 @@ export function isKnowledgeEvidenceAnswerOperationV1(value: unknown): value is K
 }
 export function createKnowledgeEvidenceAnswerSnapshotV1(input: Readonly<{
   workflowVersion?: 9 | 10;
+  answerInstructions?: KnowledgeAnswerInstructions;
   operation: KnowledgeEvidenceAnswerOperationV1;
   evidenceReceiptHash: string;
   executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1;
@@ -57,12 +60,14 @@ export function createKnowledgeEvidenceAnswerSnapshotV1(input: Readonly<{
     input.operation === "knowledge_evidence_compose_v1" && (draftPayloadHash === null) !== (reviewPayloadHash === null) ||
     input.transport !== "native_strict" && input.transport !== "provider_neutral_json" ||
     typeof input.systemPrompt !== "string" || !input.systemPrompt.trim() || typeof input.userPrompt !== "string" || !input.userPrompt.trim() ||
-    !structuredOutputPromptFits(input)) throw Error("knowledge_evidence_answer_snapshot_invalid");
+    input.answerInstructions !== undefined && (!validKnowledgeAnswerInstructions(input.answerInstructions) || input.operation !== "knowledge_evidence_compose_v1") ||
+    !structuredOutputPromptFits({ ...input, ...knowledgeCompositionPrompt(input.systemPrompt, input.answerInstructions) })) throw Error("knowledge_evidence_answer_snapshot_invalid");
   const compose = input.operation === "knowledge_evidence_compose_v1";
   const schema = compose ? KNOWLEDGE_EVIDENCE_ANSWER_DRAFT_SCHEMA_V1 : KNOWLEDGE_EVIDENCE_ANSWER_REVIEW_SCHEMA_V1;
   if (Buffer.byteLength(JSON.stringify(schema), "utf8") > STRUCTURED_OUTPUT_LIMITS.maxSchemaBytes) throw Error("knowledge_evidence_answer_schema_invalid");
   const snapshot = Object.freeze({
     ...(input.workflowVersion !== undefined ? { workflowVersion: input.workflowVersion } : {}),
+    ...(input.answerInstructions ? { answerInstructions: input.answerInstructions } : {}),
     contractVersion: 1 as const, draftPayloadHash, reviewPayloadHash, evidenceReceiptHash: input.evidenceReceiptHash, executionPolicy,
     maxOutputTokens: KNOWLEDGE_EVIDENCE_ANSWER_MAX_OUTPUT_TOKENS_V1, name: input.operation, operation: input.operation,
     pipeline: KNOWLEDGE_EVIDENCE_ANSWER_PROTOCOL_V1,

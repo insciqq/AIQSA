@@ -55,13 +55,14 @@ export function adminMemoryQueueCopy(
   _locale: AdminMemoryLocale,
   queue: AdminMemoryStatus["queue"]
 ): string {
-  if (queue.length === 0) return "Empty";
-  const count = queue.length.toLocaleString("en-US");
+  if (queue.length === 0 && queue.inProgress === 0) return "Empty";
+  const activity = `${queue.inProgress.toLocaleString("en-US")} in progress · ${queue.length.toLocaleString("en-US")} waiting`;
+  if (queue.length === 0) return activity;
   const seconds = queue.oldestAgeSeconds ?? 0;
-  if (seconds < 60) return `${count} waiting · oldest ${seconds}s`;
+  if (seconds < 60) return `${activity} · oldest ${seconds}s`;
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${count} waiting · oldest ${minutes}m`;
+  if (minutes < 60) return `${activity} · oldest ${minutes}m`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${count} waiting · oldest ${hours}h`;
-  return `${count} waiting · oldest ${Math.floor(hours / 24)}d`;
+  if (hours < 24) return `${activity} · oldest ${hours}h`;
+  return `${activity} · oldest ${Math.floor(hours / 24)}d`;
 }

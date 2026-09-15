@@ -22,6 +22,19 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** A successor can now be admitted during predecessor cleanup. Match its
+ * Project/owner -> chat -> run order before any terminal writer locks a run. */
+export async function lockRunSettlementScope(tx: Prisma.TransactionClient, runId: string): Promise<void> {
+  const [scope] = await tx.$queryRaw<Array<{ chatId: string; projectId: string | null; userId: string }>>(Prisma.sql`
+    SELECT r."chatId", r."userId", c."projectId" FROM "ModelRun" r
+    JOIN "Chat" c ON c."id" = r."chatId" WHERE r."id" = ${runId}
+  `);
+  if (!scope) return;
+  if (scope.projectId) await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${scope.projectId} FOR UPDATE`;
+  await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${scope.userId} FOR UPDATE`;
+  await tx.$queryRaw`SELECT "id" FROM "Chat" WHERE "id" = ${scope.chatId} FOR UPDATE`;
+}
+
 export const dispatchableModelRunStatuses: ModelRunStatus[] = [
   "streaming",
   "queued",

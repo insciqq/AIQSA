@@ -36,6 +36,47 @@ function completionInput(repository: Pick<RunRepository, "completeRun" | "loadMo
 }
 
 describe("run finalization", () => {
+  it("publishes the grounded answer before cleanup and settles the same accounting afterwards", async () => {
+    const order: string[] = [];
+    const grounding = { finalText: "Reviewed answer [K1].", finalAnswerHash: "a".repeat(64),
+      originalAnswerHash: "b".repeat(64), receiptHash: "c".repeat(64), sessionId: "session-1",
+      outcome: "answered" as const, version: 5 as const };
+    const groundKnowledgeAnswer = vi.fn(async () => ({ grounding }));
+    const publishRunAnswer = vi.fn(async () => { order.push("publish"); return true; });
+    const completeRun = vi.fn<RunRepository["completeRun"]>(async () => { order.push("complete"); return true; });
+    const repository = { completeRun, publishRunAnswer, groundKnowledgeAnswer, loadModelPricing: async () => null };
+    const result = await finalizeRunCompletion({ ...completionInput(repository), afterAnswerPublished: async (answer) => {
+      expect(answer.finalText).toBe(grounding.finalText);
+      expect(completeRun).not.toHaveBeenCalled();
+      order.push("handoff");
+    } });
+    expect(result).toMatchObject({ status: "completed", finalText: grounding.finalText });
+    expect(order).toEqual(["publish", "handoff", "complete"]);
+    expect(publishRunAnswer.mock.calls[0]).toEqual(completeRun.mock.calls[0]);
+    expect(groundKnowledgeAnswer).toHaveBeenCalledOnce();
+  });
+
+  it("does not announce an answer or settle a run when publication loses to another writer", async () => {
+    const completeRun = vi.fn(async () => true);
+    const afterAnswerPublished = vi.fn(async () => undefined);
+    const repository = { completeRun, publishRunAnswer: vi.fn(async () => false), loadModelPricing: async () => null };
+    await expect(finalizeRunCompletion({ ...completionInput(repository), afterAnswerPublished }))
+      .resolves.toEqual({ status: "not_completed" });
+    expect(afterAnswerPublished).not.toHaveBeenCalled();
+    expect(completeRun).not.toHaveBeenCalled();
+  });
+
+  it("retains publication when cleanup fails without declaring full completion", async () => {
+    const completeRun = vi.fn(async () => true);
+    const publishRunAnswer = vi.fn(async () => true);
+    const repository = { completeRun, publishRunAnswer, loadModelPricing: async () => null };
+    await expect(finalizeRunCompletion({ ...completionInput(repository), afterAnswerPublished: async () => {
+      throw new Error("workspace_execution_cleanup_failed");
+    } })).rejects.toThrow("workspace_execution_cleanup_failed");
+    expect(publishRunAnswer).toHaveBeenCalledOnce();
+    expect(completeRun).not.toHaveBeenCalled();
+  });
+
   it.each([KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V1, KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V2])("routes $pipeline to its settled finalizer and rejects altered contracts", async contracts => {
     const completeRun = vi.fn<RunRepository["completeRun"]>(async () => true);
     const grounding = { finalText: "Reviewed answer [K1].", finalAnswerHash: "a".repeat(64),

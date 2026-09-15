@@ -384,6 +384,11 @@ export function useRunLifecycleActions({
     const outcome = await requestRunOutcome(runId, chatId);
     if (outcome.kind !== "found") return outcome;
     const { run } = outcome;
+    useThreadStore.getState().updateMessages(chatId, (messages) => messages.map((message) => message.runId === run.id
+      ? { ...message, ...(run.answerComplete ? { status: "complete" as const } : {}),
+          workspacePreparation: run.workspacePreparation,
+          workspaceSettling: run.answerComplete && isActiveRunStatus(run.status) ? true : undefined }
+      : message));
     if (run.pdfPreparation) useThreadStore.getState().updateMessages(chatId, (messages) => messages.map((message) => {
       if (message.runId !== run.id) return message;
       const current = message.pdfPreparation;
@@ -397,6 +402,7 @@ export function useRunLifecycleActions({
     const activeStream = useRunLifecycleStore.getState().activeStreams[chatId];
     if (activeStream && (!activeStream.runId || activeStream.runId === run.id)) {
       useRunLifecycleStore.getState().runIdReceived({ chatId, runId: run.id });
+      if (run.answerComplete) useRunLifecycleStore.getState().answerCompleted({ chatId, runId: run.id });
     }
     return { kind: "found", run };
   }
@@ -425,6 +431,9 @@ export function useRunLifecycleActions({
       return;
     }
 
+    let answerNotified = selectThreadSnapshot(useThreadStore.getState(), chat.id).messages.some(
+      (message) => message.runId === runId && message.workspaceSettling);
+    if (answerNotified) useRunLifecycleStore.getState().answerCompleted({ chatId: chat.id, runId });
     let retainResumeGate = false;
     try {
       let startedAt = Date.now();
@@ -440,11 +449,15 @@ export function useRunLifecycleActions({
         }
 
         const outcome = await inspectResumedRun(chat, runId);
+        if (outcome.kind === "found" && outcome.run.answerComplete && !answerNotified) {
+          answerNotified = true;
+          void notifyAnswerReady();
+        }
         if (outcome.kind === "found" && outcome.run.pdfPreparation &&
           (outcome.run.status === "queued" || outcome.run.pdfPreparation.some((item) =>
             ["checking", "preparing", "assembling"].includes(item.phase)))) startedAt = Date.now();
         if (isTerminalRunFetchOutcome(outcome)) {
-          if (outcome.kind === "found" && outcome.run.status === "complete") {
+          if (outcome.kind === "found" && outcome.run.status === "complete" && !answerNotified) {
             void notifyAnswerReady();
           }
           return;
@@ -468,7 +481,7 @@ export function useRunLifecycleActions({
                 const outcome = await inspectResumedRun(chat, runId);
                 if (isTerminalRunFetchOutcome(outcome) && ownsResume(chat.id, runId)) {
                   useRunLifecycleStore.getState().resumeExited({ chatId: chat.id, runId });
-                  if (outcome.kind === "found" && outcome.run.status === "complete") {
+                  if (outcome.kind === "found" && outcome.run.status === "complete" && !answerNotified) {
                     void notifyAnswerReady();
                   }
                 }
@@ -490,85 +503,88 @@ export function useRunLifecycleActions({
     }
   }
 
-  async function stopCurrentRun() {
+  async function stopCurrentRun(expectedRunId?: string | null) {
     const sourceChatId = activeChatId;
-    if (!sourceChatId) {
-      return;
-    }
+    if (!sourceChatId) return;
 
-    const { activeStreams } = useRunLifecycleStore.getState();
-    const stream = activeStreams[sourceChatId];
-    if (!stream) {
-      return;
-    }
+    const lifecycle = useRunLifecycleStore.getState();
+    const stream = lifecycle.activeStreams[sourceChatId];
+    const interrupted = lifecycle.ambiguousFailures[sourceChatId];
+    const runId = stream ? stream.runId : interrupted?.runId;
+    if (!runId || (expectedRunId !== undefined && expectedRunId !== runId)) return;
+    if (!lifecycle.stopStarted(runId)) return;
 
-    const runId = stream.runId;
-    const assistantMessageId = stream.optimisticAssistantMessageId;
+    const assistantMessageId = stream?.optimisticAssistantMessageId ?? interrupted?.assistantMessageId;
     const sourceAbortController = activeStreamAbortRef.current.get(sourceChatId);
+    const stillOwnsSource = (): boolean => {
+      const current = useRunLifecycleStore.getState();
+      const producer = current.activeStreams[sourceChatId];
+      if (producer) return producer.runId === runId;
+      const failure = current.ambiguousFailures[sourceChatId];
+      return failure?.runId === runId && failure?.assistantMessageId === assistantMessageId;
+    };
 
-    if (runId) {
-      try {
-        const response = await shellFetch(`/api/model-runs/${runId}/cancel`, {
-          method: "POST"
-        });
-        const result = decodeCancelModelRunResponse(await response.json());
-        const expectedStatus =
-          (result?.kind === "cancelled" && response.status === 200) ||
-          (result?.kind === "not_cancelled" && response.status === 409);
-        if (!result || result.run.id !== runId || !expectedStatus) {
-          throw new Error(response.ok ? "cancel_malformed" : `cancel_failed_${response.status}`);
-        }
-
-        const currentStream = useRunLifecycleStore.getState().activeStreams[sourceChatId];
-        const stillOwnsSource = !currentStream || currentStream.runId === runId;
-        if (result.kind === "cancelled" && stillOwnsSource) {
-          sourceAbortController?.abort();
-          if (activeStreamAbortRef.current.get(sourceChatId) === sourceAbortController) {
-            activeStreamAbortRef.current.delete(sourceChatId);
-          }
-          useRunLifecycleStore.getState().runCancelled({ chatId: sourceChatId, runId });
-          useRunSurfaceStore.getState().appendEvent(sourceChatId, {
-            data: {
-              runId,
-              status: "cancelled"
-            },
-            type: "done"
-          });
-          if (assistantMessageId) {
-            useThreadStore.getState().updateMessages(sourceChatId, (current) =>
-              current.map((message) =>
-                message.id === assistantMessageId && message.status === "streaming"
-                  ? {
-                      ...message,
-                      content: textFromThreadContent(message.content) || "Stopped.",
-                      status: "cancelled"
-                    }
-                  : message
-              )
-            );
-          }
-        } else if (
-          result.kind === "not_cancelled" &&
-          stillOwnsSource &&
-          !isActiveRunStatus(result.run.status)
-        ) {
-          useRunLifecycleStore.getState().streamFinished({ chatId: sourceChatId });
-        }
-
-        await fetchRun(runId, sourceChatId);
-      } catch (error) {
-        if (activeChatIdRef.current === sourceChatId) {
-          setNotice({
-            kind: "error",
-            text: errorMessage(error)
-          });
-        }
-        await fetchRun(runId, sourceChatId);
+    try {
+      const response = await shellFetch(`/api/model-runs/${encodeURIComponent(runId)}/cancel`, {
+        method: "POST"
+      });
+      const result = decodeCancelModelRunResponse(await response.json());
+      const expectedStatus =
+        (result?.kind === "cancelled" && response.status === 200) ||
+        (result?.kind === "not_cancelled" && response.status === 409);
+      if (!result || result.run.id !== runId || !expectedStatus) {
+        throw new Error(response.ok ? "cancel_malformed" : `cancel_failed_${response.status}`);
       }
-    }
+      // A delayed response belongs only to the recorded run, even if a new
+      // producer has since taken over and finished in this same chat.
+      if (!stillOwnsSource()) return;
 
-    if (activeChatIdRef.current === sourceChatId) {
-      await refreshActiveChat(sourceChatId, { preserveControls: true, resumeRuns: false });
+      if (result.kind === "cancelled") {
+        sourceAbortController?.abort();
+        if (activeStreamAbortRef.current.get(sourceChatId) === sourceAbortController) {
+          activeStreamAbortRef.current.delete(sourceChatId);
+        }
+        useRunLifecycleStore.getState().runCancelled({ chatId: sourceChatId, runId });
+        useRunSurfaceStore.getState().appendEvent(sourceChatId, {
+          data: { runId, status: "cancelled" },
+          type: "done"
+        });
+        if (assistantMessageId) {
+          useThreadStore.getState().updateMessages(sourceChatId, (current) =>
+            current.map((message) =>
+              message.id === assistantMessageId &&
+              (message.status === "streaming" || message.status === "error")
+                ? {
+                    ...message,
+                    content: textFromThreadContent(message.content) || "Stopped.",
+                    status: "cancelled"
+                  }
+                : message
+            )
+          );
+        }
+      } else if (!isActiveRunStatus(result.run.status)) {
+        useRunLifecycleStore.getState().streamFinished({ chatId: sourceChatId, runId });
+        useRunLifecycleStore.getState().ambiguityCleared({ chatId: sourceChatId });
+      } else if (interrupted && activeChatIdRef.current === sourceChatId) {
+        setNotice({ kind: "error", text: "Couldn’t stop the answer. Refresh to check its state." });
+      }
+
+      if (activeChatIdRef.current === sourceChatId) {
+        await refreshActiveChat(sourceChatId, { preserveControls: true, resumeRuns: false });
+      }
+    } catch (error) {
+      if (!stillOwnsSource()) return;
+      if (activeChatIdRef.current === sourceChatId) {
+        setNotice({
+          kind: "error",
+          text: interrupted
+            ? "Couldn’t stop the answer. Refresh to check its state."
+            : errorMessage(error)
+        });
+      }
+    } finally {
+      useRunLifecycleStore.getState().stopFinished(runId);
     }
   }
 

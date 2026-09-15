@@ -1972,7 +1972,17 @@
 
 .v2-project-page-composer {
   margin-top: 1.5rem;
-  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  padding-bottom: max(1.875rem, var(--v2-safe-area-bottom));
+}
+
+.v2-project-page-composer .v2-composer-wrap {
+  --v2-composer-wrap-bottom: 0px;
+}
+
+@media (max-width: 840px), (max-height: 32rem) {
+  .v2-project-page-composer {
+    padding-bottom: max(1.5rem, var(--v2-safe-area-bottom));
+  }
 }
 
 .v2-project-page-composer-stack {
@@ -2245,7 +2255,7 @@
 
   .v2-project-page-composer {
     margin-top: 1rem;
-    padding-bottom: max(4.5rem, calc(env(safe-area-inset-bottom) + 3.75rem));
+    padding-bottom: max(5.25rem, var(--v2-safe-area-bottom));
   }
 }
 

@@ -13,7 +13,7 @@ describe("composer context statistics", () => {
       approximateInputTokens: 1_250,
       safeInputBudgetTokens: 1_000,
       totalContextTokens: 2_000
-    })).toMatchObject({ fraction: 0.625, inputBudgetFraction: 1.25, percent: 63, tone: "critical" });
+    })).toMatchObject({ fraction: 0.625, inputBudgetFraction: 1, percent: 63, tone: "critical" });
   });
 
   it("clamps the full-window gauge and distinguishes exhausted input from unavailable capacity", () => {

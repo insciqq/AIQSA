@@ -2,15 +2,17 @@
 
 import { randomUUID } from "@/lib/browser/randomUUID";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { decodeChatContinuationResult } from "@/lib/contracts/chatContinuation";
+import { decodeChatContinuationResult, type ChatContinuationModelSelection } from "@/lib/contracts/chatContinuation";
 import { decodeChatDetailResponse, type ChatDetail } from "@/lib/contracts/chats";
 import { chatDetailFromApi, shellFetch } from "./shellApi";
 import { loadChatMemoryState } from "./chatLifecycleApi";
+import { composerSessionKey, type ComposerSessionKey } from "./composerSessionStore";
 
 export type ChatContinuationControl = Readonly<{
   busy: boolean;
   error: string | null;
   suggested: boolean;
+  uploading?: boolean;
   onContinue(): void;
   onDismiss(): void;
   onCancel(): void;
@@ -45,7 +47,9 @@ export function useChatContinuation(input: Readonly<{
   leafMessageId: string | null;
   eligible: boolean;
   recommended: boolean;
-  onOpen(chat: ChatDetail): void;
+  modelSelection?: ChatContinuationModelSelection;
+  uploading?: boolean;
+  onOpen(chat: ChatDetail, sourceKey: ComposerSessionKey): void | Promise<void>;
 }>): ChatContinuationControl {
   const key = `aiqsa:context-warning:${encodeURIComponent(input.accountId)}:${encodeURIComponent(input.chatId ?? "")}`;
   const sourceKey = `${key}:${input.leafMessageId ?? ""}:${input.eligible}`;
@@ -53,7 +57,7 @@ export function useChatContinuation(input: Readonly<{
   const [storedDismissal, setStoredDismissal] = useState<{ key: string; dismissed: boolean } | null>(null);
   const [state, setState] = useState({ sourceKey, busy: false, error: null as string | null });
   const operation = useRef<{ controller: AbortController; sourceKey: string; requestId: string } | null>(null);
-  const retry = useRef<{ sourceKey: string; requestId: string } | null>(null);
+  const retry = useRef<{ sourceKey: string; requestId: string; modelSelection?: ChatContinuationModelSelection } | null>(null);
   const current = useRef(input);
   const currentSource = useRef(sourceKey);
   useLayoutEffect(() => { current.current = input; currentSource.current = sourceKey; });
@@ -76,19 +80,21 @@ export function useChatContinuation(input: Readonly<{
   };
 
   const onContinue = async () => {
-    if (!input.eligible || !input.chatId || !input.leafMessageId || operation.current) return;
+    if (!input.eligible || !input.chatId || !input.leafMessageId || input.uploading || operation.current) return;
     const controller = new AbortController();
     const requestId = retry.current?.sourceKey === sourceKey ? retry.current.requestId : randomUUID();
+    const modelSelection = retry.current?.sourceKey === sourceKey ? retry.current.modelSelection : input.modelSelection;
+    const sourceSessionKey = composerSessionKey(input.chatId);
     const owner = { controller, requestId, sourceKey };
     operation.current = owner;
-    retry.current = { sourceKey, requestId };
+    retry.current = { sourceKey, requestId, modelSelection };
     const owns = () => operation.current === owner && !controller.signal.aborted && currentSource.current === sourceKey;
     setState({ sourceKey, busy: true, error: null });
     const timeout = setTimeout(() => controller.abort(), 190_000);
     try {
       while (owns()) {
         const response = await shellFetch(`/api/chats/${encodeURIComponent(input.chatId)}/continue`, {
-          body: JSON.stringify({ expectedLeafMessageId: input.leafMessageId, requestId }),
+          body: JSON.stringify({ expectedLeafMessageId: input.leafMessageId, requestId, modelSelection }),
           headers: { "content-type": "application/json" }, method: "POST", signal: controller.signal
         });
         const body: unknown = await response.json();
@@ -116,7 +122,7 @@ export function useChatContinuation(input: Readonly<{
           summary.memoryMode = memory.mode;
           summary.temporaryRetentionDeadline = memory.temporaryRetentionDeadline;
         }
-        current.current.onOpen(summary);
+        await current.current.onOpen(summary, sourceSessionKey);
         return;
       }
     } catch (error) {
@@ -137,6 +143,7 @@ export function useChatContinuation(input: Readonly<{
     busy: state.sourceKey === sourceKey && state.busy,
     error: state.sourceKey === sourceKey ? state.error : null,
     suggested: input.eligible && input.recommended && dismissal !== key && storedDismissal?.key === key && !storedDismissal.dismissed,
+    uploading: input.uploading ?? false,
     onContinue: () => { void onContinue(); }, onDismiss, onCancel
   };
 }

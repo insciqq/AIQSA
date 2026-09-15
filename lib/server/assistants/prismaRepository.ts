@@ -44,6 +44,7 @@ export type AssistantContentRow = {
   category: string | null;
   description: string;
   developerPrompt: string | null;
+  responseReminder?: string;
   id: string;
   knowledgeSelection: KnowledgeSelection;
   mcpServerIds: string[];
@@ -130,6 +131,7 @@ const contentSelect = {
   category: true,
   description: true,
   developerPrompt: true,
+  responseReminder: true,
   id: true,
   knowledgeSelection: true,
   mcpServerIds: true,
@@ -161,6 +163,7 @@ function contentRow(record: ContentRecord): AssistantContentRow {
     category: record.category,
     description: record.description,
     developerPrompt: record.developerPrompt,
+    responseReminder: record.responseReminder ?? "",
     id: record.id,
     knowledgeSelection: knowledge.plan,
     mcpServerIds: [...record.mcpServerIds],
@@ -203,6 +206,7 @@ function contentDraftData(draft: AssistantDraft): Omit<
     category: draft.category,
     description: draft.description,
     developerPrompt: draft.developerPrompt,
+    responseReminder: draft.responseReminder ?? "",
     knowledgeSelection: draft.knowledgeSelection as unknown as Prisma.InputJsonValue,
     mcpServerIds: [...draft.mcpServerIds],
     name: draft.name,
@@ -759,6 +763,7 @@ export function createPrismaAssistantRepository(
                 category: source.content.category,
                 description: source.content.description,
                 developerPrompt: source.content.developerPrompt,
+                responseReminder: source.content.responseReminder ?? "",
                 knowledgeSelection: source.content.knowledgeSelection as unknown as Prisma.InputJsonValue,
                 mcpServerIds: [...source.content.mcpServerIds],
                 name: copyName,
@@ -1203,6 +1208,7 @@ export function createPrismaAssistantRepository(
       definitionVersion: version,
       identity: { avatar, name: content.name },
       developerPrompt: content.developerPrompt,
+      responseReminder: content.responseReminder ?? "",
       knowledgeSelection: content.knowledgeSelection,
       mcpServerIds: [...content.mcpServerIds],
       name: content.name,

@@ -1,4 +1,5 @@
 import { MEMORY_DEFAULTS_MIGRATION, memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql } from "./memory-defaults-adoption";
+import { WORKSPACE_USER_DEFAULT_MIGRATION, workspaceUserDefaultFixtureSql, workspaceUserDefaultProofSql, workspaceUserDefaultRepeatProofSql } from "./workspace-user-default-adoption";
 import { CHAT_TITLE_CREDENTIAL_MIGRATION, chatTitleCredentialAdoptionFixtureSql, chatTitleCredentialAdoptionProofSql } from "./chat-title-credential-adoption";
 import { CHAT_TITLE_ROLE_MIGRATION, chatTitleRoleAdoptionFixtureSql, chatTitleRoleAdoptionProofSql, chatTitleRoleClearProofSql } from "./system-model-roles-adoption";
 import { GEMINI_GROUNDING_MIGRATION, geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql } from "./gemini-grounding-adoption";
@@ -7390,6 +7391,8 @@ function main(
     chatTitleRoleAdoptionFixtureSql(), chatTitleRoleAdoptionProofSql(), chatTitleRoleClearProofSql());
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_DEFAULTS_MIGRATION,
     memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_USER_DEFAULT_MIGRATION,
+    workspaceUserDefaultFixtureSql, workspaceUserDefaultProofSql, workspaceUserDefaultRepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, CHAT_TITLE_CREDENTIAL_MIGRATION,
     chatTitleCredentialAdoptionFixtureSql, chatTitleCredentialAdoptionProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, "20260912060000_chat_pdf_native_reader",

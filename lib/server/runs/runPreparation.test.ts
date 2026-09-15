@@ -884,6 +884,33 @@ async function expectFailure(input: {
 }
 
 describe("run preparation", () => {
+  it("freezes owner instructions for sends and regeneration without changing the user question", async () => {
+    for (const input of [sendInput(), regenerateInput(successBody())]) {
+      const h = createHarness();
+      const accepted = { presetId: "preset", revision: 3, selectionVersion: 2,
+        systemInstructions: "SYNTHETIC_PERSONAL_STYLE", responseReminder: "SYNTHETIC_REMINDER" };
+      const instructions = { resolveForRun: vi.fn(async () => ({ ...accepted })) };
+      const result = materializePreparedRunData(preparedFrom(await prepareRun({ ...h.deps, instructions }, input)));
+      expect(instructions.resolveForRun).toHaveBeenCalledOnce();
+      expect(result.normalizedRequest.instructionPreset).toEqual({ presetId: "preset", revision: 3, selectionVersion: 2 });
+      expect(result.normalizedRequest.prompt).toMatchObject({ personalInstructions: accepted.systemInstructions, responseReminder: accepted.responseReminder });
+      expect(result.normalizedRequest.prompt.baseline?.source).toBe("standard_chat");
+      expect(JSON.stringify(result.normalizedRequest.content)).not.toContain(accepted.responseReminder);
+      expect(JSON.stringify(result.providerRequestPreview)).not.toContain(accepted.systemInstructions);
+      accepted.systemInstructions = "Changed after acceptance";
+      expect(result.normalizedRequest.prompt.personalInstructions).toBe("SYNTHETIC_PERSONAL_STYLE");
+    }
+  });
+
+  it("never resolves personal presets for shared Projects", async () => {
+    const h = createHarness(); const instructions = { resolveForRun: vi.fn() };
+    const result = materializePreparedRunData(preparedFrom(await prepareRun({ ...h.deps, instructions },
+      sendInput(successBody(), { project: projectAdmission() }))));
+    expect(instructions.resolveForRun).not.toHaveBeenCalled();
+    expect(result.normalizedRequest.instructionPreset).toBeUndefined();
+    expect(result.normalizedRequest.prompt.responseReminder).toBe("");
+  });
+
   it.each([true, false])("freezes browser guidance only when Workspace is enabled: %s", async (enabled) => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
     const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn<NonNullable<RunPreparationDeps["workspace"]>["prepare"]>(async (input) => ({ ok: true, tools: [], plan: {
@@ -1575,6 +1602,7 @@ describe("run preparation", () => {
       },
       developer: expect.stringContaining("Visible answer contract:"),
       memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+      responseReminder: "",
       system: expectedBaseline.renderedSystemPrompt
     });
     expect(sendPrepared.normalizedRequest.prompt.system).toContain("You are a helpful AI assistant. Today is ");
@@ -1641,6 +1669,7 @@ describe("run preparation", () => {
         },
         developer: expect.stringContaining("Visible answer contract:"),
         memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+        responseReminder: "",
         system: expectedBaseline.renderedSystemPrompt
       });
     }

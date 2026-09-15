@@ -105,6 +105,8 @@ import {
 } from "../memory/suppressionKeyring";
 
 const assistantRunDetailSelect = {
+  answerCompletedAt: true,
+  workspaceWaitPending: true,
   chatPdfPreparation: { select: { retryable: true, state: true } },
   chatPdfAttachments: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: {
     completedPages: true, pageCount: true, retryable: true, route: true, state: true,
@@ -722,6 +724,11 @@ function serializeHydratedMessage(
       projectChatPdfPreparation(row, modelRun.chatPdfPreparation?.state === "failed" || modelRun.chatPdfPreparation?.state === "cancelled"
         ? { phase: modelRun.status === "error" ? "failed" : "cancelled",
             retryable: modelRun.status === "error" && modelRun.chatPdfPreparation?.retryable === true } : undefined)) } : {}),
+    ...(message.assistantModelRuns.length && modelRun?.workspaceWaitPending && modelRun.status === "preparing"
+      ? { workspacePreparation: true as const } : {}),
+    ...(message.assistantModelRuns.length && modelRun?.answerCompletedAt && message.status === "complete" &&
+      ["streaming", "queued", "in_progress"].includes(modelRun.status)
+      ? { workspaceSettling: true as const } : {}),
     artifactSummary: artifactSummary && !message.assistantModelRuns.length && message.branchSourceModelRun
       ? { ...artifactSummary, generatedImages: [] } : artifactSummary,
     assistantIdentity: serializeAssistantIdentity(modelRun),

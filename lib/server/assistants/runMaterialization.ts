@@ -11,6 +11,7 @@ import type { SearchPlan } from "../../contracts/search";
 export type AssistantRunMaterialization = {
   assistantId: string;
   developerPrompt: string | null;
+  responseReminder?: string;
   knowledgeSelection: KnowledgeSelection;
   mcpServerIds: string[];
   name: string;
