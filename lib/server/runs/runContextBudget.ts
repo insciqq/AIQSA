@@ -90,11 +90,14 @@ function contextBudgetPrompt(prompt: NormalizedRunRequest["prompt"]) {
   return {
     developer: [
       prompt.developer,
+      // Fixed request overhead, never a trimmable conversation turn. Its wire
+      // role remains user; adapters append it after the current attachments.
+      prompt.responseReminder ? `Response reminder:\n${prompt.responseReminder}` : null,
       prompt.memoryActionAnswerResult ? memoryActionAnswerContract(prompt.memoryActionAnswerResult) : null,
       prompt.knowledgeAnswerContract === 1 ? KNOWLEDGE_ANSWER_CONTRACT_V1 : null,
       knowledgeAnswerDraftContractText(prompt.knowledgeAnswerDraftContract)
     ].filter((value): value is string => Boolean(value?.trim())).join("\n\n") || null,
-    system: prompt.system
+    system: [prompt.system, prompt.personalInstructions].filter(Boolean).join("\n\n") || null
   };
 }
 

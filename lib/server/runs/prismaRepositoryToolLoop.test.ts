@@ -973,6 +973,18 @@ describe("provider dispatch recovery request loading", () => {
     })).rejects.toThrow("knowledge_run_scope_invalid_in_storage");
   });
 
+  it("restores accepted instruction text and rejects incomplete selection snapshots", async () => {
+    const accepted = { ...normalizedRequest,
+      instructionPreset: { presetId: "preset", revision: 2, selectionVersion: 3 },
+      prompt: { ...normalizedRequest.prompt, personalInstructions: "accepted style", responseReminder: "accepted reminder" } };
+    const findUnique = vi.fn(async () => ({ chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one",
+      modelId: "model-one", normalizedRequest: accepted, provider: "provider-one" }));
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).resolves.toEqual(accepted);
+    accepted.instructionPreset.revision = 0;
+    await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
+
   it("accepts a persisted MCP server-only snapshot", async () => {
     const acceptedRequest: NormalizedRunRequest = {
       ...normalizedRequest,

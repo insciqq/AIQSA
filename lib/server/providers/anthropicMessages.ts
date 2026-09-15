@@ -1,3 +1,4 @@
+import { withResponseReminder } from "./responseReminder";
 import { observeJsonParse, observeStreamParseFailure } from "./providerObservability";
 import { textFromContentBlocks, type ModelRunSseEvent, type ModelRunUsage } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage } from "../../domain/usage";
@@ -151,8 +152,8 @@ function normalizeAnthropicMessagesParams(params: Record<string, unknown>): Anth
   };
 }
 
-function combineSystem(request: ProviderRunRequest): string | undefined {
-  return providerInstructionsWithPersonalContext(request);
+function combineSystem(request: ProviderRunRequest, preview = false): string | undefined {
+  return providerInstructionsWithPersonalContext(request, preview);
 }
 
 function attachmentTextBlock(
@@ -435,7 +436,7 @@ export function buildAnthropicMessagesRequest(
         return {
           content:
             index === conversation.length - 1 && message.role === "user"
-              ? buildUserContent(
+              ? withResponseReminder(request, buildUserContent(
                   request,
                   {
                     maxAttachmentTextChars: options.maxAttachmentTextChars,
@@ -444,7 +445,7 @@ export function buildAnthropicMessagesRequest(
                     redactImages: options.redactImages ?? false
                   },
                   storedContent
-                )
+                ), textContentBlock, options.preview)
               : [
                   textContentBlock(
                     message.content.trim()
@@ -477,7 +478,7 @@ export function buildAnthropicMessagesRequest(
     model: request.modelId || "claude-opus-4-8",
     stream: true
   };
-  const system = combineSystem(request);
+  const system = combineSystem(request, options.preview);
 
   if (system) {
     body.system = system;

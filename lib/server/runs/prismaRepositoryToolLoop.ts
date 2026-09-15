@@ -1,3 +1,4 @@
+import { validAcceptedInstructions } from "../instructions/snapshot";
 import { decodeAcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
 import { isMcpAutoDiscoveryOutputTokens } from "../../contracts/mcp";
 import {
@@ -517,6 +518,7 @@ const normalizedRequestKeys = new Set([
   "params",
   "personalContext",
   "prompt",
+  "instructionPreset",
   "provider",
   "reasoningEffort",
   "searchPlan",
@@ -843,6 +845,7 @@ function decodeProviderDispatchRecoveryRequest(
     new Set(value.attachmentIds).size !== value.attachmentIds.length ||
     !isRecord(value.content) || !onlyKnownKeys(value.content, new Set(["blocks"])) ||
     !Array.isArray(value.content.blocks) || !finiteJson(value.content.blocks) ||
+    !validAcceptedInstructions(value) ||
     !validContext(value.context) || !validKnowledgeAnswering(value.knowledgeAnswering) ||
     value.knowledgeAnswerWorkflowVersion !== undefined && value.knowledgeAnswerWorkflowVersion !== 2 && value.knowledgeAnswerWorkflowVersion !== 3 && value.knowledgeAnswerWorkflowVersion !== 4 && value.knowledgeAnswerWorkflowVersion !== 5 && value.knowledgeAnswerWorkflowVersion !== 6 && value.knowledgeAnswerWorkflowVersion !== 7 && value.knowledgeAnswerWorkflowVersion !== 8 && value.knowledgeAnswerWorkflowVersion !== 9 && value.knowledgeAnswerWorkflowVersion !== 10 && value.knowledgeAnswerWorkflowVersion !== 11 ||
     value.knowledgeReviewRepairFeedbackVersion !== undefined &&
@@ -860,7 +863,7 @@ function decodeProviderDispatchRecoveryRequest(
       !nonBlank(value.reasoningEffort, 32) ||
     !isRecord(value.prompt) || !onlyKnownKeys(value.prompt, new Set([
       "baseline", "developer", "knowledgeAnswerContract", "knowledgeAnswerDraftContract",
-      "knowledgeGroundedSelectorContract", "memoryActionAnswerResult", "system"
+      "knowledgeGroundedSelectorContract", "memoryActionAnswerResult", "system", "personalInstructions", "responseReminder"
     ])) || !nullableString(value.prompt.developer) || !nullableString(value.prompt.system) ||
     value.prompt.knowledgeAnswerContract !== undefined &&
       value.prompt.knowledgeAnswerContract !== 1 ||

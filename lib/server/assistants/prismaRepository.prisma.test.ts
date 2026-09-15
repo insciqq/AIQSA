@@ -159,11 +159,11 @@ describe("Prisma Assistant Skill links", () => {
 
       const version = (await prisma.assistantDefinition.findUniqueOrThrow({ where: { id: assistantId } })).version;
       const edited = { ...assistantDraft(providerModelId, [liveSkillId, firstSkillId]),
-        name: "Updated workflow", systemPrompt: "Use the updated workflow." };
+        name: "Updated workflow", systemPrompt: "Use the updated workflow.", responseReminder: "End with a next step." };
       await expect(assistantRepository.update(ownerUserId, assistantId, version, edited))
         .resolves.toEqual({ assistantId, kind: "ok" });
       await expect(assistantRepository.resolveForRun(memberUserId, assistantId)).resolves.toMatchObject({
-        ok: true, assistant: { name: "Updated workflow", systemPrompt: "Use the updated workflow.",
+        ok: true, assistant: { name: "Updated workflow", systemPrompt: "Use the updated workflow.", responseReminder: "End with a next step.",
           identity: { name: "Updated workflow" } }
       });
       await expect(assistantRepository.update(ownerUserId, assistantId, version, edited))
@@ -210,6 +210,7 @@ describe("Prisma Assistant Skill links", () => {
       await expect(assistantRepository.getDetail(memberUserId, assistantId)).resolves.toMatchObject({
         dependencyAvailability: { knowledge: "ready", skills: true },
         content: {
+          responseReminder: "End with a next step.",
           skillIds: [liveSkillId, firstSkillId],
           skillSummaries: [
             { id: liveSkillId, name: "Careful reviewer" },

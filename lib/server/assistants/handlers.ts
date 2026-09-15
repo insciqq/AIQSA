@@ -301,6 +301,7 @@ function definitionContent(
     category: assistantCategory(content.category),
     description: content.description,
     developerPrompt: content.developerPrompt,
+    responseReminder: content.responseReminder ?? "",
     // Knowledge ids are governed dependencies too. Published consumers do
     // not receive opaque ids here; run admission resolves the exact content
     // server-side and returns one privacy-neutral availability failure.
