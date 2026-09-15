@@ -52,6 +52,7 @@ export const adminMemoryStatusSchema = z.strictObject({
     readiness: z.enum(ADMIN_MEMORY_INDEX_READINESS)
   }),
   queue: z.strictObject({
+    inProgress: safeInteger,
     length: safeInteger,
     oldestAgeSeconds: safeInteger.nullable()
   }),

@@ -14,6 +14,7 @@ vi.mock("./processingRepository", () => ({
 function clientFixture(input: Readonly<{
   heartbeat?: Date | null;
   historyReindexing?: boolean;
+  inProgress?: number;
   roundConfigurationStale?: boolean;
   selectedEmbeddingProviderModelId?: string | null;
   shadowRebuilding?: boolean;
@@ -25,23 +26,14 @@ function clientFixture(input: Readonly<{
   const queryRaw = vi.fn()
     .mockResolvedValueOnce([])
     .mockResolvedValueOnce(input.staleChunk ? [{ userId: "private-owner" }] : [])
+    .mockResolvedValueOnce([{
+      inProgress: BigInt(input.inProgress ?? 0),
+      oldestQueuedAt: new Date("2026-08-21T07:59:50.000Z"),
+      waiting: 2n
+    }])
     .mockResolvedValueOnce(heartbeat ? [{ lastSeenAt: heartbeat }] : []);
-  const memoryJobFindFirst = vi.fn(async (args: {
-    select: Record<string, boolean>;
-  }) => args.select.createdAt
-    ? { createdAt: new Date("2026-08-21T07:59:50.000Z") }
-    : { errorCode: "memory_job_failed", updatedAt: new Date("2026-08-21T07:58:00.000Z") });
-  const deletionFindFirst = vi.fn(async (args: {
-    select: Record<string, boolean>;
-  }) => args.select.createdAt
-    ? null
-    : null);
   return {
     $queryRaw: queryRaw,
-    memoryDeletionOutbox: {
-      count: vi.fn().mockResolvedValue(0),
-      findFirst: deletionFindFirst
-    },
     memoryFactVersion: { findMany: vi.fn().mockResolvedValue([]) },
     memoryIndexGeneration: {
       findMany: vi.fn(async (args: { where?: { state?: unknown } }) =>
@@ -74,8 +66,6 @@ function clientFixture(input: Readonly<{
       updateMany: vi.fn().mockResolvedValue({ count: 1 })
     },
     memoryJob: {
-      count: vi.fn().mockResolvedValue(2),
-      findFirst: memoryJobFindFirst,
       findMany: vi.fn(async (args: { where: { kind: string } }) =>
         args.where.kind === "INDEX_HISTORY" && input.historyReindexing
           ? [{ userId: "private-owner" }]
@@ -106,7 +96,7 @@ function clientFixture(input: Readonly<{
 describe("Prisma administrator Memory status repository", () => {
   it("projects aggregate runtime evidence without owner or model identifiers", async () => {
     const startRebuild = vi.fn().mockResolvedValue(undefined);
-    const client = clientFixture();
+    const client = clientFixture({ inProgress: 3 });
     const repository = createPrismaAdminMemoryStatusRepository(
       client,
       startRebuild
@@ -125,6 +115,8 @@ describe("Prisma administrator Memory status repository", () => {
         rebuilding: false,
         requiresRebuild: false
       },
+      inProgressCount: 3,
+      oldestQueuedAt: new Date("2026-08-21T07:59:50.000Z"),
       queueLength: 2,
       workerLastSeenAt: new Date("2026-08-21T08:00:00.000Z")
     });
@@ -152,6 +144,7 @@ describe("Prisma administrator Memory status repository", () => {
     expect(JSON.stringify({
       processing: result.processing,
       configuredTargets: result.configuredTargets,
+      inProgressCount: result.inProgressCount,
       queueLength: result.queueLength
     })).not.toMatch(/private-owner|private-generation|private-system-model/u);
   });

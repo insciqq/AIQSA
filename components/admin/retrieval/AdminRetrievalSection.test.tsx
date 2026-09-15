@@ -12,7 +12,7 @@ function memoryStatus(overrides: Partial<AdminMemoryStatus> = {}): AdminMemorySt
     admissionTimeout: { seconds: 15, version: 4 },
     configuredTargets: [{ model: "GPT Luna", provider: "OpenAI" }],
     index: { generation: 4, readiness: "READY" },
-    queue: { length: 0, oldestAgeSeconds: null },
+    queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
     rebuild: { state: "NOT_REQUIRED" },
     worker: { state: "RUNNING" },
     ...overrides
@@ -50,7 +50,7 @@ function server(initial: Readonly<{ knowledge?: AdminKnowledgeSettings; memory?:
       if (method === "POST") {
         memory = memoryStatus({
           processing: { enabled: true, issues: [] }, index: { generation: 5, readiness: "REBUILDING" },
-          queue: { length: 1, oldestAgeSeconds: 0 }, rebuild: { state: "IN_PROGRESS" }
+          queue: { inProgress: 0, length: 1, oldestAgeSeconds: 0 }, rebuild: { state: "IN_PROGRESS" }
         });
       }
       return Response.json({ memory });
@@ -79,6 +79,18 @@ function renderSection() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("AdminRetrievalSection", () => {
+  it.each([
+    [{ inProgress: 2, length: 3, oldestAgeSeconds: 75 }, "2 in progress · 3 waiting · oldest 1m"],
+    [{ inProgress: 1, length: 0, oldestAgeSeconds: null }, "1 in progress · 0 waiting"]
+  ] as const)("distinguishes in-flight work from the waiting backlog", async (queue, copy) => {
+    server({ memory: memoryStatus({ queue }) });
+    renderSection();
+    const memory = await screen.findByTestId("admin-retrieval-memory");
+    await waitFor(() => expect(memory).toHaveTextContent(copy));
+    expect(memory).not.toHaveTextContent("Not running");
+    expect(memory).not.toHaveTextContent("Empty");
+  });
+
   it("shows stopped learning ahead of a live worker and ready index with an actionable reason", async () => {
     server({ memory: memoryStatus({ processing: { enabled: true, issues: [{
       stage: "LEARNING", reason: "CAPABILITY_UNAVAILABLE", severity: "bad", count: 3, oldestAgeSeconds: 1865

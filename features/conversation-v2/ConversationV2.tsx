@@ -660,6 +660,9 @@ export function ConversationV2({
         ref={scrollRef}
         data-testid="conversation-scroll"
         onScroll={onScroll}
+        style={jumpToLatestBottomOffset > 0
+          ? { scrollPaddingBottom: `calc(${jumpToLatestBottomOffset}px + 1rem)` }
+          : undefined}
       >
         {loading && messages.length === 0 ? (
           <div className="v2-conversation-state" aria-label="Loading conversation">

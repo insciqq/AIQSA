@@ -38,6 +38,7 @@ function fixture(outcome: "confirmed" | "not_applied" | "unconfirmed", beforeRet
   const prisma = {
     $queryRaw: vi.fn(async () => []),
     $transaction: transact,
+    chatContinuationWorkspaceSeed: { findMany: vi.fn(async () => []) },
     workspaceSession: { findMany: vi.fn(async () => []) }
   } as unknown as PrismaClient;
   const runtime = {

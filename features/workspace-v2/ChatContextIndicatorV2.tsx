@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { composerContextGauge, type ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import { formatTokenCount } from "@/components/app-shell/shellFormatting";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
@@ -13,6 +13,7 @@ export function ChatContextIndicatorV2({ stats, continuation, continuationFiles 
   continuationFiles?: ChatWorkspaceState["continuationFiles"];
 }>) {
   const [manualOpen, setOpen] = useState(false);
+  const fillMaskId = useId();
   const open = manualOpen || Boolean(continuation?.suggested);
   const close = () => { setOpen(false); continuation?.onDismiss(); };
   const { menuRef, triggerRef } = useMenuDismissalV2<HTMLButtonElement, HTMLElement>({
@@ -22,6 +23,9 @@ export function ChatContextIndicatorV2({ stats, continuation, continuationFiles 
   const label = stats.requestRejected ? "This request exceeds the model context capacity" : gauge.percent === null
     ? "Chat context size is unavailable"
     : `Chat context is approximately ${gauge.percent}% full`;
+  const estimateDescription = stats.session
+    ? `${stats.session.phase === "after_answer" ? "Estimated from the last request and completed answer" : "Estimated from the current request"}${stats.draftInputTokens ? ", plus your draft and attachments" : ""}.`
+    : "Preliminary estimate. Tools and private context are included when a request runs.";
   const circumference = 2 * Math.PI * 9;
   const remaining = stats.safeInputBudgetTokens === null ? null :
     Math.max(0, stats.safeInputBudgetTokens - stats.approximateInputTokens);
@@ -44,26 +48,32 @@ export function ChatContextIndicatorV2({ stats, continuation, continuationFiles 
         ref={triggerRef}
         aria-expanded={open}
         aria-haspopup="dialog"
-        aria-label={label}
+        aria-label={`${label}${stats.session || stats.requestRejected ? "" : ". Preliminary estimate"}`}
         className="v2-chat-context-trigger v2-focusable"
         data-context-tone={gauge.tone}
+        data-context-estimate={stats.session ? "snapshot" : "preliminary"}
         data-testid="header-context-indicator"
-        title={label}
+        title={`${label}. ${estimateDescription}`}
         type="button"
         onClick={() => { if (open) close(); else setOpen(true); }}
       >
         <svg aria-hidden="true" viewBox="0 0 24 24">
-          <circle className="v2-chat-context-track" cx="12" cy="12" fill="none" r="9" strokeWidth="3" />
+          <defs><mask id={fillMaskId} maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+            <circle cx="12" cy="12" fill="none" r="9" stroke="white" strokeWidth="3"
+              strokeDasharray={circumference}
+              strokeDashoffset={circumference * (1 - (gauge.fraction ?? 0))} />
+          </mask></defs>
+          <circle className="v2-chat-context-track" cx="12" cy="12" fill="none" r="9" strokeWidth="3"
+            strokeDasharray={stats.session ? undefined : "3 3"} />
           <circle cx="12" cy="12" fill="none" r="9" stroke="currentColor" strokeWidth="3"
-            strokeDasharray={circumference}
-            strokeDashoffset={circumference * (1 - Math.min(1, gauge.fraction ?? 0))}
-            strokeLinecap="round" />
+            mask={`url(#${fillMaskId})`} strokeDasharray={stats.session ? undefined : "3 3"} />
         </svg>
         <span>{stats.requestRejected && gauge.percent === null ? "!" : gauge.percent === null ? "?" : `${gauge.percent}%`}</span>
       </button>
       {open ? (
         <section ref={menuRef} aria-label="Chat context" className="v2-chat-context-popover" role="dialog">
           <strong>{label}.</strong>
+          <p>{estimateDescription}</p>
           <p>The percentage estimates how much of the full model context window is used. Space for its next answer is reserved; the answer reserve and safety margin reduce the safe input budget.</p>
           {gauge.tone === "critical" ? <p role="alert">{stats.requestRejected ? "The server could not fit this request in the model context window." : "There is no safe input room for the current request."} Shorten the message, remove attachments, or continue in a new chat with a summary.</p> : null}
           {gauge.tone === "warning" ? <p>The safe input budget is nearly full. You can keep working here or continue in a new chat with a summary.</p> : null}
@@ -87,11 +97,12 @@ export function ChatContextIndicatorV2({ stats, continuation, continuationFiles 
           {stats.session?.droppedMessages ? <p>{stats.session.droppedMessages} earlier {stats.session.droppedMessages === 1 ? "message is" : "messages are"} still in this chat, but were omitted from the model request. You can continue in a new chat with a summary.</p> : null}
           <details>
             <summary>Advanced details</summary>
-            <p>{stats.session
-              ? stats.session.phase === "after_answer" ? "Estimated from the last request and completed answer." : "Estimated from the current request."
-              : "Preliminary estimate. Tools and private context are measured when an answer runs."}</p>
             <dl>
               <div><dt>Context tokens</dt><dd>~{count(stats.approximateInputTokens)}</dd></div>
+              {stats.session ? <>
+                <div><dt>{stats.session.phase === "after_answer" ? "Request and answer estimate" : "Request estimate"}</dt><dd>~{count(stats.session.approximateInputTokens)}</dd></div>
+                <div><dt>Draft and attachments estimate</dt><dd>~{count(stats.draftInputTokens ?? 0)}</dd></div>
+              </> : null}
               <div><dt>Safe input budget</dt><dd>{count(stats.safeInputBudgetTokens)}</dd></div>
               <div><dt>Available input tokens</dt><dd>{count(remaining)}</dd></div>
               <div><dt>Model context limit</dt><dd>{count(stats.totalContextTokens)}</dd></div>

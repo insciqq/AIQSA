@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetComposerControlStoreForTest, resetComposerSessionStoreForTest, resetMemorySettingsStoreForTest, resetRunLifecycleStoreForTest, resetRunSurfaceStoreForTest, resetThreadStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
 import { useComposerControlStore } from "./composerControlStore";
+import { composerContextConfigurationKey } from "./composerContextConfiguration";
 import {
   composerSessionKey,
   selectComposerSession,
@@ -1208,6 +1209,9 @@ describe("message run actions", () => {
       searchPlanMode: "all_selected",
     });
 
+    const expectedContextKey = composerContextConfigurationKey(useComposerControlStore.getState(), {
+      memoryMode: "NORMAL", workspaceEnabled: false
+    });
     const submit = actions.submitComposer();
     await persistStarted;
     expect(actions.session(composerSessionKey("chat-a")).pendingSend).toMatchObject({
@@ -1215,8 +1219,11 @@ describe("message run actions", () => {
     });
     useComposerSessionStore.getState().setDraft("Newer question");
     useComposerSessionStore.getState().setAttachments([newerSearchAttachment]);
+    useComposerControlStore.getState().setMcpSelection({ mode: "off" });
     resolvePersist();
     await submit;
+
+    expect(selectRunSurface(useRunSurfaceStore.getState(), "chat-a").contextConfigurationKey).toBe(expectedContextKey);
 
     const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(String(requestInit.body))).toMatchObject({
@@ -1380,6 +1387,8 @@ describe("message run actions", () => {
 
     await actions.submitComposer();
     expect(useWorkspaceStore.getState().chats[0]?.pendingInitialMemoryMode).toBe("TEMPORARY");
+    expect(JSON.parse(selectRunSurface(useRunSurfaceStore.getState(), "chat-a").contextConfigurationKey!))
+      .toMatchObject({ memoryMode: "TEMPORARY" });
     expect(actions.session(composerSessionKey("chat-a")).draft).toBe("Temporary retry");
     await actions.submitComposer();
 

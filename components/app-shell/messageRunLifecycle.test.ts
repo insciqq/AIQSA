@@ -52,6 +52,7 @@ describe("message run lifecycle", () => {
     const result = await executeMessageRunLifecycle({
       activeChatIdRef: { current: "chat-1" }, activeStreamAbortRef: { current: new Map() }, chatId: "chat-1",
       consumeRunStream, createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() } as never),
+      contextConfigurationKey: "accepted-controls",
       failurePrefix: "send_failed", fetchRun: vi.fn(), notifyAnswerReady,
       optimisticAssistantMessageId: "assistant-optimistic", primeAnswerSound: vi.fn(),
       reconcileMessageIds: ({ assistantMessageId }) => useThreadStore.getState().updateMessages("chat-1", (messages) =>
@@ -67,6 +68,9 @@ describe("message run lifecycle", () => {
       id: "assistant-committed", status: "streaming", runId: "run-1", pdfPreparation
     });
     expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toBeUndefined();
+    expect(selectRunSurface(useRunSurfaceStore.getState(), "chat-1")).toMatchObject({
+      contextConfigurationKey: "accepted-controls", contextMessageId: "assistant-committed"
+    });
     await vi.runOnlyPendingTimersAsync();
     expect(refreshActiveChat).toHaveBeenCalledWith("chat-1", { forceDetail: true, preserveControls: true });
   });

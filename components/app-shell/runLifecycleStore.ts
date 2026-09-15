@@ -17,6 +17,7 @@ export type RunLifecycleSnapshot = {
     }
   >;
   cancelledRunIds: Set<string>;
+  stoppingRunIds: Set<string>;
 };
 
 export type RunLifecycleTransition =
@@ -67,6 +68,8 @@ export type RunLifecycleTransition =
     };
 
 export type RunLifecycleStore = RunLifecycleSnapshot & {
+  stopStarted(runId: string): boolean;
+  stopFinished(runId: string): void;
   ambiguityCleared(input: { chatId: string }): void;
   dispatch(transition: RunLifecycleTransition): void;
   resumeExited(input: { chatId: string; runId: string }): void;
@@ -82,7 +85,8 @@ export type RunLifecycleStore = RunLifecycleSnapshot & {
 export const initialRunLifecycleSnapshot: RunLifecycleSnapshot = {
   activeStreams: {},
   ambiguousFailures: {},
-  cancelledRunIds: new Set<string>()
+  cancelledRunIds: new Set<string>(),
+  stoppingRunIds: new Set<string>()
 };
 
 function cloneSnapshot(state: RunLifecycleSnapshot): RunLifecycleSnapshot {
@@ -93,7 +97,8 @@ function cloneSnapshot(state: RunLifecycleSnapshot): RunLifecycleSnapshot {
     ambiguousFailures: Object.fromEntries(
       Object.entries(state.ambiguousFailures).map(([chatId, failure]) => [chatId, { ...failure }])
     ),
-    cancelledRunIds: new Set(state.cancelledRunIds)
+    cancelledRunIds: new Set(state.cancelledRunIds),
+    stoppingRunIds: new Set(state.stoppingRunIds)
   };
 }
 
@@ -173,6 +178,18 @@ export function reduceRunLifecycle(
 
 export const useRunLifecycleStore = create<RunLifecycleStore>((set, get) => ({
   ...initialRunLifecycleSnapshot,
+  stopStarted(runId) {
+    if (get().stoppingRunIds.has(runId)) return false;
+    set((state) => ({ stoppingRunIds: new Set([...state.stoppingRunIds, runId]) }));
+    return true;
+  },
+  stopFinished(runId) {
+    set((state) => {
+      const stoppingRunIds = new Set(state.stoppingRunIds);
+      stoppingRunIds.delete(runId);
+      return { stoppingRunIds };
+    });
+  },
   ambiguityCleared(input) {
     get().dispatch({ ...input, type: "AMBIGUITY_CLEARED" });
   },

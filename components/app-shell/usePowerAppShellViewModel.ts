@@ -30,7 +30,7 @@ type PowerAppShellViewModelInput = {
   catalog: Catalog | null;
   chats: WorkspaceChatSummary[];
   draft: string;
-  requestConfiguration?: Readonly<Record<string, unknown>>;
+  contextConfigurationKey?: string;
   contextRejectionGeneration?: number | null;
   folders: FolderSummary[];
   maxOutputTokens: string;
@@ -95,15 +95,15 @@ function nativePdfProxyTokens(attachment: ComposerAttachment): number {
   return Math.max(256, extractedTextTokens + pageTokens, fallbackByteTokens);
 }
 
-function stagedAttachmentTokens(attachments: ComposerAttachment[], model?: CatalogModel): number {
+function stagedAttachmentTokens(attachments: ComposerAttachment[], model: CatalogModel | undefined, limit: number): number {
   return attachments.reduce((total, attachment) => {
     if (attachment.kind === "image") {
-      return model?.capabilities.imageInput ? total + imageProxyTokens(attachment) : total;
+      return model?.capabilities.imageInput ? Math.min(limit, total + imageProxyTokens(attachment)) : total;
     }
 
     if (attachment.kind === "pdf") {
       if (model?.capabilities.documentInputMode === "native_pdf") {
-        return total + nativePdfProxyTokens(attachment);
+        return Math.min(limit, total + nativePdfProxyTokens(attachment));
       }
 
       if (model?.capabilities.documentInputMode !== "pdf_text_extraction") {
@@ -112,7 +112,7 @@ function stagedAttachmentTokens(attachments: ComposerAttachment[], model?: Catal
     }
 
     const text = providerAttachmentText(attachment);
-    return total + (text ? estimateApproxTokens(text) : 0);
+    return Math.min(limit, total + (text ? estimateApproxTokens(text) : 0));
   }, 0);
 }
 
@@ -124,7 +124,7 @@ export function usePowerAppShellViewModel({
   catalog,
   chats,
   draft,
-  requestConfiguration,
+  contextConfigurationKey,
   contextRejectionGeneration = null,
   folders,
   maxOutputTokens,
@@ -203,21 +203,30 @@ export function usePowerAppShellViewModel({
         provider: currentModel?.providerFamily
       })
     : null, [currentContextWindow, currentModel?.providerFamily, selectedMaxOutputTokens]);
-  // Compare values, including identities and full draft/attachment contents.
-  // A refreshed object or equal text length is not a new accepted request.
+  // Drafts add to a matching request; only the branch and execution controls
+  // determine whether its server-side context is still a useful base.
   const requestInputKey = JSON.stringify({
-    activeChatId, attachments, draft, renderActiveLeafId, requestConfiguration,
+    activeChatId, attachments, draft, renderActiveLeafId, contextConfigurationKey,
     selectedAssistantPromptCharacterCount, selectedMaxOutputTokens,
     selectedModelId, selectedProvider, selectedSkillPromptCharacterCount
   });
   const lastAssistant = [...visibleMessages].reverse().find((message) => message.role === "assistant");
   const sourceKey = JSON.stringify([activeChatId, lastAssistant?.id ?? null]);
-  const [observedRequest, setObservedRequest] = useState({ sourceKey, requestInputKey });
-  if (observedRequest.sourceKey !== sourceKey) {
-    setObservedRequest({ sourceKey, requestInputKey });
+  const liveStartIndex = runEvents.reduce((last, event, index) => event.type === "message_start" ? index : last, -1);
+  const liveStartData = isRecord(runEvents[liveStartIndex]?.data) ? runEvents[liveStartIndex]!.data : null;
+  const liveSource = isRecord(liveStartData) && liveStartData.assistantMessageId === lastAssistant?.id;
+  const [rejectedSource, setRejectedSource] = useState({ sourceKey, rejected: contextRejectionGeneration !== null });
+  if (rejectedSource.sourceKey !== sourceKey) {
+    setRejectedSource({ sourceKey, rejected: contextRejectionGeneration !== null });
+  } else if (contextRejectionGeneration !== null && !rejectedSource.rejected) {
+    setRejectedSource({ ...rejectedSource, rejected: true });
   }
-  const unchangedRequest = observedRequest.sourceKey === sourceKey &&
-    observedRequest.requestInputKey === requestInputKey && !draft && attachments.length === 0;
+  // Persisted context status has no accepted-control fingerprint. A cold load
+  // stays preliminary: current controls cannot establish a historical binding.
+  const unchangedConfiguration = Boolean(contextConfigurationKey &&
+    runSurface.contextMessageId === lastAssistant?.id &&
+    runSurface.contextConfigurationKey === contextConfigurationKey &&
+    rejectedSource.sourceKey === sourceKey && !rejectedSource.rejected);
   const [rejection, setRejection] = useState({ contextRejectionGeneration, requestInputKey });
   if (rejection.contextRejectionGeneration !== contextRejectionGeneration) {
     setRejection({ contextRejectionGeneration, requestInputKey });
@@ -227,25 +236,29 @@ export function usePowerAppShellViewModel({
   const sessionSnapshot = activeThreadContextStats?.session;
   const sessionMessageId = activeThreadContextStats?.sessionMessageId;
   const composerContextStats = useMemo<ComposerContextStats>(() => {
-    const liveStart = [...runEvents].reverse().find((event) => event.type === "message_start");
-    const liveStartData = isRecord(liveStart?.data) ? liveStart.data : null;
-    const liveStatus = liveStartData?.assistantMessageId === lastAssistant?.id
-      ? [...runEvents].reverse().find((event) => event.type === "artifact" && isRecord(event.data) && event.data.artifactType === "context_status")
+    const liveStatus = liveSource
+      ? runEvents.slice(liveStartIndex + 1).reverse().find((event) => event.type === "artifact" && isRecord(event.data) && event.data.artifactType === "context_status")
       : undefined;
     const liveSnapshot = isRecord(liveStatus?.data)
       ? decodeSessionContextStatus(liveStatus.data.payload)
       : null;
     const onAnswerLeaf = Boolean(lastAssistant && lastAssistant.id === renderActiveLeafId);
-    const snapshot = unchangedRequest && onAnswerLeaf && !requestRejected
+    const snapshot = unchangedConfiguration && onAnswerLeaf && !requestRejected
       ? liveSnapshot ?? (sessionMessageId === lastAssistant?.id ? sessionSnapshot : null)
       : null;
+    // A draft can already exhaust the model window. Bound low-fidelity file
+    // proxies to one full window while preserving the measured base unchanged.
+    const deltaLimit = currentContextWindow || Number.MAX_SAFE_INTEGER;
+    const draftInputTokens = Math.min(deltaLimit, estimateApproxTokens(draft.trim()) +
+      stagedAttachmentTokens(attachments, currentModel, deltaLimit));
     if (snapshot &&
       snapshot.modelId === (currentModel?.upstreamModelId ?? currentModel?.modelId) &&
       snapshot.provider === (currentModel?.providerFamily ?? currentModel?.provider) &&
       snapshot.contextWindow === (currentContextWindow || null) &&
       sessionContextCapacity(snapshot).budgetTokens === (contextLimits?.budgetTokens ?? null)) {
       return {
-        approximateInputTokens: snapshot.approximateInputTokens,
+        approximateInputTokens: Math.min(Number.MAX_SAFE_INTEGER, snapshot.approximateInputTokens + draftInputTokens),
+        draftInputTokens,
         safeInputBudgetTokens: sessionContextCapacity(snapshot).budgetTokens,
         answerReserveTokens: snapshot.maxOutputTokens,
         safetyMarginTokens: snapshot.safetyMarginTokens,
@@ -272,18 +285,7 @@ export function usePowerAppShellViewModel({
       Math.ceil(selectedSkillPromptCharacterCount / 4);
     const branchTokens = activeThreadContextStats?.approximateActiveBranchInputTokens ??
       visibleMessages.reduce((total, message) => total + estimateApproxTokens(message.content), 0);
-    const draftTokens = estimateApproxTokens({
-      blocks: draft.trim()
-        ? [
-            {
-              text: draft.trim(),
-              type: "text"
-            }
-          ]
-        : []
-    });
-    const attachmentTokens = stagedAttachmentTokens(attachments, currentModel);
-    const currentTokens = promptTokens + branchTokens + draftTokens + attachmentTokens;
+    const currentTokens = Math.min(Number.MAX_SAFE_INTEGER, promptTokens + branchTokens + draftInputTokens);
 
     return {
       approximateInputTokens: currentTokens,
@@ -294,8 +296,8 @@ export function usePowerAppShellViewModel({
       totalContextTokens: currentContextWindow || null
     };
   }, [activeThreadContextStats, attachments, contextLimits, currentContextWindow, currentModel, draft,
-    lastAssistant, renderActiveLeafId, requestRejected, runEvents, selectedAssistantPromptCharacterCount,
-    selectedSkillPromptCharacterCount, sessionMessageId, sessionSnapshot, unchangedRequest, visibleMessages]);
+    lastAssistant, liveSource, liveStartIndex, renderActiveLeafId, requestRejected, runEvents, selectedAssistantPromptCharacterCount,
+    selectedSkillPromptCharacterCount, sessionMessageId, sessionSnapshot, unchangedConfiguration, visibleMessages]);
   return {
     activeChat,
     activeChatStreaming,

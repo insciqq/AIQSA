@@ -104,7 +104,7 @@ test("verified PDF pages survive upload, refresh and Library reuse and admit a l
     const attachment = decodeUploadAttachmentResponse(await upload.json())!.attachment;
     expect(attachment).toMatchObject({ pageCount: 2, extractedText: null, byteSize: bytes.length });
     expect(attachment.processing).toBeUndefined();
-    await expect(page.getByTestId("header-context-indicator")).toHaveAccessibleName("Chat context is approximately 0% full");
+    await expect(page.getByTestId("header-context-indicator")).toHaveAccessibleName("Chat context is approximately 0% full. Preliminary estimate");
     const refreshed = await page.request.get(`/api/uploads/${attachment.id}`);
     expect(decodeUploadAttachmentResponse(await refreshed.json())!.attachment.pageCount).toBe(2);
     const saved = await page.request.post(`/api/uploads/${attachment.id}/save`);
@@ -118,7 +118,7 @@ test("verified PDF pages survive upload, refresh and Library reuse and admit a l
     const reusedResponse = page.waitForResponse((item) => new URL(item.url()).pathname === `/api/uploads/${savedFile.id}/reuse`);
     await page.getByRole("list", { name: "Saved files" }).getByRole("button", { name: "Use file" }).click();
     expect(decodeUploadAttachmentResponse(await (await reusedResponse).json())!.attachment.pageCount).toBe(2);
-    await expect(page.getByTestId("header-context-indicator")).toHaveAccessibleName("Chat context is approximately 0% full");
+    await expect(page.getByTestId("header-context-indicator")).toHaveAccessibleName("Chat context is approximately 0% full. Preliminary estimate");
     await sendAndExpect(page, "PDF budget fixture question", "PDF budget fixture answer.");
     expect(received).toEqual([digest]);
     const run = await prisma.modelRun.findFirstOrThrow({ where: { userId } });

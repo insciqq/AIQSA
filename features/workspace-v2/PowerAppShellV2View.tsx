@@ -696,7 +696,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onSelectModel={composer.selectModel}
       onSelectSearchOptionIds={(ids) => composer.selectSearchPlan(ids, composer.searchPlanMode)}
       onSend={() => void composer.submitComposer()}
-      onStop={() => void composer.stopCurrentRun()}
+      onStop={() => void composer.stopCurrentRun(thread.currentRunId)}
+      stopping={composer.stopping}
       onUploadFiles={(files) => composer.uploadFiles(files)}
       onReuseFile={composer.reuseFile}
       runId={thread.currentRunId}
@@ -978,7 +979,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           () => thread.handleRegenerateMessage(source.id)
         )}
         pdfPreparation={source.pdfPreparation}
-        onStop={() => void composer.stopCurrentRun()}
+        onStop={() => void composer.stopCurrentRun(presentation.runId)}
+        stopping={composer.stopping}
         presentation={presentation}
         resolveHref={resolveHref}
         renderCitation={knowledgeReference

@@ -104,4 +104,19 @@ describe("run surface store", () => {
     expect(surface("chat-a").answerStartedAt).toBeNull();
     expect(surface("chat-a").startedAt).toBe(startedAt);
   });
+
+  it("keeps submitted context controls through preparation events and clears them for a new unbound run", () => {
+    useRunSurfaceStore.getState().resetSurface("chat-a", "submitted-controls", "optimistic-answer");
+    useRunSurfaceStore.getState().bindContextMessage("chat-a", "optimistic-answer", "settled-answer-id");
+    useRunSurfaceStore.getState().appendEvent("chat-a", {
+      type: "message_start", data: { assistantMessageId: "settled-answer-id" }
+    });
+    expect(surface("chat-a").contextConfigurationKey).toBe("submitted-controls");
+    expect(surface("chat-a").contextMessageId).toBe("settled-answer-id");
+    useRunSurfaceStore.getState().bindContextMessage("chat-a", "optimistic-answer", "stale-answer-id");
+    expect(surface("chat-a").contextMessageId).toBe("settled-answer-id");
+    expect(surface("chat-b").contextConfigurationKey).toBeUndefined();
+    useRunSurfaceStore.getState().resetSurface("chat-a");
+    expect(surface("chat-a").contextConfigurationKey).toBeUndefined();
+  });
 });

@@ -352,6 +352,8 @@ function memoryItems(memory: AdminMemoryStatus): AdminAttentionItem[] {
       code: "memory_worker_not_running",
       count: null,
       detail: `New facts are not learned until the worker starts${
+        memory.queue.inProgress > 0 ? ` · ${plural(memory.queue.inProgress, "job")} in progress` : ""
+      }${
         memory.queue.length > 0 ? ` · ${plural(memory.queue.length, "job")} waiting` : ""
       }`,
       id: "memory_worker_not_running",

@@ -1520,11 +1520,36 @@ describe("run execution", () => {
     expect(requests).toHaveLength(2);
     expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(["get_session_status"]);
     expect(JSON.stringify(requests[1]?.providerToolMessages)).toContain("contextPercent");
-    expect(events.find(isContextEvent)).toMatchObject({ data: { artifactType: "context_status", payload: {
+    expect(events.filter(isContextEvent).at(-1)).toMatchObject({ data: { artifactType: "context_status", payload: {
       loadedTools: 1, phase: "after_answer", modelId: "gpt-tool-model"
     } } });
-    expect(repository.persistedEvents.filter(({ event }) => isContextEvent(event))).toHaveLength(1);
+    expect(repository.persistedEvents.filter(({ event }) => isContextEvent(event))).toHaveLength(3);
     expect(events.at(-1)?.type).toBe("done");
+  });
+
+  it("publishes the prepared request context before the first provider token and replaces it on completion", async () => {
+    const held = deferred<void>();
+    const repository = createRepository();
+    const adapter = createAdapter(async function* () {
+      await held.promise;
+      yield { type: "token" as const, data: { delta: "Final answer" } };
+      return providerResult();
+    });
+    const body = createRunExecutionResponse(executionInput({ adapter, repository: repository.repository })).text();
+    try {
+      await vi.waitFor(() => expect(repository.persistedEvents.filter(({ event }) => isContextEvent(event))).toHaveLength(1));
+      expect(repository.persistedEvents.find(({ event }) => isContextEvent(event))?.event).toMatchObject({
+        type: "artifact", data: { artifactType: "context_status", payload: { phase: "request" } }
+      });
+      expect(repository.completeRuns).toHaveLength(0);
+    } finally {
+      held.resolve();
+    }
+    const events = parseSse(await body, true);
+    expect(events.findIndex(isContextEvent)).toBeLessThan(events.findIndex((event) => event.type === "token"));
+    expect(events.filter(isContextEvent)).toMatchObject([
+      { data: { payload: { phase: "request" } } }, { data: { payload: { phase: "after_answer" } } }
+    ]);
   });
 
   it.each(["ready", "failed", "cancelled", "completion_lost"] as const)("waits for safe Workspace handoff and respects %s settlement", async (outcome) => {
@@ -1931,10 +1956,11 @@ describe("run execution", () => {
       return providerResult();
     });
     const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, repository: repository.repository })).text());
-    expect(events.find((event) => event.type === "artifact" && event.data.artifactType === "workspace_activity")).toMatchObject({
-      data: { payload: { sequence: 0, updateId: "start" } }
-    });
-    expect(repository.persistedEvents[0]?.event).toMatchObject({ data: { payload: { sequence: 0 } } });
+    const persisted = repository.persistedEvents.find(({ event }) =>
+      event.type === "artifact" && event.data.artifactType === "workspace_activity");
+    expect(persisted?.event).toMatchObject({ data: { payload: { sequence: persisted?.sequence, updateId: "start" } } });
+    expect(events.find((event) => event.type === "artifact" && event.data.artifactType === "workspace_activity"))
+      .toEqual(persisted?.event);
   });
 
   it("preserves SSE order, batches durable text, and persists only reloadable output artifacts", async () => {

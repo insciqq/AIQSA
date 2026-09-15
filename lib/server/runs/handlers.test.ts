@@ -2173,9 +2173,11 @@ describe("model run route handlers", () => {
     expect(state.completed?.estimatedCostMicros).toBe(
       state.completed!.usage.inputTokens! * 2 + state.completed!.usage.outputTokens! * 8
     );
-    expect(state.events).toEqual([{ sequence: 0, event: {
-      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "after_answer" }) }
-    } }]);
+    expect(state.events).toHaveLength(2);
+    expect(state.events.map(({ sequence, event }) => ({ sequence, phase: event.type === "artifact" && event.data.artifactType === "context_status"
+      ? (event.data.payload as { phase?: unknown }).phase : undefined }))).toEqual([
+      { sequence: 0, phase: "request" }, { sequence: 1, phase: "after_answer" }
+    ]);
   });
 
   it("passes accepted run defaults from the accepted send", async () => {
@@ -2544,9 +2546,11 @@ describe("model run route handlers", () => {
         reasoningTokens: 0
       }
     });
-    expect(state.events).toEqual([{ sequence: 0, event: {
-      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "after_answer" }) }
-    } }]);
+    expect(state.events).toHaveLength(2);
+    expect(state.events.map(({ sequence, event }) => ({ sequence, phase: event.type === "artifact" && event.data.artifactType === "context_status"
+      ? (event.data.payload as { phase?: unknown }).phase : undefined }))).toEqual([
+      { sequence: 0, phase: "request" }, { sequence: 1, phase: "after_answer" }
+    ]);
   });
 
   it.each([
@@ -2667,9 +2671,11 @@ describe("model run route handlers", () => {
     expect(response.status).toBe(200);
     await response.text();
     expect(state.completed?.estimatedCostMicros).toBeNull();
-    expect(state.events).toEqual([{ sequence: 0, event: {
-      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "after_answer" }) }
-    } }]);
+    expect(state.events).toHaveLength(2);
+    expect(state.events.map(({ sequence, event }) => ({ sequence, phase: event.type === "artifact" && event.data.artifactType === "context_status"
+      ? (event.data.payload as { phase?: unknown }).phase : undefined }))).toEqual([
+      { sequence: 0, phase: "request" }, { sequence: 1, phase: "after_answer" }
+    ]);
   });
 
   it("trims oldest branch context for tiny context windows and emits a truncation artifact", async () => {
@@ -2749,9 +2755,11 @@ describe("model run route handlers", () => {
     expect(truncationEvent?.type).toBe("artifact");
     expect((truncationEvent?.data as { payload?: unknown } | undefined)?.payload)
       .toMatchObject({ droppedMessages: 2 });
-    expect(state.events).toEqual([{ sequence: 0, event: {
-      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "after_answer" }) }
-    } }]);
+    expect(state.events).toHaveLength(2);
+    expect(state.events.map(({ sequence, event }) => ({ sequence, phase: event.type === "artifact" && event.data.artifactType === "context_status"
+      ? (event.data.payload as { phase?: unknown }).phase : undefined }))).toEqual([
+      { sequence: 0, phase: "request" }, { sequence: 1, phase: "after_answer" }
+    ]);
   });
 
   it("fails before run creation when irreducible context exceeds the budget", async () => {
@@ -2943,7 +2951,10 @@ describe("model run route handlers", () => {
 
     expect(liveEvents.filter((event) => event.type === "token")).toHaveLength(2);
     expect(state.assistantText).toBe("partial answer");
-    expect(state.events).toEqual([]);
+    expect(state.events).toHaveLength(1);
+    expect(state.events[0]).toMatchObject({ sequence: 0, event: {
+      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "request" }) }
+    } });
     expect(state.failed).toMatchObject({
       error: {
         code: "provider_stream_failed",
@@ -5605,7 +5616,10 @@ describe("model run route handlers", () => {
     expect(state.cancelled).toMatchObject({
       code: "model_run_cancelled"
     });
-    expect(state.events).toEqual([]);
+    expect(state.events).toHaveLength(1);
+    expect(state.events[0]).toMatchObject({ sequence: 0, event: {
+      type: "artifact", data: { artifactType: "context_status", payload: expect.objectContaining({ phase: "request" }) }
+    } });
   });
 
   it("settles Workspace when a cancelled PDF worker has a controller but no answer settlement promise", async () => {
@@ -5893,6 +5907,7 @@ describe("model run route handlers", () => {
       { params: { messageId: "assistant-message-1" } }
     );
     expect(regenerateResponse.status).toBe(200);
+    await regenerateResponse.text();
     expect(state.regenerated?.mcpBindings).toEqual(bindings);
     expect(mcp.prepare).toHaveBeenCalledTimes(2);
     expect(mcp.prepare).toHaveBeenCalledWith(config.bootstrapUserId);
@@ -6003,6 +6018,7 @@ describe("Stop diagnostics", () => {
     const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const registration = activeRunControllerRegistry.register("run-1");
     try {
+      expect(registration).not.toBeNull();
       const { repository } = createMemoryRepository();
       const POST = createCancelModelRunHandler({ ...authDeps, repository, providers: {} });
       const response = await runWithContext({ trace_id: "4".repeat(32) }, () => POST(new Request(
