@@ -384,6 +384,11 @@ export function useRunLifecycleActions({
     const outcome = await requestRunOutcome(runId, chatId);
     if (outcome.kind !== "found") return outcome;
     const { run } = outcome;
+    useThreadStore.getState().updateMessages(chatId, (messages) => messages.map((message) => message.runId === run.id
+      ? { ...message, ...(run.answerComplete ? { status: "complete" as const } : {}),
+          workspacePreparation: run.workspacePreparation,
+          workspaceSettling: run.answerComplete && isActiveRunStatus(run.status) ? true : undefined }
+      : message));
     if (run.pdfPreparation) useThreadStore.getState().updateMessages(chatId, (messages) => messages.map((message) => {
       if (message.runId !== run.id) return message;
       const current = message.pdfPreparation;
@@ -397,6 +402,7 @@ export function useRunLifecycleActions({
     const activeStream = useRunLifecycleStore.getState().activeStreams[chatId];
     if (activeStream && (!activeStream.runId || activeStream.runId === run.id)) {
       useRunLifecycleStore.getState().runIdReceived({ chatId, runId: run.id });
+      if (run.answerComplete) useRunLifecycleStore.getState().answerCompleted({ chatId, runId: run.id });
     }
     return { kind: "found", run };
   }
@@ -425,6 +431,9 @@ export function useRunLifecycleActions({
       return;
     }
 
+    let answerNotified = selectThreadSnapshot(useThreadStore.getState(), chat.id).messages.some(
+      (message) => message.runId === runId && message.workspaceSettling);
+    if (answerNotified) useRunLifecycleStore.getState().answerCompleted({ chatId: chat.id, runId });
     let retainResumeGate = false;
     try {
       let startedAt = Date.now();
@@ -440,11 +449,15 @@ export function useRunLifecycleActions({
         }
 
         const outcome = await inspectResumedRun(chat, runId);
+        if (outcome.kind === "found" && outcome.run.answerComplete && !answerNotified) {
+          answerNotified = true;
+          void notifyAnswerReady();
+        }
         if (outcome.kind === "found" && outcome.run.pdfPreparation &&
           (outcome.run.status === "queued" || outcome.run.pdfPreparation.some((item) =>
             ["checking", "preparing", "assembling"].includes(item.phase)))) startedAt = Date.now();
         if (isTerminalRunFetchOutcome(outcome)) {
-          if (outcome.kind === "found" && outcome.run.status === "complete") {
+          if (outcome.kind === "found" && outcome.run.status === "complete" && !answerNotified) {
             void notifyAnswerReady();
           }
           return;
@@ -468,7 +481,7 @@ export function useRunLifecycleActions({
                 const outcome = await inspectResumedRun(chat, runId);
                 if (isTerminalRunFetchOutcome(outcome) && ownsResume(chat.id, runId)) {
                   useRunLifecycleStore.getState().resumeExited({ chatId: chat.id, runId });
-                  if (outcome.kind === "found" && outcome.run.status === "complete") {
+                  if (outcome.kind === "found" && outcome.run.status === "complete" && !answerNotified) {
                     void notifyAnswerReady();
                   }
                 }
@@ -551,7 +564,7 @@ export function useRunLifecycleActions({
           );
         }
       } else if (!isActiveRunStatus(result.run.status)) {
-        useRunLifecycleStore.getState().streamFinished({ chatId: sourceChatId });
+        useRunLifecycleStore.getState().streamFinished({ chatId: sourceChatId, runId });
         useRunLifecycleStore.getState().ambiguityCleared({ chatId: sourceChatId });
       } else if (interrupted && activeChatIdRef.current === sourceChatId) {
         setNotice({ kind: "error", text: "Couldn’t stop the answer. Refresh to check its state." });

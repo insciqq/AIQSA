@@ -983,7 +983,7 @@ html[data-motion="off"] .v2-chat-pulse {
   background: var(--v2-color-rail);
 }
 
-.v2-rail-brand {
+.v2-rail-button.v2-rail-brand {
   display: grid;
   width: 2.5rem;
   height: 2.5rem;
@@ -992,7 +992,7 @@ html[data-motion="off"] .v2-chat-pulse {
   color: var(--v2-color-accent);
 }
 
-.v2-rail-brand > .v2-icon {
+.v2-rail-button.v2-rail-brand > .v2-icon {
   width: 1.375rem;
   height: 1.375rem;
   stroke-width: 2;

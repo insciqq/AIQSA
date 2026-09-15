@@ -1,5 +1,6 @@
 import { imageGenerationForStorage } from "@/lib/server/images/defaultImages";
 import { getDefaultChatPdf } from "@/lib/server/uploads/defaultChatPdf";
+import { getDefaultWorkspaceFollowup } from "@/lib/server/runs/defaultWorkspaceFollowup";
 import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { defaultInstructionPresets } from "@/lib/server/instructions/defaultInstructions";
 import { defaultAssistantRepository } from "@/lib/server/assistants/defaultAssistants";
@@ -50,6 +51,7 @@ export const POST: AsyncRouteHandler<ReturnType<typeof createSendMessageHandler>
   memoryEgress: defaultMemoryToolEgressReceiptService,
   mcp: defaultMcpRunPlan,
   chatPdf: getDefaultChatPdf(),
+  workspaceFollowup: getDefaultWorkspaceFollowup(),
   providerAdmission: providerAdmissionService,
   providerRuntime: providerRuntimeResolver,
   providers: {},

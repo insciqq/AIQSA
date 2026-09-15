@@ -923,6 +923,7 @@ function chatUpdate(): RunChatUpdateRecord {
 
 function createRepository(options: RepositoryOptions = {}) {
   const assistantTexts: string[] = [];
+  const publishedAnswers: CompleteRunInput[] = [];
   const completeRuns: CompleteRunInput[] = [];
   const failedRuns: FailedRun[] = [];
   const groundingAnswers: string[] = [];
@@ -984,12 +985,19 @@ function createRepository(options: RepositoryOptions = {}) {
       toolCalls.set(callId, claimed);
       return { call: claimed, kind: "claimed" };
     },
+    async publishRunAnswer(input) {
+      publishedAnswers.push(input);
+      for (const event of input.outputEvents ?? []) {
+        persistedEvents.push({ event, runId: input.runId, sequence: persistedEvents.length });
+      }
+      return true;
+    },
     async completeRun(input) {
       completeRuns.push(input);
       if (options.completionWins === false) {
         return false;
       }
-      for (const event of input.outputEvents ?? []) {
+      for (const event of publishedAnswers.length ? [] : input.outputEvents ?? []) {
         persistedEvents.push({ event, runId: input.runId, sequence: persistedEvents.length });
       }
       return true;
@@ -1171,6 +1179,7 @@ function createRepository(options: RepositoryOptions = {}) {
 
   return {
     assistantTexts,
+    publishedAnswers,
     completeRuns,
     get durableProviderResponsePreview() {
       return durableProviderResponsePreview;
@@ -1568,12 +1577,29 @@ describe("run execution", () => {
       settle: vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true })),
       tools: async () => [{ capability: "workspace" as const, description: "Fixture", inputSchema: {}, name: "workspace_fixture" }]
     };
-    const text = createRunExecutionResponse({ ...executionInput({ adapter, repository: repository.repository,
+    const response = createRunExecutionResponse({ ...executionInput({ adapter, repository: repository.repository,
       prepared: { ...prepared, normalizedRequest: { ...prepared.normalizedRequest, workspace: completionWorkspace } }
-    }), workspace }).text();
+    }), workspace });
+    let received = "";
+    const text = (async () => {
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      try {
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) return received;
+          received += decoder.decode(chunk.value, { stream: true });
+        }
+      } finally { reader.releaseLock(); }
+    })();
     try {
       await vi.waitFor(() => expect(handoff).toHaveBeenCalledOnce());
+      expect(repository.publishedAnswers).toHaveLength(1);
       expect(repository.completeRuns).toHaveLength(0);
+      await vi.waitFor(() => expect(parseSse(received)).toContainEqual({
+        type: "answer_complete", data: { assistantMessageId: "assistant-1", runId: "run-1" }
+      }));
+      expect(parseSse(received).some((event) => event.type === "done")).toBe(false);
       if (outcome === "cancelled") expect(activeRunControllerRegistry.abort("run-1")).toBe(true);
       boundary.resolve();
       const events = parseSse(await text);
@@ -1581,8 +1607,11 @@ describe("run execution", () => {
       expect(repository.completeRuns).toHaveLength(outcome === "ready" || outcome === "completion_lost" ? 1 : 0);
       expect(providerCalls).toHaveBeenCalledOnce();
       expect(workspace.finalize).not.toHaveBeenCalled();
-      if (outcome !== "ready") expect(events.some((event) => event.type === "usage")).toBe(false);
-      if (outcome === "completion_lost") expect(repository.recordedRunUsageEvents).toHaveLength(2);
+      expect(events.filter((event) => event.type === "answer_complete")).toEqual([
+        { type: "answer_complete", data: { assistantMessageId: "assistant-1", runId: "run-1" } }
+      ]);
+      expect(events.filter((event) => event.type === "usage")).toHaveLength(1);
+      if (outcome === "completion_lost") expect(repository.recordedRunUsageEvents).toHaveLength(1);
     } finally { boundary.resolve(); await text; }
   });
 

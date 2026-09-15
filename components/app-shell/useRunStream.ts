@@ -31,6 +31,8 @@ type UseRunStreamInput = {
 type ConsumeRunStreamInput = {
   chatId: string;
   failurePrefix: string;
+  isCurrent?(): boolean;
+  onAnswerComplete?(input: { assistantMessageId: string; runId: string }): void;
   onMessageIds(messageIds: RunStreamMessageIds, currentRunId: string | null): void;
   onRunId(runId: string): void;
   response: Response;
@@ -55,6 +57,8 @@ export function useRunStream({
     async function consumeRunStream({
       chatId,
       failurePrefix,
+      isCurrent = () => true,
+      onAnswerComplete,
       onMessageIds,
       onRunId,
       response,
@@ -68,36 +72,52 @@ export function useRunStream({
       let parseWarningLogged = false;
       let receivedChatUpdate = false;
       let runId: string | null = null;
+      let assistantMessageId: string | null = null;
+      let answerPublished = false;
       let terminalStatus: RunStreamTerminalStatus | null = null;
 
       const handleEvent = (event: RunEventView) => {
         if (isSseParseError(event)) {
-          parseWarningLogged = appendSseParseWarningOnce(event, chatId, parseWarningLogged);
+          if (isCurrent() && !answerPublished) parseWarningLogged = appendSseParseWarningOnce(event, chatId, parseWarningLogged);
           return;
         }
 
         const delta = tokenDeltaFromEvent(event);
         if (delta) {
-          tokenBuffer.push(delta);
+          if (!answerPublished && isCurrent()) tokenBuffer.push(delta);
           return;
         }
 
         tokenBuffer.flush();
-        if (event.type === "message_reset") {
-          tokenBuffer.reset?.();
+        if (event.type === "answer_complete") {
+          if (!isRecord(event.data) || !runId || event.data.runId !== runId ||
+            !assistantMessageId || event.data.assistantMessageId !== assistantMessageId) {
+            throw new Error("run_answer_completion_malformed");
+          }
+          if (!answerPublished) {
+            answerPublished = true;
+            onAnswerComplete?.({ assistantMessageId, runId });
+          }
         }
-        appendRunEventView(event, chatId);
-        receivedChatUpdate = applyChatUpdate(event, chatId) || receivedChatUpdate;
+        if (event.type === "message_reset") {
+          if (!answerPublished && isCurrent()) tokenBuffer.reset?.();
+        }
+        if (isCurrent() && (!answerPublished || event.type !== "error")) {
+          appendRunEventView(event, chatId);
+          receivedChatUpdate = applyChatUpdate(event, chatId) || receivedChatUpdate;
+        }
 
         const maybeRunId = runIdFromEvent(event);
         if (maybeRunId) {
+          if (runId && runId !== maybeRunId) throw new Error("run_stream_identity_mismatch");
           runId = maybeRunId;
-          onRunId(maybeRunId);
+          if (isCurrent()) onRunId(maybeRunId);
         }
 
         const messageIds = messageIdsFromEvent(event);
         if (messageIds?.assistantMessageId || messageIds?.userMessageId) {
-          onMessageIds(messageIds, runId);
+          assistantMessageId = messageIds.assistantMessageId ?? assistantMessageId;
+          if (isCurrent()) onMessageIds(messageIds, runId);
         }
 
         if (event.type === "error") {

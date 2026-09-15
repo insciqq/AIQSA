@@ -3,7 +3,7 @@ import { PrismaClient } from "@prisma/client";
 import { expect, test } from "@playwright/test";
 import { hashPassword } from "../../lib/server/auth/password";
 import { provisionActiveUser } from "../../lib/server/auth/provisioning";
-import { activeChatId, loginWithPassword, selectFakeModel, sendAndExpect, startNewChat } from "./support/workspace";
+import { activeChatId, loginWithPassword, selectFakeModel, sendAndExpect, setWorkspaceEnabled, startNewChat } from "./support/workspace";
 
 const prisma = new PrismaClient();
 test.afterAll(() => prisma.$disconnect());
@@ -19,8 +19,8 @@ test("remembers explicit Workspace choices across chats and login, with account 
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   const savedChoice = async (userId = users[0]!.id) => (await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).defaultWorkspaceEnabled;
-  const on = page.getByRole("button", { name: /^Turn off Workspace/u });
-  const off = page.getByRole("button", { name: /^Turn on Workspace/u });
+  const on = page.getByRole("button", { name: /^Workspace details\. On\./u });
+  const off = page.getByRole("button", { name: /^Workspace details\. Off\./u });
   try {
     await prisma.workspacePolicy.update({ where: { id: "installation" }, data: { enabled: true } });
     const group = await prisma.group.findUniqueOrThrow({ where: { systemRole: "full_access" }, select: { id: true } });
@@ -33,7 +33,12 @@ test("remembers explicit Workspace choices across chats and login, with account 
     }
     await loginWithPassword(page, users[0]!);
     await selectFakeModel(page);
-    await expect(off).toHaveAttribute("aria-pressed", "false");
+    await expect(on).toBeVisible();
+    expect(await savedChoice()).toBe(true);
+    expect(await prisma.workspaceSession.count({ where: { chat: { userId: users[0]!.id } } })).toBe(0);
+    await setWorkspaceEnabled(page, false);
+    await expect.poll(savedChoice).toBe(false);
+    await expect(off).toBeVisible();
     await sendAndExpect(page, "Workspace default fixture", "Fake answer: Workspace default fixture");
     const originalChat = await activeChatId(page);
     await startNewChat(page);
@@ -45,14 +50,14 @@ test("remembers explicit Workspace choices across chats and login, with account 
         await route.fulfill({ status: 503, json: { error: "settings_update_failed_503" } });
       } else await route.continue();
     });
-    await off.click();
+    await setWorkspaceEnabled(page, true);
     await expect(on).toBeEnabled();
     await expect(page.getByRole("alert").filter({ hasText: "settings_update_failed_503" })).toBeVisible();
     expect(await savedChoice()).toBe(false);
     await page.getByRole("button", { name: "Retry", exact: true }).click();
     await expect.poll(savedChoice).toBe(true);
     await startNewChat(page);
-    await expect(on).toHaveAttribute("aria-pressed", "true");
+    await expect(on).toBeVisible();
     await selectFakeModel(page);
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:browser_missing]", "Workspace browser session absent.");
     const enabledChat = await activeChatId(page);
@@ -62,26 +67,29 @@ test("remembers explicit Workspace choices across chats and login, with account 
     await startNewChat(page);
     await page.reload();
     await selectFakeModel(page);
-    await expect(on).toHaveAttribute("aria-pressed", "true");
+    await expect(on).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("workspace-default-enabled.png") });
 
     await page.request.post("/api/auth/logout", { data: {} });
     await loginWithPassword(page, users[1]!);
     await startNewChat(page);
     await selectFakeModel(page);
-    await expect(off).toHaveAttribute("aria-pressed", "false");
-    expect(await savedChoice(users[1]!.id)).toBe(false);
+    await expect(on).toBeVisible();
+    expect(await savedChoice(users[1]!.id)).toBe(true);
     await page.request.post("/api/auth/logout", { data: {} });
     await loginWithPassword(page, users[0]!);
     await startNewChat(page);
     await selectFakeModel(page);
-    await expect(on).toHaveAttribute("aria-pressed", "true");
-    await on.click();
+    await expect(on).toBeVisible();
+    await setWorkspaceEnabled(page, false);
     await expect.poll(savedChoice).toBe(false);
+    await prisma.$transaction((tx) => provisionActiveUser(tx, { userId: users[0]!.id }));
+    await page.request.post("/api/auth/logout", { data: {} });
+    await loginWithPassword(page, users[0]!);
     await startNewChat(page);
     await page.reload();
     await selectFakeModel(page);
-    await expect(off).toHaveAttribute("aria-pressed", "false");
+    await expect(off).toBeVisible();
     expect((await prisma.chat.findUniqueOrThrow({ where: { id: enabledChat } })).workspaceEnabled).toBe(true);
     await page.screenshot({ path: testInfo.outputPath("workspace-default-disabled.png") });
     expect(pageErrors).toEqual([]);

@@ -548,6 +548,59 @@ describe("Navigation v2", () => {
     expect(within(navigation).getByText("AIQSA")).toBeInTheDocument();
   });
 
+  it.each([900, 1440])("starts a personal chat from the Library or Projects rail at width %s", (width) => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => width));
+    useWorkspaceStore.getState().applyNavigationPage({ chats: [], folders: [], nextCursor: null }, false);
+    const onChats = vi.fn();
+    const onNewChat = vi.fn();
+    const onLeaveProject = vi.fn();
+    const onProjectsSectionChange = vi.fn();
+    const shell = (section: "chats" | "library") => (
+      <ReadingRoomShellV2
+        onChats={onChats}
+        onLeaveProject={onLeaveProject}
+        onNewChat={onNewChat}
+        onProjectsSectionChange={onProjectsSectionChange}
+        onSelectChat={vi.fn()}
+        projectsSectionOpen={section === "chats"}
+        projectsSlot={<div>Project catalog</div>}
+        section={section}
+      >
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+    const view = render(shell("library"));
+    const activateBrand = () => fireEvent.click(within(screen.getByRole("navigation", { name: "Workspace" }))
+      .getByRole("button", { name: "New chat" }));
+
+    activateBrand();
+    expect(onChats).toHaveBeenCalledOnce();
+    expect(onNewChat).toHaveBeenCalledExactlyOnceWith("NORMAL");
+    expect(onLeaveProject).toHaveBeenCalledOnce();
+    expect(onProjectsSectionChange).toHaveBeenLastCalledWith(false);
+
+    view.rerender(shell("chats"));
+    activateBrand();
+    expect(onNewChat).toHaveBeenCalledTimes(2);
+    expect(onNewChat).toHaveBeenLastCalledWith("NORMAL");
+    expect(onLeaveProject).toHaveBeenCalledTimes(2);
+    expect(onProjectsSectionChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it.each([390, 900, 1440])("focuses the composer after New chat and drawer dismissal at width %s", async (width) => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => width));
+    useWorkspaceStore.getState().applyNavigationPage({ chats: [], folders: [], nextCursor: null }, false);
+    const onNewChat = vi.fn();
+    render(<ReadingRoomShellV2 onNewChat={onNewChat} onSelectChat={vi.fn()}>
+      <div data-testid="composer-v2"><textarea aria-label="Message" /></div>
+    </ReadingRoomShellV2>);
+    if (width < 1024) fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
+    fireEvent.click(within(screen.getByRole("complementary", { name: "Chat navigation" }))
+      .getByRole("button", { name: "New chat" }));
+    expect(onNewChat).toHaveBeenCalledExactlyOnceWith("NORMAL");
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveFocus());
+  });
+
   it("leaves a Project for Library but opens Projects as its own shell section", () => {
     const onLeaveProject = vi.fn();
     const onLibrary = vi.fn();
@@ -580,7 +633,8 @@ describe("Navigation v2", () => {
     expect(onProjectsSectionChange).toHaveBeenLastCalledWith(true);
     expect(screen.getByRole("complementary", { name: "Project navigation" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Create project" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "New chat" })).toBeNull();
+    expect(within(screen.getByRole("complementary", { name: "Project navigation" }))
+      .queryByRole("button", { name: "New chat" })).toBeNull();
     expect(within(rail).getByRole("button", { name: "Projects" })).toHaveAttribute("aria-current", "page");
   });
 
@@ -599,7 +653,8 @@ describe("Navigation v2", () => {
 
     expect(screen.getByText("Project catalog")).toBeVisible();
     expect(screen.getByRole("complementary", { name: "Project navigation" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "New chat" })).toBeNull();
+    expect(within(screen.getByRole("complementary", { name: "Project navigation" }))
+      .queryByRole("button", { name: "New chat" })).toBeNull();
 
     view.rerender(shell(false));
     expect(screen.queryByText("Project catalog")).toBeNull();

@@ -128,6 +128,8 @@ export type ShellThreadView = {
   activeChatDetailError: string | null;
   activeChatDetailLoading: boolean;
   activeChatStreaming: boolean;
+  /** A verified answer may be complete while its Workspace still settles. */
+  answerComplete?: boolean;
   /** Copies the complete visible branch of the active chat, or of `chat` when given. */
   copyVisibleThread(chat?: Readonly<{ id: string; title: string }>): Promise<void> | void;
   cancelMessageEdit(messageId: string): void;

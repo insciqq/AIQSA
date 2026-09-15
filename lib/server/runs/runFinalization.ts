@@ -9,7 +9,7 @@ import type { KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1 } from "../knowledge/an
 import type { KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V1 } from "../knowledge/evidenceAnswerSnapshotV1";
 import type { KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V2 } from "../knowledge/evidenceAnswerSnapshotV2";
 
-type RunCompletionRepository = Pick<RunRepository, "completeRun" | "loadModelPricing"> &
+type RunCompletionRepository = Pick<RunRepository, "completeRun" | "loadModelPricing" | "publishRunAnswer"> &
   Pick<
     RunRepository,
     "groundKnowledgeAnswer" | "groundKnowledgeAnswerV5" | "groundKnowledgeAnswerV21" | "groundKnowledgeEvidenceAnswer"
@@ -82,6 +82,9 @@ export async function usageAttributionsWithEstimatedCost(
 }
 
 export async function finalizeRunCompletion(input: Readonly<{
+  /** Called only after the final, grounded text has been durably published.
+   * Full terminal persistence still waits for this obligation to finish. */
+  afterAnswerPublished?: (answer: Readonly<{ finalText: string; usage: ModelRunUsage }>) => Promise<void>;
   knowledgeAnswerContracts?: KnowledgeAnswerFinalizationContracts;
   knowledgeZeroEvidence?: true;
   outputEvents?: readonly RunOutputArtifactEvent[];
@@ -176,6 +179,11 @@ export async function finalizeRunCompletion(input: Readonly<{
     usageAttributions,
     userId: input.run.userId
   };
+  if (input.afterAnswerPublished) {
+    if (!input.repository.publishRunAnswer) throw new Error("run_answer_publication_unavailable");
+    if (!(await input.repository.publishRunAnswer(completion))) return { status: "not_completed" };
+    await input.afterAnswerPublished({ finalText: completion.finalText, usage });
+  }
   let completed: boolean;
   try {
     completed = await input.repository.completeRun(completion);

@@ -770,7 +770,8 @@ export function useMessageRunActions({
         Boolean(currentChatSummary?.projectId)
       );
 
-      if (useRunLifecycleStore.getState().activeStreams[chatIdForSend]) {
+      const activeSend = useRunLifecycleStore.getState().activeStreams[chatIdForSend];
+      if (activeSend && !activeSend.answerComplete) {
         return;
       }
 
@@ -821,6 +822,9 @@ export function useMessageRunActions({
         failurePrefix: "send_failed",
         fetchRun,
         notifyAnswerReady,
+        onAnswerPublished(runId) {
+          useComposerSessionStore.getState().finishSend(sendToken, "succeeded", null, true, runId);
+        },
         optimisticAssistantMessageId: assistantId,
         primeAnswerSound,
         reconcileMessageIds({ currentRunId, messageIds }) {
@@ -1041,7 +1045,8 @@ export function useMessageRunActions({
         Boolean(currentChatSummary?.projectId)
       );
 
-      if (useRunLifecycleStore.getState().activeStreams[chatIdForSend]) {
+      const activeSend = useRunLifecycleStore.getState().activeStreams[chatIdForSend];
+      if (activeSend && !activeSend.answerComplete) {
         return;
       }
 

@@ -78,6 +78,15 @@ enum ModelRunStatus {
   error
 }
 
+enum WorkspaceFollowupState {
+  waiting
+  preparing
+  released
+  dispatched
+  failed
+  cancelled
+}
+
 enum SearchRunStatus {
   complete
   error
@@ -1056,7 +1065,7 @@ model UserSettings {
   defaultControlValues    Json           @default("{}")
   defaultKnowledgePlan    Json?
   defaultMcpMode          String         @default("auto")
-  defaultWorkspaceEnabled Boolean        @default(false)
+  defaultWorkspaceEnabled Boolean        @default(true)
   answerSoundEnabled      Boolean        @default(true)
   answerSoundId           String         @default("rise") @db.VarChar(16)
   sendWithEnter           Boolean        @default(true)
@@ -2903,6 +2912,8 @@ model ChatTitleGeneration {
 }
 
 model ModelRun {
+  workspaceFollowup            WorkspaceFollowup?                  @relation("WaitingWorkspaceRun")
+  dependentWorkspaceFollowups   WorkspaceFollowup[]                 @relation("PreviousWorkspaceRun")
   chatTitleGeneration          ChatTitleGeneration?
   chatPdfPreparation           ChatPdfRunPreparation?
   chatPdfAttachments           ChatPdfAttachmentPreparation[]
@@ -2929,6 +2940,10 @@ model ModelRun {
   errorPayload                 Json?
   toolLoopState                Json?
   answerStartedAt              DateTime?
+  answerCompletedAt            DateTime?
+  /// Frozen completion accounting for recovery until the run settles.
+  answerCompletionUsage        Json?
+  workspaceWaitPending         Boolean                             @default(false)
   createdAt                    DateTime                            @default(now())
   updatedAt                    DateTime                            @updatedAt
   assistantMessage             Message?                            @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
@@ -2962,12 +2977,37 @@ model ModelRun {
   workspaceProducedAttachments Attachment[]                        @relation("WorkspaceProducedAttachment")
 
   @@unique([userId, id])
+  @@unique([chatId, id], map: "ModelRun_chatId_id_key")
   @@unique([userId, chatId, id])
   @@index([assistantId])
   @@index([chatId, createdAt])
   @@index([provider, modelId])
   @@index([status])
   @@index([userId, createdAt])
+}
+
+/// One accepted next message waiting for its predecessor to retire Workspace authority.
+model WorkspaceFollowup {
+  modelRunId            String                 @id
+  chatId                String
+  predecessorRunId      String
+  admissionKey          String                 @unique @db.Char(64)
+  state                 WorkspaceFollowupState @default(waiting)
+  snapshot              Json?
+  admissionResult       Json?
+  sourceRevisionAdvance Int                    @default(0)
+  deadlineAt            DateTime
+  claimToken            String?
+  leaseExpiresAt        DateTime?
+  errorCode             String?                @db.VarChar(64)
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  modelRun              ModelRun               @relation("WaitingWorkspaceRun", fields: [chatId, modelRunId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict)
+  predecessor           ModelRun               @relation("PreviousWorkspaceRun", fields: [chatId, predecessorRunId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@unique([chatId, modelRunId])
+  @@index([state, createdAt])
+  @@index([chatId, predecessorRunId])
 }
 
 model ModelRunSkillBinding {

@@ -10,6 +10,8 @@ export function serializeRunOutcome(record: RunOutcomeRecord): RunOutcomeRespons
   const pdfPreparation = decodeChatPdfPreparations(record.pdfPreparation);
   return {
     run: {
+      ...(record.answerComplete === true ? { answerComplete: true as const } : {}),
+      ...(record.workspacePreparation === true ? { workspacePreparation: true as const } : {}),
       ...(pdfPreparation ? { pdfPreparation } : {}),
       id: record.id,
       status: record.status

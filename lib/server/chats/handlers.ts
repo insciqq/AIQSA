@@ -41,6 +41,8 @@ export type {
 } from "../../contracts/chats";
 
 export type ChatMessageRecord = {
+  workspacePreparation?: true;
+  workspaceSettling?: true;
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
   author?: ChatMessageWire["author"];
@@ -269,6 +271,8 @@ function iso(value: Date | string): string {
 function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
   return {
     ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
+    ...(message.workspacePreparation === true ? { workspacePreparation: true as const } : {}),
+    ...(message.workspaceSettling === true ? { workspaceSettling: true as const } : {}),
     artifactSummary: message.artifactSummary ?? null,
     assistantIdentity: message.assistantIdentity ?? null,
     author: message.author ?? null,

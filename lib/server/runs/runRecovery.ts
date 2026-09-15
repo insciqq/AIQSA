@@ -250,6 +250,7 @@ export type RunRecoveryRepository = Pick<
   | "loadFocusedKnowledgeCall"
   | "loadFocusedKnowledgeScopeExclusions"
   | "loadModelPricing"
+  | "loadPublishedRunAnswer"
   | "loadRunUsageAttributions"
   | "persistToolLoopCallBatch"
   | "recordRunUsageEvents"
@@ -267,6 +268,7 @@ export type RunRecoveryRepository = Pick<
   | "groundKnowledgeAnswerV21"
   | "groundKnowledgeEvidenceAnswer"
   | "hasPendingPdfPreparation"
+  | "hasPendingWorkspacePreparation"
   | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
   | "loadProviderDispatchRecoveryRequest"
@@ -400,8 +402,9 @@ function isActiveRunStatus(status: string): boolean {
   return status === "streaming" || status === "queued" || status === "in_progress";
 }
 
-function isRefreshableRun(control: Readonly<{ recoverySettled?: boolean; status: string }>): boolean {
-  return isActiveRunStatus(control.status) || (control.status === "error" && !control.recoverySettled);
+function isRefreshableRun(control: Readonly<{ answerComplete?: true; recoverySettled?: boolean; status: string }>): boolean {
+  return isActiveRunStatus(control.status) ||
+    (control.status === "error" && !control.recoverySettled && !control.answerComplete);
 }
 
 class ToolLoopRecoveryError extends Error {
@@ -3855,6 +3858,22 @@ async function refreshProviderRunOnceRegistered(
   }
   if (!(await projectRecoveryAuthorityAllowsProceed(deps, control, runId, userId))) return;
 
+  const publishedAnswer = await deps.repository.loadPublishedRunAnswer?.({ runId, userId });
+  if (publishedAnswer) {
+    const request = await deps.repository.loadProviderDispatchRecoveryRequest?.({ runId, userId });
+    if (!request?.workspace || !deps.workspace) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
+    const handoff = await deps.workspace.handoff({ runId, userId, signal, workspace: request.workspace,
+      onActivity: async (entry) => {
+        const event = projectRunOutputArtifactEvent(workspaceActivityEvent(entry));
+        if (event) await deps.repository.appendRunOutputEvent(runId, event);
+      }
+    });
+    if (handoff.status !== "ready") return;
+    signal.throwIfAborted();
+    await deps.repository.completeRun(publishedAnswer);
+    return;
+  }
+
   if (deps.knowledgeProviderDispatch) {
     let draftDispatch: Awaited<ReturnType<KnowledgeProviderDispatchLifecycle["inspect"]>> = null;
     try {
@@ -4766,7 +4785,12 @@ export async function reconcileInstallationRuns(
         run.id,
         run.userId
       ))) return;
-      if (await deps.repository.hasPendingPdfPreparation?.(run.id)) return;
+      if (await deps.repository.hasPendingPdfPreparation?.(run.id) ||
+        await deps.repository.hasPendingWorkspacePreparation?.(run.id)) return;
+      if (await deps.repository.loadPublishedRunAnswer?.({ runId: run.id, userId: run.userId })) {
+        await refreshProviderRunIfNeeded(deps, run.id, run.userId);
+        return;
+      }
       if (run.status === "preparing") {
         await recoverPreparingRun(deps.repository, {
           now,
@@ -4838,7 +4862,12 @@ export async function reconcileStaleRuns(
         input.userId
       ))) return;
 
-      if (await deps.repository.hasPendingPdfPreparation?.(run.id)) return;
+      if (await deps.repository.hasPendingPdfPreparation?.(run.id) ||
+        await deps.repository.hasPendingWorkspacePreparation?.(run.id)) return;
+      if (await deps.repository.loadPublishedRunAnswer?.({ runId: run.id, userId: input.userId })) {
+        await refreshProviderRunIfNeeded(deps, run.id, input.userId);
+        return;
+      }
       if (run.status === "preparing") {
         await recoverPreparingRun(deps.repository, {
           now,
