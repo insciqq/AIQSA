@@ -26,11 +26,11 @@ import { createAcceptedMemoryStructuredOutputProvider } from "../execution/struc
 export const MEMORY_RECLASSIFICATION_PIPELINE_VERSION =
   "memory-safety-reclassification-v2";
 export const MEMORY_RECLASSIFICATION_POLICY_VERSION =
-  "memory-safety-policy-v2";
+  "memory-safety-policy-v3";
 export const MEMORY_RECLASSIFICATION_SCHEMA_VERSION =
   "memory-safety-classification-schema-v1";
 export const MEMORY_RECLASSIFICATION_PROMPT_VERSION =
-  "memory-safety-reclassification-prompt-v2";
+  "memory-safety-reclassification-prompt-v3";
 export const MEMORY_RECLASSIFICATION_NAME =
   "memory_safety_reclassification_v1";
 
@@ -243,7 +243,8 @@ export function decodeMemoryReclassificationDecision(
         value.storage_decision
       )) ||
     (value.subject_scope === "USER_RELATIONSHIP_CONTEXT" &&
-      (value.sensitivity !== "NORMAL" || value.storage_decision !== "ALLOW")) ||
+      (value.sensitivity !== "NORMAL" && value.sensitivity !== "SENSITIVE" ||
+        value.storage_decision !== "ALLOW")) ||
     (value.subject_scope === "UNCERTAIN" &&
       value.storage_decision !== "REJECT_UNSUITABLE") ||
     (value.storage_decision === "REJECT_THIRD_PARTY" &&
@@ -290,7 +291,7 @@ export function buildMemoryReclassificationRequest(
       "SECRET means credentials, authentication material, financial-account secrets, private keys, recovery material, or similarly dangerous reusable secrets.",
       "Use NORMAL for every otherwise storable first-party personal fact, including private personal information. Use SECRET for dangerous reusable secrets and UNCERTAIN whenever safe classification is not reliable. Do not use SENSITIVE or category sensitive for a new decision.",
       "Set response_preference only when the statement directly controls how future answers should be written; then category must be preferences.",
-      "For an AUTOMATIC source, reject every third-party fact. For an EXPLICIT source, allow only necessary ordinary NORMAL relationship context explicitly requested by the owner.",
+      "For an AUTOMATIC source, allow a direct user-authored USER_RELATIONSHIP_CONTEXT fact when it is necessary, source-grounded, and otherwise safe; reject arbitrary third-party dossiers, allegations, and unrelated facts. For an EXPLICIT source, allow only necessary ordinary relationship context explicitly requested by the owner.",
       "Set subject_scope to USER for a fact about the owner, USER_RELATIONSHIP_CONTEXT only for necessary ordinary relationship context, THIRD_PARTY for a fact about someone else, and UNCERTAIN when the subject cannot be safely determined.",
       "Reject private third-party facts, any allegation about another person, temporary or unsuitable material, and all secrets. Set storage_decision to the matching rejection (REJECT_SECRET, REJECT_THIRD_PARTY, REJECT_ALLEGATION, or REJECT_UNSUITABLE) and use the matching reason_code.",
       `Choose an ordinary semantic category from: ${MEMORY_V1_CATEGORY_ALLOWLIST.filter((category) => category !== "sensitive").join(", ")}.`,

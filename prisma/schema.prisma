@@ -4371,7 +4371,7 @@ model UserMemorySettings {
   acceptedUtilityEgressAt          DateTime?
   synthesisEnabled                 Boolean                        @default(true)
   synthesisEnabledAt               DateTime?                      @default(now())
-  synthesisPolicyVersion           String?                        @default("memory-synthesis-policy-v3") @db.VarChar(64)
+  synthesisPolicyVersion           String?                        @default("memory-synthesis-policy-v4") @db.VarChar(64)
   lastSynthesisAt                  DateTime?
   decayEnabled                     Boolean                        @default(true)
   decayPolicyVersion               String?                        @default("memory-decay-v1") @db.VarChar(64)
@@ -5242,6 +5242,7 @@ model MemorySuppression {
   sourceChatId            String?
   sourceMessageId         String?
   sourceBranchGeneration  Int?
+  preservedEvidenceIds    String[]               @default([])
   deletionGeneration      Int
   fingerprintKeyVersion   String                 @db.VarChar(64)
   normalizationVersion    String                 @db.VarChar(64)

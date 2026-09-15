@@ -65,7 +65,7 @@ function providerRequest(
     searchPlan: { mode: "all_selected", options: [] },
     toolChoice: "required",
     toolMode: "auto",
-    tools: [memorySemanticAdjudicationTool]
+    tools: [memorySemanticAdjudicationTool(input)]
   };
 }
 

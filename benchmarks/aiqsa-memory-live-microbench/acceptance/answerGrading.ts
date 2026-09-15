@@ -1,5 +1,5 @@
 import type { AcceptanceDriver, Identity } from "./driver";
-import { JUDGE_SYSTEM, decodeJudgement, type Probe } from "./contract";
+import { JUDGE_SYSTEM, decodeJudgement, type JudgeSourceContext, type Probe } from "./contract";
 import { actorAwareJudgeInput } from "./actorGrading";
 
 export const ANSWER_JUDGE_SYSTEM = `${JUDGE_SYSTEM} For answer-only evaluation, require the expected information needed to answer the actual question. The expectation may also contain background details for checking stored facts: do not require the answer to volunteer those unasked details. Still reject a missing requested detail, a wrong attribution, an unsupported assertion, or an answer contradicted by the expectation.`;
@@ -12,8 +12,14 @@ export const ANSWER_GRADING_CALIBRATION = [
     values: ["You commute on Tuesdays and Thursdays."], passed: false, answer: true }
 ];
 
-export async function judgeAnswer(driver: AcceptanceDriver, identity: Identity, probe: Probe, values: string[]) {
-  const input = actorAwareJudgeInput(ANSWER_JUDGE_SYSTEM, probe, "answer", values);
+export async function judgeAnswer(
+  driver: AcceptanceDriver,
+  identity: Identity,
+  probe: Probe,
+  values: string[],
+  sourceContext?: JudgeSourceContext
+) {
+  const input = actorAwareJudgeInput(ANSWER_JUDGE_SYSTEM, probe, "answer", values, sourceContext);
   const response = await driver.send(identity, driver.conversation("EXCLUDED"),
     `${input.system}\n\nEvaluation data (JSON):\n${input.payload}`);
   if (!response.ownerIsolation || response.memoryItems !== 0 ||

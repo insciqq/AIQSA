@@ -27,6 +27,7 @@ export type MemorySuppressionCreateInput = MemorySuppressionCommonInput & (
       branchGeneration: number;
       chatId: string;
       messageId: string;
+      preservedEvidenceIds?: readonly string[];
       scope: "SOURCE_MESSAGE";
     }>
 );
@@ -96,7 +97,10 @@ function validateCreateInput(input: MemorySuppressionCreateInput): string {
     !validBounded(input.chatId, 256) ||
     !validBounded(input.messageId, 256) ||
     !Number.isSafeInteger(input.branchGeneration) ||
-    input.branchGeneration < 0
+    input.branchGeneration < 0 ||
+    (input.preservedEvidenceIds?.length ?? 0) > 256 ||
+    input.preservedEvidenceIds?.some((id) => !validBounded(id, 256)) ||
+    new Set(input.preservedEvidenceIds).size !== (input.preservedEvidenceIds?.length ?? 0)
   )) {
     return memoryPersistenceFailure("memory_suppression_shape_invalid");
   }
@@ -290,7 +294,9 @@ function existingSuppressionMatches(
     ensureHistoricalKeyAvailable(keyring, existing);
     return existing.sourceChatId === input.chatId &&
       existing.sourceMessageId === input.messageId &&
-      existing.sourceBranchGeneration === input.branchGeneration;
+      existing.sourceBranchGeneration === input.branchGeneration &&
+      [...existing.preservedEvidenceIds].sort().join("\u0000") ===
+        [...(input.preservedEvidenceIds ?? [])].sort().join("\u0000");
   }
   return false;
 }
@@ -380,6 +386,8 @@ export async function createMemorySuppressionInTransaction(
         : null,
       sourceChatId: input.scope === "SOURCE_MESSAGE" ? input.chatId : null,
       sourceMessageId: input.scope === "SOURCE_MESSAGE" ? input.messageId : null,
+      preservedEvidenceIds: input.scope === "SOURCE_MESSAGE"
+        ? [...(input.preservedEvidenceIds ?? [])] : [],
       userId: settings.userId
     },
     select: { deletionGeneration: true, id: true }

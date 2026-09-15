@@ -44,7 +44,6 @@ describe("Memory source-bound language-neutral cardinality parser", () => {
     ["৩ সফর", "bn", 3],
     ["3回", "ja", 3],
     ["𝟛 επισκέψεις", "el", 3],
-    ["1,000 records", "en", 1_000],
     ["1 000 записей", "ru", 1_000]
   ])("normalizes Unicode decimal noun-count syntax %s", (
     text,
@@ -103,6 +102,13 @@ describe("Memory source-bound language-neutral cardinality parser", () => {
       expect(parse("٣ visits", languageTag)).toMatchObject({ status: "ACCEPTED", value: 3 });
     }
   });
+
+  it.each(["en", "de", "ru", "und"])(
+    "rejects ambiguous comma-separated numbers regardless of language metadata: %s",
+    (languageTag) => {
+      rejects("1,234 Einheiten", "DECIMAL", languageTag);
+    }
+  );
 
   it("rejects unbounded input before running any grammar", () => {
     rejects(`${"9".repeat(300)} visits`, "INPUT_TOO_LONG");

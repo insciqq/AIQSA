@@ -345,6 +345,42 @@ describe("structured Memory relation policy", () => {
     });
   });
 
+  it("keeps relationship transitions bound to the same grounded subject", () => {
+    const relationshipFrame = {
+      ...semanticFrame,
+      subjectScope: "USER_RELATIONSHIP_CONTEXT" as const
+    };
+    const ana = {
+      canonicalKey: "entity:v4:person:ana",
+      entityType: "PERSON",
+      role: "SUBJECT" as const
+    };
+    const noor = { ...ana, canonicalKey: "entity:v4:person:noor" };
+    const base = snapshot({
+      current: version({
+        entities: [ana],
+        semanticFrame: relationshipFrame
+      }),
+      pending: version({
+        entities: [ana],
+        semanticAdjudication: {
+          ...adjudication("REINFORCE"),
+          subjectScope: "USER_RELATIONSHIP_CONTEXT" as const
+        },
+        semanticFrame: relationshipFrame
+      })
+    });
+    expect(decideMemoryFactRelation(base, NOW).operation).toBe("MERGE_NEW_INTO_TARGET");
+    expect(decideMemoryFactRelation({
+      ...base,
+      pending: { ...base.pending, entities: [noor] }
+    }, NOW).operation).toBe("CONFLICT");
+    expect(decideMemoryFactRelation({
+      ...base,
+      current: { ...base.current, semanticFrame: semanticFrame }
+    }, NOW).operation).toBe("CONFLICT");
+  });
+
   it("never mutates a pointer without fresh adjudication authority", () => {
     const base = snapshot();
     expect(decideMemoryFactRelation({

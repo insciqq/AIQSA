@@ -71,6 +71,8 @@ type SynthesisSourceRow = Readonly<{
   sourceChatIds: string[];
   sourceMessageIds: string[];
   sourceMode: MemorySynthesisSource["sourceMode"];
+  subjectScope: MemorySynthesisSource["subjectScope"];
+  subjectEntityIds: string[];
   structuredValue: Prisma.JsonValue;
   subjectKey: string | null;
   versionId: string;
@@ -152,6 +154,8 @@ function source(row: SynthesisSourceRow): MemorySynthesisSource | null {
     sourceChatIds: Object.freeze(row.sourceChatIds),
     sourceMessageIds: Object.freeze(row.sourceMessageIds),
     sourceMode: row.sourceMode,
+    subjectScope: row.subjectScope,
+    subjectEntityIds: Object.freeze(row.subjectEntityIds),
     structuredValue: redactStructuredValue(row.structuredValue),
     subjectKey: row.subjectKey,
     versionId: row.versionId
@@ -181,6 +185,7 @@ async function loadSources(
       source_version."observedAt", source_version."ingestionFingerprint",
       source_version."pipelineVersion", source_fact."canonicalKey",
       source_fact."category", source_fact."subjectKey", source_fact."predicateKey",
+      source_version."semanticFrame"->>'subjectScope' AS "subjectScope",
       settings."memoryGeneration",
       ARRAY(
         SELECT DISTINCT aiqsa_memory_entity_root_id(
@@ -197,6 +202,22 @@ async function loadSources(
         )
         LIMIT 16
       )::text[] AS "entityIds",
+      ARRAY(
+        SELECT DISTINCT aiqsa_memory_entity_root_id(
+          source_version."userId", entity_link."entityId"
+        )
+        FROM "MemoryFactVersionEntity" AS entity_link
+        WHERE entity_link."userId" = source_version."userId"
+          AND entity_link."factVersionId" = source_version."id"
+          AND entity_link."role" = 'SUBJECT'::"MemoryEntityLinkRole"
+          AND aiqsa_memory_entity_root_id(
+            source_version."userId", entity_link."entityId"
+          ) IS NOT NULL
+        ORDER BY aiqsa_memory_entity_root_id(
+          source_version."userId", entity_link."entityId"
+        )
+        LIMIT 4
+      )::text[] AS "subjectEntityIds",
       ARRAY(
         SELECT DISTINCT support."chatId"
         FROM "MemoryEvidence" AS support

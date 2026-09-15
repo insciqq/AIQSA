@@ -149,10 +149,34 @@ function plan(value = candidate()): MemoryFactExtractionPlan {
   };
 }
 
+function referenceKindsPlan(): MemoryFactExtractionPlan {
+  const base = plan();
+  const bound = base.input.contextRefs[0]!;
+  const message = {
+    ...bound, aliases: [], displayName: null, entityId: null, entityType: null,
+    identitySubjectKey: null, kind: "MESSAGE" as const, ref: "M1",
+    source: {
+      contentHash: "f".repeat(64), factVersionId: null, messageId: "older-message",
+      messageUpdatedAt: "2026-08-25T09:00:00.000Z",
+      projectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION
+    }
+  };
+  return {
+    ...base,
+    candidates: [candidate({
+      identityKind: "PROPOSITION", proposedIdentityKind: "PROPOSITION",
+      dependencies: [{ dependencyKind: "TEMPORAL_CONTEXT", ref: message.ref, source: message.source }]
+    })],
+    input: { ...base.input, contextRefs: [bound, {
+      ...bound, ref: "F2", entityId: null, entityType: null, displayName: null, aliases: []
+    }, message] }
+  };
+}
+
 describe("batched Memory semantic adjudication", () => {
   it("makes new-fact ref nullability explicit without weakening the decoder", () => {
     expect(MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION)
-      .toBe("memory-semantic-adjudication-prompt-v7");
+      .toBe("memory-semantic-adjudication-prompt-v12");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
       .toContain("A candidate_ref is never an entity_ref or target_ref");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
@@ -165,6 +189,8 @@ describe("batched Memory semantic adjudication", () => {
       .toContain("item obtained for a distinct recipient");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
       .toContain("including a paraphrase");
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .toContain("A withdrawal closes the target's current applicability");
   });
 
   it("routes plausible cross-key paraphrases through governed comparison", () => {
@@ -316,6 +342,131 @@ describe("batched Memory semantic adjudication", () => {
     expect(memorySemanticAuthorityAdmitsCandidate(supporting, null, [])).toBe(true);
   });
 
+  it("keeps grounded user relationship context proposition-only and attribution-scoped", () => {
+    const relationship = candidate({
+      canonicalKey: "proposition:ana-juniper",
+      displayText: "The current user reports that their sister Ana works at Juniper bakery.",
+      entities: [{
+        aliases: ["Ana"],
+        canonicalLabel: "Ana",
+        contextEntityId: null,
+        contextRef: null,
+        entityType: "PERSON",
+        mention: "Ana",
+        mentionKind: "NAMED",
+        qualifiers: {},
+        role: "SUBJECT"
+      }],
+      identityKind: "PROPOSITION",
+      identityVersion: "proposition-v1",
+      predicateKey: null,
+      proposedIdentityKind: "PROPOSITION",
+      proposedValue: {
+        normalizedStatement:
+          "the current user reports that their sister ana works at juniper bakery.",
+        schema: "generic-fact-v1"
+      },
+      semanticFrame: {
+        assertionStatus: "ASSERTED",
+        changeIntent: "NONE",
+        memoryDirective: "NONE",
+        polarity: "AFFIRMED",
+        speechAct: "ASSERTION",
+        subjectScope: "USER_RELATIONSHIP_CONTEXT",
+        temporalPerspective: "CURRENT"
+      },
+      statement: "The current user reports that their sister Ana works at Juniper bakery.",
+      subjectKey: null
+    });
+    const admitted = {
+      assertionStatus: "ASSERTED",
+      candidateRef: "C1",
+      confidenceBand: "HIGH",
+      entailment: "ENTAILED",
+      entityRef: null,
+      operation: "NO_RELATION",
+      reasonCode: "ordinary_personal_context",
+      subjectScope: "USER_RELATIONSHIP_CONTEXT",
+      targetRef: null,
+      temporalPerspective: "CURRENT"
+    } as const;
+
+    expect(memoryCandidateRequiresSemanticAdjudication(relationship)).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(relationship, admitted)).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(relationship, {
+      ...admitted,
+      subjectScope: "CURRENT_USER"
+    })).toBe(false);
+    expect(memorySemanticAuthorityAdmitsCandidate({
+      ...relationship,
+      entities: []
+    }, admitted)).toBe(false);
+    expect(memorySemanticAuthorityAdmitsCandidate({
+      ...relationship,
+      identityKind: "SLOT",
+      proposedIdentityKind: "SLOT"
+    }, admitted)).toBe(false);
+  });
+
+  it("allows exact relationship updates and withdrawals without crossing subject scope", () => {
+    const base = candidate({
+      canonicalKey: "proposition:noor-schedule",
+      displayText: "The current user reports a new schedule for their colleague Noor.",
+      entities: [{
+        aliases: ["Noor"], canonicalLabel: "Noor", contextEntityId: null,
+        contextRef: null, entityType: "PERSON", mention: "Noor",
+        mentionKind: "NAMED", qualifiers: {}, role: "SUBJECT"
+      }],
+      identityKind: "PROPOSITION",
+      identityVersion: "proposition-v1",
+      predicateKey: null,
+      proposedIdentityKind: "PROPOSITION",
+      proposedValue: { normalizedStatement: "noor schedule", schema: "generic-fact-v1" },
+      semanticFrame: {
+        assertionStatus: "ASSERTED",
+        changeIntent: "STATE_CHANGE",
+        memoryDirective: "NONE",
+        polarity: "CORRECTION",
+        speechAct: "ASSERTION",
+        subjectScope: "USER_RELATIONSHIP_CONTEXT",
+        temporalPerspective: "CURRENT"
+      },
+      subjectKey: null
+    });
+    const decision = {
+      assertionStatus: "ASSERTED",
+      candidateRef: "C1",
+      confidenceBand: "HIGH",
+      entailment: "ENTAILED",
+      entityRef: null,
+      operation: "SUPERSEDE_TARGET",
+      reasonCode: "exact_relationship_update",
+      subjectScope: "USER_RELATIONSHIP_CONTEXT",
+      targetRef: "F1",
+      temporalPerspective: "CURRENT"
+    } as const;
+    expect(memorySemanticAuthorityAdmitsCandidate(base, decision, plan(base).input.contextRefs))
+      .toBe(true);
+
+    const withdrawal = {
+      ...base,
+      semanticFrame: {
+        ...base.semanticFrame,
+        changeIntent: "RETRACTION" as const,
+        polarity: "RETRACTION" as const
+      }
+    };
+    expect(memorySemanticAuthorityAdmitsCandidate(withdrawal, {
+      ...decision,
+      operation: "RETRACT_TARGET"
+    }, plan(withdrawal).input.contextRefs)).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(withdrawal, {
+      ...decision,
+      operation: "RETRACT_TARGET",
+      subjectScope: "CURRENT_USER"
+    }, plan(withdrawal).input.contextRefs)).toBe(false);
+  });
+
   it("routes proposition STATE claims through statement-aware adjudication", () => {
     const state = candidate({
       canonicalKey: "proposition:gift-card",
@@ -387,7 +538,7 @@ describe("batched Memory semantic adjudication", () => {
       temporal_perspective: "CURRENT"
     }));
     expect(input.candidateRefs).toHaveLength(8);
-    const schema = memorySemanticAdjudicationTool.inputSchema as {
+    const schema = memorySemanticAdjudicationTool(input).inputSchema as {
       properties: { decisions: { maxItems: number } };
     };
     expect(schema.properties.decisions.maxItems).toBeGreaterThanOrEqual(decisions.length);
@@ -497,6 +648,60 @@ describe("batched Memory semantic adjudication", () => {
         name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
       }], input)).toThrow("memory_semantic_adjudication_output_invalid");
     }
+  });
+
+  it.each([
+    { entityRef: "M1", targetRef: null, operation: "NO_RELATION" },
+    { entityRef: "F2", targetRef: null, operation: "NO_RELATION" },
+    { entityRef: null, targetRef: "M1", operation: "REINFORCE" }
+  ])("rejects a context ref outside its authority domain ($entityRef, $targetRef)",
+    ({ entityRef, targetRef, operation }) => {
+      const input = memorySemanticAdjudicationInput(referenceKindsPlan())!;
+      expect(() => decodeMemorySemanticAdjudication([{
+        arguments: { decisions: [{
+          assertion_status: "ASSERTED", candidate_ref: "C1", confidence_band: "HIGH",
+          entailment: "ENTAILED", entity_ref: entityRef, operation, reason_code: "direct_continuation",
+          subject_scope: "CURRENT_USER", target_ref: targetRef, temporal_perspective: "CURRENT"
+        }] }, id: "call", name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
+      }], input)).toThrow("memory_semantic_adjudication_output_invalid");
+    }
+  );
+
+  it("admits a declared message continuation without requiring an entity binding", () => {
+    const input = memorySemanticAdjudicationInput(referenceKindsPlan())!;
+    const packet = decodeMemorySemanticAdjudication([{
+      arguments: { decisions: [{
+        assertion_status: "ASSERTED", candidate_ref: "C1", confidence_band: "HIGH",
+        entailment: "ENTAILED", entity_ref: null, operation: "NO_RELATION",
+        reason_code: "direct_continuation", subject_scope: "CURRENT_USER",
+        target_ref: null, temporal_perspective: "CURRENT"
+      }] }, id: "call", name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
+    }], input);
+    expect(memorySemanticAdjudicationPacketIsValid(input.plan, packet)).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(
+      input.plan.candidates[0]!, packet.decisions[0]!, input.plan.input.contextRefs
+    )).toBe(true);
+    expect(input.plan.candidates[0]!.dependencies[0]!.source.messageId).toBe("older-message");
+  });
+
+  it("offers only references that the corresponding output field can bind", () => {
+    const input = memorySemanticAdjudicationInput(referenceKindsPlan())!;
+    const schema = memorySemanticAdjudicationTool(input).inputSchema as {
+      properties: { decisions: { items: { properties: Record<string, { enum: unknown[] }> } } };
+    };
+    const fields = schema.properties.decisions.items.properties;
+    expect(fields.candidate_ref!.enum).toEqual(["C1"]);
+    expect(fields.entity_ref!.enum).toEqual(["F1", null]);
+    expect(fields.target_ref!.enum).toEqual(["F1", "F2", null]);
+    const messageOnly = { ...input, plan: {
+      ...input.plan, input: { ...input.plan.input,
+        contextRefs: input.plan.input.contextRefs.filter(({ kind }) => kind === "MESSAGE") }
+    } };
+    const restricted = memorySemanticAdjudicationTool(messageOnly).inputSchema as typeof schema;
+    expect(restricted.properties.decisions.items.properties.entity_ref!.enum).toEqual([null]);
+    expect(restricted.properties.decisions.items.properties.target_ref!.enum).toEqual([null]);
+    expect(JSON.parse(memorySemanticAdjudicationPromptPayload(messageOnly)).candidates[0].dependency_refs)
+      .toEqual(["M1"]);
   });
 
   it("cannot adjudicate fields that are absent from the bounded output contract", () => {

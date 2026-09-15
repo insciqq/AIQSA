@@ -6,7 +6,7 @@ import type {
 } from "../extraction/contract";
 
 export const MEMORY_FACT_RELATION_PIPELINE_VERSION = "memory-fact-relation-v2";
-export const MEMORY_FACT_RELATION_POLICY_VERSION = "memory-fact-relation-policy-v7";
+export const MEMORY_FACT_RELATION_POLICY_VERSION = "memory-fact-relation-policy-v8";
 export const MEMORY_FACT_RELATION_PROMPT_VERSION = "memory-fact-relation-prompt-v1";
 export const MEMORY_FACT_RELATION_SCHEMA_VERSION = "memory-fact-relation-schema-v1";
 
@@ -314,10 +314,21 @@ function semanticAuthorityMatches(
   operations: ReadonlySet<MemorySemanticAdjudication["operation"]>
 ): boolean {
   const adjudication = pending.semanticAdjudication;
+  const relationshipScope = adjudication?.subjectScope ===
+    "USER_RELATIONSHIP_CONTEXT";
+  const scopeMatches = adjudication !== null &&
+    (relationshipScope
+      ? adjudication.subjectScope === pending.semanticFrame?.subjectScope &&
+        pending.semanticFrame?.subjectScope === "USER_RELATIONSHIP_CONTEXT" &&
+        current.semanticFrame?.subjectScope === "USER_RELATIONSHIP_CONTEXT" &&
+        sharedSubjectEntity(pending, current)
+      : adjudication.subjectScope === "CURRENT_USER" &&
+        (pending.semanticFrame === null ||
+          pending.semanticFrame.subjectScope === "CURRENT_USER"));
   return adjudication !== null &&
     adjudication.entailment === "ENTAILED" &&
     adjudication.confidenceBand === "HIGH" &&
-    adjudication.subjectScope === "CURRENT_USER" &&
+    scopeMatches &&
     adjudication.assertionStatus === "ASSERTED" &&
     adjudication.temporalPerspective !== "UNKNOWN" &&
     adjudication.resolvedTargetVersionId === current.versionId &&

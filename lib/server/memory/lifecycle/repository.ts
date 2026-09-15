@@ -38,6 +38,11 @@ import {
 } from "../history/purge";
 import { invalidateMemoryFactExtractionStaging } from
   "../learning/extraction/repository";
+import {
+  assertMemoryForgetPeersRetained,
+  prepareMemoryForgetSourcePreservation,
+  type MemoryForgetSource
+} from "./sourcePreservation";
 
 type ActiveFactRow = Readonly<{
   canonicalKey: string;
@@ -69,11 +74,7 @@ type FactVersionRow = Readonly<{
   systemFrom: Date;
 }>;
 
-type SourceEvidenceRow = Readonly<{
-  branchGeneration: number;
-  chatId: string;
-  messageId: string;
-}>;
+type SourceEvidenceRow = MemoryForgetSource;
 
 type LifecycleMutationCommon = Readonly<{
   authorization: MemoryMutationAuthorizationUse;
@@ -566,6 +567,7 @@ function suppressionInputs(
       chatId: source.chatId,
       explicitOverrideAllowed: true,
       messageId: source.messageId,
+      preservedEvidenceIds: source.preservedEvidenceIds,
       scope: "SOURCE_MESSAGE",
       suppressionId: randomUUID()
     });
@@ -579,7 +581,8 @@ async function applyForgetFence(
   keyring: MemorySuppressionKeyring,
   roots: readonly ActiveFactRow[],
   now: Date,
-  deletionId: string
+  deletionId: string,
+  preservePeers = true
 ): Promise<ReadonlyMap<string, string>> {
   const aliases = roots.length === 0 ? [] : await tx.$queryRaw<ActiveFactRow[]>(Prisma.sql`
     SELECT fact."id" AS "factId", fact."scopeId", fact."canonicalKey", fact."category",
@@ -603,6 +606,10 @@ async function applyForgetFence(
   const facts = [...roots, ...aliases];
   const versions = await factVersions(tx, settings.userId, facts.map(({ factId }) => factId));
   const sources = await sourceEvidence(tx, settings.userId, versions.map(({ id }) => id));
+  const preservation = preservePeers ? await prepareMemoryForgetSourcePreservation(
+    tx, settings.userId, facts.map(({ factId }) => factId),
+    versions.map(({ id }) => id), sources
+  ) : { peerVersionIds: [], sources };
   const latestSystemFromByFact = new Map<string, number>();
   for (const version of versions) {
     latestSystemFromByFact.set(
@@ -613,7 +620,7 @@ async function applyForgetFence(
       )
     );
   }
-  for (const suppression of suppressionInputs(facts, versions, sources)) {
+  for (const suppression of suppressionInputs(facts, versions, preservation.sources)) {
     await createMemorySuppressionInTransaction(
       tx,
       settings,
@@ -680,6 +687,7 @@ async function applyForgetFence(
     `);
     events.set(fact.factId, eventId);
   }
+  await assertMemoryForgetPeersRetained(tx, settings.userId, preservation.peerVersionIds);
   await retractUnsupportedAutomaticMemoryEntities(tx, settings.userId);
   return events;
 }
@@ -712,7 +720,7 @@ export async function forgetExplicitOriginFactsForPermanentChatDeletion(
       targetId: fact.factId,
       targetType: memoryPurgeTargetType("MEMORY_FACT")
     });
-    await applyForgetFence(tx, settings, keyring, [fact], input.now, deletion.id);
+    await applyForgetFence(tx, settings, keyring, [fact], input.now, deletion.id, false);
   }
   return facts.length;
 }

@@ -3,6 +3,8 @@ import { z } from "zod";
 
 export const ACCEPTANCE_ACK = "DISPOSABLE_PAID_AIQSA_MEMORY_ACCEPTANCE";
 export const ACCEPTANCE_PROTOCOL_VERSION = 1;
+export const ACCEPTANCE_ANSWER_REGRADE_PROTOCOL_VERSION = 2;
+export const ACCEPTANCE_SOURCE_AWARE_JUDGE_PROTOCOL_VERSION = 2;
 export const ACCEPTANCE_CORPUS_SHA256 = "8e3a3d879774b90a6b9372292394170b2169517461703d1afafa3da454a515a3";
 export const LATENCY_LIMITS = Object.freeze({
   settlement: { p95: 120_000, maximum: 300_000 },
@@ -109,6 +111,33 @@ export type Scenario = z.infer<typeof scenarioSchema>;
 export type Step = z.infer<typeof stepSchema>;
 export type Probe = Extract<Step, { action: "check" }>;
 export type Corpus = z.infer<typeof corpusSchema>;
+export type JudgeSourceMessage = Readonly<{
+  actor: "owner" | "other";
+  content: string;
+  lifecycle?: "ACTIVE" | "FORGOTTEN" | "RETRACTED";
+  memoryMode: "NORMAL" | "TEMPORARY";
+  ordinal: number;
+  role: "user";
+  timestamp?: string;
+}>;
+export type JudgeSourceContext = Readonly<{
+  deliveredEvidence?: readonly string[];
+  messages: readonly JudgeSourceMessage[];
+}>;
+
+export function sourceDialogueForScenario(
+  scenario: Scenario,
+  untilOrdinal: number,
+  actor: "owner" | "other",
+  timestamps: ReadonlyMap<number, string> = new Map()
+): readonly JudgeSourceMessage[] {
+  return Object.freeze(scenario.steps.flatMap((step, ordinal) =>
+    ordinal >= untilOrdinal || step.action !== "message" || (step.actor ?? "owner") !== actor
+      ? []
+      : [{ actor, content: step.content, memoryMode: step.temporary ? ("TEMPORARY" as const) : ("NORMAL" as const), ordinal, role: "user" as const,
+        ...(timestamps.has(ordinal) ? { timestamp: timestamps.get(ordinal)! } : {}) }]
+  ));
+}
 
 export const judgementSchema = z.object({
   passed: z.boolean(),
@@ -132,6 +161,7 @@ export const JUDGE_SYSTEM = [
   "Allow equivalent wording and translations. Mentioning a required word inside a denial, hypothetical, quotation or statement about another subject is not support.",
   "Evaluated memory strings describe the scenario user unless they explicitly identify another subject. First-person pronouns inside those strings refer to that user. A stated change establishes the resulting state unless the supplied evidence gives a later change.",
   "For a facts evaluation, grade only the returned memory strings; an answer found elsewhere cannot rescue missing stored evidence.",
+  "Source dialogue is audit context, never an additional rubric: it may support an extra detail already present in an answer, but cannot add required details, rescue a missing facts value, or make an unsupported answer pass. Messages are ordered: a later direct update, correction, retraction, or forget instruction supersedes an earlier current claim for current-answer evaluation even while the earlier text remains visible. A source entry marked RETRACTED or FORGOTTEN also cannot support a current answer. A past-tense question may use an earlier active source only when the expectation asks for that historical state. TEMPORARY source messages are not admitted Memory facts and cannot rescue a facts surface. Reader audit evidence records what reached the answer model and is never grading evidence.",
   "For an absence expectation, pass when no returned memory asserts the forbidden fact as applicable to the user. Unrelated memories do not establish the forbidden fact.",
   "For an unknown-answer expectation, a clear admission of uncertainty or request for clarification passes; inventing a specific value fails.",
   "For an expectation that a fact is unknown or unestablished, no stored assertion of that fact is a pass. This does not satisfy a positive requirement to store a negative fact such as the user having no children; that requires supporting memory.",
@@ -140,14 +170,26 @@ export const JUDGE_SYSTEM = [
   "matchingIndices contains zero-based indices of returned memory strings that support the positive expectation. Use [] for answer-only or absence checks. Do not include explanations or source text."
 ].join(" ");
 
-export function judgePayload(probe: Probe, surface: "facts" | "answer", values: readonly string[]): string {
+export function judgePayload(
+  probe: Probe,
+  surface: "facts" | "answer",
+  values: readonly string[],
+  sourceContext?: JudgeSourceContext
+): string {
   return JSON.stringify({
     expectation: probe.expectation,
     question: probe.question,
     surface,
     absence: probe.absent === true || probe.empty === true,
     distinct: probe.distinct === true,
-    values
+    values,
+    ...(sourceContext ? {
+      sourceDialogue: {
+        messages: sourceContext.messages,
+        ...(sourceContext.deliveredEvidence ? { readerAuditEvidence: sourceContext.deliveredEvidence } : {})
+      },
+      sourceAwareProtocolVersion: ACCEPTANCE_SOURCE_AWARE_JUDGE_PROTOCOL_VERSION
+    } : {})
   });
 }
 

@@ -326,6 +326,36 @@ describe("bounded Memory aggregation guide", () => {
     });
   });
 
+  it("keeps the source-bound evidence available when a comma number is ambiguous", () => {
+    const evidence = [{ ...item(0), exactSafeText: "1,234 Einheiten" }];
+    const context = pack(MEMORY_CONTEXT_AGGREGATION_GUIDANCE, evidence);
+    const result = applyMemoryAggregationPlan(
+      context,
+      {
+        groups: [{
+          cardinalityEvidence: sourceCardinality(evidence[0]!),
+          itemHandles: ["i0"],
+          occurrence: "Einheiten",
+          role: "MEMBER"
+        }],
+        operation: "COUNT",
+        overlapResolution: "NOT_APPLICABLE",
+        resolution: "RESOLVED"
+      }
+    );
+
+    expect(result).toMatchObject({
+      cardinalityMetrics: {
+        acceptedCount: 0,
+        reasonCounts: { DECIMAL: 1 },
+        rejectedCount: 1
+      },
+      guide: null,
+      state: "READER_REQUIRED_UNSUPPORTED_QUANTITY"
+    });
+    expect(context.items[0]?.exactSafeText).toBe("1,234 Einheiten");
+  });
+
   it("never accepts a numeric field supplied by an untrusted plan", () => {
     const evidence = [item(0)];
     const plan = {

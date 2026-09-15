@@ -568,7 +568,7 @@ function runBootstrapProof(database: string): void {
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" s JOIN "User" u ON u.id = s."userId"
     WHERE u.email = 'baseline-admin@example.invalid' AND s."useMemoryFacts" AND s."referenceChatHistory"
       AND s."learnAutomatically" AND s."synthesisEnabled" AND s."decayEnabled"
-      AND s."synthesisEnabledAt" IS NOT NULL AND s."synthesisPolicyVersion" = 'memory-synthesis-policy-v3'
+      AND s."synthesisEnabledAt" IS NOT NULL AND s."synthesisPolicyVersion" = 'memory-synthesis-policy-v4'
       AND s."decayPolicyVersion" = 'memory-decay-v1' AND s."lastSynthesisAt" IS NULL;`), "1", "initial administrator Memory defaults");
   psqlScalar(database, `UPDATE "UserMemorySettings" SET "synthesisEnabled" = false, "decayEnabled" = false;`);
   const freshDigest = bootstrapFoundationDigest(database);

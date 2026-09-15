@@ -268,6 +268,37 @@ function providerFailure(
   });
 }
 
+function adjudicationOutput(candidateRefs: readonly string[]) {
+  return {
+    providerResponseId: "adjudication-response",
+    toolCalls: [{
+      arguments: {
+        decisions: candidateRefs.map((candidateRef) => ({
+          assertion_status: "ASSERTED",
+          candidate_ref: candidateRef,
+          confidence_band: "HIGH",
+          entailment: "ENTAILED",
+          entity_ref: null,
+          operation: "NO_RELATION",
+          reason_code: "direct_preference",
+          subject_scope: "CURRENT_USER",
+          target_ref: null,
+          temporal_perspective: "CURRENT"
+        }))
+      },
+      id: "adjudication-call",
+      name: "submit_memory_semantic_adjudications_v1"
+    }],
+    usage: {
+      cachedInputTokens: 0,
+      inputTokens: 20,
+      outputTokens: 8,
+      reasoningTokens: 2,
+      totalTokens: 28
+    }
+  };
+}
+
 describe("Memory fact extraction handler", () => {
   it("parks missing consent or runtime capability before provider I/O", async () => {
     for (const code of [
@@ -399,6 +430,122 @@ describe("Memory fact extraction handler", () => {
     );
   });
 
+  it("retains staged extraction when adjudication fails with a replay-safe error", async () => {
+    const fixture = dependencies();
+    fixture.bind
+      .mockResolvedValueOnce({ id: "extraction-binding" })
+      .mockResolvedValueOnce({ id: "adjudication-binding" });
+    const adjudicator = {
+      run: vi.fn(async () => { throw providerFailure("REPLAY_SAFE_TRANSIENT"); })
+    };
+    const handler = createMemoryFactExtractionHandler({
+      ...fixture.base,
+      adjudicator,
+      repository: {
+        ...fixture.base.repository,
+        auxiliary: vi.fn(async () => null),
+        reserveAdjudication: vi.fn(async () => "ACQUIRED" as const)
+      }
+    });
+
+    await expect(handler.execute(claim(), context())).rejects.toMatchObject({
+      code: "memory_fact_provider_transient",
+      retryable: true
+    });
+    expect(fixture.run).toHaveBeenCalledOnce();
+    expect(fixture.stage).toHaveBeenCalledOnce();
+    expect(adjudicator.run).toHaveBeenCalledOnce();
+    expect(fixture.settle).toHaveBeenCalledWith(
+      source.userId,
+      "adjudication-binding",
+      expect.objectContaining({
+        errorCode: "memory_fact_provider_transient",
+        state: "FAILED",
+        usage: expect.objectContaining({ completeness: "UNAVAILABLE" })
+      })
+    );
+    expect(fixture.apply).not.toHaveBeenCalled();
+    expect(fixture.base.repository.discardStale).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["FAILED", "memory_fact_provider_transient", true, true],
+    ["FAILED", "memory_fact_provider_transient", false, false],
+    ["FAILED", "memory_fact_provider_unavailable", true, false],
+    ["FAILED", "memory_semantic_adjudication_output_invalid", true, false],
+    ["OUTCOME_UNKNOWN", "memory_fact_provider_outcome_unknown", true, false],
+    ["RUNNING", null, true, false],
+    ["SUCCEEDED", null, true, false],
+    ["CANCELLED", "memory_execution_revoked", true, false]
+  ] as const)(
+    "recovers staged extraction with adjudication %s/%s (matching input: %s)",
+    async (state, errorCode, sameInput, retries) => {
+      const fixture = dependencies();
+      const plan = decodeMemoryFactExtraction(providerOutput().toolCalls, fixture.input);
+      const semanticInput = memorySemanticAdjudicationInput(plan)!;
+      const bindings = [{
+        acceptedOutputHash: plan.outputHash,
+        errorCode: null,
+        id: "accepted-extraction",
+        inputHash: fixture.input.inputHash,
+        ordinal: 0,
+        ...storedVersions(MEMORY_FACT_EXTRACTION_VERSIONS),
+        secretFreeExecutionSnapshot: {},
+        state: "SUCCEEDED" as const
+      }, {
+        acceptedOutputHash: state === "SUCCEEDED" ? "e".repeat(64) : null,
+        errorCode,
+        id: "prior-adjudication",
+        inputHash: sameInput ? semanticInput.inputHash : "d".repeat(64),
+        ordinal: 1,
+        ...storedVersions(MEMORY_SEMANTIC_ADJUDICATION_VERSIONS),
+        secretFreeExecutionSnapshot: {},
+        state
+      }];
+      fixture.bind.mockResolvedValue({ id: "retry-adjudication" });
+      const adjudicator = {
+        run: vi.fn(async () => adjudicationOutput(semanticInput.candidateRefs))
+      };
+      const completeAdjudication = vi.fn(async () => undefined);
+      const handler = createMemoryFactExtractionHandler({
+        ...fixture.base,
+        adjudicator,
+        repository: {
+          ...fixture.base.repository,
+          auxiliary: vi.fn(async () => null),
+          bindings: vi.fn(async () => bindings),
+          completeAdjudication,
+          reserveAdjudication: vi.fn(async () => "ACQUIRED" as const),
+          staged: vi.fn(async () => plan)
+        }
+      });
+
+      await handler.execute({ ...claim(), attemptCount: 2 }, context());
+      expect(fixture.run).not.toHaveBeenCalled();
+      expect(fixture.stage).not.toHaveBeenCalled();
+      expect(adjudicator.run).toHaveBeenCalledTimes(retries ? 1 : 0);
+      expect(completeAdjudication).toHaveBeenCalledTimes(retries ? 1 : 0);
+      expect(fixture.apply).toHaveBeenCalledOnce();
+      if (retries) {
+        expect(fixture.bind).toHaveBeenCalledWith(source.userId,
+          expect.objectContaining({ inputHash: semanticInput.inputHash, ordinal: 2 }));
+        expect(fixture.apply).toHaveBeenCalledWith(
+          expect.anything(), expect.anything(), expect.anything(), plan,
+          "accepted-extraction", expect.any(Date),
+          expect.objectContaining({ decisions: [expect.objectContaining({
+            candidateRef: "C1", operation: "NO_RELATION"
+          })] }), "retry-adjudication"
+        );
+      } else {
+        expect(fixture.bind).not.toHaveBeenCalled();
+        expect(fixture.apply).toHaveBeenCalledWith(
+          expect.anything(), expect.anything(), expect.anything(), plan,
+          "accepted-extraction", expect.any(Date), null, "accepted-extraction"
+        );
+      }
+    }
+  );
+
   it("isolates invalid evidence after accounting usage and writes no observation", async () => {
     const fixture = dependencies({
       provider: {
@@ -472,6 +619,7 @@ describe("Memory fact extraction handler", () => {
         ...fixture.base.repository,
         bindings: vi.fn(async () => [{
           acceptedOutputHash: null,
+          errorCode: null,
           id: "old-binding",
           inputHash: fixture.input.inputHash,
           ordinal: 0,
@@ -501,6 +649,7 @@ describe("Memory fact extraction handler", () => {
         applied: vi.fn(async () => "EMPTY" as const),
         bindings: vi.fn(async () => [{
           acceptedOutputHash: "d".repeat(64),
+          errorCode: null,
           id: "old-binding",
           inputHash: fixture.input.inputHash,
           ordinal: 0,
@@ -528,6 +677,7 @@ describe("Memory fact extraction handler", () => {
         ...fixture.base.repository,
         bindings: vi.fn(async () => [{
           acceptedOutputHash: plan.outputHash,
+          errorCode: null,
           id: "old-binding",
           inputHash: fixture.input.inputHash,
           ordinal: 0,
@@ -570,6 +720,7 @@ describe("Memory fact extraction handler", () => {
         prepare: vi.fn(async () => ({ input })),
         bindings: vi.fn(async () => accepted ? [{
           acceptedOutputHash: plan.outputHash, id: "recorded-binding", inputHash: input.inputHash,
+          errorCode: null,
           ordinal: 0, ...storedVersions(MEMORY_FACT_EXTRACTION_VERSIONS),
           secretFreeExecutionSnapshot: {}, state: "SUCCEEDED" as const
         }] : []),
@@ -673,6 +824,7 @@ describe("Memory fact extraction handler", () => {
         ...fixture.base.repository,
         bindings: vi.fn(async () => [{
           acceptedOutputHash: "d".repeat(64),
+          errorCode: null,
           id: "old-binding",
           inputHash: fixture.input.inputHash,
           ordinal: 0,

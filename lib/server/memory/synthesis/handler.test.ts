@@ -6,6 +6,7 @@ import {
   buildMemorySynthesisPlan,
   memorySynthesisSourceEligibilityHash,
   MEMORY_SYNTHESIS_PIPELINE_VERSION,
+  MEMORY_SYNTHESIS_POLICY_VERSION,
   type MemorySynthesisPlan,
   type MemorySynthesisSource
 } from "./policy";
@@ -90,7 +91,7 @@ function result(plan: MemorySynthesisPlan) {
     inputHash,
     modelId: "system-model",
     output,
-    policyVersion: "memory-synthesis-policy-v3",
+    policyVersion: MEMORY_SYNTHESIS_POLICY_VERSION,
     providerId: "openai_compatible"
   };
 }
@@ -109,7 +110,7 @@ function repository(
         memoryRevision: 4,
         synthesisEnabled: true,
         synthesisEnabledAt: new Date("2026-08-01T00:00:00.000Z"),
-        synthesisPolicyVersion: "memory-synthesis-policy-v3",
+        synthesisPolicyVersion: MEMORY_SYNTHESIS_POLICY_VERSION,
         useMemoryFacts: true
       }
     })),

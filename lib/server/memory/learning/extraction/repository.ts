@@ -72,6 +72,7 @@ type PrepareResult =
 
 export type MemoryFactExecutionBinding = Readonly<{
   acceptedOutputHash: string | null;
+  errorCode: string | null;
   id: string;
   inputHash: string;
   ordinal: number;
@@ -1481,7 +1482,15 @@ async function applyPlan(
     throw new MemoryCoordinatorError("memory_semantic_adjudication_invalid", false);
   }
 
-  for (const [index, candidate] of plan.candidates.entries()) {
+  // A replacement already closes its exact old version through relation
+  // resolution. A second observation withdrawing that same version must not
+  // destroy the comparison target while the replacement is still pending.
+  // Preserve source ordinals, but apply withdrawals after other observations.
+  const candidateEntries = [...plan.candidates.entries()].sort((left, right) =>
+    Number(decisions.get(left[1].candidateRef)?.operation === "RETRACT_TARGET") -
+    Number(decisions.get(right[1].candidateRef)?.operation === "RETRACT_TARGET"));
+  const replacementTargets = new Set<string>();
+  for (const [index, candidate] of candidateEntries) {
     const candidateOrdinal = plan.candidateOrdinals[index]!;
     const receipt = await tx.memoryFactExtractionCandidateReceipt.findFirst({
       select: { id: true, outcome: true },
@@ -1523,6 +1532,14 @@ async function applyPlan(
       await rejectCandidate(tx, claim.userId, receipt.id, "secret_fenced", now);
       continue;
     }
+    if (semanticDecision?.operation === "RETRACT_TARGET" &&
+      semanticDecision.targetRef !== null &&
+      replacementTargets.has(semanticDecision.targetRef)) {
+      await rejectCandidate(
+        tx, claim.userId, receipt.id, "withdrawal_replaced_in_packet", now
+      );
+      continue;
+    }
     await tx.$executeRawUnsafe("SAVEPOINT memory_fact_candidate_apply");
     try {
       const adjudicatedEntityId = semanticDecision?.entityRef === null ||
@@ -1530,14 +1547,19 @@ async function applyPlan(
         ? null
         : plan.input.contextRefs.find(({ ref }) =>
             ref === semanticDecision.entityRef)?.entityId ?? null;
-      const materializedCandidate = await materializeMemoryCandidateEntityIdentity(
-        tx,
-        {
-          adjudicatedEntityId,
-          candidate,
-          userId: claim.userId
-        }
-      );
+      // A pure withdrawal consumes the exact adjudicated current target. It
+      // must not create or merge an entity merely to represent a cancellation.
+      const materializedCandidate = candidate.semanticFrame.polarity === "RETRACTION" &&
+        candidate.semanticFrame.changeIntent === "RETRACTION"
+        ? candidate
+        : await materializeMemoryCandidateEntityIdentity(
+            tx,
+            {
+              adjudicatedEntityId,
+              candidate,
+              userId: claim.userId
+            }
+          );
       if (await candidateIsSuppressed(
         tx,
         keyring,
@@ -1577,9 +1599,10 @@ async function applyPlan(
       // an earlier immutable support with a different quote fingerprint.
       const replayedEvidenceIds = committed.replayedEvidenceIds ?? [];
       if (replayedEvidenceIds.length > 1) throw new Error("memory_fact_replay_result_invalid");
+      const resultingEvidenceId = committed.resultingEvidenceId ?? replayedEvidenceIds[0];
       const result = before ?? await resultingIds(tx, claim.userId,
-        replayedEvidenceIds[0]
-          ? { id: replayedEvidenceIds[0] }
+        resultingEvidenceId
+          ? { id: resultingEvidenceId }
           : { evidenceFingerprint: fingerprint });
       if (!result) {
         await tx.$executeRawUnsafe("ROLLBACK TO SAVEPOINT memory_fact_candidate_apply");
@@ -1588,21 +1611,25 @@ async function applyPlan(
           tx,
           claim.userId,
           receipt.id,
-          "semantic_not_admitted",
+          committed.reasonCode ?? "repository_guarded_noop",
           now
         );
         continue;
       }
       const outcome = before
         ? "REPLAY"
-        : committed.createdVersions > 0
+        : committed.receiptOutcome ??
+        (committed.createdVersions > 0
           ? "APPLIED"
           : committed.attachedEvidence > 0
             ? "REINFORCED"
-            : "REPLAY";
+            : "REPLAY");
       const updated = await tx.memoryFactExtractionCandidateReceipt.updateMany({
         data: {
           outcome,
+          // Successful receipts carry the outcome and exact result IDs;
+          // the schema reserves reasonCode for rejected/stale work.
+          reasonCode: null,
           resultingEvidenceId: result.evidenceId,
           resultingFactId: result.factId,
           resultingFactVersionId: result.factVersionId,
@@ -1617,6 +1644,11 @@ async function applyPlan(
         );
       }
       await tx.$executeRawUnsafe("RELEASE SAVEPOINT memory_fact_candidate_apply");
+      if (committed.createdVersions > 0 && semanticDecision?.targetRef &&
+        (semanticDecision.operation === "SUPERSEDE_TARGET" ||
+          semanticDecision.operation === "MOVE_TO_DISTINCT_FACT")) {
+        replacementTargets.add(semanticDecision.targetRef);
+      }
     } catch (error) {
       await tx.$executeRawUnsafe("ROLLBACK TO SAVEPOINT memory_fact_candidate_apply");
       await tx.$executeRawUnsafe("RELEASE SAVEPOINT memory_fact_candidate_apply");
@@ -1766,6 +1798,7 @@ export function createPrismaMemoryFactExtractionRepository(
         orderBy: [{ ordinal: "asc" }, { id: "asc" }],
         select: {
           acceptedOutputHash: true,
+          errorCode: true,
           id: true,
           inputHash: true,
           ordinal: true,

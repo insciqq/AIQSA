@@ -1,14 +1,14 @@
 import type { AcceptanceDriver, Conversation, Identity, SendResult } from "./driver";
 import {
-  JUDGE_SYSTEM, decodeJudgement, safeCode,
-  type CheckResult, type Probe, type Scenario, type ScenarioResult
+  JUDGE_SYSTEM, decodeJudgement, safeCode, sourceDialogueForScenario,
+  type CheckResult, type JudgeSourceContext, type Probe, type Scenario, type ScenarioResult
 } from "./contract";
 import { ACTOR_GRADING_CALIBRATION, actorAwareJudgeInput } from "./actorGrading";
 import { ANSWER_GRADING_CALIBRATION, judgeAnswer } from "./answerGrading";
 
 export async function judge(driver: AcceptanceDriver, identity: Identity,
-  probe: Probe, surface: "facts" | "answer", values: string[]) {
-  const input = actorAwareJudgeInput(JUDGE_SYSTEM, probe, surface, values);
+  probe: Probe, surface: "facts" | "answer", values: string[], sourceContext?: JudgeSourceContext) {
+  const input = actorAwareJudgeInput(JUDGE_SYSTEM, probe, surface, values, sourceContext);
   const response = await driver.send(identity, driver.conversation("EXCLUDED"),
     `${input.system}\n\nEvaluation data (JSON):\n${input.payload}`);
   if (!response.ownerIsolation || response.memoryItems !== 0 || response.memoryOutcome === "DEGRADED") {
@@ -55,12 +55,105 @@ export async function calibrateJudge(driver: AcceptanceDriver, identity: Identit
   return { total: cases.length, correct, results };
 }
 
+export const SOURCE_AWARE_GRADING_CALIBRATION = [
+  {
+    answer: true,
+    expectation: "Miso is the user's dog and must not eat chicken.",
+    passed: true,
+    question: "What should I avoid feeding Miso?",
+    sourceContext: { messages: [{ actor: "owner" as const, content: "Miso is my dog. The vet says he cannot eat chicken.", memoryMode: "NORMAL" as const, ordinal: 0, role: "user" as const }] },
+    values: ["Do not give Miso chicken; the vet advised it."]
+  },
+  {
+    answer: true,
+    expectation: "Miso is the user's dog and must not eat chicken.",
+    passed: false,
+    question: "What should I avoid feeding Miso?",
+    sourceContext: { messages: [{ actor: "owner" as const, content: "Miso is my dog. The vet says he cannot eat chicken.", memoryMode: "NORMAL" as const, ordinal: 0, role: "user" as const }] },
+    values: ["You should not eat chicken."]
+  },
+  {
+    answer: true,
+    expectation: "The user's current home is York.",
+    passed: false,
+    question: "Where do I live now?",
+    sourceContext: { messages: [
+      { actor: "owner" as const, content: "I live in Leeds.", memoryMode: "NORMAL" as const, ordinal: 0, role: "user" as const },
+      { actor: "owner" as const, content: "I moved to York; that is my home now.", memoryMode: "NORMAL" as const, ordinal: 1, role: "user" as const }
+    ] },
+    values: ["You live in Leeds."]
+  },
+  {
+    answer: true,
+    expectation: "The user's current home is unknown after withdrawing York without a replacement.",
+    passed: false,
+    question: "Where do I live now?",
+    sourceContext: { messages: [
+      { actor: "owner" as const, content: "I lived in York.", memoryMode: "NORMAL" as const, ordinal: 0, role: "user" as const },
+      { actor: "owner" as const, content: "I no longer live in York; I have not settled anywhere else.", memoryMode: "NORMAL" as const, ordinal: 1, role: "user" as const }
+    ] },
+    values: ["You live in York."]
+  },
+  {
+    answer: true,
+    expectation: "The user's current home is unknown.",
+    passed: false,
+    question: "Where do I live now?",
+    sourceContext: { messages: [
+      { actor: "owner" as const, content: "I live in Leeds.", memoryMode: "NORMAL" as const, ordinal: 0, role: "user" as const },
+      { actor: "owner" as const, content: "Forget that I live in Leeds.", memoryMode: "NORMAL" as const, ordinal: 1, role: "user" as const }
+    ] },
+    values: ["You live in Leeds."]
+  },
+  {
+    answer: true,
+    expectation: "Before moving to York, the user lived in Leeds.",
+    passed: true,
+    question: "Where did I live before York?",
+    sourceContext: { messages: [
+      { actor: "owner" as const, content: "I lived in Leeds.", memoryMode: "NORMAL" as const, ordinal: 0, role: "user" as const },
+      { actor: "owner" as const, content: "I moved to York; that is my home now.", memoryMode: "NORMAL" as const, ordinal: 1, role: "user" as const }
+    ] },
+    values: ["Before York, you lived in Leeds."]
+  },
+  {
+    answer: false,
+    expectation: "The user's current home is York.",
+    passed: false,
+    question: "Where do I live now?",
+    sourceContext: { messages: [{ actor: "owner" as const, content: "I live in York.", memoryMode: "NORMAL" as const, ordinal: 0, role: "user" as const }] },
+    values: []
+  }
+] as const;
+
+export async function calibrateSourceAwareJudge(
+  driver: AcceptanceDriver,
+  identity: Identity,
+  onProgress: (event: Record<string, unknown>) => void = () => undefined
+) {
+  let correct = 0;
+  const results = [];
+  for (const [index, item] of SOURCE_AWARE_GRADING_CALIBRATION.entries()) {
+    const surface = item.answer ? "answer" : "facts";
+    const probe: Probe = { action: "check", question: item.question, expectation: item.expectation, surface };
+    const result = surface === "answer"
+      ? await judgeAnswer(driver, identity, probe, [...item.values], item.sourceContext)
+      : await judge(driver, identity, probe, surface, [...item.values], item.sourceContext);
+    if (result.passed === item.passed) correct++;
+    const outcome = { index, expected: item.passed, actual: result.passed, reason: result.reason };
+    results.push(outcome);
+    onProgress({ event: "source_aware_judge_calibration", ...outcome });
+  }
+  return { total: SOURCE_AWARE_GRADING_CALIBRATION.length, correct, results };
+}
+
 export async function evaluateScenario(driver: AcceptanceDriver, judgeIdentity: Identity, scenario: Scenario,
   onProgress: (event: Record<string, unknown>) => void, judgeDriver: AcceptanceDriver = driver) {
   const actors = new Map<string, Identity>();
   const conversations = new Map<string, Conversation>();
   const bindings = new Map<string, string[]>();
   const preservation = new Map<string, boolean>();
+  const sourceTimestamps = new Map<string, Map<number, string>>();
   const checks: CheckResult[] = [];
   const observations: Array<Record<string, unknown>> = [];
   const timings: Array<{ action: string; elapsedMs: number }> = [];
@@ -93,6 +186,8 @@ export async function evaluateScenario(driver: AcceptanceDriver, judgeIdentity: 
         }
         const run = await driver.send(identity, chat, step.content);
         observeRun(run, ordinal);
+        if (!sourceTimestamps.has(name)) sourceTimestamps.set(name, new Map());
+        sourceTimestamps.get(name)!.set(ordinal, run.userMessageCreatedAt);
         const elapsedMs = await driver.settle(identity, { chat, messageId: run.userMessageId });
         timings.push({ action: "settlement", elapsedMs: run.elapsedMs + elapsedMs });
         for (const [otherName, before] of others) {
@@ -122,6 +217,7 @@ export async function evaluateScenario(driver: AcceptanceDriver, judgeIdentity: 
           let values: string[];
           let criticalPassed: boolean | undefined;
           let answerMs: number | undefined;
+          let readerAuditEvidence: string[] | undefined;
           let references: string[] = [];
           if (surface === "facts") {
             const found = await driver.search(identity, step.question);
@@ -134,14 +230,24 @@ export async function evaluateScenario(driver: AcceptanceDriver, judgeIdentity: 
             observeRun(run, ordinal);
             values = [run.answer];
             answerMs = run.elapsedMs;
+            readerAuditEvidence = run.deliveredMemoryEvidence;
             if (step.critical === "isolation") criticalPassed = run.ownerIsolation && (!step.temporary || run.memoryItems === 0);
           }
           const elapsedMs = answerMs ?? Date.now() - started;
           timings.push({ action: surface === "facts" ? "search" : "probe", elapsedMs });
+          const sourceContext = {
+            messages: sourceDialogueForScenario(
+              scenario,
+              ordinal,
+              name as "owner" | "other",
+              sourceTimestamps.get(name)
+            ),
+            ...(readerAuditEvidence ? { deliveredEvidence: readerAuditEvidence } : {})
+          };
           const verdict = step.empty && surface === "facts"
             ? { passed: values.length === 0, reason: values.length === 0 ? "SUPPORTED" : "UNSUPPORTED", matchingIndices: [] }
-            : surface === "answer" ? await judgeAnswer(judgeDriver, judgeIdentity, step, values)
-              : await judge(judgeDriver, judgeIdentity, step, surface, values);
+            : surface === "answer" ? await judgeAnswer(judgeDriver, judgeIdentity, step, values, sourceContext)
+              : await judge(judgeDriver, judgeIdentity, step, surface, values, sourceContext);
           if (step.bind && surface === "facts") bindings.set(step.bind, verdict.passed
             ? verdict.matchingIndices.map((index) => references[index]!) : []);
           if (step.critical === "persistence") criticalPassed = preservation.get(name) === true;
