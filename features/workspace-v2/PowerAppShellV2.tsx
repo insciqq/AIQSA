@@ -688,6 +688,7 @@ export function PowerAppShellV2({
     containerRef: threadScrollRef,
     handleScroll: handleThreadScroll,
     jumpToLatest,
+    refreshLayout: refreshThreadLayout,
     resetToLatest: resetThreadToLatest,
     showJumpToLatest
   } = usePinnedScroll<HTMLDivElement>({
@@ -1545,6 +1546,7 @@ export function PowerAppShellV2({
     interruptedRun: activeChatInterruptedRun,
     refreshInterruptedRun: () => refreshInterruptedRun(),
     jumpToLatest,
+    refreshLayout: refreshThreadLayout,
     hasOlderMessages: activeThreadHistory.hasOlder,
     liveArtifactSummary,
     liveWorkDurationMs: liveWorkDurationMs(activeRunSurface),

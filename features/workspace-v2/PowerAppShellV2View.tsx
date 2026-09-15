@@ -146,11 +146,13 @@ import {
 } from "./WorkspaceHeaderV2";
 import { LibrarySurfaceV2 } from "./WorkspaceWelcomeV2";
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode
 } from "react";
 
@@ -322,6 +324,7 @@ export function SkillLibraryOverlayV2({
 
 export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const { branches, composer, overlays, session, settings, thread, workspace } = props;
+  const refreshThreadLayout = thread.refreshLayout;
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
   const [projectsSurfaceOpen, setProjectsSurfaceOpen] = useState(false);
@@ -352,6 +355,36 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   );
   const archivedManageRef = useRef<HTMLButtonElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
+  const setComposerDockRef = useCallback((dock: HTMLDivElement | null) => {
+    composerDockRef.current = dock;
+    if (!dock) {
+      setComposerDockHeight(0);
+      return;
+    }
+    const updateHeight = () => {
+      if (composerDockRef.current === dock) {
+        setComposerDockHeight(Math.ceil(dock.getBoundingClientRect().height));
+      }
+    };
+    updateHeight();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateHeight);
+    observer?.observe(dock, { box: "border-box" });
+    const viewport = window.visualViewport;
+    viewport?.addEventListener("resize", updateHeight);
+    viewport?.addEventListener("scroll", updateHeight);
+    return () => {
+      observer?.disconnect();
+      viewport?.removeEventListener("resize", updateHeight);
+      viewport?.removeEventListener("scroll", updateHeight);
+      if (composerDockRef.current === dock) {
+        composerDockRef.current = null;
+        setComposerDockHeight(0);
+      }
+    };
+  }, []);
+  useLayoutEffect(() => {
+    refreshThreadLayout();
+  }, [composerDockHeight, refreshThreadLayout]);
   const composerLayerController = useRef<ComposerV2LayerController | null>(null);
   const previousActiveChatIdRef = useRef(session.activeChatId);
   const personalMemoryOpen = settings.memory.open;
@@ -797,20 +830,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     streaming: message.status === "streaming"
   }));
 
-  useEffect(() => {
-    const dock = composerDockRef.current;
-    if (!dock) {
-      setComposerDockHeight(0);
-      return;
-    }
-    const updateHeight = () => setComposerDockHeight(Math.ceil(dock.getBoundingClientRect().height));
-    updateHeight();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(updateHeight);
-    observer.observe(dock);
-    return () => observer.disconnect();
-  }, [conversationMessages.length]);
-
   const actionsFor = (message: ThreadMessage): ConversationMessageActionsV2 => {
     const editMutationReason = thread.editingMessageId
       ? "Finish or cancel the inline edit first."
@@ -1241,7 +1260,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           ) : projectsSurfaceOpen ? (
             <ProjectsSurfaceV2
               composerSlot={(
-                <div className="v2-project-page-composer-stack" ref={composerDockRef}>
+                <div className="v2-project-page-composer-stack" ref={setComposerDockRef}>
                   {shellNotice}
                   {composerOperationError}
                   {composerSurface}
@@ -1274,7 +1293,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               }}
             />
           ) : (
-          <section className="v2-live-workspace" data-project-context={projectContext || undefined}>
+          <section className="v2-live-workspace" data-project-context={projectContext || undefined}
+            style={conversationMessages.length > 0 && composerDockHeight > 0
+              ? { "--v2-live-dock-height": `${composerDockHeight}px` } as CSSProperties : undefined}>
             <WorkspaceHeaderV2
               active={Boolean(session.activeChatId)}
               contextStats={composer.composerContextStats}
@@ -1365,7 +1386,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             />
             <ConversationV2
               composerSlot={conversationMessages.length === 0 ? (
-                <div className="v2-live-empty-composer-stack" ref={composerDockRef}>
+                <div className="v2-live-empty-composer-stack" ref={setComposerDockRef}>
                   {shellNotice}
                   {composerOperationError}
                   {composerSurface}
@@ -1401,7 +1422,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               )}
             />
             {conversationMessages.length > 0 ? (
-              <div className="v2-live-composer-dock" data-thread-composer-dock="" ref={composerDockRef}>
+              <div className="v2-live-composer-dock" data-thread-composer-dock="" ref={setComposerDockRef}>
                 {shellNotice}
                 {composerOperationError}
                 {composerSurface}

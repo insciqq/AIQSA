@@ -84,6 +84,7 @@
   --v2-avatar-slate-bg: #4e5c66;
   --v2-avatar-slate-fg: #dfe6ea;
 
+  --v2-safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --v2-measure: 46.25rem;
   --v2-wide-measure: 60rem;
   --v2-sidebar-width: 16.25rem;

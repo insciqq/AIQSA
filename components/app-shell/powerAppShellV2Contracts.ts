@@ -154,6 +154,7 @@ export type ShellThreadView = {
   loadEarlierMessages(): Promise<void> | void;
   loadingOlderMessages: boolean;
   jumpToLatest(): void;
+  refreshLayout(): void;
   liveArtifactSummary: ThreadArtifactSummary | null;
   /** Send → first answer token of the run in flight (client clock); null until the answer starts. */
   liveWorkDurationMs: number | null;
