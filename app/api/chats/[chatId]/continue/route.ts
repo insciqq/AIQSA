@@ -5,12 +5,14 @@ import { createSystemModelRoleResolver } from "@/lib/server/providerRuntime/syst
 import { createChatContinuationService } from "@/lib/server/chats/continuation";
 import { createChatContinuationRepository } from "@/lib/server/chats/continuationRepository";
 import { createChatContinuationHandler } from "@/lib/server/chats/continuationHandlers";
+import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
+import { workspaceRuntime } from "@/lib/server/workspace/defaultServices";
 
 export const runtime = "nodejs";
 export const POST = createChatContinuationHandler({
   resolveAuth: resolveRequestAuth,
   continueChat: createChatContinuationService({
-    repository: createChatContinuationRepository(prisma),
+    repository: createChatContinuationRepository(prisma, { runtime: workspaceRuntime, storage: createS3StorageAdapter() }),
     execute: createAcceptedStructuredOutputExecutor(prisma),
     resolveSystemModel: () => createSystemModelRoleResolver(prisma).resolve()
   })

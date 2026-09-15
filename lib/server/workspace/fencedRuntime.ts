@@ -34,6 +34,8 @@ export function fenceDeterministicWorkspaceRuntime(runtime: WorkspaceRuntime, sh
     ...(runtime.releaseOutputCapture ? { releaseOutputCapture: (input: Parameters<NonNullable<WorkspaceRuntime["releaseOutputCapture"]>>[0]) =>
       call(input, (signal) => runtime.releaseOutputCapture!({ ...input, signal })) } : {}),
     createProjectArchive: (input) => call(input, (signal) => runtime.createProjectArchive({ ...input, signal })),
+    ...(runtime.restoreProjectArchive ? { restoreProjectArchive: (input: Parameters<NonNullable<WorkspaceRuntime["restoreProjectArchive"]>>[0]) =>
+      call(input, (signal) => runtime.restoreProjectArchive!({ ...input, signal })) } : {}),
     stopSession: (input) => call(input, (signal) => runtime.stopSession({ ...input, signal })),
     removeSession: (input) => call(input, (signal) => runtime.removeSession({ ...input, signal })),
     ...(runtime.releaseOutputs ? { releaseOutputs: runtime.releaseOutputs.bind(runtime) } : {})

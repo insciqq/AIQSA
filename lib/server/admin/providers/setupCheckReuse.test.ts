@@ -103,6 +103,18 @@ async function fixture(realTester = false) {
 }
 
 describe("reuse of checks committed by custom setup", () => {
+  it("reopens old settled receipts when detected codex-lb models have never checked Hosted Search", async () => {
+    const f = await fixture();
+    await f.finish();
+    f.connection.activeConfig!.responsesRequestIsolationDetected = true;
+    const run = await f.providerService.startCheckRun({ connectionId: f.connection.id,
+      credentialId: f.connection.defaultCredentialId!, reason: "setup", reuseCurrentChecks: true });
+    await vi.waitFor(() => expect(f.providerService.checkRun({ connectionId: f.connection.id, runId: run.id }).state).toBe("completed"));
+    expect(f.test).toHaveBeenCalledTimes(8);
+    expect(f.test.mock.calls.slice(4).every(([value]) =>
+      value.reuseSetupEvidence?.capabilitySetup?.checks.hostedSearch === "not_checked")).toBe(true);
+  });
+
   it("performs four checks, reuses all four exact proofs, and still waits for automatic setup", async () => {
     const f = await fixture(true);
     expect(f.test).toHaveBeenCalledTimes(4);

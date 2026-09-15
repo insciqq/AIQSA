@@ -14,6 +14,7 @@ import {
   Rule,
   Sandbox,
   SandboxNotFoundError,
+  SandboxNotRunningError,
   isInstalled,
   type FsReadStream
 } from "microsandbox";
@@ -42,6 +43,7 @@ import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
 import type { WorkspaceBrowserSkipCode } from "./secrets/browserSession";
 import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide, WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./secrets/manifest";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
+import { PROJECT_ARCHIVE_MAX_ENTRIES, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
 import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION } from "./config";
 import {
   bindOfficialWorkspaceTools,
@@ -1145,7 +1147,11 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       archivePath,
       WORKSPACE_PROJECT_DIRECTORY
     ]).catch(() => null);
-    if (!output?.success) throw new WorkspaceRuntimeError("workspace_output_export_failed");
+    if (!output?.success) {
+      // Exit 66 is reserved by PROJECT_ARCHIVE_COMMAND for device/socket
+      // entries; keep that distinction for the client-safe status.
+      throw new WorkspaceRuntimeError(output?.code === 66 ? "workspace_archive_invalid" : "workspace_output_export_failed");
+    }
     const metadata = await session.sandbox.fs().stat(archivePath);
     if (
       metadata.kind !== "file" ||
@@ -1166,6 +1172,57 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       opaqueFileId: createHash("sha256").update(archivePath).digest("hex"),
       relativePath: "workspace.tar.gz"
     };
+  }
+
+  async restoreProjectArchive(input: Parameters<NonNullable<WorkspaceRuntime["restoreProjectArchive"]>>[0]): Promise<void> {
+    const session = await this.runningSession(input);
+    if (!Number.isSafeInteger(input.byteSize) || input.byteSize <= 0 || input.byteSize > this.config.outputTotalMaxBytes || !HASH_PATTERN.test(input.checksum)) {
+      throw new WorkspaceRuntimeError("workspace_archive_invalid");
+    }
+    const archivePath = `${WORKSPACE_TEMP_DIRECTORY}/workspace-restore-${createHash("sha256")
+      .update(`${input.sessionId}\0${Date.now()}\0${input.checksum}`)
+      .digest("hex")}.tar.gz`;
+    const fs = session.sandbox.fs();
+    const sink = await fs.writeStream(archivePath);
+    const reader = input.archive.getReader();
+    const checksum = createHash("sha256");
+    let bytes = 0;
+    let uploaded = false;
+    try {
+      while (true) {
+        input.signal?.throwIfAborted();
+        const next = await reader.read();
+        if (next.done) break;
+        bytes += next.value.byteLength;
+        if (bytes > input.byteSize) throw new WorkspaceRuntimeError("workspace_archive_limit_exceeded");
+        checksum.update(next.value);
+        await sink.write(next.value);
+      }
+      await sink.close();
+      uploaded = true;
+    } finally {
+      if (!uploaded) await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+      await sink[Symbol.asyncDispose]().catch(() => undefined);
+      if (!uploaded) await fs.remove(archivePath).catch(() => undefined);
+    }
+    if (bytes !== input.byteSize || checksum.digest("hex") !== input.checksum) {
+      await fs.remove(archivePath).catch(() => undefined);
+      throw new WorkspaceRuntimeError("workspace_archive_invalid");
+    }
+    try {
+      const result = await session.sandbox.exec("python3", ["-c", PROJECT_RESTORE_SCRIPT, archivePath, WORKSPACE_PROJECT_DIRECTORY,
+        String(Math.min(this.config.outputTotalMaxBytes, this.config.diskMiB * 1_024 * 1_024)), String(PROJECT_ARCHIVE_MAX_ENTRIES)]);
+      if (!result.success) throw new WorkspaceRuntimeError(result.code === 65 ? "workspace_archive_invalid" :
+        result.code === 67 ? "workspace_archive_limit_exceeded" : result.code === 69 ? "workspace_execution_cleanup_failed" : "workspace_archive_restore_failed");
+    } catch (error) {
+      const cleanup = await session.sandbox.exec("bash", ["-c", "find \"$1\" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +", "aiqsa-workspace-cleanup", WORKSPACE_PROJECT_DIRECTORY]).catch(() => null);
+      if (!cleanup?.success) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+      if (error instanceof WorkspaceRuntimeError) throw error;
+      throw new WorkspaceRuntimeError("workspace_archive_restore_failed");
+    } finally {
+      await fs.remove(archivePath).catch(() => undefined);
+    }
   }
 
   private async closeMcp(session: LocalSession): Promise<void> {
@@ -1209,7 +1266,10 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       await handle.stopWithTimeout(10_000);
       stopped = true;
     } catch (error) {
-      if (error instanceof SandboxNotFoundError) {
+      // Stopping an already-stopped persistent disk is idempotent. This is
+      // expected when a new operation claims a session after run cleanup (or
+      // when the runtime idle timeout stopped it between two fence calls).
+      if (error instanceof SandboxNotFoundError || error instanceof SandboxNotRunningError) {
         stopped = true;
         return;
       }

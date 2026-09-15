@@ -2,6 +2,8 @@ import type { AdminSearchCatalog, AdminSearchIntegration } from "@/lib/contracts
 import { describe, expect, it } from "vitest";
 import {
   configurableModels,
+  draftForModel,
+  emptySearchForm,
   manuallyAddableModels,
   searchCheckSummary,
   searchExecutionValidation,
@@ -188,11 +190,26 @@ describe("plan and form helpers", () => {
     expect(searchExecutionValidation(form).valid).toBe(true);
     expect(searchExecutionValidation({
       ...form,
-      executionInputs: { maxOutputTokens: "12", maxSearchCallsPerAnswer: "9" }
+      executionInputs: { maxOutputTokens: "12", maxSearchCallsPerAnswer: "33" }
     })).toEqual({
       maxOutputTokens: "Enter a whole number from 1,024 to 32,768.",
-      maxSearchCallsPerAnswer: "Enter a whole number from 1 to 4.",
+      maxSearchCallsPerAnswer: "Enter a whole number from 1 to 32.",
       valid: false
+    });
+    expect(searchExecutionValidation({ ...form,
+      executionInputs: { maxOutputTokens: "8193", maxSearchCallsPerAnswer: "32" }
+    }).valid).toBe(true);
+  });
+
+  it("starts new sources with research-capable defaults and preserves saved settings when changing models", () => {
+    const fresh = emptySearchForm();
+    expect(fresh.draft).toMatchObject({ maxOutputTokens: 8_192, maxSearchCallsPerAnswer: 8,
+      queryMaxCharacters: 1_000, timeoutMs: 120_000 });
+    const saved = searchFormFrom(source());
+    expect(saved.draft).toMatchObject({ maxOutputTokens: 4_096, maxSearchCallsPerAnswer: 2,
+      queryMaxCharacters: 500, timeoutMs: 300_000 });
+    expect(draftForModel(catalog.providerModels[0]!, saved.draft)).toMatchObject({
+      maxOutputTokens: 4_096, maxSearchCallsPerAnswer: 2, queryMaxCharacters: 500, timeoutMs: 300_000
     });
   });
 });

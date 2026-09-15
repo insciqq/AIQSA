@@ -4,7 +4,8 @@ import {
   type AdminProviderCapabilitySetupEvidence,
   type AdminProviderTestEvidence
 } from "../../../contracts/adminProviders";
-import type { ProviderModelConfiguration } from "../../providers/providerConfiguration";
+import type { ProviderConnectionConfiguration, ProviderModelConfiguration } from "../../providers/providerConfiguration";
+import { decodeHostedSearchVerificationEvidence, shouldProbeHostedSearch } from "./hostedSearchCapability";
 import { decodeParallelToolCallVerificationEvidence } from "../../providers/parallelToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
 import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
@@ -85,6 +86,9 @@ export function initiallyVerifiedModelConfiguration(
       matching(decodeParallelToolCallVerificationEvidence(evidence.parallelToolCalls)),
     nativePdfInput: setup.checks.directPdf === "verified" && matching(decodePdfInputVerificationEvidence(evidence.pdfInput)),
     vision: setup.checks.vision === "verified" && matching(decodeVisionInputVerificationEvidence(evidence.visionInput)),
+    ...(setup.checks.hostedSearch !== undefined ? {
+      nativeSearch: setup.checks.hostedSearch === "verified" && matching(decodeHostedSearchVerificationEvidence(evidence.hostedSearch))
+    } : {}),
     streaming: setup.checks.streaming === "verified" && evidence.compatibility?.streaming === "verified"
   } };
 }
@@ -92,7 +96,8 @@ export function initiallyVerifiedModelConfiguration(
 /** The repository caller must first fence all connection/model/key revisions. */
 export function reusableCapabilitySetupEvidence(
   evidence: AdminProviderTestEvidence | undefined,
-  model: ProviderModelConfiguration
+  model: ProviderModelConfiguration,
+  connection?: Pick<ProviderConnectionConfiguration, "responsesRequestIsolationDetected">
 ): AdminProviderTestEvidence | undefined {
   let setup = decodeCapabilitySetupEvidence(evidence?.capabilitySetup);
   if (!setup && evidence && model.modelClass === "answer" && evidence.compatibility?.modelAccess === "verified") {
@@ -118,6 +123,15 @@ export function reusableCapabilitySetupEvidence(
     setup.attempts?.structuredOutput?.reason === "adapter_unsupported" &&
     supportsStructuredOutputAdapter(model.adapterKind)) checks.structuredOutput = "not_checked";
   const retained = { ...evidence, ...(evidence.compatibility ? { compatibility: { ...evidence.compatibility } } : {}) };
+  if (shouldProbeHostedSearch(model, connection) && (checks.hostedSearch === undefined ||
+    checks.hostedSearch === "unsupported" && setup.attempts?.hostedSearch?.reason === "adapter_unsupported")) {
+    checks.hostedSearch = "not_checked";
+  }
+  const hostedSearch = decodeHostedSearchVerificationEvidence(evidence.hostedSearch);
+  if (!hostedSearch || hostedSearch.adapterKind !== model.adapterKind || hostedSearch.upstreamModelId !== model.upstreamModelId) {
+    if (checks.hostedSearch === "verified") checks.hostedSearch = "not_checked";
+    delete retained.hostedSearch;
+  }
   for (const [key, valid] of [["structuredOutput", hasVerifiedStructuredOutput(evidence, model)],
     ["forcedToolCall", hasVerifiedForcedToolCall(evidence, model)]] as const) {
     if (!valid) {

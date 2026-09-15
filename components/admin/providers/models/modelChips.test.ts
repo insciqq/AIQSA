@@ -44,6 +44,21 @@ function run(overrides: Partial<AdminProviderCheckRun> = {}): AdminProviderCheck
 }
 
 describe("modelChipsFromEvidence", () => {
+  it("shows exact-model Hosted Search proof and distinguishes an inconclusive check", () => {
+    const configuration = { ...answer, adapterKind: "openai_responses_compatible" as const };
+    const check = fixtureCheck({ credentialId: "cred-primary", providerModelId: "m", evidence: evidence({
+      hostedSearch: { adapterKind: configuration.adapterKind, upstreamModelId: configuration.upstreamModelId,
+        normalizedSourceCount: 1, probeVersion: 1, verified: true },
+      capabilitySetup: { policyVersion: 2, checks: { hostedSearch: "verified" } }
+    }) });
+    expect(modelChipsFromEvidence(configuration, check)).toContainEqual({ key: "hostedSearch", label: "Hosted Search", tone: "ok" });
+    expect(modelChipsFromEvidence(answer, check).some(({ key, tone }) => key === "hostedSearch" && tone === "ok")).toBe(false);
+    check.evidence = evidence({ capabilitySetup: { policyVersion: 2, checks: { hostedSearch: "incomplete" },
+      attempts: { hostedSearch: { attempts: 1, reason: "timeout", status: "incomplete" } } } });
+    expect(modelChipsFromEvidence(configuration, check)).toContainEqual(expect.objectContaining({
+      key: "hostedSearch", tone: "muted", help: expect.stringContaining("check timed out")
+    }));
+  });
   it.each(["incomplete", "rejected", "unsupported"] as const)("makes %s Memory actions visible independently of Tools", (status) => {
     const check = fixtureCheck({ credentialId: "cred-primary", providerModelId: "m", evidence: evidence({
       compatibility: { ...evidence().compatibility!, forcedToolCall: "not_supported" },

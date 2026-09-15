@@ -186,6 +186,31 @@ describe("deterministic Workspace runtime", () => {
     expect(projectArchive.checksum).toBe(createHash("sha256").update(archiveBytes).digest("hex"));
   });
 
+  it("restores only the project tree and rejects unsafe archives", async () => {
+    const runtime = new DeterministicWorkspaceRuntime(config);
+    const sourceId = "0199aabc-12ef-7abc-8abc-0123456789ad";
+    const destinationId = "0199aabc-12ef-7abc-8abc-0123456789ae";
+    const source = await runtime.ensureSession({ cpus: 1, diskMiB: config.diskMiB, imageRef: config.imageRef,
+      internetEnabled: false, memoryMiB: config.memoryMiB, runtimeSandboxId: null,
+      sandboxName: workspaceSandboxName(sourceId), sessionId: sourceId });
+    const destination = await runtime.ensureSession({ cpus: 1, diskMiB: config.diskMiB, imageRef: config.imageRef,
+      internetEnabled: false, memoryMiB: config.memoryMiB, runtimeSandboxId: null,
+      sandboxName: workspaceSandboxName(destinationId), sessionId: destinationId });
+    await runtime.callBoundTool({ arguments: { content: "copied", path: "/workspace/project/marker.txt" }, modelRunId: "restore",
+      modelRunToolCallId: "write", originalName: "sandbox_fs_write", runtimeSandboxId: source.runtimeSandboxId, sessionId: sourceId });
+    const archive = await runtime.createProjectArchive({ runtimeSandboxId: source.runtimeSandboxId, sessionId: sourceId });
+    const bytes = await collect(archive.body);
+    await runtime.restoreProjectArchive({ archive: stream(bytes), byteSize: bytes.byteLength, checksum: archive.checksum,
+      runtimeSandboxId: destination.runtimeSandboxId, sessionId: destinationId });
+    const restored = await runtime.callBoundTool({ arguments: { path: "/workspace/project/marker.txt" }, modelRunId: "restore",
+      modelRunToolCallId: "read", originalName: "sandbox_fs_read", runtimeSandboxId: destination.runtimeSandboxId, sessionId: destinationId });
+    expect(restored.content[0]?.text).toContain("copied");
+    await expect(runtime.restoreProjectArchive({ archive: stream(bytes), byteSize: bytes.byteLength, checksum: "0".repeat(64),
+      runtimeSandboxId: destination.runtimeSandboxId, sessionId: destinationId })).rejects.toMatchObject({ code: "workspace_archive_invalid" });
+    await runtime.removeSession({ runtimeSandboxId: source.runtimeSandboxId, sessionId: sourceId });
+    await runtime.removeSession({ runtimeSandboxId: destination.runtimeSandboxId, sessionId: destinationId });
+  });
+
   it("binds long exec ids to one run and removes state idempotently", async () => {
     const runtime = new DeterministicWorkspaceRuntime(config);
     const sessionId = "0199aabc-12ef-7abc-8abc-0123456789ac";

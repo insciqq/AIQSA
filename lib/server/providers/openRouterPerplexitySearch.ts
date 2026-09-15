@@ -22,6 +22,7 @@ import type {
   ProviderSearchResult
 } from "./types";
 import { ProviderSearchExecutionError } from "./types";
+import { firstOpenAIChatChoice, firstOpenAIChatMessage } from "./openaiChatCompletions";
 
 export type OpenRouterPerplexitySearchAdapterOptions = Readonly<{
   client: OpenRouterChatClient;
@@ -62,11 +63,32 @@ export function createOpenRouterPerplexitySearchAdapter(
           ? { timeoutMs: searchOptions.timeoutMs }
           : {})
       });
+      const usage = extractOpenRouterUsage(response);
       const responseError = openRouterResponseError(response);
       if (responseError) {
-        throw new Error(responseError);
+        throw new ProviderSearchExecutionError({ artifacts: [], code: responseError, usage });
       }
-      assertValidOpenRouterTerminalResponse(response, { allowToolCalls: false });
+      const finishReason = firstOpenAIChatChoice(response)?.finish_reason;
+      const message = firstOpenAIChatMessage(response);
+      try {
+        assertValidOpenRouterTerminalResponse(response, { allowToolCalls: false });
+        // A text-bearing response can still be truncated, interrupted, or asking
+        // for a tool. Query-only Search needs successful terminal proof.
+        if (finishReason !== "stop" ||
+          Array.isArray(message?.tool_calls) && message.tool_calls.length > 0) {
+          throw new Error("openrouter_terminal_response_invalid");
+        }
+      } catch {
+        const providerStatus = finishReason === "length" || finishReason === "content_filter" ||
+          finishReason === "error" || finishReason === "tool_calls" ? finishReason : undefined;
+        throw new ProviderSearchExecutionError({
+          artifacts: [],
+          code: "openrouter_terminal_response_invalid",
+          ...(providerStatus ? { providerStatus } : {}),
+          ...(finishReason === "length" ? { reason: "max_output_tokens" } : {}),
+          usage
+        });
+      }
 
       const finalText = extractOpenRouterText(response);
       const citationArtifacts = extractOpenRouterArtifacts(response).filter((event) =>
@@ -75,7 +97,6 @@ export function createOpenRouterPerplexitySearchAdapter(
       const sources = searchSourcesFromCitationArtifacts(citationArtifacts);
       const operationArtifact = searchArtifact(response, request, sources.length);
       const artifacts = [operationArtifact, ...citationArtifacts];
-      const usage = extractOpenRouterUsage(response);
       let findings: string;
       try {
         findings = normalizeSearchFindings(finalText);

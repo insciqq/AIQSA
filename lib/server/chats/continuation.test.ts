@@ -11,7 +11,7 @@ function model(contextWindow = 32000): SystemModelRoleResolution {
       snapshot: { providerFamily: "fake", model: { upstreamModelId: "fake-upstream" } } } as unknown as ProviderAdmissionRole };
 }
 function fixture(transcript = "USER: Plan a trip.\nASSISTANT: Budget is 500.") {
-  const source = { chatId: "source", userId: "owner", leafMessageId: "answer", projectId: null, updatedAt: new Date(), transcript };
+  const source = { chatId: "source", userId: "owner", leafMessageId: "answer", projectId: null, updatedAt: new Date(), transcript, workspaceEnabled: false };
   const repository = {
     loadSource: vi.fn(async () => source),
     claim: vi.fn<ContinuationRepository["claim"]>(async () => ({ kind: "claimed", claim: { id: "operation", attemptId: "attempt" } })),

@@ -15,6 +15,15 @@ function streamResponse() {
 }
 
 describe("readAdminProviderSetupResponse", () => {
+  it.each(["hostedSearch", "imageGeneration", "imageEditing"])("delivers %s capability progress through the setup stream", async (capability) => {
+    const { response, source } = streamResponse();
+    const received = vi.fn();
+    const value = { phase: "checking", completed: 1, total: 9, capability };
+    source.enqueue(encode({ type: "progress", progress: value }));
+    source.enqueue(encode({ type: "result", status: 201, data: {} }));
+    await expect(readAdminProviderSetupResponse(response, received)).resolves.toMatchObject({ ok: true });
+    expect(received).toHaveBeenCalledExactlyOnceWith(value);
+  });
   it("delivers each real four-model count before the terminal response, including split UTF-8 frames", async () => {
     const { body, cancel, response, source } = streamResponse();
     const received = vi.fn();

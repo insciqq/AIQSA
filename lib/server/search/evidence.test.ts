@@ -37,6 +37,17 @@ describe("Search source evidence normalization", () => {
     })).toEqual([]);
   });
 
+  it.each(["url", "href"])("rejects an overlong %s without changing the cited address", (field) => {
+    const atLimit = "https://example.com/".padEnd(2_048, "a");
+
+    expect(normalizeSearchSources([{ [field]: atLimit, title: "Exact source" }])).toEqual([{
+      rank: 1,
+      title: "Exact source",
+      url: atLimit
+    }]);
+    expect(normalizeSearchSources([{ [field]: `${atLimit}b`, title: "Overlong source" }])).toEqual([]);
+  });
+
   it("bounds and canonicalizes adapter findings", () => {
     expect(normalizeSearchFindings("  grounded result  ")).toBe("grounded result");
     expect(() => normalizeSearchFindings(" ")).toThrow("search_findings_invalid");

@@ -1,6 +1,7 @@
 import { logEvent } from "../observability";
 import { inheritWorkspaceResultCode, observeWorkspaceAbort, observeWorkspaceToolExecution, retainWorkspaceResultCode } from "./toolObservability";
 import { createHash, randomUUID } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
   ThreadGeneratedFile,
@@ -52,7 +53,7 @@ import type {
 } from "./runtime";
 import { WorkspaceRuntimeError } from "./runtime";
 import type { WorkspaceOperation } from "./operationFence";
-import { failWorkspaceExportsForLostDisk, lockWorkspaceSession, workspaceOperationWhere, workspaceRunOperationOwner } from "./sessionOperation";
+import { WORKSPACE_OPERATION_LEASE_MS, failWorkspaceExportsForLostDisk, lockWorkspaceSession, workspaceOperationWhere, workspaceRunOperationOwner } from "./sessionOperation";
 import { workspaceRunTools } from "./admission";
 import { decryptWorkspaceSecret, type AcceptedWorkspaceSecret } from "./secrets/store";
 import { saveWorkspaceBrowserSessions, type WorkspaceBrowserSaveInput } from "./secrets/browserStore";
@@ -153,6 +154,10 @@ export type WorkspaceCoordinatorRepository = Readonly<{
   personalSecrets(binding: WorkspaceExecutionBinding): Promise<readonly AcceptedWorkspaceSecret[]>;
   saveBrowserSessions(input: WorkspaceBrowserSaveInput): Promise<WorkspaceBrowserSaveReport | null>;
   binding(input: Readonly<{ runId: string; userId: string }>): Promise<WorkspaceExecutionBinding | null>;
+  claimContinuationSeed?(input: Readonly<{ chatId: string; operation: WorkspaceOperation; sessionId: string }>): Promise<Readonly<{
+    id: string; storageKey: string; checksum: string; byteSize: number; token: string;
+  }> | null>;
+  settleContinuationSeed?(input: Readonly<{ id: string; token: string; status: "RESTORED" | "FAILED"; failureCode?: string }>): Promise<boolean>;
   claimExport(input: Readonly<{
     handoff?: boolean;
     leaseMs: number;
@@ -393,6 +398,47 @@ export function createPrismaWorkspaceCoordinatorRepository(
     },
     async binding({ runId, userId }) {
       return loadBinding(runId, userId);
+    },
+    async claimContinuationSeed({ chatId, operation, sessionId }) {
+      return prisma.$transaction(async (tx) => {
+        const session = await lockWorkspaceSession(tx, sessionId);
+        if (!session || session.chatId !== chatId || session.version !== operation.generation || session.operationOwner !== operation.owner) {
+          throw new WorkspaceRuntimeError("workspace_operation_stale");
+        }
+        const seed = await tx.chatContinuationWorkspaceSeed.findUnique({ where: { newChatId: chatId } });
+        if (!seed || !["TRANSFERRED", "RESTORING"].includes(seed.status)) return null;
+        if (!seed.storageKey || !seed.checksum || !seed.byteSize) throw new WorkspaceRuntimeError("workspace_archive_invalid");
+        const now = new Date();
+        if (seed.status === "RESTORING" && seed.leaseExpiresAt && seed.leaseExpiresAt > now) {
+          throw new WorkspaceRuntimeError("workspace_archive_restore_failed");
+        }
+        const token = randomUUID();
+        const claimed = await tx.chatContinuationWorkspaceSeed.updateMany({
+          where: { id: seed.id, OR: [
+            { status: "TRANSFERRED" },
+            { status: "RESTORING", OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }] }
+          ] },
+          data: { status: "RESTORING", leaseToken: token, leaseExpiresAt: new Date(now.getTime() + WORKSPACE_OPERATION_LEASE_MS),
+            restoreStartedAt: now, attemptCount: { increment: 1 } }
+        });
+        if (claimed.count !== 1) return null;
+        return { id: seed.id, storageKey: seed.storageKey, checksum: seed.checksum, byteSize: seed.byteSize, token };
+      });
+    },
+    async settleContinuationSeed({ id, token, status, failureCode }) {
+      return prisma.$transaction(async (tx) => {
+        const settled = await tx.chatContinuationWorkspaceSeed.updateMany({
+          where: { id, leaseToken: token, status: "RESTORING" },
+          data: { status, failureCode: failureCode ?? null, leaseToken: null, leaseExpiresAt: null }
+        });
+        if (settled.count !== 1) return false;
+        if (status === "FAILED") {
+          const seed = await tx.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { id } });
+          if (seed.storageKey) await tx.attachmentDeletionJob.upsert({ where: { storageKey: seed.storageKey },
+            create: { storageKey: seed.storageKey }, update: {} });
+        }
+        return true;
+      });
     },
     async attachments(binding) {
       // Earlier exported bytes are admitted from this run's immutable message
@@ -1061,6 +1107,13 @@ async function objectMatches(
 
 const EXEC_SESSION_TOOLS = new Set<string>(WORKSPACE_EXEC_SESSION_TOOL_NAMES);
 
+const EMPTY_WORKSPACE_ARCHIVE = new Uint8Array(gzipSync(new Uint8Array(1_024)));
+const EMPTY_WORKSPACE_ARCHIVE_CHECKSUM = createHash("sha256").update(EMPTY_WORKSPACE_ARCHIVE).digest("hex");
+
+function workspaceArchiveBody(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream({ start(controller) { controller.enqueue(bytes.slice()); controller.close(); } });
+}
+
 function isExecSessionTool(name: string): boolean {
   return EXEC_SESSION_TOOLS.has(name);
 }
@@ -1215,6 +1268,50 @@ export function createWorkspaceCoordinator(input: Readonly<{
           operation: ownedOperation(binding), sessionId: binding.sessionId,
           signal
         });
+        const continuationSeed = await input.repository.claimContinuationSeed?.({
+          chatId: binding.chatId, operation: ownedOperation(binding), sessionId: binding.sessionId
+        });
+        if (continuationSeed) {
+          if (!input.runtime.restoreProjectArchive) {
+            await input.repository.settleContinuationSeed?.({ id: continuationSeed.id, token: continuationSeed.token,
+              status: "FAILED", failureCode: "workspace_archive_restore_failed" });
+            throw new WorkspaceRuntimeError("workspace_archive_restore_failed");
+          }
+          let restored = false;
+          try {
+            const archive = await getStoredObjectStream(input.storage, continuationSeed.storageKey, {
+              maxBytes: input.config.outputTotalMaxBytes, signal
+            });
+            if (archive.byteSize !== continuationSeed.byteSize) {
+              await archive.body.cancel().catch(() => undefined);
+              throw new WorkspaceRuntimeError("workspace_archive_invalid");
+            }
+            await input.runtime.restoreProjectArchive({ archive: archive.body, byteSize: continuationSeed.byteSize,
+              checksum: continuationSeed.checksum, runtimeSandboxId: session.runtimeSandboxId,
+              operation: ownedOperation(binding), sessionId: binding.sessionId, signal });
+            restored = true;
+          } catch (error) {
+            // Restore is transactional at the runtime boundary. A second,
+            // empty archive clears any partial extraction before this run is
+            // admitted; it never retries the original bytes automatically.
+            try {
+              await input.runtime.restoreProjectArchive({ archive: workspaceArchiveBody(EMPTY_WORKSPACE_ARCHIVE),
+                byteSize: EMPTY_WORKSPACE_ARCHIVE.byteLength, checksum: EMPTY_WORKSPACE_ARCHIVE_CHECKSUM,
+                runtimeSandboxId: session.runtimeSandboxId, operation: ownedOperation(binding), sessionId: binding.sessionId });
+            } catch {
+              throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+            }
+            if (!await input.repository.settleContinuationSeed?.({ id: continuationSeed.id, token: continuationSeed.token,
+              status: "FAILED", failureCode: error instanceof WorkspaceRuntimeError ? error.code : "workspace_archive_restore_failed" })) {
+              throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+            }
+          }
+          // A lost settlement response can already have committed RESTORED.
+          // Never erase proven files because a database acknowledgement failed.
+          if (restored && !await input.repository.settleContinuationSeed?.({
+            id: continuationSeed.id, token: continuationSeed.token, status: "RESTORED"
+          })) throw new WorkspaceRuntimeError("workspace_operation_stale");
+        }
         if (!(await input.repository.markSessionRunning({
           ...activityWindow(),
           runtimeSandboxId: session.runtimeSandboxId,

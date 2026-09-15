@@ -1265,6 +1265,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               active={Boolean(session.activeChatId)}
               contextStats={composer.composerContextStats}
               continuation={continuationEligible ? continuation : null}
+              continuationFiles={activeChatSummary?.workspace?.continuationFiles}
               crumb={activeChatCrumb}
               archiveDisabled={thread.activeChatStreaming || temporarySession || Boolean(
                 projectContext && (
