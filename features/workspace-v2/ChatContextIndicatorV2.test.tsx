@@ -56,7 +56,8 @@ describe("header context indicator", () => {
         provider: "fake", safetyMarginTokens: 1000, version: 1 }
     }} continuation={{ busy: false, error: null, suggested: true, onContinue, onDismiss: vi.fn(), onCancel: vi.fn() }} />);
     expect(screen.getByRole("dialog")).toHaveTextContent("4 earlier messages are still in this chat, but were omitted from the model request");
-    expect(screen.getByRole("dialog")).toHaveTextContent("project files are copied into the new chat. Attachments are not carried over.");
+    expect(screen.getByRole("dialog")).toHaveTextContent("Your composer settings, unsent text and attached files come along.");
+    expect(screen.getByRole("dialog")).toHaveTextContent("Earlier messages and their attachments stay in this chat.");
     expect(onContinue).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Summarize and open new chat" }));
     expect(onContinue).toHaveBeenCalledTimes(1);

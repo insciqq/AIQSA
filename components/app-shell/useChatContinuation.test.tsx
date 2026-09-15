@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useChatContinuation } from "./useChatContinuation";
 import { ChatContextIndicatorV2 } from "@/features/workspace-v2/ChatContextIndicatorV2";
+import type { ChatContinuationModelSelection } from "@/lib/contracts/chatContinuation";
 
 const onOpen = vi.fn();
 const updatedAt = "2026-09-05T12:00:00.000Z";
@@ -15,8 +16,11 @@ const child = {
     content: { blocks: [{ type: "text", text: "Conversation summary" }] }, modelId: null, modelRunId: null,
     provider: null, errorMessage: null, artifactSummary: null, citationMessageId: null }]
 };
-function Harness({ chatId = "source", leaf = "answer", eligible = true, recommended = true }) {
-  const control = useChatContinuation({ accountId: "owner", chatId, leafMessageId: leaf, eligible, recommended, onOpen });
+function Harness({ chatId = "source", leaf = "answer", eligible = true, recommended = true, uploading = false, modelSelection }: {
+  chatId?: string; leaf?: string; eligible?: boolean; recommended?: boolean; uploading?: boolean;
+  modelSelection?: ChatContinuationModelSelection;
+}) {
+  const control = useChatContinuation({ accountId: "owner", chatId, leafMessageId: leaf, eligible, recommended, uploading, modelSelection, onOpen });
   return <ChatContextIndicatorV2 continuation={eligible ? control : null} stats={{
     approximateInputTokens: 700, safeInputBudgetTokens: 1000, totalContextTokens: 1500
   }} />;
@@ -60,7 +64,7 @@ it("opens the saved summary after one action and ignores a second click", async 
   expect(fetch).toHaveBeenCalledOnce();
   expect(screen.getByRole("status")).toHaveTextContent("Preparing your summary");
   await act(async () => { finish(Response.json({ status: "complete", chatId: "new-chat", projectId: null })); });
-  await waitFor(() => expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: "new-chat", hasContinuationSource: true })));
+  await waitFor(() => expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: "new-chat", hasContinuationSource: true }), "chat:source"));
 });
 
 it("stays on failure and uses a fresh request only after a definite failure", async () => {
@@ -76,15 +80,46 @@ it("stays on failure and uses a fresh request only after a definite failure", as
   expect(ids[0]).not.toBe(ids[1]);
 });
 
-it("reuses the same request after ambiguous network failure", async () => {
+it("reuses the same request and model selection after ambiguous network failure", async () => {
   const fetch = vi.fn().mockRejectedValue(new Error("network"));
   vi.stubGlobal("fetch", fetch);
-  render(<Harness />);
+  const selection = { provider: "provider", modelId: "chosen" };
+  const view = render(<Harness modelSelection={selection} />);
   fireEvent.click(await screen.findByRole("button", { name: "Summarize and open new chat" }));
   await screen.findByRole("alert");
+  view.rerender(<Harness modelSelection={{ provider: "other", modelId: "changed" }} />);
   fireEvent.click(screen.getByRole("button", { name: "Summarize and open new chat" }));
   await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
   expect(JSON.parse(fetch.mock.calls[0]![1].body).requestId).toBe(JSON.parse(fetch.mock.calls[1]![1].body).requestId);
+  for (const [, options] of fetch.mock.calls) expect(JSON.parse(options.body).modelSelection).toEqual(selection);
+});
+
+it("waits for uploads and keeps cancellation usable if an upload starts during summarization", async () => {
+  const fetch = vi.fn().mockImplementation(() => new Promise(() => {}));
+  vi.stubGlobal("fetch", fetch);
+  const view = render(<Harness uploading />);
+  const button = await screen.findByRole("button", { name: "Summarize and open new chat" });
+  expect(button).toBeDisabled();
+  expect(screen.getByRole("status")).toHaveTextContent("Wait for uploads to finish.");
+  fireEvent.click(button);
+  expect(fetch).not.toHaveBeenCalled();
+  view.rerender(<Harness />);
+  fireEvent.click(button);
+  expect(fetch).toHaveBeenCalledOnce();
+  view.rerender(<Harness uploading />);
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(fetch.mock.calls[0]![1].signal.aborted).toBe(true);
+  expect(onOpen).not.toHaveBeenCalled();
+});
+
+it("keeps the source input owner when the saved summary detail cannot be opened", async () => {
+  const fetch = vi.fn().mockResolvedValueOnce(Response.json({ status: "complete", chatId: "new-chat", projectId: null }))
+    .mockResolvedValueOnce(Response.json({ error: "chat_not_found" }, { status: 404 }));
+  vi.stubGlobal("fetch", fetch);
+  render(<Harness />);
+  fireEvent.click(await screen.findByRole("button", { name: "Summarize and open new chat" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("new chat could not be opened");
+  expect(onOpen).not.toHaveBeenCalled();
 });
 
 it.each(["navigation", "branch", "cancel"])("never opens a late response after %s", async (action) => {

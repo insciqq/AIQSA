@@ -2804,6 +2804,7 @@ model ChatContinuation {
   snapshotUpdatedAt DateTime
   actorUserId       String?
   attemptId         String   @unique
+  requestedProviderModelId String?
   status            String   @db.VarChar(16)
   errorCode         String?  @db.VarChar(64)
   newChatId         String?  @unique

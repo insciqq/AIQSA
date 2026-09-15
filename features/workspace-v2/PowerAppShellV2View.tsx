@@ -410,10 +410,22 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const continuation = useChatContinuation({
     accountId: session.accountId, chatId: session.activeChatId,
     leafMessageId: latestMessage?.id ?? null, eligible: continuationEligible,
+    modelSelection: composer.selectedProvider && composer.selectedModelId
+      ? { provider: composer.selectedProvider, modelId: composer.selectedModelId } : undefined,
+    uploading: composer.uploading,
     recommended: Boolean(composer.composerContextStats?.session?.phase === "after_answer" &&
       ((composer.composerContextStats.session.droppedMessages > 0) ||
         (composerContextGauge(composer.composerContextStats).inputBudgetFraction ?? 0) >= 0.7)),
-    onOpen: (chat) => workspace.pane.actions.openContinuedChat?.(chat)
+    onOpen: async (chat, sourceKey) => {
+      const opened = await workspace.pane.actions.openContinuedChat?.(chat, sourceKey);
+      if (!opened) return;
+      requestAnimationFrame(() => {
+        if (useWorkspaceStore.getState().activeChatId !== chat.id) return;
+        const textarea = composerDockRef.current?.querySelector<HTMLTextAreaElement>("textarea");
+        textarea?.focus({ preventScroll: true });
+        textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
+      });
+    }
   });
   const projectHeaderFolders = useMemo(
     () => (workspace.projects.workspace?.folders ?? []).map((folder) => ({

@@ -27,6 +27,45 @@ function session(key: ReturnType<typeof composerSessionKey>) {
 }
 
 describe("composer session store", () => {
+  it("moves only the current unsent input into an empty destination atomically", () => {
+    const store = useComposerSessionStore.getState();
+    const source = composerSessionKey("source");
+    const target = composerSessionKey("target");
+    store.activateSession(source);
+    store.setDraft("Initial draft");
+    store.startEdit("sent-message", "Inline edit stays here");
+    store.updateSession(source, { workspaceEnabled: true });
+    store.setDraft("Updated while summarizing");
+    store.setAttachments([attachment("one"), attachment("two")]);
+    store.activateSession(target);
+    expect(store.moveUnsentInputIfTargetEmpty(source, target)).toBe(true);
+    expect(session(source)).toMatchObject({ draft: "", attachments: [], editingDraft: "Inline edit stays here", workspaceEnabled: true });
+    expect(session(target)).toMatchObject({ draft: "Updated while summarizing", attachments: [attachment("one"), attachment("two")], editingDraft: "", workspaceEnabled: false });
+    expect(useComposerSessionStore.getState().activeSessionKey).toBe(target);
+    store.updateSession(source, { draft: "New source draft" });
+    const previous = useComposerSessionStore.getState().sessionsByKey;
+    expect(store.moveUnsentInputIfTargetEmpty(source, target)).toBe(false);
+    expect(useComposerSessionStore.getState().sessionsByKey).toBe(previous);
+  });
+
+  it.each(["source upload", "target upload", "target attachment", "target draft", "pending send"])("leaves both sessions intact during %s", (condition) => {
+    const store = useComposerSessionStore.getState();
+    const source = composerSessionKey("source");
+    const target = composerSessionKey("target");
+    store.activateSession(source);
+    store.setDraft("Source draft");
+    store.setAttachments([attachment("one")]);
+    store.activateSession(target);
+    if (condition === "source upload") store.beginUpload(source);
+    if (condition === "target upload") store.beginUpload(target);
+    if (condition === "target attachment") store.setAttachments([attachment("target")]);
+    if (condition === "target draft") store.setDraft(" ");
+    if (condition === "pending send") store.beginSend(source);
+    const previous = useComposerSessionStore.getState().sessionsByKey;
+    expect(store.moveUnsentInputIfTargetEmpty(source, target)).toBe(false);
+    expect(useComposerSessionStore.getState().sessionsByKey).toBe(previous);
+  });
+
   it("initializes personal Workspace defaults while preserving explicit drafts and isolating saved/Project sessions", () => {
     const store = useComposerSessionStore.getState();
     const root = composerSessionKey(null);

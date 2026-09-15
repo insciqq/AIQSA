@@ -22,10 +22,11 @@ it("requires authentication and rejects extra scope, transcript or tool controls
 it("returns truthful progress and a bounded neutral error", async () => {
   const continueChat = vi.fn().mockResolvedValueOnce({ status: "running" }).mockRejectedValueOnce(new Error("private response"));
   const handler = createChatContinuationHandler({ continueChat, resolveAuth: async () => session });
-  const running = await handler(request(input), context);
+  const modelSelection = { provider: "provider", modelId: "chosen" };
+  const running = await handler(request({ ...input, modelSelection }), context);
   expect(running.status).toBe(202);
   expect(await running.json()).toEqual({ status: "running" });
-  expect(continueChat).toHaveBeenCalledWith(expect.objectContaining({ userId: "owner", chatId: "source" }));
+  expect(continueChat).toHaveBeenCalledWith(expect.objectContaining({ userId: "owner", chatId: "source", modelSelection }));
   const failed = await handler(request(input), context);
   expect(failed.status).toBe(502);
   expect(await failed.json()).toEqual({ error: "chat_summary_failed" });

@@ -78,13 +78,14 @@ export function ChatContextIndicatorV2({ stats, continuation, continuationFiles 
           {gauge.tone === "critical" ? <p role="alert">{stats.requestRejected ? "The server could not fit this request in the model context window." : "There is no safe input room for the current request."} Shorten the message, remove attachments, or continue in a new chat with a summary.</p> : null}
           {gauge.tone === "warning" ? <p>The safe input budget is nearly full. You can keep working here or continue in a new chat with a summary.</p> : null}
           {continuation ? <div className="v2-chat-context-continuation">
-            <p>Continue in a new chat with a short summary of this conversation. When Workspace is on, its project files are copied into the new chat. Attachments are not carried over.</p>
+            <p>Continue in a new chat with a short summary of this conversation. Your composer settings, unsent text and attached files come along. When Workspace is on, its project files are copied too. Earlier messages and their attachments stay in this chat.</p>
+            {continuation.uploading ? <p role="status">Wait for uploads to finish.</p> : null}
             {continuation.error ? <p role="alert">{continuation.error}</p> : null}
             {continuation.busy ? <>
               <p role="status">Preparing your summary…</p>
               <UiV2Button onClick={continuation.onCancel}>Cancel</UiV2Button>
             </> : <div className="v2-chat-context-actions">
-              <UiV2Button tone="primary" onClick={continuation.onContinue}>Summarize and open new chat</UiV2Button>
+              <UiV2Button tone="primary" disabled={continuation.uploading} onClick={continuation.onContinue}>Summarize and open new chat</UiV2Button>
               <UiV2Button onClick={close}>Stay here</UiV2Button>
             </div>}
           </div> : null}

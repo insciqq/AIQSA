@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { afterAll, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { prisma } from "../prisma";
@@ -19,6 +20,7 @@ import { fenceDeterministicWorkspaceRuntime } from "../workspace/fencedRuntime";
 import { runWorkspaceMaintenance } from "../workspace/cleanup";
 import { failWorkspaceExportsForLostDisk } from "../workspace/sessionOperation";
 import { createPrismaRetentionRepository } from "../retention/prune";
+import { providerTemplateIds } from "../../domain/providerTemplates";
 
 afterAll(() => prisma.$disconnect());
 
@@ -52,6 +54,7 @@ async function fixture(run: (data: { userId: string; chatId: string; leafId: str
     await run({ userId, chatId: chat.id, leafId, projectId });
   } finally {
     await prisma.workspaceSession.deleteMany({ where: { chat: { OR: [{ userId }, ...(projectId ? [{ projectId }] : [])] } } });
+    if (mode === "NORMAL") await prisma.chat.deleteMany({ where: { userId } });
     if (projectId) await prisma.project.deleteMany({ where: { id: projectId } });
     // Disposable fixtures obey the temporary deletion authority used by its normal lifecycle lane.
     if (mode === "TEMPORARY") {
@@ -81,6 +84,64 @@ function service(deps: Parameters<typeof createChatContinuationRepository>[1] = 
         snapshot: { providerFamily: "fake", model: { upstreamModelId: "fake-summary" } } } as unknown as ProviderAdmissionRole })
   }) };
 }
+
+it.each([
+  ["NORMAL", "exposed"], ["NORMAL", "unexposed"], ["NORMAL", "absent"],
+  ["PROJECT", "exposed"], ["PROJECT", "unexposed"], ["PROJECT", "absent"]
+] as const)("preserves model and Knowledge defaults for %s continuation with %s selection", async (mode, selectionState) => {
+  const template = await prisma.providerModel.findUniqueOrThrow({ where: { id: providerTemplateIds.fakeModel } });
+  const modelIds = [randomUUID()];
+  try {
+    for (const id of modelIds) await prisma.providerModel.create({ data: {
+      id, connectionId: template.connectionId, provider: template.provider, modelId: `summary-${id}`,
+      displayName: "Continuation model", activeVersion: template.activeVersion, activatedAt: template.activatedAt,
+      activeConfig: template.activeConfig as Prisma.InputJsonValue,
+      capabilities: template.capabilities as Prisma.InputJsonValue,
+      defaultParams: template.defaultParams as Prisma.InputJsonValue
+    } });
+    const original = modelIds[0]!;
+    const selected = template.id;
+    await fixture(async ({ userId, chatId, leafId, projectId }) => {
+      const knowledge = { version: 1, mode: "explicit", baseIds: [randomUUID()], sourceIds: [] };
+      await prisma.chat.update({ where: { id: chatId }, data: { defaultProviderModelId: original, defaultKnowledgePlan: knowledge } });
+      if (projectId) {
+        await prisma.projectModelBinding.deleteMany({ where: { projectId } });
+        await prisma.projectModelBinding.create({ data: { projectId, providerModelId: original } });
+      }
+      // A personal grant must never grant access to an unbound Project model.
+      if (mode === "PROJECT" || selectionState === "exposed") {
+        await prisma.accessGrant.create({ data: { userId, providerModelId: selected } });
+      }
+      if (projectId && selectionState === "exposed") {
+        await prisma.projectModelBinding.create({ data: { projectId, providerModelId: selected } });
+      }
+      const f = service();
+      const input = { userId, chatId, expectedLeafMessageId: leafId, requestId: randomUUID(),
+        ...(selectionState === "absent" ? {} : { modelSelection: { provider: template.connectionId, modelId: selected } }) };
+      const source = await f.repository.loadSource(input);
+      const first = await f.repository.claim(source, input.requestId, input.modelSelection);
+      if (first.kind !== "claimed") throw new Error("claim missing");
+      expect(await f.repository.claim(source, input.requestId, { provider: "changed", modelId: original })).toEqual({ kind: "result", result: { status: "running" } });
+      expect(await prisma.chatContinuation.findUnique({ where: { id: first.claim.id } })).toMatchObject({
+        requestedProviderModelId: selectionState === "exposed" ? selected : null
+      });
+      const result = await f.repository.complete(source, first.claim, "Conversation summary");
+      if (result.status !== "complete") throw new Error("summary missing");
+      expect(await prisma.chat.findUnique({ where: { id: result.chatId } })).toMatchObject({
+        defaultProviderModelId: selectionState === "exposed" ? selected : original,
+        defaultKnowledgePlan: knowledge, workspaceEnabled: false, projectId,
+        memoryMode: mode === "PROJECT" ? "EXCLUDED" : "NORMAL"
+      });
+      expect(await prisma.workspaceSession.count({ where: { chatId: result.chatId } })).toBe(0);
+      const reopened = await createPrismaChatRepository(prisma).getChat({ chatId: result.chatId, userId });
+      expect(reopened?.defaultModelId).toBe(selectionState === "exposed" ? selected : original);
+      expect(await f.continueChat({ ...input, modelSelection: { provider: "changed", modelId: original } })).toEqual(result);
+      expect(f.execute).not.toHaveBeenCalled();
+    }, mode);
+  } finally {
+    await prisma.providerModel.deleteMany({ where: { id: { in: modelIds } } });
+  }
+});
 
 async function workspaceSource(chatId: string) {
   const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "1", NODE_ENV: "test" });

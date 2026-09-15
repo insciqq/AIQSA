@@ -30,7 +30,7 @@ export type ContinuationSource = Readonly<{
 export type ContinuationClaim = Readonly<{ id: string; attemptId: string }>;
 export type ContinuationRepository = Readonly<{
   loadSource(input: ChatContinuationRequest & { chatId: string; userId: string }): Promise<ContinuationSource>;
-  claim(source: ContinuationSource, requestId: string): Promise<
+  claim(source: ContinuationSource, requestId: string, modelSelection?: ChatContinuationRequest["modelSelection"]): Promise<
     | Readonly<{ kind: "claimed"; claim: ContinuationClaim }>
     | Readonly<{ kind: "result"; result: ChatContinuationResult }>
     | Readonly<{ kind: "failed" }>
@@ -104,7 +104,7 @@ export function createChatContinuationService(deps: Readonly<{
 }>) {
   return async (input: ChatContinuationRequest & { chatId: string; userId: string; signal?: AbortSignal }): Promise<ChatContinuationResult> => {
     const source = await deps.repository.loadSource(input);
-    const claimed = await deps.repository.claim(source, input.requestId);
+    const claimed = await deps.repository.claim(source, input.requestId, input.modelSelection);
     if (claimed.kind === "result") return claimed.result;
     if (claimed.kind === "failed") throw new ChatContinuationError("chat_summary_failed", 502);
     const { claim } = claimed;
