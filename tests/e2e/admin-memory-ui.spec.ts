@@ -23,7 +23,7 @@ test("Overview observes blocked learning and recovery in the background, retains
     ...memoryResponse({ rebuilding: false, timeoutSeconds: 30, timeoutVersion: 1 }).memory,
     index: { generation: 1, readiness: "READY" }, rebuild: { state: "NOT_REQUIRED" },
     processing: { enabled: true, issues: blocked ? [issue] : [] },
-    queue: { length: blocked ? 3 : 0, oldestAgeSeconds: blocked ? 1865 : null }
+    queue: { inProgress: 0, length: blocked ? 3 : 0, oldestAgeSeconds: blocked ? 1865 : null }
   } });
   await page.route("**/api/admin", (route) => route.fulfill({ json: emptyAdminDashboard() }));
   await page.route("**/api/admin/knowledge", (route) => route.fulfill({ json: { knowledge: adminKnowledgeSettingsFixture() } }));
@@ -135,6 +135,7 @@ function memoryResponse(input: Readonly<{
       },
       processing: { enabled: true, issues: [] },
       queue: {
+        inProgress: input.rebuilding ? 2 : 0,
         length: input.rebuilding ? 1 : 0,
         oldestAgeSeconds: input.rebuilding ? 0 : null
       },
@@ -144,7 +145,8 @@ function memoryResponse(input: Readonly<{
   };
 }
 
-test("administrator sees minimal Memory runtime status and starts a bounded rebuild after confirming", async ({ page }) => {
+test("administrator sees minimal Memory runtime status and starts a bounded rebuild after confirming", async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
   let rebuilding = false;
   let timeoutSeconds = 15;
   let timeoutVersion = 4;
@@ -219,14 +221,28 @@ test("administrator sees minimal Memory runtime status and starts a bounded rebu
   await expect(page.getByTestId("admin-feedback")).toContainText(/bounded Memory index rebuild was queued/u);
   await expect(section.getByText(/rebuild is in progress/u)).toBeVisible();
   await expect(section.getByTestId("memory-state")).toHaveText("Rebuilding");
+  await expect(section).toContainText("2 in progress · 1 waiting · oldest 0s");
   await expect(rebuild).toHaveCount(0);
   expect(rebuildBodies).toEqual([{ action: "REBUILD_REQUIRED" }]);
   await expectNoHorizontalOverflow(page);
 
-  await page.setViewportSize({ height: 844, width: 390 });
-  await expect(section).toBeVisible();
-  await expectNoHorizontalOverflow(page);
-  await page.setViewportSize({ height: 390, width: 844 });
-  await expect(section).toBeVisible();
-  await expectNoHorizontalOverflow(page);
+  const viewports = [
+    { name: "desktop-landscape", width: 1440, height: 900 },
+    { name: "desktop-portrait", width: 900, height: 1440 },
+    { name: "tablet-landscape", width: 1024, height: 768 },
+    { name: "tablet-portrait", width: 768, height: 1024 },
+    { name: "phone-landscape", width: 844, height: 390 },
+    { name: "phone-portrait", width: 390, height: 844 }
+  ];
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    for (const viewport of viewports) {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await section.scrollIntoViewIfNeeded();
+      await expect(section).toContainText("2 in progress · 1 waiting · oldest 0s");
+      await expectNoHorizontalOverflow(page);
+      await expect(section.getByText("2 in progress · 1 waiting · oldest 0s", { exact: true })).toBeInViewport();
+      await page.screenshot({ path: testInfo.outputPath(`memory-queue-${viewport.name}-${colorScheme}.png`) });
+    }
+  }
 });

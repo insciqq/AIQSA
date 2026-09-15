@@ -15,7 +15,7 @@ function response() {
         { model: "Embedding model", provider: "Vector provider" }
       ],
       index: { generation: 3, readiness: "READY" },
-      queue: { length: 0, oldestAgeSeconds: null },
+      queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
       rebuild: { state: "NOT_REQUIRED" },
       worker: { state: "RUNNING" }
     }
@@ -35,10 +35,13 @@ describe("administrator Memory status contract", () => {
   });
 
   it("keeps queue age and rebuild readiness internally consistent", () => {
+    expect(decodeAdminMemoryStatusResponse({ memory: {
+      ...response().memory, queue: { inProgress: 2, length: 0, oldestAgeSeconds: null }
+    } })).not.toBeNull();
     expect(decodeAdminMemoryStatusResponse({
       memory: {
         ...response().memory,
-        queue: { length: 0, oldestAgeSeconds: 4 }
+        queue: { inProgress: 0, length: 0, oldestAgeSeconds: 4 }
       }
     })).toBeNull();
     expect(decodeAdminMemoryStatusResponse({

@@ -30,6 +30,7 @@ import type {
 import { decodeMemoryOperationalCounters } from "../operational/counters";
 
 const sha256 = /^[a-f0-9]{64}$/u;
+const WORKER_HEARTBEAT_INTERVAL_MS = 30_000;
 function reportFailure(stage: LifecycleStage, error: unknown): void {
   reportSubsystemFailure({ subsystem: "memory", stage, action: "retry",
     code: error instanceof MemoryCoordinatorError ? error.code : "memory_coordinator_failed",
@@ -65,7 +66,7 @@ export class MemoryCoordinator {
   readonly #activeControllers = new Set<AbortController>();
   readonly #failedHeartbeats = new Set<AbortController>();
   readonly #now: () => Date;
-  readonly #onDrain: (() => Promise<void>) | null;
+  readonly #onWorkerHeartbeat: (() => Promise<void>) | null;
   readonly #policy: MemoryCoordinatorPolicy;
   readonly #registry: MemoryCoordinatorRegistry;
   readonly #repository: MemoryCoordinatorRepository;
@@ -76,10 +77,12 @@ export class MemoryCoordinator {
   #running = false;
   #stopped = false;
   #timer: ReturnType<typeof setTimeout> | null = null;
+  #workerHeartbeatPending: Promise<void> | null = null;
+  #workerHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(input: Readonly<{
     now?: () => Date;
-    onDrain?: () => Promise<void>;
+    onWorkerHeartbeat?: () => Promise<void>;
     policy?: Partial<MemoryCoordinatorPolicy>;
     reconcileWork?: () => Promise<void>;
     registry: MemoryCoordinatorRegistry;
@@ -87,7 +90,7 @@ export class MemoryCoordinator {
     scheduler?: MemoryScheduler;
   }>) {
     this.#now = input.now ?? (() => new Date());
-    this.#onDrain = input.onDrain ?? null;
+    this.#onWorkerHeartbeat = input.onWorkerHeartbeat ?? null;
     this.#policy = resolveMemoryCoordinatorPolicy(input.policy);
     this.#reconcileWork = input.reconcileWork ?? null;
     this.#registry = input.registry;
@@ -101,22 +104,50 @@ export class MemoryCoordinator {
     if (this.#running) return;
     this.#running = true;
     this.#stopped = false;
+    if (this.#onWorkerHeartbeat) {
+      runInBackground(() => {
+        this.#workerHeartbeatTimer = setInterval(
+          () => this.#beatWorkerHeartbeat(), WORKER_HEARTBEAT_INTERVAL_MS
+        );
+        this.#workerHeartbeatTimer.unref?.();
+        this.#beatWorkerHeartbeat();
+      });
+    }
     this.kick();
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.#timer) clearTimeout(this.#timer);
+    if (this.#workerHeartbeatTimer) clearInterval(this.#workerHeartbeatTimer);
     this.#timer = null;
+    this.#workerHeartbeatTimer = null;
     this.#rerun = false;
     this.#running = false;
     this.#stopped = true;
     for (const controller of this.#activeControllers) {
       controller.abort(new Error("memory_coordinator_stopped"));
     }
+    // A database write already in flight cannot be cancelled. Finish it before
+    // reporting a completed stop, and never schedule another beat from it.
+    await this.#workerHeartbeatPending;
   }
 
   kick(): void {
     this.#schedule(true);
+  }
+
+  #beatWorkerHeartbeat(): void {
+    if (!this.#running || this.#stopped || this.#workerHeartbeatPending || !this.#onWorkerHeartbeat) return;
+    this.#workerHeartbeatPending = runInBackground(async () => {
+      try {
+        await this.#onWorkerHeartbeat!();
+        if (!this.#stopped) reportSubsystemHealthy("memory", "health");
+      } catch (error) {
+        reportFailure("health", error);
+        // Installation liveness is observability, never job ownership. Its
+        // independent timer retries without changing durable job/deletion leases.
+      }
+    }).finally(() => { this.#workerHeartbeatPending = null; });
   }
 
   #armTimer(): void {
@@ -160,15 +191,6 @@ export class MemoryCoordinator {
   async #drain(): Promise<void> {
     do {
       this.#rerun = false;
-      try {
-        await this.#onDrain?.();
-        if (this.#onDrain) reportSubsystemHealthy("memory", "health");
-      } catch (error) {
-        reportFailure("health", error);
-        // Liveness evidence is observability, never work ownership. The next
-        // idle drain retries it while durable job/deletion leases remain the
-        // execution authority.
-      }
       await this.#reconcileJobs();
       let claimFailed = false;
       let claimObserved = false;

@@ -1567,6 +1567,19 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         }
       }
 
+      async function publishRequestContext(request: ProviderRunRequest): Promise<void> {
+        const event = {
+          type: "artifact", data: { artifactType: "context_status", payload: measureSessionContext({
+            bridge: input.toolBridge ?? providerToolBridges[request.provider as keyof typeof providerToolBridges],
+            request
+          }) }
+        } as const;
+        // This event is minted here. The general provider-output projector
+        // deliberately refuses context snapshots supplied by a provider.
+        await input.repository.appendRunOutputEvent(runId, event);
+        emitTransient(controller, encoder, event);
+      }
+
       async function* streamAnswerProviderWithEgress(
         request: ProviderRunRequest,
         dispatchSignal: AbortSignal = signal
@@ -1632,6 +1645,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               })
             : null;
           await assertProjectRunAccessCurrent(true);
+          await publishRequestContext(request);
           const stream = input.adapter.stream(request, { signal: dispatchSignal });
           let next = await stream.next();
           while (!next.done) {
@@ -2639,6 +2653,9 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const providerRequest = preparedProviderRequest.request;
         lastSessionRequest = groundedKnowledgeAnswer ? { ...providerRequest, tools: [] } : providerRequest;
         assertPersonalContextEgressSafe(providerRequest);
+        if (groundedKnowledgeAnswer) {
+          await publishRequestContext(lastSessionRequest);
+        }
         let knowledgeZeroEvidence = false;
         let knowledgeAnswerExecution = groundedKnowledgeAnswer
           ? preparedProviderRequest.dispatchDraft

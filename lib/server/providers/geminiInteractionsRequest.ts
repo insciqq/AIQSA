@@ -83,7 +83,17 @@ function combineSystemInstruction(request: ProviderRunRequest): string | undefin
 }
 
 function validBase64(value: string): boolean {
-  return value.length > 0 && value.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/u.test(value);
+  if (value.length === 0 || value.length % 4 !== 0) return false;
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  const dataLength = value.length - padding;
+  // Attachment payloads can be many megabytes. A linear scan avoids a
+  // backtracking stack proportional to the payload in V8's RegExp engine.
+  for (let index = 0; index < dataLength; index += 1) {
+    const code = value.charCodeAt(index);
+    if (!((code >= 65 && code <= 90) || (code >= 97 && code <= 122) ||
+      (code >= 48 && code <= 57) || code === 43 || code === 47)) return false;
+  }
+  return dataLength > 0;
 }
 
 function imageData(attachment: ProviderAttachment, preview: boolean): string {
@@ -94,12 +104,15 @@ function imageData(attachment: ProviderAttachment, preview: boolean): string {
     throw new Error(`image_attachment_data_unavailable:${attachment.id}`);
   }
 
-  const match = /^data:([^;,]+);base64,([A-Za-z0-9+/]+=*)$/u.exec(attachment.dataUrl);
-  if (!match || match[1] !== attachment.mimeType || !validBase64(match[2] ?? "")) {
+  const prefix = `data:${attachment.mimeType};base64,`;
+  if (!attachment.dataUrl.startsWith(prefix)) {
     throw new Error(`image_attachment_data_invalid:${attachment.id}`);
   }
-
-  return match[2] as string;
+  const data = attachment.dataUrl.slice(prefix.length);
+  if (!validBase64(data)) {
+    throw new Error(`image_attachment_data_invalid:${attachment.id}`);
+  }
+  return data;
 }
 
 function imageContent(attachment: ProviderAttachment, preview: boolean): Record<string, unknown> {

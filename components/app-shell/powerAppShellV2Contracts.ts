@@ -269,7 +269,8 @@ export type ShellComposerView = {
   setSendWithEnter(value: boolean): void;
   showCitations: boolean;
   showReasoningBlocks: boolean;
-  stopCurrentRun(): Promise<void> | void;
+  stopCurrentRun(expectedRunId?: string | null): Promise<void> | void;
+  stopping?: boolean;
   streamMode: boolean;
   submitComposer(): Promise<void> | void;
   temperature: string;

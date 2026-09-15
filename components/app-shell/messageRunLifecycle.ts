@@ -48,6 +48,7 @@ type ExecuteMessageRunLifecycleInput = {
   activeStreamAbortRef: MutableRef<Map<string, AbortController>>;
   chatId: string;
   consumeRunStream: ConsumeMessageRunStream;
+  contextConfigurationKey?: string;
   createStreamTokenBuffer(input: {
     chatId: string;
     getAssistantMessageId(): string;
@@ -169,6 +170,7 @@ export async function executeMessageRunLifecycle({
   activeStreamAbortRef,
   chatId,
   consumeRunStream,
+  contextConfigurationKey,
   createStreamTokenBuffer,
   failurePrefix,
   fetchRun,
@@ -193,7 +195,7 @@ export async function executeMessageRunLifecycle({
   let userFacingFailureMessage: string | null = null;
   const abortController = new AbortController();
 
-  useRunSurfaceStore.getState().resetSurface(chatId);
+  useRunSurfaceStore.getState().resetSurface(chatId, contextConfigurationKey, optimisticAssistantMessageId);
   useRunLifecycleStore.getState().streamStarted({
     assistantMessageId: optimisticAssistantMessageId,
     chatId
@@ -224,6 +226,7 @@ export async function executeMessageRunLifecycle({
       const admitted = decodePreparingRunAdmission(await response.json());
       if (!admitted) throw new Error("run_admission_malformed");
       runId = admitted.run.id;
+      useRunSurfaceStore.getState().bindContextMessage(chatId, assistantMessageId, admitted.assistantMessageId);
       assistantMessageId = admitted.assistantMessageId;
       reconcileMessageIds({ assistantMessageId, currentRunId: runId,
         messageIds: { assistantMessageId, userMessageId: admitted.userMessageId }, optimisticAssistantMessageId });
@@ -239,6 +242,7 @@ export async function executeMessageRunLifecycle({
       onMessageIds(messageIds, currentRunId) {
         const reconciledAssistantMessageId =
           messageIds.assistantMessageId ?? assistantMessageId;
+        useRunSurfaceStore.getState().bindContextMessage(chatId, assistantMessageId, reconciledAssistantMessageId);
 
         reconcileMessageIds({
           assistantMessageId: reconciledAssistantMessageId,
