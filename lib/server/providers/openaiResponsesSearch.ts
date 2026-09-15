@@ -30,7 +30,9 @@ import {
 export const OPENAI_RESPONSES_SEARCH_MIN_OUTPUT_TOKENS = 1_024;
 export const OPENAI_RESPONSES_SEARCH_MAX_OUTPUT_TOKENS = 32_768;
 
-const effortOrder = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+// GPT-5 accepts "minimal" for answers but cannot use web_search at that level.
+// Choose the next advertised Search-compatible effort, or omit the override.
+const effortOrder = ["none", "low", "medium", "high", "xhigh", "max"] as const;
 const operationLimit = 32;
 const operationStringLimit = 512;
 const operationUrlLimit = 2_048;

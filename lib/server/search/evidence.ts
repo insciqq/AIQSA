@@ -8,8 +8,10 @@ export type SearchSource = Readonly<{
   url: string;
 }>;
 
-export const MAX_SEARCH_FINDINGS_CHARACTERS = 48 * 1_024;
-export const MAX_SEARCH_FINDINGS_BYTES = 48 * 1_024;
+// Allow larger Search replies while keeping an independent safety bound on
+// UTF-8 evidence. The combined tool result also has its own persistence limit.
+export const MAX_SEARCH_FINDINGS_CHARACTERS = 128 * 1_024;
+export const MAX_SEARCH_FINDINGS_BYTES = 128 * 1_024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -22,8 +24,10 @@ function text(value: unknown, max: number): string | undefined {
 }
 
 function safeHttpHref(value: unknown): string | undefined {
-  const href = text(value, 2_048);
-  const safe = href ? safeExternalHref(href) : null;
+  if (typeof value !== "string") return undefined;
+  const href = value.trim();
+  if (!href || href.length > 2_048) return undefined;
+  const safe = safeExternalHref(href);
   if (!safe) return undefined;
   try {
     const url = new URL(safe);

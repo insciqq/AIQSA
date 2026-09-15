@@ -277,6 +277,7 @@ export function createWorkspaceLifecycleService(input: Readonly<{
         projectId: true,
         userId: true,
         workspaceEnabled: true,
+        receivedWorkspaceSeeds: { select: { status: true, failureCode: true }, take: 1 },
         workspaceSession: {
           select: { internetEnabled: true, state: true }
         }
@@ -297,7 +298,9 @@ export function createWorkspaceLifecycleService(input: Readonly<{
     return input.availability.project(snapshot, {
       enabled: access.workspaceEnabled,
       modelSupportsTools: workspaceModelSupportsTools(access.defaultProviderModel),
-      session: access.workspaceSession
+      session: access.workspaceSession,
+      continuationSeedStatus: access.receivedWorkspaceSeeds[0]?.status ?? null,
+      continuationSeedFailureCode: access.receivedWorkspaceSeeds[0]?.failureCode ?? null
     });
   }
 
@@ -472,6 +475,16 @@ export function createWorkspaceLifecycleService(input: Readonly<{
           }
           const lastActiveAt = new Date();
           await acknowledgeWorkspaceCommandsStopped(tx, session.id);
+          const continuationSeeds = await tx.chatContinuationWorkspaceSeed.findMany({
+            select: { id: true, storageKey: true }, where: { newChatId: request.chatId, status: { in: ["TRANSFERRED", "RESTORING", "RESTORED"] } }
+          });
+          await tx.chatContinuationWorkspaceSeed.updateMany({
+            data: { status: "ABANDONED", failureCode: "workspace_reset_consumed", leaseToken: null, leaseExpiresAt: null },
+            where: { newChatId: request.chatId, status: { in: ["TRANSFERRED", "RESTORING", "RESTORED"] } }
+          });
+          for (const seed of continuationSeeds) if (seed.storageKey) {
+            await tx.attachmentDeletionJob.upsert({ where: { storageKey: seed.storageKey }, create: { storageKey: seed.storageKey }, update: {} });
+          }
           await failWorkspaceExportsForLostDisk(tx, session.id);
           const settled = await tx.workspaceSession.updateMany({
             data: {

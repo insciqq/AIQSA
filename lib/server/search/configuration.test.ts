@@ -60,7 +60,12 @@ describe("Search adapter configuration", () => {
     expect(() => normalizeSearchDraft({ ...clientDraft, maxOutputTokens: 32_769 })).toThrow(
       "search_configuration_invalid"
     );
-    expect(() => normalizeSearchDraft({ ...clientDraft, maxSearchCallsPerAnswer: 5 })).toThrow(
+    expect(() => normalizeSearchDraft({ ...clientDraft, maxSearchCallsPerAnswer: 33 })).toThrow(
+      "search_configuration_invalid"
+    );
+    expect(normalizeSearchDraft({ ...clientDraft, maxSearchCallsPerAnswer: 32, queryMaxCharacters: 4_000 }))
+      .toMatchObject({ maxSearchCallsPerAnswer: 32, queryMaxCharacters: 4_000 });
+    expect(() => normalizeSearchDraft({ ...clientDraft, queryMaxCharacters: 4_001 })).toThrow(
       "search_configuration_invalid"
     );
     expect(() => normalizeSearchDraft({ ...clientDraft, reasoningPolicy: "answer_default" })).toThrow(

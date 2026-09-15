@@ -243,6 +243,16 @@ export interface WorkspaceRuntime {
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<WorkspaceOutputStream>;
+  /** Restores a previously validated private continuation archive into /project. */
+  restoreProjectArchive?(input: Readonly<{
+    archive: ReadableStream<Uint8Array>;
+    byteSize: number;
+    checksum: string;
+    runtimeSandboxId: string;
+    operation?: WorkspaceOperation;
+    sessionId: string;
+    signal?: AbortSignal;
+  }>): Promise<void>;
   stopSession(input: Readonly<{
     runtimeSandboxId: string | null;
     operation?: WorkspaceOperation;
@@ -262,6 +272,8 @@ export class WorkspaceRuntimeError extends Error {
     | "workspace_attachment_unavailable"
     | "workspace_secrets_prepare_failed"
     | "workspace_archive_limit_exceeded"
+    | "workspace_archive_invalid"
+    | "workspace_archive_restore_failed"
     | "workspace_execution_cleanup_failed"
     | "workspace_operation_stale"
     | "workspace_output_limit_exceeded"

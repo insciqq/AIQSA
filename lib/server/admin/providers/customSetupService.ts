@@ -1,6 +1,7 @@
 import type { AdminProviderSetupProgress } from "../../../contracts/adminProviderSetupProgress";
 import type { AdminProviderCheckRun } from "../../../contracts/adminProviders";
 import { decodeCapabilitySetupEvidence, initialModelConfiguration, pendingInitialCapabilityEvidence } from "./initialCapabilitySetup";
+import { decodeHostedSearchVerificationEvidence } from "./hostedSearchCapability";
 import { providerSetupModels } from "./setupModels";
 import { randomUUID } from "node:crypto";
 import { logEvent } from "../../observability";
@@ -206,6 +207,7 @@ function validatedEvidence(
   );
   const pdfInput = decodePdfInputVerificationEvidence(outcome.evidence.pdfInput);
   const visionInput = decodeVisionInputVerificationEvidence(outcome.evidence.visionInput);
+  const hostedSearch = decodeHostedSearchVerificationEvidence(outcome.evidence.hostedSearch);
   const parallelToolCalls = decodeParallelToolCallVerificationEvidence(outcome.evidence.parallelToolCalls);
   const capabilitySetup = decodeCapabilitySetupEvidence(outcome.evidence.capabilitySetup);
   const hasPdfInput = Object.prototype.hasOwnProperty.call(outcome.evidence, "pdfInput");
@@ -224,6 +226,9 @@ function validatedEvidence(
     outcome.evidence.selectedProviders.length !== 0 ||
     (hasCompatibility && !compatibility) ||
     (outcome.evidence.capabilitySetup !== undefined && !capabilitySetup) ||
+    (outcome.evidence.hostedSearch !== undefined && (!hostedSearch || model.modelClass !== "answer" ||
+      hostedSearch.adapterKind !== model.adapterKind || hostedSearch.upstreamModelId !== model.upstreamModelId)) ||
+    (capabilitySetup?.checks.hostedSearch === "verified" && !hostedSearch) ||
     (outcome.evidence.parallelToolCalls !== undefined && (!parallelToolCalls ||
       parallelToolCalls.adapterKind !== model.adapterKind || parallelToolCalls.upstreamModelId !== model.upstreamModelId)) ||
     (compatibility && (
@@ -255,6 +260,7 @@ function validatedEvidence(
   return {
     ...(compatibility ? { compatibility } : {}),
     ...(capabilitySetup ? { capabilitySetup } : {}),
+    ...(hostedSearch ? { hostedSearch } : {}),
     ...(parallelToolCalls ? { parallelToolCalls } : {}),
     detail: "ok",
     method: "tiny_generation",
@@ -403,13 +409,13 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
             adapterKind: "answer_provider_hosted",
             credentialMode: "answer_provider",
             maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
-            maxResults: 8,
+            maxResults: adminSearchExecutionDefaults.maxResults,
             maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
             protocol: "openai_responses_web_search",
             providerModelId: null,
-            queryMaxCharacters: 500,
+            queryMaxCharacters: adminSearchExecutionDefaults.queryMaxCharacters,
             reasoningPolicy: "provider_default",
-            timeoutMs: 300_000
+            timeoutMs: adminSearchExecutionDefaults.timeoutMs
           }
         : null;
       const clientSearchDraft: AdminSearchDraft | null = supportsSearch
@@ -417,13 +423,13 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
             adapterKind: "provider_model_client",
             credentialMode: "provider_model",
             maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
-            maxResults: 8,
+            maxResults: adminSearchExecutionDefaults.maxResults,
             maxSearchCallsPerAnswer: adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
             protocol: "openai_responses_web_search",
             providerModelId: providerModelIds[0]!,
-            queryMaxCharacters: 500,
+            queryMaxCharacters: adminSearchExecutionDefaults.queryMaxCharacters,
             reasoningPolicy: adminSearchExecutionDefaults.reasoningPolicy,
-            timeoutMs: 300_000
+            timeoutMs: adminSearchExecutionDefaults.timeoutMs
           }
         : null;
       inputValue.signal?.throwIfAborted();

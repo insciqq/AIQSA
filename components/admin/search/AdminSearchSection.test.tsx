@@ -426,6 +426,17 @@ describe("AdminSearchSection", () => {
     fireEvent.click(within(sheet).getByText("Advanced Search execution"));
     expect(within(sheet).getByLabelText(/^Search model/)).toBeVisible();
     expect(within(sheet).getByLabelText(/^Search model/)).toHaveValue("model-sonar");
+    const output = within(sheet).getByRole("spinbutton", { name: /^Maximum Search output/ });
+    const requests = within(sheet).getByRole("spinbutton", { name: /^Maximum requests to this source/ });
+    fireEvent.change(output, { target: { value: "8193" } });
+    fireEvent.change(requests, { target: { value: "32" } });
+    fireEvent.change(within(sheet).getByRole("spinbutton", { name: /^Generated query limit/ }), { target: { value: "4000" } });
+    fireEvent.change(within(sheet).getByRole("spinbutton", { name: /^Search timeout per request/ }), { target: { value: "121" } });
+    expect(output).toBeValid();
+    expect(requests).toBeValid();
+    fireEvent.change(requests, { target: { value: "33" } });
+    expect(within(sheet).getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.change(requests, { target: { value: "32" } });
     fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Broken Search" } });
     fireEvent.change(within(sheet).getByRole("spinbutton", { name: /^Results per search/ }), { target: { value: "12" } });
     expect(sheet.textContent).not.toMatch(bannedWords);
@@ -442,7 +453,8 @@ describe("AdminSearchSection", () => {
     expect(calls.find(({ body }) => body?.action === "save_and_check")?.body).toMatchObject({
       action: "save_and_check",
       displayName: "Broken Search",
-      draft: expect.objectContaining({ maxResults: 12, providerModelId: "model-sonar" }),
+      draft: expect.objectContaining({ maxResults: 12, providerModelId: "model-sonar",
+        maxOutputTokens: 8193, maxSearchCallsPerAnswer: 32, queryMaxCharacters: 4000, timeoutMs: 121_000 }),
       expectedDraftVersion: 1
     });
 

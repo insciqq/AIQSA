@@ -127,6 +127,18 @@ describe("OpenAI Responses query-only Search adapter", () => {
     expect(() => buildOpenAIResponsesSearchRequest(tooSmall)).toThrow("openai_search_policy_invalid");
   });
 
+  it("does not select minimal reasoning for web search even when the answer model advertises it", () => {
+    const request = searchRequest({ searchPolicy: openAISearchPolicy({
+      modelId: "gpt-5",
+      modelCapabilities: capabilities({ reasoningEfforts: ["minimal", "low", "medium", "high"] })
+    }) });
+    expect(buildOpenAIResponsesSearchRequest(request)).toMatchObject({
+      reasoning: { effort: "low" }, tools: [{ type: "web_search" }]
+    });
+    expect(lowestSupportedOpenAIResponsesSearchEffort(capabilities({ reasoningEfforts: ["minimal"] })))
+      .toBeUndefined();
+  });
+
   it("returns normalized successful evidence and forwards Search cancellation and timeout", async () => {
     const controller = new AbortController();
     const create = vi.fn<OpenAIResponsesClient["create"]>(async () => ({

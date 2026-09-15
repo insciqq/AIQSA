@@ -344,11 +344,72 @@ describe("OpenRouter Perplexity search adapter", () => {
   ])("rejects HTTP-200 %s error objects without exposing remote detail", async (_location, response) => {
     const adapter = createOpenRouterPerplexitySearchAdapter({
       client: {
-        createChatCompletion: async () => response
+        createChatCompletion: async () => ({
+          ...response,
+          usage: { prompt_tokens: 11, completion_tokens: 5 }
+        })
       }
     });
 
-    await expect(adapter.search(searchRequest())).rejects.toThrow("openrouter_response_error");
+    const error = await adapter.search(searchRequest()).catch((value: unknown) => value);
+    expect(isProviderSearchExecutionError(error)).toBe(true);
+    expect(error).toMatchObject({
+      artifacts: [],
+      code: "openrouter_response_error",
+      usage: { inputTokens: 11, outputTokens: 5, totalTokens: 16 }
+    });
+    expect(JSON.stringify(error)).not.toMatch(/Top-level failure|Choice failure|Message failure/u);
+  });
+
+  it.each(["length", "content_filter", "error", "tool_calls", null, undefined, "PRIVATE_FINISH_REASON"])(
+    "rejects a source-bearing response without successful terminal proof (%s) and preserves usage",
+    async (finishReason) => {
+      const adapter = createOpenRouterPerplexitySearchAdapter({
+        client: {
+          createChatCompletion: async () => successfulResponse({
+            choices: [{
+              ...(finishReason === undefined ? {} : { finish_reason: finishReason }),
+              message: { content: "PRIVATE_INCOMPLETE_FINDINGS", role: "assistant" }
+            }]
+          })
+        }
+      });
+
+      const error = await adapter.search(searchRequest()).catch((value: unknown) => value);
+      expect(isProviderSearchExecutionError(error)).toBe(true);
+      expect(error).toMatchObject({
+        artifacts: [],
+        code: "openrouter_terminal_response_invalid",
+        ...(finishReason === "length" ? { providerStatus: "length", reason: "max_output_tokens" } : {}),
+        usage: { inputTokens: 11, outputTokens: 5, totalTokens: 16 }
+      });
+      expect(JSON.stringify(error)).not.toMatch(/PRIVATE_INCOMPLETE_FINDINGS|PRIVATE_FINISH_REASON|example\.com/u);
+    }
+  );
+
+  it.each([
+    { refusal: "PRIVATE_REFUSAL" },
+    { tool_calls: [{ id: "PRIVATE_TOOL_CALL", function: { name: "unexpected", arguments: "{}" } }] }
+  ])("rejects contradictory success with refusal or unexecuted tools and preserves usage", async (message) => {
+    const adapter = createOpenRouterPerplexitySearchAdapter({
+      client: {
+        createChatCompletion: async () => successfulResponse({
+          choices: [{
+            finish_reason: "stop",
+            message: { content: "PRIVATE_INCOMPLETE_FINDINGS", role: "assistant", ...message }
+          }]
+        })
+      }
+    });
+
+    const error = await adapter.search(searchRequest()).catch((value: unknown) => value);
+    expect(isProviderSearchExecutionError(error)).toBe(true);
+    expect(error).toMatchObject({
+      artifacts: [],
+      code: "openrouter_terminal_response_invalid",
+      usage: { inputTokens: 11, outputTokens: 5, totalTokens: 16 }
+    });
+    expect(JSON.stringify(error)).not.toMatch(/PRIVATE_REFUSAL|PRIVATE_TOOL_CALL|PRIVATE_INCOMPLETE_FINDINGS/u);
   });
 
   it.each([
@@ -376,13 +437,19 @@ describe("OpenRouter Perplexity search adapter", () => {
   ])("rejects malformed HTTP-200 search terminal JSON: %s", async (_label, response) => {
     const adapter = createOpenRouterPerplexitySearchAdapter({
       client: {
-        createChatCompletion: async () => response
+        createChatCompletion: async () => ({
+          ...response,
+          usage: { prompt_tokens: 11, completion_tokens: 5 }
+        })
       }
     });
 
-    await expect(adapter.search(searchRequest())).rejects.toThrow(
-      "openrouter_terminal_response_invalid"
-    );
+    const error = await adapter.search(searchRequest()).catch((value: unknown) => value);
+    expect(isProviderSearchExecutionError(error)).toBe(true);
+    expect(error).toMatchObject({
+      code: "openrouter_terminal_response_invalid",
+      usage: { inputTokens: 11, outputTokens: 5, totalTokens: 16 }
+    });
   });
 
   it("accepts a usable content-array search response", async () => {
@@ -416,6 +483,7 @@ describe("OpenRouter Perplexity search adapter", () => {
       choices: [
         {
           error: "diagnostic-only",
+          finish_reason: "stop",
           message: {
             content: "Successful answer",
             error: null,

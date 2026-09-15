@@ -1,4 +1,4 @@
-import type { AdminProviderCapabilityCheck } from "./adminProviders";
+import { ADMIN_PROVIDER_CAPABILITY_CHECKS, type AdminProviderCapabilityCheck } from "./adminProviders";
 
 export const ADMIN_PROVIDER_SETUP_STREAM_TYPE = "application/x-ndjson";
 
@@ -23,7 +23,7 @@ export function decodeAdminProviderSetupProgress(value: unknown): AdminProviderS
   if (Object.keys(record).some((key) => !["completed", "phase", "total", "connectionId", "credentialId", "runId", "capability"].includes(key)) ||
     ["connectionId", "credentialId", "runId"].some((key) => record[key] !== undefined &&
       (typeof record[key] !== "string" || !record[key] || record[key].length > 256 || /[\u0000-\u001f\u007f]/u.test(record[key]))) ||
-    (record.capability !== undefined && !["modelAccess", "structuredOutput", "toolCalling", "forcedToolCall", "parallelToolCalls", "vision", "directPdf", "streaming", "embedding", "reranking"].includes(String(record.capability))) ||
+    (record.capability !== undefined && !(ADMIN_PROVIDER_CAPABILITY_CHECKS as readonly unknown[]).includes(record.capability)) ||
     !ADMIN_PROVIDER_SETUP_PHASES.includes(record.phase as AdminProviderSetupProgress["phase"]) ||
     !Number.isSafeInteger(record.completed) || Number(record.completed) < 0 ||
     (record.total !== null && (!Number.isSafeInteger(record.total) ||

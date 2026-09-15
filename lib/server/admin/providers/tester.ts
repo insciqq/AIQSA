@@ -1,6 +1,8 @@
 import { capabilityFailureAttempt, retryCapabilityAttempt } from "./capabilityProbeFailure";
 import { isRetryableProviderNetworkError } from "../../providers/providerRetry";
 import { testImageCapabilities } from "./imageCapabilityProbe";
+import { shouldProbeHostedSearch } from "./hostedSearchCapability";
+import { validateSearchToolArguments } from "../../search/query";
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import type {
   AdminProviderCapabilityAttempt,
@@ -26,7 +28,7 @@ import {
   createProviderRuntimeBinding,
   type ProviderExecutionSnapshot
 } from "../../providers/runtimeFactory";
-import type { ProviderRunRequest, ProviderRunResult } from "../../providers/types";
+import { ProviderSearchExecutionError, type ProviderRunRequest, type ProviderRunResult } from "../../providers/types";
 import {
   supportsStructuredOutputAdapter,
   type ProviderStructuredOutputAdapter
@@ -771,10 +773,39 @@ async function testParallelToolCalls(input: AdminProviderDraftTesterInput, optio
     probeVersion: 1, upstreamModelId: input.model.upstreamModelId, verified: true });
 }
 
-type AnswerCheck = "modelAccess" | "structuredOutput" | "toolCalling" | "forcedToolCall" | "parallelToolCalls" | "vision" | "directPdf" | "streaming";
+async function testHostedSearch(input: AdminProviderDraftTesterInput, options: TesterOptions): Promise<AnswerProbeResult> {
+  const model = { ...input.model, capabilities: { ...input.model.capabilities, nativeSearch: true } };
+  const adapter = providerRuntime({ ...input, model }, options).searchAdapter;
+  if (!adapter) return { verified: false };
+  const query = validateSearchToolArguments({ query: "Find the official OpenAI home page and return one source." }, 100);
+  if (!query.ok) throw new Error(query.code);
+  try {
+    const result = await adapter.search({
+      correlationId: "provider-admin-search-test",
+      query: query.query,
+      searchPolicy: { provider: "openai_compatible", strategyId: "openai-responses-web-search",
+        modelId: model.upstreamModelId, modelCapabilities: model.capabilities,
+        maxOutputTokens: probeOutputTokens(input, 2_048), reasoningPolicy: "lowest_supported" },
+      strategyId: "openai-responses-web-search"
+    }, { signal: input.signal });
+    return { verified: result.sources.length > 0, proof: {
+      adapterKind: "openai_responses_compatible", normalizedSourceCount: result.sources.length,
+      probeVersion: 1, upstreamModelId: model.upstreamModelId, verified: true
+    } };
+  } catch (error) {
+    if (error instanceof ProviderSearchExecutionError && (error.reason === "max_output_tokens" || error.reason === "content_filter")) {
+      throw Object.assign(new Error("capability_probe_inconclusive"), {
+        capabilityFailureReason: error.reason === "max_output_tokens" ? "budget_exhausted" : "refusal"
+      });
+    }
+    throw error;
+  }
+}
+
+type AnswerCheck = "modelAccess" | "structuredOutput" | "toolCalling" | "forcedToolCall" | "parallelToolCalls" | "vision" | "directPdf" | "streaming" | "hostedSearch";
 type AnswerProbeResult = { verified: boolean; proof?: AdminProviderTestEvidence[keyof AdminProviderTestEvidence]; usageSeen?: boolean };
 const answerProofFields = { structuredOutput: "structuredOutput", forcedToolCall: "forcedToolCall", parallelToolCalls: "parallelToolCalls",
-  vision: "visionInput", directPdf: "pdfInput" } as const;
+  vision: "visionInput", directPdf: "pdfInput", hostedSearch: "hostedSearch" } as const;
 
 function beforeProbeAbort<T>(signal: AbortSignal, operation: () => Promise<T>): Promise<T> {
   signal.throwIfAborted();
@@ -792,9 +823,12 @@ async function testAnswerCapabilities(original: AdminProviderDraftTesterInput, o
 ): Promise<AdminProviderDraftTestOutcome> {
   const probeModel = { ...original.model, capabilities: { ...original.model.capabilities,
     toolCalling: true, parallelToolCalls: true, vision: true, nativePdfInput: true, streaming: true } };
-  const previous = reusableCapabilitySetupEvidence(original.reuseSetupEvidence ?? original.priorEvidence, original.model);
+  const previous = reusableCapabilitySetupEvidence(original.reuseSetupEvidence ?? original.priorEvidence, original.model, original.connection);
   const reuse = Boolean(original.reuseSetupEvidence);
-  const applicable: readonly AnswerCheck[] = ["modelAccess", "structuredOutput", "toolCalling", "forcedToolCall", "parallelToolCalls", "vision", "directPdf", "streaming"];
+  const probeHostedSearch = shouldProbeHostedSearch(original.model, original.connection) ||
+    previous?.capabilitySetup?.checks.hostedSearch !== undefined;
+  const applicable: readonly AnswerCheck[] = ["modelAccess", "structuredOutput", "toolCalling", "forcedToolCall", "parallelToolCalls", "vision", "directPdf", "streaming",
+    ...(probeHostedSearch ? ["hostedSearch" as const] : [])];
   const checks = { ...Object.fromEntries(applicable.map((key) => [key, "not_checked"])) as
     Partial<Record<AdminProviderCapabilityCheck, AdminProviderCapabilityCheckStatus>>, ...previous?.capabilitySetup?.checks };
   const compatibility = { ...unsupportedAdminProviderCompatibilityEvidence(), ...previous?.compatibility,
@@ -860,12 +894,12 @@ async function testAnswerCapabilities(original: AdminProviderDraftTesterInput, o
     const field = key in answerProofFields ? answerProofFields[key as keyof typeof answerProofFields] : undefined;
     if (attempt.status === "verified" && result) {
       checks[key] = "verified";
-      compatibility[key] = "verified";
+      if (key !== "hostedSearch") compatibility[key] = "verified";
       if (result.usageSeen) compatibility.usage = "verified";
       if (field && result.proof) Object.assign(evidence, { [field]: result.proof });
     } else if (attempt.status === "unsupported" || checks[key] !== "verified") {
       checks[key] = attempt.status;
-      compatibility[key] = "not_supported";
+      if (key !== "hostedSearch") compatibility[key] = "not_supported";
       if (field) delete evidence[field];
     }
     completed += 1;
@@ -903,6 +937,8 @@ async function testAnswerCapabilities(original: AdminProviderDraftTesterInput, o
     const result = await runGenerationProbe(input, options, true);
     return { verified: result.status === "verified", usageSeen: result.usageSeen };
   });
+  if (probeHostedSearch) await check("hostedSearch", probeModel.adapterKind === "openai_responses_compatible",
+    (input) => testHostedSearch(input, options));
   original.signal?.throwIfAborted();
   return snapshot();
 }

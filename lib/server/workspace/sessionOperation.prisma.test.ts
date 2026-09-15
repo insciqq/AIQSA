@@ -26,6 +26,8 @@ import { reconcileWorkspaceAfterRestore, runWorkspaceMaintenance } from "./clean
 import type { WorkspaceRuntime } from "./runtime";
 import { createWorkspaceRunnerServer } from "./runnerServer";
 import { RemoteWorkspaceRuntime } from "./remoteRuntime";
+import { createChatContinuationRepository } from "../chats/continuationRepository";
+import { createWorkspaceLifecycleService } from "./lifecycle";
 
 function barrier() {
   let release!: () => void;
@@ -152,6 +154,27 @@ describe("Prisma Workspace operation admission", () => {
     const request = await value.plan();
     await expect(admitPreparingRunWithClient(prisma, request)).resolves.toMatchObject({ runId: request.workspaceAdmissionPlan!.runId });
     expect(await prisma.modelRun.count({ where: { chatId: value.chatId } })).toBe(1);
+  });
+
+  it("blocks reset, Download and run admission while a continuation owns the source disk", async () => {
+    const value = await fixture();
+    await prisma.workspaceSession.update({ where: { id: value.session.id }, data: { state: "STOPPED", stoppedAt: new Date() } });
+    const root = await prisma.message.create({ data: { chatId: value.chatId, role: "user", status: "complete", content: textMessageContent("Continue this work") } });
+    const leaf = await prisma.message.create({ data: { chatId: value.chatId, parentMessageId: root.id, role: "assistant", status: "complete", content: textMessageContent("Ready") } });
+    await prisma.chat.update({ where: { id: value.chatId }, data: { activeLeafMessageId: leaf.id } });
+    const repository = createChatContinuationRepository(prisma);
+    const request = { chatId: value.chatId, userId: value.userId };
+    const source = await repository.loadSource({ ...request, expectedLeafMessageId: leaf.id, requestId: randomUUID() });
+    expect((await repository.claim(source, randomUUID())).kind).toBe("claimed");
+    const lifecycle = createWorkspaceLifecycleService({ config, prisma, storage: createMemoryStorageAdapter(),
+      runtime: new DeterministicWorkspaceRuntime(config),
+      policy: { async read() { return { enabled: true, internetEnabled: false, version: 1 }; }, async update() { throw new Error("unused"); } },
+      availability: { invalidate() {}, project() { throw new Error("unused"); }, async snapshot() { throw new Error("unused"); } }
+    });
+    await expect(lifecycle.reset(request)).rejects.toMatchObject({ code: "workspace_reset_conflict" });
+    await expect(lifecycle.archive(request)).rejects.toMatchObject({ code: "workspace_busy" });
+    await expect(admitPreparingRunWithClient(prisma, await value.plan())).rejects.toMatchObject({ code: "workspace_busy" });
+    expect(await prisma.modelRun.count({ where: { chatId: value.chatId } })).toBe(0);
   });
 
   it("releases confirmed disk-loss ownership only after receiver retirement, then admits a new turn", async () => {

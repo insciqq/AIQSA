@@ -130,7 +130,9 @@ function activeCandidate() {
 describe("Prisma admin provider repository", () => {
   it.each([
     ["embedding", { embedding: { probeVersion: 1, document: true, query: true, dimensions: 1024 } }],
-    ["reranking", { reranking: { probeVersion: 1, completeScores: true } }]
+    ["reranking", { reranking: { probeVersion: 1, completeScores: true } }],
+    ["Hosted Search", { hostedSearch: { adapterKind: "openai_responses_compatible", normalizedSourceCount: 1,
+      probeVersion: 1, upstreamModelId: "vendor/model", verified: true } }]
   ])("retains verified %s evidence in draft and active model reads", async (_kind, proof) => {
     const successful = { ...storedCheck().evidence, ...proof };
     const checks = [
@@ -138,7 +140,9 @@ describe("Prisma admin provider repository", () => {
       { ...successful, method: "models_catalog" },
       { ...successful, detail: "model_missing" },
       { ...successful, embedding: { probeVersion: 1, document: true, query: false, dimensions: -1 },
-        reranking: { probeVersion: 1, completeScores: false } }
+        reranking: { probeVersion: 1, completeScores: false },
+        hostedSearch: { adapterKind: "openai_responses_compatible", normalizedSourceCount: 0, probeVersion: 1,
+          upstreamModelId: "vendor/model", verified: true } }
     ].map((checkEvidence) => ({
       ...storedCheck(), connectionId: "connection-1", connectionVersion: 1,
       credentialVersionId: "version-1", evidence: checkEvidence,
@@ -162,6 +166,7 @@ describe("Prisma admin provider repository", () => {
       for (const check of projected.slice(1)) {
         expect(check.evidence).not.toHaveProperty("embedding");
         expect(check.evidence).not.toHaveProperty("reranking");
+        expect(check.evidence).not.toHaveProperty("hostedSearch");
       }
     }
   });
@@ -382,6 +387,7 @@ describe("Prisma admin provider repository", () => {
       clientId: "custom-web-search-client:connection-1",
       clientKind: "provider_model_web_search" as const,
       existingClient: false,
+      existingHosted: false,
       family: "openai_compatible",
       hostedId: "custom-web-search-hosted:connection-1",
       hostedKind: "openai_native_web_search" as const,
@@ -398,6 +404,7 @@ describe("Prisma admin provider repository", () => {
       clientId: "openai-search-client:connection-1",
       clientKind: "provider_model_web_search" as const,
       existingClient: true,
+      existingHosted: true,
       family: "openai",
       hostedId: "openai-native-web-search",
       hostedKind: "openai_native_web_search" as const,
@@ -414,6 +421,7 @@ describe("Prisma admin provider repository", () => {
       clientId: "anthropic-search-client:connection-1",
       clientKind: "provider_model_web_search" as const,
       existingClient: false,
+      existingHosted: false,
       family: "anthropic",
       hostedId: "anthropic-web-search",
       hostedKind: "anthropic_native_web_search" as const,
@@ -430,6 +438,7 @@ describe("Prisma admin provider repository", () => {
       clientId: "gemini-search-client:connection-1",
       clientKind: "gemini_google_search" as const,
       existingClient: false,
+      existingHosted: false,
       family: "gemini",
       hostedId: "00000000-0000-4000-8000-000000001301",
       hostedKind: "gemini_google_search" as const,
@@ -442,6 +451,18 @@ describe("Prisma admin provider repository", () => {
       templateKey: "gemini"
     }
   ])("atomically materializes a tested $label draft and both active Search routes", async (scenario) => {
+    const savedHostedDraft = {
+      adapterKind: "answer_provider_hosted",
+      credentialMode: "answer_provider",
+      maxOutputTokens: 4_096,
+      maxResults: 7,
+      maxSearchCallsPerAnswer: 2,
+      protocol: scenario.protocol,
+      providerModelId: null,
+      queryMaxCharacters: 500,
+      reasoningPolicy: "provider_default",
+      timeoutMs: 300_000
+    };
     const candidateCheck: StoredProviderDraftCheck = {
       ...storedCheck(),
       evidence: {
@@ -555,7 +576,9 @@ describe("Prisma admin provider repository", () => {
       searchStrategy: {
         create: createSearchStrategy,
         findFirst: vi.fn()
-          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(scenario.existingHosted
+            ? { draft: savedHostedDraft, id: scenario.hostedId }
+            : null)
           .mockResolvedValueOnce(scenario.existingClient
             ? {
                 draft: {
@@ -692,14 +715,20 @@ describe("Prisma admin provider repository", () => {
         sourceConnectionId: "connection-1"
       })
     });
-    expect(createSearchStrategy).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        adapterKind: "answer_provider_hosted",
-        id: scenario.hostedId,
-        kind: scenario.hostedKind,
-        strategyId: scenario.hostedStrategyId
-      })
-    }));
+    if (scenario.existingHosted) {
+      expect(createSearchStrategy).not.toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ adapterKind: "answer_provider_hosted" })
+      }));
+    } else {
+      expect(createSearchStrategy).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          adapterKind: "answer_provider_hosted",
+          id: scenario.hostedId,
+          kind: scenario.hostedKind,
+          strategyId: scenario.hostedStrategyId
+        })
+      }));
+    }
     if (scenario.existingClient) {
       expect(createSearchStrategy).not.toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({ adapterKind: "provider_model_client" })
@@ -717,7 +746,9 @@ describe("Prisma admin provider repository", () => {
     }
     expect(createSearchRevision).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        configuration: expect.objectContaining({ protocol: scenario.protocol }),
+        configuration: scenario.existingHosted
+          ? savedHostedDraft
+          : expect.objectContaining({ protocol: scenario.protocol }),
         searchStrategyId: scenario.hostedId,
         validationEvidence: expect.objectContaining({ sourceProbe: false })
       })

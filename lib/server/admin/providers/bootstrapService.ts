@@ -120,10 +120,11 @@ export function createAdminProviderBootstrap(input: {
       } as const;
       const draft: AdminSearchDraft = existing?.configurationActive && existing.configuration
         ? existing.configuration : {
+          ...adminSearchExecutionDefaults,
           adapterKind: "provider_model_client", credentialMode: "provider_model", providerModelId: target.id,
-          protocol: protocol[target.searchKind], queryMaxCharacters: 500, maxResults: 8,
-          timeoutMs: Math.min(60_000, (target.responseTimeoutSeconds ?? 60) * 1_000),
-          ...adminSearchExecutionDefaults
+          protocol: protocol[target.searchKind],
+          timeoutMs: Math.min(adminSearchExecutionDefaults.timeoutMs,
+            (target.responseTimeoutSeconds ?? adminSearchExecutionDefaults.timeoutMs / 1_000) * 1_000)
         };
       value.signal.throwIfAborted();
       if (existing?.configurationActive) {

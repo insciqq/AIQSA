@@ -30,6 +30,7 @@ export type ModelChipKey =
   | "pdf"
   | "reranking"
   | "stream"
+  | "hostedSearch"
   | "tools"
   | "memoryActions"
   | "unavailable";
@@ -146,6 +147,9 @@ export function modelChipsFromEvidence(
         capabilityChip("images", "Images", "vision", legacyStatus(evidence.visionInput, configuration))
       ];
   const forcedStatus = compatibility?.forcedToolCall ?? legacyStatus(evidence.forcedToolCall, configuration);
+  if (evidence.hostedSearch || evidence.capabilitySetup?.checks.hostedSearch) {
+    chips.push(capabilityChip("hostedSearch", "Hosted Search", "hostedSearch", legacyStatus(evidence.hostedSearch, configuration)));
+  }
   const forcedReceipt = evidence.capabilitySetup?.checks.forcedToolCall;
   if (forcedStatus !== "verified" && (forcedStatus || forcedReceipt)) {
     chips.push({ key: "memoryActions", tone: forcedReceipt === "unsupported" ? "muted" : "warn",
