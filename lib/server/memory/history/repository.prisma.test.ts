@@ -510,6 +510,67 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
+  it("waits through a short settings lock during an INDEX_HISTORY commit", async () => {
+    const userId = await createOwner("memory-history-commit-contention");
+    try {
+      const chat = await prisma.chat.create({
+        data: { title: "History commit contention", userId }
+      });
+      const turn = await createTurn({
+        assistantText: "The committed answer remains atomic.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-25T10:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Keep this history commit safe."
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["NORMAL_APPEND"],
+        patch: { activeLeafMessageId: turn.assistantMessage.id }
+      });
+      await mutateSource(userId, chat.id, {
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: {
+          assistantMessageId: turn.assistantMessage.id,
+          runId: turn.run.id,
+          status: "complete"
+        }
+      });
+      await seedHistoryBackfill(userId);
+      const claim = await claimHistoryJob(userId);
+      let releaseLock!: () => void;
+      const lockReady = new Promise<void>((resolve) => { releaseLock = resolve; });
+      const holder = prisma.$transaction(async (tx) => {
+        await tx.$queryRaw(Prisma.sql`
+          SELECT "userId"
+          FROM "UserMemorySettings"
+          WHERE "userId" = ${userId}
+          FOR UPDATE
+        `);
+        releaseLock();
+        await new Promise<void>((resolve) => setTimeout(resolve, 350));
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      await lockReady;
+
+      await expect(createPrismaMemoryCoordinatorRepository(prisma).commitJobSuccess({
+        acceptedResultHash: "a".repeat(64),
+        claim,
+        now: new Date(),
+        stage: "lexical_apply"
+      })).resolves.toBe(true);
+      await holder;
+      await expect(prisma.memoryJob.findUniqueOrThrow({
+        select: { acceptedResultHash: true, state: true },
+        where: { id: claim.id }
+      })).resolves.toMatchObject({
+        acceptedResultHash: "a".repeat(64),
+        state: "SUCCEEDED"
+      });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it.each(["memory-history-index-v1", "memory-history-incremental-v8"])(
     "reindexes a legacy READY checkpoint %s locally despite a legacy classifier result", async (previousPipeline) => {
     const userId = await createOwner("memory-history-checkpoint-upgrade");
