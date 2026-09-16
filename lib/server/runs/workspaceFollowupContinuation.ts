@@ -83,7 +83,7 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
     signal.throwIfAborted();
     if (!await deps.followups.markAnswerDispatched(claim)) throw new WorkspaceFollowupError("workspace_followup_unavailable");
     releaseRegistry();
-    const response = createRunExecutionResponse({ ...deps, adapter: runtime.adapter, created, prepared,
+    const response = createRunExecutionResponse({ ...deps, adapter: runtime.adapter, agentResponses: runtime.agentResponses, created, prepared,
       searchRuntimes, structuredOutputAdapter: runtime.structuredOutputAdapter, toolBridge: runtime.toolBridge, userId: claim.userId });
     void (async () => {
       const reader = response.body?.getReader();

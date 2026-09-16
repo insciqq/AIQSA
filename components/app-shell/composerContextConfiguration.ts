@@ -4,9 +4,10 @@ import type { ComposerControlSnapshot } from "./composerControlStore";
  * Neither this key nor the control summaries are sent back as server authority. */
 export function composerContextConfigurationKey(
   controls: ComposerControlSnapshot,
-  chat: Readonly<{ memoryMode: string; workspaceEnabled: boolean }>
+  chat: Readonly<{ memoryMode: string; workspaceEnabled: boolean; agentEnabled?: boolean }>
 ): string {
   return JSON.stringify({
+    ...(chat.agentEnabled ? { agentEnabled: true } : {}),
     assistant: controls.selectedAssistant
       ? { id: controls.selectedAssistant.id, promptCharacterCount: controls.selectedAssistant.promptCharacterCount }
       : null,

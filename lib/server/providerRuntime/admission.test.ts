@@ -1,15 +1,18 @@
 import type { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { insertAcceptedProviderRunBindings } from "../runs/prismaRepositoryBindings";
 import { loadInstallationAnswerProviderRole, loadInstallationRerankerProviderRole, loadProviderAdmissionPlan, ProviderAdmissionError, type ProviderAdmissionPlan } from "./admission";
 
 const capabilities = (input: Readonly<{
   nativePdfInput?: boolean;
   nativeSearch?: boolean;
+  codexStandaloneWebSearch?: boolean;
   pdf?: boolean;
   toolCalling?: boolean;
 }> = {}) => ({
   nativePdfInput: input.nativePdfInput ?? true,
   nativeSearch: input.nativeSearch ?? false,
+  ...(input.codexStandaloneWebSearch !== undefined ? { codexStandaloneWebSearch: input.codexStandaloneWebSearch } : {}),
   pdf: input.pdf ?? true,
   reasoning: true,
   streaming: true,
@@ -33,6 +36,7 @@ type ModelSpec = Readonly<{
   id: string;
   nativePdfInput?: boolean;
   nativeSearch?: boolean;
+  codexStandaloneWebSearch?: boolean;
   pdf?: boolean;
   responseTimeoutMs?: number;
   toolCalling?: boolean;
@@ -80,6 +84,7 @@ function providerModel(
       capabilities: capabilities({
         nativePdfInput: spec.nativePdfInput,
         nativeSearch: spec.nativeSearch,
+        codexStandaloneWebSearch: spec.codexStandaloneWebSearch,
         pdf: spec.pdf,
         toolCalling: spec.toolCalling
       }),
@@ -614,6 +619,20 @@ describe("provider admission", () => {
     expect(plan.answer.credentialSource).toBe("user");
   });
 
+  it.each(["verified", "missing", "foreign", "disabled"] as const)("fences Codex search by the selected credential's %s proof", async (state) => {
+    const answer: ModelSpec = { ...officialOpenAiModel, adapterKind: "openai_responses_compatible", family: "openai_compatible",
+      codexStandaloneWebSearch: state !== "disabled" };
+    const f = admissionDb({ answer, options: [off], credentialCheckEvidenceByModel: { [answer.id]: state === "missing" ? {} : {
+      codexWebSearch: { adapterKind: answer.adapterKind, probeVersion: 1, verified: true, sourceCount: 1,
+        upstreamModelId: state === "foreign" ? "foreign-model" : answer.upstreamModelId }
+    } } });
+    const plan = await loadProviderAdmissionPlan(f.db as unknown as Prisma.TransactionClient, {
+      providerConnectionId: answer.connectionId, providerModelId: answer.id,
+      searchPlan: { mode: "all_selected", optionIds: [] }, userId: "user-1"
+    });
+    expect(plan.answer.snapshot.model.capabilities.codexStandaloneWebSearch).toBe(state === "verified");
+  });
+
   it("grants strict capabilities only from exact current-tuple probe evidence", async () => {
     const verified = admissionDb({
       answer: officialOpenAiModel,
@@ -861,6 +880,41 @@ describe("provider admission", () => {
       userId: "user-1"
     })).rejects.toMatchObject({ code: "model_not_available" });
     expect(db.providerCredential.findMany).not.toHaveBeenCalled();
+  });
+
+  it("requires a query-only client route for Agent even when hosted Search can coexist with tools", async () => {
+    const option = openAiOption();
+    const { db } = admissionDb({ answer: officialOpenAiModel, options: [option], technicalModels: [officialOpenAiSearchModel] });
+    const input = { providerConnectionId: officialOpenAiModel.connectionId, providerModelId: officialOpenAiModel.id,
+      searchPlan: { mode: "all_selected" as const, optionIds: [option.optionId] }, userId: "user-1",
+      requiresClientToolCoexistence: true, requiresClientSearchRoutes: true };
+    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, input);
+    expect(expectSearch(plan)).toMatchObject({ bindingKey: `search:${option.optionId}`, configuration: { adapterKind: "provider_model_client" } });
+    expect(plan.requiresClientSearchRoutes).toBe(true);
+    const hostedOnly = admissionDb({ answer: officialOpenAiModel,
+      options: [{ ...option, routes: option.routes!.filter((route) => route.adapterKind === "answer_provider_hosted") }] });
+    await expect(loadProviderAdmissionPlan(hostedOnly.db as unknown as Prisma.TransactionClient, input))
+      .rejects.toMatchObject({ code: "search_strategy_not_available" });
+  });
+
+  it.each([false, true])("persists Agent bindings after revalidation with Search enabled=%s", async (searchEnabled) => {
+    const option = openAiOption();
+    const { db } = admissionDb({ answer: officialOpenAiModel, options: [option], technicalModels: [officialOpenAiSearchModel] });
+    const createMany = vi.fn(async () => ({ count: searchEnabled ? 2 : 1 }));
+    const tx = { ...db, providerRunBinding: { createMany } } as unknown as Prisma.TransactionClient;
+    const plan = await loadProviderAdmissionPlan(tx, {
+      providerConnectionId: officialOpenAiModel.connectionId, providerModelId: officialOpenAiModel.id,
+      searchPlan: { mode: "all_selected", optionIds: searchEnabled ? [option.optionId] : [] },
+      userId: "user-1", requiresClientToolCoexistence: true, requiresClientSearchRoutes: true
+    });
+
+    await insertAcceptedProviderRunBindings(tx, { plan, nativeBackgroundRequested: false, runId: "agent-run", userId: "user-1" });
+
+    expect(createMany).toHaveBeenCalledExactlyOnceWith({ data: [
+      expect.objectContaining({ role: "answer", providerModelId: officialOpenAiModel.id, modelRunId: "agent-run" }),
+      ...(searchEnabled ? [expect.objectContaining({ role: "search", bindingKey: `search:${option.optionId}`,
+        providerModelId: officialOpenAiSearchModel.id, modelRunId: "agent-run" })] : [])
+    ] });
   });
 
   it("prefers official OpenAI hosted Search and persists its exact physical ids", async () => {

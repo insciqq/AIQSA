@@ -286,6 +286,15 @@ describe("run lifecycle v2 presentation", () => {
     });
   });
 
+  it("keeps the live failure code and recovery when the persisted message is also available", () => {
+    expect(presentRunLifecycleV2(state({
+      content: "Partial answer", status: "error", failure: { message: "Connection interrupted." },
+      events: [{ type: "error", data: { code: "provider_stream_reset", message: "Connection interrupted.", recovery: "retry" } }]
+    }))).toMatchObject({ kind: "recoverable_error", failure: {
+      code: "provider_stream_reset", message: "Connection interrupted.", recovery: "retry"
+    } });
+  });
+
   it("bounds malformed error state and supplies factual fallback copy", () => {
     expect(presentRunLifecycleV2(state({
       events: [{

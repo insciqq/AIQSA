@@ -313,6 +313,8 @@ export type CancelRunResult =
     };
 
 export type RunUsageAttribution = {
+  /** Exact admitted catalogue identity when an external harness reports usage. */
+  providerModelId?: string;
   /** Retained contribution count for subtracting saved answer rounds during recovery. */
   operationCount?: number | null;
   estimatedCostMicros?: number | null;
@@ -702,7 +704,9 @@ export type RunRepository = {
     userId: string;
   }): Promise<KnowledgeFullContextDispatchRecovery | null>;
   loadEntitlements(userId: string): Promise<ResolvedEntitlements>;
-  loadModelPricing(provider: string, modelId: string): Promise<ModelTokenPricing | null>;
+  loadModelPricing(provider: string, modelId: string, providerModelId?: string): Promise<ModelTokenPricing | null>;
+  interruptExpiredAgentRun?(input: { runId: string; userId: string; now: Date }): Promise<
+    { kind: "not_agent" } | { kind: "active" } | { kind: "interrupted"; failureCode: import("../agents/failures").AgentFailureCode; usage: RunUsageAttribution[] }>;
   loadRunUsageAttributions(input: {
     runId: string;
     userId: string;

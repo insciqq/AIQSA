@@ -187,6 +187,7 @@ export type ShellComposerActions = {
 };
 
 export type ShellComposerView = {
+  agent?: Readonly<{ enabled: boolean; unavailableReason?: string; setEnabled(value: boolean): void }>;
   attachments: ComposerAttachment[];
   backgroundMode: boolean;
   catalog: Catalog | null;

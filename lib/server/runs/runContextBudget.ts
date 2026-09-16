@@ -468,6 +468,9 @@ export function applyProviderRequestContextBudget(input: Readonly<{
   bridge?: ProviderToolBridge;
   request: ProviderRunRequest;
 }>): ProviderRequestContextBudgetResult {
+  // Agent turns retain their accepted branch. Codex owns compaction; deferred
+  // PDF/Workspace continuations must not apply a second, app-side truncation.
+  if (input.request.agent) return { ok: true, request: { ...input.request, tools: [] }, contextTruncation: null };
   const contextMessages = input.request.context?.messages ?? [];
   const syntheticCurrentMessageId = "__provider-current-message__";
   const budgetMessages = contextMessages.length > 0

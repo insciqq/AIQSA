@@ -293,6 +293,7 @@ describe("composer session store", () => {
     expect(store.finishEdit(editToken!, null)).toBe(false);
     expect(store.updateSession(composerSessionKey("deleted"), { draft: "resurrected" })).toBe(false);
     expect(session(chat)).toEqual({
+      agentEnabled: false,
       attachments: [],
       draft: "",
       editGeneration: 0,

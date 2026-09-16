@@ -1,3 +1,4 @@
+import { AgentExecutionError, agentFailureCode, agentFailureMessage } from "../agents/failures";
 import { knowledgeAnswerInstructions } from "../knowledge/answerInstructions";
 import { filterMcpProviderRequest } from "../mcp/toolAccessProjection";
 import { imageDispatchMustStop } from "../images/errors";
@@ -173,6 +174,8 @@ import {
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
 import { liveToolCallStatus, liveToolLoopStatus } from "./liveToolStatus";
+import { executeCodexTurn } from "../agents/executor";
+import type { AgentResponsesTransport } from "../providers/agentResponses";
 import { projectRunOutputArtifactEvent } from "./runOutputEvents";
 import { notifyProjectEvent } from "../projects/events";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
@@ -180,6 +183,7 @@ import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult"
 import { toolRunBudgetsForRequest } from "./toolBudgets";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
+import { CodexProtocolError } from "../agents/codexProtocol";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import {
@@ -226,6 +230,7 @@ export type RunExecutionRepository = Pick<
 >;
 
 export type RunExecutionInput = Readonly<{
+  agentResponses?: AgentResponsesTransport;
   images?: import("../images/service").ImageGenerationService;
   adapter: ProviderAdapter;
   /** Names a personal chat after its first answer; absent on recovery paths. */
@@ -453,7 +458,7 @@ function groupedUsageAttributions(attributions: readonly RunUsageAttribution[]):
   const grouped = new Map<string, RunUsageAttribution & { usages: ModelRunUsage[] }>();
 
   for (const attribution of attributions) {
-    const key = `${attribution.provider}\u0000${attribution.modelId}`;
+    const key = `${attribution.provider}\u0000${attribution.modelId}\u0000${attribution.providerModelId ?? ""}`;
     const current = grouped.get(key);
     if (current) {
       current.usages.push(attribution.usage);
@@ -463,6 +468,7 @@ function groupedUsageAttributions(attributions: readonly RunUsageAttribution[]):
     }
 
     grouped.set(key, {
+      ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
       operationCount: attribution.operationCount ?? null,
       modelId: attribution.modelId,
       provider: attribution.provider,
@@ -631,15 +637,16 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       const workspaceTurnController = normalizedRequest.workspace
         ? new AbortController()
         : null;
-      const workspaceTurnTimer = workspaceTurnController && normalizedRequest.workspace
+      const workspaceTurnTimeoutSeconds = normalizedRequest.agent ? normalizedRequest.agent.timeoutSeconds : normalizedRequest.workspace?.turnTimeoutSeconds;
+      const workspaceTurnTimer = workspaceTurnController && workspaceTurnTimeoutSeconds != null
         ? setTimeout(
             () => {
               logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "failed",
                 code: "workspace_tool_timeout", reason: "deadline", abort_source: "workspace_deadline",
-                timeout_ms: normalizedRequest.workspace!.turnTimeoutSeconds * 1_000 });
-              workspaceTurnController.abort(new WorkspaceRuntimeError("workspace_tool_timeout"));
+                timeout_ms: workspaceTurnTimeoutSeconds! * 1_000 });
+              workspaceTurnController.abort(normalizedRequest.agent ? new AgentExecutionError("agent_time_limit") : new WorkspaceRuntimeError("workspace_tool_timeout"));
             },
-            normalizedRequest.workspace.turnTimeoutSeconds * 1_000
+            workspaceTurnTimeoutSeconds! * 1_000
           )
         : null;
       const signal = workspaceTurnController
@@ -906,6 +913,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             ...(expected.requiresClientToolCoexistence
               ? { requiresClientToolCoexistence: true }
               : {}),
+            ...(expected.requiresClientSearchRoutes ? { requiresClientSearchRoutes: true } : {}),
             searchPlan: expected.requestedSearchPlan,
             userId: input.userId
           });
@@ -2678,7 +2686,20 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         let providerResult: ProviderRunResult & {
           usageAttributions?: RunUsageAttribution[];
         };
-        if (knowledgeAnswerExecution) {
+        if (normalizedRequest.agent) {
+          if (!input.agentResponses || !input.workspace?.executeAgent) {
+            throw new RunPipelineError("agent_unavailable", "Agent execution is unavailable.");
+          }
+          providerResult = await executeCodexTurn({
+            request: providerRequest, runId, userId: input.userId, signal,
+            transport: input.agentResponses, workspace: input.workspace,
+            onEvent: applyProviderEvent, onActivity: onWorkspaceActivity,
+            async onUsage(attributions) {
+              reportedUsageAttributions.splice(0, reportedUsageAttributions.length, ...attributions);
+              await persistReportedUsageForIncompleteRun();
+            }
+          });
+        } else if (knowledgeAnswerExecution) {
           providerResult = knowledgeAnswerExecution.result;
         } else if (hasClientTools) {
           const toolLoopResult = await runProviderToolLoop(providerRequest);
@@ -2901,7 +2922,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         try {
           await tokenBuffer.flush();
         } catch (flushError) {
-          if (!originalStreamSafetyReport) failure = flushError;
+          if (!originalStreamSafetyReport && !(failure instanceof AgentExecutionError)) failure = flushError;
         }
 
         const deadlineExceeded = isProviderDeadlineExceededError(failure);
@@ -2924,6 +2945,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           (knowledgeAnswerAttempted
             ? focusedKnowledgeFailureCode(failure)
             : pipelineError?.code ??
+              (failure instanceof AgentExecutionError ? failure.code : null) ??
+              (failure instanceof CodexProtocolError ? failure.code : null) ??
               (failure instanceof WorkspaceRuntimeError ? failure.code : null) ??
               (deadlineExceeded ? "provider_request_timed_out" : "provider_stream_failed"));
         const payload = safetyCode
@@ -2938,6 +2961,9 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               code: failureCode,
               message: knowledgeAnswerAttempted
                 ? safeKnowledgeFailureMessage(failureCode)
+                : normalizedRequest.agent
+                  ? agentFailureCode(failureCode) ? agentFailureMessage(agentFailureCode(failureCode)!)
+                    : "Agent could not complete this turn. Check the selected model and Workspace status before trying again."
                 : failure instanceof Error ? failure.message : "Provider stream failed"
             };
         if (streamSafetyReport) {

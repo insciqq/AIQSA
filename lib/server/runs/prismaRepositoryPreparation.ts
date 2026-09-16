@@ -338,6 +338,15 @@ async function insertAcceptedWorkspaceRunBinding(
     }
   });
   await bindWorkspaceSecrets(tx, { runId: ids.runId, userId: input.userId, chatId: input.chatId });
+  if (input.normalizedRequest.agent) {
+    const agent = input.normalizedRequest.agent;
+    if (input.project || input.assistant || agent.version !== 2 || !/^[a-f0-9]{64}$/u.test(agent.compatibilityHash)) {
+      throw new WorkspaceRunConflictError("workspace_runtime_incompatible");
+    }
+    await tx.agentRunBinding.create({ data: {
+      modelRunId: ids.runId, configuration: json(agent), compatibilityHash: agent.compatibilityHash
+    } });
+  }
   await tx.chat.update({
     data: { workspaceEnabled: true },
     where: { id: input.chatId }
@@ -661,7 +670,7 @@ type TemporaryPreparingRunAdmissionInput = Readonly<{
 }>;
 
 /**
- * Temporary Chat bypasses the Personal Memory preparation ledger entirely.
+ * Temporary Chat and Agent turns bypass Personal Memory preparation entirely.
  * The ordinary run is made dispatchable in the admission transaction, while
  * no Memory attempt/binding receives the content-bearing base request.
  */
@@ -669,7 +678,7 @@ export async function finalizeTemporaryPreparingRunAdmission(
   tx: Pick<Prisma.TransactionClient, "modelRun">,
   input: TemporaryPreparingRunAdmissionInput
 ): Promise<PreparingRunAdmissionResult | null> {
-  if (input.chatMemoryMode !== "TEMPORARY") return null;
+  if (input.chatMemoryMode !== "TEMPORARY" && !input.normalizedRequest.agent) return null;
   await tx.modelRun.update({
     data: {
       normalizedRequest: json(input.normalizedRequest),
@@ -1562,7 +1571,7 @@ export async function admitPreparingRunWithClient(
         });
       }
 
-      const settings = lockedChat.memoryMode === "TEMPORARY" ||
+      const settings = lockedChat.memoryMode === "TEMPORARY" || input.normalizedRequest.agent ||
           options.memoryUnavailableFallback
         ? TEMPORARY_PREPARING_SETTINGS
         : await loadPreparingSettings(tx, input.userId);
@@ -2477,6 +2486,7 @@ async function assertCurrentProviderAdmission(
       ...(input.plan.requiresClientToolCoexistence
         ? { requiresClientToolCoexistence: true }
         : {}),
+      ...(input.plan.requiresClientSearchRoutes ? { requiresClientSearchRoutes: true } : {}),
       searchPlan: input.plan.requestedSearchPlan,
       ...(input.plan.requestedSearchPreferenceSource
         ? {
@@ -3918,8 +3928,8 @@ export async function createDormantPreparingRun(
   }
   logEvent("run_accepted", { run_id: created.runId,
     kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
-    preparation: created.deferredPdf ? "pdf" : created.chatMemoryMode === "TEMPORARY" ? "ready" : "memory" });
-  if (created.deferredPdf || created.deferredWorkspace || created.chatMemoryMode === "TEMPORARY") return created;
+    preparation: created.deferredPdf ? "pdf" : created.chatMemoryMode === "TEMPORARY" || admission.normalizedRequest.agent ? "ready" : "memory" });
+  if (created.deferredPdf || created.deferredWorkspace || created.chatMemoryMode === "TEMPORARY" || admission.normalizedRequest.agent) return created;
   // Durable acceptance transfers cancellation from the HTTP request to the
   // run owner. Stop still aborts this controller; recovery sees an active owner
   // until Memory settlement. PDF preparation already owns its own registration.
@@ -4294,9 +4304,10 @@ async function continueDeferredPreparedRunWithClient(
       chat.activeLeafMessageId !== created.assistantMessageId) {
       throw failure("unavailable");
     }
-    if (admission.project || created.chatMemoryMode === "TEMPORARY") {
+    if (admission.project || created.chatMemoryMode === "TEMPORARY" || admission.normalizedRequest.agent) {
       // These scopes never create or read Personal Memory attempts.
-      if (admission.project ? chat.projectId !== admission.project.projectId : chat.memoryMode !== "TEMPORARY") {
+      if (admission.project ? chat.projectId !== admission.project.projectId
+        : admission.normalizedRequest.agent ? chat.userId !== admission.userId || Boolean(chat.projectId) : chat.memoryMode !== "TEMPORARY") {
         throw failure("unavailable");
       }
       await tx.modelRun.update({ where: { id: created.runId }, data: {

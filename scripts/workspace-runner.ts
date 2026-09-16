@@ -9,6 +9,7 @@ import { getWorkspaceConfig } from "@/lib/server/workspace/config";
 import { ensureBundledMicrosandboxRuntime } from "@/lib/server/workspace/microsandboxInstall";
 import { MicrosandboxWorkspaceRuntime } from "@/lib/server/workspace/microsandboxRuntime";
 import { createWorkspaceRunnerServer } from "@/lib/server/workspace/runnerServer";
+import { createAgentRelay, AGENT_GATEWAY_PORT } from "@/lib/server/agents/relay";
 
 async function main(): Promise<void> {
   const token = process.env.AIQSA_WORKSPACE_RUNNER_TOKEN?.trim();
@@ -51,11 +52,19 @@ async function main(): Promise<void> {
     throw new Error(health.reasonCode ?? "workspace_runtime_unavailable");
   }
 
+  const relay = process.env.AIQSA_AGENT_APP_ORIGIN?.trim()
+    ? createAgentRelay(process.env.AIQSA_AGENT_APP_ORIGIN.trim()) : null;
+  if (relay) await new Promise<void>((resolve, reject) => {
+    relay.once("error", reject);
+    relay.listen(AGENT_GATEWAY_PORT, "127.0.0.1", resolve);
+  });
+
   server.listen(portValue, host, () => {
     logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "startup", outcome: "completed" });
   });
 
   const shutdown = () => {
+    relay?.close();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(1), 10_000).unref();
   };

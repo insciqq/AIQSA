@@ -341,6 +341,11 @@ async function synchronizeInstallationFoundation(
     update: {},
     where: { id: "installation" }
   });
+  await tx.agentPolicy.upsert({
+    create: { id: "installation" },
+    update: {},
+    where: { id: "installation" }
+  });
   await tx.workspacePolicy.upsert({
     create: {
       enabled: true,

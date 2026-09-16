@@ -1,3 +1,4 @@
+import { agentPolicyRepository } from "@/lib/server/agents/defaultPolicy";
 import { imageGenerationForStorage } from "@/lib/server/images/defaultImages";
 import { getDefaultChatPdf } from "@/lib/server/uploads/defaultChatPdf";
 import { getDefaultWorkspaceFollowup } from "@/lib/server/runs/defaultWorkspaceFollowup";
@@ -57,6 +58,7 @@ export const POST: AsyncRouteHandler<ReturnType<typeof createSendMessageHandler>
   providers: {},
   repository,
   resolveAuth: resolveRequestAuth,
+  agentPolicy: agentPolicyRepository,
   runPolicy: installationToolBudgetPolicy,
   skills: defaultSkillRepository,
   storage,
