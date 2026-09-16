@@ -15,7 +15,7 @@ import {
 } from "../../contracts/knowledge";
 import { decodeMcpRunSelection } from "../../contracts/mcp";
 import { decodeSkillIds, resolveEffectiveSkillIds, SKILL_MAX_SELECTED } from "../../contracts/skills";
-import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
+import { resolveStandardChatBaseline, VISIBLE_ANSWER_CONTRACT } from "../../domain/promptTemplates";
 import type { AssistantRunControls } from "../../contracts/assistants";
 import { materializeAssistantRunParams } from "../assistants/runControlMaterialization";
 import type {
@@ -120,8 +120,6 @@ import type {
   WorkspaceRunAdmissionPlan
 } from "../workspace/admission";
 
-const visibleAnswerContract =
-  "Visible answer contract: answer the user directly in the chat message. Do not include debug sections such as Question, Search, Provider Parameters, Request Preview, Artifacts, Usage, or Errors, and do not expose provider, retrieval, tool, request, usage, or event internals. Include citations naturally only when they help the answer.";
 const currentSendMessageId = "current-user-message";
 const pdfTextUnavailableMessage =
   "No extractable text was found. Choose a model with native PDF support or remove this file.";
@@ -797,7 +795,7 @@ function standardChatPrompt(body: Readonly<Record<string, unknown>> | null): Nor
       timeZone: baseline.timeZone,
       timeZoneSource: baseline.timeZoneSource
     },
-    developer: visibleAnswerContract,
+    developer: VISIBLE_ANSWER_CONTRACT,
     system: baseline.renderedSystemPrompt
   };
 }
@@ -809,7 +807,7 @@ function standardChatPrompt(body: Readonly<Record<string, unknown>> | null): Nor
  */
 function assistantPrompt(assistant: AssistantRunMaterialization): NormalizedRunRequest["prompt"] {
   return {
-    developer: [assistant.developerPrompt, visibleAnswerContract]
+    developer: [assistant.developerPrompt, VISIBLE_ANSWER_CONTRACT]
       .filter((part): part is string => Boolean(part?.trim()))
       .join("\n\n"),
     system: assistant.systemPrompt.trim() ? assistant.systemPrompt : null
