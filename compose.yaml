@@ -168,6 +168,8 @@ services:
       AIQSA_MEMORY_JOB_CLAIMS_PER_PASS: ${AIQSA_MEMORY_JOB_CLAIMS_PER_PASS:-16}
       AIQSA_MEMORY_JOB_PARALLELISM: ${AIQSA_MEMORY_JOB_PARALLELISM:-2}
       AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: ${AIQSA_MEMORY_JOB_PER_USER_PARALLELISM:-1}
+      AIQSA_WORKSPACE_RUNNER_TOKEN: ${AIQSA_WORKSPACE_RUNNER_TOKEN:-}
+      AIQSA_WORKSPACE_RUNNER_URL: ${AIQSA_WORKSPACE_RUNNER_URL:-}
       DATABASE_URL: postgresql://${AIQSA_POSTGRES_USER:-aiqsa}:${AIQSA_POSTGRES_PASSWORD:?Set AIQSA_POSTGRES_PASSWORD in .env}@postgres:5432/${AIQSA_POSTGRES_DB:-aiqsa}?schema=public
       NEXT_TELEMETRY_DISABLED: "1"
       NODE_ENV: production
@@ -180,6 +182,9 @@ services:
     init: true
     logging: *default-logging
     mem_limit: ${AIQSA_MEMORY_WORKER_MEMORY_LIMIT:-1g}
+    networks:
+      - default
+      - workspace-control
     restart: unless-stopped
     stop_grace_period: 30s
     depends_on:
