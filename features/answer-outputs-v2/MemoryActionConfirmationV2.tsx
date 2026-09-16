@@ -6,7 +6,7 @@ import {
   memoryCategoryLabel,
   memoryUiCopy
 } from "@/components/app-shell/memoryUiCopy";
-import { submitMemorySourceAction } from "@/components/app-shell/memoryApi";
+import { memoryMutationOutcomeIsUnknown, submitMemorySourceAction } from "@/components/app-shell/memoryApi";
 import {
   UiV2Button,
   UiV2Chip,
@@ -152,24 +152,28 @@ function CandidateItems({
   candidates,
   completedRef,
   onChoose,
+  outcomeUncertain,
   pendingRef
 }: Readonly<{
   action: "FORGET" | "UPDATE";
   candidates: readonly MemoryActionResultItem[];
   completedRef: string | null;
   onChoose(item: MemoryActionResultItem): void;
+  outcomeUncertain: boolean;
   pendingRef: string | null;
 }>) {
   return (
     <>
-      <p className="v2-memory-action-guidance">{t("action.ambiguousNoAction")}</p>
+      {pendingRef === null && completedRef === null && !outcomeUncertain ? (
+        <p className="v2-memory-action-guidance">{t("action.ambiguousNoAction")}</p>
+      ) : null}
       <ul aria-label={t("action.matchesHeading")} className="v2-memory-action-results">
         {candidates.map((item, index) => (
           <MemoryResultItem
             action={(
               <UiV2Button
                 busy={pendingRef === item.memoryRef}
-                disabled={pendingRef !== null || completedRef !== null}
+                disabled={pendingRef !== null || completedRef !== null || outcomeUncertain}
                 onClick={() => onChoose(item)}
                 tone={action === "FORGET" ? "destructive" : "primary"}
                 type="button"
@@ -208,12 +212,14 @@ function MemoryActionConfirmationContent({
   const [completedRef, setCompletedRef] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [outcomeUncertain, setOutcomeUncertain] = useState(false);
 
   async function mutate(
     memoryRef: string,
     operation: "FORGET" | "UPDATE",
     replacement?: string
   ): Promise<void> {
+    if (pendingRef !== null || completedRef !== null || outcomeUncertain) return;
     setPendingRef(memoryRef);
     setError(null);
     setNotice(null);
@@ -227,7 +233,8 @@ function MemoryActionConfirmationContent({
       setCompletedRef(memoryRef);
       setEditing(false);
       setNotice(t(operation === "UPDATE" ? "action.updated" : "action.forgotten"));
-    } catch {
+    } catch (error) {
+      setOutcomeUncertain(memoryMutationOutcomeIsUnknown(error));
       setError(t("action.mutationError"));
     } finally {
       setPendingRef(null);
@@ -293,7 +300,7 @@ function MemoryActionConfirmationContent({
       <div className="v2-memory-action-buttons">
         <UiV2Button
           busy={pendingRef === action.memoryRef}
-          disabled={pendingRef !== null}
+          disabled={pendingRef !== null || outcomeUncertain}
           tone="primary"
           type="submit"
         >
@@ -312,7 +319,7 @@ function MemoryActionConfirmationContent({
 
   if (committedNotice) {
     const menuActions: UiV2MenuAction[] = [
-      ...(committedEditable && completedRef === null ? [
+      ...(committedEditable && completedRef === null && !outcomeUncertain ? [
         {
           icon: "edit" as const,
           label: t("manager.edit"),
@@ -418,6 +425,7 @@ function MemoryActionConfirmationContent({
               action.operation === "UPDATE" ? action.statement : undefined
             )}
             pendingRef={pendingRef}
+            outcomeUncertain={outcomeUncertain}
           />
         ) : (
           <Statement statement={action.status === "REJECTED" ? undefined : action.statement} />

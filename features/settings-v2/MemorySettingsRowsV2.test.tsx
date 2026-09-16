@@ -89,6 +89,25 @@ describe("MemorySettingsRowsV2", () => {
     expect(onOpenLibrary).toHaveBeenCalledOnce();
   });
 
+  it("shows a lost acknowledgement and reconciles by reading without repeating the mutation", async () => {
+    const original = memoryConsumerSettingsFixture({ settings: { learnAutomatically: true }, status: "ON" });
+    const current = memoryConsumerSettingsFixture({ settings: { learnAutomatically: false }, status: "ON" });
+    useMemorySettingsStore.setState({ data: original, loadState: "ready" });
+    // The server changed, but its acknowledgement did not reach the client.
+    memoryApi.patchMemorySettings.mockRejectedValue(new TypeError("network error"));
+    memoryApi.loadMemorySettings.mockResolvedValue(current);
+    render(<MemorySettingsRowsV2 onOpenLibrary={vi.fn()} />);
+    fireEvent.click(screen.getByRole("switch", { name: "Learn automatically: on" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not be confirmed");
+    for (const control of screen.getAllByRole("switch")) expect(control).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Reload settings" }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Learn automatically: off" })).toBeEnabled());
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(memoryApi.patchMemorySettings).toHaveBeenCalledOnce();
+    expect(memoryApi.loadMemorySettings).toHaveBeenCalledOnce();
+  });
+
   it("shows durable reset progress and prevents a second reset", () => {
     useMemorySettingsStore.setState({
       data: memoryConsumerSettingsFixture({ resetState: "IN_PROGRESS" }),
@@ -180,7 +199,7 @@ describe("MemorySettingsRowsV2", () => {
     rejectReset?.(new Error("offline"));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Memory could not be reset. Nothing was reported as deleted."
+      "The reset could not be confirmed."
     );
     expect(screen.getByRole("alertdialog", { name: "Forget everything?" })).toBeVisible();
   });

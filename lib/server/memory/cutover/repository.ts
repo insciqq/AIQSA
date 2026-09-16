@@ -210,6 +210,16 @@ export function createPrismaMemoryRetrievalCutoverRepository(
           AND (
             active."id" IS NULL
             OR active."indexedThroughMemoryRevision" <> settings."memoryRevision"
+            OR EXISTS (
+              SELECT 1 FROM "MemoryPauseInterval" AS pause
+              WHERE pause."userId" = settings."userId"
+                AND (
+                  pause."scope" = 'MASTER'::"MemoryPauseScope"
+                  OR (settings."referenceChatHistory" = TRUE
+                    AND pause."scope" = 'SEARCH_HISTORY'::"MemoryPauseScope")
+                )
+                AND pause."resumedAt" > COALESCE(active."activatedAt", active."createdAt")
+            )
             OR active."languageProfile" <> ${MEMORY_LEXICAL_ANALYSIS_PROFILE}
             OR active."normalizationVersion" <> ${MEMORY_LEXICAL_NORMALIZATION_VERSION}
             OR active."chunkingVersion" <> ${MEMORY_LEXICAL_CHUNKING_VERSION}

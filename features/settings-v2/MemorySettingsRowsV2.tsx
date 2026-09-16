@@ -25,6 +25,7 @@ export function MemorySettingsRowsV2({
   const busy = useMemorySettingsStore((state) => state.busy);
   const data = useMemorySettingsStore((state) => state.data);
   const loadState = useMemorySettingsStore((state) => state.loadState);
+  const error = useMemorySettingsStore((state) => state.error);
   const [resetBusy, setResetBusy] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [resetNotice, setResetNotice] = useState<ResetNotice>(null);
@@ -198,11 +199,22 @@ export function MemorySettingsRowsV2({
           </div>
         </div>
       </div>
+      {error ? (
+        <div className="v2-settings-note" role="alert">
+          <span>{t("settings.confirmationError")}</span>
+          <UiV2Button
+            busy={loadState === "loading"}
+            onClick={() => void refreshMemorySettings(true).catch(() => undefined)}
+          >
+            {t("settings.reload")}
+          </UiV2Button>
+        </div>
+      ) : null}
       {rows.map((row) => (
         <SettingsRowV2 description={row.description} key={row.key} title={row.label}>
           <SettingsSwitchV2
             checked={row.value}
-            disabled={busy !== null || !managementAvailable || resetBusy || resetPending}
+            disabled={busy !== null || Boolean(error) || loadState !== "ready" || !managementAvailable || resetBusy || resetPending}
             label={`${row.label}: ${row.value ? "on" : "off"}`}
             onChange={(next) => gate(row.key, next)}
           />

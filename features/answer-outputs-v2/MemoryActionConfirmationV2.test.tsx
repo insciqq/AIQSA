@@ -191,6 +191,25 @@ describe("client-safe Memory action feedback", () => {
     expect(screen.getByText("No saved memories match this search.")).toBeVisible();
   });
 
+  it("preserves a correction with an unknown outcome and prevents blind replay", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("connection lost"));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<MemoryActionConfirmationV2 action={{
+      memoryRef: "mr1.result", operation: "SAVE", statement: "Original.", status: "COMMITTED"
+    }} />);
+    pickAction("Edit");
+    const input = screen.getByRole("textbox", { name: "Correct this memory" });
+    fireEvent.change(input, { target: { value: "Revised." } });
+    fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not be confirmed");
+    expect(screen.getByRole("alert")).not.toHaveTextContent("Nothing was changed");
+    expect(input).toHaveValue("Revised.");
+    expect(screen.getByRole("button", { name: "Save correction" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("commits only the explicitly selected opaque candidate", async () => {
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ status: "COMMITTED" }));
     vi.stubGlobal("fetch", fetchMock);

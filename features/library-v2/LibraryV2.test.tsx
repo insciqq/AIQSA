@@ -86,6 +86,25 @@ describe("LibraryV2", () => {
     expect(screen.getByText("Memory owner")).toBeInTheDocument();
   });
 
+  it.each(["create", "edit", "forget"] as const)("blocks an unknown %s outcome while keeping the exit available", (rowMode) => {
+    const item = memoryConsumerItemFixture();
+    const props = memoryPanelProps({
+      activeRef: item.memoryRef, draft: "My preserved correction.", items: [item],
+      mutationError: "The change could not be confirmed.", mutationOutcomeUnknown: true, rowMode
+    });
+    render(<MemoryPanelV2 {...props} />);
+    const submit = screen.getByRole("button", {
+      name: rowMode === "create" ? "Save memory" : rowMode === "edit" ? "Save" : "Forget"
+    });
+    expect(submit).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("could not be confirmed");
+    if (rowMode !== "forget") expect(screen.getByRole("textbox")).toHaveValue("My preserved correction.");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(props.onCancelRow).toHaveBeenCalledOnce();
+    expect(props.onSave).not.toHaveBeenCalled();
+    expect(props.onConfirmForget).not.toHaveBeenCalled();
+  });
+
   it("reveals a newly selected tab when the section strip overflows", async () => {
     const originalScrollIntoView = Object.getOwnPropertyDescriptor(
       HTMLElement.prototype,
@@ -451,6 +470,18 @@ describe("Library resource panels", () => {
     expect(screen.queryAllByRole("switch")).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Memory settings" }));
     expect(onOpenSettings).toHaveBeenCalledOnce();
+  });
+
+  it("claims automatic learning only when it is enabled and ready", () => {
+    const { rerender } = render(<MemoryPanelV2 {...memoryPanelProps()} />);
+    expect(screen.queryByText("Learning from your ordinary chats")).toBeNull();
+    expect(screen.getByText("Saved memories may help personalize future answers.")).toBeVisible();
+
+    rerender(<MemoryPanelV2 {...memoryPanelProps({ memory: memoryOverview({ automaticLearning: true }) })} />);
+    expect(screen.getByText("Learning from your ordinary chats")).toBeVisible();
+
+    rerender(<MemoryPanelV2 {...memoryPanelProps({ memory: memoryOverview({ automaticLearning: true, loadState: "error" }) })} />);
+    expect(screen.queryByText("Learning from your ordinary chats")).toBeNull();
   });
 
   it("shows an honest loading state and disables settings until status is ready", () => {

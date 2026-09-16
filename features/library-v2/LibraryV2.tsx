@@ -954,6 +954,7 @@ export function MemoryPanelV2({
   listState,
   memory,
   mutationError,
+  mutationOutcomeUnknown = false,
   notice,
   onCancelRow,
   onConfirmForget,
@@ -980,6 +981,7 @@ export function MemoryPanelV2({
   listState: "error" | "idle" | "loading" | "ready";
   memory: MemoryOverviewV2;
   mutationError: string | null;
+  mutationOutcomeUnknown?: boolean;
   notice: string | null;
   onCancelRow(): void;
   onConfirmForget(): void;
@@ -1035,17 +1037,18 @@ export function MemoryPanelV2({
   const initialError = (listState === "error" || Boolean(listError)) && items.length === 0;
   const empty = listState === "ready" && items.length === 0 && rowMode !== "create";
   const longFactPresent = items.some((item) => item.statement.length > 240);
-  const summary = memory.status === "ON"
+  const summary = memory.loadState === "ready" && memory.status === "ON" && memory.automaticLearning
     ? "Learning from your ordinary chats"
     : memory.status === "PAUSED"
       ? "Answers do not read these facts. Nothing was deleted."
       : statusDescription;
+  const listControlsDisabled = busy !== null || rowMode !== null;
   const note = longFactPresent
     ? { icon: "alert" as const, text: mt("library.longFactDescription") }
     : memory.status === "PAUSED"
       ? { icon: "alert" as const, text: mt("library.pausedManagementDescription") }
       : { icon: "lock" as const, text: mt("library.temporaryDescription") };
-  const saveDisabled = busy !== null || draft.trim().length === 0 ||
+  const saveDisabled = busy !== null || mutationOutcomeUnknown || draft.trim().length === 0 ||
     draft.length > MEMORY_CONSUMER_STATEMENT_MAX_LENGTH;
 
   return (
@@ -1059,7 +1062,7 @@ export function MemoryPanelV2({
               </UiV2Button>
             ) : null}
             <UiV2Button
-              disabled={!memory.explicitCrudAvailable || busy !== null || rowMode !== null}
+              disabled={!memory.explicitCrudAvailable || mutationOutcomeUnknown || listControlsDisabled || listState === "loading"}
               icon="plus"
               tone="primary"
               onClick={onCreate}
@@ -1083,13 +1086,14 @@ export function MemoryPanelV2({
           role="search"
           onSubmit={(event) => {
             event.preventDefault();
-            onSubmitQuery();
+            if (!listControlsDisabled) onSubmitQuery();
           }}
         >
           <label className="v2-resource-search">
             <UiV2Icon name="search" />
             <input
               aria-label="Search memories"
+              disabled={listControlsDisabled}
               maxLength={MEMORY_CONSUMER_QUERY_MAX_LENGTH}
               placeholder={mt("manager.searchPlaceholder")}
               type="search"
@@ -1118,13 +1122,13 @@ export function MemoryPanelV2({
       {initialError ? (
         <div className="v2-resource-empty" role="alert">
           <p>{mt("manager.loadError")}</p>
-          <UiV2Button onClick={onRetry}>{mt("manager.retry")}</UiV2Button>
+          <UiV2Button disabled={listControlsDisabled} onClick={onRetry}>{mt("manager.retry")}</UiV2Button>
         </div>
       ) : null}
       {listError && items.length > 0 ? (
         <div className="v2-memory-error v2-memory-list-error" role="alert">
           <span>{mt("manager.loadError")}</span>
-          <UiV2Button onClick={onRetry}>{mt("manager.retry")}</UiV2Button>
+          <UiV2Button disabled={listControlsDisabled} onClick={onRetry}>{mt("manager.retry")}</UiV2Button>
         </div>
       ) : null}
       {empty ? (
@@ -1136,7 +1140,7 @@ export function MemoryPanelV2({
             <strong>{mt("manager.empty")}</strong>
             <p>{mt("manager.emptyDescription")}</p>
             <UiV2Button
-              disabled={!memory.explicitCrudAvailable}
+              disabled={!memory.explicitCrudAvailable || mutationOutcomeUnknown}
               icon="plus"
               tone="primary"
               onClick={onCreate}
@@ -1172,6 +1176,7 @@ export function MemoryPanelV2({
                 return (
                   <MemoryForgetRowV2
                     busy={busy === "forgetting"}
+                    disabled={mutationOutcomeUnknown}
                     item={item}
                     key={item.memoryRef}
                     onCancel={onCancelRow}
@@ -1181,7 +1186,7 @@ export function MemoryPanelV2({
               }
               return (
                 <MemoryListRowV2
-                  disabled={!memory.explicitCrudAvailable || busy !== null || rowMode !== null}
+                  disabled={!memory.explicitCrudAvailable || mutationOutcomeUnknown || listControlsDisabled || listState === "loading"}
                   item={item}
                   key={item.memoryRef}
                   onEdit={onEdit}
@@ -1194,7 +1199,7 @@ export function MemoryPanelV2({
       ))}
       {hasMore ? (
         <div className="v2-memory-load-more">
-          <UiV2Button busy={listState === "loading"} onClick={onLoadMore}>
+          <UiV2Button busy={listState === "loading"} disabled={listControlsDisabled} onClick={onLoadMore}>
             {mt("manager.loadMore")}
           </UiV2Button>
         </div>
@@ -1344,11 +1349,13 @@ function MemoryDraftRowV2({
 
 function MemoryForgetRowV2({
   busy,
+  disabled,
   item,
   onCancel,
   onConfirm
 }: Readonly<{
   busy: boolean;
+  disabled: boolean;
   item: MemoryConsumerItem;
   onCancel(): void;
   onConfirm(): void;
@@ -1360,7 +1367,7 @@ function MemoryForgetRowV2({
       <div className="v2-memory-row-confirm" role="group" aria-label={`Forget ${target}?`}>
         <p>Forget “{target}”? Answers stop using it. This cannot be undone.</p>
         <div>
-          <UiV2Button busy={busy} tone="destructive" onClick={onConfirm}>{mt("manager.forget")}</UiV2Button>
+          <UiV2Button busy={busy} disabled={disabled} tone="destructive" onClick={onConfirm}>{mt("manager.forget")}</UiV2Button>
           <UiV2Button disabled={busy} onClick={onCancel}>{mt("manager.cancel")}</UiV2Button>
         </div>
       </div>

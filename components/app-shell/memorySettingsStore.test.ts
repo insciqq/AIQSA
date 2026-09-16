@@ -98,6 +98,22 @@ describe("Memory settings store", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
+  it("does not let an older settings read overwrite an acknowledged toggle", async () => {
+    const before = memoryConsumerSettingsFixture();
+    const after = memoryConsumerSettingsFixture({ settings: { useMemoryFacts: true }, status: "ON" });
+    let resolve!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((done) => { resolve = done; }))
+      .mockResolvedValueOnce(json(after)));
+    useMemorySettingsStore.setState({ data: before, loadState: "ready" });
+    const oldRead = refreshMemorySettings(true);
+    await updateMemoryGate("useMemoryFacts", true);
+    resolve(json(before));
+    await oldRead;
+
+    expect(useMemorySettingsStore.getState()).toMatchObject({ data: after, loadState: "ready", error: null });
+  });
+
   it("ignores a late settings response from the previous account", async () => {
     const oldSettings = memoryConsumerSettingsFixture({
       settings: { useMemoryFacts: false },

@@ -4,7 +4,7 @@ import { ChatImageV2 } from "@/features/attachments-v2/ChatImageV2";
 import { SaveFileButtonV2 } from "@/features/attachments-v2/SaveFileButtonV2";
 
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
-import { submitMemorySourceAction } from "@/components/app-shell/memoryApi";
+import { memoryMutationOutcomeIsUnknown, submitMemorySourceAction } from "@/components/app-shell/memoryApi";
 import { formatAttachmentBytes } from "@/components/app-shell/attachmentLimitUsage";
 import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
 import {
@@ -196,6 +196,7 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openHref, setOpenHref] = useState<string | null>(null);
+  const [outcomeUncertain, setOutcomeUncertain] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const rowId = useId();
   const statementId = `memory-source-statement-${rowId}`;
@@ -225,6 +226,7 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
 
   async function runAction(action: MemorySourceAction, nextStatement?: string): Promise<void> {
     if (!source.sourceAvailable || !source.memoryRef) return;
+    if (pending || (action !== "OPEN_SOURCE" && (completed || outcomeUncertain))) return;
     setPending(action);
     setNotice(null);
     setError(null);
@@ -245,8 +247,9 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
         setNotice(memorySourceActionMessage(action));
         onSettled?.();
       }
-    } catch {
-      setError(mt("source.actionError"));
+    } catch (error) {
+      if (action !== "OPEN_SOURCE") setOutcomeUncertain(memoryMutationOutcomeIsUnknown(error));
+      setError(mt(action === "OPEN_SOURCE" ? "source.openError" : "source.actionError"));
     } finally {
       setPending(null);
     }
@@ -295,7 +298,7 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
       tone: "destructive" as const
     }] : [])
   ];
-  const showMenu = !mutationDone && !editing && menuActions.length > 0;
+  const showMenu = !mutationDone && !outcomeUncertain && !editing && menuActions.length > 0;
 
   return (
     <article
@@ -401,7 +404,7 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
           <div className="v2-memory-action-buttons">
             <UiV2Button
               busy={pending === "CORRECT"}
-              disabled={pending !== null}
+              disabled={pending !== null || outcomeUncertain}
               type="submit"
               tone="primary"
             >
@@ -421,7 +424,11 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
         </form>
       ) : null}
       {notice ? <p aria-live="polite" className="v2-memory-source-notice" role="status">{notice}</p> : null}
-      {error ? <p aria-live="assertive" className="v2-memory-source-error" role="alert">{error}</p> : null}
+      {outcomeUncertain || error ? (
+        <p aria-live="assertive" className="v2-memory-source-error" role="alert">
+          {outcomeUncertain ? mt("source.actionError") : error}
+        </p>
+      ) : null}
     </article>
   );
 }

@@ -3,6 +3,8 @@ import {
   applyMemorySearch,
   beginCreateMemory,
   beginEditMemory,
+  cancelMemoryDraft,
+  deactivateMemoryManager,
   forgetCurrentMemory,
   openMemoryDetail,
   openMemoryManager,
@@ -94,6 +96,7 @@ describe("Memory manager store", () => {
       draft: { statement: "Keep this revised statement." },
       draftDirty: true,
       draftStale: true,
+      mutationOutcomeUnknown: false,
       screen: "edit"
     });
     expect(fetch).toHaveBeenCalledWith(
@@ -178,6 +181,74 @@ describe("Memory manager store", () => {
     });
   });
 
+  it.each(["before", "after"])("preserves an edit when a search returns %s its acknowledgement", async (timing) => {
+    const original = memoryConsumerItemFixture({ memoryRef: "old-ref", statement: "The east gate." });
+    const rotated = { ...original, memoryRef: "rotated-ref" };
+    const updated = { ...original, memoryRef: "updated-ref", statement: "The west gate." };
+    let resolveSearch!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveSearch = resolve; }))
+      .mockResolvedValueOnce(json({ item: updated }))
+      .mockResolvedValueOnce(json(memoryConsumerListFixture([updated]))));
+    useMemoryManagerStore.setState({ memories: [original], listLoadState: "ready" });
+    const search = refreshMemoryList({ appliedQuery: "gate" });
+    openMemoryDetail(original.memoryRef);
+    beginEditMemory();
+    useMemoryManagerStore.getState().setDraft({ statement: updated.statement });
+    if (timing === "before") {
+      resolveSearch(json(memoryConsumerListFixture([rotated])));
+      await search;
+      expect(useMemoryManagerStore.getState().memories).toEqual([original]);
+    }
+    await saveMemoryChanges();
+    if (timing === "after") {
+      resolveSearch(json(memoryConsumerListFixture([rotated])));
+      await search;
+    }
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      activeMemory: updated, memories: [updated], notice: "saved", listLoadState: "ready"
+    });
+  });
+
+  it("keeps an acknowledged edit successful when reloading the list fails", async () => {
+    const original = memoryConsumerItemFixture();
+    const updated = { ...original, memoryRef: "updated-ref", statement: "Changed." };
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(json({ item: updated }))
+      .mockRejectedValueOnce(new TypeError("offline")));
+    useMemoryManagerStore.setState({ activeMemory: original, memories: [original] });
+    beginEditMemory();
+    useMemoryManagerStore.getState().setDraft({ statement: updated.statement });
+
+    await expect(saveMemoryChanges()).resolves.toBeUndefined();
+
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      memories: [updated], notice: "saved", mutationError: null, listLoadState: "error"
+    });
+  });
+
+  it.each(["create", "edit", "forget"])("ignores a late %s acknowledgement after leaving the account", async (kind) => {
+    const original = memoryConsumerItemFixture();
+    let resolve!: (response: Response) => void;
+    const fetchMock = vi.fn(() => new Promise<Response>((done) => { resolve = done; }));
+    vi.stubGlobal("fetch", fetchMock);
+    useMemoryManagerStore.setState({ accountId: "old", activeMemory: original, memories: [original] });
+    if (kind === "create") beginCreateMemory();
+    else if (kind === "edit") beginEditMemory();
+    useMemoryManagerStore.getState().setDraft({ statement: "Changed." });
+    const pending = kind === "create" ? saveNewMemory(true)
+      : kind === "edit" ? saveMemoryChanges() : forgetCurrentMemory();
+    deactivateMemoryManager();
+    useMemoryManagerStore.setState({ accountId: "new", memories: [] });
+    resolve(json(kind === "forget" ? { status: "FORGOTTEN" } : { item: original }));
+    await pending;
+
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      accountId: "new", memories: [], activeMemory: null, notice: null
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("deduplicates an appended page by opaque ref", async () => {
     const item = memoryConsumerItemFixture();
     useMemoryManagerStore.setState({
@@ -191,6 +262,56 @@ describe("Memory manager store", () => {
 
     await refreshMemoryList({ append: true });
     expect(useMemoryManagerStore.getState().memories).toEqual([item]);
+  });
+
+  it.each(["create", "edit", "forget"])("requires a fresh read after an unknown %s outcome", async (kind) => {
+    const original = memoryConsumerItemFixture();
+    const committed = { ...original, memoryRef: "committed-ref", statement: "Changed." };
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError("lost_acknowledgement"))
+      .mockResolvedValueOnce(json(memoryConsumerListFixture(kind === "forget" ? [] : [committed])));
+    vi.stubGlobal("fetch", fetchMock);
+    useMemoryManagerStore.setState({ activeMemory: original, memories: [original], listLoadState: "ready" });
+    if (kind === "create") beginCreateMemory();
+    else if (kind === "edit") beginEditMemory();
+    else requestForgetMemory(original.memoryRef);
+    useMemoryManagerStore.getState().setDraft({ statement: "Changed." });
+    const submit = () => kind === "create" ? saveNewMemory(true)
+      : kind === "edit" ? saveMemoryChanges() : forgetCurrentMemory();
+
+    await expect(submit()).rejects.toThrow("lost_acknowledgement");
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      draft: { statement: "Changed." }, mutationOutcomeUnknown: true
+    });
+    useMemoryManagerStore.getState().setDraft({ statement: "Keep this draft." });
+    await submit();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(useMemoryManagerStore.getState().mutationError).toBe("lost_acknowledgement");
+
+    cancelMemoryDraft();
+    await vi.waitFor(() => expect(useMemoryManagerStore.getState()).toMatchObject({
+      memories: kind === "forget" ? [] : [committed],
+      mutationError: null, mutationOutcomeUnknown: false, listLoadState: "ready"
+    }));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "GET" });
+  });
+
+  it("keeps an unknown write blocked when its reconciliation read fails", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("offline"));
+    vi.stubGlobal("fetch", fetchMock);
+    beginCreateMemory();
+    useMemoryManagerStore.getState().setDraft({ statement: "Keep the receipt." });
+    await expect(saveNewMemory(true)).rejects.toThrow("offline");
+    cancelMemoryDraft();
+    await vi.waitFor(() => expect(useMemoryManagerStore.getState().listLoadState).toBe("error"));
+
+    beginCreateMemory();
+    await saveNewMemory(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(useMemoryManagerStore.getState()).toMatchObject({
+      screen: "list", mutationOutcomeUnknown: true, mutationError: "offline"
+    });
   });
 
   it("sends category and provenance filters on every page", async () => {

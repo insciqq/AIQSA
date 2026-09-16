@@ -3,6 +3,7 @@ import {
   forgetMemory,
   listMemories,
   MemoryApiError,
+  memoryMutationOutcomeIsUnknown,
   searchMemories,
   updateMemory
 } from "@/components/app-shell/memoryApi";
@@ -33,6 +34,7 @@ type MemoryManagerStore = {
   listLoadState: MemoryManagerLoadState;
   memories: MemoryConsumerItem[];
   mutationError: string | null;
+  mutationOutcomeUnknown: boolean;
   mutationState: MemoryManagerMutationState;
   nextCursor: string | null;
   notice: MemoryManagerNotice;
@@ -62,6 +64,7 @@ const initialState: Omit<
   listLoadState: "idle",
   memories: [],
   mutationError: null,
+  mutationOutcomeUnknown: false,
   mutationState: null,
   nextCursor: null,
   notice: null,
@@ -78,7 +81,7 @@ export const useMemoryManagerStore = create<MemoryManagerStore>((set) => ({
       draft: { ...state.draft, ...patch },
       draftDirty: true,
       draftStale: false,
-      mutationError: null,
+      mutationError: state.mutationOutcomeUnknown ? state.mutationError : null,
       notice: null
     }));
   },
@@ -94,6 +97,20 @@ export const useMemoryManagerStore = create<MemoryManagerStore>((set) => ({
 }));
 
 let listRequestGeneration = 0;
+let lifecycleGeneration = 0;
+
+function holdsDraft(screen: MemoryManagerScreen): boolean {
+  return screen === "create" || screen === "edit" || screen === "forget";
+}
+
+function retainDraftList(): void {
+  // Opaque references can rotate on a read. Do not replace the row underneath
+  // an editor with a late response from before that editor opened.
+  listRequestGeneration += 1;
+  if (useMemoryManagerStore.getState().listLoadState === "loading") {
+    useMemoryManagerStore.setState({ listLoadState: "ready" });
+  }
+}
 
 function errorName(error: unknown): string {
   return error instanceof MemoryApiError || error instanceof Error
@@ -122,8 +139,9 @@ export function memoryDraftIsValid(draft: MemoryDraft): boolean {
 export async function refreshMemoryList(
   options: Readonly<{ append?: boolean; appliedQuery?: string }> = {}
 ): Promise<void> {
-  const generation = ++listRequestGeneration;
   const current = useMemoryManagerStore.getState();
+  if (current.mutationState || holdsDraft(current.screen)) return;
+  const generation = ++listRequestGeneration;
   const append = options.append === true;
   const queryApplied = options.appliedQuery ?? current.queryApplied;
   const filters = {
@@ -149,6 +167,9 @@ export async function refreshMemoryList(
       listError: null,
       listLoadState: "ready",
       memories: uniqueItems(append ? [...state.memories, ...response.items] : response.items),
+      ...(!append && state.mutationOutcomeUnknown
+        ? { mutationError: null, mutationOutcomeUnknown: false }
+        : {}),
       nextCursor: response.nextCursor
     }));
   } catch (error) {
@@ -199,6 +220,8 @@ export function showMemoryList(): void {
 }
 
 export function beginCreateMemory(): void {
+  if (useMemoryManagerStore.getState().mutationOutcomeUnknown) return;
+  retainDraftList();
   useMemoryManagerStore.setState({
     activeMemory: null,
     draft: emptyDraft,
@@ -211,8 +234,9 @@ export function beginCreateMemory(): void {
 }
 
 export function beginEditMemory(): void {
-  const memory = useMemoryManagerStore.getState().activeMemory;
-  if (!memory || !memory.allowedActions.includes("EDIT")) return;
+  const { activeMemory: memory, mutationOutcomeUnknown } = useMemoryManagerStore.getState();
+  if (mutationOutcomeUnknown || !memory || !memory.allowedActions.includes("EDIT")) return;
+  retainDraftList();
   useMemoryManagerStore.setState({
     draft: draftFromMemory(memory),
     draftDirty: false,
@@ -223,10 +247,12 @@ export function beginEditMemory(): void {
 }
 
 export function requestForgetMemory(memoryRef: string): void {
+  if (useMemoryManagerStore.getState().mutationOutcomeUnknown) return;
   const memory = useMemoryManagerStore.getState().memories.find(
     (item) => item.memoryRef === memoryRef
   );
   if (!memory?.allowedActions.includes("FORGET")) return;
+  retainDraftList();
   useMemoryManagerStore.setState({
     activeMemory: memory,
     draft: draftFromMemory(memory),
@@ -239,14 +265,15 @@ export function requestForgetMemory(memoryRef: string): void {
 }
 
 export function cancelMemoryDraft(): void {
-  const memory = useMemoryManagerStore.getState().activeMemory;
+  const { activeMemory: memory, mutationError, mutationOutcomeUnknown } = useMemoryManagerStore.getState();
   useMemoryManagerStore.setState({
     draft: memory ? draftFromMemory(memory) : emptyDraft,
     draftDirty: false,
     draftStale: false,
-    mutationError: null,
+    mutationError: mutationOutcomeUnknown ? mutationError : null,
     screen: memory ? "detail" : "list"
   });
+  if (mutationOutcomeUnknown) void refreshMemoryList().catch(() => undefined);
 }
 
 export function discardMemoryManagerDraft(): void {
@@ -254,11 +281,14 @@ export function discardMemoryManagerDraft(): void {
 }
 
 export async function saveNewMemory(useMemoryFacts: boolean): Promise<void> {
-  const draft = useMemoryManagerStore.getState().draft;
-  if (!memoryDraftIsValid(draft)) return;
+  const { draft, mutationState, mutationOutcomeUnknown } = useMemoryManagerStore.getState();
+  if (mutationState || mutationOutcomeUnknown || !memoryDraftIsValid(draft)) return;
+  const generation = lifecycleGeneration;
+  listRequestGeneration += 1;
   useMemoryManagerStore.setState({ mutationError: null, mutationState: "saving" });
   try {
     const response = await createMemory(draft.statement);
+    if (generation !== lifecycleGeneration) return;
     useMemoryManagerStore.setState((state) => ({
       activeMemory: response.item,
       draft: draftFromMemory(response.item),
@@ -270,19 +300,27 @@ export async function saveNewMemory(useMemoryFacts: boolean): Promise<void> {
       notice: useMemoryFacts ? "saved" : "saved_use_off",
       screen: "detail"
     }));
+    await refreshMemoryList().catch(() => undefined);
   } catch (error) {
-    useMemoryManagerStore.setState({ mutationError: errorName(error), mutationState: null });
+    if (generation !== lifecycleGeneration) return;
+    useMemoryManagerStore.setState({
+      mutationError: errorName(error), mutationOutcomeUnknown: memoryMutationOutcomeIsUnknown(error),
+      mutationState: null
+    });
     throw error;
   }
 }
 
 export async function saveMemoryChanges(): Promise<void> {
-  const { activeMemory, draft } = useMemoryManagerStore.getState();
-  if (!activeMemory || !memoryDraftIsValid(draft) ||
+  const { activeMemory, draft, mutationState, mutationOutcomeUnknown } = useMemoryManagerStore.getState();
+  if (mutationState || mutationOutcomeUnknown || !activeMemory || !memoryDraftIsValid(draft) ||
     !activeMemory.allowedActions.includes("EDIT")) return;
+  const generation = lifecycleGeneration;
+  listRequestGeneration += 1;
   useMemoryManagerStore.setState({ mutationError: null, mutationState: "saving" });
   try {
     const response = await updateMemory(activeMemory.memoryRef, draft.statement);
+    if (generation !== lifecycleGeneration) return;
     useMemoryManagerStore.setState((state) => ({
       activeMemory: response.item,
       draft: draftFromMemory(response.item),
@@ -296,11 +334,16 @@ export async function saveMemoryChanges(): Promise<void> {
       notice: "saved",
       screen: "detail"
     }));
+    // The current search, pagination and opaque refs belong to the server.
+    // A failed read remains a list error, never a failed committed mutation.
+    await refreshMemoryList().catch(() => undefined);
   } catch (error) {
+    if (generation !== lifecycleGeneration) return;
     const code = errorName(error);
     useMemoryManagerStore.setState({
       draftStale: code === "memory_changed",
       mutationError: code,
+      mutationOutcomeUnknown: memoryMutationOutcomeIsUnknown(error),
       mutationState: null
     });
     throw error;
@@ -308,11 +351,14 @@ export async function saveMemoryChanges(): Promise<void> {
 }
 
 export async function forgetCurrentMemory(): Promise<void> {
-  const memory = useMemoryManagerStore.getState().activeMemory;
-  if (!memory || !memory.allowedActions.includes("FORGET")) return;
+  const { activeMemory: memory, mutationState, mutationOutcomeUnknown } = useMemoryManagerStore.getState();
+  if (mutationState || mutationOutcomeUnknown || !memory || !memory.allowedActions.includes("FORGET")) return;
+  const generation = lifecycleGeneration;
+  listRequestGeneration += 1;
   useMemoryManagerStore.setState({ mutationError: null, mutationState: "forgetting" });
   try {
     await forgetMemory(memory.memoryRef);
+    if (generation !== lifecycleGeneration) return;
     useMemoryManagerStore.setState((state) => ({
       activeMemory: null,
       draft: emptyDraft,
@@ -323,8 +369,13 @@ export async function forgetCurrentMemory(): Promise<void> {
       notice: "forgotten",
       screen: "list"
     }));
+    await refreshMemoryList().catch(() => undefined);
   } catch (error) {
-    useMemoryManagerStore.setState({ mutationError: errorName(error), mutationState: null });
+    if (generation !== lifecycleGeneration) return;
+    useMemoryManagerStore.setState({
+      mutationError: errorName(error), mutationOutcomeUnknown: memoryMutationOutcomeIsUnknown(error),
+      mutationState: null
+    });
     throw error;
   }
 }
@@ -332,6 +383,7 @@ export async function forgetCurrentMemory(): Promise<void> {
 export async function openMemoryManager(accountId: string): Promise<void> {
   const current = useMemoryManagerStore.getState();
   if (current.accountId !== accountId) {
+    lifecycleGeneration += 1;
     listRequestGeneration += 1;
     useMemoryManagerStore.setState({
       ...useMemoryManagerStore.getInitialState(),
@@ -346,12 +398,14 @@ export async function openMemoryManager(accountId: string): Promise<void> {
 export function invalidateMemoryManagerData(accountId?: string): void {
   const current = useMemoryManagerStore.getState();
   if (accountId && current.accountId !== accountId) return;
+  lifecycleGeneration += 1;
   listRequestGeneration += 1;
   useMemoryManagerStore.setState({
     activeMemory: null,
     listError: null,
     listLoadState: "idle",
     memories: [],
+    mutationState: null,
     nextCursor: null,
     screen: "list"
   });
@@ -360,6 +414,7 @@ export function invalidateMemoryManagerData(accountId?: string): void {
 export function deactivateMemoryManager(accountId?: string): void {
   const current = useMemoryManagerStore.getState();
   if (accountId && current.accountId !== accountId) return;
+  lifecycleGeneration += 1;
   listRequestGeneration += 1;
   useMemoryManagerStore.setState(useMemoryManagerStore.getInitialState(), true);
 }

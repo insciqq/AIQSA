@@ -366,6 +366,37 @@ describe("answer outputs v2", () => {
     expect(document.body.textContent).not.toContain("opaque-memory-ref");
   });
 
+  it("keeps an unknown mutation visible after cancelling its editor and opening its source", async () => {
+    shellFetch.mockReset();
+    const href = "/api/me/memory/source-actions/open?memoryRef=opaque-memory-ref";
+    shellFetch.mockRejectedValueOnce(new TypeError("lost acknowledgement"))
+      .mockResolvedValueOnce(Response.json({ href, status: "READY" }));
+    render(<AnswerProcessV2 memorySources={[{
+      actions: ["CORRECT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"],
+      chatGroup: "chat-1", date: "2026-08-21T05:00:00.000Z",
+      memoryRef: "opaque-memory-ref", sourceAvailable: true, sourceType: "PAST_CHAT",
+      text: "The earlier discussion chose concise answers."
+    }]} />);
+    openProcess();
+    pickMemoryAction("Correct");
+    fireEvent.change(screen.getByRole("textbox", { name: "Correct this statement" }), {
+      target: { value: "A preserved correction." }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not be confirmed");
+    expect(screen.getByRole("button", { name: "Save correction" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("could not be confirmed");
+    fireEvent.click(screen.getByRole("button", { name: "Open source" }));
+    await screen.findByRole("link", { name: "Open source" });
+    expect(screen.getByRole("alert")).toHaveTextContent("could not be confirmed");
+    expect(screen.queryByRole("button", { name: "Memory actions" })).toBeNull();
+    expect(shellFetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String((shellFetch.mock.calls[1]?.[1] as RequestInit).body)))
+      .toMatchObject({ action: "OPEN_SOURCE" });
+  });
+
   it("does not show private source text or actions when a source is unavailable", () => {
     render(<AnswerProcessV2 memorySources={[{
       actions: [],
