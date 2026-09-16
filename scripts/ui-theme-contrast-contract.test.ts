@@ -30,6 +30,15 @@ function hex(value: string): Rgb {
   return [(parsed >> 16) & 255, (parsed >> 8) & 255, parsed & 255];
 }
 
+function composite(foreground: string, background: string): Rgb {
+  const match = /^rgb\((\d+) (\d+) (\d+) \/ (0(?:\.\d+)?|1)\)$/u.exec(foreground);
+  if (!match) throw new Error(`Invalid translucent contrast color ${foreground}`);
+  const alpha = Number(match[4]);
+  const base = hex(background);
+  const channel = (index: number) => Number(match[index + 1]) * alpha + base[index]! * (1 - alpha);
+  return [channel(0), channel(1), channel(2)];
+}
+
 function linearChannel(channel: number): number {
   const normalized = channel / 255;
   return normalized <= 0.04045
@@ -43,14 +52,32 @@ function luminance(color: Rgb): number {
     0.0722 * linearChannel(color[2]);
 }
 
-function contrast(first: string, second: string): number {
-  const firstLuminance = luminance(hex(first));
-  const secondLuminance = luminance(hex(second));
+function contrast(first: string | Rgb, second: string | Rgb): number {
+  const firstLuminance = luminance(typeof first === "string" ? hex(first) : first);
+  const secondLuminance = luminance(typeof second === "string" ? hex(second) : second);
   return (Math.max(firstLuminance, secondLuminance) + 0.05) /
     (Math.min(firstLuminance, secondLuminance) + 0.05);
 }
 
 describe("UI theme contrast", () => {
+  it.each(["dark", "light"] as const)("keeps ordinary selections visible and readable in %s", (theme) => {
+    for (const surface of ["canvas", "surface", "bubble", "code-bg"]) {
+      const background = token(theme, surface);
+      const selection = composite(token(theme, "selection"), background);
+      expect(contrast(selection, background), `${surface} highlight`).toBeGreaterThanOrEqual(theme === "dark" ? 1.9 : 1.35);
+      expect(contrast(token(theme, "text"), selection), `${surface} selected text`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it.each(["dark", "light"] as const)("keeps syntax colors readable on code selections in %s", (theme) => {
+    const background = token(theme, "code-bg");
+    const selection = composite(token(theme, "selection-code"), background);
+    expect(contrast(selection, background), "code highlight").toBeGreaterThanOrEqual(theme === "dark" ? 1.5 : 1.28);
+    for (const role of ["text", "accent2", "ok", "text3", "accent", "warn", "text2"]) {
+      expect(contrast(token(theme, role), selection), role).toBeGreaterThanOrEqual(3);
+    }
+  });
+
   it.each(["dark", "light"] as const)(
     "keeps readable contrast floors for the %s theme",
     (theme) => {

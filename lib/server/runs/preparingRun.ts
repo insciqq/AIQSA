@@ -1,3 +1,4 @@
+import { validAcceptedInstructions } from "../instructions/snapshot";
 import { createHash } from "node:crypto";
 import type { MemoryReceiptOutcome } from "@prisma/client";
 import {
@@ -259,7 +260,7 @@ export function decodeMemoryPreparingBaseSnapshot(
   value: unknown
 ): MemoryPreparingBaseSnapshot | null {
   if (!isRecord(value) || value.schemaVersion !== 1 ||
-    !isRecord(value.normalizedRequest) || !isRecord(value.providerRequestPreview)) {
+    !isRecord(value.normalizedRequest) || !validAcceptedInstructions(value.normalizedRequest) || !isRecord(value.providerRequestPreview)) {
     return null;
   }
   try {

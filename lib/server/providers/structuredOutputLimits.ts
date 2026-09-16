@@ -11,10 +11,11 @@ export const STRUCTURED_OUTPUT_LIMITS = Object.freeze({
 export function structuredOutputPromptFits(input: Readonly<{
   systemPrompt: string;
   userPrompt: string;
+  responseReminder?: string;
 }>): boolean {
-  return input.systemPrompt.length + input.userPrompt.length <=
+  return input.systemPrompt.length + input.userPrompt.length + (input.responseReminder?.length ?? 0) <=
       STRUCTURED_OUTPUT_LIMITS.maxPromptCharacters &&
     Buffer.byteLength(input.systemPrompt, "utf8") +
-      Buffer.byteLength(input.userPrompt, "utf8") <=
+      Buffer.byteLength(input.userPrompt, "utf8") + Buffer.byteLength(input.responseReminder ?? "", "utf8") <=
       STRUCTURED_OUTPUT_LIMITS.maxPromptBytes;
 }

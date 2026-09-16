@@ -9,11 +9,12 @@ function repositoryCancellationHarness(mode: "cancel" | "fail") {
   const runId = "run-one";
   const userId = "owner-one";
   const pendingCallIds = ["reserved-call", "dispatched-call"];
-  let queryOrdinal = 0;
   const tx = {
-    $queryRaw: vi.fn(async () => {
-      queryOrdinal += 1;
-      if (queryOrdinal === 1) {
+    $queryRaw: vi.fn(async (query: { sql: string } | TemplateStringsArray) => {
+      const sql = "sql" in query ? query.sql : query.join("");
+      if (sql.includes('JOIN "Chat"')) return [{ chatId, userId, projectId: "project-one" }];
+      if (/FROM "(?:Project|User|Chat)"/.test(sql)) return [{ id: "locked-scope" }];
+      if (sql.includes('FROM "ModelRun"')) {
         return mode === "cancel"
           ? [{
               assistantId: null,
@@ -59,6 +60,9 @@ function repositoryCancellationHarness(mode: "cancel" | "fail") {
     },
     modelRunToolCall: {
       updateMany: vi.fn(async () => ({ count: pendingCallIds.length }))
+    },
+    workspaceFollowup: {
+      updateMany: vi.fn(async () => ({ count: 0 }))
     }
   };
   const transaction = vi.fn(async (consume: (tx: unknown) => Promise<unknown>) => consume(tx));

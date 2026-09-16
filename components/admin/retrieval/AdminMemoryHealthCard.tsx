@@ -210,7 +210,7 @@ export function AdminMemoryHealthCard({
             <StatusLine label={copy.worker} tone={status.worker.state === "RUNNING" ? "positive" : "critical"}>
               {adminMemoryWorkerCopy("EN", status.worker.state)}
             </StatusLine>
-            <StatusLine label={copy.queue} tone={status.queue.length === 0 ? "positive" : "normal"}>
+            <StatusLine label={copy.queue} tone={status.queue.length + status.queue.inProgress === 0 ? "positive" : "normal"}>
               {adminMemoryQueueCopy("EN", status.queue)}
             </StatusLine>
             <StatusLine

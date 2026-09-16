@@ -234,6 +234,26 @@ describe("Run lifecycle v2", () => {
     expect(screen.getByText("answer")).toBeVisible();
   });
 
+  it("offers Stop only for a known interrupted run and disables recovery actions while stopping", () => {
+    const stop = vi.fn();
+    const refresh = vi.fn();
+    const { rerender } = render(<RunAnswerV2 content="Partial answer" onStop={stop} onRefresh={refresh}
+      presentation={presentation({ kind: "connection_lost", runId: null })} />);
+    expect(screen.queryByRole("button", { name: "Stop answer" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
+    rerender(<RunAnswerV2 content="Partial answer" onStop={stop} onRefresh={refresh}
+      presentation={presentation({ kind: "connection_lost", runId: "run-a" })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Stop answer" }));
+    expect(stop).toHaveBeenCalledOnce();
+    rerender(<RunAnswerV2 content="Partial answer" onStop={stop} onRefresh={refresh} stopping
+      presentation={presentation({ kind: "connection_lost", runId: "run-a" })} />);
+    expect(screen.getByRole("button", { name: "Stopping…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Stopping…" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Stopping…" }));
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
   it("presents retryable and terminal errors with distinct recovery actions", () => {
     const retry = vi.fn();
     const selectModel = vi.fn();

@@ -7,18 +7,20 @@ export type RailSectionV2 = "chats" | "library" | "projects";
 
 function RailButton({
   active = false,
+  className = "",
   icon,
   label,
   onClick
 }: Readonly<{
   active?: boolean;
+  className?: string;
   icon: UiV2IconName;
   label: string;
   onClick?(): void;
 }>) {
   return (
     <button
-      className="v2-rail-button v2-focusable"
+      className={`v2-rail-button v2-focusable ${className}`}
       type="button"
       aria-current={active ? "page" : undefined}
       aria-label={label}
@@ -49,6 +51,7 @@ export function RailV2({
   adminEntryVisible = false,
   onChats,
   onLibrary,
+  onNewChat,
   onProjects,
   onSettings
 }: Readonly<{
@@ -57,14 +60,13 @@ export function RailV2({
   adminEntryVisible?: boolean;
   onChats(): void;
   onLibrary?(): void;
+  onNewChat(): void;
   onProjects?(): void;
   onSettings?(): void;
 }>) {
   return (
     <nav className="v2-rail" aria-label="Workspace" data-testid="workspace-rail">
-      <span className="v2-rail-brand" aria-hidden="true">
-        <UiV2Icon name="brand" />
-      </span>
+      <RailButton className="v2-rail-brand" icon="brand" label="New chat" onClick={onNewChat} />
       <div className="v2-rail-group">
         <RailButton active={active === "chats"} icon="chat" label="Chats" onClick={onChats} />
         {onProjects ? (

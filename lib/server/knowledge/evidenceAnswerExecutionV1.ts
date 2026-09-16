@@ -1,3 +1,4 @@
+import type { KnowledgeAnswerInstructions } from "./answerInstructions";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { acceptedOperation } from "./answerGroundingExecutionV21";
 import { knowledgeAnswerHash } from "./answerGroundingV5";
@@ -75,6 +76,7 @@ export type KnowledgeEvidenceAnswerExecutionV1Result = Readonly<{
 
 export type KnowledgeEvidenceAnswerExecutionV1Input = Readonly<{
   authorize: OperationInput["authorize"];
+  answerInstructions?: KnowledgeAnswerInstructions;
   draft: KnowledgeEvidenceDispatchManifestDraft;
   evidenceBindings?: OperationInput["evidenceBindings"];
   execute: OperationInput["execute"];
@@ -115,7 +117,8 @@ async function executeCycle(input: KnowledgeEvidenceAnswerExecutionV1Input & Rea
     if (operations.length >= 4) failed("operation_budget_exceeded");
     const ordinal = operations.length + 1 + (input.operationOffset ?? 0) as KnowledgeEvidenceAnswerExecutionV1Result["operations"][number]["ordinal"];
     if (ordinal > 8 || input.workflowVersion === undefined && ordinal > 4) failed("operation_budget_exceeded");
-    const snapshotInput = { evidenceReceiptHash: manifest!.manifestHash, executionPolicy: input.executionPolicy, transport: input.transport };
+    const snapshotInput = { ...(isKnowledgeEvidenceComposeOperation(inputOperation.operation) && input.answerInstructions
+      ? { answerInstructions: input.answerInstructions } : {}), evidenceReceiptHash: manifest!.manifestHash, executionPolicy: input.executionPolicy, transport: input.transport };
     const snapshot = isKnowledgeEvidenceAnswerOperationV2(inputOperation.operation)
       ? createKnowledgeEvidenceAnswerSnapshotV2({ ...inputOperation, ...snapshotInput, operation: inputOperation.operation, workflowVersion: 11,
           repairFeedbackVersion: input.repairFeedbackVersion })

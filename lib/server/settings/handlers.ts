@@ -316,7 +316,7 @@ function serializeSettings(
     defaultControlValues: resolveCurrentUserControlValues({ ...data, settings }, selection),
     defaultKnowledgePlan: chatDefaults.knowledgePlan,
     defaultMcpMode: chatDefaults.mcpMode,
-    defaultWorkspaceEnabled: settings.defaultWorkspaceEnabled ?? false,
+    defaultWorkspaceEnabled: settings.defaultWorkspaceEnabled ?? true,
     hasPersonalModelDefault: selection.hasPersonalModelDefault,
     modelPreferenceSource: selection.modelPreferenceSource,
     organizationModelDefault: selection.organizationModelDefault,

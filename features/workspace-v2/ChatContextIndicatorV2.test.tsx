@@ -22,8 +22,10 @@ describe("header context indicator", () => {
       approximateInputTokens: 4400, safeInputBudgetTokens: 10000, totalContextTokens: 12000,
       answerReserveTokens: 800, safetyMarginTokens: 1200
     }} />);
-    const trigger = screen.getByRole("button", { name: "Chat context is approximately 37% full" });
+    const trigger = screen.getByRole("button", { name: "Chat context is approximately 37% full. Preliminary estimate" });
     expect(trigger).toHaveTextContent("37%");
+    expect(trigger).toHaveAttribute("data-context-estimate", "preliminary");
+    expect(trigger.querySelector(".v2-chat-context-track")).toHaveAttribute("stroke-dasharray", "3 3");
     fireEvent.click(trigger);
     const dialog = screen.getByRole("dialog", { name: "Chat context" });
     expect(dialog).toHaveTextContent("full model context window");
@@ -41,7 +43,7 @@ describe("header context indicator", () => {
     render(<ChatContextIndicatorV2 stats={{
       approximateInputTokens: 400, safeInputBudgetTokens: null, totalContextTokens: null
     }} />);
-    fireEvent.click(screen.getByRole("button", { name: "Chat context size is unavailable" }));
+    fireEvent.click(screen.getByRole("button", { name: "Chat context size is unavailable. Preliminary estimate" }));
     expect(screen.getByRole("dialog")).not.toHaveTextContent("% full");
     fireEvent.pointerDown(document.body);
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -54,10 +56,28 @@ describe("header context indicator", () => {
         provider: "fake", safetyMarginTokens: 1000, version: 1 }
     }} continuation={{ busy: false, error: null, suggested: true, onContinue, onDismiss: vi.fn(), onCancel: vi.fn() }} />);
     expect(screen.getByRole("dialog")).toHaveTextContent("4 earlier messages are still in this chat, but were omitted from the model request");
-    expect(screen.getByRole("dialog")).toHaveTextContent("project files are copied into the new chat. Attachments are not carried over.");
+    expect(screen.getByRole("dialog")).toHaveTextContent("Your composer settings, unsent text and attached files come along.");
+    expect(screen.getByRole("dialog")).toHaveTextContent("Earlier messages and their attachments stay in this chat.");
     expect(onContinue).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Summarize and open new chat" }));
     expect(onContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a snapshot ring solid and describes the separate draft estimate", () => {
+    render(<ChatContextIndicatorV2 stats={{ approximateInputTokens: 7000, safeInputBudgetTokens: 7976,
+      totalContextTokens: 10000, draftInputTokens: 1000, session: { approximateInputTokens: 6000,
+        contextWindow: 10000, droppedMessages: 0, loadedTools: 3, maxOutputTokens: 1024,
+        modelId: "model", phase: "after_answer", provider: "fake", safetyMarginTokens: 1000, version: 1 }
+    }} />);
+    const trigger = screen.getByRole("button", { name: "Chat context is approximately 70% full" });
+    expect(trigger).toHaveAttribute("data-context-estimate", "snapshot");
+    expect(trigger).toHaveAttribute("data-context-tone", "warning");
+    expect(trigger.querySelector(".v2-chat-context-track")).not.toHaveAttribute("stroke-dasharray");
+    fireEvent.click(trigger);
+    expect(screen.getByRole("dialog")).toHaveTextContent("Estimated from the last request and completed answer, plus your draft and attachments.");
+    expect(screen.getByRole("dialog")).toHaveTextContent("Request and answer estimate~6k");
+    expect(screen.getByRole("dialog")).toHaveTextContent("Draft and attachments estimate~1k");
+    expect(screen.getByRole("dialog")).toHaveTextContent("Available input tokens976");
   });
 
   it.each([false, true])("makes exhausted or rejected input actionable (rejected=%s)", (requestRejected) => {

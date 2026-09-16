@@ -1,3 +1,4 @@
+import { withResponseReminder } from "./responseReminder";
 import {
   defaultOpenRouterParams,
   normalizeOpenRouterParams,
@@ -93,8 +94,8 @@ type PrivateBuildOptions = OpenRouterChatRequestOptions & {
   redactImages: boolean;
 };
 
-function combineInstructions(request: ProviderRunRequest): string | undefined {
-  return providerInstructionsWithPersonalContext(request);
+function combineInstructions(request: ProviderRunRequest, preview = false): string | undefined {
+  return providerInstructionsWithPersonalContext(request, preview);
 }
 
 function pdfDataUrl(attachment: ProviderAttachment, redactFiles: boolean): string {
@@ -295,7 +296,7 @@ function providerToolPreviewMessages(messages: unknown[] | undefined): OpenRoute
 
 function buildMessages(request: ProviderRunRequest, options: PrivateBuildOptions): OpenRouterMessage[] {
   const messages: OpenRouterMessage[] = [];
-  const instructions = combineInstructions(request);
+  const instructions = combineInstructions(request, options.preview);
   const conversation = textConversationForRequest(request, {
     redactSkillContext: options.preview
   });
@@ -310,7 +311,7 @@ function buildMessages(request: ProviderRunRequest, options: PrivateBuildOptions
   conversation.forEach((message, index) => {
     const isLatestUser = index === conversation.length - 1 && message.role === "user";
     messages.push({
-      content: isLatestUser ? buildUserContent(request, options) : message.content,
+      content: isLatestUser ? withResponseReminder(request, buildUserContent(request, options), (text) => ({ text, type: "text" as const }), options.preview) : message.content,
       role: message.role
     });
   });

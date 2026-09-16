@@ -124,8 +124,33 @@ html[data-motion="off"] *::after {
   }
 }
 
-::selection {
-  background: var(--v2-color-accent-dim);
+:where(button, summary, [role="button"], [role="menuitem"], [role="menuitemradio"],
+  [role="menuitemcheckbox"], [role="tab"], [role="radio"], [role="switch"],
+  [role="treeitem"], [role="option"], .v2-assistant-avatar, .v2-navigation-account-avatar, .v2-monogram) {
+  user-select: none;
+}
+
+:where(input, textarea) {
+  user-select: text;
+}
+
+/* Forced colors use the browser's own selection palette. */
+@media (forced-colors: none) {
+  ::selection {
+    background: var(--v2-color-selection);
+    color: var(--v2-color-text);
+  }
+
+  .shiki::selection,
+  .shiki ::selection {
+    background: var(--v2-color-selection-code);
+    color: currentColor;
+  }
+
+  .v2-code-editor-input::selection {
+    background: var(--v2-color-selection-code);
+    color: transparent;
+  }
 }
 
 /*

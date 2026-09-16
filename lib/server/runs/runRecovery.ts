@@ -1,3 +1,4 @@
+import { knowledgeAnswerInstructions, type KnowledgeAnswerInstructions } from "../knowledge/answerInstructions";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext, type LifecycleStage } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
@@ -249,6 +250,7 @@ export type RunRecoveryRepository = Pick<
   | "loadFocusedKnowledgeCall"
   | "loadFocusedKnowledgeScopeExclusions"
   | "loadModelPricing"
+  | "loadPublishedRunAnswer"
   | "loadRunUsageAttributions"
   | "persistToolLoopCallBatch"
   | "recordRunUsageEvents"
@@ -266,6 +268,7 @@ export type RunRecoveryRepository = Pick<
   | "groundKnowledgeAnswerV21"
   | "groundKnowledgeEvidenceAnswer"
   | "hasPendingPdfPreparation"
+  | "hasPendingWorkspacePreparation"
   | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
   | "loadProviderDispatchRecoveryRequest"
@@ -399,8 +402,9 @@ function isActiveRunStatus(status: string): boolean {
   return status === "streaming" || status === "queued" || status === "in_progress";
 }
 
-function isRefreshableRun(control: Readonly<{ recoverySettled?: boolean; status: string }>): boolean {
-  return isActiveRunStatus(control.status) || (control.status === "error" && !control.recoverySettled);
+function isRefreshableRun(control: Readonly<{ answerComplete?: true; recoverySettled?: boolean; status: string }>): boolean {
+  return isActiveRunStatus(control.status) ||
+    (control.status === "error" && !control.recoverySettled && !control.answerComplete);
 }
 
 class ToolLoopRecoveryError extends Error {
@@ -2397,6 +2401,7 @@ async function recoverCheckpointedToolLoop(
           draft: dispatchDraft,
           ...(run.normalizedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: run.normalizedRequest.knowledgeAnswerWorkflowVersion } : {}),
           repairFeedbackVersion: run.normalizedRequest.knowledgeReviewRepairFeedbackVersion,
+          ...(run.normalizedRequest.prompt.responseReminder !== undefined ? { answerInstructions: knowledgeAnswerInstructions(run.normalizedRequest.prompt) } : {}),
           modelCapabilities: run.normalizedRequest.modelCapabilities,
           reasoningEffort: knowledgeGroundingInheritedReasoningEffortV1({
             acceptedReasoningEffort: run.normalizedRequest.reasoningEffort,
@@ -3301,6 +3306,7 @@ async function dispatchRecoveredReservedAnswer(input: Readonly<{
 type LoadedRecoveryControl = NonNullable<Awaited<ReturnType<typeof loadRecoveryRunControl>>>;
 
 type KnowledgeAnswerGroundingRecoverySeed = Readonly<{
+  answerInstructions?: KnowledgeAnswerInstructions;
   workflowVersion?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
   repairFeedbackVersion?: 1;
   draft: KnowledgeEvidenceDispatchManifestDraft;
@@ -3346,7 +3352,8 @@ async function recoverKnowledgeAnswerGrounding(
         throw new ToolLoopRecoveryError("knowledge_answer_contract_failed", "The saved Knowledge answer contract is invalid.");
       }
       pipeline = "evidence_answer_v1";
-      seed = Object.freeze({ workflowVersion: snapshot.workflowVersion ?? 8, draft: input.draftDispatch.draft,
+      seed = Object.freeze({ workflowVersion: snapshot.workflowVersion ?? 8,
+        ...(snapshot.answerInstructions ? { answerInstructions: snapshot.answerInstructions } : {}), draft: input.draftDispatch.draft,
         repairFeedbackVersion: "repairFeedbackVersion" in snapshot ? snapshot.repairFeedbackVersion : undefined,
         evidenceBindings: [...input.draftDispatch.items, ...input.draftDispatch.exclusions].flatMap(item => item.evidenceItemId
           ? [{ dispatchEvidenceId: item.dispatchEvidenceId, evidenceItemId: item.evidenceItemId }] : []),
@@ -3521,7 +3528,8 @@ async function recoverKnowledgeAnswerGrounding(
           operation
         }),
         personalContext: undefined,
-        prompt: { developer: null, system: operation.systemPrompt },
+        prompt: { developer: null, system: operation.systemPrompt,
+          ...(operation.responseReminder ? { responseReminder: operation.responseReminder } : {}) },
         searchPlan: { mode: "all_selected", options: [] },
         toolChoice: "none",
         toolMode: "none",
@@ -3535,7 +3543,8 @@ async function recoverKnowledgeAnswerGrounding(
         baseParams: providerNeutralBase.params,
         operation
       }),
-      prompt: { developer: null, system: operation.systemPrompt }
+      prompt: { developer: null, system: operation.systemPrompt,
+          ...(operation.responseReminder ? { responseReminder: operation.responseReminder } : {}) }
     };
   };
   const publishProviderResponseId = async (providerResponseId: string): Promise<void> => {
@@ -3684,6 +3693,7 @@ async function recoverKnowledgeAnswerGrounding(
   const workflowVersion = seed.workflowVersion;
   const groundingInput = {
     authorize,
+    ...(seed.answerInstructions ? { answerInstructions: seed.answerInstructions } : {}),
     draft: seed.draft,
     ...(seed.evidenceBindings?.length
       ? { evidenceBindings: seed.evidenceBindings }
@@ -3848,6 +3858,22 @@ async function refreshProviderRunOnceRegistered(
   }
   if (!(await projectRecoveryAuthorityAllowsProceed(deps, control, runId, userId))) return;
 
+  const publishedAnswer = await deps.repository.loadPublishedRunAnswer?.({ runId, userId });
+  if (publishedAnswer) {
+    const request = await deps.repository.loadProviderDispatchRecoveryRequest?.({ runId, userId });
+    if (!request?.workspace || !deps.workspace) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
+    const handoff = await deps.workspace.handoff({ runId, userId, signal, workspace: request.workspace,
+      onActivity: async (entry) => {
+        const event = projectRunOutputArtifactEvent(workspaceActivityEvent(entry));
+        if (event) await deps.repository.appendRunOutputEvent(runId, event);
+      }
+    });
+    if (handoff.status !== "ready") return;
+    signal.throwIfAborted();
+    await deps.repository.completeRun(publishedAnswer);
+    return;
+  }
+
   if (deps.knowledgeProviderDispatch) {
     let draftDispatch: Awaited<ReturnType<KnowledgeProviderDispatchLifecycle["inspect"]>> = null;
     try {
@@ -3997,6 +4023,7 @@ async function refreshProviderRunOnceRegistered(
           draft: recovered.draft,
           ...(acceptedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: acceptedRequest.knowledgeAnswerWorkflowVersion } : {}),
           repairFeedbackVersion: acceptedRequest.knowledgeReviewRepairFeedbackVersion,
+          ...(acceptedRequest.prompt.responseReminder !== undefined ? { answerInstructions: knowledgeAnswerInstructions(acceptedRequest.prompt) } : {}),
           evidenceBindings: recovered.evidenceBindings,
           modelCapabilities: acceptedRequest.modelCapabilities,
           reasoningEffort: knowledgeGroundingInheritedReasoningEffortV1({
@@ -4308,6 +4335,7 @@ async function refreshProviderRunOnceRegistered(
             draft,
             ...(acceptedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: acceptedRequest.knowledgeAnswerWorkflowVersion } : {}),
             repairFeedbackVersion: acceptedRequest.knowledgeReviewRepairFeedbackVersion,
+            ...(acceptedRequest.prompt.responseReminder !== undefined ? { answerInstructions: knowledgeAnswerInstructions(acceptedRequest.prompt) } : {}),
             forbiddenIdentityFragments: authorization.scope?.sources.flatMap((source) => [
               source.sourceId,
               source.sourceVersionId,
@@ -4757,7 +4785,12 @@ export async function reconcileInstallationRuns(
         run.id,
         run.userId
       ))) return;
-      if (await deps.repository.hasPendingPdfPreparation?.(run.id)) return;
+      if (await deps.repository.hasPendingPdfPreparation?.(run.id) ||
+        await deps.repository.hasPendingWorkspacePreparation?.(run.id)) return;
+      if (await deps.repository.loadPublishedRunAnswer?.({ runId: run.id, userId: run.userId })) {
+        await refreshProviderRunIfNeeded(deps, run.id, run.userId);
+        return;
+      }
       if (run.status === "preparing") {
         await recoverPreparingRun(deps.repository, {
           now,
@@ -4829,7 +4862,12 @@ export async function reconcileStaleRuns(
         input.userId
       ))) return;
 
-      if (await deps.repository.hasPendingPdfPreparation?.(run.id)) return;
+      if (await deps.repository.hasPendingPdfPreparation?.(run.id) ||
+        await deps.repository.hasPendingWorkspacePreparation?.(run.id)) return;
+      if (await deps.repository.loadPublishedRunAnswer?.({ runId: run.id, userId: input.userId })) {
+        await refreshProviderRunIfNeeded(deps, run.id, input.userId);
+        return;
+      }
       if (run.status === "preparing") {
         await recoverPreparingRun(deps.repository, {
           now,

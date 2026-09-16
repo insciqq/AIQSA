@@ -1,6 +1,7 @@
 import { chatTitleMetadataSelect, chatTitlePending } from "../chats/titleMetadata";
 import { AttachmentLinkConflictError } from "./runRepositoryContract";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
+import { assertWorkspaceFollowupClaim } from "./workspaceFollowupPersistence";
 import {
   Prisma,
   type ModelRunStatus
@@ -47,6 +48,7 @@ import {
   completePreparingRunAttemptWithClient,
   createDormantPreparingRun,
   continuePdfPreparedRunWithClient,
+  continueWorkspacePreparedRunWithClient,
   finalizePreparingRunWithClient,
   lockPreparingRun,
   recoverPreparingRunWithClient,
@@ -62,6 +64,7 @@ import {
   dispatchableModelRunStatuses,
   isRecord,
   json,
+  lockRunSettlementScope,
   projectRunRecoveryAuthority,
   runControlRecord,
   unique
@@ -93,6 +96,7 @@ import type { WorkspaceAvailabilityService } from "../workspace/availability";
 import { workspaceModelSupportsTools } from "../workspace/availability";
 import { workspaceAvailabilityService as defaultWorkspaceAvailabilityService } from "../workspace/defaultServices";
 import { retainRunPrismaCode } from "./prismaRepositoryObservability";
+import { createPrismaRunAnswerOperations, persistCompletedAnswerUsage } from "./prismaRepositoryAnswer";
 
 export { insertAcceptedMcpRunBindings } from "./prismaRepositoryBindings";
 
@@ -366,6 +370,8 @@ export function createPrismaRunRepository(
   async function loadInternalRunControl(runId: string) {
     const run = await prismaClient.modelRun.findFirst({
       select: {
+        answerCompletedAt: true,
+        workspaceWaitPending: true,
         assistantMessageId: true,
         chatId: true,
         errorPayload: true,
@@ -402,6 +408,8 @@ export function createPrismaRunRepository(
       }
     }
     return {
+      ...(run.answerCompletedAt ? { answerComplete: true as const } : {}),
+      workspaceWaitPending: run.workspaceWaitPending,
       assistantMessageId: run.assistantMessageId,
       chatId: run.chatId,
       id: run.id,
@@ -416,6 +424,7 @@ export function createPrismaRunRepository(
   }
 
   return {
+    ...createPrismaRunAnswerOperations(prismaClient),
     groundKnowledgeAnswer: (input) => groundKnowledgeRunAnswer(prismaClient, input).catch(retainRunPrismaCode),
     groundKnowledgeAnswerV5: (input) => groundKnowledgeRunAnswerV5(prismaClient, input).catch(retainRunPrismaCode),
     groundKnowledgeAnswerV21: (input) => groundKnowledgeRunAnswerV21(prismaClient, input).catch(retainRunPrismaCode),
@@ -432,6 +441,9 @@ export function createPrismaRunRepository(
       finalizePreparingRunWithClient(prismaClient, input, memoryExecutionAuthority).catch(retainRunPrismaCode),
     hasPendingPdfPreparation: async (runId) => Boolean(await prismaClient.chatPdfRunPreparation.findFirst({
       select: { modelRunId: true }, where: { modelRunId: runId, state: { in: ["pending", "preparing", "answer_ready"] } }
+    }).catch(retainRunPrismaCode)),
+    hasPendingWorkspacePreparation: async (runId) => Boolean(await prismaClient.workspaceFollowup.findFirst({
+      select: { modelRunId: true }, where: { modelRunId: runId, state: { in: ["waiting", "preparing"] } }
     }).catch(retainRunPrismaCode)),
     recoverPreparingRun: (input) =>
       recoverPreparingRunWithClient(prismaClient, input, memorySourceHooks).catch(retainRunPrismaCode),
@@ -476,7 +488,11 @@ export function createPrismaRunRepository(
             // The generic boot orphan sweep cannot make that authorization
             // decision and must not mask it with run_orphaned_on_boot.
             projectRunBinding: null,
-            NOT: { chatPdfPreparation: { is: { state: { in: ["pending", "preparing", "answer_ready"] } } } },
+            answerCompletedAt: null,
+            NOT: [
+              { chatPdfPreparation: { is: { state: { in: ["pending", "preparing", "answer_ready"] } } } },
+              { workspaceFollowup: { is: { state: { in: ["waiting", "preparing"] } } } }
+            ],
             providerResponseId: null,
             toolLoopState: { equals: Prisma.DbNull }
           }
@@ -506,6 +522,7 @@ export function createPrismaRunRepository(
             },
             where: {
               id: run.id,
+              answerCompletedAt: null,
               providerResponseId: null,
               status: { in: dispatchableModelRunStatuses },
               toolLoopState: { equals: Prisma.DbNull }
@@ -550,6 +567,7 @@ export function createPrismaRunRepository(
             }, memorySourceHooks))
           : (await tx.modelRun.updateMany({
               data: {
+                answerCompletionUsage: Prisma.DbNull,
                 errorPayload: json(input.payload),
                 status: "cancelled"
               },
@@ -594,6 +612,8 @@ export function createPrismaRunRepository(
         }
 
         await cancelPendingToolLoopCallsInTransaction(tx, input.runId);
+        await tx.workspaceFollowup.updateMany({ where: { modelRunId: input.runId, state: { in: ["waiting", "preparing"] } },
+          data: { state: "cancelled", snapshot: Prisma.DbNull, admissionResult: Prisma.DbNull, claimToken: null, leaseExpiresAt: null } });
 
         if (run.assistantMessageId) {
           await tx.message.updateMany({
@@ -630,26 +650,12 @@ export function createPrismaRunRepository(
     },
     completeRun: async (input) => {
       const usage = normalizeTokenUsage(input.usage);
-      const usageAttributions = (
-        input.usageAttributions?.length
-          ? input.usageAttributions
-          : [
-              {
-                operationCount: 1,
-                estimatedCostMicros: input.estimatedCostMicros,
-                modelId: input.modelId,
-                provider: input.provider,
-                usage
-              }
-            ]
-      ).map((attribution) => ({
-        ...attribution,
-        usage: normalizeTokenUsage(attribution.usage)
-      }));
 
       return prismaClient.$transaction(async (tx) => {
+        await lockRunSettlementScope(tx, input.runId);
         const [existingRun] = await tx.$queryRaw<
           Array<{
+            answerCompletedAt: Date | null;
             assistantMessageId: string | null;
             chatId: string;
             projectId: string | null;
@@ -662,6 +668,7 @@ export function createPrismaRunRepository(
           }>
         >(Prisma.sql`
           SELECT
+            run."answerCompletedAt",
             run."assistantMessageId",
             run."chatId",
             chat."projectId" AS "projectId",
@@ -683,6 +690,7 @@ export function createPrismaRunRepository(
         const recoveredCompletion = Boolean(
           existingRun &&
             existingRun.status === "error" &&
+            !existingRun.answerCompletedAt &&
             existingRun.providerResponseId === (input.providerResponseId ?? null) &&
             !isRecoveredRunTerminalPayload(existingRun.errorPayload)
         );
@@ -699,25 +707,29 @@ export function createPrismaRunRepository(
 
         await tx.modelRun.update({
           data: {
-            cachedInputTokens: usage.cachedInputTokens,
-            cacheWriteInputTokens: usage.cacheWriteInputTokens,
+            answerCompletedAt: existingRun.answerCompletedAt ?? new Date(),
+            answerCompletionUsage: Prisma.DbNull,
             errorPayload: Prisma.JsonNull,
-            estimatedCostMicros: input.estimatedCostMicros ?? null,
-            inputTokens: usage.inputTokens,
-            outputTokens: usage.outputTokens,
-            providerResponseId: input.providerResponseId ?? existingRun?.providerResponseId ?? null,
-            reasoningTokens: usage.reasoningTokens,
             status: "complete",
-            totalTokens: usage.totalTokens,
-            usageCompleteness: usage.completeness === "complete" ? "COMPLETE" :
-              usage.completeness === "partial" ? "PARTIAL" : "UNAVAILABLE"
+            ...(existingRun.answerCompletedAt ? {} : {
+              cachedInputTokens: usage.cachedInputTokens,
+              cacheWriteInputTokens: usage.cacheWriteInputTokens,
+              estimatedCostMicros: input.estimatedCostMicros ?? null,
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+              providerResponseId: input.providerResponseId ?? existingRun.providerResponseId ?? null,
+              reasoningTokens: usage.reasoningTokens,
+              totalTokens: usage.totalTokens,
+              usageCompleteness: usage.completeness === "complete" ? "COMPLETE" as const :
+                usage.completeness === "partial" ? "PARTIAL" as const : "UNAVAILABLE" as const
+            })
           },
           where: {
             id: input.runId
           }
         });
 
-        if (input.knowledgeGrounding) {
+        if (!existingRun.answerCompletedAt && input.knowledgeGrounding) {
           await settleKnowledgeGrounding(tx, input.knowledgeGrounding);
         }
 
@@ -750,49 +762,8 @@ export function createPrismaRunRepository(
           status: "complete",
           userId: input.userId
         }, memorySourceHooks);
-        await tx.usageEvent.deleteMany({
-          where: {
-            chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false,
-            modelRunId: input.runId
-          }
-        });
-        await tx.usageEvent.createMany({
-          data: usageAttributions.map((attribution) => ({
-            chatId: input.chatId,
-            operationCount: attribution.operationCount ?? null,
-            cachedInputTokens: attribution.usage.cachedInputTokens,
-            cacheWriteInputTokens: attribution.usage.cacheWriteInputTokens,
-            estimatedCostMicros: attribution.estimatedCostMicros ?? null,
-            inputTokens: attribution.usage.inputTokens,
-            modelId: attribution.modelId,
-            modelRunId: input.runId,
-            outputTokens: attribution.usage.outputTokens,
-            provider: attribution.provider,
-            reasoningTokens: attribution.usage.reasoningTokens,
-            totalTokens: attribution.usage.totalTokens,
-            usageCompleteness: attribution.usage.completeness === "complete" ? "COMPLETE" :
-              attribution.usage.completeness === "partial" ? "PARTIAL" : "UNAVAILABLE",
-            ...(existingRun.projectId ? { projectId: existingRun.projectId } : {}),
-            userId: input.userId
-          }))
-        });
-        await tx.chat.update({
-          data: {
-            totalInputTokens: {
-              increment: usage.inputTokens ?? 0
-            },
-            totalOutputTokens: {
-              increment: usage.outputTokens ?? 0
-            },
-            totalReasoningTokens: {
-              increment: usage.reasoningTokens ?? 0
-            }
-          },
-          where: {
-            id: input.chatId
-          }
-        });
-        await appendRunOutputEvents(tx, input.runId, input.outputEvents ?? []);
+        if (!existingRun.answerCompletedAt) await persistCompletedAnswerUsage(tx, input, existingRun.projectId);
+        if (!existingRun.answerCompletedAt) await appendRunOutputEvents(tx, input.runId, input.outputEvents ?? []);
         return true;
       }).catch(retainRunPrismaCode);
     },
@@ -802,6 +773,14 @@ export function createPrismaRunRepository(
         await loadMemoryAdmissionDeadlineMs()).catch(retainRunPrismaCode);
       return { assistantMessageId: created.assistantMessageId, runId: created.runId,
         userMessageId: created.userMessageId,
+        ...(created.materializedRequest ? { materializedRequest: created.materializedRequest } : {}) };
+    },
+    continueWorkspacePreparedRun: async (input) => {
+      const created = await continueWorkspacePreparedRunWithClient(prismaClient, input,
+        memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
+        await loadMemoryAdmissionDeadlineMs()).catch(retainRunPrismaCode);
+      return { assistantMessageId: created.assistantMessageId, runId: created.runId,
+        userMessageId: created.userMessageId, ...(created.deferredPdf ? { deferredPdf: true as const } : {}),
         ...(created.materializedRequest ? { materializedRequest: created.materializedRequest } : {}) };
     },
     createRun: async (input) => {
@@ -816,6 +795,7 @@ export function createPrismaRunRepository(
       return {
         assistantMessageId: created.assistantMessageId,
         ...(created.deferredPdf ? { deferredPdf: true as const } : {}),
+        ...(created.deferredWorkspace ? { deferredWorkspace: true as const } : {}),
         ...(created.materializedRequest
           ? { materializedRequest: created.materializedRequest }
           : {}),
@@ -885,6 +865,7 @@ export function createPrismaRunRepository(
     },
     failRun: async (runId, assistantMessageId, error, options) => {
       return prismaClient.$transaction(async (tx) => {
+        await lockRunSettlementScope(tx, runId);
         const [lockedRun] = await tx.$queryRaw<Array<{
           status: ModelRunStatus;
           userId: string;
@@ -895,6 +876,9 @@ export function createPrismaRunRepository(
           FOR UPDATE
         `);
         if (!lockedRun) return false;
+        if (options?.workspaceClaimToken) await assertWorkspaceFollowupClaim(tx, {
+          claimToken: options.workspaceClaimToken, runId, userId: lockedRun.userId
+        }, "settlement");
         const updatedCount = lockedRun.status === "preparing"
           ? Number(await settlePreparingRunInTransaction(tx, {
               errorCode: error.code,
@@ -905,6 +889,7 @@ export function createPrismaRunRepository(
             }, memorySourceHooks))
           : (await tx.modelRun.updateMany({
               data: {
+                answerCompletionUsage: Prisma.DbNull,
                 errorPayload: json(
                   options?.recoveryTerminal
                     ? recoveredRunErrorPayload(error)
@@ -923,6 +908,8 @@ export function createPrismaRunRepository(
         }
 
         await cancelPendingToolLoopCallsInTransaction(tx, runId);
+        await tx.workspaceFollowup.updateMany({ where: { modelRunId: runId, state: { in: ["waiting", "preparing"] } },
+          data: { state: "failed", snapshot: Prisma.DbNull, admissionResult: Prisma.DbNull, claimToken: null, leaseExpiresAt: null } });
 
         await tx.message.updateMany({
           data: {
@@ -1081,14 +1068,19 @@ export function createPrismaRunRepository(
           }).catch(retainRunPrismaCode)
         : null;
       if (!chat || (chat.userId !== userId && (!chat.projectId || !access))) return null;
-      return prismaClient.modelRun.findFirst({
+      const run = await prismaClient.modelRun.findFirst({
         select: {
           assistantMessageId: true, chatId: true, id: true, modelId: true,
-          provider: true, providerResponseId: true, status: true
+          provider: true, providerResponseId: true, status: true, answerCompletedAt: true, workspaceWaitPending: true,
+          workspaceRunBinding: { select: { modelRunId: true } }
         },
         orderBy: { updatedAt: "desc" },
         where: { chatId, status: { in: activeModelRunStatuses }, updatedAt: { gt: since } }
       }).catch(retainRunPrismaCode);
+      return run ? { assistantMessageId: run.assistantMessageId, chatId: run.chatId, id: run.id, modelId: run.modelId,
+        provider: run.provider, providerResponseId: run.providerResponseId, status: run.status,
+        workspaceWaitPending: run.workspaceWaitPending,
+        ...(run.answerCompletedAt && run.workspaceRunBinding ? { answerComplete: true as const } : {}) } : null;
     },
     findStaleActiveRunsForUser: (input) =>
       prismaClient.modelRun.findMany({
@@ -1134,6 +1126,7 @@ export function createPrismaRunRepository(
             {
               createdAt: { lt: input.bootedBefore },
               OR: [
+                { answerCompletedAt: { not: null } },
                 { providerResponseId: { not: null } },
                 { toolLoopState: { not: Prisma.DbNull } }
               ]
@@ -1294,6 +1287,9 @@ export function createPrismaRunRepository(
       const run = await prismaClient.modelRun.findFirst({
         select: {
           chatId: true,
+          answerCompletedAt: true,
+          workspaceWaitPending: true,
+          workspaceFollowup: { select: { state: true } },
           chatPdfPreparation: { select: { retryable: true, state: true } },
           chatPdfAttachments: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: {
             completedPages: true, pageCount: true, retryable: true, route: true, state: true,
@@ -1314,12 +1310,14 @@ export function createPrismaRunRepository(
 
       return run
         ? {
+            ...(run.answerCompletedAt ? { answerComplete: true as const } : {}),
+            ...(run.workspaceWaitPending && run.status === "preparing" ? { workspacePreparation: true as const } : {}),
             ...(run.chatPdfAttachments?.length ? { pdfPreparation: run.chatPdfAttachments.map((row) =>
               projectChatPdfPreparation(row, run.chatPdfPreparation?.state === "failed" || run.chatPdfPreparation?.state === "cancelled"
                 ? { phase: run.status === "error" ? "failed" : "cancelled",
                     retryable: run.status === "error" && run.chatPdfPreparation?.retryable === true } : undefined)) } : {}),
             id: run.id,
-            status: run.status === "preparing" && run.chatPdfPreparation
+            status: run.status === "preparing" && (run.chatPdfPreparation || run.workspaceFollowup)
               ? "queued"
               : acceptedRunStatus(run.status)
           }

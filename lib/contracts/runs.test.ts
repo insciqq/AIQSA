@@ -72,6 +72,17 @@ describe("decodeCancelModelRunResponse", () => {
 });
 
 describe("decodeRunOutcomeResponse", () => {
+  it("keeps published answers and waiting successors as separate safe facts", () => {
+    expect(decodeRunOutcomeResponse({ version: 1, run: { id: "previous", status: "streaming", answerComplete: true,
+      answerCompletionUsage: { private: "omitted" } } })).toEqual({ id: "previous", status: "streaming", answerComplete: true });
+    expect(decodeRunOutcomeResponse({ version: 1, run: { id: "next", status: "queued", workspacePreparation: true,
+      snapshot: { private: "omitted" } } })).toEqual({ id: "next", status: "queued", workspacePreparation: true });
+    for (const run of [
+      { id: "run", status: "streaming", workspacePreparation: true },
+      { id: "run", status: "queued", workspacePreparation: true, answerComplete: true },
+      { id: "run", status: "streaming", answerComplete: "true" }
+    ]) expect(decodeRunOutcomeResponse({ version: 1, run })).toBeNull();
+  });
   it("decodes the versioned minimal outcome and ignores non-contract input fields", () => {
     expect(decodeRunOutcomeResponse({
       run: {

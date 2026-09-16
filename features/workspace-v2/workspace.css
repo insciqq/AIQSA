@@ -433,12 +433,12 @@
    room; the bottom keeps clearance for the docked composer. */
 .v2-live-workspace .v2-conversation-document {
   padding-top: 1.5rem;
-  padding-bottom: max(15rem, env(safe-area-inset-bottom));
+  padding-bottom: max(15rem, calc(var(--v2-live-dock-height, 15rem) + 1rem));
 }
 
 .v2-live-workspace .v2-conversation-orientation {
   padding-top: 3rem;
-  padding-bottom: max(7rem, env(safe-area-inset-bottom));
+  padding-bottom: max(7rem, var(--v2-safe-area-bottom));
 }
 
 .v2-live-assistant-intro {
@@ -519,7 +519,7 @@
   width: 100%;
   margin: 0 auto;
   gap: 0.375rem;
-  padding: 2.75rem 1rem max(1rem, env(safe-area-inset-bottom));
+  padding: 2.75rem 1rem max(2.125rem, var(--v2-safe-area-bottom));
   background: linear-gradient(
     to bottom,
     transparent,
@@ -542,7 +542,14 @@
    the dock already provides the side gutter, so the wrap takes the full
    inner width instead of insetting itself again. */
 .v2-live-composer-dock .v2-composer-wrap {
+  --v2-composer-wrap-bottom: 0px;
   width: min(var(--v2-measure), 100%);
+}
+
+@media (max-width: 840px), (max-height: 32rem) {
+  .v2-live-composer-dock {
+    padding-bottom: max(1.75rem, var(--v2-safe-area-bottom));
+  }
 }
 
 /*
@@ -925,6 +932,7 @@
   .v2-live-workspace .v2-conversation-document {
     width: min(var(--v2-measure), calc(100% - 1.25rem));
     padding-top: max(4.25rem, calc(env(safe-area-inset-top) + 3.625rem));
+    padding-bottom: calc(var(--v2-live-dock-height, 15rem) + 1rem);
   }
 
   .v2-live-workspace .v2-conversation-turn:first-child {
@@ -937,7 +945,7 @@
     grid-template-rows: minmax(0, 1fr) auto;
     align-content: stretch;
     padding-top: max(4.25rem, calc(env(safe-area-inset-top) + 3.625rem));
-    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+    padding-bottom: max(0.75rem, var(--v2-safe-area-bottom));
   }
 
   .v2-live-workspace .v2-conversation-orientation-copy {
@@ -945,8 +953,14 @@
   }
 
   .v2-live-composer-dock {
+    padding-top: 1.5rem;
     padding-right: 0.625rem;
     padding-left: 0.625rem;
+    background: linear-gradient(to bottom, transparent, var(--v2-color-canvas) 1.25rem);
+  }
+
+  .v2-live-composer-dock .v2-composer-wrap {
+    padding-top: 0;
   }
 
   .v2-live-workspace .v2-conversation-scroll {
@@ -959,7 +973,7 @@
     align-content: start;
     gap: 1rem;
     padding-top: max(4.5rem, calc(env(safe-area-inset-top) + 4.5rem));
-    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    padding-bottom: max(1rem, var(--v2-safe-area-bottom));
   }
 
   .v2-live-assistant-starters {

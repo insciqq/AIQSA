@@ -23,6 +23,7 @@ export type RunFailureV2 = Readonly<{
 }>;
 
 export type RunLifecycleStateV2 = Readonly<{
+  workspacePreparation?: true;
   pdfPreparation?: readonly ChatPdfPreparationWire[];
   authoritativeMessageStatus?: "cancelled" | "complete" | "error" | null;
   connectionLost?: boolean;
@@ -491,6 +492,10 @@ export function presentRunLifecycleV2(
       kind: recoverable ? "recoverable_error" : "terminal_error",
       runId: state.runId
     };
+  }
+
+  if (state.workspacePreparation) {
+    return { activity: { kind: "preparing", label: "Preparing workspace..." }, kind: "activity", runId: state.runId };
   }
 
   const pendingDocuments = state.pdfPreparation?.filter((item) =>

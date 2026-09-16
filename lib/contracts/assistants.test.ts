@@ -129,6 +129,13 @@ function validDraft(): Record<string, unknown> {
 }
 
 describe("assistant draft decode", () => {
+  it("preserves literal reminder text and defaults omitted reminders to empty", () => {
+    expect(decodeAssistantDraft(validDraft())).toMatchObject({ ok: true, draft: { responseReminder: "" } });
+    const responseReminder = "  Отвечай кратко 🙂 {{literal}}\n";
+    expect(decodeAssistantDraft({ ...validDraft(), responseReminder }))
+      .toMatchObject({ ok: true, draft: { responseReminder } });
+  });
+
   it("accepts a complete bounded draft and trims presentation fields", () => {
     const decoded = decodeAssistantDraft({ ...validDraft(), name: "  Code Reviewer  " });
     expect(decoded.ok).toBe(true);
@@ -154,6 +161,9 @@ describe("assistant draft decode", () => {
       [{ ...validDraft(), providerModelId: "" }, "assistant_model_invalid"],
       [{ ...validDraft(), systemPrompt: 7 }, "assistant_system_prompt_invalid"],
       [{ ...validDraft(), developerPrompt: 7 }, "assistant_developer_prompt_invalid"],
+      [{ ...validDraft(), responseReminder: null }, "assistant_response_reminder_invalid"],
+      [{ ...validDraft(), responseReminder: "x".repeat(4001) }, "assistant_response_reminder_invalid"],
+      [{ ...validDraft(), responseReminder: "\0" }, "assistant_response_reminder_invalid"],
       [{ ...validDraft(), runControls: { topP: 1 } }, "assistant_run_controls_invalid"],
       [{ ...validDraft(), searchPlan: { mode: "sometimes", optionIds: [] } }, "assistant_search_plan_invalid"],
       [{

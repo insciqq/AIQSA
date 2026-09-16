@@ -238,7 +238,7 @@ function createDefaultMemoryCoordinator(): MemoryCoordinator {
   ensureDefaultMemoryHandlersRegistered();
   const runtime = getDefaultMemoryCoordinatorRuntime();
   return new MemoryCoordinator({
-    onDrain: () => defaultMemoryWorkerHeartbeat.beat(),
+    onWorkerHeartbeat: () => defaultMemoryWorkerHeartbeat.beat(),
     policy: runtime.policy,
     reconcileWork: reconcileDefaultMemoryWork,
     registry: defaultMemoryCoordinatorRegistry,
@@ -266,6 +266,6 @@ export function kickDefaultMemoryCoordinator(): void {
   // request must never create a second claimant that bypasses worker preflight.
 }
 
-export function stopDefaultMemoryCoordinator(): void {
-  getDefaultMemoryCoordinator().stop();
+export function stopDefaultMemoryCoordinator(): Promise<void> {
+  return getDefaultMemoryCoordinator().stop();
 }

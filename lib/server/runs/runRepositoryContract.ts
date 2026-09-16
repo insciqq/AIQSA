@@ -139,6 +139,8 @@ export type RunSearchStrategyConfiguration = {
 };
 
 export type RunControlRecord = {
+  answerComplete?: true;
+  workspaceWaitPending?: boolean;
   assistantMessageId: string | null;
   chatId: string;
   id: string;
@@ -157,7 +159,11 @@ export type DurableRunControlRecord = Omit<RunControlRecord, "status"> & {
   status: ModelRunStatus;
 };
 
-export type RunOutcomeRecord = Pick<DurableRunControlRecord, "id" | "status"> & { pdfPreparation?: readonly ChatPdfPreparationWire[] };
+export type RunOutcomeRecord = Pick<DurableRunControlRecord, "id" | "status"> & {
+  answerComplete?: true;
+  workspacePreparation?: true;
+  pdfPreparation?: readonly ChatPdfPreparationWire[];
+};
 
 export type StaleRunControlRecord = RunControlRecord & {
   updatedAt: Date | string;
@@ -319,9 +325,26 @@ export type PersistedRunUsageAttribution = RunUsageAttribution & {
   recordedAt: string;
 };
 
+export type RunCompletionInput = {
+  assistantMessageId: string;
+  chatId: string;
+  estimatedCostMicros: number | null;
+  finalText: string;
+  knowledgeGrounding?: KnowledgeRunFinalizationEnvelope;
+  modelId: string;
+  provider: string;
+  providerResponseId?: string;
+  runId: string;
+  outputEvents?: RunOutputArtifactEvent[];
+  usage: ModelRunUsage;
+  usageAttributions?: RunUsageAttribution[];
+  userId: string;
+};
+
 export type ProviderResponseIdPublication = "cancelled" | "published" | "terminal";
 
 export type CreateRunInput = {
+  workspaceFollowup?: Readonly<{ admissionKey: string; predecessorRunId: string; snapshot: unknown }>;
   chatPdfAdmissions?: readonly ChatPdfAttachmentAdmission[];
   deferredPdf?: Readonly<{ admissionKey: string; snapshot: unknown }>;
   assistant?: AcceptedAssistantRun;
@@ -357,6 +380,7 @@ export type CreateRunInput = {
 };
 
 export type CreateRegenerationRunInput = {
+  workspaceFollowup?: never;
   chatPdfAdmissions?: readonly ChatPdfAttachmentAdmission[];
   deferredPdf?: Readonly<{ admissionKey: string; snapshot: unknown }>;
   assistant?: AcceptedAssistantRun;
@@ -385,14 +409,18 @@ export type PreparingRunAdmissionInput =
   | (CreateRunInput & { admissionKind: "NORMAL_SEND" })
   | (CreateRegenerationRunInput & { admissionKind: "REGENERATE" });
 
-export type PreparingRunAdmissionResult = Readonly<{
-  deferredPdf?: true;
-  pdfMemorySource?: Readonly<{
+export type DeferredRunMemorySource = Readonly<{
     activeLeafMessageId: string | null;
     memoryBranchGeneration: number;
     memorySourceRevision: number;
     preSendActiveLeafMessageId: string | null;
-  }>;
+}>;
+
+export type PreparingRunAdmissionResult = Readonly<{
+  deferredPdf?: true;
+  deferredWorkspace?: true;
+  pdfMemorySource?: DeferredRunMemorySource;
+  workspaceMemorySource?: DeferredRunMemorySource;
   assistantMessageId: string;
   attemptId: string;
   chatMemoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
@@ -420,6 +448,7 @@ export type PreparingRunMemoryMaterializer = (
 
 export type CreatedRun = Readonly<{
   deferredPdf?: true;
+  deferredWorkspace?: true;
   assistantMessageId: string;
   materializedRequest?: PreparingRunMaterializedRequest;
   runId: string;
@@ -464,6 +493,12 @@ export type RunOwnedChatRecord = Readonly<{
 }>;
 
 export type RunRepository = {
+  hasPendingWorkspacePreparation?(runId: string): Promise<boolean>;
+  continueWorkspacePreparedRun?(input: Readonly<{
+    admission: PreparingRunAdmissionInput;
+    claimToken: string;
+    created: PreparingRunAdmissionResult;
+  }>): Promise<CreatedRun>;
   hasPendingPdfPreparation?(runId: string): Promise<boolean>;
   continuePdfPreparedRun?(input: Readonly<{
     admission: PreparingRunAdmissionInput;
@@ -531,21 +566,11 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }>): Promise<boolean>;
-  completeRun(input: {
-    assistantMessageId: string;
-    chatId: string;
-    estimatedCostMicros: number | null;
-    finalText: string;
-    knowledgeGrounding?: KnowledgeRunFinalizationEnvelope;
-    modelId: string;
-    provider: string;
-    providerResponseId?: string;
-    runId: string;
-    outputEvents?: RunOutputArtifactEvent[];
-    usage: ModelRunUsage;
-    usageAttributions?: RunUsageAttribution[];
-    userId: string;
-  }): Promise<boolean>;
+  completeRun(input: RunCompletionInput): Promise<boolean>;
+  /** Publish verified text while the run still owns its Workspace cleanup. */
+  publishRunAnswer?(input: RunCompletionInput): Promise<boolean>;
+  /** Resume settlement from the publication checkpoint without provider I/O. */
+  loadPublishedRunAnswer?(input: { runId: string; userId: string }): Promise<RunCompletionInput | null>;
   groundKnowledgeAnswer?(input: Readonly<{
     answer: string;
     runId: string;
@@ -579,7 +604,7 @@ export type RunRepository = {
     runId: string,
     assistantMessageId: string,
     error: { code: string; message: string },
-    options?: Readonly<{ recoveryTerminal?: boolean }>
+    options?: Readonly<{ recoveryTerminal?: boolean; workspaceClaimToken?: string }>
   ): Promise<boolean>;
   findOwnedChat(chatId: string, userId: string): Promise<RunOwnedChatRecord | null>;
   loadProjectFirstSend?(input: Readonly<{
@@ -739,6 +764,7 @@ export type RunRepository = {
     settingsSnapshot: MemoryPreparingSettingsSnapshot;
   }> | null>;
   settlePreparingRunFailure(input: Readonly<{
+    workspaceClaimToken?: string;
     retryable?: boolean;
     attemptId?: string;
     errorCode: string;

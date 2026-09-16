@@ -33,6 +33,7 @@ export type AssistantEditorDraftState = {
   category: AssistantCategory | null;
   description: string;
   developerPrompt: string;
+  responseReminder?: string;
   knowledgeSelection: KnowledgeSelection;
   maxOutputTokens: string;
   mcpServerIds: string[];
@@ -257,6 +258,7 @@ export function assistantDraftFromEditorState(
       starterPrompts: state.starterPrompts
         .map((starter) => starter.trim())
         .filter((starter) => starter.length > 0),
+      responseReminder: state.responseReminder ?? "",
       systemPrompt: state.systemPrompt
     }
   };
@@ -344,6 +346,7 @@ export function editorStateFromContent(
     category: content.category,
     description: content.description,
     developerPrompt: content.developerPrompt ?? "",
+    responseReminder: content.responseReminder ?? "",
     knowledgeSelection: content.knowledgeSelection.mode === "inherited"
       ? EMPTY_KNOWLEDGE_SELECTION
       : content.knowledgeSelection,

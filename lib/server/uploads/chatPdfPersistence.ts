@@ -29,7 +29,7 @@ export async function assertChatPdfClaim(tx: Prisma.TransactionClient, claim: Ch
     JOIN "User" u ON u."id" = r."userId"
     WHERE job."modelRunId" = ${claim.runId} AND job."claimToken" = ${claim.claimToken}
       AND job."state" IN ('pending', 'preparing', 'answer_ready')
-      AND r."status" IN ('preparing', 'streaming') AND r."userId" = ${claim.userId}
+      AND r."status" IN ('preparing', 'streaming') AND NOT r."workspaceWaitPending" AND r."userId" = ${claim.userId}
       AND c."permanentDeletionAt" IS NULL AND NOT c."archived" AND u."status" = 'active'
       AND (c."temporaryRetentionDeadline" IS NULL OR c."temporaryRetentionDeadline" > CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
     FOR UPDATE OF job
@@ -127,7 +127,7 @@ export function createChatPdfRepository(prisma: PrismaClient) {
           SELECT job."modelRunId", r."userId" FROM "ChatPdfRunPreparation" job
           JOIN "ModelRun" r ON r."id" = job."modelRunId"
           WHERE job."state" IN ('pending', 'preparing', 'answer_ready')
-            AND r."status" IN ('preparing', 'streaming')
+            AND r."status" IN ('preparing', 'streaming') AND NOT r."workspaceWaitPending"
             AND (job."claimedAt" IS NULL OR job."claimedAt" <
               (${new Date(now.getTime() - CHAT_PDF_CLAIM_LEASE_MS)}::timestamptz AT TIME ZONE 'UTC'))
           ORDER BY job."lastWorkedAt", job."modelRunId"
@@ -316,7 +316,7 @@ export function createChatPdfRepository(prisma: PrismaClient) {
     async markAnswerDispatched(claim: ChatPdfClaim): Promise<boolean> {
       const updated = await prisma.chatPdfRunPreparation.updateMany({
         where: { modelRunId: claim.runId, claimToken: claim.claimToken, state: "answer_ready",
-          modelRun: { status: "streaming" } },
+          modelRun: { status: "streaming", workspaceWaitPending: false } },
         data: { claimToken: null, claimedAt: null, snapshot: {}, state: "dispatched" }
       }).catch(retainDatabaseFailure);
       return updated.count === 1;
