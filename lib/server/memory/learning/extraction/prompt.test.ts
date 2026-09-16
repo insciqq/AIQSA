@@ -16,7 +16,7 @@ import { memorySha256 } from "../../persistence/lexical";
 describe("Memory semantic-frame extraction prompt", () => {
   it("locks the v5 forced-strict wire shape under the current prompt policy", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v41");
+      .toBe("memory-fact-extraction-prompt-v44");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
       .toBe("memory-fact-extraction-schema-v5");
     expect(memoryFactExtractionTool).toMatchObject({
@@ -40,7 +40,7 @@ describe("Memory semantic-frame extraction prompt", () => {
       "target_message is the only evidence",
       "same language as target_message",
       "never translate it into English",
-      "exact evidence text must by itself entail the complete statement",
+      "exact evidence text must entail the complete statement with references resolved only through declared dependencies",
       "subject, semantic relation, object or value, recipient",
       "assistant-role context message is never user testimony",
       "copy that item's opaque context_ref into dependency_refs",

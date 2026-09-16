@@ -278,7 +278,7 @@ function adjudicationOutput(candidateRefs: readonly string[]) {
           candidate_ref: candidateRef,
           confidence_band: "HIGH",
           entailment: "ENTAILED",
-          entity_ref: null,
+          subject_identity: "UNRESOLVED", entity_ref: null,
           operation: "NO_RELATION",
           reason_code: "direct_preference",
           subject_scope: "CURRENT_USER",
@@ -287,7 +287,7 @@ function adjudicationOutput(candidateRefs: readonly string[]) {
         }))
       },
       id: "adjudication-call",
-      name: "submit_memory_semantic_adjudications_v1"
+      name: "submit_memory_semantic_adjudications_v3"
     }],
     usage: {
       cachedInputTokens: 0,
@@ -371,7 +371,7 @@ describe("Memory fact extraction handler", () => {
               candidate_ref: candidateRef,
               confidence_band: "HIGH",
               entailment: "ENTAILED",
-              entity_ref: null,
+              subject_identity: "UNRESOLVED", entity_ref: null,
               operation: "NO_RELATION",
               reason_code: "explicit_preference",
               subject_scope: "CURRENT_USER",
@@ -380,7 +380,7 @@ describe("Memory fact extraction handler", () => {
             }))
           },
           id: "call-adjudication",
-          name: "submit_memory_semantic_adjudications_v1"
+          name: "submit_memory_semantic_adjudications_v3"
         }],
         usage: {
           cachedInputTokens: 0,

@@ -58,6 +58,8 @@ import {
   MEMORY_SEMANTIC_ADJUDICATION_POLICY_VERSION,
   MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION,
   MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION,
+  decodeStoredMemorySemanticAdjudication,
+  encodeStoredMemorySemanticAdjudication,
   memoryCandidateRequiresSemanticAdjudication,
   memorySemanticAdjudicationInput,
   memorySemanticAdjudicationOutputHash,
@@ -932,7 +934,8 @@ function relationshipCurrentPlan(
   targetVersionId: string | null = null,
   subjectScope: "CURRENT_USER" | "USER_RELATIONSHIP_CONTEXT" =
     "USER_RELATIONSHIP_CONTEXT",
-  sourceContext?: Readonly<{ antecedentRef: string; messageRef: string }>
+  sourceContext?: Readonly<{ antecedentRef: string; messageRef: string }>,
+  additionalSubject?: string
 ): MemoryFactExtractionPlan {
   const targetRef = targetVersionId === null ? null : input.contextRefs.find(
     ({ source }) => source.factVersionId === targetVersionId
@@ -952,7 +955,12 @@ function relationshipCurrentPlan(
           mention_kind: sourceContext ? "PRONOMINAL" : "NAMED",
           qualifier_supports: [],
           role: "SUBJECT"
-        }],
+        }, ...(additionalSubject ? [{
+          aliases: [exactTextRef(additionalSubject)], canonical_label: additionalSubject,
+          context_entity_ref: null, entity_type: "PERSON",
+          mention: exactTextRef(additionalSubject), mention_kind: "NAMED",
+          qualifier_supports: [], role: "SUBJECT"
+        }] : [])],
         evidence: exactTextRef(quote),
         future_useful: true,
         identity: {
@@ -993,7 +1001,8 @@ function relationshipCurrentPlan(
 function relationshipMutationPacket(
   plan: MemoryFactExtractionPlan,
   targetVersionId: string,
-  operation: "RETRACT_TARGET" | "SUPERSEDE_TARGET"
+  operation: "RETRACT_TARGET" | "SUPERSEDE_TARGET" | "REPLACE_RELATIONSHIP_TARGET",
+  subjectIdentity?: "SAME_ENTITY"
 ): MemorySemanticAdjudicationPacket {
   const input = memorySemanticAdjudicationInput(plan);
   const target = plan.input.contextRefs.find(({ source }) =>
@@ -1007,9 +1016,13 @@ function relationshipMutationPacket(
     candidateRef: candidate.candidateRef,
     confidenceBand: "HIGH",
     entailment: "ENTAILED",
-    entityRef: target.entityId === null ? null : target.ref,
+    entityRef: operation === "REPLACE_RELATIONSHIP_TARGET" || target.entityId === null
+      ? null : target.ref,
     operation,
     reasonCode: "relationship_mutation",
+    ...(subjectIdentity === undefined ? {} : { subjectIdentity }),
+    ...(operation === "REPLACE_RELATIONSHIP_TARGET"
+      ? { subjectIdentity: "UNRESOLVED" as const } : {}),
     subjectScope: candidate.semanticFrame.subjectScope,
     targetRef: target.ref,
     temporalPerspective: "CURRENT"
@@ -1017,7 +1030,9 @@ function relationshipMutationPacket(
   return {
     decisions,
     inputHash: input.inputHash,
-    outputHash: memorySemanticAdjudicationOutputHash(input.inputHash, decisions)
+    outputHash: memorySemanticAdjudicationOutputHash(input.inputHash, decisions),
+    ...(operation === "REPLACE_RELATIONSHIP_TARGET"
+      ? { schemaVersion: MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION } : {})
   };
 }
 
@@ -1179,6 +1194,7 @@ async function semanticAdjudicationForPlan(
       entityRef,
       operation,
       reasonCode: sameValue ? "state-match" : "state-transition",
+      subjectIdentity: "UNRESOLVED",
       subjectScope: candidate.semanticFrame.subjectScope ===
         "USER_RELATIONSHIP_CONTEXT"
         ? "USER_RELATIONSHIP_CONTEXT"
@@ -1804,10 +1820,19 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   });
 
-  it("[E02] atomically persists the bounded adjudication result before settlement", async () => {
+  it.each([
+    ["retained", 1], ["retained", 8], ["identity", 1], ["identity", 8],
+    ["current", 1], ["current", 8]
+  ] as const)("[E02] atomically persists the bounded adjudication result before settlement (%s, %i)", async (format, count) => {
     const userId = await createOwner("adjudication-result-contract");
     try {
-      const sourceText = "I currently own a MacBook Air.";
+      const statements = [
+        "I do not drink coffee.", "I do not drink black tea.",
+        "I do not drink green tea.", "I do not drink soda.",
+        "I do not drink energy drinks.", "I do not drink milk.",
+        "I do not drink cocoa.", "I do not drink lemonade."
+      ].slice(0, count);
+      const sourceText = statements.join(" ");
       const chat = await prisma.chat.create({
         data: { title: "Adjudication result contract", userId }
       });
@@ -1822,7 +1847,14 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       await settleChat(userId, chat.id, turn);
       const claim = await claimFactJob(userId, turn.userMessage.id);
       const input = await prepare(claim);
-      const plan = extractionPlan(input, sourceText);
+      const candidates = statements.flatMap((statement) => preferencePlan(
+        input, statement, statement, false, "HIGH", [], null, "NEGATED"
+      ).candidates);
+      const candidateOrdinals = candidates.map((_, index) => index);
+      const plan: MemoryFactExtractionPlan = {
+        candidateOrdinals, candidates, input, rejections: [],
+        outputHash: memoryFactExtractionOutputHash(input, candidates, candidateOrdinals, [])
+      };
       const extractionBindingId = await createSucceededBinding(
         userId,
         claim,
@@ -1830,8 +1862,16 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         plan.outputHash
       );
       await stagePlanOnly(userId, claim, plan, extractionBindingId);
-      const packet = await semanticAdjudicationForPlan(userId, plan);
-      if (!packet) throw new Error("memory_test_adjudication_packet_missing");
+      const currentPacket = await semanticAdjudicationForPlan(userId, plan);
+      if (!currentPacket) throw new Error("memory_test_adjudication_packet_missing");
+      const decisions = format !== "retained" ? currentPacket.decisions
+        : currentPacket.decisions.map(({ subjectIdentity: _identity, ...decision }) => decision);
+      const packetSchema = format === "current" ? MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION
+        : format === "retained" ? "memory-semantic-adjudication-schema-v1"
+          : "memory-semantic-adjudication-schema-v2";
+      const packet = { ...currentPacket, decisions, schemaVersion: packetSchema,
+        outputHash: memorySemanticAdjudicationOutputHash(currentPacket.inputHash, decisions) };
+      expect(packet.decisions).toHaveLength(count);
       await expect(repository().reserveAdjudication(claim))
         .resolves.toBe("ACQUIRED");
 
@@ -1865,7 +1905,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
           pipelineVersion: MEMORY_SEMANTIC_ADJUDICATION_PIPELINE_VERSION,
           policyVersion: MEMORY_SEMANTIC_ADJUDICATION_POLICY_VERSION,
           promptVersion: MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION,
-          schemaVersion: MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION,
+          schemaVersion: packetSchema,
           secretFreeExecutionSnapshot:
             authority.secretFreeExecutionSnapshot as Prisma.InputJsonValue,
           startedAt,
@@ -1900,7 +1940,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
           pipelineVersion: MEMORY_SEMANTIC_ADJUDICATION_PIPELINE_VERSION,
           policyVersion: MEMORY_SEMANTIC_ADJUDICATION_POLICY_VERSION,
           promptVersion: MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION,
-          schemaVersion: MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION,
+          schemaVersion: packetSchema,
           secretFreeExecutionSnapshot:
             authority.secretFreeExecutionSnapshot as Prisma.InputJsonValue,
           startedAt,
@@ -1909,6 +1949,22 @@ describe("Prisma Memory vNext source-message ingestion", () => {
           userId
         }
       });
+
+      const encoded = encodeStoredMemorySemanticAdjudication(packet);
+      for (const invalid of [
+        { ...encoded, schemaVersion: "memory-semantic-adjudication-schema-v999" },
+        { ...encoded, decisions: Array.from({ length: 9 }, () => decisions[0]) },
+        { ...encoded, inputHash: "unbound-input" }
+      ]) {
+        await expect(prisma.memoryAuxiliarySemanticCall.updateMany({
+          data: {
+            acceptedOutputHash: packet.outputHash, completedAt: new Date(),
+            executionId: adjudicationBindingId, inputHash: packet.inputHash,
+            result: invalid as Prisma.InputJsonObject
+          },
+          where: { ownerJobId: claim.id, userId }
+        })).rejects.toThrow("MemoryAuxiliarySemanticCall_result_contract_check");
+      }
 
       await withLockedMemoryTransaction(prisma, userId, async (tx) => {
         await repository().completeAdjudication(
@@ -1951,12 +2007,13 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         result: {
           inputHash: packet.inputHash,
           outputHash: packet.outputHash,
-          schemaVersion: MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION
+          schemaVersion: packetSchema
         }
       });
       expect(stored.completedAt?.getTime()).toBeGreaterThanOrEqual(
         startedAt.getTime()
       );
+      expect(decodeStoredMemorySemanticAdjudication(stored.result)).toEqual(packet);
     } finally {
       await cleanupOwner(userId);
     }
@@ -2591,9 +2648,14 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   });
 
-  it.each(["message", "fact"] as const)(
-    "persists one pronoun antecedent with its message source and fences changed %s",
-    async (changedSource) => {
+  it.each([
+    { changedSource: "message", subjectIdentity: "UNRESOLVED" },
+    { changedSource: "fact", subjectIdentity: "UNRESOLVED" },
+    { changedSource: "message", subjectIdentity: "SAME_ENTITY" },
+    { changedSource: "fact", subjectIdentity: "SAME_ENTITY" }
+  ] as const)(
+    "preserves an independent pronoun fact with $subjectIdentity and fences changed $changedSource",
+    async ({ changedSource, subjectIdentity }) => {
       const userId = await createOwner("pronoun-source-fences");
       try {
         const chat = await prisma.chat.create({ data: { title: "Personal context", userId } });
@@ -2627,12 +2689,31 @@ describe("Prisma Memory vNext source-message ingestion", () => {
           "The user's colleague Alex starts at noon.", "NONE", null,
           "USER_RELATIONSHIP_CONTEXT", { antecedentRef: antecedent.ref, messageRef: message.ref });
         expect(plan.rejections).toEqual([]);
+        const packet = (await semanticAdjudicationForPlan(userId, plan))!;
+        expect(packet.decisions).toHaveLength(1);
+        expect(packet.decisions[0]).toMatchObject({
+          entityRef: antecedent.ref, operation: "NO_RELATION", targetRef: null
+        });
+        const decisions = packet.decisions.map((decision) => ({ ...decision, subjectIdentity }));
         await expect(applyPlan(userId, claim, plan, await createSucceededBinding(
           userId, claim, input.inputHash, plan.outputHash
-        ))).resolves.toBe("APPLIED");
+        ), new Date(), {
+          ...packet, decisions,
+          outputHash: memorySemanticAdjudicationOutputHash(packet.inputHash, decisions)
+        })).resolves.toBe("APPLIED");
         const retained = await prisma.memoryFactVersion.findFirstOrThrow({
           where: { id: { not: original.id }, userId }
         });
+        expect(retained.factId).not.toBe(original.factId);
+        await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+          select: { state: true, systemTo: true }, where: { id: original.id }
+        })).resolves.toEqual({ state: "ACTIVE", systemTo: null });
+        await expect(prisma.memoryFact.findMany({
+          select: { currentVersionId: true, state: true }, where: { userId }
+        })).resolves.toEqual(expect.arrayContaining([
+          { currentVersionId: original.id, state: "ACTIVE" },
+          { currentVersionId: retained.id, state: "ACTIVE" }
+        ]));
         await expect(prisma.memoryFactVersionSourceDependency.findMany({
           select: { dependencyKind: true, sourceFactVersionId: true, sourceMessageId: true },
           where: { targetFactVersionId: retained.id, userId }
@@ -2674,7 +2755,10 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   );
 
-  it("keeps relationship updates and withdrawals on the exact grounded subject", async () => {
+  it.each(["exact", "unbound", "successor", "ambiguous-successor"] as const)(
+    "preserves subjects and exact relationships across updates and withdrawals (%s)", async (identity) => {
+    const successor = identity === "successor" || identity === "ambiguous-successor";
+    const ambiguous = identity === "ambiguous-successor";
     const userId = await createOwner("relationship-mutation-guard");
     try {
       const chat = await prisma.chat.create({
@@ -2689,7 +2773,8 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         changeIntent: "NONE" | "STATE_CHANGE" | "RETRACTION" = "NONE",
         targetVersionId: string | null = null,
         subjectScope: "CURRENT_USER" | "USER_RELATIONSHIP_CONTEXT" =
-          "USER_RELATIONSHIP_CONTEXT"
+          "USER_RELATIONSHIP_CONTEXT",
+        additionalSubject?: string
       ) {
         const createdAt = new Date(`2026-08-27T10:${String(minute).padStart(2, "0")}:00.000Z`);
         minute += 1;
@@ -2706,7 +2791,8 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         const claim = await claimFactJob(userId, turn.userMessage.id);
         const input = await prepare(claim);
         const plan = relationshipCurrentPlan(
-          input, text, subject, statement, changeIntent, targetVersionId, subjectScope
+          input, text, subject, statement, changeIntent, targetVersionId, subjectScope,
+          undefined, additionalSubject
         );
         const bindingId = await createSucceededBinding(
           userId, claim, input.inputHash, plan.outputHash
@@ -2715,9 +2801,10 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       }
 
       const initial = await turnPlan(
-        "My sister Lia works at North Bakery.",
+        successor ? "My manager is Lia." : "My sister Lia works at North Bakery.",
         "Lia",
-        "The current user's sister Lia works at North Bakery."
+        successor ? "The current user's manager is Lia."
+          : "The current user's sister Lia works at North Bakery."
       );
       await expect(applyPlan(
         userId, initial.claim, initial.plan, initial.bindingId,
@@ -2726,6 +2813,19 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       const original = await prisma.memoryFactVersion.findFirstOrThrow({
         where: { state: "ACTIVE", userId }
       });
+      const originalSubject = await prisma.memoryFactVersionEntity.findFirstOrThrow({
+        where: { factVersionId: original.id, role: "SUBJECT", userId }
+      });
+      let neighborId: string | null = null;
+      if (successor) {
+        const neighbor = await turnPlan("Lia is also my piano teacher.", "Lia",
+          "The current user's piano teacher is Lia.");
+        await expect(applyPlan(userId, neighbor.claim, neighbor.plan, neighbor.bindingId,
+          new Date(neighbor.createdAt.getTime() + 30_000))).resolves.toBe("APPLIED");
+        neighborId = (await prisma.memoryFactVersion.findFirstOrThrow({
+          where: { state: "ACTIVE", userId, id: { not: original.id } }
+        })).id;
+      }
 
       for (const mismatch of [
         await turnPlan(
@@ -2765,23 +2865,75 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       }
 
       const update = await turnPlan(
-        "My sister Lia now works at South Bakery.",
-        "Lia",
-        "The current user's sister Lia now works at South Bakery.",
+        successor ? "My new manager is Remy, replacing Lia." : identity === "unbound"
+          ? "My sister Lia's new workplace is South Bakery."
+          : "My sister Lia now works at South Bakery.",
+        successor ? "Remy" : identity === "unbound" ? "Lia's" : "Lia",
+        successor ? "The current user's manager is now Remy."
+          : "The current user's sister Lia now works at South Bakery.",
         "STATE_CHANGE",
-        original.id
+        identity === "unbound" ? null : original.id,
+        "USER_RELATIONSHIP_CONTEXT",
+        ambiguous ? "Lia" : undefined
       );
+      if (identity === "unbound") {
+        expect(update.plan.candidates[0]!.dependencies).toEqual([]);
+        expect(update.plan.candidates[0]!.entities[0]!.contextEntityId).toBeNull();
+      }
       await expect(applyPlan(
         userId,
         update.claim,
         update.plan,
         update.bindingId,
         new Date(update.createdAt.getTime() + 30_000),
-        relationshipMutationPacket(update.plan, original.id, "SUPERSEDE_TARGET")
-      )).resolves.toBe("APPLIED");
+        relationshipMutationPacket(update.plan, original.id,
+          successor ? "REPLACE_RELATIONSHIP_TARGET" : "SUPERSEDE_TARGET",
+          identity === "unbound" ? "SAME_ENTITY" : undefined)
+      )).resolves.toBe(identity === "unbound" || ambiguous ? "EMPTY" : "APPLIED");
+      if (identity === "unbound" || ambiguous) {
+        const execution = await prisma.memoryFactExtractionExecution.findFirstOrThrow({
+          select: { id: true }, where: { memoryJobId: update.claim.id, userId }
+        });
+        await expect(prisma.memoryFactExtractionCandidateReceipt.findFirstOrThrow({
+          select: { outcome: true, reasonCode: true },
+          where: { extractionExecutionId: execution.id, userId }
+        })).resolves.toMatchObject({ outcome: "REJECTED", reasonCode: "repository_guarded_noop" });
+        await expect(prisma.memoryFactVersion.findMany({
+          select: { id: true, state: true, systemTo: true }, where: { userId }
+        })).resolves.toEqual(expect.arrayContaining([
+          { id: original.id, state: "ACTIVE", systemTo: null },
+          ...(neighborId ? [{ id: neighborId, state: "ACTIVE", systemTo: null }] : [])
+        ]));
+        await expect(prisma.memoryFactVersion.count({ where: { userId } }))
+          .resolves.toBe(neighborId ? 2 : 1);
+        await expect(prisma.memoryEntity.count({ where: { userId } })).resolves.toBe(1);
+        await expect(prisma.memoryFactVersionEntity.findMany({
+          select: { entityId: true }, where: { factVersionId: original.id, role: "SUBJECT", userId }
+        })).resolves.toEqual([{ entityId: originalSubject.entityId }]);
+        return;
+      }
       const pendingUpdate = await prisma.memoryFactVersion.findFirstOrThrow({
         where: { state: "PENDING_RELATION", userId }
       });
+      const newSubjects = await prisma.memoryFactVersionEntity.findMany({
+        select: { entityId: true },
+        where: { factVersionId: pendingUpdate.id, role: "SUBJECT", userId }
+      });
+      if (successor) {
+        expect(newSubjects).toHaveLength(1);
+        expect(newSubjects[0]!.entityId).not.toBe(originalSubject.entityId);
+        await expect(prisma.memoryFactVersionEntity.findMany({
+          select: { entityId: true }, where: { factVersionId: neighborId!, role: "SUBJECT", userId }
+        })).resolves.toEqual([{ entityId: originalSubject.entityId }]);
+      } else expect(newSubjects).toEqual([{ entityId: originalSubject.entityId }]);
+      await expect(prisma.memoryEntity.count({ where: { userId } }))
+        .resolves.toBe(successor ? 2 : 1);
+      await expect(prisma.memoryFactVersionSourceDependency.findMany({
+        select: { dependencyKind: true, sourceFactVersionId: true },
+        where: { targetFactVersionId: pendingUpdate.id, userId }
+      })).resolves.toEqual(expect.arrayContaining([{
+        dependencyKind: "CORRECTION_TARGET", sourceFactVersionId: original.id
+      }]));
       const relationSettings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
       const relationClaim: MemoryJobClaim = {
         ...update.claim,
@@ -2806,13 +2958,19 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         orderBy: { createdAt: "asc" }, select: { id: true, displayText: true, state: true },
         where: { state: "ACTIVE", userId }
       });
-      const updated = activeAfterUpdate.find(({ displayText }) => displayText?.includes("South Bakery"));
+      const updated = activeAfterUpdate.find(({ displayText }) =>
+        displayText?.includes(successor ? "Remy" : "South Bakery"));
       if (!updated) throw new Error("memory_relationship_update_value_missing");
+      if (neighborId) expect(activeAfterUpdate.map(({ id }) => id)).toContain(neighborId);
+      await expect(prisma.memoryFactVersion.findUniqueOrThrow({ where: { id: original.id } }))
+        .resolves.toMatchObject({ state: "SUPERSEDED" });
 
       const withdrawal = await turnPlan(
-        "My sister Lia no longer works at South Bakery.",
-        "Lia",
-        "The current user withdraws the report that sister Lia works at South Bakery.",
+        successor ? "Remy is no longer my manager."
+          : "My sister Lia no longer works at South Bakery.",
+        successor ? "Remy" : "Lia",
+        successor ? "The current user withdraws that Remy is their manager."
+          : "The current user withdraws the report that sister Lia works at South Bakery.",
         "RETRACTION",
         updated.id
       );
@@ -2829,7 +2987,9 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       })).resolves.toMatchObject({ state: "RETRACTED", systemTo: expect.any(Date) });
       await expect(prisma.memoryFactVersion.count({
         where: { state: "ACTIVE", userId }
-      })).resolves.toBe(0);
+      })).resolves.toBe(successor ? 1 : 0);
+      if (neighborId) await expect(prisma.memoryFactVersion.findUniqueOrThrow({ where: { id: neighborId } }))
+        .resolves.toMatchObject({ state: "ACTIVE", systemTo: null });
     } finally {
       await cleanupOwner(userId);
     }

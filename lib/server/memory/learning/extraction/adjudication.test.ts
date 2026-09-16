@@ -12,12 +12,15 @@ import {
   encodeStoredMemorySemanticAdjudication,
   memoryCandidateRequiresSemanticAdjudication,
   memoryPotentialDuplicateContext,
+  memoryRelationshipReplacementIsAuthorized,
   memorySemanticAuthorityAdmitsCandidate,
   memorySemanticAdjudicationInput,
+  memorySemanticAdjudicationOutputHash,
   memorySemanticAdjudicationPacketIsValid,
   memorySemanticAdjudicationPromptPayload,
   memorySemanticAdjudicationTool,
   MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION,
+  MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION,
   MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT,
   MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
 } from "./adjudication";
@@ -173,10 +176,178 @@ function referenceKindsPlan(): MemoryFactExtractionPlan {
   };
 }
 
+function relationshipPlan(): MemoryFactExtractionPlan {
+  const base = plan(candidate({
+    identityKind: "PROPOSITION", proposedIdentityKind: "PROPOSITION",
+    predicateKey: null, subjectKey: null,
+    entities: [{
+      aliases: [], canonicalLabel: "Nerin", contextEntityId: null, contextRef: null,
+      entityType: "PERSON", mention: "Nerin", mentionKind: "NAMED",
+      qualifiers: {}, role: "SUBJECT"
+    }],
+    semanticFrame: { ...candidate().semanticFrame,
+      changeIntent: "STATE_CHANGE", subjectScope: "USER_RELATIONSHIP_CONTEXT" }
+  }));
+  const context = { ...base.input.contextRefs[0]!,
+    aliases: ["Nera"], displayName: "Nera", entityType: "PERSON" };
+  return { ...base, input: { ...base.input,
+    contextRefs: [context, { ...context, ref: "F2", entityId: "another-private-entity-id" }] } };
+}
+
+function subjectIdentityDecision() {
+  return {
+    assertion_status: "ASSERTED", candidate_ref: "C1", confidence_band: "HIGH",
+    entailment: "ENTAILED", entity_ref: "F1", operation: "SUPERSEDE_TARGET",
+    reason_code: "same_subject_revision", subject_identity: "SAME_ENTITY",
+    subject_scope: "USER_RELATIONSHIP_CONTEXT", target_ref: "F1",
+    temporal_perspective: "CURRENT"
+  };
+}
+
 describe("batched Memory semantic adjudication", () => {
+  it("requires a fresh explicit subject identity decision separately from the relation target", () => {
+    const input = memorySemanticAdjudicationInput(relationshipPlan())!;
+    const decode = (decision: Record<string, unknown>) => decodeMemorySemanticAdjudication([{
+      arguments: { decisions: [decision] }, id: "call", name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
+    }], input);
+    const packet = decode(subjectIdentityDecision());
+    expect(packet.decisions[0]).toMatchObject({ subjectIdentity: "SAME_ENTITY", entityRef: "F1" });
+    expect(decodeStoredMemorySemanticAdjudication(encodeStoredMemorySemanticAdjudication(packet)))
+      .toEqual(packet);
+    const { subject_identity: _identity, ...missingIdentity } = subjectIdentityDecision();
+    expect(() => decode(missingIdentity)).toThrow("memory_semantic_adjudication_output_invalid");
+    for (const change of [
+      { entity_ref: null }, { target_ref: "F2" }, { subject_scope: "CURRENT_USER" },
+      { confidence_band: "LOW" }, { operation: "RETRACT_TARGET" }
+    ]) {
+      expect(() => decode({ ...subjectIdentityDecision(), ...change }))
+        .toThrow("memory_semantic_adjudication_output_invalid");
+    }
+  });
+
+  it("supplies bounded entity annotations without database identity", () => {
+    const input = memorySemanticAdjudicationInput(relationshipPlan())!;
+    const payload = memorySemanticAdjudicationPromptPayload(input);
+    expect(JSON.parse(payload).candidates[0].entities).toEqual([{
+      context_ref: null, entity_type: "PERSON", mention: "Nerin",
+      mention_kind: "NAMED", role: "SUBJECT"
+    }]);
+    expect(payload).not.toContain("private-entity-id");
+    expect(payload).not.toContain("private-version-id");
+  });
+
+  it("admits a distinct new property only for its already bound subject", () => {
+    const base = relationshipPlan();
+    const context = base.input.contextRefs[0]!;
+    const original = base.candidates[0]!;
+    const observation = {
+      ...original,
+      dependencies: [{ dependencyKind: "COREFERENCE_ANTECEDENT" as const,
+        ref: context.ref, source: context.source }],
+      entities: [{ ...original.entities[0]!, contextRef: context.ref,
+        contextEntityId: context.entityId, mentionKind: "PRONOMINAL" as const }],
+      semanticFrame: { ...original.semanticFrame, changeIntent: "NONE" as const }
+    };
+    const input = memorySemanticAdjudicationInput({ ...base, candidates: [observation] })!;
+    const raw = { ...subjectIdentityDecision(), operation: "NO_RELATION", target_ref: null };
+    const decode = (decision: Record<string, unknown>) => decodeMemorySemanticAdjudication([{
+      arguments: { decisions: [decision] }, id: "call", name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
+    }], input);
+    const packet = decode(raw);
+    const decision = packet.decisions[0]!;
+    expect(memorySemanticAdjudicationPacketIsValid(input.plan, packet)).toBe(true);
+    expect(decodeStoredMemorySemanticAdjudication(encodeStoredMemorySemanticAdjudication(packet)))
+      .toEqual(packet);
+    expect(memorySemanticAuthorityAdmitsCandidate(observation, decision, input.plan.input.contextRefs))
+      .toBe(true);
+    for (const change of [
+      { entity_ref: null }, { entity_ref: "F99" }, { target_ref: "F1" },
+      { subject_scope: "CURRENT_USER" }, { confidence_band: "LOW" },
+      { operation: "AMBIGUOUS" }
+    ]) {
+      expect(() => decode({ ...raw, ...change })).toThrow("memory_semantic_adjudication_output_invalid");
+    }
+    for (const changed of [
+      { ...observation, dependencies: [] },
+      { ...observation, entities: original.entities },
+      { ...observation, entities: [...observation.entities, original.entities[0]!] },
+      { ...observation, entities: [{ ...observation.entities[0]!, contextEntityId: "different-entity" }] }
+    ]) {
+      expect(memorySemanticAuthorityAdmitsCandidate(changed, decision, input.plan.input.contextRefs))
+        .toBe(false);
+    }
+    expect(memorySemanticAuthorityAdmitsCandidate(observation, { ...decision, entityRef: "F2" },
+      input.plan.input.contextRefs)).toBe(false);
+    expect(memorySemanticAuthorityAdmitsCandidate(observation, decision, [{ ...context, entityId: null }]))
+      .toBe(false);
+  });
+
+  it("reads a retained generic decision without granting new subject identity authority", () => {
+    const inputHash = "a".repeat(64);
+    const decisions = [{
+      assertionStatus: "ASSERTED", candidateRef: "C1", confidenceBand: "HIGH",
+      entailment: "ENTAILED", entityRef: "F1", operation: "SUPERSEDE_TARGET",
+      reasonCode: "retained_relation", subjectScope: "USER_RELATIONSHIP_CONTEXT",
+      targetRef: "F1", temporalPerspective: "CURRENT"
+    }] as const;
+    const outputHash = memorySemanticAdjudicationOutputHash(inputHash, decisions);
+    const stored = { decisions, inputHash, outputHash,
+      schemaVersion: "memory-semantic-adjudication-schema-v1" };
+    const decoded = decodeStoredMemorySemanticAdjudication(stored);
+    expect(decoded).toEqual({ decisions, inputHash, outputHash,
+      schemaVersion: "memory-semantic-adjudication-schema-v1" });
+    expect(decoded.decisions[0]).not.toHaveProperty("subjectIdentity");
+    expect(encodeStoredMemorySemanticAdjudication(decoded)).toEqual(stored);
+  });
+
+  it("requires fresh distinct-holder authority without transferring entity identity", () => {
+    const input = memorySemanticAdjudicationInput(plan())!;
+    const raw = {
+      assertion_status: "ASSERTED", candidate_ref: "C1", confidence_band: "HIGH",
+      entailment: "ENTAILED", entity_ref: null, operation: "REPLACE_RELATIONSHIP_TARGET",
+      reason_code: "explicit_relationship_successor", subject_identity: "UNRESOLVED",
+      subject_scope: "USER_RELATIONSHIP_CONTEXT", target_ref: "F1", temporal_perspective: "CURRENT"
+    };
+    const decode = (overrides: Record<string, unknown> = {}) => decodeMemorySemanticAdjudication([{
+      arguments: { decisions: [{ ...raw, ...overrides }] }, id: "replacement-call",
+      name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
+    }], input);
+    const packet = decode();
+    expect(memoryRelationshipReplacementIsAuthorized(packet.decisions[0]!)).toBe(true);
+    expect(memorySemanticAdjudicationPacketIsValid(input.plan, packet)).toBe(true);
+    expect(decodeStoredMemorySemanticAdjudication(encodeStoredMemorySemanticAdjudication(packet)))
+      .toEqual(packet);
+    for (const overrides of [
+      { entity_ref: "F1" }, { target_ref: null }, { target_ref: "unprovided" },
+      { subject_identity: "SAME_ENTITY" }, { subject_scope: "CURRENT_USER" },
+      { temporal_perspective: "FORMER" }, { assertion_status: "HYPOTHETICAL" },
+      { confidence_band: "MEDIUM" }, { entailment: "UNKNOWN" }
+    ]) expect(() => decode(overrides)).toThrow("memory_semantic_adjudication_output_invalid");
+    for (const schemaVersion of [
+      "memory-semantic-adjudication-schema-v1", "memory-semantic-adjudication-schema-v2"
+    ]) {
+      expect(memorySemanticAdjudicationPacketIsValid(input.plan, { ...packet, schemaVersion }))
+        .toBe(false);
+      expect(() => encodeStoredMemorySemanticAdjudication({ ...packet, schemaVersion }))
+        .toThrow("memory_semantic_adjudication_result_invalid");
+      expect(() => decodeStoredMemorySemanticAdjudication({
+        ...encodeStoredMemorySemanticAdjudication(packet), schemaVersion
+      })).toThrow("memory_semantic_adjudication_result_invalid");
+    }
+    expect(packet.schemaVersion).toBe(MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION);
+
+    const previous = decode({ operation: "SUPERSEDE_TARGET" });
+    const stored = { ...encodeStoredMemorySemanticAdjudication(previous),
+      schemaVersion: "memory-semantic-adjudication-schema-v2" };
+    const retained = decodeStoredMemorySemanticAdjudication(stored);
+    expect(retained.outputHash).toBe(previous.outputHash);
+    expect(memoryRelationshipReplacementIsAuthorized(retained.decisions[0]!)).toBe(false);
+    expect(encodeStoredMemorySemanticAdjudication(retained)).toEqual(stored);
+  });
+
   it("makes new-fact ref nullability explicit without weakening the decoder", () => {
     expect(MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION)
-      .toBe("memory-semantic-adjudication-prompt-v14");
+      .toBe("memory-semantic-adjudication-prompt-v18");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
       .toContain("A candidate_ref is never an entity_ref or target_ref");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
@@ -571,7 +742,7 @@ describe("batched Memory semantic adjudication", () => {
       candidate_ref: candidateRef,
       confidence_band: "HIGH",
       entailment: "ENTAILED",
-      entity_ref: null,
+      subject_identity: "UNRESOLVED", entity_ref: null,
       operation: "NO_RELATION",
       reason_code: "direct_assertion",
       subject_scope: "CURRENT_USER",
@@ -601,7 +772,7 @@ describe("batched Memory semantic adjudication", () => {
           candidate_ref: "C1",
           confidence_band: "HIGH",
           entailment: "ENTAILED",
-          entity_ref: "F1",
+          subject_identity: "UNRESOLVED", entity_ref: "F1",
           operation: "REINFORCE",
           reason_code: "explicit_current_state",
           subject_scope: "CURRENT_USER",
@@ -663,7 +834,7 @@ describe("batched Memory semantic adjudication", () => {
         candidate_ref: "C1",
         confidence_band: "HIGH",
         entailment: "ENTAILED",
-        entity_ref: null,
+        subject_identity: "UNRESOLVED", entity_ref: null,
         operation: "SUPERSEDE_TARGET",
         reason_code: "invented_target",
         subject_scope: "CURRENT_USER",
@@ -675,7 +846,7 @@ describe("batched Memory semantic adjudication", () => {
         candidate_ref: "C1",
         confidence_band: "LOW",
         entailment: "ENTAILED",
-        entity_ref: null,
+        subject_identity: "UNRESOLVED", entity_ref: null,
         operation: "SUPERSEDE_TARGET",
         reason_code: "weak_target",
         subject_scope: "CURRENT_USER",
@@ -701,7 +872,7 @@ describe("batched Memory semantic adjudication", () => {
       expect(() => decodeMemorySemanticAdjudication([{
         arguments: { decisions: [{
           assertion_status: "ASSERTED", candidate_ref: "C1", confidence_band: "HIGH",
-          entailment: "ENTAILED", entity_ref: entityRef, operation, reason_code: "direct_continuation",
+          entailment: "ENTAILED", subject_identity: "UNRESOLVED", entity_ref: entityRef, operation, reason_code: "direct_continuation",
           subject_scope: "CURRENT_USER", target_ref: targetRef, temporal_perspective: "CURRENT"
         }] }, id: "call", name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
       }], input)).toThrow("memory_semantic_adjudication_output_invalid");
@@ -713,7 +884,7 @@ describe("batched Memory semantic adjudication", () => {
     const packet = decodeMemorySemanticAdjudication([{
       arguments: { decisions: [{
         assertion_status: "ASSERTED", candidate_ref: "C1", confidence_band: "HIGH",
-        entailment: "ENTAILED", entity_ref: null, operation: "NO_RELATION",
+        entailment: "ENTAILED", subject_identity: "UNRESOLVED", entity_ref: null, operation: "NO_RELATION",
         reason_code: "direct_continuation", subject_scope: "CURRENT_USER",
         target_ref: null, temporal_perspective: "CURRENT"
       }] }, id: "call", name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
@@ -743,6 +914,47 @@ describe("batched Memory semantic adjudication", () => {
     expect(restricted.properties.decisions.items.properties.target_ref!.enum).toEqual([null]);
     expect(JSON.parse(memorySemanticAdjudicationPromptPayload(messageOnly)).candidates[0].dependency_refs)
       .toEqual(["M1"]);
+  });
+
+  it("offers subject identity only for requested relationship observations", () => {
+    const current = plan();
+    const relationship = {
+      ...relationshipPlan().candidates[0]!, candidateRef: "C2", id: "2".repeat(64)
+    };
+    const input = memorySemanticAdjudicationInput({
+      ...current, candidates: [current.candidates[0]!, relationship],
+      candidateOrdinals: [0, 1]
+    })!;
+    const domain = (candidateRefs: readonly string[]) => {
+      const schema = memorySemanticAdjudicationTool({ ...input, candidateRefs }).inputSchema as {
+        properties: { decisions: { items: { properties: {
+          subject_identity: { enum: string[] }; entity_ref: { enum: unknown[] };
+        } } } };
+      };
+      return schema.properties.decisions.items.properties;
+    };
+    // An unrequested relationship candidate must not widen a current-user
+    // packet's identity domain; binding an object still remains available.
+    expect(domain(["C1"]).subject_identity.enum).toEqual(["UNRESOLVED"]);
+    expect(domain(["C1"]).entity_ref.enum).toEqual(["F1", null]);
+    expect(domain(["C2"]).subject_identity.enum).toEqual(["SAME_ENTITY", "UNRESOLVED"]);
+    expect(domain(["C1", "C2"]).subject_identity.enum)
+      .toEqual(["SAME_ENTITY", "UNRESOLVED"]);
+
+    const selected = { ...input, candidateRefs: ["C1"] };
+    const decision = { ...subjectIdentityDecision(), subject_scope: "CURRENT_USER" };
+    const call = (value: typeof decision) => [{
+      arguments: { decisions: [value] }, id: "identity-domain-call",
+      name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
+    }];
+    expect(() => decodeMemorySemanticAdjudication(call(decision), selected))
+      .toThrow("memory_semantic_adjudication_output_invalid");
+    expect(decodeMemorySemanticAdjudication(call({
+      ...decision, subject_identity: "UNRESOLVED"
+    }), selected).decisions[0]).toMatchObject({
+      subjectScope: "CURRENT_USER", subjectIdentity: "UNRESOLVED",
+      entityRef: "F1", targetRef: "F1", operation: "SUPERSEDE_TARGET"
+    });
   });
 
   it("cannot adjudicate fields that are absent from the bounded output contract", () => {
