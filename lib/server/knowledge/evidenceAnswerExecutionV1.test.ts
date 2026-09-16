@@ -74,6 +74,29 @@ function execution(outputs: readonly unknown[]) {
 }
 
 describe("evidence answer execution and recovery", () => {
+  it.each(["native_strict", "provider_neutral_json"] as const)("freezes compose instructions across repair and replay while keeping review independent (%s)", async transport => {
+    const h = execution([{ invalid: true }, compose(), review()]);
+    const answerInstructions = { system: "SYNTHETIC_STYLE", responseReminder: "SYNTHETIC_REMINDER" };
+    await executeKnowledgeEvidenceAnswerV1({ ...h.input, transport, answerInstructions });
+    const calls = h.execute.mock.calls as unknown as [import("../providers/structuredOutput").ProviderStructuredOutputRequest][];
+    expect(calls).toHaveLength(3);
+    for (const [index, [operation]] of calls.entries()) {
+      expect(JSON.parse(operation.userPrompt).request).toBe(request);
+      if (index < 2) {
+        expect(operation.systemPrompt).toContain(answerInstructions.system);
+        expect(operation.responseReminder).toBe(answerInstructions.responseReminder);
+      } else {
+        expect(operation.systemPrompt).not.toContain(answerInstructions.system);
+        expect(operation.responseReminder).toBeUndefined();
+      }
+    }
+    const accepted = h.store.stored().map(row => decodeKnowledgeEvidenceAnswerSnapshot(row.attempt.acceptedRequest));
+    expect(accepted[0]?.answerInstructions).toEqual(answerInstructions);
+    expect(accepted[2]?.answerInstructions).toBeUndefined();
+    await executeKnowledgeEvidenceAnswerV1({ ...h.input, transport, answerInstructions });
+    expect(h.execute).toHaveBeenCalledTimes(3);
+  });
+
   it.each([1, 2] as const)("replays frozen branch evidence-answer tags with their original hashes (%s)", async protocol => {
     const acceptedReview = protocol === 1 ? review() : { version: 2, analysisComplete: true,
       blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: ["K1"], reason: "" }],

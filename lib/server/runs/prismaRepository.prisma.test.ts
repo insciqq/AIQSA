@@ -2949,6 +2949,83 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
+  it("publishes the answer once with durable accounting while preserving run ownership", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const created = await createActiveRun(repository, userId, "Published answer settlement");
+      const completion = completionInput(created);
+      const published = await Promise.all([
+        repository.publishRunAnswer!(completion), repository.publishRunAnswer!(completion)
+      ]);
+      expect(published.filter(Boolean)).toHaveLength(1);
+      await expect(prisma.modelRun.findUniqueOrThrow({ where: { id: created.runId },
+        select: { answerCompletedAt: true, status: true } })).resolves.toEqual({
+        answerCompletedAt: expect.any(Date), status: "streaming"
+      });
+      await expect(repository.loadPublishedRunAnswer!({ runId: created.runId, userId: "another-owner" }))
+        .resolves.toBeNull();
+      await repository.appendAssistantText(created.assistantMessageId, "late draft", { runId: created.runId });
+      await expect(prisma.message.findUniqueOrThrow({ where: { id: created.assistantMessageId },
+        select: { content: true, status: true } })).resolves.toEqual({
+        content: textMessageContent(completion.finalText), status: "complete"
+      });
+      await expect(prisma.chat.findUniqueOrThrow({ where: { id: created.chatId },
+        select: { memorySourceRevision: true, totalInputTokens: true } })).resolves.toEqual({
+        memorySourceRevision: 1, totalInputTokens: 2
+      });
+      await expect(prisma.usageEvent.count({ where: { modelRunId: created.runId } })).resolves.toBe(1);
+      await expect(repository.recordRunUsageEvents({ chatId: created.chatId, runId: created.runId, userId,
+        usageAttributions: [{ provider: "fake", modelId: "fake-qsa", usage: { inputTokens: 999 } }] }))
+        .resolves.toBe(false);
+      const recovered = await repository.loadPublishedRunAnswer!({ runId: created.runId, userId });
+      expect(recovered).toMatchObject({ finalText: completion.finalText, estimatedCostMicros: 17,
+        usage: completion.usage });
+      const lateCompletion = { ...recovered!, finalText: "Late text", estimatedCostMicros: 999,
+        usage: { ...recovered!.usage, inputTokens: 999 } };
+      expect(await Promise.all([repository.completeRun(lateCompletion), repository.completeRun(lateCompletion)]))
+        .toEqual(expect.arrayContaining([true, false]));
+      await expect(prisma.usageEvent.count({ where: { modelRunId: created.runId } })).resolves.toBe(1);
+      await expect(prisma.chat.findUniqueOrThrow({ where: { id: created.chatId },
+        select: { memorySourceRevision: true, totalInputTokens: true } })).resolves.toEqual({
+        memorySourceRevision: 2, totalInputTokens: 2
+      });
+      await expect(prisma.modelRun.findUniqueOrThrow({ where: { id: created.runId },
+        select: { answerCompletionUsage: true, status: true, inputTokens: true, estimatedCostMicros: true } })).resolves.toEqual({
+        answerCompletionUsage: null, status: "complete", inputTokens: 2, estimatedCostMicros: 17
+      });
+      await expect(prisma.message.findUniqueOrThrow({ where: { id: created.assistantMessageId },
+        select: { content: true } })).resolves.toEqual({ content: textMessageContent(completion.finalText) });
+    });
+  });
+
+  it("keeps published text complete when later run cleanup fails or is cancelled", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      for (const outcome of ["error", "cancelled"] as const) {
+        const created = await createActiveRun(repository, userId, `Published answer ${outcome}`);
+        const completion = completionInput(created);
+        await expect(repository.publishRunAnswer!(completion)).resolves.toBe(true);
+        if (outcome === "error") await repository.failRun(created.runId, created.assistantMessageId,
+          { code: "workspace_execution_cleanup_failed", message: "Workspace preparation failed." });
+        else await repository.cancelRun({ runId: created.runId, userId, payload: cancelPayload });
+        await expect(prisma.message.findUniqueOrThrow({ where: { id: created.assistantMessageId },
+          select: { content: true, status: true } })).resolves.toEqual({
+          content: textMessageContent(completion.finalText), status: "complete"
+        });
+        await expect(repository.publishRunAnswer!({ ...completion, finalText: "late overwrite" })).resolves.toBe(false);
+        await expect(repository.completeRun(completion)).resolves.toBe(false);
+        await expect(prisma.usageEvent.count({ where: { modelRunId: created.runId } })).resolves.toBe(1);
+        await expect(prisma.chat.findUniqueOrThrow({ where: { id: created.chatId },
+          select: { totalInputTokens: true } })).resolves.toEqual({ totalInputTokens: 2 });
+        await expect(repository.getRunControlForRecovery!(created.runId)).resolves.toMatchObject({
+          answerComplete: true, status: outcome
+        });
+        await expect(prisma.modelRun.findUniqueOrThrow({ where: { id: created.runId },
+          select: { answerCompletionUsage: true } })).resolves.toEqual({ answerCompletionUsage: null });
+      }
+    });
+  });
+
   it("advances source revision once for normal append and once for the winning terminal settlement", async () => {
     await withRunUser(async ({ userId }) => {
       const repository = createPrismaRunRepository(prisma);

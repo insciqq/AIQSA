@@ -66,6 +66,8 @@ export type {
 export type { ThreadWorkspaceActivity } from "./workspace";
 
 export type ThreadMessage = {
+  workspacePreparation?: true;
+  workspaceSettling?: true;
   errorMessage?: string | null;
   pdfPreparation?: readonly ChatPdfPreparationWire[];
   artifactSummary?: ThreadArtifactSummary | null;
@@ -248,6 +250,8 @@ export type ChatDetail = WorkspaceChatSummary & {
 };
 
 export type ChatMessageWire = {
+  workspacePreparation?: true;
+  workspaceSettling?: true;
   pdfPreparation?: readonly ChatPdfPreparationWire[];
   artifactSummary?: ThreadArtifactSummary | null;
   assistantIdentity?: ThreadAssistantIdentity | null;
@@ -900,6 +904,10 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     value.status === "error"
       ? value.status
       : null;
+  if ((value.workspacePreparation !== undefined && value.workspacePreparation !== true) ||
+    (value.workspaceSettling !== undefined && value.workspaceSettling !== true) ||
+    (value.workspacePreparation === true && (role !== "assistant" || !["queued", "streaming"].includes(status ?? ""))) ||
+    (value.workspaceSettling === true && (role !== "assistant" || status !== "complete"))) return null;
   let artifactSummary: ThreadArtifactSummary | null | undefined;
   if (value.artifactSummary === undefined || value.artifactSummary === null) {
     artifactSummary = value.artifactSummary;
@@ -966,6 +974,8 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   }
   return {
     ...(pdfPreparation ? { pdfPreparation } : {}),
+    ...(value.workspacePreparation === true ? { workspacePreparation: true as const } : {}),
+    ...(value.workspaceSettling === true ? { workspaceSettling: true as const } : {}),
     artifactSummary,
     ...(assistantIdentity !== undefined ? { assistantIdentity } : {}),
     ...(author !== undefined ? { author } : {}),

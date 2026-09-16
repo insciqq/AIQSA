@@ -32,6 +32,7 @@ export type AdminMemoryStatusSnapshot = Readonly<{
     requiresRebuild: boolean;
   }>;
   oldestQueuedAt: Date | null;
+  inProgressCount: number;
   queueLength: number;
   workerLastSeenAt: Date | null;
 }>;
@@ -130,7 +131,7 @@ function project(snapshot: AdminMemoryStatusSnapshot, now: Date): AdminMemorySta
       generation: generation(snapshot.index.activeGenerations),
       readiness
     },
-    queue: { length: queueLength, oldestAgeSeconds },
+    queue: { inProgress: checkedCount(snapshot.inProgressCount), length: queueLength, oldestAgeSeconds },
     rebuild: { state: rebuildState },
     worker: { state: running ? "RUNNING" : "NOT_RUNNING" }
   });

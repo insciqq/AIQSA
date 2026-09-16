@@ -1,3 +1,24 @@
+import type { NormalizedRunRequest } from "../providers/types";
+
+export type KnowledgeAnswerInstructions = Readonly<{ system: string; responseReminder: string }>;
+
+export function knowledgeAnswerInstructions(prompt: NormalizedRunRequest["prompt"]): KnowledgeAnswerInstructions {
+  return { system: [prompt.system, prompt.personalInstructions, prompt.developer].filter(Boolean).join("\n\n"),
+    responseReminder: prompt.responseReminder ?? "" };
+}
+
+export function validKnowledgeAnswerInstructions(value: unknown): value is KnowledgeAnswerInstructions {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).length === 2 && typeof row.system === "string" && row.system.length <= 128_000 &&
+    typeof row.responseReminder === "string" && row.responseReminder.length <= 4_000 && !row.responseReminder.includes("\0");
+}
+
+export function knowledgeCompositionPrompt(systemPrompt: string, instructions?: KnowledgeAnswerInstructions) {
+  return { systemPrompt: instructions?.system ? `${instructions.system}\n\n${systemPrompt}` : systemPrompt,
+    ...(instructions?.responseReminder ? { responseReminder: instructions.responseReminder } : {}) };
+}
+
 export const KNOWLEDGE_NUMERIC_ANSWER_INSTRUCTION = [
   "For any requested calculation or comparison, retain the exact supported operands and " +
     "units, including their signs, decimal marks, and leading zeroes.",

@@ -5,7 +5,7 @@ import { loadProviderAttachments } from "../runs/runAttachmentMaterialization";
 import { getRunAttachmentLimits } from "../runs/attachmentLimits";
 import { applyProviderRequestContextBudget } from "../runs/runContextBudget";
 import { createRunExecutionResponse, type RunExecutionInput } from "../runs/runExecution";
-import type { MaterializedPreparedRunData } from "../runs/runPreparation";
+import { acceptedRunSnapshot, type AcceptedRunSnapshot } from "../runs/acceptedRunSnapshot";
 import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "../runs/preparingRunMaterialization";
 import type { CreatedRun, PreparingRunAdmissionInput, PreparingRunAdmissionResult, RunRepository } from "../runs/runRepositoryContract";
 import { ChatPdfPreparationError } from "./chatPdfCore";
@@ -17,18 +17,8 @@ import { databaseFailureCode } from "../observability/databaseFailure";
 import { observedFailure } from "../providers/providerObservability";
 import { observeChatPdfPersistence } from "./chatPdfPersistenceObservability";
 
-export type ChatPdfRunSnapshot = Readonly<{
-  prepared: MaterializedPreparedRunData;
-  sourceMessageId?: string;
-  version: 1;
-}>;
-
-/** Binary originals remain in attachment storage. This private checkpoint is
- * needed only to finish the accepted run or explicitly retry a failed gate. */
-export function chatPdfRunSnapshot(prepared: MaterializedPreparedRunData, sourceMessageId?: string): ChatPdfRunSnapshot {
-  return { prepared: { ...prepared, providerRequest: { ...prepared.providerRequest, attachments: [] } },
-    ...(sourceMessageId ? { sourceMessageId } : {}), version: 1 };
-}
+export type ChatPdfRunSnapshot = AcceptedRunSnapshot;
+export const chatPdfRunSnapshot = acceptedRunSnapshot;
 
 type Dependencies = Omit<RunExecutionInput,
   "adapter" | "created" | "prepared" | "repository" | "userId" | "toolBridge" | "searchRuntimes" | "structuredOutputAdapter"> & Readonly<{

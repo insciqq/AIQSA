@@ -56,6 +56,20 @@ export async function loadChatCreationDefaults(
     };
   }
 
+  return {
+    defaultFolderId: settings.defaultFolderId,
+    defaultProviderModelId: await loadExposedChatModelId(db, userId, { modelId: selectedModelId }, env)
+  };
+}
+
+export async function loadExposedChatModelId(
+  db: Pick<ChatCreationDefaultsPrisma, "accessGrant" | "providerModel" | "userGroup">,
+  userId: string,
+  selection: { modelId: string; provider?: string },
+  env: Record<string, string | undefined> = process.env
+): Promise<string | null> {
+  const selectedModelId = selection.modelId;
+
   const [memberships, grants, model] = await Promise.all([
     db.userGroup.findMany({
       include: {
@@ -106,12 +120,7 @@ export async function loadChatCreationDefaults(
       }
     })
   ]);
-  if (!model) {
-    return {
-      defaultFolderId: settings.defaultFolderId,
-      defaultProviderModelId: null
-    };
-  }
+  if (!model) return null;
 
   const activeMemberships = memberships.filter(
     (membership) => membership.group.archivedAt === null
@@ -145,10 +154,7 @@ export async function loadChatCreationDefaults(
     ? providerModelToCatalogEntry(exposed[0])
     : null;
 
-  return {
-    defaultFolderId: settings.defaultFolderId,
-    defaultProviderModelId: catalogModel?.modelId === selectedModelId
-      ? selectedModelId
-      : null
-  };
+  return catalogModel?.modelId === selectedModelId &&
+    (selection.provider === undefined || catalogModel.provider === selection.provider)
+    ? selectedModelId : null;
 }

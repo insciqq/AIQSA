@@ -967,7 +967,7 @@ describe("AdminPanel", () => {
       admissionTimeout: { seconds: 30, version: 1 },
       configuredTargets: [],
       index: { generation: 1, readiness: "READY" },
-      queue: { length: 0, oldestAgeSeconds: null },
+      queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
       rebuild: { state: "NOT_REQUIRED" },
       worker: { state: "RUNNING" }
     };

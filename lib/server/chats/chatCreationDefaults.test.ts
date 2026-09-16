@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import type { CatalogProviderModelRow } from "../catalog/prismaCatalogData";
-import { loadChatCreationDefaults } from "./chatCreationDefaults";
+import { loadChatCreationDefaults, loadExposedChatModelId } from "./chatCreationDefaults";
 import { createPrismaChatRepository } from "./prismaRepository";
 
 const NOW = new Date("2026-08-08T00:00:00.000Z");
@@ -191,6 +191,12 @@ function database(input: Readonly<{
 }
 
 describe("chat creation defaults", () => {
+  it.each(["connection:personal", "other-provider"])("validates the selected model and provider together (%s)", async (provider) => {
+    const { prisma } = database({ availableModelIds: ["personal"], entitledModelIds: ["personal"],
+      organizationModelId: null, personalModelId: "personal" });
+    await expect(loadExposedChatModelId(prisma as unknown as PrismaClient, USER_ID,
+      { provider, modelId: "personal" }, {})).resolves.toBe(provider === "connection:personal" ? "personal" : null);
+  });
   it.each([
     {
       availableModelIds: ["personal", "organization"],

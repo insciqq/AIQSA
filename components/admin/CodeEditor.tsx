@@ -94,14 +94,14 @@ export function CodeEditor({
           {Array.from({ length: lineCount }, (_, index) => index + 1).join("\n")}
         </pre>
       </div>
-      <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-14 right-0 overflow-hidden">
+      <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-14 right-0 overflow-hidden [@media(forced-colors:active)]:hidden">
         <pre className="min-h-full min-w-full whitespace-pre px-3 py-3 font-mono text-[13px] leading-6 text-ink [tab-size:2]" ref={codeRef}>
           {json ? tokens.map((token) => <span className={tokenColor[token.kind]} key={token.offset}>{token.text}</span>) : value}{"\n"}
         </pre>
       </div>
       <textarea aria-describedby={`${helpId}${describedBy ? ` ${describedBy}` : ""}`} aria-invalid={invalid}
         aria-label={label} autoCapitalize="off" autoComplete="off" autoCorrect="off"
-        className="absolute inset-y-0 left-14 h-full w-[calc(100%_-_3.5rem)] resize-none overflow-auto overscroll-contain whitespace-pre border-0 bg-transparent px-3 py-3 font-mono text-[13px] leading-6 text-transparent caret-ink outline-none placeholder:text-ink-muted selection:bg-proof/20 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus [tab-size:2] [@media(forced-colors:active)]:text-ink"
+        className="v2-code-editor-input absolute inset-y-0 left-14 h-full w-[calc(100%_-_3.5rem)] resize-none overflow-auto overscroll-contain whitespace-pre border-0 bg-transparent px-3 py-3 font-mono text-[13px] leading-6 text-transparent caret-ink outline-none placeholder:text-ink-muted focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus [tab-size:2] [@media(forced-colors:active)]:text-ink"
         data-testid={textareaTestId} disabled={disabled} id={id} onChange={(event) => { onChange(event.currentTarget.value); onValidation(null); }}
         onKeyDown={(event) => {
           if (event.nativeEvent.isComposing || disabled) return;

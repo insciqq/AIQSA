@@ -334,6 +334,7 @@ export type AssistantDraft = {
   category: AssistantCategory | null;
   description: string;
   developerPrompt: string | null;
+  responseReminder?: string;
   knowledgeSelection: KnowledgeSelection;
   mcpServerIds: string[];
   name: string;
@@ -391,6 +392,10 @@ export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult
     return { code: "assistant_system_prompt_invalid", ok: false };
   }
 
+  const responseReminder = value.responseReminder === undefined ? "" : value.responseReminder;
+  if (typeof responseReminder !== "string" || responseReminder.length > 4_000 || responseReminder.includes("\0")) {
+    return { code: "assistant_response_reminder_invalid", ok: false };
+  }
   const developerPrompt = value.developerPrompt ?? null;
   if (
     developerPrompt !== null &&
@@ -462,6 +467,7 @@ export function decodeAssistantDraft(value: unknown): AssistantDraftDecodeResult
       category: (category as AssistantCategory | null) ?? null,
       description,
       developerPrompt: typeof developerPrompt === "string" ? developerPrompt : null,
+      responseReminder,
       knowledgeSelection: knowledge.plan,
       mcpServerIds: mcpServerIds.map((id) => (id as string).trim()),
       name,
@@ -530,6 +536,7 @@ export type AssistantContent = {
   category: AssistantCategory | null;
   description: string;
   developerPrompt: string | null;
+  responseReminder?: string;
   knowledgeSelection: KnowledgeSelection;
   mcpServerIds: string[];
   name: string;
@@ -730,6 +737,7 @@ export function decodeAssistantContent(value: unknown): AssistantContent | null 
     category === undefined ||
     typeof value.description !== "string" ||
     !stringOrNull(value.developerPrompt) ||
+    (value.responseReminder !== undefined && (typeof value.responseReminder !== "string" || value.responseReminder.length > 4_000 || value.responseReminder.includes("\0"))) ||
     !knowledge.ok ||
     knowledge.plan.mode === "all_my_knowledge" ||
     knowledge.plan.mode === "inherited" && knowledge.plan.inheritedFrom !== "assistant" ||
@@ -754,6 +762,7 @@ export function decodeAssistantContent(value: unknown): AssistantContent | null 
     category,
     description: value.description,
     developerPrompt: value.developerPrompt,
+    responseReminder: typeof value.responseReminder === "string" ? value.responseReminder : "",
     knowledgeSelection: knowledge.plan,
     mcpServerIds: value.mcpServerIds,
     name: value.name,

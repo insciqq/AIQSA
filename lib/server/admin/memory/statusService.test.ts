@@ -25,6 +25,7 @@ function snapshot(
       rebuilding: false,
       requiresRebuild: false
     },
+    inProgressCount: 0,
     oldestQueuedAt: null,
     queueLength: 0,
     workerLastSeenAt: new Date(now.getTime() - 1_000),
@@ -58,6 +59,7 @@ describe("administrator Memory status service", () => {
           requiresRebuild: false
         },
         processing: { enabled: true, issues: [] },
+        inProgressCount: 2,
         oldestQueuedAt: new Date(now.getTime() - 12_999),
         queueLength: 3,
         workerLastSeenAt: new Date(now.getTime() - ADMIN_MEMORY_WORKER_FRESHNESS_MS - 1)
@@ -69,7 +71,7 @@ describe("administrator Memory status service", () => {
       processing: { enabled: true, issues: [] },
       configuredTargets: [{ model: "Utility", provider: "Primary" }],
       index: { generation: "MIXED", readiness: "READY" },
-      queue: { length: 3, oldestAgeSeconds: 12 },
+      queue: { inProgress: 2, length: 3, oldestAgeSeconds: 12 },
       rebuild: { state: "NOT_REQUIRED" },
       worker: { state: "NOT_RUNNING" }
     });
@@ -153,6 +155,25 @@ describe("administrator Memory status service", () => {
     });
 
     await expect(service.get()).rejects.toThrow("memory_admin_status_queue_invalid");
+  });
+
+  it("reports only in-flight work without inventing a waiting age", async () => {
+    const service = createAdminMemoryStatusService({
+      now: () => now,
+      repository: repository([snapshot({ inProgressCount: 3 })])
+    });
+    await expect(service.get()).resolves.toMatchObject({
+      queue: { inProgress: 3, length: 0, oldestAgeSeconds: null },
+      worker: { state: "RUNNING" }
+    });
+  });
+
+  it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1])("rejects an invalid in-flight count %s", async (inProgressCount) => {
+    const service = createAdminMemoryStatusService({
+      now: () => now,
+      repository: repository([snapshot({ inProgressCount })])
+    });
+    await expect(service.get()).rejects.toThrow("memory_admin_status_count_invalid");
   });
 
   it("updates the timeout with optimistic installation policy authority", async () => {

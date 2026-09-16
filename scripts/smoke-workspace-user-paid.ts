@@ -203,10 +203,10 @@ async function main() {
 
     const waitForAttachment = async (name: string, workspace: boolean) => {
       const row = page.getByRole("region", { name: "Attachments" }).getByRole("listitem").filter({ hasText: name });
-      const ready = row.getByText("Ready", { exact: true });
+      const ready = row.getByText("Ready", { exact: true }).first();
       // Optional text extraction may be unavailable while the original bytes
       // are already admitted for Workspace. Other failed uploads still fail.
-      await expect(workspace ? ready.or(row.getByText(/Workspace can use the stored original/u)) : ready)
+      await expect(workspace ? ready.or(row.getByText(/Workspace can use the stored original/u).first()) : ready)
         .toBeVisible({ timeout: 90_000 });
     };
     const newChat = async (files: OfficeInput[], enableWorkspace = true) => {
@@ -224,12 +224,16 @@ async function main() {
       await picker.locator(`[role="option"][data-provider-id="${provider.connectionId}"]`).filter({ hasText: provider.modelDisplayName }).click();
       await expect(picker).toHaveCount(0);
       step = "workspace_toggle";
-      if (enableWorkspace) {
-        await page.getByRole("button", { name: /^Turn on Workspace/u }).click();
-        await expect(page.getByRole("button", { name: /^Turn off Workspace/u })).toBeVisible();
-      } else {
-        await expect(page.getByRole("button", { name: /^Turn on Workspace/u })).toBeVisible();
+      const workspaceDetails = page.getByRole("button", { name: /^Workspace details\./u });
+      const expectedWorkspace = enableWorkspace ? /^Workspace details\. On\./u : /^Workspace details\. Off\./u;
+      await expect(workspaceDetails).toBeEnabled();
+      if (!expectedWorkspace.test(await workspaceDetails.getAttribute("aria-label") ?? "")) {
+        await workspaceDetails.click();
+        await page.getByRole("menu", { name: "Workspace", exact: true })
+          .getByRole("menuitemcheckbox", { name: enableWorkspace ? /Turn on Workspace/u : /Turn off Workspace/u }).click();
+        await page.keyboard.press("Escape");
       }
+      await expect(workspaceDetails).toHaveAccessibleName(expectedWorkspace);
       await expect(page.getByRole("button", { name: "Turn off Search" })).toHaveCount(0);
       step = "upload";
       if (files.length) await page.getByLabel("Attach files").setInputFiles(files.map(file => ({ name: file.name, mimeType: file.mimeType, buffer: file.buffer ?? Buffer.from(file.text ?? "") })));

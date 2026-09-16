@@ -1129,7 +1129,7 @@ export function ReadingRoomShellV2({
   const [desktopCollapsed, setDesktopCollapsed] = useState(false);
   const [focusRequest, setFocusRequest] = useState<Readonly<{
     id: number;
-    target: "open" | "sidebar";
+    target: "open" | "sidebar" | "composer";
   }> | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   // Presentation-only: the second column shows the Projects landing instead
@@ -1235,8 +1235,13 @@ export function ReadingRoomShellV2({
         ".v2-navigation .v2-navigation-close"
       )?.focus();
       handledFocusRequestRef.current = focusRequest.id;
+    } else if (focusRequest.target === "composer" && !drawerOpen && section === "chats") {
+      document.querySelector<HTMLTextAreaElement>(
+        '[data-testid="composer-v2"] textarea:not(:disabled)'
+      )?.focus({ preventScroll: true });
+      handledFocusRequestRef.current = focusRequest.id;
     }
-  }, [collapsed, composition, focusRequest, mobileOpen]);
+  }, [collapsed, composition, drawerOpen, focusRequest, mobileOpen, section]);
 
   useEffect(() => {
     if (!searchQuery) return;
@@ -1323,6 +1328,7 @@ export function ReadingRoomShellV2({
     const wasDrawerOpen = previousDrawerOpenRef.current;
     previousDrawerOpenRef.current = drawerOpen;
     if (wasDrawerOpen && !drawerOpen && (composition === "mobile" || collapsed)) {
+      if (document.activeElement?.closest('[data-testid="composer-v2"]')) return;
       openButtonRef.current?.focus();
     }
   }, [collapsed, composition, drawerOpen]);
@@ -1348,8 +1354,10 @@ export function ReadingRoomShellV2({
     navigationOwnerProps.onLeaveProject?.();
     setProjectsView(false);
     onProjectsSectionChange?.(false);
+    if (section !== "chats") onChats?.();
     onNewChat(mode);
     closeDrawers();
+    setFocusRequest((current) => ({ id: (current?.id ?? 0) + 1, target: "composer" }));
   };
   const revealList = () => {
     setFocusRequest((current) => ({ id: (current?.id ?? 0) + 1, target: "sidebar" }));
@@ -1485,6 +1493,7 @@ export function ReadingRoomShellV2({
           adminEntryVisible={navigationOwnerProps.adminEntryVisible}
           onChats={showChats}
           onLibrary={showLibrary}
+          onNewChat={() => createPersonalChat("NORMAL")}
           onProjects={navigationOwnerProps.projectsSlot ? showProjects : undefined}
           onSettings={showSettings}
         />

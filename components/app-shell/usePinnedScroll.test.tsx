@@ -1,5 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   hasUnseenLatestMessageContent,
   isPinnedToBottom,
@@ -38,6 +38,34 @@ async function waitForAnimationFrame() {
 }
 
 describe("usePinnedScroll", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([true, false])("follows resized content while preserving pinned=%s", async (pinned) => {
+    let resize = () => {};
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { resize = () => callback([], this); }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    const { result } = renderHook(() => usePinnedScroll<HTMLDivElement>({ followKey: "same-answer", resetKey: "chat" }));
+    const element = scrollElement({ clientHeight: 300, scrollHeight: 1000, scrollTop: pinned ? 700 : 200 });
+    act(() => {
+      result.current.containerRef.current = element;
+      result.current.refreshLayout();
+    });
+    await waitForAnimationFrame();
+    act(() => {
+      element.scrollTop = pinned ? 700 : 200;
+      result.current.handleScroll();
+    });
+    Object.defineProperty(element, "scrollHeight", { configurable: true, value: 1300 });
+    act(() => resize());
+    await waitForAnimationFrame();
+    expect(element.scrollTop).toBe(pinned ? 1300 : 200);
+    expect(result.current.isPinned).toBe(pinned);
+  });
+
   it("treats positions inside the threshold as pinned to the bottom", () => {
     expect(isPinnedToBottom({ clientHeight: 300, scrollHeight: 1000, scrollTop: 620 }, 96)).toBe(true);
     expect(isPinnedToBottom({ clientHeight: 300, scrollHeight: 1000, scrollTop: 500 }, 96)).toBe(false);

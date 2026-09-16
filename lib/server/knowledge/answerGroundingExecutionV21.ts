@@ -1,3 +1,4 @@
+import { knowledgeCompositionPrompt } from "./answerInstructions";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { decodeKnowledgeEvidenceAnswerSnapshot, isKnowledgeEvidenceAnswerOperation,
   isKnowledgeEvidenceComposeOperation, type KnowledgeEvidenceAnswerSnapshot,
@@ -341,7 +342,8 @@ async function executeAcceptedOperation(input: Readonly<{
       name: input.acceptedRequest.name,
       reasoningEffort: input.acceptedRequest.reasoningEffort,
       schema: input.acceptedRequest.schema,
-      systemPrompt: input.acceptedRequest.systemPrompt,
+      ...knowledgeCompositionPrompt(input.acceptedRequest.systemPrompt,
+        "answerInstructions" in input.acceptedRequest ? input.acceptedRequest.answerInstructions : undefined),
       userPrompt: input.acceptedRequest.userPrompt
     }, {
       onUsage: bindContext((value: ModelRunUsage) => { reportedUsage = mergeTokenUsage(reportedUsage, value); }),

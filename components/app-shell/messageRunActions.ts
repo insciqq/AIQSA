@@ -1,6 +1,7 @@
 import { randomUUID } from "@/lib/browser/randomUUID";
 import { resolveEffectiveSkillIds, SKILL_MAX_SELECTED } from "@/lib/contracts/skills";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
+import { composerContextConfigurationKey } from "@/components/app-shell/composerContextConfiguration";
 import {
   attachmentBlocksSend,
   firstBlockingAttachmentWarning
@@ -55,6 +56,7 @@ import type { KnowledgeSelection } from "@/lib/contracts/knowledge";
 type MutableRef<T> = { current: T };
 
 type MessageRunControlSnapshot = {
+  contextConfigurationKey: string;
   assistantId: string | null;
   controlDefaults: SavedControlDraft;
   model: CatalogModel | undefined;
@@ -168,6 +170,7 @@ export function useMessageRunActions({
   }
 
   function captureRunControlSnapshot(): MessageRunControlSnapshot {
+    const controls = useComposerControlStore.getState();
     const {
       selectedAssistant,
       knowledgeSelection,
@@ -178,7 +181,12 @@ export function useMessageRunActions({
       knowledgePlanSource,
       mcpSelection,
       selectedSkills
-    } = useComposerControlStore.getState();
+    } = controls;
+    const sessionKey = useComposerSessionStore.getState().activeSessionKey;
+    const session = selectComposerSession(useComposerSessionStore.getState(), sessionKey);
+    const chat = useWorkspaceStore.getState().chats.find((candidate) =>
+      candidate.id === chatIdFromComposerSessionKey(sessionKey));
+    const workspaceEnabled = chat?.workspace?.enabled ?? session.workspaceEnabled;
     const catalog = resolveCatalog
       ? resolveCatalog()
       : useWorkspaceStore.getState().catalog;
@@ -210,6 +218,9 @@ export function useMessageRunActions({
     const searchPreferenceOptionIds = [...selectedSearchOptionIds];
 
     return {
+      contextConfigurationKey: composerContextConfigurationKey(controls, {
+        memoryMode: chat?.pendingInitialMemoryMode ?? chat?.memoryMode ?? composerSessionModeFromKey(sessionKey), workspaceEnabled
+      }),
       assistantId: selectedAssistant?.id ?? null,
       controlDefaults: { ...buildControlDraft() },
       knowledgeSelection: {
@@ -236,10 +247,7 @@ export function useMessageRunActions({
       })),
       skillIds: selectedSkills.map((skill) => skill.id),
       toolsOverride: toolsOverride(model),
-      workspaceEnabled: activeChat?.workspace?.enabled ?? selectComposerSession(
-        useComposerSessionStore.getState(),
-        useComposerSessionStore.getState().activeSessionKey
-      ).workspaceEnabled
+      workspaceEnabled
     };
   }
 
@@ -396,6 +404,7 @@ export function useMessageRunActions({
       activeStreamAbortRef,
       chatId,
       consumeRunStream,
+      contextConfigurationKey: runControlSnapshot.contextConfigurationKey,
       createStreamTokenBuffer,
       failurePrefix: "edit_run_failed",
       fetchRun,
@@ -761,7 +770,8 @@ export function useMessageRunActions({
         Boolean(currentChatSummary?.projectId)
       );
 
-      if (useRunLifecycleStore.getState().activeStreams[chatIdForSend]) {
+      const activeSend = useRunLifecycleStore.getState().activeStreams[chatIdForSend];
+      if (activeSend && !activeSend.answerComplete) {
         return;
       }
 
@@ -807,10 +817,14 @@ export function useMessageRunActions({
         activeStreamAbortRef,
         chatId: chatIdForSend,
         consumeRunStream,
+        contextConfigurationKey: runControlSnapshot.contextConfigurationKey,
         createStreamTokenBuffer,
         failurePrefix: "send_failed",
         fetchRun,
         notifyAnswerReady,
+        onAnswerPublished(runId) {
+          useComposerSessionStore.getState().finishSend(sendToken, "succeeded", null, true, runId);
+        },
         optimisticAssistantMessageId: assistantId,
         primeAnswerSound,
         reconcileMessageIds({ currentRunId, messageIds }) {
@@ -1031,7 +1045,8 @@ export function useMessageRunActions({
         Boolean(currentChatSummary?.projectId)
       );
 
-      if (useRunLifecycleStore.getState().activeStreams[chatIdForSend]) {
+      const activeSend = useRunLifecycleStore.getState().activeStreams[chatIdForSend];
+      if (activeSend && !activeSend.answerComplete) {
         return;
       }
 
@@ -1076,6 +1091,7 @@ export function useMessageRunActions({
         activeStreamAbortRef,
         chatId: chatIdForSend,
         consumeRunStream,
+        contextConfigurationKey: runControlSnapshot.contextConfigurationKey,
         createStreamTokenBuffer,
         failurePrefix: "send_failed",
         fetchRun,
@@ -1220,6 +1236,7 @@ export function useMessageRunActions({
       activeStreamAbortRef,
       chatId: chatIdForRegenerate,
       consumeRunStream,
+      contextConfigurationKey: runControlSnapshot.contextConfigurationKey,
       createStreamTokenBuffer,
       failurePrefix: "regenerate_failed",
       fetchRun,

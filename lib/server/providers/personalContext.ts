@@ -1,3 +1,4 @@
+import { PERSONAL_INSTRUCTIONS_PREVIEW } from "./responseReminder";
 import type { ProviderRunRequest } from "./types";
 import { memoryActionAnswerContract } from "./memoryActionAnswer";
 import {
@@ -388,11 +389,14 @@ export function assertPersonalContextEgressSafe(request: ProviderRunRequest): vo
  * Any server-minted Knowledge draft contract remains last so user-governed
  * text and untrusted Memory cannot shadow its structured-output boundary. */
 export function providerInstructionsWithPersonalContext(
-  request: ProviderRunRequest
+  request: ProviderRunRequest,
+  preview = false
 ): string | undefined {
   assertPersonalContextEgressSafe(request);
   const parts = [
     request.prompt.system,
+    request.prompt.personalInstructions
+      ? preview ? PERSONAL_INSTRUCTIONS_PREVIEW : request.prompt.personalInstructions : null,
     request.prompt.developer ? `Developer instructions:\n${request.prompt.developer}` : null,
     knowledgeToolLoopContract(request),
     request.personalContext ? MEMORY_READER_CONTRACT_CURRENT : null,

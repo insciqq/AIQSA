@@ -981,6 +981,96 @@ describe("run lifecycle actions", () => {
     expect(composerSession("chat-1")).toMatchObject({ attachments: [], draft: "" });
   });
 
+  function useInterruptedRunForTest(runId: string | null = "run-1") {
+    const fixture = useRunLifecycleActionsForTest();
+    useRunLifecycleStore.getState().streamAmbiguous({
+      assistantMessageId: "assistant-1", chatId: "chat-1", runId
+    });
+    useThreadStore.getState().updateMessages("chat-1", (messages) => messages.map((entry) =>
+      entry.id === "assistant-1" ? { ...entry, content: "Partial answer", status: "error" } : entry
+    ));
+    return fixture;
+  }
+
+  it("stops an interrupted run once and preserves partial output after confirmation", async () => {
+    const { actions, surface } = useInterruptedRunForTest();
+    let finish!: (response: Response) => void;
+    const fetch = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    vi.stubGlobal("fetch", fetch);
+    const pending = actions.stopCurrentRun("run-1");
+    expect(useRunLifecycleStore.getState().stoppingRunIds.has("run-1")).toBe(true);
+    await actions.stopCurrentRun("run-1");
+    expect(fetch).toHaveBeenCalledExactlyOnceWith("/api/model-runs/run-1/cancel", { method: "POST" });
+    expect(useRunLifecycleStore.getState().ambiguousFailures["chat-1"]).toBeDefined();
+    finish(Response.json({ run: { id: "run-1", status: "cancelled" } }));
+    await pending;
+    expect(useRunLifecycleStore.getState().stoppingRunIds.size).toBe(0);
+    expect(useRunLifecycleStore.getState().ambiguousFailures["chat-1"]).toBeUndefined();
+    expect(useRunLifecycleStore.getState().activeStreams["chat-1"]).toBeUndefined();
+    expect(surface("chat-1").events).toContainEqual({ type: "done", data: { runId: "run-1", status: "cancelled" } });
+    expect(useThreadStore.getState().threadsByChatId["chat-1"]?.messages[1]).toMatchObject({
+      content: "Partial answer", status: "cancelled"
+    });
+  });
+
+  it("keeps a missing-id interruption refresh-only", async () => {
+    const { actions } = useInterruptedRunForTest(null);
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    await actions.stopCurrentRun();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(useRunLifecycleStore.getState().ambiguousFailures["chat-1"]).toMatchObject({ runId: null });
+  });
+
+  it.each([401, 404, 500])("keeps an interrupted run retryable after a %i response", async (status) => {
+    const { actions, notice, refreshActiveChat } = useInterruptedRunForTest();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "unavailable" }, { status })));
+    await actions.stopCurrentRun();
+    expect(useRunLifecycleStore.getState().ambiguousFailures["chat-1"]).toMatchObject({ runId: "run-1" });
+    expect(useRunLifecycleStore.getState().stoppingRunIds.size).toBe(0);
+    expect(useRunLifecycleStore.getState().cancelledRunIds.size).toBe(0);
+    expect(refreshActiveChat).not.toHaveBeenCalled();
+    expect(notice()?.text).toBe("Couldn’t stop the answer. Refresh to check its state.");
+  });
+
+  it.each(["complete", "error", "streaming"])("reconciles the server's %s result when interrupted cancellation loses", async (status) => {
+    const { actions, refreshActiveChat } = useInterruptedRunForTest();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      error: "model_run_not_cancelable", run: { id: "run-1", status }
+    }, { status: 409 })));
+    await actions.stopCurrentRun();
+    expect(Boolean(useRunLifecycleStore.getState().ambiguousFailures["chat-1"])).toBe(status === "streaming");
+    expect(useRunLifecycleStore.getState().cancelledRunIds.size).toBe(0);
+    expect(refreshActiveChat).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false])("ignores late cancellation after a newer producer takes ownership (still active: %s)", async (active) => {
+    const { actions, activeStreamAbortRef, refreshActiveChat, surface } = useInterruptedRunForTest();
+    let finish!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; })));
+    const pending = actions.stopCurrentRun("run-1");
+    useRunLifecycleStore.getState().streamStarted({ chatId: "chat-1", runId: "run-new" });
+    const nextController = new AbortController();
+    activeStreamAbortRef.current.set("chat-1", nextController);
+    useRunSurfaceStore.getState().appendEvent("chat-1", { type: "start", data: { runId: "run-new" } });
+    if (!active) useRunLifecycleStore.getState().streamFinished({ chatId: "chat-1" });
+    finish(Response.json({ run: { id: "run-1", status: "cancelled" } }));
+    await pending;
+    expect(nextController.signal.aborted).toBe(false);
+    expect(surface("chat-1").events).toEqual([{ type: "start", data: { runId: "run-new" } }]);
+    expect(refreshActiveChat).not.toHaveBeenCalled();
+    expect(useRunLifecycleStore.getState().stoppingRunIds.size).toBe(0);
+  });
+
+  it("rejects a stale Stop handler before sending cancellation for a newer run", async () => {
+    const { actions } = useInterruptedRunForTest();
+    useRunLifecycleStore.getState().streamStarted({ chatId: "chat-1", runId: "run-new" });
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    await actions.stopCurrentRun("run-1");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("applies a proven cancellation only to its source stream", async () => {
     const {
       actions,
@@ -1086,7 +1176,7 @@ describe("run lifecycle actions", () => {
     });
   });
 
-  it("fails closed on a malformed cancellation response and fetches durable state", async () => {
+  it("fails closed on a malformed cancellation response without clearing the producer", async () => {
     const { actions, activeStreamAbortRef, notice, surface } = useRunLifecycleActionsForTest();
     useRunLifecycleStore.getState().streamStarted({
       assistantMessageId: "assistant-1",

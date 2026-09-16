@@ -232,7 +232,7 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
       searchPlan: searchPreference.preferredPlan,
       searchPreferenceSource: searchPreference.source,
       ...resolveChatDefaults(input.settings),
-      workspaceEnabled: input.settings.defaultWorkspaceEnabled ?? false,
+      workspaceEnabled: input.settings.defaultWorkspaceEnabled ?? true,
       showCitations: input.settings.showCitations,
       showReasoningBlocks: input.settings.showReasoningBlocks
     },

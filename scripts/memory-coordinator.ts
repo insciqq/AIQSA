@@ -22,8 +22,7 @@ async function main(): Promise<void> {
     const stop = () => {
       if (stopping) return;
       stopping = true;
-      stopDefaultMemoryCoordinator();
-      resolve();
+      void stopDefaultMemoryCoordinator().then(resolve);
     };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);

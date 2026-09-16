@@ -111,6 +111,8 @@ export type NormalizedRunWorkspace = Readonly<{
 }>;
 
 export type NormalizedRunRequest = {
+  /** Owner selection fenced at initial acceptance; texts live in prompt. */
+  instructionPreset?: Readonly<{ presetId: string | null; revision: number | null; selectionVersion: number }>;
   imagePlan?: import("../providerRuntime/imageModelRole").AcceptedImageGenerationPlan;
   imageReferences?: import("../../contracts/imageGeneration").ConversationImageReference[];
   attachmentIds: string[];
@@ -187,6 +189,8 @@ export type NormalizedRunRequest = {
    * accepted requests may omit it and are decoded from their exact params. */
   reasoningEffort?: string | null;
   prompt: {
+    personalInstructions?: string;
+    responseReminder?: string;
     /**
      * Exact standard-chat baseline evidence for ordinary runs: the resolved
      * zone and its source are recorded because the rendered text in `system`

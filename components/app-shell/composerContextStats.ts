@@ -5,6 +5,8 @@ export type ComposerContextStats = Readonly<{
   safeInputBudgetTokens: number | null;
   totalContextTokens: number | null;
   session?: SessionContextStatus;
+  /** Bounded estimate for the next unsent message, added to session when present. */
+  draftInputTokens?: number;
   answerReserveTokens?: number | null;
   safetyMarginTokens?: number | null;
   requestRejected?: boolean;
@@ -23,7 +25,7 @@ export function composerContextGauge(stats: ComposerContextStats): ComposerConte
   const fraction = window === null || window <= 0 ? null :
     Math.min(1, Math.max(0, stats.approximateInputTokens / window));
   const inputBudgetFraction = budget === null ? null : budget <= 0 ? 1 :
-    Math.max(0, stats.approximateInputTokens / budget);
+    Math.min(1, Math.max(0, stats.approximateInputTokens / budget));
   return {
     fraction,
     inputBudgetFraction,

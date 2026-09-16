@@ -3,6 +3,7 @@ import { useWorkspaceOutputReconciliation } from "./useWorkspaceOutputReconcilia
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   resetComposerSessionStoreForTest,
+  resetComposerControlStoreForTest,
   resetRunSurfaceStoreForTest,
   resetThreadStoreForTest,
   resetWorkspaceStoreForTest,
@@ -29,23 +30,84 @@ import {
 } from "./workspaceStore";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { Catalog, ChatDetail, WorkspaceChatSummary, ThreadMessage } from "./types";
+import { rememberSessionExpiredDraft, storedSessionExpiredDraft } from "./shellStorage";
 
-it("opens a fully loaded continuation without a second detail request and keeps temporary chats out of navigation", async () => {
-  const setup = useWorkspaceActionsForTest({ attachments: [], draft: "Unsent source draft" });
-  const fetch = vi.fn();
-  vi.stubGlobal("fetch", fetch);
+function continuationDetail(): ChatDetail {
   const summary = chat({ id: "continuation", title: "Continued: source", activeLeafMessageId: "summary",
     messageCount: 1, hasContinuationSource: true, memoryMode: "TEMPORARY", temporaryRetentionDeadline: "2026-09-06T12:00:00.000Z" });
-  const detail: ChatDetail = { ...summary, contextStats: { approximateActiveBranchInputTokens: 20 }, usageStats: null,
+  return { ...summary, contextStats: { approximateActiveBranchInputTokens: 20 }, usageStats: null,
     messages: [message({ id: "summary", role: "assistant", content: "Conversation summary" })],
     pageInfo: { activeLeafMessageId: "summary", beforeCursor: null, hasOlder: false, snapshotUpdatedAt: summary.updatedAt } };
-  await setup.actions.openContinuedChat(detail);
-  expect(fetch).not.toHaveBeenCalled();
-  expect(useWorkspaceStore.getState().activeChatId).toBe("continuation");
-  expect(useWorkspaceStore.getState().chats.find((chat) => chat.id === "continuation")).toMatchObject({ memoryMode: "TEMPORARY", hasContinuationSource: true });
-  expect(useWorkspaceStore.getState().navigationChats.some((chat) => chat.id === "continuation")).toBe(false);
-  expect(selectComposerSession(useComposerSessionStore.getState(), composerSessionKey("chat-a")).draft).toBe("Unsent source draft");
-  expect(useThreadStore.getState().threadsByChatId.continuation?.messages[0]?.content).toBe("Conversation summary");
+}
+
+describe("opening a continuation", () => {
+  afterEach(() => { vi.unstubAllGlobals(); sessionStorage.clear(); resetComposerControlStoreForTest(); });
+
+  it("opens the summary, preserves controls and moves current text and attachments with their handoff", async () => {
+    const attachments: ComposerAttachment[] = [{ id: "one", fileName: "one.pdf", kind: "pdf" }, { id: "two", fileName: "two.pdf", kind: "pdf" }];
+    const setup = useWorkspaceActionsForTest({ attachments, draft: "Unsent source draft" });
+    const source = composerSessionKey("chat-a");
+    rememberSessionExpiredDraft({ accountEmail: "owner@example.test", draft: "Unsent source draft", sessionKey: source, savedAt: Date.now() });
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    useComposerControlStore.setState({ selectedProvider: "other", selectedModelId: "chosen", temperature: "0.4",
+      maxOutputTokens: "1700", reasoningEffort: "high", reasoningMode: "extended", streamMode: false, backgroundMode: true,
+      showCitations: false, showReasoningBlocks: true, searchPlanMode: "model_choice", selectedSearchOptionIds: ["search"],
+      knowledgePlanSource: "explicit", knowledgeSelection: { version: 1, mode: "explicit", baseIds: ["base"], sourceIds: ["source"] },
+      selectedKnowledgeBaseIds: ["base"], mcpSelection: { mode: "load_all" },
+      selectedSkills: [{ id: "skill", name: "Skill", description: "", promptCharacterCount: 10 }],
+      selectedAssistant: { id: "assistant", name: "Assistant", description: "", promptCharacterCount: 10, starterPrompts: [],
+        avatar: { accents: [0, 2], backgroundShape: "circle", foregroundShape: "diamond", kind: "generated", paletteId: "ocean", recipeVersion: 1, rotations: [0, 1] } }
+    });
+    const controls = useComposerControlStore.getState();
+    const opening = setup.actions.openContinuedChat(continuationDetail(), source);
+    useComposerSessionStore.getState().updateSession(source, { draft: "Updated before the transition finished" });
+    await expect(opening).resolves.toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().activeChatId).toBe("continuation");
+    expect(useWorkspaceStore.getState().chats.find((chat) => chat.id === "continuation")).toMatchObject({ memoryMode: "TEMPORARY", hasContinuationSource: true });
+    expect(useWorkspaceStore.getState().navigationChats.some((chat) => chat.id === "continuation")).toBe(false);
+    expect(setup.session(source)).toMatchObject({ draft: "", attachments: [] });
+    expect(setup.activeComposer()).toMatchObject({ draft: "Updated before the transition finished", attachments });
+    expect(storedSessionExpiredDraft()).toBeNull();
+    expect(useComposerControlStore.getState()).toBe(controls);
+    for (const setter of [setup.applyModelControlDefaults, setup.setSelectedModelId, setup.setSelectedProvider,
+      setup.setSelectedSearchPlan, setup.setSelectedKnowledgePlan]) expect(setter).not.toHaveBeenCalled();
+    expect(useThreadStore.getState().threadsByChatId.continuation?.messages[0]?.content).toBe("Conversation summary");
+  });
+
+  it.each(["non-empty destination", "upload started"])("opens without moving input during %s", async (condition) => {
+    const setup = useWorkspaceActionsForTest({ attachments: [], draft: "Keep source" });
+    const source = composerSessionKey("chat-a");
+    const target = composerSessionKey("continuation");
+    rememberSessionExpiredDraft({ accountEmail: "owner@example.test", draft: "Keep source", sessionKey: source, savedAt: Date.now() });
+    useComposerSessionStore.getState().activateSession(target);
+    useComposerSessionStore.getState().setDraft(condition === "non-empty destination" ? "Keep destination" : "");
+    useComposerSessionStore.getState().activateSession(source);
+    const opening = setup.actions.openContinuedChat(continuationDetail(), source);
+    if (condition === "upload started") useComposerSessionStore.getState().beginUpload(source);
+    await expect(opening).resolves.toBe(true);
+    expect(setup.session(source).draft).toBe("Keep source");
+    expect(setup.session(target).draft).toBe(condition === "non-empty destination" ? "Keep destination" : "");
+    expect(storedSessionExpiredDraft()?.sessionKey).toBe(source);
+  });
+
+  it.each(["before", "during"])("ignores navigation %s opening a continuation", async (when) => {
+    const setup = useWorkspaceActionsForTest({ attachments: [], draft: "Keep source" });
+    const source = composerSessionKey("chat-a");
+    let opening: Promise<boolean>;
+    if (when === "before") {
+      setup.actions.activateBlankWorkspace();
+      opening = setup.actions.openContinuedChat(continuationDetail(), source);
+    } else {
+      opening = setup.actions.openContinuedChat(continuationDetail(), source);
+      setup.actions.activateBlankWorkspace();
+    }
+    await expect(opening).resolves.toBe(false);
+    expect(useWorkspaceStore.getState().activeChatId).toBeNull();
+    expect(setup.session(source).draft).toBe("Keep source");
+    expect(setup.session(composerSessionKey("continuation")).draft).toBe("");
+  });
 });
 
 function chat(input: Partial<WorkspaceChatSummary> & { id: string; title: string }): WorkspaceChatSummary {

@@ -45,6 +45,7 @@ export type ProviderStructuredOutputRequest = Readonly<{
   schema: Readonly<Record<string, unknown>>;
   systemPrompt: string;
   userPrompt: string;
+  responseReminder?: string;
 }>;
 
 export type ProviderStructuredOutputOptions = Readonly<{
@@ -304,8 +305,8 @@ function geminiRequestSchema(request: ProviderStructuredOutputRequest): Record<s
 
 function normalizeRequest(
   request: ProviderStructuredOutputRequest
-): Required<Omit<ProviderStructuredOutputRequest, "reasoningEffort">> &
-  Pick<ProviderStructuredOutputRequest, "reasoningEffort"> {
+): Required<Omit<ProviderStructuredOutputRequest, "reasoningEffort" | "responseReminder">> &
+  Pick<ProviderStructuredOutputRequest, "reasoningEffort" | "responseReminder"> {
   const maxOutputTokens = request.maxOutputTokens ?? 512;
   if (
     !/^[A-Za-z][A-Za-z0-9_-]*$/u.test(request.name) ||
@@ -314,6 +315,7 @@ function normalizeRequest(
     jsonBytes(request.schema) > STRUCTURED_OUTPUT_LIMITS.maxSchemaBytes ||
     typeof request.systemPrompt !== "string" ||
     typeof request.userPrompt !== "string" ||
+    (request.responseReminder !== undefined && (typeof request.responseReminder !== "string" || request.responseReminder.length > 4_000 || request.responseReminder.includes("\0"))) ||
     !request.systemPrompt.trim() ||
     !request.userPrompt.trim() ||
     !structuredOutputPromptFits(request) ||
@@ -334,8 +336,13 @@ function normalizeRequest(
       : { reasoningEffort: request.reasoningEffort }),
     schema: request.schema,
     systemPrompt: request.systemPrompt,
+    ...(request.responseReminder ? { responseReminder: request.responseReminder } : {}),
     userPrompt: request.userPrompt
   };
+}
+
+function structuredUserContent(request: ProviderStructuredOutputRequest, type: "text" | "input_text") {
+  return [{ text: request.userPrompt, type }, ...(request.responseReminder ? [{ text: request.responseReminder, type }] : [])];
 }
 
 export function parseProviderStructuredOutputObject(text: string): Record<string, unknown> {
@@ -395,7 +402,7 @@ export function buildAnthropicMessagesStructuredOutputRequest(
   });
   return {
     ...params,
-    messages: [{ content: [{ text: normalized.userPrompt, type: "text" }], role: "user" }],
+    messages: [{ content: structuredUserContent(normalized, "text"), role: "user" }],
     model: model.upstreamModelId,
     output_config: {
       ...(effort && effort !== "none" ? { effort } : {}),
@@ -504,7 +511,7 @@ export function buildOpenAIResponsesStructuredOutputRequest(
   const body: Record<string, unknown> = {
     ...(model.adapterKind === "openai_responses_native" ? { background: false } : {}),
     input: [{
-      content: [{ text: normalized.userPrompt, type: "input_text" }],
+      content: structuredUserContent(normalized, "input_text"),
       role: "user"
     }],
     instructions: normalized.systemPrompt,
@@ -548,7 +555,7 @@ export function buildDeepSeekResponsesStructuredOutputRequest(
     : normalized.maxOutputTokens;
   return {
     input: [{
-      content: [{ text: normalized.userPrompt, type: "input_text" }],
+      content: structuredUserContent(normalized, "input_text"),
       role: "user"
     }],
     instructions: normalized.systemPrompt,
@@ -594,7 +601,7 @@ export function buildGeminiInteractionsStructuredOutputRequest(
       thinking_summaries: "none"
     },
     input: [{
-      content: [{ text: normalized.userPrompt, type: "text" }],
+      content: structuredUserContent(normalized, "text"),
       type: "user_input"
     }],
     model: model.upstreamModelId,
@@ -734,7 +741,7 @@ export function buildOpenRouterStructuredOutputRequest(
     max_tokens: maxTokens,
     messages: [
       { content: normalized.systemPrompt, role: "system" },
-      { content: normalized.userPrompt, role: "user" }
+      { content: normalized.responseReminder ? structuredUserContent(normalized, "text") : normalized.userPrompt, role: "user" }
     ],
     model: model.upstreamModelId,
     provider: openRouterProviderRouting(model),

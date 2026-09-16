@@ -46,6 +46,11 @@ type StartRebuild = (candidate: AdminMemoryRebuildCandidate) => Promise<void>;
 
 type StaleChunkOwner = Readonly<{ userId: string }>;
 type HeartbeatRow = Readonly<{ lastSeenAt: Date }>;
+type QueueRow = Readonly<{
+  inProgress: bigint;
+  oldestQueuedAt: Date | null;
+  waiting: bigint;
+}>;
 
 function boundedLabel(value: string): string {
   const trimmed = value.trim();
@@ -118,10 +123,7 @@ export function createPrismaAdminMemoryStatusRepository(
         historyReindexingRows,
         pendingClassificationRows,
         staleChunkOwners,
-        activeJobCount,
-        activeDeletionCount,
-        oldestJob,
-        oldestDeletion,
+        queue,
         processing,
         heartbeat
       ] = await Promise.all([
@@ -286,19 +288,25 @@ export function createPrismaAdminMemoryStatusRepository(
                   ), TO_TIMESTAMP(0))
               ) AS stale_history
             `),
-        client.memoryJob.count({ where: { state: { in: [...ACTIVE_JOB_STATES] } } }),
-        client.memoryDeletionOutbox.count({
-          where: { state: { in: [...ACTIVE_DELETION_STATES] } }
-        }),
-        client.memoryJob.findFirst({
-          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-          select: { createdAt: true },
-          where: { state: { in: [...ACTIVE_JOB_STATES] } }
-        }),
-        client.memoryDeletionOutbox.findFirst({
-          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-          select: { createdAt: true },
-          where: { state: { in: [...ACTIVE_DELETION_STATES] } }
+        // One statement keeps counts and waiting age on the same snapshot while
+        // workers claim/settle jobs. Private job identities never leave the DB.
+        client.$queryRaw<QueueRow[]>(Prisma.sql`
+          SELECT
+            COUNT(*) FILTER (WHERE work."inProgress") AS "inProgress",
+            COUNT(*) FILTER (WHERE NOT work."inProgress") AS "waiting",
+            MIN(work."createdAt") FILTER (WHERE NOT work."inProgress") AS "oldestQueuedAt"
+          FROM (
+            SELECT "state" = 'CLAIMED'::"MemoryJobState" AS "inProgress", "createdAt"
+            FROM "MemoryJob"
+            WHERE "state" IN (${Prisma.join(ACTIVE_JOB_STATES.map((state) => Prisma.sql`${state}::"MemoryJobState"`))})
+            UNION ALL
+            SELECT "state" = 'RUNNING'::"MemoryDeletionState" AS "inProgress", "createdAt"
+            FROM "MemoryDeletionOutbox"
+            WHERE "state" IN (${Prisma.join(ACTIVE_DELETION_STATES.map((state) => Prisma.sql`${state}::"MemoryDeletionState"`))})
+          ) AS work
+        `).then((rows) => {
+          if (!rows[0]) throw new Error("memory_admin_status_queue_invalid");
+          return rows[0];
         }),
         readAdminMemoryProcessing(client, now),
         client.$queryRaw<HeartbeatRow[]>(Prisma.sql`
@@ -379,10 +387,6 @@ export function createPrismaAdminMemoryStatusRepository(
           userId: owner.userId
         });
       }
-      const oldestQueuedAt = [oldestJob?.createdAt, oldestDeletion?.createdAt]
-        .filter((value): value is Date => value instanceof Date)
-        .sort((left, right) => left.getTime() - right.getTime())[0] ?? null;
-
       return Object.freeze({
         admissionTimeout: Object.freeze({
           seconds: admissionTimeoutSeconds,
@@ -398,8 +402,9 @@ export function createPrismaAdminMemoryStatusRepository(
           rebuilding: rebuildingOwners.size > 0,
           requiresRebuild
         }),
-        oldestQueuedAt,
-        queueLength: activeJobCount + activeDeletionCount,
+        inProgressCount: Number(queue.inProgress),
+        oldestQueuedAt: queue.oldestQueuedAt,
+        queueLength: Number(queue.waiting),
         workerLastSeenAt: heartbeat?.lastSeenAt ?? null
       });
     },
