@@ -102,6 +102,41 @@ describe("workspace browser contracts", () => {
 });
 
 describe("workspace activity contract", () => {
+  it("admits only the reviewed facts of Agent actions", () => {
+    const base = { id: "agent:fixture", phase: "succeeded" };
+    const entries = [
+      { ...base, kind: "file_change", changes: [{ action: "add", displayPath: "project/中文.py" }] },
+      { ...base, kind: "mcp_call", mcp: { serverName: "Issues", toolName: "Get issue" } },
+      { ...base, kind: "search", search: { query: "bounded query", source: "Web" } },
+      { ...base, kind: "agent_note", text: "A visible note." },
+      { ...base, kind: "plan", items: [{ completed: false, text: "Run the tests" }] },
+      { ...base, kind: "elided", count: 3, failedCount: 1, hasLifecycle: true, throughSequence: 20 }
+    ];
+    for (const entry of entries) {
+      expect(decodeThreadWorkspaceActivityEntry(entry)).toEqual(entry);
+      expect(decodeThreadWorkspaceActivityEntry({ ...entry, arguments: { private: true } })).toBeNull();
+      expect(decodeThreadWorkspaceActivityEntry({ ...entry, result: "private" })).toBeNull();
+    }
+    expect(decodeThreadWorkspaceActivityEntry({ ...entries[1], mcp: { toolName: "Tool", rawToolId: "private" } })).toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({ ...base, kind: "command", text: "unrelated" })).toBeNull();
+  });
+
+  it("enforces byte, text, collection and elision bounds at the wire boundary", () => {
+    const base = { id: "agent:fixture", phase: "succeeded" };
+    expect(decodeThreadWorkspaceActivityEntry({ ...base, kind: "agent_note", text: "🙂".repeat(512) })).not.toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({ ...base, kind: "agent_note", text: "🙂".repeat(513) })).toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({ ...base, kind: "search", search: { query: "q".repeat(201), source: "Web" } })).toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({ ...base, kind: "plan", items: Array.from({ length: 51 }, () => ({ text: "Read", completed: false })) })).toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({ ...base, kind: "file_change", changes: Array.from({ length: 65 }, () => ({ action: "update", displayPath: "file" })) })).toBeNull();
+    const elided = { ...base, kind: "elided", count: 3, failedCount: 1, hasLifecycle: false, throughSequence: 20 };
+    expect(decodeThreadWorkspaceActivityEntry({ ...elided, failedCount: 4 })).toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({ ...elided, throughSequence: -1 })).toBeNull();
+    expect(decodeThreadWorkspaceActivity({ entries: [elided] })).toBeNull();
+    expect(decodeThreadWorkspaceActivity({ entries: [elided], truncated: true })).not.toBeNull();
+    expect(decodeThreadWorkspaceActivity({ entries: [elided, { ...elided, id: "other" }], truncated: true })).toBeNull();
+    expect(decodeThreadWorkspaceActivity({ entries: Array.from({ length: 513 }, () => ({ ...base, kind: "workspace_start" })) })).toBeNull();
+  });
+
   it("decodes exact bounded entries and rejects additive or oversized data", () => {
     const entry = {
       command: { cwd: "project", exitCode: 0, preview: "npm test", stdoutPreview: "ok" },

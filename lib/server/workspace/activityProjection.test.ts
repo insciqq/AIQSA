@@ -15,6 +15,7 @@ import {
 } from "./activityProjection";
 import { isRunOutputArtifactEvent, projectRunOutputArtifactEvent } from "@/lib/server/runs/runOutputEvents";
 import { presentWorkspaceActivityV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
+import { WorkspaceActivityText } from "./activityText";
 
 function official(data: unknown, status: "complete" | "error" = "complete"): ToolExecutionResult {
   return {
@@ -32,6 +33,29 @@ function official(data: unknown, status: "complete" | "error" = "complete"): Too
 }
 
 describe("workspace activity projection", () => {
+  it("masks accepted values before previews and across polls before the 64 KiB buffer", () => {
+    const secret = "credential-" + "x".repeat(130_000);
+    const text = new WorkspaceActivityText([secret, "credential-fixture"]);
+    const execOutputs = new Map<string, ExecOutputBuffer>();
+    const start = projectWorkspaceActivity({ arguments: { command: "echo credential-fixture", cwd: "/workspace/credential-fixture" },
+      callId: "start", originalName: "sandbox_exec_start", runId: "run", text, execOutputs,
+      result: official({ execSessionId: "session" }) }, "settled");
+    expect(start?.command).toMatchObject({ preview: "echo •••", cwd: "•••" });
+    const poll = (id: string, data: string, done = false) => projectWorkspaceActivity({
+      arguments: { execSessionId: "session" }, callId: id, executionStartCallId: "start",
+      execOutputs, originalName: "sandbox_exec_poll", runId: "run", text,
+      result: official({ events: [{ event: { kind: "stdout", data } }], done,
+        ...(done ? { exitStatus: { code: 0 } } : {}) })
+    }, "settled");
+    expect(poll("one", "\x1b[31m" + secret.slice(0, 80_000))).toBeNull();
+    const last = poll("two", secret.slice(80_000) + "\x1b[0m\nRESULT", true);
+    expect(last?.command).toMatchObject({ stdoutPreview: "•••\nRESULT", exitCode: 0 });
+    expect(JSON.stringify(last)).not.toContain("credential-");
+    const file = projectWorkspaceActivity({ arguments: { path: "/workspace/project/credential-fixture" },
+      callId: "file", originalName: "sandbox_fs_read", runId: "run", text }, "running");
+    expect(file?.file?.displayPath).toBe("project/•••");
+  });
+
   it("projects commands with exit code, bounded output, and no raw identifiers", () => {
     const entry = projectWorkspaceActivity({
       arguments: { command: "npm test\necho ignored", cwd: "/workspace/project" },
@@ -46,7 +70,7 @@ describe("workspace activity projection", () => {
       command: {
         cwd: "project",
         exitCode: 1,
-        preview: "npm test",
+        preview: "npm test\necho ignored",
         stderrPreview: "TypeError: boom",
         stdoutPreview: "18 tests"
       },
@@ -241,7 +265,7 @@ describe("workspace activity projection", () => {
     for (const text of [preview.stdoutPreview, preview.stderrPreview]) {
       expect(new TextDecoder("utf-8", { fatal: true }).decode(new TextEncoder().encode(text))).toBe(text);
     }
-    expect(commandPreview({ command: "x".repeat(5_000) })?.length).toBe(2_048);
+    expect(commandPreview({ command: "x".repeat(5_000) })?.preview.length).toBe(2_048);
   });
 
   it("settles running entries from the run outcome and crosses the durable event boundary exactly", () => {

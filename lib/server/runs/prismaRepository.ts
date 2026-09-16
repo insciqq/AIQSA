@@ -9,6 +9,7 @@ import {
 } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
+import { WORKSPACE_ACTIVITY_SNAPSHOT } from "./workspaceActivityPersistence";
 import { normalizeTokenUsage } from "../../domain/usage";
 import {
   loadChatBranchSnapshotStats,
@@ -1386,7 +1387,7 @@ export function createPrismaRunRepository(
                       payload: true
                     },
                     where: {
-                      eventType: "artifact"
+                      eventType: { in: ["artifact", WORKSPACE_ACTIVITY_SNAPSHOT] }
                     }
                   },
                   errorPayload: true,

@@ -1516,7 +1516,7 @@ describe("Workspace coordinator activity projection", () => {
       data: expect.objectContaining({
         artifactType: "workspace_activity",
         payload: expect.objectContaining({
-          command: expect.objectContaining({ preview: "pwd && ls -la && cat > script.py <<'PY'" }),
+          command: expect.objectContaining({ preview: "pwd && ls -la && cat > script.py <<'PY'\nprint(1)\nPY" }),
           errorCode: "workspace_shell_syntax_requires_shell",
           kind: "command",
           phase: "failed"

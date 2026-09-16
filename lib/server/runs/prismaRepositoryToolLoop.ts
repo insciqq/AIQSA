@@ -1,4 +1,7 @@
 import { validAcceptedInstructions } from "../instructions/snapshot";
+import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
+import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
+import { loadWorkspaceActivitySnapshot, saveWorkspaceActivitySnapshot, workspaceActivityFingerprint, WORKSPACE_ACTIVITY_RECEIPT } from "./workspaceActivityPersistence";
 import { validNormalizedAgent } from "../agents/config";
 import { decodeAcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
 import { isMcpAutoDiscoveryOutputTokens } from "../../contracts/mcp";
@@ -102,6 +105,7 @@ export async function appendRunOutputEvents(
   const published: RunOutputArtifactEvent[] = [];
   const pending: Prisma.ModelRunEventCreateManyInput[] = [];
   const updates = new Map<string, RunOutputArtifactEvent>();
+  let activity: ThreadWorkspaceActivity | null | undefined;
   // Every caller holds the run row lock. Replayed tool results retain their
   // first committed update, rather than republishing old state as a new event.
   for (const event of events) {
@@ -114,11 +118,27 @@ export async function appendRunOutputEvents(
       lastGrounding = json(event.data) as Prisma.JsonValue;
     }
     const updateId = event.type === "artifact" && event.data.artifactType === "workspace_activity"
-      ? event.data.payload.updateId : undefined;
+      ? event.data.payload.updateId ?? `update:${workspaceActivityFingerprint(event.data.payload).slice(0, 24)}` : undefined;
     if (updateId) {
       const buffered = updates.get(updateId);
       if (buffered) {
         published.push(buffered);
+        continue;
+      }
+      const receipt = await tx.modelRunEvent.findFirst({
+        select: { payload: true, sequence: true },
+        where: { modelRunId: runId, eventType: WORKSPACE_ACTIVITY_RECEIPT,
+          payload: { path: ["updateId"], equals: updateId } }
+      });
+      if (receipt && event.type === "artifact" && event.data.artifactType === "workspace_activity") {
+        if (!isRecord(receipt.payload) || receipt.payload.fingerprint !== workspaceActivityFingerprint(event.data.payload)) {
+          throw new Error("workspace_activity_replay_invalid");
+        }
+        const replay: RunOutputArtifactEvent = { type: "artifact", data: {
+          artifactType: "workspace_activity", payload: { ...event.data.payload, sequence: receipt.sequence }
+        } };
+        published.push(replay);
+        updates.set(updateId, replay);
         continue;
       }
       const previous = await tx.modelRunEvent.findFirst({
@@ -139,19 +159,31 @@ export async function appendRunOutputEvents(
       }
     }
     const ordered: RunOutputArtifactEvent = event.type === "artifact" && event.data.artifactType === "workspace_activity"
-      ? { data: { artifactType: "workspace_activity", payload: { ...event.data.payload, sequence } }, type: "artifact" }
+      ? { data: { artifactType: "workspace_activity", payload: { ...event.data.payload,
+          updateId: event.data.payload.updateId ?? `update:${workspaceActivityFingerprint(event.data.payload).slice(0, 24)}`,
+          sequence } }, type: "artifact" }
       : event;
+    const workspaceEntry = ordered.type === "artifact" && ordered.data.artifactType === "workspace_activity" ? ordered.data.payload : null;
+    const effectiveUpdateId = workspaceEntry?.updateId;
+    if (workspaceEntry) {
+      if (activity === undefined) activity = await loadWorkspaceActivitySnapshot(tx, runId);
+      activity = mergeWorkspaceActivity(activity, { entries: [workspaceEntry] });
+    }
     pending.push({
-      eventType: event.type,
+      eventType: workspaceEntry ? WORKSPACE_ACTIVITY_RECEIPT : event.type,
       modelRunId: runId,
-      payload: json(ordered.data),
+      // Receipts preserve replay identity and order without keeping old output
+      // snapshots. Only the bounded logical feed retains public text.
+      payload: json(workspaceEntry ? { entryId: workspaceEntry.id,
+        fingerprint: workspaceActivityFingerprint(workspaceEntry), updateId: effectiveUpdateId } : ordered.data),
       sequence
     });
     published.push(ordered);
-    if (updateId) updates.set(updateId, ordered);
+    if (effectiveUpdateId) updates.set(effectiveUpdateId, ordered);
     sequence += 1;
   }
   if (pending.length) await tx.modelRunEvent.createMany({ data: pending });
+  if (activity) await saveWorkspaceActivitySnapshot(tx, runId, activity);
   return published;
 }
 

@@ -52,7 +52,6 @@ export async function createAgentMcpGateway(input: Readonly<{
   userId: string;
   store: ReturnType<typeof createAgentRunStore>;
   signal: AbortSignal;
-  onActivity(name: string, phase: "running" | "complete" | "error"): Promise<void>;
   onFailure(code: string): Promise<void>;
   onUsage(): Promise<void>;
 }>) {
@@ -135,17 +134,14 @@ export async function createAgentMcpGateway(input: Readonly<{
           const authority = { callId, userId: input.userId, async assertActive() {
             signal.throwIfAborted(); await input.store.assertActive();
           } };
-          await input.onActivity(name, "running");
           const result = await action(authority);
           await input.store.settleTool(callId, result.isError ? "error" : "complete", { status: result.isError ? "error" : "complete" });
-          await input.onActivity(name, result.isError ? "error" : "complete");
           return result;
         } catch (error) {
           const agentCode = agentFailureCode(error);
           const code = agentCode ?? (error instanceof McpHubServiceError ? error.code : "execution_unavailable");
           if (agentCode && agentCode !== "agent_mcp_call_limit") await input.onFailure(agentCode);
           if (callId) await input.store.settleTool(callId, "error", { code }).catch(() => undefined);
-          await input.onActivity(name, "error");
           return textResult({ code, message: agentCode ? agentFailureMessage(agentCode) : "The call could not complete. Do not repeat an operation whose outcome is unknown." }, true);
         }
       };

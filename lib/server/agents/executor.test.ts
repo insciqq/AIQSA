@@ -5,6 +5,7 @@ import type { ModelRunSseEvent } from "@/lib/domain/modelRunEvents";
 import type { ProviderRunRequest } from "../providers/types";
 import type { AgentResponsesTransport } from "../providers/agentResponses";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { WorkspaceActivityText } from "../workspace/activityText";
 import { agentLimits } from "./config";
 import { AgentExecutionError } from "./failures";
 import { executeCodexTurn } from "./executor";
@@ -43,7 +44,7 @@ describe("Agent executor terminal behavior", () => {
 
   it("delivers received text before a later gateway failure and retains its original cause", async () => {
     const f = fixture(async ({ onEvent }) => {
-      await onEvent({ type: "message", id: "available", text: "Available result." });
+      await onEvent({ type: "message", id: "available", text: "Available result." }, new WorkspaceActivityText());
       store.failure.mockResolvedValue("agent_token_limit");
       throw new Error("workspace_runtime_unavailable");
     });
@@ -66,16 +67,17 @@ describe("Agent executor terminal behavior", () => {
     expect(store.fail.mock.invocationCallOrder[0]).toBeLessThan(store.revoke.mock.invocationCallOrder[0]!);
   });
 
-  it("keeps Off deadline absent, sends each message once and settles accounting", async () => {
+  it("buffers notes, publishes only the last message and settles accounting", async () => {
     const executeAgent = vi.fn<NonNullable<WorkspaceCoordinator["executeAgent"]>>(async ({ onEvent }) => {
-      await onEvent({ type: "message", id: "first", text: "First." });
-      await onEvent({ type: "message", id: "final", text: "Final." });
+      await onEvent({ type: "message", id: "first", text: "First." }, new WorkspaceActivityText());
+      await onEvent({ type: "message", id: "final", text: "Final." }, new WorkspaceActivityText());
     });
     const f = fixture(executeAgent);
     const result = await executeCodexTurn(f.input);
     expect(executeAgent).toHaveBeenCalledWith(expect.objectContaining({ timeoutSeconds: null }));
-    expect(result.finalText).toBe("First.\n\nFinal.");
-    expect(f.events).toHaveLength(2);
+    expect(result.finalText).toBe("Final.");
+    expect(f.events).toEqual([{ type: "token", data: { delta: "Final." } }]);
+    expect(f.input.onActivity.mock.calls.map(([entry]) => entry.text)).toEqual(["First.", "Final."]);
     expect(store.revoke).toHaveBeenCalledWith(true);
     expect(store.drain).not.toHaveBeenCalled();
     expect(f.input.onUsage).toHaveBeenCalled();
@@ -89,5 +91,20 @@ describe("Agent executor terminal behavior", () => {
     expect(executeAgent).toHaveBeenCalledWith(expect.objectContaining({
       profile: expect.objectContaining({ mcpMode: "off", aiqsaSearch: false })
     }));
+  });
+
+  it.each(["Stop", "error"])("flushes only the last received message on %s", async (outcome) => {
+    const controller = new AbortController();
+    const f = fixture(async ({ onEvent }) => {
+      const text = new WorkspaceActivityText(["credential-fixture"]);
+      await onEvent({ type: "message", id: "first", text: "Earlier note." }, text);
+      await onEvent({ type: "message", id: "last", text: "Known credential-fixture result." }, text);
+      expect(f.events).toEqual([]);
+      if (outcome === "Stop") controller.abort();
+      throw new Error("interrupted");
+    }, controller.signal);
+    await expect(executeCodexTurn(f.input)).rejects.toThrow();
+    expect(f.events).toEqual([{ type: "token", data: { delta: "Known ••• result." } }]);
+    expect(f.input.onActivity).toHaveBeenCalledTimes(2);
   });
 });

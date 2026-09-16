@@ -1,7 +1,7 @@
 /**
  * Private Codex exec transport. stdout is an untrusted JSONL protocol, not a
- * terminal preview: never truncate it or forward command output/reasoning.
- * Provider accounting is deliberately absent from this projection.
+ * terminal preview. These private facts must pass through the masked, bounded
+ * activity projection before publication. Reasoning and raw results stay out.
  */
 export type CodexEvent =
   | Readonly<{ type: "thread_started"; threadId: string }>
@@ -10,8 +10,17 @@ export type CodexEvent =
   | Readonly<{
       type: "activity";
       id: string;
-      kind: "command" | "file_change" | "mcp" | "search";
+      kind: "command" | "file_change" | "mcp" | "search" | "plan";
       phase: "running" | "succeeded" | "failed";
+      command?: string;
+      output?: string;
+      exitCode?: number | null;
+      changes?: readonly Readonly<{ path: string; action: "add" | "update" | "delete" }>[];
+      tool?: string;
+      toolId?: string;
+      query?: string;
+      source?: string;
+      items?: readonly Readonly<{ text: string; completed: boolean }>[];
     }>
   | Readonly<{ type: "turn_completed" }>
   | Readonly<{ type: "turn_failed" }>
@@ -196,13 +205,58 @@ export class CodexJsonlDecoder {
       if (typeof item.text !== "string") return invalid();
       return type === "item.completed" ? { type: "message", id: item.id, text: item.text } : null;
     }
-    const kind = item.type === "command_execution" ? "command"
+    const kind = (item.type === "command_execution" ? "command"
       : item.type === "file_change" ? "file_change"
-        : item.type === "mcp_tool_call" ? "mcp" : item.type === "web_search" ? "search" : null;
+        : item.type === "mcp_tool_call" ? "mcp" : item.type === "web_search" ? "search"
+          : ["todo_list", "plan", "plan_update"].includes(item.type) ? "plan" : null) as Extract<CodexEvent, { type: "activity" }>["kind"] | null;
     if (!kind) return null;
-    const phase = type !== "item.completed" ? "running"
-      : (item.status === "completed" || kind === "search" && item.status !== "failed") && (kind !== "command" || item.exit_code === 0)
+    const phase: Extract<CodexEvent, { type: "activity" }>["phase"] = type !== "item.completed" ? "running"
+      : (item.status === "completed" || (kind === "search" || kind === "plan") && item.status !== "failed") && (kind !== "command" || item.exit_code === 0)
         ? "succeeded" : "failed";
-    return { type: "activity", id: item.id, kind, phase };
+    const base = { type: "activity" as const, id: item.id, kind, phase };
+    if (kind === "command") {
+      if (item.command !== undefined && typeof item.command !== "string" ||
+        item.aggregated_output !== undefined && typeof item.aggregated_output !== "string" ||
+        item.exit_code !== undefined && item.exit_code !== null && !Number.isSafeInteger(item.exit_code)) return invalid();
+      return { ...base,
+        ...(typeof item.command === "string" ? { command: item.command } : {}),
+        // Pinned exec reports aggregated output only at completion. Never
+        // present a started/updated payload as an incremental terminal stream.
+        ...(type === "item.completed" ? {
+          ...(typeof item.aggregated_output === "string" ? { output: item.aggregated_output } : {}),
+          exitCode: typeof item.exit_code === "number" ? item.exit_code : null
+        } : {}) };
+    }
+    if (kind === "file_change") {
+      if (item.changes !== undefined && !Array.isArray(item.changes)) return invalid();
+      const changes: NonNullable<Extract<CodexEvent, { type: "activity" }>["changes"]>[number][] = [];
+      for (const change of Array.isArray(item.changes) ? item.changes : []) {
+        if (!record(change) || typeof change.path !== "string" ||
+          !["add", "update", "delete"].includes(String(change.kind))) return invalid();
+        changes.push({ path: change.path, action: change.kind as "add" | "update" | "delete" });
+      }
+      return { ...base, changes };
+    }
+    if (kind === "plan") {
+      const rawItems = item.items ?? item.plan;
+      if (!Array.isArray(rawItems)) return invalid();
+      const items: { text: string; completed: boolean }[] = [];
+      for (const entry of rawItems) {
+        if (!record(entry) || typeof entry.text !== "string" ||
+          !(typeof entry.completed === "boolean" || entry.status === "completed" || entry.status === "in_progress" || entry.status === "pending")) return invalid();
+        items.push({ text: entry.text, completed: entry.completed === true || entry.status === "completed" });
+      }
+      return { ...base, items };
+    }
+    const args = record(item.arguments) ? item.arguments : null;
+    const toolName = typeof item.tool === "string" ? item.tool : typeof item.name === "string" ? item.name : undefined;
+    // Select only fields needed to resolve an admitted tool/search identity.
+    // Never retain the argument object, MCP result, server id or raw errors.
+    return { ...base,
+      ...(toolName ? { tool: toolName } : {}),
+      ...(typeof args?.tool_id === "string" ? { toolId: args.tool_id } : {}),
+      ...(typeof item.query === "string" ? { query: item.query }
+        : toolName === "aiqsa_search" && typeof args?.query === "string" ? { query: args.query } : {}),
+      ...(toolName === "aiqsa_search" && typeof args?.source === "string" ? { source: args.source } : {}) };
   }
 }

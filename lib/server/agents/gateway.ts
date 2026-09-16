@@ -51,7 +51,7 @@ export async function handleAgentGatewayRequest(request: Request, path: string):
     if (request.method === "POST" && path === "mcp") {
       return await withAgentLease(request, store.assertActive, async (signal) => {
         const handler = await createAgentMcpGateway({ request: normalized, runId: binding.modelRunId, store, userId,
-          signal, onActivity: async () => {}, onFailure, onUsage });
+          signal, onFailure, onUsage });
         return handler(request);
       });
     }

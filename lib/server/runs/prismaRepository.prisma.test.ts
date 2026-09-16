@@ -4094,7 +4094,10 @@ describe("Prisma-backed run repository", () => {
       ]);
       expect(first).toEqual(duplicate);
       expect(first).toMatchObject({ data: { payload: { sequence: 0 } } });
-      expect(await prisma.modelRunEvent.count({ where: { modelRunId: created.runId } })).toBe(1);
+      expect(await prisma.modelRunEvent.count({ where: { modelRunId: created.runId, eventType: "workspace_activity_receipt" } })).toBe(1);
+      const chat = await createPrismaChatRepository(prisma).getChat({ chatId: created.chatId, userId });
+      const answer = chat?.messages.find((message) => message.id === created.assistantMessageId);
+      expect(answer?.workspaceActivity?.entries).toEqual([expect.objectContaining({ id: "command", sequence: 0 })]);
     });
   });
 
