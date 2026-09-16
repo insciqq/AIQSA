@@ -27,7 +27,9 @@ export const rerankerModelPresets: readonly RerankerModelPreset[] = Object.freez
     displayName: "Voyage Rerank 2.5",
     id: DEFAULT_RERANKER_MODEL_PRESET_ID,
     providerFamily: "openrouter",
-    relevanceScoreFloor: null,
+    // Calibrated in this deployment's score space; unrelated results need not
+    // approach zero. Other deployments retain their independent floors.
+    relevanceScoreFloor: 0.3,
     upstreamModelId: "voyageai/rerank-2.5"
   },
   {

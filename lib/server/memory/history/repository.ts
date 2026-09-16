@@ -1104,7 +1104,7 @@ async function prepareWith(
     : [];
   const retainedRounds = retainedRoundRows.map((row, ordinal) =>
     storedRoundProjection(row, source, ordinal));
-  const projectedRounds = messages.length === 0
+  const rawProjectedRounds = messages.length === 0
     ? []
     : projectMemoryRecallRounds(tailSnapshot, projectedChunks, {
         excludedMessageIds: admission.excludedMessageIds,
@@ -1114,6 +1114,40 @@ async function prepareWith(
         ordinal: retainedRounds.length + ordinal,
         publicationState: "ACTIVE"
       }));
+  const existingRoundIdentities = rawProjectedRounds.length === 0 ? [] :
+    await tx.memoryRecallRound.findMany({
+      select: {
+        branchGeneration: true,
+        contentHash: true,
+        evidenceRootHash: true,
+        id: true,
+        sourceRevisionAtCreation: true
+      },
+      where: {
+        chatId: source.id,
+        id: { in: rawProjectedRounds.map(({ id }) => id) },
+        userId: source.userId
+      }
+    });
+  const existingRoundById = new Map(existingRoundIdentities.map((round) =>
+    [round.id, round]));
+  const projectedRounds = rawProjectedRounds.map((round) => {
+    const existing = existingRoundById.get(round.id);
+    if (!existing) return round;
+    if (existing.contentHash !== round.contentHash ||
+      existing.evidenceRootHash !== round.evidenceRootHash) {
+      throw new MemoryCoordinatorError("memory_history_round_identity_conflict", false);
+    }
+    // Stable evidence may be reprojected in an overlap tail or reactivated on
+    // another branch. Its creation counters identify frozen references; the
+    // current checkpoint and exact message map separately prove source authority.
+    // Preserve them in the accepted plan too, so a repeated commit is idempotent.
+    return {
+      ...round,
+      branchGeneration: existing.branchGeneration,
+      sourceRevision: existing.sourceRevisionAtCreation
+    };
+  });
   const retainedRoundIds = new Set(retainedRounds.map((round) => round.id));
   const rebuiltRounds = projectedRounds.filter((round) =>
     !retainedRoundIds.has(round.id));
@@ -2188,7 +2222,7 @@ async function persistRound(
   plan: MemoryHistoryIndexPlan,
   round: MemoryHistoryPreparedRound
 ): Promise<readonly Readonly<{ embeddingState: MemoryEmbeddingState; id: string }>[]> {
-  const persistedRound = await tx.memoryRecallRound.upsert({
+  await tx.memoryRecallRound.upsert({
     create: {
       branchGeneration: round.branchGeneration,
       chatId: round.chatId,
@@ -2220,8 +2254,6 @@ async function persistRound(
       userId: round.userId
     },
     update: {
-      branchGeneration: round.branchGeneration,
-      contentHash: round.contentHash,
       contextualKeyPolicyVersion: round.contextualKeyPolicyVersion,
       contextualKeyState: round.contextualKeyState,
       contextualNarrativeText: round.contextualNarrativeText,
@@ -2243,7 +2275,6 @@ async function persistRound(
       sourceAssistantId: round.sourceAssistantId,
       sourceFolderId: round.folderId,
       sourceProjectionVersion: round.sourceProjectionVersion,
-      sourceRevisionAtCreation: round.sourceRevision,
       state: round.publicationState,
       supportingRoundIds: [...round.supportingRoundIds]
     },
@@ -2269,14 +2300,7 @@ async function persistRound(
       userId: round.userId
     }))
   });
-  const segmentEntries = await persistRoundSegments(tx, activeIndex, plan, {
-    ...round,
-    // A stable evidence-root id may be reactivated after a later source
-    // revision. Its creation revision is audit-only but the child projection
-    // must retain the exact stored parent value enforced by the deferred
-    // source-map guard.
-    sourceRevision: persistedRound.sourceRevisionAtCreation
-  });
+  const segmentEntries = await persistRoundSegments(tx, activeIndex, plan, round);
   if (round.publicationState === "SUPPRESSED") {
     await tx.memorySearchEntry.deleteMany({
       where: { recallRoundId: round.id, userId: round.userId }

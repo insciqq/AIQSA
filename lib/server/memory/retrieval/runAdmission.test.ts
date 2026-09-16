@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
 import { decodeMemoryActionControlDecision } from "../../../contracts/memoryActionIntent";
 import { textMessageContent } from "../../../domain/content";
+import { rerankerModelPresets } from "../../../domain/rerankerModels";
 import type {
   MemoryCandidateMetadata,
   MemoryCoreCandidate,
@@ -5509,6 +5510,29 @@ describe("Personal Memory v1 run admission", () => {
         relevanceScore: [0.91, 0.01, 0.0033][index]!
       })),
       relevanceScoreFloor: 0.01,
+      status: "READY"
+    });
+
+    expect(ranked.map(({ itemId }) => itemId)).toEqual(["relevant", "at-floor"]);
+  });
+
+  it("filters Voyage's weak tail while retaining its inclusive calibrated boundary", () => {
+    const candidates = memoryRelevanceCandidates([
+      rankedHistory("relevant", "NORMAL"),
+      rankedHistory("at-floor", "NORMAL"),
+      rankedHistory("weak", "NORMAL")
+    ], [expandedHistory("relevant"), expandedHistory("at-floor"), expandedHistory("weak")]);
+    const ranked = applyMemoryRelevance(candidates, {
+      bindingId: "binding-voyage",
+      decisions: candidates.map((candidate, index) => ({
+        applicable: null,
+        current: null,
+        handle: candidate.handle,
+        reasonCode: "SCORE_ONLY" as const,
+        relevanceScore: [0.8, 0.3, 0.25][index]!
+      })),
+      relevanceScoreFloor: rerankerModelPresets.find((model) => model.id === "voyage-rerank-2.5")!
+        .relevanceScoreFloor,
       status: "READY"
     });
 

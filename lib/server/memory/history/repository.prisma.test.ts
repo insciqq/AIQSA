@@ -1337,6 +1337,283 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
+  it.each(["append", "rebuild", "branch"] as const)(
+    "preserves accepted round references across %s and an idempotent commit",
+    async (transition) => {
+      const userId = await createOwner("memory-history-retained-round");
+      try {
+        const chat = await prisma.chat.create({
+          data: { title: "Retained history evidence", userId }
+        });
+        const first = await createTurn({
+          assistantText: "The cedar desk is reserved.",
+          chatId: chat.id,
+          createdAt: new Date("2026-08-12T12:00:00.000Z"),
+          parentMessageId: null,
+          userId,
+          userText: "I reserved the cedar desk."
+        });
+        await mutateSource(userId, chat.id, {
+          mutations: ["NORMAL_APPEND", "TERMINAL_SETTLEMENT"],
+          patch: { activeLeafMessageId: first.assistantMessage.id },
+          terminalSettlement: {
+            assistantMessageId: first.assistantMessage.id,
+            runId: first.run.id,
+            status: "complete"
+          }
+        });
+        await processHistoryJob(userId);
+        const round = await prisma.memoryRecallRound.findFirstOrThrow({
+          where: { chatId: chat.id, state: "ACTIVE", userId }
+        });
+        const segment = await prisma.memoryRecallRoundSegment.findFirstOrThrow({
+          where: { roundId: round.id, state: "ACTIVE", userId }
+        });
+        const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+          where: { userId }
+        });
+        const frozen = await prisma.$transaction(async (tx) => {
+          const attempt = await tx.memoryRetrievalAttempt.create({
+            data: {
+              admissionKind: "NORMAL_SEND",
+              admittedAssistantLeafMessageId: first.assistantMessage.id,
+              admittedUserMessageId: first.userMessage.id,
+              attemptOrdinal: 0,
+              baseRequestHash: memorySha256("retained-round-request"),
+              boundedPrivateBaseRequestSnapshot: {},
+              chatId: chat.id,
+              chatMemoryModeSnapshot: "NORMAL",
+              consumedAt: new Date(),
+              expiresAt: new Date("2030-01-01T00:00:00.000Z"),
+              memoryGenerationSnapshot: settings.memoryGeneration,
+              modelRunId: first.run.id,
+              outcome: "USED",
+              preparedContextHash: memorySha256(round.rawSafeText),
+              preparedContextText: round.rawSafeText,
+              preparedContextTokenCount: 12,
+              queryHash: memorySha256("cedar desk"),
+              retrievalRevisionSnapshot: settings.memoryRevision,
+              settingsSnapshot: {},
+              state: "CONSUMED",
+              userId,
+              utilityEgressMode: "LOCAL_ONLY"
+            }
+          });
+          const binding = await tx.modelRunMemoryBinding.create({
+            data: {
+              contextTextHash: memorySha256(round.rawSafeText),
+              contextTokenCount: 12,
+              finalizedAt: new Date(),
+              finalizedRevisionSnapshot: settings.memoryRevision,
+              memoryGenerationSnapshot: settings.memoryGeneration,
+              modelRunId: first.run.id,
+              outcome: "USED",
+              queryHash: memorySha256("cedar desk"),
+              queryPlannerVersion: "retained-round-fixture-v1",
+              retrievalAttemptId: attempt.id,
+              retrievalPipelineVersion: "retained-round-fixture-v1",
+              retrievalRevisionSnapshot: settings.memoryRevision,
+              settingsSnapshot: {},
+              userId
+            }
+          });
+          const reference = {
+            exactItemId: round.id,
+            featureSnapshot: {},
+            itemType: "RECALL_ROUND" as const,
+            laneRanks: {},
+            ordinal: 0,
+            recallRoundId: round.id,
+            recallRoundSegmentId: segment.id,
+            selectionReason: "history_recall_exact",
+            sourceBranchGenerationSnapshot: round.branchGeneration,
+            sourceChatIdSnapshot: chat.id,
+            sourceContentHashSnapshot: round.contentHash,
+            sourceRevisionSnapshot: round.sourceRevisionAtCreation,
+            userId
+          };
+          const attemptItem = await tx.memoryRetrievalAttemptItem.create({
+            data: {
+              ...reference,
+              attemptId: attempt.id,
+              exactSafeText: round.rawSafeText,
+              sourceSnapshot: {},
+              textHash: memorySha256(round.rawSafeText),
+              versionSnapshot: {}
+            }
+          });
+          const runItem = await tx.modelRunMemoryItem.create({
+            data: {
+              ...reference,
+              bindingId: binding.id,
+              finalScore: 0.9,
+              includedText: round.rawSafeText,
+              includedTextHash: memorySha256(round.rawSafeText),
+              itemStateAtAdmission: "ACTIVE",
+              sourceMessageIdsSnapshot: [first.userMessage.id, first.assistantMessage.id]
+            }
+          });
+          const feedbackId = randomUUID();
+          const event = await tx.memoryEvent.create({
+            data: {
+              actorType: "USER", actorUserId: userId, operation: "USER_FEEDBACK",
+              metadata: { feedbackId, feedbackType: "CORRECT",
+                schemaVersion: "memory-feedback-event-v1" },
+              sourceChatId: chat.id, userId
+            }
+          });
+          const feedback = await tx.memoryFeedback.create({
+            data: {
+              feedbackType: "CORRECT", id: feedbackId,
+              idempotencyFingerprint: memorySha256(feedbackId),
+              memoryEventId: event.id, modelRunId: first.run.id,
+              modelRunMemoryItemId: runItem.id, recallRoundId: round.id,
+              requestId: feedbackId, sourceBranchGenerationSnapshot: round.branchGeneration,
+              sourceChatIdSnapshot: chat.id, targetKind: "RECALL_ROUND", userId
+            }
+          });
+          return { attemptItem, feedback, runItem };
+        });
+
+        if (transition === "rebuild") {
+          await prisma.chatMemoryCheckpoint.update({
+            data: { pipelineVersion: "memory-history-incremental-v7" },
+            where: { userId_chatId: { chatId: chat.id, userId } }
+          });
+        }
+        const appended = await createTurn({
+          assistantText: "The walnut shelf is also reserved.",
+          chatId: chat.id,
+          createdAt: new Date("2026-08-12T12:02:00.000Z"),
+          parentMessageId: first.assistantMessage.id,
+          userId,
+          userText: "I also reserved the walnut shelf."
+        });
+        await mutateSource(userId, chat.id, {
+          mutations: [transition === "branch" ? "BRANCH_PATH_CHANGE" : "NORMAL_APPEND",
+            "TERMINAL_SETTLEMENT"],
+          patch: { activeLeafMessageId: appended.assistantMessage.id },
+          terminalSettlement: {
+            assistantMessageId: appended.assistantMessage.id,
+            runId: appended.run.id,
+            status: "complete"
+          }
+        });
+        const claim = await claimHistoryJob(userId);
+        const handler = createPrismaMemoryHistoryIndexHandler(prisma, normalHistoryClassifier);
+        const now = new Date();
+        const result = await handler.execute(claim, executionContext(now));
+        const readArtifacts = () => Promise.all([
+          prisma.chatMemoryCheckpoint.findMany({ where: { userId } }),
+          prisma.memoryRecallChunk.findMany({ orderBy: { id: "asc" }, where: { userId } }),
+          prisma.memoryRecallRound.findMany({ orderBy: { id: "asc" }, where: { userId } }),
+          prisma.memoryRecallRoundSegment.findMany({ orderBy: { id: "asc" }, where: { userId } }),
+          prisma.memorySearchEntry.findMany({ orderBy: { id: "asc" }, where: { userId } })
+        ]);
+        const beforeCommit = await readArtifacts();
+        const rollback = new Error("retained_round_commit_rollback");
+        await expect(prisma.$transaction(async (tx) => {
+          await result.apply?.(tx, claim);
+          throw rollback;
+        })).rejects.toBe(rollback);
+        await expect(readArtifacts()).resolves.toEqual(beforeCommit);
+        await expect(createPrismaMemoryCoordinatorRepository(prisma).commitJobSuccess({
+          acceptedResultHash: result.acceptedResultHash, apply: result.apply,
+          claim, now, stage: result.stage ?? null
+        })).resolves.toBe(true);
+        const unchangedIdentity = {
+          branchGeneration: round.branchGeneration,
+          contentHash: round.contentHash,
+          id: round.id,
+          rawSafeText: round.rawSafeText,
+          sourceRevisionAtCreation: round.sourceRevisionAtCreation,
+          state: "ACTIVE"
+        };
+        await expect(prisma.memoryRecallRound.findUniqueOrThrow({
+          where: { id: round.id }
+        })).resolves.toMatchObject(unchangedIdentity);
+        await expect(prisma.memoryRetrievalAttemptItem.findUniqueOrThrow({
+          where: { id: frozen.attemptItem.id }
+        })).resolves.toEqual(frozen.attemptItem);
+        await expect(prisma.modelRunMemoryItem.findUniqueOrThrow({
+          where: { id: frozen.runItem.id }
+        })).resolves.toEqual(frozen.runItem);
+        await expect(prisma.memoryFeedback.findUniqueOrThrow({
+          where: { id: frozen.feedback.id }
+        })).resolves.toEqual(frozen.feedback);
+        await expect(prisma.memoryRecallRoundSegment.findUniqueOrThrow({
+          where: { id: segment.id }
+        })).resolves.toMatchObject({
+          rawSafeText: segment.rawSafeText,
+          sourceRevisionAtCreation: segment.sourceRevisionAtCreation,
+          state: "ACTIVE"
+        });
+        await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+          where: { userId_chatId: { chatId: chat.id, userId } }
+        })).resolves.toMatchObject({
+          activeLeafMessageId: appended.assistantMessage.id,
+          status: "READY"
+        });
+        const entries = await prisma.memorySearchEntry.findMany({
+          orderBy: { id: "asc" }, where: { userId }
+        });
+        await prisma.$transaction(async (tx) => result.apply?.(tx, claim));
+        await expect(prisma.memorySearchEntry.findMany({
+          orderBy: { id: "asc" }, where: { userId }
+        })).resolves.toEqual(entries);
+        const currentRound = await prisma.memoryRecallRound.findUniqueOrThrow({
+          where: { id: round.id }
+        });
+        const rejoined = await prisma.$transaction((tx) => resolvePreparingMemoryItem(
+          tx,
+          { assistantId: null, chatId: chat.id, folderId: null,
+            indexGenerationId: settings.activeIndexGenerationId, userId },
+          null,
+          { exactItemId: round.id, exactSafeText: round.rawSafeText, finalScore: 0.9,
+            itemType: "RECALL_ROUND", laneRanks: {},
+            projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
+            recallRoundId: round.id, recallRoundSegmentId: segment.id,
+            selectionReason: "history_recall_exact", supportingItemId: currentRound.parentChunkId }
+        ));
+        expect(rejoined).toMatchObject({ recallRoundId: round.id,
+          sourceRevisionSnapshot: round.sourceRevisionAtCreation });
+        if (transition === "branch") {
+          const edited = await createTurn({
+            assistantText: "The maple desk replaces that reservation.",
+            chatId: chat.id,
+            createdAt: new Date("2026-08-12T12:04:00.000Z"),
+            parentMessageId: null, userId,
+            userText: "I reserved the maple desk instead."
+          });
+          await mutateSource(userId, chat.id, {
+            mutations: ["BRANCH_PATH_CHANGE", "TERMINAL_SETTLEMENT"],
+            patch: { activeLeafMessageId: edited.assistantMessage.id },
+            terminalSettlement: { assistantMessageId: edited.assistantMessage.id,
+              runId: edited.run.id, status: "complete" }
+          });
+          await processHistoryJob(userId);
+          const active = await prisma.memoryRecallRound.findMany({
+            where: { chatId: chat.id, state: "ACTIVE", userId }
+          });
+          expect(active).toHaveLength(1);
+          expect(active[0]?.id).not.toBe(round.id);
+          expect(active[0]?.rawSafeText).toContain("maple desk");
+          await expect(prisma.memoryRecallRound.findUniqueOrThrow({
+            where: { id: round.id }
+          })).resolves.toMatchObject({ ...unchangedIdentity, state: "INVALIDATED" });
+          await expect(prisma.modelRunMemoryItem.findUniqueOrThrow({
+            where: { id: frozen.runItem.id }
+          })).resolves.toEqual(frozen.runItem);
+          await expect(prisma.memorySearchEntry.count({
+            where: { recallRoundId: round.id, userId }
+          })).resolves.toBe(0);
+        }
+      } finally {
+        await cleanupOwner(userId);
+      }
+    }
+  );
+
   it("marks destructive source-context drift for a full checkpoint rebuild", async () => {
     const userId = await createOwner("memory-history-context-rebuild");
     try {

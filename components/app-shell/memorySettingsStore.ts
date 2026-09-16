@@ -42,6 +42,12 @@ let loadRequest: Readonly<{
   promise: Promise<MemoryConsumerSettingsResponse>;
 }> | null = null;
 
+function invalidateSettingsLoad(): void {
+  requestGeneration += 1;
+  loadRequest?.controller.abort(new Error("memory_settings_changed"));
+  loadRequest = null;
+}
+
 function errorName(error: unknown): string {
   return error instanceof MemoryApiError || error instanceof Error
     ? error.message
@@ -52,7 +58,8 @@ export async function refreshMemorySettings(
   force = false
 ): Promise<MemoryConsumerSettingsResponse> {
   const current = useMemorySettingsStore.getState();
-  if (!force && current.loadState === "ready" && current.data) return current.data;
+  if (current.busy && current.data) return current.data;
+  if (!force && current.loadState === "ready" && current.data && !current.error) return current.data;
   if (loadRequest?.generation === requestGeneration) return loadRequest.promise;
 
   const accountId = current.accountId;
@@ -60,8 +67,7 @@ export async function refreshMemorySettings(
   const controller = new AbortController();
 
   useMemorySettingsStore.setState({
-    error: null,
-    loadState: current.data ? current.loadState : "loading"
+    loadState: "loading"
   });
   const promise = loadMemorySettings(controller.signal).then(
     (data) => {
@@ -75,7 +81,7 @@ export async function refreshMemorySettings(
       if (generation !== requestGeneration || latest.accountId !== accountId) throw error;
       useMemorySettingsStore.setState({
         error: errorName(error),
-        loadState: current.data ? current.loadState : "error"
+        loadState: "error"
       });
       throw error;
     }
@@ -92,8 +98,13 @@ async function mutation(
     current: MemoryConsumerSettingsResponse
   ) => Promise<MemoryConsumerSettingsResponse>
 ): Promise<MemoryConsumerSettingsResponse> {
-  const current = useMemorySettingsStore.getState().data ?? await refreshMemorySettings(true);
-  const accountId = useMemorySettingsStore.getState().accountId;
+  const initial = useMemorySettingsStore.getState();
+  if (initial.busy || initial.error) throw new Error("memory_settings_confirmation_required");
+  const startGeneration = requestGeneration;
+  const current = initial.data ?? await refreshMemorySettings(true);
+  if (startGeneration !== requestGeneration) throw new Error("memory_settings_account_changed");
+  const accountId = initial.accountId;
+  invalidateSettingsLoad();
   const generation = requestGeneration;
   useMemorySettingsStore.setState({ busy: kind, error: null });
   try {
@@ -120,9 +131,7 @@ async function mutation(
 export function activateMemorySettings(accountId: string): void {
   const current = useMemorySettingsStore.getState();
   if (current.accountId === accountId) return;
-  requestGeneration += 1;
-  loadRequest?.controller.abort(new Error("memory_settings_account_changed"));
-  loadRequest = null;
+  invalidateSettingsLoad();
   useMemorySettingsStore.setState({ ...initialState, accountId }, true);
 }
 
@@ -139,8 +148,6 @@ export async function updateMemoryGate(
 
 export function deactivateMemorySettings(accountId?: string): void {
   if (accountId && useMemorySettingsStore.getState().accountId !== accountId) return;
-  requestGeneration += 1;
-  loadRequest?.controller.abort(new Error("memory_settings_deactivated"));
-  loadRequest = null;
+  invalidateSettingsLoad();
   useMemorySettingsStore.setState(initialState, true);
 }

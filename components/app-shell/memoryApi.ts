@@ -38,6 +38,12 @@ export class MemoryApiError extends Error {
   }
 }
 
+/** A transport/decoder/server failure does not prove that a write was rejected. */
+export function memoryMutationOutcomeIsUnknown(error: unknown): boolean {
+  return !(error instanceof MemoryApiError &&
+    [400, 401, 403, 404, 409, 422].includes(error.status));
+}
+
 async function responseJson(response: Response): Promise<unknown> {
   try {
     return await response.json();

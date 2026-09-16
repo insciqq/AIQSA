@@ -206,8 +206,10 @@ type ToolEventRow = Readonly<{
 }>;
 
 type GenerationConfiguration = Readonly<{
+  activatedAt: Date | null;
   chunkingVersion: string;
   contextualKeyPolicyVersion: string | null;
+  createdAt: Date;
   embeddingConfigurationFingerprint: string | null;
   embeddingConnectionId: string | null;
   embeddingDimension: number | null;
@@ -462,6 +464,15 @@ async function currentHistoryProjectionIsComplete(
       WHERE chat."userId" = ${settings.userId}
         AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
         AND chat."projectId" IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM "MemoryPauseInterval" AS pause
+          WHERE pause."userId" = chat."userId"
+            AND pause."scope" IN (
+              'MASTER'::"MemoryPauseScope", 'SEARCH_HISTORY'::"MemoryPauseScope"
+            )
+            AND leaf."createdAt" >= pause."pausedAt"
+            AND (pause."resumedAt" IS NULL OR leaf."createdAt" <= pause."resumedAt")
+        )
         AND leaf."createdAt" > COALESCE((
           SELECT MAX(barrier."sourceCreatedAtCutoff")
           FROM "MemorySourceBarrier" AS barrier
@@ -1409,6 +1420,22 @@ async function cutoverInventoryWith(
   const existing = active
     ? await existingGenerationEntries(tx, settings.userId, active.id)
     : [];
+  // A rebuild while paused can omit retained evidence. Counter advancement
+  // alone does not prove that a later resume restored those projections.
+  // One shadow after resume also refreshes pause-dependent identity snapshots;
+  // it reuses eligible derivatives, never replays learning from paused chats.
+  const pendingResume = active
+    ? await tx.memoryPauseInterval.findFirst({
+        select: { id: true },
+        where: {
+          resumedAt: { gt: active.activatedAt ?? active.createdAt },
+          scope: { in: settings.referenceChatHistory
+            ? ["MASTER", "SEARCH_HISTORY"]
+            : ["MASTER"] },
+          userId: settings.userId
+        }
+      })
+    : null;
   const embeddingCompatibility = active === null
     ? null
     : await targetEmbeddingCompatibility(tx, settings, active);
@@ -1437,7 +1464,7 @@ async function cutoverInventoryWith(
       await potentiallyCompatibleAutomaticFactCount(tx, settings) - countFor("AUTOMATIC")
     ),
     memoryRevision: settings.memoryRevision,
-    ready: historyProjectionComplete && runtimeCompatible &&
+    ready: !pendingResume && historyProjectionComplete && runtimeCompatible &&
       active.indexedThroughMemoryRevision === settings.memoryRevision &&
       generationEntriesMatch(active, existing, items),
     settingsRevision: settings.settingsRevision

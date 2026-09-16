@@ -565,7 +565,10 @@ async function loadRole(
     modelConfiguration: {
       adapterKind: resolvedModel.adapterKind as CatalogAdapterKind,
       capabilities: resolvedModel.capabilities,
-      defaultParams: resolvedModel.defaultParams
+      defaultParams: resolvedModel.defaultParams,
+      ...(resolvedModel.reasoningRequestMapping
+        ? { reasoningRequestMapping: resolvedModel.reasoningRequestMapping }
+        : {})
     },
     snapshot
   };

@@ -1,5 +1,9 @@
 import type { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { parameterControlsForModel } from "../../domain/catalog";
+import { validateRunParams } from "../../domain/runParams";
+import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
+import { configuredModelParameterControls } from "../providers/providerModelCapabilities";
 import { loadInstallationAnswerProviderRole, loadInstallationRerankerProviderRole, loadProviderAdmissionPlan, ProviderAdmissionError, type ProviderAdmissionPlan } from "./admission";
 
 const capabilities = (input: Readonly<{
@@ -21,6 +25,7 @@ type ModelSpec = Readonly<{
   adapterKind:
     | "anthropic_messages"
     | "gemini_interactions_native"
+    | "openai_chat_completions_compatible"
     | "openai_responses_compatible"
     | "openai_responses_native"
     | "openrouter_chat_completions";
@@ -35,6 +40,7 @@ type ModelSpec = Readonly<{
   nativeSearch?: boolean;
   pdf?: boolean;
   responseTimeoutMs?: number;
+  reasoningRequestMapping?: ProviderReasoningRequestMapping;
   toolCalling?: boolean;
   upstreamModelId: string;
 }>;
@@ -85,6 +91,9 @@ function providerModel(
       }),
       defaultParams: {},
       modelClass: "answer",
+      ...(spec.reasoningRequestMapping
+        ? { reasoningRequestMapping: spec.reasoningRequestMapping }
+        : {}),
       ...(spec.adapterKind === "openrouter_chat_completions"
         ? { openRouterRouting: { mode: "automatic", providers: [] } }
         : {}),
@@ -593,6 +602,45 @@ describe("provider admission", () => {
     expect(findFirst).toHaveBeenNthCalledWith(2, expect.objectContaining({
       where: expect.objectContaining({ id: "answer-1", modelClass: "reranker" })
     }));
+  });
+
+  it.each([
+    { adapterKind: "openai_responses_compatible", mapping: undefined, mode: true },
+    { adapterKind: "openai_responses_compatible", mapping: { effortPath: "thinking.effort", modePath: "thinking.mode" }, mode: true },
+    { adapterKind: "openai_chat_completions_compatible", mapping: { effortPath: "reasoning_effort", modePath: "reasoning_mode" }, mode: true },
+    { adapterKind: "openai_chat_completions_compatible", mapping: undefined, mode: false }
+  ] as const)("accepts catalog reasoning controls after $adapterKind admission with mode=$mode", async ({ adapterKind, mapping, mode }) => {
+    const answer: ModelSpec = {
+      adapterKind, connectionId: "connection-compatible", family: "openai_compatible",
+      id: "model-compatible", upstreamModelId: "vendor/reasoning-model",
+      ...(mapping ? { reasoningRequestMapping: mapping } : {})
+    };
+    const { db } = admissionDb({ answer, options: [off] });
+    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+      providerConnectionId: answer.connectionId, providerModelId: answer.id,
+      searchPlan: { mode: "all_selected", optionIds: [] }, userId: "user-1"
+    });
+    const model = plan.answer.snapshot.model;
+    if (model.adapterKind === "fake") throw new Error("expected_compatible_model");
+    const catalogControls = configuredModelParameterControls(model, answer.family);
+    expect(Boolean(catalogControls.reasoningMode?.supported)).toBe(mode);
+    const configuration = plan.answer.modelConfiguration;
+    const acceptedControls = parameterControlsForModel({
+      adapterKind: configuration.adapterKind, defaultParams: configuration.defaultParams,
+      modelCapabilities: configuration.capabilities, modelId: model.upstreamModelId,
+      provider: "openai", supportsReasoningMode: Boolean(configuration.reasoningRequestMapping?.modePath)
+    });
+    expect(validateRunParams({
+      controls: acceptedControls, provider: "openai", params: {
+        maxOutputTokens: catalogControls.maxOutputTokens.defaultValue,
+        reasoning: {
+          effort: catalogControls.reasoningEffort.defaultValue,
+          ...(catalogControls.reasoningMode?.supported
+            ? { mode: catalogControls.reasoningMode.defaultValue } : {})
+        }
+      }
+    }).ok).toBe(true);
+    expect(configuration.reasoningRequestMapping).toEqual(model.reasoningRequestMapping);
   });
 
   it("resolves a verified model context before snapshotting a new run", async () => {

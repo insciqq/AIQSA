@@ -76,6 +76,7 @@ function LibrarySurfaceV2({ composer, props }: Readonly<{
   const memoryListState = useMemoryManagerStore((state) => state.listLoadState);
   const memories = useMemoryManagerStore((state) => state.memories);
   const memoryMutationError = useMemoryManagerStore((state) => state.mutationError);
+  const memoryMutationOutcomeUnknown = useMemoryManagerStore((state) => state.mutationOutcomeUnknown);
   const memoryBusy = useMemoryManagerStore((state) => state.mutationState);
   const memoryNextCursor = useMemoryManagerStore((state) => state.nextCursor);
   const memoryNotice = useMemoryManagerStore((state) => state.notice);
@@ -309,6 +310,7 @@ function LibrarySurfaceV2({ composer, props }: Readonly<{
           listState={memoryListState}
           memory={memory}
           mutationError={memoryManagerErrorCopy(memoryMutationError)}
+          mutationOutcomeUnknown={memoryMutationOutcomeUnknown}
           notice={memoryNotice ? memoryUiCopy(
             memoryNotice === "forgotten"
               ? "manager.forgotten"
