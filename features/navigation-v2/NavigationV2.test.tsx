@@ -7,6 +7,8 @@ import {
   resetWorkspaceStoreForTest
 } from "@/tests/support/appShellStores";
 import type { ChatNavigationSummaryWire } from "@/lib/contracts/chats";
+import { AnnouncementsProvider } from "@/components/announcements/AnnouncementsProvider";
+import * as announcementsApi from "@/components/announcements/api";
 import {
   flattenFolderTree,
   NavigationSidebar,
@@ -79,6 +81,27 @@ describe("Navigation v2", () => {
     resetWorkspaceStoreForTest();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it("shares the announcement count between the closed mobile trigger and drawer bell", async () => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 390));
+    const count = vi.spyOn(announcementsApi, "getAnnouncementUnreadCount").mockResolvedValue(3);
+    try {
+      render(<AnnouncementsProvider accountId="navigation-reader"><ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()}
+        sidebar={close => <NavigationSidebar {...sidebarProps({ drawerDestinations: true, onClose: close })} />}>
+        <main>Conversation</main>
+      </ReadingRoomShellV2></AnnouncementsProvider>);
+      const trigger = screen.getByRole("button", { name: "Open sidebar" });
+      await waitFor(() => expect(trigger).toHaveAttribute("data-announcements-unread", "true"));
+      expect(trigger).toHaveAccessibleDescription("Unread announcements");
+      fireEvent.click(trigger);
+      expect(screen.getByRole("button", { name: "Announcements, 3 unread" })).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "Close sidebar" }));
+      count.mockResolvedValue(0);
+      fireEvent.focus(window);
+      await waitFor(() => expect(trigger).not.toHaveAttribute("data-announcements-unread"));
+      expect(trigger).not.toHaveAttribute("aria-describedby");
+    } finally { count.mockRestore(); }
   });
 
   it("renders stable date groups, selected state, and an active-run cue", () => {

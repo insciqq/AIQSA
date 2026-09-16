@@ -773,6 +773,7 @@ enum MemoryToolEgressDispatchState {
 }
 
 model User {
+  announcementReads AnnouncementRead[]
   instructionPresets InstructionPreset[]
   chatContinuations ChatContinuation[]
   id                                  String                             @id @default(uuid())
@@ -849,6 +850,32 @@ model User {
   workspaceSecretValues               WorkspaceSecretValue[]
   workspaceBrowserSequence            BigInt                             @default(0)
   workspaceBrowserManualSequence      BigInt                             @default(0)
+}
+
+model Announcement {
+  id          String   @id @default(uuid())
+  title       String
+  body        String
+  published   Boolean  @default(false)
+  publishedAt DateTime?
+  version     Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  reads       AnnouncementRead[]
+
+  @@index([published, publishedAt, id])
+  @@index([createdAt, id])
+}
+
+model AnnouncementRead {
+  userId         String
+  announcementId String
+  readAt         DateTime     @default(now())
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+
+  @@id([userId, announcementId])
+  @@index([announcementId])
 }
 
 model SmtpControl {

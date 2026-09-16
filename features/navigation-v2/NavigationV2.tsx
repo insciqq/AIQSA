@@ -13,6 +13,8 @@ import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { UiV2RovingTree } from "@/components/ui-v2/RovingTreeV2";
 import { AccountMenuV2 } from "./AccountMenuV2";
+import { AnnouncementsBell } from "@/components/announcements/AnnouncementsBell";
+import { useAnnouncements } from "@/components/announcements/AnnouncementsProvider";
 import { chatMenuActionsV2, flattenFolderTree, type FlattenedFolder } from "./chatMenuActions";
 import { RailV2, type RailSectionV2 } from "./RailV2";
 import {
@@ -30,6 +32,7 @@ import {
 } from "@/lib/contracts/chats";
 import {
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -973,6 +976,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
 
       {props.drawerDestinations ? (
         <div className="v2-navigation-footer">
+          <AnnouncementsBell compact={false} />
           {/* One row of destinations (UX audit 2026-09-02 #15) so the chat
               list keeps the drawer's height; Settings and Control Center live
               in the account menu, exactly as on the rail. */}
@@ -1123,6 +1127,8 @@ export function ReadingRoomShellV2({
   sidebar,
   ...navigationOwnerProps
 }: ReadingRoomShellV2Props) {
+  const announcements = useAnnouncements();
+  const announcementHintId = useId();
   const { onNewChat } = navigationOwnerProps;
   const [composition, setComposition] = useState<SidebarCompositionV2>("desktop");
   const [compactExpanded, setCompactExpanded] = useState(false);
@@ -1512,8 +1518,12 @@ export function ReadingRoomShellV2({
         aria-label="Navigation"
         inert={drawerOpen ? true : undefined}
       >
+        {composition === "mobile" && announcements && announcements.unreadCount > 0 ? <span id={announcementHintId} className="sr-only">Unread announcements</span> : null}
         <UiV2IconButton
           ref={openButtonRef}
+          className={composition === "mobile" && announcements && announcements.unreadCount > 0 ? "relative before:absolute before:right-1 before:top-1 before:size-2 before:rounded-full before:bg-proof before:ring-2 before:ring-answer-paper before:content-['']" : undefined}
+          aria-describedby={composition === "mobile" && announcements && announcements.unreadCount > 0 ? announcementHintId : undefined}
+          data-announcements-unread={composition === "mobile" && announcements && announcements.unreadCount > 0 || undefined}
           icon={composition === "mobile" ? "menu" : "panel"}
           label="Open sidebar"
           tooltip={composition === "mobile" ? "Open navigation" : "Show chat list"}

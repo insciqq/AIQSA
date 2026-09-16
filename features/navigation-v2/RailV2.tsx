@@ -2,6 +2,7 @@
 
 import { UiV2Icon, type UiV2IconName } from "@/components/ui-v2";
 import { AccountMenuV2 } from "./AccountMenuV2";
+import { AnnouncementsBell } from "@/components/announcements/AnnouncementsBell";
 
 export type RailSectionV2 = "chats" | "library" | "projects";
 
@@ -77,6 +78,7 @@ export function RailV2({
         ) : null}
       </div>
       <div className="v2-rail-group v2-rail-bottom">
+        <AnnouncementsBell />
         {onSettings ? <RailButton icon="settings" label="Settings" onClick={onSettings} /> : null}
         {adminEntryVisible ? (
           <a

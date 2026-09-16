@@ -1,5 +1,7 @@
 "use client";
 
+import { AnnouncementsProvider } from "@/components/announcements/AnnouncementsProvider";
+
 import { ANSWER_SOUNDS } from "@/lib/contracts/answerSound";
 
 import { useChatPdfRoutePreview } from "@/components/app-shell/useChatPdfRoutePreview";
@@ -1129,6 +1131,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   ] : [];
 
   return (
+    <AnnouncementsProvider accountId={session.accountId}>
     <main className="v2-live-root" data-testid="app-shell">
       <UiV2IconSprite />
       {/* The Library renders inside the same shell as a rail section: the
@@ -1736,6 +1739,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       ) : null}
       <PermanentChatDeletionSurface />
     </main>
+    </AnnouncementsProvider>
   );
 }
 
