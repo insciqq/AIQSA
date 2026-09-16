@@ -1386,12 +1386,16 @@ function controlForAttemptEvidence(
   return { reason: control.reason, status: "UNAVAILABLE" };
 }
 
-function unavailableControlAfterFailure(error: unknown): MemoryControlResult {
+function unavailableControlAfterFailure(
+  error: unknown,
+  bindingId?: string
+): MemoryControlResult {
   const code = typeof error === "object" && error !== null && "code" in error &&
     typeof error.code === "string"
     ? error.code
     : null;
   return {
+    ...(bindingId ? { bindingId } : {}),
     reason: code === "memory_control_timeout" ||
       code === "memory_admission_deadline_exceeded"
       ? "memory_action_intent_outcome_unknown"
@@ -2596,6 +2600,7 @@ export function createMemoryRunRetrievalService(
         timings
       });
       let settledControl: MemoryControlResult | null = null;
+      let controlBindingId: string | undefined;
       const controlPromise = (async (): Promise<MemoryControlResult> => {
         if (!actionControlRequested) {
           return {
@@ -2621,10 +2626,13 @@ export function createMemoryRunRetrievalService(
             options.control!.decide({
               attemptId: input.attemptId,
               context,
+              onBindingId: (bindingId) => {
+                controlBindingId = bindingId;
+              },
               signal: utilitySignal,
               userId: input.userId
             }))
-            .catch(unavailableControlAfterFailure));
+            .catch((error) => unavailableControlAfterFailure(error, controlBindingId)));
       })().then((result) => {
         settledControl = result;
         return result;
