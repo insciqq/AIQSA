@@ -30,7 +30,8 @@ import type {
   MemorySessionEvidenceCompletion,
   PrismaLocalMemoryRetrievalRepository
 } from "./localRepository";
-import type { MemoryControlResult, MemoryControlService } from "../actions/controlRuntime";
+import { createMemoryControlService, type MemoryControlResult, type MemoryControlService } from "../actions/controlRuntime";
+import type { MemoryLearningProviderResult } from "../learning/providerRuntime";
 import {
   applyMemoryRelevance,
   createMemoryRunRetrievalService,
@@ -1169,6 +1170,77 @@ describe("Personal Memory v1 run admission", () => {
         outcome: "USED"
       });
       expect(base.utilities.embedQuery).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["resolve", "reject"] as const)("retains timed-out control execution evidence before settlement and ignores a late %s", async (lateOutcome) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const local = repository({});
+      let resolveProvider!: (result: MemoryLearningProviderResult) => void;
+      let rejectProvider!: (error: Error) => void;
+      let finishSettlement!: () => void;
+      const run = vi.fn(() => new Promise<MemoryLearningProviderResult>((resolve, reject) => {
+        resolveProvider = resolve;
+        rejectProvider = reject;
+      }));
+      const settle = vi.fn(() => new Promise<void>((resolve) => { finishSettlement = resolve; }));
+      const withAuthorizedResultCommit = vi.fn();
+      const control = createMemoryControlService({
+        execution: {
+          admission: {
+            bind: vi.fn(async () => ({ id: "timed-out-control-binding" })),
+            start: vi.fn(async () => ({
+              snapshot: {
+                logicalRole: "MEMORY_CONTROL",
+                providerExecutionSnapshot: {
+                  connectionId: "connection-1", credentialId: "credential-1",
+                  credentialVersionId: "credential-version-1", providerModelId: "model-1"
+                },
+                requiresStrictStructuredOutput: true
+              }
+            }))
+          },
+          lifecycle: { settle, withAuthorizedResultCommit }
+        } as never,
+        provider: { run }
+      });
+      const actionExecutor = { execute: vi.fn() };
+      const controlCache: MemoryRunControlCache = {};
+      const pending = createMemoryRunRetrievalService(local.value, {
+        actionExecutor, admissionDeadlineMs: 120_000, clock: Date.now, control
+      }).retrieve({ ...runInput("What is my preferred editor?"), controlCache });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(run).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(MEMORY_CONTROL_OPTIONAL_MAXIMUM_MS);
+      const result = await pending;
+      finishSettlement();
+      if (lateOutcome === "resolve") resolveProvider({ providerResponseId: null, toolCalls: [], usage: {} });
+      else rejectProvider(new Error("late_provider_failure"));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(result).toMatchObject({
+        budgetSnapshot: {
+          memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+          utilityEgressMode: "CONSENTED_EXTERNAL"
+        },
+        outcome: "EMPTY"
+      });
+      expect(controlCache.control).toEqual({
+        bindingId: "timed-out-control-binding",
+        reason: "memory_action_intent_outcome_unknown", status: "UNAVAILABLE"
+      });
+      expect(settle).toHaveBeenCalledOnce();
+      expect(settle).toHaveBeenCalledWith("user-1", "timed-out-control-binding", expect.objectContaining({
+        acceptedOutputHash: null, state: "CANCELLED", usage: expect.objectContaining({ completeness: "UNAVAILABLE" })
+      }));
+      expect(run).toHaveBeenCalledOnce();
+      expect(withAuthorizedResultCommit).not.toHaveBeenCalled();
+      expect(actionExecutor.execute).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
