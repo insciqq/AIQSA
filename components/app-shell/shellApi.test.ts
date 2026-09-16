@@ -219,10 +219,10 @@ describe("chat wire mapping", () => {
     });
   });
 
-  it("preserves error and cancellation fallbacks in thread detail", () => {
+  it("keeps the failure separate from answer text and retains the cancellation fallback", () => {
     expect(chatDetailFromApi(detail).messages).toEqual([
       expect.objectContaining({
-        content: "Provider failed",
+        content: "",
         errorMessage: "Provider failed",
         id: "message-error",
         status: "error"

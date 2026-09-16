@@ -281,6 +281,24 @@ describe("AdminProviderModelSheet", () => {
     expect(within(sheet).getByRole("button", { name: "Edit JSON" })).toBeVisible();
   });
 
+  it("lets an existing compatible model enable Codex search independently of hosted AIQSA Search", async () => {
+    const connection = fixtureConnection({ displayName: "Compatible", family: "openai_compatible", id: "compatible" });
+    const model = fixtureModel({ connectionId: connection.id, displayName: "Custom", id: "custom" });
+    model.draftConfig = { ...model.draftConfig, adapterKind: "openai_responses_compatible",
+      capabilities: { ...model.draftConfig.capabilities, nativeSearch: false } };
+    connection.models = [model];
+    const saveModel = vi.fn(async () => ({ ok: true as const }));
+    render(<AdminProviderModelSheet connection={connection} controller={controller(saveModel)} discovery={discovery()} model={model} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    const sheet = await screen.findByRole("dialog", { name: "Edit model" });
+    fireEvent.click(within(sheet).getByRole("switch", { name: "Codex web search" }));
+    expect(within(sheet).getByRole("switch", { name: "Hosted web search" })).not.toBeChecked();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Test & Save" }));
+    await waitFor(() => expect(saveModel).toHaveBeenCalledOnce());
+    expect(saveModel.mock.calls[0]).toEqual(expect.arrayContaining([expect.objectContaining({
+      configuration: expect.objectContaining({ capabilities: expect.objectContaining({ codexStandaloneWebSearch: true, nativeSearch: false }) })
+    })]));
+  });
+
   it("adds an OpenRouter model from the catalog with an ordered route and one Test & Save", async () => {
     const connection = fixtureConnection({
       credentials: [fixtureCredential({ id: "cred-primary", label: "Primary" })],

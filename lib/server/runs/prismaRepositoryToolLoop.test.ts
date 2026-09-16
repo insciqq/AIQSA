@@ -404,6 +404,24 @@ describe("provider dispatch recovery request loading", () => {
     toolMode: "none"
   } satisfies NormalizedRunRequest;
 
+  it("restores current admitted model capabilities without weakening their validation", async () => {
+    const capabilities = { ...normalizedRequest.modelCapabilities, vision: true, forcedToolCalling: true,
+      imageEditing: false, imageGeneration: false, maxOutputTokens: 8192,
+      imageInputLimits: { imageBytes: 1048576, imageCount: 4, imagePixels: 4000000, payloadBytes: 5000000 } };
+    let accepted: unknown = { ...normalizedRequest, modelCapabilities: capabilities };
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      normalizedRequest: accepted, provider: "provider-one"
+    })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).resolves.toEqual(accepted);
+    for (const patch of [ { forcedToolCalling: "true" }, { maxOutputTokens: 0 },
+      { imageInputLimits: { ...capabilities.imageInputLimits, imageCount: -1 } }, { vision: false } ]) {
+      accepted = { ...normalizedRequest, modelCapabilities: { ...capabilities, ...patch } };
+      await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
+        .rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+    }
+  });
+
   it.each([
     [100, 128, true], [101, 128, true], [128, 128, true], [129, 128, false],
     [5, 5, true], [6, 5, false], [5, undefined, true], [6, undefined, false]

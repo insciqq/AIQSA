@@ -25,6 +25,8 @@ Native PDF qualification must read image content through the selected native rou
 
 Every accepted transport has bounded input/output, cancellation, exact terminal proof and value-free failures. Retry only explicitly admitted replay-safe work under its adapter/stage-owned failure classification and deadline policy, without changing accepted authority or destinations. Native/background create, accepted streams and crash-ambiguous dispatched work are never blindly replayed. Every physical utility request contributes content-free accounting, including admitted retries or delayed selected-provider attempts. Never retain raw requests, responses, reasoning, tool arguments or provider errors for diagnosis.
 
+Agent uses admitted Responses without guaranteeing model compatibility. Gateway receipts bind each Search continuation to its model; source budgets survive requests. Guest counters/reservations never justify billing. Unknown usage and late receipts retain their attempt identity.
+
 Custom roots require explicit protocol and canonical base URL; do not guess `/v1`. Public endpoints require HTTPS and bearer authentication. Private/local HTTP and no-auth require their reviewed flags, pinned resolution/redirect checks and immutable tested evidence. No-auth emits no Authorization header.
 
 Gateway routing isolation is compatibility behavior, never identity or retry authority. Automatic detection belongs to validated catalog evidence bound to the tested endpoint and credential; explicit overrides and accepted snapshots remain authoritative. Opaque routing keys isolate physical requests without exposing private identity or acting as idempotency keys. Preserve concurrency; fixed delays cannot guarantee isolation.

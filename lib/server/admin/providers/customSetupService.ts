@@ -1,6 +1,7 @@
 import type { AdminProviderSetupProgress } from "../../../contracts/adminProviderSetupProgress";
 import type { AdminProviderCheckRun } from "../../../contracts/adminProviders";
 import { decodeCapabilitySetupEvidence, initialModelConfiguration, pendingInitialCapabilityEvidence } from "./initialCapabilitySetup";
+import { decodeCodexWebSearchEvidence } from "../../providers/codexWebSearch";
 import { decodeHostedSearchVerificationEvidence } from "./hostedSearchCapability";
 import { providerSetupModels } from "./setupModels";
 import { randomUUID } from "node:crypto";
@@ -208,6 +209,7 @@ function validatedEvidence(
   const pdfInput = decodePdfInputVerificationEvidence(outcome.evidence.pdfInput);
   const visionInput = decodeVisionInputVerificationEvidence(outcome.evidence.visionInput);
   const hostedSearch = decodeHostedSearchVerificationEvidence(outcome.evidence.hostedSearch);
+  const codexWebSearch = decodeCodexWebSearchEvidence(outcome.evidence.codexWebSearch);
   const parallelToolCalls = decodeParallelToolCallVerificationEvidence(outcome.evidence.parallelToolCalls);
   const capabilitySetup = decodeCapabilitySetupEvidence(outcome.evidence.capabilitySetup);
   const hasPdfInput = Object.prototype.hasOwnProperty.call(outcome.evidence, "pdfInput");
@@ -226,6 +228,9 @@ function validatedEvidence(
     outcome.evidence.selectedProviders.length !== 0 ||
     (hasCompatibility && !compatibility) ||
     (outcome.evidence.capabilitySetup !== undefined && !capabilitySetup) ||
+    (outcome.evidence.codexWebSearch !== undefined && (!codexWebSearch || model.modelClass !== "answer" ||
+      codexWebSearch.adapterKind !== model.adapterKind || codexWebSearch.upstreamModelId !== model.upstreamModelId)) ||
+    (capabilitySetup?.checks.codexWebSearch === "verified" && !codexWebSearch) ||
     (outcome.evidence.hostedSearch !== undefined && (!hostedSearch || model.modelClass !== "answer" ||
       hostedSearch.adapterKind !== model.adapterKind || hostedSearch.upstreamModelId !== model.upstreamModelId)) ||
     (capabilitySetup?.checks.hostedSearch === "verified" && !hostedSearch) ||
@@ -261,6 +266,7 @@ function validatedEvidence(
     ...(compatibility ? { compatibility } : {}),
     ...(capabilitySetup ? { capabilitySetup } : {}),
     ...(hostedSearch ? { hostedSearch } : {}),
+    ...(codexWebSearch ? { codexWebSearch } : {}),
     ...(parallelToolCalls ? { parallelToolCalls } : {}),
     detail: "ok",
     method: "tiny_generation",

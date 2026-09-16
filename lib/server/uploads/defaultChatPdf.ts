@@ -40,6 +40,7 @@ function createDefaultChatPdf() {
         const current = await providerAdmissionService.load({ ...expected.selection,
           ...(prepared.project ? { executionScope: "project" as const } : {}),
           requiresClientToolCoexistence: expected.requiresClientToolCoexistence,
+          requiresClientSearchRoutes: expected.requiresClientSearchRoutes,
           searchPlan: expected.requestedSearchPlan, userId: claim.userId });
         return sameProviderAdmissionPlan(current, expected);
       } catch { return false; }

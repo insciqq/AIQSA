@@ -26,6 +26,13 @@ function present(
 }
 
 describe("Run transport presentation v2", () => {
+  it("retains the persisted Agent limit cause alongside a partial answer after reload", () => {
+    const message = "Agent stopped because the provider call limit for this turn was reached.";
+    const slice = runTransportStateV2({ activeChatStreaming: false, interruptedRun: null,
+      message: { ...streamingMessage, status: "error", errorMessage: message }, persistedRunStatus: null });
+    expect(present(slice, "Beginning file check.")).toMatchObject({ kind: "terminal_error", failure: { message } });
+  });
+
   it("restores deterministic Gemini routing rejection without a blind retry after reload", () => {
     const failure = mcpAutoDiscoveryFailure("mcp_router_gemini_invalid_request");
     const slice = runTransportStateV2({ activeChatStreaming: false, interruptedRun: null,

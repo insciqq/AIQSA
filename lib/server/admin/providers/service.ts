@@ -87,6 +87,7 @@ import { decodeStructuredOutputVerificationEvidence } from "../../providers/stru
 import { decodeForcedToolCallVerificationEvidence } from
   "../../providers/forcedToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
+import { decodeCodexWebSearchEvidence } from "../../providers/codexWebSearch";
 import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
 import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
 import { isApprovedRerankerProviderModelId } from "./approvedRerankers";
@@ -272,6 +273,7 @@ function validateEvidence(
   const pdfInput = decodePdfInputVerificationEvidence(evidence.pdfInput);
   const visionInput = decodeVisionInputVerificationEvidence(evidence.visionInput);
   const hostedSearch = decodeHostedSearchVerificationEvidence(evidence.hostedSearch);
+  const codexWebSearch = decodeCodexWebSearchEvidence(evidence.codexWebSearch);
   const imageGeneration = decodeImageVerificationEvidence(evidence.imageGeneration);
   const imageEditing = decodeImageVerificationEvidence(evidence.imageEditing);
   const invalidImageProof = (["imageGeneration", "imageEditing"] as const).some((key) => {
@@ -299,6 +301,9 @@ function validateEvidence(
     (evidence.hostedSearch !== undefined && (!hostedSearch || model.modelClass !== "answer" ||
       hostedSearch.adapterKind !== model.adapterKind || hostedSearch.upstreamModelId !== model.upstreamModelId)) ||
     (capabilitySetup?.checks.hostedSearch === "verified" && !hostedSearch) ||
+    (evidence.codexWebSearch !== undefined && (!codexWebSearch || model.modelClass !== "answer" ||
+      codexWebSearch.adapterKind !== model.adapterKind || codexWebSearch.upstreamModelId !== model.upstreamModelId)) ||
+    (capabilitySetup?.checks.codexWebSearch === "verified" && !codexWebSearch) ||
     (evidence.parallelToolCalls !== undefined && (!parallelToolCalls ||
       parallelToolCalls.adapterKind !== model.adapterKind || parallelToolCalls.upstreamModelId !== model.upstreamModelId)) ||
     (compatibility && (
@@ -341,6 +346,7 @@ function validateEvidence(
   return {
     ...(capabilitySetup ? { capabilitySetup } : {}),
     ...(hostedSearch ? { hostedSearch } : {}),
+    ...(codexWebSearch ? { codexWebSearch } : {}),
     ...(imageGeneration ? { imageGeneration } : {}),
     ...(imageEditing ? { imageEditing } : {}),
     ...(parallelToolCalls ? { parallelToolCalls } : {}),

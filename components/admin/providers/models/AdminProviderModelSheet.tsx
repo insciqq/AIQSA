@@ -742,6 +742,15 @@ function SheetBody({
                         });
                       }}
                     />
+                    {form.adapterKind === "openai_responses_compatible" ? (
+                      <SettingRow
+                        checked={form.capabilities.codexStandaloneWebSearch === true}
+                        detail="Built-in Codex search in Agent. Requires a successful endpoint check; separate from AIQSA Search."
+                        disabled={busy}
+                        label="Codex web search"
+                        onChange={(next) => updateCapability("codexStandaloneWebSearch", next)}
+                      />
+                    ) : null}
                     {form.adapterKind === "openai_chat_completions_compatible" ? (
                       <SettingRow
                         checked={form.capabilities.streamUsage === true}

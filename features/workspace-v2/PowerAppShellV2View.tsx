@@ -762,6 +762,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       selectedSkillIds={selectedSkills.map((skill) => skill.id)}
       selectedSkills={selectedSkills.map(({ id, name }) => ({ id, name }))}
       sharedProject={projectContext}
+      agent={composer.agent ? { ...composer.agent, onToggle: composer.agent.setEnabled } : undefined}
       uploading={composer.uploading}
       workspace={{
         available: composer.workspace.available,

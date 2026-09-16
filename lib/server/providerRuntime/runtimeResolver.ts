@@ -37,7 +37,7 @@ export type ProviderRuntimeStore = Readonly<{
 }>;
 
 export type ProviderRuntimeResolver = Readonly<{
-  resolve(runId: string, role: ProviderRunBindingRole, bindingKey?: string): Promise<ProviderRuntimeBinding>;
+  resolve(runId: string, role: ProviderRunBindingRole, bindingKey?: string, options?: Readonly<{ disableRequestRetries?: true }>): Promise<ProviderRuntimeBinding>;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -75,7 +75,7 @@ export function createProviderRuntimeResolver(input: Readonly<{
   const encryptionKey = input.encryptionKey ?? getSecretEncryptionKey;
 
   return {
-    async resolve(runId, role, bindingKey = role) {
+    async resolve(runId, role, bindingKey = role, options = {}) {
       const binding = await input.store.loadBinding(runId, bindingKey);
       if (!binding) {
         throw new Error("provider_run_binding_not_found");
@@ -85,7 +85,7 @@ export function createProviderRuntimeResolver(input: Readonly<{
 
       if (snapshot.model.adapterKind === "fake") {
         return createProviderRuntimeBinding({
-          options: { allowFake: input.allowFake },
+          options: { ...options, allowFake: input.allowFake },
           secret: null,
           snapshot
         });
@@ -127,6 +127,7 @@ export function createProviderRuntimeResolver(input: Readonly<{
         };
         return createProviderRuntimeBinding({
           options: {
+            ...options,
             allowFake: input.allowFake,
             fetchFn: guardedFetch
           },
@@ -167,6 +168,7 @@ export function createProviderRuntimeResolver(input: Readonly<{
 
       return createProviderRuntimeBinding({
         options: {
+          ...options,
           allowFake: input.allowFake,
           fetchFn: input.createFetch(snapshot)
         },

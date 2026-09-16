@@ -75,6 +75,10 @@ import type {
   SkillRunResolver
 } from "../skills/runMaterialization";
 import { withSelectedSkillContext } from "../skills/userContext";
+import { agentLimits, type NormalizedRunAgent } from "../agents/config";
+import { agentPrompts } from "../agents/prompt";
+import { supportsAgentResponses } from "../providers/agentResponses";
+import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { knowledgeRetrievalToolsForRequest } from "../knowledge/knowledgeTools";
 import {
@@ -183,6 +187,7 @@ export type RunPreparationDeps = Readonly<{
       providerConnectionId: string;
       providerModelId: string;
       requiresClientToolCoexistence?: boolean;
+      requiresClientSearchRoutes?: boolean;
       searchPlan: import("../../domain/search").SearchPlan;
       searchPreferencePlan?: import("../../domain/search").SearchPlan | null;
       searchPreferenceSource?: "organization" | "personal";
@@ -191,6 +196,7 @@ export type RunPreparationDeps = Readonly<{
   }>;
   chatPdf?: Readonly<{ resolve(answer: ProviderAdmissionRole): Promise<ChatPdfRouteAdmission> }>;
   repository: RunPreparationRepository;
+  agentPolicy?: Readonly<{ read(): Promise<import("@/lib/contracts/agentPolicy").AgentPolicyWire> }>;
   runPolicy?: Readonly<{
     load(): Promise<ToolRunBudgets>;
   }>;
@@ -578,7 +584,8 @@ function resolveWorkspaceEnabled(
 function promptWithWorkspaceContract(
   prompt: NormalizedRunRequest["prompt"],
   workspace: WorkspaceRunAdmissionPlan,
-  attachments: readonly ProviderAttachment[]
+  attachments: readonly ProviderAttachment[],
+  agentEnabled = false
 ): NormalizedRunRequest["prompt"] {
   const providerToolName = (originalName: string): string =>
     workspace.toolDefinitions.find((tool) => tool.originalName === originalName)?.namespacedName ?? originalName;
@@ -592,20 +599,23 @@ function promptWithWorkspaceContract(
     `Working directory: ${workspace.normalized.projectDirectory}`,
     "Original attachments: /workspace/inbox",
     `Attachment index: ${workspace.normalized.inboxIndexPath}`,
-    `Current message manifest: ${workspace.normalized.messageManifestPath}`,
+    agentEnabled ? "Read messageManifestPath from the current AIQSA turn workspace paths."
+      : `Current message manifest: ${workspace.normalized.messageManifestPath}`,
     "Do not modify originals in inbox; copy files that need changes into project.",
     `Internet inside the workspace: ${workspace.normalized.internetEnabled ? "enabled (public destinations only)" : "disabled"}.`,
     "You may install required packages through available package managers.",
-    `Put user-downloadable files only in ${workspace.normalized.outputDirectory}.`,
+    agentEnabled ? "Put user-downloadable files only in outputDirectory from the current AIQSA turn workspace paths. These paths change each user turn."
+      : `Put user-downloadable files only in ${workspace.normalized.outputDirectory}.`,
     "After changes, run appropriate tests or checks.",
     "Do not claim that a file was created or a check passed until a tool verified it.",
-    `Use ${shellToolName} for pipelines, redirects, &&, ||, globbing and heredocs; ${execToolName} runs one program directly without shell parsing.`,
+    agentEnabled ? "Use your native Codex shell and file tools inside this Workspace."
+      : `Use ${shellToolName} for pipelines, redirects, &&, ||, globbing and heredocs; ${execToolName} runs one program directly without shell parsing.`,
     "Saved personal Workspace accesses are prepared automatically for personal chats; shared Projects do not receive personal secrets. SSH is configured for noninteractive use, and saved environment variables are available in each command and its child processes. Read /workspace/SECRETS.md for text secrets, environment names and exact original file/key paths. Use the accesses needed for the user's task. Values are not automatically included in this prompt. Do not copy managed secrets or the guide into project files or downloads unless the user requests it.",
     WORKSPACE_OFFICE_GUIDANCE,
     WORKSPACE_BROWSER_GUIDANCE,
     "The inbox index also lists earlier completed exports from this conversation, marked source=export with their producing message and date. Read that index to find the requested earlier result; the current output directory starts fresh and does not describe export history. Use the indexed canonical copy when revising an earlier export, then write a new result to the current output directory. Never claim previous exports are lost solely because the current output directory is empty.",
     "When you create a user-facing file, mention its filename in the answer. Do not create sandbox:, file: or local filesystem download links and do not repeat a \"Files for download\" list: the interface publishes successfully exported files automatically.",
-    ...(files.length > 0 ? ["Current message attachments:", ...files] : [])
+    ...(!agentEnabled && files.length > 0 ? ["Current message attachments:", ...files] : [])
   ].join("\n");
   return {
     ...prompt,
@@ -987,6 +997,8 @@ export async function prepareRun(
     ? await deps.runPolicy.load()
     : DEFAULT_TOOL_RUN_BUDGETS;
   const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
+  if (body?.agentEnabled !== undefined && typeof body.agentEnabled !== "boolean") return failure("agent_selection_invalid", 400);
+  const agentEnabled = body?.agentEnabled === true;
   const workspaceEnabled = resolveWorkspaceEnabled(body, chat.workspaceEnabled);
   if (workspaceEnabled === null) {
     return failure("workspace_intent_invalid", 400);
@@ -998,6 +1010,8 @@ export async function prepareRun(
   const project = chat.project
     ? { ...chat.project, memoryEnabled: false, memoryItems: [] }
     : undefined;
+  if (agentEnabled && !workspaceEnabled) return failure("agent_workspace_required", 400);
+  if (agentEnabled && (project || body?.assistantId)) return failure("agent_personal_chat_required", 400);
 
   let assistantRun: AssistantRunMaterialization | null = null;
   if (body && "assistantId" in body && body.assistantId !== undefined && body.assistantId !== null) {
@@ -1138,6 +1152,7 @@ export async function prepareRun(
     }
   }
   const knowledgeRequested = decodedKnowledgePlan.plan.mode !== "none";
+  if (agentEnabled && knowledgeRequested) return failure("agent_knowledge_unsupported", 400);
 
   const decodedSearchPlan = assistantRun
     ? null
@@ -1261,6 +1276,7 @@ export async function prepareRun(
       ...(knowledgeRequested || workspaceEnabled
         ? { requiresClientToolCoexistence: true }
         : {}),
+      ...(agentEnabled ? { requiresClientSearchRoutes: true } : {}),
       searchPlan: requestedSearchPlan,
       ...(requestedSearchPreference && !project
         ? {
@@ -1280,6 +1296,7 @@ export async function prepareRun(
     throw error;
   }
   modelConfiguration = admissionPlan.answer.modelConfiguration;
+  if (agentEnabled && !supportsAgentResponses(admissionPlan.answer.snapshot)) return failure("agent_model_unsupported", 400);
   let acceptedSearchPlan = admissionPlan.requestedSearchPlan;
   requestedSearchPlan = acceptedSearchPlan;
   if (project && requestedSearchPlan.optionIds.some((id) =>
@@ -1416,6 +1433,7 @@ export async function prepareRun(
         providerConnectionId: selectedProvider,
         providerModelId: selectedModelId,
         requiresClientToolCoexistence: true,
+        ...(agentEnabled ? { requiresClientSearchRoutes: true } : {}),
         searchPlan: requestedSearchPlan,
         ...(requestedSearchPreference && !project
           ? {
@@ -1612,7 +1630,7 @@ export async function prepareRun(
   });
   if (mcpCompatibility) return failure(mcpCompatibility.code, mcpCompatibility.status);
 
-  const imagePlan = body?.tools !== "none" && modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider })
+  const imagePlan = !agentEnabled && body?.tools !== "none" && modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider })
     ? await deps.images?.resolve() ?? null : null;
   let pdfRoute: ChatPdfRouteAdmission | undefined;
   let chatPdfAdmissions: ChatPdfAttachmentAdmission[] = [];
@@ -1691,7 +1709,7 @@ export async function prepareRun(
     }
     workspaceAdmissionPlan = workspaceAdmission.plan;
     workspaceTools = workspaceAdmission.tools;
-    prompt = promptWithWorkspaceContract(prompt, workspaceAdmission.plan, attachments);
+    prompt = promptWithWorkspaceContract(prompt, workspaceAdmission.plan, attachments, agentEnabled);
   }
 
   const referenceMessages = [...contextMessages, { id: input.source.kind === "send" ? "current" : input.source.source.userMessage.id, role: "user" as const, content }];
@@ -1702,7 +1720,32 @@ export async function prepareRun(
     return row ? [{ attachmentId: id, messageId: message.id, fileName: row.fileName, origin: message.role === "assistant" ? "generated" as const : "upload" as const }] : [];
   })).slice(-256);
   if (imagePlan) prompt = { ...prompt, system: [prompt.system, imageReferenceInstructions(imageReferences, modelCapabilities.vision === true)].filter(Boolean).join("\n\n") };
+  let agent: NormalizedRunAgent | undefined;
+  if (agentEnabled) {
+    let limits: ReturnType<typeof agentLimits>;
+    try {
+      if (!deps.agentPolicy) return failure("agent_unavailable", 503);
+      limits = agentLimits(await deps.agentPolicy.read());
+    } catch { return failure("agent_unavailable", 503); }
+    if (!workspaceAdmissionPlan?.normalized.internetEnabled) return failure("agent_internet_required", 400);
+    const mcpMode = ordinaryMcpSelection?.mode === "auto" ? "auto" as const
+      : ordinaryMcpSelection?.mode === "load_all" ? "all" as const : "off" as const;
+    agent = { ...limits, mcpMode,
+      maxOutputTokens: Math.min(limits.limitsEnabled ? limits.maxOutputTokens : Infinity,
+        typeof runParams.maxOutputTokens === "number" ? runParams.maxOutputTokens : parameterControls.maxOutputTokens.defaultValue),
+      compatibilityHash: hashCanonicalMcpValue({
+        version: limits.codexVersion, provider: admissionPlan.answer.snapshot,
+        workspace: { image: workspaceAdmissionPlan.normalized.imageRef, internet: true },
+        gateway: limits.gatewayOrigin, reasoning: acceptedReasoning.reasoningEffort ?? null,
+        personalInstructions: personalInstructions ?? null,
+        skills: skillRuns.map((skill) => ({ id: skill.skillId, revision: skill.revisionId })),
+        search: admissionPlan.searches, searchMode: acceptedSearchPlan.mode,
+        mcpMode, mcp: mcpCatalog ?? mcpPlan ?? null
+      })
+    };
+  }
   const baseNormalizedRequest: NormalizedRunRequest = {
+    ...(agent ? { agent } : {}),
     ...(personalInstructions ? { instructionPreset: { presetId: personalInstructions.presetId,
       revision: personalInstructions.revision, selectionVersion: personalInstructions.selectionVersion } } : {}),
     ...(imagePlan ? { imagePlan, imageReferences } : {}),
@@ -1912,6 +1955,9 @@ export async function prepareRun(
     context: providerBudget.request.context!
   };
   const providerRequest: ProviderRunRequest = providerBudget.request;
+  if (agent) {
+    try { agentPrompts(providerRequest); } catch { return failure("agent_context_too_large", 413); }
+  }
   const providerRequestPreview = adapter.buildRequestPreview(providerRequest);
   // Assistant-derived values never overwrite the user's ordinary manual
   // defaults, so an Assistant run persists no accepted-defaults update.

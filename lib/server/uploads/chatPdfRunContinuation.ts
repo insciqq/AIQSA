@@ -134,7 +134,7 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
     }
     if (!await observeChatPdfPersistence(claim.runId, "dispatch", () => deps.pdfRepository.markAnswerDispatched(claim))) throw new ChatPdfPreparationError("pdf_preparation_unavailable");
     releaseRegistry();
-    const response = createRunExecutionResponse({ ...deps, adapter: runtime.adapter, created, prepared,
+    const response = createRunExecutionResponse({ ...deps, adapter: runtime.adapter, agentResponses: runtime.agentResponses, created, prepared,
       searchRuntimes, structuredOutputAdapter: runtime.structuredOutputAdapter, toolBridge: runtime.toolBridge, userId: claim.userId });
     logEvent("run_recovery", { subsystem: "pdf", run_id: claim.runId, stage: "continuation", outcome: "completed", action: "complete" });
     // Answer persistence and its controller have taken ownership. Do not hold

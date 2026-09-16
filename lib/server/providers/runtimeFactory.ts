@@ -1,4 +1,5 @@
 import { createAnthropicMessagesAdapter, createFetchAnthropicMessagesClient } from "./anthropicMessages";
+import { createAgentResponsesTransport, type AgentResponsesTransport } from "./agentResponses";
 import { createAnthropicMessagesSearchAdapter } from "./anthropicMessagesSearch";
 import {
   createDeepSeekResponsesAdapter,
@@ -104,6 +105,7 @@ type ProviderRuntimeComponents = Readonly<{
 }>;
 
 export type ProviderRuntimeBinding = ProviderRuntimeComponents & Readonly<{
+  agentResponses?: AgentResponsesTransport;
   responseTimeoutMs: number;
 }>;
 
@@ -415,6 +417,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         baseUrl,
         defaultTimeoutMs: responseTimeoutMs,
         fetchFn,
+        acceptStreamedCreate: true,
         initialRequestRetry: { maxAttempts: input.options.disableRequestRetries ? 1 : 3 },
         requestIsolation: providerResponsesRequestIsolationEnabled(snapshot.connection)
       });
@@ -622,10 +625,14 @@ export function createProviderRuntimeBinding(input: Readonly<{
   snapshot: ProviderExecutionSnapshot;
 }>): ProviderRuntimeBinding {
   const snapshot = normalizeProviderExecutionSnapshot(input.snapshot);
-  return withProviderStreamSafetyObservability(
+  const runtime = withProviderStreamSafetyObservability(
     createProviderRuntimeBindingUnobserved({ ...input, snapshot }),
     snapshot
   );
+  const agentResponses = input.options.fetchFn ? createAgentResponsesTransport({
+    snapshot, secret: input.secret, fetch: input.options.fetchFn
+  }) : undefined;
+  return { ...runtime, ...(agentResponses ? { agentResponses } : {}) };
 }
 
 export function createProviderPreviewRuntimeBinding(

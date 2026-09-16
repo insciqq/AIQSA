@@ -1,3 +1,4 @@
+import { dispatchSearchRequest } from "./searchDispatch";
 import {
   adminSearchExecutionLimits
 } from "../../contracts/adminSearch";
@@ -134,11 +135,13 @@ export function createGeminiInteractionsSearchAdapter(
     },
     async search(request, searchOptions = {}) {
       const body = buildGeminiInteractionsSearchRequest(request);
-      const response = await options.client.createInteraction(body, {
-        signal: searchOptions.signal,
-        ...(typeof searchOptions.timeoutMs === "number"
-          ? { timeoutMs: searchOptions.timeoutMs }
-          : {})
+      const response = await dispatchSearchRequest(searchOptions, {
+        body, execute: () => options.client.createInteraction(body, {
+          signal: searchOptions.signal,
+          ...(typeof searchOptions.timeoutMs === "number"
+            ? { timeoutMs: searchOptions.timeoutMs }
+            : {})
+        }), usage: (value) => extractGeminiInteractionsUsage(value.usage)
       });
       try {
         return {

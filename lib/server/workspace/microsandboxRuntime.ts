@@ -16,6 +16,8 @@ import {
   SandboxNotFoundError,
   SandboxNotRunningError,
   isInstalled,
+  type ExecHandle,
+  type DnsBuilder,
   type FsReadStream
 } from "microsandbox";
 import {
@@ -36,6 +38,11 @@ import {
   type WorkspaceStagedAttachmentEntry
 } from "@/lib/domain/workspace";
 import type { WorkspaceConfig } from "./config";
+import { AgentExecutionOutput } from "../agents/executionOutput";
+import { AGENT_GATEWAY_PORT, AGENT_GATEWAY_ORIGIN } from "../agents/relay";
+import { AGENT_PROMPT_MAX_BYTES, INSTALL_CODEX_PROFILE } from "../agents/guest";
+import { CODEX_HOME_DIRECTORY, CODEX_RUN_TOKEN_ENV, codexExecArguments, renderCodexManagedProfile } from "../agents/codexProfile";
+import type { WorkspaceAgentIdentity, WorkspaceAgentStart } from "../agents/runtime";
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
 import { isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV } from "./secrets/guest";
@@ -72,6 +79,7 @@ type McpConnection = Readonly<{
 }>;
 
 type LocalSession = {
+  agents?: Map<string, { modelRunId: string; handle: ExecHandle; output: AgentExecutionOutput; failed: boolean }>;
   activeCalls: Map<string, Readonly<{ controller: AbortController; modelRunId: string }>>;
   execOwners: Map<string, string>;
   mcp?: McpConnection;
@@ -102,13 +110,15 @@ function contentFreeReason(error: unknown): string {
   return "workspace_runtime_unavailable";
 }
 
-function publicOnlyPolicy() {
+function publicOnlyPolicy(agentGatewayEnabled = false) {
   return {
     defaultEgress: "deny" as const,
     defaultIngress: "deny" as const,
     rules: [
       Rule.allowDns(),
-      Rule.allowEgress(Destination.group("public"))
+      Rule.allowEgress(Destination.group("public")),
+      ...(agentGatewayEnabled ? [{ ...Rule.allowEgress(Destination.group("host")),
+        protocols: ["tcp" as const], ports: [{ start: AGENT_GATEWAY_PORT, end: AGENT_GATEWAY_PORT }] }] : [])
     ]
   };
 }
@@ -565,12 +575,15 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
           .cpus(input.cpus)
           .memory(input.memoryMiB)
           .workdir(WORKSPACE_PROJECT_DIRECTORY)
-          .deploymentProfile("multi-tenant")
+          // The SDK's multi-tenant floor forbids even a single host gateway.
+          // Agent-capable sessions use our fixed policy below, never guest input.
+          .deploymentProfile(input.internetEnabled && this.config.agentGatewayEnabled ? "single-tenant" : "multi-tenant")
           .security("restricted")
           .idleTimeout(this.config.idleTtlSeconds)
           .labels({ "aiqsa.workspace": "true" });
         builder = input.internetEnabled
-          ? builder.network((network) => network.policy(publicOnlyPolicy()))
+          ? builder.network((network) => network.policy(publicOnlyPolicy(this.config.agentGatewayEnabled))
+            .dns((dns: InstanceType<typeof DnsBuilder>) => dns.rebindProtection(true)).trustHostCAs(false).maxConnections(256))
           : builder.network((network) => network.policy(NetworkPolicy.none()));
         sandbox = await builder.connectOrCreate();
       }
@@ -838,6 +851,77 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     return (await this.mcp(this.session(input.sessionId, input.runtimeSandboxId))).catalog;
   }
 
+  async startAgent(input: WorkspaceAgentStart): Promise<void> {
+    if (!this.config.agentGatewayEnabled || input.profile.gatewayOrigin !== AGENT_GATEWAY_ORIGIN) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    if (!/^agent-[a-f0-9-]{36}$/iu.test(input.runtimeExecSessionId) ||
+      !/^[a-zA-Z0-9_-]{43,128}$/u.test(input.runToken) ||
+      typeof input.prompt !== "string" || Buffer.byteLength(input.prompt) > AGENT_PROMPT_MAX_BYTES ||
+      (input.timeoutSeconds !== null && (!Number.isSafeInteger(input.timeoutSeconds) || input.timeoutSeconds < 1 || input.timeoutSeconds > 7200))) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    const config = renderCodexManagedProfile(input.profile);
+    const args = codexExecArguments(input.threadId);
+    const session = await this.runningSession(input);
+    session.agents ??= new Map();
+    // Lost start replies must never dispatch a second agent or replay effects.
+    if (session.agents.has(input.runtimeExecSessionId) || session.agents.size > 0) {
+      throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    }
+    input.signal?.throwIfAborted();
+    const prepared = await session.sandbox.execWith("/usr/bin/python3", (builder) => builder
+      .args(["-I", "-c", INSTALL_CODEX_PROFILE]).timeout(10_000)
+      .stdinBytes(Buffer.from(JSON.stringify({ config }))));
+    if (!prepared.success) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+    const environment = await this.secretEnvironment(session, input.modelRunId);
+    input.signal?.throwIfAborted();
+    const handle = await session.sandbox.execStreamWith("/usr/local/bin/codex", (builder) => {
+      const command = builder.args(args).cwd(WORKSPACE_PROJECT_DIRECTORY)
+        .envs({ ...environment, CODEX_HOME: CODEX_HOME_DIRECTORY, [CODEX_RUN_TOKEN_ENV]: input.runToken })
+        .stdinBytes(Buffer.from(input.prompt));
+      return input.timeoutSeconds === null ? command : command.timeout(input.timeoutSeconds * 1000);
+    });
+    const execution = { modelRunId: input.modelRunId, handle, output: new AgentExecutionOutput(), failed: false };
+    session.agents.set(input.runtimeExecSessionId, execution);
+    session.execOwners.set(input.runtimeExecSessionId, input.modelRunId);
+    // The receiver operation and durable registry retain cleanup ownership
+    // after this HTTP request ends. Only polling carries these raw bytes.
+    void (async () => {
+      let exitCode: number | null = null;
+      try {
+        for (;;) {
+          const event = await handle.recv();
+          if (!event) break;
+          if (event.kind === "stdout") execution.output.stdout(event.data);
+          if (event.kind === "stderr") execution.output.stderr(event.data);
+          if (event.kind === "exited") exitCode = event.code;
+        }
+        execution.output.end(exitCode);
+      } catch {
+        execution.failed = true;
+        await handle.kill().catch(() => undefined);
+      }
+    })();
+    if (input.signal?.aborted) {
+      await handle.kill().catch(() => undefined);
+      throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+    }
+  }
+
+  async pollAgent(input: WorkspaceAgentIdentity & Readonly<{ cursor: number }>) {
+    const session = this.session(input.sessionId, input.runtimeSandboxId);
+    const execution = session.agents?.get(input.runtimeExecSessionId);
+    if (!execution || execution.modelRunId !== input.modelRunId) {
+      throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
+    }
+    input.signal?.throwIfAborted();
+    try {
+      if (execution.failed) throw new Error("output_invalid");
+      return execution.output.poll(input.cursor);
+    } catch { throw new WorkspaceRuntimeError("workspace_agent_output_invalid"); }
+  }
+
   async callBoundTool(input: Parameters<WorkspaceRuntime["callBoundTool"]>[0]): Promise<WorkspaceToolResult> {
     if (!workspaceToolIsAllowed(input.originalName)) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
@@ -982,6 +1066,12 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     // Do not turn a large registry into minutes of sequential signal timeouts.
     // The VM fallback covers all commands regardless of batch size.
     if (ids.length > 32 || signal?.aborted) return unknown;
+    // Native Codex handles cannot certify escaped descendants either. Stop
+    // their leaders promptly, then require the existing exact-VM stop proof.
+    if (ids.some((id) => id.startsWith("agent-"))) {
+      await Promise.all(ids.map((id) => session.agents?.get(id)?.handle.kill().catch(() => undefined)));
+      return unknown;
+    }
     const mcp = await this.mcp(session);
     const deadline = AbortSignal.timeout(10_000);
     const operationSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
@@ -1100,9 +1190,13 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         if (entry.kind !== "file") {
           throw new WorkspaceRuntimeError("workspace_output_export_failed");
         }
-        if (entry.size <= 0) {
+        if (!Number.isSafeInteger(entry.size) || entry.size < 0) {
           throw new WorkspaceRuntimeError("workspace_output_export_failed");
         }
+        // Empty regular files (for example Python package markers) have no
+        // attachment payload. Keep exporting the other files; archives retain
+        // any empty members they contain.
+        if (entry.size === 0) continue;
         files.push({ byteSize: entry.size, path, relativePath });
       }
     };

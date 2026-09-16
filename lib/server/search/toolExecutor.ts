@@ -14,7 +14,6 @@ import type {
   NormalizedSearchPlan,
   NormalizedSearchPlanOption,
   ProviderModelCapabilities,
-  ProviderRunRequest,
   ProviderSearchPolicy,
   ProviderSearchRequest
 } from "../providers/types";
@@ -81,7 +80,7 @@ export type SearchPlanToolRouter = Readonly<{
   accepts(name: string): boolean;
   execute(
     call: ModelToolCall,
-    request: ProviderRunRequest,
+    request: unknown,
     options?: { signal?: AbortSignal }
   ): Promise<ToolExecutionResult>;
   optionIdsForTool(name: string): readonly string[];
@@ -152,7 +151,7 @@ function searchTool(name: string, description: string, queryMaxCharacters: numbe
   };
 }
 
-function configuration(option: NormalizedSearchPlanOption): {
+export function searchExecutionConfiguration(option: NormalizedSearchPlanOption): {
   capabilities: ProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
   maxOutputTokens: number;
@@ -214,7 +213,7 @@ function queryOnlyRequest(
   option: NormalizedSearchPlanOption,
   query: ValidatedSearchQuery
 ): ProviderSearchRequest {
-  const configured = configuration(option);
+  const configured = searchExecutionConfiguration(option);
   let searchPolicy: ProviderSearchPolicy;
   if (option.protocol === "openrouter_perplexity_chat") {
     searchPolicy = {
@@ -303,7 +302,7 @@ async function consumeProviderSearch(
   if (!runtime.searchAdapter) throw new Error("search_adapter_not_available");
   const result = await runtime.searchAdapter.search(request, { signal, timeoutMs });
   const sourceAttribution = result.sourceAttribution ?? "available";
-  const sources = normalizeSearchSources(result.sources, configuration(option).maxResults);
+  const sources = normalizeSearchSources(result.sources, searchExecutionConfiguration(option).maxResults);
   const providerSourcesUnavailable =
     sourceAttribution === "provider_unavailable" &&
     option.provider === "deepseek" &&
@@ -387,7 +386,7 @@ async function executeOne(input: Readonly<{
     });
   }
   const request = queryOnlyRequest(invocationId, input.option, input.query);
-  const configured = configuration(input.option);
+  const configured = searchExecutionConfiguration(input.option);
   const effectiveTimeoutMs = Math.min(
     configured.timeoutMs,
     input.runtime.responseTimeoutMs
@@ -612,7 +611,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
   }));
   const budgetDescription = (options: readonly NormalizedSearchPlanOption[]) => {
     const available = Math.min(
-      ...options.map((option) => configuration(option).maxSearchCallsPerAnswer)
+      ...options.map((option) => searchExecutionConfiguration(option).maxSearchCallsPerAnswer)
     );
     return ` This source can be requested at most ${available} ${
       available === 1 ? "time" : "times"
@@ -625,7 +624,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
           allSelectedToolName,
           "Search every user-selected web engine with the same concise query and combine attributed sources." +
             budgetDescription(clientOptions),
-          Math.min(...clientOptions.map((option) => configuration(option).queryMaxCharacters))
+          Math.min(...clientOptions.map((option) => searchExecutionConfiguration(option).queryMaxCharacters))
         )
       }]
     : clientOptions.map((option, ordinal) => ({
@@ -633,7 +632,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
         tool: searchTool(
           toolName(ordinal),
           toolDescription(option) + budgetDescription([option]),
-          configuration(option).queryMaxCharacters
+          searchExecutionConfiguration(option).queryMaxCharacters
         )
       }));
   const routeForName = (name: string) =>
@@ -672,7 +671,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
         throw new SearchToolCancelledError(result, options.signal.reason);
       }
       const queryLimit = Math.min(
-        ...route.options.map((option) => configuration(option).queryMaxCharacters)
+        ...route.options.map((option) => searchExecutionConfiguration(option).queryMaxCharacters)
       );
       const validation = validateSearchToolArguments(call.arguments, queryLimit);
       const code = validation.ok ? null : validation.code;
@@ -693,7 +692,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
       if (!validation.ok) throw new Error("search_query_validation_invariant");
       const exhaustedOption = route.options.find((option) =>
         (invocationCounts.get(option.optionId) ?? 0) >=
-          configuration(option).maxSearchCallsPerAnswer
+          searchExecutionConfiguration(option).maxSearchCallsPerAnswer
       );
       if (exhaustedOption) {
         const limitCode = "search_invocation_limit_reached";

@@ -2,6 +2,10 @@ import { logEvent } from "../observability";
 import { inheritWorkspaceResultCode, observeWorkspaceAbort, observeWorkspaceToolExecution, retainWorkspaceResultCode } from "./toolObservability";
 import { createHash, randomUUID } from "node:crypto";
 import { gzipSync } from "node:zlib";
+import { setTimeout as sleep } from "node:timers/promises";
+import { agentExecutionId } from "../agents/runtime";
+import { CodexJsonlDecoder, type CodexEvent } from "../agents/codexProtocol";
+import type { CodexManagedProfile } from "../agents/codexProfile";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
   ThreadGeneratedFile,
@@ -520,7 +524,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
     async claimExport(request) {
       return prisma.$transaction(async (tx) => {
         const session = await lockWorkspaceSession(tx, request.sessionId);
-        if (await exportAlreadyComplete(tx, request)) return { status: "complete" as const };
+        if (await exportAlreadyComplete(tx, request, request.handoff === true)) return { status: "complete" as const };
         if (!session || !request.operation || session.operationOwner !== request.operation.owner ||
           session.version !== request.operation.generation || session.runtimeSandboxId !== request.runtimeSandboxId ||
           session.state === "DELETING") return { status: "busy" as const };
@@ -892,11 +896,14 @@ async function hasActiveExportLease(tx: Prisma.TransactionClient, lease: Workspa
 type WorkspaceBindingExportClaim = Exclude<WorkspaceExportClaim, { status: "claimed" }> |
   Readonly<{ status: "claimed"; token: string }>;
 
-async function exportAlreadyComplete(tx: Prisma.TransactionClient, request: { runId: string; sessionId: string }): Promise<boolean> {
+async function exportAlreadyComplete(tx: Prisma.TransactionClient, request: { runId: string; sessionId: string }, handoff = false): Promise<boolean> {
   const binding = await tx.workspaceRunBinding.findUnique({
     select: { exportState: true, workspaceSessionId: true }, where: { modelRunId: request.runId }
   });
   if (!binding || binding.workspaceSessionId !== request.sessionId) throw new WorkspaceRuntimeError("workspace_output_export_failed");
+  // A failed capture may already have retired its session owner. Report its
+  // terminal result before the owner check can misclassify it as still busy.
+  if (handoff && binding.exportState === "FAILED") throw new WorkspaceRuntimeError("workspace_output_export_failed");
   return binding.exportState === "COMPLETE";
 }
 
@@ -993,6 +1000,22 @@ export type WorkspaceSettlementResult = Readonly<{
 }>;
 
 export type WorkspaceCoordinator = Readonly<{
+  /** One native Codex turn. The caller has persisted its dispatch obligation. */
+  executeAgent?(input: Readonly<{
+    modelRunToolCallId: string;
+    onActivity?: WorkspaceActivityListener;
+    onEvent(event: CodexEvent): Promise<void>;
+    profile: CodexManagedProfile;
+    prompt: string;
+    resumePrompt: string;
+    runId: string;
+    runToken: string;
+    signal: AbortSignal;
+    threadId?: string;
+    timeoutSeconds: number | null;
+    userId: string;
+    workspace: NormalizedRunWorkspace;
+  }>): Promise<void>;
   accepts(input: Readonly<{ name: string; workspace: NormalizedRunWorkspace }>): boolean;
   execute(input: Readonly<{
     call: ModelToolCall;
@@ -1688,6 +1711,45 @@ export function createWorkspaceCoordinator(input: Readonly<{
   }
 
   return {
+    async executeAgent(request) {
+      if (!input.runtime.startAgent || !input.runtime.pollAgent) {
+        throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+      }
+      const initial = await requireBinding(request.runId, request.userId, request.workspace);
+      const { binding, recreated } = await initializeWithLostSessionRecovery(
+        initial, request.workspace, request.signal, request.onActivity
+      );
+      if (!binding.runtimeSandboxId) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
+      const runtimeExecSessionId = agentExecutionId(request.modelRunToolCallId);
+      // Persist before releasing the prompt to Codex. A lost HTTP response or
+      // app restart cannot turn this execution into an unowned guest process.
+      const registered = await input.registry.register({
+        modelRunId: request.runId, modelRunToolCallId: request.modelRunToolCallId,
+        runtimeExecSessionId, operation: ownedOperation(binding), sessionId: binding.sessionId
+      });
+      if (registered !== "registered") throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+      const identity = {
+        modelRunId: request.runId, runtimeExecSessionId, runtimeSandboxId: binding.runtimeSandboxId,
+        operation: ownedOperation(binding), sessionId: binding.sessionId, signal: request.signal
+      };
+      const threadId = recreated ? undefined : request.threadId;
+      await input.runtime.startAgent({ ...identity, profile: request.profile,
+        prompt: threadId ? request.resumePrompt : request.prompt, threadId,
+        runToken: request.runToken, timeoutSeconds: request.timeoutSeconds });
+      const decoder = new CodexJsonlDecoder();
+      let cursor = 0;
+      for (;;) {
+        request.signal.throwIfAborted();
+        const page = await input.runtime.pollAgent({ ...identity, cursor });
+        for (const event of decoder.push(Buffer.from(page.stdoutBase64, "base64"))) await request.onEvent(event);
+        cursor = page.nextCursor;
+        if (page.done) {
+          for (const event of decoder.finish(page.exitCode)) await request.onEvent(event);
+          return;
+        }
+        if (page.stdoutBase64.length === 0) await sleep(200, undefined, { signal: request.signal });
+      }
+    },
     accepts({ name, workspace }) {
       return workspace.enabled && workspaceToolNameFromNamespaced(name) !== null;
     },

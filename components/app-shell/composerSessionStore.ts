@@ -32,6 +32,7 @@ export type ComposerPendingEdit = {
 };
 
 export type ComposerSessionSnapshot = {
+  agentEnabled?: boolean;
   attachments: ComposerAttachment[];
   draft: string;
   editGeneration: number;
@@ -87,6 +88,7 @@ export type ComposerSessionPatch = Partial<
     | "editingMessageId"
     | "operationError"
     | "workspaceEnabled"
+    | "agentEnabled"
   >
 >;
 
@@ -140,6 +142,7 @@ const emptyAttachments = Object.freeze([]) as unknown as ComposerAttachment[];
 const emptyUploadGenerations = Object.freeze([]) as unknown as number[];
 
 export const emptyComposerSessionSnapshot = Object.freeze({
+  agentEnabled: false,
   attachments: emptyAttachments,
   draft: "",
   editGeneration: 0,
@@ -277,6 +280,7 @@ function patchedSession(
   const retryabilityChanged = errorPatched && current.operationErrorRetryable;
   const workspaceChanged = hasOwn(patch, "workspaceEnabled") &&
     (patch.workspaceEnabled !== current.workspaceEnabled || !current.workspaceInitialized);
+  const agentChanged = hasOwn(patch, "agentEnabled") && patch.agentEnabled !== current.agentEnabled;
 
   if (
     !attachmentsChanged &&
@@ -286,26 +290,27 @@ function patchedSession(
     !editingMessageChanged &&
     !errorChanged &&
     !retryabilityChanged &&
-    !workspaceChanged
+    !workspaceChanged && !agentChanged
   ) {
     return current;
   }
 
   return {
     ...current,
+    ...(agentChanged ? { agentEnabled: patch.agentEnabled ?? false } : {}),
     ...(attachmentsChanged ? { attachments: [...(patch.attachments ?? [])] } : {}),
     ...(draftChanged ? { draft: patch.draft ?? "" } : {}),
     ...(editingDraftChanged ? { editingDraft: patch.editingDraft ?? "" } : {}),
     ...(editingErrorChanged ? { editingError: patch.editingError ?? null } : {}),
     ...(editingMessageChanged ? { editingMessageId: patch.editingMessageId ?? null } : {}),
     ...(errorChanged ? { operationError: patch.operationError ?? null } : {}),
-    ...(attachmentsChanged || draftChanged || workspaceChanged || errorPatched
+    ...(attachmentsChanged || draftChanged || workspaceChanged || agentChanged || errorPatched
       ? { contextRejectionGeneration: null } : {}),
     ...(workspaceChanged ? { workspaceEnabled: patch.workspaceEnabled ?? false, workspaceInitialized: true } : {}),
     ...(errorPatched ? { operationErrorLive: true, operationErrorRetryable: false } : {}),
     editRevision:
       current.editRevision + (editingDraftChanged || editingMessageChanged ? 1 : 0),
-    revision: current.revision + (attachmentsChanged || draftChanged || workspaceChanged ? 1 : 0)
+    revision: current.revision + (attachmentsChanged || draftChanged || workspaceChanged || agentChanged ? 1 : 0)
   };
 }
 

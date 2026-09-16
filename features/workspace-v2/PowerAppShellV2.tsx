@@ -593,6 +593,7 @@ export function PowerAppShellV2({
     runSurface: activeRunSurface,
     contextRejectionGeneration: composerSession.contextRejectionGeneration,
     contextConfigurationKey: composerContextConfigurationKey(useComposerControlStore.getState(), {
+      agentEnabled: composerSession.agentEnabled,
       workspaceEnabled: chats.find((chat) => chat.id === activeChatId)?.workspace?.enabled ?? composerSession.workspaceEnabled,
       memoryMode: chats.find((chat) => chat.id === activeChatId)?.pendingInitialMemoryMode ??
         chats.find((chat) => chat.id === activeChatId)?.memoryMode ?? composerSessionModeFromKey(activeComposerSessionKey)
@@ -1974,6 +1975,17 @@ export function PowerAppShellV2({
     uploadFiles: uploadComposerFiles,
     reuseFile: projectContext ? undefined : reuseComposerFile,
     uploading,
+    agent: {
+      enabled: composerSession.agentEnabled === true,
+      unavailableReason: projectContext ? "Agent is available in personal chats."
+        : !effectiveCurrentModel?.agentAvailable ? "Choose a model that supports Agent."
+        : !workspaceEnabled ? "Turn on Workspace first."
+        : !workspaceInternetEnabled ? "Agent requires Workspace Internet access, managed by the administrator."
+        : selectedAssistant ? "Remove the Assistant to use Agent." : undefined,
+      setEnabled: (value: boolean) => {
+        useComposerSessionStore.getState().updateSession(activeComposerSessionKey, { agentEnabled: value });
+      }
+    },
     workspace: {
       archive: archiveWorkspace,
       available: workspaceAvailable,

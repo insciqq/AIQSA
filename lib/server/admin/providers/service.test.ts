@@ -633,6 +633,20 @@ describe("admin provider service", () => {
     })).rejects.toMatchObject({ code: "provider_draft_stale" });
   });
 
+  it.each([undefined, { adapterKind: "openai_responses_compatible", probeVersion: 1, upstreamModelId: "another-model",
+    sourceCount: 1, verified: true } as const])("rejects verified Codex search without matching proof: %j", async (codexWebSearch) => {
+    const storeActiveRefreshCas = vi.fn<AdminProviderRepository["storeActiveRefreshCas"]>(async () => "stored");
+    const providers = service(repository({ async loadActiveRefreshCandidate() { return refreshCandidate(); }, storeActiveRefreshCas }),
+      tester(async () => ({ status: "available", evidence: {
+        detail: "ok", method: "tiny_generation", upstreamModelId: "vendor/model", selectedProviders: [],
+        capabilitySetup: { policyVersion: 2, checks: { codexWebSearch: "verified" } },
+        codexWebSearch
+      } })));
+    await expect(providers.refreshActive({ confirmPaidRequest: true, connectionId: "connection-1",
+      credentialId: "credential-1", providerModelId: "model-1" })).rejects.toMatchObject({ code: "provider_test_evidence_invalid" });
+    expect(storeActiveRefreshCas).not.toHaveBeenCalled();
+  });
+
   it("accepts discovered PDF support independently of the runtime opt-in and rejects inconsistent compatibility", async () => {
     const storeActiveRefreshCas = vi.fn<AdminProviderRepository["storeActiveRefreshCas"]>(
       async () => "stored"

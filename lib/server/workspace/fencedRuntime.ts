@@ -25,6 +25,10 @@ export function fenceDeterministicWorkspaceRuntime(runtime: WorkspaceRuntime, sh
     listStagedAttachments: (input) => call(input, (signal) => runtime.listStagedAttachments({ ...input, signal })),
     stageAttachments: (input) => call(input, (signal) => runtime.stageAttachments({ ...input, signal })),
     syncPersonalSecrets: (input) => call(input, (signal) => runtime.syncPersonalSecrets({ ...input, signal })),
+    ...(runtime.startAgent ? { startAgent: (input: Parameters<NonNullable<WorkspaceRuntime["startAgent"]>>[0]) =>
+      call(input, (signal) => runtime.startAgent!({ ...input, signal })) } : {}),
+    ...(runtime.pollAgent ? { pollAgent: (input: Parameters<NonNullable<WorkspaceRuntime["pollAgent"]>>[0]) =>
+      call(input, (signal) => runtime.pollAgent!({ ...input, signal })) } : {}),
     loadBoundTools: (input) => call(input, (signal) => runtime.loadBoundTools({ ...input, signal })),
     callBoundTool: (input) => call(input, (signal) => runtime.callBoundTool({ ...input, signal })),
     cancelToolCall: (input) => call(input, () => runtime.cancelToolCall(input)),
