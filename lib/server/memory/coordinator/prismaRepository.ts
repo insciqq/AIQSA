@@ -39,6 +39,13 @@ const JOB_COMMIT_RETRY_MAX_DELAY_MS = 500;
 // Its set-based commit is intentionally larger than ordinary single-item job
 // commits, but must remain shorter than the default 30-second job lease.
 const REBUILD_JOB_COMMIT_TIMEOUT_MS = 20_000;
+// History commits re-run the bounded preparation proof before applying the
+// accepted plan. Keep the wait and execution budgets explicit instead of
+// inheriting Prisma's 2s/5s interactive-transaction defaults: a normal
+// history commit may legitimately read the source tail and retained
+// projections before the short atomic write section begins.
+const HISTORY_JOB_COMMIT_MAX_WAIT_MS = 5_000;
+const HISTORY_JOB_COMMIT_TIMEOUT_MS = 20_000;
 const sha256 = /^[a-f0-9]{64}$/u;
 const safeStage = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 const safeInternalFailure = /^memory_[a-z0-9_]{1,56}$/u;
@@ -928,11 +935,18 @@ export function createPrismaMemoryCoordinatorRepository(
             publishEnqueues = observeMemoryEnqueues(tx);
             return commitJobSuccessWithAuthority(tx, input);
           };
-          const committed = await (input.claim.kind === "REBUILD_INDEX"
-            ? client.$transaction(commit, {
-                timeout: REBUILD_JOB_COMMIT_TIMEOUT_MS
-              }).catch(retainDatabaseFailure)
-            : client.$transaction(commit).catch(retainDatabaseFailure));
+          const transactionOptions = input.claim.kind === "REBUILD_INDEX"
+            ? { timeout: REBUILD_JOB_COMMIT_TIMEOUT_MS }
+            : input.claim.kind === "INDEX_HISTORY"
+              ? {
+                  maxWait: HISTORY_JOB_COMMIT_MAX_WAIT_MS,
+                  timeout: HISTORY_JOB_COMMIT_TIMEOUT_MS
+                }
+              : undefined;
+          const committed = await (transactionOptions
+            ? client.$transaction(commit, transactionOptions)
+            : client.$transaction(commit)
+          ).catch(retainDatabaseFailure);
           publishEnqueues();
           return committed;
         } catch (error) {
