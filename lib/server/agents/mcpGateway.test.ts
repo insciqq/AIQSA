@@ -12,7 +12,7 @@ describe("Agent MCP discovery surface", () => {
       adapterKind: "provider_model_client", config: {}, optionId: "selected", displayName: "Selected source"
     }] }, mcp: { tools: [], servers: [], version: 1 } } as unknown as NormalizedRunRequest;
     const handler = await createAgentMcpGateway({ request, store, runId: "run", userId: "user",
-      signal: new AbortController().signal, onActivity: async () => {}, onFailure: async () => {}, onUsage: async () => {} });
+      signal: new AbortController().signal, onFailure: async () => {}, onUsage: async () => {} });
     const response = await handler(new Request("http://agent.invalid/mcp", { method: "POST",
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }) }));

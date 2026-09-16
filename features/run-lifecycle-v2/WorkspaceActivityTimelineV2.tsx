@@ -7,12 +7,24 @@ import type {
   ThreadWorkspaceActivityEntry
 } from "@/lib/contracts/workspace";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
 import {
   WORKSPACE_RECREATED_NOTICE_V2,
   aggregateWorkspaceActivityV2,
   workspaceActivityLabelV2,
   workspaceDurationV2
 } from "./workspaceActivityPresentation";
+
+function compactEntries(entries: readonly ThreadWorkspaceActivityEntry[]): { visible: ThreadWorkspaceActivityEntry[]; earlier: number } {
+  if (entries.length <= 8) return { earlier: 0, visible: [...entries] };
+  const active = entries.filter((entry) => entry.phase === "running" || entry.phase === "requested");
+  const completed = entries.filter((entry) => entry.phase !== "running" && entry.phase !== "requested").slice(-6);
+  const visible = [...entries.filter((entry) => active.includes(entry)), ...completed]
+    .filter((entry, index, list) => list.findIndex((candidate) => candidate.id === entry.id) === index)
+    .sort((left, right) => (left.firstSequence ?? left.sequence ?? 0) - (right.firstSequence ?? right.sequence ?? 0));
+  return { earlier: Math.max(0, entries.length - visible.length), visible };
+}
 
 type Phase = ThreadWorkspaceActivityEntry["phase"];
 
@@ -136,6 +148,30 @@ export type WorkspaceActivityTimelineV2Props = Readonly<{
   activity: ThreadWorkspaceActivity;
 }>;
 
+function WorkspaceActivityOverlay({ activity, rows, onClose }: Readonly<{
+  activity: ThreadWorkspaceActivity;
+  rows: readonly ThreadWorkspaceActivityEntry[];
+  onClose(): void;
+}>) {
+  const { dialogRef, initialFocusRef, onDialogKeyDown, portalReady } = useModalLayerV2({ onClose });
+  if (!portalReady) return null;
+  const renderRows = (entries: readonly ThreadWorkspaceActivityEntry[]) => entries.map((entry) => (
+    <li data-kind={entry.kind} data-phase={entry.phase} key={entry.id}>
+      {entry.kind === "command" && entry.command ? <CommandRowV2 entry={entry} /> : <PlainRowV2 entry={entry} />}
+    </li>
+  ));
+  return createPortal(
+    <div className="v2-workspace-overlay-layer">
+      <button aria-label="Close Workspace activity" className="v2-workspace-overlay-scrim" onClick={onClose} type="button" />
+      <section aria-label="Workspace activity" aria-modal="true" className="v2-workspace-overlay" onKeyDown={onDialogKeyDown} ref={dialogRef} role="dialog">
+        <header className="v2-workspace-overlay-header"><h2>Workspace activity</h2><button className="v2-workspace-copy v2-focusable" onClick={onClose} ref={initialFocusRef} type="button">Close</button></header>
+        {activity.truncated ? <p className="v2-workspace-truncated" role="status">{activity.entries.find((entry) => entry.kind === "elided")?.count ?? 0} earlier steps were omitted.</p> : null}
+        <ol className="v2-workspace-timeline v2-workspace-overlay-list">{renderRows(rows)}</ol>
+      </section>
+    </div>, document.body
+  );
+}
+
 /**
  * Chronological Workspace feed: lifecycle rows, file operations, and command
  * cards that open into a terminal-style excerpt. Failed commands open on their
@@ -143,14 +179,22 @@ export type WorkspaceActivityTimelineV2Props = Readonly<{
  */
 export function WorkspaceActivityTimelineV2({ activity }: WorkspaceActivityTimelineV2Props) {
   const rows = aggregateWorkspaceActivityV2(activity.entries);
+  const compact = compactEntries(rows);
+  const [overlay, setOverlay] = useState(false);
+  const opener = useRef<HTMLButtonElement>(null);
   if (rows.length === 0) return null;
+  const renderRows = (entries: readonly ThreadWorkspaceActivityEntry[]) => entries.map((entry) => (
+    <li data-kind={entry.kind} data-phase={entry.phase} key={entry.id}>
+      {entry.kind === "command" && entry.command ? <CommandRowV2 entry={entry} /> : <PlainRowV2 entry={entry} />}
+    </li>
+  ));
   return (
-    <ol className="v2-workspace-timeline" data-testid="workspace-activity">
-      {rows.map((entry) => (
-        <li data-kind={entry.kind} data-phase={entry.phase} key={entry.id}>
-          {entry.kind === "command" && entry.command ? <CommandRowV2 entry={entry} /> : <PlainRowV2 entry={entry} />}
-        </li>
-      ))}
-    </ol>
+    <>
+      <div className="v2-workspace-feed-heading">
+        {compact.earlier > 0 ? <button className="v2-workspace-history-button v2-focusable" ref={opener} onClick={() => setOverlay(true)} type="button">{compact.earlier} earlier steps · Show all</button> : null}
+      </div>
+      <ol className="v2-workspace-timeline" data-testid="workspace-activity">{renderRows(compact.visible)}</ol>
+      {overlay ? <WorkspaceActivityOverlay activity={activity} rows={rows} onClose={() => setOverlay(false)} /> : null}
+    </>
   );
 }

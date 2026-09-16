@@ -12,6 +12,7 @@ import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { createAgentRunStore } from "./store";
 import { agentPrompts } from "./prompt";
 import type { CodexManagedProfile } from "./codexProfile";
+import { createCodexActivityProjection } from "./activityProjection";
 
 export async function executeCodexTurn(input: Readonly<{
   request: ProviderRunRequest;
@@ -36,6 +37,14 @@ export async function executeCodexTurn(input: Readonly<{
   let completed = false;
   let callId: string | null = null;
   let finalText = "";
+  let textPublished = false;
+  const projectActivity = createCodexActivityProjection(input.runId, input.request);
+  const publishFinalText = async () => {
+    if (!textPublished && finalText) {
+      textPublished = true;
+      await input.onEvent({ type: "token", data: { delta: finalText } });
+    }
+  };
   const onUsage = async () => input.onUsage(await store.usage());
   try {
     const grant = await store.arm(prompts.previousAssistantMessageId);
@@ -64,32 +73,29 @@ export async function executeCodexTurn(input: Readonly<{
       prompt: prompts.prompt, resumePrompt: prompts.resumePrompt,
       runId: input.runId, runToken: grant.token, signal, threadId: grant.threadId,
       timeoutSeconds: configuration.timeoutSeconds, userId: input.userId, workspace: input.request.workspace,
-      async onEvent(event) {
-        signal.throwIfAborted();
-        if (event.type === "thread_started") await store.setThread(event.threadId);
-        if (event.type === "message") {
-          const delta = `${finalText ? "\n\n" : ""}${event.text}`;
-          finalText += delta;
-          await input.onEvent({ type: "token", data: { delta } });
+      async onEvent(event, text) {
+        if (event.type === "thread_started") {
+          signal.throwIfAborted();
+          await store.setThread(event.threadId);
         }
-        if (event.type === "activity" && (event.kind === "mcp" || event.kind === "search")) await input.onEvent({ type: "artifact", data: {
-          artifactType: event.phase === "running" ? "tool_call" : "tool_result",
-          payload: { name: event.kind === "search" ? "Codex web search" : "AIQSA MCP", origin: event.kind === "search" ? "tool" : "mcp", status: event.phase === "running" ? "requested" : event.phase === "succeeded" ? "complete" : "error" }
-        } });
-        if (event.type === "activity" && (event.kind === "command" || event.kind === "file_change")) await input.onActivity({
-          id: `agent:${input.runId}:${event.id}`, kind: event.kind === "command" ? "command" : "file_write",
-          phase: event.phase,
-          ...(event.kind === "command" ? { command: { preview: "Codex" } } : {})
-        });
+        if (event.type === "message") {
+          finalText = text.text(event.text);
+        }
+        const entry = projectActivity(event, text);
+        if (entry) await input.onActivity(entry);
       }
     });
     signal.throwIfAborted();
     await store.settleTool(callId, "complete", { status: "complete" });
     completed = true;
+    await publishFinalText();
     await onUsage();
     return { finalText, usage: sumTokenUsage((await store.usage()).map((entry) => entry.usage)),
       finalProviderResponsePreview: { engine: "codex", version: configuration.codexVersion } };
   } catch (error) {
+    // Stop/error must still deliver the last completed message already received.
+    // No abort check here: this publishes known text, never another external call.
+    await publishFinalText();
     const cause = agentFailureCode(signal.aborted ? signal.reason : error);
     if (cause) await store.fail(cause);
     const persisted = await store.failure();

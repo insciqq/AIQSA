@@ -1,4 +1,5 @@
 import { logEvent } from "../observability";
+import { WorkspaceActivityText, workspaceActivitySecretValues } from "./activityText";
 import { inheritWorkspaceResultCode, observeWorkspaceAbort, observeWorkspaceToolExecution, retainWorkspaceResultCode } from "./toolObservability";
 import { createHash, randomUUID } from "node:crypto";
 import { gzipSync } from "node:zlib";
@@ -1004,7 +1005,7 @@ export type WorkspaceCoordinator = Readonly<{
   executeAgent?(input: Readonly<{
     modelRunToolCallId: string;
     onActivity?: WorkspaceActivityListener;
-    onEvent(event: CodexEvent): Promise<void>;
+    onEvent(event: CodexEvent, text: WorkspaceActivityText): Promise<void>;
     profile: CodexManagedProfile;
     prompt: string;
     resumePrompt: string;
@@ -1201,6 +1202,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
   // guest path and bounded output buffers per long-lived execution.
   const inboxNamesByRun = new Map<string, Map<string, string>>();
   const execOutputsByRun = new Map<string, Map<string, ExecOutputBuffer>>();
+  const activityTextByRun = new Map<string, WorkspaceActivityText>();
   const lifecycleOrdinal = new Map<string, number>();
   let recoveryCursor: WorkspaceExportRecoveryCursor | undefined;
   let recoveryScanBefore: Date | undefined;
@@ -1217,6 +1219,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
     initialized.delete(runId);
     inboxNamesByRun.delete(runId);
     execOutputsByRun.delete(runId);
+    activityTextByRun.delete(runId);
     lifecycleOrdinal.delete(runId);
   }
 
@@ -1351,8 +1354,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
           startedAt
         });
         try {
+          const secrets = await input.repository.personalSecrets(binding);
+          activityTextByRun.set(binding.runId, new WorkspaceActivityText(workspaceActivitySecretValues(secrets)));
           await input.runtime.syncPersonalSecrets({
-            secrets: await input.repository.personalSecrets(binding), modelRunId: binding.runId,
+            secrets, modelRunId: binding.runId,
             runtimeSandboxId: session.runtimeSandboxId, operation: ownedOperation(binding), sessionId: binding.sessionId, signal
           });
         } catch (error) {
@@ -1737,14 +1742,15 @@ export function createWorkspaceCoordinator(input: Readonly<{
         prompt: threadId ? request.resumePrompt : request.prompt, threadId,
         runToken: request.runToken, timeoutSeconds: request.timeoutSeconds });
       const decoder = new CodexJsonlDecoder();
+      const text = activityTextByRun.get(request.runId)!.withValues([request.runToken]);
       let cursor = 0;
       for (;;) {
         request.signal.throwIfAborted();
         const page = await input.runtime.pollAgent({ ...identity, cursor });
-        for (const event of decoder.push(Buffer.from(page.stdoutBase64, "base64"))) await request.onEvent(event);
+        for (const event of decoder.push(Buffer.from(page.stdoutBase64, "base64"))) await request.onEvent(event, text);
         cursor = page.nextCursor;
         if (page.done) {
-          for (const event of decoder.finish(page.exitCode)) await request.onEvent(event);
+          for (const event of decoder.finish(page.exitCode)) await request.onEvent(event, text);
           return;
         }
         if (page.stdoutBase64.length === 0) await sleep(200, undefined, { signal: request.signal });
@@ -1823,6 +1829,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
           );
           const entry = projectWorkspaceActivity({
             arguments: call.arguments,
+            text: activityTextByRun.get(runId) ?? new WorkspaceActivityText(
+              workspaceActivitySecretValues(await input.repository.personalSecrets(initial))),
             callId: modelRunToolCallId,
             originalName: "sandbox_exec",
             result: rejected,
@@ -1851,6 +1859,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         }
         const projectionInput = {
           arguments: call.arguments,
+          text: activityTextByRun.get(runId),
           callId: modelRunToolCallId,
           execOutputs: projectionState(runId),
           ...(execution ? { executionStartCallId: execution.modelRunToolCallId } : {}),
