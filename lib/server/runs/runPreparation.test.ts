@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { EMPTY_KNOWLEDGE_SELECTION, type KnowledgeSelection } from "../../contracts/knowledge";
 import { textMessageContent } from "../../domain/content";
 import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
+import { createInstructionPreviewHandlers } from "../instructions/previewHandlers";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanResult } from "../mcp/runPlan";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
@@ -1607,6 +1608,24 @@ describe("run preparation", () => {
 
     expect(prepared.normalizedRequest.memoryActionTools).toBeUndefined();
     expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session") ?? []).toEqual([]);
+  });
+
+  it.each(["Europe/Berlin", "Invalid/Zone", undefined])("renders the default preview from the ordinary-run instructions: %s", async timeZone => {
+    await withFrozenClock(async () => {
+      const prepared = preparedFrom(await prepareRun(createHarness().deps, sendInput(successBody({ timeZone }))));
+      const handlers = createInstructionPreviewHandlers({
+        resolveAuth: vi.fn().mockResolvedValue({ userId: "owner", user: { status: "active" } })
+      });
+      const query = timeZone === undefined ? "" : `?timeZone=${encodeURIComponent(timeZone)}`;
+      const response = await handlers.GET(new Request(`http://localhost/api/me/instructions/preview${query}`));
+      const { preview } = await response.json();
+      expect(response.status).toBe(200);
+      expect(preview.baseline.renderedSystemPrompt).toBe(prepared.normalizedRequest.prompt.system);
+      expect(preview.visibleAnswerContract).toBe(prepared.normalizedRequest.prompt.developer);
+      expect(preview.generatedAt).toBe(new Date().toISOString());
+      expect(preview.baseline.timeZone).toBe(prepared.normalizedRequest.prompt.baseline?.timeZone);
+      expect(preview.baseline.timeZoneSource).toBe(prepared.normalizedRequest.prompt.baseline?.timeZoneSource);
+    });
   });
 
   it("keeps send and regeneration preparation in parity while using their server-owned context sources", async () => {

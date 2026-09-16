@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { UiV2Button } from "@/components/ui-v2";
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { decodeInstructionPresetDraft, INSTRUCTION_PRESET_MAX_COUNT, INSTRUCTION_PRESET_NAME_MAX_LENGTH,
@@ -8,6 +8,7 @@ import { decodeInstructionPresetDraft, INSTRUCTION_PRESET_MAX_COUNT, INSTRUCTION
   type InstructionPreset, type InstructionPresetDraft, type InstructionPresetState, type InstructionPresetSummary } from "@/lib/contracts/instructionPresets";
 import { SettingsRowV2 } from "./SettingsV2";
 import { SettingsSelectV2 } from "./SettingsSelectV2";
+import { PlatformInstructionsPreview } from "./PlatformInstructionsPreview";
 import { InstructionPresetApiError, requestInstructionPreset, requestInstructionPresets } from "./instructionPresetsApi";
 
 const DEFAULT_LABEL = "AIQSA default instructions";
@@ -33,14 +34,19 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange }: Reado
   const [latest, setLatest] = useState<InstructionPreset | null>(null);
   const [deleting, setDeleting] = useState<InstructionPresetSummary | null>(null);
   const [discard, setDiscard] = useState(false);
+  const [platformPreviewOpen, setPlatformPreviewOpen] = useState(false);
+  const panelId = useId();
   const pending = useRef(false);
   const alive = useRef(false);
   const nameInput = useRef<HTMLInputElement>(null);
   const textInput = useRef<HTMLTextAreaElement>(null);
   const manageButton = useRef<HTMLButtonElement>(null);
   const newButton = useRef<HTMLButtonElement>(null);
+  const viewButton = useRef<HTMLButtonElement>(null);
+  const keepEditingButton = useRef<HTMLButtonElement>(null);
   const activeBadge = useRef<HTMLSpanElement>(null);
-  const focusIntent = useRef<"name" | "new" | "active" | null>(null);
+  const focusIntent = useRef<"name" | "new" | "active" | "manage" | "view" | "keep" | null>(null);
+  const closeAfterDiscard = useRef(false);
   const dirty = editor !== null && JSON.stringify(editor.value) !== JSON.stringify(editor.original ? values(editor.original) : blank);
   const editorId = editor ? editor.original?.id ?? "new" : null;
 
@@ -57,9 +63,10 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange }: Reado
   useEffect(() => {
     if (busy) return;
     const target = focusIntent.current === "name" ? nameInput.current : focusIntent.current === "new" ? newButton.current
-      : focusIntent.current === "active" ? activeBadge.current : null;
+      : focusIntent.current === "active" ? activeBadge.current : focusIntent.current === "manage" ? manageButton.current
+      : focusIntent.current === "view" ? viewButton.current : focusIntent.current === "keep" ? keepEditingButton.current : null;
     if (target) { focusIntent.current = null; target.focus(); }
-  }, [busy, editorId, open, deleting?.id, state?.activePresetId]);
+  }, [busy, editorId, open, discard, platformPreviewOpen, deleting?.id, state?.activePresetId]);
   useEffect(() => {
     const input = textInput.current;
     if (input) { input.style.height = "auto"; input.style.height = `${Math.min(Math.max(input.scrollHeight, 220), 440)}px`; }
@@ -75,8 +82,41 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange }: Reado
     } } finally { pending.current = false; if (alive.current) setBusy(false); }
   }
   function closeEditor() {
+    closeAfterDiscard.current = false;
     focusIntent.current = "new";
+    setPreview(false);
     setEditor(null); setLatest(null); setConflict(false); setDiscard(false); setError(null);
+  }
+  function closePanel() {
+    closeAfterDiscard.current = false;
+    focusIntent.current = "manage";
+    setPlatformPreviewOpen(false);
+    setDeleting(null);
+    setOpen(false);
+    setEditor(null); setLatest(null); setConflict(false); setDiscard(false); setPreview(false);
+  }
+  function requestClosePanel() {
+    if (pending.current) return;
+    if (dirty) {
+      closeAfterDiscard.current = true;
+      setDiscard(true);
+      focusIntent.current = "keep";
+      return;
+    }
+    closePanel();
+  }
+  function togglePanel() {
+    if (pending.current) return;
+    if (open) requestClosePanel();
+    else {
+      closeAfterDiscard.current = false;
+      setDiscard(false);
+      setOpen(true);
+    }
+  }
+  function closePlatformPreview() {
+    focusIntent.current = "view";
+    setPlatformPreviewOpen(false);
   }
   function change(patch: Partial<InstructionPresetDraft>) { setEditor(current => current && { ...current, value: { ...current.value, ...patch } }); }
   function start() { focusIntent.current = "name"; setEditor({ original: null, value: { ...blank } }); setPreview(false); setError(null); setNotice(null); }
@@ -124,7 +164,7 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange }: Reado
         <SettingsSelectV2 label="Active instructions" disabled={!state || busy || editor !== null} value={state?.activePresetId ?? ""}
           options={[{ label: DEFAULT_LABEL, value: "" }, ...(state?.presets ?? []).map(row => ({ label: row.name, value: row.id }))]}
           onChange={id => select(id || null)} />
-        <UiV2Button type="button" ref={manageButton} disabled={busy} onClick={() => setOpen(true)}>Manage presets…</UiV2Button>
+        <UiV2Button type="button" ref={manageButton} aria-controls={panelId} aria-expanded={open} disabled={busy} onClick={togglePanel}>Manage presets…</UiV2Button>
       </div>
     </SettingsRowV2>
     <div className="px-4 sm:px-6">
@@ -134,9 +174,9 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange }: Reado
       {notice ? <p className="my-3 text-sm text-positive" role="status">{notice}</p> : null}
       {!state && !error ? <p className="py-3 text-sm text-ink-muted" role="status">Loading instructions…</p> : null}
     </div>
-    {open ? <div className="mx-auto w-full min-w-0 max-w-3xl px-4 pb-6 sm:px-6">
+    <div id={panelId} hidden={!open} className="mx-auto w-full min-w-0 max-w-3xl px-4 pb-6 sm:px-6">
       <p className="mb-4 text-xs leading-5 text-ink-muted">Applies from the next reply, including existing and temporary personal chats. Assistants use their own instructions. Projects use Project instructions.</p>
-      {editor ? <form aria-label={editor.original ? "Edit instruction preset" : "New instruction preset"} onSubmit={submit}
+      {open && (platformPreviewOpen ? <PlatformInstructionsPreview onClose={closePlatformPreview} /> : editor ? <form aria-label={editor.original ? "Edit instruction preset" : "New instruction preset"} onSubmit={submit}
         onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); submit(); } }}>
         <fieldset disabled={busy} className="grid min-w-0 gap-4">
           <label className="grid gap-1.5 text-sm font-medium text-ink">Name
@@ -174,22 +214,26 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange }: Reado
             <UiV2Button type="button" onClick={() => { setEditor({ original: latest, value: values(latest) }); setLatest(null); setConflict(false); setError(null); }}>Replace draft with latest version</UiV2Button>
           </details> : null}
           {discard ? <div className="rounded-lg border border-trace-subtle p-3" role="alert"><p className="mb-2 text-sm text-ink">Discard your unsaved instructions?</p><div className="flex gap-2">
-            <UiV2Button type="button" onClick={closeEditor}>Discard changes</UiV2Button><UiV2Button type="button" onClick={() => setDiscard(false)}>Keep editing</UiV2Button>
+            <UiV2Button type="button" onClick={() => {
+              if (closeAfterDiscard.current) closePanel();
+              else closeEditor();
+            }}>Discard changes</UiV2Button><UiV2Button type="button" ref={keepEditingButton} onClick={() => { closeAfterDiscard.current = false; setDiscard(false); focusIntent.current = "name"; }}>Keep editing</UiV2Button>
           </div></div> : <div className="flex flex-wrap items-center gap-2">
             <UiV2Button type="submit" disabled={!editor.value.name.trim()}>{busy ? "Saving…" : "Save"}</UiV2Button>
-            <UiV2Button type="button" onClick={() => dirty ? setDiscard(true) : closeEditor()}>Cancel</UiV2Button>
+            <UiV2Button type="button" onClick={() => { closeAfterDiscard.current = false; if (dirty) { focusIntent.current = "keep"; setDiscard(true); } else closeEditor(); }}>Cancel</UiV2Button>
             <span className="ml-auto text-xs text-ink-muted">Ctrl / ⌘ S to save</span>
           </div>}
         </fieldset>
       </form> : <>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold text-ink">Instruction presets</h3>
           <div className="flex gap-2"><UiV2Button type="button" ref={newButton} disabled={!state || busy || atLimit} onClick={start}>New preset</UiV2Button>
-            <UiV2Button type="button" disabled={busy} onClick={() => { setOpen(false); manageButton.current?.focus(); }}>Done</UiV2Button></div>
+            <UiV2Button type="button" disabled={busy} onClick={requestClosePanel}>Done</UiV2Button></div>
         </div>
         <ul className="divide-y divide-trace-subtle rounded-xl border border-trace-subtle">
           <li className="p-3"><div className="flex flex-wrap items-center gap-2"><strong className="text-sm font-medium text-ink">{DEFAULT_LABEL}</strong>{state && !state.activePresetId ? <span ref={activeBadge} tabIndex={-1} className="v2-focusable text-xs text-positive" aria-label={`Active instructions: ${DEFAULT_LABEL}`}>Active</span> : null}</div>
             <p className="mt-1 text-xs text-ink-muted">Built-in AIQSA rules. Always available.</p>
-            {state?.activePresetId ? <div className="mt-2"><UiV2Button type="button" disabled={busy} aria-label={`Make active: ${DEFAULT_LABEL}`} onClick={() => select(null, true)}>Make active</UiV2Button></div> : null}
+            <div className="mt-2 flex flex-wrap gap-1"><UiV2Button type="button" ref={viewButton} disabled={busy} onClick={() => setPlatformPreviewOpen(true)}>View instructions</UiV2Button>
+              {state?.activePresetId ? <UiV2Button type="button" disabled={busy} aria-label={`Make active: ${DEFAULT_LABEL}`} onClick={() => select(null, true)}>Make active</UiV2Button> : null}</div>
           </li>
           {state?.presets.map(row => <li key={row.id} className="min-w-0 p-3"><div className="flex flex-wrap items-center gap-2"><strong className="min-w-0 break-words text-sm font-medium text-ink">{row.name}</strong>{state.activePresetId === row.id ? <span ref={activeBadge} tabIndex={-1} className="v2-focusable text-xs text-positive" aria-label={`Active instructions: ${row.name}`}>Active</span> : null}</div>
             <p className="mt-1 truncate text-xs text-ink-muted">{row.firstLine || "No system instructions"}</p>
@@ -202,7 +246,7 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange }: Reado
           </li>)}
         </ul>
         <p className="mt-2 text-xs text-ink-muted">{state?.presets.length ?? 0} / {INSTRUCTION_PRESET_MAX_COUNT} presets</p>
-      </>}
-    </div> : null}
+      </>)}
+    </div>
   </section>;
 }
