@@ -171,7 +171,12 @@ export const memoryFactExtractionTool: RunTool = Object.freeze({
               items: {
                 additionalProperties: false,
                 properties: {
-                  aliases: { items: exactTextRef, maxItems: 4, type: "array" },
+                  aliases: {
+                    description: "Exact additional name occurrences inside this observation's evidence.text. Keep the source spelling and grammatical form; omit names found only in context or a canonical label.",
+                    items: exactTextRef,
+                    maxItems: 4,
+                    type: "array"
+                  },
                   canonical_label: nullableBoundedString(512),
                   context_entity_ref: nullableBoundedString(128),
                   entity_type: {
@@ -181,7 +186,10 @@ export const memoryFactExtractionTool: RunTool = Object.freeze({
                     ],
                     type: "string"
                   },
-                  mention: nullableExactTextRef,
+                  mention: {
+                    ...nullableExactTextRef,
+                    description: "Copy the entity's exact surface occurrence from this observation's evidence.text, preserving case, accents and grammatical form. A canonical_label or context display_name is not a source occurrence."
+                  },
                   mention_kind: {
                     enum: ["NAMED", "NOMINAL", "PRONOMINAL", "ELLIPSIS", "UNKNOWN"],
                     type: "string"
@@ -337,7 +345,7 @@ export const MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT = [
   "Return exactly one submit_memory_fact_observations_v5 tool call and no prose or hidden rationale.",
   "target_message is the only evidence and the only text that may attest a new user fact. Use exact target text plus its zero-based exact occurrence index; preserve Unicode exactly.",
   "Write each statement in the same language as target_message and never translate it into English or another language. For mixed or undetermined input, preserve the source wording and language mixture as closely as a standalone statement permits.",
-  "The selected exact evidence text must by itself entail the complete statement, including its subject, semantic relation, object or value, recipient, and material qualifiers. If one contiguous span cannot do that, select one encompassing span within the bound or emit no observation.",
+  "The selected exact evidence text must entail the complete statement with references resolved only through declared dependencies, preserving its subject, semantic relation, object or value, recipient, and material qualifiers. Dependencies may resolve the target's referenced subject, time, or established personal association; target_message itself must supply every new predicate, state, value, or change. Do not import other details from context. Select one encompassing source span within the bound when needed.",
   "context_before contains at most two prior bounded turn groups. It may resolve a reference, relation, correction target, or temporal anchor only; it can never attest the observation.",
   "An assistant-role context message is never user testimony. A candidate that would be true only because the assistant said it must not be emitted.",
   "When a candidate relies on context_before, copy that item's opaque context_ref into dependency_refs. Never cite context text as evidence.",
@@ -359,6 +367,7 @@ export const MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT = [
   "A direct durable CURRENT_USER profession, employment role, or work identity remains eligible even when no organization is named. Without a grounded organization, represent it as a HIGH PROPOSITION with no entities and preserve the exact work meaning in statement; never invent an organization or reject the fact merely because it cannot form an employment_status SLOT.",
   "Represent USER_RELATIONSHIP_CONTEXT only as PROPOSITION identity and keep both the user's relation and the reported fact in statement. Bind each named or nominal non-self subject as a distinct source-grounded SUBJECT entity, using PERSON for people and OTHER for pets; never store it as PERSON_SELF or as a user SLOT attribute.",
   "PERSON annotations support only role SUBJECT. Annotate the person whose fact this observation asserts; preserve other participants in statement without PERSON OBJECT or MENTION annotations. A first-person reporting or correction clause identifies the speaker, not necessarily the subject of the reported fact. Do not annotate every person in an encompassing evidence span as the subject of each observation.",
+  "When one person explicitly replaces another as the current holder of a personal relationship, the new holder is the SUBJECT of that current-state observation. Keep the outgoing person's name and the replacement meaning in the source and statement, without adding the outgoing person as another SUBJECT. Annotate that person separately only for another observation that asserts their own fact. This does not collapse a genuine joint relationship: preserve every actual co-subject when the source says both hold it, and never turn an addition, hypothetical successor, or historical holder into a current replacement.",
   "For a CURRENT_USER action or event, retain directly named non-person participants as source-grounded OBJECT entities, including OTHER for a named pet. These annotations support later references without asserting current ownership or changing the actor of the event. Preserve exact names and roles; do not invent a name, relation, or entity from a pronoun alone.",
   "For a direct statement about a close person, pet, or colleague, preserve that named subject and the current user as owner/source context. The subject's work, schedule, or constraint never becomes the user's own fact. Apply the same subject-isolation rule across people, pets, and activities.",
   "A direct user assertion that a close person told the user something is not a standalone quotation. Keep USER_RELATIONSHIP_CONTEXT, preserve the attribution in statement, and use MEDIUM PROPOSITION when the underlying report remains uncertain; never rewrite it as independent testimony by that person or as a user fact.",
@@ -398,7 +407,7 @@ export const MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT = [
   "Every MEDIUM observation must use PROPOSITION identity, change_intent NONE, memory_directive NONE, and no correction or retraction semantics. It cannot propose a SLOT, current-state change, or override. Do not emit LOW observations.",
   "Use structured temporal normalization only; raw_expression is an exact occurrence reference, not an interpreted timestamp.",
   "When a relative date is reliably grounded, resolve it against target_message.created_at in time_zone into the structured absolute/calendar normalization while preserving the exact original wording through raw_expression; never replace source wording or invent an event time.",
-  "Entity aliases require exact NAMED or NOMINAL source occurrences. PRONOMINAL, ELLIPSIS, UNKNOWN, or context-only mentions are never aliases.",
+  "Entity mention and aliases refer to exact occurrences inside the selected evidence.text. Copy the surface spelling, case, accents and grammatical form from that evidence; never substitute canonical_label or a context display_name. A canonical label may differ from a source mention without changing the source text. Entity aliases require exact NAMED or NOMINAL source occurrences. PRONOMINAL, ELLIPSIS, UNKNOWN, or context-only mentions are never aliases.",
   "A PRONOMINAL or ELLIPSIS SUBJECT in USER_RELATIONSHIP_CONTEXT must bind context_entity_ref to the exact same person or pet in supplied_context_refs with entity_bound true. A context_before MESSAGE ref can be a source dependency but has no entity binding; never substitute it for that FACT_VERSION ref. Keep any separately required MESSAGE dependency in dependency_refs. Without an unambiguous supplied entity, do not invent the subject binding.",
   "Use only supplied opaque refs. A subject or correction that relies on preceding context must include that context's ref in dependency_refs. A self-contained correction whose subject and corrected value are explicit in target_message uses dependency_refs []; never invent a prior-context dependency.",
   "A continuation may rely on a prior direct-user statement that establishes the user's relation to the same named project, activity, or plan. Declare that exact context ref even when the target repeats the name instead of a pronoun. The new date, state, or change must still be asserted by target_message; do not import unrelated details or establish user ownership from assistant context.",

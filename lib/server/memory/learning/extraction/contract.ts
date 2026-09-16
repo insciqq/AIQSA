@@ -12,9 +12,9 @@ import {
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
   "memory-fact-extraction-vnext-v8";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-extraction-policy-v27";
+  "memory-fact-extraction-policy-v31";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-extraction-prompt-v41";
+  "memory-fact-extraction-prompt-v44";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
   "memory-fact-extraction-schema-v5";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
@@ -143,10 +143,13 @@ export type MemorySemanticAdjudication = Readonly<{
     | "MERGE_NEW_INTO_TARGET"
     | "MERGE_TARGET_INTO_NEW"
     | "SUPERSEDE_TARGET"
+    | "REPLACE_RELATIONSHIP_TARGET"
     | "MOVE_TO_DISTINCT_FACT"
     | "RETRACT_TARGET"
     | "AMBIGUOUS";
   reasonCode: string;
+  /** Absent on retained decisions that did not adjudicate subject identity. */
+  subjectIdentity?: "SAME_ENTITY" | "UNRESOLVED";
   subjectScope: MemorySemanticSubjectScope;
   targetRef: string | null;
   temporalPerspective: MemorySemanticTemporalPerspective;

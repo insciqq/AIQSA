@@ -178,6 +178,43 @@ describe("structured Memory relation policy", () => {
     });
   });
 
+  it("changes the holder of one exact relationship without generic different-subject authority", () => {
+    const base = propositionCorrection();
+    const current = { ...base.current,
+      entities: [{ canonicalKey: "person:old-holder", entityType: "PERSON", role: "SUBJECT" as const }],
+      semanticFrame: { ...semanticFrame, subjectScope: "USER_RELATIONSHIP_CONTEXT" as const }
+    };
+    const pending = { ...base.pending,
+      entities: [{ canonicalKey: "person:new-holder", entityType: "PERSON", role: "SUBJECT" as const }],
+      semanticFrame: { ...semanticFrame, subjectScope: "USER_RELATIONSHIP_CONTEXT" as const },
+      semanticAdjudication: { ...adjudication(), operation: "REPLACE_RELATIONSHIP_TARGET" as const,
+        subjectIdentity: "UNRESOLVED" as const, subjectScope: "USER_RELATIONSHIP_CONTEXT" as const }
+    };
+    const input = { ...base, current, pending, related: [current] };
+    expect(decideMemoryFactRelation(input, NOW)).toMatchObject({
+      operation: "MOVE_TO_DISTINCT_FACT", targetVersionId: current.versionId
+    });
+    for (const changed of [
+      { semanticAdjudication: null },
+      { semanticAdjudication: { ...pending.semanticAdjudication, operation: "SUPERSEDE_TARGET" as const } },
+      { semanticAdjudication: { ...pending.semanticAdjudication, subjectIdentity: "SAME_ENTITY" as const } },
+      { semanticAdjudication: { ...pending.semanticAdjudication, entityRef: "F1", resolvedEntityId: "old-holder" } },
+      { semanticAdjudication: { ...pending.semanticAdjudication, confidenceBand: "MEDIUM" as const } },
+      { semanticAdjudication: { ...pending.semanticAdjudication, resolvedTargetVersionId: "other-target" } },
+      { entities: [] }, { entities: current.entities },
+      { entities: [...pending.entities, ...current.entities] },
+      { semanticFrame: { ...pending.semanticFrame, changeIntent: "NONE" as const } },
+      { semanticFrame: { ...pending.semanticFrame, assertionStatus: "HYPOTHETICAL" as const } },
+      { semanticFrame: { ...pending.semanticFrame, temporalPerspective: "FORMER" as const } },
+      { semanticFrame: { ...pending.semanticFrame, subjectScope: "CURRENT_USER" as const } }
+    ]) expect(decideMemoryFactRelation({ ...input, pending: { ...pending, ...changed } }, NOW))
+      .toMatchObject({ operation: "CONFLICT" });
+    expect(decideMemoryFactRelation({ ...input, current: { ...current, sourceMode: "EXPLICIT" } }, NOW))
+      .toMatchObject({ operation: "CONFLICT" });
+    expect(decideMemoryFactRelation({ ...input, correctionTargetVersionId: null }, NOW))
+      .toMatchObject({ operation: "CONFLICT" });
+  });
+
   function scheduledRevision(expectedAt = "2026-10-28T09:00:00.000Z") {
     const input = propositionCorrection();
     const current = {

@@ -13,7 +13,10 @@ import {
   type MemoryFactExtractionPlan
 } from "../learning/extraction/contract";
 import type { MemorySemanticAdjudication } from "../learning/extraction/contract";
-import { decodeStoredMemorySemanticFrame } from "../learning/extraction/adjudication";
+import {
+  decodeStoredMemorySemanticFrame,
+  memoryRelationshipReplacementIsAuthorized
+} from "../learning/extraction/adjudication";
 import {
   memoryRepresentationTransitionTimeAllowed,
   type MemoryRelationVersionSnapshot
@@ -605,6 +608,26 @@ function relationshipSubjectMatches(
     candidateCanonicalKeys.size === targetKeys.size &&
     [...candidateCanonicalKeys].every((key) => targetKeys.has(key));
   return idMatch || keyMatch;
+}
+
+function relationshipSubjectReplacementAllowed(
+  candidate: MemoryExtractedCandidate,
+  target: LockedCurrentTarget | null,
+  decision: MemorySemanticAdjudication
+): boolean {
+  const subjects = candidate.entities.filter(({ role }) => role === "SUBJECT");
+  const subject = subjects[0];
+  return memoryRelationshipReplacementIsAuthorized(decision) && target !== null &&
+    candidate.identityKind === "PROPOSITION" && target.identityKind === "PROPOSITION" &&
+    candidate.modality === "STATE" &&
+    candidate.semanticFrame.subjectScope === "USER_RELATIONSHIP_CONTEXT" &&
+    candidate.semanticFrame.assertionStatus === "ASSERTED" &&
+    candidate.semanticFrame.temporalPerspective === "CURRENT" &&
+    subjects.length === 1 && subject !== undefined &&
+    (subject.mentionKind === "NAMED" || subject.mentionKind === "NOMINAL") &&
+    memoryGroundedEntityCanonicalKey(subject) !== null &&
+    target.subjectEntityIds.length === 1 &&
+    !relationshipSubjectMatches(candidate, target);
 }
 
 async function reinforceTarget(
@@ -1235,7 +1258,12 @@ async function createObservation(
     semanticAdjudication.resolvedTargetVersionId !== null &&
     (candidate.identityKind === "PROPOSITION" ||
       transitionTarget?.identityKind === "PROPOSITION")) {
+    const replacesRelationship = semanticAdjudication.operation ===
+      "REPLACE_RELATIONSHIP_TARGET";
     if (candidate.confidenceBand !== "HIGH" ||
+      (replacesRelationship && !relationshipSubjectReplacementAllowed(
+        candidate, transitionTarget, semanticAdjudication
+      )) ||
       (candidate.semanticFrame.changeIntent !== "CORRECTION" &&
         candidate.semanticFrame.changeIntent !== "STATE_CHANGE") ||
       !memoryRepresentationTransitionTimeAllowed(
@@ -1255,12 +1283,12 @@ async function createObservation(
           decodeStoredMemorySemanticFrame(transitionTarget?.semanticFrame ?? null)
             ?.subjectScope !== "USER_RELATIONSHIP_CONTEXT" ||
           transitionTarget === null ||
-          !relationshipSubjectMatches(candidate, transitionTarget)
+          (!replacesRelationship && !relationshipSubjectMatches(candidate, transitionTarget))
         : semanticAdjudication.subjectScope !== "CURRENT_USER" ||
           decodeStoredMemorySemanticFrame(transitionTarget?.semanticFrame ?? null)
             ?.subjectScope === "USER_RELATIONSHIP_CONTEXT") ||
       semanticAdjudication.assertionStatus !== "ASSERTED" ||
-      !["SUPERSEDE_TARGET", "MOVE_TO_DISTINCT_FACT"].includes(
+      !["SUPERSEDE_TARGET", "MOVE_TO_DISTINCT_FACT", "REPLACE_RELATIONSHIP_TARGET"].includes(
         semanticAdjudication.operation
       )) return { attachedEvidence: 0, createdVersions: 0 };
     const declaredTarget = await correctionTargetVersionId(

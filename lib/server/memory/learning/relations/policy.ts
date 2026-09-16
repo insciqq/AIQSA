@@ -1,12 +1,13 @@
 import type { MemoryFactModality } from "@prisma/client";
 import { memorySha256 } from "../../persistence/lexical";
+import { memoryRelationshipReplacementIsAuthorized } from "../extraction/adjudication";
 import type {
   MemorySemanticAdjudication,
   MemorySemanticFrame
 } from "../extraction/contract";
 
 export const MEMORY_FACT_RELATION_PIPELINE_VERSION = "memory-fact-relation-v2";
-export const MEMORY_FACT_RELATION_POLICY_VERSION = "memory-fact-relation-policy-v9";
+export const MEMORY_FACT_RELATION_POLICY_VERSION = "memory-fact-relation-policy-v10";
 export const MEMORY_FACT_RELATION_PROMPT_VERSION = "memory-fact-relation-prompt-v1";
 export const MEMORY_FACT_RELATION_SCHEMA_VERSION = "memory-fact-relation-schema-v1";
 
@@ -316,12 +317,23 @@ function semanticAuthorityMatches(
   const adjudication = pending.semanticAdjudication;
   const relationshipScope = adjudication?.subjectScope ===
     "USER_RELATIONSHIP_CONTEXT";
+  const replacesRelationship = adjudication?.operation === "REPLACE_RELATIONSHIP_TARGET";
+  const distinctRelationshipSubjects =
+    pending.identityKind === "PROPOSITION" && current.identityKind === "PROPOSITION" &&
+    pending.modality === "STATE" &&
+    pending.semanticFrame?.assertionStatus === "ASSERTED" &&
+    pending.semanticFrame?.temporalPerspective === "CURRENT" &&
+    pending.entities.filter(({ role }) => role === "SUBJECT").length === 1 &&
+    current.entities.filter(({ role }) => role === "SUBJECT").length === 1 &&
+    !sharedSubjectEntity(pending, current);
+  if (replacesRelationship && (!memoryRelationshipReplacementIsAuthorized(adjudication) ||
+    !distinctRelationshipSubjects)) return false;
   const scopeMatches = adjudication !== null &&
     (relationshipScope
       ? adjudication.subjectScope === pending.semanticFrame?.subjectScope &&
         pending.semanticFrame?.subjectScope === "USER_RELATIONSHIP_CONTEXT" &&
         current.semanticFrame?.subjectScope === "USER_RELATIONSHIP_CONTEXT" &&
-        sharedSubjectEntity(pending, current)
+        (replacesRelationship || sharedSubjectEntity(pending, current))
       : adjudication.subjectScope === "CURRENT_USER" &&
         (pending.semanticFrame === null ||
           pending.semanticFrame.subjectScope === "CURRENT_USER"));
@@ -404,7 +416,7 @@ export function decideMemoryFactRelation(
         pending, current, pending.semanticAdjudication?.temporalPerspective ?? null
       ) &&
       semanticAuthorityMatches(pending, current, new Set([
-        "SUPERSEDE_TARGET", "MOVE_TO_DISTINCT_FACT"
+        "SUPERSEDE_TARGET", "MOVE_TO_DISTINCT_FACT", "REPLACE_RELATIONSHIP_TARGET"
       ]));
     return directTransition
       ? decision("MOVE_TO_DISTINCT_FACT", current.versionId,
