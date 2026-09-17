@@ -710,6 +710,23 @@ describe("McpClientSession", () => {
     await session.close();
   });
 
+  it.each([true, false])("accepts a large tool result under the configured wire limit (JSON: %s)", async (enableJsonResponse) => {
+    const text = "Большой ответ\n".repeat(50_000);
+    expect(Buffer.byteLength(text)).toBeGreaterThan(512 * 1_024);
+    const fixture = await startFixture({
+      callTool: () => ({ content: [{ type: "text", text }] }),
+      enableJsonResponse
+    });
+    const session = createSession(fixture, { limits: { maxToolResultBytes: undefined } });
+    try {
+      await session.initialize();
+      const result = await session.callTool("read", {});
+      expect(result.isError).toBe(false);
+      expect(result.text).toEqual([text]);
+      expect(session.isClosed()).toBe(false);
+    } finally { await session.close(); }
+  });
+
   it("maps initialize and inventory wire overflows to stable non-retryable errors", async () => {
     const privateMarker = "private-wire-inventory-marker";
     const fixture = await startFixture({

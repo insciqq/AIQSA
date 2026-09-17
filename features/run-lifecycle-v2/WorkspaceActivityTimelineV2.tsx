@@ -166,7 +166,7 @@ function WorkspaceActivityOverlay({ activity, rows, onClose }: Readonly<{
       <section aria-label="Workspace activity" aria-modal="true" className="v2-workspace-overlay" onKeyDown={onDialogKeyDown} ref={dialogRef} role="dialog">
         <header className="v2-workspace-overlay-header"><h2>Workspace activity</h2><button className="v2-workspace-copy v2-focusable" onClick={onClose} ref={initialFocusRef} type="button">Close</button></header>
         {activity.truncated ? <p className="v2-workspace-truncated" role="status">{activity.entries.find((entry) => entry.kind === "elided")?.count ?? 0} earlier steps were omitted.</p> : null}
-        <ol className="v2-workspace-timeline v2-workspace-overlay-list">{renderRows(rows)}</ol>
+        <ol aria-label="Activity steps" className="v2-workspace-timeline v2-workspace-overlay-list v2-focusable" tabIndex={0}>{renderRows(rows)}</ol>
       </section>
     </div>, document.body
   );

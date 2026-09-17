@@ -38,7 +38,12 @@ export function agentPrompts(request: ProviderRunRequest) {
       "Only the current turn's selected Skills and personal instructions apply. Do not publish secrets or authentication material. " +
       "Read /workspace/SECRETS.md for the supplied secret locations; use them only as needed for the task. " +
       "Write user deliverables to the current output directory specified above. Answer the user in the chat when finished."
-      + " Cite web sources with ordinary Markdown links to their URLs; internal search reference IDs are not clickable in this chat."
+      + " Cite web sources with ordinary Markdown links to their URLs; internal search reference IDs are not clickable in this chat.",
+      ...(request.agent?.mcpMode && request.agent.mcpMode !== "off" ? [
+        "When asked to inspect private issues, documents or repositories, try the enabled MCP tools before concluding that a resource is inaccessible from a public web page. " +
+        (request.agent.mcpMode === "auto" ? "Use find_tools to discover the relevant capabilities. " : "") +
+        "A tool-discovery failure is not an authorization denial by the connected service. Report the actual diagnostic and which checks were not completed."
+      ] : [])
     ].filter(Boolean).join("\n\n")
   };
 }

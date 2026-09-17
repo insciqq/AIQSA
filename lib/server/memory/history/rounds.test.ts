@@ -105,6 +105,28 @@ function fixture() {
 }
 
 describe("recall round projection", () => {
+  it("gives a new source projection its own immutable round identity", () => {
+    const { chunks, snapshot } = fixture();
+    const legacySnapshot = {
+      ...snapshot,
+      projectionVersion: "memory-history-source-projection-v5" as typeof snapshot.projectionVersion
+    };
+    const legacy = projectMemoryRecallRounds(legacySnapshot, chunks);
+    const current = projectMemoryRecallRounds(snapshot, chunks);
+
+    expect(current.map((round) => round.rawSafeText)).toEqual(
+      legacy.map((round) => round.rawSafeText)
+    );
+    expect(current.map((round) => round.evidenceRootHash)).toEqual(
+      legacy.map((round) => round.evidenceRootHash)
+    );
+    for (const [index, round] of current.entries()) {
+      expect(round.contentHash).not.toBe(legacy[index]!.contentHash);
+      expect(round.id).not.toBe(legacy[index]!.id);
+    }
+    expect(projectMemoryRecallRounds(snapshot, chunks)).toEqual(current);
+  });
+
   it("segments paired and standalone messages with exact ordered source maps", () => {
     const { chunks, snapshot } = fixture();
     const first = projectMemoryRecallRounds(snapshot, chunks);

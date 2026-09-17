@@ -11,7 +11,7 @@ export type McpResponseWireLimits = Readonly<{
 export const MCP_JSON_RPC_REQUEST_MAX_BYTES = 1 * 1_024 * 1_024;
 
 export const DEFAULT_MCP_RESPONSE_WIRE_LIMITS: McpResponseWireLimits = Object.freeze({
-  callToolResponseMaxBytes: 512 * 1_024,
+  callToolResponseMaxBytes: 8 * 1_024 * 1_024,
   initializeResponseMaxBytes: 1 * 1_024 * 1_024,
   listToolsResponseMaxBytes: 16 * 1_024 * 1_024,
   sseEventMaxBytes: 16 * 1_024 * 1_024,

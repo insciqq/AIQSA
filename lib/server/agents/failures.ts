@@ -1,6 +1,7 @@
 const messages = {
   agent_model_call_limit: "Agent stopped because the provider call limit for this turn was reached.",
   agent_mcp_call_limit: "The MCP call limit for this turn was reached. Finish using the results already available.",
+  agent_mcp_outcome_unknown: "Agent stopped because an MCP tool call was interrupted and its outcome could not be confirmed. Check the connected service before repeating that action.",
   agent_token_limit: "Agent stopped because the token budget for this turn was reached.",
   agent_time_limit: "Agent stopped because the time limit for this turn was reached.",
   agent_generation_output_limit: "The model stopped because its output token limit was reached.",

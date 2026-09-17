@@ -1690,6 +1690,7 @@ export async function prepareRun(
       : input.source.source.userMessage.id;
     const assistantMessageId = randomUUID();
     const workspaceAdmission = await deps.workspace.prepare({
+      ...(agentEnabled ? { agentEnabled: true } : {}),
       assistantMessageId,
       chatId: chat.id,
       enabled: true,

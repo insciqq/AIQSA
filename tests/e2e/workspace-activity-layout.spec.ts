@@ -24,10 +24,11 @@ async function expectStackedTimeline(disclosure: Locator): Promise<number> {
 
 for (const viewport of [
   { width: 1440, height: 900, theme: "dark" },
+  { width: 820, height: 1180, theme: "light" },
   { width: 390, height: 844, theme: "light" },
   { width: 844, height: 390, theme: "dark" }
 ] as const) {
-  test(`Workspace activity keeps its width as live commands change at ${viewport.width}px`, async ({ page, context }, testInfo) => {
+  test(`Workspace activity keeps its width and scrolls long history at ${viewport.width}px`, async ({ page, context }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: testInfo.project.use.baseURL! }]);
     await page.addInitScript((id) => window.localStorage.setItem("aiqsa.activeChatId", id), chatId);
@@ -69,7 +70,7 @@ for (const viewport of [
     for (const [index, preview] of ["pwd", "python -c \"from pathlib import Path; print(Path('project/report-with-a-long-file-name.txt').read_text())\""].entries()) {
       const entry: ThreadWorkspaceActivityEntry = { id: `command-${index}`, kind: "command", phase: "running", command: { preview } };
       await emitActivity(entry);
-      await expect(summary).toContainText("Running ");
+      await expect(summary).toContainText(index === 0 ? "Exploring pwd" : "Running ");
       expect(Math.abs(await expectStackedTimeline(disclosure) - initialWidth)).toBeLessThanOrEqual(1);
       await expectNoHorizontalOverflow(page);
       await emitActivity({ ...entry, phase: "succeeded", durationMs: 97, command: { preview, exitCode: 0, stdoutPreview: "Synthetic output" } });
@@ -88,6 +89,46 @@ for (const viewport of [
     await expect(disclosure).not.toHaveAttribute("data-live");
     if (await disclosure.getAttribute("open") === null) await summary.click();
     expect(Math.abs(await expectStackedTimeline(disclosure) - initialWidth)).toBeLessThanOrEqual(1);
+    await expectNoHorizontalOverflow(page);
+
+    for (let index = 0; index < 60; index++) {
+      await emitActivity({ id: `read-${index}`, kind: "file_read", phase: "succeeded",
+        file: { displayPath: `project/report-${index}.txt` } });
+    }
+    const opener = disclosure.getByRole("button", { name: /earlier steps · Show all/ });
+    await opener.click();
+    const dialog = page.getByRole("dialog", { name: "Workspace activity", exact: true });
+    const steps = dialog.getByRole("list", { name: "Activity steps" });
+    const close = dialog.getByRole("button", { name: "Close", exact: true });
+    await expect(steps.getByRole("listitem")).toHaveCount(63);
+    await expect(close).toBeFocused();
+    expect(await steps.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+    const [dialogBox, listBox] = await Promise.all([dialog.boundingBox(), steps.boundingBox()]);
+    expect(dialogBox!.y).toBeGreaterThanOrEqual(0);
+    expect(dialogBox!.y + dialogBox!.height).toBeLessThanOrEqual(viewport.height);
+    expect(listBox!.y + listBox!.height).toBeLessThanOrEqual(dialogBox!.y + dialogBox!.height);
+    await dialog.screenshot({ path: testInfo.outputPath("workspace-history-top.png") });
+    await steps.hover();
+    await page.mouse.wheel(0, 16000);
+    await expect.poll(() => steps.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(1);
+    await expect(steps.getByText("Read project/report-59.txt", { exact: true })).toBeInViewport();
+    await expect(close).toBeInViewport();
+    await page.keyboard.press("Tab");
+    await expect(steps).toBeFocused();
+    await page.keyboard.press("Home");
+    await expect.poll(() => steps.evaluate((element) => element.scrollTop)).toBe(0);
+    await page.keyboard.press("End");
+    await expect.poll(() => steps.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(1);
+    await dialog.screenshot({ path: testInfo.outputPath("workspace-history-bottom.png") });
+    await page.keyboard.press("Shift+Tab");
+    await expect(close).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(dialog.locator(".v2-workspace-command > summary").last()).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(close).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(opener).toBeFocused();
     await expectNoHorizontalOverflow(page);
   });
 }

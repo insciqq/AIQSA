@@ -18,7 +18,7 @@ import { projectMemoryHistorySafeText } from "./safety";
 import { memoryHistoryEvidenceRootHash } from "./evidenceRoot";
 
 export const MEMORY_RECALL_ROUND_PROJECTION_VERSION =
-  "memory-recall-round-projection-v1";
+  "memory-recall-round-projection-v2";
 export const MEMORY_CONTEXTUAL_KEY_POLICY_VERSION =
   "memory-contextual-narrative-key-v4";
 export const MEMORY_CONTEXTUAL_KEY_MAX_PRIOR_GROUPS = 2;
@@ -286,6 +286,10 @@ export function projectMemoryRecallRounds(
       domain: "aiqsa.memory.recall-round",
       evidenceRootHash,
       projectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+      // A source projection upgrade changes contentHash even when its safe
+      // text is identical. Preserve accepted evidence by publishing a new
+      // identity instead of conflicting with the immutable prior round.
+      sourceProjectionVersion: snapshot.projectionVersion,
       userId: snapshot.userId
     });
     const contextualSearchText = boundedSearchText(rendered.text);

@@ -1,4 +1,7 @@
 import { declaredModelOutputTokenLimit } from "../providers/providerModelCapabilities";
+import type { McpDiscoveryFailure, McpDiscoveryFailureReason } from "../../contracts/mcpDiscoveryFailure";
+import { StructuredOutputDecodeError } from "../providers/structuredOutput";
+import { logEvent } from "../observability";
 import { isProviderDeadlineExceededError } from "../providers/network";
 import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
@@ -43,10 +46,17 @@ export type McpSemanticRouterErrorCode =
 export class McpSemanticRouterError extends Error {
   constructor(
     readonly code: McpSemanticRouterErrorCode,
-    readonly usageAttribution: McpRouterUsageAttribution | null = null
+    readonly usageAttribution: McpRouterUsageAttribution | null = null,
+    readonly detail?: McpDiscoveryFailureReason,
+    readonly attempt?: number
   ) {
     super(code);
     this.name = "McpSemanticRouterError";
+  }
+
+  get diagnostic(): McpDiscoveryFailure {
+    return { reason: this.code, ...(this.detail ? { detail: this.detail } : {}),
+      ...(this.attempt ? { attempt: this.attempt } : {}) };
   }
 }
 
@@ -247,22 +257,30 @@ function decodeMcpRouterToolSelection(
     value.requirements.length > MAX_ROUTING_REQUIREMENTS ||
     (!value.mcp_needed && value.requirements.length !== 0) ||
     (value.mcp_needed && value.requirements.length === 0)) {
-    throw new McpSemanticRouterError("mcp_router_output_invalid");
+    throw new McpSemanticRouterError("mcp_router_output_invalid", null, "mcp_router_invalid_shape");
   }
   const requirements: McpRouterRequirement[] = [];
   for (const candidate of value.requirements) {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-      throw new McpSemanticRouterError("mcp_router_output_invalid");
+      throw new McpSemanticRouterError("mcp_router_output_invalid", null, "mcp_router_invalid_shape");
     }
     const record = candidate as Record<string, unknown>;
-    if (Object.keys(record).length !== 3 || !boundedRequirement(record.outcome) ||
+    if (Object.keys(record).length !== 3 ||
       (record.status !== "covered" && record.status !== "uncovered") ||
-      !Array.isArray(record.tool_ids) || record.tool_ids.length > limit ||
-      record.tool_ids.some((toolId) => typeof toolId !== "string" || !allowed.has(toolId)) ||
-      new Set(record.tool_ids).size !== record.tool_ids.length ||
-      (record.status === "covered" && record.tool_ids.length === 0) ||
+      !Array.isArray(record.tool_ids)) {
+      throw new McpSemanticRouterError("mcp_router_output_invalid", null, "mcp_router_invalid_shape");
+    }
+    if (!boundedRequirement(record.outcome)) throw new McpSemanticRouterError("mcp_router_output_invalid", null, "mcp_router_invalid_outcome");
+    if (record.tool_ids.length > limit) throw new McpSemanticRouterError("mcp_router_output_invalid", null, "mcp_router_tool_limit");
+    if (record.tool_ids.some((toolId) => typeof toolId !== "string" || !allowed.has(toolId))) {
+      throw new McpSemanticRouterError("mcp_router_output_invalid", null, "mcp_router_unknown_tool");
+    }
+    if (new Set(record.tool_ids).size !== record.tool_ids.length) {
+      throw new McpSemanticRouterError("mcp_router_output_invalid", null, "mcp_router_duplicate_tool");
+    }
+    if ((record.status === "covered" && record.tool_ids.length === 0) ||
       (record.status === "uncovered" && record.tool_ids.length !== 0)) {
-      throw new McpSemanticRouterError("mcp_router_output_invalid");
+      throw new McpSemanticRouterError("mcp_router_output_invalid", null, "mcp_router_invalid_coverage");
     }
     requirements.push({
       outcome: record.outcome,
@@ -272,7 +290,7 @@ function decodeMcpRouterToolSelection(
   }
   if (new Set(requirements.map((requirement) => requirement.outcome)).size !==
     requirements.length) {
-    throw new McpSemanticRouterError("mcp_router_output_invalid");
+    throw new McpSemanticRouterError("mcp_router_output_invalid", null, "mcp_router_duplicate_outcome");
   }
   const toolNames = [...new Set(requirements.flatMap((requirement) => requirement.toolIds))];
   return {
@@ -403,6 +421,7 @@ export function createMcpSemanticRouter(dependencies: Readonly<{
       }
       const allowed = new Set(structured.candidateIds);
       const usages: ModelRunUsage[] = [];
+      let attemptNumber = 0;
       const usageAttribution = (): McpRouterUsageAttribution | null => {
         const usage = usages.length === 1
           ? usages[0]!
@@ -417,6 +436,7 @@ export function createMcpSemanticRouter(dependencies: Readonly<{
         const executeAttempt = async (
           attempt: McpRouterStructuredRequest
         ): Promise<McpRouterSelection> => {
+          attemptNumber++;
           const timeoutMs = deadline - Date.now();
           if (timeoutMs < 1) {
             throw new McpSemanticRouterError("mcp_router_timeout");
@@ -476,7 +496,7 @@ export function createMcpSemanticRouter(dependencies: Readonly<{
           selected = await executeAttempt(retry);
         }
         if (selected.toolNames.length > structured.limit) {
-          throw new McpSemanticRouterError("mcp_router_output_invalid");
+          throw new McpSemanticRouterError("mcp_router_output_invalid", null, "mcp_router_tool_limit");
         }
         return {
           toolNames: selected.toolNames,
@@ -485,7 +505,7 @@ export function createMcpSemanticRouter(dependencies: Readonly<{
       } catch (error) {
         const requestFailure = resolution.role.modelConfiguration.adapterKind === "gemini_interactions_native"
           ? geminiRequestFailure(error) : null;
-        throw new McpSemanticRouterError(
+        const failure = new McpSemanticRouterError(
           input.signal?.aborted ? "mcp_router_cancelled"
             : error instanceof McpSemanticRouterError ? error.code
             : isProviderDeadlineExceededError(error) ? "mcp_router_timeout"
@@ -496,8 +516,17 @@ export function createMcpSemanticRouter(dependencies: Readonly<{
             : requestFailure ?? (
               error instanceof Error && ["structured_output_provider_incomplete", "structured_output_invalid", "structured_output_response_invalid"].includes(error.message)
               ? "mcp_router_output_invalid" : "mcp_router_request_failed"),
-          usageAttribution()
+          usageAttribution(),
+          error instanceof McpSemanticRouterError ? error.detail
+            : error instanceof StructuredOutputDecodeError ? `mcp_router_${error.reason}`
+            : error instanceof Error && error.message === "structured_output_provider_incomplete" ? "mcp_router_response_incomplete"
+            : error instanceof Error && error.message === "structured_output_response_invalid" ? "mcp_router_response_invalid" : undefined,
+          attemptNumber || undefined
         );
+        logEvent("tool_execution", { tool_kind: "mcp", stage: "result", operation_stage: "selector",
+          outcome: input.signal?.aborted ? "cancelled" : "failed", code: failure.detail ?? failure.code,
+          attempt: failure.attempt });
+        throw failure;
       }
     }
   };

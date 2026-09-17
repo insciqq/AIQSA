@@ -3,6 +3,25 @@ import type { WorkspaceRuntime } from "./runtime";
 import { createWorkspaceHealthService, sanitizeWorkspaceRuntimeHealth } from "./health";
 
 describe("Workspace runtime health", () => {
+  it.each([
+    [true, true, true],
+    [true, false, false],
+    [false, true, false],
+    [undefined, true, false],
+    ["true", true, false]
+  ])("requires explicit Agent readiness and runtime methods (%s, %s)", async (agentReady, methods, expected) => {
+    const runtime = {
+      health: async () => ({ agentReady, imageReady: true, mcpVersion: "0.6.16",
+        runtimeVersion: "0.6.16", state: "ready", virtualizationReady: true }),
+      ...(methods ? { startAgent: vi.fn(), pollAgent: vi.fn() } : {})
+    } as unknown as WorkspaceRuntime;
+    const health = await createWorkspaceHealthService({ runtime }).read();
+    expect(health.state).toBe("ready");
+    expect(health.agentReady === true).toBe(expected);
+    expect(sanitizeWorkspaceRuntimeHealth({ ...health, agentReady: true, imageReady: false }).agentReady)
+      .not.toBe(true);
+  });
+
   it("requires exact runtime/MCP versions and complete readiness evidence", () => {
     expect(sanitizeWorkspaceRuntimeHealth({
       imageReady: true,

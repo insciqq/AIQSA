@@ -149,6 +149,7 @@ export function workspaceActivityLabelV2(entry: ThreadWorkspaceActivityEntry): s
       return `${running ? "Editing" : "Edited"} ${plural(count, "file")}`;
     }
     case "mcp_call":
+      if (entry.phase === "failed") return entry.text ?? (entry.mcp?.discovery ? "Tool discovery failed" : "MCP tool call failed");
       if (entry.mcp?.discovery) return running ? "Finding tools…" : "Found tools";
       return `${running ? "Calling" : "Called"} ${entry.mcp?.serverName ? `${entry.mcp.serverName}: ` : ""}${entry.mcp?.toolName ?? "MCP tool"}`;
     case "search":

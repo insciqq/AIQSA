@@ -1981,6 +1981,8 @@ export function PowerAppShellV2({
         : !effectiveCurrentModel?.agentAvailable ? "Choose a model that supports Agent."
         : !workspaceEnabled ? "Turn on Workspace first."
         : !workspaceInternetEnabled ? "Agent requires Workspace Internet access, managed by the administrator."
+        : !workspaceAvailable || workspaceInstallation?.agentAvailable !== true
+          ? "Agent is unavailable. Ask an administrator to check the Workspace runner."
         : selectedAssistant ? "Remove the Assistant to use Agent." : undefined,
       setEnabled: (value: boolean) => {
         useComposerSessionStore.getState().updateSession(activeComposerSessionKey, { agentEnabled: value });

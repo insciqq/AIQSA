@@ -43,6 +43,7 @@ export function sanitizeWorkspaceRuntimeHealth(
     health.virtualizationReady === true
   ) {
     return {
+      ...(health.agentReady === true ? { agentReady: true } : {}),
       imageReady: true,
       mcpVersion: WORKSPACE_MCP_VERSION,
       runtimeVersion: WORKSPACE_RUNTIME_VERSION,
@@ -74,7 +75,13 @@ export function createWorkspaceHealthService(input: Readonly<{
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      return sanitizeWorkspaceRuntimeHealth(await input.runtime.health(controller.signal));
+      const health = await input.runtime.health(controller.signal);
+      return sanitizeWorkspaceRuntimeHealth({
+        ...health,
+        agentReady: health.agentReady === true &&
+          typeof input.runtime.startAgent === "function" &&
+          typeof input.runtime.pollAgent === "function"
+      });
     } catch {
       return { reasonCode: "workspace_runtime_unavailable", state: "unavailable" };
     } finally {

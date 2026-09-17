@@ -1,3 +1,6 @@
+import { isMcpDiscoveryFailureMessage } from "./mcpDiscoveryFailure";
+import { isMcpToolFailureMessage } from "./mcpToolFailure";
+
 export const WORKSPACE_SESSION_STATES = Object.freeze([
   "not_started",
   "creating",
@@ -39,6 +42,7 @@ export type WorkspaceUnavailableReason = (typeof WORKSPACE_UNAVAILABLE_REASONS)[
 export type WorkspaceErrorCode = (typeof WORKSPACE_ERROR_CODES)[number];
 
 export type ChatWorkspaceState = Readonly<{
+  agentAvailable?: boolean;
   available: boolean;
   enabled: boolean;
   internetEnabled: boolean | null;
@@ -67,6 +71,7 @@ export type ThreadGeneratedFile = Readonly<{
 }>;
 
 export type WorkspaceRuntimeHealthWire = Readonly<{
+  agentReady?: boolean;
   imageReady?: boolean;
   mcpVersion?: string;
   reasonCode?: string;
@@ -102,6 +107,7 @@ function isBoundedString(value: unknown, maximum = 128): value is string {
 export function decodeChatWorkspaceState(value: unknown): ChatWorkspaceState | null {
   if (
     !isRecord(value) ||
+    (value.agentAvailable !== undefined && typeof value.agentAvailable !== "boolean") ||
     typeof value.available !== "boolean" ||
     typeof value.enabled !== "boolean" ||
     (value.internetEnabled !== null && typeof value.internetEnabled !== "boolean") ||
@@ -127,6 +133,7 @@ export function decodeChatWorkspaceState(value: unknown): ChatWorkspaceState | n
   }
 
   return {
+    ...(typeof value.agentAvailable === "boolean" ? { agentAvailable: value.agentAvailable } : {}),
     available: value.available,
     enabled: value.enabled,
     internetEnabled: value.internetEnabled,
@@ -165,7 +172,7 @@ export function decodeWorkspaceRuntimeHealth(
   if (!isRecord(value) || (value.state !== "ready" && value.state !== "unavailable")) {
     return null;
   }
-  const optionalBooleanKeys = ["imageReady", "virtualizationReady"] as const;
+  const optionalBooleanKeys = ["agentReady", "imageReady", "virtualizationReady"] as const;
   const optionalStringKeys = ["mcpVersion", "reasonCode", "runtimeVersion"] as const;
   if (
     optionalBooleanKeys.some((key) => value[key] !== undefined && typeof value[key] !== "boolean") ||
@@ -174,6 +181,7 @@ export function decodeWorkspaceRuntimeHealth(
     return null;
   }
   return {
+    ...(typeof value.agentReady === "boolean" ? { agentReady: value.agentReady } : {}),
     ...(typeof value.imageReady === "boolean" ? { imageReady: value.imageReady } : {}),
     ...(typeof value.mcpVersion === "string" ? { mcpVersion: value.mcpVersion } : {}),
     ...(typeof value.reasonCode === "string" ? { reasonCode: value.reasonCode } : {}),
@@ -533,6 +541,9 @@ export function decodeThreadWorkspaceActivityEntry(value: unknown): ThreadWorksp
     const decoded = boundedText(value.text, WORKSPACE_ACTIVITY_NOTE_MAX_BYTES);
     if (!decoded || utf8Bytes(decoded) > WORKSPACE_ACTIVITY_NOTE_MAX_BYTES) return null;
     text = decoded;
+  } else if (kind === "mcp_call" && phase === "failed" && value.text !== undefined) {
+    if (mcp?.discovery && isMcpDiscoveryFailureMessage(value.text) || !mcp?.discovery && isMcpToolFailureMessage(value.text)) text = value.text;
+    else return null;
   } else if (value.text !== undefined) return null;
   let elided: Pick<ThreadWorkspaceActivityEntry, "failedCount" | "hasLifecycle" | "throughSequence"> = {};
   if (kind === "elided") {

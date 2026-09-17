@@ -764,7 +764,8 @@ html[data-motion="off"] .v2-run-shimmer {
 
 .v2-workspace-overlay {
   position: relative;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   width: min(54rem, 100%);
   max-height: min(46rem, calc(100dvh - 2rem));
   overflow: hidden;
@@ -777,6 +778,7 @@ html[data-motion="off"] .v2-run-shimmer {
 
 .v2-workspace-overlay-header {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
@@ -785,7 +787,13 @@ html[data-motion="off"] .v2-run-shimmer {
 }
 
 .v2-workspace-overlay-header h2 { margin: 0; font-size: 1rem; }
-.v2-workspace-overlay-list { min-height: 0; overflow: auto; padding: 0.75rem 0.25rem 1rem; }
+.v2-workspace-overlay-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0.75rem 0.25rem 1rem;
+}
 
 @media (max-width: 48rem) {
   .v2-workspace-overlay-layer { padding: 0; }

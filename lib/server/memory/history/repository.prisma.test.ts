@@ -68,6 +68,7 @@ import {
 import { createMemoryRebuildHandler } from "../rebuild/handler";
 import { createPrismaMemoryRebuildRepository } from "../rebuild/repository";
 import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from "./segments";
+import { MEMORY_RECALL_ROUND_PROJECTION_VERSION } from "./rounds";
 import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "./toolEvents";
 import { purgeMemoryHistorySelection } from "./purge";
 
@@ -1398,7 +1399,7 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
-  it.each(["append", "rebuild", "branch"] as const)(
+  it.each(["append", "rebuild", "projection-upgrade", "branch"] as const)(
     "preserves accepted round references across %s and an idempotent commit",
     async (transition) => {
       const userId = await createOwner("memory-history-retained-round");
@@ -1424,12 +1425,61 @@ describe("Memory lexical history index persistence", () => {
           }
         });
         await processHistoryJob(userId);
-        const round = await prisma.memoryRecallRound.findFirstOrThrow({
+        let round = await prisma.memoryRecallRound.findFirstOrThrow({
           where: { chatId: chat.id, state: "ACTIVE", userId }
         });
-        const segment = await prisma.memoryRecallRoundSegment.findFirstOrThrow({
+        let segment = await prisma.memoryRecallRoundSegment.findFirstOrThrow({
           where: { roundId: round.id, state: "ACTIVE", userId }
         });
+        if (transition === "projection-upgrade") {
+          // Install the former writer's projection before freezing references.
+          // The source text is unchanged; only its projection contract differs.
+          const projectionVersion = "memory-recall-round-projection-v1";
+          const sourceProjectionVersion = "memory-history-source-projection-v5";
+          const contentHash = memorySha256({
+            evidenceRootHash: round.evidenceRootHash, projectionVersion,
+            rawSafeText: round.rawSafeText, sourceProjectionVersion
+          });
+          const id = memorySha256({
+            domain: "aiqsa.memory.recall-round", evidenceRootHash: round.evidenceRootHash,
+            projectionVersion, userId
+          });
+          const legacySegmentId = memorySha256({
+            domain: "aiqsa.memory.recall-round-segment", ordinal: segment.segmentOrdinal,
+            projectionVersion: segment.projectionVersion,
+            rawEndOffsetUtf16: segment.rawEndOffsetUtf16,
+            rawSafeTextHash: segment.rawSafeTextHash,
+            rawStartOffsetUtf16: segment.rawStartOffsetUtf16, roundId: id, userId
+          });
+          [round, segment] = await prisma.$transaction(async (tx) => {
+            const roundMessages = await tx.memoryRecallRoundMessage.findMany({
+              where: { roundId: round.id, userId }
+            });
+            const segmentMessages = await tx.memoryRecallRoundSegmentMessage.findMany({
+              where: { segmentId: segment.id, userId }
+            });
+            await tx.memoryRecallRound.delete({ where: { id: round.id } });
+            const legacyRound = await tx.memoryRecallRound.create({
+              data: { ...round, contentHash, id, projectionVersion, sourceProjectionVersion }
+            });
+            await tx.memoryRecallRoundMessage.createMany({
+              data: roundMessages.map((message) => ({ ...message, roundId: id }))
+            });
+            const legacySegment = await tx.memoryRecallRoundSegment.create({
+              data: { ...segment, id: legacySegmentId, roundId: id }
+            });
+            await tx.memoryRecallRoundSegmentMessage.createMany({
+              data: segmentMessages.map((message) => ({
+                ...message, roundId: id, segmentId: legacySegmentId
+              }))
+            });
+            await tx.chatMemoryCheckpoint.update({
+              data: { pipelineVersion: "memory-history-incremental-v9" },
+              where: { userId_chatId: { chatId: chat.id, userId } }
+            });
+            return [legacyRound, legacySegment] as const;
+          });
+        }
         const settings = await prisma.userMemorySettings.findUniqueOrThrow({
           where: { userId }
         });
@@ -1588,7 +1638,7 @@ describe("Memory lexical history index persistence", () => {
           id: round.id,
           rawSafeText: round.rawSafeText,
           sourceRevisionAtCreation: round.sourceRevisionAtCreation,
-          state: "ACTIVE"
+          state: transition === "projection-upgrade" ? "INVALIDATED" : "ACTIVE"
         };
         await expect(prisma.memoryRecallRound.findUniqueOrThrow({
           where: { id: round.id }
@@ -1607,12 +1657,13 @@ describe("Memory lexical history index persistence", () => {
         })).resolves.toMatchObject({
           rawSafeText: segment.rawSafeText,
           sourceRevisionAtCreation: segment.sourceRevisionAtCreation,
-          state: "ACTIVE"
+          state: unchangedIdentity.state
         });
         await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
           where: { userId_chatId: { chatId: chat.id, userId } }
         })).resolves.toMatchObject({
           activeLeafMessageId: appended.assistantMessage.id,
+          pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
           status: "READY"
         });
         const entries = await prisma.memorySearchEntry.findMany({
@@ -1622,22 +1673,38 @@ describe("Memory lexical history index persistence", () => {
         await expect(prisma.memorySearchEntry.findMany({
           orderBy: { id: "asc" }, where: { userId }
         })).resolves.toEqual(entries);
-        const currentRound = await prisma.memoryRecallRound.findUniqueOrThrow({
-          where: { id: round.id }
+        const currentRound = await prisma.memoryRecallRound.findFirstOrThrow({
+          where: { evidenceRootHash: round.evidenceRootHash, state: "ACTIVE", userId }
         });
+        const currentSegment = await prisma.memoryRecallRoundSegment.findFirstOrThrow({
+          where: { roundId: currentRound.id, state: "ACTIVE", userId }
+        });
+        if (transition === "projection-upgrade") {
+          expect(currentRound.id).not.toBe(round.id);
+          expect(currentRound.contentHash).not.toBe(round.contentHash);
+          expect(currentRound).toMatchObject({
+            rawSafeText: round.rawSafeText,
+            projectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
+            sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION
+          });
+          await expect(prisma.memorySearchEntry.count({
+            where: { recallRoundId: round.id, userId }
+          })).resolves.toBe(0);
+          await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 0 });
+        }
         const rejoined = await prisma.$transaction((tx) => resolvePreparingMemoryItem(
           tx,
           { assistantId: null, chatId: chat.id, folderId: null,
             indexGenerationId: settings.activeIndexGenerationId, userId },
           null,
-          { exactItemId: round.id, exactSafeText: round.rawSafeText, finalScore: 0.9,
+          { exactItemId: currentRound.id, exactSafeText: currentRound.rawSafeText, finalScore: 0.9,
             itemType: "RECALL_ROUND", laneRanks: {},
             projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
-            recallRoundId: round.id, recallRoundSegmentId: segment.id,
+            recallRoundId: currentRound.id, recallRoundSegmentId: currentSegment.id,
             selectionReason: "history_recall_exact", supportingItemId: currentRound.parentChunkId }
         ));
-        expect(rejoined).toMatchObject({ recallRoundId: round.id,
-          sourceRevisionSnapshot: round.sourceRevisionAtCreation });
+        expect(rejoined).toMatchObject({ recallRoundId: currentRound.id,
+          sourceRevisionSnapshot: currentRound.sourceRevisionAtCreation });
         if (transition === "branch") {
           const edited = await createTurn({
             assistantText: "The maple desk replaces that reservation.",

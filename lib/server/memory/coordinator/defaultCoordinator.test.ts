@@ -33,6 +33,7 @@ describe("default Memory coordinator composition", () => {
     };
 
     await reconcileDefaultMemoryWork({
+      embeddingSetup: step("embedding"),
       cutover: step("cutover"),
       historyBackfill: step("history"),
       reclassification: step("reclassification"),
@@ -42,6 +43,8 @@ describe("default Memory coordinator composition", () => {
 
     expect(maximumActive).toBe(1);
     expect(order).toEqual([
+      "embedding:start",
+      "embedding:end",
       "cutover:start",
       "cutover:end",
       "history:start",

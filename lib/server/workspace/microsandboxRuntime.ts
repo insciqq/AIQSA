@@ -484,6 +484,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       const mcp = await this.openMcpConnection();
       await mcp.transport.close();
       return {
+        agentReady: imageReady && this.config.agentGatewayEnabled === true,
         imageReady,
         mcpVersion: WORKSPACE_MCP_VERSION,
         ...(imageReady ? {} : { reasonCode: "workspace_image_unavailable" }),

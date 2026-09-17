@@ -1,5 +1,7 @@
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import { mcpDiscoveryFailureMessage } from "../../contracts/mcpDiscoveryFailure";
+import { mcpToolFailureMessage } from "../../contracts/mcpToolFailure";
 import type { McpHubDiscoveryResult } from "@/lib/contracts/mcpHub";
 import { createMcpHubService, McpHubServiceError, type McpHubAuthority } from "./hubService";
 import { MCP_HUB_REQUEST_DEADLINE_MS } from "./hubConfiguration";
@@ -23,6 +25,11 @@ function result(value: Readonly<Record<string, unknown>>, isError = false): Call
 
 function errorResult(error: unknown): CallToolResult {
   const code = error instanceof McpHubServiceError ? error.code : "upstream_unavailable";
+  const discoveryFailure = error instanceof McpHubServiceError ? error.discoveryFailure : null;
+  if (discoveryFailure) return result({ code, discoveryFailure,
+    message: `${mcpDiscoveryFailureMessage(discoveryFailure)} No connected tool was called. This does not establish an authorization failure on the connected service.` }, true);
+  const toolFailure = error instanceof McpHubServiceError ? error.toolFailure : null;
+  if (toolFailure) return result({ code, toolFailure, message: `${mcpToolFailureMessage(toolFailure)} Request fewer records or fields for a read-only query. Do not repeat a write solely because its response could not be read.` }, true);
   const message = code === "authorization_required"
     ? "Reconnect this app to AIQSA MCP Hub and approve access."
     : code === "execution_outcome_unknown"

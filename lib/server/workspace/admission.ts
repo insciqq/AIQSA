@@ -17,6 +17,7 @@ import type { WorkspacePolicyRepository } from "./policyRepository";
 import type { WorkspaceBoundTool, WorkspaceToolCatalog } from "./runtime";
 
 export type WorkspaceAdmissionErrorCode =
+  | "agent_unavailable"
   | "workspace_disabled"
   | "workspace_model_tools_required"
   | "workspace_runtime_incompatible"
@@ -49,6 +50,7 @@ export type WorkspaceAdmissionResult = WorkspaceAdmissionFailure | Readonly<{
 
 export type WorkspaceAdmissionService = Readonly<{
   prepare(input: Readonly<{
+    agentEnabled?: boolean;
     assistantMessageId: string;
     chatId: string;
     enabled: boolean;
@@ -139,6 +141,9 @@ export function createWorkspaceAdmissionService(input: Readonly<{
       }
       if (health?.state !== "ready") {
         return { code: "workspace_runtime_unavailable", ok: false, status: 503 };
+      }
+      if (request.agentEnabled && health.agentReady !== true) {
+        return { code: "agent_unavailable", ok: false, status: 503 };
       }
 
       let catalog: WorkspaceToolCatalog;

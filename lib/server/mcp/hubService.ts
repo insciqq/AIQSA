@@ -14,8 +14,11 @@ import { MCP_HUB_DISCOVERY_RESPONSE_MAX_BYTES } from "./hubConfiguration";
 import type { McpToolAccessFilter } from "./toolAccess";
 import { McpClientSessionError, validateMcpToolArguments, type AiqsaMcpToolCallResult } from "./clientSession";
 import { dispatchMcpTool, resolveMcpRunTool } from "./toolExecutor";
-import { discoverMcpTools, materializeMcpSelection } from "./discoveryService";
+import { discoverMcpTools, materializeMcpSelection, McpDiscoveryError } from "./discoveryService";
+import type { McpDiscoveryFailure } from "../../contracts/mcpDiscoveryFailure";
+import { decodeMcpToolFailure, type McpToolFailure } from "../../contracts/mcpToolFailure";
 import {
+  McpSemanticRouterError,
   type McpSemanticRouter,
   type McpRouterAttemptRecorder,
   type McpRouterUsageAttribution
@@ -41,6 +44,17 @@ export class McpHubServiceError extends Error {
   constructor(readonly code: McpHubServiceErrorCode, options?: ErrorOptions) {
     super(code, options);
     this.name = "McpHubServiceError";
+  }
+
+  get discoveryFailure(): McpDiscoveryFailure | null {
+    if (this.code !== "discovery_unavailable") return null;
+    const cause = this.cause instanceof McpDiscoveryError ? this.cause.cause : this.cause;
+    return cause instanceof McpSemanticRouterError ? cause.diagnostic : null;
+  }
+
+  get toolFailure(): McpToolFailure | null {
+    return this.code === "result_unsupported" && McpClientSessionError.isInstance(this.cause)
+      ? decodeMcpToolFailure(this.cause.code) : null;
   }
 }
 
@@ -414,9 +428,9 @@ export function createMcpToolService<Authority extends McpToolAuthority>(depende
         if (error instanceof McpHubServiceError) {
           failure = dispatched && error.code === "request_cancelled"
             ? new McpHubServiceError("execution_outcome_unknown") : error;
-        } else if (error instanceof McpClientSessionError &&
+        } else if (McpClientSessionError.isInstance(error) &&
           ["mcp_call_result_invalid", "mcp_call_result_too_large", "mcp_call_result_unsupported"].includes(error.code)) {
-          failure = new McpHubServiceError("result_unsupported");
+          failure = new McpHubServiceError("result_unsupported", { cause: error });
         } else {
           failure = new McpHubServiceError(dispatched ? "execution_outcome_unknown" : "upstream_unavailable");
         }

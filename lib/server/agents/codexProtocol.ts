@@ -3,6 +3,10 @@
  * terminal preview. These private facts must pass through the masked, bounded
  * activity projection before publication. Reasoning and raw results stay out.
  */
+import { decodeMcpDiscoveryFailure, type McpDiscoveryFailure } from "../../contracts/mcpDiscoveryFailure";
+import { decodeMcpToolFailure, type McpToolFailure } from "../../contracts/mcpToolFailure";
+import { MCP_JSON_RPC_REQUEST_MAX_BYTES, MCP_RESPONSE_WIRE_LIMIT_CEILINGS } from "../mcp/responseLimits";
+
 export type CodexEvent =
   | Readonly<{ type: "thread_started"; threadId: string }>
   | Readonly<{ type: "turn_started" }>
@@ -18,6 +22,8 @@ export type CodexEvent =
       changes?: readonly Readonly<{ path: string; action: "add" | "update" | "delete" }>[];
       tool?: string;
       toolId?: string;
+      discoveryFailure?: McpDiscoveryFailure;
+      toolFailure?: McpToolFailure;
       query?: string;
       source?: string;
       items?: readonly Readonly<{ text: string; completed: boolean }>[];
@@ -41,13 +47,28 @@ export class CodexProtocolError extends Error {
 }
 
 export const CODEX_OUTPUT_LIMITS = Object.freeze({
-  lineBytes: 2 * 1024 * 1024,
+  // Codex exec includes MCP results in JSONL. Accommodate the largest permitted
+  // tool response, the gateway envelope, and the outer activity record.
+  lineBytes: MCP_RESPONSE_WIRE_LIMIT_CEILINGS.callToolResponseMaxBytes + 2 * MCP_JSON_RPC_REQUEST_MAX_BYTES,
   records: 20_000,
   totalBytes: 64 * 1024 * 1024
 });
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function failurePayloadFromResult(value: unknown): Record<string, unknown> | null {
+  if (!record(value)) return null;
+  const structured = value.structuredContent ?? value.structured_content;
+  if (record(structured)) return structured;
+  if (!Array.isArray(value.content) || value.content.length !== 1) return null;
+  const block = value.content[0];
+  if (!record(block) || block.type !== "text" || typeof block.text !== "string" || block.text.length > 2_048) return null;
+  try {
+    const parsed: unknown = JSON.parse(block.text);
+    return record(parsed) ? parsed : null;
+  } catch { return null; }
 }
 
 function identifier(value: unknown): value is string {
@@ -250,9 +271,20 @@ export class CodexJsonlDecoder {
     }
     const args = record(item.arguments) ? item.arguments : null;
     const toolName = typeof item.tool === "string" ? item.tool : typeof item.name === "string" ? item.name : undefined;
+    const failurePayload = kind === "mcp" && type === "item.completed" ? failurePayloadFromResult(item.result) : null;
+    const discoveryFailure = toolName === "find_tools" && failurePayload?.code === "discovery_unavailable"
+      ? decodeMcpDiscoveryFailure(failurePayload.discoveryFailure) : null;
+    const toolFailure = toolName !== "find_tools" && failurePayload?.code === "result_unsupported"
+      ? decodeMcpToolFailure(failurePayload.toolFailure) : null;
+    const mcpError = kind === "mcp" && type === "item.completed" && record(item.result) &&
+      (item.result.isError === true || item.result.is_error === true);
     // Select only fields needed to resolve an admitted tool/search identity.
     // Never retain the argument object, MCP result, server id or raw errors.
+    // Discovery failures retain only the closed content-free diagnostic codes.
     return { ...base,
+      ...(mcpError ? { phase: "failed" as const } : {}),
+      ...(discoveryFailure ? { phase: "failed" as const, discoveryFailure } : {}),
+      ...(toolFailure ? { phase: "failed" as const, toolFailure } : {}),
       ...(toolName ? { tool: toolName } : {}),
       ...(typeof args?.tool_id === "string" ? { toolId: args.tool_id } : {}),
       ...(typeof item.query === "string" ? { query: item.query }

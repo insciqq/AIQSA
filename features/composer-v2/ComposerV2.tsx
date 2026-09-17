@@ -657,7 +657,7 @@ export function ComposerV2({
           ? layerRef.current.querySelector<HTMLElement>("[data-v2-knowledge-search]") ??
             optionElements(layerRef.current)[0]
           : optionElements(layerRef.current)[0];
-      target?.focus();
+      (target ?? layerRef.current).focus();
     });
     const dismiss = (event: PointerEvent) => {
       const target = event.target;
@@ -1299,6 +1299,7 @@ export function ComposerV2({
               data-placement={!externalAnchor && layerPlacement.below ? "below" : undefined}
               id={`${layerId}-${layer}`}
               role={layer === "model" || layer === "files" ? "dialog" : "menu"}
+              tabIndex={-1}
               aria-label={LAYER_LABELS[layer]}
               style={{
                 "--v2-composer-layer-left": `${externalAnchor?.left ?? layerLeft}px`,

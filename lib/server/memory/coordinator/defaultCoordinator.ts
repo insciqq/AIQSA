@@ -38,6 +38,7 @@ import {
   resolveMemoryHistoryBackfillWindow
 } from "../history/backfill";
 import { workspaceRuntime } from "../../workspace/defaultServices";
+import { createPrismaMemoryEmbeddingSetup } from "../embedding/setup";
 
 type MemoryCoordinatorGlobal = typeof globalThis & {
   __aiqsaMemoryCoordinator?: MemoryCoordinator;
@@ -51,6 +52,7 @@ export const defaultMemoryCoordinatorRepository =
   createPrismaMemoryCoordinatorRepository(prisma);
 
 type DefaultMemoryReconciliationWork = Readonly<{
+  embeddingSetup?: () => Promise<unknown>;
   cutover?: () => Promise<unknown>;
   historyBackfill?: () => Promise<unknown>;
   reclassification?: () => Promise<unknown>;
@@ -58,8 +60,11 @@ type DefaultMemoryReconciliationWork = Readonly<{
   synthesis?: () => Promise<unknown>;
 }>;
 
+const defaultMemoryEmbeddingSetup = createPrismaMemoryEmbeddingSetup(prisma);
+
 const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
   Object.freeze({
+    embeddingSetup: () => defaultMemoryEmbeddingSetup.reconcile(),
     cutover: () => createPrismaMemoryRetrievalCutoverRepository(prisma).reconcile(),
     historyBackfill: () => reconcileMemoryHistoryBackfills(
       prisma,
@@ -88,6 +93,7 @@ const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
 export async function reconcileDefaultMemoryWork(
   work: DefaultMemoryReconciliationWork = defaultMemoryReconciliationWork
 ): Promise<void> {
+  await work.embeddingSetup?.();
   // Cutover reconciliation inventories content-free identities and admits a
   // durable shadow rebuild. It must never replay source content from this
   // periodic maintenance pass.

@@ -13,6 +13,13 @@ const command = (id: string, phase: ThreadWorkspaceActivityEntry["phase"], previ
   ({ command: { preview }, id, kind: "command", phase });
 
 describe("workspace activity presentation", () => {
+  it("shows a failed discovery and its safe cause instead of claiming tools were found", () => {
+    const failed = { id: "discovery", kind: "mcp_call", phase: "failed", mcp: { discovery: true, toolName: "find_tools" } } as const;
+    expect(workspaceActivityLabelV2(failed)).toBe("Tool discovery failed");
+    expect(workspaceActivityLabelV2({ ...failed, text: "Tool discovery failed: the System Model returned malformed JSON." }))
+      .toBe("Tool discovery failed: the System Model returned malformed JSON.");
+  });
+
   it("keeps output freshness when a cold terminal update arrives before its output snapshots", () => {
     const updates = [
       { ...command("a", "running"), command: { preview: "npm test", stdoutPreview: "old" }, sequence: 1 },

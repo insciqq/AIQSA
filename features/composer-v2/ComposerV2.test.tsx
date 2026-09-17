@@ -47,6 +47,33 @@ function ComposerWithModelOpener(overrides: Partial<Parameters<typeof ComposerV2
 }
 
 describe("Composer v2", () => {
+  it.each([false, true])("explains unavailable Agent without losing the draft or trapping an enabled selection: %s", async (enabled) => {
+    const onToggle = vi.fn();
+    const onSend = vi.fn();
+    const unavailableReason = "Agent is unavailable. Ask an administrator to check the Workspace runner.";
+    render(<ComposerV2 {...props({ selectedKnowledgeBaseIds: [], onSend,
+      agent: { enabled, onToggle, unavailableReason } })} />);
+    fireEvent.click(screen.getByRole("button", { name: `Agent details. ${enabled ? "On" : "Off"}` }));
+    expect(screen.getByRole("menu", { name: "Agent" })).toHaveTextContent(unavailableReason);
+    const toggle = screen.getByRole("menuitemcheckbox", { name: enabled ? /Turn off Agent/ : /Turn on Agent/ });
+    if (enabled) expect(toggle).toBeEnabled();
+    else expect(toggle).toBeDisabled();
+    fireEvent.click(toggle);
+    if (enabled) expect(onToggle).toHaveBeenCalledWith(false);
+    else expect(onToggle).not.toHaveBeenCalled();
+    if (!enabled) {
+      const menu = screen.getByRole("menu", { name: "Agent" });
+      await waitFor(() => expect(menu).toHaveFocus());
+      fireEvent.keyDown(menu, { key: "Escape" });
+      expect(screen.queryByRole("menu", { name: "Agent" })).not.toBeInTheDocument();
+      await waitFor(() => expect(screen.getByRole("button", { name: "Agent details. Off" })).toHaveFocus());
+    }
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Проверь источники");
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+    if (enabled) expect(onSend).not.toHaveBeenCalled();
+    else expect(onSend).toHaveBeenCalledOnce();
+  });
+
   it("enables Agent without changing the selected MCP mode or Skills", () => {
     const onToggle = vi.fn();
     const onSelectMcp = vi.fn();

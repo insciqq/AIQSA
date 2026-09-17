@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { mcpDiscoveryFailureMessage } from "../../contracts/mcpDiscoveryFailure";
+import { mcpToolFailureMessage } from "../../contracts/mcpToolFailure";
 import {
   WORKSPACE_ACTIVITY_MAX_FILE_CHANGES,
   WORKSPACE_ACTIVITY_MAX_PLAN_ITEMS,
@@ -76,7 +78,10 @@ export function createCodexActivityProjection(runId: string, request: ProviderRu
           } else {
             descriptors ??= toolActivityDescriptors(request, (value) => text.text(value));
             const descriptor = descriptors.get(event.tool === "call_tool" ? event.toolId ?? "" : event.tool ?? "");
-            entry = { ...base, kind: "mcp_call", mcp: descriptor?.origin === "discovery"
+            entry = { ...base, kind: "mcp_call",
+              ...(event.discoveryFailure ? { text: mcpDiscoveryFailureMessage(event.discoveryFailure) } : {}),
+              ...(event.toolFailure ? { text: mcpToolFailureMessage(event.toolFailure) } : {}),
+              mcp: descriptor?.origin === "discovery"
               ? { discovery: true, serverName: "Auto tools", toolName: "find_tools" }
               : descriptor?.origin === "mcp" ? { serverName: descriptor.serverName, toolName: descriptor.toolName }
                 : { toolName: "MCP tool" } };

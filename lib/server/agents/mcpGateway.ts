@@ -1,4 +1,6 @@
 import { createAgentAiqsaSearch } from "./aiqsaSearchTool";
+import { mcpDiscoveryFailureMessage } from "../../contracts/mcpDiscoveryFailure";
+import { mcpToolFailureMessage } from "../../contracts/mcpToolFailure";
 import { agentFailureCode, agentFailureMessage } from "./failures";
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
@@ -14,6 +16,7 @@ import { createAcceptedStructuredOutputExecutor } from "../providerRuntime/struc
 import { createSystemModelRoleResolver } from "../providerRuntime/systemModelRole";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { validateMcpToolArguments } from "../mcp/clientSession";
+import { getMcpResponseWireLimits, MCP_JSON_RPC_REQUEST_MAX_BYTES } from "../mcp/responseLimits";
 import type { McpCapabilityCatalog, McpRunPlanSnapshot } from "../mcp/runPlan";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { createAgentRunStore } from "./store";
@@ -140,8 +143,19 @@ export async function createAgentMcpGateway(input: Readonly<{
         } catch (error) {
           const agentCode = agentFailureCode(error);
           const code = agentCode ?? (error instanceof McpHubServiceError ? error.code : "execution_unavailable");
+          const discoveryFailure = error instanceof McpHubServiceError ? error.discoveryFailure : null;
+          const toolFailure = error instanceof McpHubServiceError ? error.toolFailure : null;
+          const detail = { code, ...(discoveryFailure ? { discoveryFailure } : {}), ...(toolFailure ? { toolFailure } : {}) };
           if (agentCode && agentCode !== "agent_mcp_call_limit") await input.onFailure(agentCode);
-          if (callId) await input.store.settleTool(callId, "error", { code }).catch(() => undefined);
+          if (callId) await input.store.settleTool(callId, "error", detail).catch(() => undefined);
+          if (code === "discovery_unavailable") {
+            const value = { ...detail, message: `${discoveryFailure ? mcpDiscoveryFailureMessage(discoveryFailure) : "Tool discovery is unavailable."} No connected tool was called. This does not establish an authorization failure on the connected service. You may retry find_tools with a narrower goal.` };
+            return { ...textResult(value, true), structuredContent: value };
+          }
+          if (code === "result_unsupported") {
+            const value = { ...detail, message: `${toolFailure ? mcpToolFailureMessage(toolFailure) : "The MCP tool was called, but its response was too large, invalid or used unsupported content."} For a read-only query, request fewer records or fields. Do not repeat a write operation solely because its response could not be read.` };
+            return { ...textResult(value, true), structuredContent: value };
+          }
           return textResult({ code, message: agentCode ? agentFailureMessage(agentCode) : "The call could not complete. Do not repeat an operation whose outcome is unknown." }, true);
         }
       };
@@ -183,8 +197,12 @@ export async function createAgentMcpGateway(input: Readonly<{
       const response = await handler.fetch(bounded, { parsedBody });
       if (!response.body || response.status === 204) return response;
       // Finish the bounded JSON transport before releasing the authority lease.
+      // Include the accepted upstream result plus room for the gateway envelope.
       const result = await readBoundedRequestBody(new Request("http://agent.invalid/", { method: "POST", body: response.body,
-        duplex: "half", signal } as RequestInit), { maxBytes: 1024 * 1024, signal });
+        duplex: "half", signal } as RequestInit), {
+        maxBytes: getMcpResponseWireLimits().callToolResponseMaxBytes + MCP_JSON_RPC_REQUEST_MAX_BYTES,
+        signal
+      });
       return new Response(result, { status: response.status, headers: response.headers });
     } catch {
       return Response.json({ error: "agent_mcp_unavailable" }, { status: 502 });
