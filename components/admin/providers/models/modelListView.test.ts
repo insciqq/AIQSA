@@ -89,6 +89,7 @@ function sources(overrides: Partial<ProviderUsageSources> = {}): ProviderUsageSo
     },
     search: null,
     systemModelPolicy: {
+      memoryPolicy: { assignmentSource: "unassigned", model: null, reasoningEffort: null, version: 1 },
       candidates: [],
       titleCandidates: [], documentCandidates: [],
       ineligible: { chat_titles: [], direct_pdf: [], memory: [], vision: [] },

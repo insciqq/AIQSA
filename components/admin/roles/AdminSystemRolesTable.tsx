@@ -86,12 +86,17 @@ export function AdminSystemRolesTable({
   const catalog = controller.policy;
   if (!catalog) return null;
   const policy = catalog.policy;
+  const memory = catalog.memoryPolicy;
   const label = deploymentLabeller(catalog);
   const busy = controller.busy || controller.checking !== null;
   const checkingId = controller.checking?.id ?? null;
-  const memoryUndo = {
+  const systemUndo = {
     providerModelId: policy.systemModel?.id ?? null,
     reasoningEffort: policy.reasoningEffort
+  };
+  const memoryUndo = {
+    memoryProviderModelId: memory.model?.id ?? null,
+    memoryReasoningEffort: memory.reasoningEffort
   };
   const titleUndo = {
     chatTitleProviderModelId: policy.chatTitleModel?.id ?? null,
@@ -125,14 +130,14 @@ export function AdminSystemRolesTable({
       </div>
 
       <RoleRow
-        description="Handles Memory, MCP routing and structured helpers. Needs strict JSON output and forced tool calls."
+        description="Handles MCP routing and structured helpers. Needs strict JSON output and forced tool calls. Memory has its own assignment below."
         menu={[{
           disabled: !policy.systemModel || busy,
           label: "Clear assignment",
-          onSelect: () => void controller.assign({ providerModelId: null, reasoningEffort: null }, memoryUndo)
+          onSelect: () => void controller.assign({ providerModelId: null, reasoningEffort: null }, systemUndo)
         }]}
         status={roleStatus(policy.systemModel)}
-        testId="admin-role-memory"
+        testId="admin-role-system"
         title="System model"
       >
         <AdminRolePicker
@@ -140,12 +145,12 @@ export function AdminSystemRolesTable({
           checkingId={checkingId}
           items={generativeRoleItems(catalog, "memory")}
           label="System model deployment"
-          onCheck={(id) => controller.checkAndAssign("memory", id)}
-          onSelect={(id) => void controller.assign({ providerModelId: id, reasoningEffort: null }, memoryUndo)}
+          onCheck={(id) => controller.checkAndAssign("system", id)}
+          onSelect={(id) => void controller.assign({ providerModelId: id, reasoningEffort: null }, systemUndo)}
           roleName="System model"
           selectedId={policy.systemModel?.id ?? null}
           selectedLabel={policy.systemModel ? label(policy.systemModel) : null}
-          testId="admin-memory-picker"
+          testId="admin-system-picker"
         />
         <details>
           <summary className="cursor-pointer text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">Advanced</summary>
@@ -156,9 +161,51 @@ export function AdminSystemRolesTable({
               model={policy.systemModel}
               onChange={(effort) => void controller.assign(
                 { providerModelId: policy.systemModel?.id ?? null, reasoningEffort: effort },
-                memoryUndo
+                systemUndo
               )}
               value={policy.reasoningEffort}
+            />
+          </div>
+        </details>
+      </RoleRow>
+
+      <RoleRow
+        description="Remembers useful details, handles Memory commands and processes past chats. Its model and reasoning are independent of chat answers and System model."
+        menu={[{
+          disabled: !memory.model || busy,
+          label: "Clear assignment",
+          onSelect: () => void controller.assign({ memoryProviderModelId: null, memoryReasoningEffort: null }, memoryUndo)
+        }]}
+        status={roleStatus(memory.model)}
+        testId="admin-role-memory"
+        title="Memory utility model"
+      >
+        <AdminRolePicker
+          busy={busy}
+          checkingId={checkingId}
+          items={generativeRoleItems(catalog, "memory")}
+          label="Memory model deployment"
+          onCheck={(id) => controller.checkAndAssign("memory", id)}
+          onSelect={(id) => void controller.assign({ memoryProviderModelId: id, memoryReasoningEffort: null }, memoryUndo)}
+          roleName="Memory"
+          selectedId={memory.model?.id ?? null}
+          selectedLabel={memory.model ? label(memory.model) : null}
+          testId="admin-memory-picker"
+        />
+        {memory.assignmentSource === "inherited" ? (
+          <p className="text-xs leading-5 text-ink-muted">Copied from your previous System model setting. Future changes are independent.</p>
+        ) : null}
+        <details>
+          <summary className="cursor-pointer text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">Advanced</summary>
+          <div className="pt-2">
+            <ReasoningSelect
+              disabled={busy}
+              label="Memory reasoning"
+              model={memory.model}
+              onChange={(effort) => void controller.assign(
+                { memoryProviderModelId: memory.model?.id ?? null, memoryReasoningEffort: effort }, memoryUndo
+              )}
+              value={memory.reasoningEffort}
             />
           </div>
         </details>

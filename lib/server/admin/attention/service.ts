@@ -234,10 +234,17 @@ function systemRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminAttention
   const policy = catalog.policy;
   return [
     roleItem(
-      "memory",
+      "system",
       "System model",
       policy.systemModel,
-      "Memory and structured helpers stay off until a checked model is assigned",
+      "MCP routing and structured helpers need a checked model",
+      "warn"
+    ),
+    roleItem(
+      "memory",
+      "Memory utility model",
+      catalog.memoryPolicy.model,
+      "Memory learning and generated history context need a checked model",
       "warn"
     ),
     policy.chatPdfModel

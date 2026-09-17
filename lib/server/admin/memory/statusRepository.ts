@@ -127,7 +127,7 @@ export function createPrismaAdminMemoryStatusRepository(
         activeIndexGenerationId ? [activeIndexGenerationId] : []);
       const [
         modelPolicy,
-        systemPolicy,
+        memoryPolicy,
         generations,
         rebuildingRows,
         shadowGenerationRows,
@@ -147,7 +147,7 @@ export function createPrismaAdminMemoryStatusRepository(
           },
           where: { id: "installation" }
         }),
-        client.systemModelPolicy.findUnique({
+        client.memoryUtilityModelPolicy.findUnique({
           select: { providerModelId: true },
           where: { id: "installation" }
         }),
@@ -358,7 +358,7 @@ export function createPrismaAdminMemoryStatusRepository(
       }
 
       const selectedModelIds = [...new Set([
-        ...(systemPolicy?.providerModelId ? [systemPolicy.providerModelId] : []),
+        ...(memoryPolicy?.providerModelId ? [memoryPolicy.providerModelId] : []),
         ...settings.flatMap(({ embeddingProviderModelId }) =>
           embeddingProviderModelId ? [embeddingProviderModelId] : [])
       ])];

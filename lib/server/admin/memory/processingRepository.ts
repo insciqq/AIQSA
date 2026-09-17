@@ -1,7 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { AdminMemoryProcessingIssue, AdminMemoryStatus } from "../../../contracts/adminMemory";
 import { currentMemoryJobsSql } from "../../memory/coordinator/currentJobs";
-import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
+import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memoryUtilityModelRole";
 
 const STALLED_MS = 15 * 60_000;
 const RETRY_WARNING_MS = 5 * 60_000;
@@ -26,7 +26,7 @@ export async function readAdminMemoryProcessing(
       FROM "UserMemorySettings" AS settings
       JOIN "User" AS owner ON owner.id = settings."userId" AND owner.status = 'active'::"UserStatus"
     `),
-    createSystemModelRoleResolver(client).resolve(),
+    createMemoryUtilityModelRoleResolver(client).resolve(),
     client.$queryRaw<ProcessingRow[]>(Prisma.sql`
       WITH ${currentMemoryJobsSql(now)}, classified AS (
         SELECT job.stage, job."createdAt",

@@ -34,6 +34,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /** Fields of one immediate role save; absent fields preserve the other roles. */
 export type AdminRolePatch = Readonly<{
+  memoryProviderModelId?: string | null;
+  memoryReasoningEffort?: string | null;
   imageProviderModelId?: string | null;
   imageParameters?: ImageGenerationParameters;
   chatTitleProviderModelId?: string | null;
@@ -61,7 +63,7 @@ export type AdminRolesController = Readonly<{
   /** Immediate apply for independent roles; `undo` reverts through the same PATCH. */
   assign(patch: AdminRolePatch, undo: AdminRolePatch | null): Promise<boolean>;
   busy: boolean;
-  checkAndAssign(role: "chat_titles" | "memory" | "vision" | "direct_pdf", id: string): Promise<boolean>;
+  checkAndAssign(role: "chat_titles" | "memory" | "system" | "vision" | "direct_pdf", id: string): Promise<boolean>;
   checkDocument(mode: KnowledgeModelMode, id: string): Promise<boolean>;
   checking: Readonly<{ id: string; role: AdminSystemModelEligibilityRole }> | null;
   error: string | null;
@@ -213,7 +215,12 @@ export function useAdminRolesController({
     const current = policyRef.current;
     if (!current) return false;
     setMutationBusy(true);
-    const result = await updateAdminSystemModelPolicy({ expectedVersion: current.policy.version, ...patch });
+    const result = await updateAdminSystemModelPolicy({
+      ...(Object.hasOwn(patch, "memoryProviderModelId")
+        ? { expectedMemoryVersion: current.memoryPolicy.version }
+        : { expectedVersion: current.policy.version }),
+      ...patch
+    });
     setMutationBusy(false);
     if (!result.ok) {
       reportError(adminSystemModelPolicyErrorMessage(result.error));
@@ -254,9 +261,14 @@ export function useAdminRolesController({
     return true;
   }, [invalidateReads, reportError, setPolicy]);
 
-  const checkAndAssign = useCallback(async (role: "chat_titles" | "memory" | "vision" | "direct_pdf", id: string): Promise<boolean> => {
+  const checkAndAssign = useCallback(async (role: "chat_titles" | "memory" | "system" | "vision" | "direct_pdf", id: string): Promise<boolean> => {
     const previous = policyRef.current?.policy;
-    if (!previous || !await check(role, id)) return false;
+    const previousMemory = policyRef.current?.memoryPolicy;
+    if (!previous || !previousMemory || !await check(role === "system" ? "memory" : role, id)) return false;
+    if (role === "memory") return assign(
+      { memoryProviderModelId: id, memoryReasoningEffort: null },
+      { memoryProviderModelId: previousMemory.model?.id ?? null, memoryReasoningEffort: previousMemory.reasoningEffort }
+    );
     if (role === "chat_titles") return assign(
       { chatTitleProviderModelId: id, chatTitleReasoningEffort: initialChatTitleReasoningEffort(
         policyRef.current?.titleCandidates.find((candidate) => candidate.id === id)
@@ -268,7 +280,7 @@ export function useAdminRolesController({
       { chatPdfNativeProviderModelId: previous.chatPdfNativeModel?.id ?? null,
         chatPdfNativeReasoningEffort: previous.chatPdfNativeReasoningEffort ?? null }
     );
-    return role === "memory"
+    return role === "system"
       ? assign(
           { providerModelId: id, reasoningEffort: null },
           { providerModelId: previous.systemModel?.id ?? null, reasoningEffort: previous.reasoningEffort }

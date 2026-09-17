@@ -14,7 +14,7 @@ import { rerankerPresetsForFamily } from "../../../domain/rerankerModels";
 export function createAdminProviderBootstrap(input: {
   providers: { listConnections(): Promise<AdminProviderConnection[]> };
   chat: Pick<ReturnType<typeof createAdminModelPolicyService>, "list" | "update">;
-  roles: Pick<ReturnType<typeof createAdminSystemModelPolicyService>, "list" | "update">;
+  roles: Pick<ReturnType<typeof createAdminSystemModelPolicyService>, "list" | "update" | "updateMemory">;
   search: Pick<ReturnType<typeof createAdminSearchService>, "list" | "createDraft" | "saveAndCheck">;
   knowledge: Pick<ReturnType<typeof createAdminKnowledgeProfileService>, "list" | "activate">;
 }) {
@@ -59,7 +59,7 @@ export function createAdminProviderBootstrap(input: {
     try {
       const roles = await input.roles.list();
       const image = !roles.policy.imageModel ? pick(roles.imageCandidates ?? []) : null;
-      const memory = !roles.policy.systemModel ? pick(roles.candidates) : null;
+      const system = !roles.policy.systemModel ? pick(roles.candidates) : null;
       const pdf = !roles.policy.chatPdfModel
         ? pick(roles.documentCandidates.filter((model) => model.visionInput === "verified")) : null;
       const rerankerUpstream = rerankerPresetsForFamily(connection.family).find((preset) => preset.default)?.upstreamModelId;
@@ -67,17 +67,30 @@ export function createAdminProviderBootstrap(input: {
       const reranker = !roles.policy.rerankerModel
         ? pick(roles.rerankerCandidates.filter((model) => model.id === rerankerId)) : null;
       if (connection.family === "openrouter" && !roles.policy.rerankerModel && !reranker) result.state = "partial";
-      if (memory || pdf || reranker || image) {
+      if (system || pdf || reranker || image) {
         value.signal.throwIfAborted();
         await input.roles.update({ expectedVersion: roles.policy.version, userId: value.userId,
           ...(image ? { imageProviderModelId: image.id, imageParameters: {} } : {}),
-          ...(memory ? { providerModelId: memory.id, reasoningEffort: null } : {}),
+          ...(system ? { providerModelId: system.id, reasoningEffort: null } : {}),
           ...(pdf ? { chatPdfProviderModelId: pdf.id, chatPdfReasoningEffort: null } : {}),
           ...(reranker ? { rerankerProviderModelId: reranker.id } : {}) });
-        if (memory) result.defaults.push(`System model: ${memory.displayName}`);
+        if (system) result.defaults.push(`System model: ${system.displayName}`);
         if (pdf) result.defaults.push(`Page-image reader: ${pdf.displayName}`);
         if (reranker) result.defaults.push(`Reranking: ${reranker.displayName}`);
         if (image) result.defaults.push(`Image generation: ${image.displayName}`);
+      }
+    } catch {
+      value.signal.throwIfAborted();
+      result.state = "partial";
+    }
+    try {
+      const roles = await input.roles.list();
+      const memory = roles.memoryPolicy.assignmentSource === "unassigned" ? pick(roles.candidates) : null;
+      if (memory) {
+        value.signal.throwIfAborted();
+        await input.roles.updateMemory({ expectedVersion: roles.memoryPolicy.version,
+          providerModelId: memory.id, reasoningEffort: null, assignmentSource: "BOOTSTRAP", userId: value.userId });
+        result.defaults.push(`Memory: ${memory.displayName}`);
       }
     } catch {
       value.signal.throwIfAborted();

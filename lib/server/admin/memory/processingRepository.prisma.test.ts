@@ -6,8 +6,8 @@ import { readAdminMemoryProcessing } from "./processingRepository";
 import { textMessageContent } from "../../../domain/content";
 
 const resolution = vi.hoisted(() => ({ available: true }));
-vi.mock("../../providerRuntime/systemModelRole", () => ({
-  createSystemModelRoleResolver: () => ({ resolve: async () => ({ ok: resolution.available }) })
+vi.mock("../../providerRuntime/memoryUtilityModelRole", () => ({
+  createMemoryUtilityModelRoleResolver: () => ({ resolve: async () => ({ ok: resolution.available }) })
 }));
 
 describe("administrator Memory processing aggregates", () => {

@@ -75,35 +75,31 @@ export function createSystemModelRoleResolver(
         },
         where: { id: "installation" }
       });
-      if (!policy?.providerModelId) {
-        return { code: SYSTEM_MODEL_ABSENT, ok: false };
-      }
-      try {
-        const role = await loadRole(db, {
-          providerModelId: policy.providerModelId
-        });
-        if (!systemModelRoleEligible(role, "memory")) {
-          return { code: SYSTEM_MODEL_UNAVAILABLE, ok: false };
-        }
-        if (policy.reasoningEffort !== null) {
-          if (!supportsConfiguredReasoningEffort(role.snapshot.model, role.snapshot.providerFamily, policy.reasoningEffort)) {
-            return { code: SYSTEM_MODEL_UNAVAILABLE, ok: false };
-          }
-        }
-        return {
-          credentialScope: "installation",
-          ok: true,
-          policyVersion: policy.version,
-          providerModelId: policy.providerModelId,
-          reasoningEffort: policy.reasoningEffort,
-          role
-        };
-      } catch (error) {
-        if (error instanceof ProviderAdmissionError) {
-          return { code: SYSTEM_MODEL_UNAVAILABLE, ok: false };
-        }
-        throw error;
-      }
+      return resolveInstallationStructuredUtilityRole(db, policy, loadRole);
     }
   };
+}
+
+/** System routing and Memory have independent assignments but require the
+ * same exact installation credential and verified structured capabilities. */
+export async function resolveInstallationStructuredUtilityRole(
+  db: AdmissionPrisma,
+  policy: Readonly<{ providerModelId: string | null; reasoningEffort: string | null; version: number }> | null,
+  loadRole: RoleLoader = loadInstallationAnswerProviderRole
+): Promise<SystemModelRoleResolution> {
+  if (!policy?.providerModelId) return { code: SYSTEM_MODEL_ABSENT, ok: false };
+  try {
+    const role = await loadRole(db, { providerModelId: policy.providerModelId });
+    if (!systemModelRoleEligible(role, "memory") || policy.reasoningEffort !== null &&
+      !supportsConfiguredReasoningEffort(role.snapshot.model, role.snapshot.providerFamily, policy.reasoningEffort)) {
+      return { code: SYSTEM_MODEL_UNAVAILABLE, ok: false };
+    }
+    return {
+      credentialScope: "installation", ok: true, policyVersion: policy.version,
+      providerModelId: policy.providerModelId, reasoningEffort: policy.reasoningEffort, role
+    };
+  } catch (error) {
+    if (error instanceof ProviderAdmissionError) return { code: SYSTEM_MODEL_UNAVAILABLE, ok: false };
+    throw error;
+  }
 }

@@ -842,6 +842,7 @@ model User {
   smtpActivations                     SmtpControl[]                      @relation("SmtpControlActivator")
   smtpConfigurationEdits              SmtpControl[]                      @relation("SmtpControlUpdater")
   systemModelPolicyUpdates            SystemModelPolicy[]                @relation("SystemModelPolicyUpdater")
+  memoryUtilityModelPolicyUpdates     MemoryUtilityModelPolicy[]          @relation("MemoryUtilityModelPolicyUpdater")
   usageEvents                         UsageEvent[]
   workspacePolicyUpdates              WorkspacePolicy[]                  @relation("WorkspacePolicyUpdater")
   workspaceSecrets                    WorkspaceSecret[]
@@ -1142,7 +1143,7 @@ model SystemModelPolicy {
   chatPdfReasoningEffort   String?        @db.VarChar(32)
   chatPdfProcessingMode    ChatPdfProcessingMode @default(PREFER_CHAT_MODEL)
   chatPdfFallbackMethod    ChatPdfFallbackMethod @default(PAGE_IMAGES)
-  /// Memory semantic/action work and its shared structured utilities.
+  /// MCP semantic routing and the existing generative reranker compatibility path.
   providerModelId         String?
   rerankerProviderModelId String?
   /// Set only by an explicit administrator save or clear of the reranker role.
@@ -1165,6 +1166,29 @@ model SystemModelPolicy {
   @@index([chatTitleProviderModelId])
   @@index([chatPdfProviderModelId])
   @@index([chatPdfNativeProviderModelId])
+  @@index([updatedByUserId])
+}
+
+enum MemoryUtilityAssignmentSource {
+  UNASSIGNED
+  INHERITED
+  BOOTSTRAP
+  OPERATOR
+}
+
+model MemoryUtilityModelPolicy {
+  id               String                        @id
+  providerModelId  String?
+  reasoningEffort  String?                       @db.VarChar(32)
+  assignmentSource MemoryUtilityAssignmentSource @default(UNASSIGNED)
+  version          Int                          @default(1)
+  updatedByUserId  String?
+  createdAt        DateTime                     @default(now())
+  updatedAt        DateTime                     @updatedAt
+  providerModel    ProviderModel?               @relation("MemoryUtilityProviderModel", fields: [providerModelId], references: [id], onDelete: Restrict)
+  updatedBy        User?                        @relation("MemoryUtilityModelPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([providerModelId])
   @@index([updatedByUserId])
 }
 
@@ -2363,6 +2387,7 @@ model ProviderModel {
   chatPdfNativeRoles          SystemModelPolicy[]             @relation("ChatPdfNativeProviderModel")
   chatPdfRoles                SystemModelPolicy[]             @relation("ChatPdfProviderModel")
   systemUtilityRoles          SystemModelPolicy[]             @relation("SystemUtilityProviderModel")
+  memoryUtilityRoles          MemoryUtilityModelPolicy[]       @relation("MemoryUtilityProviderModel")
   imageGenerationRoles       SystemModelPolicy[]             @relation("ImageGenerationProviderModel")
   memoryRerankerRoles         SystemModelPolicy[]             @relation("MemoryRerankerProviderModel")
   userDefaults                UserSettings[]                  @relation("UserDefaultProviderModel")

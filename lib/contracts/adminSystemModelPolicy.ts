@@ -63,7 +63,15 @@ export type AdminRerankerRouteEntry = AdminRerankerModelCandidate & {
   role: "fallback" | "primary";
 };
 
+export type AdminMemoryUtilityModelPolicy = {
+  assignmentSource: "unassigned" | "inherited" | "bootstrap" | "operator";
+  model: (AdminSystemModelCandidate & { available: boolean }) | null;
+  reasoningEffort: string | null;
+  version: number;
+};
+
 export type AdminSystemModelPolicyCatalog = {
+  memoryPolicy: AdminMemoryUtilityModelPolicy;
   candidates: AdminSystemModelCandidate[];
   titleCandidates: AdminSystemModelCandidate[];
   documentCandidates: AdminSystemModelCandidate[];
@@ -174,6 +182,15 @@ export function decodeAdminSystemModelPolicyResponse(
 ): AdminSystemModelPolicyResponse | null {
   if (!record(value) || !record(value.systemModelPolicy)) return null;
   const catalog = value.systemModelPolicy;
+  const memory = catalog.memoryPolicy;
+  if (!record(memory) ||
+    typeof memory.assignmentSource !== "string" ||
+    !["unassigned", "inherited", "bootstrap", "operator"].includes(memory.assignmentSource) ||
+    memory.assignmentSource === "unassigned" && memory.model !== null ||
+    !Number.isSafeInteger(memory.version) || Number(memory.version) < 1 ||
+    !(memory.reasoningEffort === null || boundedText(memory.reasoningEffort, 32)) ||
+    (memory.model === null ? memory.reasoningEffort !== null :
+      !record(memory.model) || typeof memory.model.available !== "boolean" || !candidate(memory.model))) return null;
   const ineligible = decodeIneligible(catalog.ineligible);
   if (!ineligible) return null;
   if (!Array.isArray(catalog.candidates) || !catalog.candidates.every((value) =>
@@ -244,6 +261,12 @@ export function decodeAdminSystemModelPolicyResponse(
 
   return {
     systemModelPolicy: {
+      memoryPolicy: {
+        assignmentSource: memory.assignmentSource as AdminMemoryUtilityModelPolicy["assignmentSource"],
+        model: memory.model as AdminMemoryUtilityModelPolicy["model"],
+        reasoningEffort: memory.reasoningEffort as string | null,
+        version: Number(memory.version)
+      },
       candidates: catalog.candidates,
       titleCandidates: catalog.titleCandidates,
       documentCandidates: catalog.documentCandidates,

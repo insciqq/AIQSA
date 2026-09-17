@@ -81,7 +81,7 @@ function clientFixture(input: Readonly<{
         id: "private-system-model"
       }])
     },
-    systemModelPolicy: {
+    memoryUtilityModelPolicy: {
       findUnique: vi.fn().mockResolvedValue({ providerModelId: "private-system-model" })
     },
     userMemorySettings: {
