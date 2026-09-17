@@ -279,6 +279,7 @@ describe("list copy", () => {
       policy: { defaultModel: { ...candidate, available: true } }
     } as unknown as AdminModelPolicyCatalog;
     const systemModelPolicy = {
+      memoryPolicy: { assignmentSource: "unassigned", model: null, reasoningEffort: null, version: 1 },
       candidates: [],
       titleCandidates: [], documentCandidates: [],
       policy: {
@@ -339,6 +340,7 @@ describe("list copy", () => {
     expect(deriveProviderUsage([openai], { knowledge: null, modelPolicy: null, search: null, systemModelPolicy: null }).size).toBe(0);
 
     expect(providerSubtitle(openai, usage)).toBe("Default chat provider · 1 Search source");
+    expect(providerSubtitle(openai, new Map([[openai.id, ["Default chat", "Memory"]]]))).toBe("Default chat provider");
     expect(providerSubtitle(openrouter, usage)).toBe("Qwen3 Embedding 8B, Voyage Rerank");
   });
 

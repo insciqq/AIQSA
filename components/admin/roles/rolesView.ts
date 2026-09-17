@@ -52,6 +52,7 @@ export function deploymentLabeller(
         ...catalog.rerankerCandidates,
         ...Object.values(catalog.ineligible).flat(),
         ...(catalog.policy.systemModel ? [catalog.policy.systemModel] : []),
+        ...(catalog.memoryPolicy.model ? [catalog.memoryPolicy.model] : []),
         ...(catalog.policy.chatTitleModel ? [catalog.policy.chatTitleModel] : []),
         ...(catalog.policy.chatPdfNativeModel ? [catalog.policy.chatPdfNativeModel] : []),
         ...(catalog.policy.chatPdfModel ? [catalog.policy.chatPdfModel] : []),

@@ -16,6 +16,7 @@ import {
   deriveAdminProviderQuickSetupStateTokenKey
 } from "./quickSetupService";
 import { approvedRerankerDeployments } from "./approvedRerankers";
+import type { NativeRouteDiscovery } from "./nativeRouting";
 
 const actor = { sessionId: "session-admin", userId: "admin" };
 const checkedAt = new Date("2026-07-26T10:00:00.000Z");
@@ -48,6 +49,7 @@ function inspection(
 function fixture(input: {
   inspections?: Partial<Record<AdminProviderQuickSetupProviderId, AdminProviderQuickSetupInspection>>;
   modelIds?: string[];
+  nativeRoutes?: Record<string, NativeRouteDiscovery>;
   pdfProbeResults?: Record<string, "failed" | "throw" | "verified">;
   rerankerOutcomes?: Record<string, "available" | "throw" | "unavailable">;
   repositoryCommit?: AdminProviderQuickSetupRepository["commit"];
@@ -89,7 +91,7 @@ function fixture(input: {
   };
   const test = vi.fn(async () => {
     order.push("network");
-    return { method: "models_catalog" as const, modelIds: input.modelIds ?? [] };
+    return { method: "models_catalog" as const, modelIds: input.modelIds ?? [], ...(input.nativeRoutes ? { nativeRoutes: input.nativeRoutes } : {}) };
   });
   const searchTest = vi.fn(async () => {
     order.push("search");
@@ -164,6 +166,20 @@ async function expectedState(
 }
 
 describe("provider Quick setup service", () => {
+  it("commits the discovered native default and its exact route evidence", async () => {
+    const upstream = "anthropic/claude-opus-5";
+    const value = fixture({ modelIds: [upstream], nativeRoutes: { [upstream]: { available: true, provider: "anthropic" } } });
+    await value.service.setup({ actor, request: { expectedState: await expectedState(value.service, "openrouter"),
+      provider: "openrouter", secret: "synthetic-native-route" } });
+    expect(value.commit).toHaveBeenCalledWith(expect.objectContaining({
+      candidate: expect.objectContaining({ configuration: expect.objectContaining({
+        openRouterRouting: { mode: "only_selected", providers: ["anthropic"] },
+        defaultParams: expect.objectContaining({ provider: expect.objectContaining({ only: ["anthropic"], order: ["anthropic"], allowFallbacks: false }) })
+      }) }),
+      modelChecks: [expect.objectContaining({ evidence: expect.objectContaining({ selectedProviders: ["anthropic"] }) })]
+    }));
+  });
+
   it("derives a deterministic domain-separated state-token key", () => {
     const derived = deriveAdminProviderQuickSetupStateTokenKey(sessionSecret);
     const otherDomain = createHmac("sha256", Buffer.from(sessionSecret, "utf8"))

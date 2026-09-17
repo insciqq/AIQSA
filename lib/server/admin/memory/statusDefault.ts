@@ -1,6 +1,9 @@
 import { prisma } from "../../prisma";
 import { defaultMemoryRebuildService } from "../../memory/rebuild/defaultRebuild";
-import { kickDefaultMemoryCoordinator } from "../../memory/coordinator/defaultCoordinator";
+import {
+  defaultMemoryCoordinatorRepository,
+  kickDefaultMemoryCoordinator
+} from "../../memory/coordinator/defaultCoordinator";
 import { seedMemoryHistoryBackfill } from "../../memory/history/backfill";
 import { withLockedMemoryTransaction } from "../../memory/persistence/transaction";
 import { createPrismaAdminMemoryStatusRepository } from "./statusRepository";
@@ -35,6 +38,11 @@ const repository = createPrismaAdminMemoryStatusRepository(
       expectedSettingsRevision: candidate.expectedSettingsRevision,
       operation: candidate.operation
     });
+  },
+  async ({ limit, now }) => {
+    const recovered = await defaultMemoryCoordinatorRepository.recoverEligibleJobs({ limit, now });
+    if (recovered > 0) kickDefaultMemoryCoordinator();
+    return recovered;
   }
 );
 

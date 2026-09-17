@@ -9,6 +9,8 @@ import { imageModelConfiguration } from "@/lib/domain/imageModels";
 import type { ImageGenerationParameters, ImageParameterDefinitions } from "@/lib/contracts/imageGeneration";
 import type { ModelForm } from "./modelSheetView";
 import { ImageParameterFields } from "./ImageParameterFields";
+import { UiV2Button } from "@/components/ui-v2";
+import { resolveOpenRouterNativeProvider } from "@/lib/domain/openRouterNativeRouting";
 
 function sharedParameters(endpoints: readonly AdminImageDiscoveredEndpoint[]): ImageParameterDefinitions {
   const common = { ...endpoints[0]?.image.parameters };
@@ -32,8 +34,9 @@ export function ImageModelFields({ connection, credential, form, disabled, disco
 }) {
   const [requested, setRequested] = useState(discoverOnMount);
   const [catalogState, setCatalogState] = useState<{ key: string; models: AdminImageDiscoveredModel[]; error: string | null } | null>(null);
-  const [endpointState, setEndpointState] = useState<{ key: string; endpoints: AdminImageDiscoveredEndpoint[] } | null>(null);
+  const [endpointState, setEndpointState] = useState<{ key: string; endpoints: AdminImageDiscoveredEndpoint[]; error: boolean } | null>(null);
   const [revision, setRevision] = useState(0);
+  const [customizing, setCustomizing] = useState(false);
   const credentialId = credential?.id;
   const identity = `${connection.id}:${connection.draftVersion}:${connection.activeVersion}:${credentialId}:${credential?.draftVersion}:${credential?.activeVersion?.id}`;
   const catalogKey = `${identity}:${revision}`;
@@ -55,14 +58,19 @@ export function ImageModelFields({ connection, credential, form, disabled, disco
     let current = true;
     if (!requested || connection.family !== "openrouter" || !credentialId || !form.upstreamModelId) return;
     void discoverAdminImageEndpoints(connection.id, credentialId, form.upstreamModelId).then((result) => {
-      if (current) setEndpointState({ key: endpointKey, endpoints: result.ok ? result.data : [] });
+      if (current) setEndpointState({ key: endpointKey, endpoints: result.ok ? result.data : [], error: !result.ok });
     });
     return () => { current = false; };
-  }, [connection.family, connection.id, credentialId, form.upstreamModelId, endpointKey, requested]);
+  }, [connection.family, connection.id, credentialId, form.upstreamModelId, endpointKey, requested, revision]);
   const parameters = useMemo(() => {
     try { return JSON.parse(form.defaultParamsText) as ImageGenerationParameters; } catch { return {}; }
   }, [form.defaultParamsText]);
   const selected = catalog.find((entry) => entry.id === form.upstreamModelId);
+  const native = resolveOpenRouterNativeProvider({ modelId: form.upstreamModelId,
+    endpoints: endpoints.map((endpoint) => ({ tag: endpoint.tag, supportedParameters: [] })) });
+  const nativeSelected = !customizing && native.available && form.openRouterRoutingMode === "only_selected" &&
+    form.providerTags.length === 1 && form.providerTags[0] === native.provider;
+  const routingChoice = nativeSelected ? "native" : form.openRouterRoutingMode;
   return <div className="flex min-w-0 flex-col gap-4">
     <AdminSearchablePicker label="Image model" items={catalog.map((entry) => ({ id: entry.id, label: entry.name,
       secondaryText: `${entry.id}${entry.source === "preset" ? " · requires a capability check" : ""}` }))}
@@ -90,10 +98,23 @@ export function ImageModelFields({ connection, credential, form, disabled, disco
     </> : null}
     {connection.family === "openrouter" ? <fieldset className="min-w-0" onFocus={() => setRequested(true)}>
       <legend className="mb-1 text-xs font-medium text-ink-secondary">Image providers</legend>
-      <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={disabled} checked={form.openRouterRoutingMode === "automatic"}
-        onChange={(event) => onChange({ ...form, openRouterRoutingMode: event.currentTarget.checked ? "automatic" : "only_selected",
-          providerTags: [], image: selected?.image ?? form.image, defaultParamsText: "{}" })} />Automatic routing</label>
-      {form.openRouterRoutingMode === "only_selected" ? <div className="mt-2 flex flex-col gap-2">
+      <div className="flex flex-wrap gap-x-4 gap-y-2">{([ ["native", "Native · recommended"], ["automatic", "Automatic"], ["only_selected", "Custom providers"] ] as const).map(([mode, label]) =>
+        <label className="flex min-h-11 items-center gap-2 text-sm" key={mode}><input type="radio" name="image-routing" disabled={disabled || mode === "native" && !native.available}
+          checked={routingChoice === mode} onChange={() => {
+            setCustomizing(mode === "only_selected");
+            const tags = mode === "native" && native.available ? [native.provider] : [];
+            onChange({ ...form, openRouterRoutingMode: mode === "native" ? "only_selected" : mode, providerTags: tags,
+              image: tags.length ? { profile: "openrouter", parameters: sharedParameters(endpoints.filter((endpoint) => tags.includes(endpoint.tag))) } : selected?.image ?? form.image,
+              defaultParamsText: "{}" });
+          }} />{label}</label>)}</div>
+      <p className="mt-2 text-xs leading-5 text-ink-muted">Native uses the model’s publisher only. Automatic may use other providers with different latency and availability.</p>
+      {!requested && credentialId ? <UiV2Button tone="ghost" type="button" disabled={disabled} onClick={() => setRequested(true)}>Find native provider</UiV2Button> : null}
+      {requested && endpointState?.key === endpointKey && !native.available ? <p className="mt-2 text-xs text-ink-muted" role="status">
+        {endpointState.error ? "Could not load image providers." : "No native provider is confirmed. Keep Automatic or choose custom providers."}
+        {endpointState.error ? <UiV2Button tone="ghost" type="button" disabled={disabled} onClick={() => setRevision((value) => value + 1)}>Retry discovery</UiV2Button> : null}
+      </p> : null}
+      {nativeSelected ? <p className="mt-2 break-all text-xs text-ink-muted">{native.provider}</p> : null}
+      {form.openRouterRoutingMode === "only_selected" && !nativeSelected ? <div className="mt-2 flex flex-col gap-2">
         {endpoints.map((endpoint) => <label className="flex items-center gap-2 text-sm" key={endpoint.tag}>
           <input type="checkbox" disabled={disabled} checked={form.providerTags.includes(endpoint.tag)} onChange={(event) => {
             const tags = event.currentTarget.checked ? [...form.providerTags, endpoint.tag] : form.providerTags.filter((tag) => tag !== endpoint.tag);

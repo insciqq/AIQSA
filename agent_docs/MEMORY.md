@@ -13,7 +13,9 @@ Respect operator-defined scope and budgets; do not invent experiment, retry, eva
 
 ## Product And Authority
 
-All five Personal Memory preferences are enabled at account creation. Later user choices remain authoritative across login, bootstrap and upgrades. Assigning a working System Model with the required verified capabilities authorizes the corresponding Memory operations; there is no separate administrator or user egress consent. Each dispatch still validates the exact configured model, connection, credential and role. Model changes affect future admissions and never retarget accepted executions. Optional embedding and reranking failures preserve the supported local fallback; an explicit user pause remains authoritative.
+All Memory preferences default on; upgrades preserve choices and pauses. Independent, verified Memory Utility Model assignment authorizes generation without extra egress consent. Dispatch revalidates exact model/connection/credential/role authority. Migration copies the former System model/effort/revision once; subsequent System edits cannot change Memory. Configuration affects future admissions only. Embeddings/reranking retain separate authority and fallback.
+
+Recommendations require working-case evidence and current capabilities/credentials/budget. One-time adoption may replace inherited/default bindings, preserving explicit Memory choices and clears. Without a qualified target, bootstrap requires configuration. Small qualification sets do not establish benchmark parity.
 
 Personal Memory is user-global. Saved Memories remain directly manageable while Memory is paused; pausing stops new use and work without deleting retained data. Archive is organization only. Resume admits only messages after its server-owned cutoff, never automatic historical backfill. Temporary and Project chats create or receive no Memory context, sources, bindings, counters or jobs. Legacy non-global and Project data is not silently broadened into Personal Memory. Public shares strip the entire private Memory surface.
 

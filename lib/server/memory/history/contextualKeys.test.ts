@@ -10,6 +10,7 @@ import {
   MEMORY_RECALL_ROUND_PROJECTION_VERSION
 } from "./rounds";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
+import { MemoryStructuredOutputProviderError } from "../execution/structuredClassifier";
 
 const execute = vi.hoisted(() => vi.fn());
 vi.mock("../execution", async (importOriginal) => ({
@@ -86,7 +87,9 @@ async function generate(
     };
   });
   const client = {
+    $queryRaw: vi.fn(async () => [{ id: "private-contextual-job" }]),
     memoryExecutionBinding: {
+      findMany: vi.fn(async () => []),
       aggregate: vi.fn(async () => ({ _max: { ordinal: null } }))
     }
   } as unknown as PrismaClient;
@@ -156,6 +159,8 @@ describe("contextual Memory semantic grounding", () => {
 
   it.each([
     [{ error: new Error("upstream unavailable") }, "PROVIDER_UNAVAILABLE"],
+    [{ error: new MemoryStructuredOutputProviderError(null, { outputTokens: 4096, reasoningTokens: 4096 },
+      { cause: Object.assign(new Error("bounded failure"), { code: "structured_output_output_limit_exceeded" }) }) }, "PROVIDER_OUTPUT_LIMIT"],
     [{ output: { decisions: [] } }, "GROUNDING_INVALID"]
   ] as const)("keeps raw history when review fails %#", async (review, reason) => {
     const source = round("I prefer tea.", "en");

@@ -63,7 +63,27 @@ export type AdminRerankerRouteEntry = AdminRerankerModelCandidate & {
   role: "fallback" | "primary";
 };
 
+export type AdminMemoryModelRecommendation = {
+  id: string;
+  modelName: string;
+  displayName: string;
+  providerModelId: string | null;
+  connectionId: string | null;
+  reasoningEffort: string;
+  unavailableReason: "not_installed" | "verification_required" | "reasoning_unavailable" | "budget_too_small" | null;
+  evidence: { revision: string; passedCases: number; totalCases: number; latencyP50Ms: number; latencyP95Ms: number };
+};
+
+export type AdminMemoryUtilityModelPolicy = {
+  assignmentSource: "unassigned" | "inherited" | "bootstrap" | "operator";
+  model: (AdminSystemModelCandidate & { available: boolean }) | null;
+  reasoningEffort: string | null;
+  version: number;
+  recommendations?: AdminMemoryModelRecommendation[];
+};
+
 export type AdminSystemModelPolicyCatalog = {
+  memoryPolicy: AdminMemoryUtilityModelPolicy;
   candidates: AdminSystemModelCandidate[];
   titleCandidates: AdminSystemModelCandidate[];
   documentCandidates: AdminSystemModelCandidate[];
@@ -145,6 +165,21 @@ function imageCandidate(value: unknown): value is AdminImageModelCandidate {
   } catch { return false; }
 }
 
+function memoryRecommendation(value: unknown): value is AdminMemoryModelRecommendation {
+  if (!record(value) || !boundedText(value.id, 128) || !boundedText(value.modelName, 160) ||
+    !boundedText(value.displayName, 160) || !boundedText(value.reasoningEffort, 32) ||
+    !(value.providerModelId === null || boundedText(value.providerModelId, 256)) ||
+    !(value.connectionId === null || boundedText(value.connectionId, 256)) ||
+    (value.providerModelId === null) !== (value.connectionId === null) ||
+    !(value.unavailableReason === null || typeof value.unavailableReason === "string" && ["not_installed", "verification_required", "reasoning_unavailable", "budget_too_small"].includes(value.unavailableReason)) ||
+    value.unavailableReason === null && value.providerModelId === null || !record(value.evidence)) return false;
+  const evidence = value.evidence;
+  return boundedText(evidence.revision, 128) &&
+    [evidence.passedCases, evidence.totalCases, evidence.latencyP50Ms, evidence.latencyP95Ms]
+      .every((entry) => Number.isSafeInteger(entry) && Number(entry) > 0 && Number(entry) <= 1_000_000) &&
+    evidence.passedCases === evidence.totalCases && Number(evidence.latencyP95Ms) >= Number(evidence.latencyP50Ms);
+}
+
 function ineligibleCandidate(value: unknown): value is AdminSystemModelIneligibleCandidate {
   return candidate(value) &&
     ((value as Record<string, unknown>).requirement === undefined ||
@@ -174,6 +209,17 @@ export function decodeAdminSystemModelPolicyResponse(
 ): AdminSystemModelPolicyResponse | null {
   if (!record(value) || !record(value.systemModelPolicy)) return null;
   const catalog = value.systemModelPolicy;
+  const memory = catalog.memoryPolicy;
+  if (!record(memory) ||
+    typeof memory.assignmentSource !== "string" ||
+    !["unassigned", "inherited", "bootstrap", "operator"].includes(memory.assignmentSource) ||
+    memory.assignmentSource === "unassigned" && memory.model !== null ||
+    !Number.isSafeInteger(memory.version) || Number(memory.version) < 1 ||
+    !(memory.reasoningEffort === null || boundedText(memory.reasoningEffort, 32)) ||
+    (memory.model === null ? memory.reasoningEffort !== null :
+      !record(memory.model) || typeof memory.model.available !== "boolean" || !candidate(memory.model))) return null;
+  if (memory.recommendations !== undefined && (!Array.isArray(memory.recommendations) ||
+    memory.recommendations.length > 256 || !memory.recommendations.every(memoryRecommendation))) return null;
   const ineligible = decodeIneligible(catalog.ineligible);
   if (!ineligible) return null;
   if (!Array.isArray(catalog.candidates) || !catalog.candidates.every((value) =>
@@ -244,6 +290,13 @@ export function decodeAdminSystemModelPolicyResponse(
 
   return {
     systemModelPolicy: {
+      memoryPolicy: {
+        assignmentSource: memory.assignmentSource as AdminMemoryUtilityModelPolicy["assignmentSource"],
+        model: memory.model as AdminMemoryUtilityModelPolicy["model"],
+        reasoningEffort: memory.reasoningEffort as string | null,
+        ...(memory.recommendations === undefined ? {} : { recommendations: memory.recommendations as AdminMemoryModelRecommendation[] }),
+        version: Number(memory.version)
+      },
       candidates: catalog.candidates,
       titleCandidates: catalog.titleCandidates,
       documentCandidates: catalog.documentCandidates,

@@ -7,6 +7,7 @@ export const MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS = Object.freeze({
   GROUNDING_INVALID: "contextualFallbackGroundingInvalid",
   NOT_ELIGIBLE: "contextualFallbackNotEligible",
   PROVIDER_OUTPUT_INVALID: "contextualFallbackProviderOutputInvalid",
+  PROVIDER_OUTPUT_LIMIT: "contextualFallbackProviderOutputLimit",
   PROVIDER_UNAVAILABLE: "contextualFallbackProviderUnavailable",
   SAFETY_REDACTED_OR_REJECTED: "contextualFallbackSafetyRedactedOrRejected",
   SEARCH_TEXT_BUDGET_EXCEEDED: "contextualFallbackSearchTextBudgetExceeded",

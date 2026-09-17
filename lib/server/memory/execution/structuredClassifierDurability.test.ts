@@ -2,7 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MemoryTransaction } from "../persistence/transaction";
 import { memoryExecutionSha256 } from "./canonical";
-import { executeGovernedMemoryStructuredOutput } from "./structuredClassifier";
+import { executeGovernedMemoryStructuredOutput, MemoryStructuredOutputProviderError } from "./structuredClassifier";
 
 const { bind, start, settle, settleDurable } = vi.hoisted(() => ({
   bind: vi.fn(), start: vi.fn(), settle: vi.fn(), settleDurable: vi.fn()
@@ -61,6 +61,23 @@ function input() {
 }
 
 describe("governed structured output durable settlement", () => {
+  it.each([false, true])("retains exhaustion accounting without retry, with cancellation taking precedence (%s)", async (cancelled) => {
+    const request = input();
+    const failure = new MemoryStructuredOutputProviderError("provider-response", {
+      inputTokens: 20, outputTokens: 4096, reasoningTokens: 4096, totalTokens: 4116
+    }, { cause: Object.assign(new Error("bounded failure"), { code: "structured_output_output_limit_exceeded" }) });
+    request.provider.run.mockRejectedValue(failure);
+    const controller = new AbortController();
+    if (cancelled) controller.abort();
+    await expect(executeGovernedMemoryStructuredOutput({ ...request, signal: controller.signal })).rejects.toBe(failure);
+    expect(settle).toHaveBeenCalledWith("owner", "binding", expect.objectContaining({
+      state: cancelled ? "CANCELLED" : "FAILED",
+      errorCode: cancelled ? "memory_classifier_cancelled" : "memory_classifier_output_limit_exceeded",
+      usage: expect.objectContaining({ totalTokens: 4116, reasoningTokens: 4096 })
+    }));
+    expect(request.provider.run).toHaveBeenCalledOnce();
+    expect(settleDurable).not.toHaveBeenCalled();
+  });
   it("stores only the decoded output in the same successful settlement as provider usage", async () => {
     const request = input();
     const persistResult = vi.fn().mockResolvedValue(undefined);

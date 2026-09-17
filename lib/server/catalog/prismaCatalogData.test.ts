@@ -132,6 +132,8 @@ function providerModel(options: ProviderModelFixtureOptions = {}): CatalogProvid
     id,
     inputTokenPriceMicros: 0,
     modelClass: "answer",
+    nativeRoutingAdoptionVersion: 1,
+    nativeRoutingAdoptionReason: null,
     modelId: "retired-upstream",
     outputTokenPriceMicros: 0,
     provider: "retired-family",

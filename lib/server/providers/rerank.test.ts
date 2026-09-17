@@ -299,6 +299,19 @@ describe("OpenRouter reranker adapter", () => {
     })).rejects.toMatchObject({ code: "rerank_response_model_mismatch" });
   });
 
+  it("recognizes Voyage's exact OpenRouter display name only on the selected Voyage route", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response({ model: "rerank-2.5", provider: "VoyageAI by MongoDB" }));
+    const native = createOpenRouterRerankAdapter({ connection, model: rerankerModel("voyageai/rerank-2.5", ["voyageai"]),
+      network: { fetchFn }, secret: "synthetic-key" });
+    const request = { documents: [{ handle: "a", text: "first" }, { handle: "b", text: "second" }], query: "query" };
+    await expect(native.rerank(request)).resolves.toMatchObject({ provider: "VoyageAI by MongoDB", scores: [{ index: 1 }, { index: 0 }] });
+    fetchFn.mockResolvedValueOnce(response({ model: "rerank-2.5", provider: "VoyageAI by MongoDB proxy" }));
+    await expect(native.rerank(request)).rejects.toMatchObject({ code: "rerank_response_provider_mismatch" });
+    const other = createOpenRouterRerankAdapter({ connection, model: rerankerModel("voyageai/rerank-2.5", ["cohere"]),
+      network: { fetchFn }, secret: "synthetic-key" });
+    await expect(other.rerank(request)).rejects.toMatchObject({ code: "rerank_response_provider_mismatch" });
+  });
+
   it("rejects a response from a provider outside the governed routing roster", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => response({
       provider: "Fireworks",

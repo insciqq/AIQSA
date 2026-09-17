@@ -175,6 +175,18 @@ describe("OpenAI-compatible embeddings", () => {
     });
   });
 
+  it("disables fallback for a single selected provider in both embedding modes", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => providerResponse([vector(4_096)]));
+    const adapter = createOpenAICompatibleEmbeddingAdapter({ connection: openRouterConnection,
+      model: { ...embeddingModel(), openRouterRouting: { mode: "only_selected", providers: ["nebius"] } },
+      network: { fetchFn }, secret: "synthetic-key" });
+    await adapter.embed({ mode: "document", texts: ["one"] });
+    await adapter.embed({ mode: "query", texts: ["one"] });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    for (const [, request] of fetchFn.mock.calls) expect(JSON.parse(String(request?.body)).provider)
+      .toEqual({ allow_fallbacks: false, data_collection: "deny", only: ["nebius"], order: ["nebius"] });
+  });
+
   it("keeps a successful interactive query on the primary provider", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => providerResponse([vector(4_096)]));
     const adapter = createOpenAICompatibleEmbeddingAdapter({

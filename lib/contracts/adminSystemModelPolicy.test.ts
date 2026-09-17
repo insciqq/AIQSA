@@ -3,6 +3,7 @@ import { decodeAdminSystemModelPolicyResponse, initialChatTitleReasoningEffort }
 
 const response = {
   systemModelPolicy: {
+    memoryPolicy: { assignmentSource: "unassigned", model: null, reasoningEffort: null, version: 1 },
     candidates: [{
       connectionDisplayName: "Provider",
       connectionId: "connection-1",
@@ -34,6 +35,30 @@ const response = {
 };
 
 describe("administrator system model policy contract", () => {
+  it("rejects forged or malformed recommendation readiness and qualification evidence", () => {
+    const entry = { id: "terra-low", modelName: "Terra", displayName: "My model", providerModelId: "model-1", connectionId: "connection-1",
+      reasoningEffort: "low", unavailableReason: null, evidence: { revision: "test", passedCases: 5, totalCases: 5, latencyP50Ms: 3000, latencyP95Ms: 14000 } };
+    const decode = (value: unknown) => decodeAdminSystemModelPolicyResponse({ systemModelPolicy: {
+      ...response.systemModelPolicy, memoryPolicy: { ...response.systemModelPolicy.memoryPolicy, recommendations: [value] }
+    } });
+    expect(decode(entry)).not.toBeNull();
+    for (const patch of [{ providerModelId: null, connectionId: null }, { unavailableReason: ["not_installed"] },
+      { evidence: { ...entry.evidence, passedCases: 4 } }, { evidence: { ...entry.evidence, latencyP95Ms: 1 } }]) {
+      expect(decode({ ...entry, ...patch })).toBeNull();
+    }
+  });
+  it.each([
+    undefined,
+    { assignmentSource: ["operator"], model: null, reasoningEffort: null, version: 1 },
+    { assignmentSource: "unassigned", model: { ...response.systemModelPolicy.candidates[0], available: true }, reasoningEffort: null, version: 1 },
+    { assignmentSource: "guessed", model: null, reasoningEffort: null, version: 1 },
+    { assignmentSource: "operator", model: null, reasoningEffort: "high", version: 1 },
+    { assignmentSource: "operator", model: null, reasoningEffort: null, version: 0 },
+    { assignmentSource: "inherited", model: { ...response.systemModelPolicy.candidates[0], available: "yes" }, reasoningEffort: null, version: 1 }
+  ])("rejects missing or malformed independent Memory policy", (memoryPolicy) => {
+    expect(decodeAdminSystemModelPolicyResponse({ systemModelPolicy: { ...response.systemModelPolicy, memoryPolicy } })).toBeNull();
+  });
+
   it("decodes the catalog-safe policy projection", () => {
     expect(decodeAdminSystemModelPolicyResponse(response)).toEqual(response);
   });

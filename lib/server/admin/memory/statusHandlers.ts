@@ -1,6 +1,6 @@
 import {
   decodeAdminMemoryAdmissionTimeoutInput,
-  decodeAdminMemoryRebuildInput
+  decodeAdminMemoryActionInput
 } from "../../../contracts/adminMemory";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
@@ -67,11 +67,20 @@ export function createAdminMemoryStatusHandlers(input: Readonly<{
         bodyError.headers.set("vary", "Cookie");
         return bodyError;
       }
-      if (!decodeAdminMemoryRebuildInput(value)) {
-        return json({ error: "memory_admin_rebuild_input_invalid" }, 400);
+      const action = decodeAdminMemoryActionInput(value);
+      if (!action) {
+        const requestedAction = typeof value === "object" && value !== null &&
+          "action" in value ? (value as { action?: unknown }).action : undefined;
+        return json({ error: requestedAction === "REBUILD_REQUIRED"
+          ? "memory_admin_rebuild_input_invalid"
+          : "memory_admin_action_input_invalid" }, 400);
       }
       try {
-        return json({ memory: await input.service.rebuild() }, 202);
+        return json({
+          memory: action.action === "REBUILD_REQUIRED"
+            ? await input.service.rebuild()
+            : await input.service.recover()
+        }, 202);
       } catch (error) {
         return failure(error);
       }

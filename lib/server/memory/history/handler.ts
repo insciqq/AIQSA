@@ -18,6 +18,10 @@ import {
 } from "../execution";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import {
+  clearMemoryHistoryExecutionResults,
+  prepareMemoryHistoryExecutionRecovery
+} from "./execution";
+import {
   lockMemorySettings,
   type LockedMemorySettings
 } from "../persistence/transaction";
@@ -60,6 +64,8 @@ import {
 } from "./repository";
 
 export type MemoryHistoryIndexHandlerDependencies = Readonly<{
+  prepareRecovery?: (userId: string, jobId: string) => Promise<boolean>;
+  clearResults?: (tx: Prisma.TransactionClient, userId: string, jobId: string, now: Date) => Promise<void>;
   authorizeResults?: (
     tx: Prisma.TransactionClient,
     settings: LockedMemorySettings,
@@ -81,7 +87,7 @@ const MEMORY_CHAT_DIGEST_OUTPUT_DEGRADED_POLICY_VERSION =
 
 function degradedMemoryChatDigest(
   reason: "aggregate_limit" | "contract" | "invalid" | "safety_rejected" |
-    "unavailable"
+    "unavailable" | "output_limit"
 ): Readonly<{
   generated: MemoryChatDigestGenerationResult;
   stage: string;
@@ -478,6 +484,7 @@ export function createMemoryHistoryIndexHandler(
         return staleExecutionResult(claim.id, prepared.decision.errorCode);
       }
       if (context.signal.aborted) throw context.signal.reason;
+      const recoveryOnly = await dependencies.prepareRecovery?.(claim.userId, claim.id) ?? false;
       await context.setStage("safety_classification");
       let plan: MemoryHistoryIndexPlan;
       let completionStage = "lexical_ready";
@@ -502,12 +509,14 @@ export function createMemoryHistoryIndexHandler(
               contextualTargets,
               {
                 jobId: claim.id,
+                recoveryOnly,
                 signal: context.signal,
                 userId: claim.userId
               }
             );
           } catch (error) {
             if (context.signal.aborted) throw context.signal.reason;
+            if (error instanceof MemoryCoordinatorError) throw error;
             generated = {
               executions: [],
               fallbackDiagnostics: contextualTargets.map((roundId) => ({
@@ -533,6 +542,7 @@ export function createMemoryHistoryIndexHandler(
               plan.chunks,
               {
                 jobId: claim.id,
+                recoveryOnly,
                 signal: context.signal,
                 timeZone: plan.timeZone,
                 userId: claim.userId
@@ -545,7 +555,7 @@ export function createMemoryHistoryIndexHandler(
               : error instanceof MemoryChatDigestError
                 ? error.code === "memory_chat_digest_unavailable"
                   ? "unavailable"
-                  : "invalid"
+                  : error.code === "memory_chat_digest_output_limit" ? "output_limit" : "invalid"
                 : null;
             if (!reason) throw error;
             const degraded = degradedMemoryChatDigest(reason);
@@ -578,6 +588,9 @@ export function createMemoryHistoryIndexHandler(
           }, null);
         }
         await context.setStage("lexical_apply");
+        if (recoveryOnly && (plan.work.contextualRoundsFallback > 0 || !plan.digest)) {
+          completionStage = "lexical_ready:recovery_raw_fallback";
+        }
         return {
           acceptedResultHash: plan.resultHash,
           apply: async (tx, acceptedClaim) => {
@@ -604,6 +617,7 @@ export function createMemoryHistoryIndexHandler(
               plan,
               context.now()
             );
+            await dependencies.clearResults?.(tx, acceptedClaim.userId, acceptedClaim.id, context.now());
           },
           operationalCounters: historyOperationalCounters(plan),
           stage: completionStage
@@ -634,6 +648,9 @@ export function createPrismaMemoryHistoryIndexHandler(
   const governed = _classifier === undefined;
   return createMemoryHistoryIndexHandler({
     ...(governed ? {
+      prepareRecovery: (userId: string, jobId: string) =>
+        prepareMemoryHistoryExecutionRecovery(client, authority, userId, jobId),
+      clearResults: clearMemoryHistoryExecutionResults,
       authorizeResults: async (
         tx: Prisma.TransactionClient,
         settings: LockedMemorySettings,

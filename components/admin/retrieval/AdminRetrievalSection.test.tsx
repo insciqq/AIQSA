@@ -1,3 +1,4 @@
+import { memoryRecoveryStatusFixture, memoryWorkerStatusFixture } from "@/tests/support/memoryStatus";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { adminKnowledgeOperationsFixture, adminKnowledgeSettingsFixture } from "@/tests/support/knowledgeProfile";
 import type { AdminKnowledgeSettings } from "@/lib/contracts/adminKnowledge";
@@ -14,7 +15,8 @@ function memoryStatus(overrides: Partial<AdminMemoryStatus> = {}): AdminMemorySt
     index: { generation: 4, readiness: "READY" },
     queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
     rebuild: { state: "NOT_REQUIRED" },
-    worker: { state: "RUNNING" },
+    recovery: memoryRecoveryStatusFixture(),
+    worker: memoryWorkerStatusFixture(),
     ...overrides
   };
 }
@@ -47,7 +49,10 @@ function server(initial: Readonly<{ knowledge?: AdminKnowledgeSettings; memory?:
       if (method === "PUT" && body) {
         memory = { ...memory, admissionTimeout: { seconds: Number(body.timeoutSeconds), version: memory.admissionTimeout.version + 1 } };
       }
-      if (method === "POST") {
+      if (method === "POST" && body?.action === "RECOVER_ELIGIBLE") {
+        memory = { ...memory, recovery: memoryRecoveryStatusFixture(),
+          queue: { inProgress: 0, length: memory.recovery.eligible, oldestAgeSeconds: 0 } };
+      } else if (method === "POST") {
         memory = memoryStatus({
           processing: { enabled: true, issues: [] }, index: { generation: 5, readiness: "REBUILDING" },
           queue: { inProgress: 0, length: 1, oldestAgeSeconds: 0 }, rebuild: { state: "IN_PROGRESS" }
@@ -79,6 +84,53 @@ function renderSection() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("AdminRetrievalSection", () => {
+  it("retries eligible work independently of rebuild and preserves an unsaved timeout", async () => {
+    const calls = server({ memory: memoryStatus({ recovery: memoryRecoveryStatusFixture({ eligible: 2 }) }) });
+    const { reportNotice, requestConfirmation } = renderSection();
+    const retry = await screen.findByRole("button", { name: "Retry eligible work" });
+    const field = screen.getByRole("spinbutton", { name: "Admission timeout (seconds)" });
+    fireEvent.change(field, { target: { value: "42" } });
+    fireEvent.click(retry);
+    await waitFor(() => expect(reportNotice).toHaveBeenCalledWith("Eligible Memory work was queued for retry."));
+    expect(calls.filter(({ method }) => method === "POST").map(({ body }) => body)).toEqual([{ action: "RECOVER_ELIGIBLE" }]);
+    expect(requestConfirmation).not.toHaveBeenCalled();
+    expect(field).toHaveValue(42);
+    expect(screen.getByTestId("admin-retrieval-memory")).toHaveTextContent("2 waiting");
+  });
+
+  it.each([
+    [memoryWorkerStatusFixture({ state: "NOT_RUNNING", reason: "NOT_READY" }), "Worker not running"],
+    [memoryWorkerStatusFixture({ state: "STALLED", reason: "QUEUE_STALLED", lastProgressAgeSeconds: 1200 }), "Queue stalled"],
+    [memoryWorkerStatusFixture({ state: "STALLED", reason: "QUEUE_STALLED", lastProgressAgeSeconds: 1 }), "Queue stalled"]
+  ] as const)("distinguishes stopped startup and a live stalled queue with recovery evidence", async (worker, label) => {
+    server({ memory: memoryStatus({ worker, recovery: memoryRecoveryStatusFixture({ eligible: 1, protected: 2, permanent: 3 }) }) });
+    renderSection();
+    await waitFor(() => expect(screen.getByTestId("memory-state")).toHaveTextContent(label));
+    const retry = screen.getByRole("button", { name: "Retry eligible work" });
+    if (worker.state === "NOT_RUNNING") expect(retry).toBeDisabled();
+    else expect(retry).toBeEnabled();
+    expect(screen.getByTestId("admin-retrieval-memory")).toHaveTextContent("2 have a recorded provider execution");
+    expect(screen.getByTestId("admin-retrieval-memory")).toHaveTextContent("3 require a fix before retry");
+    if (worker.state === "STALLED" && worker.lastProgressAgeSeconds === 1) {
+      expect(screen.getByTestId("admin-retrieval-memory")).toHaveTextContent("Some queued work is not progressing");
+      expect(screen.getByTestId("admin-retrieval-memory")).not.toHaveTextContent("No queue progress for 1s");
+    }
+  });
+
+  it("disables recovery after a failed refresh while keeping the last known evidence", async () => {
+    const calls = server({ memory: memoryStatus({ recovery: memoryRecoveryStatusFixture({ eligible: 2 }) }) });
+    renderSection();
+    const retry = await screen.findByRole("button", { name: "Retry eligible work" });
+    const original = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input) === "/api/admin/memory" ? Response.json({ error: "memory_admin_status_failed" }, { status: 503 }) : original(input, init)));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Memory status" }));
+    await waitFor(() => expect(screen.getByTestId("memory-state")).toHaveTextContent("Status unknown"));
+    expect(retry).toBeDisabled();
+    expect(screen.getByTestId("admin-retrieval-memory")).toHaveTextContent("2 eligible for retry");
+    expect(calls.filter(({ method }) => method === "POST")).toHaveLength(0);
+  });
+
   it.each([
     [{ inProgress: 2, length: 3, oldestAgeSeconds: 75 }, "2 in progress · 3 waiting · oldest 1m"],
     [{ inProgress: 1, length: 0, oldestAgeSeconds: null }, "1 in progress · 0 waiting"]
@@ -102,8 +154,21 @@ describe("AdminRetrievalSection", () => {
     expect(within(memory).getByText("Running", { exact: true })).toBeInTheDocument();
     expect(memory).toHaveTextContent("3 affected jobs; oldest 31m");
     expect(memory).toHaveTextContent("required verified capability");
-    expect(within(memory).getByRole("link", { name: "Open Defaults & roles" })).toHaveAttribute("href", "/admin?section=roles");
+    expect(within(memory).getByRole("link", { name: "Open Defaults & roles" })).toHaveAttribute("href", "/admin?section=roles&resource=memory");
     expect(memory).not.toHaveTextContent(/consent|memory_execution_/u);
+  });
+  it("shows usable raw history with limited derived context and no automatic retry", async () => {
+    server({ memory: memoryStatus({ queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
+      recovery: memoryRecoveryStatusFixture(), processing: { enabled: true, issues: [{
+        stage: "HISTORY", reason: "OUTPUT_LIMIT", severity: "warn", count: 1, oldestAgeSeconds: 60
+      }] } }) });
+    renderSection();
+    await waitFor(() => expect(screen.getByTestId("memory-state")).toHaveTextContent("Limited history context"));
+    const memory = screen.getByTestId("admin-retrieval-memory");
+    expect(memory).toHaveTextContent("History text remains searchable");
+    expect(within(memory).queryByRole("button", { name: "Retry eligible work" })).not.toBeInTheDocument();
+    expect(within(memory).getByRole("link", { name: "Open Defaults & roles" }))
+      .toHaveAttribute("href", "/admin?section=roles&resource=memory");
   });
   it("shows one processing line, alerts and metrics, and links assignments to Defaults & roles", async () => {
     server({ knowledge: adminKnowledgeSettingsFixture({ operations: adminKnowledgeOperationsFixture({

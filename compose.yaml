@@ -155,7 +155,8 @@ services:
 
   memory-worker:
     image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
-    command: ["npm", "run", "memory:coordinator"]
+    # Deliver termination directly to the worker so it clears readiness.
+    command: ["node", "--import", "tsx", "scripts/memory-coordinator.ts"]
     environment:
       AIQSA_ENCRYPTION_KEY: ${AIQSA_ENCRYPTION_KEY:?Set AIQSA_ENCRYPTION_KEY in .env}
       AIQSA_MEMORY_EMBEDDING_BATCH_SIZE: ${AIQSA_MEMORY_EMBEDDING_BATCH_SIZE:-16}

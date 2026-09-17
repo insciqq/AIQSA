@@ -28,6 +28,7 @@ import type {
   MemoryJobGateDecision
 } from "./types";
 import { decodeMemoryOperationalCounters } from "../operational/counters";
+import { MEMORY_RECOVERY_BATCH_SIZE, MEMORY_RECOVERY_INTERVAL_MS } from "./recoveryPolicy";
 
 const sha256 = /^[a-f0-9]{64}$/u;
 const WORKER_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -79,6 +80,7 @@ export class MemoryCoordinator {
   #timer: ReturnType<typeof setTimeout> | null = null;
   #workerHeartbeatPending: Promise<void> | null = null;
   #workerHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  #nextRecoveryAt = 0;
 
   constructor(input: Readonly<{
     now?: () => Date;
@@ -241,13 +243,28 @@ export class MemoryCoordinator {
       }
       const [cancelled, requeued] = await Promise.all([
         this.#repository.cancelUnavailableJobOwners({ kinds, now }),
-        this.#repository.requeueDueJobs({ kinds, now })
+        this.#repository.requeueDueJobs({
+          kinds,
+          limit: this.#policy.reconciliationBatchSize,
+          now
+        })
       ]);
       if (cancelled + requeued > 0) this.#rerun = true;
       if (cancelled > 0) logEvent("runtime_lifecycle", { subsystem: "memory", stage: "reconcile",
         outcome: "cancelled", count: cancelled });
       if (requeued > 0) logEvent("runtime_lifecycle", { subsystem: "memory", stage: "retry",
         outcome: "completed", action: "retry", count: requeued });
+      if (now.getTime() >= this.#nextRecoveryAt) {
+        this.#nextRecoveryAt = now.getTime() + MEMORY_RECOVERY_INTERVAL_MS;
+        const recovered = await this.#repository.recoverEligibleJobs({
+          limit: MEMORY_RECOVERY_BATCH_SIZE, now
+        });
+        if (recovered > 0) {
+          this.#rerun = true;
+          logEvent("runtime_lifecycle", { subsystem: "memory", stage: "recovery",
+            outcome: "completed", action: "retry", count: recovered });
+        }
+      }
       const waiting = await this.#repository.listWaitingJobs({
         kinds,
         limit: this.#policy.reconciliationBatchSize

@@ -195,6 +195,7 @@ test("PDF modes keep independent reader assignments through refresh and compact 
   const native = { ...base, id: "native-reader", displayName: "Native document reader", pdfInput: "verified" as const, visionInput: "not_verified" as const };
   const images = { ...base, id: "image-reader", displayName: "Page image reader", pdfInput: "unsupported" as const, visionInput: "verified" as const };
   const roles: AdminSystemModelPolicyCatalog = {
+    memoryPolicy: { model: null, reasoningEffort: null, version: 1, assignmentSource: "unassigned" },
     candidates: [], titleCandidates: [], documentCandidates: [native, images], verificationCandidates: [], rerankerCandidates: [],
     ineligible: { chat_titles: [], direct_pdf: [], memory: [], vision: [] },
     policy: { systemModel: null, reasoningEffort: null, chatTitleModel: null, chatTitleReasoningEffort: null,

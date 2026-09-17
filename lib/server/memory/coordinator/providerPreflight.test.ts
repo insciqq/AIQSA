@@ -152,7 +152,7 @@ function dependencies(
     loadCredentialVersion: async ({ credentialId, credentialVersionId }) =>
       credential(credentialId, credentialVersionId),
     resolveEmbedding: async () => embedding,
-    resolveSystemModel: async () => ({
+    resolveMemoryModel: async () => ({
       credentialScope: "installation",
       ok: true,
       policyVersion: 1,
@@ -167,7 +167,7 @@ function dependencies(
 describe("Memory coordinator provider preflight", () => {
   it("does not block deletion-only work when the System Model is absent", async () => {
     await expect(preflightMemoryProviderBindings(dependencies({
-      resolveSystemModel: async () => ({ code: "system_model_absent", ok: false })
+      resolveMemoryModel: async () => ({ code: "system_model_absent", ok: false })
     }))).resolves.toBeUndefined();
   });
 
@@ -176,7 +176,7 @@ describe("Memory coordinator provider preflight", () => {
     await expect(preflightMemoryProviderBindings(dependencies({
       listEnabledOwners: async () => [],
       loadCredentialVersion,
-      resolveSystemModel: async () => ({
+      resolveMemoryModel: async () => ({
         credentialScope: "installation",
         ok: true,
         policyVersion: 1,
