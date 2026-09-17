@@ -1587,7 +1587,7 @@ describe("run recovery", () => {
     expect(harness.state.completed).toBeNull();
   });
 
-  it.each(["ready", "busy"] as const)("recovers a published answer through Workspace handoff without provider replay (%s)", async (outcome) => {
+  it.each(["ready", "busy", "failed"] as const)("recovers a published answer through Workspace handoff without provider replay (%s)", async (outcome) => {
     const refresh = vi.fn();
     const adapter = providerWithRefresh(refresh);
     const stream = vi.spyOn(adapter, "stream");
@@ -1600,7 +1600,10 @@ describe("run recovery", () => {
       finalText: "Already published answer", modelId: "gpt-test", provider: "openai",
       providerResponseId: "response-old", runId, usage: { inputTokens: 2, outputTokens: 3 }, userId };
     harness.repository.loadPublishedRunAnswer = vi.fn(async () => published);
-    const handoff = vi.fn(async () => ({ status: outcome }));
+    const handoff = vi.fn(async () => {
+      if (outcome === "failed") throw new Error("synthetic_capture_failure");
+      return { status: outcome };
+    });
     const workspace: NonNullable<RunRecoveryDeps["workspace"]> = {
       accepts: () => false, execute: vi.fn(), finalize: vi.fn(), handoff,
       recoverExports: vi.fn(), settle: vi.fn(), tools: async () => []
@@ -1610,7 +1613,14 @@ describe("run recovery", () => {
     expect(stream).not.toHaveBeenCalled();
     expect(refresh).not.toHaveBeenCalled();
     expect(harness.state.completed).toEqual(outcome === "ready" ? published : null);
-    expect(harness.state.failed).toEqual([]);
+    if (outcome === "failed") {
+      expect(harness.state.failed).toEqual([expect.objectContaining({ error: {
+        code: "workspace_output_export_failed",
+        message: "The answer was saved, but Workspace could not finish preparing its files."
+      } })]);
+      expect(workspace.settle).toHaveBeenCalledWith({ outcome: "failed", runId, userId });
+      expect(harness.state.run.status).toBe("error");
+    } else expect(harness.state.failed).toEqual([]);
   });
 
   it.each(["ready", "failed", "cancelled", "busy"] as const)("waits for recovered Workspace handoff and respects %s settlement", async (outcome) => {

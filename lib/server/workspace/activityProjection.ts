@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
+import { WorkspaceActivityText, clipWorkspaceActivityText, plainWorkspaceActivityText } from "./activityText";
+import { isWorkspaceActivityActive, mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 import {
   WORKSPACE_ACTIVITY_COMMAND_MAX_CHARS,
   WORKSPACE_ACTIVITY_PATH_MAX_CHARS,
@@ -38,7 +39,7 @@ const FILE_TOOL_KINDS: Partial<Record<WorkspaceMcpToolName, WorkspaceActivityKin
   sandbox_fs_write: "file_write"
 };
 const OUTPUT_BUFFER_MAX_BYTES = 64 * 1_024;
-const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu;
+const plainText = new WorkspaceActivityText();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -65,35 +66,36 @@ export function workspaceLifecycleEntryId(
 }
 
 function cleanText(value: string): string {
-  return value.replace(CONTROL_CHARACTERS, "");
+  return plainWorkspaceActivityText(value);
 }
 
-/** Bounded, single-line command preview: the first non-empty line plus bounded args. */
+/** Preserve multiline syntax so the client cannot classify a partial command as read-only. */
 export function commandPreview(input: Readonly<{
   args?: unknown;
   command: unknown;
-}>): string | null {
+}>, text: WorkspaceActivityText = plainText): { preview: string; previewTruncated?: boolean } | null {
   if (typeof input.command !== "string") return null;
-  const firstLine = input.command.split(/\r?\n/u).map((line) => line.trim()).find(Boolean) ?? "";
   const args = Array.isArray(input.args)
-    ? input.args.filter((entry): entry is string => typeof entry === "string").slice(0, 64)
-    : [];
-  const joined = [firstLine, ...args.map((entry) => /[\s"']/u.test(entry) ? JSON.stringify(entry) : entry)]
-    .join(" ")
-    .trim();
-  const preview = cleanText(joined).slice(0, WORKSPACE_ACTIVITY_COMMAND_MAX_CHARS);
-  return preview || null;
+    ? input.args.filter((entry): entry is string => typeof entry === "string") : [];
+  const joined = [text.text(input.command), ...args.map((entry) => {
+    const masked = text.text(entry);
+    return /[\s"']/u.test(masked) ? JSON.stringify(masked) : masked;
+  })].join(" ").trim();
+  if (!joined) return null;
+  return { preview: clipWorkspaceActivityText(joined, WORKSPACE_ACTIVITY_COMMAND_MAX_CHARS),
+    ...(joined.length > WORKSPACE_ACTIVITY_COMMAND_MAX_CHARS ? { previewTruncated: true } : {}) };
 }
 
 /** `/workspace`-relative display path; inbox physical names map back to originals when known. */
 export function displayPath(
   value: unknown,
-  inboxNames?: ReadonlyMap<string, string>
+  inboxNames?: ReadonlyMap<string, string>,
+  text: WorkspaceActivityText = plainText
 ): string | null {
   if (typeof value !== "string" || !value) return null;
-  const path = cleanText(value.replace(/\/{2,}/gu, "/").replace(/\/$/u, ""));
-  const original = inboxNames?.get(path);
-  if (original) return `inbox/${original}`.slice(0, WORKSPACE_ACTIVITY_PATH_MAX_CHARS);
+  const original = inboxNames?.get(value);
+  if (original) return clipWorkspaceActivityText(text.text(`inbox/${original}`), WORKSPACE_ACTIVITY_PATH_MAX_CHARS);
+  const path = text.text(value).replace(/\/{2,}/gu, "/").replace(/\/$/u, "");
   if (path === WORKSPACE_ROOT) return ".";
   const relative = path.startsWith(`${WORKSPACE_ROOT}/`) ? path.slice(WORKSPACE_ROOT.length + 1) : path;
   const inboxMessages = `${WORKSPACE_INBOX_DIRECTORY.slice(WORKSPACE_ROOT.length + 1)}/messages/`;
@@ -101,10 +103,9 @@ export function displayPath(
     // Unknown physical inbox name: drop the opaque id prefix, keep the safe basename.
     const basename = relative.split("/").at(-1) ?? relative;
     const dashed = basename.indexOf("--");
-    return `inbox/${dashed > 0 ? basename.slice(dashed + 2) : basename}`
-      .slice(0, WORKSPACE_ACTIVITY_PATH_MAX_CHARS);
+    return clipWorkspaceActivityText(`inbox/${dashed > 0 ? basename.slice(dashed + 2) : basename}`, WORKSPACE_ACTIVITY_PATH_MAX_CHARS);
   }
-  return relative.slice(0, WORKSPACE_ACTIVITY_PATH_MAX_CHARS) || ".";
+  return clipWorkspaceActivityText(relative, WORKSPACE_ACTIVITY_PATH_MAX_CHARS) || ".";
 }
 
 function utf8Bytes(value: string): number {
@@ -192,10 +193,13 @@ export type ExecOutputBuffer = {
   exitCode: number | null;
   stderr: string;
   stdout: string;
+  streams?: { stderr: ReturnType<WorkspaceActivityText["stream"]>; stdout: ReturnType<WorkspaceActivityText["stream"]> };
+  truncated?: boolean;
 };
 
-function emptyBuffer(): ExecOutputBuffer {
-  return { done: false, exitCode: null, stderr: "", stdout: "" };
+function emptyBuffer(text: WorkspaceActivityText = plainText): ExecOutputBuffer {
+  return { done: false, exitCode: null, stderr: "", stdout: "",
+    streams: { stderr: text.stream(), stdout: text.stream() } };
 }
 
 function appendBounded(current: string, chunk: string): string {
@@ -214,17 +218,22 @@ function appendBounded(current: string, chunk: string): string {
 }
 
 /** Folds an official `sandbox_exec_poll` result into the execution's bounded buffer. */
-export function applyExecPoll(buffer: ExecOutputBuffer, result: ToolExecutionResult): ExecOutputBuffer {
+export function applyExecPoll(buffer: ExecOutputBuffer, result: ToolExecutionResult, text: WorkspaceActivityText = plainText): ExecOutputBuffer {
+  if (buffer.done) return buffer;
   const data = resultData(result);
   const payload = data && isRecord(data.data) ? data.data : null;
   if (!payload) return buffer;
-  const next = { ...buffer };
+  const next = { ...buffer, streams: buffer.streams ?? { stderr: text.stream(), stdout: text.stream() } };
+  const append = (stream: "stdout" | "stderr", value: string, done = false) => {
+    const masked = next.streams[stream].push(value, done);
+    if (utf8Bytes(next[stream]) + utf8Bytes(masked) > OUTPUT_BUFFER_MAX_BYTES) next.truncated = true;
+    next[stream] = appendBounded(next[stream], masked);
+  };
   if (Array.isArray(payload.events)) {
     for (const entry of payload.events.slice(0, 1_000)) {
       const event = isRecord(entry) && isRecord(entry.event) ? entry.event : null;
       if (!event || typeof event.data !== "string") continue;
-      if (event.kind === "stdout") next.stdout = appendBounded(next.stdout, event.data);
-      if (event.kind === "stderr") next.stderr = appendBounded(next.stderr, event.data);
+      if (event.kind === "stdout" || event.kind === "stderr") append(event.kind, event.data);
     }
   }
   if (payload.done === true) {
@@ -232,6 +241,8 @@ export function applyExecPoll(buffer: ExecOutputBuffer, result: ToolExecutionRes
     if (status && typeof status.code === "number" && Number.isSafeInteger(status.code)) {
       next.done = true;
       next.exitCode = status.code;
+      append("stdout", "", true);
+      append("stderr", "", true);
     }
   }
   return next;
@@ -248,6 +259,7 @@ export type WorkspaceActivityProjectionInput = Readonly<{
   result?: ToolExecutionResult;
   runId: string;
   startedAt?: Date;
+  text?: WorkspaceActivityText;
 }>;
 
 function baseFields(input: WorkspaceActivityProjectionInput, id: string) {
@@ -262,12 +274,12 @@ function commandEntry(
   input: WorkspaceActivityProjectionInput,
   phase: WorkspaceActivityPhase
 ): ThreadWorkspaceActivityEntry | null {
-  const preview = commandPreview({ args: input.arguments.args, command: input.arguments.command });
+  const preview = commandPreview({ args: input.arguments.args, command: input.arguments.command }, input.text);
   if (!preview) return null;
-  const cwd = displayPath(input.arguments.cwd) ?? undefined;
+  const cwd = displayPath(input.arguments.cwd, undefined, input.text) ?? undefined;
   const base = { ...baseFields(input, workspaceActivityEntryId(input.callId)), kind: "command" as const };
   if (!input.result || phase === "running" || phase === "requested") {
-    return { ...base, command: { ...(cwd ? { cwd } : {}), preview }, phase };
+    return { ...base, command: { ...(cwd ? { cwd } : {}), ...preview }, phase };
   }
   const data = resultData(input.result);
   const payload = data && isRecord(data.data) ? data.data : null;
@@ -283,8 +295,8 @@ function commandEntry(
     : "";
   const output = boundedOutputPreview({
     failed,
-    stderr: payload && typeof payload.stderr === "string" ? payload.stderr : errorMessage,
-    stdout: payload && typeof payload.stdout === "string" ? payload.stdout : ""
+    stderr: (input.text ?? plainText).text(payload && typeof payload.stderr === "string" ? payload.stderr : errorMessage),
+    stdout: (input.text ?? plainText).text(payload && typeof payload.stdout === "string" ? payload.stdout : "")
   });
   const truncated = output.truncated || input.result.rawPreview?.truncated === true;
   const errorCode = errorCodeFrom(input.result);
@@ -297,7 +309,7 @@ function commandEntry(
       ...(typeof originalByteCount === "number" && Number.isSafeInteger(originalByteCount)
         ? { originalByteCount }
         : {}),
-      preview,
+      ...preview,
       ...(output.stderrPreview ? { stderrPreview: output.stderrPreview } : {}),
       ...(output.stdoutPreview ? { stdoutPreview: output.stdoutPreview } : {}),
       ...(truncated ? { truncated: true } : {})
@@ -312,10 +324,10 @@ function fileEntry(
   kind: WorkspaceActivityKind,
   phase: WorkspaceActivityPhase
 ): ThreadWorkspaceActivityEntry | null {
-  const source = displayPath(input.arguments.path ?? input.arguments.from, input.inboxNames);
+  const source = displayPath(input.arguments.path ?? input.arguments.from, input.inboxNames, input.text);
   if (!source) return null;
   const target = kind === "file_copy" || kind === "file_move"
-    ? displayPath(input.arguments.to, input.inboxNames) ?? undefined
+    ? displayPath(input.arguments.to, input.inboxNames, input.text) ?? undefined
     : undefined;
   const written = kind === "file_write" && typeof input.arguments.content === "string"
     ? input.arguments.encoding === "base64"
@@ -364,13 +376,13 @@ function projectActivity(
       return commandEntry(input, phase === "running" ? "running" : "failed");
     }
     const execSessionId = execSessionIdOf(input);
-    const preview = commandPreview({ args: input.arguments.args, command: input.arguments.command });
+    const preview = commandPreview({ args: input.arguments.args, command: input.arguments.command }, input.text);
     if (!execSessionId || !preview) return null;
     const groupId = workspaceExecutionGroupId(input.runId, execSessionId);
-    if (!input.execOutputs?.has(groupId)) input.execOutputs?.set(groupId, emptyBuffer());
-    const cwd = displayPath(input.arguments.cwd) ?? undefined;
+    if (!input.execOutputs?.has(groupId)) input.execOutputs?.set(groupId, emptyBuffer(input.text));
+    const cwd = displayPath(input.arguments.cwd, undefined, input.text) ?? undefined;
     return {
-      command: { ...(cwd ? { cwd } : {}), preview },
+      command: { ...(cwd ? { cwd } : {}), ...preview },
       groupId,
       id: workspaceActivityEntryId(input.callId),
       kind: "command",
@@ -383,8 +395,8 @@ function projectActivity(
     const execSessionId = execSessionIdOf(input);
     if (!execSessionId || !input.executionStartCallId) return null;
     const groupId = workspaceExecutionGroupId(input.runId, execSessionId);
-    const previous = input.execOutputs?.get(groupId) ?? emptyBuffer();
-    const buffer = name === "sandbox_exec_poll" ? applyExecPoll(previous, input.result) : previous;
+    const previous = input.execOutputs?.get(groupId) ?? emptyBuffer(input.text);
+    const buffer = name === "sandbox_exec_poll" ? applyExecPoll(previous, input.result, input.text) : previous;
     // Signal/close acknowledgements carry no observed process exit. Terminal
     // command evidence comes from poll; run-outcome folding handles Stop.
     const settled = buffer.done;
@@ -401,7 +413,7 @@ function projectActivity(
         preview: "…",
         ...(output.stderrPreview ? { stderrPreview: output.stderrPreview } : {}),
         ...(output.stdoutPreview ? { stdoutPreview: output.stdoutPreview } : {}),
-        ...(output.truncated ? { truncated: true } : {})
+        ...(output.truncated || buffer.truncated ? { truncated: true } : {})
       },
       groupId,
       id: workspaceActivityEntryId(input.executionStartCallId),
@@ -465,7 +477,7 @@ export function foldWorkspaceActivityEntries(
   runTerminal: "cancelled" | "failed" | null
 ): ThreadWorkspaceActivityEntry[] {
   return (mergeWorkspaceActivity(null, { entries })?.entries ?? []).map((entry) =>
-    runTerminal && (entry.phase === "running" || entry.phase === "requested")
+    runTerminal && isWorkspaceActivityActive(entry)
       ? { ...entry, phase: runTerminal, runOutcome: runTerminal }
       : entry
   );

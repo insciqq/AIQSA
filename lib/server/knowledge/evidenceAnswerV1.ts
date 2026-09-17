@@ -140,6 +140,33 @@ export function validateKnowledgeEvidenceAnswerDraftV1(value: unknown, input: Re
   return Object.freeze({ kind: "accepted", value: Object.freeze({ version: 1, blocks: Object.freeze(blocks) }) });
 }
 
+/**
+ * Models sometimes repeat a valid Knowledge handle in prose even though the
+ * draft contract carries citations in `evidenceHandles`. Remove only markers
+ * duplicated in the block's delivered evidence handles; other markers stay
+ * intact and are rejected by the strict validator below.
+ */
+export function normalizeKnowledgeEvidenceAnswerDraftV1(value: unknown, availableHandles: readonly string[]): unknown {
+  if (!record(value) || !Array.isArray(value.blocks)) return value;
+  const allowed = new Set(availableHandles);
+  const marker = /\[((?:K|S)\d+(?:\s*,\s*(?:K|S)?\d+)*)\]/gu;
+  return {
+    ...value,
+    blocks: value.blocks.map(block => {
+      if (!record(block) || block.kind !== "paragraph" || typeof block.text !== "string" || !Array.isArray(block.evidenceHandles)) return block;
+      const cited = new Set(block.evidenceHandles.filter(handle => typeof handle === "string" && allowed.has(handle)));
+      const withoutMarkers = block.text.replace(marker, (full, body: string) => {
+        const parts = body.split(",").map(part => part.trim());
+        const prefix = parts[0]?.[0];
+        const handles = parts.map(part => /^[KS]\d+$/u.test(part) ? part : `${prefix ?? ""}${part}`);
+        return handles.every(handle => cited.has(handle)) ? "" : full;
+      });
+      if (withoutMarkers === block.text) return block;
+      return { ...block, text: withoutMarkers.replace(/[ \t]+([,.;:!?])/gu, "$1").replace(/[ \t]{2,}/gu, " ").trim() };
+    })
+  };
+}
+
 /** Decode by the same rules as initial admission; stable IDs are positions,
  * never a second provider-controlled reference namespace. */
 export function decodeKnowledgeEvidenceAnswerDraftV1(value: unknown, input: Parameters<typeof validateKnowledgeEvidenceAnswerDraftV1>[1]): KnowledgeEvidenceAnswerDraftV1 | null {
@@ -268,7 +295,7 @@ export function knowledgeEvidenceAnswerReviewPromptV1(input: Readonly<{
     "Return exactly one verdict per supplied block ID. Supported means every substantive assertion in that block follows from the cited evidence. Choose the exact supporting handles from the delivered manifest; a handle, topic match or earlier assertion is not proof. Unsupported and contradicted blocks must have no citation handles and will not be published.",
     "Allow valid derivation, arithmetic and application of documented operations; the derived answer need not occur verbatim. Check all factual premises, conditions, operand labels, dates, units and epistemic force. Do not strengthen possibility into certainty, copy the value of a neighboring row, or combine fields into a relationship the Sources do not establish. Respect later qualifications within a Source without treating source order as agreement between independent Sources.",
     "Explanations need the relationship that answers why or how. A working procedure or code example must implement the documented behavior and satisfy the user's constraints. Ordinary syntax, variable names and illustrative inputs do not need independent documentary quotations. Mark a block unsupported if an essential API, behavior or step is invented.",
-    "Judge coverage using only the blocks you accept. Complete means they collectively answer every essential requested outcome and condition. Partial means useful supported parts survive a gap. None means there is no supported useful block. Do not reject a known operand solely because another operand is absent. Background does not replace the requested result.",
+    "Judge coverage using only the blocks you accept. Complete means they collectively answer every essential requested outcome and condition. Partial means useful supported parts survive a gap. None means there is no supported useful block. Do not reject a known operand solely because another operand is absent. Background does not replace the requested result. The server renders accepted evidence handles as user-visible citations after publication, so a requested [K…] citation is satisfied by the matching evidence handle even when the draft prose contains no marker.",
     "Record specific missing information as bounded descriptions of unanswered request requirements, not factual assertions or speculative answers. Check explicit all/every/list requests and separately requested items exhaustively. If capacity prevents a complete check, set analysisComplete=false; do not silently narrow the request. Complete coverage requires analysisComplete=true and no gaps or follow-ups.",
     "For material gaps, propose at most three distinct search queries that could find the missing facts or method. Preserve exact discriminating identifiers while using meaningful alternative terminology or mechanisms as hypotheses. sourceAliases=[] searches the whole selection; restrict only when an exact disclosed alias is likely to contain the missing information. Use only availableSourceAliases and no private Source IDs. Do not repeat equivalent queries. Return no follow-ups when evidence is sufficient or further search would be redundant.",
     "A structural repair replaces the whole review over unchanged request, evidence and draft. Return only the schema's version-1 JSON object."

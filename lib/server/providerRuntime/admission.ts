@@ -30,6 +30,7 @@ import {
 import type { SearchProbeBinding } from "../search/probeBinding";
 import { hasVerifiedStructuredOutput } from "../providers/structuredOutputEvidence";
 import { hasVerifiedForcedToolCall } from "../providers/forcedToolCallEvidence";
+import { hasVerifiedCodexWebSearch } from "../providers/codexWebSearch";
 import { hasVerifiedPdfInput } from "../providers/pdfInputEvidence";
 import { hasVerifiedVisionInput } from "../providers/visionInputEvidence";
 
@@ -90,6 +91,7 @@ export type ProviderAdmissionPlan = Readonly<{
   executionScope?: "personal" | "project";
   fingerprint: string;
   requiresClientToolCoexistence?: true;
+  requiresClientSearchRoutes?: true;
   requestedSearchPlan: SearchPlan;
   requestedSearchPreferencePlan?: SearchPlan | null;
   requestedSearchPreferenceSource?: "organization" | "personal";
@@ -195,7 +197,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function withResolvedModelCapabilities(
   snapshot: ProviderExecutionSnapshot,
-  options: Readonly<{ nativePdfInput?: boolean }> = {}
+  options: Readonly<{ nativePdfInput?: boolean; codexStandaloneWebSearch?: boolean }> = {}
 ): ProviderExecutionSnapshot {
   if (
     snapshot.model.adapterKind !== "fake" &&
@@ -214,7 +216,8 @@ function withResolvedModelCapabilities(
           providerFamily: snapshot.providerFamily,
           upstreamModelId: snapshot.model.upstreamModelId
         }),
-        nativePdfInput: options.nativePdfInput ?? false
+        nativePdfInput: options.nativePdfInput ?? false,
+        ...(snapshot.model.capabilities.codexStandaloneWebSearch !== undefined ? { codexStandaloneWebSearch: options.codexStandaloneWebSearch ?? false } : {})
       }
     }
   });
@@ -478,7 +481,8 @@ async function loadRole(
     version: 1
   });
   const resolvedSnapshot = input.modelClass === "answer"
-    ? withResolvedModelCapabilities(normalizedSnapshot, { nativePdfInput })
+    ? withResolvedModelCapabilities(normalizedSnapshot, { nativePdfInput,
+        codexStandaloneWebSearch: modelConfig.capabilities.codexStandaloneWebSearch === true && hasVerifiedCodexWebSearch(check.evidence, modelConfig) })
     : normalizedSnapshot;
   const snapshot = (structuredOutput || forcedToolCalling) &&
     resolvedSnapshot.model.adapterKind !== "fake"
@@ -1053,6 +1057,7 @@ export async function loadProviderAdmissionPlan(
     providerModelId: string;
     executionScope?: "personal" | "project";
     requiresClientToolCoexistence?: boolean;
+    requiresClientSearchRoutes?: boolean;
     searchPlan: SearchPlan;
     searchPreferencePlan?: SearchPlan | null;
     searchPreferenceSource?: "organization" | "personal";
@@ -1237,7 +1242,7 @@ export async function loadProviderAdmissionPlan(
       throw new ProviderAdmissionError("search_strategy_not_available");
     }
     const candidates: ResolvedSearchRouteCandidate[] = routes
-      .filter((route) => hostedRouteCompatible(option, route, answer))
+      .filter((route) => !input.requiresClientSearchRoutes && hostedRouteCompatible(option, route, answer))
       .map((route) => ({ option, ordinal, route }));
     const clientRouteRequired = candidates.length === 0 || optionIds.length > 1 ||
       input.requiresClientToolCoexistence === true;
@@ -1292,6 +1297,7 @@ export async function loadProviderAdmissionPlan(
     answer,
     ...(input.executionScope ? { executionScope: input.executionScope } : {}),
     ...(input.requiresClientToolCoexistence ? { requiresClientToolCoexistence: true as const } : {}),
+    ...(input.requiresClientSearchRoutes ? { requiresClientSearchRoutes: true as const } : {}),
     requestedSearchPlan,
     ...(input.searchPreferenceSource
       ? {

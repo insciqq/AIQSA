@@ -36,6 +36,8 @@ const publicPrefixes = [
   "/api/auth/logout",
   "/api/test/auth-mails",
   "/api/public-shares",
+  // This endpoint authenticates short-lived, run-scoped bearer grants itself.
+  "/api/internal/agent",
   "/.well-known/oauth-authorization-server",
   "/.well-known/oauth-protected-resource",
   "/oauth/register",

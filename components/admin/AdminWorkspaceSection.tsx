@@ -10,6 +10,7 @@ import { cardClass, sectionHeadingClass } from "@/components/admin/roles/rolesCo
 import type { AdminFeedbackController } from "@/components/admin/useAdminFeedback";
 import { UiV2Button, UiV2Switch } from "@/components/ui-v2";
 import { AdminWorkspaceOverview } from "./AdminWorkspaceOverview";
+import { AdminAgentPolicy } from "./AdminAgentPolicy";
 import type { WorkspacePolicyWire } from "@/lib/contracts/workspace";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -173,6 +174,7 @@ export function AdminWorkspaceSection({ reportNotice }: Readonly<{
               />
             </div>
           </div>
+          <AdminAgentPolicy reportNotice={reportNotice} />
           <AdminWorkspaceOverview />
           <dl className={`${cardClass} grid min-w-0 gap-5 p-5 sm:grid-cols-2`} aria-live="polite">
             <div className="min-w-0">

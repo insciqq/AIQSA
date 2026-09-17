@@ -148,6 +148,24 @@ describe("AdminProviderModelSheet", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("allows an unactivated model draft to be published without an artificial edit", async () => {
+    const connection = workingConnection();
+    const model = { ...connection.models[0]!, activeConfig: null, activeVersion: 0, activatedAt: null };
+    const saveModel = vi.fn(async () => ({ ok: true as const }));
+    const onSaved = vi.fn();
+    render(<AdminProviderModelSheet connection={{ ...connection, models: [model, ...connection.models.slice(1)] }} model={model}
+      controller={controller(saveModel)} discovery={discovery()} onClose={vi.fn()} onSaved={onSaved} open />);
+    const sheet = screen.getByRole("dialog", { name: "Edit model" });
+    expect(within(sheet).getByRole("button", { name: "Test & Save" })).toBeEnabled();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Test & Save" }));
+    await waitFor(() => expect(saveModel).toHaveBeenCalledOnce());
+    expect(saveModel).toHaveBeenCalledWith(connection.id, model.id, expect.objectContaining({
+      displayName: model.displayName,
+      configuration: expect.objectContaining({ upstreamModelId: model.draftConfig.upstreamModelId })
+    }), expect.objectContaining({ onProgress: expect.any(Function), signal: expect.any(AbortSignal) }));
+    expect(onSaved).toHaveBeenCalledOnce();
+  });
+
   it("keeps a new model draft when its last key is revoked and blocks even form submission", async () => {
     const connection = workingConnection();
     const saveModel = vi.fn(async () => ({ ok: true as const }));
@@ -279,6 +297,24 @@ describe("AdminProviderModelSheet", () => {
     expect(within(sheet).queryByRole("switch", { name: "Streaming usage totals" })).not.toBeInTheDocument();
     expect(within(sheet).getByLabelText("Reasoning effort field")).toHaveValue("reasoning.effort");
     expect(within(sheet).getByRole("button", { name: "Edit JSON" })).toBeVisible();
+  });
+
+  it("lets an existing compatible model enable Codex search independently of hosted AIQSA Search", async () => {
+    const connection = fixtureConnection({ displayName: "Compatible", family: "openai_compatible", id: "compatible" });
+    const model = fixtureModel({ connectionId: connection.id, displayName: "Custom", id: "custom" });
+    model.draftConfig = { ...model.draftConfig, adapterKind: "openai_responses_compatible",
+      capabilities: { ...model.draftConfig.capabilities, nativeSearch: false } };
+    connection.models = [model];
+    const saveModel = vi.fn(async () => ({ ok: true as const }));
+    render(<AdminProviderModelSheet connection={connection} controller={controller(saveModel)} discovery={discovery()} model={model} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    const sheet = await screen.findByRole("dialog", { name: "Edit model" });
+    fireEvent.click(within(sheet).getByRole("switch", { name: "Codex web search" }));
+    expect(within(sheet).getByRole("switch", { name: "Hosted web search" })).not.toBeChecked();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Test & Save" }));
+    await waitFor(() => expect(saveModel).toHaveBeenCalledOnce());
+    expect(saveModel.mock.calls[0]).toEqual(expect.arrayContaining([expect.objectContaining({
+      configuration: expect.objectContaining({ capabilities: expect.objectContaining({ codexStandaloneWebSearch: true, nativeSearch: false }) })
+    })]));
   });
 
   it("adds an OpenRouter model from the catalog with an ordered route and one Test & Save", async () => {

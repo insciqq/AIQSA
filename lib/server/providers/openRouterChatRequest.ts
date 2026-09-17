@@ -329,7 +329,7 @@ function buildMessages(request: ProviderRunRequest, options: PrivateBuildOptions
   return mergeAdjacentOpenRouterMessages(messages);
 }
 
-function buildProviderRouting(
+export function buildProviderRouting(
   params: OpenRouterParams,
   requireParameters = false
 ): Record<string, unknown> {

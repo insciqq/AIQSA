@@ -65,7 +65,7 @@ import {
   type CSSProperties
 } from "react";
 
-export type ComposerV2Layer = "add" | "files" | "knowledge" | "model" | "search" | "tools" | "workspace" | null;
+export type ComposerV2Layer = "add" | "files" | "knowledge" | "model" | "search" | "tools" | "workspace" | "agent" | null;
 
 /**
  * Imperative handle for openers outside the composer (the header model
@@ -78,6 +78,7 @@ export type ComposerV2LayerController = Readonly<{
 }>;
 
 const LAYER_LABELS: Record<Exclude<ComposerV2Layer, null>, string> = {
+  agent: "Agent",
   add: "Add",
   files: "Saved files",
   knowledge: "Knowledge",
@@ -87,6 +88,7 @@ const LAYER_LABELS: Record<Exclude<ComposerV2Layer, null>, string> = {
   tools: "MCP tools"
 };
 const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
+  agent: "Agent",
   add: "Add",
   files: "Saved files",
   knowledge: "Knowledge",
@@ -98,6 +100,7 @@ const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
 /* Desktop popover widths (see composer.css) used to keep a chip-anchored layer
    inside the composer frame. */
 const LAYER_WIDTH_PX: Record<Exclude<ComposerV2Layer, null>, number> = {
+  agent: 340,
   add: 300,
   files: 380,
   knowledge: 380,
@@ -189,6 +192,7 @@ const EMPTY_MODELS: readonly CatalogModel[] = [];
 const EMPTY_PROVIDERS: readonly CatalogProvider[] = [];
 
 export type ComposerV2Props = Readonly<{
+  agent?: Readonly<{ enabled: boolean; unavailableReason?: string; onToggle(value: boolean): void }>;
   activeRun?: boolean;
   assistantRemovedNotice?: boolean;
   attachmentItems?: readonly ComposerAttachmentItemV2[];
@@ -380,6 +384,7 @@ function CapabilityRow({
 }
 
 export function ComposerV2({
+  agent,
   activeRun = false,
   assistantRemovedNotice = false,
   attachmentItems = [],
@@ -472,6 +477,10 @@ export function ComposerV2({
   const currentProvider = providers.find((provider) => provider.id === currentModel?.provider);
   const noModels = Boolean(config && models.length === 0);
   const controlsLocked = Boolean(selectedAssistant);
+  const agentReason = agent?.unavailableReason ??
+    ((selectedKnowledgeSelection && selectedKnowledgeSelection.mode !== "none") || selectedKnowledgeBaseIds.length > 0
+      ? "Turn off Knowledge to use Agent." : null);
+  const agentBlockReason = agent?.enabled ? agentReason : null;
   const bootstrapReason = configError
     ? "Could not load available capabilities."
     : !config
@@ -492,11 +501,11 @@ export function ComposerV2({
   const skillLimitReason = effectiveSkillIds.length > SKILL_MAX_SELECTED
     ? `Choose at most ${SKILL_MAX_SELECTED} Skills. Remove manual selections or change the Assistant before sending.` : null;
   const sendDisabled = Boolean(
-    sending || inputDisabled || attachmentBlockReason || skillLimitReason || (!draft.trim() && !readyAttachment)
+    sending || inputDisabled || agentBlockReason || attachmentBlockReason || skillLimitReason || (!draft.trim() && !readyAttachment)
   );
   const sendDisabledReason = sending
     ? "Sending message…"
-    : bootstrapReason ?? attachmentBlockReason ?? skillLimitReason ??
+    : bootstrapReason ?? agentBlockReason ?? attachmentBlockReason ?? skillLimitReason ??
       (!draft.trim() && !readyAttachment ? "Type a message." : null);
 
   const attachmentAccept = attachmentAcceptForPolicy(attachmentPolicy);
@@ -1103,6 +1112,16 @@ export function ComposerV2({
           {/* The model is chosen in the header (operator, 2026-09-02); the
               composer row holds only this message's tools. */}
           <div className="v2-composer-indicators" aria-label="Active capabilities">
+            {agent ? (
+              <button type="button" className="v2-composer-indicator v2-focusable"
+                data-quiet={agent.enabled ? undefined : ""}
+                aria-label={`Agent details. ${agent.enabled ? "On" : "Off"}`}
+                aria-controls={`${layerId}-agent`} aria-expanded={layer === "agent"} aria-haspopup="menu"
+                onClick={(event) => openLayer("agent", event.currentTarget)}>
+                <UiV2Icon className="v2-composer-indicator-glyph" name="braces" />
+                <span className="v2-composer-indicator-label">Agent: {agent.enabled ? "On" : "Off"}</span>
+              </button>
+            ) : null}
             {workspace ? (
               <button
                 aria-label={`Workspace details. ${workspace.enabled ? "On" : "Off"}. ${workspaceStatusCopy(workspace.sessionState, Boolean(workspace.commandRunning))}`}
@@ -1297,7 +1316,19 @@ export function ComposerV2({
                 <UiV2IconButton icon="close" label="Close" onClick={closeLayer} />
               </header>
 
-              {layer === "workspace" && workspace ? (
+              {layer === "agent" && agent ? (
+                <div className="v2-composer-layer-scroll">
+                  <p className="v2-composer-layer-title">Agent</p>
+                  <CapabilityRow selected={agent.enabled}
+                    disabled={Boolean(activeRun || (!agent.enabled && agentReason))}
+                    reason={agentReason ?? "Codex carries out your task in Workspace."}
+                    onClick={() => agent.onToggle(!agent.enabled)}>
+                    {agent.enabled ? "Turn off Agent" : "Turn on Agent"}
+                  </CapabilityRow>
+                  <p className="v2-composer-layer-note">Uses the selected model, Skills, MCP mode and saved Workspace secrets. Available while this Workspace exists.</p>
+                  <p className="v2-composer-layer-note">Turn off Knowledge for Agent. Personal Memory and image generation are unavailable.</p>
+                </div>
+              ) : layer === "workspace" && workspace ? (
                 <div className="v2-composer-layer-scroll">
                   <p className="v2-composer-layer-title">Workspace</p>
                   <CapabilityRow selected={workspace.enabled} disabled={workspaceToggleDisabled}

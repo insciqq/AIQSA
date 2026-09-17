@@ -56,6 +56,8 @@ export type AdminProviderModelCapabilities = {
    * requires current verification evidence for the exact credential tuple. */
   nativePdfInput: boolean;
   nativeSearch: boolean;
+  /** Native Codex /alpha/search, independent of AIQSA Search. */
+  codexStandaloneWebSearch?: boolean;
   parallelToolCalls?: boolean;
   pdf: boolean;
   reasoning: boolean;
@@ -102,7 +104,7 @@ export type AdminProviderReasoningRequestMapping = ProviderReasoningRequestMappi
 export type AdminProviderCompatibilityStatus = "not_supported" | "verified";
 
 export const ADMIN_PROVIDER_CAPABILITY_CHECKS = ["modelAccess", "structuredOutput", "toolCalling",
-  "forcedToolCall", "parallelToolCalls", "vision", "directPdf", "streaming", "hostedSearch", "embedding", "reranking", "imageGeneration", "imageEditing"] as const;
+  "forcedToolCall", "parallelToolCalls", "vision", "directPdf", "streaming", "hostedSearch", "codexWebSearch", "embedding", "reranking", "imageGeneration", "imageEditing"] as const;
 export type AdminProviderCapabilityCheck = (typeof ADMIN_PROVIDER_CAPABILITY_CHECKS)[number];
 export type AdminProviderCapabilityCheckStatus = "verified" | "rejected" | "unsupported" | "incomplete" | "not_checked";
 export const ADMIN_PROVIDER_CAPABILITY_REASONS = ["verified", "adapter_unsupported", "route_unsupported", "refusal",
@@ -165,6 +167,13 @@ export type AdminProviderCompatibilityEvidence = {
 export type AdminProviderTestEvidence = {
   /** Initial setup/retry results; stored under the same exact tuple as the proofs. */
   capabilitySetup?: AdminProviderCapabilitySetupEvidence;
+  codexWebSearch?: {
+    adapterKind: "openai_responses_compatible";
+    sourceCount: number;
+    probeVersion: 1;
+    upstreamModelId: string;
+    verified: true;
+  };
   hostedSearch?: {
     adapterKind: "openai_responses_compatible";
     normalizedSourceCount: number;

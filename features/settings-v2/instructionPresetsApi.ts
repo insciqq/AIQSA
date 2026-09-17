@@ -1,5 +1,6 @@
 import { decodeInstructionPreset, decodeInstructionPresetState, instructionPresetErrorMessage,
   type InstructionPreset, type InstructionPresetMutation, type InstructionPresetState } from "@/lib/contracts/instructionPresets";
+import { decodeInstructionPreview, type InstructionPreview } from "@/lib/contracts/instructionPreview";
 
 export class InstructionPresetApiError extends Error {
   constructor(readonly code: unknown) { super(instructionPresetErrorMessage(code)); }
@@ -23,4 +24,12 @@ export async function requestInstructionPreset(id: string, signal?: AbortSignal)
   const preset = decodeInstructionPreset((await request(`/${encodeURIComponent(id)}`, undefined, signal))?.preset);
   if (!preset) throw new InstructionPresetApiError(null);
   return preset;
+}
+
+export async function requestInstructionPreview(timeZone?: string, signal?: AbortSignal): Promise<InstructionPreview> {
+  const query = timeZone ? `?timeZone=${encodeURIComponent(timeZone)}` : "";
+  const data = await request(`/preview${query}`, undefined, signal);
+  const preview = decodeInstructionPreview(data?.preview);
+  if (!preview) throw new InstructionPresetApiError(null);
+  return preview;
 }

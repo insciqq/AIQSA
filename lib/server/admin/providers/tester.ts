@@ -1,6 +1,8 @@
 import { capabilityFailureAttempt, retryCapabilityAttempt } from "./capabilityProbeFailure";
 import { isRetryableProviderNetworkError } from "../../providers/providerRetry";
 import { testImageCapabilities } from "./imageCapabilityProbe";
+import { randomUUID } from "node:crypto";
+import { shouldProbeCodexWebSearch, readCodexWebSearchResponse } from "../../providers/codexWebSearch";
 import { shouldProbeHostedSearch } from "./hostedSearchCapability";
 import { validateSearchToolArguments } from "../../search/query";
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
@@ -802,10 +804,29 @@ async function testHostedSearch(input: AdminProviderDraftTesterInput, options: T
   }
 }
 
-type AnswerCheck = "modelAccess" | "structuredOutput" | "toolCalling" | "forcedToolCall" | "parallelToolCalls" | "vision" | "directPdf" | "streaming" | "hostedSearch";
+async function testCodexWebSearch(input: AdminProviderDraftTesterInput, options: TesterOptions): Promise<AnswerProbeResult> {
+  const model = { ...input.model, capabilities: { ...input.model.capabilities, codexStandaloneWebSearch: true } };
+  const transport = providerRuntime({ ...input, model }, options).agentResponses;
+  if (!transport?.search) return { verified: false };
+  const signal = input.signal ?? new AbortController().signal;
+  const response = await readCodexWebSearchResponse(await transport.search({
+    id: randomUUID(), model: model.upstreamModelId,
+    input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Find the official OpenAI home page." }] }],
+    commands: { search_query: [{ q: "OpenAI official home page" }], response_length: "short" },
+    settings: { allowed_callers: ["direct"], external_web_access: true }, max_output_tokens: probeOutputTokens(input, 2048)
+  }, signal), signal);
+  const sourceCount = (response.results as unknown[]).filter((item) => {
+    if (!item || typeof item !== "object" || !("url" in item) || typeof item.url !== "string") return false;
+    try { const url = new URL(item.url); return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password; } catch { return false; }
+  }).length;
+  return { verified: sourceCount > 0, proof: { adapterKind: "openai_responses_compatible", probeVersion: 1,
+    upstreamModelId: model.upstreamModelId, verified: true, sourceCount } };
+}
+
+type AnswerCheck = "modelAccess" | "structuredOutput" | "toolCalling" | "forcedToolCall" | "parallelToolCalls" | "vision" | "directPdf" | "streaming" | "hostedSearch" | "codexWebSearch";
 type AnswerProbeResult = { verified: boolean; proof?: AdminProviderTestEvidence[keyof AdminProviderTestEvidence]; usageSeen?: boolean };
 const answerProofFields = { structuredOutput: "structuredOutput", forcedToolCall: "forcedToolCall", parallelToolCalls: "parallelToolCalls",
-  vision: "visionInput", directPdf: "pdfInput", hostedSearch: "hostedSearch" } as const;
+  vision: "visionInput", directPdf: "pdfInput", hostedSearch: "hostedSearch", codexWebSearch: "codexWebSearch" } as const;
 
 function beforeProbeAbort<T>(signal: AbortSignal, operation: () => Promise<T>): Promise<T> {
   signal.throwIfAborted();
@@ -827,8 +848,9 @@ async function testAnswerCapabilities(original: AdminProviderDraftTesterInput, o
   const reuse = Boolean(original.reuseSetupEvidence);
   const probeHostedSearch = shouldProbeHostedSearch(original.model, original.connection) ||
     previous?.capabilitySetup?.checks.hostedSearch !== undefined;
+  const probeCodexWebSearch = shouldProbeCodexWebSearch(original.model, original.connection) || previous?.capabilitySetup?.checks.codexWebSearch !== undefined;
   const applicable: readonly AnswerCheck[] = ["modelAccess", "structuredOutput", "toolCalling", "forcedToolCall", "parallelToolCalls", "vision", "directPdf", "streaming",
-    ...(probeHostedSearch ? ["hostedSearch" as const] : [])];
+    ...(probeHostedSearch ? ["hostedSearch" as const] : []), ...(probeCodexWebSearch ? ["codexWebSearch" as const] : [])];
   const checks = { ...Object.fromEntries(applicable.map((key) => [key, "not_checked"])) as
     Partial<Record<AdminProviderCapabilityCheck, AdminProviderCapabilityCheckStatus>>, ...previous?.capabilitySetup?.checks };
   const compatibility = { ...unsupportedAdminProviderCompatibilityEvidence(), ...previous?.compatibility,
@@ -894,12 +916,12 @@ async function testAnswerCapabilities(original: AdminProviderDraftTesterInput, o
     const field = key in answerProofFields ? answerProofFields[key as keyof typeof answerProofFields] : undefined;
     if (attempt.status === "verified" && result) {
       checks[key] = "verified";
-      if (key !== "hostedSearch") compatibility[key] = "verified";
+      if (key !== "hostedSearch" && key !== "codexWebSearch") compatibility[key] = "verified";
       if (result.usageSeen) compatibility.usage = "verified";
       if (field && result.proof) Object.assign(evidence, { [field]: result.proof });
     } else if (attempt.status === "unsupported" || checks[key] !== "verified") {
       checks[key] = attempt.status;
-      if (key !== "hostedSearch") compatibility[key] = "not_supported";
+      if (key !== "hostedSearch" && key !== "codexWebSearch") compatibility[key] = "not_supported";
       if (field) delete evidence[field];
     }
     completed += 1;
@@ -937,6 +959,7 @@ async function testAnswerCapabilities(original: AdminProviderDraftTesterInput, o
     const result = await runGenerationProbe(input, options, true);
     return { verified: result.status === "verified", usageSeen: result.usageSeen };
   });
+  if (probeCodexWebSearch) await check("codexWebSearch", probeModel.adapterKind === "openai_responses_compatible", (input) => testCodexWebSearch(input, options));
   if (probeHostedSearch) await check("hostedSearch", probeModel.adapterKind === "openai_responses_compatible",
     (input) => testHostedSearch(input, options));
   original.signal?.throwIfAborted();

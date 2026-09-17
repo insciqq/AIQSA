@@ -10,6 +10,7 @@ import { workspaceAttachmentPath, workspaceSandboxName } from "@/lib/domain/work
 import { getWorkspaceConfig } from "./config";
 import { MicrosandboxWorkspaceRuntime } from "./microsandboxRuntime";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "./runtime";
+import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
 
 const sdk = vi.hoisted(() => ({
   builder: vi.fn(),
@@ -144,6 +145,24 @@ function fixture() {
 describe("Microsandbox Workspace lifecycle", () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => vi.restoreAllMocks());
+
+  it.each([null, 2])("passes Agent deadline %s explicitly, omitting the SDK timer in Off", async (timeoutSeconds) => {
+    const value = fixture();
+    const runtime = new MicrosandboxWorkspaceRuntime({ ...config, agentGatewayEnabled: true });
+    await runtime.ensureSession(ensureInput);
+    const builder = { args: vi.fn().mockReturnThis(), cwd: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis(),
+      envs: vi.fn().mockReturnThis(), stdinBytes: vi.fn().mockReturnThis() };
+    const handle = { recv: vi.fn(async () => null), kill: vi.fn(async () => {}) };
+    Object.assign(value.sandbox, { execStreamWith: vi.fn(async (_command: string, configure: (builder: unknown) => unknown) => {
+      configure(builder); return handle;
+    }) });
+    await runtime.startAgent({ ...sessionInput, modelRunId: "run_fixture", runtimeExecSessionId: `agent-${randomUUID()}`,
+      prompt: "Synthetic task", runToken: "a".repeat(43), timeoutSeconds,
+      profile: { gatewayOrigin: AGENT_GATEWAY_ORIGIN, modelId: "fixture", contextWindowTokens: 128000,
+        maxOutputTokens: 4096, developerInstructions: "Synthetic instructions", mcpMode: "off", mcpTimeoutSeconds: 90 } });
+    if (timeoutSeconds === null) expect(builder.timeout).not.toHaveBeenCalled();
+    else expect(builder.timeout).toHaveBeenCalledWith(2000);
+  });
 
   it.each([true, false])("reports only a proven SDK timeout before the public fallback (typed=%s)", async (typed) => {
     const value = fixture();
@@ -340,6 +359,37 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(outputs).toHaveLength(1);
     expect(outputs[0]?.checksum).toBe(createHash("sha256").update(bytes).digest("hex"));
     expect(Buffer.from(await new Response(outputs[0]!.body).arrayBuffer())).toEqual(Buffer.from(bytes));
+  });
+
+  it.each([true, false])("ignores empty package markers while exporting available deliverables (%s)", async (withArchive) => {
+    const value = fixture();
+    const outputDirectory = "/workspace/output/run_fixture";
+    const emptyPath = `${outputDirectory}/tests/__init__.py`;
+    const archivePath = `${outputDirectory}/project.tar.gz`;
+    const archive = Buffer.from("synthetic archive bytes");
+    value.files.set(emptyPath, Buffer.alloc(0));
+    if (withArchive) value.files.set(archivePath, archive);
+    value.fs.list.mockImplementation(async (directory) => directory === outputDirectory ? [
+      { kind: "directory", path: `${outputDirectory}/tests`, size: 4096 },
+      ...(withArchive ? [{ kind: "file", path: archivePath, size: archive.length }] : [])
+    ] : [{ kind: "file", path: emptyPath, size: 0 }]);
+    const outputs = await value.runtime.collectOutputs({ ...sessionInput, modelRunId: "run_fixture", outputDirectory });
+    expect(outputs.map((output) => output.relativePath)).toEqual(withArchive ? ["project.tar.gz"] : []);
+    expect(value.fs.readStream).not.toHaveBeenCalledWith(emptyPath);
+    if (withArchive) {
+      expect(outputs[0]!.checksum).toBe(createHash("sha256").update(archive).digest("hex"));
+      expect(Buffer.from(await new Response(outputs[0]!.body).arrayBuffer())).toEqual(archive);
+    }
+  });
+
+  it.each([-1, Number.NaN, 1.5])("still rejects an invalid output size %s", async (size) => {
+    const value = fixture();
+    const outputDirectory = "/workspace/output/run_fixture";
+    value.files.set(`${outputDirectory}/result.txt`, Buffer.from("result"));
+    value.fs.list.mockResolvedValueOnce([{ kind: "file", path: `${outputDirectory}/result.txt`, size }]);
+    await expect(value.runtime.collectOutputs({ ...sessionInput, modelRunId: "run_fixture", outputDirectory }))
+      .rejects.toMatchObject({ code: "workspace_output_export_failed" });
+    expect(value.fs.readStream).not.toHaveBeenCalled();
   });
 
   it.each(["same size", "short read", "long read", "unreadable", "symlink", "index checksum", "forged index", "replacement"] as const)(

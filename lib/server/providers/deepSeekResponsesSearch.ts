@@ -1,3 +1,4 @@
+import { dispatchSearchRequest } from "./searchDispatch";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { adminSearchExecutionLimits } from "../../contracts/adminSearch";
 import {
@@ -148,13 +149,13 @@ export function createDeepSeekResponsesSearchAdapter(input: Readonly<{
       };
     },
     async search(request, options = {}) {
-      const response = await input.client.create(
-        buildDeepSeekResponsesSearchRequest(request),
-        {
+      const body = buildDeepSeekResponsesSearchRequest(request);
+      const response = await dispatchSearchRequest(options, {
+        body, execute: () => input.client.create(body, {
           signal: options.signal,
           ...(typeof options.timeoutMs === "number" ? { timeoutMs: options.timeoutMs } : {})
-        }
-      );
+        }), usage: extractOpenAIUsage
+      });
       const status = openAIResponseStatus(response);
       const artifacts = searchArtifacts(response);
       const usage = extractOpenAIUsage(response);

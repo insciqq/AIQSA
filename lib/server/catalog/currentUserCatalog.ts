@@ -21,6 +21,7 @@ import {
   type ChatDefaults
 } from "../../contracts/chatDefaults";
 import { decodeKnowledgePlan } from "../../contracts/knowledge";
+import { supportsAgentAdapter } from "../providers/agentResponses";
 
 export type CatalogSettingsRecord = Partial<AnswerSoundPreferences> & {
   defaultControlValues: unknown;
@@ -108,7 +109,8 @@ export function resolveCurrentUserCatalogSelection(
   );
   const models = input.models
     .filter((model) => canAccessModel(input.entitlements, model.provider, model.modelId))
-    .map((model) => buildCatalogModel(model, entitledStrategies));
+    .map((model) => ({ ...buildCatalogModel(model, entitledStrategies),
+      ...(process.env.AIQSA_AGENT_GATEWAY_URL && supportsAgentAdapter(model.adapterKind) ? { agentAvailable: true } : {}) }));
   const personalModelId = input.settings.defaultProviderModelId;
   const personalModel = personalModelId
     ? models.find((model) => model.modelId === personalModelId) ?? null

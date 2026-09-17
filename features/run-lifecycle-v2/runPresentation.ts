@@ -399,7 +399,7 @@ function failureFromState(
   state: RunLifecycleStateV2,
   eventFailure: RunFailureV2 | null
 ): NonNullable<RunPresentationV2["failure"]> {
-  const failure = state.failure ?? eventFailure ?? {};
+  const failure = { ...eventFailure, ...state.failure };
   if (isToolSynthesisFailure(failure.code, failure.message)) {
     return { ...TOOL_SYNTHESIS_FAILURE, recovery: "regenerate" };
   }

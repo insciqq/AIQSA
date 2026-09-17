@@ -5,6 +5,7 @@ import {
   Home,
   Layers,
   Mail,
+  Megaphone,
   Search,
   ShieldCheck,
   Sparkles,
@@ -15,6 +16,7 @@ import {
 } from "lucide-react";
 
 export type AdminSectionId =
+  | "announcements"
   | "access-rules"
   | "email"
   | "groups"
@@ -54,6 +56,7 @@ export const adminSections = [
   { Icon: Users, group: "people", id: "users", label: "Users" },
   { Icon: Layers, group: "people", id: "groups", label: "Groups" },
   { Icon: ShieldCheck, group: "people", id: "access-rules", label: "Sign-up rules" },
+  { Icon: Megaphone, group: "people", id: "announcements", label: "Announcements" },
   { Icon: Wrench, group: "platform", id: "mcp", label: "MCP servers" },
   { Icon: SquareTerminal, group: "platform", id: "workspace", label: "Workspace" },
   { Icon: Mail, group: "platform", id: "email", label: "Email" },

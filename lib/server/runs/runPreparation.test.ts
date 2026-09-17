@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { EMPTY_KNOWLEDGE_SELECTION, type KnowledgeSelection } from "../../contracts/knowledge";
 import { textMessageContent } from "../../domain/content";
 import { resolveStandardChatBaseline } from "../../domain/promptTemplates";
+import { createInstructionPreviewHandlers } from "../instructions/previewHandlers";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type { McpRunPlanResult } from "../mcp/runPlan";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
@@ -21,6 +22,7 @@ import type { ProviderAdapter, ProviderConversationMessage, ProviderModelCapabil
 import type { ProjectRunAdmission, RunAttachmentRecord } from "./runRepositoryContract";
 import type { RunAttachmentLimits } from "./attachmentLimits";
 import { materializePreparedRunData, prepareRun, type PreparedRun, type RegenerateRunPreparationSource, type RunPreparationDeps, type RunPreparationInput, type RunPreparationResult, type SendRunPreparationSource } from "./runPreparation";
+import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
 
 const baseCapabilities: ProviderModelCapabilities = {
   contextWindow: 32_768,
@@ -884,6 +886,18 @@ async function expectFailure(input: {
 }
 
 describe("run preparation", () => {
+  it.each([
+    [{ agentEnabled: "yes" }, "agent_selection_invalid"],
+    [{ agentEnabled: true, workspace: { enabled: false } }, "agent_workspace_required"],
+    [{ agentEnabled: true, workspace: { enabled: true }, assistantId: "assistant" }, "agent_personal_chat_required"]
+  ] as const)("rejects incompatible Agent admission before workspace effects: %s", async (body, code) => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const workspace = { prepare: vi.fn() };
+    expect(await prepareRun({ ...harness.deps, workspace }, sendInput(successBody(body))))
+      .toMatchObject({ ok: false, code });
+    expect(workspace.prepare).not.toHaveBeenCalled();
+  });
+
   it("freezes owner instructions for sends and regeneration without changing the user question", async () => {
     for (const input of [sendInput(), regenerateInput(successBody())]) {
       const h = createHarness();
@@ -909,6 +923,38 @@ describe("run preparation", () => {
     expect(instructions.resolveForRun).not.toHaveBeenCalled();
     expect(result.normalizedRequest.instructionPreset).toBeUndefined();
     expect(result.normalizedRequest.prompt.responseReminder).toBe("");
+  });
+
+  it("admits Search with Agent and freezes policy without making budgets part of thread compatibility", async () => {
+    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
+    try {
+      const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+      const search = providerNeutralOpenAISearchPlan("anthropic_messages").searches[0]!;
+      const load = vi.fn<NonNullable<RunPreparationDeps["providerAdmission"]>["load"]>(async (input) => ({
+        ...await harness.deps.providerAdmission!.load({ ...input, searchPlan: { mode: "all_selected", optionIds: [] } }),
+        requestedSearchPlan: input.searchPlan, requiresClientSearchRoutes: true, searches: [search]
+      }));
+      const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn<NonNullable<RunPreparationDeps["workspace"]>["prepare"]>(async (input) => ({ ok: true, tools: [], plan: {
+        ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
+        normalized: { enabled: true, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
+          maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/fixture.json",
+          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_fixture",
+          syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
+      } })) };
+      const body = successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture",
+        params: { maxOutputTokens: 2048 }, searchPlan: { mode: "all_selected", optionIds: [search.optionId] } });
+      const configs = [];
+      for (const limitsEnabled of [false, true]) {
+        const prepared = preparedFrom(await prepareRun({ ...harness.deps, workspace, providerAdmission: { load },
+          agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY, limitsEnabled, maxOutputTokens: 256, version: limitsEnabled ? 2 : 1 }) }
+        }, sendInput(body)));
+        expect(prepared.normalizedRequest.agent).toMatchObject({ limitsEnabled, timeoutSeconds: limitsEnabled ? 3600 : null,
+          maxOutputTokens: limitsEnabled ? 256 : 2048, policyVersion: limitsEnabled ? 2 : 1 });
+        configs.push(prepared.normalizedRequest.agent!);
+      }
+      expect(load).toHaveBeenCalledWith(expect.objectContaining({ requiresClientSearchRoutes: true }));
+      expect(configs[0]!.compatibilityHash).toBe(configs[1]!.compatibilityHash);
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it.each([true, false])("freezes browser guidance only when Workspace is enabled: %s", async (enabled) => {
@@ -1562,6 +1608,24 @@ describe("run preparation", () => {
 
     expect(prepared.normalizedRequest.memoryActionTools).toBeUndefined();
     expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session") ?? []).toEqual([]);
+  });
+
+  it.each(["Europe/Berlin", "Invalid/Zone", undefined])("renders the default preview from the ordinary-run instructions: %s", async timeZone => {
+    await withFrozenClock(async () => {
+      const prepared = preparedFrom(await prepareRun(createHarness().deps, sendInput(successBody({ timeZone }))));
+      const handlers = createInstructionPreviewHandlers({
+        resolveAuth: vi.fn().mockResolvedValue({ userId: "owner", user: { status: "active" } })
+      });
+      const query = timeZone === undefined ? "" : `?timeZone=${encodeURIComponent(timeZone)}`;
+      const response = await handlers.GET(new Request(`http://localhost/api/me/instructions/preview${query}`));
+      const { preview } = await response.json();
+      expect(response.status).toBe(200);
+      expect(preview.baseline.renderedSystemPrompt).toBe(prepared.normalizedRequest.prompt.system);
+      expect(preview.visibleAnswerContract).toBe(prepared.normalizedRequest.prompt.developer);
+      expect(preview.generatedAt).toBe(new Date().toISOString());
+      expect(preview.baseline.timeZone).toBe(prepared.normalizedRequest.prompt.baseline?.timeZone);
+      expect(preview.baseline.timeZoneSource).toBe(prepared.normalizedRequest.prompt.baseline?.timeZoneSource);
+    });
   });
 
   it("keeps send and regeneration preparation in parity while using their server-owned context sources", async () => {

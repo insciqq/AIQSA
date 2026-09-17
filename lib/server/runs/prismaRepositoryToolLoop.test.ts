@@ -5,23 +5,34 @@ import type { NormalizedRunRequest } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { createKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
 import { appendRunOutputEvents, createPrismaRunToolLoopOperations } from "./prismaRepositoryToolLoop";
+import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
+import { workspaceActivitySnapshot, WORKSPACE_ACTIVITY_RECEIPT, WORKSPACE_ACTIVITY_SNAPSHOT } from "./workspaceActivityPersistence";
+import { summarizeMessageRunWorkspaceActivity } from "../chats/prismaRepository";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
+
+function activityStore() {
+  const rows: { eventType: string; payload: unknown; sequence: number }[] = [];
+  const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const modelRunEvent = {
+    aggregate: async () => ({ _max: { sequence: Math.max(-1, ...rows.map((row) => row.sequence)) } }),
+    createMany: vi.fn(async ({ data }: { data: typeof rows }) => { rows.push(...data); }),
+    findFirst: async ({ where }: { where: { eventType: string; payload?: { path: string[]; equals: string } } }) =>
+      [...rows].reverse().find((row) => row.eventType === where.eventType && (!where.payload ||
+        where.payload.path.reduce<unknown>((value, key) => object(value)[key], row.payload) === where.payload.equals)) ?? null,
+    findMany: async () => rows.filter((row) => row.eventType === "artifact" && object(row.payload).artifactType === "workspace_activity"),
+    findUnique: async () => rows.find((row) => row.sequence === -1) ?? null,
+    upsert: async ({ create, update }: { create: typeof rows[number]; update: { payload: unknown } }) => {
+      const existing = rows.find((row) => row.sequence === -1);
+      if (existing) existing.payload = update.payload;
+      else rows.push(create);
+    }
+  };
+  return { rows, tx: { modelRunEvent } as unknown as Prisma.TransactionClient };
+}
 
 describe("Workspace activity publication", () => {
   it("deduplicates grounded output and Workspace replays within one ordered output stream", async () => {
-    const rows: { eventType: string; payload: RunOutputArtifactEvent["data"]; sequence: number }[] = [];
-    const tx = {
-      modelRunEvent: {
-        aggregate: async () => ({ _max: { sequence: rows.at(-1)?.sequence ?? null } }),
-        createMany: async ({ data }: { data: typeof rows }) => { rows.push(...data); },
-        findFirst: async ({ where }: { where: { eventType: string; payload?: { equals: string } } }) =>
-          where.eventType === "grounding_display"
-            ? [...rows].reverse().find((row) => row.eventType === "grounding_display") ?? null
-            : rows.find((row) => "artifactType" in row.payload &&
-              row.payload.artifactType === "workspace_activity" &&
-              row.payload.payload.updateId === where.payload?.equals) ?? null
-      }
-    } as unknown as Prisma.TransactionClient;
+    const { rows, tx } = activityStore();
     const display: RunOutputArtifactEvent = { type: "grounding_display", data: {
       provider: "gemini", suggestionsHtml: '<a href="https://www.google.com/search?q=weather">Weather</a>',
       citations: [{ startIndex: 0, endIndex: 8, title: "Source", url: "https://example.test/source" }]
@@ -33,18 +44,20 @@ describe("Workspace activity publication", () => {
     const first = await appendRunOutputEvents(tx, "run", [display, activity, display]);
     const replay = await appendRunOutputEvents(tx, "run", [activity, display]);
     expect(rows.map(({ eventType, sequence }) => ({ eventType, sequence }))).toEqual([
-      { eventType: "grounding_display", sequence: 0 }, { eventType: "artifact", sequence: 1 }
+      { eventType: "grounding_display", sequence: 0 }, { eventType: WORKSPACE_ACTIVITY_RECEIPT, sequence: 1 },
+      { eventType: WORKSPACE_ACTIVITY_SNAPSHOT, sequence: -1 }
     ]);
     expect(first).toMatchObject([display, { data: { payload: { sequence: 1 } } }, display]);
     expect(replay).toEqual([first[1], display]);
   });
 
   it.each(["complete", "error", "cancelled"] as const)("keeps provider output fenced after %s while allowing Workspace settlement", async (status) => {
-    const createMany = vi.fn();
+    const store = activityStore();
+    const createMany = store.tx.modelRunEvent.createMany;
     const tx = {
       $queryRaw: async () => [{ id: "run", status, errorPayload: { recoveryTerminal: true } }],
       modelRun: { update: vi.fn() },
-      modelRunEvent: { aggregate: async () => ({ _max: { sequence: 3 } }), createMany }
+      modelRunEvent: { ...store.tx.modelRunEvent, aggregate: async () => ({ _max: { sequence: 3 } }) }
     };
     const operations = createPrismaRunToolLoopOperations({
       $transaction: async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)
@@ -63,15 +76,7 @@ describe("Workspace activity publication", () => {
   });
 
   it("reuses the first durable sequence and payload when a settled tool artifact is replayed", async () => {
-    const rows: { payload: RunOutputArtifactEvent["data"]; sequence: number }[] = [];
-    const tx = {
-      modelRunEvent: {
-        aggregate: async () => ({ _max: { sequence: rows.at(-1)?.sequence ?? null } }),
-        createMany: async ({ data }: { data: typeof rows }) => { rows.push(...data); },
-        findFirst: async ({ where }: { where: { payload: { equals: string; path: string[] } } }) =>
-          rows.find((row) => "artifactType" in row.payload && row.payload.artifactType === "workspace_activity" && row.payload.payload.updateId === where.payload.equals) ?? null
-      }
-    } as unknown as Prisma.TransactionClient;
+    const { rows, tx } = activityStore();
     const event = (updateId: string, phase: "running" | "succeeded"): RunOutputArtifactEvent => ({
       data: { artifactType: "workspace_activity", payload: { command: { preview: "command" }, id: "command", kind: "command", phase, updateId } },
       type: "artifact"
@@ -82,8 +87,49 @@ describe("Workspace activity publication", () => {
     expect(first).toMatchObject([{ data: { payload: { sequence: 0 } } }]);
     expect(last).toMatchObject([{ data: { payload: { sequence: 1 } } }, { data: { payload: { sequence: 1 } } }]);
     expect(replay).toEqual(first);
-    expect(rows).toHaveLength(2);
+    expect(rows.filter((row) => row.eventType === WORKSPACE_ACTIVITY_RECEIPT)).toHaveLength(2);
+    expect(workspaceActivitySnapshot(rows.find((row) => row.sequence === -1)?.payload)?.entries).toHaveLength(1);
   });
+
+  it("retains one bounded snapshot, value-free replay receipts and the same live/reload feed", async () => {
+    const { rows, tx } = activityStore();
+    const events: RunOutputArtifactEvent[] = Array.from({ length: 600 }, (_, index) => ({
+      type: "artifact", data: { artifactType: "workspace_activity", payload: {
+        id: `step:${index}`, updateId: `update:${index}`, kind: "command", phase: index === 0 ? "running" : index === 2 ? "failed" : "succeeded",
+        command: { preview: `command ${index}`, stdoutPreview: `output ${index}` }
+      } }
+    }));
+    const published = await appendRunOutputEvents(tx, "run", events);
+    const stored = workspaceActivitySnapshot(rows.find((row) => row.sequence === -1)?.payload)!;
+    const live = mergeWorkspaceActivity(null, { entries: published.flatMap((event) =>
+      event.type === "artifact" && event.data.artifactType === "workspace_activity" ? [event.data.payload] : []) });
+    expect(stored).toEqual(live);
+    expect(stored.entries).toHaveLength(512);
+    expect(stored.entries[0]).toMatchObject({ kind: "elided", count: 89, failedCount: 1, throughSequence: 89 });
+    expect(stored.entries[1]?.id).toBe("step:0");
+    const receipts = rows.filter((row) => row.eventType === WORKSPACE_ACTIVITY_RECEIPT);
+    expect(receipts).toHaveLength(600);
+    expect(JSON.stringify(receipts)).not.toMatch(/command|output /u);
+    const replays = await appendRunOutputEvents(tx, "run", [events[3]!, events[599]!]);
+    expect(replays).toEqual([published[3], published[599]]);
+    expect(workspaceActivitySnapshot(rows.find((row) => row.sequence === -1)?.payload)).toEqual(stored);
+    expect(summarizeMessageRunWorkspaceActivity({ events: rows, status: "streaming" })).toEqual(stored);
+    const stopped = summarizeMessageRunWorkspaceActivity({ events: rows, status: "cancelled" })!;
+    expect(stopped.entries[0]?.phase).toBe("requested");
+    expect(stopped.entries[1]).toMatchObject({ phase: "cancelled", runOutcome: "cancelled" });
+  });
+
+  it("rejects replacement text using a previously committed update identity", async () => {
+    const { tx } = activityStore();
+    const event: RunOutputArtifactEvent = { type: "artifact", data: { artifactType: "workspace_activity", payload: {
+      id: "command", updateId: "update", kind: "command", phase: "succeeded", command: { preview: "original" }
+    } } };
+    await appendRunOutputEvents(tx, "run", [event]);
+    await expect(appendRunOutputEvents(tx, "run", [{ ...event, data: { artifactType: "workspace_activity", payload: {
+      id: "command", updateId: "update", kind: "command", phase: "succeeded", command: { preview: "replacement" }
+    } } }])).rejects.toThrow("workspace_activity_replay_invalid");
+  });
+
 });
 
 type ToolCallRow = {
@@ -403,6 +449,24 @@ describe("provider dispatch recovery request loading", () => {
     searchPlan: { mode: "all_selected", options: [] },
     toolMode: "none"
   } satisfies NormalizedRunRequest;
+
+  it("restores current admitted model capabilities without weakening their validation", async () => {
+    const capabilities = { ...normalizedRequest.modelCapabilities, vision: true, forcedToolCalling: true,
+      imageEditing: false, imageGeneration: false, maxOutputTokens: 8192,
+      imageInputLimits: { imageBytes: 1048576, imageCount: 4, imagePixels: 4000000, payloadBytes: 5000000 } };
+    let accepted: unknown = { ...normalizedRequest, modelCapabilities: capabilities };
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      normalizedRequest: accepted, provider: "provider-one"
+    })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" })).resolves.toEqual(accepted);
+    for (const patch of [ { forcedToolCalling: "true" }, { maxOutputTokens: 0 },
+      { imageInputLimits: { ...capabilities.imageInputLimits, imageCount: -1 } }, { vision: false } ]) {
+      accepted = { ...normalizedRequest, modelCapabilities: { ...capabilities, ...patch } };
+      await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
+        .rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+    }
+  });
 
   it.each([
     [100, 128, true], [101, 128, true], [128, 128, true], [129, 128, false],

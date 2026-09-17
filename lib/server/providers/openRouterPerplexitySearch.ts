@@ -1,3 +1,4 @@
+import { dispatchSearchRequest } from "./searchDispatch";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import {
   buildOpenRouterPerplexitySearchRequest,
@@ -57,11 +58,13 @@ export function createOpenRouterPerplexitySearchAdapter(
     },
     async search(request, searchOptions = {}): Promise<ProviderSearchResult> {
       const body = buildOpenRouterPerplexitySearchRequest(request);
-      const response = await options.client.createChatCompletion(body, {
-        signal: searchOptions.signal,
-        ...(typeof searchOptions.timeoutMs === "number"
-          ? { timeoutMs: searchOptions.timeoutMs }
-          : {})
+      const response = await dispatchSearchRequest(searchOptions, {
+        body, execute: () => options.client.createChatCompletion(body, {
+          signal: searchOptions.signal,
+          ...(typeof searchOptions.timeoutMs === "number"
+            ? { timeoutMs: searchOptions.timeoutMs }
+            : {})
+        }), usage: extractOpenRouterUsage
       });
       const usage = extractOpenRouterUsage(response);
       const responseError = openRouterResponseError(response);

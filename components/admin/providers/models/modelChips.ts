@@ -31,6 +31,7 @@ export type ModelChipKey =
   | "reranking"
   | "stream"
   | "hostedSearch"
+  | "codexWebSearch"
   | "tools"
   | "memoryActions"
   | "unavailable";
@@ -149,6 +150,9 @@ export function modelChipsFromEvidence(
   const forcedStatus = compatibility?.forcedToolCall ?? legacyStatus(evidence.forcedToolCall, configuration);
   if (evidence.hostedSearch || evidence.capabilitySetup?.checks.hostedSearch) {
     chips.push(capabilityChip("hostedSearch", "Hosted Search", "hostedSearch", legacyStatus(evidence.hostedSearch, configuration)));
+  }
+  if (evidence.codexWebSearch || evidence.capabilitySetup?.checks.codexWebSearch) {
+    chips.push(capabilityChip("codexWebSearch", "Codex web search", "codexWebSearch", legacyStatus(evidence.codexWebSearch, configuration)));
   }
   const forcedReceipt = evidence.capabilitySetup?.checks.forcedToolCall;
   if (forcedStatus !== "verified" && (forcedStatus || forcedReceipt)) {

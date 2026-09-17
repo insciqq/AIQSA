@@ -99,6 +99,28 @@ const request = { allowPrivateNetwork: false, apiRoot: "https://provider.example
   perModelCapabilities: { "model-a": { contextWindow: 272_000, maxOutputTokens: 65_536 }, "model-b": { contextWindow: 128_000 } } };
 
 describe("initial setup per-model publication and retry", () => {
+  it("preserves the model-bound Codex search proof across activation and check publication", async () => {
+    const f = fixture();
+    const ordinaryTest = f.test.getMockImplementation()!;
+    f.test.mockImplementation(async (value) => {
+      const outcome = await ordinaryTest(value);
+      return { ...outcome, evidence: { ...outcome.evidence,
+        capabilitySetup: { ...outcome.evidence.capabilitySetup!, checks: { ...outcome.evidence.capabilitySetup!.checks,
+          codexWebSearch: "verified" } },
+        codexWebSearch: { adapterKind: "openai_responses_compatible", sourceCount: 1, probeVersion: 1,
+          upstreamModelId: value.model.upstreamModelId, verified: true } as const
+      } };
+    });
+    await f.custom.setup({ actor: { sessionId: "session", userId: "admin" },
+      request: { ...request, apiRoot: "https://provider.example.test/backend-api/codex", modelIds: ["model-a"] } });
+    expect(f.connection().models[0]!.activeConfig?.capabilities).toMatchObject({ codexStandaloneWebSearch: true, nativeSearch: false });
+    expect(f.store.mock.calls.at(-1)?.[0].evidence.codexWebSearch).toEqual({
+      adapterKind: "openai_responses_compatible", sourceCount: 1, probeVersion: 1, upstreamModelId: "model-a", verified: true
+    });
+    expect(f.connection().activeChecks.find((check) => check.providerModelId === f.connection().models[0]!.id)
+      ?.evidence?.codexWebSearch?.verified).toBe(true);
+  });
+
   it("checks every detected codex-lb model and publishes only its successful Search capability", async () => {
     const f = fixture();
     const ordinaryTest = f.test.getMockImplementation()!;

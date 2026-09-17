@@ -193,7 +193,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     ...(message.status === "error" && message.errorMessage ? { errorMessage: message.errorMessage } : {}),
     content:
       message.status === "error"
-        ? persistedText || message.errorMessage || ""
+        ? persistedText
         : message.status === "cancelled"
           ? persistedText || "Stopped."
           : message.content,

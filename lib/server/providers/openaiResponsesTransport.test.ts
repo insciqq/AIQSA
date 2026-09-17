@@ -35,6 +35,25 @@ function delayedResponse(input: {
 }
 
 describe("OpenAI Responses transport", () => {
+  it("assembles a compatible streamed create from completed items without changing or repeating the request", async () => {
+    const item = { type: "message", id: "m1", role: "assistant", content: [{ type: "output_text", text: "OK" }] };
+    const terminal = { id: "r1", status: "completed", output: [], usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 } };
+    const events = [{ type: "response.output_item.done", output_index: 0, item }, { type: "response.completed", response: terminal }];
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(events.map(x => `data: ${JSON.stringify(x)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } }));
+    const client = createFetchOpenAIResponsesClient({ apiKey: "synthetic-key", baseUrl: "https://example.test/backend-api/codex", fetchFn, acceptStreamedCreate: true });
+    expect(await client.create({ model: "synthetic-model", stream: false })).toEqual({ ...terminal, output: [item] });
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(fetchFn.mock.calls[0]![0]).toBe("https://example.test/backend-api/codex/responses");
+    expect(JSON.parse(String(fetchFn.mock.calls[0]![1]?.body)).stream).toBe(false);
+  });
+
+  it.each(["[DONE]", JSON.stringify({ type: "response.completed", response: { status: "in_progress" } })])("rejects streamed creates without matching terminal proof: %s", async (data) => {
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(`data: ${data}\n\n`, { headers: { "content-type": "text/event-stream" } }));
+    const client = createFetchOpenAIResponsesClient({ apiKey: "synthetic-key", fetchFn, acceptStreamedCreate: true });
+    await expect(client.create({ stream: false })).rejects.toThrow(/^openai_response_/);
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
   const remoteSecret = "sk-aiqsa-remote-error-regression-123456789";
 
   it("preserves the Responses endpoints, methods, headers, bodies, and custom base URL", async () => {

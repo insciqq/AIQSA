@@ -54,6 +54,8 @@ export type ProviderModelCapabilities = {
   imageGeneration?: boolean;
   imageEditing?: boolean;
   nativeSearch: boolean;
+  /** Native Codex /alpha/search, independent of AIQSA Search. */
+  codexStandaloneWebSearch?: boolean;
   parallelToolCalls?: boolean;
   pdf: boolean;
   reasoning: boolean;
@@ -111,6 +113,7 @@ export type NormalizedRunWorkspace = Readonly<{
 }>;
 
 export type NormalizedRunRequest = {
+  agent?: import("../agents/config").NormalizedRunAgent;
   /** Owner selection fenced at initial acceptance; texts live in prompt. */
   instructionPreset?: Readonly<{ presetId: string | null; revision: number | null; selectionVersion: number }>;
   imagePlan?: import("../providerRuntime/imageModelRole").AcceptedImageGenerationPlan;
@@ -378,6 +381,7 @@ export function isProviderSearchExecutionError(
 }
 
 export type ProviderSearchOptions = {
+  dispatch?: import("./searchDispatch").ProviderSearchDispatch;
   signal?: AbortSignal;
   timeoutMs?: number;
 };

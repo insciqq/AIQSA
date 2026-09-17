@@ -6,7 +6,7 @@ export type LocalPromptTemplateOptions = {
 
 /**
  * The code-owned platform baseline for ordinary no-Assistant runs. It is not a
- * database object: it cannot be listed, edited, shared, versioned, or deleted,
+ * database object: it cannot be edited, shared, versioned, or deleted,
  * and the browser has no authority to replace it or to supply the rendered
  * date/time as arbitrary prompt text.
  */
@@ -14,6 +14,10 @@ export const STANDARD_CHAT_BASELINE_TEMPLATE =
   "You are a helpful AI assistant. Today is {local_date}, local time is {local_time}.";
 
 export const STANDARD_CHAT_FALLBACK_TIME_ZONE = "UTC";
+
+/** The cross-cutting answer visibility rules included in every chat run. */
+export const VISIBLE_ANSWER_CONTRACT =
+  "Visible answer contract: answer the user directly in the chat message. Do not include debug sections such as Question, Search, Provider Parameters, Request Preview, Artifacts, Usage, or Errors, and do not expose provider, retrieval, tool, request, usage, or event internals. Include citations naturally only when they help the answer.";
 
 const MAX_TIME_ZONE_LENGTH = 64;
 const TIME_ZONE_SHAPE = /^[A-Za-z0-9_+\-/]+$/u;

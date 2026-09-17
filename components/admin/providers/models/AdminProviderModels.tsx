@@ -18,6 +18,7 @@ import {
   providerNeedsKeyForModels,
   turnOffConsequence
 } from "@/components/admin/providers/models/modelListView";
+import { modelEditGuard } from "@/components/admin/providers/models/modelSheetView";
 import { useAdminOpenRouterDiscovery } from "@/components/admin/providers/models/useAdminOpenRouterDiscovery";
 import { describeDeleteBlockers } from "@/components/admin/providers/providerBlockers";
 import { visibleProviderModels, type ProviderUsageSources } from "@/components/admin/providers/providerListView";
@@ -154,15 +155,15 @@ export function AdminProviderModels({
   usageSources
 }: AdminProviderModelsProps) {
   const [sheet, setSheet] = useState<Readonly<{ kind: "add" } | { kind: "edit"; model: AdminProviderModel }> | null>(null);
-  const [presetProgress, setPresetProgress] = useState<SetupProgress | null>(null);
-  const presetAbortRef = useRef<AbortController | null>(null);
-  useEffect(() => () => presetAbortRef.current?.abort(), []);
+  const [setupProgress, setSetupProgress] = useState<SetupProgress | null>(null);
+  const setupAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => setupAbortRef.current?.abort(), []);
   const discovery = useAdminOpenRouterDiscovery({
     loadCompatibleModels: controller.actions.discoverCompatibleModels,
     loadEndpoints: controller.actions.discoverEndpoints,
     loadModels: controller.actions.discoverModels
   });
-  const busy = controller.state.busy || presetProgress !== null;
+  const busy = controller.state.busy || setupProgress !== null;
   const needsKey = providerNeedsKeyForModels(connection);
   const keyHelpId = useId();
   const usage = useMemo(() => deriveModelUsage(usageSources), [usageSources]);
@@ -176,7 +177,8 @@ export function AdminProviderModels({
   const editing = sheet?.kind === "edit" ? sheet.model : null;
   const initialSetup = connection.activeVersion === 0;
   const checkHelpId = useId();
-  const hasCheckableModels = connection.models.some((model) => initialSetup || model.enabled && model.activeConfig !== null);
+  const hasCheckableModels = connection.models.some((model) => initialSetup ||
+    model.enabled && (model.activeConfig !== null || model.activeVersion === 0));
   const checkHelp = !checkKey ? selectedKey || diagnosticCredentialId
     ? "This key is unavailable. Choose a working key to check models."
     : "Choose a working API key to see its results and check models."
@@ -189,6 +191,25 @@ export function AdminProviderModels({
     void controller.actions.startModelChecks(connection.id, credentialId, modelIds);
   };
 
+  const publishDraft = (model: AdminProviderModel) => {
+    if (busy || setupAbortRef.current || model.activeConfig !== null) return;
+    const abort = new AbortController();
+    setupAbortRef.current = abort;
+    setSetupProgress({ connectionId: connection.id, phase: "validating", completed: 0, total: null });
+    void controller.actions.saveModel(connection.id, model.id, {
+      ...modelEditGuard(model),
+      configuration: model.draftConfig,
+      displayName: model.displayName
+    }, {
+      signal: abort.signal,
+      onProgress: (progress) => { if (!abort.signal.aborted) setSetupProgress(progress); }
+    }).then((result) => {
+      if (setupAbortRef.current === abort) setupAbortRef.current = null;
+      setSetupProgress(null);
+      if (!result.ok) onError(`Could not publish “${model.displayName}”. ${result.message}`);
+    });
+  };
+
   const setEnabled = (model: AdminProviderModel, enabled: boolean) => {
     const successMessage = enabled ? "Model turned on." : "Model turned off.";
     const apply = () => void controller.actions.updateModel(
@@ -198,6 +219,10 @@ export function AdminProviderModels({
       successMessage
     );
     if (enabled) {
+      if (model.activeConfig === null) {
+        publishDraft(model);
+        return;
+      }
       apply();
       return;
     }
@@ -243,16 +268,16 @@ export function AdminProviderModels({
   };
 
   const addPreset = (displayName: string, configuration: unknown) => {
-    if (busy || needsKey || presetAbortRef.current) return;
+    if (busy || needsKey || setupAbortRef.current) return;
     const abort = new AbortController();
-    presetAbortRef.current = abort;
-    setPresetProgress({ phase: "validating", completed: 0, total: null });
+    setupAbortRef.current = abort;
+    setSetupProgress({ phase: "validating", completed: 0, total: null });
     void controller.actions.saveModel(connection.id, null, { configuration, displayName }, {
       signal: abort.signal,
-      onProgress: (progress) => { if (!abort.signal.aborted) setPresetProgress(progress); }
+      onProgress: (progress) => { if (!abort.signal.aborted) setSetupProgress(progress); }
     }).then((result) => {
-      presetAbortRef.current = null;
-      setPresetProgress(null);
+      if (setupAbortRef.current === abort) setupAbortRef.current = null;
+      setSetupProgress(null);
       if (!result.ok) onError(`Setup for “${displayName}” did not finish. ${result.message}`);
     });
   };
@@ -290,9 +315,9 @@ export function AdminProviderModels({
 
   return (
     <section aria-labelledby="provider-models-heading" className="flex min-w-0 flex-col gap-2.5" data-testid="provider-models">
-      {presetProgress ? <div>
-        <AdminProviderSetupProgress progress={presetProgress} />
-        <UiV2Button className="mt-2" onClick={() => presetAbortRef.current?.abort()} tone="ghost" type="button">Stop checking</UiV2Button>
+      {setupProgress ? <div>
+        <AdminProviderSetupProgress progress={setupProgress} />
+        <UiV2Button className="mt-2" onClick={() => setupAbortRef.current?.abort()} tone="ghost" type="button">Stop checking</UiV2Button>
       </div> : null}
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
         <h3 className="text-base font-semibold text-ink" id="provider-models-heading">Models</h3>
@@ -376,11 +401,19 @@ export function AdminProviderModels({
                     });
                     const tags = usage.get(model.id) ?? [];
                     const route = modelRouteLabel(connection, model);
-                    const canCheck = !busy && Boolean(checkKey) && (initialSetup || model.enabled && model.activeConfig !== null) && !running;
+                    const canCheck = !busy && Boolean(checkKey) && (initialSetup ||
+                      model.enabled && (model.activeConfig !== null || model.activeVersion === 0)) && !running;
+                    const modelCheckHelp = !checkKey
+                      ? checkHelp
+                      : !initialSetup && !model.enabled
+                        ? "Turn this model on to publish and check it."
+                        : !initialSetup && model.activeConfig === null
+                          ? "Publishes this model and checks it with the selected key."
+                          : checkHelp;
                     const menu: UiV2MenuAction[] = [
                       { icon: "edit", label: "Edit", onSelect: () => setSheet({ kind: "edit", model }) },
                       {
-                        disabled: busy || running || !checkable.length || !model.enabled || model.activeConfig === null,
+                        disabled: busy || running || !checkable.length || !model.enabled,
                         icon: "regenerate",
                         label: "Re-check with key…",
                         submenu: checkable.map((credential) => ({
@@ -421,10 +454,10 @@ export function AdminProviderModels({
                           ) : worksWith.kind === "not_checked" ? (
                             <span className="inline-flex flex-wrap items-center gap-2 text-xs text-ink-muted">
                               not checked yet
-                              <UiV2Button aria-describedby={checkHelpId} disabled={!canCheck} onClick={() => checkKey && startChecks(checkKey.id, [model.id])} title={checkHelp} tone="ghost" type="button">
+                              <UiV2Button aria-describedby={checkHelpId} disabled={!canCheck} onClick={() => checkKey && startChecks(checkKey.id, [model.id])} title={modelCheckHelp} tone="ghost" type="button">
                                 Check model
                               </UiV2Button>
-                              {!model.enabled && !initialSetup ? <span>Turn this model on to check it.</span> : null}
+                              {!model.enabled && !initialSetup ? <span>Turn this model on to publish and check it.</span> : null}
                             </span>
                           ) : (
                             <div className="flex flex-wrap items-start gap-1.5">

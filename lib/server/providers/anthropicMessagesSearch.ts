@@ -1,3 +1,4 @@
+import { dispatchSearchRequest } from "./searchDispatch";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage, reportedTokenCount, sumTokenUsage } from "../../domain/usage";
 import { adminSearchExecutionLimits } from "../../contracts/adminSearch";
@@ -690,14 +691,12 @@ export function createAnthropicMessagesSearchAdapter(
         while (true) {
           let envelope: ReturnType<typeof messageEnvelope>;
           try {
-            const response = await options.client.createMessage({
-              ...initialBody,
-              messages
-            }, {
-              signal: deadline.signal,
-              ...(typeof searchOptions.timeoutMs === "number"
-                ? { timeoutMs: searchOptions.timeoutMs }
-                : {})
+            const body = { ...initialBody, messages };
+            const response = await dispatchSearchRequest(searchOptions, {
+              body, execute: () => options.client.createMessage(body, {
+                signal: deadline.signal,
+                ...(typeof searchOptions.timeoutMs === "number" ? { timeoutMs: searchOptions.timeoutMs } : {})
+              }), usage: (value) => extractAnthropicMessageUsage(value.usage)
             });
             envelope = messageEnvelope(response);
           } catch (error) {

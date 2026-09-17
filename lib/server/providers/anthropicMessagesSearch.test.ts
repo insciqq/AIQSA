@@ -1,3 +1,4 @@
+import type { ModelRunUsage } from "@/lib/domain/modelRunEvents";
 import { describe, expect, it, vi } from "vitest";
 import { validateSearchToolArguments } from "../search/query";
 import { createFetchAnthropicMessagesClient } from "./anthropicMessages";
@@ -266,7 +267,13 @@ describe("Anthropic Messages query-only Search adapter", () => {
       async () => responses.shift()!
     );
     const adapter = createAnthropicMessagesSearchAdapter({ client: client(createMessage) });
-    const result = await adapter.search(searchRequest());
+    const physicalUsage: ModelRunUsage[] = [];
+    const result = await adapter.search(searchRequest(), { async dispatch(attempt) {
+      const response = await attempt.execute();
+      physicalUsage.push(attempt.usage(response));
+      return response;
+    } });
+    expect(physicalUsage.map((usage) => usage.totalTokens)).toEqual([3, 7]);
 
     expect(createMessage).toHaveBeenCalledTimes(2);
     const continuationBody = createMessage.mock.calls[1]?.[0] as {

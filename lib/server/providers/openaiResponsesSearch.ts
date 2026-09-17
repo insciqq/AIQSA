@@ -1,3 +1,4 @@
+import { dispatchSearchRequest } from "./searchDispatch";
 import { safeExternalHref } from "../../domain/links";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import {
@@ -316,11 +317,13 @@ export function createOpenAIResponsesSearchAdapter(
     },
     async search(request, searchOptions = {}): Promise<ProviderSearchResult> {
       const body = requestBody(request, options);
-      const response = await options.client.create(body, {
-        signal: searchOptions.signal,
-        ...(typeof searchOptions.timeoutMs === "number"
-          ? { timeoutMs: searchOptions.timeoutMs }
-          : {})
+      const response = await dispatchSearchRequest(searchOptions, {
+        body, execute: () => options.client.create(body, {
+          signal: searchOptions.signal,
+          ...(typeof searchOptions.timeoutMs === "number"
+            ? { timeoutMs: searchOptions.timeoutMs }
+            : {})
+        }), usage: extractOpenAIUsage
       });
       const status = openAIResponseStatus(response);
       if (status !== "completed") {

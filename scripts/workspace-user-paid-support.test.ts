@@ -3,6 +3,7 @@ import { codexLbRoute, requirePaidStand, type PaidStand } from "./workspace-user
 
 function fixture(): PaidStand {
   const runtime = {
+    AIQSA_WORKSPACE_RUNNER_URL: "http://workspace-runner:4310", AIQSA_WORKSPACE_RUNNER_TOKEN: "synthetic-runner-token",
     AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "0", AIQSA_WORKSPACE_MEMORY_MIB: "1024", AIQSA_WORKSPACE_CPUS: "1",
     AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: "12", AIQSA_WORKSPACE_MAX_TOOL_CALLS: "30", AIQSA_WORKSPACE_TURN_TIMEOUT_SECONDS: "600"
   };
@@ -10,7 +11,7 @@ function fixture(): PaidStand {
     app: { image: "fixture", environment: { ...runtime, DATABASE_URL: "postgresql://aiqsa:synthetic@postgres:5432/aiqsa?schema=public" }, ports: [{ target: 3000, published: "30385", host_ip: "127.0.0.1" }] },
     postgres: { image: "fixture", environment: {}, ports: [{ target: 5432, published: "15485", host_ip: "127.0.0.1" }] },
     "workspace-runner": { image: "fixture", environment: { ...runtime } },
-    "workspace-maintenance": { image: "fixture", environment: { ...runtime } }
+    "workspace-maintenance": { image: "fixture", environment: { ...runtime }, networks: { default: {}, "workspace-control": {} } }
   } };
 }
 
@@ -44,6 +45,18 @@ describe("real Workspace qualification authority", () => {
     expect(requirePaidStand("DISPOSABLE", value).project).toBe(value.name);
     value.services["memory-worker"].environment.AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME = "1";
     expect(() => requirePaidStand("DISPOSABLE", value)).toThrow("workspace_user_paid_runtime_bounds_invalid");
+  });
+  it.each(["missing URL", "missing token", "different token", "control network", "data network"])("rejects a deletion worker with %s before provider work", problem => {
+    const value = fixture();
+    const worker = structuredClone(value.services["workspace-maintenance"]);
+    value.services["memory-worker"] = worker;
+    if (problem === "missing URL") delete worker.environment.AIQSA_WORKSPACE_RUNNER_URL;
+    if (problem === "missing token") delete worker.environment.AIQSA_WORKSPACE_RUNNER_TOKEN;
+    if (problem === "different token") worker.environment.AIQSA_WORKSPACE_RUNNER_TOKEN = "another-synthetic-token";
+    if (problem === "control network") delete worker.networks!["workspace-control"];
+    if (problem === "data network") delete worker.networks!.default;
+    expect(() => requirePaidStand("DISPOSABLE", value)).toThrow(problem.includes("network")
+      ? "workspace_user_paid_deletion_runner_unreachable" : "workspace_user_paid_deletion_runner_mismatch");
   });
   it.each(["persistent", "public app", "public database", "external database", "fake runtime", "large VM", "parallel CPUs", "unbounded calls", "missing maintenance"])("rejects %s before browser/provider work", kind => {
     const value = fixture();

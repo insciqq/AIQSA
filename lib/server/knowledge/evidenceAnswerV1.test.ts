@@ -4,6 +4,7 @@ import {
   decodeKnowledgeEvidenceAnswerDraftV1,
   knowledgeEvidenceAnswerDraftPromptV1,
   knowledgeEvidenceAnswerReviewPromptV1,
+  normalizeKnowledgeEvidenceAnswerDraftV1,
   renderKnowledgeEvidenceAnswerPublicationV1,
   validateKnowledgeEvidenceAnswerDraftV1,
   validateKnowledgeEvidenceAnswerReviewV1,
@@ -27,6 +28,24 @@ const review = () => ({ version: 1, blocks: [{ blockId: "B1", verdict: "supporte
   followUps: [{ query: "crate Beta mass", sourceAliases: [] }] });
 
 describe("reviewed evidence answers", () => {
+  it("removes only inline citations duplicated in the block's delivered evidence handles", () => {
+    expect(normalizeKnowledgeEvidenceAnswerDraftV1({ version: 1, blocks: [
+      { kind: "paragraph", text: "Rollback is 14 days [K1].", evidenceHandles: ["K1"] },
+      { kind: "paragraph", text: "Unknown [K9].", evidenceHandles: ["K1"] },
+      { kind: "paragraph", text: "Uncited [K2].", evidenceHandles: ["K1"] },
+      { kind: "paragraph", text: "Multiple [K1, 2].", evidenceHandles: ["K1", "K2"] },
+      { kind: "paragraph", text: "Unchanged  spacing .", evidenceHandles: ["K1"] },
+      { kind: "code", text: "literal [K1]", evidenceHandles: ["K1"] }
+    ] }, ["K1", "K2"])).toEqual({ version: 1, blocks: [
+      { kind: "paragraph", text: "Rollback is 14 days.", evidenceHandles: ["K1"] },
+      { kind: "paragraph", text: "Unknown [K9].", evidenceHandles: ["K1"] },
+      { kind: "paragraph", text: "Uncited [K2].", evidenceHandles: ["K1"] },
+      { kind: "paragraph", text: "Multiple.", evidenceHandles: ["K1", "K2"] },
+      { kind: "paragraph", text: "Unchanged  spacing .", evidenceHandles: ["K1"] },
+      { kind: "code", text: "literal [K1]", evidenceHandles: ["K1"] }
+    ] });
+  });
+
   it("keeps a known operand useful while the other operand is missing", () => {
     const candidate = draft();
     const checked = validateKnowledgeEvidenceAnswerReviewV1(review(), { ...context, draft: candidate });

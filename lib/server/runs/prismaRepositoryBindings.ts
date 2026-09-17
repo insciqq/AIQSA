@@ -1221,6 +1221,7 @@ export async function insertAcceptedProviderRunBindings(
       ...(input.plan.requiresClientToolCoexistence
         ? { requiresClientToolCoexistence: true }
         : {}),
+      ...(input.plan.requiresClientSearchRoutes ? { requiresClientSearchRoutes: true } : {}),
       searchPlan: input.plan.requestedSearchPlan,
       ...(input.plan.requestedSearchPreferenceSource
         ? {

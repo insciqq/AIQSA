@@ -444,7 +444,8 @@ function SheetBody({
     applySaveResult(saved, submitted);
   };
 
-  const canSave = !busy && !needsKeyForNewModel && !interrupted && !jsonEditing && !discarding && form.upstreamModelId.trim() !== "" && (editing === null || dirty);
+  const canSave = !busy && !needsKeyForNewModel && !interrupted && !jsonEditing && !discarding && form.upstreamModelId.trim() !== "" &&
+    (editing === null || dirty || editing.activeVersion === 0);
   const capabilityRows: ReadonlyArray<[keyof AdminProviderModelCapabilities, string, string?]> = compatible
     ? [
         ["toolCalling", "Tools", "Function calling for Search, MCP and Memory."],
@@ -742,6 +743,15 @@ function SheetBody({
                         });
                       }}
                     />
+                    {form.adapterKind === "openai_responses_compatible" ? (
+                      <SettingRow
+                        checked={form.capabilities.codexStandaloneWebSearch === true}
+                        detail="Built-in Codex search in Agent. Requires a successful endpoint check; separate from AIQSA Search."
+                        disabled={busy}
+                        label="Codex web search"
+                        onChange={(next) => updateCapability("codexStandaloneWebSearch", next)}
+                      />
+                    ) : null}
                     {form.adapterKind === "openai_chat_completions_compatible" ? (
                       <SettingRow
                         checked={form.capabilities.streamUsage === true}

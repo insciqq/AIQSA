@@ -1,6 +1,7 @@
 "use client";
 
 import { AdminConfirmationHost } from "@/components/admin/AdminConfirmationHost";
+import { AdminAnnouncementsSection } from "@/components/admin/AdminAnnouncementsSection";
 import { AdminDashboardUnavailable } from "@/components/admin/AdminDashboardUnavailable";
 import { AdminEmailSection } from "@/components/admin/email/AdminEmailSection";
 import { AdminFeedbackHost } from "@/components/admin/AdminFeedbackHost";
@@ -112,6 +113,8 @@ function AdminSectionContent({
   switch (activeSection) {
     case "overview":
       return <AdminOverviewSection controller={attention} onJump={onJump} />;
+    case "announcements":
+      return <AdminAnnouncementsSection resource={navigation.activeResource} onSelectResource={navigation.selectResource} />;
     case "providers":
       return (
         <AdminProvidersSection

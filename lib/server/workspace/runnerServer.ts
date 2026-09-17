@@ -19,6 +19,8 @@ import { parseWorkspaceOperation, WorkspaceOperationFence, type WorkspaceOperati
 import { parseOutputCaptureRequest } from "./outputManifest";
 import { parseAcceptedWorkspaceSecrets, WORKSPACE_SECRETS_REQUEST_MAX_BYTES } from "./secrets/manifest";
 import { logEvent, reportSubsystemFailure, runInBackground, runWithContext, type LifecycleStage } from "../observability";
+import { AGENT_PROMPT_MAX_BYTES } from "../agents/guest";
+import { renderCodexManagedProfile, type CodexManagedProfile } from "../agents/codexProfile";
 import { observeWorkspaceHealth, workspaceLifecycleFailure } from "./lifecycleObservability";
 
 const JSON_BODY_MAX_BYTES = 2 * 1_024 * 1_024;
@@ -387,6 +389,36 @@ export function createWorkspaceRunnerServer(input: Readonly<{
           runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
           sessionId, signal
         })));
+        return;
+      }
+
+      if (request.method === "POST" && (suffix === "/agent/start" || suffix === "/agent/poll")) {
+        stage = "dispatch";
+        const body = await readJson(request);
+        const identity = {
+          modelRunId: requiredString(body.modelRunId, 128),
+          runtimeExecSessionId: requiredString(body.runtimeExecSessionId, 128),
+          runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
+          sessionId
+        };
+        if (suffix === "/agent/start") {
+          if (!input.runtime.startAgent || !isRecord(body.profile) || typeof body.prompt !== "string" ||
+            Buffer.byteLength(body.prompt) > AGENT_PROMPT_MAX_BYTES) throw new Error("field_invalid");
+          const profile = body.profile as CodexManagedProfile;
+          renderCodexManagedProfile(profile);
+          await execute(body.operation, (signal) => input.runtime.startAgent!({
+            ...identity, signal, profile, prompt: body.prompt as string,
+            runToken: requiredString(body.runToken, 128),
+            threadId: body.threadId === undefined ? undefined : requiredString(body.threadId, 36),
+            timeoutSeconds: body.timeoutSeconds === null ? null : integer(body.timeoutSeconds, 1, 7200)
+          }));
+          sendJson(response, 200, { started: true });
+        } else {
+          if (!input.runtime.pollAgent) throw new Error("field_invalid");
+          sendJson(response, 200, await execute(body.operation, (signal) => input.runtime.pollAgent!({
+            ...identity, signal, cursor: integer(body.cursor, 0, 64 * 1024 * 1024)
+          })));
+        }
         return;
       }
 

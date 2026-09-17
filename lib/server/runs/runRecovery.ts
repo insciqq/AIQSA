@@ -1,3 +1,4 @@
+import { agentFailureMessage } from "../agents/failures";
 import { knowledgeAnswerInstructions, type KnowledgeAnswerInstructions } from "../knowledge/answerInstructions";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext, type LifecycleStage } from "../observability";
@@ -269,6 +270,7 @@ export type RunRecoveryRepository = Pick<
   | "groundKnowledgeEvidenceAnswer"
   | "hasPendingPdfPreparation"
   | "hasPendingWorkspacePreparation"
+  | "interruptExpiredAgentRun"
   | "isProjectRunAccessCurrent"
   | "isSearchStrategyEnabled"
   | "loadProviderDispatchRecoveryRequest"
@@ -606,13 +608,14 @@ function groupedUsageAttributions(
   attributions: readonly RunUsageAttribution[]
 ): RunUsageAttribution[] {
   const grouped = new Map<string, {
+    providerModelId?: string;
     operationCount: number | null;
     modelId: string;
     provider: string;
     usages: ModelRunUsage[];
   }>();
   for (const attribution of attributions) {
-    const key = `${attribution.provider}\u0000${attribution.modelId}`;
+    const key = `${attribution.provider}\u0000${attribution.modelId}\u0000${attribution.providerModelId ?? ""}`;
     const existing = grouped.get(key);
     if (existing) {
       existing.usages.push(attribution.usage);
@@ -620,6 +623,7 @@ function groupedUsageAttributions(
         ? null : existing.operationCount + attribution.operationCount;
     }
     else grouped.set(key, {
+      ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
       operationCount: attribution.operationCount ?? null,
       modelId: attribution.modelId,
       provider: attribution.provider,
@@ -627,6 +631,7 @@ function groupedUsageAttributions(
     });
   }
   return [...grouped.values()].map((entry) => ({
+    ...(entry.providerModelId ? { providerModelId: entry.providerModelId } : {}),
     operationCount: entry.operationCount,
     modelId: entry.modelId,
     provider: entry.provider,
@@ -3862,17 +3867,32 @@ async function refreshProviderRunOnceRegistered(
   if (publishedAnswer) {
     const request = await deps.repository.loadProviderDispatchRecoveryRequest?.({ runId, userId });
     if (!request?.workspace || !deps.workspace) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
-    const handoff = await deps.workspace.handoff({ runId, userId, signal, workspace: request.workspace,
-      onActivity: async (entry) => {
-        const event = projectRunOutputArtifactEvent(workspaceActivityEvent(entry));
-        if (event) await deps.repository.appendRunOutputEvent(runId, event);
-      }
-    });
+    let handoff;
+    try {
+      handoff = await deps.workspace.handoff({ runId, userId, signal, workspace: request.workspace,
+        onActivity: async (entry) => {
+          const event = projectRunOutputArtifactEvent(workspaceActivityEvent(entry));
+          if (event) await deps.repository.appendRunOutputEvent(runId, event);
+        }
+      });
+    } catch (error) {
+      signal.throwIfAborted();
+      // The answer and its usage are already durable. A failed capture must
+      // terminate this turn without replaying the provider or losing that text.
+      await failRecoveredRun(deps.repository, runId, publishedAnswer.assistantMessageId, {
+        code: error instanceof WorkspaceRuntimeError ? error.code : "workspace_output_export_failed",
+        message: "The answer was saved, but Workspace could not finish preparing its files."
+      }, { recoveryTerminal: true });
+      await deps.workspace.settle({ outcome: "failed", runId, userId });
+      return;
+    }
     if (handoff.status !== "ready") return;
     signal.throwIfAborted();
     await deps.repository.completeRun(publishedAnswer);
     return;
   }
+
+  if (await recoverAgentIfNeeded(deps, runId, userId)) return;
 
   if (deps.knowledgeProviderDispatch) {
     let draftDispatch: Awaited<ReturnType<KnowledgeProviderDispatchLifecycle["inspect"]>> = null;
@@ -4759,6 +4779,19 @@ export async function refreshProviderRunIfNeeded(
   }
 }
 
+async function recoverAgentIfNeeded(deps: RunRecoveryDeps, runId: string, userId: string, now = new Date()): Promise<boolean> {
+  const agent = await deps.repository.interruptExpiredAgentRun?.({ runId, userId, now });
+  if (!agent || agent.kind === "not_agent") return false;
+  if (agent.kind === "active") return true;
+  await settleRecoveredError(deps.repository, {
+    runId, userId, outputEvents: [],
+    error: { code: agent.failureCode, message: agentFailureMessage(agent.failureCode) },
+    usageAttributions: await usageAttributionsWithEstimatedCost(deps.repository, groupedUsageAttributions(agent.usage))
+  });
+  await deps.workspace?.settle({ outcome: "failed", runId, userId });
+  return true;
+}
+
 export async function reconcileInstallationRuns(
   deps: RunRecoveryDeps,
   input: Readonly<{ now?: Date }> = {}
@@ -4799,6 +4832,7 @@ export async function reconcileInstallationRuns(
         });
         return;
       }
+      if (await recoverAgentIfNeeded(deps, run.id, run.userId, now)) return;
       const checkpointed = await deps.repository.loadCheckpointedToolLoopRun({
         runId: run.id,
         userId: run.userId
@@ -4876,6 +4910,8 @@ export async function reconcileStaleRuns(
         });
         return;
       }
+
+      if (await recoverAgentIfNeeded(deps, run.id, input.userId, now)) return;
 
       const checkpointed = await deps.repository.loadCheckpointedToolLoopRun({
         runId: run.id,

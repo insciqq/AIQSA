@@ -65,7 +65,8 @@ export function runTransportStateV2(input: Readonly<{
   const failure = discoveryFailure ? { ...discoveryFailure,
     recovery: canRetryMcpAutoDiscoveryFailure(discoveryFailure.code) ? "retry" as const : "change_parameters" as const }
     : isToolSynthesisFailure(null, input.message.errorMessage)
-      ? { ...TOOL_SYNTHESIS_FAILURE, recovery: "regenerate" as const } : null;
+      ? { ...TOOL_SYNTHESIS_FAILURE, recovery: "regenerate" as const }
+      : input.message.errorMessage ? { message: input.message.errorMessage } : null;
   return {
     ...(input.message.status === "error" && failure ? { failure } : {}),
     authoritativeMessageStatus:

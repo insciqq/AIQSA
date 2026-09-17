@@ -175,9 +175,19 @@ function mapPreparationFailure(error: unknown): McpHubServiceError {
   return new McpHubServiceError("upstream_unavailable", { cause: error });
 }
 
-export function createMcpHubService(dependencies: McpHubServiceDependencies) {
-  const preparedCalls = new WeakMap<McpHubPreparedToolCall, McpHubAuthority>();
-  const assertActive = async (authority: McpHubAuthority, signal?: AbortSignal) => {
+export type McpToolAuthority = Readonly<{ userId: string; assertActive(): Promise<void> }>;
+
+export type McpToolServiceDependencies<Authority extends McpToolAuthority> =
+  Omit<McpHubServiceDependencies, "recordDispatch" | "recordDiscoveryAttempt"> & Readonly<{
+    recordDiscoveryAttempt(authority: Authority, role: Parameters<McpRouterAttemptRecorder>[0]): ReturnType<McpRouterAttemptRecorder>;
+    recordDispatch(input: Readonly<{ authority: Authority; toolId: string; toolVersion: string }>):
+      ReturnType<McpHubServiceDependencies["recordDispatch"]>;
+  }>;
+
+/** Shared discovery/dispatch policy; OAuth Hub and run grants own different lifecycles. */
+export function createMcpToolService<Authority extends McpToolAuthority>(dependencies: McpToolServiceDependencies<Authority>) {
+  const preparedCalls = new WeakMap<McpHubPreparedToolCall, Authority>();
+  const assertActive = async (authority: Authority, signal?: AbortSignal) => {
     if (signal?.aborted) throw new McpHubServiceError("request_cancelled");
     await authority.assertActive();
     if (signal?.aborted) throw new McpHubServiceError("request_cancelled");
@@ -186,7 +196,7 @@ export function createMcpHubService(dependencies: McpHubServiceDependencies) {
     filterMcpCatalog(userId, await dependencies.catalog(userId), dependencies.filterTools);
 
   const materialize = async (
-    authority: McpHubAuthority,
+    authority: Authority,
     selection: SelectedCatalogTool,
     signal?: AbortSignal,
     inspect = false
@@ -221,7 +231,7 @@ export function createMcpHubService(dependencies: McpHubServiceDependencies) {
   };
 
   const resolveCurrent = async (
-    authority: McpHubAuthority,
+    authority: Authority,
     toolId: string,
     signal?: AbortSignal,
     inspect = false
@@ -233,7 +243,7 @@ export function createMcpHubService(dependencies: McpHubServiceDependencies) {
   };
 
   const revalidate = async (
-    authority: McpHubAuthority,
+    authority: Authority,
     descriptor: McpHubToolDescriptor,
     signal?: AbortSignal
   ) => {
@@ -246,7 +256,7 @@ export function createMcpHubService(dependencies: McpHubServiceDependencies) {
 
   return {
     async findTools(input: Readonly<{
-      authority: McpHubAuthority;
+      authority: Authority;
       context?: string;
       goal: string;
       maxResults?: number;
@@ -322,7 +332,7 @@ export function createMcpHubService(dependencies: McpHubServiceDependencies) {
     },
 
     async prepareToolCall(input: Readonly<{
-      authority: McpHubAuthority;
+      authority: Authority;
       arguments: Readonly<Record<string, unknown>>;
       signal?: AbortSignal;
       toolId: string;
@@ -349,7 +359,7 @@ export function createMcpHubService(dependencies: McpHubServiceDependencies) {
     },
 
     async dispatchPreparedToolCall(input: Readonly<{
-      authority: McpHubAuthority;
+      authority: Authority;
       onDispatch?(): void;
       prepared: McpHubPreparedToolCall;
       signal?: AbortSignal;
@@ -363,12 +373,9 @@ export function createMcpHubService(dependencies: McpHubServiceDependencies) {
       let receipt: Awaited<ReturnType<McpHubServiceDependencies["recordDispatch"]>>;
       try {
         receipt = await dependencies.recordDispatch({
-          clientId: input.authority.clientId,
-          grantId: input.authority.grantId,
-          resourcePath: "/mcp/hub",
+          authority: input.authority,
           toolId: input.prepared.descriptor.tool_id,
-          toolVersion: input.prepared.descriptor.tool_version,
-          userId: input.authority.userId
+          toolVersion: input.prepared.descriptor.tool_version
         });
       } catch (error) {
         throw new McpHubServiceError("upstream_unavailable", { cause: error });
@@ -429,4 +436,14 @@ export function createMcpHubService(dependencies: McpHubServiceDependencies) {
       return result!;
     }
   };
+}
+
+export function createMcpHubService(dependencies: McpHubServiceDependencies) {
+  return createMcpToolService<McpHubAuthority>({
+    ...dependencies,
+    recordDispatch: ({ authority, toolId, toolVersion }) => dependencies.recordDispatch({
+      clientId: authority.clientId, grantId: authority.grantId, userId: authority.userId,
+      resourcePath: "/mcp/hub", toolId, toolVersion
+    })
+  });
 }

@@ -229,7 +229,13 @@ export const WORKSPACE_ACTIVITY_KINDS = Object.freeze([
   "file_remove",
   "folder_create",
   "file_check",
-  "outputs_export"
+  "outputs_export",
+  "file_change",
+  "mcp_call",
+  "search",
+  "agent_note",
+  "plan",
+  "elided"
 ] as const);
 
 export const WORKSPACE_ACTIVITY_PHASES = Object.freeze([
@@ -248,6 +254,9 @@ export const WORKSPACE_ACTIVITY_PREVIEW_MAX_BYTES = 8 * 1_024;
 export const WORKSPACE_ACTIVITY_COMMAND_MAX_CHARS = 2_048;
 export const WORKSPACE_ACTIVITY_PATH_MAX_CHARS = 512;
 export const WORKSPACE_ACTIVITY_MAX_ENTRIES = 512;
+export const WORKSPACE_ACTIVITY_NOTE_MAX_BYTES = 2 * 1_024;
+export const WORKSPACE_ACTIVITY_MAX_FILE_CHANGES = 64;
+export const WORKSPACE_ACTIVITY_MAX_PLAN_ITEMS = 50;
 
 export type ThreadWorkspaceActivityCommand = Readonly<{
   cwd?: string;
@@ -256,6 +265,7 @@ export type ThreadWorkspaceActivityCommand = Readonly<{
   /** Source event of the retained output snapshot, even after a later output-free update. */
   outputSequence?: number;
   preview: string;
+  previewTruncated?: boolean;
   stderrPreview?: string;
   stdoutPreview?: string;
   truncated?: boolean;
@@ -268,21 +278,30 @@ export type ThreadWorkspaceActivityFile = Readonly<{
 }>;
 
 export type ThreadWorkspaceActivityEntry = Readonly<{
+  changes?: readonly Readonly<{ action: "add" | "update" | "delete"; displayPath: string }>[];
   command?: ThreadWorkspaceActivityCommand;
   count?: number;
   durationMs?: number;
   errorCode?: WorkspaceErrorCode;
+  failedCount?: number;
   file?: ThreadWorkspaceActivityFile;
   firstSequence?: number;
   groupId?: string;
+  hasLifecycle?: boolean;
   id: string;
+  items?: readonly Readonly<{ completed: boolean; text: string }>[];
   kind: WorkspaceActivityKind;
+  mcp?: Readonly<{ discovery?: boolean; serverName?: string; toolName: string }>;
   phase: WorkspaceActivityPhase;
   /** Run-outcome projection of an unfinished entry; does not assert a process exit. */
   runOutcome?: "cancelled" | "failed";
+  search?: Readonly<{ query: string; source: string }>;
   /** Assigned by ModelRunEvent persistence and retained when this update is replayed. */
   sequence?: number;
   startedAt?: string;
+  text?: string;
+  /** Unknown rows at or below this durable boundary have already been elided. */
+  throughSequence?: number;
   updateId?: string;
 }>;
 
@@ -294,23 +313,32 @@ export type ThreadWorkspaceOutputStatus = Readonly<{
 export type ThreadWorkspaceActivity = Readonly<{
   entries: readonly ThreadWorkspaceActivityEntry[];
   outputStatus?: ThreadWorkspaceOutputStatus;
+  truncated?: boolean;
 }>;
 
 const ACTIVITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_:-]{0,63}$/u;
 const ACTIVITY_ENTRY_KEYS = new Set([
+  "changes",
   "command",
   "count",
   "durationMs",
   "errorCode",
+  "failedCount",
   "file",
   "firstSequence",
   "groupId",
+  "hasLifecycle",
   "id",
+  "items",
   "kind",
+  "mcp",
   "phase",
   "runOutcome",
+  "search",
   "sequence",
   "startedAt",
+  "text",
+  "throughSequence",
   "updateId"
 ]);
 const ACTIVITY_COMMAND_KEYS = new Set([
@@ -319,6 +347,7 @@ const ACTIVITY_COMMAND_KEYS = new Set([
   "originalByteCount",
   "outputSequence",
   "preview",
+  "previewTruncated",
   "stderrPreview",
   "stdoutPreview",
   "truncated"
@@ -378,12 +407,14 @@ function decodeActivityCommand(value: unknown): ThreadWorkspaceActivityCommand |
   const outputSequence = value.outputSequence === undefined ? undefined : boundedCount(value.outputSequence, Number.MAX_SAFE_INTEGER);
   if (outputSequence === null) return null;
   if (value.truncated !== undefined && typeof value.truncated !== "boolean") return null;
+  if (value.previewTruncated !== undefined && typeof value.previewTruncated !== "boolean") return null;
   return {
     ...(cwd ? { cwd } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
     ...(originalByteCount !== undefined ? { originalByteCount } : {}),
     ...(outputSequence !== undefined ? { outputSequence } : {}),
     preview,
+    ...(value.previewTruncated !== undefined ? { previewTruncated: value.previewTruncated } : {}),
     ...(stderrPreview !== undefined ? { stderrPreview } : {}),
     ...(stdoutPreview !== undefined ? { stdoutPreview } : {}),
     ...(value.truncated !== undefined ? { truncated: value.truncated } : {})
@@ -453,20 +484,85 @@ export function decodeThreadWorkspaceActivityEntry(value: unknown): ThreadWorksp
   if (command?.outputSequence !== undefined && (sequence === undefined || command.outputSequence > sequence)) return null;
   const file = value.file === undefined ? undefined : decodeActivityFile(value.file);
   if (value.file !== undefined && !file) return null;
+  let changes: ThreadWorkspaceActivityEntry["changes"];
+  if (kind === "file_change") {
+    if (!Array.isArray(value.changes) || value.changes.length > WORKSPACE_ACTIVITY_MAX_FILE_CHANGES) return null;
+    const decoded: NonNullable<ThreadWorkspaceActivityEntry["changes"]>[number][] = [];
+    for (const change of value.changes) {
+      if (!isRecord(change) || !hasOnlyKeys(change, new Set(["action", "displayPath"])) ||
+        !["add", "update", "delete"].includes(String(change.action))) return null;
+      const displayPath = boundedText(change.displayPath, WORKSPACE_ACTIVITY_PATH_MAX_CHARS);
+      if (!displayPath) return null;
+      decoded.push({ action: change.action as "add" | "update" | "delete", displayPath });
+    }
+    changes = decoded;
+  } else if (value.changes !== undefined) return null;
+  let items: ThreadWorkspaceActivityEntry["items"];
+  if (kind === "plan") {
+    if (!Array.isArray(value.items) || value.items.length > WORKSPACE_ACTIVITY_MAX_PLAN_ITEMS) return null;
+    const decoded: NonNullable<ThreadWorkspaceActivityEntry["items"]>[number][] = [];
+    for (const item of value.items) {
+      if (!isRecord(item) || !hasOnlyKeys(item, new Set(["completed", "text"])) || typeof item.completed !== "boolean") return null;
+      const text = boundedText(item.text, 512);
+      if (!text) return null;
+      decoded.push({ completed: item.completed, text });
+    }
+    items = decoded;
+  } else if (value.items !== undefined) return null;
+  let mcp: ThreadWorkspaceActivityEntry["mcp"];
+  if (kind === "mcp_call") {
+    if (!isRecord(value.mcp) || !hasOnlyKeys(value.mcp, new Set(["discovery", "serverName", "toolName"]))) return null;
+    const toolName = boundedText(value.mcp.toolName, 160);
+    const serverName = value.mcp.serverName === undefined ? undefined : boundedText(value.mcp.serverName, 160);
+    if (!toolName || serverName === null || value.mcp.discovery !== undefined && typeof value.mcp.discovery !== "boolean") return null;
+    mcp = {
+      ...(value.mcp.discovery !== undefined ? { discovery: value.mcp.discovery } : {}),
+      ...(serverName !== undefined ? { serverName } : {}), toolName
+    };
+  } else if (value.mcp !== undefined) return null;
+  let search: ThreadWorkspaceActivityEntry["search"];
+  if (kind === "search") {
+    if (!isRecord(value.search) || !hasOnlyKeys(value.search, new Set(["query", "source"]))) return null;
+    const query = boundedText(value.search.query, 200, true);
+    const source = boundedText(value.search.source, 160);
+    if (query === null || !source) return null;
+    search = { query, source };
+  } else if (value.search !== undefined) return null;
+  let text: string | undefined;
+  if (kind === "agent_note") {
+    const decoded = boundedText(value.text, WORKSPACE_ACTIVITY_NOTE_MAX_BYTES);
+    if (!decoded || utf8Bytes(decoded) > WORKSPACE_ACTIVITY_NOTE_MAX_BYTES) return null;
+    text = decoded;
+  } else if (value.text !== undefined) return null;
+  let elided: Pick<ThreadWorkspaceActivityEntry, "failedCount" | "hasLifecycle" | "throughSequence"> = {};
+  if (kind === "elided") {
+    const failedCount = boundedCount(value.failedCount, 1_000_000);
+    const throughSequence = boundedCount(value.throughSequence, Number.MAX_SAFE_INTEGER);
+    if (!count || failedCount === null || failedCount > count || throughSequence === null || typeof value.hasLifecycle !== "boolean") return null;
+    elided = { failedCount, hasLifecycle: value.hasLifecycle, throughSequence };
+  } else if (value.failedCount !== undefined || value.hasLifecycle !== undefined || value.throughSequence !== undefined) return null;
   return {
+    ...(changes ? { changes } : {}),
     ...(command ? { command } : {}),
     ...(count !== undefined ? { count } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
     ...(errorCode ? { errorCode } : {}),
+    ...(elided.failedCount !== undefined ? { failedCount: elided.failedCount } : {}),
     ...(file ? { file } : {}),
     ...(firstSequence !== undefined ? { firstSequence } : {}),
     ...(groupId ? { groupId } : {}),
+    ...(elided.hasLifecycle !== undefined ? { hasLifecycle: elided.hasLifecycle } : {}),
     id,
+    ...(items ? { items } : {}),
     kind,
+    ...(mcp ? { mcp } : {}),
     phase,
     ...(runOutcome ? { runOutcome } : {}),
+    ...(search ? { search } : {}),
     ...(sequence !== undefined ? { sequence } : {}),
     ...(startedAt ? { startedAt } : {}),
+    ...(text !== undefined ? { text } : {}),
+    ...(elided.throughSequence !== undefined ? { throughSequence: elided.throughSequence } : {}),
     ...(updateId ? { updateId } : {})
   };
 }
@@ -486,8 +582,9 @@ export function decodeThreadWorkspaceOutputStatus(value: unknown): ThreadWorkspa
 }
 
 export function decodeThreadWorkspaceActivity(value: unknown): ThreadWorkspaceActivity | null {
-  if (!isRecord(value) || !hasOnlyKeys(value, new Set(["entries", "outputStatus"]))) return null;
+  if (!isRecord(value) || !hasOnlyKeys(value, new Set(["entries", "outputStatus", "truncated"]))) return null;
   if (!Array.isArray(value.entries) || value.entries.length > WORKSPACE_ACTIVITY_MAX_ENTRIES) return null;
+  if (value.truncated !== undefined && typeof value.truncated !== "boolean") return null;
   const entries: ThreadWorkspaceActivityEntry[] = [];
   for (const candidate of value.entries) {
     const entry = decodeThreadWorkspaceActivityEntry(candidate);
@@ -498,7 +595,10 @@ export function decodeThreadWorkspaceActivity(value: unknown): ThreadWorkspaceAc
     ? undefined
     : decodeThreadWorkspaceOutputStatus(value.outputStatus);
   if (value.outputStatus !== undefined && !outputStatus) return null;
-  return { entries, ...(outputStatus ? { outputStatus } : {}) };
+  if (entries.filter((entry) => entry.kind === "elided").length > 1) return null;
+  if (entries.some((entry) => entry.kind === "elided") && value.truncated !== true) return null;
+  return { entries, ...(outputStatus ? { outputStatus } : {}),
+    ...(value.truncated !== undefined ? { truncated: value.truncated } : {}) };
 }
 
 const PHYSICAL_BASENAME_MAX_BYTES = 160;

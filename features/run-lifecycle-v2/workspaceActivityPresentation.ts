@@ -6,7 +6,8 @@ import {
   type ThreadWorkspaceOutputStatus
 } from "@/lib/contracts/workspace";
 import { formatWorkDurationV2 } from "./runPresentation";
-import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
+import { isWorkspaceActivityActive, mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
+import { isExploredWorkspaceCommand } from "./workspaceCommandClassification";
 
 /**
  * Client-owned copy and folding for the Workspace activity timeline. The
@@ -80,17 +81,15 @@ export function collapsedCommandV2(preview: string): string {
 
 function commandLabel(entry: ThreadWorkspaceActivityEntry): string {
   const command = collapsedCommandV2(entry.command?.preview ?? "command");
-  switch (entry.phase) {
-    case "requested":
-    case "running":
-      return `Running ${command}…`;
-    case "failed":
-      return `${command} failed`;
-    case "cancelled":
-      return `Stopped ${command}`;
-    default:
-      return `Ran ${command}`;
-  }
+  if (entry.phase === "failed") return `${command} failed`;
+  return `${workspaceCommandVerbV2(entry)} ${command}${isWorkspaceActivityActive(entry) ? "…" : ""}`;
+}
+
+export function workspaceCommandVerbV2(entry: ThreadWorkspaceActivityEntry): string {
+  if (entry.phase === "cancelled") return "Stopped";
+  if (entry.phase === "failed") return "";
+  const explored = isExploredWorkspaceCommand(entry.command?.preview ?? "", entry.command?.previewTruncated);
+  return isWorkspaceActivityActive(entry) ? explored ? "Exploring" : "Running" : explored ? "Explored" : "Ran";
 }
 
 function fileLabel(entry: ThreadWorkspaceActivityEntry): string {
@@ -143,9 +142,30 @@ export function workspaceActivityLabelV2(entry: ThreadWorkspaceActivityEntry): s
     }
     case "command":
       return commandLabel(entry);
+    case "file_change": {
+      const count = entry.count ?? entry.changes?.length ?? 0;
+      const single = count === 1 ? entry.changes?.[0] : undefined;
+      if (single) return `${running ? "Changing" : single.action === "add" ? "Created" : single.action === "delete" ? "Deleted" : "Edited"} ${single.displayPath}`;
+      return `${running ? "Editing" : "Edited"} ${plural(count, "file")}`;
+    }
+    case "mcp_call":
+      if (entry.mcp?.discovery) return running ? "Finding tools…" : "Found tools";
+      return `${running ? "Calling" : "Called"} ${entry.mcp?.serverName ? `${entry.mcp.serverName}: ` : ""}${entry.mcp?.toolName ?? "MCP tool"}`;
+    case "search":
+      return `${running ? "Searching" : "Searched"}${entry.search?.query ? ` ${entry.search.query}` : " the web"}`;
+    case "agent_note":
+      return entry.text ?? "Agent note";
+    case "plan":
+      return `Plan · ${entry.items?.filter((item) => item.completed).length ?? 0} of ${entry.items?.length ?? 0} complete`;
+    case "elided":
+      return `${entry.count ?? 0} earlier steps omitted${entry.failedCount ? ` · ${entry.failedCount} failed` : ""}`;
     default:
       return fileLabel(entry);
   }
+}
+
+export function workspaceActivityHasFailureV2(activity: ThreadWorkspaceActivity | null): boolean {
+  return (activity?.entries ?? []).some((entry) => entry.phase === "failed" || entry.phase === "cancelled");
 }
 
 export const WORKSPACE_RECREATED_NOTICE_V2 =
@@ -158,16 +178,12 @@ export function workspaceDurationV2(durationMs: number | undefined): string | nu
     : `${(durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0)} s`;
 }
 
-export function workspaceActivityHasFailureV2(activity: ThreadWorkspaceActivity | null): boolean {
-  return (activity?.entries ?? []).some((entry) => entry.phase === "failed" || entry.phase === "cancelled");
-}
-
 /** Live status line while the run works: the latest running step, else the generic phrase. */
 export function workspaceLiveLabelV2(activity: ThreadWorkspaceActivity | null): string | null {
   if (!activity || activity.entries.length === 0) return null;
   for (let index = activity.entries.length - 1; index >= 0; index -= 1) {
     const entry = activity.entries[index]!;
-    if (entry.phase === "running" || entry.phase === "requested") {
+    if (isWorkspaceActivityActive(entry) && entry.kind !== "plan") {
       return workspaceActivityLabelV2(entry);
     }
   }

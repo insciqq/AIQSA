@@ -538,6 +538,11 @@ function bootstrapFoundationDigest(database: string): string {
         SELECT jsonb_agg(jsonb_build_array(id, "providerModelId", "reasoningEffort", version, "updatedByUserId") ORDER BY id)
         FROM "SystemModelPolicy"
       ), '[]'::jsonb),
+      'agent_policy', COALESCE((
+        SELECT jsonb_agg(jsonb_build_array(id, "limitsEnabled", "timeoutSeconds", "maxModelCalls",
+          "maxToolCalls", "tokenBudget", "maxOutputTokens", version, "updatedByUserId") ORDER BY id)
+        FROM "AgentPolicy"
+      ), '[]'::jsonb),
       'workspace_policy', COALESCE((
         SELECT jsonb_agg(jsonb_build_array(id, enabled, "internetEnabled", version, "updatedByUserId") ORDER BY id)
         FROM "WorkspacePolicy"
@@ -547,6 +552,8 @@ function bootstrapFoundationDigest(database: string): string {
 }
 
 function runBootstrapProof(database: string): void {
+  assert.equal(psqlScalar(database, `SELECT "limitsEnabled" FROM "AgentPolicy" WHERE id = 'installation';`), "f",
+    "Agent budgets must be disabled by default");
   assert.equal(
     psqlScalar(database, `SELECT enabled FROM "WorkspacePolicy" WHERE id = 'installation';`),
     "t",
@@ -583,7 +590,8 @@ function runBootstrapProof(database: string): void {
     freshDigest,
     "adopted bootstrap changed the settled fresh-install foundation",
   );
-  psqlScalar(database, `UPDATE "WorkspacePolicy" SET enabled = false, version = version + 1 WHERE id = 'installation';`);
+  psqlScalar(database, `UPDATE "WorkspacePolicy" SET enabled = false, version = version + 1 WHERE id = 'installation';
+    UPDATE "AgentPolicy" SET "limitsEnabled" = true, "maxModelCalls" = 3, version = version + 1 WHERE id = 'installation';`);
   const disabledDigest = bootstrapFoundationDigest(database);
   app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.equal(
