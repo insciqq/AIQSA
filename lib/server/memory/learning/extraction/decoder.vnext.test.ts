@@ -866,6 +866,52 @@ describe("Memory v5 semantic-frame decoder", () => {
       .toThrow();
   });
 
+  it.each(["entities", "aliases", "qualifier_supports"] as const)(
+    "enforces the local %s limit even when the provider schema omits maxItems",
+    (field) => {
+      const quote = "I own a MacBook Air M4.";
+      const proposed = productObservation(quote);
+      const entity = (proposed.entities as Record<string, unknown>[])[0]!;
+      const limit = field === "entities" ? 6 : 4;
+      const value = field === "entities" ? entity : field === "aliases"
+        ? textRef("MacBook Air M4")
+        : { key: "model", source: textRef("MacBook Air M4"), value: "MacBook Air M4" };
+      const withCount = (count: number) => ({
+        ...proposed,
+        entities: field === "entities" ? Array.from({ length: count }, () => value)
+          : [{ ...entity, [field]: Array.from({ length: count }, () => value) }]
+      });
+      expect(decode(quote, [withCount(limit)])).toMatchObject({
+        candidates: [expect.anything()], rejections: []
+      });
+      expect(decode(quote, [withCount(limit + 1)])).toMatchObject({
+        candidates: [], rejections: [expect.objectContaining({ candidateOrdinal: 0 })]
+      });
+    }
+  );
+
+  it("enforces the local dependency limit with otherwise valid supplied references", () => {
+    const quote = "I prefer short emails.";
+    const refs: MemoryFactContextRef[] = Array.from({ length: 4 }, (_, index) => ({
+      aliases: [], displayName: null, entityId: null, entityType: null,
+      identitySubjectKey: null, kind: "MESSAGE", ref: `M${index + 1}`,
+      source: {
+        contentHash: "a".repeat(64), factVersionId: null, messageId: `prior-${index + 1}`,
+        messageUpdatedAt: "2026-08-25T09:00:00.000Z", projectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION
+      },
+      text: "Prior user context."
+    }));
+    const withCount = (count: number) => observation(quote, {
+      dependency_refs: refs.slice(0, count).map(({ ref }) => ref), statement: quote
+    });
+    expect(decode(quote, [withCount(3)], refs)).toMatchObject({
+      candidates: [expect.objectContaining({ dependencies: expect.any(Array) })], rejections: []
+    });
+    expect(decode(quote, [withCount(4)], refs)).toMatchObject({
+      candidates: [], rejections: [expect.objectContaining({ candidateOrdinal: 0 })]
+    });
+  });
+
   it("rejects LOW output and MEDIUM correction semantics", () => {
     const quote = "I usually choose cedar.";
     const result = decode(quote, [

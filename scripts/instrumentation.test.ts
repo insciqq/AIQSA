@@ -7,7 +7,7 @@ vi.mock("../lib/server/observability/http.cjs", () => ({ reportNextRequestError:
 const startup = vi.hoisted(() => ({
   announce: vi.fn(), failed: vi.fn(), healthy: vi.fn(), hooks: vi.fn(),
   recovery: vi.fn(), attachments: vi.fn(), knowledge: vi.fn(),
-  activation: vi.fn(), mcp: vi.fn(), memory: vi.fn()
+  activation: vi.fn(), mcp: vi.fn(), memory: vi.fn(), nativeRouting: vi.fn()
 }));
 vi.mock("../lib/server/observability", () => ({ announceProcess: startup.announce, reportSubsystemFailure: startup.failed, reportSubsystemHealthy: startup.healthy }));
 vi.mock("../lib/server/observability/process.cjs", () => ({ installProcessFailureHooks: startup.hooks }));
@@ -17,6 +17,7 @@ vi.mock("../lib/server/knowledge/defaultIngestion", () => ({ getDefaultKnowledge
 vi.mock("../lib/server/mcp/defaultActivation", () => ({ getDefaultMcpActivationCoordinator: startup.activation }));
 vi.mock("../lib/server/mcp/defaultRuntime", () => ({ getDefaultMcpRuntimeCoordinator: startup.mcp }));
 vi.mock("../lib/server/memory/coordinator/startup", () => ({ startDefaultMemoryCoordinatorFeatureLocally: startup.memory }));
+vi.mock("../lib/server/bootstrap/nativeRoutingAdoption", () => ({ startNativeRoutingAdoption: startup.nativeRouting }));
 
 import { onRequestError, register } from "../instrumentation";
 
@@ -39,6 +40,7 @@ describe("optional subsystem startup", () => {
     startup.mcp.mockImplementationOnce(() => { throw new Error("private-mcp-canary"); });
     await expect(register()).resolves.toBeUndefined();
     expect(startup.hooks).toHaveBeenCalledOnce();
+    expect(startup.nativeRouting).toHaveBeenCalledOnce();
     expect(startup.announce).toHaveBeenCalledWith(expect.objectContaining({ attachments: "starting", memory: "unknown" }));
     expect(startup.failed.mock.calls.map(([fields]) => fields)).toEqual([
       { subsystem: "attachments", stage: "startup", code: "attachment_processing_startup_failed", action: "degrade" },

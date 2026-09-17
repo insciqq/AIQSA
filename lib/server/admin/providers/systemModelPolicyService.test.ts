@@ -115,11 +115,14 @@ describe("administrator system model policy service", () => {
     } as unknown as PrismaClient;
     const absent = vi.fn().mockResolvedValue({ ok: false, code: "system_model_absent" });
     const catalog = await createAdminSystemModelPolicyService(prisma, {
+      loadRole: vi.fn().mockRejectedValue(new ProviderAdmissionError("model_not_available")),
       resolveRole: absent, resolveChatPdfRole: absent, resolveRerankerRole: absent
     }).list();
     for (const model of [catalog.policy.systemModel, catalog.policy.chatPdfModel]) {
       expect(model).toMatchObject({ reasoningEfforts: ["none", "low", "medium", "high"], defaultReasoningEffort: "high" });
     }
+    expect(catalog.memoryPolicy.recommendations?.find((entry) => entry.id === "gemini-flash-openrouter-low-memory-v2"))
+      .toMatchObject({ unavailableReason: "verification_required" });
   });
 
   it("projects and retains the independently selected dedicated reranker", async () => {

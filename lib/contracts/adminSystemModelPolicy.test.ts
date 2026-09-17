@@ -42,8 +42,11 @@ describe("administrator system model policy contract", () => {
       ...response.systemModelPolicy, memoryPolicy: { ...response.systemModelPolicy.memoryPolicy, recommendations: [value] }
     } });
     expect(decode(entry)).not.toBeNull();
+    expect(decode({ ...entry, evidence: { ...entry.evidence, passedCases: 4 } })).not.toBeNull();
     for (const patch of [{ providerModelId: null, connectionId: null }, { unavailableReason: ["not_installed"] },
-      { evidence: { ...entry.evidence, passedCases: 4 } }, { evidence: { ...entry.evidence, latencyP95Ms: 1 } }]) {
+      { evidence: { ...entry.evidence, passedCases: 6 } }, { evidence: { ...entry.evidence, passedCases: 0 } },
+      { evidence: { ...entry.evidence, totalCases: -1 } }, { evidence: { ...entry.evidence, passedCases: 4.5 } },
+      { evidence: { ...entry.evidence, latencyP95Ms: 1 } }]) {
       expect(decode({ ...entry, ...patch })).toBeNull();
     }
   });
