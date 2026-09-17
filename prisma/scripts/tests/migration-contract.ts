@@ -10,6 +10,7 @@ import { MEMORY_UTILITY_MODEL_MIGRATION, memoryUtilityModelFixtureSql, memoryUti
 import { MEMORY_HISTORY_BUDGET_MIGRATION, memoryHistoryBudgetFixtureSql, memoryHistoryBudgetProofSql } from "./memory-history-budget-adoption";
 import { MEMORY_EGRESS_RECEIPT_MIGRATION, memoryEgressReceiptFixtureSql, memoryEgressReceiptProofSql } from "./memory-egress-receipt-adoption";
 import { MEMORY_RECOMMENDATION_MIGRATION, memoryRecommendationFixtureSql, memoryRecommendationProofSql, memoryRecommendationRepeatProofSql } from "./memory-recommendation-adoption";
+import { MEMORY_RECOMMENDATION_V2_MIGRATION, memoryRecommendationV2FixtureSql, memoryRecommendationV2ProofSql, memoryRecommendationV2RepeatProofSql } from "./memory-recommendation-adoption";
 import { CHAT_PDF_ASSIGNMENT_MIGRATION, chatPdfAssignmentAdoptionFixtureSql, SYSTEM_MODEL_ROLES_MIGRATION, systemModelRolesAdoptionFixtureSql, systemModelRolesAdoptionProofSql } from "./system-model-roles-adoption";
 import { ASSISTANT_LIVE_MIGRATION, assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql } from "./assistant-live-adoption";
 import assert from "node:assert/strict";
@@ -7403,6 +7404,8 @@ function main(
     nativeRoutingFixtureSql, nativeRoutingProofSql, nativeRoutingRepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_RECOMMENDATION_MIGRATION,
     memoryRecommendationFixtureSql, memoryRecommendationProofSql, memoryRecommendationRepeatProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_RECOMMENDATION_V2_MIGRATION,
+    memoryRecommendationV2FixtureSql, memoryRecommendationV2ProofSql, memoryRecommendationV2RepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_WORKER_RECOVERY_MIGRATION,
     memoryWorkerRecoveryFixtureSql, memoryWorkerRecoveryProofSql);
   for (const assigned of [false, true]) {

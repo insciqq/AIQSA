@@ -8,7 +8,43 @@ import { supportsConfiguredReasoningEffort } from "../providers/providerModelCap
 // Curated working-case evidence, not a vendor ranking or a claim of benchmark
 // parity. A different transport/model needs its own qualification. Installed
 // credential and capability evidence is independently revalidated below.
+// Order also defines the one-time bootstrap preference among eligible targets.
 export const MEMORY_MODEL_RECOMMENDATIONS = [{
+  id: "deepseek-flash-none-memory-v1",
+  modelName: "DeepSeek V4.1 Flash (DeepSeek API)",
+  upstreamModelId: "deepseek-flash",
+  adapterKind: "deepseek_responses_native",
+  reasoningEffort: "none",
+  minimumOutputTokens: 8192,
+  minimumContextWindow: 16384,
+  // Includes the original rejected digest and repeated working-case attempts;
+  // diagnostic probes are excluded. This is not a perfect-reliability claim.
+  evidence: { revision: "memory-working-cases-20260917-deepseek-flash-v1", passedCases: 22, totalCases: 23,
+    latencyP50Ms: 1320, latencyP95Ms: 2731 }
+}, {
+  id: "gemini-flash-native-low-memory-v2",
+  modelName: "Gemini 3.8 Flash (Gemini API)",
+  upstreamModelId: "gemini-3.8-flash",
+  adapterKind: "gemini_interactions_native",
+  reasoningEffort: "low",
+  minimumOutputTokens: 8192,
+  minimumContextWindow: 16384,
+  // Working cases with the extraction schema projection. Earlier incompatible
+  // schema trials are separate evidence, not successful qualification runs.
+  evidence: { revision: "memory-working-cases-20260917-native-gemini38-compatible-v2", passedCases: 18, totalCases: 18,
+    latencyP50Ms: 1932, latencyP95Ms: 5297 }
+}, {
+  id: "gemini-flash-openrouter-low-memory-v2",
+  modelName: "Gemini 3.8 Flash (OpenRouter / Google AI Studio)",
+  upstreamModelId: "google/gemini-3.8-flash",
+  adapterKind: "openrouter_chat_completions",
+  openRouterProvider: "google-ai-studio",
+  reasoningEffort: "low",
+  minimumOutputTokens: 8192,
+  minimumContextWindow: 16384,
+  evidence: { revision: "memory-working-cases-20260917-openrouter-gemini38-compatible-v2", passedCases: 18, totalCases: 18,
+    latencyP50Ms: 1530, latencyP95Ms: 3516 }
+}, {
   id: "terra-low-memory-v1",
   modelName: "GPT-5.6 Terra",
   upstreamModelId: "gpt-5.6-terra",
@@ -29,6 +65,10 @@ export function memoryRecommendationRejection(
   const model = role.snapshot.model;
   if (model.adapterKind !== recommendation.adapterKind || model.upstreamModelId !== recommendation.upstreamModelId ||
     !systemModelRoleEligible(role, "memory")) return "verification_required";
+  if ("openRouterProvider" in recommendation &&
+    (model.openRouterRouting?.mode !== "only_selected" ||
+      model.openRouterRouting.providers.length !== 1 ||
+      model.openRouterRouting.providers[0] !== recommendation.openRouterProvider)) return "verification_required";
   if (!model.capabilities.reasoning ||
     !supportsConfiguredReasoningEffort(model, role.snapshot.providerFamily, recommendation.reasoningEffort)) return "reasoning_unavailable";
   const outputTokens = Math.min(model.capabilities.maxOutputTokens ?? Infinity,

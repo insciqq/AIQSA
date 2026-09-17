@@ -1,15 +1,18 @@
 import type { Prisma } from "@prisma/client";
 import { listMemoryModelRecommendations } from "../memory/modelRecommendations";
 
+const RECOMMENDATION_ADOPTION_VERSION = 2;
+
 /** Called only by installation bootstrap/seed in a transaction, never by a
  * catalog read. The marker survives model removal and explicit clears. */
 export async function adoptMemoryModelRecommendation(tx: Prisma.TransactionClient): Promise<void> {
   const policy = await tx.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-  if (policy.recommendationAdoptionVersion >= 1) return;
+  if (policy.recommendationAdoptionVersion >= RECOMMENDATION_ADOPTION_VERSION) return;
   if (policy.assignmentSource === "OPERATOR") {
     await tx.memoryUtilityModelPolicy.updateMany({
-      where: { id: policy.id, version: policy.version, recommendationAdoptionVersion: 0 },
-      data: { recommendationAdoptionVersion: 1, recommendationAdoptionReason: "preserved_operator" }
+      where: { id: policy.id, version: policy.version, recommendationAdoptionVersion: policy.recommendationAdoptionVersion,
+        assignmentSource: "OPERATOR" },
+      data: { recommendationAdoptionVersion: RECOMMENDATION_ADOPTION_VERSION, recommendationAdoptionReason: "preserved_operator" }
     });
     return;
   }
@@ -20,9 +23,9 @@ export async function adoptMemoryModelRecommendation(tx: Prisma.TransactionClien
   const recommendation = (await listMemoryModelRecommendations(tx, models))
     .find((entry) => entry.unavailableReason === null);
   await tx.memoryUtilityModelPolicy.updateMany({
-    where: { id: policy.id, version: policy.version, recommendationAdoptionVersion: 0,
+    where: { id: policy.id, version: policy.version, recommendationAdoptionVersion: policy.recommendationAdoptionVersion,
       assignmentSource: { not: "OPERATOR" } },
-    data: { recommendationAdoptionVersion: 1,
+    data: { recommendationAdoptionVersion: RECOMMENDATION_ADOPTION_VERSION,
       recommendationAdoptionReason: recommendation ? "applied" : "no_eligible_model",
       ...(recommendation ? { providerModelId: recommendation.providerModelId,
         reasoningEffort: recommendation.reasoningEffort, assignmentSource: "BOOTSTRAP",
