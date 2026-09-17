@@ -80,7 +80,7 @@ describe("Composer v2", () => {
     render(<ComposerV2 {...props({ selectedKnowledgeBaseIds: [], selectedSearchOptionIds: [],
       selectedSkills: [{ id: "summary", name: "Signed summary" }], selectedSkillIds: ["summary"],
       mcpSelection: { mode: "auto" }, onSelectMcp, agent: { enabled: false, onToggle } })} />);
-    const toggle = screen.getByRole("button", { name: "Agent", exact: true });
+    const toggle = screen.getByRole("button", { name: "Agent" });
     expect(toggle).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(toggle);
     expect(onToggle).toHaveBeenCalledExactlyOnceWith(true);
@@ -108,7 +108,7 @@ describe("Composer v2", () => {
     const unavailableReason = "Turn on Workspace first.";
     const { rerender } = render(<ComposerV2 {...props({ selectedKnowledgeBaseIds: [],
       agent: { enabled, onToggle, unavailableReason } })} />);
-    const toggle = screen.getByRole("button", { name: "Agent", exact: true });
+    const toggle = screen.getByRole("button", { name: "Agent" });
     expect(toggle).toHaveAttribute("aria-pressed", String(enabled));
     expect(toggle).toHaveAccessibleDescription(unavailableReason);
     if (enabled) expect(toggle).toBeEnabled();

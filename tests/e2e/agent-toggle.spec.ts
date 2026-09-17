@@ -16,11 +16,12 @@ for (const viewport of [
     for (const theme of ["light", "dark"] as const) {
       test(`toggles directly and keeps details accessible in ${theme}`, async ({ page, context }, testInfo) => {
         await context.addCookies([{ name: "aiqsa.theme", value: theme, url: testInfo.project.use.baseURL! }]);
-        await installMatrixCatalogFixture(page, { folders: [], chats: [] }, { catalog: {
+        const catalog = {
           ...matrixCatalog,
           defaults: { ...matrixCatalog.defaults, workspaceEnabled: true },
           models: matrixCatalog.models.map((model) => ({ ...model, agentAvailable: true }))
-        } });
+        };
+        await installMatrixCatalogFixture(page, { folders: [], chats: [] }, { catalog });
         await page.route("**/api/workspace", (route) => route.fulfill({ json: { workspace: {
           available: true, agentAvailable: true, enabled: true, internetEnabled: true, sessionState: null
         } } }));
