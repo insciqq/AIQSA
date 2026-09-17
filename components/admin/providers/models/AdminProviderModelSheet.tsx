@@ -444,7 +444,8 @@ function SheetBody({
     applySaveResult(saved, submitted);
   };
 
-  const canSave = !busy && !needsKeyForNewModel && !interrupted && !jsonEditing && !discarding && form.upstreamModelId.trim() !== "" && (editing === null || dirty);
+  const canSave = !busy && !needsKeyForNewModel && !interrupted && !jsonEditing && !discarding && form.upstreamModelId.trim() !== "" &&
+    (editing === null || dirty || editing.activeVersion === 0);
   const capabilityRows: ReadonlyArray<[keyof AdminProviderModelCapabilities, string, string?]> = compatible
     ? [
         ["toolCalling", "Tools", "Function calling for Search, MCP and Memory."],
