@@ -1,4 +1,6 @@
 import { retainDatabaseFailure } from "../../observability/databaseFailure";
+import { resolveOpenRouterNativeProvider } from "../../../domain/openRouterNativeRouting";
+import { applyNativeRoute } from "./nativeRouting";
 import { createHash } from "node:crypto";
 import { initialModelConfiguration } from "./initialCapabilitySetup";
 import { Prisma, type PrismaClient } from "@prisma/client";
@@ -228,6 +230,14 @@ function canonicalModelConfig(value: unknown, expected: ProviderModelConfigurati
   } catch {
     return false;
   }
+}
+
+function nativeDefaultConfig(planned: ProviderModelConfiguration, canonical: ProviderModelConfiguration): boolean {
+  const providers = planned.openRouterRouting?.mode === "only_selected" ? planned.openRouterRouting.providers : [];
+  if (providers.length !== 1 || canonical.openRouterRouting?.mode !== "automatic") return false;
+  const route = resolveOpenRouterNativeProvider({ modelId: canonical.upstreamModelId,
+    endpoints: [{ tag: providers[0]!, supportedParameters: [] }] });
+  return route.available && canonicalModelConfig(planned, applyNativeRoute(canonical, route));
 }
 
 function modelColumns(configuration: ProviderModelConfiguration) {
@@ -1414,8 +1424,9 @@ async function applyQuickSetupPlan(
       canonical.modelId === planned.modelId &&
       canonical.templateKey === planned.templateKey &&
       canonical.displayName === planned.displayName &&
-      canonicalJson(canonical.configuration) === canonicalJson(planned.configuration)
-      ? [canonical]
+      (canonicalModelConfig(planned.configuration, canonical.configuration) ||
+        plan.mode === "initial" && nativeDefaultConfig(planned.configuration, canonical.configuration))
+      ? [{ ...canonical, configuration: planned.configuration }]
       : [];
   });
   const candidateModelIds = canonicalCandidates.map(({ modelId }) => modelId);
@@ -1535,7 +1546,9 @@ async function applyQuickSetupPlan(
       existingModel.templateKey !== candidate.templateKey ||
       (existingModel.activeConfig === null
         ? existingModel.draftVersion < 1 ||
-          !canonicalModelConfig(existingModel.draftConfig, candidate.configuration)
+          (!canonicalModelConfig(existingModel.draftConfig, candidate.configuration) &&
+            !(plan.mode === "initial" && existingModel.draftVersion === 1 && nativeDefaultConfig(candidate.configuration,
+              normalizeProviderModelConfiguration(existingModel.draftConfig))))
         : existingModel.activeVersion < 1 ||
           !canonicalModelConfig(existingModel.activeConfig, candidate.configuration))
     )) {
@@ -1605,6 +1618,7 @@ async function applyQuickSetupPlan(
       await tx.providerModel.update({
         data: {
           activeConfig: json(candidate.configuration),
+          draftConfig: json(candidate.configuration),
           activeVersion: existingModel.draftVersion,
           activatedAt: plan.now,
           enabled: true,
@@ -1770,7 +1784,7 @@ function sameModelIdentity(
     canonical!.modelId === planned.modelId &&
     canonical!.templateKey === planned.templateKey &&
     canonical!.displayName === planned.displayName &&
-    canonicalJson(canonical!.configuration) === canonicalJson(planned.configuration);
+    (canonicalModelConfig(planned.configuration, canonical!.configuration) || nativeDefaultConfig(planned.configuration, canonical!.configuration));
 }
 
 async function applyQuickSetupAdditionalPlan(

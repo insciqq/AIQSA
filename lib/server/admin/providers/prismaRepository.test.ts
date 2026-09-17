@@ -22,6 +22,7 @@ function transactional<T extends Record<string, unknown>>(db: T): T & {
     $executeRaw: vi.fn(async () => 0),
     $queryRaw: vi.fn(async () => [{ id: "installation" }]),
     memoryExecutionBinding: { count: vi.fn(async () => 0) },
+    memoryUtilityModelPolicy: { count: vi.fn(async () => 0) },
     chatTitleGeneration: { count: vi.fn(async () => 0) }
   }, db);
   return Object.assign(transaction, {
@@ -314,7 +315,7 @@ describe("Prisma admin provider repository", () => {
     expect(remove).not.toHaveBeenCalled();
   });
 
-  it("blocks model deletion when only immutable Search revisions retain the model", async () => {
+  it.each(["search_revision_references", "system_model"] as const)("blocks model deletion when only %s retains it", async (kind) => {
     const remove = vi.fn(async () => ({}));
     const db = transactional({
       accessGrant: { count: vi.fn(async () => 0) },
@@ -331,7 +332,8 @@ describe("Prisma admin provider repository", () => {
         count: vi.fn(async () => 0),
         updateMany: vi.fn(async () => ({ count: 0 }))
       },
-      searchIntegrationRevision: { count: vi.fn(async () => 2) },
+      searchIntegrationRevision: { count: vi.fn(async () => kind === "search_revision_references" ? 2 : 0) },
+      memoryUtilityModelPolicy: { count: vi.fn(async () => kind === "system_model" ? 1 : 0) },
       searchStrategy: { count: vi.fn(async () => 0) },
       systemModelPolicy: { count: vi.fn(async () => 0) },
       userSettings: { count: vi.fn(async () => 0) }
@@ -339,7 +341,7 @@ describe("Prisma admin provider repository", () => {
     const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
 
     await expect(repository.deleteModel("model-1")).resolves.toEqual({
-      blockers: [{ count: 2, kind: "search_revision_references" }],
+      blockers: [{ count: kind === "system_model" ? 1 : 2, kind }],
       status: "conflict"
     });
     expect(db.searchIntegrationRevision.count).toHaveBeenCalledWith({
@@ -1218,6 +1220,7 @@ describe("Prisma admin provider repository", () => {
       searchOption: { count: vi.fn(async () => 0) },
       searchStrategy: { count: vi.fn(async () => 0) },
       systemModelPolicy: { updateMany: vi.fn(async () => ({ count: 1 })) },
+      memoryUtilityModelPolicy: { updateMany: vi.fn(async () => ({ count: 1 })) },
       userSettings: { updateMany: vi.fn(async () => ({ count: 1 })) }
     });
     const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
@@ -1226,6 +1229,16 @@ describe("Prisma admin provider repository", () => {
       status: "deleted"
     });
     expect(deleteConnection).toHaveBeenCalledWith({ where: { id: "connection-1" } });
+    expect(db.memoryUtilityModelPolicy.updateMany).toHaveBeenCalledWith({
+      data: {
+        providerModelId: null,
+        reasoningEffort: null,
+        assignmentSource: "OPERATOR",
+        updatedByUserId: null,
+        version: { increment: 1 }
+      },
+      where: { providerModelId: { in: ["model-1"] } }
+    });
     expect(db.userSettings.updateMany).toHaveBeenCalledWith({
       data: { defaultProviderModelId: null },
       where: { defaultProviderModelId: { in: ["model-1"] } }

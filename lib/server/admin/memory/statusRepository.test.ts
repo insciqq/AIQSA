@@ -31,7 +31,10 @@ function clientFixture(input: Readonly<{
       oldestQueuedAt: new Date("2026-08-21T07:59:50.000Z"),
       waiting: 2n
     }])
-    .mockResolvedValueOnce(heartbeat ? [{ lastSeenAt: heartbeat }] : []);
+    .mockResolvedValueOnce(heartbeat ? [{ lastSeenAt: heartbeat, ready: true }] : [])
+    .mockResolvedValueOnce([{ lastProgressAt: null, lastSuccessfulJobAt: null, activeStages: [], hasStalledClaims: false }])
+    .mockResolvedValueOnce([{ eligible: 0n, scheduled: 0n, permanent: 0n, protected: 0n,
+      exhausted: 0n, obsolete: 0n, configurationRequired: 0n, nextRetryAt: null }]);
   return {
     $queryRaw: queryRaw,
     memoryFactVersion: { findMany: vi.fn().mockResolvedValue([]) },
@@ -78,7 +81,7 @@ function clientFixture(input: Readonly<{
         id: "private-system-model"
       }])
     },
-    systemModelPolicy: {
+    memoryUtilityModelPolicy: {
       findUnique: vi.fn().mockResolvedValue({ providerModelId: "private-system-model" })
     },
     userMemorySettings: {

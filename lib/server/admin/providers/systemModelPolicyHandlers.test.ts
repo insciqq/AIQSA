@@ -10,6 +10,40 @@ function session(role: "admin" | "user" = "admin") {
 }
 
 describe("administrator system model policy handlers", () => {
+  it("saves Memory with its independent version without changing System roles", async () => {
+    const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn(), updateMemory: vi.fn() };
+    const handlers = createAdminSystemModelPolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never
+    });
+    const response = await handlers.PATCH(new Request("http://local.test/api/admin/providers/system-model-policy", {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedMemoryVersion: 7, memoryProviderModelId: "memory-model", memoryReasoningEffort: "low" })
+    }));
+    expect(response.status).toBe(200);
+    expect(service.updateMemory).toHaveBeenCalledExactlyOnceWith({ expectedVersion: 7,
+      providerModelId: "memory-model", reasoningEffort: "low", userId: "user-1" });
+    expect(service.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { expectedVersion: 1 }, { providerModelId: "system" }, { assignmentSource: "BOOTSTRAP" },
+    { expectedMemoryVersion: 0 }, { memoryReasoningEffort: undefined }, { memoryRecommendationId: null },
+    { memoryRecommendationId: "" }, { memoryRecommendationId: ["terra-low-memory-v1"] },
+    { memoryProviderModelId: null, memoryReasoningEffort: "low" }
+  ])("rejects a mixed, incomplete or authority-bearing Memory update: %j", async (patch) => {
+    const service = { list: vi.fn(), update: vi.fn(), updateMemory: vi.fn() };
+    const handlers = createAdminSystemModelPolicyHandlers({
+      resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never
+    });
+    const response = await handlers.PATCH(new Request("http://local.test/api/admin/providers/system-model-policy", {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedMemoryVersion: 7, memoryProviderModelId: "memory-model", memoryReasoningEffort: "low", ...patch })
+    }));
+    expect(response.status).toBe(400);
+    expect(service.updateMemory).not.toHaveBeenCalled();
+    expect(service.update).not.toHaveBeenCalled();
+  });
+
   it("denies non-administrators before reading policy state", async () => {
     const service = { list: vi.fn(), update: vi.fn() };
     const handlers = createAdminSystemModelPolicyHandlers({

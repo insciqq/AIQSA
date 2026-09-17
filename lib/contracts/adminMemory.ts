@@ -15,6 +15,20 @@ export const ADMIN_MEMORY_REBUILD_STATES = [
   "UNAVAILABLE"
 ] as const;
 
+export const ADMIN_MEMORY_WORKER_STATES = [
+  "NOT_RUNNING",
+  "RUNNING",
+  "STALLED"
+] as const;
+
+export const ADMIN_MEMORY_WORKER_REASONS = [
+  "HEARTBEAT_STALE",
+  "NOT_READY",
+  "IDLE",
+  "ACTIVE",
+  "QUEUE_STALLED"
+] as const;
+
 export const ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS = Object.freeze({
   defaultSeconds: 30,
   maxSeconds: 120,
@@ -23,9 +37,10 @@ export const ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS = Object.freeze({
 
 const safeInteger = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const safeLabel = z.string().trim().min(1).max(200);
+const processingStage = z.enum(["LEARNING", "HISTORY", "INDEXING", "SYNTHESIS", "MAINTENANCE", "DELETION"]);
 export const adminMemoryProcessingIssueSchema = z.strictObject({
-  stage: z.enum(["LEARNING", "HISTORY", "INDEXING", "SYNTHESIS", "MAINTENANCE", "DELETION"]),
-  reason: z.enum(["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED", "PROCESSING_FAILED", "RETRYING", "STALLED"]),
+  stage: processingStage,
+  reason: z.enum(["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED", "PROCESSING_FAILED", "OUTPUT_LIMIT", "RETRYING", "STALLED"]),
   severity: z.enum(["bad", "warn"]),
   count: safeInteger,
   oldestAgeSeconds: safeInteger.nullable()
@@ -59,8 +74,24 @@ export const adminMemoryStatusSchema = z.strictObject({
   rebuild: z.strictObject({
     state: z.enum(ADMIN_MEMORY_REBUILD_STATES)
   }),
+  recovery: z.strictObject({
+    eligible: safeInteger,
+    scheduled: safeInteger,
+    permanent: safeInteger,
+    protected: safeInteger,
+    exhausted: safeInteger,
+    obsolete: safeInteger,
+    configurationRequired: safeInteger,
+    nextRetrySeconds: safeInteger.nullable()
+  }),
   worker: z.strictObject({
-    state: z.enum(["NOT_RUNNING", "RUNNING"])
+    state: z.enum(ADMIN_MEMORY_WORKER_STATES),
+    reason: z.enum(ADMIN_MEMORY_WORKER_REASONS),
+    lastSeenAgeSeconds: safeInteger.nullable(),
+    lastProgressAgeSeconds: safeInteger.nullable(),
+    lastSuccessAgeSeconds: safeInteger.nullable(),
+    observationWindowSeconds: safeInteger.min(1),
+    activeStages: z.array(processingStage).max(6)
   })
 }).superRefine((value, context) => {
   if (new Set(value.processing.issues.map((issue) => issue.stage)).size !== value.processing.issues.length ||
@@ -91,6 +122,19 @@ export const adminMemoryStatusSchema = z.strictObject({
       message: "Memory rebuild is available only for an index that requires it"
     });
   }
+  if (value.worker.state === "NOT_RUNNING" && value.worker.reason !== "HEARTBEAT_STALE" && value.worker.reason !== "NOT_READY") {
+    context.addIssue({ code: "custom", message: "An unavailable Memory worker must have startup or heartbeat evidence" });
+  }
+  if (value.worker.state === "STALLED" && value.worker.reason !== "QUEUE_STALLED") {
+    context.addIssue({ code: "custom", message: "A stalled Memory worker must have queue stall evidence" });
+  }
+  if (value.worker.state === "RUNNING" &&
+    (value.worker.reason === "HEARTBEAT_STALE" || value.worker.reason === "QUEUE_STALLED" || value.worker.reason === "NOT_READY")) {
+    context.addIssue({ code: "custom", message: "A running Memory worker cannot report stale or stalled evidence" });
+  }
+  if ((value.recovery.scheduled === 0) !== (value.recovery.nextRetrySeconds === null)) {
+    context.addIssue({ code: "custom", message: "Scheduled recovery must include its next retry" });
+  }
 });
 
 export const adminMemoryStatusResponseSchema = z.strictObject({
@@ -101,6 +145,15 @@ export const adminMemoryRebuildInputSchema = z.strictObject({
   action: z.literal("REBUILD_REQUIRED")
 });
 
+export const adminMemoryRecoveryInputSchema = z.strictObject({
+  action: z.literal("RECOVER_ELIGIBLE")
+});
+
+export const adminMemoryActionInputSchema = z.union([
+  adminMemoryRebuildInputSchema,
+  adminMemoryRecoveryInputSchema
+]);
+
 export const adminMemoryAdmissionTimeoutInputSchema = z.strictObject({
   expectedVersion: safeInteger.min(1),
   timeoutSeconds: safeInteger.min(ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.minSeconds)
@@ -110,6 +163,8 @@ export const adminMemoryAdmissionTimeoutInputSchema = z.strictObject({
 export type AdminMemoryStatus = z.infer<typeof adminMemoryStatusSchema>;
 export type AdminMemoryStatusResponse = z.infer<typeof adminMemoryStatusResponseSchema>;
 export type AdminMemoryRebuildInput = z.infer<typeof adminMemoryRebuildInputSchema>;
+export type AdminMemoryRecoveryInput = z.infer<typeof adminMemoryRecoveryInputSchema>;
+export type AdminMemoryActionInput = z.infer<typeof adminMemoryActionInputSchema>;
 export type AdminMemoryAdmissionTimeoutInput = z.infer<
   typeof adminMemoryAdmissionTimeoutInputSchema
 >;
@@ -125,6 +180,13 @@ export function decodeAdminMemoryRebuildInput(
   value: unknown
 ): AdminMemoryRebuildInput | null {
   const decoded = adminMemoryRebuildInputSchema.safeParse(value);
+  return decoded.success ? decoded.data : null;
+}
+
+export function decodeAdminMemoryActionInput(
+  value: unknown
+): AdminMemoryActionInput | null {
+  const decoded = adminMemoryActionInputSchema.safeParse(value);
   return decoded.success ? decoded.data : null;
 }
 

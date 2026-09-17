@@ -1,3 +1,4 @@
+import { memoryRecoveryStatusFixture, memoryWorkerStatusFixture } from "@/tests/support/memoryStatus";
 import { expect, test, type Page } from "@playwright/test";
 import type { AdminDashboard } from "../../lib/contracts/admin";
 import type { AdminKnowledgeSettings } from "../../lib/contracts/adminKnowledge";
@@ -59,7 +60,8 @@ function memoryResponse(): AdminMemoryStatusResponse {
       index: { generation: 1, readiness: "READY" },
       queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
       rebuild: { state: "NOT_REQUIRED" },
-      worker: { state: "RUNNING" }
+      recovery: memoryRecoveryStatusFixture(),
+      worker: memoryWorkerStatusFixture()
     }
   };
 }
@@ -219,7 +221,8 @@ test("Documents reasoning keeps the draft, confirmation and saved revision acros
     mode: "system_model_vision" as const, parserProfileVersion: 19, reasoningEffort: null } };
   settings = { ...settings, profile: { ...settings.profile, activeRevision: initial,
     availablePdfDestinations: [destination], recentRevisions: [initial] } };
-  const roles: AdminSystemModelPolicyCatalog = { candidates: [], titleCandidates: [], documentCandidates: [], verificationCandidates: [],
+  const roles: AdminSystemModelPolicyCatalog = {
+    memoryPolicy: { model: null, reasoningEffort: null, version: 1, assignmentSource: "unassigned" }, candidates: [], titleCandidates: [], documentCandidates: [], verificationCandidates: [],
     ineligible: { chat_titles: [], direct_pdf: [], memory: [], vision: [] }, rerankerCandidates: [], policy: {
       chatTitleModel: null, chatTitleReasoningEffort: null, chatPdfModel: null, chatPdfReasoningEffort: null, reasoningEffort: null, rerankerModel: null,
       systemModel: null, updatedAt: "2026-09-09T00:00:00.000Z", updatedBy: null, version: 1

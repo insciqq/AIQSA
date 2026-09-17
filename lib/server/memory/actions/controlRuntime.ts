@@ -70,6 +70,13 @@ export type MemoryControlService = Readonly<{
   decide(input: Readonly<{
     attemptId: string;
     context: MemoryActionIntentContext;
+    /**
+     * Reports the opaque durable binding as soon as admission creates it.
+     * The retrieval deadline may stop awaiting this service before it can
+     * return its terminal result, but the caller still needs to declare the
+     * already-started external execution accurately.
+     */
+    onBindingId?: (bindingId: string) => void;
     signal: AbortSignal;
     userId: string;
   }>): Promise<MemoryControlResult>;
@@ -401,6 +408,7 @@ export function createMemoryControlService(input: Readonly<{
           versions: MEMORY_CONTROL_VERSIONS
         });
         bindingId = binding.id;
+        requestInput.onBindingId?.(bindingId);
         const started = await input.execution.admission.start(requestInput.userId, binding.id);
         if (started.snapshot.logicalRole !== "MEMORY_CONTROL" ||
           !started.snapshot.requiresStrictStructuredOutput) {

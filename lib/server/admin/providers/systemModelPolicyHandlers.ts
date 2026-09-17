@@ -83,6 +83,27 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const textOrNull = (entry: unknown, limit: number) => entry === null ||
         typeof entry === "string" && entry.trim() === entry && entry.length > 0 && entry.length <= limit &&
         !/[\u0000-\u001f\u007f]/u.test(entry);
+      const memoryFields = ["expectedMemoryVersion", "memoryProviderModelId", "memoryReasoningEffort", "memoryRecommendationId"];
+      if (record(value) && memoryFields.some((key) => Object.hasOwn(value, key))) {
+        if (Object.keys(value).some((key) => !memoryFields.includes(key)) ||
+          !Number.isSafeInteger(value.expectedMemoryVersion) || Number(value.expectedMemoryVersion) < 1 ||
+          !textOrNull(value.memoryProviderModelId, 256) || !textOrNull(value.memoryReasoningEffort, 32) ||
+          Object.hasOwn(value, "memoryRecommendationId") &&
+            (value.memoryRecommendationId === null || !textOrNull(value.memoryRecommendationId, 128)) ||
+          value.memoryProviderModelId === null && value.memoryReasoningEffort !== null) {
+          return Response.json({ error: "system_model_policy_update_invalid" }, { status: 400 });
+        }
+        try {
+          await input.service.updateMemory({
+            expectedVersion: Number(value.expectedMemoryVersion),
+            providerModelId: value.memoryProviderModelId as string | null,
+            reasoningEffort: value.memoryReasoningEffort as string | null,
+            ...(typeof value.memoryRecommendationId === "string" ? { recommendationId: value.memoryRecommendationId } : {}),
+            userId: auth.session.userId
+          });
+          return Response.json({ systemModelPolicy: await input.service.list() });
+        } catch (error) { return failure(error); }
+      }
       const hasUtilityUpdate = record(value) && Object.hasOwn(value, "providerModelId");
       const hasRerankerUpdate = record(value) && Object.hasOwn(value, "rerankerProviderModelId");
       const hasImageUpdate = record(value) && Object.hasOwn(value, "imageProviderModelId");

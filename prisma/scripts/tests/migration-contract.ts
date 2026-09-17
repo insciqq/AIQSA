@@ -1,9 +1,14 @@
+import { NATIVE_ROUTING_MIGRATION, nativeRoutingFixtureSql, nativeRoutingProofSql, nativeRoutingRepeatProofSql } from "./openrouter-native-routing-adoption";
 import { MEMORY_DEFAULTS_MIGRATION, memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql } from "./memory-defaults-adoption";
 import { WORKSPACE_USER_DEFAULT_MIGRATION, workspaceUserDefaultFixtureSql, workspaceUserDefaultProofSql, workspaceUserDefaultRepeatProofSql } from "./workspace-user-default-adoption";
 import { CHAT_TITLE_CREDENTIAL_MIGRATION, chatTitleCredentialAdoptionFixtureSql, chatTitleCredentialAdoptionProofSql } from "./chat-title-credential-adoption";
 import { CHAT_TITLE_ROLE_MIGRATION, chatTitleRoleAdoptionFixtureSql, chatTitleRoleAdoptionProofSql, chatTitleRoleClearProofSql } from "./system-model-roles-adoption";
 import { GEMINI_GROUNDING_MIGRATION, geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql } from "./gemini-grounding-adoption";
 import { MEMORY_CONFIGURATION_WAIT_MIGRATION, memoryConfigurationAdoptionFixtureSql, memoryConfigurationAdoptionProofSql } from "./memory-configuration-adoption";
+import { MEMORY_WORKER_RECOVERY_MIGRATION, memoryWorkerRecoveryFixtureSql, memoryWorkerRecoveryProofSql } from "./memory-worker-recovery-adoption";
+import { MEMORY_UTILITY_MODEL_MIGRATION, memoryUtilityModelFixtureSql, memoryUtilityModelProofSql, memoryUtilityModelRepeatProofSql } from "./memory-utility-model-adoption";
+import { MEMORY_HISTORY_BUDGET_MIGRATION, memoryHistoryBudgetFixtureSql, memoryHistoryBudgetProofSql } from "./memory-history-budget-adoption";
+import { MEMORY_RECOMMENDATION_MIGRATION, memoryRecommendationFixtureSql, memoryRecommendationProofSql, memoryRecommendationRepeatProofSql } from "./memory-recommendation-adoption";
 import { CHAT_PDF_ASSIGNMENT_MIGRATION, chatPdfAssignmentAdoptionFixtureSql, SYSTEM_MODEL_ROLES_MIGRATION, systemModelRolesAdoptionFixtureSql, systemModelRolesAdoptionProofSql } from "./system-model-roles-adoption";
 import { ASSISTANT_LIVE_MIGRATION, assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql } from "./assistant-live-adoption";
 import assert from "node:assert/strict";
@@ -27,7 +32,7 @@ import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-
 const BASELINE = "20260815000000_baseline";
 const BASELINE_SHA256 = "71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33";
 const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
-  "bf38a40b93bb28edae2f1cca97aef2a4612464d80fb1be1958ec7af3a217d583";
+  "f01548a80488eb9d3d385350aeca55541204b6fc98d585ff9a86aa6de1adac5e";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const KNOWLEDGE_PROFILE_MIGRATION = "20260818023000_knowledge_index_profile";
 const KNOWLEDGE_SOURCES_MIGRATION = "20260818043000_knowledge_sources_v2";
@@ -543,6 +548,10 @@ function bootstrapFoundationDigest(database: string): string {
           "maxToolCalls", "tokenBudget", "maxOutputTokens", version, "updatedByUserId") ORDER BY id)
         FROM "AgentPolicy"
       ), '[]'::jsonb),
+      'memory_utility_model_policy', COALESCE((
+        SELECT jsonb_agg(to_jsonb(policy) - 'createdAt' - 'updatedAt' ORDER BY policy.id)
+        FROM "MemoryUtilityModelPolicy" AS policy
+      ), '[]'::jsonb),
       'workspace_policy', COALESCE((
         SELECT jsonb_agg(jsonb_build_array(id, enabled, "internetEnabled", version, "updatedByUserId") ORDER BY id)
         FROM "WorkspacePolicy"
@@ -573,6 +582,10 @@ function runBootstrapProof(database: string): void {
   psqlScalar(database, `UPDATE "UserSettings" SET "defaultSearchPlan" = '{"mode":"all_selected","optionIds":[]}';`);
   assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "8192");
   psqlScalar(database, `UPDATE "ModelPolicy" SET "mcpAutoDiscoveryMaxOutputTokens" = 4096 WHERE id = 'installation';`);
+  assert.equal(psqlScalar(database, `SELECT count(*) FROM "MemoryUtilityModelPolicy" WHERE id = 'installation'
+    AND "providerModelId" IS NULL AND "reasoningEffort" IS NULL AND "assignmentSource" = 'UNASSIGNED' AND version = 1;`), "1",
+    "fresh bootstrap leaves Memory available for verified automatic setup");
+  psqlScalar(database, `UPDATE "MemoryUtilityModelPolicy" SET "assignmentSource" = 'OPERATOR', version = 7 WHERE id = 'installation';`);
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" s JOIN "User" u ON u.id = s."userId"
     WHERE u.email = 'baseline-admin@example.invalid' AND s."useMemoryFacts" AND s."referenceChatHistory"
       AND s."learnAutomatically" AND s."synthesisEnabled" AND s."decayEnabled"
@@ -7381,6 +7394,18 @@ function main(
     geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_CONFIGURATION_WAIT_MIGRATION,
     memoryConfigurationAdoptionFixtureSql, memoryConfigurationAdoptionProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_HISTORY_BUDGET_MIGRATION,
+    memoryHistoryBudgetFixtureSql, memoryHistoryBudgetProofSql, memoryHistoryBudgetProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, NATIVE_ROUTING_MIGRATION,
+    nativeRoutingFixtureSql, nativeRoutingProofSql, nativeRoutingRepeatProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_RECOMMENDATION_MIGRATION,
+    memoryRecommendationFixtureSql, memoryRecommendationProofSql, memoryRecommendationRepeatProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_WORKER_RECOVERY_MIGRATION,
+    memoryWorkerRecoveryFixtureSql, memoryWorkerRecoveryProofSql);
+  for (const assigned of [false, true]) {
+    runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_UTILITY_MODEL_MIGRATION,
+      memoryUtilityModelFixtureSql(assigned), memoryUtilityModelProofSql(assigned), memoryUtilityModelRepeatProofSql);
+  }
   for (const pdfAllowed of [false, true]) {
     runForwardAdoptionProof(shadowDatabase, migrations, SYSTEM_MODEL_ROLES_MIGRATION,
       systemModelRolesAdoptionFixtureSql(pdfAllowed), systemModelRolesAdoptionProofSql(pdfAllowed));

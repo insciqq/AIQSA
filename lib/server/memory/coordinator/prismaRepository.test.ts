@@ -186,14 +186,15 @@ describe("Prisma memory coordinator repository preflight", () => {
     expect(apply).toHaveBeenCalledOnce();
   });
 
-  it("gives only full-set rebuild commits a lease-bounded transaction budget", async () => {
+  it("gives history and full-set rebuild commits lease-bounded transaction budgets", async () => {
     const tx = {
       $queryRaw: vi.fn(async () => [{ id: "job-commit" }]),
+      memoryIndexGeneration: { findFirst: vi.fn(async () => null) },
       memoryJob: { updateMany: vi.fn(async () => ({ count: 1 })) }
     };
     const transaction = vi.fn(async (
       consume: (value: typeof tx) => Promise<boolean>,
-      _options?: Readonly<{ timeout: number }>
+      _options?: Readonly<{ maxWait?: number; timeout?: number }>
     ) => consume(tx));
     const repository = createPrismaMemoryCoordinatorRepository({
       $transaction: transaction
@@ -206,6 +207,18 @@ describe("Prisma memory coordinator repository preflight", () => {
       stage: "catching_up"
     })).resolves.toBe(true);
     expect(transaction.mock.calls[0]?.[1]).toEqual({ timeout: 20_000 });
+
+    transaction.mockClear();
+    await expect(repository.commitJobSuccess({
+      acceptedResultHash: "b".repeat(64),
+      claim: { ...jobClaim(), kind: "INDEX_HISTORY" },
+      now: new Date("2026-08-21T10:00:00.000Z"),
+      stage: "lexical_apply"
+    })).resolves.toBe(true);
+    expect(transaction.mock.calls[0]?.[1]).toEqual({
+      maxWait: 5_000,
+      timeout: 20_000
+    });
 
     transaction.mockClear();
     await expect(repository.commitJobSuccess({

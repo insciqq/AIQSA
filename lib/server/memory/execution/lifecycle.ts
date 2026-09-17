@@ -317,6 +317,14 @@ export async function detachExpiredMemoryExecutionBindings(
     return memoryExecutionFailure("memory_execution_input_invalid");
   }
   await tx.$executeRaw(Prisma.sql`
+    UPDATE "MemoryHistoryExecution" AS execution
+    SET "acceptedOutput" = NULL, "clearedAt" = GREATEST(${now}, execution."createdAt")
+    FROM "MemoryExecutionBinding" AS binding
+    WHERE execution."userId" = binding."userId" AND execution."executionBindingId" = binding.id
+      AND execution."clearedAt" IS NULL AND execution."recoverableUntil" <= ${now}
+      AND ${targetPredicate(target)}
+  `);
+  await tx.$executeRaw(Prisma.sql`
     UPDATE "MemoryFactExtractionCandidateReceipt" AS receipt
     SET
       "outcome" = 'STALE'::"MemoryFactExtractionCandidateOutcome",

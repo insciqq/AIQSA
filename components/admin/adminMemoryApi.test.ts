@@ -1,3 +1,4 @@
+import { memoryRecoveryStatusFixture, memoryWorkerStatusFixture } from "@/tests/support/memoryStatus";
 import { describe, expect, it, vi } from "vitest";
 import {
   getAdminMemoryStatus,
@@ -14,7 +15,8 @@ function response() {
       index: { generation: 2, readiness: "READY" },
       queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
       rebuild: { state: "NOT_REQUIRED" },
-      worker: { state: "RUNNING" }
+      recovery: memoryRecoveryStatusFixture(),
+      worker: memoryWorkerStatusFixture()
     }
   };
 }

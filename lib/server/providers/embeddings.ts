@@ -310,7 +310,7 @@ function serializedRequestBody(
       ? {
           provider: {
             allow_fallbacks: pinnedOpenRouterProvider === null &&
-              model.openRouterRouting !== undefined,
+              (model.openRouterRouting?.mode === "automatic" || (selectedRouting?.providers.length ?? 0) > 1),
             data_collection: "deny",
             ...(pinnedOpenRouterProvider !== null
               ? {

@@ -1,6 +1,8 @@
+import { memoryRecoveryStatusFixture } from "@/tests/support/memoryStatus";
 import { describe, expect, it, vi } from "vitest";
 import {
   ADMIN_MEMORY_REBUILD_BATCH_SIZE,
+  ADMIN_MEMORY_RECOVERY_BATCH_SIZE,
   ADMIN_MEMORY_WORKER_FRESHNESS_MS,
   AdminMemoryStatusServiceError,
   createAdminMemoryStatusService,
@@ -16,6 +18,7 @@ function snapshot(
   return {
     admissionTimeout: { seconds: 15, version: 4 },
     processing: { enabled: true, issues: [] },
+    recovery: memoryRecoveryStatusFixture(),
     configuredTargets: [{ model: "Utility", provider: "Primary" }],
     index: {
       activeGenerations: [3],
@@ -28,7 +31,12 @@ function snapshot(
     inProgressCount: 0,
     oldestQueuedAt: null,
     queueLength: 0,
+    workerReady: true,
+    workerHasStalledClaims: false,
+    workerActiveStages: [],
     workerLastSeenAt: new Date(now.getTime() - 1_000),
+    workerLastProgressAt: new Date(now.getTime() - 1_000),
+    workerLastSuccessfulJobAt: new Date(now.getTime() - 1_000),
     ...overrides
   };
 }
@@ -41,11 +49,75 @@ function repository(
   return {
     read: vi.fn(async () => rows[Math.min(index++, rows.length - 1)]!),
     startRebuild,
+    recoverEligible: vi.fn(async () => 0),
     updateAdmissionTimeout: vi.fn().mockResolvedValue(true)
   };
 }
 
 describe("administrator Memory status service", () => {
+  it("does not report startup as ready even when its heartbeat is fresh", async () => {
+    const service = createAdminMemoryStatusService({ now: () => now,
+      repository: repository([snapshot({ workerReady: false })]) });
+    await expect(service.get()).resolves.toMatchObject({
+      worker: { state: "NOT_RUNNING", reason: "NOT_READY", lastSeenAgeSeconds: 1 }
+    });
+  });
+
+  it("distinguishes a stalled live queue from a healthy idle worker", async () => {
+    const stale = new Date(now.getTime() - 20 * 60_000);
+    const service = createAdminMemoryStatusService({ now: () => now,
+      repository: repository([
+        snapshot({ workerLastProgressAt: stale, workerLastSuccessfulJobAt: stale, inProgressCount: 1,
+          workerActiveStages: ["HISTORY"] }),
+        snapshot({ workerLastProgressAt: stale, workerLastSuccessfulJobAt: stale })
+      ]) });
+    await expect(service.get()).resolves.toMatchObject({ worker: {
+      state: "STALLED", reason: "QUEUE_STALLED", lastProgressAgeSeconds: 1200,
+      lastSuccessAgeSeconds: 1200, activeStages: ["HISTORY"]
+    } });
+    await expect(service.get()).resolves.toMatchObject({ worker: { state: "RUNNING", reason: "IDLE" } });
+  });
+
+  it("reports a stalled waiting stage even without a claimed job", async () => {
+    const service = createAdminMemoryStatusService({ now: () => now,
+      repository: repository([snapshot({ queueLength: 1, oldestQueuedAt: new Date(now.getTime() - 1000_000),
+        processing: { enabled: true, issues: [{ stage: "HISTORY", reason: "STALLED", severity: "warn", count: 1, oldestAgeSeconds: 1000 }] }
+      })]) });
+    await expect(service.get()).resolves.toMatchObject({ worker: { state: "STALLED", reason: "QUEUE_STALLED" } });
+  });
+
+  it("keeps a stalled claim visible when a higher-priority stage issue and peer progress coexist", async () => {
+    const service = createAdminMemoryStatusService({ now: () => now,
+      repository: repository([snapshot({ inProgressCount: 1, workerHasStalledClaims: true,
+        processing: { enabled: true, issues: [{ stage: "HISTORY", reason: "PROCESSING_FAILED", severity: "bad", count: 2, oldestAgeSeconds: 1200 }] }
+      })]) });
+    await expect(service.get()).resolves.toMatchObject({
+      worker: { state: "STALLED", reason: "QUEUE_STALLED", lastProgressAgeSeconds: 1 },
+      processing: { issues: [{ reason: "PROCESSING_FAILED" }] }
+    });
+  });
+
+  it("admits bounded recovery and returns fresh queue state without rebuilding", async () => {
+    const repo = repository([
+      snapshot({ recovery: memoryRecoveryStatusFixture({ eligible: 12 }) }),
+      snapshot({ recovery: memoryRecoveryStatusFixture({ eligible: 4 }), queueLength: 8, oldestQueuedAt: now })
+    ]);
+    vi.mocked(repo.recoverEligible!).mockResolvedValue(8);
+    const service = createAdminMemoryStatusService({ now: () => now, repository: repo });
+    await expect(service.recover()).resolves.toMatchObject({ recovery: { eligible: 4 }, queue: { length: 8 } });
+    expect(repo.recoverEligible).toHaveBeenCalledWith({ limit: ADMIN_MEMORY_RECOVERY_BATCH_SIZE, now });
+    expect(repo.startRebuild).not.toHaveBeenCalled();
+  });
+
+  it("rejects recovery without a worker or when a concurrent recovery wins", async () => {
+    const repo = repository([snapshot({ workerReady: false }), snapshot()]);
+    const service = createAdminMemoryStatusService({ now: () => now, repository: repo });
+    await expect(service.recover()).rejects.toThrow("memory_admin_recovery_unavailable");
+    expect(repo.recoverEligible).not.toHaveBeenCalled();
+    await expect(service.recover()).rejects.toThrow("memory_admin_recovery_unavailable");
+    expect(repo.recoverEligible).toHaveBeenCalledOnce();
+  });
+
   it("projects only exact bounded status and a conservative worker lease", async () => {
     const service = createAdminMemoryStatusService({
       now: () => now,
@@ -58,7 +130,6 @@ describe("administrator Memory status service", () => {
           rebuilding: false,
           requiresRebuild: false
         },
-        processing: { enabled: true, issues: [] },
         inProgressCount: 2,
         oldestQueuedAt: new Date(now.getTime() - 12_999),
         queueLength: 3,
@@ -69,11 +140,20 @@ describe("administrator Memory status service", () => {
     await expect(service.get()).resolves.toEqual({
       admissionTimeout: { seconds: 15, version: 4 },
       processing: { enabled: true, issues: [] },
+      recovery: memoryRecoveryStatusFixture(),
       configuredTargets: [{ model: "Utility", provider: "Primary" }],
       index: { generation: "MIXED", readiness: "READY" },
       queue: { inProgress: 2, length: 3, oldestAgeSeconds: 12 },
       rebuild: { state: "NOT_REQUIRED" },
-      worker: { state: "NOT_RUNNING" }
+      worker: {
+        activeStages: [],
+        observationWindowSeconds: 900,
+        lastProgressAgeSeconds: 1,
+        lastSeenAgeSeconds: 150,
+        lastSuccessAgeSeconds: 1,
+        reason: "HEARTBEAT_STALE",
+        state: "NOT_RUNNING"
+      }
     });
   });
 
@@ -164,7 +244,10 @@ describe("administrator Memory status service", () => {
     });
     await expect(service.get()).resolves.toMatchObject({
       queue: { inProgress: 3, length: 0, oldestAgeSeconds: null },
-      worker: { state: "RUNNING" }
+      worker: {
+        reason: "ACTIVE",
+        state: "RUNNING"
+      }
     });
   });
 

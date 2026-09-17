@@ -3,13 +3,13 @@
 Owner: Provider integration maintainers
 Scope: Execution authority, capability evidence, transport and disclosure boundaries.
 
-Exact adapters, supported protocols, terminal events, request shapes and limits belong to [provider code](../lib/server/providers/). [Run contracts](RUN_CONTRACTS.md) owns accepted execution; [Security](SECURITY.md) owns credentials, SSRF and endpoint trust.
+Adapters and wire contracts: [provider code](../lib/server/providers/); accepted execution: [Run contracts](RUN_CONTRACTS.md); credentials and endpoint trust: [Security](SECURITY.md).
 
 ## Authority And Capability
 
 Catalog discovery is availability evidence, never execution authority. Admission binds the exact tested connection/model/revision/credential and role, then rechecks revocation before outbound requests. Personal credential precedence is direct user, identical group grant, then an explicitly configured installation default. Project runs use canonical Project resources and shared authority only. Missing authority never selects another tier, model, endpoint or provider.
 
-Answer, embedding and rerank roles are distinct. Internal System Model, Chat titles, chat PDF and Knowledge document assignments use their explicitly selected installation credentials, confer no user entitlement and do not inherit ordinary selector visibility. Chat titles use an independent nullable assignment with verified structured output; the stronger Memory requirements remain independent. An absent or unavailable title assignment keeps the heuristic name without fallback dispatch. A failed capability disables only that capability, preserving unrelated valid roles. Memory read admission is independent of the System Model; [Memory](MEMORY.md) owns action authority and optional ranking policy.
+Answer, embedding and rerank roles are distinct. Internal System Model, Memory Utility Model, Chat titles, chat PDF and Knowledge document assignments use their explicitly selected installation credentials, confer no user entitlement and do not inherit ordinary selector visibility. Chat titles use an independent nullable assignment with verified structured output; the stronger Memory requirements remain independent. An absent or unavailable title assignment keeps the heuristic name without fallback dispatch. A failed capability disables only that capability, preserving unrelated valid roles. Memory read admission is independent of the generation assignment; [Memory](MEMORY.md) owns action authority and optional ranking policy.
 
 Key replacement tests the active connection and publishes evidence atomically under exact version fences. Endpoint changes require fresh explicit secrets for every retained key, including disabled ones, before contacting the new destination. Stored secrets are never reused to discover or test changed endpoints. Search Save & Check likewise publishes only successfully validated configuration and evidence; a diagnostic run check does not publish configuration.
 
@@ -31,7 +31,7 @@ Custom roots require explicit protocol and canonical base URL; do not guess `/v1
 
 Gateway routing isolation is compatibility behavior, never identity or retry authority. Automatic detection belongs to validated catalog evidence bound to the tested endpoint and credential; explicit overrides and accepted snapshots remain authoritative. Opaque routing keys isolate physical requests without exposing private identity or acting as idempotency keys. Preserve concurrency; fixed delays cannot guarantee isolation.
 
-Native and compatible protocols are separate runtime identities; wire similarity grants no fallback authority. Native OpenAI background work requires stored provider state; compatible Responses does not inherit its store/background/cache lifecycle. DeepSeek and Gemini use their dedicated native paths without compatible fallback. Gemini thought signatures remain private continuation state; hosted Search and application tools are not combined until the stable protocol supports it. OpenRouter preserves the selected routing/privacy profile and defaults data collection to `deny`; an administrator may explicitly opt an individual model into `allow`, revalidated at admission and dispatch. Fakes are verification-only.
+Native and compatible protocols have distinct runtime identities; wire similarity grants no fallback authority. Native OpenAI background work requires stored provider state; compatible Responses inherits no store/background/cache lifecycle. DeepSeek and Gemini use native paths without compatible fallback. Gemini thought signatures remain private continuation state; combining hosted Search and application tools requires stable protocol support. OpenRouter defaults to a discovered native provider without outside fallback; operator Automatic/custom choices remain authoritative. One-time adoption preserves routing until fresh capability proofs for all usable keys publish together. Unresolved or crash-ambiguous checks require explicit Test & Save. Data collection defaults to `deny`; per-model `allow` requires administrator choice, revalidated at admission and dispatch. Fakes are verification-only.
 
 Client Search receives only a bounded generated query and server-owned controls, never conversation, prompts, attachment identity, filenames, bytes or extracted text. Findings are bounded safe URL/text projections; raw bodies and recursively discovered URLs are not retained. Partial fan-out is explicit and no unselected fallback runs. Only the dedicated native DeepSeek Responses Search path may publish explicit `provider_unavailable` attribution with an empty source list; do not generalize that exception to other providers.
 
@@ -47,7 +47,7 @@ A reranker receives a sanitized query and bounded opaque-handle documents, retur
 
 ## Upstream References
 
-Reverify affected primary documentation when changing provider behavior; this file is not evidence of a current upstream check. Adapter tests own AIQSA's exact wire support.
+Reverify affected primary documentation when changing provider behavior. Adapter tests own exact wire support.
 
 - OpenAI: [Responses](https://platform.openai.com/docs/api-reference/responses), [background mode](https://platform.openai.com/docs/guides/background), [SDK retries](https://github.com/openai/openai-node/blob/main/docs/configuration.md#retries-and-timeouts).
 - Anthropic: [Messages](https://docs.anthropic.com/en/api/messages), [streaming and terminals](https://platform.claude.com/docs/en/build-with-claude/streaming).

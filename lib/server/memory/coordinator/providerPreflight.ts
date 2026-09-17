@@ -5,10 +5,8 @@ import {
   type EmbeddingProviderAdmissionRole,
   type ProviderAdmissionRole
 } from "../../providerRuntime/admission";
-import {
-  createSystemModelRoleResolver,
-  type SystemModelRoleResolution
-} from "../../providerRuntime/systemModelRole";
+import type { SystemModelRoleResolution } from "../../providerRuntime/systemModelRole";
+import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memoryUtilityModelRole";
 import { decryptProviderCredentialSecret } from "../../providers/credentialSecrets";
 import { providerAuthenticationMode } from "../../providers/providerConfiguration";
 import {
@@ -42,7 +40,7 @@ export type MemoryProviderBindingPreflightDependencies = Readonly<{
     providerModelId: string;
     userId: string;
   }>): Promise<EmbeddingProviderAdmissionRole>;
-  resolveSystemModel(): Promise<SystemModelRoleResolution>;
+  resolveMemoryModel(): Promise<SystemModelRoleResolution>;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -114,7 +112,7 @@ async function assertCredentialReadable(
 }
 
 /**
- * Resolve the same effective installation System Model and per-owner embedding
+ * Resolve the same effective installation Memory utility model and per-owner embedding
  * roles used by Memory admission, then prove that every currently admitted
  * binding's exact credential version can be read with this process's envelope
  * key. An absent or currently unavailable capability is not a process-wide
@@ -126,19 +124,19 @@ export async function preflightMemoryProviderBindings(
 ): Promise<void> {
   const owners = await dependencies.listEnabledOwners();
   const validatedCredentials = new Set<string>();
-  let systemModel: SystemModelRoleResolution;
+  let memoryModel: SystemModelRoleResolution;
   try {
-    systemModel = await dependencies.resolveSystemModel();
+    memoryModel = await dependencies.resolveMemoryModel();
   } catch {
     return invalidBinding("memory_system_model_binding_invalid");
   }
   if (
-    systemModel.ok &&
-    systemModel.role.modelConfiguration.adapterKind !== "fake"
+    memoryModel.ok &&
+    memoryModel.role.modelConfiguration.adapterKind !== "fake"
   ) {
     await assertCredentialReadable(
       dependencies,
-      systemModel.role,
+      memoryModel.role,
       validatedCredentials
     );
   }
@@ -163,7 +161,7 @@ export async function preflightPrismaMemoryProviderBindings(
   client: PrismaClient,
   encryptionKey: Buffer
 ): Promise<void> {
-  const systemModelResolver = createSystemModelRoleResolver(client);
+  const memoryModelResolver = createMemoryUtilityModelRoleResolver(client);
   return preflightMemoryProviderBindings({
     encryptionKey,
     listEnabledOwners: () => client.$queryRaw<EnabledMemoryOwner[]>(Prisma.sql`
@@ -185,6 +183,6 @@ export async function preflightPrismaMemoryProviderBindings(
       return rows[0] ?? null;
     }),
     resolveEmbedding: (input) => loadEmbeddingProviderRole(client, input),
-    resolveSystemModel: () => systemModelResolver.resolve()
+    resolveMemoryModel: () => memoryModelResolver.resolve()
   });
 }

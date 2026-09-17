@@ -40,7 +40,7 @@ const catalogModels: AdminOpenRouterDiscoveredModel[] = [
 ];
 
 const endpoints: AdminOpenRouterDiscoveredEndpoint[] = [
-  { name: "Anthropic | claude-sonnet-5", providerName: "Anthropic", supportedParameters: [], tag: "anthropic" },
+  { name: "Anthropic | claude-sonnet-5", providerName: "Anthropic", supportedParameters: ["tools"], tag: "anthropic" },
   { name: "Amazon Bedrock | claude-sonnet-5", providerName: "Amazon Bedrock · US", quantization: "fp8", supportedParameters: [], tag: "amazon-bedrock" }
 ];
 
@@ -352,7 +352,7 @@ describe("AdminProviderModelSheet", () => {
     expect(within(sheet).getByLabelText("Display name")).toHaveValue("Anthropic: Claude Sonnet 5");
     expect(sheet).toHaveTextContent("1M context · tools, reasoning, image input");
 
-    fireEvent.click(within(sheet).getByLabelText(/Only these providers/));
+    fireEvent.click(within(sheet).getByLabelText(/Custom providers/));
     const routing = await within(sheet).findByTestId("model-routing-list");
     expect(within(routing).getByPlaceholderText(/Add provider · Amazon Bedrock · US, Anthropic…/)).toBeInTheDocument();
     fireEvent.click(await within(routing).findByRole("button", { name: /^Anthropic/ }));

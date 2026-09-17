@@ -843,6 +843,7 @@ model User {
   smtpActivations                     SmtpControl[]                      @relation("SmtpControlActivator")
   smtpConfigurationEdits              SmtpControl[]                      @relation("SmtpControlUpdater")
   systemModelPolicyUpdates            SystemModelPolicy[]                @relation("SystemModelPolicyUpdater")
+  memoryUtilityModelPolicyUpdates     MemoryUtilityModelPolicy[]          @relation("MemoryUtilityModelPolicyUpdater")
   usageEvents                         UsageEvent[]
   workspacePolicyUpdates              WorkspacePolicy[]                  @relation("WorkspacePolicyUpdater")
   agentPolicyUpdates                  AgentPolicy[]                      @relation("AgentPolicyUpdater")
@@ -1170,7 +1171,7 @@ model SystemModelPolicy {
   chatPdfReasoningEffort   String?        @db.VarChar(32)
   chatPdfProcessingMode    ChatPdfProcessingMode @default(PREFER_CHAT_MODEL)
   chatPdfFallbackMethod    ChatPdfFallbackMethod @default(PAGE_IMAGES)
-  /// Memory semantic/action work and its shared structured utilities.
+  /// MCP semantic routing and the existing generative reranker compatibility path.
   providerModelId         String?
   rerankerProviderModelId String?
   /// Set only by an explicit administrator save or clear of the reranker role.
@@ -1193,6 +1194,31 @@ model SystemModelPolicy {
   @@index([chatTitleProviderModelId])
   @@index([chatPdfProviderModelId])
   @@index([chatPdfNativeProviderModelId])
+  @@index([updatedByUserId])
+}
+
+enum MemoryUtilityAssignmentSource {
+  UNASSIGNED
+  INHERITED
+  BOOTSTRAP
+  OPERATOR
+}
+
+model MemoryUtilityModelPolicy {
+  id               String                        @id
+  providerModelId  String?
+  reasoningEffort  String?                       @db.VarChar(32)
+  assignmentSource MemoryUtilityAssignmentSource @default(UNASSIGNED)
+  recommendationAdoptionVersion Int            @default(0)
+  recommendationAdoptionReason String?         @db.VarChar(32)
+  version          Int                          @default(1)
+  updatedByUserId  String?
+  createdAt        DateTime                     @default(now())
+  updatedAt        DateTime                     @updatedAt
+  providerModel    ProviderModel?               @relation("MemoryUtilityProviderModel", fields: [providerModelId], references: [id], onDelete: Restrict)
+  updatedBy        User?                        @relation("MemoryUtilityModelPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([providerModelId])
   @@index([updatedByUserId])
 }
 
@@ -2348,6 +2374,8 @@ model KnowledgeBasePublication {
 }
 
 model ProviderModel {
+  nativeRoutingAdoptionVersion Int                             @default(1)
+  nativeRoutingAdoptionReason  String?                         @db.VarChar(32)
   chatPdfPreparations ChatPdfAttachmentPreparation[]
   id                          String                          @id @default(uuid())
   connectionId                String
@@ -2391,6 +2419,7 @@ model ProviderModel {
   chatPdfNativeRoles          SystemModelPolicy[]             @relation("ChatPdfNativeProviderModel")
   chatPdfRoles                SystemModelPolicy[]             @relation("ChatPdfProviderModel")
   systemUtilityRoles          SystemModelPolicy[]             @relation("SystemUtilityProviderModel")
+  memoryUtilityRoles          MemoryUtilityModelPolicy[]       @relation("MemoryUtilityProviderModel")
   imageGenerationRoles       SystemModelPolicy[]             @relation("ImageGenerationProviderModel")
   memoryRerankerRoles         SystemModelPolicy[]             @relation("MemoryRerankerProviderModel")
   userDefaults                UserSettings[]                  @relation("UserDefaultProviderModel")
@@ -5216,6 +5245,27 @@ model MemorySynthesisExecution {
   @@index([userId, appliedAt, createdAt])
 }
 
+/// Strict decoded history outputs retained only until local apply or expiry.
+/// One job may make several independently accounted contextual/digest calls.
+model MemoryHistoryExecution {
+  id                 String    @id @default(uuid())
+  userId             String
+  memoryJobId        String
+  executionBindingId String
+  inputHash          String    @db.VarChar(128)
+  acceptedOutputHash String    @db.VarChar(128)
+  acceptedOutput     Json?
+  recoverableUntil   DateTime
+  createdAt          DateTime  @default(now())
+  clearedAt          DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, executionBindingId])
+  @@index([userId, memoryJobId, inputHash])
+  @@index([userId, clearedAt, recoverableUntil])
+  @@index([clearedAt, recoverableUntil, id])
+}
+
 /// Recovery-only staging for one strict automatic-fact extraction result.
 /// Provider reasoning and raw response envelopes never enter this owner. The
 /// decoded packet is cleared after every candidate has a durable outcome.
@@ -5722,6 +5772,10 @@ model MemoryJob {
   state                    MemoryJobState @default(QUEUED)
   stage                    String?        @db.VarChar(64)
   attemptCount             Int            @default(0)
+  recoveryCount            Int            @default(0)
+  lastRecoveryAt           DateTime?
+  recoveryErrorCode        String?        @db.VarChar(64)
+  progressAt               DateTime?
   leaseToken               String?        @db.VarChar(128)
   leaseExpiresAt           DateTime?
   nextAttemptAt            DateTime?
@@ -5755,6 +5809,7 @@ model MemoryWorkerHeartbeat {
   instanceId String   @db.VarChar(128)
   startedAt  DateTime
   lastSeenAt DateTime
+  ready      Boolean  @default(true)
 }
 
 model MemoryDeletionOutbox {
@@ -5774,6 +5829,7 @@ model MemoryDeletionOutbox {
   leaseToken                  String?                 @db.VarChar(128)
   leaseExpiresAt              DateTime?
   lastAuditAt                 DateTime?
+  progressAt                  DateTime?
   completedAt                 DateTime?
   errorCode                   String?                 @db.VarChar(64)
   createdAt                   DateTime                @default(now())

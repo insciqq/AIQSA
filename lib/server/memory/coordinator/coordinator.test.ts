@@ -1,3 +1,4 @@
+import { memoryRecoveryStatusFixture } from "@/tests/support/memoryStatus";
 import { rememberDatabaseFailure } from "../../observability/databaseFailure";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryCoordinator } from "./coordinator";
@@ -86,6 +87,7 @@ function repository(
     listWaitingJobs: vi.fn(async () => []),
     preflight: vi.fn(async () => undefined),
     requeueDueJobs: vi.fn(async () => 0),
+    recoverEligibleJobs: vi.fn(async () => 0),
     resolveWaitingJob: vi.fn(async () => false),
     retryDeletion: vi.fn(async () => true),
     retryJob: vi.fn(async () => true),
@@ -116,6 +118,23 @@ function coordinator(
 }
 
 describe("Memory coordinator", () => {
+  it("bounds automatic recovery polling across repeated ticks and retries after a database failure", async () => {
+    let now = NOW;
+    const repo = repository({ recoverEligibleJobs: vi.fn().mockRejectedValueOnce(new Error("unavailable")).mockResolvedValue(0) });
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({ kind: "EMBED_ITEMS", preflight: async () => ({ status: "READY" }),
+      execute: async () => ({ acceptedResultHash: RESULT_HASH }) });
+    const service = new MemoryCoordinator({ now: () => now, registry, repository: repo });
+    await service.reconcileNow();
+    await service.reconcileNow();
+    expect(repo.recoverEligibleJobs).toHaveBeenCalledTimes(1);
+    now = new Date(NOW.getTime() + 60_000);
+    await service.reconcileNow();
+    expect(repo.recoverEligibleJobs).toHaveBeenCalledTimes(2);
+    expect(repo.recoverEligibleJobs).toHaveBeenLastCalledWith({ limit: 8, now });
+    await service.stop();
+  });
+
   it("isolates concurrent jobs and deletion from startup, repeated kicks, and shared reconciliation", async () => {
     const request = { trace_id: "e".repeat(32), run_id: "request-run", job_id: "request-job" };
     const jobs = [jobClaim(), jobClaim({ id: "job-2", userId: "user-2" })];
@@ -727,14 +746,21 @@ describe("Memory coordinator worker liveness", () => {
         inProgressCount: 1,
         oldestQueuedAt: null,
         queueLength: 0,
+        recovery: memoryRecoveryStatusFixture(),
+        workerReady: true,
+        workerActiveStages: ["INDEXING"],
+        workerHasStalledClaims: false,
+        workerLastProgressAt: NOW,
+        workerLastSuccessfulJobAt: null,
         workerLastSeenAt: lastSeenAt
       }),
       startRebuild: vi.fn(),
+      recoverEligible: vi.fn(async () => 0),
       updateAdmissionTimeout: vi.fn()
     } });
     const userState = () => readMemoryCapabilityOperationalState({
       memoryIndexGeneration: { findFirst: vi.fn() },
-      memoryWorkerHeartbeat: { findUnique: async () => lastSeenAt ? { lastSeenAt } : null }
+      memoryWorkerHeartbeat: { findUnique: async () => lastSeenAt ? { lastSeenAt, ready: true } : null }
     } as never, {
       now: new Date(),
       settings: {

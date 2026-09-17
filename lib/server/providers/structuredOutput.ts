@@ -40,6 +40,9 @@ export type StructuredOutputAdapterKind =
 
 export type ProviderStructuredOutputRequest = Readonly<{
   maxOutputTokens?: number;
+  /** The owning caller admitted a total allowance, including hidden reasoning.
+   * Preserve that ceiling instead of applying the legacy wire-budget floor. */
+  reasoningBudgetIncluded?: true;
   name: string;
   reasoningEffort?: string | null;
   schema: Readonly<Record<string, unknown>>;
@@ -305,8 +308,8 @@ function geminiRequestSchema(request: ProviderStructuredOutputRequest): Record<s
 
 function normalizeRequest(
   request: ProviderStructuredOutputRequest
-): Required<Omit<ProviderStructuredOutputRequest, "reasoningEffort" | "responseReminder">> &
-  Pick<ProviderStructuredOutputRequest, "reasoningEffort" | "responseReminder"> {
+): Required<Omit<ProviderStructuredOutputRequest, "reasoningEffort" | "responseReminder" | "reasoningBudgetIncluded">> &
+  Pick<ProviderStructuredOutputRequest, "reasoningEffort" | "responseReminder" | "reasoningBudgetIncluded"> {
   const maxOutputTokens = request.maxOutputTokens ?? 512;
   if (
     !/^[A-Za-z][A-Za-z0-9_-]*$/u.test(request.name) ||
@@ -322,6 +325,7 @@ function normalizeRequest(
     !Number.isSafeInteger(maxOutputTokens) ||
     maxOutputTokens < STRUCTURED_OUTPUT_LIMITS.minOutputTokens ||
     maxOutputTokens > STRUCTURED_OUTPUT_LIMITS.maxOutputTokens ||
+    (request.reasoningBudgetIncluded !== undefined && request.reasoningBudgetIncluded !== true) ||
     (request.reasoningEffort !== undefined && request.reasoningEffort !== null &&
       (typeof request.reasoningEffort !== "string" || !request.reasoningEffort.trim() ||
         request.reasoningEffort.length > 32))
@@ -330,6 +334,7 @@ function normalizeRequest(
   }
   return {
     maxOutputTokens,
+    ...(request.reasoningBudgetIncluded ? { reasoningBudgetIncluded: true as const } : {}),
     name: request.name,
     ...(request.reasoningEffort === undefined
       ? {}
@@ -501,7 +506,7 @@ export function buildOpenAIResponsesStructuredOutputRequest(
     throw new Error("structured_output_adapter_unsupported");
   }
   const normalized = normalizeRequest(request);
-  const maxOutputTokens = normalized.reasoningEffort &&
+  const maxOutputTokens = !normalized.reasoningBudgetIncluded && normalized.reasoningEffort &&
     normalized.reasoningEffort !== "none"
     ? Math.max(
         normalized.maxOutputTokens,
@@ -549,7 +554,7 @@ export function buildDeepSeekResponsesStructuredOutputRequest(
     throw new Error("structured_output_adapter_unsupported");
   }
   const normalized = normalizeRequest(request);
-  const maxOutputTokens = normalized.reasoningEffort &&
+  const maxOutputTokens = !normalized.reasoningBudgetIncluded && normalized.reasoningEffort &&
     normalized.reasoningEffort !== "none"
     ? Math.max(normalized.maxOutputTokens, REASONING_STRUCTURED_OUTPUT_MIN_TOKENS)
     : normalized.maxOutputTokens;
@@ -722,13 +727,14 @@ export function buildOpenRouterStructuredOutputRequest(
     params.reasoning.enabled || Boolean(normalized.reasoningEffort) ||
       params.reasoning.maxTokens > 0
   );
-  const maxTokens = reasoningActive || params.reasoning.exclude
+  const maxTokens = !normalized.reasoningBudgetIncluded && (reasoningActive || params.reasoning.exclude)
     ? Math.max(
         normalized.maxOutputTokens,
         REASONING_STRUCTURED_OUTPUT_MIN_TOKENS
       )
     : normalized.maxOutputTokens;
   const reasoning: Record<string, unknown> = {};
+  if (reasoningDisabled && normalized.reasoningBudgetIncluded) reasoning.enabled = false;
   if (reasoningActive) reasoning.enabled = true;
   const effort = reasoningDisabled ? null : normalized.reasoningEffort ??
     (params.reasoning.enabled ? params.reasoning.effort : null);

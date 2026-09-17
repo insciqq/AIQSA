@@ -14,6 +14,7 @@ const reasons = {
   CAPABILITY_UNAVAILABLE: "The configured model lacks a required verified capability.",
   CONFIGURATION_REQUIRED: "The current model configuration cannot run this operation.",
   PROCESSING_FAILED: "Processing failed and has not recovered.",
+  OUTPUT_LIMIT: "History text remains searchable, but some summaries or context could not be generated within the model's output limit. Choose a suitable Memory model or lower its reasoning in Defaults & roles. This does not replay earlier paid work.",
   RETRYING: "Processing keeps failing and is waiting to retry.",
   STALLED: "No completed work has advanced this backlog for at least 15 minutes."
 } as const;
@@ -24,7 +25,7 @@ export function adminMemoryProcessingCopy(issue: AdminMemoryProcessingIssue) {
   const duration = age === null ? "" : age < 60 ? `${age}s`
     : age < 3600 ? `${Math.floor(age / 60)}m` : `${Math.floor(age / 3600)}h`;
   const configuration = issue.stage !== "INDEXING" && (issue.reason === "MODEL_UNAVAILABLE" ||
-    issue.reason === "CAPABILITY_UNAVAILABLE" || issue.reason === "CONFIGURATION_REQUIRED");
+    issue.reason === "CAPABILITY_UNAVAILABLE" || issue.reason === "CONFIGURATION_REQUIRED" || issue.reason === "OUTPUT_LIMIT");
   return {
     action: configuration ? "Open Defaults & roles" : "Open Memory",
     detail: `${reasons[issue.reason]}${issue.count > 0 ? ` ${issue.count} affected job${issue.count === 1 ? "" : "s"}${duration ? `; oldest ${duration}` : ""}.` : ""}${issue.stage === "LEARNING" ? " Previously saved facts remain available when the index is ready." : ""}`,

@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
+import { applyNativeRoute } from "./nativeRouting";
 import {
   createPrismaAdminProviderQuickSetupRepository,
   lockAdminProviderQuickSetupState
@@ -864,6 +865,29 @@ describe("Prisma provider Quick setup additional connections", () => {
     // The canonical connection and its rows are never touched.
     expect(updates.some(({ where }) => JSON.stringify(where).includes(policy.connection.id))).toBe(false);
     expect(tx.$queryRaw).toHaveBeenCalled();
+  });
+
+  it("persists the verified native default without admitting unrelated configuration changes", async () => {
+    const { created, repository } = transactionalRepository([]);
+    const router = adminProviderQuickSetupPolicy("openrouter");
+    const canonical = router.candidates[0]!;
+    const candidate = { ...canonical, configuration: applyNativeRoute(canonical.configuration, { available: true, provider: "anthropic" }) };
+    const inspection = await repository.inspect({ now, provider: "openrouter", ...actor });
+    const plan = additionalPlan(inspection.fingerprint, { provider: "openrouter", pendingCapabilityChecks: true,
+      connection: { id: "connection-second", displayName: "OpenRouter second", configuration: router.connection.configuration },
+      models: [{ candidate, id: "model-second", grantId: "grant-second", evidence: { detail: "ok", method: "models_catalog",
+        selectedProviders: ["anthropic"], upstreamModelId: candidate.configuration.upstreamModelId } }] });
+    expect(await repository.commitAdditional(plan)).toEqual({ status: "ready" });
+    expect(created.providerModel?.[0]).toMatchObject({ activeConfig: {
+      openRouterRouting: { mode: "only_selected", providers: ["anthropic"] },
+      defaultParams: { provider: { only: ["anthropic"], order: ["anthropic"], allowFallbacks: false } }
+    } });
+    const other = transactionalRepository([]);
+    const guard = await other.repository.inspect({ now, provider: "openrouter", ...actor });
+    const invalid = { ...candidate, configuration: { ...candidate.configuration, upstreamModelId: "anthropic/unlisted" } };
+    expect(await other.repository.commitAdditional({ ...plan, expectedFingerprint: guard.fingerprint,
+      models: [{ ...plan.models[0]!, candidate: invalid }] })).toBe("stale");
+    expect(other.created.providerModel).toBeUndefined();
   });
 
   it("writes nothing behind a stale fence or a name the family already uses", async () => {

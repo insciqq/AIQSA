@@ -1,4 +1,6 @@
 import { createImageModelDiscovery } from "../../providers/imageModelDiscovery";
+import { createOpenRouterDiscoveryClient } from "../../providers/openRouterDiscovery";
+import { discoverNativeRoute, type NativeRouteDiscovery } from "./nativeRouting";
 import type { AdminImageDiscoveredModel } from "../../../contracts/adminProviders";
 import {
   providerResponseMaxBytes,
@@ -12,6 +14,7 @@ import {
   type ProviderFamily,
   type ProviderModelClass
 } from "../../providers/providerConfiguration";
+import type { ProviderModelConfiguration } from "../../providers/providerConfiguration";
 import {
   resolveProviderCredentialSource,
   type ProviderCredentialSource
@@ -34,6 +37,7 @@ export type AdminProviderCredentialTesterInput = Readonly<{
   connection: ProviderConnectionConfiguration;
   family: ProviderFamily;
   modelClasses?: readonly ProviderModelClass[];
+  nativeRoutingModels?: readonly ProviderModelConfiguration[];
   secret: ProviderCredentialSource | null;
   signal?: AbortSignal;
 }>;
@@ -44,6 +48,7 @@ export type AdminProviderCredentialTestOutcome = Readonly<{
   modelIdsByClass?: Readonly<Partial<Record<ProviderModelClass, string[]>>>;
   models?: AdminCompatibleDiscoveredModel[];
   imageModels?: AdminImageDiscoveredModel[];
+  nativeRoutes?: Readonly<Record<string, NativeRouteDiscovery>>;
   /** Exact whole-catalog marker, observed before model-id deduplication. */
   responsesRequestIsolationDetected?: boolean;
 }>;
@@ -374,10 +379,22 @@ export function createAdminProviderCredentialTester(
             [...answerModels, ...embeddingModels, ...rerankerModels]
               .map((model) => [model.id, model])
           ).values()];
+          const nativeRoutes: Record<string, NativeRouteDiscovery> = {};
+          if (input.family === "openrouter" && input.nativeRoutingModels?.length && secret) {
+            const available = new Set([...models.map(({ id }) => id), ...imageModels.map(({ id }) => id)]);
+            const discovery = createOpenRouterDiscoveryClient({ ...connection, bearerToken: secret, network: options.network });
+            for (const model of input.nativeRoutingModels) {
+              if (available.has(model.upstreamModelId) && model.openRouterRouting?.mode === "automatic" &&
+                !nativeRoutes[model.upstreamModelId]) {
+                nativeRoutes[model.upstreamModelId] = await discoverNativeRoute(discovery, model, timeout.signal);
+              }
+            }
+          }
           return {
             method: "models_catalog",
             modelIds: [...new Set([...models.map(({ id }) => id), ...imageModels.map(({ id }) => id)])],
             ...(classes.includes("image") ? { imageModels } : {}),
+            ...(input.nativeRoutingModels && input.family === "openrouter" ? { nativeRoutes } : {}),
             ...(input.modelClasses ? { modelIdsByClass } : {}),
             ...(input.family === "openai_compatible" ? { models, responsesRequestIsolationDetected } : {})
           };

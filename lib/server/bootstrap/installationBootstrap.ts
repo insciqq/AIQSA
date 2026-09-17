@@ -1,3 +1,4 @@
+import { adoptMemoryModelRecommendation } from "./memoryRecommendationAdoption";
 import { randomUUID as randomNodeUuid } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
@@ -346,6 +347,13 @@ async function synchronizeInstallationFoundation(
     update: {},
     where: { id: "installation" }
   });
+  await tx.memoryUtilityModelPolicy.upsert({
+    create: { id: "installation" },
+    // Migration owns compatibility; reruns preserve every assignment and clear.
+    update: {},
+    where: { id: "installation" }
+  });
+  await adoptMemoryModelRecommendation(tx);
   await tx.workspacePolicy.upsert({
     create: {
       enabled: true,

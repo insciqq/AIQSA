@@ -137,7 +137,7 @@ export async function readMemoryCapabilityOperationalState(
         })
       : Promise.resolve(null),
     client.memoryWorkerHeartbeat.findUnique({
-      select: { lastSeenAt: true },
+      select: { lastSeenAt: true, ready: true },
       where: { id: "installation" }
     })
   ]);
@@ -161,7 +161,7 @@ export async function readMemoryCapabilityOperationalState(
 
   return Object.freeze({
     retrievalIndexAvailable,
-    workerAvailable: Number.isFinite(nowMs) && workerAge >= 0 &&
+    workerAvailable: heartbeat?.ready === true && Number.isFinite(nowMs) && workerAge >= 0 &&
       workerAge <= MEMORY_WORKER_HEARTBEAT_FRESHNESS_MS
   });
 }

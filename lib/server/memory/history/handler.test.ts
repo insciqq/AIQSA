@@ -636,7 +636,7 @@ describe("Memory INDEX_HISTORY handler", () => {
     );
   });
 
-  it("commits safe chunks when optional digest generation is unavailable", async () => {
+  it.each(["unavailable", "output_limit"] as const)("commits safe chunks when optional digest generation is %s", async (reason) => {
     const currentClaim = claim();
     const currentPlan = plan([chunk("chunk-safe", 0)]);
     const apply = vi.fn(async () => undefined);
@@ -649,7 +649,7 @@ describe("Memory INDEX_HISTORY handler", () => {
       },
       digestGenerator: {
         generate: vi.fn(async () => {
-          throw new MemoryChatDigestError("memory_chat_digest_unavailable");
+          throw new MemoryChatDigestError(`memory_chat_digest_${reason}`);
         })
       },
       repository: {
@@ -661,7 +661,7 @@ describe("Memory INDEX_HISTORY handler", () => {
 
     const result = await handler.execute(currentClaim, context());
     expect(result).toMatchObject({
-      stage: "lexical_ready:digest_unavailable"
+      stage: `lexical_ready:digest_${reason}`
     });
     await result.apply?.({
       $queryRaw: vi.fn(async () => [{ ownerStatus: "active", userId: source.userId }])
@@ -672,7 +672,7 @@ describe("Memory INDEX_HISTORY handler", () => {
       expect.objectContaining({
         digest: null,
         digestPolicyVersion:
-          "memory-chat-digest-output-degraded-v1:unavailable"
+          `memory-chat-digest-output-degraded-v1:${reason}`
       }),
       new Date("2026-08-10T12:00:00.000Z")
     );

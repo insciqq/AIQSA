@@ -1,3 +1,4 @@
+import { adoptMemoryModelRecommendation } from "../lib/server/bootstrap/memoryRecommendationAdoption";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { hashCanonicalMcpValue } from "../lib/server/mcp/definitions";
 import { ensureFullAccessGroup } from "../lib/server/auth/fullAccessGroup";
@@ -326,6 +327,15 @@ async function main() {
     // Local reseeding must not overwrite an administrator's current role.
     update: {},
     where: { id: "installation" }
+  });
+  await prisma.memoryUtilityModelPolicy.upsert({
+    create: { id: "installation" },
+    // Migration owns compatibility; reruns preserve every assignment and clear.
+    update: {},
+    where: { id: "installation" }
+  });
+  await prisma.$transaction((tx) => adoptMemoryModelRecommendation(tx), {
+    isolationLevel: "Serializable", maxWait: 10_000, timeout: 30_000
   });
 
   await prisma.group.upsert({

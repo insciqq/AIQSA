@@ -10,7 +10,9 @@ function validDate(value: Date): boolean {
 }
 
 export type MemoryWorkerHeartbeat = Readonly<{
+  begin(now?: Date): Promise<void>;
   beat(now?: Date): Promise<void>;
+  stop(): Promise<void>;
 }>;
 
 export function createPrismaMemoryWorkerHeartbeat(
@@ -26,24 +28,22 @@ export function createPrismaMemoryWorkerHeartbeat(
     throw new Error("memory_worker_heartbeat_identity_invalid");
   }
 
+  async function write(ready: boolean, now: Date) {
+    if (!validDate(now) || now.getTime() < startedAt.getTime()) {
+      throw new Error("memory_worker_heartbeat_clock_invalid");
+    }
+    await client.memoryWorkerHeartbeat.upsert({
+      create: { id: HEARTBEAT_ID, instanceId, lastSeenAt: now, ready, startedAt },
+      update: { instanceId, lastSeenAt: now, ready, startedAt },
+      where: { id: HEARTBEAT_ID }
+    });
+  }
   return Object.freeze({
-    async beat(now = new Date()) {
-      if (!validDate(now) || now.getTime() < startedAt.getTime()) {
-        throw new Error("memory_worker_heartbeat_clock_invalid");
-      }
-      await client.memoryWorkerHeartbeat.upsert({
-        create: {
-          id: HEARTBEAT_ID,
-          instanceId,
-          lastSeenAt: now,
-          startedAt
-        },
-        update: {
-          instanceId,
-          lastSeenAt: now,
-          startedAt
-        },
-        where: { id: HEARTBEAT_ID }
+    begin: (now = new Date()) => write(false, now),
+    beat: (now = new Date()) => write(true, now),
+    async stop() {
+      await client.memoryWorkerHeartbeat.updateMany({
+        data: { ready: false }, where: { id: HEARTBEAT_ID, instanceId }
       });
     }
   });

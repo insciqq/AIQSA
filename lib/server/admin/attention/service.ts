@@ -234,10 +234,17 @@ function systemRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminAttention
   const policy = catalog.policy;
   return [
     roleItem(
-      "memory",
+      "system",
       "System model",
       policy.systemModel,
-      "Memory and structured helpers stay off until a checked model is assigned",
+      "MCP routing and structured helpers need a checked model",
+      "warn"
+    ),
+    roleItem(
+      "memory",
+      "Memory utility model",
+      catalog.memoryPolicy.model,
+      "Memory learning and generated history context need a checked model",
       "warn"
     ),
     policy.chatPdfModel
@@ -360,6 +367,19 @@ function memoryItems(memory: AdminMemoryStatus): AdminAttentionItem[] {
       severity: "bad",
       target: { section: "retrieval" },
       title: "Memory worker is not running"
+    });
+  }
+  if (memory.worker.state === "STALLED" && memory.processing.enabled &&
+    !memory.processing.issues.some(({ reason }) => reason === "STALLED")) {
+    items.push({
+      action: "Open Memory",
+      code: "memory_worker_stalled",
+      count: memory.queue.length + memory.queue.inProgress,
+      detail: "The worker is responding, but its queue is not progressing. Check recovery status and worker logs.",
+      id: "memory_worker_stalled",
+      severity: "warn",
+      target: { section: "retrieval" },
+      title: "Memory queue is stalled"
     });
   }
   if (memory.index.readiness === "REBUILD_REQUIRED" && memory.processing.enabled) {
