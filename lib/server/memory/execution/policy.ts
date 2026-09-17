@@ -12,6 +12,7 @@ import {
   createSystemModelRoleResolver,
   type SystemModelRoleResolution
 } from "../../providerRuntime/systemModelRole";
+import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memoryUtilityModelRole";
 import {
   createRerankerModelRoleResolver,
   type RerankerModelRoleResolution
@@ -31,7 +32,7 @@ export const MEMORY_UTILITY_EGRESS_POLICY_VERSION = "memory-utility-egress-v5";
 
 type MemoryPolicyPrisma = AdmissionPrisma & Pick<
   Prisma.TransactionClient,
-  "systemModelPolicy"
+  "systemModelPolicy" | "memoryUtilityModelPolicy"
 >;
 
 type SafeTargetAuthority = Readonly<{
@@ -87,6 +88,7 @@ export type MemoryUtilityPolicyDependencies = Readonly<{
   loadEmbeddingRole?: typeof loadEmbeddingProviderRole;
   resolveRerankerRole?: () => Promise<RerankerModelRoleResolution>;
   resolveSystemRole?: () => Promise<SystemModelRoleResolution>;
+  resolveMemoryRole?: () => Promise<SystemModelRoleResolution>;
 }>;
 
 function exactAuthority(value: SearchProbeBinding | null | undefined): SafeTargetAuthority | null {
@@ -243,7 +245,9 @@ export async function resolveCurrentMemoryUtilityPolicy(
   settings: Pick<LockedMemorySettings, "embeddingProviderModelId">,
   dependencies: MemoryUtilityPolicyDependencies = {}
 ): Promise<ResolvedMemoryUtilityPolicy> {
-  const [systemResolution, rerankerResolution] = await Promise.all([
+  const [memoryResolution, systemResolution, rerankerResolution] = await Promise.all([
+    dependencies.resolveMemoryRole?.() ??
+      createMemoryUtilityModelRoleResolver(db).resolve(),
     dependencies.resolveSystemRole?.() ??
       createSystemModelRoleResolver(db).resolve(),
     dependencies.resolveRerankerRole?.() ??
@@ -343,12 +347,12 @@ export async function resolveCurrentMemoryUtilityPolicy(
       };
     }
 
-    const target = systemResolution.ok
+    const target = memoryResolution.ok
       ? targetFor(
           role,
-          systemResolution.role,
-          systemResolution.policyVersion,
-          systemResolution.reasoningEffort
+          memoryResolution.role,
+          memoryResolution.policyVersion,
+          memoryResolution.reasoningEffort
         )
       : null;
     if (target) {
@@ -356,11 +360,11 @@ export async function resolveCurrentMemoryUtilityPolicy(
       return { kind: "AVAILABLE" as const, role, target };
     }
     return {
-      code: systemResolution.ok ? "system_model_unavailable" : systemFailure(systemResolution),
+      code: memoryResolution.ok ? "system_model_unavailable" : systemFailure(memoryResolution),
       kind: "UNAVAILABLE" as const,
       role,
-      selectedProviderModelId: systemResolution.ok
-        ? systemResolution.providerModelId
+      selectedProviderModelId: memoryResolution.ok
+        ? memoryResolution.providerModelId
         : null
     };
   });

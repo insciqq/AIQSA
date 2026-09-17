@@ -27,6 +27,7 @@ const fallback = { ...reranker, displayName: "Cohere 4 Pro", id: "cohere" };
 
 function catalog(overrides: Partial<AdminSystemModelPolicyCatalog["policy"]> = {}): AdminSystemModelPolicyCatalog {
   return {
+    memoryPolicy: { assignmentSource: "unassigned", model: null, reasoningEffort: null, version: 1 },
     candidates: [ready],
     titleCandidates: [], documentCandidates: [],
     ineligible: { chat_titles: [],

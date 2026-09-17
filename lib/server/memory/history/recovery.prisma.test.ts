@@ -28,7 +28,7 @@ import { MEMORY_CONTEXTUAL_KEY_VERSIONS } from "./contextualKeys";
 import { inspectMemoryHistoryPurge, purgeMemoryHistorySelection } from "./purge";
 
 let providerAuthority: TestProviderExecutionAuthority;
-let priorPolicy: { providerModelId: string | null; reasoningEffort: string | null; updatedAt: Date; version: number } | null;
+let priorPolicy: { assignmentSource: import("@prisma/client").MemoryUtilityAssignmentSource; providerModelId: string | null; reasoningEffort: string | null; updatedAt: Date; version: number } | null;
 const owners = new Set<string>();
 
 beforeAll(async () => {
@@ -47,12 +47,12 @@ beforeAll(async () => {
     },
     modelVersion: 1, providerModelId: model.id, status: "available"
   } });
-  priorPolicy = await prisma.systemModelPolicy.findUnique({
-    select: { providerModelId: true, reasoningEffort: true, updatedAt: true, version: true }, where: { id: "installation" }
+  priorPolicy = await prisma.memoryUtilityModelPolicy.findUnique({
+    select: { assignmentSource: true, providerModelId: true, reasoningEffort: true, updatedAt: true, version: true }, where: { id: "installation" }
   });
-  await prisma.systemModelPolicy.upsert({
-    create: { id: "installation", providerModelId: model.id },
-    update: { providerModelId: model.id, reasoningEffort: null, version: { increment: 1 } }, where: { id: "installation" }
+  await prisma.memoryUtilityModelPolicy.upsert({
+    create: { id: "installation", providerModelId: model.id, assignmentSource: "OPERATOR" },
+    update: { providerModelId: model.id, reasoningEffort: null, assignmentSource: "OPERATOR", version: { increment: 1 } }, where: { id: "installation" }
   });
 });
 
@@ -68,8 +68,8 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (priorPolicy) await prisma.systemModelPolicy.update({ data: priorPolicy, where: { id: "installation" } });
-  else await prisma.systemModelPolicy.deleteMany({ where: { id: "installation", providerModelId: providerAuthority.providerModelId } });
+  if (priorPolicy) await prisma.memoryUtilityModelPolicy.update({ data: priorPolicy, where: { id: "installation" } });
+  else await prisma.memoryUtilityModelPolicy.deleteMany({ where: { id: "installation", providerModelId: providerAuthority.providerModelId } });
   await prisma.providerModelCredentialCheck.deleteMany({ where: { connectionId: providerAuthority.connectionId } });
   await deleteTestProviderExecutionAuthority(prisma, providerAuthority);
   await prisma.$disconnect();

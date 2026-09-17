@@ -93,6 +93,7 @@ export function deriveModelUsage(sources: ProviderUsageSources): ModelUsageIndex
   add(sources.modelPolicy?.policy.defaultModel?.id, "Default chat");
   const roles = sources.systemModelPolicy?.policy;
   add(roles?.systemModel?.id, "System model");
+  add(sources.systemModelPolicy?.memoryPolicy.model?.id, "Memory");
   add(roles?.chatTitleModel?.id, "Chat titles");
   add(roles?.chatPdfModel?.id, "Chat PDF");
   add(roles?.imageModel?.id, "Image generation");
@@ -149,6 +150,7 @@ export function turnOffConsequence(input: Readonly<{
   const uses: string[] = [];
   if (input.tags.includes("Default chat")) uses.push("the default chat model for new chats");
   if (input.tags.includes("System model")) uses.push("the System model");
+  if (input.tags.includes("Memory")) uses.push("Memory processing");
   if (input.tags.includes("Chat titles")) uses.push("the chat title model");
   if (input.tags.includes("Chat PDF")) uses.push("the chat PDF model");
   if (roles.length) {
@@ -158,7 +160,7 @@ export function turnOffConsequence(input: Readonly<{
   }
   if (input.tags.includes("Knowledge docs")) uses.push("the Knowledge document model");
   if (input.tags.includes("Knowledge embeddings")) uses.push("the Knowledge embedding model");
-  const known = new Set(["Default chat", "System model", "Chat titles", "Chat PDF", "Knowledge docs", "Knowledge embeddings"]);
+  const known = new Set(["Default chat", "System model", "Memory", "Chat titles", "Chat PDF", "Knowledge docs", "Knowledge embeddings"]);
   const searchSources = input.tags.filter((tag) => !known.has(tag) && !tag.startsWith("Reranker"));
   if (searchSources.length) {
     uses.push(`the model behind ${joinNames(searchSources.map((name) => `“${name}”`))} Search`);

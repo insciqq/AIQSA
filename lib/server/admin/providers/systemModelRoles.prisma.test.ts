@@ -7,6 +7,8 @@ import { createPrismaAdminProviderRepository } from "./prismaRepository";
 import { createAdminKnowledgeProfileService } from "../knowledge/profileService";
 import { loadInstallationAnswerProviderRole } from "../../providerRuntime/admission";
 import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
+import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memoryUtilityModelRole";
+import { resolveCurrentMemoryUtilityPolicy } from "../../memory/execution/policy";
 import { createChatTitleModelRoleResolver } from "../../providerRuntime/chatTitleModelRole";
 import { createChatPdfModelRoleResolver } from "../../providerRuntime/chatPdfModelRole";
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
@@ -80,6 +82,42 @@ async function fixture(run: (input: {
 }
 
 describe("persisted independent System Model roles", () => {
+  it("keeps Memory independent through System edits, explicit clear, capability loss and provider deletion", async () => {
+    await fixture(async ({ db, adminId, memory, titles }) => {
+      const service = createAdminSystemModelPolicyService(db);
+      const originalSystem = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+      const version = async () => (await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).version;
+      const initialVersion = await version();
+      await service.updateMemory({ expectedVersion: initialVersion, providerModelId: memory, reasoningEffort: null, userId: adminId });
+      const admitted = await resolveCurrentMemoryUtilityPolicy(db, adminId, { embeddingProviderModelId: null });
+      expect(admitted.targets.get("MEMORY_HISTORY_CLASSIFY")?.snapshot.providerModelId).toBe(memory);
+      expect(await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(originalSystem);
+      await service.update({ expectedVersion: originalSystem.version, chatTitleProviderModelId: titles,
+        chatTitleReasoningEffort: null, userId: adminId });
+      const afterSystemEdit = await resolveCurrentMemoryUtilityPolicy(db, adminId, { embeddingProviderModelId: null });
+      expect(afterSystemEdit.targets.get("MEMORY_HISTORY_CLASSIFY")).toEqual(admitted.targets.get("MEMORY_HISTORY_CLASSIFY"));
+      await expect(service.updateMemory({ expectedVersion: initialVersion, providerModelId: null,
+        reasoningEffort: null, userId: adminId })).rejects.toMatchObject({ code: "system_model_policy_stale" });
+      await expect(service.updateMemory({ expectedVersion: await version(), providerModelId: titles,
+        reasoningEffort: null, userId: adminId })).rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
+      await service.updateMemory({ expectedVersion: await version(), providerModelId: null, reasoningEffort: null, userId: adminId });
+      expect((await service.list()).memoryPolicy).toMatchObject({ model: null, assignmentSource: "operator" });
+      await expect(service.updateMemory({ expectedVersion: await version(), providerModelId: memory,
+        reasoningEffort: null, userId: adminId, assignmentSource: "BOOTSTRAP" })).rejects.toMatchObject({ code: "system_model_policy_stale" });
+      expect(admitted.targets.get("MEMORY_HISTORY_CLASSIFY")?.snapshot.providerModelId).toBe(memory);
+      await service.updateMemory({ expectedVersion: await version(), providerModelId: memory, reasoningEffort: null, userId: adminId });
+      await db.providerModel.update({ where: { id: memory }, data: { enabled: false } });
+      expect(await createMemoryUtilityModelRoleResolver(db).resolve()).toMatchObject({ ok: false });
+      expect((await service.list()).memoryPolicy.model).toMatchObject({ id: memory, available: false });
+      const repository = createPrismaAdminProviderRepository(db);
+      expect(await repository.deleteModel(memory)).toMatchObject({ status: "conflict", blockers: [{ count: 1, kind: "system_model" }] });
+      const model = await db.providerModel.findUniqueOrThrow({ where: { id: memory } });
+      expect(await repository.deleteConnection(model.connectionId)).toEqual({ status: "deleted" });
+      expect((await service.list()).memoryPolicy).toMatchObject({ model: null, assignmentSource: "operator" });
+      expect((await service.list()).policy.chatTitleModel?.id).toBe(titles);
+    });
+  });
+
   it("provisions helpers only through the exact default key and keeps repeat checks idempotent", async () => {
     await fixture(async ({ db, reranker }) => {
       const target = await db.providerModel.findUniqueOrThrow({ where: { id: reranker }, include: { connection: true } });
@@ -176,6 +214,29 @@ describe("persisted independent System Model roles", () => {
         chatPdfReasoningEffort: null, userId: adminId })).rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
     });
   });
+});
+
+it("admits one concurrent Memory policy writer without changing the System policy", async () => {
+  const original = await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+  const originalSystem = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+  const adminId = randomUUID();
+  await prisma.user.create({ data: { id: adminId, displayName: "Concurrent policy administrator", role: "admin", status: "active" } });
+  try {
+    const service = createAdminSystemModelPolicyService(prisma);
+    const results = await Promise.allSettled([1, 2].map(() => service.updateMemory({
+      expectedVersion: original.version, providerModelId: null, reasoningEffort: null, userId: adminId
+    })));
+    expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    expect(results.find(({ status }) => status === "rejected")).toMatchObject({
+      reason: { code: "system_model_policy_stale" }
+    });
+    expect(await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } }))
+      .toMatchObject({ providerModelId: null, reasoningEffort: null, version: original.version + 1, assignmentSource: "OPERATOR" });
+    expect(await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(originalSystem);
+  } finally {
+    await prisma.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: original });
+    await prisma.user.delete({ where: { id: adminId } });
+  }
 });
 
 it("persists a structured-only title assignment, retains admitted identity and preserves an explicit clear", async () => {

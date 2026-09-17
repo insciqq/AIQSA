@@ -10,6 +10,7 @@ import {
   SYSTEM_MODEL_UNAVAILABLE
 } from "../../lib/server/providerRuntime/systemModelRole";
 import { signInWithLocalToken } from "./support/localAuth";
+import { expectCenterUnobscured, expectNoHorizontalOverflow, expectTouchSafe } from "./support/layoutAssertions";
 
 const prisma = new PrismaClient();
 const fixture = {
@@ -52,11 +53,14 @@ let originalPolicy: {
   reasoningEffort: string | null;
   updatedByUserId: string | null;
 } | null = null;
+let originalMemoryPolicy: Awaited<ReturnType<typeof prisma.memoryUtilityModelPolicy.findUniqueOrThrow>>;
 
 test.describe("system model policy", () => {
   test.describe.configure({ mode: "serial" });
+  test.use({ hasTouch: true });
 
   test.beforeAll(async () => {
+    originalMemoryPolicy = await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
     const policy = await prisma.systemModelPolicy.findUniqueOrThrow({
       where: { id: "installation" }
     });
@@ -173,6 +177,7 @@ test.describe("system model policy", () => {
     try {
       if (!originalPolicy) return;
       await prisma.$transaction(async (tx) => {
+        await tx.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: originalMemoryPolicy });
         await tx.systemModelPolicy.update({
           data: {
             providerModelId: originalPolicy!.providerModelId,
@@ -303,7 +308,7 @@ test.describe("system model policy", () => {
     await page.goto("/admin?section=roles");
     const trigger = page.getByRole("button", { name: "System model deployment" });
     await expect(trigger).toBeVisible();
-    await expect(page.getByTestId("admin-role-memory-status")).toHaveText("Not assigned");
+    await expect(page.getByTestId("admin-role-system-status")).toHaveText("Not assigned");
 
     const fixtureLabel = "System Policy Fixture / System Policy Model";
     await page.route("**/api/admin/providers/system-model-policy", async (route) => {
@@ -347,12 +352,12 @@ test.describe("system model policy", () => {
     await expect(picker.getByText("System roles always use the provider's default key")).toBeVisible();
     await picker.getByRole("button", { name: `Check ${fixtureLabel}` }).click();
     await expect(trigger).toHaveText(fixtureLabel);
-    await expect(page.getByTestId("admin-role-memory-status")).toHaveText("Working");
+    await expect(page.getByTestId("admin-role-system-status")).toHaveText("Working");
     await expect(page.getByTestId("admin-feedback")).toContainText("Saved for future work");
     await expect(picker).toHaveCount(0);
 
     const reasoning = page.getByRole("combobox", { name: "System model reasoning" });
-    await page.getByTestId("admin-role-memory").locator("summary").click();
+    await page.getByTestId("admin-role-system").locator("summary").click();
     await reasoning.selectOption("xhigh");
     await expect(reasoning).toHaveValue("xhigh");
 
@@ -370,6 +375,62 @@ test.describe("system model policy", () => {
     await page.getByRole("button", { name: "System model actions" }).click();
     await page.getByRole("menuitem", { name: "Clear assignment" }).click();
     await expect(trigger).toHaveText("Not assigned");
-    await expect(page.getByTestId("admin-role-memory-status")).toHaveText("Not assigned");
+    await expect(page.getByTestId("admin-role-system-status")).toHaveText("Not assigned");
+  });
+
+  test("saves and clears independent Memory settings across responsive views", async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    const systemBefore = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+    await signInWithLocalToken(page);
+    await page.goto("/admin?section=roles&resource=memory");
+    const row = page.getByTestId("admin-role-memory");
+    const trigger = row.getByRole("button", { name: "Memory model deployment" });
+    await trigger.click();
+    const picker = page.getByRole("dialog", { name: "Memory model deployment" });
+    await picker.getByRole("option", { name: "System Policy Fixture / System Policy Model" }).click();
+    await expect(row.getByTestId("admin-role-memory-status")).toHaveText("Working");
+    await row.locator("summary").click();
+    const reasoning = row.getByRole("combobox", { name: "Memory reasoning" });
+    await reasoning.selectOption("low");
+    await expect(reasoning).toHaveValue("low");
+    await expect.poll(async () => (await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).reasoningEffort).toBe("low");
+    expect(await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(systemBefore);
+
+    const viewports = [
+      { name: "desktop-landscape", width: 1440, height: 900 },
+      { name: "desktop-portrait", width: 900, height: 1440 },
+      { name: "tablet-landscape", width: 1024, height: 768 },
+      { name: "tablet-portrait", width: 768, height: 1024 },
+      { name: "phone-landscape", width: 844, height: 390 },
+      { name: "phone-portrait", width: 390, height: 844 }
+    ];
+    for (const colorScheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme });
+      for (const viewport of viewports) {
+        await page.setViewportSize(viewport);
+        await expectNoHorizontalOverflow(page);
+        await expectTouchSafe(trigger);
+        await trigger.focus();
+        await expect(trigger).toBeFocused();
+        await row.evaluate((element) => element.scrollIntoView({ block: "center" }));
+        await expectCenterUnobscured(trigger);
+        await row.screenshot({ path: testInfo.outputPath(`memory-policy-${viewport.name}-${colorScheme}.png`) });
+      }
+    }
+    await trigger.click();
+    await expect(picker).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    await picker.screenshot({ path: testInfo.outputPath("memory-policy-picker-phone-dark.png") });
+    await page.keyboard.press("Escape");
+    await expect(trigger).toBeFocused();
+    await row.getByRole("button", { name: "Memory utility model actions" }).click();
+    await page.getByRole("menuitem", { name: "Clear assignment" }).click();
+    await expect(trigger).toHaveText("Not assigned");
+    await page.getByRole("button", { name: "Undo", exact: true }).click();
+    await expect(trigger).toHaveText("System Policy Fixture / System Policy Model");
+    await expect(reasoning).toHaveValue("low");
+    await page.reload();
+    await expect(row.getByTestId("admin-role-memory-status")).toHaveText("Working");
+    expect(await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(systemBefore);
   });
 });

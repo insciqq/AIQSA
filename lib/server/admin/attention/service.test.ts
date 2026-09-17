@@ -161,6 +161,7 @@ const roleCandidate = {
 
 function roles(overrides: Partial<AdminSystemModelPolicyCatalog["policy"]> = {}): AdminSystemModelPolicyCatalog {
   return {
+    memoryPolicy: { assignmentSource: "operator", model: { ...roleCandidate, available: true }, reasoningEffort: null, version: 7 },
     candidates: [],
     titleCandidates: [], documentCandidates: [],
     ineligible: { chat_titles: [], direct_pdf: [], memory: [], vision: [] },
@@ -432,7 +433,7 @@ describe("deriveAdminAttentionItems", () => {
       })
     });
     expect(result.map((item) => [item.code, item.id, item.severity])).toEqual([
-      ["system_role_not_assigned", "system_role_not_assigned:memory", "warn"],
+      ["system_role_not_assigned", "system_role_not_assigned:system", "warn"],
       ["system_role_unavailable", "system_role_unavailable:chat_pdf", "bad"],
       ["system_role_unavailable", "system_role_unavailable:reranker", "bad"]
     ]);
@@ -521,7 +522,9 @@ describe("deriveAdminAttentionItems", () => {
 
   it.each(["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED"] as const)(
     "reports three blocked learning jobs despite RUNNING and READY, deduplicating %s role alerts", (reason) => {
-      const result = items({ systemRoles: roles({ systemModel: null }), memory: {
+      const systemRoles = roles();
+      systemRoles.memoryPolicy.model = null;
+      const result = items({ systemRoles, memory: {
         ...memoryOk, queue: { inProgress: 0, length: 3, oldestAgeSeconds: 1865 },
         processing: { enabled: true, issues: [{ stage: "LEARNING", reason, severity: "bad", count: 3, oldestAgeSeconds: 1865 }] }
       } });

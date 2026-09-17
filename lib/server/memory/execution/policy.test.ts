@@ -21,7 +21,7 @@ function snapshot(defaultParams: Record<string, unknown>): ProviderExecutionSnap
   } as unknown as ProviderExecutionSnapshot;
 }
 
-describe("Memory system-model execution policy", () => {
+describe("Memory utility execution policy", () => {
   it("adds the selected reasoning effort without mutating the admitted snapshot", () => {
     const admitted = snapshot({
       reasoning: { summary: "auto" },
@@ -228,7 +228,66 @@ function rerankerRole(
   };
 }
 
-const policyDb = {} as Prisma.TransactionClient;
+const policyDb = {
+  memoryUtilityModelPolicy: { findUnique: async () => null }
+} as unknown as Prisma.TransactionClient;
+
+describe("Independent Memory utility assignment", () => {
+  const memoryRole = () => {
+    const role = systemRole();
+    return {
+      ...role,
+      authority: { ...role.authority!, providerModelId: "memory-model" },
+      snapshot: { ...role.snapshot, providerModelId: "memory-model" }
+    };
+  };
+  const resolve = (memoryAvailable = true, systemVersion = 20, memoryVersion = 7) =>
+    resolveCurrentMemoryUtilityPolicy(policyDb, "user-1", { embeddingProviderModelId: null }, {
+      resolveMemoryRole: async () => memoryAvailable ? {
+        credentialScope: "installation", ok: true, policyVersion: memoryVersion,
+        providerModelId: "memory-model", reasoningEffort: "low", role: memoryRole()
+      } : { code: "system_model_absent", ok: false },
+      resolveSystemRole: async () => ({
+        credentialScope: "installation", ok: true, policyVersion: systemVersion,
+        providerModelId: "answer-model", reasoningEffort: "high", role: systemRole()
+      }),
+      resolveRerankerRole: async () => ({
+        code: "reranker_model_absent", ok: false, selectedProviderModelId: null
+      })
+    });
+
+  it("uses Memory's model and reasoning while preserving the existing reranker destination", async () => {
+    const policy = await resolve();
+    expect(policy.targets.get("MEMORY_HISTORY_CLASSIFY")).toMatchObject({
+      policyRevision: 7,
+      snapshot: { providerModelId: "memory-model", model: { defaultParams: { reasoning: { effort: "low" } } } }
+    });
+    expect(policy.targets.get("MEMORY_RERANK")).toMatchObject({
+      policyRevision: 20,
+      snapshot: { providerModelId: "answer-model", model: { defaultParams: { reasoning: { effort: "high" } } } }
+    });
+  });
+
+  it("does not activate Memory generation when only the System model is assigned", async () => {
+    const policy = await resolve(false);
+    expect(policy.targets.has("MEMORY_HISTORY_CLASSIFY")).toBe(false);
+    expect(policy.targets.has("MEMORY_FACT_EXTRACT")).toBe(false);
+    expect(policy.targets.has("MEMORY_RERANK")).toBe(true);
+  });
+
+  it("isolates policy revisions and retains previously resolved execution snapshots", async () => {
+    const first = await resolve();
+    const systemChanged = await resolve(true, 21);
+    const memoryChanged = await resolve(true, 21, 8);
+    expect(first.targets.get("MEMORY_HISTORY_CLASSIFY")).toEqual(
+      systemChanged.targets.get("MEMORY_HISTORY_CLASSIFY")
+    );
+    expect(memoryChanged.targets.get("MEMORY_HISTORY_CLASSIFY")?.executionTargetFingerprint)
+      .not.toBe(first.targets.get("MEMORY_HISTORY_CLASSIFY")?.executionTargetFingerprint);
+    expect(first.targets.get("MEMORY_HISTORY_CLASSIFY")?.policyRevision).toBe(7);
+    expect(systemChanged.targets.get("MEMORY_RERANK")).toEqual(memoryChanged.targets.get("MEMORY_RERANK"));
+  });
+});
 
 describe("Memory dedicated reranker policy", () => {
   it("binds reranking to the dedicated class without an aggregation destination", async () => {

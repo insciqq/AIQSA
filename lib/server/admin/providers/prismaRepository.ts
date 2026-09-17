@@ -354,6 +354,12 @@ async function lockInstallationModelPolicies(tx: Prisma.TransactionClient): Prom
     WHERE "id" = 'installation'
     FOR UPDATE
   `);
+  await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT "id"
+    FROM "MemoryUtilityModelPolicy"
+    WHERE "id" = 'installation'
+    FOR UPDATE
+  `);
 }
 
 async function repeatableRead<Value>(
@@ -2331,6 +2337,7 @@ export function createPrismaAdminProviderRepository(
           accessGrants,
           installationDefaults,
           systemModelRoles,
+          memoryUtilityRoles,
           userDefaults,
           chatDefaults,
           searchReferences,
@@ -2352,6 +2359,7 @@ export function createPrismaAdminProviderRepository(
               ]
             }
           }),
+          tx.memoryUtilityModelPolicy.count({ where: { providerModelId: modelId } }),
           tx.userSettings.count({ where: { defaultProviderModelId: modelId } }),
           tx.chat.count({ where: { defaultProviderModelId: modelId } }),
           tx.searchStrategy.count({ where: { providerModelId: modelId } }),
@@ -2367,7 +2375,9 @@ export function createPrismaAdminProviderRepository(
           installationDefaults
             ? { count: installationDefaults, kind: "installation_default" }
             : null,
-          systemModelRoles ? { count: systemModelRoles, kind: "system_model" } : null,
+          systemModelRoles + memoryUtilityRoles
+            ? { count: systemModelRoles + memoryUtilityRoles, kind: "system_model" }
+            : null,
           userDefaults ? { count: userDefaults, kind: "user_defaults" } : null,
           chatDefaults ? { count: chatDefaults, kind: "chat_defaults" } : null,
           searchReferences ? { count: searchReferences, kind: "search_references" } : null,
@@ -2500,6 +2510,16 @@ export function createPrismaAdminProviderRepository(
               version: { increment: 1 }
             },
             where: { defaultProviderModelId: { in: modelIds } }
+          });
+          await tx.memoryUtilityModelPolicy.updateMany({
+            data: {
+              providerModelId: null,
+              reasoningEffort: null,
+              assignmentSource: "OPERATOR",
+              updatedByUserId: null,
+              version: { increment: 1 }
+            },
+            where: { providerModelId: { in: modelIds } }
           });
           // Clear only the deleted deployment's roles; other assignments
           // remain valid, including their explicit configuration timestamps.

@@ -8,7 +8,7 @@ import {
   type TestProviderExecutionAuthority
 } from "@/tests/support/providerExecutionAuthority";
 import { prisma } from "../../../prisma";
-import { createSystemModelRoleResolver } from "../../../providerRuntime/systemModelRole";
+import { createMemoryUtilityModelRoleResolver } from "../../../providerRuntime/memoryUtilityModelRole";
 import { forcedToolCallVerificationEvidence } from "../../../providers/forcedToolCallEvidence";
 import { structuredOutputVerificationEvidence } from "../../../providers/structuredOutputEvidence";
 import { createPrismaMemoryCoordinatorRepository } from "../../coordinator/prismaRepository";
@@ -50,7 +50,7 @@ const facts = createPrismaMemoryFactRepository(keyring, prisma, {
 const coordinator = createPrismaMemoryCoordinatorRepository(prisma);
 const owners = new Set<string>();
 let providerAuthority: TestProviderExecutionAuthority;
-let priorPolicy: {
+let priorPolicy: { assignmentSource: import("@prisma/client").MemoryUtilityAssignmentSource;
   providerModelId: string | null;
   reasoningEffort: string | null;
   updatedAt: Date;
@@ -78,16 +78,16 @@ beforeAll(async () => {
       modelVersion: 1, providerModelId: model.id, status: "available"
     }
   });
-  priorPolicy = await prisma.systemModelPolicy.findUnique({
-    select: { providerModelId: true, reasoningEffort: true, updatedAt: true, version: true },
+  priorPolicy = await prisma.memoryUtilityModelPolicy.findUnique({
+    select: { assignmentSource: true, providerModelId: true, reasoningEffort: true, updatedAt: true, version: true },
     where: { id: "installation" }
   });
-  await prisma.systemModelPolicy.upsert({
-    create: { id: "installation", providerModelId: model.id },
-    update: { providerModelId: model.id, reasoningEffort: null, version: { increment: 1 } },
+  await prisma.memoryUtilityModelPolicy.upsert({
+    create: { id: "installation", providerModelId: model.id, assignmentSource: "OPERATOR" },
+    update: { providerModelId: model.id, reasoningEffort: null, assignmentSource: "OPERATOR", version: { increment: 1 } },
     where: { id: "installation" }
   });
-  await expect(createSystemModelRoleResolver(prisma).resolve()).resolves.toMatchObject({ ok: true });
+  await expect(createMemoryUtilityModelRoleResolver(prisma).resolve()).resolves.toMatchObject({ ok: true });
 });
 
 afterEach(async () => {
@@ -109,8 +109,8 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (priorPolicy) await prisma.systemModelPolicy.update({ data: priorPolicy, where: { id: "installation" } });
-  else if (providerAuthority) await prisma.systemModelPolicy.deleteMany({
+  if (priorPolicy) await prisma.memoryUtilityModelPolicy.update({ data: priorPolicy, where: { id: "installation" } });
+  else if (providerAuthority) await prisma.memoryUtilityModelPolicy.deleteMany({
     where: { id: "installation", providerModelId: providerAuthority.providerModelId }
   });
   if (providerAuthority) {

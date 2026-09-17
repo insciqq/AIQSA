@@ -3,6 +3,7 @@ import { decodeAdminSystemModelPolicyResponse, initialChatTitleReasoningEffort }
 
 const response = {
   systemModelPolicy: {
+    memoryPolicy: { assignmentSource: "unassigned", model: null, reasoningEffort: null, version: 1 },
     candidates: [{
       connectionDisplayName: "Provider",
       connectionId: "connection-1",
@@ -34,6 +35,18 @@ const response = {
 };
 
 describe("administrator system model policy contract", () => {
+  it.each([
+    undefined,
+    { assignmentSource: ["operator"], model: null, reasoningEffort: null, version: 1 },
+    { assignmentSource: "unassigned", model: { ...response.systemModelPolicy.candidates[0], available: true }, reasoningEffort: null, version: 1 },
+    { assignmentSource: "guessed", model: null, reasoningEffort: null, version: 1 },
+    { assignmentSource: "operator", model: null, reasoningEffort: "high", version: 1 },
+    { assignmentSource: "operator", model: null, reasoningEffort: null, version: 0 },
+    { assignmentSource: "inherited", model: { ...response.systemModelPolicy.candidates[0], available: "yes" }, reasoningEffort: null, version: 1 }
+  ])("rejects missing or malformed independent Memory policy", (memoryPolicy) => {
+    expect(decodeAdminSystemModelPolicyResponse({ systemModelPolicy: { ...response.systemModelPolicy, memoryPolicy } })).toBeNull();
+  });
+
   it("decodes the catalog-safe policy projection", () => {
     expect(decodeAdminSystemModelPolicyResponse(response)).toEqual(response);
   });

@@ -88,6 +88,7 @@ function createBootstrapTransaction(input: {
     searchStrategyUpdate: record("searchStrategy.update", { id: "strategy-id" }),
     searchStrategyUpsert: record("searchStrategy.upsert", { activeRevisionId: null, id: "strategy-id" }),
     systemModelPolicyUpsert: record("systemModelPolicy.upsert", { id: "installation" }),
+    memoryUtilityModelPolicyUpsert: record("memoryUtilityModelPolicy.upsert", { id: "installation" }),
     workspacePolicyUpsert: record("workspacePolicy.upsert", { id: "installation" }),
     userMemorySettingsUpsert: record("userMemorySettings.upsert", {}),
     userCreate: record("user.create", { id: USER_ID }),
@@ -151,6 +152,9 @@ function createBootstrapTransaction(input: {
     },
     systemModelPolicy: {
       upsert: spies.systemModelPolicyUpsert
+    },
+    memoryUtilityModelPolicy: {
+      upsert: spies.memoryUtilityModelPolicyUpsert
     },
     workspacePolicy: {
       upsert: spies.workspacePolicyUpsert
@@ -383,6 +387,11 @@ describe("installation bootstrap", () => {
       where: { id: "installation" }
     });
     expect(fixture.spies.memoryEgressAdminPolicyUpsert).not.toHaveBeenCalled();
+    expect(fixture.spies.memoryUtilityModelPolicyUpsert).toHaveBeenCalledWith({
+      create: { id: "installation" },
+      update: {},
+      where: { id: "installation" }
+    });
     expect(fixture.spies.systemModelPolicyUpsert).toHaveBeenCalledWith({
       create: {
         id: "installation",

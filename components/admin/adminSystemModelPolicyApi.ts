@@ -56,7 +56,10 @@ export function updateAdminSystemModelPolicy(input: Readonly<{
   chatPdfReasoningEffort?: string | null;
   chatPdfProcessingMode?: ChatPdfProcessingMode;
   chatPdfFallbackMethod?: ChatPdfFallbackMethod;
-  expectedVersion: number;
+  expectedVersion?: number;
+  expectedMemoryVersion?: number;
+  memoryProviderModelId?: string | null;
+  memoryReasoningEffort?: string | null;
   /** Omit both utility fields to preserve the independent utility role. */
   providerModelId?: string | null;
   /** Omit to preserve the independent reranker role. */
@@ -84,9 +87,9 @@ export function verifyAdminSystemModelRole(
 
 export function adminSystemModelPolicyErrorMessage(code: string): string {
   const messages: Record<string, string> = {
-    network_error: "The system model policy could not be reached.",
-    system_model_policy_admin_action_failed: "The system model policy could not be updated.",
-    system_model_policy_response_invalid: "The system model policy response was invalid.",
+    network_error: "Model role settings could not be reached.",
+    system_model_policy_admin_action_failed: "The model role could not be updated.",
+    system_model_policy_response_invalid: "The model role response was invalid.",
     system_model_policy_image_parameters_invalid: "Choose image settings supported by this model and provider.",
     system_model_policy_reasoning_unavailable: "Choose a reasoning effort advertised by the selected deployment.",
     system_model_policy_stale: "The role assignments changed elsewhere. Reload and apply your choice again.",

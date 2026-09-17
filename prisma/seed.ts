@@ -327,6 +327,12 @@ async function main() {
     update: {},
     where: { id: "installation" }
   });
+  await prisma.memoryUtilityModelPolicy.upsert({
+    create: { id: "installation" },
+    // Migration owns compatibility; reruns preserve every assignment and clear.
+    update: {},
+    where: { id: "installation" }
+  });
 
   await prisma.group.upsert({
     create: {
