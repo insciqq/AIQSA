@@ -5605,6 +5605,10 @@ model MemoryJob {
   state                    MemoryJobState @default(QUEUED)
   stage                    String?        @db.VarChar(64)
   attemptCount             Int            @default(0)
+  recoveryCount            Int            @default(0)
+  lastRecoveryAt           DateTime?
+  recoveryErrorCode        String?        @db.VarChar(64)
+  progressAt               DateTime?
   leaseToken               String?        @db.VarChar(128)
   leaseExpiresAt           DateTime?
   nextAttemptAt            DateTime?
@@ -5638,6 +5642,7 @@ model MemoryWorkerHeartbeat {
   instanceId String   @db.VarChar(128)
   startedAt  DateTime
   lastSeenAt DateTime
+  ready      Boolean  @default(true)
 }
 
 model MemoryDeletionOutbox {
@@ -5657,6 +5662,7 @@ model MemoryDeletionOutbox {
   leaseToken                  String?                 @db.VarChar(128)
   leaseExpiresAt              DateTime?
   lastAuditAt                 DateTime?
+  progressAt                  DateTime?
   completedAt                 DateTime?
   errorCode                   String?                 @db.VarChar(64)
   createdAt                   DateTime                @default(now())

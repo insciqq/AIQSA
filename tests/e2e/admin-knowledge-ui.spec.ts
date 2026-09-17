@@ -1,3 +1,4 @@
+import { memoryRecoveryStatusFixture, memoryWorkerStatusFixture } from "@/tests/support/memoryStatus";
 import { expect, test, type Page } from "@playwright/test";
 import type { AdminDashboard } from "../../lib/contracts/admin";
 import type { AdminKnowledgeSettings } from "../../lib/contracts/adminKnowledge";
@@ -59,7 +60,8 @@ function memoryResponse(): AdminMemoryStatusResponse {
       index: { generation: 1, readiness: "READY" },
       queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
       rebuild: { state: "NOT_REQUIRED" },
-      worker: { state: "RUNNING" }
+      recovery: memoryRecoveryStatusFixture(),
+      worker: memoryWorkerStatusFixture()
     }
   };
 }

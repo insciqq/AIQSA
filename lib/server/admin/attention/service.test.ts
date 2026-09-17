@@ -1,3 +1,4 @@
+import { memoryRecoveryStatusFixture, memoryWorkerStatusFixture } from "@/tests/support/memoryStatus";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminDashboard } from "../../../contracts/admin";
 import type { AdminMemoryStatus } from "../../../contracts/adminMemory";
@@ -186,7 +187,8 @@ const memoryOk: AdminMemoryStatus = {
   index: { generation: 1, readiness: "READY" },
   queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
   rebuild: { state: "NOT_REQUIRED" },
-  worker: { state: "RUNNING" }
+  recovery: memoryRecoveryStatusFixture(),
+  worker: memoryWorkerStatusFixture()
 };
 
 function mcpServer(overrides: Partial<AdminMcpServer> = {}): AdminMcpServer {
@@ -494,7 +496,7 @@ describe("deriveAdminAttentionItems", () => {
         index: { generation: 1, readiness: "REBUILD_REQUIRED" },
         queue: { inProgress: 2, length: 4, oldestAgeSeconds: 10 },
         rebuild: { state: "AVAILABLE" },
-        worker: { state: "NOT_RUNNING" }
+        worker: memoryWorkerStatusFixture({ state: "NOT_RUNNING", reason: "HEARTBEAT_STALE", lastSeenAgeSeconds: null })
       }
     });
     expect(result).toEqual([
@@ -506,6 +508,15 @@ describe("deriveAdminAttentionItems", () => {
       }),
       expect.objectContaining({ code: "memory_index_rebuild_required", severity: "warn" })
     ]);
+  });
+
+  it("reports live queue stalls without calling the process stopped or duplicating a stage alert", () => {
+    const memory = { ...memoryOk, queue: { inProgress: 2, length: 0, oldestAgeSeconds: null },
+      worker: memoryWorkerStatusFixture({ state: "STALLED", reason: "QUEUE_STALLED" }) };
+    expect(items({ memory })).toEqual([expect.objectContaining({ code: "memory_worker_stalled", count: 2 })]);
+    const issues = [{ stage: "HISTORY", reason: "STALLED", count: 2, oldestAgeSeconds: 1000, severity: "warn" }] as const;
+    expect(items({ memory: { ...memory, processing: { enabled: true, issues: [...issues] } } }))
+      .toEqual([expect.objectContaining({ code: "memory_processing_blocked" })]);
   });
 
   it.each(["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED"] as const)(
@@ -538,7 +549,7 @@ describe("deriveAdminAttentionItems", () => {
     } })).toEqual([expect.objectContaining({ severity: "warn", count: 4 })]);
     expect(items({ memory: { ...memoryOk, queue: { inProgress: 0, length: 3, oldestAgeSeconds: 30 } } })).toEqual([]);
     expect(items({ memory: { ...memoryOk, queue: { inProgress: 2, length: 0, oldestAgeSeconds: null } } })).toEqual([]);
-    expect(items({ memory: { ...memoryOk, processing: { enabled: false, issues: [] }, worker: { state: "NOT_RUNNING" } } })).toEqual([]);
+    expect(items({ memory: { ...memoryOk, processing: { enabled: false, issues: [] }, worker: memoryWorkerStatusFixture({ state: "NOT_RUNNING", reason: "HEARTBEAT_STALE", lastSeenAgeSeconds: null }) } })).toEqual([]);
   });
 
   it("lists MCP servers that need authorization or runtime repair", () => {

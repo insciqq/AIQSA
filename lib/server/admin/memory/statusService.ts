@@ -6,7 +6,9 @@ import {
 import { MEMORY_WORKER_HEARTBEAT_FRESHNESS_MS } from "../../memory/coordinator/workerHeartbeat";
 
 export const ADMIN_MEMORY_WORKER_FRESHNESS_MS = MEMORY_WORKER_HEARTBEAT_FRESHNESS_MS;
+export const ADMIN_MEMORY_WORKER_PROGRESS_STALE_MS = 15 * 60_000;
 export const ADMIN_MEMORY_REBUILD_BATCH_SIZE = 8;
+export const ADMIN_MEMORY_RECOVERY_BATCH_SIZE = 8;
 
 export type AdminMemoryRebuildCandidate = Readonly<{
   embeddingDeploymentId: string | null;
@@ -22,6 +24,7 @@ export type AdminMemoryStatusSnapshot = Readonly<{
     version: number;
   }>;
   processing: AdminMemoryStatus["processing"];
+  recovery: AdminMemoryStatus["recovery"];
   configuredTargets: readonly Readonly<{ model: string; provider: string }>[];
   index: Readonly<{
     activeGenerations: readonly number[];
@@ -35,11 +38,17 @@ export type AdminMemoryStatusSnapshot = Readonly<{
   inProgressCount: number;
   queueLength: number;
   workerLastSeenAt: Date | null;
+  workerReady: boolean;
+  workerHasStalledClaims: boolean;
+  workerLastProgressAt: Date | null;
+  workerLastSuccessfulJobAt: Date | null;
+  workerActiveStages: AdminMemoryStatus["worker"]["activeStages"];
 }>;
 
 export type AdminMemoryStatusRepository = Readonly<{
   read(now: Date): Promise<AdminMemoryStatusSnapshot>;
   startRebuild(candidate: AdminMemoryRebuildCandidate): Promise<void>;
+  recoverEligible?: (input: Readonly<{ limit: number; now: Date }>) => Promise<number>;
   updateAdmissionTimeout(input: Readonly<{
     expectedVersion: number;
     seconds: number;
@@ -50,6 +59,7 @@ export type AdminMemoryStatusRepository = Readonly<{
 export type AdminMemoryStatusService = Readonly<{
   get(): Promise<AdminMemoryStatus>;
   rebuild(): Promise<AdminMemoryStatus>;
+  recover(): Promise<AdminMemoryStatus>;
   updateAdmissionTimeout(input: Readonly<{
     expectedVersion: number;
     seconds: number;
@@ -61,13 +71,14 @@ export class AdminMemoryStatusServiceError extends Error {
   constructor(readonly code:
     | "memory_admin_rebuild_not_required"
     | "memory_admin_rebuild_unavailable"
+    | "memory_admin_recovery_unavailable"
     | "memory_admin_timeout_stale") {
     super(code);
     this.name = "AdminMemoryStatusServiceError";
   }
 }
 
-function validDate(value: Date | null): value is Date {
+function validDate(value: Date | null | undefined): value is Date {
   return value instanceof Date && Number.isFinite(value.getTime());
 }
 
@@ -87,9 +98,56 @@ function generation(
 }
 
 function workerRunning(snapshot: AdminMemoryStatusSnapshot, now: Date): boolean {
-  if (!validDate(snapshot.workerLastSeenAt)) return false;
+  if (!snapshot.workerReady || !validDate(snapshot.workerLastSeenAt)) return false;
   const age = now.getTime() - snapshot.workerLastSeenAt.getTime();
   return age >= 0 && age <= ADMIN_MEMORY_WORKER_FRESHNESS_MS;
+}
+
+function ageSeconds(value: Date | null | undefined, now: Date): number | null {
+  if (!validDate(value)) return null;
+  return Math.max(0, Math.floor((now.getTime() - value.getTime()) / 1_000));
+}
+
+function workerProjection(
+  snapshot: AdminMemoryStatusSnapshot,
+  now: Date,
+  queueLength: number,
+  inProgressCount: number,
+  oldestAgeSeconds: number | null
+): AdminMemoryStatus["worker"] {
+  const lastSeenAgeSeconds = ageSeconds(snapshot.workerLastSeenAt, now);
+  const lastProgressAgeSeconds = ageSeconds(snapshot.workerLastProgressAt, now);
+  const lastSuccessAgeSeconds = ageSeconds(snapshot.workerLastSuccessfulJobAt, now);
+  const evidence = {
+    lastProgressAgeSeconds, lastSeenAgeSeconds, lastSuccessAgeSeconds,
+    observationWindowSeconds: ADMIN_MEMORY_WORKER_PROGRESS_STALE_MS / 1_000,
+    activeStages: snapshot.workerActiveStages
+  };
+  if (!workerRunning(snapshot, now)) {
+    return {
+      ...evidence,
+      reason: snapshot.workerLastSeenAt && !snapshot.workerReady ? "NOT_READY" : "HEARTBEAT_STALE",
+      state: "NOT_RUNNING"
+    };
+  }
+  const hasQueue = queueLength > 0 || inProgressCount > 0;
+  const progressStale = lastProgressAgeSeconds === null
+    ? oldestAgeSeconds !== null && oldestAgeSeconds >= ADMIN_MEMORY_WORKER_PROGRESS_STALE_MS / 1_000
+    : lastProgressAgeSeconds >= ADMIN_MEMORY_WORKER_PROGRESS_STALE_MS / 1_000;
+  if (hasQueue && (snapshot.workerHasStalledClaims ||
+    snapshot.processing.issues.some(({ reason }) => reason === "STALLED") ||
+    (progressStale && inProgressCount > 0))) {
+    return {
+      ...evidence,
+      reason: "QUEUE_STALLED",
+      state: "STALLED"
+    };
+  }
+  return {
+    ...evidence,
+    reason: hasQueue ? "ACTIVE" : "IDLE",
+    state: "RUNNING"
+  };
 }
 
 function project(snapshot: AdminMemoryStatusSnapshot, now: Date): AdminMemoryStatus {
@@ -126,6 +184,7 @@ function project(snapshot: AdminMemoryStatusSnapshot, now: Date): AdminMemorySta
   return adminMemoryStatusSchema.parse({
     admissionTimeout: snapshot.admissionTimeout,
     processing: snapshot.processing,
+    recovery: snapshot.recovery,
     configuredTargets: snapshot.configuredTargets,
     index: {
       generation: generation(snapshot.index.activeGenerations),
@@ -133,7 +192,13 @@ function project(snapshot: AdminMemoryStatusSnapshot, now: Date): AdminMemorySta
     },
     queue: { inProgress: checkedCount(snapshot.inProgressCount), length: queueLength, oldestAgeSeconds },
     rebuild: { state: rebuildState },
-    worker: { state: running ? "RUNNING" : "NOT_RUNNING" }
+    worker: workerProjection(
+      snapshot,
+      now,
+      queueLength,
+      checkedCount(snapshot.inProgressCount),
+      oldestAgeSeconds
+    )
   });
 }
 
@@ -175,6 +240,24 @@ export function createAdminMemoryStatusService(input: Readonly<{
       }
       if (admitted === 0) {
         throw new AdminMemoryStatusServiceError("memory_admin_rebuild_unavailable");
+      }
+      const observedAt = now();
+      return project(await input.repository.read(observedAt), observedAt);
+    },
+
+    async recover() {
+      const admittedAt = now();
+      const before = await input.repository.read(admittedAt);
+      const current = project(before, admittedAt);
+      if (current.worker.state === "NOT_RUNNING") {
+        throw new AdminMemoryStatusServiceError("memory_admin_recovery_unavailable");
+      }
+      const admitted = await input.repository.recoverEligible?.({
+        limit: ADMIN_MEMORY_RECOVERY_BATCH_SIZE,
+        now: admittedAt
+      }) ?? 0;
+      if (admitted === 0) {
+        throw new AdminMemoryStatusServiceError("memory_admin_recovery_unavailable");
       }
       const observedAt = now();
       return project(await input.repository.read(observedAt), observedAt);

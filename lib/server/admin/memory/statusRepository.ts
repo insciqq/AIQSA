@@ -20,12 +20,16 @@ import {
 } from "../../memory/persistence/lexical";
 import { memoryCanonicalGlobalScopePredicate } from "../../memory/persistence/scopes";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from "../../memory/retrieval/vector";
-import type {
-  AdminMemoryRebuildCandidate,
-  AdminMemoryStatusRepository
+import {
+  ADMIN_MEMORY_WORKER_PROGRESS_STALE_MS,
+  type AdminMemoryRebuildCandidate,
+  type AdminMemoryStatusRepository
 } from "./statusService";
 
 import { readAdminMemoryProcessing } from "./processingRepository";
+import { currentMemoryJobsSql } from "../../memory/coordinator/currentJobs";
+import { readMemoryRecoveryStatus } from "../../memory/coordinator/recoveryStatus";
+import type { AdminMemoryStatus } from "../../../contracts/adminMemory";
 
 const ACTIVE_JOB_STATES = Object.freeze([
   "QUEUED",
@@ -45,7 +49,13 @@ const ACTIVE_DELETION_STATES = Object.freeze([
 type StartRebuild = (candidate: AdminMemoryRebuildCandidate) => Promise<void>;
 
 type StaleChunkOwner = Readonly<{ userId: string }>;
-type HeartbeatRow = Readonly<{ lastSeenAt: Date }>;
+type HeartbeatRow = Readonly<{ lastSeenAt: Date; ready: boolean }>;
+type ActivityRow = Readonly<{
+  hasStalledClaims: boolean;
+  lastProgressAt: Date | null;
+  lastSuccessfulJobAt: Date | null;
+  activeStages: AdminMemoryStatus["worker"]["activeStages"];
+}>;
 type QueueRow = Readonly<{
   inProgress: bigint;
   oldestQueuedAt: Date | null;
@@ -91,7 +101,8 @@ function generationConfigurationCurrent(generation: Readonly<{
 
 export function createPrismaAdminMemoryStatusRepository(
   client: PrismaClient,
-  startRebuild: StartRebuild
+  startRebuild: StartRebuild,
+  recoverEligible?: (input: Readonly<{ limit: number; now: Date }>) => Promise<number>
 ): AdminMemoryStatusRepository {
   return Object.freeze({
     async read(now) {
@@ -125,7 +136,9 @@ export function createPrismaAdminMemoryStatusRepository(
         staleChunkOwners,
         queue,
         processing,
-        heartbeat
+        heartbeat,
+        activity,
+        recovery
       ] = await Promise.all([
         client.modelPolicy.findUnique({
           select: {
@@ -291,13 +304,14 @@ export function createPrismaAdminMemoryStatusRepository(
         // One statement keeps counts and waiting age on the same snapshot while
         // workers claim/settle jobs. Private job identities never leave the DB.
         client.$queryRaw<QueueRow[]>(Prisma.sql`
+          WITH ${currentMemoryJobsSql(now)}
           SELECT
             COUNT(*) FILTER (WHERE work."inProgress") AS "inProgress",
             COUNT(*) FILTER (WHERE NOT work."inProgress") AS "waiting",
             MIN(work."createdAt") FILTER (WHERE NOT work."inProgress") AS "oldestQueuedAt"
           FROM (
             SELECT "state" = 'CLAIMED'::"MemoryJobState" AS "inProgress", "createdAt"
-            FROM "MemoryJob"
+            FROM current_jobs
             WHERE "state" IN (${Prisma.join(ACTIVE_JOB_STATES.map((state) => Prisma.sql`${state}::"MemoryJobState"`))})
             UNION ALL
             SELECT "state" = 'RUNNING'::"MemoryDeletionState" AS "inProgress", "createdAt"
@@ -310,11 +324,32 @@ export function createPrismaAdminMemoryStatusRepository(
         }),
         readAdminMemoryProcessing(client, now),
         client.$queryRaw<HeartbeatRow[]>(Prisma.sql`
-          SELECT "lastSeenAt"
+          SELECT "lastSeenAt", ready
           FROM "MemoryWorkerHeartbeat"
           WHERE "id" = 'installation'
           LIMIT 1
-        `).then((rows) => rows[0] ?? null)
+        `).then((rows) => rows[0] ?? null),
+        client.$queryRaw<ActivityRow[]>(Prisma.sql`
+          WITH ${currentMemoryJobsSql(now)}
+          SELECT MAX("progressAt") AS "lastProgressAt",
+            MAX("completedAt") FILTER (WHERE succeeded) AS "lastSuccessfulJobAt",
+            COALESCE(bool_or(active AND COALESCE("progressAt", "createdAt") <=
+              ${new Date(now.getTime() - ADMIN_MEMORY_WORKER_PROGRESS_STALE_MS)}), false) AS "hasStalledClaims",
+            COALESCE(array_agg(DISTINCT stage) FILTER (WHERE active), ARRAY[]::text[]) AS "activeStages"
+          FROM (
+            SELECT "progressAt", "createdAt", "completedAt", state = 'SUCCEEDED'::"MemoryJobState" AS succeeded,
+              stage, state = 'CLAIMED'::"MemoryJobState" AS active
+            FROM current_jobs
+            UNION ALL
+            SELECT "progressAt", "createdAt", "completedAt", state = 'SUCCEEDED'::"MemoryDeletionState" AS succeeded,
+              'DELETION' AS stage, state = 'RUNNING'::"MemoryDeletionState" AS active
+            FROM "MemoryDeletionOutbox"
+          ) AS work
+        `).then((rows) => {
+          if (!rows[0]) throw new Error("memory_admin_status_activity_invalid");
+          return rows[0];
+        }),
+        readMemoryRecoveryStatus(client, now)
       ]);
       if (!modelPolicy) throw new Error("installation_model_policy_missing");
       const admissionTimeoutSeconds = Number(modelPolicy.memoryAdmissionTimeoutSeconds);
@@ -393,6 +428,7 @@ export function createPrismaAdminMemoryStatusRepository(
           version: modelPolicy.version
         }),
         processing,
+        recovery,
         configuredTargets: Object.freeze(configuredTargets),
         index: Object.freeze({
           activeGenerations: Object.freeze(generations.map(({ generation }) => generation)),
@@ -405,11 +441,18 @@ export function createPrismaAdminMemoryStatusRepository(
         inProgressCount: Number(queue.inProgress),
         oldestQueuedAt: queue.oldestQueuedAt,
         queueLength: Number(queue.waiting),
-        workerLastSeenAt: heartbeat?.lastSeenAt ?? null
+        workerLastSeenAt: heartbeat?.lastSeenAt ?? null,
+        workerReady: heartbeat?.ready ?? false,
+        workerHasStalledClaims: activity.hasStalledClaims,
+        workerLastProgressAt: activity.lastProgressAt,
+        workerLastSuccessfulJobAt: activity.lastSuccessfulJobAt,
+        workerActiveStages: activity.activeStages
       });
     },
 
     startRebuild,
+
+    ...(recoverEligible ? { recoverEligible } : {}),
 
     async updateAdmissionTimeout(input) {
       const result = await client.modelPolicy.updateMany({

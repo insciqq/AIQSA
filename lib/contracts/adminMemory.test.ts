@@ -1,6 +1,8 @@
+import { memoryRecoveryStatusFixture, memoryWorkerStatusFixture } from "@/tests/support/memoryStatus";
 import { describe, expect, it } from "vitest";
 import {
   decodeAdminMemoryAdmissionTimeoutInput,
+  decodeAdminMemoryActionInput,
   decodeAdminMemoryRebuildInput,
   decodeAdminMemoryStatusResponse
 } from "./adminMemory";
@@ -17,12 +19,28 @@ function response() {
       index: { generation: 3, readiness: "READY" },
       queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
       rebuild: { state: "NOT_REQUIRED" },
-      worker: { state: "RUNNING" }
+      recovery: memoryRecoveryStatusFixture(),
+      worker: memoryWorkerStatusFixture()
     }
   };
 }
 
 describe("administrator Memory status contract", () => {
+  it("rejects inconsistent worker and recovery evidence or private recovery targets", () => {
+    const memory = response().memory;
+    for (const worker of [
+      memoryWorkerStatusFixture({ state: "RUNNING", reason: "NOT_READY" }),
+      memoryWorkerStatusFixture({ state: "STALLED", reason: "IDLE" }),
+      memoryWorkerStatusFixture({ lastSuccessAgeSeconds: -1 })
+    ]) expect(decodeAdminMemoryStatusResponse({ memory: { ...memory, worker } })).toBeNull();
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory,
+      recovery: memoryRecoveryStatusFixture({ scheduled: 1 }) } })).toBeNull();
+    expect(decodeAdminMemoryActionInput({ action: "RECOVER_ELIGIBLE" })).toEqual({ action: "RECOVER_ELIGIBLE" });
+    expect(decodeAdminMemoryActionInput({ action: "RECOVER_ELIGIBLE", jobId: "private" })).toBeNull();
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory,
+      recovery: { ...memoryRecoveryStatusFixture(), errorMessage: "private" } } })).toBeNull();
+  });
+
   it("accepts only the minimal operational projection", () => {
     expect(decodeAdminMemoryStatusResponse(response())).toEqual(response());
     expect(decodeAdminMemoryStatusResponse({

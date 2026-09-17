@@ -10,8 +10,15 @@ import {
 } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { isMemoryCoordinatorErrorCode, MemoryCoordinatorError } from "./errors";
+import { currentMemoryJobsSql } from "./currentJobs";
+import { MEMORY_COORDINATOR_JOB_KINDS } from "./registry";
+import {
+  MEMORY_RECOVERY_BATCH_SIZE,
+  memoryTerminalRecoveryEligibleSql
+} from "./recoveryPolicy";
 import { memorySourceJobSnapshotMatches } from "../sourceState";
 import { lockMemorySettings } from "../persistence/transaction";
+import { MemoryPersistenceError } from "../persistence/errors";
 import { MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION } from "../learning/relations/explicitPolicy";
 import {
   decodeMemoryOperationalCounters,
@@ -172,6 +179,11 @@ export type MemoryCoordinatorRepository = Readonly<{
   }): Promise<readonly MemoryWaitingJob[]>;
   requeueDueJobs(input: {
     kinds: readonly MemoryJobKind[];
+    limit: number;
+    now: Date;
+  }): Promise<number>;
+  recoverEligibleJobs(input: {
+    limit: number;
     now: Date;
   }): Promise<number>;
   resolveWaitingJob(input: {
@@ -248,6 +260,80 @@ async function lockFairnessCursor(
   `);
   if (!rows[0]) throw new Error("memory_fairness_cursor_unavailable");
   return rows[0].lastGrantedOwnerUserId;
+}
+
+type RecoverableJobRow = MemoryWaitingJob & Readonly<{
+  errorCode: string;
+  recoveryCount: number;
+}>;
+
+async function recoverEligibleMemoryJobs(
+  client: PrismaClient,
+  input: Readonly<{ limit: number; now: Date }>
+): Promise<number> {
+  if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > MEMORY_RECOVERY_BATCH_SIZE ||
+    !Number.isFinite(input.now.getTime())) throw new Error("memory_recovery_input_invalid");
+  const candidates = await client.$queryRaw<Array<{ id: string; userId: string }>>(Prisma.sql`
+    WITH ${currentMemoryJobsSql(input.now)}
+    SELECT job.id, job."userId" FROM current_jobs AS job
+    WHERE ${memoryTerminalRecoveryEligibleSql(input.now)}
+      AND job.kind IN (${jobKindList(MEMORY_COORDINATOR_JOB_KINDS)})
+    ORDER BY job."completedAt", job.id LIMIT ${input.limit}
+  `).catch(retainDatabaseFailure);
+  let recovered = 0;
+  for (const candidate of candidates) {
+    const accepted = await client.$transaction(async (tx) => {
+      // Match ordinary commits: settings before source/job locks. This also
+      // serializes binding creation and every privacy/settings mutation.
+      await lockMemorySettings(tx, candidate.userId, true);
+      const rows = await tx.$queryRaw<RecoverableJobRow[]>(Prisma.sql`
+        WITH ${currentMemoryJobsSql(input.now)}
+        SELECT job.*, job."workStage" AS stage
+        FROM current_jobs AS job JOIN "MemoryJob" AS durable ON durable.id = job.id
+        WHERE job.id = ${candidate.id} AND job."userId" = ${candidate.userId}
+          AND ${memoryTerminalRecoveryEligibleSql(input.now)}
+        FOR UPDATE OF durable SKIP LOCKED
+      `);
+      const row = rows[0];
+      if (!row) return false;
+      const sourceMatches = await memorySourceJobSnapshotMatches(tx, row,
+        row.kind === "RECLASSIFY_FACTS" || row.kind === "SYNTHESIZE_MEMORIES"
+          ? { memoryRevisionSnapshot: row.memoryRevisionSnapshot } : undefined);
+      if (!sourceMatches) {
+        // Retire proven obsolete work so it cannot occupy every bounded
+        // recovery scan forever. Preserve its original failure evidence.
+        await tx.memoryJob.updateMany({
+          data: { state: "STALE", progressAt: input.now, updatedAt: input.now },
+          where: { id: row.id, userId: row.userId, state: "TERMINAL_FAILED" }
+        });
+        return false;
+      }
+      const updated = await tx.memoryJob.updateMany({
+        data: {
+          completedAt: null,
+          lastRecoveryAt: input.now,
+          recoveryCount: { increment: 1 },
+          recoveryErrorCode: row.errorCode,
+          nextAttemptAt: null,
+          state: "QUEUED",
+          progressAt: input.now,
+          updatedAt: input.now
+        },
+        where: {
+          id: row.id, userId: row.userId, state: "TERMINAL_FAILED",
+          recoveryCount: row.recoveryCount, errorCode: row.errorCode
+        }
+      });
+      return updated.count === 1;
+    }).catch((error: unknown) => {
+      // Account deletion/disable may win after candidate selection. It is an
+      // authority change, not a reason to abandon the rest of the batch.
+      if (error instanceof MemoryPersistenceError && error.code === "memory_owner_unavailable") return false;
+      return retainDatabaseFailure(error);
+    });
+    if (accepted) recovered += 1;
+  }
+  return recovered;
 }
 
 function jobEligibility(
@@ -455,6 +541,7 @@ async function claimJobFromCandidate(
       UPDATE "MemoryJob" AS job
       SET
         "state" = 'CLAIMED'::"MemoryJobState",
+        "progressAt" = ${input.now},
         "attemptCount" = job."attemptCount" + 1,
         "leaseToken" = ${input.claimToken},
         "leaseExpiresAt" = ${input.leaseExpiresAt},
@@ -557,6 +644,7 @@ async function commitJobSuccessWithAuthority(
         leaseToken: null,
         nextAttemptAt: null,
         state: "STALE",
+        progressAt: input.now,
         updatedAt: input.now
       },
       where: {
@@ -593,6 +681,7 @@ async function commitJobSuccessWithAuthority(
           }),
       stage: input.stage,
       state: "SUCCEEDED",
+      progressAt: input.now,
       updatedAt: input.now
     },
     where: {
@@ -793,7 +882,7 @@ export function createPrismaMemoryCoordinatorRepository(
     async setJobStage(input) {
       if (!safeStage.test(input.stage)) return false;
       const updated = await client.memoryJob.updateMany({
-        data: { stage: input.stage, updatedAt: input.now },
+        data: { stage: input.stage, progressAt: input.now, updatedAt: input.now },
         where: {
           id: input.claim.id,
           leaseExpiresAt: { gt: input.now },
@@ -845,6 +934,7 @@ export function createPrismaMemoryCoordinatorRepository(
           leaseToken: null,
           nextAttemptAt: input.nextAttemptAt,
           state: "RETRYABLE_FAILED",
+          progressAt: input.now,
           updatedAt: input.now
         },
         where: {
@@ -869,6 +959,7 @@ export function createPrismaMemoryCoordinatorRepository(
             leaseToken: null,
             nextAttemptAt: null,
             state: "TERMINAL_FAILED",
+            progressAt: input.now,
             updatedAt: input.now
           },
           where: {
@@ -975,15 +1066,22 @@ export function createPrismaMemoryCoordinatorRepository(
 
     async requeueDueJobs(input) {
       if (input.kinds.length === 0) return 0;
-      const updated = await client.memoryJob.updateMany({
-        data: { nextAttemptAt: null, state: "QUEUED", updatedAt: input.now },
-        where: {
-          kind: { in: [...input.kinds] },
-          nextAttemptAt: { lte: input.now },
-          state: "RETRYABLE_FAILED"
-        }
-      }).catch(retainDatabaseFailure);
-      return updated.count;
+      return client.$executeRaw(Prisma.sql`
+        WITH due AS (
+          SELECT id FROM "MemoryJob"
+          WHERE kind IN (${jobKindList(input.kinds)}) AND state = 'RETRYABLE_FAILED'
+            AND "nextAttemptAt" <= ${input.now}
+          ORDER BY "nextAttemptAt", id LIMIT ${input.limit}
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE "MemoryJob" AS job SET "nextAttemptAt" = NULL,
+          state = 'QUEUED', "updatedAt" = ${input.now}
+        FROM due WHERE job.id = due.id AND job.state = 'RETRYABLE_FAILED'
+      `).catch(retainDatabaseFailure);
+    },
+
+    async recoverEligibleJobs(input) {
+      return recoverEligibleMemoryJobs(client, input);
     },
 
     async cancelUnavailableJobOwners(input) {
@@ -1103,6 +1201,7 @@ export function createPrismaMemoryCoordinatorRepository(
             UPDATE "MemoryDeletionOutbox" AS deletion
             SET
               "state" = 'RUNNING'::"MemoryDeletionState",
+              "progressAt" = ${input.now},
               "attemptCount" = deletion."attemptCount" + 1,
               "leaseToken" = ${input.claimToken},
               "leaseExpiresAt" = ${input.leaseExpiresAt},
@@ -1164,6 +1263,7 @@ export function createPrismaMemoryCoordinatorRepository(
           leaseToken: null,
           nextAttemptAt: input.nextAttemptAt,
           state: input.blocked ? "BLOCKED_REQUIRES_ADMIN" : "RETRY_WAIT",
+          progressAt: input.now,
           updatedAt: input.now
         },
         where: {
@@ -1199,6 +1299,7 @@ export function createPrismaMemoryCoordinatorRepository(
             leaseToken: null,
             nextAttemptAt: null,
             state: "SUCCEEDED",
+            progressAt: input.now,
             updatedAt: input.now
           },
           where: {

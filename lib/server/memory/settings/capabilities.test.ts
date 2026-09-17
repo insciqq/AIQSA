@@ -354,6 +354,7 @@ describe("Memory capability projection", () => {
       vectorSpaceFingerprint: memoryVectorSpaceFingerprint(embedding)
     }));
     const findHeartbeat = vi.fn(async () => ({
+      ready: true,
       lastSeenAt: new Date(NOW.getTime() - 1_000)
     }));
     const state = await readMemoryCapabilityOperationalState({
@@ -372,7 +373,7 @@ describe("Memory capability projection", () => {
       where: { id: "generation-1", userId: "user-1" }
     }));
     expect(findHeartbeat).toHaveBeenCalledWith({
-      select: { lastSeenAt: true },
+      select: { ready: true, lastSeenAt: true },
       where: { id: "installation" }
     });
   });

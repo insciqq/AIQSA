@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  recoverAdminMemoryWork,
   adminMemoryErrorMessage,
   getAdminMemoryStatus,
   startAdminMemoryRebuild,
@@ -11,6 +12,9 @@ import {
   adminMemoryCopy,
   adminMemoryIndexCopy,
   adminMemoryQueueCopy,
+  adminMemoryRecoveryCopy,
+  adminMemorySuccessCopy,
+  adminMemoryWorkerEvidenceCopy,
   adminMemoryWorkerCopy
 } from "@/components/admin/retrieval/adminMemoryUiCopy";
 import { AdminStatusPill } from "@/components/admin/roles/AdminStatusPill";
@@ -26,10 +30,11 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 const POLL_MS = 30_000;
 
 function memoryState(status: AdminMemoryStatus): Readonly<{ label: string; status: AdminRoleStatus | "reindexing" }> {
+  if (!status.processing.enabled) return { label: "Paused", status: "not_assigned" };
+  if (status.worker.state === "NOT_RUNNING") return { label: "Worker not running", status: "unavailable" };
+  if (status.worker.state === "STALLED") return { label: "Queue stalled", status: "unavailable" };
   if (status.processing.issues.some((issue) => issue.severity === "bad")) return { label: "Processing blocked", status: "unavailable" };
   if (status.processing.issues.length > 0) return { label: "Processing delayed", status: "reindexing" };
-  if (!status.processing.enabled) return { label: "Paused", status: "not_assigned" };
-  if (status.worker.state !== "RUNNING") return { label: "Worker not running", status: "unavailable" };
   switch (status.index.readiness) {
     case "READY":
       return { label: "Working", status: "working" };
@@ -163,6 +168,27 @@ export function AdminMemoryHealthCard({
     reportNotice(copy.notice);
   };
 
+  const recover = async () => {
+    if (busy || error || !status || status.worker.state === "NOT_RUNNING" || status.recovery.eligible === 0) return;
+    setBusy(true);
+    busyRef.current = true;
+    const sequence = ++sequenceRef.current;
+    setFormError(null);
+    const result = await recoverAdminMemoryWork();
+    if (sequence !== sequenceRef.current) return;
+    busyRef.current = false;
+    setBusy(false);
+    if (!result.ok) {
+      setFormError(adminMemoryErrorMessage(result.error));
+      await refresh();
+      return;
+    }
+    setStatus(result.data.memory);
+    setObservedAt(new Date().toISOString());
+    setError(null);
+    reportNotice(copy.recoveryNotice);
+  };
+
   const requestRebuild = () => {
     requestConfirmation({
       body: copy.rebuildDescription,
@@ -189,6 +215,7 @@ export function AdminMemoryHealthCard({
           {status ? copy.intro : error ?? (loading ? copy.loading : copy.statusUnavailable)}
         </p>
         {error && status ? <p className="basis-full text-xs text-critical" role="alert">{error} Current health is unknown.{observedAt ? ` Last checked ${new Date(observedAt).toLocaleString()}.` : ""}</p> : null}
+        <UiV2Button className="min-h-11" disabled={busy || loading} onClick={() => void refresh()} tone="ghost">Refresh Memory status</UiV2Button>
       </div>
 
       {status ? (
@@ -208,7 +235,22 @@ export function AdminMemoryHealthCard({
               )}
             </StatusLine>
             <StatusLine label={copy.worker} tone={status.worker.state === "RUNNING" ? "positive" : "critical"}>
-              {adminMemoryWorkerCopy("EN", status.worker.state)}
+              <span>{adminMemoryWorkerCopy("EN", status.worker)}</span>
+              <span className="mt-1 block text-xs font-normal text-ink-muted">
+                {adminMemoryWorkerEvidenceCopy("EN", status.worker)}
+              </span>
+              {status.worker.state === "NOT_RUNNING" ? (
+                <span className="mt-1 block text-xs font-normal">Check the Memory worker service and its startup logs.</span>
+              ) : null}
+              <span className="mt-1 block text-xs font-normal text-ink-muted">
+                {adminMemorySuccessCopy(status.worker)} · Progress window {status.worker.observationWindowSeconds / 60}m
+                {status.worker.activeStages.length ? ` · ${status.worker.activeStages.map((stage) => stage.toLowerCase()).join(", ")}` : ""}
+              </span>
+            </StatusLine>
+            <StatusLine label="Recovery">
+              <ul className="grid gap-1">
+                {adminMemoryRecoveryCopy(status.recovery).map((line) => <li key={line}>{line}</li>)}
+              </ul>
             </StatusLine>
             <StatusLine label={copy.queue} tone={status.queue.length + status.queue.inProgress === 0 ? "positive" : "normal"}>
               {adminMemoryQueueCopy("EN", status.queue)}
@@ -283,6 +325,14 @@ export function AdminMemoryHealthCard({
             <p className="border-t border-trace-subtle px-5 py-3 text-sm text-ink-secondary" role="status">{copy.rebuildInProgress}</p>
           ) : status.rebuild.state === "UNAVAILABLE" ? (
             <p className="border-t border-trace-subtle px-5 py-3 text-sm text-caution" role="status">{copy.rebuildUnavailable}</p>
+          ) : null}
+          {status.recovery.eligible + status.recovery.scheduled > 0 ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-trace-subtle px-5 py-4">
+              <p className="min-w-0 flex-1 basis-[16rem] text-sm leading-5 text-ink-secondary">{copy.recoveryDescription}</p>
+              <UiV2Button className="min-h-11" busy={busy} disabled={busy || Boolean(error) || status.recovery.eligible === 0 || status.worker.state === "NOT_RUNNING"} onClick={() => void recover()} tone="primary">
+                {copy.recovery}
+              </UiV2Button>
+            </div>
           ) : null}
         </>
       ) : null}
