@@ -53,6 +53,16 @@ describe("administrator Memory queue aggregates", () => {
         inProgress: current.inProgressCount, waiting: current.queueLength, oldestQueuedAt: current.oldestQueuedAt
       })).not.toContain(userId);
 
+      expect(current.workerHasStalledClaims).toBe(false);
+      await prisma.memoryJob.updateMany({ where: { userId, state: "SUCCEEDED" }, data: { progressAt: now } });
+      await prisma.memoryJob.updateMany({ where: { userId, state: "CLAIMED" },
+        data: { progressAt: new Date(now.getTime() - 1200_000) } });
+      expect(await repository.read(now)).toMatchObject({
+        workerHasStalledClaims: true, workerLastProgressAt: now
+      });
+      await prisma.memoryJob.updateMany({ where: { userId, state: "CLAIMED" }, data: { progressAt: now } });
+      expect((await repository.read(now)).workerHasStalledClaims).toBe(false);
+
       // Claim every remaining fixture item. No running item may keep a waiting
       // count or waiting age alive, even when its creation predates the backlog.
       await prisma.memoryJob.updateMany({

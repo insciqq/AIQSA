@@ -12,6 +12,9 @@ const COPY = {
   loading: "Loading Memory status...",
   noError: "None",
   notice: "A bounded Memory index rebuild was queued.",
+  recovery: "Retry eligible work",
+  recoveryDescription: "The worker automatically retries eligible failures after a delay. You can request the next due batch here.",
+  recoveryNotice: "Eligible Memory work was queued for retry.",
   queue: "Worker queue",
   rebuild: "Rebuild",
   rebuildConfirmTitle: "Rebuild the Memory index?",
@@ -32,9 +35,60 @@ export function adminMemoryCopy(_locale: AdminMemoryLocale) {
 
 export function adminMemoryWorkerCopy(
   _locale: AdminMemoryLocale,
-  state: AdminMemoryStatus["worker"]["state"]
+  worker: AdminMemoryStatus["worker"]
 ): string {
-  return state === "RUNNING" ? "Running" : "Not running";
+  if (worker.state === "NOT_RUNNING") return "Not running";
+  if (worker.state === "STALLED") return "Running, queue stalled";
+  return "Running";
+}
+
+export function adminMemoryWorkerEvidenceCopy(
+  _locale: AdminMemoryLocale,
+  worker: AdminMemoryStatus["worker"]
+): string {
+  if (worker.state === "NOT_RUNNING") {
+    if (worker.reason === "NOT_READY") return "Startup has not completed, or the worker has stopped";
+    return worker.lastSeenAgeSeconds === null
+      ? "No heartbeat observed"
+      : `Heartbeat stale for ${formatAge(worker.lastSeenAgeSeconds)}`;
+  }
+  if (worker.state === "STALLED") {
+    if (worker.lastProgressAgeSeconds !== null && worker.lastProgressAgeSeconds < worker.observationWindowSeconds) {
+      return "Some queued work is not progressing";
+    }
+    return worker.lastProgressAgeSeconds === null
+      ? "Queue has no recorded progress"
+      : `No queue progress for ${formatAge(worker.lastProgressAgeSeconds)}`;
+  }
+  if (worker.reason === "IDLE") return "Heartbeat healthy · queue idle";
+  return worker.lastProgressAgeSeconds == null
+    ? "Heartbeat healthy · progress not yet recorded"
+    : `Progress ${formatAge(worker.lastProgressAgeSeconds)} ago`;
+}
+
+export function adminMemorySuccessCopy(worker: AdminMemoryStatus["worker"]): string {
+  return worker.lastSuccessAgeSeconds === null ? "No completed job recorded" :
+    `Last completed job ${formatAge(worker.lastSuccessAgeSeconds)} ago`;
+}
+
+export function adminMemoryRecoveryCopy(recovery: AdminMemoryStatus["recovery"]): readonly string[] {
+  const lines: string[] = [];
+  if (recovery.eligible) lines.push(`${recovery.eligible} eligible for retry`);
+  if (recovery.scheduled) lines.push(`${recovery.scheduled} scheduled · next retry in ${formatAge(recovery.nextRetrySeconds)}`);
+  if (recovery.configurationRequired) lines.push(`${recovery.configurationRequired} waiting for model setup. Check Defaults & roles.`);
+  if (recovery.protected) lines.push(`${recovery.protected} ${recovery.protected === 1 ? "has" : "have"} a recorded provider execution. Safe result recovery is required before retry.`);
+  if (recovery.exhausted) lines.push(`${recovery.exhausted} exhausted automatic retries. Check worker logs and resolve the cause.`);
+  if (recovery.permanent) lines.push(`${recovery.permanent} ${recovery.permanent === 1 ? "requires" : "require"} a fix before retry. Check worker logs for the failure code.`);
+  if (recovery.obsolete) lines.push(`${recovery.obsolete} outdated or already resolved failures excluded from retry`);
+  return lines.length ? lines : ["No failures awaiting recovery"];
+}
+
+function formatAge(seconds: number | null | undefined): string {
+  if (seconds == null) return "an unknown period";
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h`;
 }
 
 export function adminMemoryIndexCopy(

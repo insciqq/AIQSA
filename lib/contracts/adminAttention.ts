@@ -18,6 +18,7 @@ export type AdminAttentionCode =
   | "memory_index_rebuild_required"
   | "memory_processing_blocked"
   | "memory_worker_not_running"
+  | "memory_worker_stalled"
   | "provider_key_check_failed"
   | "provider_catalog_models_available"
   | "provider_key_rejected"
@@ -97,6 +98,7 @@ const ATTENTION_CODES = new Set<AdminAttentionCode>([
   "memory_index_rebuild_required",
   "memory_processing_blocked",
   "memory_worker_not_running",
+  "memory_worker_stalled",
   "provider_key_check_failed",
   "provider_catalog_models_available",
   "provider_key_rejected",

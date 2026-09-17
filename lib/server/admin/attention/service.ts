@@ -362,6 +362,19 @@ function memoryItems(memory: AdminMemoryStatus): AdminAttentionItem[] {
       title: "Memory worker is not running"
     });
   }
+  if (memory.worker.state === "STALLED" && memory.processing.enabled &&
+    !memory.processing.issues.some(({ reason }) => reason === "STALLED")) {
+    items.push({
+      action: "Open Memory",
+      code: "memory_worker_stalled",
+      count: memory.queue.length + memory.queue.inProgress,
+      detail: "The worker is responding, but its queue is not progressing. Check recovery status and worker logs.",
+      id: "memory_worker_stalled",
+      severity: "warn",
+      target: { section: "retrieval" },
+      title: "Memory queue is stalled"
+    });
+  }
   if (memory.index.readiness === "REBUILD_REQUIRED" && memory.processing.enabled) {
     items.push({
       action: "Open Memory",

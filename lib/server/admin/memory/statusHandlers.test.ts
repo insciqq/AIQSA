@@ -1,3 +1,4 @@
+import { memoryRecoveryStatusFixture, memoryWorkerStatusFixture } from "@/tests/support/memoryStatus";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminMemoryStatus } from "../../../contracts/adminMemory";
 import { AdminMemoryStatusServiceError } from "./statusService";
@@ -10,7 +11,8 @@ const status: AdminMemoryStatus = {
   index: { generation: 2, readiness: "READY" },
   queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
   rebuild: { state: "NOT_REQUIRED" },
-  worker: { state: "RUNNING" }
+  recovery: memoryRecoveryStatusFixture(),
+  worker: memoryWorkerStatusFixture()
 };
 
 function auth(role: "admin" | "user" = "admin") {
@@ -29,6 +31,7 @@ function service(overrides: Record<string, unknown> = {}) {
       queue: { inProgress: 0, length: 1, oldestAgeSeconds: 0 },
       rebuild: { state: "IN_PROGRESS" }
     }),
+    recover: vi.fn().mockResolvedValue(status),
     updateAdmissionTimeout: vi.fn().mockResolvedValue({
       ...status,
       admissionTimeout: { seconds: 30, version: 5 }
@@ -38,6 +41,23 @@ function service(overrides: Record<string, unknown> = {}) {
 }
 
 describe("administrator Memory status handlers", () => {
+  it("authorizes strict recovery independently of rebuild and reports a conflict when it is unavailable", async () => {
+    const memoryService = service();
+    const handler = createAdminMemoryStatusHandlers({ resolveAuth: auth(), service: memoryService });
+    const request = (body: unknown) => new Request("http://local.test", {
+      body: JSON.stringify(body), headers: { "content-type": "application/json" }, method: "POST"
+    });
+    expect((await handler.POST(request({ action: "RECOVER_ELIGIBLE", jobId: "private" }))).status).toBe(400);
+    expect(memoryService.recover).not.toHaveBeenCalled();
+    expect((await handler.POST(request({ action: "RECOVER_ELIGIBLE" }))).status).toBe(202);
+    expect(memoryService.recover).toHaveBeenCalledOnce();
+    expect(memoryService.rebuild).not.toHaveBeenCalled();
+    memoryService.recover.mockRejectedValue(new AdminMemoryStatusServiceError("memory_admin_recovery_unavailable"));
+    expect((await handler.POST(request({ action: "RECOVER_ELIGIBLE" }))).status).toBe(409);
+    const nonAdmin = createAdminMemoryStatusHandlers({ resolveAuth: auth("user"), service: memoryService });
+    expect((await nonAdmin.POST(request({ action: "RECOVER_ELIGIBLE" }))).status).toBe(403);
+  });
+
   it("returns only the minimal private status to an active administrator", async () => {
     const handler = createAdminMemoryStatusHandlers({
       resolveAuth: auth(),

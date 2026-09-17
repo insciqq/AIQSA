@@ -3,6 +3,7 @@ import { databaseFailureCode, rememberDatabaseFailure, retainDatabaseFailure } f
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
+import { defaultMemoryWorkerHeartbeat } from "./workerHeartbeat";
 import {
   loadMemorySuppressionKeyring,
   preflightMemorySuppressionKeys
@@ -126,7 +127,12 @@ export function startDefaultMemoryCoordinatorFeatureLocally(): Promise<MemoryCoo
   scope.__aiqsaMemoryCoordinatorStartupStatus = Object.freeze({ status: "starting" });
   ensureDefaultMemoryPurgeHandlerRegistered();
   const pending = startMemoryCoordinatorFeatureLocally({
-    listRequiredKeyIds: () => listRequiredMemorySuppressionKeyIds(prisma),
+    listRequiredKeyIds: async () => {
+      // Both the dedicated service and the development process must clear
+      // predecessor readiness before any startup check can fail.
+      await defaultMemoryWorkerHeartbeat.begin();
+      return listRequiredMemorySuppressionKeyIds(prisma);
+    },
     preflight: async () => {
       try {
         // Provider credentials used by extraction, consolidation, and rerank

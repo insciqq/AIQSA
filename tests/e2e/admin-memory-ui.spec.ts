@@ -1,3 +1,4 @@
+import { memoryRecoveryStatusFixture, memoryWorkerStatusFixture } from "@/tests/support/memoryStatus";
 import { expect, test } from "@playwright/test";
 import type { AdminDashboard } from "../../lib/contracts/admin";
 import type { AdminMemoryStatusResponse } from "../../lib/contracts/adminMemory";
@@ -10,6 +11,85 @@ import {
 import { signInWithLocalToken } from "./support/localAuth";
 
 test.use({ hasTouch: true });
+
+test("Memory recovery distinguishes stalled and stopped workers across responsive views", async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
+  let unavailable = false;
+  let memory = memoryResponse({ rebuilding: false, timeoutSeconds: 30, timeoutVersion: 1 }).memory;
+  memory = { ...memory, index: { generation: 1, readiness: "READY" }, rebuild: { state: "NOT_REQUIRED" },
+    worker: memoryWorkerStatusFixture({ state: "STALLED", reason: "QUEUE_STALLED",
+      lastProgressAgeSeconds: 1200, lastSuccessAgeSeconds: 1800, activeStages: ["HISTORY"] }),
+    queue: { inProgress: 1, length: 2, oldestAgeSeconds: 1200 },
+    recovery: memoryRecoveryStatusFixture({ eligible: 2, scheduled: 1, nextRetrySeconds: 120,
+      protected: 2, permanent: 1, obsolete: 3 }) };
+  const bodies: unknown[] = [];
+  await page.route("**/api/admin", (route) => route.fulfill({ json: emptyAdminDashboard() }));
+  await page.route("**/api/admin/knowledge", (route) => route.fulfill({ json: { knowledge: adminKnowledgeSettingsFixture() } }));
+  await page.route("**/api/admin/memory", async (route) => {
+    if (unavailable) return route.fulfill({ status: 503, json: { error: "memory_admin_status_failed" } });
+    if (route.request().method() === "POST") {
+      bodies.push(route.request().postDataJSON());
+      memory = { ...memory, worker: memoryWorkerStatusFixture({ reason: "ACTIVE", lastProgressAgeSeconds: 0 }),
+        recovery: memoryRecoveryStatusFixture({ protected: 2, permanent: 1, obsolete: 3 }),
+        queue: { inProgress: 1, length: 4, oldestAgeSeconds: 1200 },
+        processing: { enabled: true, issues: [{ stage: "HISTORY", reason: "PROCESSING_FAILED", count: 3, oldestAgeSeconds: 1200, severity: "bad" }] } };
+    }
+    return route.fulfill({ json: { memory } });
+  });
+  await signInWithLocalToken(page);
+  await page.goto("/admin?section=retrieval");
+  const section = page.getByTestId("admin-retrieval-memory");
+  const retry = section.getByRole("button", { name: "Retry eligible work" });
+  const refresh = section.getByRole("button", { name: "Refresh Memory status" });
+  await expect(section.getByTestId("memory-state")).toHaveText("Queue stalled");
+  await expect(section).toContainText("No queue progress for 20m");
+  await expect(section).toContainText("Last completed job 30m ago");
+  const viewports = [
+    { name: "desktop-landscape", width: 1440, height: 900 },
+    { name: "desktop-portrait", width: 900, height: 1440 },
+    { name: "tablet-landscape", width: 1024, height: 768 },
+    { name: "tablet-portrait", width: 768, height: 1024 },
+    { name: "phone-landscape", width: 844, height: 390 },
+    { name: "phone-portrait", width: 390, height: 844 }
+  ];
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    for (const viewport of viewports) {
+      await page.setViewportSize(viewport);
+      await expectNoHorizontalOverflow(page);
+      await expectTouchSafe(retry);
+      await retry.focus();
+      await expect(retry).toBeFocused();
+      await section.screenshot({ path: testInfo.outputPath(`memory-recovery-${viewport.name}-${colorScheme}.png`) });
+    }
+  }
+  memory = { ...memory, worker: memoryWorkerStatusFixture({ state: "NOT_RUNNING", reason: "NOT_READY" }) };
+  await refresh.click();
+  await expect(section.getByTestId("memory-state")).toHaveText("Worker not running");
+  await expect(retry).toBeDisabled();
+  await expect(section).toContainText("Check the Memory worker service and its startup logs");
+  await section.screenshot({ path: testInfo.outputPath("memory-recovery-startup-phone-dark.png") });
+  memory = { ...memory, worker: memoryWorkerStatusFixture({ reason: "ACTIVE" }) };
+  await refresh.click();
+  await expect(retry).toBeEnabled();
+  unavailable = true;
+  await refresh.click();
+  await expect(section.getByTestId("memory-state")).toHaveText("Status unknown");
+  await expect(retry).toBeDisabled();
+  unavailable = false;
+  await refresh.click();
+  await expect(retry).toBeEnabled();
+  const timeout = section.getByRole("spinbutton", { name: "Admission timeout (seconds)" });
+  await timeout.fill("42");
+  await retry.click();
+  await expect(page.getByTestId("admin-feedback")).toContainText("Eligible Memory work was queued for retry");
+  expect(bodies).toEqual([{ action: "RECOVER_ELIGIBLE" }]);
+  await expect(timeout).toHaveValue("42");
+  await expect(section.getByTestId("memory-state")).toHaveText("Processing blocked");
+  await expect(section).toContainText("2 have a recorded provider execution");
+  await expect(section).toContainText("1 requires a fix before retry");
+  await expectNoHorizontalOverflow(page);
+});
 
 test("Overview observes blocked learning and recovery in the background, retains stale issues and agrees with Memory", async ({ page }, testInfo) => {
   test.setTimeout(90_000);
@@ -140,7 +220,8 @@ function memoryResponse(input: Readonly<{
         oldestAgeSeconds: input.rebuilding ? 0 : null
       },
       rebuild: { state: input.rebuilding ? "IN_PROGRESS" : "AVAILABLE" },
-      worker: { state: "RUNNING" }
+      recovery: memoryRecoveryStatusFixture(),
+      worker: memoryWorkerStatusFixture()
     }
   };
 }

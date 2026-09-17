@@ -109,4 +109,17 @@ describe("administrator Memory processing aggregates", () => {
       expect((await readAdminMemoryProcessing(prisma, f.now)).issues).toEqual([]);
     } finally { resolution.available = true; await f.cleanup(); }
   });
+
+  it("reports a stalled claim even while other work in the same stage completes", async () => {
+    const f = await fixture();
+    try {
+      resolution.available = true;
+      const stalled = await f.job("CLAIMED", { kind: "EMBED_ITEMS" });
+      await f.job("SUCCEEDED", { kind: "EMBED_ITEMS", age: 20 });
+      expect((await readAdminMemoryProcessing(prisma, f.now)).issues).toContainEqual(
+        expect.objectContaining({ stage: "INDEXING", reason: "STALLED", count: 1 }));
+      await prisma.memoryJob.update({ where: { id: stalled.id }, data: { progressAt: f.now } });
+      expect((await readAdminMemoryProcessing(prisma, f.now)).issues).toEqual([]);
+    } finally { await f.cleanup(); }
+  });
 });
