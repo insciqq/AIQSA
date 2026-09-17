@@ -7,6 +7,7 @@ import { decodeKnowledgeEvidenceDispatchManifestDraft, type KnowledgeEvidenceDis
 import {
   buildKnowledgeEvidenceAnswerPublicationV1, decodeKnowledgeEvidenceAnswerDraftV1,
   knowledgeEvidenceAnswerDraftPromptV1, knowledgeEvidenceAnswerReviewPromptV1,
+  normalizeKnowledgeEvidenceAnswerDraftV1,
   validateKnowledgeEvidenceAnswerDraftV1, validateKnowledgeEvidenceAnswerReviewV1,
   type KnowledgeEvidenceAnswerDraftV1, type KnowledgeEvidenceAnswerPublicationV1,
   type KnowledgeEvidenceAnswerReviewV1, type KnowledgeEvidenceAnswerValidationV1
@@ -149,7 +150,9 @@ async function executeCycle(input: KnowledgeEvidenceAnswerExecutionV1Input & Rea
       ...(input.revision ? { draftPayloadHash: knowledgeAnswerHash(input.revision.draft), reviewPayloadHash: knowledgeAnswerHash(input.revision.review) } : {}),
       ...composePrompt(),
       accept(output) {
-        const validation = validateKnowledgeEvidenceAnswerDraftV1(output, context);
+        const validation = validateKnowledgeEvidenceAnswerDraftV1(
+          normalizeKnowledgeEvidenceAnswerDraftV1(output, context.availableHandles), context
+        );
         return validation.kind === "accepted" ? validation.value : { ...validation, version: 1 };
       } });
     draft = decodeKnowledgeEvidenceAnswerDraftV1(result, context);

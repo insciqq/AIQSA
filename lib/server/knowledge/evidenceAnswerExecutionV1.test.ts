@@ -77,7 +77,7 @@ describe("evidence answer execution and recovery", () => {
   it.each(["native_strict", "provider_neutral_json"] as const)("freezes compose instructions across repair and replay while keeping review independent (%s)", async transport => {
     const h = execution([{ invalid: true }, compose(), review()]);
     const answerInstructions = { system: "SYNTHETIC_STYLE", responseReminder: "SYNTHETIC_REMINDER" };
-    await executeKnowledgeEvidenceAnswerV1({ ...h.input, transport, answerInstructions });
+    const result = await executeKnowledgeEvidenceAnswerV1({ ...h.input, transport, answerInstructions });
     const calls = h.execute.mock.calls as unknown as [import("../providers/structuredOutput").ProviderStructuredOutputRequest][];
     expect(calls).toHaveLength(3);
     for (const [index, [operation]] of calls.entries()) {
@@ -94,6 +94,7 @@ describe("evidence answer execution and recovery", () => {
     expect(accepted[0]?.answerInstructions).toEqual(answerInstructions);
     expect(accepted[2]?.answerInstructions).toBeUndefined();
     await executeKnowledgeEvidenceAnswerV1({ ...h.input, transport, answerInstructions });
+    expect(await replayKnowledgeEvidenceAnswerV1({ dispatches: h.store.stored(), forbiddenIdentityFragments: [], modelRunId: "fixture-run" })).toEqual(result);
     expect(h.execute).toHaveBeenCalledTimes(3);
   });
 
