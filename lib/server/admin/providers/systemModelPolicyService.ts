@@ -16,6 +16,7 @@ import {
 } from "../../providerRuntime/admission";
 import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
 import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memoryUtilityModelRole";
+import { listMemoryModelRecommendations, memoryRecommendationMatches } from "../../memory/modelRecommendations";
 import { systemModelRoleEligible } from "../../providerRuntime/systemModelCapabilities";
 import { createChatTitleModelRoleResolver } from "../../providerRuntime/chatTitleModelRole";
 import { createChatPdfModelRoleResolver } from "../../providerRuntime/chatPdfModelRole";
@@ -529,6 +530,7 @@ export function createAdminSystemModelPolicyService(
               memoryResolution.policyVersion === memoryPolicy.version
           } : null,
           reasoningEffort: memoryPolicy.reasoningEffort,
+          recommendations: await listMemoryModelRecommendations(prisma, models, loadRole),
           version: memoryPolicy.version
         },
         candidates: deployments.filter((model) => model.structuredOutput === "verified" &&
@@ -602,6 +604,7 @@ export function createAdminSystemModelPolicyService(
       userId: string;
       /** Automation only adopts a never-assigned role; explicit clears survive. */
       assignmentSource?: "BOOTSTRAP" | "OPERATOR";
+      recommendationId?: string;
     }>): Promise<void> {
       try {
         await prisma.$transaction(async (tx) => {
@@ -621,6 +624,9 @@ export function createAdminSystemModelPolicyService(
           if (input.providerModelId === null && input.reasoningEffort !== null) {
             throw new AdminSystemModelPolicyServiceError("system_model_policy_reasoning_unavailable");
           }
+          if (input.recommendationId && input.providerModelId === null) {
+            throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
+          }
           if (input.providerModelId !== null) {
             const role = await loadRole(tx, { providerModelId: input.providerModelId });
             if (!systemModelRoleEligible(role, "memory")) {
@@ -628,6 +634,10 @@ export function createAdminSystemModelPolicyService(
             }
             if (input.reasoningEffort !== null && !supportsReasoningEffort(role, input.reasoningEffort)) {
               throw new AdminSystemModelPolicyServiceError("system_model_policy_reasoning_unavailable");
+            }
+            if (input.recommendationId && !memoryRecommendationMatches(role, input.recommendationId, input.reasoningEffort) ||
+              input.assignmentSource === "BOOTSTRAP" && !input.recommendationId) {
+              throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
             }
           }
           await tx.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: {

@@ -433,4 +433,71 @@ test.describe("system model policy", () => {
     await expect(row.getByTestId("admin-role-memory-status")).toHaveText("Working");
     expect(await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(systemBefore);
   });
+
+  test("previews, applies and undoes recommended Memory settings across responsive views", async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    const configuration = { ...modelConfiguration, upstreamModelId: "gpt-5.6-terra",
+      capabilities: { ...capabilities, contextWindow: 128000, maxOutputTokens: 8192 }, defaultParams: { maxOutputTokens: 8192 } };
+    await prisma.providerModel.update({ where: { id: fixture.modelId }, data: {
+      activeConfig: configuration, enabled: true, activeVersion: 2
+    } });
+    await prisma.providerModelCredentialCheck.update({ where: { id: fixture.checkId }, data: { modelVersion: 2,
+      evidence: { method: "system_policy_fixture",
+        forcedToolCall: forcedToolCallVerificationEvidence(configuration.adapterKind, configuration.upstreamModelId),
+        structuredOutput: structuredOutputVerificationEvidence(configuration.adapterKind, configuration.upstreamModelId) }
+    } });
+    await prisma.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: {
+      providerModelId: null, reasoningEffort: null, assignmentSource: "OPERATOR"
+    } });
+    const systemBefore = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+    await signInWithLocalToken(page);
+    await page.goto("/admin?section=roles&resource=memory");
+    const row = page.getByTestId("admin-role-memory");
+    const useRecommended = row.getByRole("button", { name: "Use recommended", exact: true });
+    const dialog = page.getByRole("dialog", { name: "Use recommended Memory model" });
+    const before = await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+    const viewports = [
+      { name: "desktop-landscape", width: 1440, height: 900 }, { name: "desktop-portrait", width: 900, height: 1440 },
+      { name: "tablet-landscape", width: 1024, height: 768 }, { name: "tablet-portrait", width: 768, height: 1024 },
+      { name: "phone-landscape", width: 844, height: 390 }, { name: "phone-portrait", width: 390, height: 844 }
+    ];
+    for (const colorScheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme });
+      for (const viewport of viewports) {
+        await page.setViewportSize(viewport);
+        await expectNoHorizontalOverflow(page);
+        await expectTouchSafe(useRecommended);
+        const heading = row.locator("p").first();
+        await heading.evaluate((element) => element.scrollIntoView({ block: "center" }));
+        await expectCenterUnobscured(heading);
+        await page.screenshot({ path: testInfo.outputPath(`memory-recommendation-heading-${viewport.name}-${colorScheme}.png`) });
+        await useRecommended.focus();
+        await useRecommended.scrollIntoViewIfNeeded();
+        await expectCenterUnobscured(useRecommended);
+        await row.screenshot({ path: testInfo.outputPath(`memory-recommendation-${viewport.name}-${colorScheme}.png`) });
+        await useRecommended.click();
+        await expect(dialog).toContainText("System Policy Model with low reasoning");
+        const confirm = dialog.getByRole("button", { name: "Confirm use recommended", exact: true });
+        await expectTouchSafe(confirm);
+        await confirm.focus(); await expect(confirm).toBeFocused();
+        await expectNoHorizontalOverflow(page);
+        await dialog.screenshot({ path: testInfo.outputPath(`memory-recommendation-confirm-${viewport.name}-${colorScheme}.png`) });
+        await page.keyboard.press("Escape");
+        await expect(dialog).not.toBeVisible(); await expect(useRecommended).toBeFocused();
+      }
+    }
+    expect(await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(before);
+    await useRecommended.click(); await dialog.getByRole("button", { name: "Confirm use recommended", exact: true }).click();
+    await expect(row.getByRole("button", { name: "Recommended setting active" })).toBeDisabled();
+    expect(await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toMatchObject({
+      providerModelId: fixture.modelId, reasoningEffort: "low", version: before.version + 1, assignmentSource: "OPERATOR"
+    });
+    await page.getByRole("button", { name: "Undo", exact: true }).click();
+    await expect(useRecommended).toBeEnabled();
+    expect(await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toMatchObject({
+      providerModelId: null, reasoningEffort: null, version: before.version + 2, assignmentSource: "OPERATOR"
+    });
+    await page.reload(); await expect(useRecommended).toBeEnabled();
+    expect(await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(systemBefore);
+  });
 });

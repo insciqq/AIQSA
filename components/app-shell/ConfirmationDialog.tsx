@@ -1,4 +1,4 @@
-import { AlertTriangle, Archive, RotateCcw, Trash2, X } from "lucide-react";
+import { AlertTriangle, Archive, Check, RotateCcw, Trash2, X } from "lucide-react";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import { useDialogFocus } from "./useDialogFocus";
 
@@ -11,7 +11,7 @@ type ConfirmationDialogProps = {
   confirmAriaLabel?: string;
   confirmLabel: string;
   dialogLabel: string;
-  icon?: "archive" | "resume" | "trash" | "x";
+  icon?: "archive" | "check" | "resume" | "trash" | "x";
   onCancel(): void;
   onConfirm(): void;
   restoreFocus?(): HTMLElement | null;
@@ -52,7 +52,7 @@ export function ConfirmationDialog({
           button: "bg-critical text-proof-contrast hover:opacity-90",
           icon: "border-critical/35 bg-critical/10 text-critical"
         };
-  const ConfirmIcon = icon === "x"
+  const ConfirmIcon = icon === "check" ? Check : icon === "x"
     ? X
     : icon === "archive"
       ? Archive

@@ -87,6 +87,8 @@ export function AdminSystemRolesTable({
   if (!catalog) return null;
   const policy = catalog.policy;
   const memory = catalog.memoryPolicy;
+  const recommendation = memory.recommendations?.find((entry) => entry.unavailableReason === null) ?? memory.recommendations?.[0];
+  const recommendationSelected = recommendation?.providerModelId === memory.model?.id && recommendation?.reasoningEffort === memory.reasoningEffort;
   const label = deploymentLabeller(catalog);
   const busy = controller.busy || controller.checking !== null;
   const checkingId = controller.checking?.id ?? null;
@@ -194,6 +196,24 @@ export function AdminSystemRolesTable({
         />
         {memory.assignmentSource === "inherited" ? (
           <p className="text-xs leading-5 text-ink-muted">Copied from your previous System model setting. Future changes are independent.</p>
+        ) : null}
+        {recommendation ? (
+          <div className="grid justify-items-start gap-1.5 text-xs leading-5 text-ink-muted" data-testid="admin-memory-recommendation">
+            <p>Recommended: {recommendation.modelName} · {recommendation.reasoningEffort} reasoning.</p>
+            <p>{recommendation.evidence.passedCases}/{recommendation.evidence.totalCases} working cases passed. Typical case: {(recommendation.evidence.latencyP50Ms / 1000).toFixed(1)}s. A small qualification check; actual speed and quality vary.</p>
+            {recommendation.unavailableReason ? <p>{
+              recommendation.unavailableReason === "not_installed" ? "Add this model in Providers, then verify its Memory capabilities." :
+              recommendation.unavailableReason === "budget_too_small" ? "Increase this deployment’s output budget and context allowance in Providers before using the recommendation." :
+              recommendation.unavailableReason === "reasoning_unavailable" ? "This deployment does not support the recommended reasoning setting." :
+              "Verify this deployment’s Memory capabilities in Providers before using the recommendation."
+            }</p> : <UiV2Button disabled={busy || recommendationSelected} type="button" onClick={() => requestConfirmation({
+              body: `${recommendation.displayName} with ${recommendation.reasoningEffort} reasoning will replace ${memory.model ? label(memory.model) : "the unassigned Memory model"} for future Memory work. You can undo this change.`,
+              confirmLabel: "Use recommended", dialogLabel: "Use recommended Memory model", title: "Use recommended Memory model?",
+              testId: "admin-memory-recommendation-confirm", tone: "warning", icon: "check",
+              onConfirm: () => { void controller.assign({ memoryProviderModelId: recommendation.providerModelId,
+                memoryReasoningEffort: recommendation.reasoningEffort, memoryRecommendationId: recommendation.id }, memoryUndo); }
+            })}>{recommendationSelected ? "Recommended setting active" : "Use recommended"}</UiV2Button>}
+          </div>
         ) : null}
         <details>
           <summary className="cursor-pointer text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">Advanced</summary>

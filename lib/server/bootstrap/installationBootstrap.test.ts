@@ -154,7 +154,8 @@ function createBootstrapTransaction(input: {
       upsert: spies.systemModelPolicyUpsert
     },
     memoryUtilityModelPolicy: {
-      upsert: spies.memoryUtilityModelPolicyUpsert
+      upsert: spies.memoryUtilityModelPolicyUpsert,
+      findUniqueOrThrow: vi.fn().mockResolvedValue({ recommendationAdoptionVersion: 1 })
     },
     workspacePolicy: {
       upsert: spies.workspacePolicyUpsert
