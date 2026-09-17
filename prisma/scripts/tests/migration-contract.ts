@@ -6,6 +6,7 @@ import { GEMINI_GROUNDING_MIGRATION, geminiGroundingAdoptionFixtureSql, geminiGr
 import { MEMORY_CONFIGURATION_WAIT_MIGRATION, memoryConfigurationAdoptionFixtureSql, memoryConfigurationAdoptionProofSql } from "./memory-configuration-adoption";
 import { MEMORY_WORKER_RECOVERY_MIGRATION, memoryWorkerRecoveryFixtureSql, memoryWorkerRecoveryProofSql } from "./memory-worker-recovery-adoption";
 import { MEMORY_UTILITY_MODEL_MIGRATION, memoryUtilityModelFixtureSql, memoryUtilityModelProofSql, memoryUtilityModelRepeatProofSql } from "./memory-utility-model-adoption";
+import { MEMORY_HISTORY_BUDGET_MIGRATION, memoryHistoryBudgetFixtureSql, memoryHistoryBudgetProofSql } from "./memory-history-budget-adoption";
 import { CHAT_PDF_ASSIGNMENT_MIGRATION, chatPdfAssignmentAdoptionFixtureSql, SYSTEM_MODEL_ROLES_MIGRATION, systemModelRolesAdoptionFixtureSql, systemModelRolesAdoptionProofSql } from "./system-model-roles-adoption";
 import { ASSISTANT_LIVE_MIGRATION, assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql } from "./assistant-live-adoption";
 import assert from "node:assert/strict";
@@ -7383,6 +7384,8 @@ function main(
     geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_CONFIGURATION_WAIT_MIGRATION,
     memoryConfigurationAdoptionFixtureSql, memoryConfigurationAdoptionProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_HISTORY_BUDGET_MIGRATION,
+    memoryHistoryBudgetFixtureSql, memoryHistoryBudgetProofSql, memoryHistoryBudgetProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_WORKER_RECOVERY_MIGRATION,
     memoryWorkerRecoveryFixtureSql, memoryWorkerRecoveryProofSql);
   for (const assigned of [false, true]) {

@@ -12,9 +12,10 @@ import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import { createAcceptedMemoryStructuredOutputProvider } from
   "../execution/structuredClassifier";
 import {
-  MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
   type MemoryHistoryPreparedRound
 } from "./contract";
+import { MEMORY_HISTORY_OUTPUT_PIPELINE_VERSION } from "../execution/historyOutputBudget";
+import { MemoryStructuredOutputProviderError } from "../execution/structuredClassifier";
 import { projectMemoryHistorySafeText } from "./safety";
 import { normalizeMemoryLanguageCode } from "./language";
 import {
@@ -47,7 +48,7 @@ const statementOutputKeys = ["source_refs", "text"];
 
 export const MEMORY_CONTEXTUAL_KEY_VERSIONS: MemoryExecutionVersions =
   Object.freeze({
-    pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+    pipelineVersion: MEMORY_HISTORY_OUTPUT_PIPELINE_VERSION,
     policyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
     promptVersion: MEMORY_CONTEXTUAL_KEY_PROMPT_VERSION,
     retrievalConfigFingerprint: memoryExecutionSha256({
@@ -534,6 +535,8 @@ export function createPrismaMemoryContextualKeyGenerator(
           const reason = error instanceof MemoryContextualKeyOutputError ||
             error instanceof MemoryContextualGroundingError
             ? error.reason
+            : error instanceof MemoryStructuredOutputProviderError && error.outputLimitExceeded
+              ? "PROVIDER_OUTPUT_LIMIT" as const
             : error instanceof Error &&
                 error.message === "memory_contextual_key_output_invalid"
               ? "PROVIDER_OUTPUT_INVALID" as const

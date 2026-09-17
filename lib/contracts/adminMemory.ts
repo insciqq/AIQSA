@@ -40,7 +40,7 @@ const safeLabel = z.string().trim().min(1).max(200);
 const processingStage = z.enum(["LEARNING", "HISTORY", "INDEXING", "SYNTHESIS", "MAINTENANCE", "DELETION"]);
 export const adminMemoryProcessingIssueSchema = z.strictObject({
   stage: processingStage,
-  reason: z.enum(["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED", "PROCESSING_FAILED", "RETRYING", "STALLED"]),
+  reason: z.enum(["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED", "PROCESSING_FAILED", "OUTPUT_LIMIT", "RETRYING", "STALLED"]),
   severity: z.enum(["bad", "warn"]),
   count: safeInteger,
   oldestAgeSeconds: safeInteger.nullable()

@@ -18,7 +18,7 @@ import { MEMORY_RECOVERY_DELAYS_MS } from "../coordinator/recoveryPolicy";
 import type { MemoryJobHandler } from "../coordinator/types";
 import type { MemoryStructuredOutputProvider } from "../execution";
 import { createPrismaMemoryExecutionAdmission } from "../execution/admission";
-import { probeMemoryStructuredOutputAuthority } from "../execution/structuredClassifier";
+import { probeMemoryStructuredOutputAuthority, MemoryStructuredOutputProviderError } from "../execution/structuredClassifier";
 import { detachExpiredMemoryExecutionBindings, MEMORY_EXECUTION_RECOVERY_HORIZON_MS } from "../execution/lifecycle";
 import { createPrismaLocalMemoryRetrievalRepository } from "../retrieval/localRepository";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
@@ -163,6 +163,37 @@ async function assertRecall(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("history recovery without repeated provider work", () => {
+  it("keeps raw history and paid usage after output exhaustion, with truthful current admin status and no replay", async () => {
+    const f = await fixture();
+    f.run.mockRejectedValue(new MemoryStructuredOutputProviderError(null, {
+      inputTokens: 20, outputTokens: 4096, reasoningTokens: 4096, totalTokens: 4116
+    }, { cause: Object.assign(new Error("bounded failure"), { code: "structured_output_output_limit_exceeded" }) }));
+    await f.drive();
+    expect(f.run).toHaveBeenCalledTimes(2);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({
+      state: "SUCCEEDED", stage: "lexical_ready:digest_output_limit",
+      operationalCounters: expect.objectContaining({ contextualRoundsGenerated: 0, contextualRoundsFallback: 1,
+        contextualFallbackProviderOutputLimit: 1 })
+    });
+    expect(await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId } }))
+      .toEqual([expect.objectContaining({ state: "FAILED", errorCode: "memory_classifier_output_limit_exceeded", reasoningTokens: 4096 }),
+        expect.objectContaining({ state: "FAILED", errorCode: "memory_classifier_output_limit_exceeded", reasoningTokens: 4096 })]);
+    expect(await prisma.usageEvent.aggregate({ where: { userId: f.userId }, _count: true, _sum: { totalTokens: true } }))
+      .toMatchObject({ _count: 2, _sum: { totalTokens: 8232 } });
+    expect(await prisma.chatMemoryDigest.count({ where: { userId: f.userId } })).toBe(0);
+    expect((await readAdminMemoryProcessing(prisma, f.now())).issues.filter(({ stage }) => stage === "HISTORY"))
+      .toEqual([expect.objectContaining({ reason: "OUTPUT_LIMIT", count: 1, severity: "warn" })]);
+    await assertRecall(f);
+    f.advance();
+    await f.drive();
+    expect(f.run).toHaveBeenCalledTimes(2);
+    await prisma.$transaction(async (tx) => {
+      await tx.chatMemoryCheckpoint.update({ where: { userId_chatId: { userId: f.userId, chatId: f.chat.id } },
+        data: { status: "PENDING" } });
+      await tx.chat.update({ where: { id: f.chat.id }, data: { memorySourceRevision: { increment: 1 } } });
+    });
+    expect((await readAdminMemoryProcessing(prisma, f.now())).issues.filter(({ stage }) => stage === "HISTORY")).toEqual([]);
+  });
   it("automatically recovers an exhausted transaction after restart, preserving results, usage and alert truth", async () => {
     const f = await fixture();
     await f.failCommit();

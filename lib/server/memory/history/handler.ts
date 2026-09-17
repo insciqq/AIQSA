@@ -87,7 +87,7 @@ const MEMORY_CHAT_DIGEST_OUTPUT_DEGRADED_POLICY_VERSION =
 
 function degradedMemoryChatDigest(
   reason: "aggregate_limit" | "contract" | "invalid" | "safety_rejected" |
-    "unavailable"
+    "unavailable" | "output_limit"
 ): Readonly<{
   generated: MemoryChatDigestGenerationResult;
   stage: string;
@@ -555,7 +555,7 @@ export function createMemoryHistoryIndexHandler(
               : error instanceof MemoryChatDigestError
                 ? error.code === "memory_chat_digest_unavailable"
                   ? "unavailable"
-                  : "invalid"
+                  : error.code === "memory_chat_digest_output_limit" ? "output_limit" : "invalid"
                 : null;
             if (!reason) throw error;
             const degraded = degradedMemoryChatDigest(reason);

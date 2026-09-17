@@ -34,6 +34,9 @@ function memoryState(status: AdminMemoryStatus): Readonly<{ label: string; statu
   if (status.worker.state === "NOT_RUNNING") return { label: "Worker not running", status: "unavailable" };
   if (status.worker.state === "STALLED") return { label: "Queue stalled", status: "unavailable" };
   if (status.processing.issues.some((issue) => issue.severity === "bad")) return { label: "Processing blocked", status: "unavailable" };
+  if (status.processing.issues.length > 0 && status.processing.issues.every((issue) => issue.reason === "OUTPUT_LIMIT")) {
+    return { label: "Limited history context", status: "reindexing" };
+  }
   if (status.processing.issues.length > 0) return { label: "Processing delayed", status: "reindexing" };
   switch (status.index.readiness) {
     case "READY":
@@ -273,7 +276,7 @@ export function AdminMemoryHealthCard({
                     return <li className={issue.severity === "bad" ? "text-critical" : "text-caution"} key={issue.stage}>
                       <p>{issueCopy.title}</p>
                       <p className="mt-1 text-xs font-normal">{issueCopy.detail}</p>
-                      <a className="v2-focusable mt-1 inline-block text-xs underline" href={`/admin?section=${issueCopy.section}`}>{issueCopy.action}</a>
+                      <a className="v2-focusable mt-1 inline-block text-xs underline" href={`/admin?section=${issueCopy.section}${issueCopy.section === "roles" ? "&resource=memory" : ""}`}>{issueCopy.action}</a>
                     </li>;
                   })}
                 </ul>
