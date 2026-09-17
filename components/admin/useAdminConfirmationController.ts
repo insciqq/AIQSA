@@ -3,7 +3,7 @@ import type { AdminRunAction } from "@/components/admin/useAdminActionRunner";
 import type { AdminActionRequest } from "@/lib/contracts/admin";
 import { useCallback, useMemo, useRef, useState } from "react";
 
-export type AdminConfirmationIcon = "trash" | "x";
+export type AdminConfirmationIcon = "check" | "trash" | "x";
 export type AdminConfirmationTone = "destructive" | "warning";
 
 export type AdminConfirmationConfig = Readonly<{

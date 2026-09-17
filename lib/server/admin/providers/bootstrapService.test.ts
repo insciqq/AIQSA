@@ -27,7 +27,10 @@ function fixture() {
     mcpAutoDiscoveryMaxOutputTokens: 8_192, mcpAutoDiscoveryTimeoutSeconds: 10
   } };
   const roles: AdminSystemModelPolicyCatalog = { candidates, titleCandidates: [], documentCandidates: candidates, verificationCandidates: candidates,
-    memoryPolicy: { assignmentSource: "unassigned", model: null, reasoningEffort: null, version: 1 },
+    memoryPolicy: { assignmentSource: "unassigned", model: null, reasoningEffort: null, version: 1,
+      recommendations: [{ id: "terra-low-memory-v1", providerModelId: "model-terra", connectionId: connection.id,
+        modelName: "GPT-5.6 Terra", displayName: "GPT-5.6 Terra", reasoningEffort: "low", unavailableReason: null,
+        evidence: { revision: "synthetic", passedCases: 5, totalCases: 5, latencyP50Ms: 3000, latencyP95Ms: 14000 } }] },
     ineligible: { chat_titles: [], memory: [], vision: [], direct_pdf: [] }, rerankerCandidates: [], policy: {
       chatTitleModel: null, chatTitleReasoningEffort: null, chatPdfModel: null, chatPdfReasoningEffort: null, reasoningEffort: null,
       rerankerModel: null, systemModel: null, updatedAt: "2026-09-08T12:00:00Z", updatedBy: null, version: 1
@@ -50,6 +53,13 @@ function fixture() {
 }
 
 describe("provider automatic setup", () => {
+  it("leaves Memory unassigned when only unqualified candidates are available", async () => {
+    const value = fixture();
+    value.roles.memoryPolicy.recommendations = [];
+    expect(await value.run()).toMatchObject({ state: "partial" });
+    expect(value.memoryUpdate).not.toHaveBeenCalled();
+    expect(value.chatUpdate).toHaveBeenCalledOnce();
+  });
   it.each([false, true])("publishes Anthropic Search only after its check (failure=%s)", async (fails) => {
     const value = fixture();
     value.connection.family = "anthropic";
@@ -137,7 +147,7 @@ describe("provider automatic setup", () => {
     const value = fixture();
     value.connection.activeChecks[0]!.credentialVersionId = "previous-key";
     value.connection.activeChecks[1]!.evidence = null;
-    expect(await value.run()).toEqual({ defaults: [], search: "skipped", state: "completed" });
+    expect(await value.run()).toEqual({ defaults: [], search: "skipped", state: "partial" });
     value.connection.enabled = false;
     await value.run();
     expect(value.chatUpdate).not.toHaveBeenCalled();

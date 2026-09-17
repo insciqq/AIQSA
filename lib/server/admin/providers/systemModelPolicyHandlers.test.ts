@@ -27,7 +27,8 @@ describe("administrator system model policy handlers", () => {
 
   it.each([
     { expectedVersion: 1 }, { providerModelId: "system" }, { assignmentSource: "BOOTSTRAP" },
-    { expectedMemoryVersion: 0 }, { memoryReasoningEffort: undefined },
+    { expectedMemoryVersion: 0 }, { memoryReasoningEffort: undefined }, { memoryRecommendationId: null },
+    { memoryRecommendationId: "" }, { memoryRecommendationId: ["terra-low-memory-v1"] },
     { memoryProviderModelId: null, memoryReasoningEffort: "low" }
   ])("rejects a mixed, incomplete or authority-bearing Memory update: %j", async (patch) => {
     const service = { list: vi.fn(), update: vi.fn(), updateMemory: vi.fn() };

@@ -1,3 +1,4 @@
+import { adoptMemoryModelRecommendation } from "../lib/server/bootstrap/memoryRecommendationAdoption";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { hashCanonicalMcpValue } from "../lib/server/mcp/definitions";
 import { ensureFullAccessGroup } from "../lib/server/auth/fullAccessGroup";
@@ -332,6 +333,9 @@ async function main() {
     // Migration owns compatibility; reruns preserve every assignment and clear.
     update: {},
     where: { id: "installation" }
+  });
+  await prisma.$transaction((tx) => adoptMemoryModelRecommendation(tx), {
+    isolationLevel: "Serializable", maxWait: 10_000, timeout: 30_000
   });
 
   await prisma.group.upsert({

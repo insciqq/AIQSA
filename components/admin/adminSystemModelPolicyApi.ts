@@ -60,6 +60,7 @@ export function updateAdminSystemModelPolicy(input: Readonly<{
   expectedMemoryVersion?: number;
   memoryProviderModelId?: string | null;
   memoryReasoningEffort?: string | null;
+  memoryRecommendationId?: string;
   /** Omit both utility fields to preserve the independent utility role. */
   providerModelId?: string | null;
   /** Omit to preserve the independent reranker role. */

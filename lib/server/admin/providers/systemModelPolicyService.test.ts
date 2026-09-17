@@ -902,6 +902,31 @@ describe("administrator system model policy service", () => {
     })).rejects.toBe(failure);
   });
 
+  it("revalidates the recommended pair and budget inside the Memory write transaction", async () => {
+    const update = vi.fn();
+    const tx = { $queryRaw: vi.fn().mockResolvedValue([{ version: 7, assignmentSource: "INHERITED" }]),
+      user: { findFirst: vi.fn().mockResolvedValue({ id: "admin-1" }) }, memoryUtilityModelPolicy: { update } };
+    const db = { $transaction: (run: (db: unknown) => Promise<void>) => run(tx) } as unknown as PrismaClient;
+    const role = { verifiedStructuredOutput: true, verifiedForcedToolCall: true,
+      snapshot: { providerFamily: "openai_compatible", model: { ...activeConfiguration, upstreamModelId: "gpt-5.6-terra",
+        defaultParams: { maxOutputTokens: 8192 }, capabilities: { ...activeConfiguration.capabilities, contextWindow: 128000, maxOutputTokens: 8192 } } } } as unknown as ProviderAdmissionRole;
+    const loadRole = vi.fn().mockResolvedValue(role);
+    const service = createAdminSystemModelPolicyService(db, { loadRole });
+    const input = { expectedVersion: 7, providerModelId: "model-1", reasoningEffort: "low", userId: "admin-1", recommendationId: "terra-low-memory-v1" };
+    await service.updateMemory(input);
+    expect(loadRole).toHaveBeenCalledWith(tx, { providerModelId: "model-1" });
+    expect(update).toHaveBeenCalledOnce(); update.mockClear();
+    for (const patch of [{ reasoningEffort: "high" }, { recommendationId: "unqualified" }, { providerModelId: null, reasoningEffort: null }]) {
+      await expect(service.updateMemory({ ...input, ...patch })).rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
+    }
+    role.snapshot.model.defaultParams.maxOutputTokens = 512;
+    await expect(service.updateMemory(input)).rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
+    expect(update).not.toHaveBeenCalled();
+    // An explicit manual choice remains possible without claiming qualification.
+    await service.updateMemory({ ...input, recommendationId: undefined });
+    expect(update).toHaveBeenCalledOnce();
+  });
+
   it("explains disabled verified capabilities and identifies the missing forced-tool requirement", async () => {
     const proof = { adapterKind: "openai_responses_compatible", probeVersion: 1,
       upstreamModelId: "vendor/answer", verified: true };

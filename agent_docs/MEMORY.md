@@ -13,7 +13,9 @@ Respect operator-defined scope and budgets; do not invent experiment, retry, eva
 
 ## Product And Authority
 
-All five Personal Memory preferences default on; bootstrap/upgrades preserve subsequent choices and pauses. Memory generation uses an independent installation Memory Utility Model; a verified assignment authorizes its operations without separate egress consent. Dispatch revalidates the exact model, connection, credential and role. Migration copies the previous model, reasoning and policy revision once to preserve accepted execution identity. Later System edits cannot change Memory; bootstrap preserves explicit assignments and clears. Configuration affects future admissions only. Embeddings and reranking retain separate authority and supported local fallback.
+All Memory preferences default on; upgrades preserve choices and pauses. Independent, verified Memory Utility Model assignment authorizes generation without extra egress consent. Dispatch revalidates exact model/connection/credential/role authority. Migration copies the former System model/effort/revision once; subsequent System edits cannot change Memory. Configuration affects future admissions only. Embeddings/reranking retain separate authority and fallback.
+
+Recommendations require working-case evidence and current capabilities/credentials/budget. One-time adoption may replace inherited/default bindings, preserving explicit Memory choices and clears. Without a qualified target, bootstrap requires configuration. Small qualification sets do not establish benchmark parity.
 
 Personal Memory is user-global. Saved Memories remain directly manageable while Memory is paused; pausing stops new use and work without deleting retained data. Archive is organization only. Resume admits only messages after its server-owned cutoff, never automatic historical backfill. Temporary and Project chats create or receive no Memory context, sources, bindings, counters or jobs. Legacy non-global and Project data is not silently broadened into Personal Memory. Public shares strip the entire private Memory surface.
 

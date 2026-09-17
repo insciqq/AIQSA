@@ -36,6 +36,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 export type AdminRolePatch = Readonly<{
   memoryProviderModelId?: string | null;
   memoryReasoningEffort?: string | null;
+  memoryRecommendationId?: string;
   imageProviderModelId?: string | null;
   imageParameters?: ImageGenerationParameters;
   chatTitleProviderModelId?: string | null;

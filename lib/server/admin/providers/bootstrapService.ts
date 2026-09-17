@@ -85,12 +85,17 @@ export function createAdminProviderBootstrap(input: {
     }
     try {
       const roles = await input.roles.list();
-      const memory = roles.memoryPolicy.assignmentSource === "unassigned" ? pick(roles.candidates) : null;
+      const memory = roles.memoryPolicy.assignmentSource === "unassigned"
+        ? roles.memoryPolicy.recommendations?.find((entry) => entry.unavailableReason === null &&
+          entry.connectionId === connection.id && entry.providerModelId && eligible.has(entry.providerModelId)) : null;
       if (memory) {
         value.signal.throwIfAborted();
         await input.roles.updateMemory({ expectedVersion: roles.memoryPolicy.version,
-          providerModelId: memory.id, reasoningEffort: null, assignmentSource: "BOOTSTRAP", userId: value.userId });
+          providerModelId: memory.providerModelId, reasoningEffort: memory.reasoningEffort,
+          recommendationId: memory.id, assignmentSource: "BOOTSTRAP", userId: value.userId });
         result.defaults.push(`Memory: ${memory.displayName}`);
+      } else if (roles.memoryPolicy.assignmentSource === "unassigned") {
+        result.state = "partial";
       }
     } catch {
       value.signal.throwIfAborted();
