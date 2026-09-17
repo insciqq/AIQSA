@@ -32,6 +32,7 @@ import {
   type MemoryTransaction
 } from "../persistence/transaction";
 import { MEMORY_ADMISSION_MAX_TIMEOUT_MS } from "../admissionDeadline";
+import { memoryHistoryOutputRequest } from "./historyOutputBudget";
 
 export const MEMORY_STRUCTURED_OUTPUT_PROVIDER_TIMEOUT_MS =
   MEMORY_ADMISSION_MAX_TIMEOUT_MS;
@@ -62,6 +63,7 @@ export type GovernedMemoryStructuredOutput<Value> = Readonly<{
 }>;
 
 export class MemoryStructuredOutputProviderError extends Error {
+  readonly outputLimitExceeded: boolean;
   constructor(
     readonly providerResponseId: string | null,
     readonly usage: ModelRunUsage | null,
@@ -69,6 +71,8 @@ export class MemoryStructuredOutputProviderError extends Error {
   ) {
     super("memory_structured_output_provider_failed", options);
     this.name = "MemoryStructuredOutputProviderError";
+    this.outputLimitExceeded = options.cause instanceof Error &&
+      "code" in options.cause && options.cause.code === "structured_output_output_limit_exceeded";
   }
 }
 
@@ -111,11 +115,12 @@ export function createAcceptedMemoryStructuredOutputProvider(
       let providerResponseId: string | null = null;
       let usage: ModelRunUsage | null = null;
       try {
+        const admittedRequest = memoryHistoryOutputRequest(snapshot, request);
         const output = await execute(
           snapshot.providerExecutionSnapshot,
           {
-            ...request,
-            reasoningEffort: request.reasoningEffort ?? reasoningEffort(snapshot)
+            ...admittedRequest,
+            reasoningEffort: admittedRequest.reasoningEffort ?? reasoningEffort(snapshot)
           },
           {
             onProviderResponseId: (value) => { providerResponseId = value; },
@@ -204,7 +209,8 @@ export async function executeGovernedMemoryStructuredOutput<Value>(input: Readon
       acceptedOutputHash: null,
       errorCode: input.signal.aborted
         ? "memory_classifier_cancelled"
-        : "memory_classifier_provider_unavailable",
+        : failure?.outputLimitExceeded ? "memory_classifier_output_limit_exceeded"
+          : "memory_classifier_provider_unavailable",
       providerResponseId: failure?.providerResponseId ?? null,
       state: input.signal.aborted ? "CANCELLED" : "FAILED",
       usage: memoryReportedUsage(failure?.usage ?? null)

@@ -53,6 +53,7 @@ export function applySystemModelReasoningEffort(
         ...snapshot.model.defaultParams,
         reasoning: {
           ...currentReasoning,
+          enabled: reasoningEffort !== "none",
           effort: reasoningEffort
         }
       }

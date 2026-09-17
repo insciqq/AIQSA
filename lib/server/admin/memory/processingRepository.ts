@@ -10,7 +10,7 @@ type Reason = AdminMemoryProcessingIssue["reason"];
 type ProcessingRow = { stage: Stage; reason: Reason | null; count: bigint; oldestAt: Date };
 const priority: Record<Reason, number> = {
   MODEL_UNAVAILABLE: 6, CAPABILITY_UNAVAILABLE: 5, CONFIGURATION_REQUIRED: 4,
-  PROCESSING_FAILED: 3, STALLED: 2, RETRYING: 1
+  PROCESSING_FAILED: 3, STALLED: 2, RETRYING: 1, OUTPUT_LIMIT: 0
 };
 
 /** Read-only aggregates. Source identities stay inside PostgreSQL; worker
@@ -37,6 +37,11 @@ export async function readAdminMemoryProcessing(
                 WHEN 'memory_execution_capability_unavailable' THEN 'CAPABILITY_UNAVAILABLE'
                 ELSE 'CONFIGURATION_REQUIRED'
               END
+            WHEN job.kind = 'INDEX_HISTORY' AND job.state = 'SUCCEEDED' AND EXISTS (
+              SELECT 1 FROM "MemoryExecutionBinding" AS binding
+              WHERE binding."memoryJobId" = job.id AND binding."userId" = job."userId"
+                AND binding."errorCode" = 'memory_classifier_output_limit_exceeded'
+            ) THEN 'OUTPUT_LIMIT'
             WHEN job.state = 'TERMINAL_FAILED' THEN 'PROCESSING_FAILED'
             WHEN job.state = 'RETRYABLE_FAILED' AND job."createdAt" <= ${new Date(now.getTime() - RETRY_WARNING_MS)} THEN 'RETRYING'
             WHEN job.state IN ('QUEUED', 'CLAIMED') AND job."createdAt" <= ${new Date(now.getTime() - STALLED_MS)}
@@ -48,8 +53,8 @@ export async function readAdminMemoryProcessing(
             ELSE NULL
           END AS reason
         FROM current_jobs AS job
-        WHERE job.state <> 'SUCCEEDED'
-          AND (job.state <> 'TERMINAL_FAILED' OR NOT EXISTS (
+        WHERE (job.state <> 'SUCCEEDED' OR job.kind = 'INDEX_HISTORY')
+          AND (job.state NOT IN ('TERMINAL_FAILED', 'SUCCEEDED') OR NOT EXISTS (
             SELECT 1 FROM current_jobs AS recovered
             WHERE recovered."userId" = job."userId" AND recovered.kind = job.kind AND recovered.state = 'SUCCEEDED'
               AND recovered."completedAt" > job."completedAt"
@@ -84,7 +89,7 @@ export async function readAdminMemoryProcessing(
       count: (previous?.count ?? 0) + count,
       oldestAgeSeconds: Math.max(previous?.oldestAgeSeconds ?? 0, oldestAgeSeconds),
       reason: selectedReason,
-      severity: row.stage === "INDEXING" || selectedReason === "RETRYING" || selectedReason === "STALLED" ? "warn" : "bad",
+      severity: row.stage === "INDEXING" || selectedReason === "RETRYING" || selectedReason === "STALLED" || selectedReason === "OUTPUT_LIMIT" ? "warn" : "bad",
       stage: row.stage
     });
   }

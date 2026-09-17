@@ -32,13 +32,15 @@ describe("Memory utility execution policy", () => {
 
     expect(execution).not.toBe(admitted);
     expect(execution.model.defaultParams).toEqual({
-      reasoning: { effort: "xhigh", summary: "auto" },
+      reasoning: { enabled: true, effort: "xhigh", summary: "auto" },
       temperature: 0.2
     });
     expect(admitted.model.defaultParams).toEqual({
       reasoning: { summary: "auto" },
       temperature: 0.2
     });
+    expect(applySystemModelReasoningEffort(admitted, "none").model.defaultParams.reasoning)
+      .toEqual({ enabled: false, effort: "none", summary: "auto" });
   });
 
   it("preserves the exact admitted snapshot for provider-default reasoning", () => {

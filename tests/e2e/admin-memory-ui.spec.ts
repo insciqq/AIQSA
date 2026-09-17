@@ -5,12 +5,57 @@ import type { AdminMemoryStatusResponse } from "../../lib/contracts/adminMemory"
 import { adminMemoryProcessingCopy } from "../../lib/domain/adminMemoryProcessing";
 import { adminKnowledgeSettingsFixture } from "../support/knowledgeProfile";
 import {
+  expectCenterUnobscured,
   expectNoHorizontalOverflow,
   expectTouchSafe
 } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 
 test.use({ hasTouch: true });
+
+test("Memory output limit preserves usable history and points to its independent model across responsive views", async ({ page }, testInfo) => {
+  const memory = { ...memoryResponse({ rebuilding: false, timeoutSeconds: 30, timeoutVersion: 1 }).memory,
+    index: { generation: 1, readiness: "READY" as const }, rebuild: { state: "NOT_REQUIRED" as const },
+    queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
+    recovery: memoryRecoveryStatusFixture(), worker: memoryWorkerStatusFixture({ reason: "IDLE" }),
+    processing: { enabled: true, issues: [{ stage: "HISTORY", reason: "OUTPUT_LIMIT", count: 2,
+      oldestAgeSeconds: 120, severity: "warn" }] } };
+  await page.route("**/api/admin", (route) => route.fulfill({ json: emptyAdminDashboard() }));
+  await page.route("**/api/admin/knowledge", (route) => route.fulfill({ json: { knowledge: adminKnowledgeSettingsFixture() } }));
+  await page.route("**/api/admin/memory", (route) => route.fulfill({ json: { memory } }));
+  await signInWithLocalToken(page);
+  await page.goto("/admin?section=retrieval");
+  const section = page.getByTestId("admin-retrieval-memory");
+  await expect(section.getByTestId("memory-state")).toHaveText("Limited history context");
+  await expect(section).toContainText("History text remains searchable");
+  await expect(section.getByRole("button", { name: "Retry eligible work" })).toHaveCount(0);
+  const link = section.getByRole("link", { name: "Open Defaults & roles" });
+  const viewports = [
+    { name: "desktop-landscape", width: 1440, height: 900 }, { name: "desktop-portrait", width: 900, height: 1440 },
+    { name: "tablet-landscape", width: 1024, height: 768 }, { name: "tablet-portrait", width: 768, height: 1024 },
+    { name: "phone-landscape", width: 844, height: 390 }, { name: "phone-portrait", width: 390, height: 844 }
+  ];
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    for (const viewport of viewports) {
+      await page.setViewportSize(viewport);
+      await expectNoHorizontalOverflow(page);
+      await link.focus();
+      await expect(link).toBeFocused();
+      await section.screenshot({ path: testInfo.outputPath(`memory-output-limit-${viewport.name}-${colorScheme}.png`) });
+      if (viewport.name.startsWith("phone")) {
+        const state = section.getByTestId("memory-state");
+        await state.evaluate((element) => element.scrollIntoView({ block: "center" }));
+        await expectCenterUnobscured(state);
+        await section.locator(":scope > div").first().screenshot({
+          path: testInfo.outputPath(`memory-output-limit-header-${viewport.name}-${colorScheme}.png`)
+        });
+      }
+    }
+  }
+  await link.click();
+  await expect(page).toHaveURL(/section=roles&resource=memory/u);
+});
 
 test("Memory recovery distinguishes stalled and stopped workers across responsive views", async ({ page }, testInfo) => {
   test.setTimeout(90_000);

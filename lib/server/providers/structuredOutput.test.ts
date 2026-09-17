@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ProviderModelConfiguration } from "./providerConfiguration";
 import {
   buildOpenAIResponsesStructuredOutputRequest,
+  buildDeepSeekResponsesStructuredOutputRequest,
   buildOpenRouterStructuredOutputRequest,
   createDeepSeekResponsesStructuredOutputAdapter,
   createOpenAIResponsesStructuredOutputAdapter,
@@ -96,6 +97,16 @@ const openRouterModel: ProviderModelConfiguration = {
 };
 
 describe("provider structured output", () => {
+  it("preserves a caller-admitted total ceiling without an adapter silently enlarging it", () => {
+    const total = { ...request, maxOutputTokens: 256, reasoningEffort: "high", reasoningBudgetIncluded: true as const };
+    expect(buildOpenAIResponsesStructuredOutputRequest(responsesModel("openai_responses_compatible"), total))
+      .toHaveProperty("max_output_tokens", 256);
+    expect(buildDeepSeekResponsesStructuredOutputRequest({ adapterKind: "deepseek_responses_native", upstreamModelId: "fixture" }, total))
+      .toHaveProperty("max_output_tokens", 256);
+    expect(buildOpenRouterStructuredOutputRequest(openRouterModel, total)).toHaveProperty("max_tokens", 256);
+    expect(buildOpenRouterStructuredOutputRequest(openRouterModel, { ...total, reasoningEffort: "none" }))
+      .toMatchObject({ max_tokens: 256, reasoning: { enabled: false } });
+  });
   it.each([8_192, 32_768, 65_536])("preserves the explicit %s token allowance in Responses and OpenRouter requests", (maxOutputTokens) => {
     for (const adapterKind of ["openai_responses_native", "openai_responses_compatible"] as const) {
       expect(buildOpenAIResponsesStructuredOutputRequest(responsesModel(adapterKind), { ...request, maxOutputTokens }))

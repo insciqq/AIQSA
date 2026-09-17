@@ -1,7 +1,7 @@
 import type { ProviderStructuredOutputRequest } from "../../providers/structuredOutput";
 import type { MemoryExecutionVersions } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
-import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "./contract";
+import { MEMORY_HISTORY_OUTPUT_PIPELINE_VERSION } from "../execution/historyOutputBudget";
 import { projectMemoryHistorySafeText } from "./safety";
 import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
@@ -23,7 +23,7 @@ const supportValues = ["SUPPORTED", "UNSUPPORTED", "UNCERTAIN"] as const;
 
 export const MEMORY_CONTEXTUAL_GROUNDING_VERSIONS: MemoryExecutionVersions =
   Object.freeze({
-    pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+    pipelineVersion: MEMORY_HISTORY_OUTPUT_PIPELINE_VERSION,
     policyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
     promptVersion: "memory-contextual-grounding-prompt-v1",
     retrievalConfigFingerprint: memoryExecutionSha256({
