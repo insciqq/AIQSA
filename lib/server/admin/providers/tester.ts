@@ -268,6 +268,7 @@ async function runForcedToolCallProbe(
     !runtime.toolBridge
   ) throw new Error("forced_tool_call_adapter_unsupported");
   const request = generationRequest(input, false);
+  const effort = lowestConfiguredReasoningEffort(input.model, input.providerFamily);
   const stream = runtime.adapter.stream({
     ...request,
     content: {
@@ -284,10 +285,10 @@ async function runForcedToolCallProbe(
     params: {
       ...request.params,
       ...(input.model.adapterKind === "openrouter_chat_completions"
-        ? { reasoning: { enabled: false, exclude: true } }
+        ? { reasoning: { enabled: effort !== "none", effort, exclude: true } }
         : {}),
-      maxOutputTokens: probeOutputTokens(input, lowestConfiguredReasoningEffort(input.model, input.providerFamily) === "none" ? 128 : 1_024),
-      max_output_tokens: probeOutputTokens(input, lowestConfiguredReasoningEffort(input.model, input.providerFamily) === "none" ? 128 : 1_024)
+      maxOutputTokens: probeOutputTokens(input, effort === "none" ? 128 : 1_024),
+      max_output_tokens: probeOutputTokens(input, effort === "none" ? 128 : 1_024)
     },
     prompt: {
       developer: null,

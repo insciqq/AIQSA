@@ -278,6 +278,42 @@ describe("AdminRolesSection", () => {
     await screen.findByText(/Increase this deployment’s output budget/);
     expect(screen.queryByRole("button", { name: "Use recommended" })).not.toBeInTheDocument();
   });
+
+  it("shows multiple recommendations and applies the selected Flash deployment with none and Undo", async () => {
+    const catalog = rolesCatalog();
+    const flash = { ...luna, id: "flash", displayName: "Flash native", connectionId: "deepseek",
+      connectionDisplayName: "DeepSeek", defaultReasoningEffort: "high", reasoningEfforts: ["none", "low", "high"] };
+    catalog.candidates.push({ ...terra, forcedToolCall: "verified", structuredOutput: "verified" }, flash);
+    catalog.memoryPolicy.recommendations = [
+      { id: "terra-low-memory-v1", modelName: "GPT Terra", displayName: "GPT Terra", providerModelId: "terra", connectionId: "openai",
+        reasoningEffort: "low", unavailableReason: null, evidence: { revision: "test", passedCases: 5, totalCases: 5, latencyP50Ms: 3300, latencyP95Ms: 13500 } },
+      { id: "deepseek-flash-none-memory-v1", modelName: "DeepSeek V4.1 Flash (DeepSeek API)", displayName: flash.displayName,
+        providerModelId: flash.id, connectionId: flash.connectionId, reasoningEffort: "none", unavailableReason: null,
+        evidence: { revision: "test", passedCases: 22, totalCases: 23, latencyP50Ms: 1320, latencyP95Ms: 2731 } }
+    ];
+    const calls = server(catalog);
+    const { requestConfirmation, reportNotice } = renderSection();
+    const choice = await screen.findByRole("group", { name: /DeepSeek V4.1 Flash.*Flash native/ });
+    expect(within(choice).getByText(/22\/23 working-case attempts passed/)).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "Use recommended" })).toHaveLength(2);
+    fireEvent.click(within(choice).getByRole("button", { name: "Use recommended" }));
+    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([]);
+    const confirmation = requestConfirmation.mock.calls.at(-1)![0];
+    expect(confirmation.body).toMatch(/Flash native with none reasoning/);
+    await act(async () => confirmation.onConfirm());
+    expect(await within(choice).findByRole("button", { name: "Recommended setting active" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Use recommended" })).toBeEnabled();
+    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
+      { expectedMemoryVersion: 7, memoryProviderModelId: "flash", memoryReasoningEffort: "none", memoryRecommendationId: "deepseek-flash-none-memory-v1" }
+    ]);
+    expect(screen.getByRole("button", { name: "System model deployment" })).toHaveTextContent("GPT Luna");
+    const undo = reportNotice.mock.calls.at(-1)?.[1];
+    await act(async () => undo?.onSelect());
+    await within(choice).findByRole("button", { name: "Use recommended" });
+    expect(patchesTo(calls, "/api/admin/providers/system-model-policy").at(-1)).toEqual({
+      expectedMemoryVersion: 8, memoryProviderModelId: "luna", memoryReasoningEffort: null
+    });
+  });
   it.each([["reranker", "reranker"], ["chat_titles", "chat-titles"], ["system", "system"], ["memory", "memory"]])("focuses the %s system role from an Overview target", async (resource, row) => {
     server();
     renderSection(groups, resource);

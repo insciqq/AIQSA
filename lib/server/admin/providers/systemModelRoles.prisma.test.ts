@@ -10,6 +10,8 @@ import { createSystemModelRoleResolver } from "../../providerRuntime/systemModel
 import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memoryUtilityModelRole";
 import { resolveCurrentMemoryUtilityPolicy } from "../../memory/execution/policy";
 import { adoptMemoryModelRecommendation } from "../../bootstrap/memoryRecommendationAdoption";
+import { MEMORY_MODEL_RECOMMENDATIONS } from "../../memory/modelRecommendations";
+import { structuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
 import { createChatTitleModelRoleResolver } from "../../providerRuntime/chatTitleModelRole";
 import { createChatPdfModelRoleResolver } from "../../providerRuntime/chatPdfModelRole";
 import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
@@ -17,8 +19,11 @@ import { providerSetupModels } from "./setupModels";
 
 afterAll(() => prisma.$disconnect());
 
+type MemoryRecommendation = typeof MEMORY_MODEL_RECOMMENDATIONS[number];
+
 async function fixture(run: (input: {
   db: PrismaClient; adminId: string; titles: string; memory: string; vision: string; embedding: string; reranker: string;
+  addMemoryModel: (recommendation: MemoryRecommendation) => Promise<string>;
 }) => Promise<void>, qualifiedMemory = false) {
   const rolledBack = new Error("fixture_rollback");
   try {
@@ -31,25 +36,34 @@ async function fixture(run: (input: {
       } }) as unknown as PrismaClient;
       const adminId = randomUUID();
       await tx.user.create({ data: { id: adminId, displayName: "Role test administrator", role: "admin", status: "active" } });
-      async function model(purpose: "titles" | "memory" | "vision" | "embedding" | "reranker") {
+      async function model(purpose: "titles" | "memory" | "vision" | "embedding" | "reranker", suppliedRecommendation?: MemoryRecommendation) {
         const id = randomUUID();
-        const family = purpose === "reranker" ? "openrouter" : "openai_compatible";
+        const recommendation = suppliedRecommendation ?? (qualifiedMemory && purpose === "memory"
+          ? MEMORY_MODEL_RECOMMENDATIONS.find((entry) => entry.id === "terra-low-memory-v1") : undefined);
+        const family = recommendation?.adapterKind === "deepseek_responses_native" ? "deepseek"
+          : recommendation?.adapterKind === "gemini_interactions_native" ? "gemini"
+          : purpose === "reranker" || recommendation?.adapterKind === "openrouter_chat_completions" ? "openrouter" : "openai_compatible";
         const answer = purpose === "titles" || purpose === "memory" || purpose === "vision";
         const modelClass = purpose === "embedding" ? "embedding" : purpose === "reranker" ? "reranker" : "answer";
-        const adapterKind = answer ? "openai_responses_compatible" : purpose === "embedding" ? "openai_embeddings_compatible" : "openrouter_rerank";
+        const adapterKind = recommendation?.adapterKind ?? (answer ? "openai_responses_compatible" : purpose === "embedding" ? "openai_embeddings_compatible" : "openrouter_rerank");
         const capabilities = { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false,
           vision: purpose === "vision", toolCalling: purpose === "memory", streaming: answer,
-          ...(qualifiedMemory && purpose === "memory" ? { reasoning: true, defaultReasoningEffort: "low",
-            reasoningEfforts: ["low", "medium", "high"], contextWindow: 128000, maxOutputTokens: 8192 } : {}) };
+          ...(recommendation ? { reasoning: true, defaultReasoningEffort: recommendation.reasoningEffort,
+            reasoningEfforts: recommendation.reasoningEffort === "none" ? ["none", "high"] : ["low", "medium", "high"],
+            contextWindow: 128000, maxOutputTokens: 8192 } : {}) };
+        const selectedProviders = purpose === "reranker" ? ["Together"]
+          : recommendation && "openRouterProvider" in recommendation ? [recommendation.openRouterProvider] : [];
         const configuration = { adapterKind, answerSelectable: answer, modelClass,
-          capabilities, defaultParams: qualifiedMemory && purpose === "memory" ? { maxOutputTokens: 8192 } : {},
-          upstreamModelId: purpose === "reranker" ? "qwen/qwen3-reranker-8b" : qualifiedMemory && purpose === "memory" ? "gpt-5.6-terra" : "fixture",
-          ...(purpose === "reranker" ? { openRouterRouting: { mode: "only_selected", providers: ["Together"] } } : {}),
+          capabilities, defaultParams: recommendation ? { maxOutputTokens: 8192 } : {},
+          upstreamModelId: recommendation?.upstreamModelId ?? (purpose === "reranker" ? "qwen/qwen3-reranker-8b" : "fixture"),
+          ...(selectedProviders.length ? { openRouterRouting: { mode: "only_selected", providers: selectedProviders } } : {}),
           ...(purpose === "embedding" ? { embedding: { nativeDimension: 1024, targetDimension: 1024, supportsMrl: false,
             providerFamily: family, queryInstructionTemplate: null } } : {}) };
         const connection = await tx.providerConnection.create({ data: { id: randomUUID(), displayName: purpose, family,
           enabled: true, activeVersion: 1, activatedAt: new Date(), activeConfig: {
-            allowPrivateNetwork: false, apiRoot: family === "openrouter" ? "https://openrouter.ai/api/v1" : "https://provider.example.test/v1",
+            allowPrivateNetwork: false, apiRoot: family === "openrouter" ? "https://openrouter.ai/api/v1"
+              : family === "deepseek" ? "https://api.deepseek.com" : family === "gemini"
+                ? "https://generativelanguage.googleapis.com/v1beta" : "https://provider.example.test/v1",
             authenticationMode: "bearer", responseTimeoutMs: 300_000
           } } });
         const credential = await tx.providerCredential.create({ data: { id: randomUUID(), connectionId: connection.id,
@@ -62,12 +76,13 @@ async function fixture(run: (input: {
           modelId: configuration.upstreamModelId, modelClass, capabilities, defaultParams: {},
           enabled: true, activeConfig: configuration, activeVersion: 1, activatedAt: new Date() } });
         const proof = { adapterKind, probeVersion: 1, upstreamModelId: configuration.upstreamModelId, verified: true };
-        const evidence = { method: "tiny_generation", detail: "ok", selectedProviders: purpose === "reranker" ? ["Together"] : [],
+        const evidence = { method: "tiny_generation", detail: "ok", selectedProviders,
           upstreamModelId: configuration.upstreamModelId,
           compatibility: { probeVersion: 1, modelAccess: "verified", streaming: answer ? "verified" : "not_supported",
             usage: "not_supported", directPdf: "not_supported", structuredOutput: purpose === "memory" || purpose === "titles" ? "verified" : "not_supported",
             forcedToolCall: purpose === "memory" ? "verified" : "not_supported", vision: purpose === "vision" ? "verified" : "not_supported" },
-          ...(purpose === "memory" || purpose === "titles" ? { structuredOutput: { ...proof, probeVersion: 2 } } : {}),
+          ...(purpose === "memory" || purpose === "titles"
+            ? { structuredOutput: structuredOutputVerificationEvidence(adapterKind, configuration.upstreamModelId) } : {}),
           ...(purpose === "memory" ? { forcedToolCall: proof } : {}),
           ...(purpose === "vision" ? { visionInput: proof } : {}),
           ...(purpose === "embedding" ? { embedding: { probeVersion: 1, document: true, query: true, dimensions: 1024 } } : {}),
@@ -78,7 +93,8 @@ async function fixture(run: (input: {
         return id;
       }
       await run({ db, adminId, titles: await model("titles"), memory: await model("memory"), vision: await model("vision"),
-        embedding: await model("embedding"), reranker: await model("reranker") });
+        embedding: await model("embedding"), reranker: await model("reranker"),
+        addMemoryModel: (recommendation) => model("memory", recommendation) });
       await tx.$executeRawUnsafe("SET CONSTRAINTS ALL IMMEDIATE");
       throw rolledBack;
     }, { timeout: 30_000 });
@@ -97,11 +113,12 @@ describe("persisted independent System Model roles", () => {
       await adoptMemoryModelRecommendation(db);
       const adopted = await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
       expect(adopted).toMatchObject({ providerModelId: memory, reasoningEffort: "low", assignmentSource: "BOOTSTRAP",
-        recommendationAdoptionVersion: 1, recommendationAdoptionReason: "applied", version: before.version + 1 });
+        recommendationAdoptionVersion: 2, recommendationAdoptionReason: "applied", version: before.version + 1 });
       await adoptMemoryModelRecommendation(db);
       expect(await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(adopted);
       const service = createAdminSystemModelPolicyService(db);
-      expect((await service.list()).memoryPolicy.recommendations).toMatchObject([{ providerModelId: memory, unavailableReason: null }]);
+      expect((await service.list()).memoryPolicy.recommendations?.find((entry) => entry.id === "terra-low-memory-v1"))
+        .toMatchObject({ providerModelId: memory, unavailableReason: null });
       await service.updateMemory({ expectedVersion: adopted.version, providerModelId: null, reasoningEffort: null, userId: adminId });
       const cleared = await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
       await adoptMemoryModelRecommendation(db);
@@ -112,16 +129,16 @@ describe("persisted independent System Model roles", () => {
 
   it("preserves manual assignments and explicit clears even on first recommendation adoption", async () => {
     await fixture(async ({ db, memory }) => {
-      for (const providerModelId of [memory, null]) {
+      for (const recommendationAdoptionVersion of [0, 1]) for (const providerModelId of [memory, null]) {
         await db.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: {
           providerModelId, reasoningEffort: providerModelId ? "high" : null, assignmentSource: "OPERATOR",
-          recommendationAdoptionVersion: 0, recommendationAdoptionReason: null
+          recommendationAdoptionVersion, recommendationAdoptionReason: recommendationAdoptionVersion ? "preserved_operator" : null
         } });
         const before = await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
         await adoptMemoryModelRecommendation(db);
         expect(await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toMatchObject({
           providerModelId, reasoningEffort: before.reasoningEffort, assignmentSource: "OPERATOR", version: before.version,
-          recommendationAdoptionVersion: 1, recommendationAdoptionReason: "preserved_operator"
+          recommendationAdoptionVersion: 2, recommendationAdoptionReason: "preserved_operator"
         });
       }
     }, true);
@@ -137,10 +154,61 @@ describe("persisted independent System Model roles", () => {
       await adoptMemoryModelRecommendation(db);
       expect(await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toMatchObject({
         providerModelId: memory, version: before.version, assignmentSource: "INHERITED",
-        recommendationAdoptionVersion: 1, recommendationAdoptionReason: "no_eligible_model"
+        recommendationAdoptionVersion: 2, recommendationAdoptionReason: "no_eligible_model"
       });
     });
   });
+
+  it("upgrades the previous adoption once, preferring native Flash then both Gemini routes before Terra", async () => {
+    await fixture(async ({ db, memory, addMemoryModel }) => {
+      const targets = new Map<string, string>([["terra-low-memory-v1", memory]]);
+      for (const recommendation of MEMORY_MODEL_RECOMMENDATIONS) {
+        if (!targets.has(recommendation.id)) targets.set(recommendation.id, await addMemoryModel(recommendation));
+      }
+      const expectedOrder = ["deepseek-flash-none-memory-v1", "gemini-flash-native-low-memory-v2",
+        "gemini-flash-openrouter-low-memory-v2", "terra-low-memory-v1"];
+      for (const id of expectedOrder) {
+        expect((await createAdminSystemModelPolicyService(db).list()).memoryPolicy.recommendations
+          ?.find((entry) => entry.id === id), id).toMatchObject({ providerModelId: targets.get(id), unavailableReason: null });
+        await db.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: {
+          providerModelId: memory, reasoningEffort: "low", assignmentSource: "BOOTSTRAP",
+          recommendationAdoptionVersion: 1, recommendationAdoptionReason: "applied"
+        } });
+        await adoptMemoryModelRecommendation(db);
+        const selected = await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+        expect(selected).toMatchObject({ providerModelId: targets.get(id), assignmentSource: "BOOTSTRAP",
+          reasoningEffort: id === "deepseek-flash-none-memory-v1" ? "none" : "low",
+          recommendationAdoptionVersion: 2, recommendationAdoptionReason: "applied" });
+        await db.providerModel.update({ where: { id: targets.get(id)! }, data: { enabled: false } });
+        await adoptMemoryModelRecommendation(db);
+        expect(await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(selected);
+      }
+    }, true);
+  });
+
+  it("consumes the upgrade without selecting an unchecked key or retrying after later verification", async () => {
+    await fixture(async ({ db, memory }) => {
+      const checks = await db.providerModelCredentialCheck.findMany({ where: { providerModelId: memory } });
+      await db.providerModelCredentialCheck.deleteMany({ where: { providerModelId: memory } });
+      await db.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: {
+        providerModelId: null, reasoningEffort: null, assignmentSource: "UNASSIGNED",
+        recommendationAdoptionVersion: 1, recommendationAdoptionReason: "no_eligible_model"
+      } });
+      await adoptMemoryModelRecommendation(db);
+      const skipped = await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+      expect(skipped).toMatchObject({ providerModelId: null, reasoningEffort: null, assignmentSource: "UNASSIGNED",
+        recommendationAdoptionVersion: 2, recommendationAdoptionReason: "no_eligible_model" });
+      await db.providerModelCredentialCheck.createMany({ data: checks.map((check) => ({ ...check,
+        evidence: check.evidence as Prisma.InputJsonValue,
+        latestRefreshError: check.latestRefreshError === null ? Prisma.DbNull : check.latestRefreshError as Prisma.InputJsonValue
+      })) });
+      expect((await createAdminSystemModelPolicyService(db).list()).memoryPolicy.recommendations
+        ?.find((entry) => entry.id === "terra-low-memory-v1")).toMatchObject({ unavailableReason: null });
+      await adoptMemoryModelRecommendation(db);
+      expect(await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(skipped);
+    }, true);
+  });
+
   it("keeps Memory independent through System edits, explicit clear, capability loss and provider deletion", async () => {
     await fixture(async ({ db, adminId, memory, titles }) => {
       const service = createAdminSystemModelPolicyService(db);

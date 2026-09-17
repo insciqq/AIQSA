@@ -16,6 +16,7 @@ import {
   memoryFactExtractionPromptPayload,
   memoryFactExtractionTool
 } from "./prompt";
+import { memoryFactExtractionProviderTool } from "./providerSchema";
 
 export type MemoryFactProviderEvidence = Readonly<{
   connectionId: string;
@@ -56,7 +57,7 @@ export class MemoryFactProviderCallError extends Error {
   }
 }
 
-function providerRequest(
+export function buildMemoryFactExtractionRequest(
   snapshot: ProviderExecutionSnapshot,
   input: MemoryFactExtractionInput
 ): ProviderRunRequest {
@@ -98,7 +99,7 @@ function providerRequest(
     // The extraction contract is one forced strict System Model call.  A
     // free-form answer or an omitted tool call is not an extraction result.
     toolChoice: "required",
-    tools: [memoryFactExtractionTool]
+    tools: [memoryFactExtractionProviderTool(model, memoryFactExtractionTool)]
   };
 }
 
@@ -134,7 +135,7 @@ export function createAcceptedMemoryFactProvider(
     MemoryFactExtractionInput
   >(client, {
     ...options,
-    buildRequest: providerRequest,
+    buildRequest: buildMemoryFactExtractionRequest,
     callError: (usage, cause, classification) => new MemoryFactProviderCallError({
       cause,
       classification,

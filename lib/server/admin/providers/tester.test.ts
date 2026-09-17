@@ -165,6 +165,36 @@ function strictToolChatResponse(
 }
 
 describe("admin provider draft tester", () => {
+  it.each([
+    { efforts: ["none", "low", "high"], effort: "none", enabled: false },
+    { efforts: ["low", "high"], effort: "low", enabled: true }
+  ])("verifies strict OpenRouter tools with the lowest supported effort: $effort", async ({ efforts, effort, enabled }) => {
+    const bodies: Record<string, unknown>[] = [];
+    const base = input();
+    const outcome = await createAdminProviderDraftTester({ createFetch: () => async (_url, request) => {
+      const body = JSON.parse(String(request?.body));
+      bodies.push(body);
+      if (body.tool_choice === "required") {
+        // A reasoning-default backend requires an explicit opt-out; hiding its
+        // reasoning output alone does not make a forced call compatible.
+        if (body.reasoning?.effort !== effort || body.reasoning?.enabled !== enabled) {
+          return Response.json({ error: { code: 400 } }, { status: 400 });
+        }
+        return strictToolChatResponse("aiqsa_forced_tool_call_probe", { city: "Oslo" });
+      }
+      return structuredChatResponse();
+    } }).test({ ...base, mode: "tiny_generation", capabilityRole: "memory",
+      model: { ...base.model, capabilities: { ...base.model.capabilities, reasoning: true,
+        reasoningEfforts: efforts, defaultReasoningEffort: "high", toolCalling: true },
+        defaultParams: { reasoning: { enabled: true, effort: "high" } } }
+    });
+    expect(outcome.evidence.forcedToolCall?.verified).toBe(true);
+    expect(bodies.find((body) => body.tool_choice === "required")).toMatchObject({
+      reasoning: { enabled, effort, exclude: true }, provider: { require_parameters: true },
+      tools: [{ function: { strict: true } }]
+    });
+  });
+
   it.each(["verified", "ignored", "rejected"] as const)(
     "verifies ordinary tools and native JSON independently of a %s strict Memory call",
     async (strictResult) => {

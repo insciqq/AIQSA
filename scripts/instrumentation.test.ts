@@ -41,6 +41,7 @@ describe("optional subsystem startup", () => {
     await expect(register()).resolves.toBeUndefined();
     expect(startup.nativeRouting).toHaveBeenCalledOnce();
     expect(startup.hooks).toHaveBeenCalledOnce();
+    expect(startup.nativeRouting).toHaveBeenCalledOnce();
     expect(startup.announce).toHaveBeenCalledWith(expect.objectContaining({ attachments: "starting", memory: "unknown" }));
     expect(startup.failed.mock.calls.map(([fields]) => fields)).toEqual([
       { subsystem: "attachments", stage: "startup", code: "attachment_processing_startup_failed", action: "degrade" },
