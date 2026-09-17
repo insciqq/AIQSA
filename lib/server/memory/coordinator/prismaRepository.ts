@@ -273,6 +273,19 @@ async function recoverEligibleMemoryJobs(
 ): Promise<number> {
   if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > MEMORY_RECOVERY_BATCH_SIZE ||
     !Number.isFinite(input.now.getTime())) throw new Error("memory_recovery_input_invalid");
+  // The same periodic pass retires expired private staging even when its
+  // source became obsolete and no job can ever be admitted again.
+  await client.$executeRaw(Prisma.sql`
+    WITH expired AS (
+      SELECT id FROM "MemoryHistoryExecution"
+      WHERE "clearedAt" IS NULL AND "recoverableUntil" <= ${input.now}
+      ORDER BY "recoverableUntil", id LIMIT ${input.limit}
+      FOR UPDATE SKIP LOCKED
+    )
+    UPDATE "MemoryHistoryExecution" execution SET "acceptedOutput" = NULL,
+      "clearedAt" = GREATEST(${input.now}, execution."createdAt")
+    FROM expired WHERE execution.id = expired.id
+  `).catch(retainDatabaseFailure);
   const candidates = await client.$queryRaw<Array<{ id: string; userId: string }>>(Prisma.sql`
     WITH ${currentMemoryJobsSql(input.now)}
     SELECT job.id, job."userId" FROM current_jobs AS job

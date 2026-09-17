@@ -1,12 +1,13 @@
 import type { PrismaClient } from "@prisma/client";
 import type { ProviderStructuredOutputRequest } from "../../providers/structuredOutput";
 import {
-  executeGovernedMemoryStructuredOutput,
   type MemoryExecutionAuthorityDependencies,
   type MemoryExecutionVersions,
   type MemoryStructuredOutputProvider
 } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
+import { MemoryCoordinatorError } from "../coordinator/errors";
+import { executeRecoverableMemoryHistoryOutput } from "./execution";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import { createAcceptedMemoryStructuredOutputProvider } from
   "../execution/structuredClassifier";
@@ -77,6 +78,7 @@ export type MemoryContextualKeyGenerator = Readonly<{
     targetRoundIds: readonly string[],
     options: Readonly<{
       jobId: string;
+      recoveryOnly?: boolean;
       signal: AbortSignal;
       userId: string;
     }>
@@ -375,6 +377,32 @@ export function decodeMemoryContextualKeyOutputs(
   }));
 }
 
+function restoreMemoryContextualKeyOutputs(
+  value: unknown,
+  batch: readonly BatchItem[],
+  handles: readonly string[]
+): readonly MemoryContextualRoundOutput[] {
+  if (!Array.isArray(value) || value.length !== batch.length) return outputError("HANDLE_MISMATCH");
+  const sourceHandles = contextualSourceHandles(batch, handles);
+  return decodeMemoryContextualKeyOutputs({ rounds: value.map((item, ordinal) => {
+    if (!isRecord(item) || item.roundId !== batch[ordinal]!.roundId ||
+      !Array.isArray(item.statements)) return outputError("HANDLE_MISMATCH");
+    const ids = [batch[ordinal]!.input.current.id, ...batch[ordinal]!.input.prior.map(({ id }) => id)];
+    return {
+      handle: handles[ordinal], language_code: item.languageCode,
+      statements: item.statements.map((statement: unknown) => {
+        if (!isRecord(statement) || !Array.isArray(statement.sourceRoundIds)) {
+          return outputError("HANDLE_MISMATCH");
+        }
+        return {
+          text: statement.text,
+          source_refs: statement.sourceRoundIds.map((id) => sourceHandles[ordinal]![ids.indexOf(id)])
+        };
+      })
+    };
+  }) }, batch, handles);
+}
+
 export function createPrismaMemoryContextualKeyGenerator(
   client: PrismaClient,
   options: Readonly<{
@@ -419,10 +447,13 @@ export function createPrismaMemoryContextualKeyGenerator(
         const executionOrdinal = ordinal;
         ordinal += 1;
         try {
-          providerRequests += 1;
-          const governed = await executeGovernedMemoryStructuredOutput({
+          const governed = await executeRecoverableMemoryHistoryOutput({
             authority,
             client,
+            jobId: generateOptions.jobId,
+            recoveryOnly: generateOptions.recoveryOnly,
+            onDispatch: () => { providerRequests += 1; },
+            restore: (value) => restoreMemoryContextualKeyOutputs(value, batch, built.handles),
             decode: (value) => decodeMemoryContextualKeyOutputs(
               value,
               batch,
@@ -434,10 +465,8 @@ export function createPrismaMemoryContextualKeyGenerator(
               versions: MEMORY_CONTEXTUAL_KEY_VERSIONS
             }),
             ordinal: executionOrdinal,
-            owner: { memoryJobId: generateOptions.jobId, type: "JOB" },
             provider,
             request: built.request,
-            role: "MEMORY_HISTORY_CLASSIFY",
             signal: generateOptions.signal,
             userId: generateOptions.userId,
             versions: MEMORY_CONTEXTUAL_KEY_VERSIONS
@@ -453,10 +482,25 @@ export function createPrismaMemoryContextualKeyGenerator(
           }
           const reviewOrdinal = ordinal;
           ordinal += 1;
-          providerRequests += 1;
-          const grounded = await executeGovernedMemoryStructuredOutput({
+          const grounded = await executeRecoverableMemoryHistoryOutput({
             authority,
             client,
+            jobId: generateOptions.jobId,
+            recoveryOnly: generateOptions.recoveryOnly,
+            onDispatch: () => { providerRequests += 1; },
+            restore: (value) => {
+              if (!isRecord(value) || !Array.isArray(value.rejectedRoundIds) ||
+                value.rejectedRoundIds.some((id) => typeof id !== "string")) {
+                throw new MemoryCoordinatorError("memory_history_result_invalid", false);
+              }
+              const rejected = new Set(value.rejectedRoundIds);
+              return decodeMemoryContextualGrounding({
+                decisions: review.checks.map((check) => ({
+                  handle: check.handle,
+                  support: rejected.has(check.roundId) ? "UNSUPPORTED" : "SUPPORTED"
+                }))
+              }, review.checks, batch, governed.value);
+            },
             decode: (value) => decodeMemoryContextualGrounding(
               value, review.checks, batch, governed.value
             ),
@@ -467,10 +511,8 @@ export function createPrismaMemoryContextualKeyGenerator(
               versions: MEMORY_CONTEXTUAL_GROUNDING_VERSIONS
             }),
             ordinal: reviewOrdinal,
-            owner: { memoryJobId: generateOptions.jobId, type: "JOB" },
             provider,
             request: review.request,
-            role: "MEMORY_HISTORY_CLASSIFY",
             signal: generateOptions.signal,
             userId: generateOptions.userId,
             versions: MEMORY_CONTEXTUAL_GROUNDING_VERSIONS
@@ -487,6 +529,7 @@ export function createPrismaMemoryContextualKeyGenerator(
           })));
         } catch (error) {
           if (generateOptions.signal.aborted) throw generateOptions.signal.reason;
+          if (error instanceof MemoryCoordinatorError) throw error;
           fallbackRoundIds.push(...batch.map((item) => item.roundId));
           const reason = error instanceof MemoryContextualKeyOutputError ||
             error instanceof MemoryContextualGroundingError

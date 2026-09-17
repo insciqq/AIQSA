@@ -86,7 +86,9 @@ async function generate(
     };
   });
   const client = {
+    $queryRaw: vi.fn(async () => [{ id: "private-contextual-job" }]),
     memoryExecutionBinding: {
+      findMany: vi.fn(async () => []),
       aggregate: vi.fn(async () => ({ _max: { ordinal: null } }))
     }
   } as unknown as PrismaClient;

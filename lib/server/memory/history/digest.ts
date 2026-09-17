@@ -2,12 +2,13 @@ import type { PrismaClient } from "@prisma/client";
 import { canonicalMemoryTimeZone } from "../../../domain/memory/temporal/calendar";
 import type { ProviderStructuredOutputRequest } from "../../providers/structuredOutput";
 import {
-  executeGovernedMemoryStructuredOutput,
   type MemoryExecutionAuthorityDependencies,
   type MemoryExecutionVersions,
   type MemoryStructuredOutputProvider
 } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
+import { MemoryCoordinatorError } from "../coordinator/errors";
+import { executeRecoverableMemoryHistoryOutput } from "./execution";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import { createAcceptedMemoryStructuredOutputProvider } from
   "../execution/structuredClassifier";
@@ -84,6 +85,7 @@ export type MemoryChatDigestGenerator = Readonly<{
     chunks: readonly MemoryHistoryPreparedChunk[],
     options: Readonly<{
       jobId: string;
+      recoveryOnly?: boolean;
       signal: AbortSignal;
       timeZone: string;
       userId: string;
@@ -777,10 +779,19 @@ export function createPrismaMemoryChatDigestGenerator(
           request: ProviderStructuredOutputRequest,
           inputIdentity: unknown
         ): Promise<MemoryChatDigestContent> => {
-          const governed = await executeGovernedMemoryStructuredOutput({
+          const governed = await executeRecoverableMemoryHistoryOutput({
             authority,
             client,
             decode: decodeMemoryChatDigest,
+            jobId: generateOptions.jobId,
+            recoveryOnly: generateOptions.recoveryOnly,
+            restore: (value) => {
+              if (!isRecord(value)) throw new MemoryChatDigestError("memory_chat_digest_invalid");
+              return decodeMemoryChatDigest({
+                decisions: value.decisions, open_loops: value.openLoops,
+                summary: value.summary, topics: value.topics
+              });
+            },
             inputHash: memoryExecutionSha256({
               domain: "aiqsa.memory.chat-digest-input",
               inputIdentity,
@@ -788,10 +799,8 @@ export function createPrismaMemoryChatDigestGenerator(
               versions: MEMORY_CHAT_DIGEST_VERSIONS
             }),
             ordinal,
-            owner: { memoryJobId: generateOptions.jobId, type: "JOB" },
             provider,
             request,
-            role: "MEMORY_HISTORY_CLASSIFY",
             signal: generateOptions.signal,
             userId: generateOptions.userId,
             versions: MEMORY_CHAT_DIGEST_VERSIONS
@@ -891,6 +900,7 @@ export function createPrismaMemoryChatDigestGenerator(
         };
       } catch (error) {
         if (generateOptions.signal.aborted) throw generateOptions.signal.reason;
+        if (error instanceof MemoryCoordinatorError) throw error;
         if (error instanceof MemoryChatDigestError) throw error;
         throw new MemoryChatDigestError("memory_chat_digest_unavailable");
       }

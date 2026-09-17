@@ -93,6 +93,7 @@ export async function loadAccountMemoryOwnedCounts(
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryFactExtractionExecution" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryFactExtractionCandidateReceipt" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemorySynthesisExecution" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
+      UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryHistoryExecution" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryAuxiliarySemanticCall" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryEvidence" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryEvent" row INNER JOIN requested USING ("userId") GROUP BY row."userId"

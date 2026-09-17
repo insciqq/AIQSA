@@ -17,6 +17,7 @@ import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
   MEMORY_RECALL_ROUND_PROJECTION_VERSION
 } from "./rounds";
+import { currentMemoryJobsSql } from "../coordinator/currentJobs";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
 
 export const MEMORY_HISTORY_CLEAR_MANIFEST_VERSION =
@@ -693,12 +694,45 @@ async function receiptSelectionPredicates(
   };
 }
 
+async function executionPurgePredicate(
+  tx: MemoryTransaction,
+  userId: string,
+  selection: HistoryPurgeSelection
+): Promise<Prisma.Sql> {
+  if (selection.kind === "SOURCE") {
+    return Prisma.sql`job."chatId" = ${selection.chatId}
+      AND NOT EXISTS (SELECT 1 FROM current_jobs current WHERE current.id = job.id)`;
+  }
+  if (selection.kind === "CLEAR" || selection.kind === "ALL_REUSABLE") {
+    const barrier = await tx.memorySourceBarrier.findFirst({
+      select: { createdAt: true, sourceCreatedAtCutoff: true },
+      where: { id: selection.barrierId, userId,
+        kind: selection.kind === "CLEAR" ? "HISTORY_INDEX" : "ALL_REUSABLE" }
+    });
+    if (!barrier) throw new MemoryCoordinatorError("memory_deletion_target_invalid", true);
+    return Prisma.sql`(job."createdAt" <= ${barrier.createdAt}
+      OR EXISTS (SELECT 1 FROM "Message" message WHERE message."chatId" = job."chatId"
+        AND message."createdAt" <= ${barrier.sourceCreatedAtCutoff}))`;
+  }
+  return Prisma.sql`EXISTS (SELECT 1 FROM "MemorySuppression" suppression
+    WHERE suppression."userId" = job."userId"
+      AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
+      AND (suppression.scope = 'ALL' OR suppression."sourceChatId" = job."chatId"))`;
+}
+
 async function historyReceiptDerivativeCounts(
   tx: MemoryTransaction,
   userId: string,
   selection: HistoryPurgeSelection
-): Promise<Readonly<{ historyRuns: number }>> {
+): Promise<Readonly<{ historyRuns: number; executionResults: number }>> {
   const predicates = await receiptSelectionPredicates(tx, userId, selection);
+  const executionPredicate = await executionPurgePredicate(tx, userId, selection);
+  const executionRows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+    WITH ${currentMemoryJobsSql(new Date())}
+    SELECT COUNT(*)::integer AS count FROM "MemoryHistoryExecution" execution
+    JOIN "MemoryJob" job ON job."userId" = execution."userId" AND job.id = execution."memoryJobId"
+    WHERE execution."userId" = ${userId} AND execution."clearedAt" IS NULL AND ${executionPredicate}
+  `);
   const historyRows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
     SELECT COUNT(DISTINCT history."id")::integer AS "count"
     FROM "MemoryHistoryRun" AS history
@@ -713,10 +747,12 @@ async function historyReceiptDerivativeCounts(
       )
   `);
   const historyRuns = historyRows[0]?.count ?? -1;
-  if (!Number.isSafeInteger(historyRuns) || historyRuns < 0) {
+  const executionResults = executionRows[0]?.count ?? -1;
+  if (!Number.isSafeInteger(historyRuns) || historyRuns < 0 ||
+    !Number.isSafeInteger(executionResults) || executionResults < 0) {
     throw new MemoryCoordinatorError("memory_purge_incomplete", true);
   }
-  return { historyRuns };
+  return { historyRuns, executionResults };
 }
 
 export async function purgeMemoryHistoryReceiptDerivatives(
@@ -725,6 +761,15 @@ export async function purgeMemoryHistoryReceiptDerivatives(
   selection: HistoryPurgeSelection
 ): Promise<void> {
   const predicates = await receiptSelectionPredicates(tx, userId, selection);
+  const executionPredicate = await executionPurgePredicate(tx, userId, selection);
+  await tx.$executeRaw(Prisma.sql`
+    WITH ${currentMemoryJobsSql(new Date())}
+    UPDATE "MemoryHistoryExecution" execution SET "acceptedOutput" = NULL,
+      "clearedAt" = GREATEST(CURRENT_TIMESTAMP, execution."createdAt")
+    FROM "MemoryJob" job
+    WHERE job."userId" = execution."userId" AND job.id = execution."memoryJobId"
+      AND execution."userId" = ${userId} AND execution."clearedAt" IS NULL AND ${executionPredicate}
+  `);
   await tx.$executeRaw(Prisma.sql`
     WITH affected AS MATERIALIZED (
       SELECT DISTINCT history."id", history."modelRunToolCallId"
@@ -935,7 +980,7 @@ export async function inspectMemoryHistoryPurge(
   const completedUnits = Number(historyItemCount === 0) +
     Number(referenceCount === 0) +
     Number(searchCount === 0) +
-    Number(receiptDerivatives.historyRuns === 0) +
+    Number(receiptDerivatives.historyRuns === 0 && receiptDerivatives.executionResults === 0) +
     Number(feedbackCount === 0);
   return { complete: completedUnits === 5, completedUnits, totalUnits: 5 };
 }
