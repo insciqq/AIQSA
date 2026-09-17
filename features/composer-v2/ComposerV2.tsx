@@ -1113,14 +1113,24 @@ export function ComposerV2({
               composer row holds only this message's tools. */}
           <div className="v2-composer-indicators" aria-label="Active capabilities">
             {agent ? (
-              <button type="button" className="v2-composer-indicator v2-focusable"
-                data-quiet={agent.enabled ? undefined : ""}
-                aria-label={`Agent details. ${agent.enabled ? "On" : "Off"}`}
-                aria-controls={`${layerId}-agent`} aria-expanded={layer === "agent"} aria-haspopup="menu"
-                onClick={(event) => openLayer("agent", event.currentTarget)}>
-                <UiV2Icon className="v2-composer-indicator-glyph" name="braces" />
-                <span className="v2-composer-indicator-label">Agent: {agent.enabled ? "On" : "Off"}</span>
-              </button>
+              <span className="v2-composer-agent" data-quiet={agent.enabled ? undefined : ""}>
+                <button type="button" className="v2-composer-indicator v2-focusable"
+                  data-quiet={agent.enabled ? undefined : ""}
+                  aria-label="Agent" aria-pressed={agent.enabled}
+                  aria-describedby={agentReason ? `${layerId}-agent-reason` : undefined}
+                  disabled={Boolean(activeRun || (!agent.enabled && agentReason))}
+                  onClick={() => agent.onToggle(!agent.enabled)}>
+                  <UiV2Icon className="v2-composer-indicator-glyph" name="braces" />
+                  <span className="v2-composer-indicator-label">Agent: {agent.enabled ? "On" : "Off"}</span>
+                </button>
+                <button type="button" className="v2-composer-agent-details v2-focusable"
+                  aria-label="Agent details" title="Agent details"
+                  aria-controls={`${layerId}-agent`} aria-expanded={layer === "agent"} aria-haspopup="menu"
+                  onClick={(event) => openLayer("agent", event.currentTarget)}>
+                  <UiV2Icon name="chevron-down" />
+                </button>
+                {agentReason ? <span className="v2-sr-only" id={`${layerId}-agent-reason`}>{agentReason}</span> : null}
+              </span>
             ) : null}
             {workspace ? (
               <button

@@ -27,6 +27,30 @@ function session(key: ReturnType<typeof composerSessionKey>) {
 }
 
 describe("composer session store", () => {
+  it("retains Agent for the open conversation across sends without enabling a new chat", () => {
+    const store = useComposerSessionStore.getState();
+    const blank = composerSessionKey(null);
+    const saved = composerSessionKey("agent-conversation");
+    store.activateSession(blank);
+    expect(session(blank).agentEnabled).toBe(false);
+    store.updateSession(blank, { agentEnabled: true });
+    store.setDraft("Inspect the project");
+    const send = store.beginSend(blank)!;
+    expect(store.transferSession(blank, saved)).toBe(true);
+    expect(store.finishSend(send, "succeeded")).toBe(true);
+    expect(session(saved).agentEnabled).toBe(true);
+    store.setDraft("Continue the task");
+    const followup = store.beginSend(saved)!;
+    expect(store.finishSend(followup, "succeeded")).toBe(true);
+    expect(session(saved).agentEnabled).toBe(true);
+    store.activateSession(blank);
+    expect(session(blank).agentEnabled).toBe(false);
+    store.activateSession(saved);
+    expect(session(saved).agentEnabled).toBe(true);
+    store.updateSession(saved, { agentEnabled: false });
+    expect(session(saved).agentEnabled).toBe(false);
+  });
+
   it("moves only the current unsent input into an empty destination atomically", () => {
     const store = useComposerSessionStore.getState();
     const source = composerSessionKey("source");

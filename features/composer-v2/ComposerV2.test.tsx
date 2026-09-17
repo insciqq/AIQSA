@@ -53,7 +53,7 @@ describe("Composer v2", () => {
     const unavailableReason = "Agent is unavailable. Ask an administrator to check the Workspace runner.";
     render(<ComposerV2 {...props({ selectedKnowledgeBaseIds: [], onSend,
       agent: { enabled, onToggle, unavailableReason } })} />);
-    fireEvent.click(screen.getByRole("button", { name: `Agent details. ${enabled ? "On" : "Off"}` }));
+    fireEvent.click(screen.getByRole("button", { name: "Agent details" }));
     expect(screen.getByRole("menu", { name: "Agent" })).toHaveTextContent(unavailableReason);
     const toggle = screen.getByRole("menuitemcheckbox", { name: enabled ? /Turn off Agent/ : /Turn on Agent/ });
     if (enabled) expect(toggle).toBeEnabled();
@@ -66,7 +66,7 @@ describe("Composer v2", () => {
       await waitFor(() => expect(menu).toHaveFocus());
       fireEvent.keyDown(menu, { key: "Escape" });
       expect(screen.queryByRole("menu", { name: "Agent" })).not.toBeInTheDocument();
-      await waitFor(() => expect(screen.getByRole("button", { name: "Agent details. Off" })).toHaveFocus());
+      await waitFor(() => expect(screen.getByRole("button", { name: "Agent details" })).toHaveFocus());
     }
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Проверь источники");
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
@@ -80,9 +80,13 @@ describe("Composer v2", () => {
     render(<ComposerV2 {...props({ selectedKnowledgeBaseIds: [], selectedSearchOptionIds: [],
       selectedSkills: [{ id: "summary", name: "Signed summary" }], selectedSkillIds: ["summary"],
       mcpSelection: { mode: "auto" }, onSelectMcp, agent: { enabled: false, onToggle } })} />);
-    fireEvent.click(screen.getByRole("button", { name: "Agent details. Off" }));
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Turn on Agent/ }));
-    expect(onToggle).toHaveBeenCalledWith(true);
+    const toggle = screen.getByRole("button", { name: "Agent", exact: true });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(toggle);
+    expect(onToggle).toHaveBeenCalledExactlyOnceWith(true);
+    expect(screen.queryByRole("menu", { name: "Agent" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Проверь источники");
+    fireEvent.click(screen.getByRole("button", { name: "Agent details" }));
     expect(onSelectMcp).not.toHaveBeenCalled();
     expect(screen.getByRole("menu", { name: "Agent" })).toHaveTextContent("selected model, Skills, MCP mode");
   });
@@ -93,10 +97,33 @@ describe("Composer v2", () => {
     render(<ComposerV2 {...props({ onSend, agent: { enabled: true, onToggle } })} />);
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
     expect(onSend).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Agent details. On" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agent details" }));
     expect(screen.getByRole("menu", { name: "Agent" })).toHaveTextContent("Turn off Knowledge");
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Turn off Agent/ }));
     expect(onToggle).toHaveBeenCalledWith(false);
+  });
+
+  it.each([false, true])("keeps Agent details accessible while direct activation is unavailable: %s", (enabled) => {
+    const onToggle = vi.fn();
+    const unavailableReason = "Turn on Workspace first.";
+    const { rerender } = render(<ComposerV2 {...props({ selectedKnowledgeBaseIds: [],
+      agent: { enabled, onToggle, unavailableReason } })} />);
+    const toggle = screen.getByRole("button", { name: "Agent", exact: true });
+    expect(toggle).toHaveAttribute("aria-pressed", String(enabled));
+    expect(toggle).toHaveAccessibleDescription(unavailableReason);
+    if (enabled) expect(toggle).toBeEnabled();
+    else expect(toggle).toBeDisabled();
+    fireEvent.click(toggle);
+    if (enabled) expect(onToggle).toHaveBeenCalledExactlyOnceWith(false);
+    else expect(onToggle).not.toHaveBeenCalled();
+    onToggle.mockClear();
+    rerender(<ComposerV2 {...props({ selectedKnowledgeBaseIds: [], activeRun: true,
+      agent: { enabled, onToggle } })} />);
+    expect(toggle).toBeDisabled();
+    fireEvent.click(toggle);
+    expect(onToggle).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Agent details" }));
+    expect(screen.getByRole("menu", { name: "Agent" })).toBeVisible();
   });
 
   it("sends with Agent and Search enabled when Knowledge is off", () => {

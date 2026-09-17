@@ -285,6 +285,58 @@
   color: var(--v2-color-danger);
   border-color: var(--v2-color-danger);
 }
+/* Agent's primary control toggles directly; details remain reachable on touch. */
+.v2-composer-agent {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--v2-color-border);
+  border-radius: 999px;
+  color: var(--v2-color-text2);
+  background: var(--v2-color-surface2);
+}
+
+.v2-composer-agent:not([data-quiet]) {
+  border-color: color-mix(in srgb, var(--v2-color-accent) 22%, transparent);
+  color: var(--v2-color-accent);
+  background: var(--v2-color-accent-dim);
+}
+
+.v2-composer-agent > .v2-composer-indicator {
+  border: 0;
+  border-radius: 999px 0 0 999px;
+  color: inherit;
+  background: transparent;
+}
+
+.v2-composer-agent-details {
+  display: inline-flex;
+  width: 1.75rem;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-left: 1px solid var(--v2-color-border);
+  border-radius: 0 999px 999px 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.v2-composer-agent-details:hover {
+  background: var(--v2-color-hover);
+}
+
+.v2-composer-agent-details > .v2-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .v2-composer-agent-details {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+}
+
 .v2-composer-workspace-signal { font-size: 0.875rem; line-height: 1; }
 
 /* An active Search/Knowledge chip pairs its picker trigger with a clear
