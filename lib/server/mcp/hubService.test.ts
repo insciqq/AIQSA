@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { namespacedMcpToolName, type McpCapabilityCatalog, type McpRunPlanResult } from "./runPlan";
 import { createMcpHubService, McpHubServiceError, type McpHubAuthority, type McpHubServiceDependencies } from "./hubService";
+import { McpSemanticRouterError } from "./router";
+import { McpClientSessionError } from "./clientSession";
 
 const authority: McpHubAuthority = {
   assertActive: async () => undefined,
@@ -299,6 +301,26 @@ describe("MCP Hub shared discovery and dispatch", () => {
     expect(error).toMatchObject({ code: "execution_outcome_unknown" });
   });
 
+  it.each([false, true])("retains rejected-response classification across runtime bundles (%s)", async (foreignBundle) => {
+    const original = new McpClientSessionError({ code: "mcp_call_result_too_large", operation: "call_tool" });
+    const failure = foreignBundle ? Object.assign(new Error("PRIVATE_CANARY"), {
+      name: original.name, code: original.code, operation: original.operation, retryable: original.retryable
+    }) : original;
+    expect(failure instanceof McpClientSessionError).toBe(!foreignBundle);
+    const settle = vi.fn(async () => undefined);
+    const callRuntimeTool = vi.fn(async () => { throw failure; });
+    const test = fixture({ callRuntimeTool, recordDispatch: async () => ({ settle }) });
+    const descriptor = (await test.service.findTools({ goal: "echo", authority })).tools[0]!;
+    const prepared = await test.service.prepareToolCall({
+      arguments: { value: "x" }, toolId: echoId, toolVersion: descriptor.tool_version, authority
+    });
+    await expect(test.service.dispatchPreparedToolCall({ prepared, authority }))
+      .rejects.toMatchObject({ code: "result_unsupported", toolFailure: "mcp_call_result_too_large" });
+    expect(settle).toHaveBeenCalledExactlyOnceWith("ERROR", "result_unsupported");
+    expect(callRuntimeTool).toHaveBeenCalledOnce();
+    expect(McpClientSessionError.isInstance({ name: original.name, code: "PRIVATE_CANARY" })).toBe(false);
+  });
+
   it("settles a durable dispatch receipt exactly once after the single upstream call", async () => {
     const settle = vi.fn(async () => undefined);
     const recordDispatch = vi.fn(async () => ({ settle }));
@@ -433,6 +455,20 @@ describe("MCP Hub shared discovery and dispatch", () => {
       .rejects.toMatchObject({ code: "tool_unavailable" });
     expect(test.dependencies.recordDispatch).not.toHaveBeenCalled();
     expect(test.dependencies.callRuntimeTool).not.toHaveBeenCalled();
+  });
+
+  it("retains a content-free router failure through the shared discovery boundary", async () => {
+    const test = fixture({ router: { route: vi.fn(async () => {
+      throw new McpSemanticRouterError("mcp_router_output_invalid", null, "mcp_router_unknown_tool", 2);
+    }) } });
+    await expect(test.service.findTools({ authority, goal: "echo" })).rejects.toMatchObject({
+      code: "discovery_unavailable", discoveryFailure: {
+        reason: "mcp_router_output_invalid", detail: "mcp_router_unknown_tool", attempt: 2
+      }
+    });
+    expect(test.dependencies.materialize).not.toHaveBeenCalled();
+    expect(test.dependencies.callRuntimeTool).not.toHaveBeenCalled();
+    expect(new McpHubServiceError("discovery_unavailable", { cause: new Error("private") }).discoveryFailure).toBeNull();
   });
 
   it("rejects invented router selections before preparing any runtime", async () => {

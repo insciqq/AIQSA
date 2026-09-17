@@ -24,6 +24,13 @@ function clientFixture(input: Readonly<{
     ? new Date("2026-08-21T08:00:00.000Z")
     : input.heartbeat;
   const queryRaw = vi.fn()
+    .mockResolvedValueOnce([{
+      activeIndexGenerationId: "private-generation",
+      embeddingProviderModelId: input.selectedEmbeddingProviderModelId ?? null,
+      memoryRevision: 4,
+      settingsRevision: 3,
+      userId: "private-owner"
+    }])
     .mockResolvedValueOnce([])
     .mockResolvedValueOnce(input.staleChunk ? [{ userId: "private-owner" }] : [])
     .mockResolvedValueOnce([{
@@ -83,15 +90,6 @@ function clientFixture(input: Readonly<{
     },
     memoryUtilityModelPolicy: {
       findUnique: vi.fn().mockResolvedValue({ providerModelId: "private-system-model" })
-    },
-    userMemorySettings: {
-      findMany: vi.fn().mockResolvedValue([{
-        activeIndexGenerationId: "private-generation",
-        embeddingProviderModelId: input.selectedEmbeddingProviderModelId ?? null,
-        memoryRevision: 4,
-        settingsRevision: 3,
-        userId: "private-owner"
-      }])
     }
   } as unknown as PrismaClient;
 }
@@ -123,23 +121,13 @@ describe("Prisma administrator Memory status repository", () => {
       queueLength: 2,
       workerLastSeenAt: new Date("2026-08-21T08:00:00.000Z")
     });
-    expect(client.userMemorySettings.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          OR: [
-            { referenceChatHistory: true },
-            { useMemoryFacts: true }
-          ]
-        }
-      })
-    );
     const rawQueries = (client.$queryRaw as unknown as {
       mock: { calls: Array<[Prisma.Sql]> };
     }).mock.calls;
-    const pendingClassificationSql = rawQueries[0]?.[0].strings.join("?") ?? "";
+    const pendingClassificationSql = rawQueries[1]?.[0].strings.join("?") ?? "";
     expect(pendingClassificationSql).toContain('scope."scopeType" = \'GLOBAL_USER\'');
     expect(pendingClassificationSql).toContain('evidence_chat."projectId" IS NULL');
-    const staleProjectionQuery = rawQueries[1]?.[0];
+    const staleProjectionQuery = rawQueries[2]?.[0];
     const staleProjectionSql = staleProjectionQuery?.strings.join("?") ?? "";
     expect(staleProjectionSql).toContain('chunk."chunkingVersion" <>');
     expect(staleProjectionSql).toContain('chunk."sourceProjectionVersion" <>');

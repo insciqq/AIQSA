@@ -24,6 +24,7 @@ import { logEvent } from "../observability";
 import { beginMcpToolStage, mcpToolFailure, observeMcpAbort } from "./toolObservability";
 import {
   McpResponseTooLargeError,
+  resolveMcpResponseWireLimits,
   type McpResponseOperation,
   type McpResponseWireLimits
 } from "./responseLimits";
@@ -102,6 +103,16 @@ const ERROR_MESSAGES: Record<McpClientSessionErrorCode, string> = {
 };
 
 export class McpClientSessionError extends Error {
+  /** The shared runtime can originate in another Next entry bundle. */
+  static isInstance(error: unknown): error is McpClientSessionError {
+    if (!error || typeof error !== "object") return false;
+    const value = error as Record<string, unknown>;
+    return value.name === "McpClientSessionError" && typeof value.code === "string" &&
+      Object.hasOwn(ERROR_MESSAGES, value.code) && typeof value.operation === "string" &&
+      ["call_tool", "close", "initialize", "list_tools", "ping", "session"].includes(value.operation) &&
+      typeof value.retryable === "boolean";
+  }
+
   readonly code: McpClientSessionErrorCode;
   readonly operation: SessionOperation;
   readonly retryable: boolean;
@@ -182,7 +193,8 @@ export type McpClientSessionLimits = Readonly<{
   maxListPages: number;
   maxToolArgumentBytes: number;
   maxToolMetadataBytes: number;
-  maxToolResultBytes: number;
+  /** Defaults to the configured tools/call wire limit. */
+  maxToolResultBytes?: number;
   maxToolSchemaBytes: number;
   maxTools: number;
 }>;
@@ -293,7 +305,7 @@ function validateOptions(options: McpClientSessionOptions): void {
     !positiveInteger(options.limits.maxListPages) ||
     !positiveInteger(options.limits.maxToolArgumentBytes) ||
     !positiveInteger(options.limits.maxToolMetadataBytes) ||
-    !positiveInteger(options.limits.maxToolResultBytes) ||
+    (options.limits.maxToolResultBytes !== undefined && !positiveInteger(options.limits.maxToolResultBytes)) ||
     !positiveInteger(options.limits.maxToolSchemaBytes) ||
     !positiveInteger(options.limits.maxTools)
   ) {
@@ -586,7 +598,7 @@ export class McpClientSession {
   private initializePromise: Promise<void> | null = null;
   private inventoryChangeVersion = 0;
   private inventoryStaleValue = true;
-  private readonly limits: McpClientSessionLimits;
+  private readonly limits: Required<McpClientSessionLimits>;
   private readonly onInventoryStale: (() => void) | undefined;
   private fatalCauseExposed = false;
   private readonly responseGuard: McpResponseGuard;
@@ -596,11 +608,13 @@ export class McpClientSession {
   constructor(options: McpClientSessionOptions) {
     validateOptions(options);
     this.defaultRequestTimeoutMs = options.requestTimeoutMs;
-    this.limits = options.limits;
+    const responseLimits = resolveMcpResponseWireLimits(options.responseLimits);
+    this.limits = {
+      ...options.limits,
+      maxToolResultBytes: options.limits.maxToolResultBytes ?? responseLimits.callToolResponseMaxBytes
+    };
     this.onInventoryStale = options.onInventoryStale;
-    this.responseGuard = new McpResponseGuard(
-      options.responseLimits ? { limits: options.responseLimits } : {}
-    );
+    this.responseGuard = new McpResponseGuard({ limits: responseLimits });
     const staticHeaders = new Headers(options.headers);
     const guardedFetch = this.responseGuard.wrapFetch(options.fetch);
     const transport = new StreamableHTTPClientTransport(new URL(options.url.toString()), {

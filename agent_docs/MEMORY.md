@@ -3,9 +3,9 @@
 Owner: Native Memory maintainers
 Scope: Personal Memory authority, evidence, retrieval, learning, and lifecycle.
 
-The cross-cutting safety boundary is in [Critical invariants](CRITICAL_INVARIANTS.md). Exact policies, limits, prompts, identities and job manifests belong to [Memory code](../lib/server/memory/), not this document.
+See [Critical invariants](CRITICAL_INVARIANTS.md) for safety; [Memory code](../lib/server/memory/) owns exact policies, limits, prompts, identities and jobs.
 
-Before designing a Memory repair, inspect the corresponding implementation in established open-source memory engines. Prefer applicable, demonstrated approaches over inventing a new mechanism. Record the inspected upstream revision, relevant mechanism and AIQSA-specific constraints in the local task; verify the adaptation against independent scenarios and the frozen quality suites.
+Before repairing Memory, inspect established open-source engines and prefer proven mechanisms. Record the upstream revision, mechanism and AIQSA constraints in the task; verify adaptations against independent scenarios and frozen quality suites.
 
 Memory is a supporting conversational feature. Aim for practical parity with a declared mature reference on useful supported workflows, prioritizing inexpensive, local improvements. Perfect semantic recall, exhaustive reasoning over long histories, and simultaneous leadership in quality, latency and cost are not product requirements. Comparable semantic failures and explicitly bounded low-value gaps may be accepted; ownership, source authority, integrity and the effects of acknowledged mutations or deletion remain mandatory.
 
@@ -16,6 +16,8 @@ Respect operator-defined scope and budgets; do not invent experiment, retry, eva
 All Memory preferences default on; upgrades preserve choices and pauses. Independent, verified Memory Utility Model assignment authorizes generation without extra egress consent. Dispatch revalidates exact model/connection/credential/role authority. Migration copies the former System model/effort/revision once; subsequent System edits cannot change Memory. Configuration affects future admissions only. Embeddings/reranking retain separate authority and fallback.
 
 Recommendations require working-case evidence and current capabilities/credentials/budget. One-time adoption may replace inherited/default bindings, preserving explicit Memory choices and clears. Without a qualified target, bootstrap requires configuration. Small qualification sets do not establish benchmark parity.
+
+Verified Knowledge embeddings may bootstrap untouched Memory settings after owner admission. Preserve ambiguous edited selections and existing vector spaces; Knowledge changes never switch them.
 
 Personal Memory is user-global. Saved Memories remain directly manageable while Memory is paused; pausing stops new use and work without deleting retained data. Archive is organization only. Resume admits only messages after its server-owned cutoff, never automatic historical backfill. Temporary and Project chats create or receive no Memory context, sources, bindings, counters or jobs. Legacy non-global and Project data is not silently broadened into Personal Memory. Public shares strip the entire private Memory surface.
 

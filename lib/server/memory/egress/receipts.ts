@@ -109,10 +109,15 @@ async function createReceipt(
       });
       if (existing) return existing;
     }
-    const count = await tx.memoryToolEgressReceipt.count({
+    // The accepted execution budget bounds work. Its evidence journal must
+    // also accommodate final synthesis and auxiliary provider dispatches.
+    // Allocate under the run lock from the indexed tail, not a second limit
+    // (or a row count that can reuse an ordinal after a child is removed).
+    const latest = await tx.memoryToolEgressReceipt.findFirst({
+      orderBy: { requestOrdinal: "desc" },
+      select: { requestOrdinal: true },
       where: { modelRunId: input.runId }
     });
-    if (count >= 64) throw new Error("memory_egress_receipt_limit");
     const blocked = input.blocked === true;
     const now = new Date();
     const created = await tx.memoryToolEgressReceipt.create({
@@ -129,7 +134,7 @@ async function createReceipt(
           ? { modelRunToolCallId: input.modelRunToolCallId }
           : {}),
         modelRunId: input.runId,
-        requestOrdinal: count + 1,
+        requestOrdinal: (latest?.requestOrdinal ?? 0) + 1,
         ...(input.requestPreview !== undefined
           ? { requestPreviewHash: memorySha256(input.requestPreview) }
           : {}),

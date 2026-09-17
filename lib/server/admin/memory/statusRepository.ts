@@ -2,7 +2,8 @@ import {
   Prisma,
   type MemoryDeletionState,
   type MemoryJobState,
-  type PrismaClient
+  type PrismaClient,
+  type UserMemorySettings
 } from "@prisma/client";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../../memory/history/chunking";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../../memory/history/contract";
@@ -106,22 +107,18 @@ export function createPrismaAdminMemoryStatusRepository(
 ): AdminMemoryStatusRepository {
   return Object.freeze({
     async read(now) {
-      const settings = await client.userMemorySettings.findMany({
-        orderBy: { userId: "asc" },
-        select: {
-          activeIndexGenerationId: true,
-          embeddingProviderModelId: true,
-          memoryRevision: true,
-          settingsRevision: true,
-          userId: true
-        },
-        where: {
-          OR: [
-            { referenceChatHistory: true },
-            { useMemoryFacts: true }
-          ]
-        }
-      });
+      const settings = await client.$queryRaw<Array<Pick<UserMemorySettings,
+        | "activeIndexGenerationId" | "embeddingProviderModelId"
+        | "memoryRevision" | "settingsRevision" | "userId"
+      >>>(Prisma.sql`
+        SELECT settings."activeIndexGenerationId", settings."embeddingProviderModelId",
+          settings."memoryRevision", settings."settingsRevision", settings."userId"
+        FROM "UserMemorySettings" AS settings
+        INNER JOIN "User" AS owner ON owner.id = settings."userId"
+          AND owner.status = 'active'::"UserStatus"
+        WHERE settings."referenceChatHistory" OR settings."useMemoryFacts"
+        ORDER BY settings."userId" ASC
+      `);
       const ownerIds = settings.map(({ userId }) => userId);
       const generationIds = settings.flatMap(({ activeIndexGenerationId }) =>
         activeIndexGenerationId ? [activeIndexGenerationId] : []);

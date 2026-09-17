@@ -17,6 +17,63 @@ const request = {
 const text = new WorkspaceActivityText(["credential-fixture"]);
 
 describe("masked Codex activity", () => {
+  it.each(["structuredContent", "structured_content", "text"])("shows a rejected response through %s without its private contents", (format) => {
+    const value = { code: "result_unsupported", toolFailure: "mcp_call_result_too_large", message: "PRIVATE_RESULT" };
+    const decoder = new CodexJsonlDecoder();
+    const events = decoder.push(new TextEncoder().encode([
+      { type: "thread.started", thread_id: "thread" }, { type: "turn.started" },
+      { type: "item.completed", item: { id: "oversized", type: "mcp_tool_call", tool: "call_tool", status: "completed",
+        result: format === "text" ? { content: [{ type: "text", text: JSON.stringify(value) }] } : { [format]: value } } },
+      { type: "turn.completed" }
+    ].map(event => JSON.stringify(event)).join("\n") + "\n"));
+    decoder.finish(0);
+    const project = createCodexActivityProjection("run", request);
+    const entries = events.map(event => project(event, text)).filter(Boolean);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: "mcp_call", phase: "failed", text: "MCP tool response exceeded its size limit." });
+    expect(decodeThreadWorkspaceActivityEntry(entries[0])).toEqual(entries[0]);
+    expect(decodeThreadWorkspaceActivityEntry({ ...entries[0], text: "PRIVATE_RESULT" })).toBeNull();
+    expect(decodeThreadWorkspaceActivityEntry({ ...entries[0], phase: "succeeded" })).toBeNull();
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_RESULT");
+  });
+
+  it.each([
+    { tool: "find_tools", reason: "SECRET_CANARY" },
+    { tool: "other_tool", reason: "mcp_router_timeout" }
+  ])("does not publish arbitrary MCP error content ($tool, $reason)", ({tool,reason}) => {
+    const decoder = new CodexJsonlDecoder();
+    const events = decoder.push(new TextEncoder().encode([
+      { type: "thread.started", thread_id: "thread" }, { type: "turn.started" },
+      { type: "item.completed", item: { id: "failed", type: "mcp_tool_call", tool, status: "failed", result: {
+        structuredContent: { code: "discovery_unavailable", discoveryFailure: { reason }, message: "SECRET_CANARY" }
+      } } }, { type: "turn.completed" }
+    ].map(event => JSON.stringify(event)).join("\n") + "\n"));
+    decoder.finish(0);
+    expect(events.find(event=>event.type==="activity")).not.toHaveProperty("discoveryFailure");
+    expect(JSON.stringify(events)).not.toContain("SECRET_CANARY");
+  });
+
+  it.each(["structuredContent", "structured_content", "text"])("projects only allowlisted discovery failure fields from %s", (format) => {
+    const diagnostic = { reason: "mcp_router_output_invalid", detail: "mcp_router_unknown_tool", attempt: 2, private: "SECRET_CANARY" };
+    const value = { code: "discovery_unavailable", discoveryFailure: diagnostic, message: "SECRET_CANARY" };
+    const result = format === "text" ? { content: [{ type: "text", text: JSON.stringify(value) }] } : { [format]: value };
+    const decoder = new CodexJsonlDecoder();
+    const events = decoder.push(new TextEncoder().encode([
+      { type: "thread.started", thread_id: "thread" }, { type: "turn.started" },
+      { type: "item.completed", item: { id: "failed", type: "mcp_tool_call", tool: "find_tools", status: "completed", result } },
+      { type: "turn.completed" }
+    ].map(event => JSON.stringify(event)).join("\n") + "\n"));
+    decoder.finish(0);
+    const project = createCodexActivityProjection("run", request);
+    const entries = events.map(event => project(event, text)).filter(Boolean);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: "mcp_call", phase: "failed", mcp: { discovery: true },
+      text: "Tool discovery failed: the tool selection contains an identifier outside the available catalog." });
+    expect(decodeThreadWorkspaceActivityEntry(entries[0])).toEqual(entries[0]);
+    expect(JSON.stringify(events)).not.toContain("SECRET_CANARY");
+    expect(JSON.stringify(entries)).not.toContain("SECRET_CANARY");
+  });
+
   it("retains actual commands and combined output, observed exits and measured duration", () => {
     const project = createCodexActivityProjection("run", request);
     const running = project({ type: "activity", id: "one", kind: "command", phase: "running",

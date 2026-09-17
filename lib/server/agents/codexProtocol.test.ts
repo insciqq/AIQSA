@@ -10,6 +10,17 @@ const complete = { type: "turn.completed", usage: { input_tokens: 999, output_to
 const jsonl = (events: readonly unknown[]) => encoder.encode(events.map((event) => JSON.stringify(event)).join("\n") + "\n");
 
 describe("Codex exec JSONL transport", () => {
+  it.each(["isError", "is_error"])("marks a completed RPC with %s as a failed tool without exposing its result", (key) => {
+    const decoder = new CodexJsonlDecoder();
+    const events = decoder.push(jsonl([...start, { type: "item.completed", item: {
+      id: "failed_call", type: "mcp_tool_call", tool: "call_tool", status: "completed",
+      result: { [key]: true, content: [{ type: "text", text: "PRIVATE_RESULT" }] }
+    } }, complete]));
+    decoder.finish(0);
+    expect(events).toContainEqual({ type: "activity", id: "failed_call", kind: "mcp", phase: "failed", tool: "call_tool" });
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_RESULT");
+  });
+
   it("reassembles UTF-8 and complete records from arbitrary transport chunks", () => {
     const decoder = new CodexJsonlDecoder();
     const bytes = jsonl([...start, { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "Отчёт 🧪 готов" } }, complete]);

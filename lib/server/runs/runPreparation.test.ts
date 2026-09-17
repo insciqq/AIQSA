@@ -953,7 +953,13 @@ describe("run preparation", () => {
         configs.push(prepared.normalizedRequest.agent!);
       }
       expect(load).toHaveBeenCalledWith(expect.objectContaining({ requiresClientSearchRoutes: true }));
+      expect(workspace.prepare).toHaveBeenCalledWith(expect.objectContaining({ agentEnabled: true }));
       expect(configs[0]!.compatibilityHash).toBe(configs[1]!.compatibilityHash);
+      vi.mocked(workspace.prepare).mockResolvedValue({ ok: false, code: "agent_unavailable", status: 503 });
+      for (const input of [sendInput(body), regenerateInput(body)]) {
+        await expect(prepareRun({ ...harness.deps, workspace, providerAdmission: { load } }, input))
+          .resolves.toMatchObject({ ok: false, code: "agent_unavailable", status: 503 });
+      }
     } finally { vi.unstubAllEnvs(); }
   });
 

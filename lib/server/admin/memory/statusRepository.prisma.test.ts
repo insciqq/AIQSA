@@ -10,6 +10,35 @@ vi.mock("./processingRepository", () => ({
 describe("administrator Memory queue aggregates", () => {
   afterAll(() => prisma.$disconnect());
 
+  it.each(["disabled", "pending", "denied"] as const)(
+    "excludes an unavailable index for a %s owner until activation without changing retained settings",
+    async (status) => {
+      const userId = `memory-index-status-${randomUUID()}`;
+      const repository = createPrismaAdminMemoryStatusRepository(prisma, async () => undefined);
+      const now = new Date();
+      const before = await repository.read(now);
+      await prisma.user.create({ data: { id: userId, displayName: "Index status fixture", status } });
+      try {
+        const settings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+        expect((await repository.read(now)).index).toEqual(before.index);
+
+        await prisma.user.update({ where: { id: userId }, data: { status: "active" } });
+        const active = await repository.read(now);
+        expect(active.index.ownerCount).toBe(before.index.ownerCount + 1);
+        expect(active.index.requiresRebuild).toBe(true);
+        expect(active.index.rebuildCandidates).toContainEqual(expect.objectContaining({
+          operation: "REBUILD_SEARCH_INDEX", userId
+        }));
+
+        await prisma.user.update({ where: { id: userId }, data: { status } });
+        expect((await repository.read(now)).index).toEqual(before.index);
+        expect(await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } })).toEqual(settings);
+      } finally {
+        await prisma.user.delete({ where: { id: userId } });
+      }
+    }
+  );
+
   it("partitions durable jobs and deletions into waiting and in-flight work with only waiting age", async () => {
     const userId = `memory-queue-${randomUUID()}`;
     const now = new Date();

@@ -272,6 +272,13 @@ function schemaForProvider(
   return { rootWrapped, schema };
 }
 
+export class StructuredOutputDecodeError extends Error {
+  constructor(readonly reason: "empty_output" | "invalid_json" | "non_object" | "invalid_wrapper") {
+    super("structured_output_invalid");
+    this.name = "StructuredOutputDecodeError";
+  }
+}
+
 function decodeProviderStructuredOutput(
   request: ProviderStructuredOutputRequest,
   output: Record<string, unknown>,
@@ -281,7 +288,7 @@ function decodeProviderStructuredOutput(
   if (Object.keys(output).length !== 1 ||
     !Object.hasOwn(output, PROVIDER_ROOT_WRAPPER_KEY) ||
     !isRecord(output[PROVIDER_ROOT_WRAPPER_KEY])) {
-    throw new Error("structured_output_invalid");
+    throw new StructuredOutputDecodeError("invalid_wrapper");
   }
   return output[PROVIDER_ROOT_WRAPPER_KEY];
 }
@@ -351,8 +358,8 @@ function structuredUserContent(request: ProviderStructuredOutputRequest, type: "
 }
 
 export function parseProviderStructuredOutputObject(text: string): Record<string, unknown> {
+  if (!text.trim()) throw new StructuredOutputDecodeError("empty_output");
   if (
-    !text.trim() ||
     text.length > STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters ||
     Buffer.byteLength(text, "utf8") > STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters * 4
   ) {
@@ -362,9 +369,9 @@ export function parseProviderStructuredOutputObject(text: string): Record<string
   try {
     parsed = JSON.parse(text);
   } catch {
-    throw new Error("structured_output_invalid");
+    throw new StructuredOutputDecodeError("invalid_json");
   }
-  if (!isRecord(parsed)) throw new Error("structured_output_invalid");
+  if (!isRecord(parsed)) throw new StructuredOutputDecodeError("non_object");
   return parsed;
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { memorySha256 } from "../persistence/lexical";
-import type { MemoryRecallRoundProjection } from "./rounds";
+import { MEMORY_RECALL_ROUND_PROJECTION_VERSION, type MemoryRecallRoundProjection } from "./rounds";
 import {
   MEMORY_RECALL_ROUND_SEGMENT_MAX_CHARACTERS,
   MEMORY_RECALL_ROUND_SEGMENT_MAX_PER_ROUND,
@@ -43,7 +43,7 @@ function round(rawSafeText: string): MemoryRecallRoundProjection {
     occurredTo: "2026-08-28T10:00:00.000Z",
     ordinal: 0,
     parentChunkId: "chunk-segments",
-    projectionVersion: "memory-recall-round-projection-v1",
+    projectionVersion: MEMORY_RECALL_ROUND_PROJECTION_VERSION,
     rawSafeText,
     redactionReasonCodes: [],
     redactionState: "NOT_NEEDED",

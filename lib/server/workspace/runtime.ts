@@ -8,6 +8,7 @@ import type {
 } from "@/lib/domain/workspace";
 
 export type WorkspaceRuntimeHealth = Readonly<{
+  agentReady?: boolean;
   imageReady?: boolean;
   mcpVersion?: string;
   reasonCode?: string;

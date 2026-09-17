@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { access, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,17 +15,27 @@ import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
 const sdk = vi.hoisted(() => ({
   builder: vi.fn(),
   get: vi.fn(),
+  installed: vi.fn(() => true),
+  image: vi.fn(async () => ({})),
+  list: vi.fn(async () => []),
   listWith: vi.fn(),
   callTool: vi.fn(),
   closeMcp: vi.fn(async () => undefined)
 }));
 
 vi.mock("microsandbox", () => ({
-  Sandbox: { builder: sdk.builder, get: sdk.get, listWith: sdk.listWith },
+  Image: { get: sdk.image },
+  isInstalled: sdk.installed,
+  Sandbox: { builder: sdk.builder, get: sdk.get, list: sdk.list, listWith: sdk.listWith },
   SandboxNotFoundError: class extends Error {},
   SandboxNotRunningError: class extends Error {},
   NetworkPolicy: { none: () => ({}) }
 }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  const access = vi.fn(original.access);
+  return { ...original, access, default: { ...original, access } };
+});
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
   Client: class {
     connect = vi.fn(async () => undefined);
@@ -145,6 +155,13 @@ function fixture() {
 describe("Microsandbox Workspace lifecycle", () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => vi.restoreAllMocks());
+
+  it.each([true, false, undefined])("qualifies Agent only when its gateway is configured: %s", async (agentGatewayEnabled) => {
+    vi.mocked(access).mockResolvedValueOnce(undefined);
+    const runtime = new MicrosandboxWorkspaceRuntime({ ...config, agentGatewayEnabled });
+    const health = await runtime.health();
+    expect(health).toMatchObject({ state: "ready", agentReady: agentGatewayEnabled === true });
+  });
 
   it.each([null, 2])("passes Agent deadline %s explicitly, omitting the SDK timer in Off", async (timeoutSeconds) => {
     const value = fixture();

@@ -19,6 +19,7 @@ describe("Workspace chat availability projection", () => {
       modelSupportsTools: true,
       session: null
     })).toEqual({
+      agentAvailable: false,
       available: true,
       enabled: true,
       internetEnabled: true,
@@ -29,6 +30,21 @@ describe("Workspace chat availability projection", () => {
       modelSupportsTools: true,
       session: { internetEnabled: false, state: "STOPPED" }
     })).toMatchObject({ internetEnabled: false, sessionState: "stopped" });
+  });
+
+  it("keeps ordinary Workspace available when Agent is unsupported", async () => {
+    const service = createWorkspaceAvailabilityService({
+      health: { invalidate() {}, async read() { return { state: "ready" }; } },
+      policy: { async read() { return { enabled: true, internetEnabled: true, version: 1 }; }, async update() { return { kind: "stale" }; } }
+    });
+    const snapshot = await service.snapshot();
+    const state = { enabled: true, modelSupportsTools: true, session: null };
+    expect(service.project(snapshot, state)).toMatchObject({ agentAvailable: false, available: true });
+    const qualified = { ...snapshot, runtime: { ...snapshot.runtime, agentReady: true } };
+    expect(service.project(qualified, state)).toMatchObject({ agentAvailable: true, available: true });
+    expect(service.project({ ...qualified, runtime: { agentReady: true, state: "unavailable" } }, state).agentAvailable).toBe(false);
+    expect(service.project({ ...qualified, policy: { ...qualified.policy, enabled: false } }, state).agentAvailable).toBe(false);
+    expect(service.project(qualified, { ...state, modelSupportsTools: false }).agentAvailable).toBe(false);
   });
 
   it("uses stable unavailable-reason precedence", async () => {

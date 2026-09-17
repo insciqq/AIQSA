@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
+import { StructuredOutputDecodeError } from "../providers/structuredOutput";
 import { mcpChatDiscoveryContext } from "./chatDiscoveryContext";
 import type { McpCapabilityCatalog } from "./runPlan";
 import {
@@ -158,6 +159,31 @@ function resolution(structuredOutput = true) {
 }
 
 describe("semantic MCP router", () => {
+  it.each([
+    ["mcp_router_unknown_tool", { outcome: "Read", status: "covered", tool_ids: ["private-unknown-id"] }],
+    ["mcp_router_duplicate_tool", { outcome: "Read", status: "covered", tool_ids: [jiraTool, jiraTool] }],
+    ["mcp_router_invalid_outcome", { outcome: " Read ", status: "covered", tool_ids: [jiraTool] }],
+    ["mcp_router_invalid_coverage", { outcome: "Read", status: "uncovered", tool_ids: [jiraTool] }],
+    ["mcp_router_invalid_shape", { outcome: "Read", tool_ids: [jiraTool] }]
+  ])("preserves %s and the correction attempt without retaining output", async (detail, requirement) => {
+    const executeStructuredOutput = vi.fn()
+      .mockResolvedValueOnce({ mcp_needed: true, requirements: [{ outcome: "Read", status: "uncovered", tool_ids: [] }] })
+      .mockResolvedValueOnce({ mcp_needed: true, requirements: [requirement] });
+    const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => resolution() });
+    const error = await router.route({ activeToolNames: new Set(), catalog, goals: ["Read"], limit: 5 }).catch(e => e);
+    expect(error.diagnostic).toEqual({ reason: "mcp_router_output_invalid", detail, attempt: 2 });
+    expect(JSON.stringify(error.diagnostic)).not.toContain("private-unknown-id");
+  });
+
+  it("distinguishes invalid provider JSON from a rejected semantic selection", async () => {
+    const router = createMcpSemanticRouter({
+      resolveSystemModel: async () => resolution(),
+      executeStructuredOutput: async () => { throw new StructuredOutputDecodeError("invalid_json"); }
+    });
+    await expect(router.route({ activeToolNames: new Set(), catalog, goals: ["Read"], limit: 5 }))
+      .rejects.toMatchObject({ diagnostic: { reason: "mcp_router_output_invalid", detail: "mcp_router_invalid_json", attempt: 1 } });
+  });
+
   it.each([false, true])("gives a 114-tool catalog the configured reasoning/JSON allowance (reasoning=%s)", async (reasoning) => {
     const largeCatalog: McpCapabilityCatalog = { ...catalog, servers: [{ ...catalog.servers[0]!,
       tools: Array.from({ length: 114 }, (_, index) => ({ description: "Read synthetic data", namespacedName: `mcp_test_${index}`, originalName: `test_${index}` }))
@@ -528,10 +554,10 @@ describe("semantic MCP router", () => {
     });
 
     await expect(route()).rejects.toEqual(
-      new McpSemanticRouterError("mcp_router_output_invalid")
+      new McpSemanticRouterError("mcp_router_output_invalid", null, "mcp_router_unknown_tool", 1)
     );
     await expect(route()).rejects.toEqual(
-      new McpSemanticRouterError("mcp_router_output_invalid")
+      new McpSemanticRouterError("mcp_router_output_invalid", null, "mcp_router_duplicate_tool", 1)
     );
   });
 

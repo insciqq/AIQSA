@@ -1,7 +1,8 @@
 import { CODEX_OUTPUT_LIMITS, CodexProtocolError } from "./codexProtocol";
 
 export const AGENT_OUTPUT_POLL_BYTES = 64 * 1024;
-export const AGENT_OUTPUT_PENDING_BYTES = 4 * 1024 * 1024;
+// A complete MCP activity may arrive while the preceding output is being polled.
+export const AGENT_OUTPUT_PENDING_BYTES = 2 * CODEX_OUTPUT_LIMITS.lineBytes;
 
 /** Private runner response; only the protocol decoder may consume these bytes. */
 export type AgentExecutionOutputPage = Readonly<{

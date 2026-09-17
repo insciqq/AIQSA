@@ -71,7 +71,7 @@ function limits(overrides: Partial<McpResponseWireLimits> = {}): McpResponseWire
 describe("MCP response limit configuration", () => {
   it("uses the specified defaults", () => {
     expect(DEFAULT_MCP_RESPONSE_WIRE_LIMITS).toEqual({
-      callToolResponseMaxBytes: 524_288,
+      callToolResponseMaxBytes: 8_388_608,
       initializeResponseMaxBytes: 1_048_576,
       listToolsResponseMaxBytes: 16_777_216,
       sseEventMaxBytes: 16_777_216,
