@@ -689,7 +689,10 @@ function fakeProviderExecutionSnapshot() {
 }
 
 describe("Knowledge Evidence v2 repository projection", () => {
-  it.each([false, true])("publishes evidence answer blocks from authorized settled receipts without repeating providers (V2: %s)", async modern => {
+  it.each([
+    { modern: false, instructions: false }, { modern: false, instructions: true },
+    { modern: true, instructions: false }, { modern: true, instructions: true }
+  ])("publishes settled evidence answers without repeating providers (V2: $modern, instructions: $instructions)", async ({ modern, instructions }) => {
     const evidenceRow = row().evidenceItems[0]!;
     const draft = packKnowledgeEvidenceDispatchManifest({
       candidates: [{ ambiguity: "none", evidenceId: "provider-call-1:result:1", exactExcerpt: evidenceRow.excerpt,
@@ -732,6 +735,7 @@ describe("Knowledge Evidence v2 repository projection", () => {
     const execute = vi.fn(async () => ({ output: outputs[cursor++]!, providerResponseId: `response-${cursor}`,
       usage: { inputTokens: 10, outputTokens: 5, reasoningTokens: 0, totalTokens: 15 } }));
     const executionInput = { authorize: async () => undefined, draft, execute, lifecycle,
+      ...(instructions ? { answerInstructions: { system: "Use concise paragraphs.", responseReminder: "Keep the requested format." } } : {}),
       executionPolicy: resolveKnowledgeGroundingExecutionPolicyV1({ modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false } }),
       modelRunId: "run-1", request: "Explain retention and its trend.", shouldAbort: () => false, transport: "native_strict" as const };
     if (modern) await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...executionInput, workflowVersion: 11, refineEvidence: async () => null });

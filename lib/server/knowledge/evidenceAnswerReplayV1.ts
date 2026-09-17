@@ -46,6 +46,7 @@ export async function replayKnowledgeEvidenceAnswerV1(input: Readonly<{
     }
   };
   const executionInput = { authorize: unavailable, draft: first.draft, execute: unavailable,
+    ...(snapshot.answerInstructions ? { answerInstructions: snapshot.answerInstructions } : {}),
     executionPolicy: snapshot.executionPolicy, forbiddenIdentityFragments: input.forbiddenIdentityFragments,
     lifecycle, modelRunId: input.modelRunId, request, shouldAbort: () => true, transport: snapshot.transport,
     repairFeedbackVersion: "repairFeedbackVersion" in snapshot ? snapshot.repairFeedbackVersion : undefined };
