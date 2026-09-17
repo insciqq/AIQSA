@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import type { AdminConfirmationRequest } from "@/components/admin/useAdminConfirmationController";
@@ -253,6 +253,42 @@ describe("AdminProviderModels", () => {
     expect(connection.unassignedPolicy).toBe("require_assignment");
   });
 
+  it("checks an enabled draft inline instead of sending the user to Edit", async () => {
+    const connection = openRouter();
+    const draft = connection.models.find(({ id }) => id === "model-opus")!;
+    draft.activeConfig = null;
+    draft.activeVersion = 0;
+    draft.activatedAt = null;
+    const { actions } = harness(connection);
+    const row = screen.getByTestId("provider-model-model-opus");
+    const check = within(row).getByRole("button", { name: "Check model" });
+    expect(check).toBeEnabled();
+    expect(check).toHaveAttribute("title", "Publishes this model and checks it with the selected key.");
+    fireEvent.click(check);
+    expect(actions.startModelChecks).toHaveBeenCalledWith("conn-or", "cred-primary", ["model-opus"]);
+    expect(actions.saveModel).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Check models" }));
+    expect(actions.startModelChecks).toHaveBeenLastCalledWith("conn-or", "cred-primary", undefined);
+  });
+
+  it("publishes a draft when its On switch is turned on", async () => {
+    const connection = openRouter();
+    const draft = connection.models.find(({ id }) => id === "model-sonar")!;
+    draft.activeConfig = null;
+    draft.activeVersion = 0;
+    draft.activatedAt = null;
+    const { actions } = harness(connection);
+    await act(async () => { fireEvent.click(screen.getByRole("switch", { name: "Perplexity Sonar Pro Search on" })); await Promise.resolve(); });
+    await waitFor(() => expect(actions.saveModel).toHaveBeenCalledOnce());
+    expect(actions.saveModel).toHaveBeenCalledWith("conn-or", "model-sonar", expect.objectContaining({
+      configuration: draft.draftConfig,
+      displayName: draft.displayName,
+      expectedActiveVersion: 0,
+      expectedDraftVersion: 1
+    }), expect.objectContaining({ onProgress: expect.any(Function), signal: expect.any(AbortSignal) }));
+    expect(actions.updateModel).not.toHaveBeenCalled();
+  });
+
   it("requires an explicit diagnostic key and shows its check in Edit without changing access", async () => {
     const connection = openRouter();
     connection.defaultCredentialId = null;
@@ -388,6 +424,7 @@ describe("AdminProviderModels", () => {
     const sonar = screen.getByTestId("provider-model-model-sonar");
     expect(sonar).toHaveTextContent("not checked yet");
     expect(within(sonar).getByRole("button", { name: "Check model" })).toBeDisabled();
+    expect(sonar).toHaveTextContent("Turn this model on to publish and check it.");
     expect(within(sonar).getByRole("switch", { name: "Perplexity Sonar Pro Search on" })).not.toBeChecked();
 
     const cohere = screen.getByTestId("provider-model-model-cohere");

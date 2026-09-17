@@ -76,6 +76,7 @@ import type {
   ProviderCredentialSecretSource,
   ProviderDisableTarget,
   ProviderDraftMutationResult,
+  ProviderModelActivationCandidate,
   StoredProviderDraftCheck
 } from "./repositoryContract";
 import type {
@@ -860,6 +861,43 @@ export function createAdminProviderService(input: Readonly<{
       .map(({ id }) => id);
   }
 
+  /** Publish a never-live model draft without starting a second check run. */
+  async function activateModelDraft(
+    candidate: ProviderModelActivationCandidate,
+    signal?: AbortSignal
+  ): Promise<boolean> {
+    let model = normalizeProviderModelConfiguration(candidate.model.configuration);
+    const initial = candidate.model.activeVersion === 0;
+    if (initial && model.modelClass === "answer") model = { ...model, capabilities: {
+      ...model.capabilities, toolCalling: false, parallelToolCalls: false, vision: false,
+      nativePdfInput: false, streaming: false
+    } };
+    validateFamily(candidate.connection.family, model);
+    const result = await input.repository.activateModelCas({
+      initialSetup: initial,
+      signal,
+      connection: {
+        activateDraft: candidate.connection.activeVersion === 0
+          ? {
+              configuration: normalizeProviderConnectionConfiguration(candidate.connection.draftConfiguration),
+              draftVersion: candidate.connection.draftVersion
+            }
+          : null,
+        id: candidate.connection.id
+      },
+      enable: true,
+      model: {
+        configuration: model,
+        draftVersion: candidate.model.draftVersion,
+        id: candidate.model.id
+      },
+      now: now()
+    });
+    if (result === "stale") throw new AdminProviderServiceError("provider_draft_stale");
+    if (result === "not_found") throw new AdminProviderServiceError("provider_model_not_found");
+    return initial;
+  }
+
   async function startCheckRun(value: {
     catalogModelIds?: readonly string[];
     expectedConnectionVersion?: number;
@@ -880,10 +918,12 @@ export function createAdminProviderService(input: Readonly<{
     let connection = (await input.repository.listConnections())
       .find(({ id }) => id === value.connectionId);
     if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
-    const credential = usableCredential(connection, value.credentialId);
-    if (!credential) {
-      throw new AdminProviderServiceError("provider_credential_not_found");
-    }
+    const requireUsableCredential = (current: AdminProviderConnection) => {
+      const credential = usableCredential(current, value.credentialId);
+      if (!credential) throw new AdminProviderServiceError("provider_credential_not_found");
+      return credential;
+    };
+    let credential = requireUsableCredential(connection);
     if (value.expectedConnectionVersion !== undefined && connection.activeVersion !== value.expectedConnectionVersion ||
       value.expectedCredentialVersionId !== undefined && credential.activeVersion!.id !== value.expectedCredentialVersionId) {
       throw new AdminProviderServiceError("provider_draft_stale");
@@ -906,12 +946,14 @@ export function createAdminProviderService(input: Readonly<{
       });
       connection = (await input.repository.listConnections()).find(({ id }) => id === value.connectionId);
       if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
+      credential = requireUsableCredential(connection);
     }
     const running = checkRuns.running(connection.id, value.credentialId);
     if (running) {
       if (value.expectedConnectionVersion !== undefined) throw new AdminProviderServiceError("provider_checks_running");
       return running;
     }
+    const initialModelIds = new Set(value.initialModelIds ?? []);
     if (value.reason === "setup" && !value.modelIds && connection.enabled &&
       connection.activeConfig && connection.defaultCredentialId === credential.id) {
       const missing = providerSetupModels(connection.family, connection.activeConfig.apiRoot).filter((candidate) =>
@@ -938,10 +980,31 @@ export function createAdminProviderService(input: Readonly<{
           connectionId: connection.id, connectionVersion: connection.activeVersion,
           credentialId: credential.id, credentialVersionId: credential.activeVersion!.id, models: additions, now: now()
         }) !== "updated") throw new AdminProviderServiceError("provider_draft_stale");
-        if (additions.length) value = { ...value, reuseCurrentChecks: true,
-          initialModelIds: [...(value.initialModelIds ?? []), ...additions.map(({ id }) => id)] };
+        if (additions.length) {
+          value = { ...value, reuseCurrentChecks: true };
+          for (const id of additions.map(({ id }) => id)) initialModelIds.add(id);
+        }
         connection = (await input.repository.listConnections()).find(({ id }) => id === value.connectionId);
         if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
+        credential = requireUsableCredential(connection);
+      }
+    }
+    if (value.reason === "requested" || value.reason === "model") {
+      const wanted = value.modelIds ? new Set(value.modelIds) : null;
+      const drafts = connection.models.filter((model) => model.enabled && model.activeConfig === null &&
+        model.activeVersion === 0 && (!wanted || wanted.has(model.id)));
+      for (const draft of drafts) {
+        const candidate = await input.repository.loadModelActivationCandidate({
+          connectionId: connection.id,
+          modelId: draft.id
+        });
+        if (!candidate) throw new AdminProviderServiceError("provider_model_not_found");
+        if (candidate.model.activeVersion === 0) {
+          if (await activateModelDraft(candidate, value.signal)) initialModelIds.add(draft.id);
+          connection = (await input.repository.listConnections()).find(({ id }) => id === value.connectionId);
+          if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
+          credential = requireUsableCredential(connection);
+        }
       }
     }
     const modelIds = checkableModelIds(connection, value.modelIds);
@@ -959,7 +1022,7 @@ export function createAdminProviderService(input: Readonly<{
         connection.activeChecks.some((check) => check.providerModelId === id && check.modelVersion === model.activeVersion &&
           Boolean(decodeCapabilitySetupEvidence(check.evidence?.capabilitySetup)) &&
           decodeCapabilitySetupEvidence(check.evidence?.capabilitySetup)?.activation !== "preserve");
-      const activateCapabilities = Boolean(value.initialModelIds?.includes(id) || initialMarker &&
+      const activateCapabilities = Boolean(initialModelIds.has(id) || initialMarker &&
         model.draftVersion === model.activeVersion && (value.reason === "setup" || value.retryUnresolved));
       if (activateCapabilities || value.retryUnresolved || value.reuseCurrentChecks) {
         initialSetup[id] = { activateCapabilities, connectionVersion: connection.activeVersion,
@@ -971,7 +1034,7 @@ export function createAdminProviderService(input: Readonly<{
           } : {}) };
       }
     }
-    const completedModelIds = ((value.reason === "setup" || Boolean(value.initialModelIds?.length)) && value.reuseCurrentChecks || value.retryUnresolved)
+    const completedModelIds = ((value.reason === "setup" || initialModelIds.size > 0) && value.reuseCurrentChecks || value.retryUnresolved)
       ? modelIds.filter((id) => {
           const model = connection!.models.find((candidate) => candidate.id === id)!;
           return connection!.activeChecks.some((check) =>
@@ -1264,37 +1327,7 @@ export function createAdminProviderService(input: Readonly<{
       if (value.expectedDraftVersion !== undefined && candidate.model.draftVersion !== value.expectedDraftVersion) {
         throw new AdminProviderServiceError("provider_draft_stale");
       }
-      let model = normalizeProviderModelConfiguration(candidate.model.configuration);
-      const initial = candidate.model.activeVersion === 0;
-      if (initial && model.modelClass === "answer") model = { ...model, capabilities: {
-        ...model.capabilities, toolCalling: false, parallelToolCalls: false, vision: false,
-        nativePdfInput: false, streaming: false
-      } };
-      validateFamily(candidate.connection.family, model);
-      const result = await input.repository.activateModelCas({
-        initialSetup: initial,
-        signal: value.signal,
-        connection: {
-          activateDraft: candidate.connection.activeVersion === 0
-            ? {
-                configuration: normalizeProviderConnectionConfiguration(
-                  candidate.connection.draftConfiguration
-                ),
-                draftVersion: candidate.connection.draftVersion
-              }
-            : null,
-          id: candidate.connection.id
-        },
-        enable: true,
-        model: {
-          configuration: model,
-          draftVersion: candidate.model.draftVersion,
-          id: candidate.model.id
-        },
-        now: now()
-      });
-      if (result === "stale") throw new AdminProviderServiceError("provider_draft_stale");
-      if (result === "not_found") throw new AdminProviderServiceError("provider_model_not_found");
+      const initial = await activateModelDraft(candidate, value.signal);
       value.onActivated?.();
       const credential = candidate.connection.defaultCredential;
       if (!credential?.usable) return { check: "skipped" };
