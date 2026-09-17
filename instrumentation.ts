@@ -10,6 +10,8 @@ export async function register(): Promise<void> {
       "./lib/server/observability"
     );
     announceProcess({ attachments: "starting", memory: "unknown", knowledge: "starting", mcp: "starting", workspace: "unknown", email: "unknown" });
+    const { startNativeRoutingAdoption } = await import("./lib/server/bootstrap/nativeRoutingAdoption");
+    startNativeRoutingAdoption();
     const { startDefaultRunRecoveryScheduler } = await import(
       "./lib/server/runs/defaultRecoveryScheduler"
     );

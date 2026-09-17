@@ -1,5 +1,7 @@
 "use client";
 
+import { resolveOpenRouterNativeProvider } from "@/lib/domain/openRouterNativeRouting";
+
 import { ImageModelFields } from "./ImageModelFields";
 import { reconcileModelForm } from "./modelSaveReconciliation";
 import { imageModelConfiguration } from "@/lib/domain/imageModels";
@@ -120,13 +122,18 @@ function RoutingField({
     [connection, credential, form.upstreamModelId]
   );
   const endpoints = discovery.endpoints.get(identity);
+  const [customizing, setCustomizing] = useState(false);
   const selectedMode = form.openRouterRoutingMode === "only_selected";
+  const native = resolveOpenRouterNativeProvider({ modelId: form.upstreamModelId, endpoints: endpoints.items,
+    requiredParameters: form.capabilities.toolCalling ? ["tools"] : [] });
+  const nativeSelected = !customizing && selectedMode && native.available && form.providerTags.length === 1 && form.providerTags[0] === native.provider;
+  const choice = nativeSelected ? "native" : selectedMode ? "only_selected" : "automatic";
 
   useEffect(() => {
-    if (requested && selectedMode && identity) void discovery.endpoints.load(identity);
-  }, [discovery.endpoints, identity, requested, selectedMode]);
+    if (requested && identity) void discovery.endpoints.load(identity);
+  }, [discovery.endpoints, identity, requested]);
 
-  const byTag = useMemo(() => new Map(endpoints.items.map((endpoint) => [endpoint.tag, endpoint])), [endpoints.items]);
+  const byTag = new Map(endpoints.items.map((endpoint) => [endpoint.tag, endpoint]));
   const normalized = query.trim().toLocaleLowerCase();
   const available = endpoints.items
     .filter((endpoint) => !form.providerTags.includes(endpoint.tag))
@@ -134,22 +141,22 @@ function RoutingField({
       `${endpoint.providerName} ${endpoint.name} ${endpoint.tag}`.toLocaleLowerCase().includes(normalized))
     .sort((left, right) => collator.compare(endpointLabel(left), endpointLabel(right)) || collator.compare(left.tag, right.tag));
   const suggestion = available.slice(0, 3).map(endpointLabel).join(", ");
-  const optionCard = (mode: ModelForm["openRouterRoutingMode"], title: string, detail: string) => (
+  const optionCard = (mode: ModelForm["openRouterRoutingMode"] | "native", title: string, detail: string) => (
     <label
-      className={`flex cursor-pointer flex-col gap-0.5 rounded-[10px] border px-3 py-2.5 ${
-        form.openRouterRoutingMode === mode ? "border-proof bg-proof/10" : "border-trace-strong"
+      className={`flex cursor-pointer flex-col gap-0.5 rounded-[10px] border px-3 py-2.5 focus-within:ring-2 focus-within:ring-focus ${
+        choice === mode ? "border-proof bg-proof/10" : "border-trace-strong"
       } ${focusRing}`}
-      data-selected={form.openRouterRoutingMode === mode || undefined}
+      data-selected={choice === mode || undefined}
     >
       <input
-        checked={form.openRouterRoutingMode === mode}
+        checked={choice === mode}
         className="sr-only"
-        disabled={disabled}
+        disabled={disabled || mode === "native" && !native.available}
         name="routing-mode"
-        onChange={() => { setRequested(true); setForm({
+        onChange={() => { setRequested(true); setCustomizing(mode === "only_selected"); setForm({
           ...form,
-          openRouterRoutingMode: mode,
-          providerTags: mode === "automatic" ? [] : form.providerTags
+          openRouterRoutingMode: mode === "native" ? "only_selected" : mode,
+          providerTags: mode === "native" && native.available ? [native.provider] : []
         }); }}
         type="radio"
         value={mode}
@@ -160,13 +167,21 @@ function RoutingField({
   );
 
   return (
-    <fieldset className="min-w-0">
+    <fieldset className="min-w-0" onFocus={() => setRequested(true)}>
       <legend className={fieldLabel}>Routing</legend>
-      <div className="grid gap-2 grid-cols-[minmax(0,1fr)] sm:grid-cols-2">
+      <div className="grid gap-2 grid-cols-[minmax(0,1fr)] sm:grid-cols-3">
+        {optionCard("native", "Native · recommended", native.available ? native.provider : "Needs a matching provider")}
         {optionCard("automatic", "Automatic", "OpenRouter picks a healthy route")}
-        {optionCard("only_selected", "Only these providers", "In order, no fallback outside the list")}
+        {optionCard("only_selected", "Custom providers", "In order, no fallback outside the list")}
       </div>
-      {selectedMode ? (
+      <p className="mt-2 text-xs leading-5 text-ink-muted">Native uses the model’s publisher only. Automatic can improve availability, but may change who handles requests and their latency.</p>
+      {!requested && identity ? <UiV2Button tone="ghost" type="button" disabled={disabled} onClick={() => setRequested(true)}>Find native provider</UiV2Button> : null}
+      {requested && !selectedMode && endpoints.status === "loading" ? <p className="mt-2 text-xs text-ink-muted" role="status">Loading providers…</p> : null}
+      {requested && !native.available && endpoints.status !== "loading" ? <p className="mt-2 text-xs text-ink-muted" role="status">
+        {endpoints.status === "error" ? "Could not verify a native provider. Retry discovery or choose custom providers." : "No compatible native provider is confirmed. Keep Automatic or choose custom providers."}
+        {identity && endpoints.status === "error" ? <UiV2Button tone="ghost" type="button" onClick={() => void discovery.endpoints.retry(identity)}>Retry discovery</UiV2Button> : null}
+      </p> : null}
+      {selectedMode && !nativeSelected ? (
         <div className="mt-2 overflow-hidden rounded-[10px] bg-control-surface/60" data-testid="model-routing-list">
           {form.providerTags.length ? (
             <ol aria-label="Providers in order" className="divide-y divide-trace-subtle">

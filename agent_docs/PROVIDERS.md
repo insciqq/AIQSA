@@ -3,7 +3,7 @@
 Owner: Provider integration maintainers
 Scope: Execution authority, capability evidence, transport and disclosure boundaries.
 
-Exact adapters, supported protocols, terminal events, request shapes and limits belong to [provider code](../lib/server/providers/). [Run contracts](RUN_CONTRACTS.md) owns accepted execution; [Security](SECURITY.md) owns credentials, SSRF and endpoint trust.
+Adapters and wire contracts belong to [provider code](../lib/server/providers/); accepted execution to [Run contracts](RUN_CONTRACTS.md); credentials and endpoint trust to [Security](SECURITY.md).
 
 ## Authority And Capability
 
@@ -29,7 +29,7 @@ Custom roots require explicit protocol and canonical base URL; do not guess `/v1
 
 Gateway routing isolation is compatibility behavior, never identity or retry authority. Automatic detection belongs to validated catalog evidence bound to the tested endpoint and credential; explicit overrides and accepted snapshots remain authoritative. Opaque routing keys isolate physical requests without exposing private identity or acting as idempotency keys. Preserve concurrency; fixed delays cannot guarantee isolation.
 
-Native and compatible protocols are separate runtime identities; wire similarity grants no fallback authority. Native OpenAI background work requires stored provider state; compatible Responses does not inherit its store/background/cache lifecycle. DeepSeek and Gemini use their dedicated native paths without compatible fallback. Gemini thought signatures remain private continuation state; hosted Search and application tools are not combined until the stable protocol supports it. OpenRouter preserves the selected routing/privacy profile and defaults data collection to `deny`; an administrator may explicitly opt an individual model into `allow`, revalidated at admission and dispatch. Fakes are verification-only.
+Native and compatible protocols are separate runtime identities; wire similarity grants no fallback authority. Native OpenAI background work requires stored provider state; compatible Responses does not inherit its store/background/cache lifecycle. DeepSeek and Gemini use their dedicated native paths without compatible fallback. Gemini thought signatures remain private continuation state; hosted Search and application tools are not combined until the stable protocol supports it. OpenRouter defaults to a discovered native provider with no outside fallback; operator Automatic/custom choices remain authoritative. One-time adoption preserves the serving route until fresh capability proofs for all usable keys publish together. Unresolved or crash-ambiguous checks require explicit Test & Save. Data collection defaults to `deny`; per-model `allow` requires an administrator choice, revalidated at dispatch. Fakes are verification-only.
 
 Client Search receives only a bounded generated query and server-owned controls, never conversation, prompts, attachment identity, filenames, bytes or extracted text. Findings are bounded safe URL/text projections; raw bodies and recursively discovered URLs are not retained. Partial fan-out is explicit and no unselected fallback runs. Only the dedicated native DeepSeek Responses Search path may publish explicit `provider_unavailable` attribution with an empty source list; do not generalize that exception to other providers.
 
@@ -45,7 +45,7 @@ A reranker receives a sanitized query and bounded opaque-handle documents, retur
 
 ## Upstream References
 
-Reverify affected primary documentation when changing provider behavior; this file is not evidence of a current upstream check. Adapter tests own AIQSA's exact wire support.
+Reverify affected primary documentation when changing provider behavior. Adapter tests own exact wire support.
 
 - OpenAI: [Responses](https://platform.openai.com/docs/api-reference/responses), [background mode](https://platform.openai.com/docs/guides/background), [SDK retries](https://github.com/openai/openai-node/blob/main/docs/configuration.md#retries-and-timeouts).
 - Anthropic: [Messages](https://docs.anthropic.com/en/api/messages), [streaming and terminals](https://platform.claude.com/docs/en/build-with-claude/streaming).

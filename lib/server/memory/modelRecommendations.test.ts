@@ -20,7 +20,9 @@ describe("qualified Memory recommendations", () => {
     expect(memoryRecommendationMatches(available, "terra-low-memory-v1", null)).toBe(false);
     expect(memoryRecommendationMatches(available, "unknown", "low")).toBe(false);
     const variants: ProviderAdmissionRole[] = [
-      { ...available, verifiedStructuredOutput: false }, { ...available, verifiedForcedToolCall: false },
+      // Deliberately malformed authority must never establish a recommendation.
+      { ...available, verifiedStructuredOutput: false } as unknown as ProviderAdmissionRole,
+      { ...available, verifiedForcedToolCall: false } as unknown as ProviderAdmissionRole,
       ...[
         { upstreamModelId: "gpt-5.6-sol" }, { adapterKind: "openrouter" },
         { defaultParams: { maxOutputTokens: 512 } },

@@ -2346,6 +2346,8 @@ model KnowledgeBasePublication {
 }
 
 model ProviderModel {
+  nativeRoutingAdoptionVersion Int                             @default(1)
+  nativeRoutingAdoptionReason  String?                         @db.VarChar(32)
   chatPdfPreparations ChatPdfAttachmentPreparation[]
   id                          String                          @id @default(uuid())
   connectionId                String

@@ -26,7 +26,8 @@ import {
   type ProviderConnectionConfiguration
 } from "../../providers/providerConfiguration";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
-import type { AdminProviderCredentialTester } from "./credentialTester";
+import type { AdminProviderCredentialTester, AdminProviderCredentialTestOutcome } from "./credentialTester";
+import { applyNativeRoute } from "./nativeRouting";
 import {
   adminProviderQuickSetupPolicy,
   decideAdminProviderQuickSetupModel,
@@ -149,17 +150,18 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
     secret: string;
     onProgress?(value: AdminProviderSetupProgress): void;
     signal?: AbortSignal;
-  }>): Promise<string[]> {
+  }>): Promise<AdminProviderCredentialTestOutcome> {
     value.signal?.throwIfAborted();
     value.onProgress?.({ phase: "discovering", completed: 0, total: null });
     try {
       const outcome = await input.credentialTester.test({
         connection: value.connection,
         family: value.provider,
+        nativeRoutingModels: adminProviderQuickSetupPolicy(value.provider).candidates.map(({ configuration }) => configuration),
         secret: value.secret,
         signal: value.signal
       });
-      return outcome.modelIds;
+      return outcome;
     } catch (error) {
       const failure = observedFailure(error);
       logEvent("service_operation", { subsystem: "admin", stage: "discover", outcome: value.signal?.aborted ? "cancelled" : "failed", code: failure.code, httpStatus: failure.httpStatus });
@@ -261,7 +263,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
         })
       : policy.connection.configuration;
     const secret = testedSecret(request.secret);
-    const modelIds = await catalogModelIds({
+    const catalog = await catalogModelIds({
       connection,
       provider: policy.provider,
       secret,
@@ -269,10 +271,11 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       signal: inputValue.signal
     });
     const checkedAt = now();
-    const remotelyAvailable = new Set(modelIds);
+    const remotelyAvailable = new Set(catalog.modelIds);
     const candidates = policy.candidates.filter((candidate) =>
       remotelyAvailable.has(candidate.configuration.upstreamModelId)
-    );
+    ).map((candidate) => ({ ...candidate, configuration: applyNativeRoute(candidate.configuration,
+      catalog.nativeRoutes?.[candidate.configuration.upstreamModelId]) }));
     if (candidates.length === 0) {
       throw new AdminProviderQuickSetupServiceError("provider_quick_setup_unsupported_catalog");
     }
@@ -446,18 +449,20 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       }
 
       const secret = testedSecret(inputValue.request.secret);
-      const modelIds = await catalogModelIds({
+      const catalog = await catalogModelIds({
         connection: policy.connection.configuration,
         provider: policy.provider,
         secret,
         onProgress: inputValue.onProgress,
         signal: inputValue.signal
       });
+      const modelIds = catalog.modelIds;
       const checkedAt = now();
       const remotelyAvailableModelIds = new Set(modelIds);
       const availableCandidates = policy.candidates.filter((candidate) =>
         remotelyAvailableModelIds.has(candidate.configuration.upstreamModelId)
-      );
+      ).map((candidate) => mode === "initial" ? { ...candidate, configuration: applyNativeRoute(candidate.configuration,
+        catalog.nativeRoutes?.[candidate.configuration.upstreamModelId]) } : candidate);
       if (inspection.preservedModels.some(
         ({ upstreamModelId }) => !remotelyAvailableModelIds.has(upstreamModelId)
       )) {
@@ -503,7 +508,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
             providerDisplayName: policy.connection.displayName
           };
         }
-        candidate = decision.candidate;
+        candidate = availableCandidates.find(({ candidateId }) => candidateId === decision.candidate.candidateId) ?? decision.candidate;
       }
 
       const credentialId = inspection.quickSetupCredential?.id ?? idFactory();
