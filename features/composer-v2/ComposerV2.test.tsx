@@ -47,6 +47,39 @@ function ComposerWithModelOpener(overrides: Partial<Parameters<typeof ComposerV2
 }
 
 describe("Composer v2", () => {
+  it("enables Agent without changing the selected MCP mode or Skills", () => {
+    const onToggle = vi.fn();
+    const onSelectMcp = vi.fn();
+    render(<ComposerV2 {...props({ selectedKnowledgeBaseIds: [], selectedSearchOptionIds: [],
+      selectedSkills: [{ id: "summary", name: "Signed summary" }], selectedSkillIds: ["summary"],
+      mcpSelection: { mode: "auto" }, onSelectMcp, agent: { enabled: false, onToggle } })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent details. Off" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Turn on Agent/ }));
+    expect(onToggle).toHaveBeenCalledWith(true);
+    expect(onSelectMcp).not.toHaveBeenCalled();
+    expect(screen.getByRole("menu", { name: "Agent" })).toHaveTextContent("selected model, Skills, MCP mode");
+  });
+
+  it("explains incompatible Agent controls and permits turning Agent off", () => {
+    const onToggle = vi.fn();
+    const onSend = vi.fn();
+    render(<ComposerV2 {...props({ onSend, agent: { enabled: true, onToggle } })} />);
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Agent details. On" }));
+    expect(screen.getByRole("menu", { name: "Agent" })).toHaveTextContent("Turn off Knowledge");
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Turn off Agent/ }));
+    expect(onToggle).toHaveBeenCalledWith(false);
+  });
+
+  it("sends with Agent and Search enabled when Knowledge is off", () => {
+    const onSend = vi.fn();
+    render(<ComposerV2 {...props({ selectedKnowledgeBaseIds: [], onSend,
+      agent: { enabled: true, onToggle: vi.fn() } })} />);
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+    expect(onSend).toHaveBeenCalledOnce();
+  });
+
   it("warns about pending MCP setup on the chip and offers a touch-accessible settings action", async () => {
     const onOpenMcpSettings = vi.fn();
     const config: ComposerConfig = {

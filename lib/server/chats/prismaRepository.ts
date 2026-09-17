@@ -5,6 +5,8 @@ import { projectGroundingDisplay } from "../runs/runOutputEvents";
 import { decodeSessionContextStatus } from "../../contracts/sessionStatus";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
 import { Prisma } from "@prisma/client";
+import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
+import { workspaceActivitySnapshot, WORKSPACE_ACTIVITY_SNAPSHOT } from "../runs/workspaceActivityPersistence";
 import {
   estimateApproxTokensFromProjectedParts,
   type ApproxTokenProjectedPart
@@ -12,12 +14,10 @@ import {
 import { safeExternalHref } from "../../domain/links";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import {
-  WORKSPACE_MCP_TOOL_ALLOWLIST,
   WORKSPACE_EXPORT_MAX_ATTEMPTS,
   isRetryableWorkspaceExportErrorCode
 } from "../../domain/workspace";
 import {
-  WORKSPACE_ACTIVITY_MAX_ENTRIES,
   decodeThreadWorkspaceActivityEntry,
   isWorkspaceErrorCode,
   type ThreadWorkspaceActivity,
@@ -34,8 +34,7 @@ import {
   CHAT_HISTORY_CURSOR_MAX_LENGTH,
   CHAT_HISTORY_PAGE_SIZE,
   boundedChatBranchPreview,
-  type ChatContextStats,
-  type ThreadToolActivityOrigin
+  type ChatContextStats
 } from "../../contracts/chats";
 import {
   decodeKnowledgeCitationHandle,
@@ -88,7 +87,7 @@ import type {
   WorkspaceAvailabilitySnapshot
 } from "../workspace/availability";
 import { workspaceModelSupportsTools } from "../workspace/availability";
-import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
+import { activityName, toolActivityDescriptors } from "../tools/activityDescriptors";
 import { loadMemoryRunActions } from "../memory/actions/runProjection";
 import {
   applyMemoryScopedTargetOwnerLifecycle,
@@ -125,7 +124,7 @@ const assistantRunDetailSelect = {
       payload: true
     },
     where: {
-      eventType: { in: ["artifact", "grounding_display"] }
+      eventType: { in: ["artifact", "grounding_display", WORKSPACE_ACTIVITY_SNAPSHOT] }
     }
   },
   createdAt: true,
@@ -942,97 +941,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function activityName(value: unknown, fallback: string): string {
-  if (typeof value !== "string") return fallback;
-  const normalized = value.trim().replace(/\s+/gu, " ");
-  return normalized && !/[\u0000-\u001f\u007f]/u.test(normalized)
-    ? normalized.slice(0, 160)
-    : fallback;
-}
-
-function toolActivityDescriptors(normalizedRequest: unknown): Map<string, {
-  origin: ThreadToolActivityOrigin;
-  serverName?: string;
-  toolName: string;
-}> {
-  const descriptors = new Map<string, {
-    origin: ThreadToolActivityOrigin;
-    serverName?: string;
-    toolName: string;
-  }>();
-  if (!isRecord(normalizedRequest)) return descriptors;
-
-  const mcp = isRecord(normalizedRequest.mcp) ? normalizedRequest.mcp : null;
-  if (mcp && Array.isArray(mcp.tools)) {
-    for (const value of mcp.tools) {
-      if (!isRecord(value) || typeof value.namespacedName !== "string") continue;
-      descriptors.set(value.namespacedName, {
-        origin: "mcp",
-        serverName: activityName(value.serverName, "MCP server"),
-        toolName: activityName(value.originalName, "Tool")
-      });
-    }
-  }
-
-  const discovery = isRecord(normalizedRequest.mcpDiscovery)
-    ? normalizedRequest.mcpDiscovery
-    : null;
-  const catalog = discovery && isRecord(discovery.catalog) ? discovery.catalog : null;
-  if (catalog && Array.isArray(catalog.servers)) {
-    for (const server of catalog.servers) {
-      if (!isRecord(server) || !Array.isArray(server.tools)) continue;
-      for (const value of server.tools) {
-        if (!isRecord(value) || typeof value.namespacedName !== "string") continue;
-        if (!descriptors.has(value.namespacedName)) {
-          descriptors.set(value.namespacedName, {
-            origin: "mcp",
-            serverName: activityName(server.serverName, "MCP server"),
-            toolName: activityName(value.originalName, "Tool")
-          });
-        }
-      }
-    }
-  }
-
-  const searchPlan = isRecord(normalizedRequest.searchPlan) ? normalizedRequest.searchPlan : null;
-  if (searchPlan && Array.isArray(searchPlan.options)) {
-    searchPlan.options.forEach((option, index) => {
-      descriptors.set(`search_engine_${index + 1}`, {
-        origin: "web_search",
-        serverName: isRecord(option)
-          ? activityName(option.displayName, "Web search")
-          : "Web search",
-        toolName: "search"
-      });
-    });
-  }
-
-  if (isRecord(normalizedRequest.workspace) && normalizedRequest.workspace.enabled === true) {
-    for (const name of WORKSPACE_MCP_TOOL_ALLOWLIST) {
-      descriptors.set(namespacedWorkspaceToolName(name), {
-        origin: "workspace",
-        serverName: "Workspace",
-        toolName: name
-      });
-    }
-  }
-
-  descriptors.set("find_tools", { origin: "discovery", serverName: "Auto tools", toolName: "find_tools" });
-  if (normalizedRequest.imagePlan) descriptors.set("generate_image", { origin: "image", serverName: "Images", toolName: "generate_image" });
-  descriptors.set("search_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
-  descriptors.set("retrieve_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
-  for (const name of [
-    "forget_memory",
-    "list_memories",
-    "mark_memory_incorrect",
-    "save_memory",
-    "search_memory",
-    "update_memory"
-  ]) {
-    descriptors.set(name, { origin: "memory", serverName: "Memory", toolName: name });
-  }
-  return descriptors;
-}
 
 function acceptedToolBudgets(normalizedRequest: unknown): {
   maxToolCalls: number;
@@ -1077,6 +985,8 @@ function toolBudgetWarning(
 export function summarizeMessageRunToolActivity(
   run: ToolActivityRun
 ): ThreadToolActivity | null {
+  // Agent actions have one JSONL-backed Workspace feed, including MCP/search.
+  if (isRecord(run.normalizedRequest) && isRecord(run.normalizedRequest.agent)) return null;
   const descriptors = toolActivityDescriptors(run.normalizedRequest);
   const calls = run.toolCalls.map((call) => {
     const descriptor = descriptors.get(call.toolName) ?? {
@@ -1152,19 +1062,22 @@ export function summarizeMessageRunWorkspaceActivity(
     .map((payload) => decodeThreadWorkspaceActivityEntry(isRecord(payload) ? payload.payload : null))
     .filter((entry): entry is ThreadWorkspaceActivityEntry => entry !== null);
   const outputStatus = workspaceOutputStatus(run);
-  if (entries.length === 0 && !outputStatus) return null;
+  let activity = mergeWorkspaceActivity(null, { entries, ...(outputStatus ? { outputStatus } : {}) });
+  for (const event of run.events) activity = mergeWorkspaceActivity(activity, workspaceActivitySnapshot(event.payload));
+  if (!activity) return null;
   const terminal = run.status === "cancelled"
     ? "cancelled" as const
     : run.status === "error" ? "failed" as const : null;
   return {
-    entries: foldWorkspaceActivityEntries(entries, terminal).map((entry) => {
+    ...activity,
+    entries: foldWorkspaceActivityEntries(activity.entries, terminal).map((entry) => {
       // Background export settles after answer SSE closes, so its durable
       // binding can be newer than the last recorded lifecycle event.
       if (entry.kind !== "outputs_export") return entry;
       if (outputStatus?.state === "complete") return { ...entry, phase: "succeeded" as const };
       if (outputStatus?.state === "failed") return { ...entry, phase: "failed" as const };
       return entry;
-    }).slice(0, WORKSPACE_ACTIVITY_MAX_ENTRIES),
+    }),
     ...(outputStatus ? { outputStatus } : {})
   };
 }

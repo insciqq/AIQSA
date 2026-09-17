@@ -4,7 +4,7 @@ import { decodeImageFailureDiagnostic, type ImageFailureDiagnostic } from "@/lib
 export const CAPABILITY_LABELS: Record<AdminProviderCapabilityCheck, string> = {
   modelAccess: "Model access", structuredOutput: "Strict JSON", toolCalling: "Tools",
   forcedToolCall: "Forced tool calls", parallelToolCalls: "Parallel tool calls", vision: "Image input",
-  directPdf: "Direct PDF", streaming: "Streaming", hostedSearch: "Hosted Search", embedding: "Embeddings", reranking: "Reranking", imageGeneration: "Image generation", imageEditing: "Image editing"
+  directPdf: "Direct PDF", streaming: "Streaming", hostedSearch: "Hosted Search", codexWebSearch: "Codex web search", embedding: "Embeddings", reranking: "Reranking", imageGeneration: "Image generation", imageEditing: "Image editing"
 };
 
 const reasonLabels: Record<AdminProviderCapabilityAttempt["reason"], string> = {

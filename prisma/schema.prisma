@@ -773,6 +773,7 @@ enum MemoryToolEgressDispatchState {
 }
 
 model User {
+  announcementReads AnnouncementRead[]
   instructionPresets InstructionPreset[]
   chatContinuations ChatContinuation[]
   id                                  String                             @id @default(uuid())
@@ -844,10 +845,37 @@ model User {
   systemModelPolicyUpdates            SystemModelPolicy[]                @relation("SystemModelPolicyUpdater")
   usageEvents                         UsageEvent[]
   workspacePolicyUpdates              WorkspacePolicy[]                  @relation("WorkspacePolicyUpdater")
+  agentPolicyUpdates                  AgentPolicy[]                      @relation("AgentPolicyUpdater")
   workspaceSecrets                    WorkspaceSecret[]
   workspaceSecretValues               WorkspaceSecretValue[]
   workspaceBrowserSequence            BigInt                             @default(0)
   workspaceBrowserManualSequence      BigInt                             @default(0)
+}
+
+model Announcement {
+  id          String   @id @default(uuid())
+  title       String
+  body        String
+  published   Boolean  @default(false)
+  publishedAt DateTime?
+  version     Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  reads       AnnouncementRead[]
+
+  @@index([published, publishedAt, id])
+  @@index([createdAt, id])
+}
+
+model AnnouncementRead {
+  userId         String
+  announcementId String
+  readAt         DateTime     @default(now())
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+
+  @@id([userId, announcementId])
+  @@index([announcementId])
 }
 
 model SmtpControl {
@@ -2550,6 +2578,7 @@ model ProviderModelCredentialCheck {
 }
 
 model ProviderRunBinding {
+  agentAttempts             AgentProviderAttempt[]
   id                        String                     @id @default(uuid())
   modelRunId                String
   bindingKey                String                     @default("answer")
@@ -2727,6 +2756,23 @@ model Chat {
   @@index([projectFolderId])
   @@index([userId, permanentDeletionAt])
   @@index([userId, archived, updatedAt])
+}
+
+model AgentPolicy {
+  id              String   @id
+  limitsEnabled   Boolean  @default(false)
+  timeoutSeconds  Int      @default(3600)
+  maxModelCalls   Int      @default(40)
+  maxToolCalls    Int      @default(80)
+  tokenBudget     Int      @default(2000000)
+  maxOutputTokens Int      @default(16384)
+  version         Int      @default(1)
+  updatedByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  updatedBy       User?    @relation("AgentPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([updatedByUserId])
 }
 
 model WorkspacePolicy {
@@ -3889,6 +3935,7 @@ model Attachment {
 }
 
 model WorkspaceRunBinding {
+  agent                AgentRunBinding?
   modelRunId          String               @id
   workspaceSessionId  String
   imageRef            String
@@ -3920,6 +3967,76 @@ model WorkspaceRunBinding {
   @@index([workspaceSessionId, createdAt])
   @@index([exportState, updatedAt])
   @@index([exportState, exportLeaseExpiresAt])
+}
+
+enum AgentAttemptState {
+  DISPATCHED
+  COMPLETE
+  ERROR
+  UNKNOWN
+}
+
+/// Authority is one accepted turn; native thread files live only on its Workspace disk.
+model AgentRunBinding {
+  modelRunId          String              @id
+  configuration       Json
+  compatibilityHash   String              @db.Char(64)
+  tokenHash           String?             @unique @db.Char(64)
+  expiresAt           DateTime?
+  leaseExpiresAt      DateTime?
+  revokedAt           DateTime?
+  startedAt           DateTime?
+  completedAt         DateTime?
+  threadId            String?             @db.VarChar(128)
+  failureCode         String?             @db.VarChar(64)
+  resumedFromRunId     String?
+  modelCalls          Int                 @default(0)
+  toolCalls           Int                 @default(0)
+  reservedTokens      BigInt              @default(0)
+  providerInFlight    Boolean             @default(false)
+  nextToolOrdinal     Int                 @default(0)
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  workspaceRun        WorkspaceRunBinding @relation(fields: [modelRunId], references: [modelRunId], onDelete: Cascade, onUpdate: Restrict, map: "AgentRunBinding_workspaceRun_fkey")
+  resumedFrom         AgentRunBinding?    @relation("AgentThreadPredecessor", fields: [resumedFromRunId], references: [modelRunId], onDelete: SetNull, onUpdate: Restrict, map: "AgentRunBinding_resumedFrom_fkey")
+  resumedBy           AgentRunBinding[]   @relation("AgentThreadPredecessor")
+  attempts            AgentProviderAttempt[]
+  mcpTools            AgentMcpTool[]
+
+  @@index([leaseExpiresAt])
+  @@index([resumedFromRunId])
+}
+
+/// One physical provider request, persisted before dispatch. Guest JSONL is never usage evidence.
+model AgentProviderAttempt {
+  id                 String             @id @default(uuid())
+  modelRunId         String
+  providerBindingKey String
+  searchOptionId     String?
+  searchInvocationId String?
+  state              AgentAttemptState  @default(DISPATCHED)
+  reservedTokens     Int
+  usage              Json?
+  createdAt          DateTime           @default(now())
+  completedAt        DateTime?
+  binding            AgentRunBinding    @relation(fields: [modelRunId], references: [modelRunId], onDelete: Cascade, onUpdate: Restrict, map: "AgentProviderAttempt_binding_fkey")
+  providerBinding    ProviderRunBinding @relation(fields: [modelRunId, providerBindingKey], references: [modelRunId, bindingKey], onDelete: NoAction, onUpdate: Restrict, map: "AgentProviderAttempt_providerBinding_fkey")
+
+  @@index([modelRunId, createdAt])
+  @@index([modelRunId, providerBindingKey])
+  @@index([modelRunId, searchOptionId])
+}
+
+/// Exact discovered schema/route. Current permissions are additionally checked before every dispatch.
+model AgentMcpTool {
+  modelRunId String
+  toolId     String          @db.VarChar(128)
+  version    String          @db.Char(64)
+  snapshot   Json
+  createdAt  DateTime        @default(now())
+  binding    AgentRunBinding @relation(fields: [modelRunId], references: [modelRunId], onDelete: Cascade, onUpdate: Restrict, map: "AgentMcpTool_binding_fkey")
+
+  @@id([modelRunId, toolId])
 }
 
 model WorkspaceSecret {

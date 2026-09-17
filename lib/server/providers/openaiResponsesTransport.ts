@@ -13,6 +13,7 @@ import {
 } from "./providerRetry";
 import { parseRetryAfterMs } from "../retryAfter";
 import { randomUUID } from "node:crypto";
+import { parseSseStream } from "./sse";
 
 export type OpenAIResponseObject = Record<string, unknown>;
 
@@ -67,6 +68,36 @@ async function parseOpenAIJsonResponse(
   }
 
   return parsed as OpenAIResponseObject;
+}
+
+/** Some compatible roots always stream, even for stream:false. Assemble only
+ * provider-issued completed items, under explicit terminal proof, without a retry. */
+async function collectStreamedResponse(response: Response, signal: AbortSignal): Promise<OpenAIResponseObject> {
+  if (!response.body) throw new Error("openai_stream_body_missing");
+  const items = new Map<number, OpenAIResponseObject>();
+  for await (const event of parseSseStream(response.body, { signal, maxBytes: 16 * 1024 * 1024, maxEventBytes: 16 * 1024 * 1024 })) {
+    if (event.data === "[DONE]") break;
+    let value: unknown;
+    try { value = JSON.parse(event.data); } catch { throw new Error("openai_response_invalid_json"); }
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("openai_response_invalid_json");
+    const payload = value as Record<string, unknown>;
+    if (payload.type === "response.output_item.done") {
+      if (!Number.isSafeInteger(payload.output_index) || Number(payload.output_index) < 0 || Number(payload.output_index) >= 1024 ||
+        !payload.item || typeof payload.item !== "object" || Array.isArray(payload.item) || items.has(Number(payload.output_index))) {
+        throw new Error("openai_response_invalid_output");
+      }
+      items.set(Number(payload.output_index), payload.item as OpenAIResponseObject);
+    }
+    if (["response.completed", "response.failed", "response.incomplete"].includes(String(payload.type))) {
+      if (!payload.response || typeof payload.response !== "object" || Array.isArray(payload.response)) throw new Error("openai_response_invalid_json");
+      const terminal = payload.response as OpenAIResponseObject;
+      if (`response.${String(terminal.status)}` !== payload.type) throw new Error("openai_response_invalid_terminal");
+      return { ...terminal, output: Array.isArray(terminal.output) && terminal.output.length ? terminal.output
+        : [...items.entries()].sort(([a], [b]) => a - b).map(([, item]) => item) };
+    }
+    if (payload.type === "error") throw new Error("openai_response_stream_failed");
+  }
+  throw new Error("openai_response_not_completed");
 }
 
 async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Promise<never> {
@@ -136,6 +167,8 @@ export function createFetchOpenAIResponsesClient(input: {
   initialRequestRetry?: ProviderRetryOptions;
   /** Adds a fresh opaque routing key to every physical compatible POST. */
   requestIsolation?: boolean;
+  /** Compatible Responses may deliver an SSE representation of a nonstream create. */
+  acceptStreamedCreate?: boolean;
 }): OpenAIResponsesClient {
   const baseUrl = input.baseUrl?.trim() || "https://api.openai.com/v1";
   const fetchFn = input.fetchFn ?? fetch;
@@ -211,6 +244,9 @@ export function createFetchOpenAIResponsesClient(input: {
       const exchange = await postResponse(body, options);
 
       try {
+        if (input.acceptStreamedCreate && exchange.response.headers.get("content-type")?.includes("text/event-stream")) {
+          return await collectStreamedResponse(exchange.response, exchange.timeout.signal);
+        }
         return await parseOpenAIJsonResponse(exchange.response, exchange.timeout.signal);
       } finally {
         exchange.timeout.clear();

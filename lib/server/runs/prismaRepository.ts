@@ -1,4 +1,5 @@
 import { chatTitleMetadataSelect, chatTitlePending } from "../chats/titleMetadata";
+import { interruptExpiredAgentRun } from "../agents/store";
 import { AttachmentLinkConflictError } from "./runRepositoryContract";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
 import { assertWorkspaceFollowupClaim } from "./workspaceFollowupPersistence";
@@ -8,6 +9,7 @@ import {
 } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
+import { WORKSPACE_ACTIVITY_SNAPSHOT } from "./workspaceActivityPersistence";
 import { normalizeTokenUsage } from "../../domain/usage";
 import {
   loadChatBranchSnapshotStats,
@@ -490,6 +492,7 @@ export function createPrismaRunRepository(
             projectRunBinding: null,
             answerCompletedAt: null,
             NOT: [
+              { workspaceRunBinding: { is: { agent: { isNot: null } } } },
               { chatPdfPreparation: { is: { state: { in: ["pending", "preparing", "answer_ready"] } } } },
               { workspaceFollowup: { is: { state: { in: ["waiting", "preparing"] } } } }
             ],
@@ -1123,6 +1126,11 @@ export function createPrismaRunRepository(
         take: input.limit,
         where: {
           OR: [
+            { workspaceRunBinding: { is: { agent: { is: { OR: [
+              { leaseExpiresAt: { lte: new Date() } },
+              { revokedAt: { not: null } },
+              { startedAt: null, createdAt: { lte: new Date(Date.now() - 30_000) } }
+            ] } } } } },
             {
               createdAt: { lt: input.bootedBefore },
               OR: [
@@ -1379,7 +1387,7 @@ export function createPrismaRunRepository(
                       payload: true
                     },
                     where: {
-                      eventType: "artifact"
+                      eventType: { in: ["artifact", WORKSPACE_ACTIVITY_SNAPSHOT] }
                     }
                   },
                   errorPayload: true,
@@ -1732,14 +1740,15 @@ export function createPrismaRunRepository(
       return passages;
     },
     loadEntitlements: (userId) => loadEntitlementsForUser(userId).catch(retainRunPrismaCode),
-    loadModelPricing: async (provider, modelId) => {
+    interruptExpiredAgentRun: (input) => interruptExpiredAgentRun(prismaClient, input),
+    loadModelPricing: async (provider, modelId, providerModelId) => {
       const models = await prismaClient.providerModel.findMany({
         select: {
           inputTokenPriceMicros: true,
           outputTokenPriceMicros: true
         },
         take: 2,
-        where: { modelClass: "answer", modelId, provider }
+        where: { modelClass: "answer", ...(providerModelId ? { id: providerModelId } : { modelId, provider }) }
       }).catch(retainRunPrismaCode);
 
       return models.length === 1

@@ -45,13 +45,16 @@ function hasUsablePricing(pricing: ModelTokenPricing | null): pricing is ModelTo
 export async function usageWithEstimatedCost(
   repository: Pick<RunRepository, "loadModelPricing">,
   input: Readonly<{
+    providerModelId?: string;
     modelId: string;
     provider: string;
     usage: ModelRunUsage;
   }>
 ): Promise<ModelRunUsage> {
   const normalizedUsage = normalizeTokenUsage(input.usage);
-  const pricing = await repository.loadModelPricing(input.provider, input.modelId);
+  const pricing = input.providerModelId
+    ? await repository.loadModelPricing(input.provider, input.modelId, input.providerModelId)
+    : await repository.loadModelPricing(input.provider, input.modelId);
   const estimatedCostMicros = hasUsablePricing(pricing) ? estimateCostMicros(normalizedUsage, pricing) : null;
 
   return {
@@ -69,12 +72,14 @@ export async function usageAttributionsWithEstimatedCost(
       ...(attribution.operationCount !== undefined ? { operationCount: attribution.operationCount } : {}),
       estimatedCostMicros: (
         await usageWithEstimatedCost(repository, {
+          ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
           modelId: attribution.modelId,
           provider: attribution.provider,
           usage: attribution.usage
         })
       ).estimatedCostMicros,
       modelId: attribution.modelId,
+      ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
       provider: attribution.provider,
       usage: normalizeTokenUsage(attribution.usage)
     }))

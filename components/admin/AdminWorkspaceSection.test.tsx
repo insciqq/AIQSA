@@ -10,6 +10,11 @@ const workspaceApi = vi.hoisted(() => ({
 
 const reportNotice = vi.fn();
 
+vi.mock("./adminAgentPolicyApi", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./adminAgentPolicyApi")>(),
+  requestAgentPolicy: async () => ({ ok: true, policy: (await import("@/lib/contracts/agentPolicy")).DEFAULT_AGENT_POLICY })
+}));
+
 vi.mock("./adminWorkspaceApi", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./adminWorkspaceApi")>();
   return {

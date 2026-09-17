@@ -1,6 +1,6 @@
 import { codexLbOverridesFromConfig } from "./memory-mcp-codex-smoke-support";
 
-type Service = { environment: Record<string, string>; image: string; ports?: { target: number; published: string; host_ip: string }[] };
+type Service = { environment: Record<string, string>; image: string; networks?: Record<string, unknown>; ports?: { target: number; published: string; host_ip: string }[] };
 export type PaidStand = { name: string; services: Record<string, Service> };
 
 export function requirePaidStand(mode: string | undefined, value: PaidStand) {
@@ -13,6 +13,16 @@ export function requirePaidStand(mode: string | undefined, value: PaidStand) {
   if (!app || !runner || !maintenance) throw new Error("workspace_user_paid_roles_missing");
   if (app.environment.NODE_ENV === "production" && !memoryWorker) {
     throw new Error("workspace_user_paid_deletion_worker_required");
+  }
+  if (memoryWorker) {
+    for (const key of ["AIQSA_WORKSPACE_RUNNER_URL", "AIQSA_WORKSPACE_RUNNER_TOKEN"]) {
+      if (!app.environment[key] || memoryWorker.environment[key] !== app.environment[key]) {
+        throw new Error("workspace_user_paid_deletion_runner_mismatch");
+      }
+    }
+    if (!["default", "workspace-control"].every(network => network in (memoryWorker.networks ?? {}))) {
+      throw new Error("workspace_user_paid_deletion_runner_unreachable");
+    }
   }
   for (const role of [app, runner, maintenance, ...(memoryWorker ? [memoryWorker] : [])]) {
     const env = role.environment;

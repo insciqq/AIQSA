@@ -2,6 +2,7 @@ export const WORKSPACE_RUNTIME_VERSION = "0.6.16";
 export const WORKSPACE_MCP_VERSION = "0.6.16";
 
 export type WorkspaceConfig = Readonly<{
+  agentGatewayEnabled?: boolean;
   cpus: number;
   diskMiB: number;
   idleTtlSeconds: number;
@@ -198,10 +199,11 @@ export function getWorkspaceConfig(
   }
 
   const config = {
+    ...(env.AIQSA_AGENT_APP_ORIGIN?.trim() ? { agentGatewayEnabled: true } : {}),
     cpus: integerValue(env, integerSettings.cpus),
     diskMiB: integerValue(env, integerSettings.diskMiB),
     idleTtlSeconds: integerValue(env, integerSettings.idleTtlSeconds),
-    imageRef: boundedText(env.AIQSA_WORKSPACE_IMAGE, "aiqsa-workspace:0.1.26", 512),
+    imageRef: boundedText(env.AIQSA_WORKSPACE_IMAGE, "aiqsa-workspace:0.1.27", 512),
     maxToolCalls: integerValue(env, integerSettings.maxToolCalls),
     maxToolRounds: integerValue(env, integerSettings.maxToolRounds),
     mcpVersion: boundedText(env.AIQSA_WORKSPACE_MCP_VERSION, WORKSPACE_MCP_VERSION, 64),

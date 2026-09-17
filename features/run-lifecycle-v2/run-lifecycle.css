@@ -728,3 +728,72 @@ html[data-motion="off"] .v2-run-shimmer {
 .v2-workspace-output-status[data-state="failed"] {
   color: var(--v2-color-danger);
 }
+
+.v2-workspace-feed-heading {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 1.5rem;
+}
+
+.v2-workspace-history-button {
+  border: 0;
+  background: transparent;
+  color: var(--v2-color-accent-text);
+  font: inherit;
+  font-size: var(--v2-text-metadata, 0.75rem);
+  cursor: pointer;
+}
+
+.v2-workspace-history-button:hover { text-decoration: underline; }
+
+.v2-workspace-overlay-layer {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.v2-workspace-overlay-scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: var(--v2-color-scrim);
+}
+
+.v2-workspace-overlay {
+  position: relative;
+  display: grid;
+  width: min(54rem, 100%);
+  max-height: min(46rem, calc(100dvh - 2rem));
+  overflow: hidden;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-l);
+  background: var(--v2-color-surface);
+  box-shadow: var(--v2-shadow-overlay);
+}
+
+.v2-workspace-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--v2-color-border);
+}
+
+.v2-workspace-overlay-header h2 { margin: 0; font-size: 1rem; }
+.v2-workspace-overlay-list { min-height: 0; overflow: auto; padding: 0.75rem 0.25rem 1rem; }
+
+@media (max-width: 48rem) {
+  .v2-workspace-overlay-layer { padding: 0; }
+  .v2-workspace-overlay {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    border-radius: 0;
+    padding: calc(0.75rem + env(safe-area-inset-top, 0px)) 0.875rem calc(0.75rem + var(--v2-safe-area-bottom));
+  }
+}

@@ -459,6 +459,7 @@ export function normalizeProviderModelCapabilities(value: unknown): ProviderMode
   }
 
   const optional = [
+    "codexStandaloneWebSearch",
     "backgroundStreaming",
     "nativeBackground",
     "nativeImageGeneration",
@@ -533,6 +534,7 @@ export function normalizeProviderModelCapabilities(value: unknown): ProviderMode
     ...(typeof value.imageGeneration === "boolean" ? { imageGeneration: value.imageGeneration } : {}),
     ...(typeof value.imageEditing === "boolean" ? { imageEditing: value.imageEditing } : {}),
     nativeSearch: value.nativeSearch as boolean,
+    ...(typeof value.codexStandaloneWebSearch === "boolean" ? { codexStandaloneWebSearch: value.codexStandaloneWebSearch } : {}),
     ...(typeof value.parallelToolCalls === "boolean" ? { parallelToolCalls: value.parallelToolCalls } : {}),
     pdf: value.pdf as boolean,
     reasoning: value.reasoning as boolean,

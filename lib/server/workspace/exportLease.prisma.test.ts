@@ -224,6 +224,16 @@ describe("Prisma Workspace export lease", () => {
     await prisma.$disconnect();
   });
 
+  it("reports a failed handoff after its capture owner has retired", async () => {
+    const fixture = await createFixture({ exportState: "FAILED", lastExportErrorCode: "workspace_output_export_failed" });
+    await prisma.workspaceSession.update({ where: { id: fixture.sessionId },
+      data: { operationOwner: null, operationExpiresAt: null, state: "STOPPED" } });
+    await expect(repository.claimExport({ ...fixture, handoff: true, leaseMs: 60_000,
+      operation: { generation: fixture.generation, owner: `run:${fixture.runId}` } }))
+      .rejects.toMatchObject({ code: "workspace_output_export_failed" });
+    expect((await bindingState(fixture.runId)).exportState).toBe("FAILED");
+  });
+
   it("keeps a handoff discoverable across answer completion and a fresh repository without spending an export attempt", async () => {
     const fixture = await createFixture();
     const operation = { generation: fixture.generation, owner: `run:${fixture.runId}` };

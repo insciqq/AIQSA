@@ -132,7 +132,7 @@ function connection(overrides: Partial<AdminProviderConnection> = {}): AdminProv
       model("model-luna", "gpt-5.6-luna"),
       model("model-sol", "gpt-5.6-sol"),
       model("model-off", "gpt-5.5", { enabled: false }),
-      model("model-draft", "gpt-5.4", { activeConfig: null, activeVersion: 0 })
+      model("model-draft", "gpt-5.4", { activeConfig: null, activeVersion: 0, enabled: false })
     ],
     unassignedPolicy: "use_default",
     updatedAt: NOW.toISOString(),
@@ -584,7 +584,7 @@ describe("background capability checks (B3)", () => {
         return [connection({ models: [
           model("m1", "gpt-1"), model("m2", "gpt-2"), model("m3", "gpt-3"), model("m4", "gpt-4"),
           model("off", "gpt-off", { enabled: false }),
-          model("draft", "gpt-draft", { activeConfig: null, activeVersion: 0 })
+          model("draft", "gpt-draft", { activeConfig: null, activeVersion: 0, enabled: false })
         ] })];
       },
       async loadActiveRefreshCandidate(input) {
@@ -628,6 +628,43 @@ describe("background capability checks (B3)", () => {
     });
     const [catalog] = await providers.listConnections();
     expect(catalog?.checkRun?.id).toBe(run.id);
+  });
+
+  it("publishes an enabled never-live draft before checking it", async () => {
+    const draftConfiguration = modelConfiguration("gpt-draft");
+    let catalog = connection({ models: [model("draft", "gpt-draft", {
+      activeConfig: null, activeVersion: 0, draftConfig: draftConfiguration, enabled: true
+    })] });
+    const activateModelCas = vi.fn<AdminProviderRepository["activateModelCas"]>(async () => {
+      catalog = { ...catalog, models: catalog.models.map((entry) => entry.id === "draft"
+        ? { ...entry, activeConfig: draftConfiguration, activeVersion: 1, draftVersion: 1 }
+        : entry) };
+      return "updated";
+    });
+    const test = vi.fn(async (input: AdminProviderDraftTesterInput) => okOutcome(input));
+    const providers = service(repository({
+      activateModelCas,
+      async listConnections() { return [catalog]; },
+      async loadModelActivationCandidate() {
+        const candidate = activationCandidate();
+        return { ...candidate, model: {
+          configuration: draftConfiguration, displayName: "Draft", activeVersion: 0, draftVersion: 1, id: "draft"
+        } };
+      },
+      async loadActiveRefreshCandidate(input) {
+        return refreshCandidate(input.providerModelId, "gpt-draft");
+      }
+    }), { test });
+
+    const run = await providers.startCheckRun({ connectionId: catalog.id, credentialId: "cred-primary", reason: "requested" });
+    await waitFor(() => providers.checkRun({ connectionId: catalog.id, runId: run.id }).state === "completed");
+    expect(activateModelCas).toHaveBeenCalledWith(expect.objectContaining({
+      initialSetup: true,
+      enable: true,
+      model: expect.objectContaining({ id: "draft", draftVersion: 1 })
+    }));
+    expect(test).toHaveBeenCalledWith(expect.objectContaining({ providerModelId: "draft", initialSetup: true }));
+    expect(providers.checkRun({ connectionId: catalog.id, runId: run.id })).toMatchObject({ total: 1, failed: [] });
   });
 
   it.each([

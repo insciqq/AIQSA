@@ -1,5 +1,7 @@
 import type { WorkspaceOperation } from "./operationFence";
 import type { AcceptedWorkspaceSecret } from "./secrets/store";
+import type { WorkspaceAgentIdentity, WorkspaceAgentStart } from "../agents/runtime";
+import type { AgentExecutionOutputPage } from "../agents/executionOutput";
 import type {
   WorkspaceMcpToolName,
   WorkspaceStagedAttachmentEntry
@@ -124,6 +126,9 @@ export type WorkspaceOperationInput = Readonly<{
 }>;
 
 export interface WorkspaceRuntime {
+  /** Private raw byte transport; never a model-visible Workspace MCP tool. */
+  startAgent?(input: WorkspaceAgentStart): Promise<void>;
+  pollAgent?(input: WorkspaceAgentIdentity & Readonly<{ cursor: number }>): Promise<AgentExecutionOutputPage>;
   claimSessionOperation?(input: WorkspaceOperationInput): Promise<void>;
   retireSessionOperation?(input: WorkspaceOperationInput): Promise<void>;
   health(signal?: AbortSignal): Promise<WorkspaceRuntimeHealth>;
@@ -269,6 +274,7 @@ export interface WorkspaceRuntime {
 
 export class WorkspaceRuntimeError extends Error {
   readonly code:
+    | "workspace_agent_output_invalid"
     | "workspace_attachment_unavailable"
     | "workspace_secrets_prepare_failed"
     | "workspace_archive_limit_exceeded"

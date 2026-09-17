@@ -88,6 +88,7 @@ function createBootstrapTransaction(input: {
     searchStrategyUpdate: record("searchStrategy.update", { id: "strategy-id" }),
     searchStrategyUpsert: record("searchStrategy.upsert", { activeRevisionId: null, id: "strategy-id" }),
     systemModelPolicyUpsert: record("systemModelPolicy.upsert", { id: "installation" }),
+    agentPolicyUpsert: record("agentPolicy.upsert", { id: "installation" }),
     workspacePolicyUpsert: record("workspacePolicy.upsert", { id: "installation" }),
     userMemorySettingsUpsert: record("userMemorySettings.upsert", {}),
     userCreate: record("user.create", { id: USER_ID }),
@@ -152,6 +153,7 @@ function createBootstrapTransaction(input: {
     systemModelPolicy: {
       upsert: spies.systemModelPolicyUpsert
     },
+    agentPolicy: { upsert: spies.agentPolicyUpsert },
     workspacePolicy: {
       upsert: spies.workspacePolicyUpsert
     },

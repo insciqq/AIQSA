@@ -56,6 +56,7 @@ import type { KnowledgeSelection } from "@/lib/contracts/knowledge";
 type MutableRef<T> = { current: T };
 
 type MessageRunControlSnapshot = {
+  agentEnabled: boolean;
   contextConfigurationKey: string;
   assistantId: string | null;
   controlDefaults: SavedControlDraft;
@@ -219,8 +220,10 @@ export function useMessageRunActions({
 
     return {
       contextConfigurationKey: composerContextConfigurationKey(controls, {
+        agentEnabled: session.agentEnabled,
         memoryMode: chat?.pendingInitialMemoryMode ?? chat?.memoryMode ?? composerSessionModeFromKey(sessionKey), workspaceEnabled
       }),
+      agentEnabled: session.agentEnabled === true,
       assistantId: selectedAssistant?.id ?? null,
       controlDefaults: { ...buildControlDraft() },
       knowledgeSelection: {
@@ -311,6 +314,7 @@ export function useMessageRunActions({
       // the request carries only the Assistant identity plus user content and
       // never an expanded client copy of the governed controls.
       return {
+        ...(snapshot.agentEnabled ? { agentEnabled: true } : {}),
         assistantId: snapshot.assistantId,
         ...(snapshot.skillIds.length > 0 ? { skillIds: [...snapshot.skillIds] } : {}),
         workspace: { enabled: snapshot.workspaceEnabled }
@@ -326,6 +330,7 @@ export function useMessageRunActions({
     const timeZone = clientTimeZone();
 
     return {
+      ...(snapshot.agentEnabled ? { agentEnabled: true } : {}),
       controlDefaults: snapshot.controlDefaults,
       modelId: snapshot.modelId,
       ...(snapshot.knowledgePlanSource === "explicit"

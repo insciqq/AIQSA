@@ -5,6 +5,7 @@ import {
   type AdminProviderTestEvidence
 } from "../../../contracts/adminProviders";
 import type { ProviderConnectionConfiguration, ProviderModelConfiguration } from "../../providers/providerConfiguration";
+import { decodeCodexWebSearchEvidence, shouldProbeCodexWebSearch } from "../../providers/codexWebSearch";
 import { decodeHostedSearchVerificationEvidence, shouldProbeHostedSearch } from "./hostedSearchCapability";
 import { decodeParallelToolCallVerificationEvidence } from "../../providers/parallelToolCallEvidence";
 import { decodePdfInputVerificationEvidence } from "../../providers/pdfInputEvidence";
@@ -86,6 +87,9 @@ export function initiallyVerifiedModelConfiguration(
       matching(decodeParallelToolCallVerificationEvidence(evidence.parallelToolCalls)),
     nativePdfInput: setup.checks.directPdf === "verified" && matching(decodePdfInputVerificationEvidence(evidence.pdfInput)),
     vision: setup.checks.vision === "verified" && matching(decodeVisionInputVerificationEvidence(evidence.visionInput)),
+    ...(setup.checks.codexWebSearch !== undefined ? {
+      codexStandaloneWebSearch: setup.checks.codexWebSearch === "verified" && matching(decodeCodexWebSearchEvidence(evidence.codexWebSearch))
+    } : {}),
     ...(setup.checks.hostedSearch !== undefined ? {
       nativeSearch: setup.checks.hostedSearch === "verified" && matching(decodeHostedSearchVerificationEvidence(evidence.hostedSearch))
     } : {}),
@@ -97,7 +101,7 @@ export function initiallyVerifiedModelConfiguration(
 export function reusableCapabilitySetupEvidence(
   evidence: AdminProviderTestEvidence | undefined,
   model: ProviderModelConfiguration,
-  connection?: Pick<ProviderConnectionConfiguration, "responsesRequestIsolationDetected">
+  connection?: Pick<ProviderConnectionConfiguration, "responsesRequestIsolationDetected"> & Partial<Pick<ProviderConnectionConfiguration, "apiRoot">>
 ): AdminProviderTestEvidence | undefined {
   let setup = decodeCapabilitySetupEvidence(evidence?.capabilitySetup);
   if (!setup && evidence && model.modelClass === "answer" && evidence.compatibility?.modelAccess === "verified") {
@@ -126,6 +130,12 @@ export function reusableCapabilitySetupEvidence(
   if (shouldProbeHostedSearch(model, connection) && (checks.hostedSearch === undefined ||
     checks.hostedSearch === "unsupported" && setup.attempts?.hostedSearch?.reason === "adapter_unsupported")) {
     checks.hostedSearch = "not_checked";
+  }
+  if (shouldProbeCodexWebSearch(model, connection?.apiRoot ? { apiRoot: connection.apiRoot } : undefined) && checks.codexWebSearch === undefined) checks.codexWebSearch = "not_checked";
+  const codexWebSearch = decodeCodexWebSearchEvidence(evidence.codexWebSearch);
+  if (!codexWebSearch || codexWebSearch.adapterKind !== model.adapterKind || codexWebSearch.upstreamModelId !== model.upstreamModelId) {
+    if (checks.codexWebSearch === "verified") checks.codexWebSearch = "not_checked";
+    delete retained.codexWebSearch;
   }
   const hostedSearch = decodeHostedSearchVerificationEvidence(evidence.hostedSearch);
   if (!hostedSearch || hostedSearch.adapterKind !== model.adapterKind || hostedSearch.upstreamModelId !== model.upstreamModelId) {
