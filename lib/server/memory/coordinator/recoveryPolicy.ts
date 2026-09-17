@@ -26,12 +26,20 @@ export function memoryRecoveryDueAtSql(): Prisma.Sql {
   END::double precision * INTERVAL '1 millisecond'`;
 }
 
-/** A binding without a retained result cannot be replayed by a generic retry.
- * Feature-specific receipt recovery may lift this restriction separately. */
+/** History recovery only reuses exact retained outputs or local raw history.
+ * All other bound work and any ambiguous dispatch remain protected. */
 export function memoryRecoveryProtectedSql(): Prisma.Sql {
   return Prisma.sql`EXISTS (
     SELECT 1 FROM "MemoryExecutionBinding" AS execution
     WHERE execution."userId" = job."userId" AND execution."memoryJobId" = job.id
+      AND (job.kind <> 'INDEX_HISTORY' OR execution."ownerType" <> 'JOB'
+        OR execution."logicalRole" <> 'MEMORY_HISTORY_CLASSIFY'
+        OR execution.state IN ('RUNNING', 'OUTCOME_UNKNOWN')
+        OR (execution.state = 'PENDING' AND execution."startedAt" IS NOT NULL)
+        OR (execution.state <> 'PENDING' AND NOT EXISTS (
+          SELECT 1 FROM "UsageEvent" usage
+          WHERE usage."userId" = execution."userId" AND usage."memoryExecutionBindingId" = execution.id
+        )))
   )`;
 }
 

@@ -397,6 +397,9 @@ async function releaseAggregateExecutionReferences(
       data: { executionId: null },
       where: { executionId: { in: executionBindingIds }, userId: claim.userId }
     });
+    await tx.memoryHistoryExecution.deleteMany({
+      where: { executionBindingId: { in: executionBindingIds }, userId: claim.userId }
+    });
     await tx.memoryFactExtractionExecution.deleteMany({
       where: {
         executionBindingId: { in: executionBindingIds },

@@ -5099,6 +5099,27 @@ model MemorySynthesisExecution {
   @@index([userId, appliedAt, createdAt])
 }
 
+/// Strict decoded history outputs retained only until local apply or expiry.
+/// One job may make several independently accounted contextual/digest calls.
+model MemoryHistoryExecution {
+  id                 String    @id @default(uuid())
+  userId             String
+  memoryJobId        String
+  executionBindingId String
+  inputHash          String    @db.VarChar(128)
+  acceptedOutputHash String    @db.VarChar(128)
+  acceptedOutput     Json?
+  recoverableUntil   DateTime
+  createdAt          DateTime  @default(now())
+  clearedAt          DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, executionBindingId])
+  @@index([userId, memoryJobId, inputHash])
+  @@index([userId, clearedAt, recoverableUntil])
+  @@index([clearedAt, recoverableUntil, id])
+}
+
 /// Recovery-only staging for one strict automatic-fact extraction result.
 /// Provider reasoning and raw response envelopes never enter this owner. The
 /// decoded packet is cleared after every candidate has a durable outcome.

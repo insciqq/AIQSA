@@ -466,6 +466,12 @@ export const allReusableWorkContributor: MemoryDeletionContributor = Object.free
         AND ${oldJobCondition(target)}
     `);
     await tx.$executeRaw(Prisma.sql`
+      DELETE FROM "MemoryHistoryExecution" AS execution
+      USING "MemoryJob" AS job
+      WHERE execution."userId" = job."userId" AND execution."memoryJobId" = job.id
+        AND ${oldJobCondition(target)}
+    `);
+    await tx.$executeRaw(Prisma.sql`
       DELETE FROM "MemoryJob" AS job
       WHERE ${oldJobCondition(target)}
     `);
