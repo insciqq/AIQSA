@@ -1,4 +1,5 @@
 import { decodeImageVerificationEvidence } from "../../providers/imageGenerationEvidence";
+import { applyNativeRoute } from "./nativeRouting";
 import { decodeHostedSearchVerificationEvidence, shouldProbeHostedSearch } from "./hostedSearchCapability";
 import { createImageModelDiscovery } from "../../providers/imageModelDiscovery";
 import { hasVerifiedDedicatedProtocol } from "../../providers/systemRoleEvidence";
@@ -253,7 +254,7 @@ function secretValueId(source: ProviderCredentialSecretSource): string {
     : source.versionId;
 }
 
-function validateEvidence(
+export function validateEvidence(
   outcome: AdminProviderDraftTestOutcome,
   mode: AdminProviderDraftTestMode,
   model: ProviderModelConfiguration
@@ -460,6 +461,7 @@ export function createAdminProviderService(input: Readonly<{
     connection: AdminProviderConnectionConfiguration | ProviderConnectionConfiguration;
     family: string;
     modelClasses?: readonly ProviderModelConfiguration["modelClass"][];
+    nativeRoutingModels?: readonly ProviderModelConfiguration[];
     secret: ProviderCredentialSource | null;
     signal?: AbortSignal;
   }): Promise<AdminProviderCredentialTestOutcome> {
@@ -471,6 +473,7 @@ export function createAdminProviderService(input: Readonly<{
         connection,
         family: realProviderFamily(value.family),
         ...(value.modelClasses ? { modelClasses: value.modelClasses } : {}),
+        ...(value.nativeRoutingModels ? { nativeRoutingModels: value.nativeRoutingModels } : {}),
         secret: value.secret,
         signal: value.signal
       });
@@ -548,6 +551,7 @@ export function createAdminProviderService(input: Readonly<{
       connection: connection.activeConfig ?? connection.draftConfig,
       family: connection.family,
       modelClasses: modelClasses.length ? modelClasses : ["answer"],
+      ...(initialSetup ? { nativeRoutingModels: setupModels.map(({ configuration }) => configuration) } : {}),
       secret: value.secret,
       signal: value.signal
     });
@@ -556,8 +560,10 @@ export function createAdminProviderService(input: Readonly<{
     const models = initialSetup ? connection.models.map((model) => {
       const configuration = normalizeAdminProviderModelConfiguration(model.draftConfig);
       validateFamily(connection.family, configuration);
+      const untouchedPreset = model.draftVersion === 1 && connection.id === setupPolicy?.connection.id &&
+        setupModels.some((candidate) => candidate.modelId === model.id);
       return {
-        configuration,
+        configuration: untouchedPreset ? applyNativeRoute(configuration, outcome.nativeRoutes?.[configuration.upstreamModelId]) : configuration,
         draftVersion: model.draftVersion,
         enabled: (outcome.modelIdsByClass?.[configuration.modelClass] ?? outcome.modelIds)
           .includes(configuration.upstreamModelId),
@@ -569,8 +575,9 @@ export function createAdminProviderService(input: Readonly<{
       (outcome.modelIdsByClass?.[candidate.configuration.modelClass] ?? outcome.modelIds)
         .includes(candidate.configuration.upstreamModelId) && !connection.models.some((model) => catalogModelPresent(model, candidate)))
       .map((candidate) => ({
-        configuration: candidate.configuration.modelClass === "image" ? { ...candidate.configuration,
+        configuration: applyNativeRoute(candidate.configuration.modelClass === "image" ? { ...candidate.configuration,
           image: outcome.imageModels?.find((entry) => entry.id === candidate.configuration.upstreamModelId)?.image ?? candidate.configuration.image } : candidate.configuration,
+          outcome.nativeRoutes?.[candidate.configuration.upstreamModelId]),
         displayName: candidate.displayName,
         id: connection.id === setupPolicy?.connection.id ? candidate.modelId : idFactory(),
         inputTokenPriceMicros: candidate.inputTokenPriceMicros,
@@ -580,7 +587,7 @@ export function createAdminProviderService(input: Readonly<{
     const checkedConnection = {
       models: [...connection.models.map((model) => initialSetup ? ({
         ...model,
-        activeConfig: model.draftConfig,
+        activeConfig: adminProviderModelConfiguration(models.find(({ id }) => id === model.id)!.configuration),
         activeVersion: model.draftVersion
       }) : model), ...additions.map((model) => ({
         id: model.id, activeConfig: adminProviderModelConfiguration(model.configuration), activeVersion: 1
@@ -914,6 +921,7 @@ export function createAdminProviderService(input: Readonly<{
         const outcome = await testCredentialCatalog({
           connection: connection.activeConfig, family: connection.family,
           modelClasses: [...new Set(missing.map((model) => model.configuration.modelClass))],
+          nativeRoutingModels: missing.map(({ configuration }) => configuration),
           secret: () => activeCredentialSecret(credential.id, credential.activeVersion!.id),
           signal: value.signal
         });
@@ -922,8 +930,9 @@ export function createAdminProviderService(input: Readonly<{
         const additions = missing.filter((candidate) =>
           (outcome.modelIdsByClass?.[candidate.configuration.modelClass] ?? outcome.modelIds)
             .includes(candidate.configuration.upstreamModelId)).map((candidate) => ({
-          configuration: initialModelConfiguration(candidate.configuration.modelClass === "image" ? { ...candidate.configuration,
-            image: outcome.imageModels?.find((entry) => entry.id === candidate.configuration.upstreamModelId)?.image ?? candidate.configuration.image } : candidate.configuration), displayName: candidate.displayName,
+          configuration: initialModelConfiguration(applyNativeRoute(candidate.configuration.modelClass === "image" ? { ...candidate.configuration,
+            image: outcome.imageModels?.find((entry) => entry.id === candidate.configuration.upstreamModelId)?.image ?? candidate.configuration.image } : candidate.configuration,
+            outcome.nativeRoutes?.[candidate.configuration.upstreamModelId])), displayName: candidate.displayName,
           id: connection!.id === policy?.connection.id ? candidate.modelId : idFactory(),
           inputTokenPriceMicros: candidate.inputTokenPriceMicros, outputTokenPriceMicros: candidate.outputTokenPriceMicros,
           templateKey: connection!.id === policy?.connection.id ? candidate.templateKey : null

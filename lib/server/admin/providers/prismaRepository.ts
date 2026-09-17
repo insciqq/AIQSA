@@ -1063,7 +1063,9 @@ export function createPrismaAdminProviderRepository(
         data: {
           displayName: input.displayName,
           draftConfig: json(input.configuration),
-          draftVersion: { increment: 1 }
+          draftVersion: { increment: 1 },
+          nativeRoutingAdoptionVersion: 1,
+          nativeRoutingAdoptionReason: "preserved"
         },
         where: {
           activeVersion: input.expectedActiveVersion,

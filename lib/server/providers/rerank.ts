@@ -261,8 +261,11 @@ function responseProviderMatches(
   if (!model.openRouterRouting) return false;
   if (model.openRouterRouting.mode === "automatic") return true;
   const normalizedActual = actual.toLocaleLowerCase("und");
+  // OpenRouter's public provider catalog uses this display name in responses,
+  // while routing accepts its slug. This exact alias does not admit lookalikes.
+  const canonicalActual = normalizedActual === "voyageai by mongodb" ? "voyageai" : normalizedActual;
   return model.openRouterRouting.providers.some((provider) =>
-    provider.toLocaleLowerCase("und") === normalizedActual);
+    provider.toLocaleLowerCase("und") === canonicalActual);
 }
 
 function responseBody(

@@ -444,20 +444,24 @@ describe("admin provider service", () => {
     expect(JSON.stringify(write)).not.toContain("candidate-secret");
   });
 
-  it.each([0, 1])("imports OpenRouter presets only during first setup, keeping ordinary key additions scoped to existing models (active version %s)", async (version) => {
+  it.each([{ version: 0, seeded: true }, { version: 0, seeded: false }, { version: 1, seeded: true }])("imports OpenRouter presets only during first setup, preserving manual routes and later key additions (version $version, seeded $seeded)", async ({ version, seeded }) => {
     const policy = adminProviderQuickSetupPolicy("openrouter");
     const reranker = adminRerankerModelConfiguration(automaticRerankerRoutePresets[0]!);
     const connection: AdminProviderConnection = {
       ...adminConnection(), id: policy.connection.id, family: "openrouter", enabled: version > 0,
       activeVersion: version, draftConfig: adminProviderConnectionConfiguration(policy.connection.configuration),
       activeConfig: version ? adminProviderConnectionConfiguration(policy.connection.configuration) : null,
-      models: [{ id: "reranker", connectionId: policy.connection.id, modelClass: "reranker",
+      models: [{ id: seeded ? approvedRerankerDeployments[0]!.providerModelId : "operator-reranker", connectionId: policy.connection.id, modelClass: "reranker",
         displayName: "Reranker", draftConfig: reranker, draftVersion: 1, activeConfig: version ? reranker : null,
         activeVersion: version, enabled: true, activatedAt: null, createdAt: NOW.toISOString(), updatedAt: NOW.toISOString() }]
     };
     const activateCredentialCas = vi.fn<AdminProviderRepository["activateCredentialCas"]>(async () => "updated");
     const test = vi.fn<AdminProviderCredentialTester["test"]>(async () => ({
       method: "models_catalog", modelIds: [...policy.candidates.map((c) => c.configuration.upstreamModelId), reranker.upstreamModelId],
+      nativeRoutes: Object.fromEntries(([
+        ["anthropic/claude-opus-5", "anthropic"], ["google/gemini-3.8-flash", "google-ai-studio"],
+        ["deepseek/deepseek-v4.1-flash", "deepseek"], ["openai/gpt-6-astra", "openai"], [reranker.upstreamModelId, "voyageai"]
+      ] as const).map(([id, provider]) => [id, { available: true as const, provider }])),
       modelIdsByClass: { answer: policy.candidates.map((c) => c.configuration.upstreamModelId), embedding: ["qwen/qwen3-embedding-8b"], reranker: [reranker.upstreamModelId] }
     }));
     const providers = service(repository({ activateCredentialCas, listConnections: async () => [connection] }),
@@ -470,6 +474,17 @@ describe("admin provider service", () => {
         "google/gemini-3.8-flash", "openai/gpt-6-astra", "perplexity/sonar-pro-search", "qwen/qwen3-embedding-8b"
       ]));
     else expect(added).toEqual([]);
+    expect(added).not.toContain("deepseek/deepseek-v4-flash");
+    if (version === 0) {
+      for (const [upstream, provider] of [["anthropic/claude-opus-5", "anthropic"], ["google/gemini-3.8-flash", "google-ai-studio"],
+        ["deepseek/deepseek-v4.1-flash", "deepseek"], ["openai/gpt-6-astra", "openai"]]) {
+        expect(activateCredentialCas.mock.calls[0]![0].catalogAdditions?.find(({ configuration }) => configuration.upstreamModelId === upstream)?.configuration)
+          .toMatchObject({ openRouterRouting: { mode: "only_selected", providers: [provider] },
+            defaultParams: { provider: { only: [provider], order: [provider], allowFallbacks: false } } });
+      }
+      expect(activateCredentialCas.mock.calls[0]![0].bootstrap?.models[0]?.configuration.openRouterRouting)
+        .toEqual(seeded ? { mode: "only_selected", providers: ["voyageai"] } : { mode: "automatic", providers: [] });
+    }
   });
 
   it("saves a new key in one step against the active configuration and writes nothing when the provider rejects it", async () => {

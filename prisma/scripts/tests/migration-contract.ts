@@ -1,3 +1,4 @@
+import { NATIVE_ROUTING_MIGRATION, nativeRoutingFixtureSql, nativeRoutingProofSql, nativeRoutingRepeatProofSql } from "./openrouter-native-routing-adoption";
 import { MEMORY_DEFAULTS_MIGRATION, memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql } from "./memory-defaults-adoption";
 import { WORKSPACE_USER_DEFAULT_MIGRATION, workspaceUserDefaultFixtureSql, workspaceUserDefaultProofSql, workspaceUserDefaultRepeatProofSql } from "./workspace-user-default-adoption";
 import { CHAT_TITLE_CREDENTIAL_MIGRATION, chatTitleCredentialAdoptionFixtureSql, chatTitleCredentialAdoptionProofSql } from "./chat-title-credential-adoption";
@@ -7387,6 +7388,8 @@ function main(
     memoryConfigurationAdoptionFixtureSql, memoryConfigurationAdoptionProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_HISTORY_BUDGET_MIGRATION,
     memoryHistoryBudgetFixtureSql, memoryHistoryBudgetProofSql, memoryHistoryBudgetProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, NATIVE_ROUTING_MIGRATION,
+    nativeRoutingFixtureSql, nativeRoutingProofSql, nativeRoutingRepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_RECOMMENDATION_MIGRATION,
     memoryRecommendationFixtureSql, memoryRecommendationProofSql, memoryRecommendationRepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_WORKER_RECOVERY_MIGRATION,

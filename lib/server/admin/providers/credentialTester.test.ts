@@ -7,6 +7,7 @@ import {
   type AdminProviderCredentialTesterInput
 } from "./credentialTester";
 import { discoverAdminCompatibleModels } from "@/components/admin/adminProvidersApi";
+import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 
 const publicLookup = async () => [
   { address: "93.184.216.34", family: 4 as const }
@@ -54,6 +55,23 @@ afterEach(() => {
 });
 
 describe("admin provider credential tester", () => {
+  it("discovers exact native endpoints only for available requested setup models", async () => {
+    const models = adminProviderQuickSetupPolicy("openrouter").candidates.slice(0, 4).map(({ configuration }) => configuration);
+    const slugs = ["anthropic", "google-ai-studio", "deepseek", "deepseek"];
+    const requests: string[] = [];
+    const tester = createAdminProviderCredentialTester({ network: { lookupHostname: publicLookup, dispatch: async (request) => {
+      requests.push(request.url.pathname);
+      if (request.url.pathname.endsWith("/models/user")) return catalog(models.map(({ upstreamModelId }) => upstreamModelId));
+      const index = models.findIndex(({ upstreamModelId }) => request.url.pathname.endsWith(`/models/${upstreamModelId}/endpoints`));
+      return Response.json({ data: { endpoints: [{ tag: slugs[index], provider_name: slugs[index], name: "Native",
+        supported_parameters: ["tools", "response_format"], max_completion_tokens: 1_000_000 }] } });
+    } } });
+    const outcome = await tester.test({ ...input("openrouter"), nativeRoutingModels: models });
+    expect(outcome.nativeRoutes).toEqual(Object.fromEntries(models.map((model, i) =>
+      [model.upstreamModelId, { available: true, provider: slugs[i] }])));
+    expect(requests).toHaveLength(5);
+  });
+
   it("feeds the actual compatible catalog projection through the client decoder", async () => {
     const tester = createAdminProviderCredentialTester({
       network: {
