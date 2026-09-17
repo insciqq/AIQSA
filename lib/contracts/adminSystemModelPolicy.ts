@@ -177,7 +177,7 @@ function memoryRecommendation(value: unknown): value is AdminMemoryModelRecommen
   return boundedText(evidence.revision, 128) &&
     [evidence.passedCases, evidence.totalCases, evidence.latencyP50Ms, evidence.latencyP95Ms]
       .every((entry) => Number.isSafeInteger(entry) && Number(entry) > 0 && Number(entry) <= 1_000_000) &&
-    evidence.passedCases === evidence.totalCases && Number(evidence.latencyP95Ms) >= Number(evidence.latencyP50Ms);
+    Number(evidence.passedCases) <= Number(evidence.totalCases) && Number(evidence.latencyP95Ms) >= Number(evidence.latencyP50Ms);
 }
 
 function ineligibleCandidate(value: unknown): value is AdminSystemModelIneligibleCandidate {
