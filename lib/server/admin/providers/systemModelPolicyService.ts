@@ -76,6 +76,8 @@ export class AdminSystemModelPolicyServiceError extends Error {
   }
 }
 
+class ChatTitleAlreadyConfigured extends Error {}
+
 function isPolicyWriteConflict(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError &&
     (error.code === "P2034" || error.code === "P2010" &&
@@ -297,7 +299,7 @@ export function createAdminSystemModelPolicyService(
       loadRole: loadRerankerRole
     }).resolve;
 
-  return {
+  const service = {
     async list(): Promise<AdminSystemModelPolicyCatalog> {
       const rerankerResolution = await resolveRerankerRole();
       const [policy, rows, rerankerRows, resolution, chatPdfResolution, chatTitleResolution, chatPdfNativeResolution] =
@@ -712,11 +714,27 @@ export function createAdminSystemModelPolicyService(
       }
     },
 
+    async adoptChatTitle(input: Readonly<{
+      expectedVersion: number; providerModelId: string; reasoningEffort: string | null; userId: string;
+    }>): Promise<boolean> {
+      try {
+        await service.update({ expectedVersion: input.expectedVersion, userId: input.userId,
+          chatTitleProviderModelId: input.providerModelId, chatTitleReasoningEffort: input.reasoningEffort,
+          chatTitleBootstrap: true });
+        return true;
+      } catch (error) {
+        if (error instanceof ChatTitleAlreadyConfigured) return false;
+        throw error;
+      }
+    },
+
     async update(input: Readonly<{
       imageProviderModelId?: string | null;
       imageParameters?: ImageGenerationParameters;
       chatTitleProviderModelId?: string | null;
       chatTitleReasoningEffort?: string | null;
+      /** Internal setup only; never accepted by the HTTP policy handler. */
+      chatTitleBootstrap?: true;
       chatPdfNativeProviderModelId?: string | null;
       chatPdfNativeReasoningEffort?: string | null;
       chatPdfProviderModelId?: string | null;
@@ -766,8 +784,10 @@ export function createAdminSystemModelPolicyService(
       }
       try {
         await prisma.$transaction(async (tx) => {
-          const policies = await tx.$queryRaw<Array<{ version: number }>>(Prisma.sql`
-            SELECT "version"
+          const policies = await tx.$queryRaw<Array<{
+            version: number; chatTitleConfiguredAt: Date | null; chatTitleProviderModelId: string | null;
+          }>>(Prisma.sql`
+            SELECT "version", "chatTitleConfiguredAt", "chatTitleProviderModelId"
             FROM "SystemModelPolicy"
             WHERE "id" = 'installation'
             FOR UPDATE
@@ -786,6 +806,9 @@ export function createAdminSystemModelPolicyService(
               "system_model_policy_target_unavailable"
             );
           }
+
+          if (input.chatTitleBootstrap && (policies[0].chatTitleConfiguredAt !== null ||
+            policies[0].chatTitleProviderModelId !== null)) throw new ChatTitleAlreadyConfigured();
 
           if (providerModelId === null && reasoningEffort !== null) {
             throw new AdminSystemModelPolicyServiceError(
@@ -899,7 +922,8 @@ export function createAdminSystemModelPolicyService(
               ...(hasImageUpdate ? { imageProviderModelId: input.imageProviderModelId, imageParamsJson: imageParameters as Prisma.InputJsonObject } : {}),
               ...(hasTitleUpdate ? {
                 chatTitleProviderModelId: input.chatTitleProviderModelId,
-                chatTitleReasoningEffort: input.chatTitleReasoningEffort
+                chatTitleReasoningEffort: input.chatTitleReasoningEffort,
+                chatTitleConfiguredAt: new Date()
               } : {}),
               ...(hasPdfUpdate ? {
                 chatPdfProviderModelId: input.chatPdfProviderModelId,
@@ -955,4 +979,5 @@ export function createAdminSystemModelPolicyService(
       }
     }
   };
+  return service;
 }

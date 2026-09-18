@@ -195,7 +195,10 @@ export function AdminSystemRolesTable({
         {memory.assignmentSource === "inherited" ? (
           <p className="text-xs leading-5 text-ink-muted">Copied from your previous System model setting. Future changes are independent.</p>
         ) : null}
-        {memory.recommendations?.map((recommendation) => {
+        {memory.recommendations?.length ? <details>
+          <summary className="min-h-11 cursor-pointer content-center text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">Recommended models</summary>
+          <div className="grid gap-4 pb-2 pt-1">
+          {memory.recommendations.map((recommendation) => {
           const recommendationSelected = recommendation.providerModelId === memory.model?.id && recommendation.reasoningEffort === memory.reasoningEffort;
           return (
           <div key={`${recommendation.id}:${recommendation.providerModelId ?? "missing"}`} role="group"
@@ -218,7 +221,9 @@ export function AdminSystemRolesTable({
             })}>{recommendationSelected ? "Recommended setting active" : "Use recommended"}</UiV2Button>}
           </div>
           );
-        })}
+          })}
+          </div>
+        </details> : null}
         <details>
           <summary className="cursor-pointer text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">Advanced</summary>
           <div className="pt-2">

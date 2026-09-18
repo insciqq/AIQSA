@@ -14,7 +14,7 @@ import { rerankerPresetsForFamily } from "../../../domain/rerankerModels";
 export function createAdminProviderBootstrap(input: {
   providers: { listConnections(): Promise<AdminProviderConnection[]> };
   chat: Pick<ReturnType<typeof createAdminModelPolicyService>, "list" | "update">;
-  roles: Pick<ReturnType<typeof createAdminSystemModelPolicyService>, "list" | "update" | "updateMemory">;
+  roles: Pick<ReturnType<typeof createAdminSystemModelPolicyService>, "list" | "update" | "updateMemory" | "adoptChatTitle">;
   search: Pick<ReturnType<typeof createAdminSearchService>, "list" | "createDraft" | "saveAndCheck">;
   knowledge: Pick<ReturnType<typeof createAdminKnowledgeProfileService>, "list" | "activate">;
 }) {
@@ -96,6 +96,28 @@ export function createAdminProviderBootstrap(input: {
         result.defaults.push(`Memory: ${memory.displayName}`);
       } else if (roles.memoryPolicy.assignmentSource === "unassigned") {
         result.state = "partial";
+      }
+    } catch {
+      value.signal.throwIfAborted();
+      result.state = "partial";
+    }
+    try {
+      const roles = await input.roles.list();
+      const recommendation = !roles.policy.chatTitleModel ? roles.memoryPolicy.recommendations?.find((entry) =>
+        entry.unavailableReason === null && entry.connectionId === connection.id && entry.providerModelId &&
+        eligible.has(entry.providerModelId) && roles.titleCandidates.some((model) => model.id === entry.providerModelId)) : null;
+      const target = roles.titleCandidates.find((model) => model.id === recommendation?.providerModelId);
+      if (target && recommendation) {
+        // Use the qualified utility shortlist, not an arbitrary answer model.
+        // Titles prefer reasoning Off when the exact deployment supports it.
+        const effort = target.reasoningEfforts.includes("none") ? "none" : recommendation.reasoningEffort;
+        if (target.reasoningEfforts.includes(effort)) {
+          value.signal.throwIfAborted();
+          if (await input.roles.adoptChatTitle({ expectedVersion: roles.policy.version,
+            providerModelId: target.id, reasoningEffort: effort, userId: value.userId })) {
+            result.defaults.push(`Chat titles: ${target.displayName}`);
+          }
+        }
       }
     } catch {
       value.signal.throwIfAborted();
