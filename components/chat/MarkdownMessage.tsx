@@ -17,6 +17,7 @@ type FencedCodeBlock = {
 type ListBlock = {
   items: ListItem[];
   ordered: boolean;
+  start?: number;
 };
 
 type ListItem = {
@@ -28,6 +29,7 @@ type ListLine = {
   content: string;
   indent: number;
   ordered: boolean;
+  start?: number;
 };
 
 type DisplayMathBlock = {
@@ -350,7 +352,7 @@ function renderHeading(
 }
 
 function parseListLine(line: string): ListLine | null {
-  const match = /^(\s*)([-*+]|\d+\.)\s+(.+)$/.exec(line);
+  const match = /^(\s*)([-*+]|\d{1,9}\.)\s+(.+)$/.exec(line);
   if (!match) {
     return null;
   }
@@ -358,7 +360,8 @@ function parseListLine(line: string): ListLine | null {
   return {
     content: match[3],
     indent: match[1].replace(/\t/g, "  ").length,
-    ordered: /^\d+\.$/.test(match[2])
+    ordered: /^\d+\.$/.test(match[2]),
+    start: /^\d+\.$/.test(match[2]) ? Number.parseInt(match[2], 10) : undefined
   };
 }
 
@@ -377,7 +380,8 @@ function parseList(lines: string[], startIndex: number, baseIndent?: number): { 
   const indent = baseIndent ?? first.indent;
   const block: ListBlock = {
     items: [],
-    ordered: first.ordered
+    ordered: first.ordered,
+    start: first.start
   };
   let index = startIndex;
 
@@ -432,7 +436,7 @@ function renderList(
     : "list-disc space-y-1 break-words pl-5 marker:text-ink-muted [overflow-wrap:anywhere]";
 
   return (
-    <Tag className={className} key={keyPrefix}>
+    <Tag className={className} key={keyPrefix} start={block.start}>
       {block.items.map((item, index) => (
         <li key={`${keyPrefix}-item-${index}`}>
           {renderInline(item.content, `${keyPrefix}-item-${index}`, renderCitation, resolveHref)}

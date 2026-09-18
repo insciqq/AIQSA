@@ -236,13 +236,13 @@ function okOutcome(input: AdminProviderDraftTesterInput) {
         directPdf: "not_supported" as const,
         modelAccess: "verified" as const,
         probeVersion: 1 as const,
-        streaming: "verified" as const,
+        streaming: input.model.modelClass === "answer" ? "verified" as const : "not_supported" as const,
         structuredOutput: "not_supported" as const,
         usage: "verified" as const
       },
       detail: "ok" as const,
       method: "tiny_generation" as const,
-      selectedProviders: [],
+      selectedProviders: [...(input.model.openRouterRouting?.providers ?? [])],
       upstreamModelId: input.model.upstreamModelId
     },
     status: "available" as const
@@ -566,6 +566,7 @@ describe("background capability checks (B3)", () => {
     expect(addSetupModelsCas).toHaveBeenCalledWith(expect.objectContaining({ connectionVersion: 1,
       credentialId: "cred-primary", credentialVersionId: "version-primary" }));
     expect(test.mock.calls.map(([input]) => input.model.modelClass).sort()).toEqual(["embedding", "image", "reranker"]);
+    expect(providers.checkRun({ connectionId: catalog.id, runId: run.id })).toMatchObject({ failed: [] });
     expect(activateCredentialCas).not.toHaveBeenCalled();
     const retry = await start();
     await waitFor(() => providers.checkRun({ connectionId: catalog.id, runId: retry.id }).state === "completed");
@@ -666,6 +667,65 @@ describe("background capability checks (B3)", () => {
     expect(test).toHaveBeenCalledWith(expect.objectContaining({ providerModelId: "draft", initialSetup: true }));
     expect(providers.checkRun({ connectionId: catalog.id, runId: run.id })).toMatchObject({ total: 1, failed: [] });
   });
+
+  it.each(["fresh", "disabled", "edited", "changed configuration", "manual identity", "concurrent edit"] as const)(
+    "handles the seeded reranker during setup while preserving administrator choices: %s", async (state) => {
+      const presets = providerSetupModels("openrouter");
+      const preset = presets.find(({ configuration }) => configuration.modelClass === "reranker")!;
+      const draft = model(state === "manual identity" ? "manual-reranker" : preset.modelId,
+        preset.configuration.upstreamModelId, {
+          activeConfig: null, activeVersion: 0, activatedAt: null, modelClass: "reranker",
+          draftConfig: adminProviderModelConfiguration({ ...preset.configuration,
+            ...(state === "changed configuration" ? { responseTimeoutMs: 10_000 } : {}) }),
+          draftVersion: state === "edited" ? 2 : 1, enabled: state !== "disabled"
+        });
+      const catalog = connection({ family: "openrouter", models: presets.map((candidate) => candidate === preset ? draft
+        : model(candidate.modelId, candidate.configuration.upstreamModelId, {
+          activeConfig: adminProviderModelConfiguration(candidate.configuration),
+          draftConfig: adminProviderModelConfiguration(candidate.configuration), enabled: false
+        })) });
+      const activateModelCas = vi.fn<AdminProviderRepository["activateModelCas"]>(async () => {
+        draft.activeConfig = draft.draftConfig;
+        draft.activeVersion = 1;
+        return "updated";
+      });
+      const test = vi.fn<AdminProviderDraftTester["test"]>(async (input) => ({
+        ...okOutcome(input), evidence: { ...okOutcome(input).evidence,
+          reranking: { probeVersion: 1, completeScores: true } }
+      }));
+      const providers = service(repository({ activateModelCas, listConnections: async () => [catalog],
+        loadModelActivationCandidate: async () => ({
+          connection: { ...activationCandidate().connection, family: "openrouter" },
+          model: { configuration: preset.configuration, displayName: preset.displayName,
+            activeVersion: 0, draftVersion: state === "concurrent edit" ? 2 : 1, id: draft.id }
+        }),
+        loadActiveRefreshCandidate: async () => ({ ...refreshCandidate(draft.id, preset.configuration.upstreamModelId),
+          connection: { ...refreshCandidate(draft.id, "").connection, family: "openrouter" },
+          model: { configuration: preset.configuration, displayName: preset.displayName, id: draft.id, version: 1 }
+        })
+      }), { test });
+      const start = () => providers.startCheckRun({ connectionId: catalog.id, credentialId: "cred-primary", reason: "setup" });
+      if (state === "concurrent edit") {
+        await expect(start()).rejects.toMatchObject({ code: "provider_draft_stale" });
+        expect(activateModelCas).not.toHaveBeenCalled();
+        expect(test).not.toHaveBeenCalled();
+        return;
+      }
+      const run = await start();
+      await waitFor(() => providers.checkRun({ connectionId: catalog.id, runId: run.id }).state === "completed");
+      if (state === "fresh") {
+        expect(activateModelCas).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+          initialSetup: true, model: expect.objectContaining({ id: preset.modelId, draftVersion: 1 })
+        }));
+        expect(test).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ providerModelId: preset.modelId, initialSetup: true }));
+        expect(providers.checkRun({ connectionId: catalog.id, runId: run.id })).toMatchObject({ total: 1, failed: [] });
+      } else {
+        expect(activateModelCas).not.toHaveBeenCalled();
+        expect(test).not.toHaveBeenCalled();
+        expect(draft.activeVersion).toBe(0);
+      }
+    }
+  );
 
   it.each([
     { label: "an explicit recheck of current initial evidence", modelVersion: 1, retryUnresolved: false },

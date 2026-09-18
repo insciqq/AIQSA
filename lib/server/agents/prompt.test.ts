@@ -4,6 +4,18 @@ import { textMessageContent } from "@/lib/domain/content";
 import { agentPrompts } from "./prompt";
 
 describe("Codex conversation delivery", () => {
+  it("does not advertise a missing message manifest on attachment-free turns", () => {
+    const request = { content: textMessageContent("Read an issue"), attachments: [], prompt: { system: "baseline" },
+      workspace: { outputDirectory: "/workspace/output/current", inboxIndexPath: "/workspace/inbox/index.json",
+        messageManifestPath: "/workspace/inbox/messages/current/manifest.json" } } as unknown as ProviderRunRequest;
+    const result = agentPrompts(request);
+    for (const prompt of [result.prompt, result.resumePrompt]) {
+      expect(prompt).not.toContain("messageManifestPath");
+      expect(prompt).toContain('"inboxIndexPath":"/workspace/inbox/index.json"');
+      expect(prompt).toContain('"attachments":[]');
+    }
+  });
+
   it.each(["off", "auto", "all"] as const)("only directs the agent to tools enabled by MCP %s", (mcpMode) => {
     const request = { content: textMessageContent("Read a private issue"), attachments: [],
       agent: { mcpMode }, prompt: { system: "baseline" } } as unknown as ProviderRunRequest;

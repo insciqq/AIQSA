@@ -950,6 +950,8 @@ describe("run preparation", () => {
         }, sendInput(body)));
         expect(prepared.normalizedRequest.agent).toMatchObject({ limitsEnabled, timeoutSeconds: limitsEnabled ? 3600 : null,
           maxOutputTokens: limitsEnabled ? 256 : 2048, policyVersion: limitsEnabled ? 2 : 1 });
+        expect(prepared.normalizedRequest.prompt.system).toContain("no current message manifest is present");
+        expect(prepared.normalizedRequest.prompt.system).not.toContain("Read messageManifestPath");
         configs.push(prepared.normalizedRequest.agent!);
       }
       expect(load).toHaveBeenCalledWith(expect.objectContaining({ requiresClientSearchRoutes: true }));
@@ -979,6 +981,8 @@ describe("run preparation", () => {
       expect(accepted.normalizedRequest.prompt.system).toContain(WORKSPACE_BROWSER_GUIDANCE);
       expect(accepted.providerRequest.prompt.system).toBe(accepted.normalizedRequest.prompt.system);
       expect(accepted.normalizedRequest.prompt.system).toContain("aria_snapshot()");
+      expect(accepted.normalizedRequest.prompt.system).toContain("no current message manifest is present");
+      expect(accepted.normalizedRequest.prompt.system).not.toContain("Current message manifest:");
     } else {
       expect(workspace.prepare).not.toHaveBeenCalled();
       expect(accepted.normalizedRequest.prompt.system).not.toContain(WORKSPACE_BROWSER_GUIDANCE);
