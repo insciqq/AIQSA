@@ -2,7 +2,9 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { isDeepStrictEqual } from "node:util";
 import { createPrismaAdminProviderRepository } from "../admin/providers/prismaRepository";
 import { createAdminProviderDraftTester, type AdminProviderDraftTester, type AdminProviderDraftTestOutcome } from "../admin/providers/tester";
-import { applyNativeRoute, discoverNativeRoute, nativeRoutePreservesCapabilities } from "../admin/providers/nativeRouting";
+import { applyNativeRoute, discoverNativeRoute, nativeRouteMissingCapabilities, nativeRoutePreviouslyUnverified } from "../admin/providers/nativeRouting";
+import { decodeNativeRouteAdoptionDiagnostic, type NativeRouteAdoptionDiagnostic } from "../../contracts/nativeRoutingAdoption";
+import { capabilityFailureAttempt } from "../admin/providers/capabilityProbeFailure";
 import { validateEvidence } from "../admin/providers/service";
 import { createOpenRouterDiscoveryClient } from "../providers/openRouterDiscovery";
 import { normalizeProviderConnectionConfiguration, normalizeProviderModelConfiguration } from "../providers/providerConfiguration";
@@ -49,11 +51,17 @@ export async function adoptNativeOpenRouterRoutes(input: {
     const claimed = await db.providerModel.updateMany({ where: { ...guard, nativeRoutingAdoptionVersion: 0 },
       data: { nativeRoutingAdoptionVersion: 1, nativeRoutingAdoptionReason: "verification_required" } });
     if (claimed.count !== 1) continue;
+    let diagnostic: NativeRouteAdoptionDiagnostic | undefined;
     async function unresolved(reason = "verification_required") {
+      const safeDiagnostic = decodeNativeRouteAdoptionDiagnostic(diagnostic);
       await db.providerModel.updateMany({ where: { ...guard, nativeRoutingAdoptionVersion: 1,
-        nativeRoutingAdoptionReason: "verification_required" }, data: { nativeRoutingAdoptionReason: reason } });
+        nativeRoutingAdoptionReason: "verification_required" }, data: { nativeRoutingAdoptionReason: reason,
+          nativeRoutingAdoptionEvidence: safeDiagnostic ? safeDiagnostic as Prisma.InputJsonValue : Prisma.DbNull } });
       totals.unresolved += 1;
-      logEvent("service_operation", { subsystem: "admin", stage: "initialize", outcome: "degraded", code: `native_route_${reason}` });
+      logEvent("service_operation", { subsystem: "admin",
+        stage: safeDiagnostic?.stage === "catalog" ? "discover" : safeDiagnostic?.stage === "publication" ? "publish" : "validate",
+        outcome: "degraded", code: `native_route_${safeDiagnostic?.code ?? reason}`,
+        ...(safeDiagnostic?.httpStatus ? { httpStatus: safeDiagnostic.httpStatus } : {}) });
     }
     try {
       const model = normalizeProviderModelConfiguration(snapshot.activeConfig ?? snapshot.draftConfig);
@@ -64,6 +72,8 @@ export async function adoptNativeOpenRouterRoutes(input: {
         continue;
       }
       const connection = normalizeProviderConnectionConfiguration(snapshot.connection.activeConfig);
+      diagnostic = { version: 1, stage: "catalog", code: "verification_required", servingMode: "automatic",
+        missing: [], previouslyUnverified: [] };
       const keys = usableCredentials(snapshot);
       if (!snapshot.enabled || !snapshot.connection.enabled || snapshot.connection.family !== "openrouter" ||
         snapshot.activeVersion < 1 || snapshot.draftVersion !== snapshot.activeVersion || !keys.length) {
@@ -94,9 +104,11 @@ export async function adoptNativeOpenRouterRoutes(input: {
           if (!value) throw new Error("native_route_credential_unavailable");
           return value;
         };
-        const route = await discoverNativeRoute(createDiscovery({ ...connection, bearerToken: secret }), model, signal);
-        if (!route.available) { failure = route.reason; break; }
+        diagnostic = { ...diagnostic, stage: "catalog", previouslyUnverified: nativeRoutePreviouslyUnverified(model, candidate.priorEvidence) };
+        const route = await discoverNativeRoute(createDiscovery({ ...connection, bearerToken: secret }), model, signal, candidate.priorEvidence);
+        if (!route.available) { failure = route.reason; diagnostic = route.diagnostic; break; }
         if (proofs.length && proposed.openRouterRouting?.providers[0] !== route.provider) { failure = "native_incompatible"; break; }
+        diagnostic = { ...diagnostic, stage: "modelAccess", provider: route.provider };
         proposed = applyNativeRoute(model, route);
         const timeout = withTimeoutSignal(signal, INITIAL_CAPABILITY_BATCH_TIMEOUT_MS);
         try {
@@ -107,7 +119,13 @@ export async function adoptNativeOpenRouterRoutes(input: {
             secret, signal: timeout.signal });
           timeout.signal.throwIfAborted();
           const evidence = validateEvidence(outcome, "tiny_generation", proposed);
-          if (outcome.status !== "available" || !nativeRoutePreservesCapabilities(proposed, candidate.priorEvidence, evidence)) {
+          const missing = nativeRouteMissingCapabilities(proposed, candidate.priorEvidence, evidence);
+          if (outcome.status !== "available" || missing.length > 0) {
+            const check = outcome.status !== "available" ? "modelAccess" : missing[0]!;
+            const attempt = evidence.capabilitySetup?.attempts?.[check];
+            diagnostic = { ...diagnostic, stage: check === "modelAccess" ? "modelAccess" : "capabilities",
+              code: attempt?.reason ?? "capability_mismatch", missing,
+              ...(attempt?.httpStatus ? { httpStatus: attempt.httpStatus } : {}) };
             failure = "native_incompatible"; break;
           }
           proofs.push({ credentialId: key.id, versionId: key.activeVersionId!, outcome: { ...outcome, evidence } });
@@ -115,6 +133,7 @@ export async function adoptNativeOpenRouterRoutes(input: {
       }
       signal?.throwIfAborted();
       if (failure || proofs.length !== keys.length) { await unresolved(failure ?? undefined); continue; }
+      diagnostic = { ...diagnostic!, stage: "publication", code: "authority_changed" };
       const published = await db.$transaction(async (tx) => {
         await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "ProviderConnection" WHERE "id" = ${snapshot.connectionId} FOR UPDATE`);
         await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "ProviderModel" WHERE "id" = ${id} FOR UPDATE`);
@@ -134,7 +153,7 @@ export async function adoptNativeOpenRouterRoutes(input: {
         await tx.providerModel.update({ where: { id }, data: { activeVersion: snapshot.activeVersion + 1,
           draftVersion: snapshot.activeVersion + 1, activeConfig: proposed as Prisma.InputJsonValue,
           draftConfig: proposed as Prisma.InputJsonValue, defaultParams: proposed.defaultParams as Prisma.InputJsonValue,
-          nativeRoutingAdoptionReason: "applied" } });
+          nativeRoutingAdoptionReason: "applied", nativeRoutingAdoptionEvidence: Prisma.DbNull } });
         await tx.providerModelCredentialCheck.createMany({ data: proofs.map(({ credentialId, versionId, outcome }) => ({
           connectionId: snapshot.connectionId, connectionVersion: snapshot.connection.activeVersion,
           providerModelId: id, modelVersion: snapshot.activeVersion + 1, credentialId, credentialVersionId: versionId,
@@ -144,8 +163,14 @@ export async function adoptNativeOpenRouterRoutes(input: {
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 15_000 });
       if (published) totals.applied += 1;
       else await unresolved();
-    } catch {
+    } catch (error) {
       signal?.throwIfAborted();
+      if (diagnostic) {
+        const attempt = capabilityFailureAttempt(error, { attempts: 1, capability: "modelAccess",
+          adapterKind: "openrouter_chat_completions", accessVerified: false, timedOut: false });
+        diagnostic = { ...diagnostic, code: attempt.reason,
+          ...(attempt.httpStatus ? { httpStatus: attempt.httpStatus } : {}) };
+      }
       await unresolved();
     }
   }

@@ -18,6 +18,8 @@ import {
 } from "./recoveryPolicy";
 import { memorySourceJobSnapshotMatches } from "../sourceState";
 import { lockMemorySettings } from "../persistence/transaction";
+import { enqueueMemoryJob } from "../persistence/jobs";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION, memoryHistoryIndexJobFingerprint } from "../history/contract";
 import { MemoryPersistenceError } from "../persistence/errors";
 import { MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION } from "../learning/relations/explicitPolicy";
 import {
@@ -298,7 +300,7 @@ async function recoverEligibleMemoryJobs(
     const accepted = await client.$transaction(async (tx) => {
       // Match ordinary commits: settings before source/job locks. This also
       // serializes binding creation and every privacy/settings mutation.
-      await lockMemorySettings(tx, candidate.userId, true);
+      const settings = await lockMemorySettings(tx, candidate.userId, true);
       const rows = await tx.$queryRaw<RecoverableJobRow[]>(Prisma.sql`
         WITH ${currentMemoryJobsSql(input.now)}
         SELECT job.*, job."workStage" AS stage
@@ -320,6 +322,22 @@ async function recoverEligibleMemoryJobs(
           where: { id: row.id, userId: row.userId, state: "TERMINAL_FAILED" }
         });
         return false;
+      }
+      if (row.kind === "INDEX_HISTORY" && row.pipelineVersion !== MEMORY_HISTORY_INDEX_PIPELINE_VERSION) {
+        if (!row.chatId || !row.activeLeafMessageId || row.branchGeneration === null ||
+          row.sourceRevision === null || !row.sourceHash) return false;
+        const source = { activeLeafMessageId: row.activeLeafMessageId, id: row.chatId,
+          memoryBranchGeneration: row.branchGeneration, memorySourceRevision: row.sourceRevision,
+          sourceHash: row.sourceHash, userId: row.userId };
+        const successor = await enqueueMemoryJob(tx, settings, {
+          idempotencyFingerprint: memoryHistoryIndexJobFingerprint(source), kind: "INDEX_HISTORY",
+          pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION, nextAttemptAt: input.now,
+          source: { activeLeafMessageId: row.activeLeafMessageId, branchGeneration: row.branchGeneration,
+            chatId: row.chatId, sourceHash: row.sourceHash, sourceRevision: row.sourceRevision }
+        });
+        // Preserve the old failure and accepted execution identities. The current
+        // handler recognizes this source's failed predecessor and cannot dispatch.
+        return successor.created;
       }
       const updated = await tx.memoryJob.updateMany({
         data: {

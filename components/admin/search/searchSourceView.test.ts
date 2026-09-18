@@ -192,7 +192,7 @@ describe("plan and form helpers", () => {
       ...form,
       executionInputs: { maxOutputTokens: "12", maxSearchCallsPerAnswer: "33" }
     })).toEqual({
-      maxOutputTokens: "Enter a whole number from 1,024 to 32,768.",
+      maxOutputTokens: "Enter a whole number of at least 16, or leave blank for Auto.",
       maxSearchCallsPerAnswer: "Enter a whole number from 1 to 32.",
       valid: false
     });
@@ -203,7 +203,7 @@ describe("plan and form helpers", () => {
 
   it("starts new sources with research-capable defaults and preserves saved settings when changing models", () => {
     const fresh = emptySearchForm();
-    expect(fresh.draft).toMatchObject({ maxOutputTokens: 8_192, maxSearchCallsPerAnswer: 8,
+    expect(fresh.draft).toMatchObject({ maxOutputTokens: null, maxSearchCallsPerAnswer: 8,
       queryMaxCharacters: 1_000, timeoutMs: 120_000 });
     const saved = searchFormFrom(source());
     expect(saved.draft).toMatchObject({ maxOutputTokens: 4_096, maxSearchCallsPerAnswer: 2,

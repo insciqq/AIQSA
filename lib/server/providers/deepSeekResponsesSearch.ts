@@ -1,3 +1,4 @@
+import { admittedOutputAllowance } from "./modelOutputAllowance";
 import { dispatchSearchRequest } from "./searchDispatch";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { adminSearchExecutionLimits } from "../../contracts/adminSearch";
@@ -78,7 +79,7 @@ export function buildDeepSeekResponsesSearchRequest(
   const effort = configured.reasoningPolicy === "lowest_supported"
     ? lowestSupportedEffort(configured.modelCapabilities)
     : undefined;
-  return {
+  const body: DeepSeekResponsesSearchRequestBody = {
     input: [{
       content: [{ text: request.query, type: "input_text" }],
       role: "user"
@@ -91,6 +92,7 @@ export function buildDeepSeekResponsesSearchRequest(
     tool_choice: "auto",
     tools: [{ type: "web_search" }]
   };
+  return request.generationBudget ? { ...body, max_output_tokens: admittedOutputAllowance(request.generationBudget, body) } : body;
 }
 
 function searchArtifacts(response: Readonly<Record<string, unknown>>): ModelRunSseEvent[] {

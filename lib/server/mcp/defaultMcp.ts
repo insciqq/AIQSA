@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/server/prisma";
+import { getMcpRequestMaxBytes } from "./responseLimits";
 import { createMcpClientSessionFactory } from "./clientSessionFactory";
 import { mcpOAuthService } from "./defaultOAuth";
 import { getDefaultToolHiveClient, getDefaultToolHiveDriver } from "./defaultToolHive";
@@ -11,7 +12,7 @@ import { createToolHiveMcpSessionFactory } from "./toolhiveSessionFactory";
 
 const VALIDATION_RUNTIME_LIMITS = {
   maxListPages: 16,
-  maxToolArgumentBytes: 64 * 1_024,
+  get maxToolArgumentBytes() { return getMcpRequestMaxBytes(); },
   maxToolMetadataBytes: 256 * 1_024,
   maxToolSchemaBytes: 64 * 1_024,
   maxTools: 256

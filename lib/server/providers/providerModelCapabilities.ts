@@ -91,12 +91,12 @@ export function resolveProviderModelCapabilities(
 
 /** A saved exact-model ceiling or a reviewed template ceiling; defaults are not limits. */
 export function declaredModelOutputTokenLimit(
-  configuration: Pick<ProviderModelConfiguration, "capabilities" | "upstreamModelId"> & {
+  configuration: Pick<ProviderModelConfiguration, "upstreamModelId"> & Partial<Pick<ProviderModelConfiguration, "capabilities">> & {
     adapterKind: ProviderModelConfiguration["adapterKind"] | "fake";
   },
   providerFamily: string
 ): number | null {
-  return configuration.capabilities.maxOutputTokens ?? defaultProviderModels.find((model) =>
+  return configuration.capabilities?.maxOutputTokens ?? defaultProviderModels.find((model) =>
     model.adapterKind === configuration.adapterKind && model.providerFamily === providerFamily &&
     model.upstreamModelId === configuration.upstreamModelId
   )?.parameterControls.maxOutputTokens.maxValue ?? null;

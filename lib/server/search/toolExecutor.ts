@@ -1,3 +1,4 @@
+import { admittedOutputAllowance, isModelGenerationBudget } from "../providers/modelOutputAllowance";
 import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
 import type { ValidatedSearchQuery } from "../../domain/search";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
@@ -151,7 +152,7 @@ function searchTool(name: string, description: string, queryMaxCharacters: numbe
   };
 }
 
-export function searchExecutionConfiguration(option: NormalizedSearchPlanOption): {
+export function searchExecutionConfiguration(option: NormalizedSearchPlanOption, input: unknown = ""): {
   capabilities: ProviderModelCapabilities;
   defaultParams: Record<string, unknown>;
   maxOutputTokens: number;
@@ -162,6 +163,9 @@ export function searchExecutionConfiguration(option: NormalizedSearchPlanOption)
   timeoutMs: number;
 } {
   const config = option.config;
+  if (config.maxOutputTokens === null && !isModelGenerationBudget(config.generationBudget)) {
+    throw Object.assign(new Error("search_generation_budget_invalid"), { code: "search_generation_budget_invalid" });
+  }
   const capabilities = isRecord(config.modelCapabilities)
     ? config.modelCapabilities as ProviderModelCapabilities
     : {
@@ -176,7 +180,8 @@ export function searchExecutionConfiguration(option: NormalizedSearchPlanOption)
   return {
     capabilities,
     defaultParams: isRecord(config.modelDefaultParams) ? config.modelDefaultParams : {},
-    maxOutputTokens: boundedInteger(
+    maxOutputTokens: isModelGenerationBudget(config.generationBudget)
+      ? admittedOutputAllowance(config.generationBudget, input) : boundedInteger(
       config.maxOutputTokens,
       adminSearchExecutionLimits.maxOutputTokens.minimum,
       adminSearchExecutionLimits.maxOutputTokens.maximum,
@@ -213,7 +218,7 @@ function queryOnlyRequest(
   option: NormalizedSearchPlanOption,
   query: ValidatedSearchQuery
 ): ProviderSearchRequest {
-  const configured = searchExecutionConfiguration(option);
+  const configured = searchExecutionConfiguration(option, { query });
   let searchPolicy: ProviderSearchPolicy;
   if (option.protocol === "openrouter_perplexity_chat") {
     searchPolicy = {
@@ -282,6 +287,7 @@ function queryOnlyRequest(
   return {
     correlationId,
     query,
+    ...(isModelGenerationBudget(option.config.generationBudget) ? { generationBudget: option.config.generationBudget } : {}),
     searchPolicy,
     strategyId: option.optionId
   };

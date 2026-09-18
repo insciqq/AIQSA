@@ -153,6 +153,8 @@ export type NormalizedRunRequest = {
   /** Closed review-field validation feedback. Omission preserves historical
    * prompts and rejection receipts; only evidence-review workflow 11 uses it. */
   knowledgeReviewRepairFeedbackVersion?: 1;
+  /** Admitted utility allowance for workflow 11; omission retains historical requests. */
+  knowledgeGenerationBudget?: import("./modelOutputAllowance").ModelGenerationBudget;
   /** Frozen retrieval instructions, independent of answer-stage versions.
    * V2 pins the tool descriptor; V3 also pins the retrieval system contract.
    * Omission retains historical descriptor and workflow-based selection. */
@@ -224,7 +226,7 @@ export type NormalizedRunRequest = {
   /** Exact installation tool-loop limits frozen when the run is accepted. */
   toolBudgets?: Readonly<{
     mcpAutoDiscoveryTimeoutSeconds?: number;
-    mcpAutoDiscoveryMaxOutputTokens?: number;
+    mcpAutoDiscoveryMaxOutputTokens?: number | "model";
     maxMcpToolsPerDiscovery?: number;
     maxToolCalls: number;
     maxToolRounds: number;
@@ -326,6 +328,7 @@ export type ProviderRunRefreshResult = {
 };
 
 export type ProviderSearchRequest = Readonly<{
+  generationBudget?: import("./modelOutputAllowance").ModelGenerationBudget;
   correlationId: string;
   query: ValidatedSearchQuery;
   searchControls?: Readonly<Record<string, unknown>>;

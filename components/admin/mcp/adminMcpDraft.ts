@@ -110,7 +110,7 @@ export function defaultMcpDraft(kind: McpSource["kind"] = "remote"): McpDraftCon
   return {
     auth: { mode: "none" },
     runtime: {
-      callTimeoutMs: 60_000,
+      callTimeoutMs: 300_000,
       startupTimeoutMs: 60_000
     },
     slots: [],

@@ -10,7 +10,7 @@ import { applyMemorySourceMutations, lockMemorySourceChat } from "../memory/sour
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { scheduleTemporaryChatDeletion, temporaryRetentionDeadline } from "../memory/temporaryRetention";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
-import { CHAT_SUMMARY_TIMEOUT_MS, ChatContinuationError, type ContinuationRepository, type ContinuationSource } from "./continuation";
+import { CHAT_SUMMARY_LEASE_MS, ChatContinuationError, type ContinuationRepository, type ContinuationSource } from "./continuation";
 import type { StorageAdapter } from "../uploads/storage";
 import { WorkspaceRuntimeError, type WorkspaceOutputStream, type WorkspaceRuntime } from "../workspace/runtime";
 import { WORKSPACE_OPERATION_LEASE_MS } from "../workspace/sessionOperation";
@@ -115,14 +115,22 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
         return { kind: "result", result: { status: "complete", chatId: existing.newChatId, projectId: access.project?.projectId ?? null } };
       }
       if (existing?.status === "running") {
-        if (Date.now() - existing.updatedAt.getTime() <= CHAT_SUMMARY_TIMEOUT_MS + 60_000) {
-          return { kind: "result", result: { status: "running" } };
+        if (existing.cancelRequestedAt) throw new ChatContinuationError("chat_summary_cancelled");
+        if (existing.leaseExpiresAt ? existing.leaseExpiresAt.getTime() > Date.now() : Date.now() - existing.updatedAt.getTime() <= 180_000) {
+          return { kind: "result", result: { status: "running", ...(existing.leaseExpiresAt ? { progress: {
+            completedParts: existing.completedParts,
+            stage: existing.progressStage === "combining" ? "combining" as const : existing.progressStage === "summarizing" ? "summarizing" as const : "preparing" as const
+          } } : {}) } };
         }
         // A stopped process has an unknown provider outcome. Only a fresh explicit attempt can retry.
         await tx.chatContinuation.update({ where: { id: existing.id }, data: { status: "failed", errorCode: "chat_summary_failed" } });
         return { kind: "failed" };
       }
-      if (existing?.attemptId === requestId) throw new ChatContinuationError("chat_summary_failed", 502);
+      if (existing?.attemptId === requestId) {
+        const code = existing.errorCode;
+        throw new ChatContinuationError(code === "chat_summary_no_progress" || code === "chat_summary_outcome_unknown" ||
+          code === "chat_summary_cancelled" || code === "chat_summary_unavailable" ? code : "chat_summary_failed", 502);
+      }
       // Freeze only a server-exposed selection. Polls and duplicate claims
       // return above, so later composer changes cannot retarget this claim.
       let requestedProviderModelId: string | null = null;
@@ -138,10 +146,12 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
       }
       const operation = existing
         ? await tx.chatContinuation.update({ where: { id: existing.id }, data: {
-            actorUserId: source.userId, attemptId: requestId, errorCode: null, status: "running", requestedProviderModelId
+            actorUserId: source.userId, attemptId: requestId, errorCode: null, status: "running", requestedProviderModelId, leaseExpiresAt: new Date(Date.now() + CHAT_SUMMARY_LEASE_MS),
+            cancelRequestedAt: null, completedParts: 0, progressStage: "preparing"
           } })
         : await tx.chatContinuation.create({ data: {
-            ...key, actorUserId: source.userId, attemptId: requestId, status: "running", requestedProviderModelId
+            ...key, actorUserId: source.userId, attemptId: requestId, status: "running", requestedProviderModelId, leaseExpiresAt: new Date(Date.now() + CHAT_SUMMARY_LEASE_MS),
+            cancelRequestedAt: null, completedParts: 0, progressStage: "preparing"
           } });
       const priorSeed = await tx.chatContinuationWorkspaceSeed.findUnique({ where: { continuationId: operation.id } });
       if (priorSeed) {
@@ -179,6 +189,41 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
       }
       return { kind: "claimed", claim: { id: operation.id, attemptId: operation.attemptId } };
     }),
+
+    async heartbeat(claim, progress) {
+      const renewed = await client.chatContinuation.updateMany({ where: { id: claim.id, attemptId: claim.attemptId,
+        status: "running", cancelRequestedAt: null, leaseExpiresAt: { gt: new Date() } },
+        data: { leaseExpiresAt: new Date(Date.now() + CHAT_SUMMARY_LEASE_MS), completedParts: progress.completedParts,
+          progressStage: progress.stage } });
+      return renewed.count === 1;
+    },
+
+    async loadStep(claim, hash) {
+      const step = await client.chatContinuationStep.findUnique({ where: {
+        continuationId_requestHash: { continuationId: claim.id, requestHash: hash }
+      } });
+      if (step?.status === "dispatched" || step?.status === "unknown") throw new ChatContinuationError("chat_summary_outcome_unknown", 502);
+      return step?.status === "complete" ? step.summary : null;
+    },
+
+    beginStep: (claim, hash) => client.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "ChatContinuation" WHERE "id" = ${claim.id} FOR UPDATE`;
+      if (!await tx.chatContinuation.count({ where: { id: claim.id, attemptId: claim.attemptId, status: "running",
+        cancelRequestedAt: null, leaseExpiresAt: { gt: new Date() } } })) throw new ChatContinuationError("chat_summary_cancelled");
+      const where = { continuationId_requestHash: { continuationId: claim.id, requestHash: hash } };
+      const prior = await tx.chatContinuationStep.findUnique({ where });
+      if (prior && prior.status !== "failed") throw new ChatContinuationError("chat_summary_outcome_unknown", 502);
+      await tx.chatContinuationStep.upsert({ where,
+        create: { continuationId: claim.id, requestHash: hash, attemptId: claim.attemptId, status: "dispatched" },
+        update: { attemptId: claim.attemptId, status: "dispatched", summary: null } });
+    }),
+
+    async settleStep(claim, hash, result) {
+      await client.chatContinuationStep.updateMany({ where: { continuationId: claim.id, requestHash: hash,
+        attemptId: claim.attemptId, status: "dispatched" }, data: "summary" in result
+          ? { status: "complete", summary: result.summary }
+          : { status: result.ambiguous ? "unknown" : "failed", summary: null } });
+    },
 
     async assertCurrent(source) {
       await client.$transaction((tx) => lockedSource(tx, currentInput(source)));
@@ -284,7 +329,8 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
       const result = await client.$transaction(async (tx) => {
         const { actor, chat, projectRole } = await lockedSource(tx, currentInput(source));
         const operation = await tx.chatContinuation.findFirst({ where: {
-          id: claim.id, attemptId: claim.attemptId, actorUserId: source.userId, status: "running"
+          id: claim.id, attemptId: claim.attemptId, actorUserId: source.userId, status: "running", cancelRequestedAt: null,
+          OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { gt: new Date() } }]
         } });
         if (!operation) throw new ChatContinuationError("chat_changed");
         const newChatId = randomUUID();
@@ -331,8 +377,10 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
           });
         }
         if (deadline) await scheduleTemporaryChatDeletion(tx, { chatId: newChatId, deadline, now: new Date(), userId: source.userId });
-        const settled = await tx.chatContinuation.updateMany({ where: { id: claim.id, attemptId: claim.attemptId, status: "running" }, data: { status: "complete", newChatId, errorCode: null } });
+        const settled = await tx.chatContinuation.updateMany({ where: { id: claim.id, attemptId: claim.attemptId, status: "running", cancelRequestedAt: null,
+          OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { gt: new Date() } }] }, data: { status: "complete", newChatId, errorCode: null } });
         if (settled.count !== 1) throw new ChatContinuationError("chat_changed");
+        await tx.chatContinuationStep.deleteMany({ where: { continuationId: claim.id } });
         return { status: "complete" as const, chatId: newChatId, projectId: chat.projectId };
       });
       if (result.projectId) notifyProjectEvent(result.projectId);
@@ -383,4 +431,17 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
         create: { ...data, id: `chat-summary:${claim.id}:${claim.attemptId}:${ordinal}` }, update: data });
     }
   };
+}
+
+/** Cancel only the authenticated actor's exact attempt; never another member's work. */
+export async function cancelChatContinuation(client: PrismaClient, input: {
+  chatId: string; userId: string; requestId: string;
+}): Promise<void> {
+  await client.$transaction(async tx => {
+    const access = await resolveChatAccess(tx, { chatId: input.chatId, userId: input.userId, requireMutable: true,
+      minimumProjectRole: "CONTRIBUTOR" });
+    if (!access) throw new ChatContinuationError("chat_not_found", 404);
+    await tx.chatContinuation.updateMany({ where: { sourceChatId: input.chatId, actorUserId: input.userId,
+      attemptId: input.requestId, status: "running" }, data: { cancelRequestedAt: new Date() } });
+  });
 }

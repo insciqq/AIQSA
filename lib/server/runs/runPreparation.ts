@@ -1,4 +1,5 @@
 import { imageGenerationTool, imageReferenceInstructions } from "../tools/imageGeneration";
+import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
 import type { AssistantIdentity } from "../../contracts/assistants";
 import { isChatPdfPolicyUnavailableError, type ChatPdfAttachmentAdmission, type ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
@@ -1759,6 +1760,7 @@ export async function prepareRun(
     ...(knowledgeRequested ? {
       knowledgeAnswerWorkflowVersion: 11 as const,
       knowledgeReviewRepairFeedbackVersion: 1 as const,
+      knowledgeGenerationBudget: admitModelGenerationBudget(admissionPlan.answer.snapshot),
       knowledgeSearchInstructionVersion: 3 as const,
       knowledgeQueryAnchorVersion: 2 as const,
       knowledgeEvidencePackingVersion: 5 as const

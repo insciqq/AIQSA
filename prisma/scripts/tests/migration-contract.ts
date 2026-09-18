@@ -7,6 +7,9 @@ import { CHAT_TITLE_ROLE_MIGRATION, chatTitleRoleAdoptionFixtureSql, chatTitleRo
 import { GEMINI_GROUNDING_MIGRATION, geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql } from "./gemini-grounding-adoption";
 import { MEMORY_CONFIGURATION_WAIT_MIGRATION, memoryConfigurationAdoptionFixtureSql, memoryConfigurationAdoptionProofSql } from "./memory-configuration-adoption";
 import { MEMORY_WORKER_RECOVERY_MIGRATION, memoryWorkerRecoveryFixtureSql, memoryWorkerRecoveryProofSql } from "./memory-worker-recovery-adoption";
+import { MEMORY_HISTORY_LIVE_ORDINALS_MIGRATION, memoryHistoryLiveOrdinalsFixtureSql, memoryHistoryLiveOrdinalsProofSql } from "./memory-history-live-ordinals";
+import { MCP_MODEL_OUTPUT_BUDGET_MIGRATION, mcpModelOutputBudgetFixtures } from "./mcp-model-output-budget";
+import { UTILITY_RUNTIME_BUDGET_MIGRATION, utilityRuntimeBudgetFixtures } from "./utility-runtime-budgets";
 import { MEMORY_UTILITY_MODEL_MIGRATION, memoryUtilityModelFixtureSql, memoryUtilityModelProofSql, memoryUtilityModelRepeatProofSql } from "./memory-utility-model-adoption";
 import { MEMORY_HISTORY_BUDGET_MIGRATION, memoryHistoryBudgetFixtureSql, memoryHistoryBudgetProofSql } from "./memory-history-budget-adoption";
 import { MEMORY_EGRESS_RECEIPT_MIGRATION, memoryEgressReceiptFixtureSql, memoryEgressReceiptProofSql } from "./memory-egress-receipt-adoption";
@@ -583,7 +586,7 @@ function runBootstrapProof(database: string): void {
     WHERE u.email = 'baseline-admin@example.invalid' AND s."defaultSearchPlan" IS NULL;`), "1",
     "initial administrator inherits organization Search");
   psqlScalar(database, `UPDATE "UserSettings" SET "defaultSearchPlan" = '{"mode":"all_selected","optionIds":[]}';`);
-  assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "8192");
+  assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "");
   psqlScalar(database, `UPDATE "ModelPolicy" SET "mcpAutoDiscoveryMaxOutputTokens" = 4096 WHERE id = 'installation';`);
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "MemoryUtilityModelPolicy" WHERE id = 'installation'
     AND "providerModelId" IS NULL AND "reasoningEffort" IS NULL AND "assignmentSource" = 'UNASSIGNED' AND version = 1;`), "1",
@@ -7410,6 +7413,16 @@ function main(
     memoryRecommendationV2FixtureSql, memoryRecommendationV2ProofSql, memoryRecommendationV2RepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_WORKER_RECOVERY_MIGRATION,
     memoryWorkerRecoveryFixtureSql, memoryWorkerRecoveryProofSql);
+  for (const { fixture, proof } of mcpModelOutputBudgetFixtures) {
+    runForwardAdoptionProof(shadowDatabase, migrations, MCP_MODEL_OUTPUT_BUDGET_MIGRATION,
+      fixture, proof, proof);
+  }
+  for (const { fixture, proof } of utilityRuntimeBudgetFixtures) {
+    runForwardAdoptionProof(shadowDatabase, migrations, UTILITY_RUNTIME_BUDGET_MIGRATION,
+      fixture, proof, proof);
+  }
+  runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_HISTORY_LIVE_ORDINALS_MIGRATION,
+    memoryHistoryLiveOrdinalsFixtureSql, memoryHistoryLiveOrdinalsProofSql, memoryHistoryLiveOrdinalsProofSql);
   for (const assigned of [false, true]) {
     runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_UTILITY_MODEL_MIGRATION,
       memoryUtilityModelFixtureSql(assigned), memoryUtilityModelProofSql(assigned), memoryUtilityModelRepeatProofSql);

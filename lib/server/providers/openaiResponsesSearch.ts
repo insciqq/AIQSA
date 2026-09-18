@@ -1,3 +1,4 @@
+import { admittedOutputAllowance } from "./modelOutputAllowance";
 import { dispatchSearchRequest } from "./searchDispatch";
 import { safeExternalHref } from "../../domain/links";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
@@ -28,8 +29,8 @@ import {
   type ProviderSearchResult
 } from "./types";
 
-export const OPENAI_RESPONSES_SEARCH_MIN_OUTPUT_TOKENS = 1_024;
-export const OPENAI_RESPONSES_SEARCH_MAX_OUTPUT_TOKENS = 32_768;
+export const OPENAI_RESPONSES_SEARCH_MIN_OUTPUT_TOKENS = 16;
+export const OPENAI_RESPONSES_SEARCH_MAX_OUTPUT_TOKENS = Number.MAX_SAFE_INTEGER;
 
 // GPT-5 accepts "minimal" for answers but cannot use web_search at that level.
 // Choose the next advertised Search-compatible effort, or omit the override.
@@ -132,7 +133,7 @@ export function buildOpenAIResponsesSearchRequest(
   const effort = policy.reasoningPolicy === "lowest_supported"
     ? lowestSupportedOpenAIResponsesSearchEffort(policy.modelCapabilities)
     : undefined;
-  return {
+  const body: OpenAIResponsesSearchRequestBody = {
     background: false,
     include: ["web_search_call.action.sources"],
     input: [{
@@ -148,6 +149,7 @@ export function buildOpenAIResponsesSearchRequest(
     tool_choice: "required",
     tools: [{ type: "web_search" }]
   };
+  return request.generationBudget ? { ...body, max_output_tokens: admittedOutputAllowance(request.generationBudget, body) } : body;
 }
 
 function compatibleBody(

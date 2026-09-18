@@ -101,8 +101,11 @@ export async function reauthorizeStoredMemoryExecution(
       schemaVersion: requirement.schemaVersion
     }
   });
+  // The accepted aggregate fingerprint is immutable audit evidence. An unrelated
+  // embedding/reranker destination can change it without changing this call's
+  // authority. Revalidate the selected role and exact target, including its
+  // credential version, configuration, reasoning and policy revision, instead.
   if (
-    input.snapshot.acceptedUtilityEgressFingerprint !== current.policy.fingerprint ||
     input.snapshot.utilityPolicyVersion !== current.policy.policyVersion ||
     input.snapshot.destinationFingerprint !== current.target.destinationFingerprint ||
     input.snapshot.executionTargetFingerprint !== current.target.executionTargetFingerprint ||

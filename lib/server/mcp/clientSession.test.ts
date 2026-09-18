@@ -630,6 +630,20 @@ describe("McpClientSession", () => {
     await session.close();
   });
 
+  it("retains a delivered MCP failure with explanatory text and an empty structured object", async () => {
+    const message = "Validation error: Provide either url, or project_id, file_path, and ref";
+    const callTool = vi.fn(() => ({ content: [{ type: "text" as const, text: message }], structuredContent: {}, isError: true }));
+    const fixture = await startFixture({ callTool });
+    const session = createSession(fixture);
+    try {
+      await session.initialize();
+      await expect(session.callTool("read", {})).resolves.toEqual({
+        isError: true, structuredContent: {}, text: [message], unsupportedContentTypes: []
+      });
+      expect(callTool).toHaveBeenCalledTimes(1);
+    } finally { await session.close(); }
+  });
+
   it("allows concurrent SDK calls and returns bounded canonical text and structured JSON", async () => {
     const release = deferred();
     const bothStarted = deferred();

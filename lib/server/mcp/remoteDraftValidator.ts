@@ -24,6 +24,7 @@ import type {
 } from "./draftValidator";
 import { McpDraftValidationAbortedError } from "./draftValidator";
 import { compactMcpToolInventoryEntry } from "./catalogMetadata";
+import { getMcpRequestMaxBytes } from "./responseLimits";
 import { discoverGitLabMcpEndpoint, type McpValidationOAuthProvider } from "./endpointCorrection";
 
 const MAX_EVIDENCE_TOOLS = 256;
@@ -40,7 +41,7 @@ const SDK_OWNED_HEADERS = new Set([
 
 const DEFAULT_LIMITS: McpClientSessionLimits = {
   maxListPages: 16,
-  maxToolArgumentBytes: 64 * 1_024,
+  get maxToolArgumentBytes() { return getMcpRequestMaxBytes(); },
   maxToolMetadataBytes: 256 * 1_024,
   maxToolSchemaBytes: 64 * 1_024,
   maxTools: MAX_EVIDENCE_TOOLS

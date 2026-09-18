@@ -2167,7 +2167,7 @@ describe("run recovery", () => {
     expect(harness.state.completed?.finalText).toBe("Recovered grounded answer [K1]");
   });
 
-  it.each([[undefined, undefined], [9, undefined], [10, undefined], [11, undefined], [11, 1]] as const)("recovers the evidence review after a settled compose operation without regenerating the answer (%s, %s)", async (workflowVersion, repairFeedbackVersion) => {
+  it.each([[undefined, undefined, false], [9, undefined, false], [10, undefined, false], [11, undefined, false], [11, 1, false], [11, 1, true]] as const)("recovers the evidence review after a settled compose operation without regenerating the answer (%s, %s, %s)", async (workflowVersion, repairFeedbackVersion, modelBudget) => {
     const fixture = focusedKnowledgeProviderRecoveryFixture();
     const dispatch = knowledgeProviderDispatchRecorder("dispatch");
     const snapshotInput = { evidenceReceiptHash: dispatch.draft.manifestHash,
@@ -2177,6 +2177,7 @@ describe("run recovery", () => {
     const promptInput = { request: "remember this", evidenceManifest: dispatch.draft.message };
     const acceptedRequest = workflowVersion === 11
       ? createKnowledgeEvidenceAnswerSnapshotV2({ ...snapshotInput, operation: "knowledge_evidence_compose_v2", workflowVersion, repairFeedbackVersion,
+        ...(modelBudget ? { generationBudget: { version: 1 as const, contextWindow: 1_000_000, maxOutputTokens: 131_072, timeoutMs: 300_000 } } : {}),
         ...knowledgeEvidenceAnswerDraftPromptV2(promptInput) })
       : createKnowledgeEvidenceAnswerSnapshotV1({ ...snapshotInput, operation: "knowledge_evidence_compose_v1", workflowVersion,
         ...knowledgeEvidenceAnswerDraftPromptV1(promptInput) });
@@ -2211,6 +2212,11 @@ describe("run recovery", () => {
     expect(dispatch.lifecycle.prepare).toHaveBeenCalledWith(expect.objectContaining({ ordinal: 2,
       purpose: workflowVersion === 11 ? "knowledge_evidence_review_v2" : "knowledge_evidence_review_v1" }));
     const repairRequest = vi.mocked(dispatch.lifecycle.prepare).mock.calls[0]?.[0].acceptedRequest;
+    if (modelBudget) {
+      expect(repairRequest).toMatchObject({ generationBudget: { maxOutputTokens: 131_072, timeoutMs: 300_000 }, maxOutputTokens: 131_072, reasoningBudgetIncluded: true });
+      expect(requests[0]?.params.maxOutputTokens).toBe(131_072);
+    }
+
     if (repairFeedbackVersion === 1) expect(repairRequest).toMatchObject({ repairFeedbackVersion: 1 });
     else expect(repairRequest).not.toHaveProperty("repairFeedbackVersion");
     expect(groundKnowledgeEvidenceAnswer).toHaveBeenCalledOnce();

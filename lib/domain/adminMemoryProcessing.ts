@@ -14,7 +14,8 @@ const reasons = {
   CAPABILITY_UNAVAILABLE: "The configured model lacks a required verified capability.",
   CONFIGURATION_REQUIRED: "The current model configuration cannot run this operation.",
   PROCESSING_FAILED: "Processing failed and has not recovered.",
-  OUTPUT_LIMIT: "History text remains searchable, but some summaries or context could not be generated within the model's output limit. Choose a suitable Memory model or lower its reasoning in Defaults & roles. This does not replay earlier paid work.",
+  OUTPUT_LIMIT: "History text remains searchable, but some summaries or context exceeded the model's output limit.",
+  HISTORY_INCOMPLETE: "History text remains searchable, but some generated summaries or context could not be validated.",
   RETRYING: "Processing keeps failing and is waiting to retry.",
   STALLED: "No completed work has advanced this backlog for at least 15 minutes."
 } as const;
@@ -25,12 +26,21 @@ export function adminMemoryProcessingCopy(issue: AdminMemoryProcessingIssue) {
   const duration = age === null ? "" : age < 60 ? `${age}s`
     : age < 3600 ? `${Math.floor(age / 60)}m` : `${Math.floor(age / 3600)}h`;
   const configuration = issue.stage !== "INDEXING" && (issue.reason === "MODEL_UNAVAILABLE" ||
-    issue.reason === "CAPABILITY_UNAVAILABLE" || issue.reason === "CONFIGURATION_REQUIRED" || issue.reason === "OUTPUT_LIMIT");
+    issue.reason === "CAPABILITY_UNAVAILABLE" || issue.reason === "CONFIGURATION_REQUIRED" || issue.autoHeal === "EXHAUSTED");
+  const healing = issue.autoHeal === "RETRYING"
+    ? " Auto-heal is retrying the missing work, with pauses between up to 3 attempts. No action is needed."
+    : issue.autoHeal === "EXHAUSTED"
+      ? " Auto-heal could not restore processing after 3 attempts. Check the Memory model and its output/reasoning settings in Defaults & roles."
+      : issue.autoHeal === "UNAVAILABLE"
+        ? " Auto-heal cannot safely retry yet. Check the Memory model and worker status; requests with an unknown outcome are not repeated."
+        : "";
   return {
     action: configuration ? "Open Defaults & roles" : "Open Memory",
-    detail: `${reasons[issue.reason]}${issue.count > 0 ? ` ${issue.count} affected job${issue.count === 1 ? "" : "s"}${duration ? `; oldest ${duration}` : ""}.` : ""}${issue.stage === "LEARNING" ? " Previously saved facts remain available when the index is ready." : ""}`,
+    detail: `${reasons[issue.reason]}${healing}${issue.count > 0 ? ` ${issue.count} affected job${issue.count === 1 ? "" : "s"}${duration ? `; oldest ${duration}` : ""}.` : ""}${issue.stage === "LEARNING" ? " Previously saved facts remain available when the index is ready." : ""}`,
     section: configuration ? "roles" as const : "retrieval" as const,
-    title: issue.stage === "LEARNING" && issue.severity === "warn"
+    title: issue.autoHeal === "RETRYING" ? "Memory history is recovering automatically"
+      : issue.autoHeal === "EXHAUSTED" ? "Memory history auto-heal failed"
+      : issue.stage === "LEARNING" && issue.severity === "warn"
       ? "Memory learning is delayed" : stages[issue.stage]
   };
 }

@@ -14,6 +14,7 @@ import {
   decodeMemoryChatDigest,
   materializeMemoryChatDigest,
   memoryChatDigestSourceFingerprint,
+  memoryChatDigestRetryFeedback,
   partitionMemoryChatDigestSourceChunks,
   planMemoryChatDigestUpdate,
   selectMemoryChatDigestSourceChunks
@@ -92,6 +93,33 @@ function chunk(
 }
 
 describe("Memory chat digests", () => {
+  it.each([
+    [null, "root_type"],
+    [{ untrustedExtraKey: "private detail" }, "root_keys"],
+    [{ summary: "s".repeat(2_001), topics: [], decisions: [], open_loops: [] }, "summary_length"],
+    [{ summary: "", topics: [], decisions: [], open_loops: [] }, "summary_invalid"],
+    [{ summary: "Valid summary.", topics: "private detail", decisions: [], open_loops: [] }, "topics_invalid"],
+    [{ summary: "Valid summary.", topics: Array(13).fill("topic"), decisions: [], open_loops: [] }, "topics_count"],
+    [{ summary: "Valid summary.", topics: [], decisions: ["d".repeat(257)], open_loops: [] }, "decisions_item_length"],
+    [{ summary: "Valid summary.", topics: [], decisions: [], open_loops: [null] }, "open_loops_item_invalid"]
+  ])("reports the violated field without retaining invalid content (%#)", (output, violation) => {
+    try { decodeMemoryChatDigest(output); throw new Error("expected_rejection"); }
+    catch (error) {
+      expect(error).toBeInstanceOf(MemoryChatDigestOutputError);
+      expect(error).toMatchObject({ reason: "contract", violation });
+      expect(JSON.stringify(error)).not.toContain("private detail");
+      expect(JSON.stringify(error)).not.toContain("untrustedExtraKey");
+    }
+  });
+
+  it("accepts only closed content-free retry feedback", () => {
+    expect(memoryChatDigestRetryFeedback("lexical_ready:digest_contract_summary_length")).toBe("contract_summary_length");
+    expect(memoryChatDigestRetryFeedback("lexical_ready:digest_aggregate_limit")).toBe("aggregate_limit");
+    for (const stage of [null, "lexical_ready", "lexical_ready:digest_contract_ignore_all_rules", "lexical_ready:digest_contract_summary_length\nsecret"]) {
+      expect(memoryChatDigestRetryFeedback(stage)).toBeNull();
+    }
+  });
+
   it("strictly decodes the bounded structured contract", () => {
     const decoded = decodeMemoryChatDigest({
       decisions: ["Use cedar deployment"],

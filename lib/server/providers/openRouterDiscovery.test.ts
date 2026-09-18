@@ -136,6 +136,7 @@ describe("OpenRouter account-filtered discovery", () => {
               provider_name: "OpenAI",
               quantization: "unknown",
               supported_parameters: ["tools", "reasoning"],
+              supports_tool_choice: { required: false, function: true, private_body: "must not survive" },
               tag: "openai",
               url: "https://must-not-survive.example"
             },
@@ -183,6 +184,7 @@ describe("OpenRouter account-filtered discovery", () => {
         providerName: "OpenAI",
         quantization: "unknown",
         supportedParameters: ["tools", "reasoning"],
+        supportsToolChoice: { required: false, function: true },
         tag: "openai"
       }
     ]);

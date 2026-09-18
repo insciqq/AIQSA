@@ -6,9 +6,11 @@ import { estimateApproxTokens } from "../../domain/contextBudget";
 
 const input = { chatId: "source", userId: "owner", expectedLeafMessageId: "answer", requestId: "attempt" };
 function model(contextWindow = 32000): SystemModelRoleResolution {
+  const configuration = { adapterKind: "fake", capabilities: { contextWindow, maxOutputTokens: 8192, structuredOutput: true },
+    defaultParams: {}, upstreamModelId: "fake-upstream" };
   return { ok: true, credentialScope: "installation", policyVersion: 1, providerModelId: "fake", reasoningEffort: "low",
-    role: { modelConfiguration: { capabilities: { contextWindow, structuredOutput: true } },
-      snapshot: { providerFamily: "fake", model: { upstreamModelId: "fake-upstream" } } } as unknown as ProviderAdmissionRole };
+    role: { modelConfiguration: configuration, snapshot: { providerFamily: "fake", model: configuration,
+      connection: { responseTimeoutMs: 300000 } } } as unknown as ProviderAdmissionRole };
 }
 function fixture(transcript = "USER: Plan a trip.\nASSISTANT: Budget is 500.") {
   const source = { chatId: "source", userId: "owner", leafMessageId: "answer", projectId: null, updatedAt: new Date(), transcript, workspaceEnabled: false };
@@ -20,6 +22,7 @@ function fixture(transcript = "USER: Plan a trip.\nASSISTANT: Budget is 500.") {
     fail: vi.fn(async () => {}), recordUsage: vi.fn(async () => {})
   } satisfies ContinuationRepository;
   const execute = vi.fn<Parameters<typeof createChatContinuationService>[0]["execute"]>(async (_role, _request, options) => {
+    await options.beforeDispatch?.();
     options.onUsage?.({ inputTokens: 80, outputTokens: 10, reasoningTokens: 0, totalTokens: 90 });
     return { summary: "## Goal\nPlan a trip.\n## Decisions\nBudget: 500." };
   });
@@ -68,10 +71,13 @@ describe("chat continuation service", () => {
     expect(f.repository.recordUsage.mock.calls.length).toBe(calls.length);
   });
 
-  it("rejects oversized input before spending and never drops old turns", async () => {
+  it("handles more than eight parts without losing the source or limiting the whole job", async () => {
     const f = fixture("long input ".repeat(100000));
-    await expect(createChatContinuationService(f)(input)).rejects.toMatchObject({ code: "chat_summary_too_large" });
-    expect(f.execute).not.toHaveBeenCalled();
+    await expect(createChatContinuationService(f)(input)).resolves.toMatchObject({ status: "complete" });
+    expect(f.execute.mock.calls.length).toBeGreaterThan(8);
+    expect(f.execute.mock.calls.slice(0, -1).map(([, request]) => request.userPrompt).join(""))
+      .toBe((await f.repository.loadSource()).transcript);
+    expect(f.execute.mock.calls.every(([, request, options]) => request.reasoningBudgetIncluded && options.timeoutMs === 300000)).toBe(true);
   });
 
   it("fails safely with no System Model or malformed output", async () => {
@@ -108,4 +114,30 @@ describe("chat continuation service", () => {
     await expect(createChatContinuationService(changed)(input)).rejects.toMatchObject({ code: "chat_changed" });
     expect(changed.execute).not.toHaveBeenCalled();
   });
+});
+
+it("returns a background claim immediately, exposes progress and respects durable cancellation", async () => {
+  const f = fixture();
+  const heartbeat = vi.fn(async () => true);
+  const scheduled: Array<() => Promise<void>> = [];
+  const run = createChatContinuationService({ ...f, repository: { ...f.repository, heartbeat },
+    schedule: work => { scheduled.push(work); } });
+  expect(await run(input)).toEqual({ status: "running", progress: { completedParts: 0, stage: "preparing" } });
+  expect(f.execute).not.toHaveBeenCalled();
+  heartbeat.mockResolvedValue(false);
+  await scheduled[0]!();
+  expect(f.execute).not.toHaveBeenCalled();
+  expect(f.repository.fail).toHaveBeenCalledWith(expect.anything(), "chat_summary_cancelled");
+});
+
+it("reuses a settled fragment without another provider request and does not replay an ambiguous one", async () => {
+  const f = fixture();
+  const loadStep = vi.fn(async () => "A settled summary.");
+  const run = createChatContinuationService({ ...f, repository: { ...f.repository, loadStep } });
+  await expect(run(input)).resolves.toMatchObject({ status: "complete" });
+  expect(f.execute).not.toHaveBeenCalled();
+  expect(f.repository.recordUsage).not.toHaveBeenCalled();
+  loadStep.mockRejectedValue(new ChatContinuationError("chat_summary_outcome_unknown", 502));
+  await expect(run(input)).rejects.toMatchObject({ code: "chat_summary_outcome_unknown" });
+  expect(f.execute).not.toHaveBeenCalled();
 });

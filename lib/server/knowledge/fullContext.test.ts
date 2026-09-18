@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { KNOWLEDGE_FULL_CONTEXT_DRAFT_ROUTE_INSTRUCTION } from "./answerGroundingV5";
 import { textMessageContent } from "../../domain/content";
 import type { ProviderRunRequest } from "../providers/types";
@@ -414,16 +414,20 @@ describe("adaptive Knowledge answering", () => {
     }).route).toBe(KNOWLEDGE_ANSWER_ROUTE_RAG);
   });
 
-  it("falls back before provider I/O when the two-stage structured prompt envelope cannot fit", () => {
+  it("fits the larger envelope but falls back before provider I/O when an administrator lowers its resource guard", () => {
     const oversized = passages().map((passage, index) => ({
       ...passage,
       text: `${index}: ${"😀".repeat(24_000)}`,
       tokenCount: 1_000
     }));
-    expect(planKnowledgeAnswering({
+    const input = {
       admissionPlan: admission(2_000),
       passages: oversized,
       request: request(1_000_000)
-    }).route).toBe(KNOWLEDGE_ANSWER_ROUTE_RAG);
+    };
+    expect(planKnowledgeAnswering(input).route).toBe(KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT);
+    vi.stubEnv("AIQSA_STRUCTURED_INPUT_MAX_BYTES", "256000");
+    try { expect(planKnowledgeAnswering(input).route).toBe(KNOWLEDGE_ANSWER_ROUTE_RAG); }
+    finally { vi.unstubAllEnvs(); }
   });
 });

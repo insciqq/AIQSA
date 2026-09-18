@@ -1,3 +1,4 @@
+import { MCP_RUNTIME_TIMEOUT_LIMITS } from "../../contracts/mcp";
 import { createHash } from "node:crypto";
 import type {
   McpAuthPolicy,
@@ -337,7 +338,7 @@ function authFrom(value: unknown, source: McpSource | null, issues: McpValidatio
 }
 
 function boundedMilliseconds(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1_000 && value <= 600_000
+  return typeof value === "number" && Number.isInteger(value) && value >= MCP_RUNTIME_TIMEOUT_LIMITS.minimumMs && value <= MCP_RUNTIME_TIMEOUT_LIMITS.maximumMs
     ? value
     : null;
 }

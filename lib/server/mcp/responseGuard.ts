@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { FetchLike } from "@modelcontextprotocol/client";
 import { beginTransportStage, transportFailureFacts } from "../providers/providerObservability";
 import {
-  MCP_JSON_RPC_REQUEST_MAX_BYTES,
+  getMcpRequestMaxBytes,
   McpResponseTooLargeError,
   mcpResponseMaxBytes,
   resolveMcpResponseWireLimits,
@@ -136,6 +136,7 @@ function concatenate(chunks: readonly Uint8Array[], byteLength: number): Uint8Ar
 
 async function boundedRequestBody(request: Request): Promise<Uint8Array | null> {
   if (!request.body) return null;
+  const maxBytes = getMcpRequestMaxBytes();
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
   let byteLength = 0;
@@ -145,10 +146,10 @@ async function boundedRequestBody(request: Request): Promise<Uint8Array | null> 
       const { done, value } = await readWithSignal(reader, request.signal);
       if (done) break;
       const observedBytes = byteLength + value.byteLength;
-      if (observedBytes > MCP_JSON_RPC_REQUEST_MAX_BYTES) {
+      if (observedBytes > maxBytes) {
         const error = new McpRequestTooLargeError({
-          maxBytes: MCP_JSON_RPC_REQUEST_MAX_BYTES,
-          observedBytes: MCP_JSON_RPC_REQUEST_MAX_BYTES + 1
+          maxBytes,
+          observedBytes
         });
         throw error;
       }

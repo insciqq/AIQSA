@@ -1,3 +1,4 @@
+import { STRUCTURED_OUTPUT_LIMITS } from "../providers/structuredOutputLimits";
 import { decodeTokenUsage, type TokenUsageCompleteness } from "../../domain/usage";
 import { decodeKnowledgeCoverageLimitationsV1 } from "./searchFailure";
 import { decodeKnowledgeEvidenceAnswerSnapshot, isKnowledgeEvidenceAnswerOperation } from "./evidenceAnswerSnapshot";
@@ -53,7 +54,7 @@ const SAFE_IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}$/u;
 const SAFE_REASON = /^[a-z][a-z0-9_]{0,63}$/u;
 const SOURCE_ALIAS = /^S[1-9][0-9]{0,2}$/u;
 const MAX_ACCOUNTING_VALUE = 2_147_483_647;
-const MAX_ACCEPTED_RESULT_BYTES = 128 * 1_024;
+const MAX_ACCEPTED_RESULT_BYTES = 4 * STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters + 64 * 1024;
 const SERIALIZABLE_ATTEMPTS = 3;
 const STORED_DISPATCH_METADATA_VERSION = 2 as const;
 const LEGACY_STORED_DISPATCH_METADATA_VERSION = 1 as const;

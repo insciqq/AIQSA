@@ -52,10 +52,15 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
           policy.policy.reasoningEffort = body.reasoningEffort ?? null;
           data.modelPolicy = { defaultProviderModelId: body.providerModelId, reasoningEffort: body.reasoningEffort ?? null };
         }
-        for (const key of ["maxMcpToolsPerDiscovery", "maxToolCalls", "maxToolRounds",
-          "mcpAutoDiscoveryTimeoutSeconds", "mcpAutoDiscoveryMaxOutputTokens"] as const) {
+        for (const key of ["maxMcpToolsPerDiscovery", "maxToolCalls", "maxToolRounds"] as const) {
           const value = body[key];
           if (value !== undefined) policy.policy[key] = value;
+        }
+        if (body.mcpAutoDiscoveryTimeoutSeconds !== undefined) {
+          policy.policy.mcpAutoDiscoveryTimeoutSeconds = body.mcpAutoDiscoveryTimeoutSeconds;
+        }
+        if (body.mcpAutoDiscoveryMaxOutputTokens !== undefined) {
+          policy.policy.mcpAutoDiscoveryMaxOutputTokens = body.mcpAutoDiscoveryMaxOutputTokens;
         }
         policy.policy.version += 1;
       }
@@ -114,6 +119,33 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     expect(box!.x).toBeGreaterThanOrEqual(0);
     expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width + 1);
     await page.screenshot({ path: testInfo.outputPath("default-reasoning.png") });
+
+    const outputMode = defaults.getByRole("combobox", { name: "MCP output budget" });
+    const timeout = defaults.getByRole("spinbutton", { name: "Discovery timeout", exact: true });
+    await outputMode.selectOption("model");
+    await timeout.fill("");
+    await save.click();
+    expect(saved.at(-1)).toMatchObject({ mcpAutoDiscoveryTimeoutSeconds: null, mcpAutoDiscoveryMaxOutputTokens: null });
+    await page.reload();
+    await defaults.locator("summary").click();
+    await expect(outputMode).toHaveValue("model");
+    await expect(timeout).toHaveValue("");
+    await expect(timeout).toHaveAttribute("placeholder", "Auto");
+    await expect(save).toBeDisabled();
+    if (viewport.width === 1440) {
+      for (const theme of ["light", "dark"]) {
+        await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+        for (const size of [{ width: 1440, height: 900 }, { width: 820, height: 1180 },
+          { width: 1180, height: 820 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
+          await page.setViewportSize(size);
+          await timeout.scrollIntoViewIfNeeded();
+          await expect(timeout).toBeInViewport();
+          expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+          await page.screenshot({ path: testInfo.outputPath(`utility-auto-${theme}-${size.width}x${size.height}.png`) });
+        }
+      }
+      await page.setViewportSize(viewport);
+    }
 
     await page.goto("/");
     await expectRunSummary(page, { model: "GPT-5.5", reasoning: "high" });

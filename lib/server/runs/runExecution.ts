@@ -1316,9 +1316,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         executionOptions: KnowledgeAnswerOperationExecutionOptionsV8
       ): Promise<KnowledgeAnswerOperationExecutionV8> {
         const dispatchRequest = providerNeutralKnowledgeRequest(operation);
+        const operationTimeoutMs = normalizedRequest.knowledgeGenerationBudget?.timeoutMs ?? 120_000;
         const operationSignal = AbortSignal.any([
           signal,
-          AbortSignal.timeout(120_000)
+          AbortSignal.timeout(operationTimeoutMs)
         ]);
         const receipt = input.memoryEgress && egressReceiptRequired
           ? await input.memoryEgress.beginDispatch({
@@ -1354,7 +1355,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 executionOptions.onUsage?.(reportedUsage);
               },
               signal: operationSignal,
-              timeoutMs: 120_000
+              timeoutMs: operationTimeoutMs
             });
           } else {
             const stream = input.adapter.stream(dispatchRequest, {
@@ -1485,7 +1486,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         } as const;
         if (evidenceAnswer) {
           const evidenceInput = { ...executionInput, ...(normalizedRequest.prompt.responseReminder !== undefined ? { answerInstructions: knowledgeAnswerInstructions(normalizedRequest.prompt) } : {}), executionPolicy: groundingExecutionPolicy!,
-            repairFeedbackVersion: normalizedRequest.knowledgeReviewRepairFeedbackVersion };
+            repairFeedbackVersion: normalizedRequest.knowledgeReviewRepairFeedbackVersion,
+            generationBudget: normalizedRequest.knowledgeGenerationBudget };
           const operationResult = normalizedRequest.knowledgeAnswerWorkflowVersion === 9 || normalizedRequest.knowledgeAnswerWorkflowVersion === 10 || normalizedRequest.knowledgeAnswerWorkflowVersion === 11
             ? await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...evidenceInput,
                 workflowVersion: normalizedRequest.knowledgeAnswerWorkflowVersion === 10 || normalizedRequest.knowledgeAnswerWorkflowVersion === 11 ? normalizedRequest.knowledgeAnswerWorkflowVersion : undefined,

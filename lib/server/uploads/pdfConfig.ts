@@ -4,7 +4,9 @@ import {
 } from "../../contracts/uploads";
 
 export const DEFAULT_PDF_MAX_PAGES = PDF_PROCESSING_MAX_PAGES;
-export const DEFAULT_PDF_EXTRACTION_TIMEOUT_MS = 20_000;
+export const DEFAULT_PDF_EXTRACTION_TIMEOUT_MS = 300_000;
+// Node timers overflow above this platform limit and would fire immediately.
+export const MAX_PDF_EXTRACTION_TIMEOUT_MS = 2_147_483_647;
 export const DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS = ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS;
 export const DEFAULT_PDF_CHUNK_MAX_CHARS = 1_200;
 
@@ -26,6 +28,20 @@ export type PdfExtractionConfig = {
 
 export type PdfExtractionEnvironment = Readonly<Record<string, string | undefined>>;
 
+export function pdfExtractionTimeoutMs(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_PDF_EXTRACTION_TIMEOUT_MS;
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_PDF_EXTRACTION_TIMEOUT_MS) {
+    throw Object.assign(new Error("pdf_extraction_timeout_config_invalid"), { code: "pdf_extraction_timeout_config_invalid" });
+  }
+  return value;
+}
+
+function configuredTimeout(value: string | undefined): number {
+  if (value === undefined) return DEFAULT_PDF_EXTRACTION_TIMEOUT_MS;
+  if (!/^\d+$/u.test(value)) throw Object.assign(new Error("pdf_extraction_timeout_config_invalid"), { code: "pdf_extraction_timeout_config_invalid" });
+  return pdfExtractionTimeoutMs(Number(value));
+}
+
 function reductionOnlyPositiveInteger(value: string | undefined, fallback: number): number {
   if (value === undefined || !/^\d+$/.test(value)) {
     return fallback;
@@ -44,10 +60,7 @@ export function getPdfExtractionConfig(env: PdfExtractionEnvironment = process.e
       DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS
     ),
     maxPages: reductionOnlyPositiveInteger(env.AIQSA_PDF_MAX_PAGES, DEFAULT_PDF_MAX_PAGES),
-    timeoutMs: reductionOnlyPositiveInteger(
-      env.AIQSA_PDF_EXTRACTION_TIMEOUT_MS,
-      DEFAULT_PDF_EXTRACTION_TIMEOUT_MS
-    ),
+    timeoutMs: configuredTimeout(env.AIQSA_PDF_EXTRACTION_TIMEOUT_MS),
     workerResourceLimits: PDF_WORKER_RESOURCE_LIMITS
   };
 }

@@ -1,3 +1,7 @@
+import { calculateContextBudgetLimits, estimateApproxTokens } from "../../domain/contextBudget";
+import { maxOutputTokensFromParams } from "../../domain/providerParams";
+import { structuredOutputInput } from "./modelOutputAllowance";
+import { declaredModelOutputTokenLimit } from "./providerModelCapabilities";
 import type { JsonSchemaType } from "@modelcontextprotocol/client";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/ajv";
 import { buildAnthropicMessagesOutputParams } from "./anthropicMessages";
@@ -314,7 +318,9 @@ function geminiRequestSchema(request: ProviderStructuredOutputRequest): Record<s
 }
 
 function normalizeRequest(
-  request: ProviderStructuredOutputRequest
+  request: ProviderStructuredOutputRequest,
+  modelOutputTokenLimit: number | null,
+  model: Partial<Pick<ProviderModelConfiguration, "capabilities" | "defaultParams">>
 ): Required<Omit<ProviderStructuredOutputRequest, "reasoningEffort" | "responseReminder" | "reasoningBudgetIncluded">> &
   Pick<ProviderStructuredOutputRequest, "reasoningEffort" | "responseReminder" | "reasoningBudgetIncluded"> {
   const maxOutputTokens = request.maxOutputTokens ?? 512;
@@ -331,13 +337,20 @@ function normalizeRequest(
     !structuredOutputPromptFits(request) ||
     !Number.isSafeInteger(maxOutputTokens) ||
     maxOutputTokens < STRUCTURED_OUTPUT_LIMITS.minOutputTokens ||
-    maxOutputTokens > STRUCTURED_OUTPUT_LIMITS.maxOutputTokens ||
+    maxOutputTokens > (request.reasoningBudgetIncluded
+      ? modelOutputTokenLimit ?? maxOutputTokensFromParams(model.defaultParams ?? {}) ?? STRUCTURED_OUTPUT_LIMITS.maxOutputTokens
+      : STRUCTURED_OUTPUT_LIMITS.maxOutputTokens) ||
     (request.reasoningBudgetIncluded !== undefined && request.reasoningBudgetIncluded !== true) ||
     (request.reasoningEffort !== undefined && request.reasoningEffort !== null &&
       (typeof request.reasoningEffort !== "string" || !request.reasoningEffort.trim() ||
         request.reasoningEffort.length > 32))
   ) {
     throw new Error("structured_output_request_invalid");
+  }
+  const context = model.capabilities?.contextWindow;
+  if (context !== undefined && estimateApproxTokens(structuredOutputInput(request)) + maxOutputTokens >
+    calculateContextBudgetLimits({ contextWindow: context }).budgetTokens) {
+    throw Object.assign(new Error("provider_context_limit_exceeded"), { code: "provider_context_limit_exceeded" });
   }
   return {
     maxOutputTokens,
@@ -397,7 +410,7 @@ export function buildAnthropicMessagesStructuredOutputRequest(
   request: ProviderStructuredOutputRequest
 ): Record<string, unknown> {
   if (model.adapterKind !== "anthropic_messages") throw new Error("structured_output_adapter_unsupported");
-  const normalized = normalizeRequest(request);
+  const normalized = normalizeRequest(request, declaredModelOutputTokenLimit(model, "anthropic"), model);
   const outputConfig = isRecord(model.defaultParams.outputConfig) ? model.defaultParams.outputConfig
     : isRecord(model.defaultParams.output_config) ? model.defaultParams.output_config : {};
   const effort = normalized.reasoningEffort ?? outputConfig.effort ?? model.capabilities.defaultReasoningEffort;
@@ -505,14 +518,15 @@ function openAIResponseText(response: Record<string, unknown>): string {
 }
 
 export function buildOpenAIResponsesStructuredOutputRequest(
-  model: Pick<ProviderModelConfiguration, "adapterKind" | "reasoningRequestMapping" | "upstreamModelId">,
+  model: Pick<ProviderModelConfiguration, "adapterKind" | "reasoningRequestMapping" | "upstreamModelId"> & Partial<Pick<ProviderModelConfiguration, "capabilities" | "defaultParams">>,
   request: ProviderStructuredOutputRequest
 ): Record<string, unknown> {
   if (model.adapterKind !== "openai_responses_native" &&
     model.adapterKind !== "openai_responses_compatible") {
     throw new Error("structured_output_adapter_unsupported");
   }
-  const normalized = normalizeRequest(request);
+  const normalized = normalizeRequest(request, declaredModelOutputTokenLimit(model,
+    model.adapterKind === "openai_responses_compatible" ? "openai_compatible" : "openai"), model);
   const maxOutputTokens = !normalized.reasoningBudgetIncluded && normalized.reasoningEffort &&
     normalized.reasoningEffort !== "none"
     ? Math.max(
@@ -554,13 +568,13 @@ export function buildOpenAIResponsesStructuredOutputRequest(
 }
 
 export function buildDeepSeekResponsesStructuredOutputRequest(
-  model: Pick<ProviderModelConfiguration, "adapterKind" | "upstreamModelId">,
+  model: Pick<ProviderModelConfiguration, "adapterKind" | "upstreamModelId"> & Partial<Pick<ProviderModelConfiguration, "capabilities" | "defaultParams">>,
   request: ProviderStructuredOutputRequest
 ): Record<string, unknown> {
   if (model.adapterKind !== "deepseek_responses_native") {
     throw new Error("structured_output_adapter_unsupported");
   }
-  const normalized = normalizeRequest(request);
+  const normalized = normalizeRequest(request, declaredModelOutputTokenLimit(model, "deepseek"), model);
   const maxOutputTokens = !normalized.reasoningBudgetIncluded && normalized.reasoningEffort &&
     normalized.reasoningEffort !== "none"
     ? Math.max(normalized.maxOutputTokens, REASONING_STRUCTURED_OUTPUT_MIN_TOKENS)
@@ -595,7 +609,7 @@ export function buildGeminiInteractionsStructuredOutputRequest(
   if (model.adapterKind !== "gemini_interactions_native") {
     throw new Error("structured_output_adapter_unsupported");
   }
-  const normalized = normalizeRequest(request);
+  const normalized = normalizeRequest(request, declaredModelOutputTokenLimit(model, "gemini"), model);
   const reasoning = isRecord(model.defaultParams.reasoning) ? model.defaultParams.reasoning : {};
   const effort = normalized.reasoningEffort ?? reasoning.effort ?? model.capabilities.defaultReasoningEffort;
   if (effort !== undefined && effort !== null && (
@@ -721,13 +735,13 @@ function openRouterProviderRouting(
 
 export function buildOpenRouterStructuredOutputRequest(
   model: Pick<ProviderModelConfiguration,
-    "adapterKind" | "defaultParams" | "openRouterRouting" | "upstreamModelId">,
+    "adapterKind" | "defaultParams" | "openRouterRouting" | "upstreamModelId"> & Partial<Pick<ProviderModelConfiguration, "capabilities" | "defaultParams">>,
   request: ProviderStructuredOutputRequest
 ): Record<string, unknown> {
   if (model.adapterKind !== "openrouter_chat_completions") {
     throw new Error("structured_output_adapter_unsupported");
   }
-  const normalized = normalizeRequest(request);
+  const normalized = normalizeRequest(request, declaredModelOutputTokenLimit(model, "openrouter"), model);
   const params = normalizeOpenRouterParams(model.defaultParams);
   const reasoningDisabled = normalized.reasoningEffort === "none";
   const reasoningActive = !reasoningDisabled && (

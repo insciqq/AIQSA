@@ -1,4 +1,5 @@
 export type ChatContinuationModelSelection = Readonly<{ provider: string; modelId: string }>;
+export type ChatContinuationProgress = Readonly<{ completedParts: number; stage: "preparing" | "summarizing" | "combining" }>;
 export type ChatContinuationRequest = Readonly<{
   expectedLeafMessageId: string;
   requestId: string;
@@ -6,7 +7,7 @@ export type ChatContinuationRequest = Readonly<{
 }>;
 export type ChatContinuationResult =
   | Readonly<{ status: "complete"; chatId: string; projectId: string | null }>
-  | Readonly<{ status: "running" }>;
+  | Readonly<{ status: "running"; progress?: ChatContinuationProgress }>;
 
 export function decodeChatContinuationRequest(value: unknown): ChatContinuationRequest | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -31,6 +32,13 @@ export function decodeChatContinuationResult(value: unknown): ChatContinuationRe
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   if (record.status === "running" && Object.keys(record).length === 1) return { status: "running" };
+  if (record.status === "running" && Object.keys(record).length === 2 && record.progress && typeof record.progress === "object" && !Array.isArray(record.progress)) {
+    const progress = record.progress as Record<string, unknown>;
+    if (Object.keys(progress).length === 2 && Number.isSafeInteger(progress.completedParts) && Number(progress.completedParts) >= 0 &&
+      (progress.stage === "preparing" || progress.stage === "summarizing" || progress.stage === "combining")) {
+      return { status: "running", progress: { completedParts: Number(progress.completedParts), stage: progress.stage } };
+    }
+  }
   if (record.status !== "complete" || Object.keys(record).length !== 3 ||
     typeof record.chatId !== "string" || !record.chatId || record.chatId.length > 256 ||
     !(record.projectId === null || typeof record.projectId === "string" && record.projectId.length > 0 && record.projectId.length <= 256)) return null;

@@ -7,7 +7,7 @@ import {
   readBoundedRequestBody,
   RequestBodyTooLargeError
 } from "@/lib/server/http/requestBody";
-import { MCP_JSON_RPC_REQUEST_MAX_BYTES } from "./responseLimits";
+import { getMcpRequestMaxBytes } from "./responseLimits";
 import { createTransportFailureObserver, observeMcpFetch, transportFailureFacts } from "../providers/providerObservability";
 
 const DEFAULT_MAX_REDIRECTS = 3;
@@ -459,7 +459,7 @@ function configuredMaxRedirects(options: McpSafeFetchOptions): number {
 }
 
 function configuredRequestBodyMaxBytes(options: McpSafeFetchOptions): number {
-  const value = options.requestBodyMaxBytes ?? MCP_JSON_RPC_REQUEST_MAX_BYTES;
+  const value = options.requestBodyMaxBytes ?? getMcpRequestMaxBytes();
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new McpSafeFetchError("mcp_http_invalid_request");
   }

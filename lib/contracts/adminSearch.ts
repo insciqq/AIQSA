@@ -12,7 +12,7 @@ export type AdminSearchDraft = {
   adapterKind: SearchAdapterKind;
   credentialMode: SearchCredentialMode;
   maxResults: number;
-  maxOutputTokens: number;
+  maxOutputTokens: number | null;
   maxSearchCallsPerAnswer: number;
   protocol: SearchProtocol;
   providerModelId: string | null;
@@ -24,8 +24,8 @@ export type AdminSearchDraft = {
 export type AdminSearchReasoningPolicy = "lowest_supported" | "provider_default";
 
 export const adminSearchExecutionDefaults = Object.freeze({
-  /** Enough room for a source-backed answer while keeping one search call bounded. */
-  maxOutputTokens: 8_192,
+  /** Auto follows the admitted model configuration, output ceiling and context. */
+  maxOutputTokens: null,
   /** A source may be revisited for query refinement, while the run-wide tool budget remains authoritative. */
   maxSearchCallsPerAnswer: 8,
   maxResults: 8,
@@ -35,7 +35,7 @@ export const adminSearchExecutionDefaults = Object.freeze({
 });
 
 export const adminSearchExecutionLimits = Object.freeze({
-  maxOutputTokens: Object.freeze({ maximum: 32_768, minimum: 1_024 }),
+  maxOutputTokens: Object.freeze({ maximum: Number.MAX_SAFE_INTEGER, minimum: 16 }),
   maxSearchCallsPerAnswer: Object.freeze({ maximum: 32, minimum: 1 }),
   maxResults: Object.freeze({ maximum: 20, minimum: 1 }),
   queryMaxCharacters: Object.freeze({ maximum: 4_000, minimum: 32 }),
@@ -130,11 +130,11 @@ export function decodeAdminSearchDraft(value: unknown): AdminSearchDraft | null 
     (value.adapterKind === "answer_provider_hosted" || value.adapterKind === "provider_model_client") &&
     (value.credentialMode === "answer_provider" || value.credentialMode === "provider_model") &&
     boundedInteger(value.maxResults, adminSearchExecutionLimits.maxResults.minimum, adminSearchExecutionLimits.maxResults.maximum) &&
-    boundedInteger(
+    (value.maxOutputTokens === null || boundedInteger(
       value.maxOutputTokens,
       adminSearchExecutionLimits.maxOutputTokens.minimum,
       adminSearchExecutionLimits.maxOutputTokens.maximum
-    ) &&
+    )) &&
     boundedInteger(
       value.maxSearchCallsPerAnswer,
       adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum,

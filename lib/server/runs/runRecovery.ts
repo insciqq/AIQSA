@@ -2406,6 +2406,7 @@ async function recoverCheckpointedToolLoop(
           draft: dispatchDraft,
           ...(run.normalizedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: run.normalizedRequest.knowledgeAnswerWorkflowVersion } : {}),
           repairFeedbackVersion: run.normalizedRequest.knowledgeReviewRepairFeedbackVersion,
+          generationBudget: run.normalizedRequest.knowledgeGenerationBudget,
           ...(run.normalizedRequest.prompt.responseReminder !== undefined ? { answerInstructions: knowledgeAnswerInstructions(run.normalizedRequest.prompt) } : {}),
           modelCapabilities: run.normalizedRequest.modelCapabilities,
           reasoningEffort: knowledgeGroundingInheritedReasoningEffortV1({
@@ -3314,6 +3315,7 @@ type KnowledgeAnswerGroundingRecoverySeed = Readonly<{
   answerInstructions?: KnowledgeAnswerInstructions;
   workflowVersion?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
   repairFeedbackVersion?: 1;
+  generationBudget?: import("../providers/modelOutputAllowance").ModelGenerationBudget;
   draft: KnowledgeEvidenceDispatchManifestDraft;
   evidenceBindings?: readonly KnowledgeEvidenceDispatchBinding[];
   executionPolicy?: KnowledgeGroundingEffectiveExecutionPolicyV1;
@@ -3360,6 +3362,7 @@ async function recoverKnowledgeAnswerGrounding(
       seed = Object.freeze({ workflowVersion: snapshot.workflowVersion ?? 8,
         ...(snapshot.answerInstructions ? { answerInstructions: snapshot.answerInstructions } : {}), draft: input.draftDispatch.draft,
         repairFeedbackVersion: "repairFeedbackVersion" in snapshot ? snapshot.repairFeedbackVersion : undefined,
+        generationBudget: "generationBudget" in snapshot ? snapshot.generationBudget : undefined,
         evidenceBindings: [...input.draftDispatch.items, ...input.draftDispatch.exclusions].flatMap(item => item.evidenceItemId
           ? [{ dispatchEvidenceId: item.dispatchEvidenceId, evidenceItemId: item.evidenceItemId }] : []),
         forbiddenIdentityFragments: input.draftDispatch.draft.items.map(item => item.evidenceId),
@@ -3607,9 +3610,10 @@ async function recoverKnowledgeAnswerGrounding(
     operation: ProviderStructuredOutputRequest,
     options: KnowledgeAnswerOperationExecutionOptionsV8
   ): Promise<KnowledgeAnswerOperationExecutionV8> => {
+    const operationTimeoutMs = seed.generationBudget?.timeoutMs ?? 120_000;
     const operationSignal = AbortSignal.any([
       input.signal,
-      AbortSignal.timeout(120_000)
+      AbortSignal.timeout(operationTimeoutMs)
     ]);
     if (options.providerResponseId) {
       if (!runtime.adapter.refresh) {
@@ -3646,7 +3650,7 @@ async function recoverKnowledgeAnswerGrounding(
           options.onUsage?.(operationUsage);
         },
         signal: operationSignal,
-        timeoutMs: 120_000
+        timeoutMs: operationTimeoutMs
       });
       if (providerResponseId) await publishProviderResponseId(providerResponseId);
       return Object.freeze({
@@ -3726,6 +3730,7 @@ async function recoverKnowledgeAnswerGrounding(
       return seed.workflowVersion === 9 || seed.workflowVersion === 10 || seed.workflowVersion === 11
     ? await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...groundingInput, executionPolicy: seed.executionPolicy!,
         repairFeedbackVersion: seed.repairFeedbackVersion,
+        generationBudget: seed.generationBudget,
         workflowVersion: seed.workflowVersion === 10 || seed.workflowVersion === 11 ? seed.workflowVersion : undefined,
         async refineEvidence(result, previousEvidence) {
           // Accepted child operations pin their exact manifest. Never rebuild
@@ -4043,6 +4048,7 @@ async function refreshProviderRunOnceRegistered(
           draft: recovered.draft,
           ...(acceptedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: acceptedRequest.knowledgeAnswerWorkflowVersion } : {}),
           repairFeedbackVersion: acceptedRequest.knowledgeReviewRepairFeedbackVersion,
+          generationBudget: acceptedRequest.knowledgeGenerationBudget,
           ...(acceptedRequest.prompt.responseReminder !== undefined ? { answerInstructions: knowledgeAnswerInstructions(acceptedRequest.prompt) } : {}),
           evidenceBindings: recovered.evidenceBindings,
           modelCapabilities: acceptedRequest.modelCapabilities,
@@ -4355,6 +4361,7 @@ async function refreshProviderRunOnceRegistered(
             draft,
             ...(acceptedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: acceptedRequest.knowledgeAnswerWorkflowVersion } : {}),
             repairFeedbackVersion: acceptedRequest.knowledgeReviewRepairFeedbackVersion,
+            generationBudget: acceptedRequest.knowledgeGenerationBudget,
             ...(acceptedRequest.prompt.responseReminder !== undefined ? { answerInstructions: knowledgeAnswerInstructions(acceptedRequest.prompt) } : {}),
             forbiddenIdentityFragments: authorization.scope?.sources.flatMap((source) => [
               source.sourceId,

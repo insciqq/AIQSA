@@ -235,4 +235,18 @@ describe("durable optional title work", () => {
       expect(await prisma.usageEvent.count({ where: { chatTitleGenerationId: work.runId } })).toBe(0);
     });
   });
+
+  it("does not expire a healthy model call at the historical one-minute recovery deadline", async () => {
+    await fixture(async work => {
+      const admitted = { ...work, maxOutputTokens: 65_536, responseTimeoutMs: 300_000 };
+      const now = new Date();
+      await repository.enqueue(admitted, expiry());
+      expect(await repository.take(now)).toMatchObject({ maxOutputTokens: 65_536, responseTimeoutMs: 300_000 });
+      await repository.recover(new Date(now.getTime() + 61_000));
+      expect(await job(work.runId)).toMatchObject({ status: "dispatched" });
+      await repository.recover(new Date(now.getTime() + 361_000));
+      expect(await job(work.runId)).toMatchObject({ status: "ambiguous", providerSnapshot: null });
+      expect(await repository.take(new Date())).toBeNull();
+    });
+  });
 });

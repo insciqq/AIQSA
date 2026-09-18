@@ -18,7 +18,8 @@ import { defaultInboundMcpOAuthConfiguration, defaultInboundMcpOAuthService } fr
 import { inboundMcpProtectedResourceMetadataUrl } from "@/lib/server/memoryMcp/oauth/resources";
 import type { InboundMcpOAuthService } from "@/lib/server/memoryMcp/oauth/service";
 import { defaultMcpHubRateLimiter, defaultMcpHubService } from "./defaultHub";
-import { createMcpHubServer, MCP_HUB_REQUEST_DEADLINE_MS } from "./hubServer";
+import { createMcpHubServer } from "./hubServer";
+import { getMcpRequestMaxBytes, MCP_JSON_RPC_REQUEST_MAX_BYTES, mcpRequestSizeFailure } from "./responseLimits";
 import { McpHubServiceError } from "./hubService";
 import {
   isMcpHubEnabled,
@@ -26,19 +27,19 @@ import {
   MCP_HUB_MAX_CONCURRENT_REQUESTS_PER_PRINCIPAL
 } from "./hubConfiguration";
 
-export const MCP_HUB_BODY_MAX_BYTES = 128 * 1_024;
+export const MCP_HUB_BODY_MAX_BYTES = MCP_JSON_RPC_REQUEST_MAX_BYTES;
 const RESPONSE_GRACE_MS = 250;
 
 function jsonError(error: string, status: number, headers?: HeadersInit): Response {
   return Response.json({ error }, { headers: { "cache-control": "no-store", ...headers }, status });
 }
 
-function withDeadline(request: Request, deadlineMs: number): Readonly<{ abort(): void; clear(): void; request: Request }> {
+function withDeadline(request: Request, deadlineMs?: number): Readonly<{ abort(): void; clear(): void; request: Request }> {
   const controller = new AbortController();
   const abort = () => controller.abort();
   request.signal.addEventListener("abort", abort, { once: true });
   if (request.signal.aborted) abort();
-  const timer = setTimeout(abort, deadlineMs);
+  const timer = deadlineMs === undefined ? undefined : setTimeout(abort, deadlineMs);
   return {
     abort,
     clear() { clearTimeout(timer); request.signal.removeEventListener("abort", abort); },
@@ -111,8 +112,8 @@ export function createMcpHubHandler(input: Readonly<{
   const service = input.service ?? defaultMcpHubService;
   const oauthService = input.oauthService ?? defaultInboundMcpOAuthService;
   const issuer = input.issuer ?? defaultInboundMcpOAuthConfiguration.issuer;
-  const deadlineMs = input.deadlineMs ?? MCP_HUB_REQUEST_DEADLINE_MS;
-  const bodyMaxBytes = input.bodyMaxBytes ?? MCP_HUB_BODY_MAX_BYTES;
+  const deadlineMs = input.deadlineMs;
+  const bodyMaxBytes = input.bodyMaxBytes ?? getMcpRequestMaxBytes();
   const resource = new URL("/mcp/hub", issuer);
   const resourceMetadataUrl = inboundMcpProtectedResourceMetadataUrl(
     issuer,
@@ -214,12 +215,13 @@ export function createMcpHubHandler(input: Readonly<{
       else activeByPrincipal.delete(principal);
     };
     try {
-      bounded = withDeadline(request, deadlineMs + RESPONSE_GRACE_MS);
+      bounded = withDeadline(request, deadlineMs === undefined ? undefined : deadlineMs + RESPONSE_GRACE_MS);
       if (!request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase().endsWith("json")) {
         return jsonError("unsupported_media_type", 415);
       }
       try {
-        const bytes = await readBoundedRequestBody(bounded.request, { maxBytes: bodyMaxBytes });
+        const bytes = await readBoundedRequestBody(bounded.request, { maxBytes: bodyMaxBytes,
+          signal: AbortSignal.any([bounded.request.signal, AbortSignal.timeout(30_000)]) });
         const parsedBody = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
         if (Array.isArray(parsedBody)) return jsonError("invalid_request", 400);
         // The legacy transport returns headers while its tool call is still running.
@@ -227,7 +229,9 @@ export function createMcpHubHandler(input: Readonly<{
         transferred = true;
         return response;
       } catch (error) {
-        if (error instanceof RequestBodyTooLargeError) return jsonError("request_body_too_large", 413);
+        if (error instanceof RequestBodyTooLargeError) return Response.json({ error: "request_body_too_large",
+          ...mcpRequestSizeFailure(error.actualBytes, error.limitBytes) }, { status: 413, headers: { "cache-control": "no-store" } });
+        if (error instanceof Error && error.name === "TimeoutError") return jsonError("request_timeout", 408);
         if (bounded.request.signal.aborted) return jsonError("temporarily_unavailable", 504);
         return jsonError("invalid_request", 400);
       }

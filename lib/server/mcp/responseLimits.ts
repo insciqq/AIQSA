@@ -1,3 +1,4 @@
+import { constants } from "node:buffer";
 export type McpResponseOperation = "call_tool" | "initialize" | "list_tools" | "ping" | "unknown";
 
 export type McpResponseWireLimits = Readonly<{
@@ -8,7 +9,23 @@ export type McpResponseWireLimits = Readonly<{
   unknownResponseMaxBytes: number;
 }>;
 
-export const MCP_JSON_RPC_REQUEST_MAX_BYTES = 1 * 1_024 * 1_024;
+export const MCP_JSON_RPC_REQUEST_MAX_BYTES = 8 * 1_024 * 1_024;
+
+export function getMcpRequestMaxBytes(environment: Readonly<Record<string, string | undefined>> = process.env): number {
+  const raw = environment.AIQSA_MCP_REQUEST_MAX_BYTES;
+  if (raw === undefined || raw === "") return MCP_JSON_RPC_REQUEST_MAX_BYTES;
+  const value = Number(raw);
+  // Leave room for escaped JSON transport/activity envelopes in a Node string.
+  if (!/^\d+$/u.test(raw) || !Number.isSafeInteger(value) || value < 1 || value > Math.floor(constants.MAX_STRING_LENGTH / 6)) {
+    throw Object.assign(new Error("mcp_request_limit_config_invalid"), { code: "mcp_request_limit_config_invalid" });
+  }
+  return value;
+}
+
+export function mcpRequestSizeFailure(observedBytes: number | bigint, maxBytes: number) {
+  return { code: "mcp_request_too_large", maxBytes, observedBytes: String(observedBytes),
+    message: `The MCP request exceeds the configured ${maxBytes}-byte request limit. No connected tool was called.` };
+}
 
 export const DEFAULT_MCP_RESPONSE_WIRE_LIMITS: McpResponseWireLimits = Object.freeze({
   callToolResponseMaxBytes: 8 * 1_024 * 1_024,

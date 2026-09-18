@@ -3,6 +3,7 @@
 import { resolveOpenRouterNativeProvider } from "@/lib/domain/openRouterNativeRouting";
 
 import { ImageModelFields } from "./ImageModelFields";
+import { NativeRoutingAdoptionNote } from "./NativeRoutingAdoptionNote";
 import { reconcileModelForm } from "./modelSaveReconciliation";
 import { imageModelConfiguration } from "@/lib/domain/imageModels";
 import { inputClass } from "@/components/admin/adminPrimitives";
@@ -682,6 +683,8 @@ function SheetBody({
               />
             </div>
           ) : null}
+
+          {openRouter && model?.nativeRoutingAdoption ? <NativeRoutingAdoptionNote status={model.nativeRoutingAdoption} /> : null}
 
           {answer ? (
             <div className="border-y border-trace-subtle">

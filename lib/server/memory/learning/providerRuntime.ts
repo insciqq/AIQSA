@@ -25,6 +25,8 @@ import { ProviderStreamSafetyError } from "../../providers/streamSafety";
 import type { ProviderRunRequest, ProviderRunResult } from "../../providers/types";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
 import type { ModelToolCall } from "../../tools/types";
+import { memoryModelOutputAllowance } from "../execution/outputBudget";
+import { admittedOutputAllowance, type ModelGenerationBudget } from "../../providers/modelOutputAllowance";
 
 type LockedCredentialVersion = Readonly<{
   credentialId: string;
@@ -35,6 +37,8 @@ type LockedCredentialVersion = Readonly<{
 }>;
 
 export type MemoryLearningProviderEvidence = Readonly<{
+  memorySnapshotVersion?: 3 | 4;
+  generationBudget?: ModelGenerationBudget | null;
   connectionId: string;
   credentialId: string;
   credentialVersionId: string;
@@ -383,9 +387,18 @@ export function createAcceptedMemoryLearningProvider<
     })) {
       throw new Error(input.invalidRuntimeError);
     }
-    const providerRequest = applyMemoryLearningReasoningBudget(
+    const builtRequest = input.buildRequest(snapshot, request);
+    const prompt = { prompt: builtRequest.prompt, content: builtRequest.content, tools: builtRequest.tools };
+    if (evidence.memorySnapshotVersion === 4 && !evidence.generationBudget) throw new Error(input.invalidRuntimeError);
+    const maxOutputTokens = evidence.memorySnapshotVersion === 4
+      ? admittedOutputAllowance(evidence.generationBudget!, prompt)
+      : evidence.memorySnapshotVersion === 3 ? memoryModelOutputAllowance(snapshot, prompt) : null;
+    const providerRequest = maxOutputTokens !== null ? {
+      ...builtRequest,
+      params: { ...builtRequest.params, maxOutputTokens, max_output_tokens: maxOutputTokens }
+    } : applyMemoryLearningReasoningBudget(
       snapshot,
-      input.buildRequest(snapshot, request),
+      builtRequest,
       {
         ...(input.reasoningToolOutputTokenFloor === undefined
           ? {}

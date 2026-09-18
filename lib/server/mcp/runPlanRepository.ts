@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { McpReadiness } from "@/lib/contracts/mcp";
+import { isMcpRuntimeTimeouts } from "../../contracts/mcp";
 import type {
   McpToolArgumentInventoryEntry,
   McpToolInventoryEntry
@@ -11,6 +12,11 @@ import {
   type McpCapabilityCatalog,
   type McpRunPlanRecord
 } from "./runPlan";
+
+function runtimeTimeouts(configuration: unknown) {
+  const runtime = configuration && typeof configuration === "object" && "runtime" in configuration ? configuration.runtime : undefined;
+  return isMcpRuntimeTimeouts(runtime) ? { runtimeTimeouts: runtime } : {};
+}
 
 const runPlanPreferenceSelect = {
   desiredRuntimeGeneration: {
@@ -186,6 +192,7 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
         preference,
         preference.desiredRuntimeGenerationId ? "mcp_runtime_stale" : "mcp_runtime_pending"
       ),
+      ...runtimeTimeouts(preference.server.activeRevision?.configuration),
       catalogTools: revisionCatalogTools(
         preference.server.activeRevision?.validationEvidence,
         preference.server.activeRevision?.configuration
@@ -204,6 +211,7 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
 
   const runtime = runtimeReadiness(generation.state, generation.errorCode);
   return {
+    ...runtimeTimeouts(preference.server.activeRevision?.configuration),
     catalogTools: revisionCatalogTools(
       preference.server.activeRevision?.validationEvidence,
       preference.server.activeRevision?.configuration
@@ -315,6 +323,7 @@ function serializeProjectRunGeneration(
   const runtime = runtimeReadiness(generation.state, generation.errorCode);
   const runnable = projectRunGenerationIsRunnable(generation);
   return {
+    ...runtimeTimeouts(generation.revision.configuration),
     catalogTools: revisionCatalogTools(
       generation.revision.validationEvidence,
       generation.revision.configuration

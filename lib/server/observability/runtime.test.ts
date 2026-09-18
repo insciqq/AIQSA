@@ -29,6 +29,31 @@ class Sink extends EventEmitter {
 afterEach(() => { setProcessRole("app"); vi.restoreAllMocks(); });
 
 describe("bounded observability runtime", () => {
+  it("projects discovery reasons and counts without tool metadata or private goals", () => {
+    const fields = { outcome: "completed", attempt: 2, duration_ms: 123,
+      correction_reason: "uncovered_outcomes", input_bytes: 1000, candidate_count: 121,
+      selected_count: 2, requirement_count: 3, uncovered_count: 1, previous_uncovered_count: 1,
+      selection_changed: false } as const;
+    const event = record("mcp_discovery", { ...fields, goals: "PRIVATE_GOAL", catalog: "PRIVATE_CATALOG",
+      requirements: "PRIVATE_OUTPUT", token: "PRIVATE_CREDENTIAL" } as never);
+    expect(event).toMatchObject(fields);
+    expect(JSON.stringify(event)).not.toContain("PRIVATE_");
+    const invalid = record("mcp_discovery", { ...fields, attempt: 3, candidate_count: -1,
+      correction_reason: "PRIVATE_GOAL", selected_count: "PRIVATE_OUTPUT", input_bytes: Infinity } as never);
+    for (const key of ["attempt", "candidate_count", "correction_reason", "selected_count", "input_bytes"]) {
+      expect(invalid).not.toHaveProperty(key);
+    }
+  });
+
+  it.each(["native_route_http_error", "native_route_capability_mismatch", "native_route_authority_changed"])(
+    "retains native adoption diagnosis %s without raw provider details", (code) => {
+      const event = record("service_operation", { subsystem: "admin", stage: "validate", outcome: "degraded",
+        code, httpStatus: 404, message: "PRIVATE_PROVIDER_BODY", credential: "PRIVATE_KEY" } as never);
+      expect(event).toMatchObject({ code, httpStatus: 404, stage: "validate", outcome: "degraded" });
+      expect(JSON.stringify(event)).not.toContain("PRIVATE_");
+    }
+  );
+
   it("shares CJS and bundled entry context, including concurrent callbacks and fresh job roots", async () => {
     const cjs = require("./runtime.cjs") as typeof import("./runtime.cjs");
     const seen: Array<{ run: string; trace: string; callback: string; job: string; jobRun: string | undefined }> = [];

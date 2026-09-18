@@ -1,3 +1,4 @@
+import { admittedOutputAllowance } from "./modelOutputAllowance";
 import { dispatchSearchRequest } from "./searchDispatch";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage, reportedTokenCount, sumTokenUsage } from "../../domain/usage";
@@ -259,7 +260,7 @@ export function buildAnthropicMessagesSearchRequest(
   const effort = policy.reasoningPolicy === "lowest_supported"
     ? lowestSupportedAnthropicSearchEffort(policy.modelCapabilities)
     : undefined;
-  return {
+  const body: AnthropicMessagesSearchRequestBody = {
     max_tokens: policy.maxOutputTokens,
     messages: [{
       content: [{ text: request.query, type: "text" }],
@@ -279,6 +280,7 @@ export function buildAnthropicMessagesSearchRequest(
       allowed_callers: ["direct"]
     }]
   };
+  return request.generationBudget ? { ...body, max_tokens: admittedOutputAllowance(request.generationBudget, body) } : body;
 }
 
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {

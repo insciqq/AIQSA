@@ -244,14 +244,15 @@ function SourceFields({
                 min={adminSearchExecutionLimits.maxOutputTokens.minimum}
                 onChange={(event) => setForm({
                   ...form,
-                  draft: { ...form.draft, maxOutputTokens: Number(event.currentTarget.value) },
+                  draft: { ...form.draft, maxOutputTokens: event.currentTarget.value.trim() ? Number(event.currentTarget.value) : null },
                   executionInputs: { ...form.executionInputs, maxOutputTokens: event.currentTarget.value }
                 })}
                 step={1}
                 type="number"
                 value={form.executionInputs.maxOutputTokens}
+                placeholder="Auto"
               />
-              <span className={helpText} id={outputHelpId}>Limits each Search model reply, including reasoning tokens where the provider counts them. Default: {adminSearchExecutionDefaults.maxOutputTokens.toLocaleString("en-US")} tokens. The final answer has its own output limit.</span>
+              <span className={helpText} id={outputHelpId}>Limits each Search model reply, including reasoning tokens where the provider counts them. Leave blank for Auto to use the selected model’s allowance. The final answer has its own output limit.</span>
               {validation.maxOutputTokens ? (
                 <span className="mt-1 block text-xs text-critical" id={outputErrorId}>{validation.maxOutputTokens}</span>
               ) : null}

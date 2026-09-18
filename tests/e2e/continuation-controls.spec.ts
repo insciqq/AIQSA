@@ -6,6 +6,67 @@ import { chooseSearchStrategy, closeRunSetup, openRunSetup, selectModel } from "
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 
+test("background continuation shows progress and cancels without losing the current chat", async ({ page }, testInfo) => {
+  test.setTimeout(120_000);
+  const timestamp = "2026-09-18T00:00:00.000Z";
+  const source: ChatDetailWire = {
+    id: "source", title: "Source conversation", createdAt: timestamp, updatedAt: timestamp,
+    activeLeafMessageId: "source-answer", defaultModelId: matrixCatalog.models[0]!.modelId,
+    defaultProvider: matrixCatalog.models[0]!.provider, folderId: null, pinned: false, messageCount: 1, usageStats: null,
+    hasContinuationSource: false, workspace: { available: false, enabled: false, internetEnabled: false, sessionState: null },
+    contextStats: { approximateActiveBranchInputTokens: 100 },
+    pageInfo: { activeLeafMessageId: "source-answer", beforeCursor: null, hasOlder: false, snapshotUpdatedAt: timestamp },
+    messages: [{ id: "source-answer", role: "assistant", status: "complete", parentMessageId: null,
+      content: "Your source conversation is preserved.", createdAt: timestamp, errorMessage: null,
+      citationMessageId: null, modelId: null, modelRunId: null, provider: null }]
+  };
+  await page.addInitScript(() => localStorage.setItem("aiqsa.activeChatId", "source"));
+  await installMatrixCatalogFixture(page, { chats: [source], folders: [] });
+  await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));
+  await page.route("**/api/me/chats/*/memory-mode", (route) => route.fulfill({ json: {
+    allowedActions: ["EXCLUDE"], archived: false, mode: "NORMAL", temporaryRetentionDeadline: null
+  } }));
+  let cancelled = 0;
+  const requestIds = new Set<string>();
+  await page.route("**/api/chats/source/continue", async (route) => {
+    requestIds.add(route.request().postDataJSON().requestId);
+    if (route.request().method() === "DELETE") {
+      cancelled += 1;
+      await route.fulfill({ json: { cancelled: true } });
+    } else if (cancelled) {
+      await route.fulfill({ status: 409, json: { error: "chat_summary_cancelled" } });
+    } else {
+      await route.fulfill({ status: 202, json: { status: "running", progress: { completedParts: 9, stage: "summarizing" } } });
+    }
+  });
+  await signInWithLocalToken(page);
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await composer.fill("Keep this unsent draft");
+  await page.getByTestId("header-context-indicator").click();
+  const dialog = page.getByRole("dialog", { name: "Chat context" });
+  await dialog.getByRole("button", { name: "Summarize and open new chat" }).click();
+  await expect(dialog.getByRole("status")).toHaveText("Summarizing conversation · 9 parts processed");
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 820, height: 1180 },
+      { width: 1180, height: 820 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
+      await page.setViewportSize(viewport);
+      await dialog.getByRole("button", { name: "Cancel", exact: true }).scrollIntoViewIfNeeded();
+      await expectWithinViewport(page, dialog.getByRole("button", { name: "Cancel", exact: true }));
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: testInfo.outputPath(`continuation-progress-${theme}-${viewport.width}x${viewport.height}.png`) });
+    }
+  }
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("Summarization was cancelled. Your conversation is still here.", { timeout: 10_000 });
+  await expect(dialog.getByRole("button", { name: "Summarize and open new chat" })).toBeEnabled();
+  expect(cancelled).toBe(1);
+  expect(requestIds.size).toBe(1);
+  await expect(composer).toHaveValue("Keep this unsent draft");
+  await dialog.getByRole("button", { name: "Stay here" }).click();
+  await expect(page.getByRole("article", { name: "Answer", exact: true })).toContainText("Your source conversation is preserved.");
+});
+
 for (const width of [1440, 390]) {
   test(`continuation preserves controls, current input and focus at ${width}px`, async ({ page }, testInfo) => {
     test.setTimeout(120_000);

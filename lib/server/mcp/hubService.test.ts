@@ -3,6 +3,7 @@ import { namespacedMcpToolName, type McpCapabilityCatalog, type McpRunPlanResult
 import { createMcpHubService, McpHubServiceError, type McpHubAuthority, type McpHubServiceDependencies } from "./hubService";
 import { McpSemanticRouterError } from "./router";
 import { McpClientSessionError } from "./clientSession";
+import { getMcpRequestMaxBytes } from "./responseLimits";
 
 const authority: McpHubAuthority = {
   assertActive: async () => undefined,
@@ -120,6 +121,20 @@ function fixture(overrides: Partial<McpHubServiceDependencies> = {}) {
 }
 
 describe("MCP Hub shared discovery and dispatch", () => {
+  it("passes large admitted arguments intact and refuses oversize before recording a dispatch", async () => {
+    const test = fixture();
+    const descriptor = (await test.service.findTools({ authority, goal: "Echo" })).tools[0]!;
+    const args = { value: "x".repeat(256 * 1024) };
+    const prepared = await test.service.prepareToolCall({ authority, arguments: args,
+      toolId: echoId, toolVersion: descriptor.tool_version });
+    await test.service.dispatchPreparedToolCall({ authority, prepared });
+    expect(test.dependencies.callRuntimeTool).toHaveBeenCalledWith(expect.objectContaining({ arguments: args }));
+    await expect(test.service.prepareToolCall({ authority, arguments: { value: "x".repeat(getMcpRequestMaxBytes()) },
+      toolId: echoId, toolVersion: descriptor.tool_version })).rejects.toMatchObject({ code: "invalid_arguments" });
+    expect(test.dependencies.recordDispatch).toHaveBeenCalledOnce();
+    expect(test.dependencies.callRuntimeTool).toHaveBeenCalledOnce();
+  });
+
   it("bounds the complete discovery response by omitting whole schemas", async () => {
     const description = '"'.repeat(40_000);
     const load: McpHubServiceDependencies["materialize"] = async (_user, tools) => {

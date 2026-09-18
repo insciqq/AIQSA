@@ -15,6 +15,9 @@ export const MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION =
   "memory-history-rebuild-required-v5";
 export const MEMORY_CHAT_DIGEST_PIPELINE_VERSION = "memory-chat-digest-v5";
 export const MEMORY_HISTORY_INDEX_JOB_PREFIX = "index-history:";
+const HISTORY_AUTO_HEAL_PREFIX = "heal-history:";
+export const MEMORY_HISTORY_AUTO_HEAL_POLICY_VERSION = "v2";
+export const MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS = Object.freeze([60_000, 5 * 60_000, 15 * 60_000]);
 export const MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS = 512;
 export const MEMORY_CHAT_DIGEST_MAX_SOURCE_MESSAGES = 8_192;
 
@@ -199,6 +202,25 @@ export function memoryHistoryIndexJobFingerprint(source: FingerprintSource): str
   })}`;
 }
 
+/** Each bounded repair owns new work; ordinary indexing keeps its stable key. */
+export function memoryHistoryAutoHealJobFingerprint(
+  source: FingerprintSource,
+  attempt: number,
+  utilityPolicyVersion?: number
+): string {
+  if (!Number.isSafeInteger(attempt) || attempt < 1 || attempt > MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS.length) {
+    throw new Error("memory_history_auto_heal_attempt_invalid");
+  }
+  if (utilityPolicyVersion !== undefined && (!validCounter(utilityPolicyVersion) || utilityPolicyVersion < 1)) {
+    throw new Error("memory_history_auto_heal_policy_invalid");
+  }
+  // Accepted legacy attempts remain valid. A repaired generator or a deliberate
+  // Memory role change admits a separate bounded cycle without rewriting them.
+  const policy = utilityPolicyVersion === undefined ? ""
+    : `${MEMORY_HISTORY_AUTO_HEAL_POLICY_VERSION}:${utilityPolicyVersion}:`;
+  return `${HISTORY_AUTO_HEAL_PREFIX}${memoryHistoryIndexJobFingerprint(source).slice(MEMORY_HISTORY_INDEX_JOB_PREFIX.length)}:${policy}${attempt}`;
+}
+
 export function memoryHistoryIndexClaimIsValid(
   job: MemoryJobDescriptor
 ): job is MemoryJobDescriptor & MemoryHistoryIndexSourceIdentity {
@@ -219,14 +241,22 @@ export function memoryHistoryIndexClaimIsValid(
   ) {
     return false;
   }
-  return job.idempotencyFingerprint === memoryHistoryIndexJobFingerprint({
+  const source = {
     activeLeafMessageId: job.activeLeafMessageId,
     id: job.chatId,
     memoryBranchGeneration: job.branchGeneration,
     memorySourceRevision: job.sourceRevision,
     sourceHash: job.sourceHash,
     userId: job.userId
-  });
+  };
+  const expected = memoryHistoryIndexJobFingerprint(source);
+  if (job.idempotencyFingerprint === expected) return true;
+  const match = /^heal-history:[a-f0-9]{64}:([1-3])$/u.exec(job.idempotencyFingerprint);
+  if (match) return job.idempotencyFingerprint === memoryHistoryAutoHealJobFingerprint(source, Number(match[1]));
+  const versioned = /^heal-history:[a-f0-9]{64}:(v[1-9][0-9]*):([1-9][0-9]{0,9}):([1-3])$/u.exec(job.idempotencyFingerprint);
+  return Boolean(versioned && versioned[1] === MEMORY_HISTORY_AUTO_HEAL_POLICY_VERSION &&
+    validCounter(Number(versioned[2])) && job.idempotencyFingerprint ===
+    memoryHistoryAutoHealJobFingerprint(source, Number(versioned[3]), Number(versioned[2])));
 }
 
 export function memoryHistoryChunkId(

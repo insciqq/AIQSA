@@ -1,13 +1,12 @@
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import { getMcpRequestMaxBytes } from "./responseLimits";
 import { mcpDiscoveryFailureMessage } from "../../contracts/mcpDiscoveryFailure";
 import { mcpToolFailureMessage } from "../../contracts/mcpToolFailure";
 import type { McpHubDiscoveryResult } from "@/lib/contracts/mcpHub";
 import { createMcpHubService, McpHubServiceError, type McpHubAuthority } from "./hubService";
-import { MCP_HUB_REQUEST_DEADLINE_MS } from "./hubConfiguration";
-export { MCP_HUB_REQUEST_DEADLINE_MS } from "./hubConfiguration";
 const findToolsInput = z.strictObject({
-  goal: z.string().trim().min(1).max(400)
+  goal: z.string().trim().min(1).max(getMcpRequestMaxBytes())
 }, { error: "invalid_arguments" });
 const callToolInput = z.strictObject({
   tool_id: z.string().trim().min(1).max(128),
@@ -52,7 +51,7 @@ function errorResult(error: unknown): CallToolResult {
 function bounded<T>(
   operation: (signal: AbortSignal, onDispatch: () => void) => Promise<T>,
   signal: AbortSignal,
-  deadlineMs: number
+  deadlineMs?: number
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const controller = new AbortController();
@@ -69,7 +68,7 @@ function bounded<T>(
       controller.abort();
       finish(() => reject(new McpHubServiceError(dispatched ? "execution_outcome_unknown" : "request_cancelled")));
     };
-    const timer = setTimeout(abort, deadlineMs);
+    const timer = deadlineMs === undefined ? undefined : setTimeout(abort, deadlineMs);
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
     else operation(controller.signal, () => { dispatched = true; })
@@ -82,7 +81,9 @@ export function createMcpHubServer(input: Readonly<{
   authority: McpHubAuthority;
   deadlineMs?: number;
 }>): McpServer {
-  const deadlineMs = input.deadlineMs ?? MCP_HUB_REQUEST_DEADLINE_MS;
+  // The router model and exact server runtime own operation deadlines.
+  // An explicit enclosing deadline is used by bounded test/embedding callers.
+  const deadlineMs = input.deadlineMs;
   const server = new McpServer({ name: "aiqsa-mcp-hub", version: "1.0.0" }, {
     instructions: "Use find_tools with the user's goal, then call_tool with the returned tool_id, tool_version, and arguments. Tools are limited by the user's current AIQSA permissions and enabled MCP connections."
   });

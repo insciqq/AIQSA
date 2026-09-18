@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentResponsesTransport } from "../providers/agentResponses";
 import { agentLimits } from "./config";
 import { admittedAgentRequest, createAgentModelGateway } from "./modelGateway";
+import { ProviderSafeFetchError } from "../providers/providerSafeFetch";
+import { AgentExecutionError } from "./failures";
+import { observedFailure } from "../providers/providerObservability";
 
 const configuration = { ...agentLimits({ ...DEFAULT_AGENT_POLICY, limitsEnabled: true }, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
   compatibilityHash: "a".repeat(64), mcpMode: "auto" as const };
@@ -23,6 +26,33 @@ function fixture(response: Response, nativeSearch = false) {
 }
 
 describe("Agent model gateway", () => {
+  it.each([
+    new ProviderSafeFetchError("provider_http_dns_failed"),
+    new TypeError("PRIVATE_ENDPOINT", { cause: Object.assign(new Error("PRIVATE_DNS_ERROR"), { code: "ENOTFOUND" }) })
+  ])("exposes a safe DNS cause without replaying the provider call", async (error) => {
+    const f = fixture(sse());
+    vi.mocked(f.transport.request).mockRejectedValue(error);
+    const response = await f.handle(request());
+    const payload = await response.json();
+    expect(response.status).toBe(502);
+    expect(payload.error.code).toBe("agent_provider_dns_failed");
+    expect(payload.error.message).toContain("DNS");
+    expect(JSON.stringify(payload)).not.toContain("PRIVATE_");
+    expect(f.transport.request).toHaveBeenCalledOnce();
+    expect(f.store.settleProvider).toHaveBeenCalledWith(expect.any(String), "UNKNOWN", null);
+    expect(f.onFailure).toHaveBeenCalledWith("agent_provider_dns_failed");
+    expect(observedFailure(new AgentExecutionError(payload.error.code))).toEqual({
+      code: "agent_provider_dns_failed", reason: "network"
+    });
+  });
+
+  it("does not classify an arbitrary provider error message as DNS", async () => {
+    const f = fixture(sse());
+    vi.mocked(f.transport.request).mockRejectedValue(new Error("ENOTFOUND PRIVATE_ENDPOINT"));
+    const payload = await (await f.handle(request())).json();
+    expect(payload.error.code).toBe("agent_provider_failed");
+    expect(JSON.stringify(payload)).not.toContain("PRIVATE_");
+  });
   it.each(["agent_model_call_limit", "agent_token_limit", "agent_time_limit"])("preserves %s without dispatching or replacing it with a provider error", async (code) => {
     const f = fixture(sse());
     f.store.reserveProvider.mockRejectedValue(new Error(code));

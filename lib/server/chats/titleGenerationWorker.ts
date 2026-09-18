@@ -23,10 +23,11 @@ export function createChatTitleWorker(input: Readonly<{
             let title: string | null = null;
             try {
               if (!signal.aborted && await input.repository.isCurrent(work)) {
+                const timeoutMs = work.responseTimeoutMs ?? CHAT_TITLE_GENERATION_TIMEOUT_MS;
                 const result = await input.execute(work.providerSnapshot, buildChatTitleRequest(work), {
                   onUsage: (value) => { usage = mergeTokenUsage(usage ?? {}, value); },
-                  signal: AbortSignal.any([signal, AbortSignal.timeout(CHAT_TITLE_GENERATION_TIMEOUT_MS)]),
-                  timeoutMs: CHAT_TITLE_GENERATION_TIMEOUT_MS
+                  signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
+                  timeoutMs
                 });
                 title = normalizeGeneratedChatTitle(result.title);
               }

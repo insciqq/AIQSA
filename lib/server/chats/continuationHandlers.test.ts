@@ -40,3 +40,15 @@ it("resolves source links through current authorization and never exposes inacce
   expect(response.status).toBe(303);
   expect(response.headers.get("location")).toBe("http://localhost/?chat=old&project=project");
 });
+
+it("authenticates explicit cancellation and bounds its authority to the current actor", async () => {
+  const { createChatContinuationCancelHandler } = await import("./continuationHandlers");
+  const cancel = vi.fn(async () => {});
+  const denied = createChatContinuationCancelHandler({ cancel, resolveAuth: async () => null });
+  expect((await denied(request(input), context)).status).toBe(401);
+  expect(cancel).not.toHaveBeenCalled();
+  const handler = createChatContinuationCancelHandler({ cancel, resolveAuth: async () => session });
+  expect((await handler(request({ ...input, userId: "another" }), context)).status).toBe(400);
+  expect((await handler(request(input), context)).status).toBe(204);
+  expect(cancel).toHaveBeenCalledExactlyOnceWith({ chatId: "source", userId: "owner", requestId: input.requestId });
+});

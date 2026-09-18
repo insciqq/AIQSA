@@ -121,7 +121,7 @@ describe("OpenAI Responses query-only Search adapter", () => {
 
     const tooSmall = searchRequest({
       searchPolicy: openAISearchPolicy({
-        maxOutputTokens: 1_023
+        maxOutputTokens: 15
       })
     });
     expect(() => buildOpenAIResponsesSearchRequest(tooSmall)).toThrow("openai_search_policy_invalid");

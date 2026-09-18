@@ -1,3 +1,4 @@
+import { getMcpRequestMaxBytes } from "./responseLimits";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import type {
@@ -20,7 +21,6 @@ export const mcpFindToolsTool: RunTool = {
     properties: {
       goal: {
         description: "The outcome that needs an MCP capability, such as 'create a GitHub issue'.",
-        maxLength: 400,
         minLength: 1,
         type: "string"
       }
@@ -72,7 +72,7 @@ export function mcpFindToolsArguments(argumentsValue: Record<string, unknown>): 
     return null;
   }
   const goal = typeof argumentsValue.goal === "string" ? argumentsValue.goal.trim() : "";
-  return !goal || goal.length > 400 ? null : { goal };
+  return !goal || Buffer.byteLength(goal, "utf8") > getMcpRequestMaxBytes() ? null : { goal };
 }
 
 export function mergeMcpRunPlanSnapshots(

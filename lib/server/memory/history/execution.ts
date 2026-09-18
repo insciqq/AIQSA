@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { MemoryCoordinatorError } from "../coordinator/errors";
 import { currentMemoryJobsSql } from "../coordinator/currentJobs";
+import { memoryRecoverableFailureSql } from "../coordinator/recoveryPolicy";
 import {
   executeGovernedMemoryStructuredOutput,
   type MemoryExecutionAuthorityDependencies
@@ -25,15 +26,31 @@ export async function prepareMemoryHistoryExecutionRecovery(
   userId: string,
   jobId: string
 ): Promise<boolean> {
+  const related = await client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    WITH ${currentMemoryJobsSql(memoryExecutionNow(authority))}
+    SELECT job.id FROM current_jobs job JOIN current_jobs current_job
+      ON current_job.id = ${jobId} AND current_job."userId" = ${userId}
+    WHERE job."userId" = current_job."userId" AND job.kind = 'INDEX_HISTORY'
+      AND job."chatId" = current_job."chatId" AND job."sourceHash" = current_job."sourceHash"
+      AND job."branchGeneration" = current_job."branchGeneration"
+      AND job."sourceRevision" = current_job."sourceRevision"
+      AND job."activeLeafMessageId" = current_job."activeLeafMessageId"
+      AND job."memoryGenerationSnapshot" = current_job."memoryGenerationSnapshot"
+      AND job.state = 'TERMINAL_FAILED' AND ${memoryRecoverableFailureSql()}
+  `);
   const bindings = await client.memoryExecutionBinding.findMany({
     select: { id: true, logicalRole: true, ownerType: true, state: true, startedAt: true },
-    where: { memoryJobId: jobId, userId }
+    where: { memoryJobId: { in: [jobId, ...related.map(({ id }) => id)] }, userId }
   });
   if (bindings.some((binding) => binding.logicalRole !== "MEMORY_HISTORY_CLASSIFY" ||
     binding.ownerType !== "JOB" || binding.state === "RUNNING" ||
     binding.state === "OUTCOME_UNKNOWN" || binding.state === "PENDING" && binding.startedAt)) {
     throw new MemoryCoordinatorError("memory_history_execution_protected", false);
   }
+  const settled = bindings.filter(({ state }) => state !== "PENDING").map(({ id }) => id);
+  if (settled.length > 0 && await client.usageEvent.count({
+    where: { userId, memoryExecutionBindingId: { in: settled } }
+  }) !== settled.length) throw new MemoryCoordinatorError("memory_history_execution_protected", false);
   const lifecycle = createPrismaMemoryExecutionLifecycle(authority, client);
   for (const binding of bindings) {
     if (binding.state !== "PENDING") continue;
@@ -45,7 +62,9 @@ export async function prepareMemoryHistoryExecutionRecovery(
       usage: unavailableMemoryReportedUsage
     });
   }
-  return bindings.length > 0;
+  // A new pipeline can rebuild old failed work locally. Legacy outputs belong
+  // to their immutable owner and are not rebound to this successor's dispatch.
+  return bindings.length > 0 || related.length > 0;
 }
 
 export async function clearMemoryHistoryExecutionResults(

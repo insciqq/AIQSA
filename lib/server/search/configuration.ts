@@ -60,7 +60,7 @@ export function normalizeSearchDraft(value: unknown): AdminSearchDraft {
   const normalized: AdminSearchDraft = {
     adapterKind,
     credentialMode,
-    maxOutputTokens: boundedInteger(
+    maxOutputTokens: value.maxOutputTokens === null ? null : boundedInteger(
       value.maxOutputTokens,
       adminSearchExecutionLimits.maxOutputTokens.minimum,
       adminSearchExecutionLimits.maxOutputTokens.maximum

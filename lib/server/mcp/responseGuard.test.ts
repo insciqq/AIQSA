@@ -8,6 +8,7 @@ import {
 import {
   DEFAULT_MCP_RESPONSE_WIRE_LIMITS,
   getMcpResponseWireLimits,
+  getMcpRequestMaxBytes,
   MCP_JSON_RPC_REQUEST_MAX_BYTES,
   MCP_RESPONSE_WIRE_LIMIT_CEILINGS,
   McpResponseTooLargeError,
@@ -103,7 +104,7 @@ describe("MCP response limit configuration", () => {
 });
 
 describe("McpResponseGuard finite bodies", () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
   it("counts actual finite reads and retains call context on a later socket failure", async () => {
     const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -293,6 +294,18 @@ describe("McpResponseGuard finite bodies", () => {
       observedBytes: MCP_JSON_RPC_REQUEST_MAX_BYTES + 1
     });
     expect(baseFetch).not.toHaveBeenCalled();
+  });
+
+  it("honors an increased shared request cap without an intermediate one-MiB ceiling", async () => {
+    vi.stubEnv("AIQSA_MCP_REQUEST_MAX_BYTES", "12582912");
+    const baseFetch = vi.fn<FetchLike>(async () => new Response(null, { status: 204 }));
+    const guard = new McpResponseGuard();
+    const request = guard.beginRequest("call_tool");
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { document: "x".repeat(9 * 1024 * 1024) } });
+    expect(getMcpRequestMaxBytes()).toBe(12 * 1024 * 1024);
+    await request.run(() => guard.wrapFetch(baseFetch)("https://mcp.example", { body, method: "POST" }));
+    expect(baseFetch).toHaveBeenCalledOnce();
+    request.finish();
   });
 
   it("propagates parent abort and cancels without marking the session fatal", async () => {

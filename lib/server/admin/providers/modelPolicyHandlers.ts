@@ -85,10 +85,10 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
           !textOrNull(value.providerModelId, 256) || !textOrNull(value.reasoningEffort, 32) ||
           value.providerModelId === null && value.reasoningEffort !== null) ||
         presentLimits.length > 0 && (presentLimits.length !== limitKeys.length ||
-          !isMcpAutoDiscoveryOutputTokens(value.mcpAutoDiscoveryMaxOutputTokens) ||
-          !Number.isSafeInteger(value.mcpAutoDiscoveryTimeoutSeconds) ||
+          value.mcpAutoDiscoveryMaxOutputTokens !== null && !isMcpAutoDiscoveryOutputTokens(value.mcpAutoDiscoveryMaxOutputTokens) ||
+          value.mcpAutoDiscoveryTimeoutSeconds !== null && (!Number.isSafeInteger(value.mcpAutoDiscoveryTimeoutSeconds) ||
           Number(value.mcpAutoDiscoveryTimeoutSeconds) < MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds ||
-          Number(value.mcpAutoDiscoveryTimeoutSeconds) > MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds ||
+          Number(value.mcpAutoDiscoveryTimeoutSeconds) > MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds) ||
           !Number.isSafeInteger(value.maxMcpToolsPerDiscovery) ||
           Number(value.maxMcpToolsPerDiscovery) < 1 ||
           Number(value.maxMcpToolsPerDiscovery) > MCP_RUN_PLAN_LIMITS.maxTools ||
@@ -107,8 +107,8 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
             maxMcpToolsPerDiscovery: Number(value.maxMcpToolsPerDiscovery),
             maxToolCalls: Number(value.maxToolCalls),
             maxToolRounds: Number(value.maxToolRounds),
-            mcpAutoDiscoveryTimeoutSeconds: Number(value.mcpAutoDiscoveryTimeoutSeconds),
-            mcpAutoDiscoveryMaxOutputTokens: Number(value.mcpAutoDiscoveryMaxOutputTokens)
+            mcpAutoDiscoveryTimeoutSeconds: value.mcpAutoDiscoveryTimeoutSeconds === null ? null : Number(value.mcpAutoDiscoveryTimeoutSeconds),
+            mcpAutoDiscoveryMaxOutputTokens: value.mcpAutoDiscoveryMaxOutputTokens === null ? null : Number(value.mcpAutoDiscoveryMaxOutputTokens)
           } : {}),
           userId: auth.session.userId
         });

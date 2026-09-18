@@ -69,7 +69,9 @@ async function fixture(run: (context: {
     const adopt = (overrides: { test?: AdminProviderDraftTester["test"]; nativeAvailable?: boolean } = {}) => adoptNativeOpenRouterRoutes({ db,
       encryptionKey: () => encryptionKey, tester: { test: overrides.test ?? test }, createDiscovery: () => ({
         listModels: async () => [], listEmbeddingModels: async () => [], listRerankModels: async () => [],
-        listModelEndpoints: async () => overrides.nativeAvailable === false ? [] : [{ tag: "alibaba", providerName: "Alibaba", name: "Alibaba", supportedParameters: [] }]
+        listModelEndpoints: async () => overrides.nativeAvailable === false
+          ? [{ tag: "fireworks", providerName: "Fireworks", name: "Fireworks", supportedParameters: [] }]
+          : [{ tag: "alibaba", providerName: "Alibaba", name: "Alibaba", supportedParameters: [] }]
       }) });
     await run({ id, connectionId, keyIds, versionIds, adopt, test });
   } finally {
@@ -101,13 +103,53 @@ describe("one-time native OpenRouter adoption", () => {
     await fixture(async ({ id, adopt, test }) => {
       await adopt({ nativeAvailable: false });
       expect(test).not.toHaveBeenCalled();
-      expect(await prisma.providerModel.findUnique({ where: { id } })).toMatchObject({ activeVersion: 1, nativeRoutingAdoptionReason: "native_unavailable" });
+      expect(await prisma.providerModel.findUnique({ where: { id } })).toMatchObject({ activeVersion: 1, nativeRoutingAdoptionReason: "native_unavailable",
+        nativeRoutingAdoptionEvidence: { stage: "catalog", code: "native_unavailable", servingMode: "automatic" } });
     });
     await fixture(async ({ id, adopt, test }) => {
       await adopt({ test: async (input) => {
         await test(input); throw new Error("crash-ambiguous synthetic provider failure");
       } });
       expect(await prisma.providerModel.findUnique({ where: { id } })).toMatchObject({ activeVersion: 1, nativeRoutingAdoptionReason: "verification_required" });
+      await adopt(); expect(test).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("retains all serving checks when a later key returns HTTP 404 and projects only safe diagnostic fields", async () => {
+    await fixture(async ({ id, adopt, test }) => {
+      const original = await prisma.providerModel.findUniqueOrThrow({ where: { id } });
+      const checks = await prisma.providerModelCredentialCheck.findMany({ where: { providerModelId: id }, orderBy: { id: "asc" } });
+      let ordinal = 0;
+      const outcomes = await adopt({ test: async (input) => {
+        const good = await test(input);
+        if (++ordinal === 1) return good;
+        return { status: "unavailable", evidence: { method: "tiny_generation", detail: "model_missing",
+          selectedProviders: input.model.openRouterRouting?.providers ?? [], upstreamModelId: input.model.upstreamModelId,
+          capabilitySetup: { policyVersion: 2, activation: "preserve", checks: { modelAccess: "incomplete", embedding: "not_checked" },
+            attempts: { modelAccess: { attempts: 1, status: "incomplete", reason: "http_error", httpStatus: 404 } } }
+        } };
+      } });
+      expect(outcomes).toEqual({ applied: 0, preserved: 0, unresolved: 1 });
+      const current = await prisma.providerModel.findUniqueOrThrow({ where: { id } });
+      expect(current).toMatchObject({ activeConfig: original.activeConfig, activeVersion: original.activeVersion,
+        nativeRoutingAdoptionEvidence: { stage: "modelAccess", code: "http_error", provider: "alibaba", httpStatus: 404, servingMode: "automatic" } });
+      const catalog = await createPrismaAdminProviderRepository(prisma).listConnections();
+      expect(catalog.flatMap(({ models }) => models).find((model) => model.id === id)?.nativeRoutingAdoption)
+        .toMatchObject({ reason: "native_incompatible", diagnostic: { httpStatus: 404, servingMode: "automatic" } });
+      expect(await prisma.providerModelCredentialCheck.findMany({ where: { providerModelId: id }, orderBy: { id: "asc" } })).toEqual(checks);
+      await adopt(); expect(test).toHaveBeenCalledTimes(2);
+    }, 2);
+  });
+
+  it("never records a raw exception body or repeats an ambiguously failed native probe", async () => {
+    await fixture(async ({ id, adopt, test }) => {
+      await adopt({ test: async (input) => {
+        await test(input);
+        throw Object.assign(new Error("PRIVATE_KEY_AND_RESPONSE_BODY"), { httpStatus: 404, body: "PRIVATE_PROMPT" });
+      } });
+      const row = await prisma.providerModel.findUniqueOrThrow({ where: { id } });
+      expect(row.nativeRoutingAdoptionEvidence).toMatchObject({ stage: "modelAccess", code: "http_error", httpStatus: 404 });
+      expect(JSON.stringify(row.nativeRoutingAdoptionEvidence)).not.toContain("PRIVATE");
       await adopt(); expect(test).toHaveBeenCalledOnce();
     });
   });

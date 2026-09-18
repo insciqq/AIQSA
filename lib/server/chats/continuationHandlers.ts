@@ -40,3 +40,25 @@ export function createChatContinuationHandler(deps: Readonly<{
     }
   };
 }
+
+export function createChatContinuationCancelHandler(deps: Readonly<{
+  resolveAuth: RequestAuthResolver;
+  cancel(input: { chatId: string; userId: string; requestId: string }): Promise<void>;
+}>) {
+  return async (request: Request, context: RouteContext): Promise<Response> => {
+    const session = await deps.resolveAuth(request);
+    if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
+    let value: unknown;
+    try { value = await readJsonBodyOrNull(request); }
+    catch (error) { return requestBodyErrorResponse(error) ?? Response.json({ error: "invalid_request" }, { status: 400 }); }
+    const body = decodeChatContinuationRequest(value);
+    if (!body) return Response.json({ error: "invalid_request" }, { status: 400 });
+    try {
+      await deps.cancel({ chatId: (await context.params).chatId, userId: session.userId, requestId: body.requestId });
+      return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+    } catch (error) {
+      const failure = error instanceof ChatContinuationError ? error : new ChatContinuationError("chat_summary_failed", 502);
+      return Response.json({ error: failure.code }, { status: failure.status });
+    }
+  };
+}

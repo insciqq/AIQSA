@@ -222,6 +222,8 @@ function providerEvidence(
   }
   return {
     connectionId: provider.connectionId,
+    ...(snapshot.version === 4 ? { memorySnapshotVersion: 4 as const, generationBudget: snapshot.generationBudget } :
+      snapshot.version === 3 ? { memorySnapshotVersion: 3 as const } : {}),
     credentialId: provider.credentialId,
     credentialVersionId: provider.credentialVersionId,
     executionSnapshot: provider,

@@ -204,8 +204,6 @@ export function assertMemoryExecutionBindingLink(
   }
   if (
     binding.destinationFingerprint !== source.destinationFingerprint ||
-    snapshot.acceptedUtilityEgressFingerprint !==
-      sourceSnapshot.acceptedUtilityEgressFingerprint ||
     snapshot.destinationFingerprint !== sourceSnapshot.destinationFingerprint ||
     snapshot.executionTargetFingerprint !== sourceSnapshot.executionTargetFingerprint ||
     snapshot.utilityPolicyVersion !== sourceSnapshot.utilityPolicyVersion
@@ -219,6 +217,7 @@ function samePendingBinding(
   input: BindMemoryExecutionInput,
   expectedSnapshot: MemorySecretFreeExecutionSnapshot
 ): boolean {
+  const stored = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
   return binding.inputHash === input.inputHash &&
     binding.logicalRole === input.role &&
     binding.ordinal === input.ordinal &&
@@ -228,7 +227,8 @@ function samePendingBinding(
     binding.schemaVersion === input.versions.schemaVersion &&
     binding.pipelineVersion === input.versions.pipelineVersion &&
     canonicalMemoryExecutionJson(binding.secretFreeExecutionSnapshot) ===
-      canonicalMemoryExecutionJson(expectedSnapshot);
+      canonicalMemoryExecutionJson({ ...expectedSnapshot, version: stored.version,
+        acceptedUtilityEgressFingerprint: stored.acceptedUtilityEgressFingerprint });
 }
 
 export async function loadMemoryExecutionBinding(

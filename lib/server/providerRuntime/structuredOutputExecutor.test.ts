@@ -143,7 +143,7 @@ const nativeRouterInput: Parameters<ReturnType<typeof createMcpSemanticRouter>["
   context: { currentText: "Look up the sample item" }
 };
 const nativeSelection = { mcp_needed: true, requirements: [{
-  outcome: "Find the sample item", status: "covered", tool_ids: ["mcp_sample_lookup_1234567890"]
+  outcome: "Find the sample item", status: "covered", tool_ids: ["t0"]
 }] };
 
 const routingCatalogInput = {
@@ -157,7 +157,7 @@ const routingCatalogInput = {
 };
 const selectedRoutingIds = routingCatalogInput.catalog.servers[0]!.tools.slice(0, 10).map((tool) => tool.namespacedName);
 const routingSelection = { mcp_needed: true, requirements: [{
-  outcome: "Read the requested items", status: "covered", tool_ids: selectedRoutingIds
+  outcome: "Read the requested items", status: "covered", tool_ids: selectedRoutingIds.map((_, index) => `t${index}`)
 }] };
 
 describe("accepted structured-output executor", () => {
@@ -177,7 +177,7 @@ describe("accepted structured-output executor", () => {
     await fixture.router.route({ ...nativeRouterInput, recordAttempt });
     expect(fixture.fetchFn).toHaveBeenCalledTimes(2);
     expect(recordAttempt).toHaveBeenCalledTimes(2);
-    expect(recordAttempt).toHaveBeenCalledWith(fixture.admitted);
+    expect(recordAttempt).toHaveBeenCalledWith(fixture.admitted, expect.any(Number), expect.any(Number), expect.any(Number));
     expect(records[0]!.settle).toHaveBeenCalledWith({ state: "COMPLETE", usage: expect.objectContaining({ totalTokens: 11 }) });
     expect(records[1]!.settle).toHaveBeenCalledWith({ state: "COMPLETE", usage: expect.objectContaining({ totalTokens: 22 }) });
   });
@@ -255,7 +255,7 @@ describe("accepted structured-output executor", () => {
         requirements: { type: "array", items: { additionalProperties: false,
           required: ["outcome", "status", "tool_ids"], properties: {
             status: { enum: ["covered", "uncovered"] }, tool_ids: { items: {
-              enum: routingCatalogInput.catalog.servers[0]!.tools.map((tool) => tool.namespacedName)
+              enum: routingCatalogInput.catalog.servers[0]!.tools.map((_, index) => `t${index}`)
             } }
           } } }
       } });
@@ -263,7 +263,7 @@ describe("accepted structured-output executor", () => {
       if (JSON.stringify(wire).includes('"maxItems"')) {
         return Response.json({ error: { code: "invalid_request", message: "PRIVATE_UPSTREAM_BODY" } }, { status: 400 });
       }
-      expect(body.generation_config).toEqual({ max_output_tokens: 8192, thinking_level: "medium", thinking_summaries: "none" });
+      expect(body.generation_config).toEqual({ max_output_tokens: 65536, thinking_level: "medium", thinking_summaries: "none" });
       const value = index === 1 ? { mcp_needed: true, requirements: [{
         outcome: "Read the requested items", status: "uncovered", tool_ids: []
       }] } : routingSelection;
@@ -305,13 +305,13 @@ describe("accepted structured-output executor", () => {
 
   it.each([
     { label: "17 requirements", value: { mcp_needed: true, requirements: Array.from({ length: 17 }, (_, index) => ({
-      outcome: `Outcome ${index}`, status: "covered", tool_ids: [selectedRoutingIds[0]]
+      outcome: `Outcome ${index}`, status: "covered", tool_ids: ["t0"]
     })) } },
     { label: "11 tools in one requirement", value: { mcp_needed: true, requirements: [{
-      ...routingSelection.requirements[0], tool_ids: [...selectedRoutingIds, "mcp_sample_lookup_10"]
+      ...routingSelection.requirements[0], tool_ids: [...selectedRoutingIds.map((_, index) => `t${index}`), "t10"]
     }] } },
     { label: "unknown tool", value: { mcp_needed: true, requirements: [{ ...routingSelection.requirements[0], tool_ids: ["unknown"] }] } },
-    { label: "duplicate tool", value: { mcp_needed: true, requirements: [{ ...routingSelection.requirements[0], tool_ids: [selectedRoutingIds[0], selectedRoutingIds[0]] }] } },
+    { label: "duplicate tool", value: { mcp_needed: true, requirements: [{ ...routingSelection.requirements[0], tool_ids: ["t0", "t0"] }] } },
     { label: "invalid coverage", value: { mcp_needed: true, requirements: [{ ...routingSelection.requirements[0], status: "uncovered" }] } },
     { label: "invalid status enum", value: { mcp_needed: true, requirements: [{ ...routingSelection.requirements[0], status: "invented" }] } },
     { label: "duplicate outcome", value: { mcp_needed: true, requirements: [routingSelection.requirements[0], routingSelection.requirements[0]] } }
@@ -358,7 +358,7 @@ describe("accepted structured-output executor", () => {
     { mcp_needed: true },
     { ...nativeSelection, extra: true },
     { mcp_needed: true, requirements: [{ ...nativeSelection.requirements[0], tool_ids: ["unknown"] }] },
-    { mcp_needed: true, requirements: [{ ...nativeSelection.requirements[0], tool_ids: ["mcp_sample_lookup_1234567890", "mcp_sample_lookup_1234567890"] }] },
+    { mcp_needed: true, requirements: [{ ...nativeSelection.requirements[0], tool_ids: ["t0", "t0"] }] },
     { mcp_needed: true, requirements: [{ ...nativeSelection.requirements[0], outcome: "" }] },
     { mcp_needed: true, requirements: [{ ...nativeSelection.requirements[0], outcome: "x".repeat(161) }] },
     { mcp_needed: true, requirements: [{ ...nativeSelection.requirements[0], status: "invented" }] }

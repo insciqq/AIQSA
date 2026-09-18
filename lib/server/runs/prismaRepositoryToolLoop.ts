@@ -1,10 +1,12 @@
+import { isMcpRuntimeTimeouts } from "../../contracts/mcp";
+import { isModelGenerationBudget } from "../providers/modelOutputAllowance";
 import { validAcceptedInstructions } from "../instructions/snapshot";
 import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
 import { loadWorkspaceActivitySnapshot, saveWorkspaceActivitySnapshot, workspaceActivityFingerprint, WORKSPACE_ACTIVITY_RECEIPT } from "./workspaceActivityPersistence";
 import { validNormalizedAgent } from "../agents/config";
 import { decodeAcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
-import { isMcpAutoDiscoveryOutputTokens } from "../../contracts/mcp";
+import { isMcpDiscoveryOutputBudget } from "../../contracts/mcp";
 import {
   Prisma,
   type ModelRunStatus,
@@ -537,6 +539,7 @@ const normalizedRequestKeys = new Set([
   "knowledgeAnswering",
   "knowledgeAnswerWorkflowVersion",
   "knowledgeReviewRepairFeedbackVersion",
+  "knowledgeGenerationBudget",
   "knowledgeEvidencePackingVersion",
   "knowledgeFocusedRequest",
   "imagePlan",
@@ -831,10 +834,12 @@ function validMcpSnapshot(value: unknown): boolean {
       "credentialSources",
       "externalAccountLabel",
       "fingerprint",
+      "runtimeTimeouts",
       "revisionId",
       "serverId",
       "serverName"
-    ])) || !/^[0-9a-f]{64}$/u.test(String(server.fingerprint)) ||
+    ])) || server.runtimeTimeouts !== undefined && !isMcpRuntimeTimeouts(server.runtimeTimeouts) ||
+      !/^[0-9a-f]{64}$/u.test(String(server.fingerprint)) ||
       !nonBlank(server.revisionId) || !nonBlank(server.serverId) ||
       !nonBlank(server.serverName) || servers.has(server.serverId) ||
       server.externalAccountLabel !== undefined &&
@@ -899,6 +904,8 @@ function decodeProviderDispatchRecoveryRequest(
     value.knowledgeAnswerWorkflowVersion !== undefined && value.knowledgeAnswerWorkflowVersion !== 2 && value.knowledgeAnswerWorkflowVersion !== 3 && value.knowledgeAnswerWorkflowVersion !== 4 && value.knowledgeAnswerWorkflowVersion !== 5 && value.knowledgeAnswerWorkflowVersion !== 6 && value.knowledgeAnswerWorkflowVersion !== 7 && value.knowledgeAnswerWorkflowVersion !== 8 && value.knowledgeAnswerWorkflowVersion !== 9 && value.knowledgeAnswerWorkflowVersion !== 10 && value.knowledgeAnswerWorkflowVersion !== 11 ||
     value.knowledgeReviewRepairFeedbackVersion !== undefined &&
       (value.knowledgeReviewRepairFeedbackVersion !== 1 || value.knowledgeAnswerWorkflowVersion !== 11) ||
+    value.knowledgeGenerationBudget !== undefined &&
+      (!isModelGenerationBudget(value.knowledgeGenerationBudget) || value.knowledgeAnswerWorkflowVersion !== 11) ||
     value.knowledgeEvidencePackingVersion !== undefined &&
       value.knowledgeEvidencePackingVersion !== 2 && value.knowledgeEvidencePackingVersion !== 3 && value.knowledgeEvidencePackingVersion !== 4 && value.knowledgeEvidencePackingVersion !== 5 ||
     value.knowledgeSearchInstructionVersion !== undefined && value.knowledgeSearchInstructionVersion !== 2 && value.knowledgeSearchInstructionVersion !== 3 ||
@@ -959,7 +966,7 @@ function decodeProviderDispatchRecoveryRequest(
       "maxToolCalls",
       "maxToolRounds"
     ])) || toolBudgets.mcpAutoDiscoveryMaxOutputTokens !== undefined &&
-      !isMcpAutoDiscoveryOutputTokens(toolBudgets.mcpAutoDiscoveryMaxOutputTokens) ||
+      !isMcpDiscoveryOutputBudget(toolBudgets.mcpAutoDiscoveryMaxOutputTokens) ||
     ["maxToolCalls", "maxToolRounds"].some((key) =>
       !Number.isSafeInteger(toolBudgets[key]) || Number(toolBudgets[key]) < 1) ||
     ["mcpAutoDiscoveryTimeoutSeconds", "maxMcpToolsPerDiscovery"].some((key) =>

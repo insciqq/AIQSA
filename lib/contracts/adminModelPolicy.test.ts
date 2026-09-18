@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 import { decodeAdminModelPolicyResponse } from "./adminModelPolicy";
 
 describe("administrator model policy contract", () => {
-  it("decodes positive safe tool budgets without an arbitrary product cap", () => {
+  it.each([null, 8192])("decodes Auto or an explicit MCP output allowance: %s", (mcpAutoDiscoveryMaxOutputTokens) => {
     expect(decodeAdminModelPolicyResponse({
       modelPolicy: {
         candidates: [],
         policy: {
           defaultModel: null,
           reasoningEffort: null,
-          mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192,
+          mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens,
           maxMcpToolsPerDiscovery: 10,
           maxToolCalls: 200,
           maxToolRounds: 200,
@@ -19,14 +19,14 @@ describe("administrator model policy contract", () => {
         }
       }
     })?.modelPolicy.policy).toMatchObject({
-      mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192,
+      mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens,
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 200
     });
   });
 
-  it.each([undefined, null, 0, 1023, 65537, 4096.5, "8192"])("rejects invalid MCP output allowance %s", (mcpAutoDiscoveryMaxOutputTokens) => {
+  it.each([undefined, 0, 1023, 65537, 4096.5, "8192"])("rejects invalid MCP output allowance %s", (mcpAutoDiscoveryMaxOutputTokens) => {
     expect(decodeAdminModelPolicyResponse({ modelPolicy: { candidates: [], policy: {
       defaultModel: null, reasoningEffort: null, mcpAutoDiscoveryTimeoutSeconds: 60,
       mcpAutoDiscoveryMaxOutputTokens, maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8,

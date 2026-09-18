@@ -1,4 +1,6 @@
+import { isMcpRuntimeTimeouts } from "../../contracts/mcp";
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
+import { getMcpRequestMaxBytes } from "./responseLimits";
 import { LEGACY_MCP_DISCOVERY_MAX_RESULTS } from "./discovery";
 import type {
   McpCapabilityCatalog,
@@ -78,11 +80,13 @@ function catalogServer(value: unknown): McpCapabilityCatalogServer | null {
     "revisionId",
     "serverId",
     "serverName",
+    "runtimeTimeouts",
     "tools"
   ]) || typeof value.description !== "string" ||
     (value.instructions !== undefined && typeof value.instructions !== "string") ||
     !nonBlank(value.namespace) || !nonBlank(value.revisionId) ||
-    !nonBlank(value.serverId) || !nonBlank(value.serverName) || !Array.isArray(value.tools)) {
+    !nonBlank(value.serverId) || !nonBlank(value.serverName) || !Array.isArray(value.tools) ||
+    value.runtimeTimeouts !== undefined && !isMcpRuntimeTimeouts(value.runtimeTimeouts)) {
     return null;
   }
   const tools = value.tools.flatMap((tool) => {
@@ -100,6 +104,7 @@ function catalogServer(value: unknown): McpCapabilityCatalogServer | null {
     revisionId: value.revisionId,
     serverId: value.serverId,
     serverName: value.serverName,
+    ...(value.runtimeTimeouts === undefined ? {} : { runtimeTimeouts: value.runtimeTimeouts }),
     tools
   };
 }
@@ -130,7 +135,7 @@ function epoch(
     "modelRunToolCallId",
     "roundIndex",
     "toolIds"
-  ]) || value.epoch !== expectedOrdinal || !nonBlank(value.goal) || value.goal.length > 400 ||
+  ]) || value.epoch !== expectedOrdinal || !nonBlank(value.goal) || Buffer.byteLength(value.goal, "utf8") > getMcpRequestMaxBytes() ||
     !nonBlank(value.modelRunToolCallId) || !Number.isSafeInteger(value.roundIndex) ||
     Number(value.roundIndex) < 0 || !Array.isArray(value.toolIds) ||
     value.toolIds.length > maxResults ||

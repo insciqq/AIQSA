@@ -1,16 +1,20 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { AdminMemoryProcessingIssue, AdminMemoryStatus } from "../../../contracts/adminMemory";
 import { currentMemoryJobsSql } from "../../memory/coordinator/currentJobs";
+import { memoryHistoryActiveWorkSql, memoryHistoryAutoHealAttemptsSql, memoryHistoryAutoHealProtectedSql, memoryHistoryIncompleteOutputSql } from "../../memory/history/autoHeal";
+import { MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS } from "../../memory/history/contract";
 import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memoryUtilityModelRole";
 
 const STALLED_MS = 15 * 60_000;
 const RETRY_WARNING_MS = 5 * 60_000;
 type Stage = AdminMemoryProcessingIssue["stage"];
 type Reason = AdminMemoryProcessingIssue["reason"];
-type ProcessingRow = { stage: Stage; reason: Reason | null; count: bigint; oldestAt: Date };
+type Healing = NonNullable<AdminMemoryProcessingIssue["autoHeal"]>;
+type ProcessingRow = { stage: Stage; reason: Reason | null; autoHeal: Healing | null; count: bigint; oldestAt: Date };
+const healingPriority: Record<Healing, number> = { RETRYING: 0, EXHAUSTED: 1, UNAVAILABLE: 2 };
 const priority: Record<Reason, number> = {
   MODEL_UNAVAILABLE: 6, CAPABILITY_UNAVAILABLE: 5, CONFIGURATION_REQUIRED: 4,
-  PROCESSING_FAILED: 3, STALLED: 2, RETRYING: 1, OUTPUT_LIMIT: 0
+  PROCESSING_FAILED: 3, STALLED: 2, RETRYING: 1, OUTPUT_LIMIT: 0, HISTORY_INCOMPLETE: 0
 };
 
 /** Read-only aggregates. Source identities stay inside PostgreSQL; worker
@@ -42,6 +46,7 @@ export async function readAdminMemoryProcessing(
               WHERE binding."memoryJobId" = job.id AND binding."userId" = job."userId"
                 AND binding."errorCode" = 'memory_classifier_output_limit_exceeded'
             ) THEN 'OUTPUT_LIMIT'
+            WHEN ${memoryHistoryIncompleteOutputSql()} THEN 'HISTORY_INCOMPLETE'
             WHEN job.state = 'TERMINAL_FAILED' THEN 'PROCESSING_FAILED'
             WHEN job.state = 'RETRYABLE_FAILED' AND job."createdAt" <= ${new Date(now.getTime() - RETRY_WARNING_MS)} THEN 'RETRYING'
             WHEN job.state IN ('QUEUED', 'CLAIMED') AND job."createdAt" <= ${new Date(now.getTime() - STALLED_MS)}
@@ -51,7 +56,12 @@ export async function readAdminMemoryProcessing(
                   AND progress.state = 'SUCCEEDED' AND progress."completedAt" > ${new Date(now.getTime() - STALLED_MS)}))
               THEN 'STALLED'
             ELSE NULL
-          END AS reason
+          END AS reason,
+          CASE WHEN ${memoryHistoryIncompleteOutputSql()} THEN CASE
+            WHEN ${memoryHistoryActiveWorkSql()} THEN 'RETRYING'
+            WHEN ${memoryHistoryAutoHealProtectedSql()} THEN 'UNAVAILABLE'
+            WHEN ${memoryHistoryAutoHealAttemptsSql()} >= ${MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS.length} THEN 'EXHAUSTED'
+            ELSE 'RETRYING' END ELSE NULL END AS "autoHeal"
         FROM current_jobs AS job
         WHERE (job.state <> 'SUCCEEDED' OR job.kind = 'INDEX_HISTORY')
           AND (job.state NOT IN ('TERMINAL_FAILED', 'SUCCEEDED') OR NOT EXISTS (
@@ -67,12 +77,12 @@ export async function readAdminMemoryProcessing(
           CASE WHEN deletion.state = 'BLOCKED_REQUIRES_ADMIN' THEN 'PROCESSING_FAILED'
             WHEN deletion."createdAt" <= ${new Date(now.getTime() - STALLED_MS)}
               AND (deletion."progressAt" IS NULL OR deletion."progressAt" <= ${new Date(now.getTime() - STALLED_MS)})
-              THEN 'STALLED' ELSE NULL END
+              THEN 'STALLED' ELSE NULL END, NULL AS "autoHeal"
         FROM "MemoryDeletionOutbox" AS deletion
         WHERE deletion.state IN ('PENDING', 'RUNNING', 'RETRY_WAIT', 'BLOCKED_REQUIRES_ADMIN')
       )
-      SELECT stage, reason, count(*) AS count, min("createdAt") AS "oldestAt"
-      FROM classified GROUP BY stage, reason
+      SELECT stage, reason, "autoHeal", count(*) AS count, min("createdAt") AS "oldestAt"
+      FROM classified GROUP BY stage, reason, "autoHeal"
     `)
   ]);
   const issues = new Map<Stage, AdminMemoryProcessingIssue>();
@@ -85,11 +95,15 @@ export async function readAdminMemoryProcessing(
     const oldestAgeSeconds = Math.max(0, Math.floor((now.getTime() - row.oldestAt.getTime()) / 1000));
     const previous = issues.get(row.stage);
     const selectedReason = previous && priority[previous.reason] > priority[reason] ? previous.reason : reason;
+    const healing = row.autoHeal && !role.ok ? "UNAVAILABLE" : row.autoHeal;
+    const autoHeal = previous?.autoHeal && (!healing || healingPriority[previous.autoHeal] > healingPriority[healing])
+      ? previous.autoHeal : healing;
     issues.set(row.stage, {
+      ...(autoHeal && (selectedReason === "OUTPUT_LIMIT" || selectedReason === "HISTORY_INCOMPLETE") ? { autoHeal } : {}),
       count: (previous?.count ?? 0) + count,
       oldestAgeSeconds: Math.max(previous?.oldestAgeSeconds ?? 0, oldestAgeSeconds),
       reason: selectedReason,
-      severity: row.stage === "INDEXING" || selectedReason === "RETRYING" || selectedReason === "STALLED" || selectedReason === "OUTPUT_LIMIT" ? "warn" : "bad",
+      severity: row.stage === "INDEXING" || selectedReason === "RETRYING" || selectedReason === "STALLED" || selectedReason === "OUTPUT_LIMIT" || selectedReason === "HISTORY_INCOMPLETE" ? "warn" : "bad",
       stage: row.stage
     });
   }

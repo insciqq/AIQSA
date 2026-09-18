@@ -14,12 +14,13 @@ type Draft = Readonly<{
   effort: string;
   mcpTools: string;
   outputTokens: string;
+  outputMode: "model" | "manual";
   modelId: string;
   rounds: string;
   timeout: string;
 }>;
 
-const emptyDraft: Draft = { calls: "", effort: "", mcpTools: "", outputTokens: "", modelId: "", rounds: "", timeout: "" };
+const emptyDraft: Draft = { calls: "", effort: "", mcpTools: "", outputTokens: "", outputMode: "model", modelId: "", rounds: "", timeout: "" };
 
 function draftFor(catalog: AdminModelPolicyCatalog | null): Draft {
   if (!catalog) return emptyDraft;
@@ -27,10 +28,11 @@ function draftFor(catalog: AdminModelPolicyCatalog | null): Draft {
     calls: String(catalog.policy.maxToolCalls),
     effort: catalog.policy.reasoningEffort ?? "",
     mcpTools: String(catalog.policy.maxMcpToolsPerDiscovery),
-    outputTokens: String(catalog.policy.mcpAutoDiscoveryMaxOutputTokens),
+    outputTokens: String(catalog.policy.mcpAutoDiscoveryMaxOutputTokens ?? MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.fallbackTokens),
+    outputMode: catalog.policy.mcpAutoDiscoveryMaxOutputTokens === null ? "model" : "manual",
     modelId: catalog.policy.defaultModel?.id ?? "",
     rounds: String(catalog.policy.maxToolRounds),
-    timeout: String(catalog.policy.mcpAutoDiscoveryTimeoutSeconds)
+    timeout: catalog.policy.mcpAutoDiscoveryTimeoutSeconds === null ? "" : String(catalog.policy.mcpAutoDiscoveryTimeoutSeconds)
   };
 }
 
@@ -104,12 +106,12 @@ export function AdminChatDefaultsCard({
     timeout: positiveSafeInteger(draft.timeout)
   };
   const limitsValid = parsed.calls !== null && parsed.rounds !== null &&
-    isMcpAutoDiscoveryOutputTokens(parsed.outputTokens) &&
+    (draft.outputMode === "model" || isMcpAutoDiscoveryOutputTokens(parsed.outputTokens)) &&
     parsed.mcpTools !== null && parsed.mcpTools <= MCP_RUN_PLAN_LIMITS.maxTools &&
-    parsed.timeout !== null && parsed.timeout >= MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds &&
-    parsed.timeout <= MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds;
+    (draft.timeout === "" || parsed.timeout !== null && parsed.timeout >= MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds &&
+    parsed.timeout <= MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds);
   const modelChanged = draft.modelId !== current.modelId || draft.effort !== current.effort;
-  const limitsChanged = (["calls", "mcpTools", "outputTokens", "rounds", "timeout"] as const)
+  const limitsChanged = (["calls", "mcpTools", "outputMode", "outputTokens", "rounds", "timeout"] as const)
     .filter((key) => draft[key] !== current[key]).length;
   const changed = (modelChanged ? 1 : 0) + limitsChanged;
   const canSave = Boolean(catalog) && changed > 0 && effortValid && limitsValid && !busy;
@@ -128,8 +130,8 @@ export function AdminChatDefaultsCard({
         maxMcpToolsPerDiscovery: parsed.mcpTools!,
         maxToolCalls: parsed.calls!,
         maxToolRounds: parsed.rounds!,
-        mcpAutoDiscoveryTimeoutSeconds: parsed.timeout!,
-        mcpAutoDiscoveryMaxOutputTokens: parsed.outputTokens!
+        mcpAutoDiscoveryTimeoutSeconds: draft.timeout === "" ? null : parsed.timeout!,
+        mcpAutoDiscoveryMaxOutputTokens: draft.outputMode === "model" ? null : parsed.outputTokens!
       } : {})
     });
     if (message) setFormError(message);
@@ -165,6 +167,7 @@ export function AdminChatDefaultsCard({
           setEdits((previous) => ({ ...previous, [key]: value }));
         }}
         step={1}
+        placeholder={key === "timeout" ? "Auto" : undefined}
         type="number"
         value={draft[key]}
       />
@@ -241,21 +244,34 @@ export function AdminChatDefaultsCard({
               {limitField("rounds", "Rounds", { width: "w-16" })}
               {limitField("calls", "Calls", { width: "w-16" })}
               {limitField("mcpTools", "MCP Auto tools", { max: MCP_RUN_PLAN_LIMITS.maxTools, width: "w-16" })}
-              {limitField("outputTokens", "MCP Auto output tokens", {
+              <label className="flex items-center gap-2 text-xs text-ink-muted">
+                <span>MCP output budget</span>
+                <select aria-label="MCP output budget" className={compactSelectClass}
+                  disabled={!catalog || busy} value={draft.outputMode}
+                  onChange={(event) => {
+                    const outputMode = event.currentTarget.value === "model" ? "model" : "manual";
+                    setEdits((previous) => ({ ...previous, outputMode }));
+                  }}>
+                  <option value="model">Auto · System Model</option>
+                  <option value="manual">Custom limit</option>
+                </select>
+              </label>
+              {draft.outputMode === "manual" ? limitField("outputTokens", "MCP Auto output tokens", {
                 max: MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.maxTokens,
                 min: MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.minTokens,
                 width: "w-24"
-              })}
-              {limitField("timeout", "Auto timeout", {
+              }) : null}
+              {limitField("timeout", "Discovery timeout", {
                 max: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds,
                 min: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds,
                 suffix: "s",
-                width: "w-[4.5rem]"
+                width: "w-20"
               })}
             </div>
             <p className="text-xs leading-5 text-ink-muted">
-              MCP Auto output tokens (1024–65,536, default 8192) cover the System Model’s hidden reasoning and JSON tool selection.
-              Larger allowances can increase request time and cost. This does not change the chat answer limit.
+              Auto uses the System Model’s output setting and available context for hidden reasoning and JSON tool selection.
+              Without an output setting or a known model limit, Auto allows up to 65,536 tokens. Larger allowances can increase time and cost.
+              Leave discovery timeout blank to use the System Model’s response timeout. Tool calls use their MCP server’s timeout.
             </p>
           </div>
         <div className="flex flex-wrap items-center gap-2 rounded-b-[12px] border-t border-trace-subtle bg-workspace-rail/40 px-5 py-3">

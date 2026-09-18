@@ -48,7 +48,7 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
     (input.standaloneWebSearch !== undefined && typeof input.standaloneWebSearch !== "boolean") ||
     (input.aiqsaSearch !== undefined && typeof input.aiqsaSearch !== "boolean") ||
     (input.nativeWebSearch !== undefined && typeof input.nativeWebSearch !== "boolean") ||
-    !Number.isSafeInteger(input.mcpTimeoutSeconds) || input.mcpTimeoutSeconds < 1 || input.mcpTimeoutSeconds > 3600 ||
+    !Number.isSafeInteger(input.mcpTimeoutSeconds) || input.mcpTimeoutSeconds < 1 ||
     !["auto", "all", "off"].includes(input.mcpMode) ||
     Buffer.byteLength(input.developerInstructions) > 256 * 1024 ||
     (input.reasoningEffort !== undefined && !["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(input.reasoningEffort))) {

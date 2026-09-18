@@ -30,6 +30,8 @@ import {
 export const MEMORY_FACT_VERIFICATION_MAX_OUTPUT_TOKENS = 800;
 
 export type MemoryFactDecisionProviderEvidence = Readonly<{
+  memorySnapshotVersion?: 3 | 4;
+  generationBudget?: import("../../../providers/modelOutputAllowance").ModelGenerationBudget | null;
   connectionId: string;
   credentialId: string;
   credentialVersionId: string;
@@ -146,6 +148,8 @@ export function memoryFactDecisionProviderEvidence(
   ) throw new Error("memory_fact_decision_binding_invalid");
   return {
     connectionId: provider.connectionId,
+    ...(snapshot.version === 4 ? { memorySnapshotVersion: 4 as const, generationBudget: snapshot.generationBudget } :
+      snapshot.version === 3 ? { memorySnapshotVersion: 3 as const } : {}),
     credentialId: provider.credentialId,
     credentialVersionId: provider.credentialVersionId,
     executionSnapshot: provider,

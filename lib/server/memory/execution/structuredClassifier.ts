@@ -8,7 +8,7 @@ import type { ProviderConnectionConfiguration } from "../../providers/providerCo
 import type {
   ProviderStructuredOutputRequest
 } from "../../providers/structuredOutput";
-import { supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
+import { StructuredOutputDecodeError, supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
 import { memoryRoleRequiresForcedToolCall } from "./roles";
 import {
   memoryExecutionNow,
@@ -32,7 +32,7 @@ import {
   type MemoryTransaction
 } from "../persistence/transaction";
 import { MEMORY_ADMISSION_MAX_TIMEOUT_MS } from "../admissionDeadline";
-import { memoryHistoryOutputRequest } from "./historyOutputBudget";
+import { memoryStructuredOutputRequest } from "./outputBudget";
 
 export const MEMORY_STRUCTURED_OUTPUT_PROVIDER_TIMEOUT_MS =
   MEMORY_ADMISSION_MAX_TIMEOUT_MS;
@@ -64,6 +64,7 @@ export type GovernedMemoryStructuredOutput<Value> = Readonly<{
 
 export class MemoryStructuredOutputProviderError extends Error {
   readonly outputLimitExceeded: boolean;
+  readonly outputInvalid: boolean;
   constructor(
     readonly providerResponseId: string | null,
     readonly usage: ModelRunUsage | null,
@@ -73,6 +74,7 @@ export class MemoryStructuredOutputProviderError extends Error {
     this.name = "MemoryStructuredOutputProviderError";
     this.outputLimitExceeded = options.cause instanceof Error &&
       "code" in options.cause && options.cause.code === "structured_output_output_limit_exceeded";
+    this.outputInvalid = options.cause instanceof StructuredOutputDecodeError;
   }
 }
 
@@ -115,7 +117,7 @@ export function createAcceptedMemoryStructuredOutputProvider(
       let providerResponseId: string | null = null;
       let usage: ModelRunUsage | null = null;
       try {
-        const admittedRequest = memoryHistoryOutputRequest(snapshot, request);
+        const admittedRequest = memoryStructuredOutputRequest(snapshot, request);
         const output = await execute(
           snapshot.providerExecutionSnapshot,
           {
@@ -210,6 +212,7 @@ export async function executeGovernedMemoryStructuredOutput<Value>(input: Readon
       errorCode: input.signal.aborted
         ? "memory_classifier_cancelled"
         : failure?.outputLimitExceeded ? "memory_classifier_output_limit_exceeded"
+          : failure?.outputInvalid ? "memory_classifier_output_invalid"
           : "memory_classifier_provider_unavailable",
       providerResponseId: failure?.providerResponseId ?? null,
       state: input.signal.aborted ? "CANCELLED" : "FAILED",

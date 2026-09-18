@@ -3,6 +3,7 @@ export const MCP_DISCOVERY_FAILURE_MESSAGES = {
   mcp_router_cancelled: "the request was cancelled",
   mcp_router_output_limit: "the System Model exhausted its output allowance",
   mcp_router_model_output_limit: "the configured output allowance exceeds the System Model's limit",
+  mcp_router_context_limit: "the System Model has no output space left after the tool catalog and context",
   mcp_router_timeout: "the System Model did not finish before the deadline",
   mcp_router_credential_unavailable: "the System Model's credential is unavailable",
   mcp_router_output_invalid: "the System Model returned an invalid tool selection",

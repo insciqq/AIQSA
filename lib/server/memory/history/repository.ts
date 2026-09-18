@@ -2639,7 +2639,7 @@ async function applyPlan(
     throw new MemoryCoordinatorError("memory_history_plan_stale", true);
   }
   const currentChunks = await tx.memoryRecallChunk.findMany({
-    select: { id: true, state: true },
+    select: { chunkOrdinal: true, id: true, state: true },
     where: {
       chatId: claim.chatId,
       state: { in: ["ACTIVE", "SUPPRESSED"] },
@@ -2748,6 +2748,19 @@ async function applyPlan(
       }
     });
   }
+  // Release every moving slot before restoring the new order. These rows keep
+  // their accepted source identities; the locked transaction never publishes
+  // an intermediate projection. Retired rows do not own a live ordinal slot.
+  const desiredOrdinals = new Map(plan.chunks.map((chunk) => [chunk.id, chunk.ordinal]));
+  const reorderedIds = new Set(currentChunks.flatMap((chunk) =>
+    desiredOrdinals.has(chunk.id) && desiredOrdinals.get(chunk.id) !== chunk.chunkOrdinal
+      ? [chunk.id] : []));
+  if (reorderedIds.size > 0) {
+    await tx.memoryRecallChunk.updateMany({
+      data: { invalidatedAt: now, state: "INVALIDATED" },
+      where: { id: { in: [...reorderedIds] }, userId: claim.userId }
+    });
+  }
   const retainedEntries = plan.chunks.length === 0
     ? []
     : await tx.memorySearchEntry.findMany({
@@ -2775,7 +2788,7 @@ async function applyPlan(
         retainedEntry.safetyIdentitySnapshot !== expected.safetyIdentitySnapshot ||
         retainedEntry.sourceIdentitySnapshot !== expected.sourceIdentitySnapshot ||
         retainedEntry.suppressionIdentitySnapshot !== expected.suppressionIdentitySnapshot;
-    if (!rebuilt.has(chunk.id) && !searchArtifactNeedsRepair) continue;
+    if (!rebuilt.has(chunk.id) && !reorderedIds.has(chunk.id) && !searchArtifactNeedsRepair) continue;
     const entry = await persistChunk(tx, activeIndex, plan, chunk);
     if (entry) {
       await enqueueChunkEmbedding(tx, settings, entry, plan.resultHash);

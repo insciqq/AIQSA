@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunUsage } from "../../../domain/modelRunEvents";
 import type { MemorySecretFreeExecutionSnapshot } from "./snapshot";
+import { StructuredOutputDecodeError } from "../../providers/structuredOutput";
 import {
   createAcceptedMemoryStructuredOutputProvider,
   memoryReportedUsage,
@@ -13,7 +14,11 @@ vi.mock("../../providerRuntime/structuredOutputExecutor", () => ({
 }));
 
 const snapshot = {
-  providerExecutionSnapshot: { model: { defaultParams: {} } }
+  version: 4,
+  generationBudget: { version: 1, contextWindow: null, maxOutputTokens: 65536, timeoutMs: 300000 },
+  providerExecutionSnapshot: { model: { defaultParams: {}, capabilities: {
+    reasoning: false, structuredOutput: true, vision: false, pdf: false, nativePdfInput: false, nativeSearch: false
+  } } }
 } as MemorySecretFreeExecutionSnapshot;
 const request = {
   maxOutputTokens: 64,
@@ -26,6 +31,19 @@ const request = {
 beforeEach(() => { execute.mockReset(); });
 
 describe("Memory structured classifier usage", () => {
+  it("distinguishes a received malformed output from an unavailable provider", async () => {
+    execute.mockImplementation(async (_snapshot, _request, options: { onUsage(value: ModelRunUsage): void }) => {
+      options.onUsage({ inputTokens: 12, outputTokens: 8, totalTokens: 20 });
+      throw new StructuredOutputDecodeError("invalid_json");
+    });
+    await expect(createAcceptedMemoryStructuredOutputProvider({} as never)
+      .run(snapshot, request, new AbortController().signal)).rejects.toMatchObject({
+        outputInvalid: true, outputLimitExceeded: false,
+        usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 }
+      });
+    expect(new MemoryStructuredOutputProviderError(null, null, { cause: new Error("structured_output_invalid") }).outputInvalid).toBe(false);
+  });
+
   it("keeps complete reported totals complete when optional breakdowns are absent", () => {
     expect(memoryReportedUsage({ inputTokens: 10, outputTokens: 0, totalTokens: 10 })).toMatchObject({
       completeness: "COMPLETE", inputTokens: 10, outputTokens: 0, totalTokens: 10,

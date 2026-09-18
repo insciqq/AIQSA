@@ -103,6 +103,7 @@ async function fixture(run: (data: { userId: string; chatId: string; leafId: str
 function service(deps: Parameters<typeof createChatContinuationRepository>[1] = {}) {
   const repository = createChatContinuationRepository(prisma, deps);
   const execute = vi.fn<Parameters<typeof createChatContinuationService>[0]["execute"]>(async (_role, _request, options) => {
+    await options.beforeDispatch?.();
     options.onUsage?.({ inputTokens: 50, outputTokens: 12, reasoningTokens: 0, totalTokens: 62 });
     return { summary: "## Goal\nRelease a small feature.\n## Decisions\nKeep find_tools unchanged." };
   });
@@ -110,7 +111,9 @@ function service(deps: Parameters<typeof createChatContinuationRepository>[1] = 
     resolveSystemModel: async () => ({ ok: true, credentialScope: "installation", policyVersion: 1,
       providerModelId: "summary-test-model", reasoningEffort: null,
       role: { modelConfiguration: { capabilities: { contextWindow: 32000, structuredOutput: true } },
-        snapshot: { providerFamily: "fake", model: { upstreamModelId: "fake-summary" } } } as unknown as ProviderAdmissionRole })
+        snapshot: { providerFamily: "fake", connection: { responseTimeoutMs: 300000 },
+          model: { adapterKind: "fake", capabilities: { contextWindow: 32000, maxOutputTokens: 8192, structuredOutput: true },
+            defaultParams: {}, upstreamModelId: "fake-summary" } } } as unknown as ProviderAdmissionRole })
   }) };
 }
 
@@ -150,7 +153,7 @@ it.each([
       const source = await f.repository.loadSource(input);
       const first = await f.repository.claim(source, input.requestId, input.modelSelection);
       if (first.kind !== "claimed") throw new Error("claim missing");
-      expect(await f.repository.claim(source, input.requestId, { provider: "changed", modelId: original })).toEqual({ kind: "result", result: { status: "running" } });
+      expect(await f.repository.claim(source, input.requestId, { provider: "changed", modelId: original })).toEqual({ kind: "result", result: { status: "running", progress: { completedParts: 0, stage: "preparing" } } });
       expect(await prisma.chatContinuation.findUnique({ where: { id: first.claim.id } })).toMatchObject({
         requestedProviderModelId: selectionState === "exposed" ? selected : null
       });
@@ -214,7 +217,7 @@ it("cleans an archive when a process dies between capture and destination creati
   const seed = await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { continuationId: claim.claim.id } });
   expect(seed.status).toBe("READY");
   const stale = new Date(Date.now() - 240_000);
-  await prisma.chatContinuation.update({ where: { id: claim.claim.id }, data: { updatedAt: stale } });
+  await prisma.chatContinuation.update({ where: { id: claim.claim.id }, data: { updatedAt: stale, leaseExpiresAt: stale } });
   await prisma.chatContinuationWorkspaceSeed.update({ where: { id: seed.id }, data: { updatedAt: stale } });
   await runWorkspaceMaintenance({ config: w.config, prisma, runtime: w.runtime });
   expect(await prisma.chatContinuationWorkspaceSeed.findUnique({ where: { id: seed.id } })).toMatchObject({ status: "ABANDONED" });
@@ -380,7 +383,7 @@ it("never replays a stopped attempt automatically and preserves deleted-child to
   const source = await f.repository.loadSource(input);
   const claimed = await f.repository.claim(source, input.requestId);
   if (claimed.kind !== "claimed") throw new Error("claim missing");
-  await prisma.chatContinuation.update({ where: { id: claimed.claim.id }, data: { updatedAt: new Date(Date.now() - 240000) } });
+  await prisma.chatContinuation.update({ where: { id: claimed.claim.id }, data: { updatedAt: new Date(Date.now() - 240000), leaseExpiresAt: new Date(Date.now() - 60000) } });
   expect(await f.repository.claim(source, input.requestId)).toEqual({ kind: "failed" });
   expect((await prisma.chatContinuation.findUnique({ where: { id: claimed.claim.id } }))?.status).toBe("failed");
   await expect(f.continueChat(input)).rejects.toMatchObject({ code: "chat_summary_failed" });
@@ -423,3 +426,46 @@ it("keeps temporary continuations temporary with a deletion deadline and no Work
   });
   expect(await prisma.memoryDeletionOutbox.count({ where: { userId, targetId: result.chatId, operation: "TEMPORARY_DELETE" } })).toBe(1);
 }, "TEMPORARY"));
+
+it("renews a long-running continuation, reuses settled parts, fences cancellation and never replays unknown dispatch", () => fixture(async ({ userId, chatId, leafId }) => {
+  const repository = createChatContinuationRepository(prisma);
+  const input = { userId, chatId, expectedLeafMessageId: leafId, requestId: randomUUID() };
+  const source = await repository.loadSource(input);
+  const accepted = await repository.claim(source, input.requestId);
+  if (accepted.kind !== "claimed") throw new Error("claim missing");
+  const claim = accepted.claim;
+  await prisma.chatContinuation.update({ where: { id: claim.id }, data: { updatedAt: new Date(Date.now() - 3600000) } });
+  expect(await repository.heartbeat!(claim, { completedParts: 3, stage: "combining" })).toBe(true);
+  expect(await repository.claim(source, input.requestId)).toMatchObject({ kind: "result", result: {
+    status: "running", progress: { completedParts: 3, stage: "combining" }
+  } });
+  const settled = "a".repeat(64), unknown = "b".repeat(64);
+  await repository.beginStep!(claim, settled);
+  await repository.settleStep!(claim, settled, { summary: "Settled fixture summary." });
+  expect(await repository.loadStep!(claim, settled)).toBe("Settled fixture summary.");
+  await repository.beginStep!(claim, unknown);
+  await expect(repository.loadStep!(claim, unknown)).rejects.toMatchObject({ code: "chat_summary_outcome_unknown" });
+  const { cancelChatContinuation } = await import("./continuationRepository");
+  await cancelChatContinuation(prisma, { chatId, userId, requestId: input.requestId });
+  expect(await repository.heartbeat!(claim, { completedParts: 3, stage: "combining" })).toBe(false);
+  await expect(repository.complete(source, claim, "Late output")).rejects.toBeInstanceOf(ChatContinuationError);
+  expect(await prisma.chatContinuation.findUniqueOrThrow({ where: { id: claim.id } })).toMatchObject({ newChatId: null });
+}));
+
+it("rolls back the destination if cancellation wins after the completion preflight", () => fixture(async ({ userId, chatId, leafId }) => {
+  const repository = createChatContinuationRepository(prisma);
+  const input = { userId, chatId, expectedLeafMessageId: leafId, requestId: randomUUID() };
+  const source = await repository.loadSource(input);
+  const accepted = await repository.claim(source, input.requestId);
+  if (accepted.kind !== "claimed") throw new Error("claim missing");
+  const { cancelChatContinuation } = await import("./continuationRepository");
+  const client = prisma.$extends({ query: { chat: { async create({ args, query }) {
+    await cancelChatContinuation(prisma, input);
+    return query(args);
+  } } } });
+  const racing = createChatContinuationRepository(client as unknown as typeof prisma);
+  await expect(racing.complete(source, accepted.claim, "Late output")).rejects.toBeInstanceOf(ChatContinuationError);
+  expect(await prisma.chat.count({ where: { userId } })).toBe(1);
+  expect(await prisma.chatContinuation.findUniqueOrThrow({ where: { id: accepted.claim.id } }))
+    .toMatchObject({ newChatId: null, cancelRequestedAt: expect.any(Date) });
+}));

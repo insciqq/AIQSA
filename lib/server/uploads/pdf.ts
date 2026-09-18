@@ -7,6 +7,7 @@ import {
   DEFAULT_PDF_EXTRACTION_TIMEOUT_MS,
   DEFAULT_PDF_MAX_PAGES,
   getPdfExtractionConfig,
+  pdfExtractionTimeoutMs,
   PDF_WORKER_RESOURCE_LIMITS,
   type PdfExtractionConfig
 } from "./pdfConfig";
@@ -127,11 +128,7 @@ function normalizeOptions(options: PdfExtractionOptions): NormalizedPdfExtractio
         DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS
       ),
       maxPages: positiveIntegerAtMost(requested?.maxPages, defaults.maxPages, DEFAULT_PDF_MAX_PAGES),
-      timeoutMs: positiveIntegerAtMost(
-        requested?.timeoutMs,
-        defaults.timeoutMs,
-        DEFAULT_PDF_EXTRACTION_TIMEOUT_MS
-      ),
+      timeoutMs: pdfExtractionTimeoutMs(requested?.timeoutMs ?? defaults.timeoutMs),
       workerResourceLimits: PDF_WORKER_RESOURCE_LIMITS
     },
     createWorker: options.createWorker ?? ((source, workerOptions) => new Worker(source, workerOptions)),

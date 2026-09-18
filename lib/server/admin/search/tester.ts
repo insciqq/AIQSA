@@ -1,3 +1,5 @@
+import { admitModelGenerationBudget, modelOutputAllowance } from "../../providers/modelOutputAllowance";
+import type { ProviderAdapterKind } from "../../providers/providerConfiguration";
 import type { PrismaClient } from "@prisma/client";
 import {
   adminSearchExecutionLimits,
@@ -22,24 +24,29 @@ const connectivityQuery = "OpenAI official website";
 
 export function adminSearchProviderPolicy(input: Readonly<{
   capabilities: ProviderModelCapabilities;
+  adapterKind?: ProviderAdapterKind;
   defaultParams: Readonly<Record<string, unknown>>;
   draft: AdminSearchDraft;
   modelId: string;
   provider: string;
 }>): ProviderSearchPolicy {
+  const maxOutputTokens = modelOutputAllowance({ providerFamily: input.provider, model: {
+    adapterKind: input.adapterKind ?? "fake", capabilities: input.capabilities, defaultParams: { ...input.defaultParams },
+    upstreamModelId: input.modelId
+  } }, { query: connectivityQuery }, input.draft.maxOutputTokens);
   if (input.draft.protocol === "openrouter_perplexity_chat") {
     if (input.provider !== "openrouter") throw new Error("search_protocol_not_supported");
     return {
       controls: {
         maxOutputTokens: {
-          defaultValue: input.draft.maxOutputTokens,
+          defaultValue: maxOutputTokens,
           maxValue: adminSearchExecutionLimits.maxOutputTokens.maximum
         },
         temperature: { defaultValue: 0, maxValue: 2, minValue: 0, supported: true }
       },
       defaultParams: {
         ...input.defaultParams,
-        maxOutputTokens: input.draft.maxOutputTokens,
+        maxOutputTokens: maxOutputTokens,
         stream: false,
         temperature: 0
       },
@@ -53,7 +60,7 @@ export function adminSearchProviderPolicy(input: Readonly<{
       throw new Error("search_protocol_not_supported");
     }
     return {
-      maxOutputTokens: input.draft.maxOutputTokens,
+      maxOutputTokens: maxOutputTokens,
       modelCapabilities: input.capabilities,
       modelId: input.modelId,
       provider: input.provider,
@@ -64,7 +71,7 @@ export function adminSearchProviderPolicy(input: Readonly<{
   if (input.draft.protocol === "deepseek_responses_web_search") {
     if (input.provider !== "deepseek") throw new Error("search_protocol_not_supported");
     return {
-      maxOutputTokens: input.draft.maxOutputTokens,
+      maxOutputTokens: maxOutputTokens,
       modelCapabilities: input.capabilities,
       modelId: input.modelId,
       provider: "deepseek",
@@ -75,7 +82,7 @@ export function adminSearchProviderPolicy(input: Readonly<{
   if (input.draft.protocol === "anthropic_web_search") {
     if (input.provider !== "anthropic") throw new Error("search_protocol_not_supported");
     return {
-      maxOutputTokens: input.draft.maxOutputTokens,
+      maxOutputTokens: maxOutputTokens,
       modelCapabilities: input.capabilities,
       modelId: input.modelId,
       provider: "anthropic",
@@ -85,7 +92,7 @@ export function adminSearchProviderPolicy(input: Readonly<{
   }
   if (input.draft.protocol === "gemini_google_search" && input.provider === "gemini") {
     return {
-      maxOutputTokens: input.draft.maxOutputTokens,
+      maxOutputTokens: maxOutputTokens,
       modelCapabilities: input.capabilities,
       modelId: input.modelId,
       provider: "gemini",
@@ -158,6 +165,7 @@ export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester
       if (!validatedQuery.ok) throw new Error(validatedQuery.code);
       const searchPolicy = adminSearchProviderPolicy({
         capabilities: role.modelConfiguration.capabilities,
+        ...(role.snapshot.model.adapterKind !== "fake" ? { adapterKind: role.snapshot.model.adapterKind } : {}),
         defaultParams: role.modelConfiguration.defaultParams,
         draft,
         modelId: role.snapshot.model.upstreamModelId,
@@ -165,6 +173,7 @@ export function createAdminSearchTester(prisma: PrismaClient): AdminSearchTester
       });
       const searchRequest: ProviderSearchRequest = {
         correlationId: "search-admin-test",
+        generationBudget: admitModelGenerationBudget(role.snapshot, draft.maxOutputTokens),
         query: validatedQuery.query,
         searchPolicy,
         strategyId: searchPolicy.strategyId

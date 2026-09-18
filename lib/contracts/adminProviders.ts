@@ -297,6 +297,7 @@ export type AdminProviderModelRename = AdminProviderModelEditGuard & Readonly<{
 }>;
 
 export type AdminProviderModel = {
+  nativeRoutingAdoption?: import("./nativeRoutingAdoption").NativeRouteAdoptionStatus;
   activatedAt: string | null;
   activeConfig: AdminProviderModelConfiguration | null;
   activeVersion: number;

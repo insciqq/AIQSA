@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../../prisma";
 import { createFakeEmbeddingAdapter } from "@/tests/support/embeddings";
@@ -267,6 +268,13 @@ describe("Prisma Memory execution", () => {
         versions: VERSIONS
       });
       expect(first).toMatchObject({ replayed: false, state: "PENDING" });
+      const accepted = await prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: first.id } });
+      expect(accepted.secretFreeExecutionSnapshot).toMatchObject({ version: 4 });
+      // A restart after upgrading must reuse an admitted v2 binding unchanged.
+      const legacySnapshot = { ...(accepted.secretFreeExecutionSnapshot as Prisma.JsonObject), version: 2 };
+      await prisma.memoryExecutionBinding.update({
+        where: { id: first.id }, data: { secretFreeExecutionSnapshot: legacySnapshot }
+      });
       await expect(service.admission.bind(fixture.userId, {
         inputHash: "1".repeat(64),
         ordinal: 0,
@@ -274,6 +282,8 @@ describe("Prisma Memory execution", () => {
         role: "MEMORY_DOCUMENT_EMBED",
         versions: VERSIONS
       })).resolves.toMatchObject({ id: first.id, replayed: true, state: "PENDING" });
+      expect((await prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: first.id } }))
+        .secretFreeExecutionSnapshot).toEqual(legacySnapshot);
 
       // Simulate a small backwards wall-clock adjustment between binding and
       // start. Execution timestamps must remain monotonic relative to their
@@ -633,6 +643,13 @@ describe("Prisma Memory execution", () => {
         state: "SUCCEEDED",
         usage: completeUsage(4)
       });
+      // Earlier global route inventories may differ for unrelated roles. The
+      // selected source and its linked call still have the same exact target.
+      const acceptedSource = await prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: selectedSource.id } });
+      await prisma.memoryExecutionBinding.update({ where: { id: selectedSource.id }, data: {
+        secretFreeExecutionSnapshot: { ...(acceptedSource.secretFreeExecutionSnapshot as Prisma.JsonObject),
+          acceptedUtilityEgressFingerprint: "f".repeat(64) }
+      } });
       const selected = await service.admission.bind(fixture.userId, {
         inputHash: "f".repeat(64),
         ordinal: 1,

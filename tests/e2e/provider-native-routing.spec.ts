@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { fixtureCheck, fixtureConnection, fixtureCredential, fixtureModel } from "../../components/admin/providers/providerFixtures";
 import type { AdminProviderModelConfiguration } from "../../lib/contracts/adminProviders";
 import { signInWithLocalToken } from "./support/localAuth";
-import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
+import { expectCenterUnobscured, expectNoHorizontalOverflow, expectTouchSafe } from "./support/layoutAssertions";
 
 for (const kind of ["answer", "image"] as const) test(`${kind} native, automatic and custom routes survive save and refresh across orientations`, async ({ page }, testInfo) => {
   test.setTimeout(120_000);
@@ -23,6 +23,10 @@ for (const kind of ["answer", "image"] as const) test(`${kind} native, automatic
       method: "tiny_generation", detail: "ok", selectedProviders: [], upstreamModelId: configuration.upstreamModelId
     } })] });
   const mutations: AdminProviderModelConfiguration[] = [];
+  connection.models[0]!.nativeRoutingAdoption = { reason: "native_incompatible", diagnostic: {
+    version: 1, stage: "modelAccess", code: "http_error", servingMode: "automatic", provider: nativeTag, httpStatus: 404,
+    missing: ["modelAccess"], previouslyUnverified: [kind === "image" ? "imageEditing" : "directPdf"]
+  } };
   let nativeAvailable = true;
   await page.route("**/api/admin/providers**", async (route) => {
     if (route.request().method() === "GET") return route.fulfill({ json: { connections: [connection] } });
@@ -37,7 +41,7 @@ for (const kind of ["answer", "image"] as const) test(`${kind} native, automatic
     const current = connection.models[0]!;
     expect(body.expectedDraftVersion).toBe(current.draftVersion);
     mutations.push(body.configuration);
-    const next = { ...current, activeConfig: body.configuration, draftConfig: body.configuration,
+    const next = { ...current, nativeRoutingAdoption: undefined, activeConfig: body.configuration, draftConfig: body.configuration,
       activeVersion: current.activeVersion + 1, draftVersion: current.draftVersion + 1 };
     connection = { ...connection, models: [next] };
     return route.fulfill({ json: { receipt: { connectionId: id, modelId: current.id, displayName: current.displayName,
@@ -54,6 +58,14 @@ for (const kind of ["answer", "image"] as const) test(`${kind} native, automatic
     if (await find.isVisible()) await find.click();
   };
   await open();
+  const adoptionSummary = sheet.locator("summary", { hasText: "Automatic routing kept during native setup" });
+  const adoptionDetails = adoptionSummary.locator("..");
+  await expect(adoptionDetails).not.toHaveAttribute("open");
+  await adoptionSummary.focus();
+  await adoptionSummary.press("Enter");
+  await expect(adoptionDetails).toContainText("HTTP 404");
+  await expect(adoptionDetails).toContainText("The saved route and model checks were kept");
+  expect(mutations).toHaveLength(0);
   const native = sheet.getByRole("radio", { name: /Native · recommended/ });
   await expect(native).toBeEnabled();
   await sheet.getByText("Native · recommended", { exact: true }).click();
@@ -68,6 +80,15 @@ for (const kind of ["answer", "image"] as const) test(`${kind} native, automatic
       await expect(native).toBeChecked();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: testInfo.outputPath(`native-${theme}-${viewport.width}x${viewport.height}.png`) });
+      await adoptionSummary.scrollIntoViewIfNeeded();
+      await adoptionSummary.focus();
+      await expect(adoptionSummary).toBeInViewport();
+      await expectTouchSafe(adoptionSummary);
+      const lastExplanation = adoptionDetails.locator("p").last();
+      await lastExplanation.scrollIntoViewIfNeeded();
+      await expectCenterUnobscured(lastExplanation);
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: testInfo.outputPath(`native-retained-${theme}-${viewport.width}x${viewport.height}.png`) });
       await sheet.getByRole("button", { name: "Test & Save", exact: true }).scrollIntoViewIfNeeded();
       await expect(sheet.getByRole("button", { name: "Test & Save", exact: true })).toBeInViewport();
     }

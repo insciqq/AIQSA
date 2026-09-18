@@ -32,7 +32,7 @@ afterAll(() => prisma.$disconnect());
 describe("durable external MCP operations", () => {
   it("admits dispatch before I/O and permits only one terminal writer", async () => {
     await fixture(async ({ authority, store }) => {
-      const receipt = await store.recordDispatch({ ...authority, resourcePath: "/mcp/hub", toolId: "fixture-tool", toolVersion: "a".repeat(64) });
+      const receipt = await store.recordDispatch({ ...authority, resourcePath: "/mcp/hub", toolId: "fixture-tool", timeoutMs: 300_000, toolVersion: "a".repeat(64) });
       const accepted = await prisma.mcpHubDispatch.findFirstOrThrow({ where: { userId: authority.userId } });
       expect(accepted).toMatchObject({ state: "DISPATCHED", completedAt: null, revision: 0 });
       const results = await Promise.allSettled([receipt.settle("COMPLETE"), receipt.settle("ERROR", "tool_unavailable")]);
@@ -43,7 +43,7 @@ describe("durable external MCP operations", () => {
 
   it("creates exactly one accounting event with unknown fields and no conversation artifacts", async () => {
     await fixture(async ({ authority, store }) => {
-      const receipt = await store.recordDiscoveryAttempt(authority, role);
+      const receipt = await store.recordDiscoveryAttempt(authority, role, 65536, 300_000, 1000);
       const where = { userId: authority.userId };
       expect(await prisma.usageEvent.findFirstOrThrow({ where })).toMatchObject({
         mcpHubDiscovery: true, usageCompleteness: "UNAVAILABLE", inputTokens: null, totalTokens: null, estimatedCostMicros: null,
@@ -64,7 +64,7 @@ describe("durable external MCP operations", () => {
 
   it("recovers expired dispatch as unknown while preserving live work and late reported usage", async () => {
     await fixture(async ({ authority, store }) => {
-      const receipt = await store.recordDiscoveryAttempt(authority, role);
+      const receipt = await store.recordDiscoveryAttempt(authority, role, 65536, 300_000, 1000);
       const now = new Date();
       const discovery = await prisma.mcpHubDiscoveryAttempt.findFirstOrThrow({ where: { userId: authority.userId } });
       await prisma.mcpHubDiscoveryAttempt.update({ where: { id: discovery.id }, data: { expiresAt: new Date(now.getTime() - 1_000) } });
@@ -83,7 +83,7 @@ describe("durable external MCP operations", () => {
 
   it("retires old receipts without erasing accounted cost, then cascades owner deletion", async () => {
     await fixture(async ({ authority, store }) => {
-      const receipt = await store.recordDiscoveryAttempt(authority, role);
+      const receipt = await store.recordDiscoveryAttempt(authority, role, 65536, 300_000, 1000);
       await receipt.settle({ state: "COMPLETE", usage: { inputTokens: 8, outputTokens: 2, reasoningTokens: 0, totalTokens: 10 } });
       const old = new Date("2000-01-01T00:00:00Z");
       await prisma.mcpHubDiscoveryAttempt.updateMany({ where: { userId: authority.userId }, data: { createdAt: old } });

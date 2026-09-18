@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { AGENT_REQUEST_MAX_BYTES } from "./config";
+import { getMcpRequestMaxBytes, mcpRequestSizeFailure } from "../mcp/responseLimits";
 
 export const AGENT_GATEWAY_PORT = 4311;
 export const AGENT_GATEWAY_ORIGIN = `http://host.microsandbox.internal:${AGENT_GATEWAY_PORT}`;
@@ -26,10 +27,14 @@ export function createAgentRelay(appOrigin: string, fetchFn: typeof fetch = fetc
     try {
       const chunks: Buffer[] = [];
       let total = 0;
+      const maxBytes = path === "/mcp" ? getMcpRequestMaxBytes() : AGENT_REQUEST_MAX_BYTES;
       for await (const chunk of request) {
         total += chunk.length;
-        if (total > (path === "/mcp" ? 128 * 1024 : AGENT_REQUEST_MAX_BYTES)) {
-          response.writeHead(413).end(); return;
+        if (total > maxBytes) {
+          response.writeHead(413, { "content-type": "application/json", "cache-control": "no-store" })
+            .end(JSON.stringify(path === "/mcp" ? mcpRequestSizeFailure(total, maxBytes) :
+              { code: "agent_request_too_large", maxBytes, observedBytes: String(total) }));
+          return;
         }
         chunks.push(Buffer.from(chunk));
       }
@@ -39,7 +44,7 @@ export function createAgentRelay(appOrigin: string, fetchFn: typeof fetch = fetc
       if (typeof protocol === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(protocol)) headers.set("mcp-protocol-version", protocol);
       const upstream = await fetchFn(`${origin.origin}/api/internal/agent${path}`, {
         method: "POST", headers, body: Buffer.concat(chunks), redirect: "error",
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(7_200_000)])
+        signal: path === "/mcp" ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(7_200_000)])
       });
       response.writeHead(upstream.status, {
         "content-type": upstream.headers.get("content-type") ?? "application/json",
