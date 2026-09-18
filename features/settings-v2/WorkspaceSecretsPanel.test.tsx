@@ -115,7 +115,7 @@ describe("WorkspaceSecretsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
     await screen.findByText("No saved Workspace secrets.");
     expect(request).toHaveBeenLastCalledWith({ action: "delete", id: renamed.id, expectedVersionId: renamed.versionId });
-    expect(screen.getByRole("button", { name: "Add secret" })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add secret" })).toHaveFocus());
   });
 
   it("uploads original binary bytes and offers private-key paste/upload without a host field", async () => {
