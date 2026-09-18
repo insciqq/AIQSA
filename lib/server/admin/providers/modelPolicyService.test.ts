@@ -52,6 +52,20 @@ function activeModel(overrides: Record<string, unknown> = {}) {
 }
 
 describe("administrator model policy service", () => {
+  it.each([null, 32768])("persists Auto or a custom MCP allowance without coercing Auto to zero: %s", async (mcpAutoDiscoveryMaxOutputTokens) => {
+    const update = vi.fn();
+    const tx = { $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]), modelPolicy: { update } };
+    const prisma = { $transaction: async (run: (store: typeof tx) => Promise<void>) => run(tx) };
+    await createAdminModelPolicyService(prisma as never).update({
+      expectedVersion: 3, providerModelId: null, reasoningEffort: null,
+      mcpAutoDiscoveryMaxOutputTokens, mcpAutoDiscoveryTimeoutSeconds: 60,
+      maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8, userId: "admin-1"
+    });
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      mcpAutoDiscoveryMaxOutputTokens: mcpAutoDiscoveryMaxOutputTokens === null ? null : BigInt(mcpAutoDiscoveryMaxOutputTokens)
+    }) }));
+  });
+
   it.each(["high", "max", null])("saves supported reasoning or Provider default: %s", async (reasoningEffort) => {
     const queryRaw = vi.fn()
       .mockResolvedValueOnce([{ version: 3 }])

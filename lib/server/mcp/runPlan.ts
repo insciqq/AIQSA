@@ -1,4 +1,5 @@
 import { hashCanonicalMcpValue } from "./definitions";
+import type { McpRuntimeTimeouts } from "../../contracts/mcp";
 import {
   isMcpReadinessStartable,
   MCP_RUN_PLAN_LIMITS,
@@ -12,6 +13,7 @@ import type { McpRuntimeInventoryTool } from "./runtimeCoordinator";
 const INVENTORY_FRESH_MS = 5 * 60_000;
 
 export type McpRunPlanRecord = {
+  runtimeTimeouts?: McpRuntimeTimeouts;
   catalogTools?: McpToolInventoryEntry[];
   credentialSources: McpCredentialSource[];
   enabled: boolean;
@@ -52,6 +54,7 @@ export type McpCapabilityCatalogTool = {
 };
 
 export type McpCapabilityCatalogServer = {
+  runtimeTimeouts?: McpRuntimeTimeouts;
   description: string;
   instructions?: string;
   namespace: string;
@@ -83,6 +86,7 @@ export type McpDiscoveryState = {
 
 export type McpRunPlanSnapshot = {
   servers: {
+    runtimeTimeouts?: McpRuntimeTimeouts;
     credentialSources?: McpCredentialSource[];
     externalAccountLabel?: string | null;
     fingerprint: string;
@@ -211,6 +215,7 @@ export function buildMcpCapabilityCatalog(
     servers: records
       .map((record) => ({
         description: record.serverDescription ?? "",
+        ...(record.runtimeTimeouts ? { runtimeTimeouts: record.runtimeTimeouts } : {}),
         instructions: record.serverInstructions ?? "",
         namespace: record.namespace,
         revisionId: record.revisionId,
@@ -303,6 +308,7 @@ export function buildMcpRunPlan(
       serverId: record.serverId
     });
     servers.push({
+      ...(record.runtimeTimeouts ? { runtimeTimeouts: record.runtimeTimeouts } : {}),
       credentialSources: [...record.credentialSources],
       externalAccountLabel: record.externalAccountLabel,
       fingerprint: record.fingerprint!,

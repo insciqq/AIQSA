@@ -3,6 +3,7 @@ import { prisma } from "../../prisma";
 import { createPrismaMemoryEmbeddingHandler } from
   "../embedding/compositeHandler";
 import { createPrismaMemoryHistoryIndexHandler } from "../history/handler";
+import { autoHealIncompleteMemoryHistory } from "../history/autoHeal";
 import { ensureDefaultMemoryPurgeHandlerRegistered } from "../purge/defaultPurge";
 import { MemoryCoordinator } from "./coordinator";
 import {
@@ -55,6 +56,7 @@ type DefaultMemoryReconciliationWork = Readonly<{
   embeddingSetup?: () => Promise<unknown>;
   cutover?: () => Promise<unknown>;
   historyBackfill?: () => Promise<unknown>;
+  historyAutoHeal?: () => Promise<unknown>;
   reclassification?: () => Promise<unknown>;
   relations?: () => Promise<unknown>;
   synthesis?: () => Promise<unknown>;
@@ -72,6 +74,7 @@ const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
         getDefaultMemoryCoordinatorRuntime().policy.maxJobParallelPerUser
       )
     ),
+    historyAutoHeal: () => autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: new Date() }),
     reclassification: () => reconcileMemoryFactReclassificationJobs(prisma),
     relations: () => reconcileMemoryFactRelationJobs(prisma),
     synthesis: () => reconcileMemorySynthesisWork(
@@ -99,6 +102,7 @@ export async function reconcileDefaultMemoryWork(
   // periodic maintenance pass.
   await work.cutover?.();
   await work.historyBackfill?.();
+  await work.historyAutoHeal?.();
   await work.reclassification?.();
   await work.relations?.();
   await work.synthesis?.();

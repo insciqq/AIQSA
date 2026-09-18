@@ -155,7 +155,7 @@ export function executionInputValues(
   draft: Pick<AdminSearchDraft, "maxOutputTokens" | "maxSearchCallsPerAnswer">
 ): SearchSourceForm["executionInputs"] {
   return {
-    maxOutputTokens: String(draft.maxOutputTokens),
+    maxOutputTokens: draft.maxOutputTokens === null ? "" : String(draft.maxOutputTokens),
     maxSearchCallsPerAnswer: String(draft.maxSearchCallsPerAnswer)
   };
 }
@@ -188,11 +188,11 @@ export function searchExecutionValidation(form: SearchSourceForm): Readonly<{
     adminSearchExecutionLimits.maxSearchCallsPerAnswer
   );
   return {
-    maxOutputTokens: maxOutputTokens === null ? "Enter a whole number from 1,024 to 32,768." : null,
+    maxOutputTokens: form.executionInputs.maxOutputTokens.trim() && maxOutputTokens === null ? "Enter a whole number of at least 16, or leave blank for Auto." : null,
     maxSearchCallsPerAnswer: maxSearchCallsPerAnswer === null
       ? `Enter a whole number from ${adminSearchExecutionLimits.maxSearchCallsPerAnswer.minimum} to ${adminSearchExecutionLimits.maxSearchCallsPerAnswer.maximum}.`
       : null,
-    valid: maxOutputTokens !== null && maxSearchCallsPerAnswer !== null
+    valid: (!form.executionInputs.maxOutputTokens.trim() || maxOutputTokens !== null) && maxSearchCallsPerAnswer !== null
   };
 }
 

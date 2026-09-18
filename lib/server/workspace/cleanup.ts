@@ -9,7 +9,6 @@ import type { WorkspaceOperation } from "./operationFence";
 import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext, type LifecycleStage } from "../observability";
 import { retainDatabaseFailure } from "../observability/databaseFailure";
 import { workspaceLifecycleFailure } from "./lifecycleObservability";
-import { CHAT_SUMMARY_TIMEOUT_MS } from "../chats/continuation";
 
 const ACTIVE_RUN_STATUSES = ["preparing", "queued", "in_progress", "streaming"] as const;
 const CLAIM_STALE_MS = 15 * 60 * 1_000;
@@ -256,13 +255,13 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
   // A process can stop after uploading the archive and releasing the source
   // disk, but before creating the destination. Such READY seeds have no live
   // session lease for the recovery loop above to find.
-  const abandonedBefore = new Date(now.getTime() - CHAT_SUMMARY_TIMEOUT_MS - 60_000);
+  const abandonedBefore = new Date(now.getTime() - 180_000);
   const orphanedSeeds = await input.prisma.chatContinuationWorkspaceSeed.findMany({
     select: { id: true, sourceChatId: true }, orderBy: [{ updatedAt: "asc" }, { id: "asc" }], take: limit,
     where: { newChatId: null, updatedAt: { lte: abandonedBefore },
       status: { in: ["CAPTURING", "READY", "FAILED", "ABANDONED"] },
       OR: [{ continuation: null }, { continuation: { status: "failed" } },
-        { continuation: { status: "running", updatedAt: { lte: abandonedBefore } } }] }
+        { continuation: { status: "running", OR: [{ leaseExpiresAt: { lte: now } }, { leaseExpiresAt: null, updatedAt: { lte: abandonedBefore } }] } }] }
   });
   for (const candidate of orphanedSeeds) {
     await input.prisma.$transaction(async (tx) => {
@@ -270,7 +269,7 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
       const seed = await tx.chatContinuationWorkspaceSeed.findUnique({ where: { id: candidate.id }, include: { continuation: true } });
       if (!seed || seed.newChatId || seed.updatedAt > abandonedBefore ||
         (seed.continuation && (seed.continuation.status === "complete" ||
-          seed.continuation.status === "running" && seed.continuation.updatedAt > abandonedBefore))) return;
+          seed.continuation.status === "running" && (seed.continuation.leaseExpiresAt ? seed.continuation.leaseExpiresAt > now : seed.continuation.updatedAt > abandonedBefore)))) return;
       // CAPTURING still needs receiver fencing; never race its disk operation.
       if (seed.continuationId && await tx.workspaceSession.count({ where: { operationOwner: `continuation:${seed.continuationId}` } })) return;
       if (seed.continuation?.status === "running") await tx.chatContinuation.update({ where: { id: seed.continuation.id },

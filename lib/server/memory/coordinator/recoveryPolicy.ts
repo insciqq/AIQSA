@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { MEMORY_COORDINATOR_JOB_KINDS } from "./registry";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 
 export const MEMORY_RECOVERY_BATCH_SIZE = 8;
 export const MEMORY_RECOVERY_INTERVAL_MS = 60_000;
@@ -14,7 +15,9 @@ export function memoryRecoverableFailureSql(): Prisma.Sql {
       'memory_job_commit_database_p1001', 'memory_job_commit_database_p1002',
       'memory_job_commit_database_p1017')
     OR (job.kind = 'INDEX_HISTORY'::"MemoryJobKind" AND job."workStage" = 'lexical_apply'
-      AND job."errorCode" = 'memory_job_commit_database_failed')
+      AND job."pipelineVersion" IN ('memory-history-incremental-v8', 'memory-history-incremental-v9', ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION})
+      AND job."errorCode" IN ('memory_job_commit_database_failed',
+        'memory_job_commit_database_p2002', 'memory_execution_policy_drift'))
   ), FALSE))`;
 }
 
@@ -49,6 +52,13 @@ export function memoryTerminalRecoveryEligibleSql(now: Date): Prisma.Sql {
     AND job."recoveryCount" < ${MEMORY_RECOVERY_DELAYS_MS.length}
     AND (${memoryRecoveryDueAtSql()}) <= ${now}
     AND NOT ${memoryRecoveryProtectedSql()}
+    AND (job.kind <> 'INDEX_HISTORY' OR job."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+      OR NOT EXISTS (
+        SELECT 1 FROM current_jobs successor WHERE successor."userId" = job."userId"
+          AND successor.kind = 'INDEX_HISTORY' AND successor."chatId" = job."chatId"
+          AND successor."sourceHash" = job."sourceHash"
+          AND successor."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+      ))
     AND ${memoryUnresolvedFailureSql()}`;
 }
 

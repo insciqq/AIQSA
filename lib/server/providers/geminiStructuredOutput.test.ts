@@ -52,7 +52,7 @@ describe("native Gemini structured output", () => {
     expect(client.createInteraction).toHaveBeenCalledWith(expect.objectContaining({
       generation_config: expect.objectContaining({ max_output_tokens: maxOutputTokens })
     }), undefined);
-    expect(STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters).toBe(65_536);
+    expect(STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters).toBe(1024 * 1024);
   });
 
   it("sends the exact admitted token cap and native stateless JSON request", () => {

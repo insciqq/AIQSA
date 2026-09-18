@@ -1,4 +1,5 @@
 import type { KnowledgeAnswerInstructions } from "./answerInstructions";
+import type { ModelGenerationBudget } from "../providers/modelOutputAllowance";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { acceptedOperation } from "./answerGroundingExecutionV21";
 import { knowledgeAnswerHash } from "./answerGroundingV5";
@@ -89,6 +90,7 @@ export type KnowledgeEvidenceAnswerExecutionV1Input = Readonly<{
   shouldAbort: OperationInput["shouldAbort"];
   transport: "native_strict" | "provider_neutral_json";
   repairFeedbackVersion?: 1;
+  generationBudget?: ModelGenerationBudget;
   onOperationAccepted?: (operation: KnowledgeEvidenceAnswerExecutionV1Result["operations"][number]) => void;
 }>;
 
@@ -122,7 +124,7 @@ async function executeCycle(input: KnowledgeEvidenceAnswerExecutionV1Input & Rea
       ? { answerInstructions: input.answerInstructions } : {}), evidenceReceiptHash: manifest!.manifestHash, executionPolicy: input.executionPolicy, transport: input.transport };
     const snapshot = isKnowledgeEvidenceAnswerOperationV2(inputOperation.operation)
       ? createKnowledgeEvidenceAnswerSnapshotV2({ ...inputOperation, ...snapshotInput, operation: inputOperation.operation, workflowVersion: 11,
-          repairFeedbackVersion: input.repairFeedbackVersion })
+          repairFeedbackVersion: input.repairFeedbackVersion, generationBudget: input.generationBudget })
       : createKnowledgeEvidenceAnswerSnapshotV1({ ...inputOperation, ...snapshotInput, operation: inputOperation.operation,
           workflowVersion: input.workflowVersion === 11 ? undefined : input.workflowVersion });
     const result = await acceptedOperation({ ...input, draft: manifest!, acceptedRequest: snapshot,

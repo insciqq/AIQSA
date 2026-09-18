@@ -121,6 +121,42 @@ function evidence(runtime: ProviderExecutionSnapshot) {
 }
 
 describe("Memory learning provider runtime", () => {
+  it.each([false, true])("new forced-tool work uses model output capacity with reasoning enabled=%s", async (reasoning) => {
+    const base = snapshot();
+    const runtime: ProviderExecutionSnapshot = { ...base, model: { ...base.model,
+      capabilities: { ...base.model.capabilities, reasoning },
+      defaultParams: { maxOutputTokens: 12_000,
+        ...(reasoning ? { reasoning: { effort: "high" } } : {}) }
+    } };
+    const fixture = client();
+    const fetchFn = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body.max_tokens ?? body.max_completion_tokens).toBe(12_000);
+      return new Response(JSON.stringify({
+        id: "response-budget", model: "local/model",
+        choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null,
+          tool_calls: [{ id: "call-1", type: "function", function: {
+            name: "strict_memory_result", arguments: '{"ok":true}'
+          } }] } }],
+        usage: { completion_tokens: 3200, prompt_tokens: 300, total_tokens: 3500 }
+      }));
+    });
+    const run = createAcceptedMemoryLearningProvider(fixture.client, {
+      buildRequest: accepted => ({ ...request(accepted),
+        params: { ...accepted.model.defaultParams, maxOutputTokens: 2400, max_output_tokens: 2400 },
+        toolChoice: "required", tools: [{ name: "strict_memory_result", capability: "memory", strict: true,
+          description: "Return the result.", inputSchema: { type: "object", properties: { ok: { type: "boolean" } },
+            required: ["ok"], additionalProperties: false } }] }),
+      callError: (_usage, cause) => new Error("memory_provider_failed", { cause }),
+      createFetch: () => fetchFn,
+      invalidRuntimeError: "memory_runtime_invalid",
+      reasoningToolOutputTokenFloor: 2048
+    });
+    const result = await run({ ...evidence(runtime), memorySnapshotVersion: 3 }, undefined, new AbortController().signal);
+    expect(result.usage.outputTokens).toBe(3200);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
   it("adds provider-neutral headroom only for one forced strict reasoning tool", () => {
     const base = snapshot();
     const reasoningRuntime: ProviderExecutionSnapshot = {

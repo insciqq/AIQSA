@@ -14,6 +14,18 @@ function fixture() {
 }
 
 describe("background chat title worker", () => {
+  it("keeps the newly admitted model allowance and timeout through background dispatch", async () => {
+    const { repository, work } = fixture();
+    const admitted = { ...work, maxOutputTokens: 131_072, responseTimeoutMs: 300_000, reasoningEffort: "high" };
+    repository.take.mockReset().mockResolvedValueOnce(admitted).mockResolvedValue(null);
+    const execute = vi.fn(async () => ({ title: "A short title" }));
+    await createChatTitleWorker({ execute, repository }).reconcile(new AbortController().signal);
+    expect(execute).toHaveBeenCalledExactlyOnceWith(admitted.providerSnapshot,
+      expect.objectContaining({ maxOutputTokens: 131_072, reasoningBudgetIncluded: true, reasoningEffort: "high" }),
+      expect.objectContaining({ timeoutMs: 300_000 }));
+    expect(repository.finish).toHaveBeenCalledWith(admitted, "A short title");
+  });
+
   it("gives claimed title work its own run context while retaining no invoking request metadata", async () => {
     const { repository, work } = fixture();
     const second = { ...work, runId: "second-run", userId: "second-owner" };

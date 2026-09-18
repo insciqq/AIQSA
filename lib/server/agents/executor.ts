@@ -1,4 +1,4 @@
-import { searchExecutionConfiguration } from "../search/toolExecutor";
+import { agentMcpEnvelopeTimeoutSeconds } from "./mcpTimeout";
 import { AgentExecutionError, agentFailureCode } from "./failures";
 import { prisma } from "../prisma";
 import { sumTokenUsage } from "@/lib/domain/usage";
@@ -62,8 +62,7 @@ export async function executeCodexTurn(input: Readonly<{
       developerInstructions: prompts.developerInstructions,
       mcpMode: configuration.mcpMode === "all" && !input.request.mcp?.tools.length ? "off" : configuration.mcpMode,
       aiqsaSearch: input.request.searchPlan.options.length > 0,
-      mcpTimeoutSeconds: Math.max(input.request.toolBudgets?.mcpAutoDiscoveryTimeoutSeconds ?? 90,
-        ...input.request.searchPlan.options.map((option) => Math.ceil(searchExecutionConfiguration(option).timeoutMs / 1000))),
+      mcpTimeoutSeconds: agentMcpEnvelopeTimeoutSeconds(input.request),
       ...(effort && ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(effort)
         ? { reasoningEffort: effort as CodexManagedProfile["reasoningEffort"] } : {})
     };

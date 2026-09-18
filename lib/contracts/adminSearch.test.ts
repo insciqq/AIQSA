@@ -101,7 +101,7 @@ describe("administrator Search contract", () => {
       queryMaxCharacters: 4_000,
       reasoningPolicy: "provider_default"
     });
-    expect(decodeAdminSearchDraft({ ...currentDraft, maxOutputTokens: 1_023 })).toBeNull();
+    expect(decodeAdminSearchDraft({ ...currentDraft, maxOutputTokens: 15 })).toBeNull();
     expect(decodeAdminSearchDraft({ ...currentDraft, maxSearchCallsPerAnswer: 33 })).toBeNull();
     expect(decodeAdminSearchDraft({ ...currentDraft, queryMaxCharacters: 4_001 })).toBeNull();
     expect(decodeAdminSearchDraft({ ...currentDraft, timeoutMs: 900_001 })).toBeNull();
@@ -109,7 +109,7 @@ describe("administrator Search contract", () => {
     expect(decodeAdminSearchDraft({ ...currentDraft, reasoningPolicy: "answer_default" })).toBeNull();
     expect(decodeAdminSearchCatalog(catalog({
       ...currentDraft,
-      maxOutputTokens: 32_769
+      maxOutputTokens: Number.MAX_SAFE_INTEGER + 1
     }))).toBeNull();
     expect(decodeAdminSearchCatalog(catalog(currentDraft, [{
       connectionDisplayName: "OpenAI",

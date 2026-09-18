@@ -1399,6 +1399,57 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
+  it.each(["memory-history-incremental-v8", "memory-history-incremental-v9"])(
+    "rebuilds retained chunk ordinals from %s without replacing source identities",
+    async (pipelineVersion) => {
+      const userId = await createOwner("memory-history-ordinal-rebuild");
+      try {
+        const chat = await prisma.chat.create({ data: { title: "Retained chunk positions", userId } });
+        let parentMessageId: string | null = null;
+        let last: Awaited<ReturnType<typeof createTurn>> | null = null;
+        for (let ordinal = 0; ordinal < 9; ordinal++) {
+          last = await createTurn({ chatId: chat.id, userId, parentMessageId,
+            userText: `User retained turn ${ordinal}.`, assistantText: `Assistant retained turn ${ordinal}.`,
+            createdAt: new Date(Date.UTC(2026, 7, 12, 10, ordinal * 2)) });
+          parentMessageId = last.assistantMessage.id;
+          await mutateSource(userId, chat.id, { mutations: ["NORMAL_APPEND"],
+            patch: { activeLeafMessageId: parentMessageId } });
+        }
+        await mutateSource(userId, chat.id, { mutations: ["TERMINAL_SETTLEMENT"],
+          terminalSettlement: { assistantMessageId: last!.assistantMessage.id, runId: last!.run.id, status: "complete" } });
+        await processHistoryJob(userId);
+        const before = await prisma.memoryRecallChunk.findMany({
+          where: { userId, state: "ACTIVE" }, orderBy: { chunkOrdinal: "asc" } });
+        expect(before).toHaveLength(2);
+        const joins = await prisma.memoryRecallChunkMessage.findMany({ where: { userId }, orderBy: [{ chunkId: "asc" }, { ordinal: "asc" }] });
+        const retired = await prisma.memoryRecallChunk.create({ data: {
+          ...before[0]!, id: randomUUID(), state: "INVALIDATED", invalidatedAt: new Date(),
+          contentHash: memorySha256({ legacyProjection: before[0]!.contentHash })
+        } });
+        await expect(prisma.memoryRecallChunk.create({ data: {
+          ...retired, id: randomUUID(), state: "ACTIVE", invalidatedAt: null
+        } })).rejects.toMatchObject({ code: "P2002" });
+        // The earlier projection owns the same content identities in a different
+        // order. Its ordinal slots stay occupied even when upserts run serially.
+        await prisma.$transaction(async (tx) => {
+          await tx.memoryRecallChunk.update({ where: { id: before[0]!.id }, data: { chunkOrdinal: 2 } });
+          await tx.memoryRecallChunk.update({ where: { id: before[1]!.id }, data: { chunkOrdinal: 0 } });
+          await tx.memoryRecallChunk.update({ where: { id: before[0]!.id }, data: { chunkOrdinal: 1 } });
+          await tx.chatMemoryCheckpoint.update({ where: { userId_chatId: { userId, chatId: chat.id } }, data: { pipelineVersion } });
+        });
+        await withLockedMemoryTransaction(prisma, userId, (tx, settings) => seedMemoryHistoryBackfill(tx, settings));
+        const { claim, result } = await processHistoryJob(userId);
+        expect(await prisma.memoryRecallChunk.findMany({
+          where: { userId, state: "ACTIVE" }, orderBy: { chunkOrdinal: "asc" } })).toEqual(before);
+        expect(await prisma.memoryRecallChunkMessage.findMany({ where: { userId }, orderBy: [{ chunkId: "asc" }, { ordinal: "asc" }] })).toEqual(joins);
+        expect(await prisma.memoryRecallChunk.findUniqueOrThrow({ where: { id: retired.id } })).toEqual(retired);
+        await Promise.all([0, 1].map(() => prisma.$transaction(async (tx) => result.apply?.(tx, claim))));
+        expect(await prisma.memoryRecallChunk.findMany({
+          where: { userId, state: "ACTIVE" }, orderBy: { chunkOrdinal: "asc" } })).toEqual(before);
+      } finally { await cleanupOwner(userId); }
+    }
+  );
+
   it.each(["append", "rebuild", "projection-upgrade", "branch"] as const)(
     "preserves accepted round references across %s and an idempotent commit",
     async (transition) => {

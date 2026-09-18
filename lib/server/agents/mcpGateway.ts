@@ -8,7 +8,7 @@ import { canAccessSearchStrategy } from "../auth/entitlements";
 import { createMcpHandler, McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { prisma } from "../prisma";
-import { readBoundedRequestBody } from "../http/requestBody";
+import { readBoundedRequestBody, RequestBodyTooLargeError } from "../http/requestBody";
 import { createMcpToolService, McpHubServiceError, type McpToolAuthority } from "../mcp/hubService";
 import { defaultMcpRunPlan, getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import { createMcpSemanticRouter } from "../mcp/router";
@@ -16,7 +16,7 @@ import { createAcceptedStructuredOutputExecutor } from "../providerRuntime/struc
 import { createSystemModelRoleResolver } from "../providerRuntime/systemModelRole";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { validateMcpToolArguments } from "../mcp/clientSession";
-import { getMcpResponseWireLimits, MCP_JSON_RPC_REQUEST_MAX_BYTES } from "../mcp/responseLimits";
+import { getMcpResponseWireLimits, getMcpRequestMaxBytes, mcpRequestSizeFailure } from "../mcp/responseLimits";
 import type { McpCapabilityCatalog, McpRunPlanSnapshot } from "../mcp/runPlan";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { createAgentRunStore } from "./store";
@@ -88,12 +88,11 @@ export async function createAgentMcpGateway(input: Readonly<{
     },
     router: createMcpSemanticRouter({ resolveSystemModel: () => role.resolve(),
       executeStructuredOutput: createAcceptedStructuredOutputExecutor(prisma, { disableRequestRetries: true }) }),
-    async recordDiscoveryAttempt(authority, providerRole) {
+    async recordDiscoveryAttempt(authority, providerRole, maxOutputTokens, _timeoutMs, inputBytes) {
       await authority.assertActive();
-      // The router compacts this catalog. Reserve its full encoded size plus
-      // escaping, instructions, and output, never a fixed small catalog guess.
-      const reservation = 2 * Buffer.byteLength(JSON.stringify(catalog)) + 65_536 +
-        (input.request.toolBudgets?.mcpAutoDiscoveryMaxOutputTokens ?? 8192);
+      // Include the complete admitted goal, context and catalog. Reserve for
+      // transport escaping and output; charge only provider-reported usage.
+      const reservation = 2 * inputBytes + maxOutputTokens;
       const id = await input.store.reserveProvider(reservation, { kind: "discovery", role: providerRole });
       return { async settle({ state, usage }) {
         await input.store.settleProvider(id, state, usage);
@@ -120,11 +119,12 @@ export async function createAgentMcpGateway(input: Readonly<{
   }
   return async (request: Request): Promise<Response> => {
     if (configuration.mcpMode === "off" && !search) return new Response(null, { status: 404 });
+    let requestBodyRead = false;
     try {
-      const signal = AbortSignal.any([input.signal, request.signal, AbortSignal.timeout(
-        Math.max(input.request.toolBudgets?.mcpAutoDiscoveryTimeoutSeconds ?? 90, search?.timeoutSeconds ?? 0) * 1000)]);
+      const signal = AbortSignal.any([input.signal, request.signal]);
       const bounded = new Request(request, { signal });
-      const bytes = await readBoundedRequestBody(bounded, { maxBytes: 128 * 1024, signal });
+      const bytes = await readBoundedRequestBody(bounded, { maxBytes: getMcpRequestMaxBytes(), signal });
+      requestBodyRead = true;
       const parsedBody: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
       if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) return new Response(null, { status: 400 });
       const rpc = parsedBody as Record<string, unknown>;
@@ -163,8 +163,18 @@ export async function createAgentMcpGateway(input: Readonly<{
         if (allowed.get(toolId) !== toolVersion) throw new McpHubServiceError("tool_unavailable");
         const prepared = await service.prepareToolCall({ authority, toolId, toolVersion, arguments: args, signal });
         const result = await service.dispatchPreparedToolCall({ authority, prepared, signal });
-        return { content: result.text.map((text) => ({ type: "text" as const, text })),
-          ...(result.structuredContent ? { structuredContent: result.structuredContent } : {}),
+        const content = result.text.map((text) => ({ type: "text" as const, text }));
+        const structured = result.structuredContent;
+        const hasStructuredData = structured && Object.keys(structured).length > 0;
+        // Codex prefers any structured content, including {}, over ordinary
+        // text. Keep error explanations model-visible, carrying structured
+        // details alongside them without copying private payloads into receipts.
+        if (result.isError && content.length > 0 && hasStructuredData) {
+          content.push({ type: "text", text: JSON.stringify(structured) });
+        }
+        const preferStructured = content.length === 0 || !result.isError && hasStructuredData;
+        return { content,
+          ...(structured && preferStructured ? { structuredContent: structured } : {}),
           ...(result.isError ? { isError: true } : {}) } satisfies CallToolResult;
       };
       const handler = createMcpHandler(() => {
@@ -173,7 +183,7 @@ export async function createAgentMcpGateway(input: Readonly<{
           (args) => execute("aiqsa_search", args, (authority) => search.execute(args as Record<string, unknown>, authority.callId, signal)));
         if (configuration.mcpMode === "auto") {
           server.registerTool("find_tools", { description: "Find a small relevant set of the chat's enabled MCP tools. Call the returned tools with call_tool.",
-            inputSchema: z.strictObject({ goal: z.string().trim().min(1).max(400) }) },
+            inputSchema: z.strictObject({ goal: z.string().trim().min(1).max(getMcpRequestMaxBytes()) }) },
           (args) => execute("find_tools", args, async (authority) => {
             const result = await service.findTools({ authority, goal: args.goal, signal,
               timeoutMs: (input.request.toolBudgets?.mcpAutoDiscoveryTimeoutSeconds ?? 90) * 1000,
@@ -200,11 +210,16 @@ export async function createAgentMcpGateway(input: Readonly<{
       // Include the accepted upstream result plus room for the gateway envelope.
       const result = await readBoundedRequestBody(new Request("http://agent.invalid/", { method: "POST", body: response.body,
         duplex: "half", signal } as RequestInit), {
-        maxBytes: getMcpResponseWireLimits().callToolResponseMaxBytes + MCP_JSON_RPC_REQUEST_MAX_BYTES,
+        maxBytes: 2 * getMcpResponseWireLimits().callToolResponseMaxBytes + 64 * 1024,
         signal
       });
       return new Response(result, { status: response.status, headers: response.headers });
-    } catch {
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        if (requestBodyRead) return Response.json({ code: "mcp_response_too_large", maxBytes: error.limitBytes,
+          observedBytes: String(error.actualBytes), message: "The MCP response exceeds the configured transport limit. The tool may have completed; do not repeat a write operation solely because its response could not be read." }, { status: 502 });
+        return Response.json(mcpRequestSizeFailure(error.actualBytes, error.limitBytes), { status: 413 });
+      }
       return Response.json({ error: "agent_mcp_unavailable" }, { status: 502 });
     }
   };

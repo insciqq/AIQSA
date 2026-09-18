@@ -422,10 +422,17 @@ export const MCP_RUN_PLAN_LIMITS = Object.freeze({
 
 /** Provider completion allowance includes reasoning and the strict JSON selection. */
 export const MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS = Object.freeze({
-  defaultTokens: 8_192,
+  fallbackTokens: 65_536,
   maxTokens: 65_536,
   minTokens: 1_024
 });
+
+/** New admissions use the System Model; null remains the legacy routing marker. */
+export type McpDiscoveryOutputBudget = number | "model" | null;
+
+export function isMcpDiscoveryOutputBudget(value: unknown): value is number | "model" {
+  return value === "model" || isMcpAutoDiscoveryOutputTokens(value);
+}
 
 export function isMcpAutoDiscoveryOutputTokens(value: unknown): value is number {
   return Number.isSafeInteger(value) &&
@@ -434,10 +441,22 @@ export function isMcpAutoDiscoveryOutputTokens(value: unknown): value is number 
 }
 
 export const MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS = Object.freeze({
-  defaultSeconds: 60,
-  maxSeconds: 120,
+  defaultSeconds: 300,
+  // Node timer capacity; administrator overrides may exceed a provider default.
+  maxSeconds: 2_147_483,
   minSeconds: 1
 });
+
+export const MCP_RUNTIME_TIMEOUT_LIMITS = Object.freeze({ minimumMs: 1_000, maximumMs: 2_147_483_647,
+  defaultCallMs: 300_000, defaultStartupMs: 60_000 });
+export type McpRuntimeTimeouts = Readonly<{ callTimeoutMs: number; startupTimeoutMs: number }>;
+export function isMcpRuntimeTimeouts(value: unknown): value is McpRuntimeTimeouts {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).length === 2 && [row.callTimeoutMs, row.startupTimeoutMs].every(timeout =>
+    Number.isSafeInteger(timeout) && Number(timeout) >= MCP_RUNTIME_TIMEOUT_LIMITS.minimumMs &&
+    Number(timeout) <= MCP_RUNTIME_TIMEOUT_LIMITS.maximumMs);
+}
 
 export type AdminMcpAttention = {
   action: string;

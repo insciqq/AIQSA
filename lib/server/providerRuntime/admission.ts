@@ -1,3 +1,4 @@
+import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
 import { hasVerifiedImageCapability } from "../providers/imageGenerationEvidence";
 import { hasVerifiedDedicatedProtocol } from "../providers/systemRoleEvidence";
 import { createHash } from "node:crypto";
@@ -1027,6 +1028,7 @@ function searchConfiguration(
     adapterKind: route.draft.adapterKind,
     config: {
       ...route.draft,
+      generationBudget: admitModelGenerationBudget((role ?? answer).snapshot, route.draft.maxOutputTokens),
       ...(role
         ? {
             modelCapabilities: role.modelConfiguration.capabilities,

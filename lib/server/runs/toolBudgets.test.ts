@@ -47,8 +47,8 @@ describe("accepted tool budgets", () => {
       maxToolRounds: 3
     });
     expect(DEFAULT_TOOL_RUN_BUDGETS).toEqual({
-      mcpAutoDiscoveryTimeoutSeconds: 60,
-      mcpAutoDiscoveryMaxOutputTokens: 8192,
+      mcpAutoDiscoveryTimeoutSeconds: 300,
+      mcpAutoDiscoveryMaxOutputTokens: "model",
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 20,
       maxToolRounds: 8

@@ -2,27 +2,71 @@ import { resolveOpenRouterNativeProvider, type NativeProviderResolution } from "
 import { maxOutputTokensFromParams } from "../../../domain/providerParams";
 import type { OpenRouterDiscoveryClient } from "../../providers/openRouterDiscovery";
 import { normalizeProviderModelConfiguration, type ProviderModelConfiguration } from "../../providers/providerConfiguration";
-import type { AdminProviderTestEvidence } from "../../../contracts/adminProviders";
+import type { AdminProviderCapabilityCheck, AdminProviderTestEvidence } from "../../../contracts/adminProviders";
+import type { NativeRouteAdoptionDiagnostic } from "../../../contracts/nativeRoutingAdoption";
 import { reusableCapabilitySetupEvidence } from "./initialCapabilitySetup";
 import { hasVerifiedDedicatedProtocol } from "../../providers/systemRoleEvidence";
+import { capabilityFailureAttempt } from "./capabilityProbeFailure";
 
-export type NativeRouteDiscovery = NativeProviderResolution | { available: false; reason: "verification_required" };
+export type NativeRouteDiscovery = (NativeProviderResolution | { available: false; reason: "verification_required" }) & {
+  diagnostic?: NativeRouteAdoptionDiagnostic;
+};
+
+const configuredChecks = { toolCalling: "toolCalling", parallelToolCalls: "parallelToolCalls", vision: "vision",
+  nativePdfInput: "directPdf", streaming: "streaming", nativeSearch: "hostedSearch",
+  imageGeneration: "imageGeneration", imageEditing: "imageEditing" } as const;
+
+function configuredCapabilities(model: ProviderModelConfiguration): AdminProviderCapabilityCheck[] {
+  return Object.entries(configuredChecks).flatMap(([capability, check]) =>
+    model.capabilities[capability as keyof typeof configuredChecks] === true ? [check] : []);
+}
+
+function requiredCapabilities(model: ProviderModelConfiguration, previous?: AdminProviderTestEvidence): AdminProviderCapabilityCheck[] {
+  const before = reusableCapabilitySetupEvidence(previous, model);
+  return [...new Set<AdminProviderCapabilityCheck>(["modelAccess", ...configuredCapabilities(model),
+    ...Object.entries(before?.capabilitySetup?.checks ?? {}).flatMap(([check, status]) =>
+      status === "verified" ? [check as AdminProviderCapabilityCheck] : [])])];
+}
+
+export function nativeRoutePreviouslyUnverified(model: ProviderModelConfiguration, previous?: AdminProviderTestEvidence): AdminProviderCapabilityCheck[] {
+  const before = reusableCapabilitySetupEvidence(previous, model);
+  return configuredCapabilities(model).filter((check) => before?.capabilitySetup?.checks[check] !== "verified");
+}
 
 export async function discoverNativeRoute(
   client: Pick<OpenRouterDiscoveryClient, "listModelEndpoints">,
   model: ProviderModelConfiguration,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  previous?: AdminProviderTestEvidence
 ): Promise<NativeRouteDiscovery> {
   try {
     const endpoints = await client.listModelEndpoints(model.upstreamModelId, { signal });
-    return resolveOpenRouterNativeProvider({
+    const required = requiredCapabilities(model, previous);
+    const route = resolveOpenRouterNativeProvider({
       modelId: model.upstreamModelId, endpoints,
-      requiredParameters: model.capabilities.toolCalling ? ["tools"] : [],
-      maxOutputTokens: maxOutputTokensFromParams(model.defaultParams)
+      requiredParameters: required.some((check) => ["toolCalling", "parallelToolCalls", "forcedToolCall"].includes(check)) ? ["tools"] : [],
+      maxOutputTokens: maxOutputTokensFromParams(model.defaultParams),
+      requireForcedToolChoice: required.includes("forcedToolCall")
     });
-  } catch {
+    if (route.available) return route;
+    const mismatch = route.mismatch;
+    const missing: NativeRouteAdoptionDiagnostic["missing"] = [
+      ...(mismatch?.missingParameters.includes("tools") ? required.filter((check) => ["toolCalling", "parallelToolCalls", "forcedToolCall"].includes(check)) : []),
+      ...(mismatch?.outputLimit !== undefined ? ["maxOutputTokens" as const] : []),
+      ...(mismatch?.forcedToolChoice ? ["forcedToolCall" as const] : [])
+    ];
+    return { ...route, diagnostic: { version: 1, stage: "catalog", code: route.reason, servingMode: "automatic",
+      ...(mismatch ? { provider: mismatch.provider } : {}), missing: [...new Set(missing)],
+      previouslyUnverified: nativeRoutePreviouslyUnverified(model, previous) } };
+  } catch (error) {
     signal?.throwIfAborted();
-    return { available: false, reason: "verification_required" };
+    const failure = capabilityFailureAttempt(error, { attempts: 1, capability: "modelAccess",
+      adapterKind: model.adapterKind, accessVerified: false, timedOut: false });
+    return { available: false, reason: "verification_required", diagnostic: {
+      version: 1, stage: "catalog", code: failure.reason, servingMode: "automatic", missing: [],
+      previouslyUnverified: nativeRoutePreviouslyUnverified(model, previous),
+      ...(failure.httpStatus ? { httpStatus: failure.httpStatus } : {})
+    } };
   }
 }
 
@@ -40,18 +84,13 @@ export function applyNativeRoute(
 
 export function nativeRoutePreservesCapabilities(model: ProviderModelConfiguration,
   previous: AdminProviderTestEvidence | undefined, fresh: AdminProviderTestEvidence): boolean {
-  if (model.modelClass === "embedding" || model.modelClass === "reranker") return hasVerifiedDedicatedProtocol(fresh, model);
-  const before = reusableCapabilitySetupEvidence(previous, model);
+  return nativeRouteMissingCapabilities(model, previous, fresh).length === 0;
+}
+
+export function nativeRouteMissingCapabilities(model: ProviderModelConfiguration,
+  previous: AdminProviderTestEvidence | undefined, fresh: AdminProviderTestEvidence): AdminProviderCapabilityCheck[] {
+  if (model.modelClass === "embedding" || model.modelClass === "reranker") return hasVerifiedDedicatedProtocol(fresh, model)
+    ? [] : [model.modelClass === "embedding" ? "embedding" : "reranking"];
   const after = reusableCapabilitySetupEvidence(fresh, model);
-  if (!after) return false;
-  const required = new Set(Object.entries(before?.capabilitySetup?.checks ?? {})
-    .filter(([, status]) => status === "verified").map(([key]) => key));
-  const configured = { toolCalling: "toolCalling", parallelToolCalls: "parallelToolCalls", vision: "vision",
-    nativePdfInput: "directPdf", streaming: "streaming", nativeSearch: "hostedSearch",
-    imageGeneration: "imageGeneration", imageEditing: "imageEditing" } as const;
-  for (const [capability, check] of Object.entries(configured)) {
-    if (model.capabilities[capability as keyof typeof configured] === true) required.add(check);
-  }
-  return [...required].every((key) => Object.entries(after.capabilitySetup!.checks)
-    .some(([check, status]) => check === key && status === "verified"));
+  return requiredCapabilities(model, previous).filter((check) => after?.capabilitySetup?.checks[check] !== "verified");
 }

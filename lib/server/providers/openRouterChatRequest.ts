@@ -1,3 +1,4 @@
+import { admittedOutputAllowance } from "./modelOutputAllowance";
 import { withResponseReminder } from "./responseReminder";
 import {
   defaultOpenRouterParams,
@@ -571,7 +572,7 @@ function buildSearchText(request: ProviderSearchRequest): string {
 export function buildOpenRouterPerplexitySearchRequest(
   request: ProviderSearchRequest
 ): OpenRouterChatRequestBody {
-  return buildOpenRouterBody({
+  const body = buildOpenRouterBody({
     chatId: request.correlationId,
     messages: [
       {
@@ -593,6 +594,7 @@ export function buildOpenRouterPerplexitySearchRequest(
     params: searchParamsFromRequest(request),
     stream: false
   });
+  return request.generationBudget ? { ...body, max_completion_tokens: admittedOutputAllowance(request.generationBudget, body) } : body;
 }
 
 export function buildOpenRouterPerplexitySearchRequestPreview(

@@ -46,6 +46,17 @@ test("MCP setup edits inline and expanded with one draft, selection and no impli
   await editor.fill("https://mcp.example.test/api");
   await sheet.getByRole("button", { name: "Parse", exact: true }).click();
   await expect(sheet.getByRole("textbox", { name: "Name", exact: true })).toBeVisible();
+  const callTimeout = sheet.getByRole("spinbutton", { name: "Tool call timeout", exact: true });
+  await callTimeout.fill("7200000");
+  expect(await callTimeout.evaluate((element: HTMLInputElement) => element.validity.valid)).toBe(true);
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 820, height: 1180 },
+    { width: 1180, height: 820 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
+    await page.setViewportSize(viewport);
+    await callTimeout.scrollIntoViewIfNeeded();
+    await expect(callTimeout).toBeInViewport();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    await page.screenshot({ path: test.info().outputPath(`mcp-timeout-${viewport.width}x${viewport.height}.png`) });
+  }
   expect(mutations).toBe(0);
   await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Discard the new server" })).toBeVisible();

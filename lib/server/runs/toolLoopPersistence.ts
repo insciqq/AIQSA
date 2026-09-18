@@ -1,3 +1,4 @@
+import { getMcpRequestMaxBytes } from "../mcp/responseLimits";
 import type { ModelRunStatus } from "@prisma/client";
 import type { SearchPlan } from "../../domain/search";
 import { mergeTokenUsage, normalizeTokenUsage, type NormalizedTokenUsage, type TokenUsageField } from "../../domain/usage";
@@ -172,9 +173,9 @@ export type AdvanceToolLoopCallBatchResult =
   | "not_found";
 
 export const toolLoopPersistenceLimits = Object.freeze({
-  argumentsBytes: 64 * 1_024,
+  get argumentsBytes() { return getMcpRequestMaxBytes(); },
   batchCalls: 64,
-  checkpointBytes: 4 * 1_024 * 1_024,
+  get checkpointBytes() { return Math.max(4 * 1024 * 1024, 2 * getMcpRequestMaxBytes() + 64 * 1024); },
   providerCallIdLength: 256,
   providerCursorLength: 4_096,
   resultBytes: 256 * 1_024,

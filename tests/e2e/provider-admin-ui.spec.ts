@@ -2077,9 +2077,15 @@ test("administrator saves a versioned Search recommendation that grants no acces
   await expect(sheet.getByLabel(/^Search model/)).not.toBeVisible();
   await sheet.getByText("Advanced Search execution").click();
   await expect(sheet.getByLabel(/^Search model/)).toHaveValue("search-model-1");
-  await expect(sheet.getByRole("spinbutton", {
+  const outputAllowance = sheet.getByRole("spinbutton", {
     name: /^Maximum Search output, tokens/
-  })).toHaveValue(String(adminSearchExecutionDefaults.maxOutputTokens));
+  });
+  await expect(outputAllowance).toHaveValue("");
+  await expect(outputAllowance).toHaveAttribute("placeholder", "Auto");
+  await outputAllowance.fill("131072");
+  expect(await outputAllowance.evaluate((element: HTMLInputElement) => element.validity.valid)).toBe(true);
+  await outputAllowance.fill("");
+  await expect(sheet.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
   await expect(sheet.getByRole("spinbutton", {
     name: /^Maximum requests to this source per answer/
   })).toHaveValue(String(adminSearchExecutionDefaults.maxSearchCallsPerAnswer));
@@ -2088,6 +2094,17 @@ test("administrator saves a versioned Search recommendation that grants no acces
   await expect(sheet).toContainText("If it fails, nothing changes.");
   await expect(sheet).not.toContainText(vocabulary);
   await expect(section).not.toContainText(vocabulary);
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 820, height: 1180 },
+      { width: 1180, height: 820 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
+      await page.setViewportSize(viewport);
+      await outputAllowance.scrollIntoViewIfNeeded();
+      await expect(outputAllowance).toBeInViewport();
+      await expectNoPageOverflow(page);
+      await page.screenshot({ path: test.info().outputPath(`search-auto-${theme}-${viewport.width}x${viewport.height}.png`) });
+    }
+  }
   await page.keyboard.press("Escape");
   await expect(sheet).toHaveCount(0);
   await expect(sourcePage.getByRole("button", { name: "Configure" })).toBeFocused();

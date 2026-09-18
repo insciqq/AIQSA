@@ -43,6 +43,7 @@ export type OpenRouterDiscoveredModel = {
 };
 
 export type OpenRouterDiscoveredEndpoint = {
+  supportsToolChoice?: { required?: boolean; function?: boolean };
   contextLength?: number;
   maxCompletionTokens?: number;
   maxPromptTokens?: number;
@@ -250,6 +251,11 @@ function normalizeEndpoints(value: unknown): OpenRouterDiscoveredEndpoint[] {
     const maxCompletionTokens = boundedPositiveInteger(candidate.max_completion_tokens);
     const maxPromptTokens = boundedPositiveInteger(candidate.max_prompt_tokens);
     const quantization = safeText(candidate.quantization, MAX_METADATA_STRING_LENGTH);
+    const choices = isRecord(candidate.supports_tool_choice) ? candidate.supports_tool_choice : null;
+    const supportsToolChoice = choices ? {
+      ...(typeof choices.required === "boolean" ? { required: choices.required } : {}),
+      ...(typeof choices.function === "boolean" ? { function: choices.function } : {})
+    } : undefined;
 
     seen.add(tag);
     endpoints.push({
@@ -259,6 +265,7 @@ function normalizeEndpoints(value: unknown): OpenRouterDiscoveredEndpoint[] {
       name,
       providerName,
       ...(quantization ? { quantization } : {}),
+      ...(supportsToolChoice && Object.keys(supportsToolChoice).length ? { supportsToolChoice } : {}),
       supportedParameters: safeStringArray(
         candidate.supported_parameters,
         MAX_SUPPORTED_PARAMETERS

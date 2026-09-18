@@ -59,7 +59,8 @@ export function createMcpHubOperationStore(database: Database) {
     await maintain();
     const operation = await database.mcpHubDispatch.create({
       data: { userId: input.userId, clientId: input.clientId, grantId: input.grantId,
-        resourcePath: input.resourcePath, toolId: input.toolId, toolVersion: input.toolVersion },
+        resourcePath: input.resourcePath, toolId: input.toolId, toolVersion: input.toolVersion,
+        expiresAt: new Date(Date.now() + input.timeoutMs + 60_000) },
       select: { id: true, revision: true }
     });
     return {
@@ -73,7 +74,7 @@ export function createMcpHubOperationStore(database: Database) {
     };
   };
 
-  const recordDiscoveryAttempt: McpHubServiceDependencies["recordDiscoveryAttempt"] = async (authority, role) => {
+  const recordDiscoveryAttempt: McpHubServiceDependencies["recordDiscoveryAttempt"] = async (authority, role, _maxOutputTokens, timeoutMs) => {
     const snapshot = role.snapshot;
     if (!snapshot.connectionId || !snapshot.providerModelId || !snapshot.credentialVersionId) {
       throw new Error("mcp_hub_discovery_binding_missing");
@@ -82,6 +83,7 @@ export function createMcpHubOperationStore(database: Database) {
     const operation = await database.mcpHubDiscoveryAttempt.create({
       data: {
         clientId: authority.clientId, grantId: authority.grantId, userId: authority.userId,
+        expiresAt: new Date(Date.now() + timeoutMs + 60_000),
         connectionId: snapshot.connectionId, providerModelId: snapshot.providerModelId,
         credentialVersionId: snapshot.credentialVersionId,
         usageEvent: { create: {

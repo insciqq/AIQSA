@@ -108,7 +108,7 @@ it("waits for uploads and keeps cancellation usable if an upload starts during s
   expect(fetch).toHaveBeenCalledOnce();
   view.rerender(<Harness uploading />);
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-  expect(fetch.mock.calls[0]![1].signal.aborted).toBe(true);
+  expect(screen.getByRole("alert")).toHaveTextContent("Stopping the summary");
   expect(onOpen).not.toHaveBeenCalled();
 });
 
@@ -130,7 +130,7 @@ it.each(["navigation", "branch", "cancel"])("never opens a late response after %
   fireEvent.click(await screen.findByRole("button", { name: "Summarize and open new chat" }));
   if (action === "cancel") fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   else view.rerender(<Harness chatId={action === "navigation" ? "other" : "source"} leaf="changed" />);
-  expect(fetch.mock.calls[0]![1].signal.aborted).toBe(true);
+  expect(fetch.mock.calls[0]![1].signal.aborted).toBe(action !== "cancel");
   await act(async () => { finish(Response.json({ status: "complete", chatId: "new-chat", projectId: null })); });
   expect(onOpen).not.toHaveBeenCalled();
   expect(fetch).toHaveBeenCalledOnce();
@@ -140,4 +140,36 @@ it("keeps a quiet indicator below the warning threshold", async () => {
   render(<Harness recommended={false} />);
   await act(async () => {});
   expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+it("shows background progress and sends cancellation only after the claim is acknowledged", async () => {
+  let acknowledge!: (response: Response) => void;
+  const fetch = vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { acknowledge = resolve; }))
+    .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    .mockResolvedValueOnce(Response.json({ error: "chat_summary_cancelled" }, { status: 409 }));
+  vi.stubGlobal("fetch", fetch);
+  const view = render(<Harness />);
+  fireEvent.click(await screen.findByRole("button", { name: "Summarize and open new chat" }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(fetch).toHaveBeenCalledOnce();
+  await act(async () => { acknowledge(Response.json({ status: "running", progress: { completedParts: 9, stage: "combining" } })); });
+  expect(screen.getByRole("status")).toHaveTextContent("Combining summaries · 9 parts processed");
+  expect(fetch.mock.calls[1]![1].method).toBe("DELETE");
+  expect(JSON.parse(fetch.mock.calls[1]![1].body).requestId).toBe(JSON.parse(fetch.mock.calls[0]![1].body).requestId);
+  expect(onOpen).not.toHaveBeenCalled();
+  view.unmount();
+});
+
+it("does not open a completed chat when cancellation arrives while its details load", async () => {
+  let finish!: (response: Response) => void;
+  const fetch = vi.fn().mockResolvedValueOnce(Response.json({ status: "complete", chatId: "new-chat", projectId: null }))
+    .mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve; }));
+  vi.stubGlobal("fetch", fetch);
+  render(<Harness />);
+  fireEvent.click(await screen.findByRole("button", { name: "Summarize and open new chat" }));
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await act(async () => { finish(Response.json({ chat: child })); });
+  expect(onOpen).not.toHaveBeenCalled();
+  expect(fetch).toHaveBeenCalledTimes(2);
 });

@@ -31,6 +31,15 @@ describe("OpenRouter native provider selection", () => {
     expect(resolveOpenRouterNativeProvider({ modelId: "google/example", endpoints, requiredParameters: ["tools", "response_format"], maxOutputTokens: 8192 }))
       .toEqual({ available: true, provider: "google-vertex" });
     expect(resolveOpenRouterNativeProvider({ modelId: "google/example", endpoints, requiredParameters: ["unknown"] }))
-      .toEqual({ available: false, reason: "native_incompatible" });
+      .toMatchObject({ available: false, reason: "native_incompatible", mismatch: { provider: "google-ai-studio", missingParameters: ["unknown"] } });
+  });
+
+  it("does not treat ordinary tools as proof of forced tool choice on a native route", () => {
+    const endpoints = [{ tag: "deepseek", supportedParameters: ["tools", "tool_choice"],
+      supportsToolChoice: { required: false, function: false } }];
+    expect(resolveOpenRouterNativeProvider({ modelId: "deepseek/fixture", endpoints, requiredParameters: ["tools"] }))
+      .toEqual({ available: true, provider: "deepseek" });
+    expect(resolveOpenRouterNativeProvider({ modelId: "deepseek/fixture", endpoints, requiredParameters: ["tools"], requireForcedToolChoice: true }))
+      .toMatchObject({ available: false, reason: "native_incompatible", mismatch: { provider: "deepseek", forcedToolChoice: true } });
   });
 });

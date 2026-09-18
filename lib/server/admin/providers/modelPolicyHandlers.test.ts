@@ -124,7 +124,7 @@ describe("administrator model policy handlers", () => {
         mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: tokens
       })
     }));
-    const valid = typeof tokens === "number" && Number.isInteger(tokens) && tokens >= 1024 && tokens <= 65536;
+    const valid = tokens === null || typeof tokens === "number" && Number.isInteger(tokens) && tokens >= 1024 && tokens <= 65536;
     expect(response.status).toBe(valid ? 200 : 400);
     expect(service.update).toHaveBeenCalledTimes(valid ? 1 : 0);
     if (valid) expect(service.update).toHaveBeenCalledWith(expect.objectContaining({ mcpAutoDiscoveryMaxOutputTokens: tokens }));

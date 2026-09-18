@@ -687,7 +687,7 @@ export function AdminMcpDraftEditor(props: AdminMcpDraftEditorProps) {
       <section className="grid gap-3 rounded-panel bg-workspace-rail/45 p-3">
         <div>
           <h4 className="text-xs font-semibold text-ink">Runtime timeouts</h4>
-          <p className={helpText}>Values are milliseconds, from 1,000 to 600,000.</p>
+          <p className={helpText}>Startup and tool calls have separate timeouts, in milliseconds.</p>
         </div>
         <div className="grid gap-3 md:grid-cols-2">
           <label>
@@ -695,7 +695,7 @@ export function AdminMcpDraftEditor(props: AdminMcpDraftEditorProps) {
             <input
               className={inputClass}
               disabled={disabled}
-              max={600000}
+              max={2147483647}
               min={1000}
               onChange={(event) => onChange({
                 ...draft,
@@ -710,7 +710,7 @@ export function AdminMcpDraftEditor(props: AdminMcpDraftEditorProps) {
             <input
               className={inputClass}
               disabled={disabled}
-              max={600000}
+              max={2147483647}
               min={1000}
               onChange={(event) => onChange({
                 ...draft,

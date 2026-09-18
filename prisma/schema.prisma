@@ -1145,8 +1145,8 @@ model ModelPolicy {
   maxToolCalls                   BigInt         @default(20)
   maxToolRounds                  BigInt         @default(8)
   maxMcpToolsPerDiscovery        BigInt         @default(10)
-  mcpAutoDiscoveryTimeoutSeconds BigInt         @default(60)
-  mcpAutoDiscoveryMaxOutputTokens BigInt         @default(8192)
+  mcpAutoDiscoveryTimeoutSeconds BigInt?
+  mcpAutoDiscoveryMaxOutputTokens BigInt?
   version                        Int            @default(1)
   updatedByUserId                String?
   createdAt                      DateTime       @default(now())
@@ -2378,6 +2378,7 @@ model KnowledgeBasePublication {
 model ProviderModel {
   nativeRoutingAdoptionVersion Int                             @default(1)
   nativeRoutingAdoptionReason  String?                         @db.VarChar(32)
+  nativeRoutingAdoptionEvidence Json?
   chatPdfPreparations ChatPdfAttachmentPreparation[]
   id                          String                          @id @default(uuid())
   connectionId                String
@@ -2906,6 +2907,7 @@ model Message {
 /// Content-free claim/result identity. Provider work is never replayed automatically.
 model ChatContinuation {
   workspaceSeed     ChatContinuationWorkspaceSeed?
+  steps             ChatContinuationStep[]
   id                String   @id @default(uuid())
   sourceChatId      String
   sourceMessageId   String
@@ -2913,6 +2915,10 @@ model ChatContinuation {
   actorUserId       String?
   attemptId         String   @unique
   requestedProviderModelId String?
+  leaseExpiresAt    DateTime?
+  cancelRequestedAt DateTime?
+  completedParts    Int      @default(0)
+  progressStage     String   @default("preparing") @db.VarChar(16)
   status            String   @db.VarChar(16)
   errorCode         String?  @db.VarChar(64)
   newChatId         String?  @unique
@@ -2925,6 +2931,22 @@ model ChatContinuation {
 
   @@unique([sourceChatId, sourceMessageId, snapshotUpdatedAt], map: "ChatContinuation_source_snapshot_key")
   @@index([actorUserId])
+}
+
+/// Settled summary fragments support recovery without repeating paid requests.
+/// The owning source lifecycle deletes these private derived contents.
+model ChatContinuationStep {
+  id             String   @id @default(uuid())
+  continuationId String
+  attemptId      String
+  requestHash    String   @db.VarChar(64)
+  status         String   @db.VarChar(16)
+  summary        String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  continuation   ChatContinuation @relation(fields: [continuationId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@unique([continuationId, requestHash])
 }
 
 /// Private Workspace archive captured for one continuation claim. It is never
@@ -2972,6 +2994,10 @@ model ChatTitleGeneration {
   answerText       String
   reasoningEffort  String?
   providerSnapshot Json?
+  /// Null preserves the legacy accepted title request.
+  maxOutputTokens  Int?
+  responseTimeoutMs Int?
+  dispatchDeadlineAt DateTime?
   credentialVersionId String?
   status           ChatTitleGenerationStatus @default(pending)
   createdAt        DateTime                  @default(now())
@@ -4721,7 +4747,7 @@ model MemoryRecallChunk {
   @@unique([userId, id])
   @@unique([userId, chatId, id])
   @@unique([userId, id, chatId, branchGeneration, sourceRevisionAtCreation, contentHash], map: "MemoryRecallChunk_source_identity_key")
-  @@unique([userId, chatId, branchGeneration, sourceRevisionAtCreation, chunkingVersion, sourceProjectionVersion, chunkOrdinal], map: "MemoryRecallChunk_source_ordinal_key")
+  // SQL partial unique index reserves ordinal slots only for ACTIVE/SUPPRESSED projections.
   @@index([userId, chatId, state, branchGeneration, sourceRevisionAtCreation])
   @@index([userId, evidenceRootHash, state])
   @@index([userId, sourceFolderId, state])

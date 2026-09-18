@@ -1,3 +1,4 @@
+import { admittedOutputAllowance } from "./modelOutputAllowance";
 import { dispatchSearchRequest } from "./searchDispatch";
 import {
   adminSearchExecutionLimits
@@ -75,7 +76,7 @@ export function buildGeminiInteractionsSearchRequest(
   const thinkingLevel = policy.reasoningPolicy === "lowest_supported"
     ? lowestSupportedThinkingLevel(policy.modelCapabilities)
     : undefined;
-  return {
+  const body: GeminiInteractionsSearchRequestBody = {
     generation_config: {
       max_output_tokens: policy.maxOutputTokens,
       ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
@@ -92,6 +93,8 @@ export function buildGeminiInteractionsSearchRequest(
     system_instruction: "Use Google Search for the query and return concise source-backed findings.",
     tools: [{ type: "google_search" }]
   };
+  return request.generationBudget ? { ...body, generation_config: { ...body.generation_config,
+    max_output_tokens: admittedOutputAllowance(request.generationBudget, body) } } : body;
 }
 
 function safeFailureCode(error: unknown): string {

@@ -6,7 +6,8 @@ import { canonicalMemoryExecutionJson } from "./canonical";
 import { memoryExecutionFailure } from "./errors";
 import type { ResolvedMemoryExecutionTarget } from "./policy";
 import type { MemoryExecutionCompatibilityRequirement } from "./compatibility";
-import { isMemoryExecutionRole, type MemoryExecutionRole } from "./roles";
+import { isMemoryExecutionRole, memoryRoleRequiresStrictOutput, type MemoryExecutionRole } from "./roles";
+import { admitModelGenerationBudget, isModelGenerationBudget, type ModelGenerationBudget } from "../../providers/modelOutputAllowance";
 
 const MAX_EXECUTION_SNAPSHOT_BYTES = 128 * 1024;
 const sha256 = /^[a-f0-9]{64}$/u;
@@ -27,8 +28,7 @@ type SnapshotBase = Readonly<{
 
 export type MemorySecretFreeExecutionSnapshot = SnapshotBase & Readonly<{
   compatibilityRequirement: MemoryExecutionCompatibilityRequirement;
-  version: 2;
-}>;
+}> & (Readonly<{ version: 2 | 3 }> | Readonly<{ version: 4; generationBudget: ModelGenerationBudget | null }>);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -107,7 +107,9 @@ export function createMemoryExecutionSnapshot(input: Readonly<{
     compatibilityRequirement: input.compatibilityRequirement,
     requiresStrictStructuredOutput: input.requiresStrictStructuredOutput,
     utilityPolicyVersion: input.utilityPolicyVersion,
-    version: 2 as const
+    // v4 freezes the shared model-aware policy; v2/v3 keep their old allowance.
+    generationBudget: memoryRoleRequiresStrictOutput(input.role) ? admitModelGenerationBudget(input.target.snapshot) : null,
+    version: 4 as const
   } as MemorySecretFreeExecutionSnapshot;
   if (!validSnapshotSize(snapshot)) {
     return memoryExecutionFailure("memory_execution_snapshot_invalid");
@@ -117,7 +119,7 @@ export function createMemoryExecutionSnapshot(input: Readonly<{
 
 export function parseMemoryExecutionSnapshot(value: unknown): MemorySecretFreeExecutionSnapshot {
   if (
-    !isRecord(value) || value.version !== 2 ||
+    !isRecord(value) || value.version !== 2 && value.version !== 3 && value.version !== 4 ||
     !validSnapshotSize(value) ||
     typeof value.acceptedUtilityEgressFingerprint !== "string" ||
     !sha256.test(value.acceptedUtilityEgressFingerprint) ||
@@ -126,6 +128,8 @@ export function parseMemoryExecutionSnapshot(value: unknown): MemorySecretFreeEx
     typeof value.executionTargetFingerprint !== "string" ||
     !sha256.test(value.executionTargetFingerprint) ||
     !isMemoryExecutionRole(value.logicalRole) ||
+    value.version === 4 && (memoryRoleRequiresStrictOutput(value.logicalRole)
+      ? !isModelGenerationBudget(value.generationBudget) : value.generationBudget !== null) ||
     (value.credentialSource !== "default" && value.credentialSource !== "group" &&
       value.credentialSource !== "user") ||
     (value.policyRevision !== null &&
@@ -158,5 +162,7 @@ export function parseMemoryExecutionSnapshot(value: unknown): MemorySecretFreeEx
     requiresStrictStructuredOutput: value.requiresStrictStructuredOutput,
     utilityPolicyVersion: value.utilityPolicyVersion
   } as const;
-  return Object.freeze({ ...base, version: 2 as const });
+  return value.version === 4
+    ? Object.freeze({ ...base, version: 4, generationBudget: value.generationBudget as ModelGenerationBudget | null })
+    : Object.freeze({ ...base, version: value.version });
 }

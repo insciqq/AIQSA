@@ -54,10 +54,10 @@ describe("Search adapter configuration", () => {
     expect(() => normalizeSearchDraft({ ...clientDraft, timeoutMs: 900_001 })).toThrow(
       "search_configuration_invalid"
     );
-    expect(() => normalizeSearchDraft({ ...clientDraft, maxOutputTokens: 1_023 })).toThrow(
+    expect(() => normalizeSearchDraft({ ...clientDraft, maxOutputTokens: 15 })).toThrow(
       "search_configuration_invalid"
     );
-    expect(() => normalizeSearchDraft({ ...clientDraft, maxOutputTokens: 32_769 })).toThrow(
+    expect(() => normalizeSearchDraft({ ...clientDraft, maxOutputTokens: Number.MAX_SAFE_INTEGER + 1 })).toThrow(
       "search_configuration_invalid"
     );
     expect(() => normalizeSearchDraft({ ...clientDraft, maxSearchCallsPerAnswer: 33 })).toThrow(

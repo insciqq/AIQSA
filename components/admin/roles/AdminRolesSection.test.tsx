@@ -183,7 +183,7 @@ function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSetti
           ...(Object.hasOwn(body, "maxToolRounds") ? {
             maxMcpToolsPerDiscovery: Number(body.maxMcpToolsPerDiscovery), maxToolCalls: Number(body.maxToolCalls),
             maxToolRounds: Number(body.maxToolRounds), mcpAutoDiscoveryTimeoutSeconds: Number(body.mcpAutoDiscoveryTimeoutSeconds),
-            mcpAutoDiscoveryMaxOutputTokens: Number(body.mcpAutoDiscoveryMaxOutputTokens)
+            mcpAutoDiscoveryMaxOutputTokens: body.mcpAutoDiscoveryMaxOutputTokens === null ? null : Number(body.mcpAutoDiscoveryMaxOutputTokens)
           } : {})
         } };
       }
@@ -600,6 +600,21 @@ describe("AdminRolesSection", () => {
     fireEvent(window, new Event("focus"));
     await waitFor(() => expect(calls.filter((call) => call.method === "GET")).toHaveLength(previousGetCount + 3));
     expect(tokens).toHaveValue(32768);
+  });
+
+  it("saves Auto without converting it to zero and retains the choice after refresh", async () => {
+    const calls = server();
+    renderSection();
+    const mode = await screen.findByRole("combobox", { name: "MCP output budget" });
+    expect(mode).toHaveValue("manual");
+    fireEvent.change(mode, { target: { value: "model" } });
+    expect(screen.queryByRole("spinbutton", { name: "MCP Auto output tokens" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByText("No unsaved changes")).toBeInTheDocument());
+    expect(patchesTo(calls, "/api/admin/providers/model-policy").at(-1)).toMatchObject({ mcpAutoDiscoveryMaxOutputTokens: null });
+    expect(mode).toHaveValue("model");
+    fireEvent.change(mode, { target: { value: "manual" } });
+    expect(screen.getByRole("spinbutton", { name: "MCP Auto output tokens" })).toHaveValue(65536);
   });
 
   it("saves the default chat model and tool limits with one request", async () => {

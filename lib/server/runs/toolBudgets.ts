@@ -1,23 +1,24 @@
+import { createSystemModelRoleResolver } from "../providerRuntime/systemModelRole";
+import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import type { NormalizedRunRequest } from "../providers/types";
 import { prisma } from "../prisma";
 import {
   MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS,
-  MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS,
-  isMcpAutoDiscoveryOutputTokens,
+  isMcpDiscoveryOutputBudget,
   MCP_RUN_PLAN_LIMITS
 } from "../../contracts/mcp";
 
 export type ToolRunBudgets = Readonly<{
   mcpAutoDiscoveryTimeoutSeconds: number;
   /** Null means pre-field checkpoints derive the old cap from each routing limit. */
-  mcpAutoDiscoveryMaxOutputTokens: number | null;
+  mcpAutoDiscoveryMaxOutputTokens: number | "model" | null;
   maxMcpToolsPerDiscovery: number;
   maxToolCalls: number;
   maxToolRounds: number;
 }>;
 
 export const DEFAULT_TOOL_RUN_BUDGETS: ToolRunBudgets = Object.freeze({
-  mcpAutoDiscoveryMaxOutputTokens: MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.defaultTokens,
+  mcpAutoDiscoveryMaxOutputTokens: "model",
   mcpAutoDiscoveryTimeoutSeconds: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.defaultSeconds,
   maxMcpToolsPerDiscovery: 10,
   maxToolCalls: 20,
@@ -26,7 +27,7 @@ export const DEFAULT_TOOL_RUN_BUDGETS: ToolRunBudgets = Object.freeze({
 
 const LEGACY_TOOL_RUN_BUDGETS: ToolRunBudgets = Object.freeze({
   mcpAutoDiscoveryMaxOutputTokens: null,
-  mcpAutoDiscoveryTimeoutSeconds: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.defaultSeconds,
+  mcpAutoDiscoveryTimeoutSeconds: 60,
   maxMcpToolsPerDiscovery: 5,
   maxToolCalls: 16,
   maxToolRounds: 3
@@ -48,7 +49,7 @@ function validToolLoopBudgets(value: unknown): value is Readonly<{
 
 function valid(value: unknown): value is ToolRunBudgets {
   return validToolLoopBudgets(value) &&
-    isMcpAutoDiscoveryOutputTokens((value as Record<string, unknown>).mcpAutoDiscoveryMaxOutputTokens) &&
+    isMcpDiscoveryOutputBudget((value as Record<string, unknown>).mcpAutoDiscoveryMaxOutputTokens) &&
     positiveSafeInteger((value as Record<string, unknown>).mcpAutoDiscoveryTimeoutSeconds) &&
     Number((value as Record<string, unknown>).mcpAutoDiscoveryTimeoutSeconds) <=
       MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds &&
@@ -74,11 +75,11 @@ export function toolRunBudgetsForRequest(
   if (validToolLoopBudgets(request.toolBudgets)) {
     const candidate = request.toolBudgets as Record<string, unknown>;
     if (candidate.mcpAutoDiscoveryMaxOutputTokens !== undefined &&
-      !isMcpAutoDiscoveryOutputTokens(candidate.mcpAutoDiscoveryMaxOutputTokens)) {
+      !isMcpDiscoveryOutputBudget(candidate.mcpAutoDiscoveryMaxOutputTokens)) {
       throw new Error("accepted_tool_budgets_invalid");
     }
     return {
-      mcpAutoDiscoveryMaxOutputTokens: (candidate.mcpAutoDiscoveryMaxOutputTokens as number | undefined) ?? null,
+      mcpAutoDiscoveryMaxOutputTokens: (candidate.mcpAutoDiscoveryMaxOutputTokens as number | "model" | undefined) ?? null,
       mcpAutoDiscoveryTimeoutSeconds: positiveSafeInteger(candidate.mcpAutoDiscoveryTimeoutSeconds) &&
         candidate.mcpAutoDiscoveryTimeoutSeconds <= MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds
         ? candidate.mcpAutoDiscoveryTimeoutSeconds
@@ -106,9 +107,16 @@ export const installationToolBudgetPolicy = {
       where: { id: "installation" }
     });
     if (!policy) throw new Error("installation_model_policy_missing");
+    let discoveryTimeoutSeconds = policy.mcpAutoDiscoveryTimeoutSeconds === null ? null : Number(policy.mcpAutoDiscoveryTimeoutSeconds);
+    if (discoveryTimeoutSeconds === null) {
+      const resolution = await createSystemModelRoleResolver(prisma).resolve();
+      discoveryTimeoutSeconds = resolution.ok ? Math.ceil(effectiveProviderResponseTimeoutMs(
+        resolution.role.snapshot.connection, resolution.role.snapshot.model.adapterKind === "fake" ? null : resolution.role.snapshot.model) / 1000)
+        : MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.defaultSeconds;
+    }
     const budgets = {
-      mcpAutoDiscoveryTimeoutSeconds: Number(policy.mcpAutoDiscoveryTimeoutSeconds),
-      mcpAutoDiscoveryMaxOutputTokens: Number(policy.mcpAutoDiscoveryMaxOutputTokens),
+      mcpAutoDiscoveryTimeoutSeconds: discoveryTimeoutSeconds,
+      mcpAutoDiscoveryMaxOutputTokens: policy.mcpAutoDiscoveryMaxOutputTokens === null ? "model" as const : Number(policy.mcpAutoDiscoveryMaxOutputTokens),
       maxMcpToolsPerDiscovery: Number(policy.maxMcpToolsPerDiscovery),
       maxToolCalls: Number(policy.maxToolCalls),
       maxToolRounds: Number(policy.maxToolRounds)

@@ -1,4 +1,5 @@
 import { retainDatabaseFailure } from "../../observability/databaseFailure";
+import { nativeRouteAdoptionStatus } from "../../../contracts/nativeRoutingAdoption";
 import { mergeSystemRoleEvidence } from "./systemRoleEvidence";
 import { decodeCapabilitySetupEvidence, pendingInitialCapabilityEvidence } from "./initialCapabilitySetup";
 import { decodeParallelToolCallVerificationEvidence } from "../../providers/parallelToolCallEvidence";
@@ -930,6 +931,7 @@ export function createPrismaAdminProviderRepository(
         family: family(connection.family),
         id: connection.id,
         models: connection.models.map((model) => ({
+          nativeRoutingAdoption: nativeRouteAdoptionStatus(model.nativeRoutingAdoptionReason, model.nativeRoutingAdoptionEvidence),
           activatedAt: date(model.activatedAt),
           activeConfig: model.activeConfig === null
             ? null
@@ -1068,7 +1070,8 @@ export function createPrismaAdminProviderRepository(
           draftConfig: json(input.configuration),
           draftVersion: { increment: 1 },
           nativeRoutingAdoptionVersion: 1,
-          nativeRoutingAdoptionReason: "preserved"
+          nativeRoutingAdoptionReason: "preserved",
+          nativeRoutingAdoptionEvidence: Prisma.DbNull
         },
         where: {
           activeVersion: input.expectedActiveVersion,

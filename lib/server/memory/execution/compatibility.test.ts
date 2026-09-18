@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { MemoryExecutionError } from "./errors";
 import type { ResolvedMemoryExecutionTarget } from "./policy";
 import { resolveMemoryExecutionCompatibility } from "./compatibility";
+import { createMemoryExecutionSnapshot, parseMemoryExecutionSnapshot } from "./snapshot";
+import { memoryFactProviderEvidence } from "../learning/extraction/runtime";
+import { memoryFactDecisionProviderEvidence } from "../learning/consolidation/runtime";
 import {
   MEMORY_EXECUTABLE_ROLES,
   MEMORY_EXECUTION_ROLES,
@@ -76,6 +79,30 @@ function target(
 }
 
 describe("Memory execution compatibility", () => {
+  it("pins the new output policy and preserves the version of previously accepted work", () => {
+    const acceptedTarget = target(true);
+    const compatibility = resolveMemoryExecutionCompatibility({
+      role: "MEMORY_FACT_EXTRACT", target: acceptedTarget, versions
+    });
+    const snapshot = createMemoryExecutionSnapshot({
+      acceptedUtilityEgressFingerprint: "7".repeat(64),
+      compatibilityId: compatibility.compatibilityId,
+      compatibilityRequirement: compatibility.requirement,
+      requiresStrictStructuredOutput: true,
+      role: "MEMORY_FACT_EXTRACT", target: acceptedTarget, utilityPolicyVersion: "test-v1"
+    });
+    expect(snapshot.version).toBe(4);
+    expect(memoryFactProviderEvidence(snapshot).memorySnapshotVersion).toBe(4);
+    expect(memoryFactDecisionProviderEvidence({ ...snapshot, logicalRole: "MEMORY_CONSOLIDATE" })
+      .memorySnapshotVersion).toBe(4);
+    const { generationBudget: _budget, ...oldSnapshot } = snapshot as Extract<typeof snapshot, { version: 4 }>;
+    void _budget;
+    const legacy = { ...oldSnapshot, version: 2 as const };
+    expect(parseMemoryExecutionSnapshot(legacy)).toEqual(legacy);
+    expect(memoryFactProviderEvidence(legacy).memorySnapshotVersion).toBeUndefined();
+    expect(() => parseMemoryExecutionSnapshot({ ...snapshot, version: 5 }))
+      .toThrow("memory_execution_snapshot_invalid");
+  });
   it("keeps the bounded role and strict-output declarations", () => {
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_FACT_EXTRACT");
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_RERANK");

@@ -82,7 +82,7 @@ export function ChatContextIndicatorV2({ stats, continuation, continuationFiles 
             {continuation.uploading ? <p role="status">Wait for uploads to finish.</p> : null}
             {continuation.error ? <p role="alert">{continuation.error}</p> : null}
             {continuation.busy ? <>
-              <p role="status">Preparing your summary…</p>
+              <p role="status">{continuation.progress ?? "Preparing your summary…"}</p>
               <UiV2Button onClick={continuation.onCancel}>Cancel</UiV2Button>
             </> : <div className="v2-chat-context-actions">
               <UiV2Button tone="primary" disabled={continuation.uploading} onClick={continuation.onContinue}>Summarize and open new chat</UiV2Button>

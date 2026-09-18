@@ -339,6 +339,8 @@ async function executeAcceptedOperation(input: Readonly<{
   try {
     execution = await input.execute({
       maxOutputTokens: input.acceptedRequest.maxOutputTokens,
+      ...("reasoningBudgetIncluded" in input.acceptedRequest && input.acceptedRequest.reasoningBudgetIncluded
+        ? { reasoningBudgetIncluded: true as const } : {}),
       name: input.acceptedRequest.name,
       reasoningEffort: input.acceptedRequest.reasoningEffort,
       schema: input.acceptedRequest.schema,

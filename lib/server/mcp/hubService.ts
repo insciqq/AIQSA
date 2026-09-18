@@ -3,6 +3,7 @@ import type {
   McpHubToolDescriptor
 } from "@/lib/contracts/mcpHub";
 import { MCP_RUN_PLAN_LIMITS } from "@/lib/contracts/mcp";
+import { getMcpRequestMaxBytes } from "./responseLimits";
 import { canonicalMcpJson, hashCanonicalMcpValue } from "./definitions";
 import {
   LEGACY_MCP_DISCOVERY_MAX_RESULTS,
@@ -98,11 +99,12 @@ export type McpHubServiceDependencies = Readonly<{
   /** Read the current exact definition/authority without starting a runtime. */
   inspect(userId: string, tools: SelectedTools): Promise<McpRunPlanResult>;
   router: McpSemanticRouter;
-  recordDiscoveryAttempt(authority: McpHubAuthority, role: Parameters<McpRouterAttemptRecorder>[0]): ReturnType<McpRouterAttemptRecorder>;
+  recordDiscoveryAttempt(authority: McpHubAuthority, role: Parameters<McpRouterAttemptRecorder>[0], maxOutputTokens: number, timeoutMs: number, inputBytes: number): ReturnType<McpRouterAttemptRecorder>;
   recordDispatch(input: Readonly<{
     clientId: string;
     grantId: string;
     resourcePath: "/mcp/hub";
+    timeoutMs: number;
     toolId: string;
     toolVersion: string;
     userId: string;
@@ -177,7 +179,7 @@ function safeArguments(value: Readonly<Record<string, unknown>>): Record<string,
     const encoded = canonicalMcpJson(value);
     const snapshot = JSON.parse(encoded) as unknown;
     if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) throw new Error("invalid");
-    if (Buffer.byteLength(encoded, "utf8") > 64 * 1_024) throw new Error("too_large");
+    if (Buffer.byteLength(encoded, "utf8") > getMcpRequestMaxBytes()) throw new Error("too_large");
     return snapshot as Record<string, unknown>;
   } catch (error) {
     throw new McpHubServiceError("invalid_arguments", { cause: error });
@@ -193,8 +195,8 @@ export type McpToolAuthority = Readonly<{ userId: string; assertActive(): Promis
 
 export type McpToolServiceDependencies<Authority extends McpToolAuthority> =
   Omit<McpHubServiceDependencies, "recordDispatch" | "recordDiscoveryAttempt"> & Readonly<{
-    recordDiscoveryAttempt(authority: Authority, role: Parameters<McpRouterAttemptRecorder>[0]): ReturnType<McpRouterAttemptRecorder>;
-    recordDispatch(input: Readonly<{ authority: Authority; toolId: string; toolVersion: string }>):
+    recordDiscoveryAttempt(authority: Authority, role: Parameters<McpRouterAttemptRecorder>[0], maxOutputTokens: number, timeoutMs: number, inputBytes: number): ReturnType<McpRouterAttemptRecorder>;
+    recordDispatch(input: Readonly<{ authority: Authority; toolId: string; toolVersion: string; timeoutMs: number }>):
       ReturnType<McpHubServiceDependencies["recordDispatch"]>;
   }>;
 
@@ -274,7 +276,7 @@ export function createMcpToolService<Authority extends McpToolAuthority>(depende
       context?: string;
       goal: string;
       maxResults?: number;
-      maxOutputTokens?: number | null;
+      maxOutputTokens?: number | "model" | null;
       onUsage?(usage: McpRouterUsageAttribution): void;
       signal?: AbortSignal;
       timeoutMs?: number;
@@ -307,7 +309,7 @@ export function createMcpToolService<Authority extends McpToolAuthority>(depende
             limit: maxResults,
             maxOutputTokens: input.maxOutputTokens,
             beforeDispatch: () => assertActive(input.authority, input.signal),
-            recordAttempt: (role) => dependencies.recordDiscoveryAttempt(input.authority, role),
+            recordAttempt: (role, maxOutputTokens, timeoutMs, inputBytes) => dependencies.recordDiscoveryAttempt(input.authority, role, maxOutputTokens, timeoutMs, inputBytes),
             signal: input.signal,
             timeoutMs: input.timeoutMs
           },
@@ -383,13 +385,14 @@ export function createMcpToolService<Authority extends McpToolAuthority>(depende
       }
       // A prepared object is one dispatch admission, not a replay handle.
       preparedCalls.delete(input.prepared);
-      await revalidate(input.authority, input.prepared.descriptor, input.signal);
+      const accepted = await revalidate(input.authority, input.prepared.descriptor, input.signal);
       let receipt: Awaited<ReturnType<McpHubServiceDependencies["recordDispatch"]>>;
       try {
         receipt = await dependencies.recordDispatch({
           authority: input.authority,
           toolId: input.prepared.descriptor.tool_id,
-          toolVersion: input.prepared.descriptor.tool_version
+          toolVersion: input.prepared.descriptor.tool_version,
+          timeoutMs: accepted.snapshot.servers.find(server => server.serverId === input.prepared.serverId)?.runtimeTimeouts?.callTimeoutMs ?? 600_000
         });
       } catch (error) {
         throw new McpHubServiceError("upstream_unavailable", { cause: error });
@@ -455,9 +458,9 @@ export function createMcpToolService<Authority extends McpToolAuthority>(depende
 export function createMcpHubService(dependencies: McpHubServiceDependencies) {
   return createMcpToolService<McpHubAuthority>({
     ...dependencies,
-    recordDispatch: ({ authority, toolId, toolVersion }) => dependencies.recordDispatch({
+    recordDispatch: ({ authority, toolId, toolVersion, timeoutMs }) => dependencies.recordDispatch({
       clientId: authority.clientId, grantId: authority.grantId, userId: authority.userId,
-      resourcePath: "/mcp/hub", toolId, toolVersion
+      resourcePath: "/mcp/hub", toolId, toolVersion, timeoutMs
     })
   });
 }

@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "../../prisma";
+import { logEvent } from "../../observability";
 import { MemoryCoordinatorError } from "../coordinator/errors";
 import type {
   MemoryJobExecutionResult,
@@ -39,6 +40,7 @@ import {
   createPrismaMemoryChatDigestGenerator,
   MemoryChatDigestError,
   MemoryChatDigestOutputError,
+  type MemoryChatDigestContractViolation,
   type MemoryChatDigestGenerationResult,
   type MemoryChatDigestGenerator
 } from "./digest";
@@ -87,7 +89,8 @@ const MEMORY_CHAT_DIGEST_OUTPUT_DEGRADED_POLICY_VERSION =
 
 function degradedMemoryChatDigest(
   reason: "aggregate_limit" | "contract" | "invalid" | "safety_rejected" |
-    "unavailable" | "output_limit"
+    "unavailable" | "output_limit",
+  violation?: MemoryChatDigestContractViolation
 ): Readonly<{
   generated: MemoryChatDigestGenerationResult;
   stage: string;
@@ -104,7 +107,7 @@ function degradedMemoryChatDigest(
         digestSourceChunksProcessed: 0
       }
     },
-    stage: `lexical_ready:digest_${reason}`
+    stage: `lexical_ready:digest_${reason}${violation ? `_${violation}` : ""}`
   };
 }
 
@@ -558,7 +561,10 @@ export function createMemoryHistoryIndexHandler(
                   : error.code === "memory_chat_digest_output_limit" ? "output_limit" : "invalid"
                 : null;
             if (!reason) throw error;
-            const degraded = degradedMemoryChatDigest(reason);
+            const violation = error instanceof MemoryChatDigestOutputError ? error.violation : undefined;
+            logEvent("service_operation", { subsystem: "memory", stage: "validate", outcome: "degraded",
+              job_id: claim.id, code: `memory_chat_digest_${reason}${violation ? `_${violation}` : ""}`, action: "degrade" });
+            const degraded = degradedMemoryChatDigest(reason, violation);
             generated = degraded.generated;
             completionStage = degraded.stage;
           }

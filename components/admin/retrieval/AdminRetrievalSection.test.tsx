@@ -157,18 +157,21 @@ describe("AdminRetrievalSection", () => {
     expect(within(memory).getByRole("link", { name: "Open Defaults & roles" })).toHaveAttribute("href", "/admin?section=roles&resource=memory");
     expect(memory).not.toHaveTextContent(/consent|memory_execution_/u);
   });
-  it("shows usable raw history with limited derived context and no automatic retry", async () => {
-    server({ memory: memoryStatus({ queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
+  it.each(["RETRYING", "EXHAUSTED"] as const)("shows history auto-heal %s without a repair button or UI-triggered work", async (autoHeal) => {
+    const calls = server({ memory: memoryStatus({ queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
       recovery: memoryRecoveryStatusFixture(), processing: { enabled: true, issues: [{
-        stage: "HISTORY", reason: "OUTPUT_LIMIT", severity: "warn", count: 1, oldestAgeSeconds: 60
+        stage: "HISTORY", reason: "OUTPUT_LIMIT", severity: "warn", count: 1, oldestAgeSeconds: 60, autoHeal
       }] } }) });
     renderSection();
-    await waitFor(() => expect(screen.getByTestId("memory-state")).toHaveTextContent("Limited history context"));
+    await waitFor(() => expect(screen.getByTestId("memory-state")).toHaveTextContent(autoHeal === "RETRYING" ? "Recovering history" : "Limited history context"));
     const memory = screen.getByTestId("admin-retrieval-memory");
     expect(memory).toHaveTextContent("History text remains searchable");
     expect(within(memory).queryByRole("button", { name: "Retry eligible work" })).not.toBeInTheDocument();
-    expect(within(memory).getByRole("link", { name: "Open Defaults & roles" }))
+    expect(memory).toHaveTextContent(autoHeal === "RETRYING" ? "No action is needed" : "Auto-heal could not restore processing after 3 attempts");
+    if (autoHeal === "EXHAUSTED") expect(within(memory).getByRole("link", { name: "Open Defaults & roles" }))
       .toHaveAttribute("href", "/admin?section=roles&resource=memory");
+    expect(calls.filter(({ method }) => method === "POST")).toEqual([]);
+    expect(within(memory).queryByRole("button", { name: /regenerate|repair/i })).not.toBeInTheDocument();
   });
   it("shows one processing line, alerts and metrics, and links assignments to Defaults & roles", async () => {
     server({ knowledge: adminKnowledgeSettingsFixture({ operations: adminKnowledgeOperationsFixture({

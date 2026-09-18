@@ -27,6 +27,29 @@ const request = {
   userPrompt: "Set ok to true."
 };
 
+it("allows a model-admitted reasoning budget above 64k without enlarging decoded JSON", () => {
+  const model = responsesModel("openai_responses_native");
+  model.capabilities.maxOutputTokens = 131072;
+  const extended = { ...request, maxOutputTokens: 131072, reasoningBudgetIncluded: true as const };
+  expect(buildOpenAIResponsesStructuredOutputRequest(model, extended)).toMatchObject({ max_output_tokens: 131072 });
+  expect(() => buildOpenAIResponsesStructuredOutputRequest(model, { ...extended, maxOutputTokens: 131073 })).toThrow();
+  expect(() => buildOpenAIResponsesStructuredOutputRequest(model, { ...extended, reasoningBudgetIncluded: undefined })).toThrow();
+  delete model.capabilities.maxOutputTokens;
+  expect(() => buildOpenAIResponsesStructuredOutputRequest(model, extended)).toThrow();
+  model.defaultParams.maxOutputTokens = 131072;
+  expect(buildOpenAIResponsesStructuredOutputRequest(model, extended)).toMatchObject({ max_output_tokens: 131072 });
+  model.capabilities.maxOutputTokens = 32768;
+  expect(() => buildOpenAIResponsesStructuredOutputRequest(model, { ...extended, maxOutputTokens: 65536 })).toThrow();
+  expect(STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters).toBe(1024 * 1024);
+});
+
+it("rejects a structured request outside the model context before transport", () => {
+  const model = responsesModel("openai_responses_native");
+  model.capabilities.contextWindow = 2048;
+  expect(() => buildOpenAIResponsesStructuredOutputRequest(model, { ...request, userPrompt: "x".repeat(8192) }))
+    .toThrow("provider_context_limit_exceeded");
+});
+
 const rootUnionSchema = {
   oneOf: [
     {
@@ -114,7 +137,7 @@ describe("provider structured output", () => {
     }
     expect(buildOpenRouterStructuredOutputRequest(openRouterModel, { ...request, maxOutputTokens }))
       .toHaveProperty("max_tokens", maxOutputTokens);
-    expect(STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters).toBe(65_536);
+    expect(STRUCTURED_OUTPUT_LIMITS.maxOutputCharacters).toBe(1024 * 1024);
   });
 
   it.each(["openai_responses_native", "openai_responses_compatible", "deepseek_responses_native"] as const)(
@@ -421,7 +444,7 @@ describe("provider structured output", () => {
       responsesModel("openai_responses_native"),
       {
         ...request,
-        userPrompt: "😀".repeat(64_001)
+        userPrompt: "😀".repeat(Math.floor(STRUCTURED_OUTPUT_LIMITS.maxPromptBytes / 4) + 1)
       }
     )).toThrow("structured_output_request_invalid");
   });

@@ -1397,3 +1397,13 @@ describe("Search plan tool router", () => {
     });
   });
 });
+
+it("uses the admitted model allowance in Auto without the old Search ceiling and keeps legacy requests unchanged", async () => {
+  const { searchExecutionConfiguration } = await import("./toolExecutor");
+  const generationBudget = { version: 1, contextWindow: 250000, maxOutputTokens: 131072, timeoutMs: 300000 };
+  const auto = option("auto", { config: { maxOutputTokens: null, generationBudget } });
+  expect(searchExecutionConfiguration(auto, { query: "A query" }).maxOutputTokens).toBe(131072);
+  expect(searchExecutionConfiguration(option("old")).maxOutputTokens).toBe(4096);
+  expect(() => searchExecutionConfiguration(option("broken", { config: { maxOutputTokens: null } })))
+    .toThrow("search_generation_budget_invalid");
+});

@@ -27,7 +27,10 @@ export function createChatTitleRepository(client: PrismaClient) {
       // A dispatched call is never replayed. Its unknown-usage receipt remains
       // chargeable evidence even after a crash or loss of the response.
       await client.chatTitleGeneration.updateMany({
-        where: { status: "dispatched", dispatchedAt: { lte: new Date(now.getTime() - 60_000) } },
+        where: { status: "dispatched", OR: [
+          { dispatchDeadlineAt: { lte: now } },
+          { dispatchDeadlineAt: null, dispatchedAt: { lte: new Date(now.getTime() - 60_000) } }
+        ] },
         data: { ...clearedInput, finishedAt: now, status: "ambiguous" }
       });
     },
@@ -60,7 +63,9 @@ export function createChatTitleRepository(client: PrismaClient) {
         }
         const snapshot = normalizeProviderExecutionSnapshot(job.providerSnapshot);
         await tx.chatTitleGeneration.update({ where: { runId: job.runId },
-          data: { dispatchedAt: now, status: "dispatched" } });
+          data: { dispatchedAt: now, status: "dispatched",
+            dispatchDeadlineAt: job.responseTimeoutMs === null ? null :
+              new Date(now.getTime() + job.responseTimeoutMs + 60_000) } });
         await tx.usageEvent.create({ data: {
           chatId: job.chatId, chatTitleGeneration: true, chatTitleGenerationId: job.runId,
           modelId: snapshot.model.upstreamModelId, modelRunId: job.runId,
@@ -70,6 +75,7 @@ export function createChatTitleRepository(client: PrismaClient) {
         return {
           answerText: job.answerText, chatId: job.chatId, expectedTitle: job.expectedTitle,
           providerSnapshot: snapshot, questionText: job.questionText,
+          maxOutputTokens: job.maxOutputTokens, responseTimeoutMs: job.responseTimeoutMs,
           reasoningEffort: job.reasoningEffort, runId: job.runId,
           titleRevision: job.titleRevision, userId: job.userId
         };

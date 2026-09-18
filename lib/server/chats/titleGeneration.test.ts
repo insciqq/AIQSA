@@ -79,6 +79,7 @@ describe("createChatTitleGenerator", () => {
     const work = enqueue.mock.calls[0]?.[0];
     expect(work).toMatchObject({ chatId: context.chatId, runId: context.runId, userId: context.userId,
       expectedTitle: "Explain TCP versus UDP", titleRevision: 3, reasoningEffort: "low",
+      maxOutputTokens: 65_536, responseTimeoutMs: 8_000,
       providerSnapshot: { credentialId: "title-credential", credentialVersionId: "title-credential-version", providerModelId: "title-model" }
     });
     expect(work?.questionText.length).toBeLessThanOrEqual(1_201);

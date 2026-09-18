@@ -580,7 +580,10 @@ describe("Memory INDEX_HISTORY handler", () => {
     );
   });
 
-  it("commits safe chunks when only the derived digest output is invalid", async () => {
+  it.each([
+    [new MemoryChatDigestOutputError("aggregate_limit"), "lexical_ready:digest_aggregate_limit"],
+    [new MemoryChatDigestOutputError("contract", "summary_length"), "lexical_ready:digest_contract_summary_length"]
+  ] as const)("commits safe chunks and preserves content-free digest failure detail (%#)", async (failure, expectedStage) => {
     const currentClaim = claim();
     const currentPlan = plan([chunk("chunk-safe", 0)]);
     const apply = vi.fn(async () => undefined);
@@ -592,7 +595,7 @@ describe("Memory INDEX_HISTORY handler", () => {
       classifier,
       digestGenerator: {
         generate: vi.fn(async () => {
-          throw new MemoryChatDigestOutputError("aggregate_limit");
+          throw failure;
         })
       },
       repository: {
@@ -610,7 +613,7 @@ describe("Memory INDEX_HISTORY handler", () => {
         digestIncremental: 0,
         digestNoop: 0
       },
-      stage: "lexical_ready:digest_aggregate_limit"
+      stage: expectedStage
     });
     expect(classifier.classify).not.toHaveBeenCalled();
     expect(executionContext.setStage.mock.calls.map(([stage]) => stage)).toEqual([
@@ -630,7 +633,7 @@ describe("Memory INDEX_HISTORY handler", () => {
       expect.objectContaining({
         digest: null,
         digestPolicyVersion:
-          "memory-chat-digest-output-degraded-v1:aggregate_limit"
+          `memory-chat-digest-output-degraded-v1:${failure.reason}`
       }),
       new Date("2026-08-10T12:00:00.000Z")
     );

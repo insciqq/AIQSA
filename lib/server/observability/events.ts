@@ -79,6 +79,12 @@ export type EventFields = {
     duration_ms?: number; attempt?: number; code?: string; reason?: Reason; httpStatus?: number;
     action?: LifecycleAction; count?: number;
   }>;
+  mcp_discovery: Readonly<{
+    outcome: "started" | "completed"; attempt: number; duration_ms?: number;
+    correction_reason: "none" | "uncovered_outcomes" | "tool_limit" | "coverage_and_limit";
+    input_bytes: number; candidate_count: number; selected_count?: number; requirement_count?: number;
+    uncovered_count?: number; previous_uncovered_count?: number; selection_changed?: boolean;
+  }>;
   tool_deadline: ToolOperationFields & Readonly<{
     tool_kind: ToolKind; outer_timeout_ms?: number; configured_timeout_ms?: number;
     provider_timeout_ms?: number; effective_timeout_ms?: number; request_timeout_ms?: number;

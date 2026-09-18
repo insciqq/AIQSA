@@ -4,6 +4,8 @@ import { normalizeProviderExecutionSnapshot, type ProviderExecutionSnapshot } fr
 import { type SystemModelRoleResolution } from "../providerRuntime/systemModelRole";
 import { createChatTitleModelRoleResolver } from "../providerRuntime/chatTitleModelRole";
 import type { ProviderStructuredOutputRequest } from "../providers/structuredOutput";
+import { modelOutputAllowance, structuredOutputInput } from "../providers/modelOutputAllowance";
+import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import { createChatTitleRepository } from "./titleGenerationRepository";
 import { messageTextFromContent, titleFromMessageContent } from "./titlePolicy";
 
@@ -34,6 +36,8 @@ export type ChatTitleWork = Readonly<{
   providerSnapshot: ProviderExecutionSnapshot;
   questionText: string;
   reasoningEffort: string | null;
+  maxOutputTokens?: number | null;
+  responseTimeoutMs?: number | null;
   runId: string;
   titleRevision: number;
   userId: string;
@@ -73,9 +77,11 @@ export function buildChatTitleRequest(input: Readonly<{
   answerText: string;
   questionText: string;
   reasoningEffort?: string | null;
+  maxOutputTokens?: number | null;
 }>): ProviderStructuredOutputRequest {
   return {
-    maxOutputTokens: 64,
+    maxOutputTokens: input.maxOutputTokens ?? 64,
+    ...(input.maxOutputTokens == null ? {} : { reasoningBudgetIncluded: true as const }),
     name: "chat_title",
     reasoningEffort: input.reasoningEffort ?? null,
     schema: {
@@ -114,11 +120,17 @@ export function createChatTitleGenerator(deps: Readonly<{
       if (!turn || turn === "customized") return;
       const resolution = await deps.resolveTitleModel();
       if (!resolution.ok || resolution.role.modelConfiguration.capabilities.structuredOutput !== true) return;
+      const providerSnapshot = normalizeProviderExecutionSnapshot(resolution.role.snapshot);
+      const request = buildChatTitleRequest({ answerText: context.answerText, questionText: turn.questionText,
+        reasoningEffort: resolution.reasoningEffort });
       await deps.enqueue({
         answerText: excerpt(context.answerText, ANSWER_EXCERPT_LENGTH),
         chatId: context.chatId,
         expectedTitle: turn.expectedTitle,
-        providerSnapshot: normalizeProviderExecutionSnapshot(resolution.role.snapshot),
+        providerSnapshot,
+        maxOutputTokens: modelOutputAllowance(providerSnapshot, structuredOutputInput(request)),
+        responseTimeoutMs: effectiveProviderResponseTimeoutMs(providerSnapshot.connection,
+          providerSnapshot.model.adapterKind === "fake" ? null : providerSnapshot.model),
         questionText: excerpt(turn.questionText, QUESTION_EXCERPT_LENGTH),
         reasoningEffort: resolution.reasoningEffort,
         runId: context.runId,

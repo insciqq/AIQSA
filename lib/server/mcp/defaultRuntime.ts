@@ -1,4 +1,5 @@
 import { createMcpClientSessionFactory } from "./clientSessionFactory";
+import { getMcpRequestMaxBytes } from "./responseLimits";
 import {
   createDefaultMcpOAuthRuntimeProvider,
   mcpOAuthService
@@ -27,7 +28,7 @@ import { observedFailureCode } from "../providers/providerObservability";
 
 const DEFAULT_RUNTIME_LIMITS = {
   maxListPages: 16,
-  maxToolArgumentBytes: 64 * 1_024,
+  get maxToolArgumentBytes() { return getMcpRequestMaxBytes(); },
   maxToolMetadataBytes: 256 * 1_024,
   maxToolSchemaBytes: 64 * 1_024,
   maxTools: 256

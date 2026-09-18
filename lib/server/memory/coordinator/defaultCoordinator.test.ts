@@ -36,6 +36,7 @@ describe("default Memory coordinator composition", () => {
       embeddingSetup: step("embedding"),
       cutover: step("cutover"),
       historyBackfill: step("history"),
+      historyAutoHeal: step("history-heal"),
       reclassification: step("reclassification"),
       relations: step("relations"),
       synthesis: step("synthesis")
@@ -49,6 +50,8 @@ describe("default Memory coordinator composition", () => {
       "cutover:end",
       "history:start",
       "history:end",
+      "history-heal:start",
+      "history-heal:end",
       "reclassification:start",
       "reclassification:end",
       "relations:start",

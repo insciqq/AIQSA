@@ -85,7 +85,7 @@ type ExecuteDurableMcpDiscoveryInput = Readonly<{
     }>[]
   ): Promise<McpRunPlanResult>;
   maxResults?: number;
-  maxOutputTokens?: number | null;
+  maxOutputTokens?: number | "model" | null;
   modelRunToolCallId: string;
   onUsage?(attribution: McpRouterUsageAttribution): void;
   request: Pick<ProviderRunRequest, "content" | "context">;

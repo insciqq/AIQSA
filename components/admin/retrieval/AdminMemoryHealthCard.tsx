@@ -34,8 +34,9 @@ function memoryState(status: AdminMemoryStatus): Readonly<{ label: string; statu
   if (status.worker.state === "NOT_RUNNING") return { label: "Worker not running", status: "unavailable" };
   if (status.worker.state === "STALLED") return { label: "Queue stalled", status: "unavailable" };
   if (status.processing.issues.some((issue) => issue.severity === "bad")) return { label: "Processing blocked", status: "unavailable" };
-  if (status.processing.issues.length > 0 && status.processing.issues.every((issue) => issue.reason === "OUTPUT_LIMIT")) {
-    return { label: "Limited history context", status: "reindexing" };
+  if (status.processing.issues.length > 0 && status.processing.issues.every((issue) => issue.reason === "OUTPUT_LIMIT" || issue.reason === "HISTORY_INCOMPLETE")) {
+    return { label: status.processing.issues.every((issue) => issue.autoHeal === "RETRYING")
+      ? "Recovering history" : "Limited history context", status: "reindexing" };
   }
   if (status.processing.issues.length > 0) return { label: "Processing delayed", status: "reindexing" };
   switch (status.index.readiness) {

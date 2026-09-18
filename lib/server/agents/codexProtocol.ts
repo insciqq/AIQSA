@@ -5,7 +5,7 @@
  */
 import { decodeMcpDiscoveryFailure, type McpDiscoveryFailure } from "../../contracts/mcpDiscoveryFailure";
 import { decodeMcpToolFailure, type McpToolFailure } from "../../contracts/mcpToolFailure";
-import { MCP_JSON_RPC_REQUEST_MAX_BYTES, MCP_RESPONSE_WIRE_LIMIT_CEILINGS } from "../mcp/responseLimits";
+import { getMcpRequestMaxBytes, MCP_RESPONSE_WIRE_LIMIT_CEILINGS } from "../mcp/responseLimits";
 
 export type CodexEvent =
   | Readonly<{ type: "thread_started"; threadId: string }>
@@ -49,9 +49,9 @@ export class CodexProtocolError extends Error {
 export const CODEX_OUTPUT_LIMITS = Object.freeze({
   // Codex exec includes MCP results in JSONL. Accommodate the largest permitted
   // tool response, the gateway envelope, and the outer activity record.
-  lineBytes: MCP_RESPONSE_WIRE_LIMIT_CEILINGS.callToolResponseMaxBytes + 2 * MCP_JSON_RPC_REQUEST_MAX_BYTES,
+  get lineBytes() { return 2 * (MCP_RESPONSE_WIRE_LIMIT_CEILINGS.callToolResponseMaxBytes + getMcpRequestMaxBytes()) + 64 * 1024; },
   records: 20_000,
-  totalBytes: 64 * 1024 * 1024
+  get totalBytes() { return Math.max(64 * 1024 * 1024, 2 * this.lineBytes); }
 });
 
 function record(value: unknown): value is Record<string, unknown> {

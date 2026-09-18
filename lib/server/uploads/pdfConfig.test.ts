@@ -34,33 +34,34 @@ describe("PDF extraction configuration", () => {
   });
 
   it.each(["", "0", "-1", "1.5", " 4", "4 ", "1e2", "NaN", "Infinity"])(
-    "falls back for invalid value %j",
+    "rejects invalid timeout %j without silently selecting a different deadline",
     (value) => {
-      expect(
+      expect(() =>
         getPdfExtractionConfig({
           AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS: value,
           AIQSA_PDF_EXTRACTION_TIMEOUT_MS: value,
           AIQSA_PDF_MAX_PAGES: value
         })
-      ).toMatchObject({
-        extractedTextMaxChars: DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS,
-        maxPages: DEFAULT_PDF_MAX_PAGES,
-        timeoutMs: DEFAULT_PDF_EXTRACTION_TIMEOUT_MS
-      });
+      ).toThrow("pdf_extraction_timeout_config_invalid");
     }
   );
 
-  it("falls back when an override exceeds its hard ceiling", () => {
+  it("accepts longer extraction while retaining independent page and text bounds", () => {
     expect(
       getPdfExtractionConfig({
         AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS: String(DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS + 1),
-        AIQSA_PDF_EXTRACTION_TIMEOUT_MS: String(DEFAULT_PDF_EXTRACTION_TIMEOUT_MS + 1),
+        AIQSA_PDF_EXTRACTION_TIMEOUT_MS: "900000",
         AIQSA_PDF_MAX_PAGES: String(DEFAULT_PDF_MAX_PAGES + 1)
       })
     ).toMatchObject({
       extractedTextMaxChars: DEFAULT_PDF_EXTRACTED_TEXT_MAX_CHARS,
       maxPages: DEFAULT_PDF_MAX_PAGES,
-      timeoutMs: DEFAULT_PDF_EXTRACTION_TIMEOUT_MS
+      timeoutMs: 900_000
     });
+  });
+
+  it("rejects a duration that would overflow the runtime timer", () => {
+    expect(() => getPdfExtractionConfig({ AIQSA_PDF_EXTRACTION_TIMEOUT_MS: "2147483648" }))
+      .toThrow("pdf_extraction_timeout_config_invalid");
   });
 });

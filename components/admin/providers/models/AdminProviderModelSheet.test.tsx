@@ -76,6 +76,30 @@ function controller(saveModel: Mock = vi.fn(async () => ({ ok: true as const }))
 describe("AdminProviderModelSheet", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("keeps rejected native-route details collapsed without marking the working model unavailable", () => {
+    const connection = workingConnection();
+    connection.family = "openrouter";
+    const model = connection.models[0]!;
+    model.nativeRoutingAdoption = { reason: "native_incompatible", diagnostic: {
+      version: 1, stage: "modelAccess", code: "http_error", servingMode: "automatic", provider: "deepseek", httpStatus: 404,
+      missing: ["modelAccess"], previouslyUnverified: ["directPdf"]
+    } };
+    const actions = controller();
+    const session = discovery();
+    const load = vi.spyOn(session.endpoints, "load");
+    render(<AdminProviderModelSheet connection={connection} model={model} controller={actions} discovery={session} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    const summary = screen.getByText("Automatic routing kept during native setup");
+    const details = summary.closest("details")!;
+    expect(details.open).toBe(false);
+    expect(within(details).getByText(/HTTP 404/)).not.toBeVisible();
+    fireEvent.click(summary);
+    expect(within(details).getByText(/HTTP 404/)).toBeVisible();
+    expect(within(details).getByText(/saved route and model checks were kept/)).toBeVisible();
+    expect(within(details).getByText(/Direct PDF/)).toBeVisible();
+    expect(load).not.toHaveBeenCalled();
+    expect(actions.actions.saveModel).not.toHaveBeenCalled();
+  });
+
   it("defers saved image catalog and endpoint discovery until the picker is opened", async () => {
     const loadModels = vi.spyOn(providerApi, "discoverAdminImageModels").mockResolvedValue({ ok: true, data: [] });
     const loadEndpoints = vi.spyOn(providerApi, "discoverAdminImageEndpoints").mockResolvedValue({ ok: true, data: [] });

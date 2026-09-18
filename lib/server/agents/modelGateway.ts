@@ -1,4 +1,5 @@
 import { agentFailureCode, agentFailureMessage } from "./failures";
+import { transportFailureFacts } from "../providers/providerObservability";
 import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import type { ModelRunUsage } from "@/lib/domain/modelRunEvents";
 import { readBoundedRequestBody } from "../http/requestBody";
@@ -10,6 +11,11 @@ import type { createAgentRunStore } from "./store";
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function modelFailureCode(error: unknown) {
+  return agentFailureCode(error) ?? (transportFailureFacts(error).category === "dns"
+    ? "agent_provider_dns_failed" : "agent_provider_failed");
 }
 
 function admitLocalTools(value: unknown, budget: { remaining: number }, webSearch = false, depth = 0): void {
@@ -152,7 +158,7 @@ export function createAgentModelGateway(input: Readonly<{
             if (completed) return;
             await settle("UNKNOWN").catch(() => undefined);
             await events.return(undefined).catch(() => undefined);
-            const code = agentFailureCode(error) ?? "agent_provider_failed";
+            const code = modelFailureCode(error);
             await input.onFailure(code).catch(() => undefined);
             controller.error(new Error(code));
           }
@@ -168,7 +174,7 @@ export function createAgentModelGateway(input: Readonly<{
       return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });
     } catch (error) {
       await settle("UNKNOWN").catch(() => undefined);
-      const code = agentFailureCode(error) ?? "agent_provider_failed";
+      const code = modelFailureCode(error);
       await input.onFailure(code).catch(() => undefined);
       return Response.json({ error: { code, message: agentFailureMessage(code) } }, { status: 502 });
     }

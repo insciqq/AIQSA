@@ -15,8 +15,9 @@ FROM "ProviderModel" model WHERE id IN ('native-upgrade-automatic', 'native-upgr
 export const nativeRoutingProofSql = `
 DO $$ BEGIN
   IF (SELECT count(*) FROM "NativeRoutingAdoptionFixture" fixture JOIN "ProviderModel" model ON model.id = fixture.id
-    WHERE fixture.snapshot = to_jsonb(model) - 'nativeRoutingAdoptionVersion' - 'nativeRoutingAdoptionReason'
-      AND model."nativeRoutingAdoptionVersion" = 0 AND model."nativeRoutingAdoptionReason" IS NULL) <> 2 THEN
+    WHERE fixture.snapshot = to_jsonb(model) - 'nativeRoutingAdoptionVersion' - 'nativeRoutingAdoptionReason' - 'nativeRoutingAdoptionEvidence'
+      AND model."nativeRoutingAdoptionVersion" = 0 AND model."nativeRoutingAdoptionReason" IS NULL
+      AND model."nativeRoutingAdoptionEvidence" IS NULL) <> 2 THEN
     RAISE EXCEPTION 'native_migration_changed_routes_or_legacy_models';
   END IF;
   BEGIN

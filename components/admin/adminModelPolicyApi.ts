@@ -47,8 +47,8 @@ export type AdminModelPolicyUpdateInput = Readonly<{
   maxMcpToolsPerDiscovery?: number;
   maxToolCalls?: number;
   maxToolRounds?: number;
-  mcpAutoDiscoveryTimeoutSeconds?: number;
-  mcpAutoDiscoveryMaxOutputTokens?: number;
+  mcpAutoDiscoveryTimeoutSeconds?: number | null;
+  mcpAutoDiscoveryMaxOutputTokens?: number | null;
 }>;
 
 /** One PATCH for the Chat defaults card: model and limits under one version. */

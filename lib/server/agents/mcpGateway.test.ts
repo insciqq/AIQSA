@@ -9,10 +9,109 @@ import { AgentExecutionError, agentFailureCode, agentFailureMessage } from "./fa
 import { McpClientSessionError } from "../mcp/clientSession";
 import { CodexJsonlDecoder, type CodexEvent } from "./codexProtocol";
 import { AgentExecutionOutput } from "./executionOutput";
+import { CODEX_VERSION } from "./codexProfile";
+
+// Text-result contract from the pinned consumer's CallToolResult conversion:
+// https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/protocol/src/models.rs#L2129
+// Non-null structured content takes precedence over all ordinary text items.
+// Pin this harness so an SDK upgrade requires reviewing the actual consumer.
+function codexModelOutput(result: {
+  content: Array<{ type: string; text?: string }>;
+  structuredContent?: unknown;
+  isError?: boolean;
+}) {
+  expect(CODEX_VERSION).toBe("0.154.0");
+  return {
+    body: result.structuredContent != null ? JSON.stringify(result.structuredContent)
+      : result.content.map(({ text }) => text ?? "").join("\n"),
+    success: !result.isError
+  };
+}
 
 vi.mock("../prisma", () => ({ prisma: {} }));
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 describe("Agent MCP discovery surface", () => {
+  it.each([false, true])("uses the shared request envelope and safely reports an over-limit body (%s)", async lowerLimit => {
+    if (lowerLimit) vi.stubEnv("AIQSA_MCP_REQUEST_MAX_BYTES", "1048576");
+    const prepare = vi.fn(async () => ({}));
+    const dispatch = vi.fn(async () => ({ text: ["done"], isError: false }));
+    vi.spyOn(hub, "createMcpToolService").mockReturnValue({ prepareToolCall: prepare, dispatchPreparedToolCall: dispatch } as unknown as ReturnType<typeof hub.createMcpToolService>);
+    const toolId = "fixture_write", toolVersion = "a".repeat(64);
+    const store = { mcpTools: async () => [{ toolId, version: toolVersion }], toolCall: async () => "call",
+      settleTool: vi.fn() } as unknown as ReturnType<typeof createAgentRunStore>;
+    const handler = await createAgentMcpGateway({ request: { agent: { mcpMode: "auto" }, searchPlan: { mode: "all_selected", options: [] } } as unknown as NormalizedRunRequest, store, runId: "run", userId: "user", signal: new AbortController().signal,
+      onFailure: vi.fn(), onUsage: vi.fn() });
+    const payload = "x".repeat(2 * 1024 * 1024) + "PRIVATE_ARGUMENT_TAIL";
+    const response = await handler(new Request("http://agent.invalid/mcp", { method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "call_tool",
+        arguments: { tool_id: toolId, tool_version: toolVersion, arguments: { document: payload } } } }) }));
+    expect(response.status).toBe(lowerLimit ? 413 : 200);
+    if (lowerLimit) {
+      const failure = await response.json();
+      expect(failure).toMatchObject({ code: "mcp_request_too_large", maxBytes: 1048576 });
+      expect(Number(failure.observedBytes)).toBeGreaterThan(1048576);
+      expect(JSON.stringify(failure)).not.toContain("PRIVATE_ARGUMENT_TAIL");
+      expect(prepare).not.toHaveBeenCalled();
+      expect(dispatch).not.toHaveBeenCalled();
+    } else {
+      expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ arguments: { document: payload } }));
+      expect(dispatch).toHaveBeenCalledOnce();
+    }
+  });
+
+  it.each(["auto", "all"] as const)("preserves model-facing errors and structured successes in %s mode", async (mcpMode) => {
+    const message = "Validation error: Provide either url, or project_id, file_path, and ref PRIVATE_TOOL_PATH";
+    expect(codexModelOutput({ content: [{ type: "text", text: message }], structuredContent: {}, isError: true }))
+      .toEqual({ body: "{}", success: false });
+    for (const isError of [true, false]) for (const text of [[message], []]) {
+      for (const structuredContent of [undefined, {}, { code: "missing_project", detail: "PRIVATE_STRUCTURED_DETAIL" }]) {
+        const dispatch = vi.fn(async () => ({ text, structuredContent, isError }));
+        vi.spyOn(hub, "createMcpToolService").mockReturnValue({
+          prepareToolCall: async () => ({}), dispatchPreparedToolCall: dispatch
+        } as unknown as ReturnType<typeof hub.createMcpToolService>);
+        const settleTool = vi.fn(async () => {}), onFailure = vi.fn();
+        const toolId = "fixture_read", toolVersion = "a".repeat(64);
+        const store = { mcpTools: async () => [{ toolId, version: toolVersion }],
+          admitMcpPlan: async () => {}, toolCall: async () => "call", settleTool } as unknown as ReturnType<typeof createAgentRunStore>;
+        const request = { agent: { mcpMode }, searchPlan: { mode: "all_selected", options: [] }, mcp: {
+          version: 1, servers: [{ serverId: "fixture", fingerprint: "b".repeat(64) }], tools: [{
+            serverId: "fixture", namespacedName: toolId, originalName: "read", definitionHash: "c".repeat(64), inputSchema: { type: "object" }
+          }]
+        } } as unknown as NormalizedRunRequest;
+        const handler = await createAgentMcpGateway({ request, store, runId: "run", userId: "user",
+          signal: new AbortController().signal, onFailure, onUsage: async () => {} });
+        const response = await handler(new Request("http://agent.invalid/mcp", { method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: mcpMode === "auto"
+            ? { name: "call_tool", arguments: { tool_id: toolId, tool_version: toolVersion, arguments: {} } }
+            : { name: toolId, arguments: {} } }) }));
+        const responseText = await response.text();
+        const body = JSON.parse(responseText.startsWith("event:") ? responseText.split("\n").find(line => line.startsWith("data: "))!.slice(6) : responseText);
+        const output = codexModelOutput(body.result);
+        expect(output.success).toBe(!isError);
+        if (text.length && (isError || !structuredContent || !Object.keys(structuredContent).length)) expect(output.body).toContain(message);
+        if (structuredContent && Object.keys(structuredContent).length) {
+          expect(output.body).toContain("missing_project");
+          expect(output.body).toContain("PRIVATE_STRUCTURED_DETAIL");
+          if (!isError) expect(JSON.parse(output.body)).toEqual(structuredContent);
+        }
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(settleTool).toHaveBeenCalledWith("call", isError ? "error" : "complete", { status: isError ? "error" : "complete" });
+        expect(JSON.stringify(settleTool.mock.calls)).not.toContain("PRIVATE_");
+        expect(onFailure).not.toHaveBeenCalled();
+        const decoder = new CodexJsonlDecoder();
+        const events = decoder.push(Buffer.from([
+          { type: "thread.started", thread_id: "fixture_thread" }, { type: "turn.started" },
+          { type: "item.completed", item: {
+          id: "call", type: "mcp_tool_call", tool: toolId, status: isError ? "failed" : "completed", result: body.result
+        } }].map((item) => JSON.stringify(item)).join("\n") + "\n"));
+        expect(JSON.stringify(events)).not.toContain("PRIVATE_");
+        expect(events).toContainEqual(expect.objectContaining({ type: "activity", phase: isError ? "failed" : "succeeded" }));
+      }
+    }
+  });
+
   it("delivers a multi-megabyte tool response through the gateway and Codex activity transport", async () => {
     const text = "x".repeat(5 * 1024 * 1024) + "PRIVATE_TOOL_TAIL";
     vi.spyOn(hub, "createMcpToolService").mockReturnValue({

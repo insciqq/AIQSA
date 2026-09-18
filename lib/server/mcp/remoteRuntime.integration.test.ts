@@ -6,11 +6,14 @@ import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRemoteMcpDraftValidator } from "./remoteDraftValidator";
 import { createMcpSafeFetch } from "./safeFetch";
+import { McpClientSession } from "./clientSession";
+import { getMcpRequestMaxBytes } from "./responseLimits";
 
 type Fixture = Readonly<{
   close(): Promise<void>;
   cursors: Array<string | undefined>;
   observedStaticHeaders: Array<string | undefined>;
+  receivedArgumentBytes: number[];
   url: URL;
 }>;
 
@@ -31,6 +34,7 @@ async function startRemoteFixture(
 ): Promise<Fixture> {
   const cursors: Array<string | undefined> = [];
   const observedStaticHeaders: Array<string | undefined> = [];
+  const receivedArgumentBytes: number[] = [];
   const server = new Server(
     { name: "aiqsa-validator-fixture", title: "AIQSA validator fixture", version: "2.1.0" },
     { capabilities: { tools: { listChanged: true } } }
@@ -54,6 +58,10 @@ async function startRemoteFixture(
             name: "list_tasks"
           }]
         };
+  });
+  server.setRequestHandler("tools/call", async request => {
+    receivedArgumentBytes.push(Buffer.byteLength(JSON.stringify(request.params.arguments)));
+    return { content: [{ type: "text", text: "Accepted" }] };
   });
 
   const transport = new NodeStreamableHTTPServerTransport({
@@ -105,6 +113,7 @@ async function startRemoteFixture(
     },
     cursors,
     observedStaticHeaders,
+    receivedArgumentBytes,
     url: new URL(`http://127.0.0.1:${address.port}/mcp`)
   };
   openFixtures.add(fixture);
@@ -116,6 +125,25 @@ afterEach(async () => {
 });
 
 describe("remote MCP runtime integration", () => {
+  it("sends a request beyond the former small limits and rejects an oversized envelope before a second tool call", async () => {
+    const fixture = await startRemoteFixture("fixture");
+    const session = new McpClientSession({
+      fetch: createMcpSafeFetch({ allowInsecureHttp: true, allowPrivateNetwork: true }),
+      url: fixture.url, requestTimeoutMs: 900000,
+      limits: { maxListPages: 16, maxToolArgumentBytes: getMcpRequestMaxBytes(),
+        maxToolMetadataBytes: 256 * 1024, maxToolSchemaBytes: 64 * 1024, maxTools: 256 }
+    });
+    try {
+      await session.initialize();
+      await session.listAllTools();
+      await session.callTool("create_task", { title: "x".repeat(256 * 1024) });
+      expect(fixture.receivedArgumentBytes).toEqual([256 * 1024 + 12]);
+      await expect(session.callTool("create_task", { title: "x".repeat(getMcpRequestMaxBytes()) }))
+        .rejects.toMatchObject({ code: "mcp_call_arguments_too_large" });
+      expect(fixture.receivedArgumentBytes).toHaveLength(1);
+    } finally { await session.close(); }
+  });
+
   it("recovers a GitLab endpoint over real pinned HTTP and completes official-SDK initialize and paginated tools", async () => {
     const secret = "fixture-gitlab-header";
     const fixture = await startRemoteFixture(secret, false, "Create a task", true);

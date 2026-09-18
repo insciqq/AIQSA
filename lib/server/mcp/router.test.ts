@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
 import { StructuredOutputDecodeError } from "../providers/structuredOutput";
+import { logEvent } from "../observability";
 import { mcpChatDiscoveryContext } from "./chatDiscoveryContext";
 import type { McpCapabilityCatalog } from "./runPlan";
 import {
@@ -8,6 +9,8 @@ import {
   createMcpSemanticRouter,
   McpSemanticRouterError
 } from "./router";
+
+vi.mock("../observability", () => ({ logEvent: vi.fn() }));
 
 const jiraTool = "mcp_jira_create_issue_1111111111";
 const githubTool = "mcp_github_create_pull_request_2222222222";
@@ -161,10 +164,10 @@ function resolution(structuredOutput = true) {
 describe("semantic MCP router", () => {
   it.each([
     ["mcp_router_unknown_tool", { outcome: "Read", status: "covered", tool_ids: ["private-unknown-id"] }],
-    ["mcp_router_duplicate_tool", { outcome: "Read", status: "covered", tool_ids: [jiraTool, jiraTool] }],
-    ["mcp_router_invalid_outcome", { outcome: " Read ", status: "covered", tool_ids: [jiraTool] }],
-    ["mcp_router_invalid_coverage", { outcome: "Read", status: "uncovered", tool_ids: [jiraTool] }],
-    ["mcp_router_invalid_shape", { outcome: "Read", tool_ids: [jiraTool] }]
+    ["mcp_router_duplicate_tool", { outcome: "Read", status: "covered", tool_ids: ["t0", "t0"] }],
+    ["mcp_router_invalid_outcome", { outcome: " Read ", status: "covered", tool_ids: ["t0"] }],
+    ["mcp_router_invalid_coverage", { outcome: "Read", status: "uncovered", tool_ids: ["t0"] }],
+    ["mcp_router_invalid_shape", { outcome: "Read", tool_ids: ["t0"] }]
   ])("preserves %s and the correction attempt without retaining output", async (detail, requirement) => {
     const executeStructuredOutput = vi.fn()
       .mockResolvedValueOnce({ mcp_needed: true, requirements: [{ outcome: "Read", status: "uncovered", tool_ids: [] }] })
@@ -192,7 +195,7 @@ describe("semantic MCP router", () => {
       options?.onUsage?.({ inputTokens: 100, outputTokens: structured.maxOutputTokens === 1024 ? 1024 : 3242 });
       if (structured.maxOutputTokens === 1024) throw new Error("structured_output_output_limit_exceeded");
       expect(structured.reasoningEffort).toBe(reasoning ? "high" : null);
-      return { mcp_needed: true, requirements: [{ outcome: "Read data", status: "covered", tool_ids: ["mcp_test_0"] }] };
+      return { mcp_needed: true, requirements: [{ outcome: "Read data", status: "covered", tool_ids: ["t0"] }] };
     });
     const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => ({
       ...resolution(), reasoningEffort: reasoning ? "high" : null
@@ -203,7 +206,46 @@ describe("semantic MCP router", () => {
     });
     await expect(router.route(input)).resolves.toMatchObject({ toolNames: ["mcp_test_0"] });
     await expect(router.route({ ...input, maxOutputTokens: 4096 })).resolves.toMatchObject({ toolNames: ["mcp_test_0"] });
-    expect(executeStructuredOutput.mock.calls.map((call) => call[1].maxOutputTokens)).toEqual([1024, 8192, 4096]);
+    expect(executeStructuredOutput.mock.calls.map((call) => call[1].maxOutputTokens)).toEqual([1024, 65536, 4096]);
+  });
+
+  it.each([
+    { maximum: 131072, configured: undefined, expected: 131072 },
+    { maximum: 32768, configured: undefined, expected: 32768 },
+    { maximum: 131072, configured: 24000, expected: 24000 },
+    { maximum: 32768, configured: 65536, expected: 32768 },
+    { maximum: undefined, configured: 131072, expected: 131072 },
+    { maximum: undefined, configured: undefined, expected: 65536 }
+  ])("uses the model allowance in Auto: %j", async ({ maximum, configured, expected }) => {
+    const resolved = resolution();
+    resolved.role.modelConfiguration.capabilities.maxOutputTokens = maximum;
+    if (configured) resolved.role.modelConfiguration.defaultParams.maxOutputTokens = configured;
+    const executeStructuredOutput = vi.fn(async (_role, structured, options) => {
+      expect(structured).toMatchObject({ maxOutputTokens: expected, reasoningBudgetIncluded: true });
+      await options?.beforeDispatch?.();
+      return { mcp_needed: true, requirements: [{ outcome: "Create issue", status: "covered", tool_ids: ["t0"] }] };
+    });
+    const recordAttempt = vi.fn(async () => ({ settle: vi.fn(async () => {}) }));
+    const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => resolved });
+    await expect(router.route({ activeToolNames: new Set(), catalog, goals: ["Create issue"], limit: 10,
+      maxOutputTokens: "model", recordAttempt })).resolves.toMatchObject({ toolNames: [jiraTool] });
+    expect(recordAttempt).toHaveBeenCalledWith(resolved.role, expected, expect.any(Number), expect.any(Number));
+  });
+
+  it("reduces Auto output to remaining context and rejects an exhausted context before dispatch", async () => {
+    const resolved = resolution();
+    resolved.role.modelConfiguration.capabilities.contextWindow = 8192;
+    const executeStructuredOutput = vi.fn(async (_role, structured) => {
+      expect(structured.maxOutputTokens).toBeGreaterThan(16);
+      expect(structured.maxOutputTokens).toBeLessThan(8192);
+      return { mcp_needed: false, requirements: [] };
+    });
+    const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => resolved });
+    await router.route({ activeToolNames: new Set(), catalog, goals: ["Read"], limit: 10 });
+    resolved.role.modelConfiguration.capabilities.contextWindow = 32;
+    await expect(router.route({ activeToolNames: new Set(), catalog, goals: ["Read"], limit: 10 }))
+      .rejects.toMatchObject({ code: "mcp_router_context_limit" });
+    expect(executeStructuredOutput).toHaveBeenCalledOnce();
   });
 
   it.each(["saved", "catalog"])("rejects the %s model ceiling before I/O without reducing the requested cap", async (source) => {
@@ -237,7 +279,7 @@ describe("semantic MCP router", () => {
         return { mcp_needed: true, requirements: [{ outcome: "Read data", status: "uncovered", tool_ids: [] }] };
       }
       expect(options?.timeoutMs).toBe(5_000);
-      return { mcp_needed: true, requirements: [{ outcome: "Read data", status: "covered", tool_ids: [jiraTool] }] };
+      return { mcp_needed: true, requirements: [{ outcome: "Read data", status: "covered", tool_ids: ["t0"] }] };
     });
     try {
       const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => resolution() });
@@ -269,10 +311,10 @@ describe("semantic MCP router", () => {
       return {
         mcp_needed: true,
         requirements: [
-          { outcome: "Issue", status: "covered", tool_ids: [jiraTool] },
-          { outcome: "Pull request", status: "covered", tool_ids: [githubTool] },
+          { outcome: "Issue", status: "covered", tool_ids: ["t0"] },
+          { outcome: "Pull request", status: "covered", tool_ids: ["t1"] },
           ...(prompts.length === 1 || repeatOverflow
-            ? [{ outcome: "Calendar", status: "covered", tool_ids: [calendarTool] }]
+            ? [{ outcome: "Calendar", status: "covered", tool_ids: ["t2"] }]
             : [{ outcome: "Calendar", status: "uncovered", tool_ids: [] }])
         ]
       };
@@ -301,7 +343,7 @@ describe("semantic MCP router", () => {
 
   it.each([
     { reason: "empty batch", goals: [] },
-    { reason: "oversized goal", goals: ["a".repeat(401)] },
+    { reason: "oversized goal", goals: ["a".repeat(8 * 1024 * 1024 + 1)] },
     { reason: "oversized batch", goals: Array.from({ length: 65 }, (_, index) => `Goal ${index}`) }
   ])("rejects $reason before provider I/O", async ({ goals }) => {
     const executeStructuredOutput = vi.fn();
@@ -339,7 +381,7 @@ describe("semantic MCP router", () => {
           requirements: [{
             outcome: "Calendar event",
             status: "covered",
-            tool_ids: [outcome === "invalid_output" ? "unknown-tool" : calendarTool]
+            tool_ids: [outcome === "invalid_output" ? "unknown-tool" : "t2"]
           }]
         };
       });
@@ -389,7 +431,7 @@ describe("semantic MCP router", () => {
           options?.onUsage?.({ outputTokens: 3 });
         }
         if (outcome !== "complete") { controller.abort(); throw new Error("Interrupted"); }
-        return { mcp_needed: true, requirements: [{ outcome: "Create an issue", status: "covered", tool_ids: [jiraTool] }] };
+        return { mcp_needed: true, requirements: [{ outcome: "Create an issue", status: "covered", tool_ids: ["t0"] }] };
       }
     });
     const routed = router.route({ activeToolNames: new Set(), catalog, goals: ["Create an issue"], limit: 5,
@@ -448,7 +490,7 @@ describe("semantic MCP router", () => {
             items: {
               properties: {
                 tool_ids: {
-                  items: { enum: [jiraTool, githubTool, calendarTool] },
+                  items: { enum: ["t0", "t1", "t2"] },
                   maxItems: 5,
                   uniqueItems: true
                 }
@@ -459,7 +501,7 @@ describe("semantic MCP router", () => {
       });
       return {
         mcp_needed: true,
-        requirements: [{ outcome: goal, status: "covered", tool_ids: [selected] }]
+        requirements: [{ outcome: goal, status: "covered", tool_ids: [`t${[jiraTool, githubTool, calendarTool].indexOf(selected)}`] }]
       };
     });
     const router = createMcpSemanticRouter({
@@ -523,6 +565,96 @@ describe("semantic MCP router", () => {
     expect(serialized.length).toBeLessThan(64_000);
   });
 
+  it("keeps every capability field and a stable catalog prefix across changed goals and context", () => {
+    const input = { activeToolNames: new Set<string>(), catalog, goals: ["Create the issue"], limit: 5 };
+    const first = buildMcpRouterPrompt(input);
+    const next = buildMcpRouterPrompt({ ...input, goals: ["Schedule the meeting"],
+      context: { currentText: "Different conversation" } });
+    const projected = JSON.parse(first.userPrompt).integrations;
+    expect(projected[0]).toEqual({ name: "Jira", namespace: "jira", description: catalog.servers[0]!.description,
+      instructions: catalog.servers[0]!.instructions, tools: [{
+        arguments: catalog.servers[0]!.tools[0]!.arguments, description: "Create an issue in a project",
+        id: "t0", name: "create_issue", title: "Create issue"
+      }] });
+    const prefix = `{"integrations":${JSON.stringify(projected)},"max_unique_tools":5,`;
+    expect(first.userPrompt.startsWith(prefix)).toBe(true);
+    expect(next.userPrompt.startsWith(prefix)).toBe(true);
+    for (const name of [jiraTool, githubTool, calendarTool]) expect(first.userPrompt).not.toContain(name);
+  });
+
+  it("maps short IDs only within each authorized catalog, including loaded tools and concurrent requests", async () => {
+    const executeStructuredOutput = vi.fn(async (_role, request) => {
+      expect(request.schema.properties.requirements.items.properties.tool_ids.items.enum).toEqual(["t0", "t1"]);
+      expect(JSON.parse(request.userPrompt).integrations[0].tools[0].id).toBe("t0");
+      return { mcp_needed: true, requirements: [{ outcome: "Read", status: "covered", tool_ids: ["t0"] }] };
+    });
+    const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => resolution() });
+    const input = { catalog, goals: ["Read"], limit: 2 };
+    const [first, second] = await Promise.all([
+      router.route({ ...input, activeToolNames: new Set([jiraTool]) }),
+      router.route({ ...input, activeToolNames: new Set([githubTool]) })
+    ]);
+    expect(first.toolNames).toEqual([githubTool]);
+    expect(second.toolNames).toEqual([jiraTool]);
+    expect(executeStructuredOutput).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the initial catalog, goal and alias mapping when caller-owned inputs change during routing", async () => {
+    const mutableCatalog = structuredClone(catalog);
+    const goals = ["Create the issue"];
+    const activeToolNames = new Set<string>();
+    const prompts: Record<string, unknown>[] = [];
+    const executeStructuredOutput = vi.fn(async (_role, request) => {
+      prompts.push(JSON.parse(request.userPrompt));
+      if (prompts.length === 1) {
+        mutableCatalog.servers.reverse();
+        goals[0] = "Different goal";
+        activeToolNames.add(jiraTool);
+        return { mcp_needed: true, requirements: [{ outcome: "Create the issue", status: "uncovered", tool_ids: [] }] };
+      }
+      expect(prompts[1]).toMatchObject({ ...prompts[0], correction: {
+        previous_unique_tool_count: 0,
+        previous_requirements: [{ outcome: "Create the issue", status: "uncovered", tool_ids: [] }],
+        previously_uncovered_outcomes: ["Create the issue"]
+      } });
+      return { mcp_needed: true, requirements: [{ outcome: "Create the issue", status: "covered", tool_ids: ["t0"] }] };
+    });
+    const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => resolution() });
+    await expect(router.route({ catalog: mutableCatalog, goals, activeToolNames, limit: 2 }))
+      .resolves.toMatchObject({ toolNames: [jiraTool] });
+    expect(executeStructuredOutput).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["uncovered_outcomes", "tool_limit", "coverage_and_limit"] as const)(
+    "reports correction reason %s and unchanged coverage without retaining private content", async (reason) => {
+      vi.mocked(logEvent).mockClear();
+      const requirement = { outcome: "PRIVATE_GOAL", status: "uncovered", tool_ids: [] };
+      const previous = { mcp_needed: true, requirements: [
+        { outcome: "PRIVATE_READ", status: "covered", tool_ids: ["t0"] },
+        ...(reason !== "uncovered_outcomes" ? [{ outcome: "PRIVATE_WRITE", status: "covered", tool_ids: ["t1"] }] : []),
+        ...(reason !== "tool_limit" ? [requirement] : [])
+      ] };
+      const next = { mcp_needed: true, requirements: [previous.requirements[0], requirement] };
+      const executeStructuredOutput = vi.fn(async (_role, _request, options) => {
+        await options?.beforeDispatch?.();
+        return executeStructuredOutput.mock.calls.length === 1 ? previous : next;
+      });
+      const router = createMcpSemanticRouter({ executeStructuredOutput, resolveSystemModel: async () => resolution() });
+      await expect(router.route({ activeToolNames: new Set(), catalog, goals: ["PRIVATE_GOAL"], limit: 1 }))
+        .resolves.toMatchObject({ toolNames: [jiraTool] });
+      expect(executeStructuredOutput).toHaveBeenCalledTimes(2);
+      const events = vi.mocked(logEvent).mock.calls.filter(([event]) => event === "mcp_discovery").map(([, fields]) => fields);
+      expect(events).toHaveLength(4);
+      expect(events[0]).toMatchObject({ outcome: "started", attempt: 1, correction_reason: "none", candidate_count: 3 });
+      expect(events[2]).toMatchObject({ outcome: "started", attempt: 2, correction_reason: reason, input_bytes: expect.any(Number) });
+      expect(events[3]).toMatchObject({ outcome: "completed", attempt: 2, correction_reason: reason,
+        selected_count: 1, uncovered_count: 1, previous_uncovered_count: reason === "tool_limit" ? 0 : 1,
+        selection_changed: reason !== "uncovered_outcomes" });
+      expect(JSON.stringify(events)).not.toContain("PRIVATE_");
+      expect(JSON.stringify(events)).not.toContain(jiraTool);
+    }
+  );
+
   it("rejects unknown IDs and duplicate output with a stable reason", async () => {
     const executeStructuredOutput = vi.fn()
       .mockResolvedValueOnce({
@@ -538,7 +670,7 @@ describe("semantic MCP router", () => {
         requirements: [{
           outcome: "Create an issue",
           status: "covered",
-          tool_ids: [jiraTool, jiraTool]
+          tool_ids: ["t0", "t0"]
         }]
       });
     const router = createMcpSemanticRouter({
@@ -586,5 +718,42 @@ describe("semantic MCP router", () => {
       new McpSemanticRouterError("mcp_router_structured_output_unverified")
     );
     expect(executeStructuredOutput).not.toHaveBeenCalled();
+  });
+});
+
+
+it("keeps the full current request and goals and packs whole recent messages by the model context", async () => {
+  const resolved = resolution();
+  resolved.role.modelConfiguration.capabilities.contextWindow = 8192;
+  resolved.role.modelConfiguration.capabilities.maxOutputTokens = 1024;
+  const currentText = "Current request. ".repeat(400) + "PRESERVE_CURRENT_TAIL";
+  const goal = "Intended outcome. ".repeat(60) + "PRESERVE_GOAL_TAIL";
+  const recent = { role: "user" as const, text: "Recent useful constraint." };
+  const executeStructuredOutput = vi.fn(async (_role, request) => {
+    const prompt = JSON.parse(request.userPrompt);
+    expect(prompt.current_user_text).toBe(currentText);
+    expect(prompt.goals).toEqual([goal]);
+    expect(prompt.branch_context).toEqual([recent]);
+    return { mcp_needed: false, requirements: [] };
+  });
+  await createMcpSemanticRouter({ resolveSystemModel: async () => resolved, executeStructuredOutput }).route({
+    activeToolNames: new Set(), catalog, goals: [goal], limit: 5, context: { currentText,
+      messages: [{ role: "assistant", text: "Older context. ".repeat(6000) }, recent] }
+  });
+  expect(executeStructuredOutput).toHaveBeenCalledOnce();
+});
+
+it("keeps more than eight history messages when the model has room and honors the model deadline", async () => {
+  const resolved = resolution();
+  if (resolved.role.snapshot.model.adapterKind === "fake") throw new Error("unexpected fixture");
+  resolved.role.snapshot.model.responseTimeoutMs = 900000;
+  const messages = Array.from({ length: 12 }, (_, i) => ({ role: "user" as const, text: `Constraint ${i}.` }));
+  const executeStructuredOutput = vi.fn(async (_role, request, options) => {
+    expect(JSON.parse(request.userPrompt).branch_context).toEqual(messages);
+    expect(options.timeoutMs).toBeGreaterThan(899000);
+    return { mcp_needed: false, requirements: [] };
+  });
+  await createMcpSemanticRouter({ resolveSystemModel: async () => resolved, executeStructuredOutput }).route({
+    activeToolNames: new Set(), catalog, goals: ["Read"], limit: 5, context: { messages }
   });
 });

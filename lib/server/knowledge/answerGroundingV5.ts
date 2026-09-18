@@ -420,12 +420,10 @@ export function knowledgeAnswerContractPairForDraftOperation(
   return null;
 }
 
-/** PostgreSQL stores the content-bearing operation snapshot as JSONB. The
- * provider prompt is capped at 256 KB, but embedding that prompt as a JSON
- * string can escape every quote or backslash a second time. Keep the durable
- * bound explicit and comfortably above that worst case while remaining
- * purpose-bounded private run state. */
-export const KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES = 1024 * 1024;
+/** Include worst-case JSON escaping plus bounded snapshot metadata; the
+ * persisted envelope must not be smaller than an admitted provider prompt. */
+export const KNOWLEDGE_ANSWER_ACCEPTED_REQUEST_MAX_BYTES =
+  6 * STRUCTURED_OUTPUT_LIMITS.maxPromptBytes + 2 * STRUCTURED_OUTPUT_LIMITS.maxSchemaBytes + 64 * 1024;
 
 export type KnowledgeInsufficientReason = "ambiguous" | "conflicting" | "not_found";
 export type KnowledgeRequestCoverage = "complete" | "none" | "partial";
