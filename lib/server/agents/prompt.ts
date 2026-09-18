@@ -17,7 +17,8 @@ export function agentPrompts(request: ProviderRunRequest) {
       ...(request.workspace ? [
         "Current AIQSA turn workspace paths (replace all previous turn paths):",
         JSON.stringify({ outputDirectory: request.workspace.outputDirectory,
-          inboxIndexPath: request.workspace.inboxIndexPath, messageManifestPath: request.workspace.messageManifestPath,
+          inboxIndexPath: request.workspace.inboxIndexPath,
+          ...(request.attachments.length ? { messageManifestPath: request.workspace.messageManifestPath } : {}),
           attachments: request.attachments.map(({ fileName, mimeType, byteSize }) => ({ fileName, mimeType, byteSize })) })
       ] : []),
       JSON.stringify(selected.map((message) => ({ role: message.role, text: textFromContentBlocks(message.content) }))),

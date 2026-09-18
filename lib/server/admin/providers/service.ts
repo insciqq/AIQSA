@@ -998,16 +998,30 @@ export function createAdminProviderService(input: Readonly<{
         credential = requireUsableCredential(connection);
       }
     }
-    if (value.reason === "requested" || value.reason === "model") {
+    const setupDefaults = value.reason === "setup" && connection.activeConfig
+      ? providerSetupModels(connection.family, connection.activeConfig.apiRoot) : [];
+    if (value.reason === "requested" || value.reason === "model" || setupDefaults.length) {
       const wanted = value.modelIds ? new Set(value.modelIds) : null;
       const drafts = connection.models.filter((model) => model.enabled && model.activeConfig === null &&
-        model.activeVersion === 0 && (!wanted || wanted.has(model.id)));
+        model.activeVersion === 0 && (!wanted || wanted.has(model.id)) &&
+        (value.reason !== "setup" || model.draftVersion === 1 && setupDefaults.some((candidate) =>
+          candidate.modelId === model.id &&
+          canonicalJson(normalizeAdminProviderModelConfiguration(model.draftConfig)) ===
+            canonicalJson(normalizeProviderModelConfiguration(candidate.configuration)))));
       for (const draft of drafts) {
         const candidate = await input.repository.loadModelActivationCandidate({
           connectionId: connection.id,
           modelId: draft.id
         });
         if (!candidate) throw new AdminProviderServiceError("provider_model_not_found");
+        // Seeded helpers can already exist as never-live drafts. Setup may
+        // activate only their untouched defaults, fenced against concurrent edits.
+        if (value.reason === "setup" && (candidate.connection.activeVersion !== connection.activeVersion ||
+          candidate.model.activeVersion !== 0 || candidate.model.draftVersion !== draft.draftVersion ||
+          canonicalJson(normalizeProviderModelConfiguration(candidate.model.configuration)) !==
+            canonicalJson(normalizeAdminProviderModelConfiguration(draft.draftConfig)))) {
+          throw new AdminProviderServiceError("provider_draft_stale");
+        }
         if (candidate.model.activeVersion === 0) {
           if (await activateModelDraft(candidate, value.signal)) initialModelIds.add(draft.id);
           connection = (await input.repository.listConnections()).find(({ id }) => id === value.connectionId);

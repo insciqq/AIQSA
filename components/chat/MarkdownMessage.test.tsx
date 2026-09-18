@@ -270,6 +270,22 @@ describe("MarkdownMessage", () => {
     expect(container.querySelector("blockquote ul")).toHaveTextContent("Quoted bullet");
   });
 
+  it("preserves numeric answer markers and independent nested list starts", () => {
+    const { container } = render(<MarkdownMessage content={[
+      "385. Verified using Python.", "386. Checked independently.", "  7. Nested step.",
+      "", "0. Zero-based step.", "", "- Bullet."
+    ].join("\n")} />);
+    expect([...container.querySelectorAll("ol")].map(list => list.getAttribute("start"))).toEqual(["385", "7", "0"]);
+    expect(container.querySelector("ol")?.children).toHaveLength(2);
+    expect(container.querySelector("ul")).not.toHaveAttribute("start");
+  });
+
+  it("keeps oversized numeric prefixes as text instead of unsafe list markers", () => {
+    const { container } = render(<MarkdownMessage content="1234567890. Reference number." />);
+    expect(container.querySelector("ol")).toBeNull();
+    expect(container).toHaveTextContent("1234567890. Reference number.");
+  });
+
   it("keeps section headings visually distinct from bold inline text", () => {
     const { container } = render(
       <MarkdownMessage

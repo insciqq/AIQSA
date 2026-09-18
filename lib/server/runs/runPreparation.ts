@@ -597,8 +597,9 @@ function promptWithWorkspaceContract(
     `Working directory: ${workspace.normalized.projectDirectory}`,
     "Original attachments: /workspace/inbox",
     `Attachment index: ${workspace.normalized.inboxIndexPath}`,
-    agentEnabled ? "Read messageManifestPath from the current AIQSA turn workspace paths."
-      : `Current message manifest: ${workspace.normalized.messageManifestPath}`,
+    attachments.length === 0 ? "This message has no attachments; no current message manifest is present."
+      : agentEnabled ? "Read messageManifestPath from the current AIQSA turn workspace paths."
+        : `Current message manifest: ${workspace.normalized.messageManifestPath}`,
     "Do not modify originals in inbox; copy files that need changes into project.",
     `Internet inside the workspace: ${workspace.normalized.internetEnabled ? "enabled (public destinations only)" : "disabled"}.`,
     "You may install required packages through available package managers.",

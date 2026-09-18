@@ -531,7 +531,7 @@ export function createMemoryIntentActionExecutor(input: Readonly<{
       if (resolution.kind === "MISSING") {
         return mutationRejected(intent.action);
       }
-      if (resolution.kind === "UNAVAILABLE") return null;
+      if (resolution.kind === "UNAVAILABLE") return mutationRejected(intent.action);
       const target = resolution.target;
       if (!await mutationAuthorityCurrent(
         input.targetSelector,

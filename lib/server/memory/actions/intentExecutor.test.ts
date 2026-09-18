@@ -552,7 +552,7 @@ describe("Memory intent action executor", () => {
     expect(deps.lifecycleService.forget).not.toHaveBeenCalled();
   });
 
-  it("fails closed when semantic target lookup is unavailable", async () => {
+  it.each(["UPDATE", "FORGET"] as const)("reports unapplied %s when semantic target lookup is unavailable", async (action) => {
     const deps = dependencies();
     deps.targetSearch.semantic.mockResolvedValue({
       reason: "memory_vector_unavailable",
@@ -562,12 +562,14 @@ describe("Memory intent action executor", () => {
       ...deps,
       clientRefs
     } as never).execute(execution(intent({
-      action: "FORGET",
-      reasonCode: "forget_request",
+      action,
+      reasonCode: action === "UPDATE" ? "update_request" : "forget_request",
+      replacementStatement: action === "UPDATE" ? "I prefer detailed replies." : null,
       targetQuery: "a paraphrased target"
-    })))).resolves.toBeNull();
+    })))).resolves.toEqual({ operation: action, status: "REJECTED" });
     expect(deps.authorizationRepository.mintForControl).not.toHaveBeenCalled();
     expect(deps.lifecycleService.forget).not.toHaveBeenCalled();
+    expect(deps.explicitService.update).not.toHaveBeenCalled();
   });
 
   it("routes explicit Saved Memories SEARCH through bounded semantic lookup", async () => {
