@@ -251,7 +251,10 @@ describe("AdminRolesSection", () => {
     catalog.candidates.push({ ...terra, forcedToolCall: "verified", structuredOutput: "verified" });
     const calls = server(catalog);
     const { requestConfirmation, reportNotice } = renderSection();
-    fireEvent.click(await screen.findByRole("button", { name: "Use recommended" }));
+    const disclosure = await screen.findByText("Recommended models", { selector: "summary" });
+    expect(screen.getByRole("button", { name: "Use recommended" })).not.toBeVisible();
+    fireEvent.click(disclosure);
+    fireEvent.click(screen.getByRole("button", { name: "Use recommended" }));
     expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([]);
     const confirmation = requestConfirmation.mock.calls.at(-1)![0];
     expect(confirmation.body).toMatch(/GPT Terra with low reasoning/);
@@ -275,7 +278,8 @@ describe("AdminRolesSection", () => {
       providerModelId: "terra", connectionId: "openai", reasoningEffort: "low", unavailableReason: "budget_too_small",
       evidence: { revision: "working-cases", passedCases: 5, totalCases: 5, latencyP50Ms: 3300, latencyP95Ms: 13500 } }];
     server(catalog); renderSection();
-    await screen.findByText(/Increase this deployment’s output budget/);
+    fireEvent.click(await screen.findByText("Recommended models", { selector: "summary" }));
+    expect(await screen.findByText(/Increase this deployment’s output budget/)).toBeVisible();
     expect(screen.queryByRole("button", { name: "Use recommended" })).not.toBeInTheDocument();
   });
 
@@ -293,6 +297,7 @@ describe("AdminRolesSection", () => {
     ];
     const calls = server(catalog);
     const { requestConfirmation, reportNotice } = renderSection();
+    fireEvent.click(await screen.findByText("Recommended models", { selector: "summary" }));
     const choice = await screen.findByRole("group", { name: /DeepSeek V4.1 Flash.*Flash native/ });
     expect(within(choice).getByText(/22\/23 working-case attempts passed/)).toBeVisible();
     expect(screen.getAllByRole("button", { name: "Use recommended" })).toHaveLength(2);

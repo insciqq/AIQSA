@@ -1165,6 +1165,8 @@ model SystemModelPolicy {
   id                      String         @id
   chatTitleProviderModelId String?
   chatTitleReasoningEffort String?        @db.VarChar(32)
+  /// A saved choice, including explicit Off, closes first-setup title adoption.
+  chatTitleConfiguredAt   DateTime?
   chatPdfNativeProviderModelId String?
   chatPdfNativeReasoningEffort String? @db.VarChar(32)
   chatPdfProviderModelId   String?

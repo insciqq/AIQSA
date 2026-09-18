@@ -366,6 +366,31 @@ it("admits one concurrent Memory policy writer without changing the System polic
   }
 });
 
+it("adopts titles once, rejects stale setup and preserves an explicit clear", async () => {
+  await fixture(async ({ db, adminId, titles, memory }) => {
+    await db.systemModelPolicy.update({ where: { id: "installation" }, data: {
+      chatTitleProviderModelId: null, chatTitleReasoningEffort: null, chatTitleConfiguredAt: null
+    } });
+    const service = createAdminSystemModelPolicyService(db);
+    const policy = () => db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+    const original = await policy();
+    expect(await service.adoptChatTitle({ expectedVersion: original.version, providerModelId: titles,
+      reasoningEffort: null, userId: adminId })).toBe(true);
+    expect(await policy()).toMatchObject({ chatTitleProviderModelId: titles, chatTitleConfiguredAt: expect.any(Date),
+      providerModelId: original.providerModelId, version: original.version + 1 });
+    await expect(service.adoptChatTitle({ expectedVersion: original.version, providerModelId: memory,
+      reasoningEffort: null, userId: adminId })).rejects.toMatchObject({ code: "system_model_policy_stale" });
+    expect(await service.adoptChatTitle({ expectedVersion: (await policy()).version, providerModelId: memory,
+      reasoningEffort: null, userId: adminId })).toBe(false);
+    await service.update({ expectedVersion: (await policy()).version, chatTitleProviderModelId: null,
+      chatTitleReasoningEffort: null, userId: adminId });
+    const cleared = await policy();
+    expect(await service.adoptChatTitle({ expectedVersion: cleared.version, providerModelId: titles,
+      reasoningEffort: null, userId: adminId })).toBe(false);
+    expect(await policy()).toEqual(cleared);
+  });
+});
+
 it("persists a structured-only title assignment, retains admitted identity and preserves an explicit clear", async () => {
   await fixture(async ({ db, adminId, titles, memory }) => {
     const service = createAdminSystemModelPolicyService(db);

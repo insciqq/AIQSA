@@ -40,19 +40,49 @@ function fixture() {
   const chatUpdate = vi.fn(async () => {});
   const rolesUpdate = vi.fn(async () => {});
   const memoryUpdate = vi.fn(async () => {});
+  const adoptChatTitle = vi.fn(async () => true);
   const searchCreate = vi.fn(async () => ({ created: true, id: "search" }));
   const searchSave = vi.fn(async () => {});
   const knowledge = adminKnowledgeProfileFixture({ activeRevision: null, availableDestinations: [], availablePdfDestinations: [] });
   const knowledgeActivate = vi.fn(async () => {});
   const complete = createAdminProviderBootstrap({ providers: { listConnections: async () => [connection] },
-    chat: { list: async () => chat, update: chatUpdate }, roles: { list: async () => roles, update: rolesUpdate, updateMemory: memoryUpdate },
+    chat: { list: async () => chat, update: chatUpdate }, roles: { list: async () => roles, update: rolesUpdate, updateMemory: memoryUpdate, adoptChatTitle },
     search: { list: async () => search, createDraft: searchCreate, saveAndCheck: searchSave },
     knowledge: { list: async () => knowledge, activate: knowledgeActivate } });
   const run = (signal = new AbortController().signal) => complete({ connectionId: connection.id, credentialId: "cred-primary", userId: "operator", signal });
-  return { chat, chatUpdate, connection, roles, rolesUpdate, memoryUpdate, run, search, searchCreate, searchSave, knowledge, knowledgeActivate };
+  return { chat, chatUpdate, connection, roles, rolesUpdate, memoryUpdate, adoptChatTitle, run, search, searchCreate, searchSave, knowledge, knowledgeActivate };
 }
 
 describe("provider automatic setup", () => {
+  it.each(["none", "low"])("adopts a qualified title model with economical %s reasoning", async (effort) => {
+    const value = fixture();
+    value.roles.titleCandidates = [{ ...value.roles.candidates[0]!, reasoningEfforts: effort === "none" ? ["none", "low", "high"] : ["low", "high"] }];
+    const result = await value.run();
+    expect(value.adoptChatTitle).toHaveBeenCalledExactlyOnceWith({ expectedVersion: 1,
+      providerModelId: "model-terra", reasoningEffort: effort, userId: "operator" });
+    expect(result.defaults).toContain("Chat titles: GPT-5.6 Terra");
+  });
+
+  it.each(["unqualified", "not a title candidate", "unsupported effort", "stale credential", "different connection", "assigned", "explicitly cleared"])(
+    "preserves title authority when %s", async (state) => {
+      const value = fixture();
+      value.roles.titleCandidates = [{ ...value.roles.candidates[0]!, reasoningEfforts: ["none", "low"] }];
+      if (state === "unqualified") value.roles.memoryPolicy.recommendations![0]!.unavailableReason = "verification_required";
+      if (state === "not a title candidate") value.roles.titleCandidates = [];
+      if (state === "unsupported effort") value.roles.titleCandidates[0]!.reasoningEfforts = ["high"];
+      if (state === "stale credential") value.connection.activeChecks[0]!.credentialVersionId = "old-key";
+      if (state === "different connection") value.roles.memoryPolicy.recommendations![0]!.connectionId = "other";
+      if (state === "assigned") value.roles.policy.chatTitleModel = { ...value.roles.candidates[1]!, available: true };
+      if (state === "explicitly cleared") value.adoptChatTitle.mockResolvedValue(false);
+      const result = await value.run();
+      expect(result.defaults.some((entry) => entry.startsWith("Chat titles:"))).toBe(false);
+      if (state === "explicitly cleared") {
+        expect(value.adoptChatTitle).toHaveBeenCalledOnce();
+        expect(result.state).toBe("completed");
+      } else expect(value.adoptChatTitle).not.toHaveBeenCalled();
+    }
+  );
+
   it("leaves Memory unassigned when only unqualified candidates are available", async () => {
     const value = fixture();
     value.roles.memoryPolicy.recommendations = [];

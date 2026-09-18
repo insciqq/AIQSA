@@ -454,6 +454,11 @@ test.describe("system model policy", () => {
     await page.goto("/admin?section=roles&resource=memory");
     const row = page.getByTestId("admin-role-memory");
     const useRecommended = row.getByRole("button", { name: "Use recommended", exact: true });
+    const disclosure = row.locator("summary", { hasText: "Recommended models" });
+    await expect(useRecommended).not.toBeVisible();
+    await disclosure.focus();
+    await page.keyboard.press("Enter");
+    await expect(useRecommended).toBeVisible();
     const dialog = page.getByRole("dialog", { name: "Use recommended Memory model" });
     const before = await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
     const viewports = [
@@ -497,7 +502,8 @@ test.describe("system model policy", () => {
     expect(await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toMatchObject({
       providerModelId: null, reasoningEffort: null, version: before.version + 2, assignmentSource: "OPERATOR"
     });
-    await page.reload(); await expect(useRecommended).toBeEnabled();
+    await page.reload(); await expect(useRecommended).not.toBeVisible();
+    await disclosure.click(); await expect(useRecommended).toBeEnabled();
     expect(await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(systemBefore);
   });
 });

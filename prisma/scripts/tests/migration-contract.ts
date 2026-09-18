@@ -1,4 +1,5 @@
 import { NATIVE_ROUTING_MIGRATION, nativeRoutingFixtureSql, nativeRoutingProofSql, nativeRoutingRepeatProofSql } from "./openrouter-native-routing-adoption";
+import { CHAT_TITLE_SETUP_MIGRATION, chatTitleSetupFixtureSql, chatTitleSetupProofSql } from "./chat-title-setup-adoption";
 import { MEMORY_DEFAULTS_MIGRATION, memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql } from "./memory-defaults-adoption";
 import { WORKSPACE_USER_DEFAULT_MIGRATION, workspaceUserDefaultFixtureSql, workspaceUserDefaultProofSql, workspaceUserDefaultRepeatProofSql } from "./workspace-user-default-adoption";
 import { CHAT_TITLE_CREDENTIAL_MIGRATION, chatTitleCredentialAdoptionFixtureSql, chatTitleCredentialAdoptionProofSql } from "./chat-title-credential-adoption";
@@ -7364,7 +7365,8 @@ function main(
   for (const database of databases) {
     deployAndVerify(database, migrations, shadowDatabase);
     psqlScalar(database, `DO $$ BEGIN
-      IF EXISTS (SELECT 1 FROM "SystemModelPolicy" WHERE "chatTitleProviderModelId" IS NOT NULL OR "chatTitleReasoningEffort" IS NOT NULL)
+      IF EXISTS (SELECT 1 FROM "SystemModelPolicy" WHERE "chatTitleProviderModelId" IS NOT NULL
+        OR "chatTitleReasoningEffort" IS NOT NULL OR "chatTitleConfiguredAt" IS NOT NULL)
         THEN RAISE EXCEPTION 'fresh_title_role_not_unassigned'; END IF;
     END $$;`);
   }
@@ -7428,6 +7430,8 @@ function main(
 
   runForwardAdoptionProof(shadowDatabase, migrations, CHAT_TITLE_ROLE_MIGRATION,
     chatTitleRoleAdoptionFixtureSql(), chatTitleRoleAdoptionProofSql(), chatTitleRoleClearProofSql());
+  runForwardAdoptionProof(shadowDatabase, migrations, CHAT_TITLE_SETUP_MIGRATION,
+    chatTitleSetupFixtureSql, chatTitleSetupProofSql, chatTitleSetupProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_DEFAULTS_MIGRATION,
     memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_USER_DEFAULT_MIGRATION,
