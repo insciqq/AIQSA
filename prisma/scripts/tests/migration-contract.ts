@@ -10,6 +10,8 @@ import { MEMORY_WORKER_RECOVERY_MIGRATION, memoryWorkerRecoveryFixtureSql, memor
 import { MEMORY_HISTORY_LIVE_ORDINALS_MIGRATION, memoryHistoryLiveOrdinalsFixtureSql, memoryHistoryLiveOrdinalsProofSql } from "./memory-history-live-ordinals";
 import { MCP_MODEL_OUTPUT_BUDGET_MIGRATION, mcpModelOutputBudgetFixtures } from "./mcp-model-output-budget";
 import { UTILITY_RUNTIME_BUDGET_MIGRATION, utilityRuntimeBudgetFixtures } from "./utility-runtime-budgets";
+import { SEMANTIC_DECISIONS_MIGRATION, semanticDecisionsFixtureSql, semanticDecisionsProofSql } from "./semantic-decisions-adoption";
+import { DECISION_UPGRADE_MIGRATION, decisionUpgradeFixtureSql, decisionUpgradeProofSql } from "./decision-upgrade-adoption";
 import { MEMORY_UTILITY_MODEL_MIGRATION, memoryUtilityModelFixtureSql, memoryUtilityModelProofSql, memoryUtilityModelRepeatProofSql } from "./memory-utility-model-adoption";
 import { MEMORY_HISTORY_BUDGET_MIGRATION, memoryHistoryBudgetFixtureSql, memoryHistoryBudgetProofSql } from "./memory-history-budget-adoption";
 import { MEMORY_EGRESS_RECEIPT_MIGRATION, memoryEgressReceiptFixtureSql, memoryEgressReceiptProofSql } from "./memory-egress-receipt-adoption";
@@ -7421,6 +7423,10 @@ function main(
     runForwardAdoptionProof(shadowDatabase, migrations, UTILITY_RUNTIME_BUDGET_MIGRATION,
       fixture, proof, proof);
   }
+  runForwardAdoptionProof(shadowDatabase, migrations, SEMANTIC_DECISIONS_MIGRATION,
+    semanticDecisionsFixtureSql, semanticDecisionsProofSql, semanticDecisionsProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, DECISION_UPGRADE_MIGRATION,
+    decisionUpgradeFixtureSql, decisionUpgradeProofSql, decisionUpgradeProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_HISTORY_LIVE_ORDINALS_MIGRATION,
     memoryHistoryLiveOrdinalsFixtureSql, memoryHistoryLiveOrdinalsProofSql, memoryHistoryLiveOrdinalsProofSql);
   for (const assigned of [false, true]) {

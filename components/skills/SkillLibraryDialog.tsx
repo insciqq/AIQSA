@@ -26,6 +26,7 @@ import {
 } from "@/lib/contracts/skills";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { SkillSelectionSummary, type SelectedSkillName } from "./SkillSelectionSummary";
+import { SkillSuggestions, type SkillSuggestionsProps } from "./SkillSuggestions";
 
 type EditorState = {
   draft: SkillDraft;
@@ -34,6 +35,7 @@ type EditorState = {
 
 type SkillLibraryContentProps = Readonly<{
   mode: "picker" | "section";
+  suggestions?: Pick<SkillSuggestionsProps, "request" | "onUse">;
   includedSkills?: readonly SelectedSkillName[];
   selectedSkills?: readonly SelectedSkillName[];
   onSelectionChange(skillIds: readonly string[]): void;
@@ -78,7 +80,7 @@ function actionErrorMessage(failure: unknown): string {
   return code.replaceAll("_", " ");
 }
 
-function SkillLibraryContent({ mode, onSelectionChange, selectedIds, includedSkills = [], selectedSkills = [] }: SkillLibraryContentProps) {
+function SkillLibraryContent({ mode, onSelectionChange, selectedIds, includedSkills = [], selectedSkills = [], suggestions }: SkillLibraryContentProps) {
   const data = useSkillLibraryStore((state) => state.data);
   const loadingMore = useSkillLibraryStore((state) => state.loadingMore);
   const loadState = useSkillLibraryStore((state) => state.loadState);
@@ -299,6 +301,8 @@ function SkillLibraryContent({ mode, onSelectionChange, selectedIds, includedSki
         <section className="v2-skill-list-pane" aria-label="Skill library">
           <SkillSelectionSummary includedSkills={includedSkills} manualSkills={manualSkills}
             onRemove={(id) => onSelectionChange(selectedIds.filter((value) => value !== id))} />
+          {mode === "picker" && suggestions ? <SkillSuggestions key={suggestions.request.requestId} {...suggestions}
+            excludedIds={effectiveIds} atLimit={effectiveIds.length >= SKILL_MAX_SELECTED} /> : null}
           {loadState === "error" && data ? (
             <div className="v2-skill-state" role="alert">
               <p>Skills could not be loaded. Earlier results are shown.</p>
@@ -587,8 +591,10 @@ export function SkillLibraryDialog({
   selectedIds,
   selectedSkills,
   includedSkills,
-  restoreFocus
+  restoreFocus,
+  suggestions
 }: Readonly<{
+  suggestions?: Pick<SkillSuggestionsProps, "request" | "onUse">;
   includedSkills?: readonly SelectedSkillName[];
   selectedSkills?: readonly SelectedSkillName[];
   restoreFocus?(): HTMLElement | null;
@@ -616,6 +622,7 @@ export function SkillLibraryDialog({
         </header>
         <SkillLibraryContent
           mode="picker"
+          suggestions={suggestions}
           includedSkills={includedSkills}
           selectedSkills={selectedSkills}
           onSelectionChange={onSelectionChange}

@@ -5,6 +5,7 @@ import {
   rollbackAdminKnowledgeProfile
 } from "@/components/admin/adminKnowledgeApi";
 import type { ImageGenerationParameters } from "@/lib/contracts/imageGeneration";
+import type { DecisionFeatureOverrides } from "@/lib/contracts/semanticDecisions";
 import {
   adminModelPolicyErrorMessage,
   getAdminModelPolicy,
@@ -50,6 +51,8 @@ export type AdminRolePatch = Readonly<{
   providerModelId?: string | null;
   reasoningEffort?: string | null;
   rerankerProviderModelId?: string | null;
+  decisionProviderModelId?: string | null;
+  decisionFeatures?: DecisionFeatureOverrides;
 }>;
 
 export type AdminKnowledgeDraft = Readonly<{

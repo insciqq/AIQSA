@@ -29,6 +29,21 @@ function expectDiscoveryCode(error: unknown, code: OpenRouterDiscoveryError["cod
 }
 
 describe("OpenRouter account-filtered discovery", () => {
+  it("filters Decisions upstream and locally without promoting answer models", async () => {
+    const requests: McpPinnedHttpRequest[] = [];
+    const client = createOpenRouterDiscoveryClient({ apiRoot: "https://openrouter.example.test/api/v1", bearerToken: "synthetic",
+      network: { lookupHostname: publicLookup, dispatch: async (request) => {
+        requests.push(request);
+        return responseJson({ data: [
+          { id: "typesafe/jev-1.13", name: "Jev", architecture: { input_modalities: ["text"], output_modalities: ["decisions"] } },
+          { id: "synthetic/answer", name: "Answer", architecture: { output_modalities: ["text"] } }
+        ] });
+      } } });
+    expect((await client.listDecisionModels()).map((model) => model.id)).toEqual(["typesafe/jev-1.13"]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url.pathname).toBe("/api/v1/models");
+    expect(requests[0]!.url.searchParams.get("output_modalities")).toBe("decisions");
+  });
   it("uses the dedicated embedding-model catalog path", async () => {
     const requests: McpPinnedHttpRequest[] = [];
     const client = createOpenRouterDiscoveryClient({

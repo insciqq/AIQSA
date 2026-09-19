@@ -13,6 +13,7 @@ import {
   type SystemModelRoleResolution
 } from "../../providerRuntime/systemModelRole";
 import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memoryUtilityModelRole";
+import { createDecisionModelRoleResolver, type DecisionModelRoleResolution } from "../../providerRuntime/decisionModelRole";
 import {
   createRerankerModelRoleResolver,
   type RerankerModelRoleResolution
@@ -69,6 +70,7 @@ export type MemoryPolicyDestination =
     }>
   | Readonly<{
       code: "embedding_not_configured" | "embedding_unavailable" |
+        "decision_model_absent" | "decision_feature_disabled" | "decision_model_unavailable" |
         "reranker_model_unavailable" | "system_model_absent" |
         "system_model_unavailable";
       kind: "UNAVAILABLE";
@@ -89,6 +91,7 @@ export type MemoryUtilityPolicyDependencies = Readonly<{
   resolveRerankerRole?: () => Promise<RerankerModelRoleResolution>;
   resolveSystemRole?: () => Promise<SystemModelRoleResolution>;
   resolveMemoryRole?: () => Promise<SystemModelRoleResolution>;
+  resolveDecisionRole?: () => Promise<DecisionModelRoleResolution>;
 }>;
 
 function exactAuthority(value: SearchProbeBinding | null | undefined): SafeTargetAuthority | null {
@@ -245,13 +248,14 @@ export async function resolveCurrentMemoryUtilityPolicy(
   settings: Pick<LockedMemorySettings, "embeddingProviderModelId">,
   dependencies: MemoryUtilityPolicyDependencies = {}
 ): Promise<ResolvedMemoryUtilityPolicy> {
-  const [memoryResolution, systemResolution, rerankerResolution] = await Promise.all([
+  const [memoryResolution, systemResolution, rerankerResolution, decisionResolution] = await Promise.all([
     dependencies.resolveMemoryRole?.() ??
       createMemoryUtilityModelRoleResolver(db).resolve(),
     dependencies.resolveSystemRole?.() ??
       createSystemModelRoleResolver(db).resolve(),
     dependencies.resolveRerankerRole?.() ??
-      createRerankerModelRoleResolver(db).resolve()
+      createRerankerModelRoleResolver(db).resolve(),
+    dependencies.resolveDecisionRole?.() ?? createDecisionModelRoleResolver(db).resolve("memoryRelevance")
   ]);
   let embedding: EmbeddingProviderAdmissionRole | null = null;
   let embeddingUnavailable = false;
@@ -271,6 +275,17 @@ export async function resolveCurrentMemoryUtilityPolicy(
   const targets = new Map<MemoryExecutionRole, ResolvedMemoryExecutionTarget>();
   let rerankerTargets: readonly ResolvedMemoryExecutionTarget[] = Object.freeze([]);
   const destinations: MemoryPolicyDestination[] = MEMORY_EXECUTABLE_ROLES.map((role) => {
+    if (role === "MEMORY_HISTORY_RELEVANCE") {
+      const target = decisionResolution.ok
+        ? targetFor(role, decisionResolution.role, decisionResolution.policyVersion) : null;
+      if (target) {
+        targets.set(role, target);
+        return { kind: "AVAILABLE" as const, role, target };
+      }
+      return { kind: "UNAVAILABLE" as const, role,
+        code: decisionResolution.ok ? "decision_model_unavailable" as const : decisionResolution.code,
+        selectedProviderModelId: decisionResolution.ok ? decisionResolution.providerModelId : decisionResolution.selectedProviderModelId };
+    }
     if (isMemoryEmbeddingRole(role)) {
       const target = embedding ? targetFor(role, embedding, null) : null;
       if (target) {

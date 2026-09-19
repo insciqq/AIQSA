@@ -24,7 +24,7 @@ export type ToolKind = "search" | "knowledge" | "mcp" | "workspace";
 export type NestedAbortSource = "parent_signal" | "tool_deadline" | "search_deadline" | "provider_deadline" | "knowledge_deadline" | "mcp_deadline" | "workspace_deadline" | "unknown";
 type ToolOperationFields = Readonly<{
   engine_index?: number; operation_index?: number;
-  operation_stage?: "retrieval" | "embedding" | "rerank" | "draft" | "selector" | "auditor" | "supplement" | "compose" | "verify";
+  operation_stage?: "retrieval" | "embedding" | "rerank" | "relevance" | "draft" | "selector" | "auditor" | "supplement" | "compose" | "verify";
 }>;
 type RouteFields = Readonly<{
   method?: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" | "CONNECT" | "TRACE" | "unknown";
@@ -40,7 +40,7 @@ type OperationOutcome = "started" | "completed" | "failed" | "cancelled";
 type Reason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response";
 type ProviderIdentity = Readonly<{ providerFamily?: string; adapterKind?: string; connectionId?: string; providerModelId?: string }>;
 type ProviderFields = ProviderIdentity & Readonly<{
-  stage?: "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank";
+  stage?: "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions";
   outcome?: OperationOutcome; duration_ms?: number; attempt?: number; action?: "none" | "retry" | "stop";
   httpStatus?: number; code?: string; reason?: Reason; timeout_ms?: number; delay_ms?: number;
   abort_source?: "provider_deadline" | "parent_signal" | "unknown";
@@ -90,7 +90,7 @@ export type EventFields = {
     provider_timeout_ms?: number; effective_timeout_ms?: number; request_timeout_ms?: number;
   }>;
   provider_deadline: ProviderIdentity & Readonly<{
-    stage?: "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank";
+    stage?: "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions";
     configured_timeout_ms?: number; provider_timeout_ms?: number; effective_timeout_ms?: number; poll_timeout_ms?: number;
     stream_idle_timeout_ms?: number; stream_absolute_timeout_ms?: number;
   }>;
@@ -98,12 +98,12 @@ export type EventFields = {
     layer: "tool" | ToolKind | "provider"; stage: "before_start" | "delivery";
     abort_source: NestedAbortSource; duration_ms?: number; timeout_ms?: number;
     deadline_kind?: "operation" | "request" | "sdk_request" | "stream_idle" | "stream_absolute" | "polling";
-    operation?: "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank";
+    operation?: "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions";
     attempt?: number;
   }>;
   transport_stage: ProviderIdentity & Readonly<{
     transport: "provider" | "mcp"; stage: "fetch" | "headers" | "body" | "stream" | "parse";
-    operation?: "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank";
+    operation?: "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions";
     outcome: OperationOutcome; duration_ms?: number; httpStatus?: number; code?: string;
     category?: "dns" | "tls" | "connect" | "timeout" | "parse" | "http" | "aborted" | "unknown";
     bytes?: number; chunks?: number; last_progress_ms?: number; timeout_ms?: number; attempt?: number;

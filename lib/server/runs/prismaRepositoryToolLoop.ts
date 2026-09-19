@@ -1901,7 +1901,7 @@ export function createPrismaRunToolLoopOperations(
 
         await tx.usageEvent.deleteMany({
           where: {
-            chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false,
+            chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false, knowledgeRelevance: false, optionalDecision: false,
             modelRunId: input.runId
           }
         });
@@ -2071,7 +2071,7 @@ export function createPrismaRunToolLoopOperations(
         if (usageAttributions.length > 0) {
           await tx.usageEvent.deleteMany({
             where: {
-              chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false,
+              chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false, knowledgeRelevance: false, optionalDecision: false,
               modelRunId: input.runId
             }
           });

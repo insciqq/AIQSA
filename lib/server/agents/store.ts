@@ -6,7 +6,7 @@ import type { ModelRunUsage } from "@/lib/domain/modelRunEvents";
 import type { RunUsageAttribution } from "../runs/runRepositoryContract";
 import { json, lockRunSettlementScope } from "../runs/prismaRepositoryShared";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
-import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
+import { normalizeProviderExecutionSnapshot, type ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { resolveMcpRunTool } from "../mcp/toolExecutor";
 import type { McpRunPlanResult } from "../mcp/runPlan";
@@ -116,6 +116,7 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
     async reserveProvider(reservedTokens: number, utility?:
       | Readonly<{ kind: "native_search" }>
       | Readonly<{ kind: "aiqsa_search"; optionId: string; invocationId: string; maxCalls: number }>
+      | Readonly<{ kind: "decision"; snapshot: ProviderExecutionSnapshot }>
       | Readonly<{ kind: "discovery"; role: ProviderAdmissionRole }>) {
       if (!Number.isSafeInteger(reservedTokens) || reservedTokens < 1) throw new Error("agent_budget_invalid");
       const result = await locked(async (tx) => {
@@ -150,14 +151,13 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
             credentialVersionId: true, credentialSource: true, executionSnapshot: true } });
           await tx.providerRunBinding.create({ data: { ...answer, executionSnapshot: json(answer.executionSnapshot),
             modelRunId: runId, bindingKey, role: "search" } });
-        } else if (utility?.kind === "discovery") {
-          const { role } = utility;
-          const snapshot = role.snapshot;
+        } else if (utility?.kind === "discovery" || utility?.kind === "decision") {
+          const snapshot = utility.kind === "decision" ? utility.snapshot : utility.role.snapshot;
           await tx.providerRunBinding.create({ data: {
-            modelRunId: runId, bindingKey, role: "search", executionSnapshot: json(snapshot),
+            modelRunId: runId, bindingKey, role: utility.kind === "decision" ? "decision" : "search", executionSnapshot: json(snapshot),
             connectionId: snapshot.connectionId, providerModelId: snapshot.providerModelId,
             credentialId: snapshot.credentialId, credentialVersionId: snapshot.credentialVersionId,
-            credentialSource: role.credentialSource
+            credentialSource: utility.kind === "decision" ? "default" : utility.role.credentialSource
           } });
         }
         await tx.agentProviderAttempt.create({ data: { id, modelRunId: runId, providerBindingKey: bindingKey, reservedTokens,
@@ -264,7 +264,10 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
 }
 
 export async function loadAgentUsage(database: Pick<Prisma.TransactionClient, "agentProviderAttempt">, runId: string): Promise<RunUsageAttribution[]> {
-  const attempts = await database.agentProviderAttempt.findMany({ where: { modelRunId: runId },
+  // Optional decisions have their own crash-safe UsageEvent; their reservation
+  // still counts against Agent limits, but must not be charged a second time.
+  const attempts = await database.agentProviderAttempt.findMany({ where: { modelRunId: runId,
+    NOT: { providerBindingKey: { startsWith: "agent-decision:" } } },
     include: { providerBinding: { select: { executionSnapshot: true } } }, orderBy: { createdAt: "asc" } });
   return attempts.map((attempt) => {
     const snapshot = normalizeProviderExecutionSnapshot(attempt.providerBinding.executionSnapshot);

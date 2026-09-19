@@ -19,9 +19,7 @@ import {
   createPrismaMcpRunPlanLoader
 } from "./runPlanRepository";
 import { prisma } from "../prisma";
-import { createSystemModelRoleResolver } from "../providerRuntime/systemModelRole";
-import { createAcceptedStructuredOutputExecutor } from "../providerRuntime/structuredOutputExecutor";
-import { createMcpSemanticRouter } from "./router";
+import { createPrismaAcceptedMcpRouter } from "./decisionRouter";
 import { filterMcpToolsForUser } from "./toolAccess";
 import { reportSubsystemFailure, reportSubsystemHealthy } from "../observability";
 import { observedFailureCode } from "../providers/providerObservability";
@@ -99,11 +97,6 @@ export function defaultMcpOperationalStatus(generationId: string) {
 const loadRunPlan = createPrismaMcpRunPlanLoader();
 const loadProjectRunPlan = createPrismaMcpProjectRunPlanLoader();
 const loadCapabilityCatalog = createPrismaMcpCapabilityCatalogLoader();
-const systemModelRole = createSystemModelRoleResolver(prisma);
-const defaultMcpSemanticRouter = createMcpSemanticRouter({
-  executeStructuredOutput: createAcceptedStructuredOutputExecutor(prisma),
-  resolveSystemModel: () => systemModelRole.resolve()
-});
 
 async function prepareExactMcpRunPlan(
   userId: string,
@@ -204,5 +197,7 @@ export const defaultMcpRunPlan = {
   async prepareProject(userId: string, serverIds: readonly string[]) {
     return prepareExactProjectMcpRunPlan(userId, serverIds);
   },
-  router: defaultMcpSemanticRouter
+  routerForRun(owner: Readonly<{ runId: string; userId: string }>) {
+    return createPrismaAcceptedMcpRouter(prisma, owner);
+  }
 };

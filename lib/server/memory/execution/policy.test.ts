@@ -231,7 +231,8 @@ function rerankerRole(
 }
 
 const policyDb = {
-  memoryUtilityModelPolicy: { findUnique: async () => null }
+  memoryUtilityModelPolicy: { findUnique: async () => null },
+  systemModelPolicy: { findUnique: async () => null }
 } as unknown as Prisma.TransactionClient;
 
 describe("Independent Memory utility assignment", () => {

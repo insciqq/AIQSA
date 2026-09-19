@@ -58,6 +58,7 @@ export const providerAdapterKinds = [
   "openai_embeddings_compatible",
   "openrouter_chat_completions",
   "openrouter_rerank",
+  "openrouter_decisions",
   "openai_images_native",
   "openai_images_compatible",
   "gemini_images_native",
@@ -75,7 +76,7 @@ export type ProviderFamily =
 
 export type ProviderAuthenticationMode = "bearer" | "none";
 export type ResponsesRequestIsolationMode = "auto" | "on" | "off";
-export type ProviderModelClass = "answer" | "embedding" | "reranker" | "image";
+export type ProviderModelClass = "answer" | "embedding" | "reranker" | "decision" | "image";
 
 export type EmbeddingModelConfiguration = Readonly<{
   nativeDimension: number;
@@ -361,6 +362,16 @@ export function providerRequestEndpoint(
   configuration: ProviderConnectionConfiguration,
   adapterKind: ProviderAdapterKind
 ): string {
+  if (adapterKind === "openrouter_decisions") {
+    // Decisions is a sibling of OpenRouter's v1 API. Preserve an explicitly
+    // configured proxy prefix and origin; never substitute a public host.
+    const root = new URL(configuration.apiRoot);
+    if (!root.pathname.endsWith("/v1")) {
+      throw new ProviderConfigurationError("provider_api_root_invalid");
+    }
+    root.pathname = `${root.pathname.slice(0, -3)}/alpha/decisions`;
+    return root.toString();
+  }
   const terminalPath = adapterKind === "openrouter_images" ? "images" :
     adapterKind === "openai_images_native" || adapterKind === "openai_images_compatible" ? "images/generations" :
     adapterKind === "gemini_images_native" ? "interactions" :
@@ -636,7 +647,7 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
   const adapterKind = value.adapterKind as ProviderAdapterKind;
   const modelClass = value.modelClass;
   if (modelClass !== "answer" && modelClass !== "embedding" &&
-    modelClass !== "reranker" && modelClass !== "image") {
+    modelClass !== "reranker" && modelClass !== "decision" && modelClass !== "image") {
     throw new ProviderConfigurationError("provider_model_class_invalid");
   }
   const capabilities = normalizeProviderModelCapabilities(value.capabilities);
@@ -671,9 +682,9 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
     ) {
       throw new ProviderConfigurationError("provider_embedding_configuration_invalid");
     }
-  } else if (modelClass === "reranker") {
+  } else if (modelClass === "reranker" || modelClass === "decision") {
     if (
-      adapterKind !== "openrouter_rerank" ||
+      adapterKind !== (modelClass === "reranker" ? "openrouter_rerank" : "openrouter_decisions") ||
       value.answerSelectable !== false ||
       embedding ||
       !nonAnswerCapabilitiesAreInert(capabilities) ||
@@ -682,7 +693,7 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
       throw new ProviderConfigurationError("provider_model_class_invalid");
     }
   } else if (adapterKind === "openai_embeddings_compatible" ||
-    adapterKind === "openrouter_rerank" || embedding) {
+    adapterKind === "openrouter_rerank" || adapterKind === "openrouter_decisions" || embedding) {
     throw new ProviderConfigurationError("provider_embedding_configuration_invalid");
   }
   if (
@@ -711,7 +722,7 @@ export function normalizeProviderModelConfiguration(value: unknown): ProviderMod
     ? undefined
     : normalizeOpenRouterRouting(value.openRouterRouting);
   const openRouterRoutingRequired = adapterKind === "openrouter_chat_completions" ||
-    adapterKind === "openrouter_rerank" || adapterKind === "openrouter_images";
+    adapterKind === "openrouter_rerank" || adapterKind === "openrouter_decisions" || adapterKind === "openrouter_images";
   const openRouterRoutingAllowed = openRouterRoutingRequired || (
     adapterKind === "openai_embeddings_compatible" &&
     modelClass === "embedding" &&

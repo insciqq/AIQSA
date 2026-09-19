@@ -7322,7 +7322,7 @@ describe("run recovery", () => {
   it.each([
     { mode: "single", goals: ["remember this detail"] },
     { mode: "batch", goals: ["a".repeat(400), "remember this detail"] }
-  ])("routes all fresh recovered $mode goals and attributes usage once", async ({ goals }) => {
+  ])("routes fresh recovered $mode goals through their accepted binding and attributes usage once", async ({ goals }) => {
     const requests: ProviderRunRequest[] = [];
     const snapshot = normalizedToolRequest().mcp!;
     const catalog = {
@@ -7359,6 +7359,8 @@ describe("run recovery", () => {
       snapshot
     }));
     const discovery: McpDiscoveryState = { catalog, epochs: [], version: 2 };
+    const routerForRun = vi.fn(() => ({ route }));
+    const mutableRoute = vi.fn(async () => ({ toolNames: [], usageAttribution: null }));
     const harness = createHarness({
       mcp: {
         filterTools: allowMcpTools, materialize,
@@ -7367,7 +7369,8 @@ describe("run recovery", () => {
           ok: true,
           snapshot: { servers: [], tools: [], version: 1 }
         }),
-        router: { route }
+        router: { route: mutableRoute },
+        routerForRun
       },
       providers: {
         openai: {
@@ -7434,6 +7437,8 @@ describe("run recovery", () => {
 
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
+    expect(routerForRun).toHaveBeenCalledExactlyOnceWith({ runId, userId });
+    expect(mutableRoute).not.toHaveBeenCalled();
     expect(route).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       activeToolNames: new Set(),
       catalog,

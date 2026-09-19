@@ -1,6 +1,7 @@
 import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
 import { hasVerifiedImageCapability } from "../providers/imageGenerationEvidence";
 import { hasVerifiedDedicatedProtocol } from "../providers/systemRoleEvidence";
+import { decodeDecisionEvidence } from "../providers/decisionEvidence";
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import type { CatalogAdapterKind } from "../../domain/catalog";
@@ -84,6 +85,7 @@ export type RerankerProviderAdmissionRole = Readonly<{
 }>;
 
 export type ImageProviderAdmissionRole = RerankerProviderAdmissionRole;
+export type DecisionProviderAdmissionRole = RerankerProviderAdmissionRole;
 
 export type ProviderAdmissionPlan = Readonly<{
   answer: ProviderAdmissionRole;
@@ -157,6 +159,7 @@ type EmbeddingRoleInput = SharedRoleInput & Readonly<{
 }>;
 
 type ImageRoleInput = SharedRoleInput & Readonly<{ modelClass: "image" }>;
+type DecisionRoleInput = SharedRoleInput & Readonly<{ modelClass: "decision" }>;
 
 type RerankerRoleInput = SharedRoleInput & Readonly<{
   modelClass: "reranker";
@@ -302,7 +305,11 @@ async function loadRole(
 ): Promise<ImageProviderAdmissionRole>;
 async function loadRole(
   db: AdmissionPrisma,
-  input: AnswerRoleInput | EmbeddingRoleInput | RerankerRoleInput | ImageRoleInput
+  input: DecisionRoleInput
+): Promise<DecisionProviderAdmissionRole>;
+async function loadRole(
+  db: AdmissionPrisma,
+  input: AnswerRoleInput | EmbeddingRoleInput | RerankerRoleInput | ImageRoleInput | DecisionRoleInput
 ): Promise<ProviderAdmissionRole | EmbeddingProviderAdmissionRole |
   RerankerProviderAdmissionRole> {
   const model = await db.providerModel.findFirst({
@@ -386,7 +393,9 @@ async function loadRole(
         modelConfig.embedding.providerFamily !== model.connection.family)) ||
     (input.modelClass === "reranker" &&
       (model.connection.family !== "openrouter" ||
-        modelConfig.adapterKind !== "openrouter_rerank"))
+        modelConfig.adapterKind !== "openrouter_rerank")) ||
+    (input.modelClass === "decision" &&
+      (model.connection.family !== "openrouter" || modelConfig.adapterKind !== "openrouter_decisions"))
   ) {
     throw new ProviderAdmissionError("model_not_available");
   }
@@ -475,6 +484,8 @@ async function loadRole(
     connectionId: model.connectionId,
     credentialId: credential.credentialId,
     credentialVersionId: credential.credentialVersionId,
+    ...(input.modelClass === "decision" ? { decisionVerification:
+      decodeDecisionEvidence(isRecord(check.evidence) ? check.evidence.decisions : null) } : {}),
     model: modelConfig,
     modelDisplayName: model.displayName,
     providerFamily: model.connection.family,
@@ -537,11 +548,11 @@ async function loadRole(
       snapshot
     };
   }
-  if (input.modelClass === "reranker") {
+  if (input.modelClass === "reranker" || input.modelClass === "decision") {
     if (
       resolvedModel.adapterKind === "fake" ||
-      resolvedModel.modelClass !== "reranker" ||
-      resolvedModel.adapterKind !== "openrouter_rerank"
+      resolvedModel.modelClass !== input.modelClass ||
+      resolvedModel.adapterKind !== (input.modelClass === "reranker" ? "openrouter_rerank" : "openrouter_decisions")
     ) {
       throw new ProviderAdmissionError("model_not_available");
     }
@@ -731,6 +742,24 @@ export async function loadInstallationRerankerProviderRole(
   } catch (error) {
     if (error instanceof ProviderConfigurationError ||
       error instanceof Error && error.message === "provider_execution_snapshot_invalid") {
+      throw new ProviderAdmissionError("model_not_available");
+    }
+    throw error;
+  }
+}
+
+/** Optional semantic judgments have their own installation model/key and
+ * verified protocol. Selecting a Memory or answer model grants no authority. */
+export async function loadInstallationDecisionProviderRole(
+  db: AdmissionPrisma, input: { providerModelId: string }
+): Promise<DecisionProviderAdmissionRole> {
+  const model = await db.providerModel.findUnique({ select: { connectionId: true }, where: { id: input.providerModelId } });
+  if (!model) throw new ProviderAdmissionError("model_not_available");
+  try {
+    return await loadRole(db, { connectionId: model.connectionId, credentialAuthority: { kind: "installation" },
+      modelClass: "decision", modelId: input.providerModelId, requireEntitlement: false });
+  } catch (error) {
+    if (error instanceof ProviderConfigurationError || error instanceof Error && error.message === "provider_execution_snapshot_invalid") {
       throw new ProviderAdmissionError("model_not_available");
     }
     throw error;

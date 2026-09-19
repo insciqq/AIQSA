@@ -43,8 +43,12 @@ import {
 } from "@/components/app-shell/mcpSettingsStore";
 import { mcpSetupAttention } from "@/components/app-shell/mcpReadiness";
 import {
+  loadSkillDetail,
   useSkillLibraryStore
 } from "@/components/app-shell/skillLibraryStore";
+import { resolveEffectiveSkillIds, SKILL_MAX_SELECTED } from "@/lib/contracts/skills";
+import type { SkillSuggestionRequest } from "@/lib/contracts/skillSuggestions";
+import type { SkillSuggestionsProps } from "@/components/skills/SkillSuggestions";
 import type { PowerAppShellV2Props, ShellComposerView } from "@/components/app-shell/powerAppShellV2Contracts";
 import type {
   WorkspaceChatSummary,
@@ -302,8 +306,10 @@ export function SkillLibraryOverlayV2({
   selectedIds,
   selectedSkills,
   includedSkills,
-  restoreFocus
+  restoreFocus,
+  suggestions
 }: Readonly<{
+  suggestions?: Pick<SkillSuggestionsProps, "request" | "onUse">;
   selectedSkills?: readonly SelectedSkillName[];
   includedSkills?: readonly SelectedSkillName[];
   restoreFocus?(): HTMLElement | null;
@@ -314,6 +320,7 @@ export function SkillLibraryOverlayV2({
 }>) {
   return open ? (
     <SkillLibraryDialog
+      suggestions={suggestions}
       includedSkills={includedSkills}
       selectedSkills={selectedSkills}
       restoreFocus={restoreFocus}
@@ -342,6 +349,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [secretsKey, setSecretsKey] = useState(0);
   const [dataSubview, setDataSubview] = useState<null | "archived">(null);
   const [skillLibraryScope, setSkillLibraryScope] = useState<string | null>(null);
+  const [skillSuggestionInput, setSkillSuggestionInput] = useState<Readonly<{ scope: string; request: SkillSuggestionRequest }> | null>(null);
   const [composerDockHeight, setComposerDockHeight] = useState(0);
   const [composerLayer, setComposerLayer] = useState<ComposerV2Layer>(null);
   const [workspaceResetOpen, setWorkspaceResetOpen] = useState(false);
@@ -442,6 +450,53 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     }));
   }
   const latestMessage = thread.visibleMessages.at(-1);
+  const suggestionDraftRef = useRef(composer.draft);
+  useLayoutEffect(() => { suggestionDraftRef.current = composer.draft; }, [composer.draft]);
+  function openSkillLibrary() {
+    setSkillLibraryScope(skillScopeKey);
+    if (!composer.draft.trim() || thread.activeChatStreaming || thread.activeChatDetailLoading || thread.activeChatDetailError ||
+      projectContext && !activeProject?.capabilities.mutateChats) {
+      setSkillSuggestionInput(null); return;
+    }
+    const input = { draft: composer.draft, chatId: session.activeChatId,
+      projectId: projectContext ? activeProject?.id ?? null : null,
+      expectedActiveLeafMessageId: session.activeChatId ? latestMessage?.id ?? null : null,
+      excludedIds: resolveEffectiveSkillIds(composer.assistant.selected?.includedSkills?.map(skill => skill.id) ?? [], selectedSkills.map(skill => skill.id)) };
+    setSkillSuggestionInput(previous => {
+      if (previous?.scope === skillScopeKey && JSON.stringify({ ...previous.request, requestId: undefined }) === JSON.stringify(input)) return previous;
+      return { scope: skillScopeKey, request: { ...input, requestId: crypto.randomUUID() } };
+    });
+  }
+  const skillSuggestions = skillSuggestionInput?.scope === skillScopeKey && skillSuggestionInput.request.draft === composer.draft
+    ? { request: skillSuggestionInput.request, async onUse(id: string, signal: AbortSignal) {
+      const checkCurrent = () => {
+        signal.throwIfAborted();
+        if (skillScopeRef.current !== skillScopeKey || suggestionDraftRef.current !== skillSuggestionInput.request.draft) {
+          throw new Error("skill_selection_context_changed");
+        }
+      };
+      checkCurrent();
+      const included = composer.assistant.selected?.includedSkills?.map(skill => skill.id) ?? [];
+      if (projectContext) {
+        if (!activeProject?.resources.some(resource => resource.type === "skill" && resource.resourceId === id && resource.available)) {
+          throw new Error("skill_not_available");
+        }
+        const current = useComposerControlStore.getState().selectedSkills;
+        const effective = resolveEffectiveSkillIds(included, current.map(skill => skill.id));
+        if (!effective.includes(id) && effective.length < SKILL_MAX_SELECTED) selectManualSkills([...current.map(skill => skill.id), id]);
+        return;
+      }
+      // Suggestions may refer to a later library page. Resolve the authorized
+      // current detail on explicit Use instead of silently dropping that ID.
+      const detail = await loadSkillDetail(id, signal);
+      checkCurrent();
+      if (detail.archived) throw new Error("skill_not_available");
+      const current = useComposerControlStore.getState().selectedSkills;
+      const effective = resolveEffectiveSkillIds(included, current.map(skill => skill.id));
+      if (effective.includes(id) || effective.length >= SKILL_MAX_SELECTED) return;
+      useComposerControlStore.getState().setSelectedSkills([...current, { id: detail.id, name: detail.name,
+        description: detail.description, promptCharacterCount: detail.instructionCharacterCount }]);
+    } } : undefined;
   const continuationEligible = Boolean(workspace.pane.actions.openContinuedChat && session.activeChatId && latestMessage?.role === "assistant" &&
     latestMessage.status === "complete" && !thread.activeChatStreaming && !thread.activeChatDetailLoading &&
     !thread.activeChatDetailError && !activeProjectChat?.archived &&
@@ -734,7 +789,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onOpenKnowledgeLibrary={projectContext ? undefined : settings.openKnowledge}
       onOpenMcpSettings={projectContext ? workspace.projects.actions.openSettings : settings.openMcp}
       onOpenModelParameters={() => setRunSetupOpen(true)}
-      onOpenSkillLibrary={() => setSkillLibraryScope(skillScopeKey)}
+      onOpenSkillLibrary={openSkillLibrary}
       onOverrideKnowledgePlan={composer.knowledge.override}
       onRemoveAssistant={composer.assistant.remove}
       onRemoveAttachment={composer.composerActions.removeAttachment}
@@ -1490,6 +1545,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       ) : null}
       {skillLibraryScope === skillScopeKey && projectContext ? (
         <ProjectSkillPicker key={`project:${skillScopeKey}`}
+          suggestions={skillSuggestions}
           resources={(activeProject?.resources ?? []).flatMap((resource) => resource.type === "skill" ? [{
             id: resource.resourceId, name: resource.label, description: resource.description ?? "", available: resource.available
           }] : [])}
@@ -1502,6 +1558,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         />
       ) : null}
       <SkillLibraryOverlayV2 key={`personal:${skillScopeKey}`}
+        suggestions={skillSuggestions}
         open={skillLibraryScope === skillScopeKey && !projectContext}
         includedSkills={composer.assistant.selected?.includedSkills}
         selectedSkills={selectedSkills}

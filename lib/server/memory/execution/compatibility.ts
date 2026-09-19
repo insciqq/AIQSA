@@ -70,13 +70,16 @@ export function resolveMemoryExecutionCompatibility(input: Readonly<{
   }
   const embeddingRole = isMemoryEmbeddingRole(input.role);
   const rerankerRole = input.role === "MEMORY_RERANK";
+  const decisionRole = input.role === "MEMORY_HISTORY_RELEVANCE";
   const vectorSpaceFingerprint = memoryVectorSpaceFingerprint(input.target);
   if (
     embeddingRole !== (vectorSpaceFingerprint !== null) ||
     (embeddingRole && model.modelClass !== "embedding") ||
     (rerankerRole && model.modelClass !== "answer" &&
       model.modelClass !== "reranker") ||
-    (!embeddingRole && !rerankerRole && model.modelClass !== "answer") ||
+    (!embeddingRole && !rerankerRole && !decisionRole && model.modelClass !== "answer") ||
+    (decisionRole && (model.modelClass !== "decision" || model.adapterKind !== "openrouter_decisions" ||
+      !input.target.snapshot.decisionVerification)) ||
     (model.modelClass === "reranker" && model.adapterKind !== "openrouter_rerank")
   ) return memoryExecutionFailure("memory_execution_capability_unavailable");
 

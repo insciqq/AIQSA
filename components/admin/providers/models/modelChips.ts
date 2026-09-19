@@ -29,6 +29,7 @@ export type ModelChipKey =
   | "json"
   | "pdf"
   | "reranking"
+  | "decisions"
   | "stream"
   | "hostedSearch"
   | "codexWebSearch"
@@ -123,6 +124,13 @@ export function modelChipsFromEvidence(
       embedding ? "embedding" : "reranking", (embedding ? evidence.embedding : evidence.reranking) ? "verified" : null);
     return result ? [result] : [];
   }
+  if (configuration.modelClass === "decision") {
+    const proof = evidence.decisions;
+    const result = capabilityChip("decisions", "Semantic decisions", "decisions",
+      proof?.adapterKind === configuration.adapterKind && proof.upstreamModelId === configuration.upstreamModelId &&
+        proof.noul && proof.choice ? "verified" : null);
+    return result ? [result] : [];
+  }
   if (configuration.modelClass === "image") {
     return (["imageGeneration", "imageEditing"] as const).flatMap((key) => {
       const result = capabilityChip(key, key === "imageGeneration" ? "Generate images" : "Edit images", key, legacyStatus(evidence[key], configuration));
@@ -204,6 +212,7 @@ export function checkingLabel(modelClass: AdminProviderModelClass): string {
   if (modelClass === "image") return "Checking image generation and editing…";
   if (modelClass === "embedding") return "Checking embeddings…";
   if (modelClass === "reranker") return "Checking reranking…";
+  if (modelClass === "decision") return "Checking semantic decisions…";
   return "Checking tools, JSON, PDF, images and streaming…";
 }
 

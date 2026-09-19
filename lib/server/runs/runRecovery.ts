@@ -330,6 +330,7 @@ export type RunRecoveryDeps = Readonly<{
     ): Promise<McpRunPlanResult>;
     prepareProject?(userId: string, serverIds: readonly string[]): Promise<McpRunPlanResult>;
     router?: McpSemanticRouter;
+    routerForRun?(owner: Readonly<{ runId: string; userId: string }>): McpSemanticRouter;
   }>;
   providerAdmission?: Readonly<{
     load(input: {
@@ -1137,7 +1138,7 @@ async function executeRecoveredMcpDiscovery(
   const operation = async (): Promise<ToolExecutionResult> => {
     const discovery = context.activeMcpDiscovery;
     const materialize = context.deps.mcp?.materialize;
-    const router = context.deps.mcp?.router;
+    const router = context.deps.mcp?.routerForRun?.({ runId: context.run.id, userId: context.run.userId }) ?? context.deps.mcp?.router;
     const appendEpoch = context.deps.repository.appendMcpDiscoveryEpoch;
     if (!discovery || !materialize || !appendEpoch) {
       throw new Error("mcp_discovery_arguments_invalid");
@@ -1205,7 +1206,7 @@ function registerRecoveredMcpDiscoveryBatch(
         const operation = async (): Promise<ReadonlyMap<string, ToolExecutionResult>> => {
           const discovery = context.activeMcpDiscovery;
           const materialize = context.deps.mcp?.materialize;
-          const router = context.deps.mcp?.router;
+          const router = context.deps.mcp?.routerForRun?.({ runId: context.run.id, userId: context.run.userId }) ?? context.deps.mcp?.router;
           const appendEpoch = context.deps.repository.appendMcpDiscoveryEpoch;
           if (!discovery || !materialize || !appendEpoch) {
             throw new Error("mcp_discovery_arguments_invalid");

@@ -911,6 +911,22 @@
     margin-left: 0;
   }
 
+  /* Temporary replaces the new-chat island with a variable-width label.
+     Let that label claim its real width before the model name ellipsizes. */
+  .v2-workspace-shell .v2-live-header:has(.v2-live-temporary) {
+    display: flex;
+    padding-right: 0;
+  }
+
+  .v2-live-header:has(.v2-live-temporary) .v2-live-header-actions {
+    position: static;
+  }
+
+  /* Anchor the disclosure to the full header so it fits narrow screens. */
+  .v2-live-temporary {
+    position: static;
+  }
+
   /*
    * The Share text button collapses into the "⋯" menu; the Temporary
    * indicator stays directly visible.

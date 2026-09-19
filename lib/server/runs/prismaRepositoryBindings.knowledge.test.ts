@@ -5,9 +5,14 @@ import type { KnowledgeRunAdmissionPlan } from "../knowledge/runAdmission";
 import { KnowledgeRunPlanConflictError } from "./runRepositoryContract";
 
 const mocks = vi.hoisted(() => ({
+  insertAcceptedKnowledgeRelevanceBinding: vi.fn(async () => undefined),
   loadKnowledgeRunAdmissionPlan: vi.fn(),
   materializeKnowledgeBaseSnapshot: vi.fn(),
   sameKnowledgeRunAdmissionPlan: vi.fn()
+}));
+
+vi.mock("../knowledge/relevanceBinding", () => ({
+  insertAcceptedKnowledgeRelevanceBinding: mocks.insertAcceptedKnowledgeRelevanceBinding
 }));
 
 vi.mock("../knowledge/runAdmission", async (importOriginal) => ({
@@ -125,6 +130,7 @@ describe("accepted Knowledge Source snapshot binding", () => {
         resolvedSourceCount: 0
       })
     });
+    expect(mocks.insertAcceptedKnowledgeRelevanceBinding).toHaveBeenCalledWith(tx, "run-1");
     expect(createSession).toHaveBeenCalledWith({
       data: expect.objectContaining({
         modelRunId: "run-1",

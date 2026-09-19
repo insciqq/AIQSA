@@ -1,4 +1,8 @@
 import { loadInstallationImageProviderRole } from "../../providerRuntime/admission";
+import { loadInstallationDecisionProviderRole } from "../../providerRuntime/admission";
+import { createDecisionModelRoleResolver } from "../../providerRuntime/decisionModelRole";
+import { decodeDecisionFeatureOverrides, DECISION_FEATURES, type DecisionFeatureOverrides } from "../../../contracts/semanticDecisions";
+import { decisionFeatureEnabled, DEFAULT_DECISION_FEATURES, JEV_MODEL_ID, JEV_SERVED_MODEL_ID } from "../../../domain/decisionModels";
 import { normalizeImageGenerationParameters, type ImageGenerationParameters } from "../../../contracts/imageGeneration";
 import { hasVerifiedImageCapability } from "../../providers/imageGenerationEvidence";
 import { hasVerifiedDedicatedProtocol } from "../../providers/systemRoleEvidence";
@@ -77,6 +81,7 @@ export class AdminSystemModelPolicyServiceError extends Error {
 }
 
 class ChatTitleAlreadyConfigured extends Error {}
+class DecisionAlreadyConfigured extends Error {}
 
 function isPolicyWriteConflict(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -275,6 +280,7 @@ export function createAdminSystemModelPolicyService(
   dependencies: Readonly<{
     loadRole?: RoleLoader;
     loadRerankerRole?: RerankerRoleLoader;
+    loadDecisionRole?: typeof loadInstallationDecisionProviderRole;
     refreshActive?: ActiveRefresh;
     resolveRerankerRole?: ReturnType<typeof createRerankerModelRoleResolver>["resolve"];
     resolveChatTitleRole?: ReturnType<typeof createChatTitleModelRoleResolver>["resolve"];
@@ -294,6 +300,8 @@ export function createAdminSystemModelPolicyService(
     createChatPdfModelRoleResolver(prisma, loadRole).resolve;
   const loadRerankerRole = dependencies.loadRerankerRole ??
     loadInstallationRerankerProviderRole;
+  const loadDecisionRole = dependencies.loadDecisionRole ?? loadInstallationDecisionProviderRole;
+  const resolveDecisionRole = createDecisionModelRoleResolver(prisma, { loadRole: loadDecisionRole }).resolve;
   const resolveRerankerRole = dependencies.resolveRerankerRole ??
     createRerankerModelRoleResolver(prisma, {
       loadRole: loadRerankerRole
@@ -439,6 +447,15 @@ export function createAdminSystemModelPolicyService(
         resolveChatPdfRole("pdf_reader")
       ]);
       if (!policy) throw new Error("installation_system_model_policy_missing");
+      const decisionRows = await prisma.providerModel.findMany({ where: { modelClass: "decision" },
+        include: { connection: true }, orderBy: [{ displayName: "asc" }, { id: "asc" }] });
+      const decisionCandidates = [];
+      for (const row of decisionRows) {
+        try { await loadDecisionRole(prisma, { providerModelId: row.id }); decisionCandidates.push(serializeAdminAnswerModel(row)); }
+        catch (error) { if (!(error instanceof ProviderAdmissionError)) throw error; }
+      }
+      const decisionResolution = await resolveDecisionRole();
+      const selectedDecision = decisionRows.find((row) => row.id === policy.decisionProviderModelId);
       const imageRows = await prisma.providerModel.findMany({
         where: { modelClass: "image" }, orderBy: [{ displayName: "asc" }, { id: "asc" }],
         include: { activeCredentialChecks: true, connection: { include: { defaultCredential: { include: { activeVersion: true } } } } }
@@ -542,8 +559,14 @@ export function createAdminSystemModelPolicyService(
         verificationCandidates: deployments,
         ineligible,
         rerankerCandidates,
+        decisionCandidates,
         imageCandidates: imageModels.filter((model) => model.generation || model.editing),
         policy: {
+          decisionModel: selectedDecision ? { ...serializeAdminAnswerModel(selectedDecision),
+            available: decisionResolution.ok && decisionResolution.providerModelId === selectedDecision.id &&
+              decisionResolution.policyVersion === policy.version } : null,
+          decisionFeatures: Object.fromEntries(DECISION_FEATURES.map((feature) =>
+            [feature, decisionFeatureEnabled(policy.decisionFeaturesJson ?? {}, feature)])),
           imageModel: selectedImage ? { ...selectedImage, available: imageAvailable } : null,
           imageParameters,
           chatTitleReasoningEffort: policy.chatTitleReasoningEffort ?? null,
@@ -680,7 +703,7 @@ export function createAdminSystemModelPolicyService(
         (input.role === "memory" && (!supportsStructuredOutputAdapter(configuration.adapterKind) ||
         !supportsForcedToolCallProbe(configuration.adapterKind))) ||
         (input.role === "embedding" ? configuration.modelClass !== "embedding" :
-         input.role === "reranker" ? configuration.modelClass !== "reranker" : input.role === "image" ? configuration.modelClass !== "image" : configuration.modelClass !== "answer")) {
+         input.role === "reranker" ? configuration.modelClass !== "reranker" : input.role === "decision" ? configuration.modelClass !== "decision" : input.role === "image" ? configuration.modelClass !== "image" : configuration.modelClass !== "answer")) {
         throw new AdminSystemModelPolicyServiceError("system_model_policy_structured_output_unsupported");
       }
       const checked = model.activeCredentialChecks.find((check) => check.status === "available" &&
@@ -728,6 +751,17 @@ export function createAdminSystemModelPolicyService(
       }
     },
 
+    async adoptDecisionModel(input: Readonly<{
+      expectedVersion: number; providerModelId: string; userId: string;
+    }>): Promise<boolean> {
+      if (!DEFAULT_DECISION_FEATURES.length) return false;
+      try {
+        await service.update({ expectedVersion: input.expectedVersion, userId: input.userId,
+          decisionProviderModelId: input.providerModelId, decisionBootstrap: true });
+        return true;
+      } catch (error) { if (error instanceof DecisionAlreadyConfigured) return false; throw error; }
+    },
+
     async update(input: Readonly<{
       imageProviderModelId?: string | null;
       imageParameters?: ImageGenerationParameters;
@@ -749,12 +783,19 @@ export function createAdminSystemModelPolicyService(
        * null) is an explicit administrator save/clear and permanently closes
        * fresh-install default adoption for this installation. */
       rerankerProviderModelId?: string | null;
+      decisionProviderModelId?: string | null;
+      decisionFeatures?: DecisionFeatureOverrides;
+      /** Internal adoption only; never accepted from HTTP. */
+      decisionBootstrap?: true;
       reasoningEffort?: string | null;
       userId: string;
     }>): Promise<void> {
       const providerModelId = input.providerModelId;
       const reasoningEffort = input.reasoningEffort;
       const rerankerProviderModelId = input.rerankerProviderModelId;
+      const hasDecisionUpdate = input.decisionProviderModelId !== undefined || input.decisionFeatures !== undefined;
+      const decisionFeatures = input.decisionFeatures === undefined ? undefined : decodeDecisionFeatureOverrides(input.decisionFeatures);
+      if (decisionFeatures === null) throw new Error("system_model_policy_update_invalid");
       const hasImageUpdate = input.imageProviderModelId !== undefined;
       if (hasImageUpdate !== (input.imageParameters !== undefined) || input.imageProviderModelId === null && Object.keys(input.imageParameters ?? {}).length) {
         throw new AdminSystemModelPolicyServiceError("system_model_policy_image_parameters_invalid");
@@ -779,15 +820,16 @@ export function createAdminSystemModelPolicyService(
       const hasUtilityUpdate = providerModelId !== undefined;
       const hasReasoningUpdate = reasoningEffort !== undefined;
       if (hasUtilityUpdate !== hasReasoningUpdate ||
-        !hasUtilityUpdate && !hasTitleUpdate && !hasPdfUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate && rerankerProviderModelId === undefined) {
+        !hasUtilityUpdate && !hasTitleUpdate && !hasPdfUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate && !hasDecisionUpdate && rerankerProviderModelId === undefined) {
         throw new Error("system_model_policy_update_invalid");
       }
       try {
         await prisma.$transaction(async (tx) => {
           const policies = await tx.$queryRaw<Array<{
             version: number; chatTitleConfiguredAt: Date | null; chatTitleProviderModelId: string | null;
+            decisionConfiguredAt: Date | null; decisionProviderModelId: string | null;
           }>>(Prisma.sql`
-            SELECT "version", "chatTitleConfiguredAt", "chatTitleProviderModelId"
+            SELECT "version", "chatTitleConfiguredAt", "chatTitleProviderModelId", "decisionConfiguredAt", "decisionProviderModelId"
             FROM "SystemModelPolicy"
             WHERE "id" = 'installation'
             FOR UPDATE
@@ -809,6 +851,8 @@ export function createAdminSystemModelPolicyService(
 
           if (input.chatTitleBootstrap && (policies[0].chatTitleConfiguredAt !== null ||
             policies[0].chatTitleProviderModelId !== null)) throw new ChatTitleAlreadyConfigured();
+          if (input.decisionBootstrap && (policies[0].decisionConfiguredAt !== null ||
+            policies[0].decisionProviderModelId !== null)) throw new DecisionAlreadyConfigured();
 
           if (providerModelId === null && reasoningEffort !== null) {
             throw new AdminSystemModelPolicyServiceError(
@@ -906,6 +950,22 @@ export function createAdminSystemModelPolicyService(
           }
 
           let imageParameters = input.imageParameters;
+          if (input.decisionProviderModelId) {
+            try {
+              const role = await loadDecisionRole(tx, { providerModelId: input.decisionProviderModelId });
+              if (input.decisionBootstrap && (!DEFAULT_DECISION_FEATURES.length || role.configuration.upstreamModelId !== JEV_MODEL_ID ||
+                role.snapshot.decisionVerification?.servedModelId !== JEV_SERVED_MODEL_ID ||
+                role.snapshot.decisionVerification.provider.toLowerCase() !== "typesafe")) {
+                throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
+              }
+            }
+            catch (error) {
+              if (error instanceof ProviderAdmissionError) throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
+              throw error;
+            }
+          }
+          const currentDecisionFeatures = decisionFeatures === undefined ? undefined :
+            (await tx.systemModelPolicy.findUnique({ select: { decisionFeaturesJson: true }, where: { id: "installation" } }))?.decisionFeaturesJson;
           if (input.imageProviderModelId) {
             try {
               const role = await loadInstallationImageProviderRole(tx, { providerModelId: input.imageProviderModelId });
@@ -919,6 +979,10 @@ export function createAdminSystemModelPolicyService(
           }
           await tx.systemModelPolicy.update({
             data: {
+              ...(input.decisionProviderModelId === undefined ? {} : { decisionProviderModelId: input.decisionProviderModelId, decisionConfiguredAt: new Date() }),
+              ...(decisionFeatures === undefined ? {} : { decisionFeaturesJson: {
+                ...(decodeDecisionFeatureOverrides(currentDecisionFeatures ?? {}) ?? {}), ...decisionFeatures
+              } }),
               ...(hasImageUpdate ? { imageProviderModelId: input.imageProviderModelId, imageParamsJson: imageParameters as Prisma.InputJsonObject } : {}),
               ...(hasTitleUpdate ? {
                 chatTitleProviderModelId: input.chatTitleProviderModelId,

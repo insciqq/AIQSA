@@ -89,8 +89,8 @@ export function nativeRoutePreservesCapabilities(model: ProviderModelConfigurati
 
 export function nativeRouteMissingCapabilities(model: ProviderModelConfiguration,
   previous: AdminProviderTestEvidence | undefined, fresh: AdminProviderTestEvidence): AdminProviderCapabilityCheck[] {
-  if (model.modelClass === "embedding" || model.modelClass === "reranker") return hasVerifiedDedicatedProtocol(fresh, model)
-    ? [] : [model.modelClass === "embedding" ? "embedding" : "reranking"];
+  if (model.modelClass === "embedding" || model.modelClass === "reranker" || model.modelClass === "decision") return hasVerifiedDedicatedProtocol(fresh, model)
+    ? [] : [model.modelClass === "embedding" ? "embedding" : model.modelClass === "decision" ? "decisions" : "reranking"];
   const after = reusableCapabilitySetupEvidence(fresh, model);
   return requiredCapabilities(model, previous).filter((check) => after?.capabilitySetup?.checks[check] !== "verified");
 }

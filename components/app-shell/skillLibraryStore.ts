@@ -278,8 +278,8 @@ async function refreshCurrentSkillLibrary(): Promise<SkillListResponse> {
   return refreshSkillLibrary(true, useSkillLibraryStore.getState().query);
 }
 
-export async function loadSkillDetail(skillId: string): Promise<SkillDetail> {
-  const value = await request(`/api/me/skills/${encodeURIComponent(skillId)}`);
+export async function loadSkillDetail(skillId: string, signal?: AbortSignal): Promise<SkillDetail> {
+  const value = await request(`/api/me/skills/${encodeURIComponent(skillId)}`, signal ? { signal } : undefined);
   const detailValue = isRecord(value) ? parseDetail(value.skill) : null;
   if (!detailValue) throw new Error("skill_response_invalid");
   return detailValue;

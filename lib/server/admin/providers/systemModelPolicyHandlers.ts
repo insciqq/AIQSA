@@ -2,6 +2,7 @@ import { logEvent, type LifecycleStage } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
 import type { ImageGenerationParameters } from "../../../contracts/imageGeneration";
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
+import { decodeDecisionFeatureOverrides } from "../../../contracts/semanticDecisions";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
 import {
@@ -77,7 +78,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const value = await readJsonBodyOrNull(request, "json");
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
-      const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", "rerankerProviderModelId",
+      const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", "rerankerProviderModelId", "decisionProviderModelId", "decisionFeatures",
         "chatTitleProviderModelId", "chatTitleReasoningEffort", "chatPdfProviderModelId", "chatPdfReasoningEffort",
         "chatPdfProcessingMode", "chatPdfFallbackMethod", "chatPdfNativeProviderModelId", "chatPdfNativeReasoningEffort", "imageProviderModelId", "imageParameters"];
       const textOrNull = (entry: unknown, limit: number) => entry === null ||
@@ -106,6 +107,9 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       }
       const hasUtilityUpdate = record(value) && Object.hasOwn(value, "providerModelId");
       const hasRerankerUpdate = record(value) && Object.hasOwn(value, "rerankerProviderModelId");
+      const hasDecisionModelUpdate = record(value) && Object.hasOwn(value, "decisionProviderModelId");
+      const hasDecisionFeaturesUpdate = record(value) && Object.hasOwn(value, "decisionFeatures");
+      const decisionFeatures = hasDecisionFeaturesUpdate && record(value) ? decodeDecisionFeatureOverrides(value.decisionFeatures) : null;
       const hasImageUpdate = record(value) && Object.hasOwn(value, "imageProviderModelId");
       const hasTitleModelUpdate = record(value) && Object.hasOwn(value, "chatTitleProviderModelId");
       const hasPdfModelUpdate = record(value) && Object.hasOwn(value, "chatPdfProviderModelId");
@@ -113,7 +117,9 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const hasPdfPolicyUpdate = record(value) && (Object.hasOwn(value, "chatPdfProcessingMode") || Object.hasOwn(value, "chatPdfFallbackMethod"));
       if (!record(value) || Object.keys(value).some((key) => !allowed.includes(key)) ||
         !Number.isSafeInteger(value.expectedVersion) || Number(value.expectedVersion) < 1 ||
-        !hasUtilityUpdate && !hasRerankerUpdate && !hasTitleModelUpdate && !hasPdfModelUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate ||
+        !hasUtilityUpdate && !hasRerankerUpdate && !hasDecisionModelUpdate && !hasDecisionFeaturesUpdate && !hasTitleModelUpdate && !hasPdfModelUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate ||
+        hasDecisionModelUpdate && !textOrNull(value.decisionProviderModelId, 256) ||
+        hasDecisionFeaturesUpdate && !decisionFeatures ||
         hasImageUpdate !== Object.hasOwn(value, "imageParameters") ||
         hasImageUpdate && (!textOrNull(value.imageProviderModelId, 256) || !record(value.imageParameters)) ||
         hasUtilityUpdate !== Object.hasOwn(value, "reasoningEffort") ||
@@ -135,6 +141,8 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       }
       try {
         await input.service.update({
+          ...(hasDecisionModelUpdate ? { decisionProviderModelId: value.decisionProviderModelId as string | null } : {}),
+          ...(decisionFeatures ? { decisionFeatures } : {}),
           ...(hasImageUpdate ? { imageProviderModelId: value.imageProviderModelId as string | null, imageParameters: value.imageParameters as ImageGenerationParameters } : {}),
           ...(hasTitleModelUpdate ? {
             chatTitleProviderModelId: value.chatTitleProviderModelId as string | null,
@@ -178,7 +186,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
       if (!record(value) || Object.keys(value).length !== 2 ||
-        !["chat_titles", "memory", "direct_pdf", "vision", "embedding", "reranker", "image"].includes(String(value.role)) ||
+        !["chat_titles", "memory", "direct_pdf", "vision", "embedding", "reranker", "decision", "image"].includes(String(value.role)) ||
         typeof value.providerModelId !== "string" ||
         value.providerModelId.trim() !== value.providerModelId ||
         value.providerModelId.length < 1 || value.providerModelId.length > 256 ||

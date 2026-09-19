@@ -552,7 +552,7 @@ function SheetBody({
                   emptyDescription="This key returned an empty catalog. Refresh it or review the OpenRouter account policy."
                   emptyTitle="No models available to this key"
                   error={catalog.error}
-                  items={catalog.items.map((entry) => ({
+                  items={catalog.items.filter((entry) => !entry.outputModalities.includes("decisions")).map((entry) => ({
                     id: entry.id,
                     keywords: [entry.id.split("/")[0] ?? "", ...entry.inputModalities, ...entry.supportedParameters],
                     label: entry.name,
@@ -830,7 +830,7 @@ function SheetBody({
             </label>
             <span className={helpText}>Blank inherits the provider timeout. 5 to 900 seconds.</span>
           </div>
-          {openRouter && !imageModel ? (
+          {openRouter && !imageModel && form.modelClass !== "decision" ? (
             <div className="border-t border-trace-subtle">
               <SettingRow
                 checked={form.dataCollectionAllowed}

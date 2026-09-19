@@ -74,6 +74,23 @@ function execution(outputs: readonly unknown[]) {
 }
 
 describe("evidence answer execution and recovery", () => {
+  it.each([null, 1_000_000])("replays the accepted generation budget without provider work (context: %s)", async contextWindow => {
+    const acceptedReview = { version: 2, analysisComplete: true,
+      blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: ["K1"], reason: "" }],
+      requirements: [{ requirement: request, status: "missing_evidence", blockIds: ["B1"], correctionEvidenceHandles: [], gap: "The mass of Beta." }],
+      followUps: [] };
+    const fixture = execution([compose(), acceptedReview]);
+    const generationBudget = { version: 1 as const, contextWindow, maxOutputTokens: 65_536, timeoutMs: 300_000 };
+    const result = await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...fixture.input,
+      generationBudget, workflowVersion: 11, refineEvidence: async () => null });
+    const dispatches = fixture.store.stored();
+    const frozen = JSON.stringify(dispatches);
+    expect(await replayKnowledgeEvidenceAnswerV1({ dispatches, forbiddenIdentityFragments: [], modelRunId: "fixture-run" })).toEqual(result);
+    expect(JSON.stringify(dispatches)).toBe(frozen);
+    expect(fixture.execute).toHaveBeenCalledTimes(2);
+    expect(fixture.store.lifecycle.prepare).toHaveBeenCalledTimes(2);
+  });
+
   it.each(["native_strict", "provider_neutral_json"] as const)("freezes compose instructions across repair and replay while keeping review independent (%s)", async transport => {
     const h = execution([{ invalid: true }, compose(), review()]);
     const answerInstructions = { system: "SYNTHETIC_STYLE", responseReminder: "SYNTHETIC_REMINDER" };

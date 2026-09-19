@@ -195,14 +195,14 @@ describe("administrator system model policy service", () => {
         providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
       }) },
       providerModel: {
-        findMany: vi.fn().mockResolvedValue([
+        findMany: vi.fn().mockImplementation(async ({ where }: { where: { modelClass: string } }) => where.modelClass === "answer" ? [
           activeModel(),
           activeModel({
             activeConfig: { ...activeConfiguration, answerSelectable: false },
             id: "technical-model"
           }),
           target
-        ])
+        ] : [])
       },
       systemModelPolicy: {
         findUnique: vi.fn().mockResolvedValue({
@@ -255,7 +255,7 @@ describe("administrator system model policy service", () => {
       memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
         providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
       }) },
-      providerModel: { findMany: vi.fn().mockResolvedValue([target]) },
+      providerModel: { findMany: vi.fn().mockImplementation(async ({ where }: { where: { modelClass: string } }) => where.modelClass === "answer" ? [target] : []) },
       systemModelPolicy: {
         findUnique: vi.fn().mockResolvedValue({
           providerModel: target,
@@ -326,7 +326,7 @@ describe("administrator system model policy service", () => {
       memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
         providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
       }) },
-      providerModel: { findMany: vi.fn().mockResolvedValue([verified, unsupported]) },
+      providerModel: { findMany: vi.fn().mockImplementation(async ({ where }: { where: { modelClass: string } }) => where.modelClass === "answer" ? [verified, unsupported] : []) },
       systemModelPolicy: {
         findUnique: vi.fn().mockResolvedValue({
           providerModel: null,
@@ -1049,9 +1049,9 @@ describe("administrator system model policy service", () => {
         providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
       }) },
       providerModel: {
-        findMany: vi.fn().mockResolvedValue([
+        findMany: vi.fn().mockImplementation(async ({ where }: { where: { modelClass: string } }) => where.modelClass === "answer" ? [
           ready, unsupportedAdapter, disabled, withoutKey, unchecked, revokedKey
-        ])
+        ] : [])
       },
       systemModelPolicy: {
         findUnique: vi.fn().mockResolvedValue({

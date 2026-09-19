@@ -50,6 +50,7 @@ export function deploymentLabeller(
         ...catalog.documentCandidates,
         ...catalog.verificationCandidates,
         ...catalog.rerankerCandidates,
+        ...(catalog.decisionCandidates ?? []),
         ...Object.values(catalog.ineligible).flat(),
         ...(catalog.policy.systemModel ? [catalog.policy.systemModel] : []),
         ...(catalog.memoryPolicy.model ? [catalog.memoryPolicy.model] : []),
@@ -57,6 +58,7 @@ export function deploymentLabeller(
         ...(catalog.policy.chatPdfNativeModel ? [catalog.policy.chatPdfNativeModel] : []),
         ...(catalog.policy.chatPdfModel ? [catalog.policy.chatPdfModel] : []),
         ...(catalog.policy.rerankerModel ? [catalog.policy.rerankerModel] : []),
+        ...(catalog.policy.decisionModel ? [catalog.policy.decisionModel] : []),
         ...(catalog.policy.rerankerRoute?.entries ?? [])
       ].map((item) => ({ id: item.connectionId, name: item.connectionDisplayName }))
     : [];

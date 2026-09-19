@@ -19,7 +19,8 @@ export async function persistCompletedAnswerUsage(
     modelId: input.modelId, provider: input.provider, usage
   }];
   await tx.usageEvent.deleteMany({ where: {
-    chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false, modelRunId: input.runId
+    chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false,
+    knowledgeRelevance: false, optionalDecision: false, modelRunId: input.runId
   } });
   await tx.usageEvent.createMany({ data: attributions.map((attribution) => {
     const reported = normalizeTokenUsage(attribution.usage);

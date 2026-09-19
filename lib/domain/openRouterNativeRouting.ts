@@ -12,6 +12,7 @@ const NATIVE_PROVIDERS: Readonly<Record<string, readonly string[]>> = {
   openai: ["openai"],
   perplexity: ["perplexity"],
   qwen: ["alibaba"],
+  typesafe: ["typesafe"],
   voyageai: ["voyageai"],
   "x-ai": ["xai"]
 };

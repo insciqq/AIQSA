@@ -7,6 +7,11 @@ import { createAdminProviderBootstrap } from "./bootstrapService";
 import { adminKnowledgeProfileFixture } from "@/tests/support/knowledgeProfile";
 import { providerSetupModels } from "./setupModels";
 import { adminProviderModelConfiguration } from "./adminConfiguration";
+import { jevModelConfiguration } from "../../../domain/decisionModels";
+
+vi.mock("../../../domain/decisionModels", async (original) => ({
+  ...await original<typeof import("../../../domain/decisionModels")>(), DEFAULT_DECISION_FEATURES: ["memoryRelevance"]
+}));
 
 function fixture() {
   const connection = workingConnection();
@@ -41,19 +46,44 @@ function fixture() {
   const rolesUpdate = vi.fn(async () => {});
   const memoryUpdate = vi.fn(async () => {});
   const adoptChatTitle = vi.fn(async () => true);
+  const adoptDecisionModel = vi.fn(async () => true);
   const searchCreate = vi.fn(async () => ({ created: true, id: "search" }));
   const searchSave = vi.fn(async () => {});
   const knowledge = adminKnowledgeProfileFixture({ activeRevision: null, availableDestinations: [], availablePdfDestinations: [] });
   const knowledgeActivate = vi.fn(async () => {});
   const complete = createAdminProviderBootstrap({ providers: { listConnections: async () => [connection] },
-    chat: { list: async () => chat, update: chatUpdate }, roles: { list: async () => roles, update: rolesUpdate, updateMemory: memoryUpdate, adoptChatTitle },
+    chat: { list: async () => chat, update: chatUpdate }, roles: { list: async () => roles, update: rolesUpdate, updateMemory: memoryUpdate, adoptChatTitle, adoptDecisionModel },
     search: { list: async () => search, createDraft: searchCreate, saveAndCheck: searchSave },
     knowledge: { list: async () => knowledge, activate: knowledgeActivate } });
   const run = (signal = new AbortController().signal) => complete({ connectionId: connection.id, credentialId: "cred-primary", userId: "operator", signal });
-  return { chat, chatUpdate, connection, roles, rolesUpdate, memoryUpdate, adoptChatTitle, run, search, searchCreate, searchSave, knowledge, knowledgeActivate };
+  return { chat, chatUpdate, connection, roles, rolesUpdate, memoryUpdate, adoptChatTitle, adoptDecisionModel, run, search, searchCreate, searchSave, knowledge, knowledgeActivate };
 }
 
 describe("provider automatic setup", () => {
+  it.each(["verified", "missing", "unverified", "stale credential", "assigned", "explicitly cleared", "adoption failed"])(
+    "adopts optional Decisions only when qualified and available (%s)", async (state) => {
+      const f = fixture();
+      f.connection.family = "openrouter";
+      const model = { ...f.connection.models[0]!, id: "jev", displayName: "Jev", modelClass: "decision" as const,
+        activeConfig: adminProviderModelConfiguration(jevModelConfiguration()) };
+      if (state !== "missing") f.connection.models.push(model);
+      f.roles.decisionCandidates = state === "unverified" ? [] : [{ id: "jev", displayName: "Jev",
+        connectionId: f.connection.id, connectionDisplayName: "OpenRouter" }];
+      f.connection.activeChecks.push({ ...f.connection.activeChecks[0]!, providerModelId: "jev",
+        credentialVersionId: state === "stale credential" ? "stale" : f.connection.activeChecks[0]!.credentialVersionId });
+      if (state === "assigned") f.roles.policy.decisionModel = { ...f.roles.decisionCandidates[0]!, available: true };
+      if (state === "explicitly cleared") f.adoptDecisionModel.mockResolvedValue(false);
+      if (state === "adoption failed") f.adoptDecisionModel.mockRejectedValue(new Error("synthetic_failure"));
+      const result = await f.run();
+      expect(result.defaults.includes("Relevance checks: Jev")).toBe(state === "verified");
+      expect(f.adoptDecisionModel).toHaveBeenCalledTimes(["verified", "explicitly cleared", "adoption failed"].includes(state) ? 1 : 0);
+      expect(f.chatUpdate).toHaveBeenCalledOnce();
+      expect(f.memoryUpdate).toHaveBeenCalledOnce();
+      if (state === "verified") expect(f.adoptDecisionModel).toHaveBeenCalledWith({
+        expectedVersion: 1, providerModelId: "jev", userId: "operator"
+      });
+    }
+  );
   it.each(["none", "low"])("adopts a qualified title model with economical %s reasoning", async (effort) => {
     const value = fixture();
     value.roles.titleCandidates = [{ ...value.roles.candidates[0]!, reasoningEfforts: effort === "none" ? ["none", "low", "high"] : ["low", "high"] }];

@@ -68,7 +68,7 @@ async function fixture(run: (context: {
     } }) as PrismaClient;
     const adopt = (overrides: { test?: AdminProviderDraftTester["test"]; nativeAvailable?: boolean } = {}) => adoptNativeOpenRouterRoutes({ db,
       encryptionKey: () => encryptionKey, tester: { test: overrides.test ?? test }, createDiscovery: () => ({
-        listModels: async () => [], listEmbeddingModels: async () => [], listRerankModels: async () => [],
+        listModels: async () => [], listEmbeddingModels: async () => [], listRerankModels: async () => [], listDecisionModels: async () => [],
         listModelEndpoints: async () => overrides.nativeAvailable === false
           ? [{ tag: "fireworks", providerName: "Fireworks", name: "Fireworks", supportedParameters: [] }]
           : [{ tag: "alibaba", providerName: "Alibaba", name: "Alibaba", supportedParameters: [] }]

@@ -11,9 +11,7 @@ import { prisma } from "../prisma";
 import { readBoundedRequestBody, RequestBodyTooLargeError } from "../http/requestBody";
 import { createMcpToolService, McpHubServiceError, type McpToolAuthority } from "../mcp/hubService";
 import { defaultMcpRunPlan, getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
-import { createMcpSemanticRouter } from "../mcp/router";
-import { createAcceptedStructuredOutputExecutor } from "../providerRuntime/structuredOutputExecutor";
-import { createSystemModelRoleResolver } from "../providerRuntime/systemModelRole";
+import { createPrismaAcceptedMcpRouter } from "../mcp/decisionRouter";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { validateMcpToolArguments } from "../mcp/clientSession";
 import { getMcpResponseWireLimits, getMcpRequestMaxBytes, mcpRequestSizeFailure } from "../mcp/responseLimits";
@@ -75,7 +73,6 @@ export async function createAgentMcpGateway(input: Readonly<{
   });
   const catalog = input.request.mcpDiscovery?.catalog ?? catalogFromSnapshot(input.request.mcp);
   const allowed = new Map((await input.store.mcpTools()).map((tool) => [tool.toolId, tool.version]));
-  const role = createSystemModelRoleResolver(prisma);
   const service = createMcpToolService<Authority>({
     catalog: async () => catalog,
     filterTools: defaultMcpRunPlan.filterTools,
@@ -86,8 +83,26 @@ export async function createAgentMcpGateway(input: Readonly<{
       if (plan.ok) await input.store.admitMcpPlan(plan);
       return plan;
     },
-    router: createMcpSemanticRouter({ resolveSystemModel: () => role.resolve(),
-      executeStructuredOutput: createAcceptedStructuredOutputExecutor(prisma, { disableRequestRetries: true }) }),
+    router: createPrismaAcceptedMcpRouter(prisma, { runId: input.runId, userId: input.userId }, {
+      disableRequestRetries: true,
+      // A speculative utility must not consume the last admitted call/token
+      // allowance needed by the ordinary router. Bounded Agents keep baseline.
+      decisionsEnabled: !configuration.limitsEnabled,
+      async admit(snapshot) {
+        // Reserve the qualified model envelope, not an invented token charge.
+        // Reported usage settles the reservation; unknown work stays reserved.
+        const contextWindow = snapshot.model.capabilities.contextWindow;
+        if (!contextWindow || !Number.isSafeInteger(contextWindow)) throw new Error("decision_model_context_unavailable");
+        const id = await input.store.reserveProvider(contextWindow, { kind: "decision", snapshot });
+        return { async settle(result) {
+          const usage = result.receipt?.usage;
+          await input.store.settleProvider(id, result.receipt || !result.dispatched ? result.failureCode ? "ERROR" : "COMPLETE" : "UNKNOWN",
+            usage ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
+              totalTokens: usage.inputTokens + usage.outputTokens, completeness: "complete" } : null);
+          await input.onUsage();
+        } };
+      }
+    }),
     async recordDiscoveryAttempt(authority, providerRole, maxOutputTokens, _timeoutMs, inputBytes) {
       await authority.assertActive();
       // Include the complete admitted goal, context and catalog. Reserve for
@@ -134,7 +149,7 @@ export async function createAgentMcpGateway(input: Readonly<{
         try {
           signal.throwIfAborted();
           callId = await input.store.toolCall(name, { argumentHash: hashCanonicalMcpValue(args) }, false, deliveryId);
-          const authority = { callId, userId: input.userId, async assertActive() {
+          const authority = { callId, discoveryOperationKey: callId, userId: input.userId, async assertActive() {
             signal.throwIfAborted(); await input.store.assertActive();
           } };
           const result = await action(authority);

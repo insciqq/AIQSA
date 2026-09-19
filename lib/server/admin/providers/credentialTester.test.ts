@@ -55,6 +55,15 @@ afterEach(() => {
 });
 
 describe("admin provider credential tester", () => {
+  it("keeps ordinary setup usable when the optional Decisions catalog is down", async () => {
+    const dispatch = vi.fn(async (request: McpPinnedHttpRequest) => request.url.searchParams.get("output_modalities") === "decisions"
+      ? Response.json({}, { status: 503 }) : catalog(["synthetic/chat"]));
+    const tester = createAdminProviderCredentialTester({ network: { lookupHostname: publicLookup, dispatch } });
+    await expect(tester.test({ ...input("openrouter"), modelClasses: ["answer", "decision"] })).resolves.toMatchObject({
+      modelIds: ["synthetic/chat"], modelIdsByClass: { answer: ["synthetic/chat"], decision: [] }
+    });
+    await expect(tester.test({ ...input("openrouter"), modelClasses: ["decision"] })).rejects.toBeInstanceOf(AdminProviderCredentialTestError);
+  });
   it("discovers exact native endpoints only for available requested setup models", async () => {
     const models = adminProviderQuickSetupPolicy("openrouter").candidates.slice(0, 4).map(({ configuration }) => configuration);
     const slugs = ["anthropic", "google-ai-studio", "deepseek", "deepseek"];

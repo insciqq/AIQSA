@@ -164,7 +164,7 @@ function expectedFamily(model: ProviderModelConfiguration): AdminProviderFamily 
   if (model.modelClass === "embedding") {
     return model.embedding!.providerFamily;
   }
-  if (model.modelClass === "reranker") return "openrouter";
+  if (model.modelClass === "reranker" || model.modelClass === "decision") return "openrouter";
   switch (model.adapterKind) {
     case "anthropic_messages":
       return "anthropic";
@@ -186,6 +186,7 @@ function expectedFamily(model: ProviderModelConfiguration): AdminProviderFamily 
     case "openrouter_chat_completions":
       return "openrouter";
     case "openrouter_rerank":
+    case "openrouter_decisions":
       throw new AdminProviderServiceError("provider_family_adapter_mismatch");
   }
 }
@@ -296,8 +297,10 @@ export function validateEvidence(
     (outcome.status === "available") !== (evidence.detail === "ok") ||
     (evidence.embedding !== undefined && model.modelClass !== "embedding") ||
     (evidence.reranking !== undefined && model.modelClass !== "reranker") ||
-    ((evidence.embedding !== undefined || evidence.reranking !== undefined) &&
+    (evidence.decisions !== undefined && model.modelClass !== "decision") ||
+    ((evidence.embedding !== undefined || evidence.reranking !== undefined || evidence.decisions !== undefined) &&
       !hasVerifiedDedicatedProtocol(evidence, model)) ||
+    (capabilitySetup?.checks.decisions === "verified" && !hasVerifiedDedicatedProtocol(evidence, model)) ||
     (hasCompatibility && !compatibility) ||
     (evidence.capabilitySetup !== undefined && !capabilitySetup) ||
     (evidence.hostedSearch !== undefined && (!hostedSearch || model.modelClass !== "answer" ||
@@ -358,6 +361,11 @@ export function validateEvidence(
     } } : {}),
     ...(evidence.reranking && hasVerifiedDedicatedProtocol(evidence, model) ? { reranking: {
       probeVersion: 1 as const, completeScores: true as const
+    } } : {}),
+    ...(evidence.decisions && hasVerifiedDedicatedProtocol(evidence, model) ? { decisions: {
+      probeVersion: 1 as const, adapterKind: "openrouter_decisions" as const,
+      upstreamModelId: model.upstreamModelId, servedModelId: evidence.decisions.servedModelId,
+      provider: evidence.decisions.provider, noul: true as const, choice: true as const
     } } : {}),
     detail: evidence.detail,
     method: evidence.method,
@@ -1788,7 +1796,7 @@ export function createAdminProviderService(input: Readonly<{
                 check.evidence.method === "openrouter_account_catalog")
             );
           let directOutcome: AdminProviderDraftTestOutcome | null = null;
-          if (model.configuration.modelClass === "reranker") {
+          if (model.configuration.modelClass === "reranker" || model.configuration.modelClass === "decision") {
             try {
               directOutcome = await input.tester.test({
                 connection,
@@ -1814,7 +1822,9 @@ export function createAdminProviderService(input: Readonly<{
           const directRerankerAvailable = directOutcome
             ? directOutcome.status === "available"
             : storedDirectRerankerAvailable;
-          const available = model.configuration.modelClass === "reranker"
+          const available = model.configuration.modelClass === "decision"
+            ? directOutcome?.status === "available"
+            : model.configuration.modelClass === "reranker"
             ? directRerankerAvailable
             : catalogAvailable;
           const credentialDraftVersion = write.kind === "draft" ? write.draftVersion : null;

@@ -570,3 +570,15 @@
 .v2-skill-selection li span { min-width: 0; overflow-wrap: anywhere; }
 .v2-project-skill-picker { overflow-y: auto; min-height: 0; padding: 1rem; }
 .v2-project-skill-picker .v2-skill-row { grid-template-columns: minmax(0, 1fr) auto; }
+
+.v2-skill-suggestions {
+  padding: 1rem;
+  border-bottom: 1px solid var(--v2-color-border);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+.v2-skill-suggestions p { margin: 0; color: var(--v2-color-text2); overflow-wrap: anywhere; }
+.v2-skill-suggestions ul { margin: 0.5rem 0 0; padding: 0; list-style: none; }
+.v2-skill-suggestions li { display: flex; align-items: start; flex-wrap: wrap; gap: 0.5rem 0.75rem; padding: 0.5rem 0; }
+.v2-skill-suggestions li > div:first-child { flex: 1 1 10rem; min-width: 0; overflow-wrap: anywhere; }
+.v2-skill-suggestion-actions { display: flex; align-items: center; gap: 0.25rem; }

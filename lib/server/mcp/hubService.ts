@@ -191,7 +191,7 @@ function mapPreparationFailure(error: unknown): McpHubServiceError {
   return new McpHubServiceError("upstream_unavailable", { cause: error });
 }
 
-export type McpToolAuthority = Readonly<{ userId: string; assertActive(): Promise<void> }>;
+export type McpToolAuthority = Readonly<{ userId: string; discoveryOperationKey?: string; assertActive(): Promise<void> }>;
 
 export type McpToolServiceDependencies<Authority extends McpToolAuthority> =
   Omit<McpHubServiceDependencies, "recordDispatch" | "recordDiscoveryAttempt"> & Readonly<{
@@ -303,6 +303,7 @@ export function createMcpToolService<Authority extends McpToolAuthority>(depende
           partial: true,
           router: dependencies.router,
           routing: {
+            ...(input.authority.discoveryOperationKey ? { decisionOperationKey: input.authority.discoveryOperationKey } : {}),
             activeToolNames: new Set(),
             context: input.context ? { messages: [{ role: "user", text: input.context }] } : undefined,
             goals: [parsed.goal],

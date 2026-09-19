@@ -270,6 +270,7 @@ enum ProviderCredentialCheckStatus {
 }
 
 enum ProviderRunRole {
+  decision
   image
   answer
   search
@@ -280,6 +281,7 @@ enum ProviderModelClass {
   embedding
   reranker
   image
+  decision
 }
 
 enum ProviderCredentialSource {
@@ -808,6 +810,7 @@ model User {
   inboundMcpOAuthGrants               InboundMcpOAuthGrant[]
   mcpHubDispatches                    McpHubDispatch[]
   mcpHubDiscoveryAttempts             McpHubDiscoveryAttempt[]
+  optionalDecisionAttempts           OptionalDecisionAttempt[]
   mcpGrants                           McpGrant[]
   mcpToolGrants                       McpToolUserGrant[]
   mcpActivationJobs                   McpActivationJob[]
@@ -1178,6 +1181,15 @@ model SystemModelPolicy {
   rerankerProviderModelId String?
   /// Set only by an explicit administrator save or clear of the reranker role.
   rerankerConfiguredAt    DateTime?
+  decisionProviderModelId String?
+  /// Explicit saves and clears prevent later automatic role adoption.
+  decisionConfiguredAt    DateTime?
+  /// Per-feature administrator overrides; defaults require independent qualification.
+  decisionFeaturesJson    Json           @default("{}")
+  /// Existing installations are marked pending by the forward migration only.
+  decisionAdoptionVersion Int            @default(1)
+  /// Claimed before external verification; restarts never replay ambiguous probes.
+  decisionAdoptionReason String?         @db.VarChar(32)
   reasoningEffort         String?        @db.VarChar(32)
   version                 Int            @default(1)
   updatedByUserId         String?
@@ -1188,11 +1200,13 @@ model SystemModelPolicy {
   chatPdfProviderModel    ProviderModel? @relation("ChatPdfProviderModel", fields: [chatPdfProviderModelId], references: [id], onDelete: Restrict)
   providerModel           ProviderModel? @relation("SystemUtilityProviderModel", fields: [providerModelId], references: [id], onDelete: Restrict)
   rerankerProviderModel   ProviderModel? @relation("MemoryRerankerProviderModel", fields: [rerankerProviderModelId], references: [id], onDelete: Restrict)
+  decisionProviderModel   ProviderModel? @relation("SemanticDecisionProviderModel", fields: [decisionProviderModelId], references: [id], onDelete: Restrict)
   updatedBy               User?          @relation("SystemModelPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
 
   @@index([imageProviderModelId])
   @@index([providerModelId])
   @@index([rerankerProviderModelId])
+  @@index([decisionProviderModelId])
   @@index([chatTitleProviderModelId])
   @@index([chatPdfProviderModelId])
   @@index([chatPdfNativeProviderModelId])
@@ -2425,6 +2439,7 @@ model ProviderModel {
   memoryUtilityRoles          MemoryUtilityModelPolicy[]       @relation("MemoryUtilityProviderModel")
   imageGenerationRoles       SystemModelPolicy[]             @relation("ImageGenerationProviderModel")
   memoryRerankerRoles         SystemModelPolicy[]             @relation("MemoryRerankerProviderModel")
+  semanticDecisionRoles       SystemModelPolicy[]             @relation("SemanticDecisionProviderModel")
   userDefaults                UserSettings[]                  @relation("UserDefaultProviderModel")
 
   @@unique([connectionId, id])
@@ -3064,6 +3079,7 @@ model ModelRun {
   knowledgeRuns                KnowledgeRun[]
   knowledgeBudgetReservations  KnowledgeBudgetReservation[]
   knowledgeProviderAttempts    KnowledgeProviderAttempt[]
+  optionalDecisionAttempts     OptionalDecisionAttempt[]
   knowledgeDispatchManifests   KnowledgeEvidenceDispatchManifest[]
   memoryHistoryRuns            MemoryHistoryRun[]
   memoryToolEvents             MemoryToolEvent[]
@@ -3693,6 +3709,7 @@ model KnowledgeBudgetReservation {
   modelRun                 ModelRun                        @relation(fields: [modelRunId], references: [id], onDelete: Cascade)
   modelRunToolCall         ModelRunToolCall                @relation(fields: [modelRunId, modelRunToolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "KnowledgeBudgetReservation_toolCall_fkey")
   knowledgeRun             KnowledgeRun?
+  relevanceAttempts        KnowledgeRelevanceAttempt[]
 
   @@unique([modelRunId, id])
   @@unique([modelRunId, modelRunToolCallId])
@@ -3701,6 +3718,25 @@ model KnowledgeBudgetReservation {
   @@unique([modelRunId, idempotencyKey])
   @@index([modelRunId, state])
   @@index([state, leaseExpiresAt])
+}
+
+// Optional passage decisions are owned by a dispatched Knowledge operation.
+// Content-free attempts fence retries and retain late provider accounting.
+model KnowledgeRelevanceAttempt {
+  id                  String                        @id @default(uuid())
+  reservationId       String
+  ordinal             Int
+  executionSnapshot   Json
+  inputHash           String                        @db.Char(64)
+  state               KnowledgeProviderAttemptState @default(dispatched)
+  usefulness          Float?
+  failureCode         String?                       @db.VarChar(128)
+  dispatchedAt        DateTime                      @default(now())
+  settledAt           DateTime?
+  reservation         KnowledgeBudgetReservation    @relation(fields: [reservationId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  usageEvent          UsageEvent?
+
+  @@unique([reservationId, ordinal])
 }
 
 model KnowledgeProviderAttempt {
@@ -4239,6 +4275,12 @@ model SharedChatSnapshot {
 }
 
 model UsageEvent {
+  optionalDecision                Boolean                        @default(false)
+  optionalDecisionAttemptId       String?                        @unique
+  optionalDecisionAttempt         OptionalDecisionAttempt?       @relation(fields: [optionalDecisionAttemptId], references: [id], onDelete: SetNull, onUpdate: Restrict)
+  knowledgeRelevance              Boolean                        @default(false)
+  knowledgeRelevanceAttemptId     String?                        @unique
+  knowledgeRelevanceAttempt       KnowledgeRelevanceAttempt?     @relation(fields: [knowledgeRelevanceAttemptId], references: [id], onDelete: SetNull, onUpdate: Restrict)
   mcpHubDiscovery                  Boolean                        @default(false)
   mcpHubDiscoveryAttemptId         String?                        @unique
   mcpHubDiscoveryAttempt           McpHubDiscoveryAttempt?        @relation(fields: [mcpHubDiscoveryAttemptId], references: [id], onDelete: SetNull, onUpdate: Restrict)
@@ -4288,6 +4330,30 @@ model UsageEvent {
   @@index([provider, modelId])
   @@index([projectId, createdAt])
   @@index([knowledgeBaseId, createdAt])
+}
+
+// Content-free dispatch fences for optional interactive decisions. Results
+// contain only answer aliases/scores; queries and catalog text are not retained.
+model OptionalDecisionAttempt {
+  id                String   @id @default(uuid())
+  userId            String
+  modelRunId        String?
+  purpose           String   @db.VarChar(32)
+  operationKey      String   @db.VarChar(128)
+  inputHash         String   @db.Char(64)
+  executionSnapshot Json
+  state             String   @default("dispatched") @db.VarChar(16)
+  answers           Json?
+  failureCode       String?  @db.VarChar(128)
+  createdAt         DateTime @default(now())
+  settledAt         DateTime?
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  modelRun          ModelRun? @relation(fields: [userId, modelRunId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+  usageEvent        UsageEvent?
+
+  @@unique([userId, purpose, operationKey])
+  @@index([userId, createdAt])
+  @@index([userId, modelRunId])
 }
 
 model Project {

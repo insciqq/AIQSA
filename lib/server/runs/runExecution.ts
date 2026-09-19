@@ -288,6 +288,7 @@ export type RunExecutionInput = Readonly<{
     ): Promise<import("../mcp/runPlan").McpRunPlanResult>;
     prepareProject?(userId: string, serverIds: readonly string[]): Promise<import("../mcp/runPlan").McpRunPlanResult>;
     router?: McpSemanticRouter;
+    routerForRun?(owner: Readonly<{ runId: string; userId: string }>): McpSemanticRouter;
   }>;
   mcpRuntime?: Readonly<{
     callTool(input: {
@@ -1735,7 +1736,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         let activeMcpSnapshot = normalizedRequest.mcp;
         let activeMcpDiscovery = normalizedRequest.mcpDiscovery;
         const materializeMcpTools = input.mcp?.materialize;
-        const mcpRouter = input.mcp?.router;
+        const mcpRouter = input.mcp?.routerForRun?.({ runId, userId: input.userId }) ?? input.mcp?.router;
         const appendMcpDiscoveryEpoch = input.repository.appendMcpDiscoveryEpoch;
         if (activeMcpDiscovery && (!materializeMcpTools || !appendMcpDiscoveryEpoch)) {
           throw new RunPipelineError(

@@ -6,6 +6,7 @@ import type {
   KnowledgeRerankerBindingEvidence
 } from "./retrievalRanking";
 import type { KnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
+import type { KnowledgeRelevanceEvidence } from "./relevancePolicy";
 import type {
   KnowledgeBudgetEvidence,
   LegacyKnowledgeBudgetEvidence,
@@ -396,6 +397,7 @@ export type KnowledgeRetrievalEvidence = Readonly<{
   providerText: string;
   query: string;
   read?: KnowledgeReadReceipt;
+  relevance?: KnowledgeRelevanceEvidence;
   /**
    * Version 1 shapes are decode-only compatibility for immutable legacy
    * receipts. New automatic-search operations record the content-free hosted

@@ -1,6 +1,7 @@
 import { retainDatabaseFailure } from "../../observability/databaseFailure";
 import { nativeRouteAdoptionStatus } from "../../../contracts/nativeRoutingAdoption";
 import { mergeSystemRoleEvidence } from "./systemRoleEvidence";
+import { decodeDecisionEvidence } from "../../providers/decisionEvidence";
 import { decodeCapabilitySetupEvidence, pendingInitialCapabilityEvidence } from "./initialCapabilitySetup";
 import { decodeParallelToolCallVerificationEvidence } from "../../providers/parallelToolCallEvidence";
 import { randomUUID } from "node:crypto";
@@ -135,6 +136,7 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
   const capabilitySetup = decodeCapabilitySetupEvidence(value.capabilitySetup);
   const parallelToolCalls = decodeParallelToolCallVerificationEvidence(value.parallelToolCalls);
   const dedicatedProbe = value.detail === "ok" && value.method !== "models_catalog";
+  const decisions = dedicatedProbe ? decodeDecisionEvidence(value.decisions) : null;
   const codexWebSearch = dedicatedProbe ? decodeCodexWebSearchEvidence(value.codexWebSearch) : null;
   const hostedSearch = dedicatedProbe ? decodeHostedSearchVerificationEvidence(value.hostedSearch) : null;
   const embedding = dedicatedProbe && isRecord(value.embedding) &&
@@ -153,6 +155,7 @@ function evidence(value: unknown): AdminProviderTestEvidence | null {
     ...(compatibility ? { compatibility } : {}),
     ...(embedding ? { embedding } : {}),
     ...(reranking ? { reranking } : {}),
+    ...(decisions?.upstreamModelId === value.upstreamModelId ? { decisions } : {}),
     detail: value.detail,
     method: value.method,
     selectedProviders: value.selectedProviders as string[],

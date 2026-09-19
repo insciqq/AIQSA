@@ -1,5 +1,6 @@
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { sumTokenUsage } from "../../domain/usage";
+import { decodeKnowledgeRelevanceEvidence, knowledgeRelevanceKeptChunks } from "./relevancePolicy";
 import { decodeKnowledgeCitationHandle } from "../../contracts/knowledge";
 import type { ToolExecutionResult } from "../tools/types";
 import {
@@ -1224,6 +1225,8 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
           value.rerankerBinding.version === KNOWLEDGE_RERANKER_EVIDENCE_VERSION
         ? decodeKnowledgeRerankerBindingEvidenceV2(value.rerankerBinding)
         : decodeRerankerBinding(value.rerankerBinding);
+  const relevance = value.relevance === undefined ? undefined : decodeKnowledgeRelevanceEvidence(value.relevance);
+  const relevanceKept = relevance ? knowledgeRelevanceKeptChunks(relevance) : null;
   const rerankerBindingV2: KnowledgeRerankerBindingEvidenceV2 | null =
     rerankerBinding && rerankerBinding.version === KNOWLEDGE_RERANKER_EVIDENCE_VERSION
       ? rerankerBinding
@@ -1245,7 +1248,11 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     : boundedString(value.failureCode, 128);
   if (
     bases.some((base) => base === null) || budget === null || operation === null || read === null ||
-    exact === null || discovery === null || lexicalBackend === null || value.structured !== undefined ||
+    exact === null || discovery === null || lexicalBackend === null || relevance === null || value.structured !== undefined ||
+    relevance !== undefined && (version !== KNOWLEDGE_RESULT_VERSION || operation !== "automatic_search" ||
+      candidateCount === null || relevance.chunkIds.length > candidateCount ||
+      (relevanceKept ? relevanceKept.size !== results.length || results.some((result, index) => result?.chunkId !== [...relevanceKept][index]) :
+        relevance.chunkIds.length !== results.length || results.some((result, index) => result?.chunkId !== relevance.chunkIds[index]))) ||
     value.visual !== undefined ||
     [read, exact, discovery].filter((entry) => entry !== undefined).length > 1 ||
     scopeAliases === null || scopeAliases?.some((alias) => alias === null) ||
@@ -1312,6 +1319,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     query,
     ...(read ? { read } : {}),
     ...(rerankerBinding !== undefined ? { rerankerBinding } : {}),
+    ...(relevance ? { relevance } : {}),
     resultLimit,
     results: decodedResults,
     ...(scopeAliases ? { scopeAliases: scopeAliases as KnowledgeEvidenceScopeAlias[] } : {}),
@@ -1486,7 +1494,7 @@ export function decodeKnowledgeRetrievalEvidence(value: unknown): KnowledgeRetri
     (decodedOutcome === "complete" && decodedResults.length === 0 && !deterministicDiscovery) ||
     (decodedOutcome !== "complete" && decodedResults.length !== 0) ||
     (decodedOutcome === "base_empty" && candidateCount !== 0) ||
-    (decodedOutcome === "no_relevant_evidence" && candidateCount !== 0) ||
+    (decodedOutcome === "no_relevant_evidence" && candidateCount !== 0 && relevanceKept?.size !== 0) ||
     (decodedOutcome === "budget_exhausted" && (
       decodedResults.length !== 0 || budget?.stopReason == null
     )) ||

@@ -87,6 +87,8 @@ import {
 } from "./rerankExecution";
 import type { KnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
 import type { KnowledgeRerankerRuntimeResolver } from "./rerankerRuntime";
+import type { KnowledgeRelevanceExecutor } from "./relevanceRuntime";
+import { knowledgeRelevanceKeptChunks } from "./relevancePolicy";
 import { knowledgeTokenizerEvidenceLabel } from "./tokenizer/knowledgeTokenCounter";
 import {
   fitKnowledgeParentExpansionsToByteBudget,
@@ -1038,6 +1040,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
    * stays fully deterministic and no reranker evidence is recorded.
    */
   rerankerRuntime?: KnowledgeRerankerRuntimeResolver;
+  relevance?: KnowledgeRelevanceExecutor;
   store: KnowledgeRetrievalStore;
 }>): KnowledgeToolExecutor {
   const monotonicNow = input.monotonicNow ?? monotonicNowMilliseconds;
@@ -1834,7 +1837,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         1,
         budgetState.policy.maxRetrievedTokens - budgetState.usage.retrievedTokens
       );
-      const results = includedPassages(
+      let results = includedPassages(
         search.passages,
         budgetState.evidenceCount ??
           (budgetState.invocationOrdinal - 1) * KNOWLEDGE_RESULT_LIMIT,
@@ -1847,9 +1850,29 @@ export function createKnowledgeToolExecutor(input: Readonly<{
       if (search.candidateCount > 0 && results.length === 0) {
         throw new Error("knowledge_evidence_package_empty");
       }
+      // Filter only fully packed, authorized automatic-search excerpts. Exact
+      // reads, discovery and full-corpus delivery never enter this stage.
+      // Retain ranking/order, and never refill a rejected slot from a new pool.
+      let relevance: KnowledgeRetrievalEvidence["relevance"];
+      if (input.relevance && activeReservation && results.length) {
+        const actorUserId = context.userId;
+        relevance = await input.relevance({ runId, userId: context.userId,
+          reservationId: activeReservation.record.reservation.id, leaseToken: activeReservation.leaseToken,
+          query: anchorQuery ?? request.query, passages: results, signal: options?.signal,
+          authorize: () => input.store.assertSearchReady({ bindings: scopedBindings, runId, userId: actorUserId,
+            ...(filter.bindingOrdinals ? { bindingOrdinals: filter.bindingOrdinals } : {}),
+            ...(filter.sourceIds ? { sourceIds: filter.sourceIds } : {}) }) }) ?? undefined;
+        throwIfAborted(options?.signal);
+        if (relevance) {
+          const kept = knowledgeRelevanceKeptChunks(relevance);
+          if (relevance.chunkIds.length !== results.length || relevance.chunkIds.some((id, index) => id !== results[index]!.chunkId) ||
+            relevance.status === "complete" && !kept) throw new Error("knowledge_relevance_receipt_invalid");
+          if (kept) results = results.filter(passage => kept.has(passage.chunkId));
+        }
+      }
       const retrievalOutcome: KnowledgeRetrievalOutcome = results.length > 0
         ? "complete"
-        : scopedBindings.some((binding) =>
+        : relevance?.status === "complete" ? "no_relevant_evidence" : scopedBindings.some((binding) =>
               binding.indexedContentRevision < binding.baseContentRevision)
             ? "base_indexing"
             : "no_relevant_evidence";
@@ -1876,6 +1899,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         outcome: retrievalOutcome,
         query: request.query,
         ...(rerankerBinding ? { rerankerBinding } : {}),
+        ...(relevance ? { relevance } : {}),
         resultLimit,
         results: retrievalOutcome === "complete" ? results : [],
         scopeAliases: evidenceAliases(aliases, results, scopedBindings),

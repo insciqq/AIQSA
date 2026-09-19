@@ -279,6 +279,39 @@ function context(persistedToolCallId = "tool-call-1") {
 }
 
 describe("Knowledge executor hosted rerank wiring", () => {
+  it.each(["keep", "reject", "unavailable"] as const)("persists and replays an optional %s decision without reranking again", async decision => {
+    const { store: retrievalStore, persistReceipt } = store(async () => rerankedSearchResult());
+    const estimate = { candidateCount: 96, costMicros: 0, latencyMs: 1000, operationSlots: 1, queryEmbeddingCalls: 1, retrievedTokens: 8192 };
+    const record = { purgedAt: null, leaseToken: "accepted-lease", reservation: { id: "reservation", state: "reserved",
+      operationOrdinal: 1, estimate } };
+    const budgetReservations = { reserve: vi.fn(async () => ({ kind: "admitted", record, chargeAfter: estimate })),
+      claimDispatch: vi.fn(async () => ({ kind: "transitioned", record })), markAmbiguous: vi.fn(), release: vi.fn(), settle: vi.fn() };
+    const relevance = vi.fn(async (_input: { authorize(): Promise<void> }) => ({ version: 1 as const, chunkIds: ["chunk-1"], attemptIds: ["decision-1"],
+      status: decision === "unavailable" ? "unavailable" as const : "complete" as const,
+      scores: decision === "unavailable" ? [] : [decision === "keep" ? 0.5 : 0.02],
+      failureCode: decision === "unavailable" ? "decision_provider_request_failed" : null, durationMs: 12 }));
+    const runtime = createKnowledgeToolExecutor({ store: { ...retrievalStore, loadBindings: async () => [{ ...acceptedBinding,
+      executionScope: "base" as const, profileRevisionId: "22222222-2222-4222-8222-222222222222" }] }, relevance, budgetReservations: budgetReservations as never,
+      embeddingRuntime: embeddingRuntime(), rerankerRuntime: { resolve: async () => ({ adapter: { rerank: vi.fn() }, kind: "ready", pin }) } });
+    const result = await runtime.execute(call(), context());
+    expect(relevance).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-1", runId: "run-1", reservationId: "reservation",
+      leaseToken: "accepted-lease", passages: [expect.objectContaining({ chunkId: "chunk-1", includedText: "Reranked evidence." })] }));
+    expect(relevance.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ authorize: expect.any(Function) }));
+    const evidence = knowledgeEvidenceFromToolResult(result)!;
+    expect(evidence).not.toBeNull();
+    expect(evidence.outcome).toBe(decision === "reject" ? "no_relevant_evidence" : "complete");
+    expect(evidence.candidateCount).toBe(1);
+    expect(evidence.results).toHaveLength(decision === "reject" ? 0 : 1);
+    expect(decodeKnowledgeRetrievalEvidence(evidence)).toEqual(evidence);
+    if (decision === "reject") expect(decodeKnowledgeRetrievalEvidence({ ...evidence, relevance: undefined })).toBeNull();
+    const stored = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes)!;
+    expect(parsePersistedToolExecutionResult(call(), stored)).toEqual(result);
+    const replay = createKnowledgeToolExecutor({ embeddingRuntime: embeddingRuntime(), relevance,
+      store: { ...retrievalStore, loadReceipt: async () => evidence } });
+    expect(knowledgeEvidenceFromToolResult(await replay.execute(call(), context()))).toEqual(evidence);
+    expect(relevance).toHaveBeenCalledOnce(); expect(persistReceipt).toHaveBeenCalledOnce();
+  });
+
   it.each([1, 128])("persists a single eligible passage at lexical rank %s when reranking skips provider I/O", async (lexicalRank) => {
     const passage = rerankedSearchResult().passages[0]!;
     const scope = { acceptedIndexArtifactIds: [], baseName: "Base", bindingOrdinal: 0,
