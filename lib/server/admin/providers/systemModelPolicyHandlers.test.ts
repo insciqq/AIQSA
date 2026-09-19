@@ -10,6 +10,29 @@ function session(role: "admin" | "user" = "admin") {
 }
 
 describe("administrator system model policy handlers", () => {
+  it.each([null, "decision-model"])("saves only the independent optional role (%s)", async (decisionProviderModelId) => {
+    const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
+    const handlers = createAdminSystemModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never });
+    const response = await handlers.PATCH(new Request("http://local.test/api/admin/providers/system-model-policy", {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: 4,
+        decisionProviderModelId, decisionFeatures: { memoryRelevance: false } })
+    }));
+    expect(response.status).toBe(200);
+    expect(service.update).toHaveBeenCalledExactlyOnceWith({ expectedVersion: 4, decisionProviderModelId,
+      decisionFeatures: { memoryRelevance: false }, userId: "user-1" });
+  });
+
+  it.each([{ decisionFeatures: { unsupportedFeature: true } }, { decisionFeatures: { memoryRelevance: "false" } },
+    { decisionFeatures: [] }, { decisionProviderModelId: 42 }, { decisionBootstrap: true }])(
+    "rejects malformed or authority-bearing Decisions fields (%j)", async (fields) => {
+      const service = { list: vi.fn(), update: vi.fn() };
+      const handlers = createAdminSystemModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never });
+      const response = await handlers.PATCH(new Request("http://local.test/api/admin/providers/system-model-policy", {
+        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: 4, ...fields })
+      }));
+      expect(response.status).toBe(400); expect(service.update).not.toHaveBeenCalled();
+    }
+  );
   it("saves Memory with its independent version without changing System roles", async () => {
     const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn(), updateMemory: vi.fn() };
     const handlers = createAdminSystemModelPolicyHandlers({

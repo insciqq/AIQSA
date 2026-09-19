@@ -19,6 +19,7 @@ export type AdminProviderAdapterKind =
   | "openai_responses_native"
   | "openrouter_chat_completions"
   | "openrouter_rerank"
+  | "openrouter_decisions"
   | "openai_images_native"
   | "openai_images_compatible"
   | "gemini_images_native"
@@ -26,7 +27,7 @@ export type AdminProviderAdapterKind =
 
 export type AdminProviderUnassignedPolicy = "require_assignment" | "use_default";
 export type AdminProviderCheckStatus = "available" | "unavailable";
-export type AdminProviderModelClass = "answer" | "embedding" | "reranker" | "image";
+export type AdminProviderModelClass = "answer" | "embedding" | "reranker" | "decision" | "image";
 
 export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS = 300;
 export const ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS = 900;
@@ -104,7 +105,7 @@ export type AdminProviderReasoningRequestMapping = ProviderReasoningRequestMappi
 export type AdminProviderCompatibilityStatus = "not_supported" | "verified";
 
 export const ADMIN_PROVIDER_CAPABILITY_CHECKS = ["modelAccess", "structuredOutput", "toolCalling",
-  "forcedToolCall", "parallelToolCalls", "vision", "directPdf", "streaming", "hostedSearch", "codexWebSearch", "embedding", "reranking", "imageGeneration", "imageEditing"] as const;
+  "forcedToolCall", "parallelToolCalls", "vision", "directPdf", "streaming", "hostedSearch", "codexWebSearch", "embedding", "reranking", "decisions", "imageGeneration", "imageEditing"] as const;
 export type AdminProviderCapabilityCheck = (typeof ADMIN_PROVIDER_CAPABILITY_CHECKS)[number];
 export type AdminProviderCapabilityCheckStatus = "verified" | "rejected" | "unsupported" | "incomplete" | "not_checked";
 export const ADMIN_PROVIDER_CAPABILITY_REASONS = ["verified", "adapter_unsupported", "route_unsupported", "refusal",
@@ -165,6 +166,15 @@ export type AdminProviderCompatibilityEvidence = {
 };
 
 export type AdminProviderTestEvidence = {
+  decisions?: {
+    probeVersion: 1;
+    adapterKind: "openrouter_decisions";
+    upstreamModelId: string;
+    servedModelId: string;
+    provider: string;
+    noul: true;
+    choice: true;
+  };
   /** Initial setup/retry results; stored under the same exact tuple as the proofs. */
   capabilitySetup?: AdminProviderCapabilitySetupEvidence;
   codexWebSearch?: {
@@ -379,7 +389,7 @@ export type AdminProviderCatalogModel = Readonly<{
   id: string;
   displayName: string;
   upstreamModelId: string;
-  modelClass: "answer" | "embedding" | "reranker" | "image";
+  modelClass: AdminProviderModelClass;
 }>;
 
 export type AdminProviderCatalogUpdates = Readonly<{
@@ -394,7 +404,7 @@ export function decodeAdminProviderCatalogUpdates(value: unknown): AdminProvider
   const candidate = (entry: unknown): entry is AdminProviderCatalogModel => record(entry) &&
     Object.keys(entry).sort().join(",") === "displayName,id,modelClass,upstreamModelId" &&
     text(entry.id, 256) && text(entry.displayName, 160) && text(entry.upstreamModelId, 256) &&
-    typeof entry.modelClass === "string" && ["answer", "embedding", "reranker", "image"].includes(entry.modelClass);
+    typeof entry.modelClass === "string" && ["answer", "embedding", "reranker", "decision", "image"].includes(entry.modelClass);
   if (!record(value) || Object.keys(value).sort().join(",") !== "available,skipped" ||
     !Array.isArray(value.available) || !Array.isArray(value.skipped) ||
     value.available.length + value.skipped.length > 256 || !value.available.every(candidate) || !value.skipped.every(candidate) ||

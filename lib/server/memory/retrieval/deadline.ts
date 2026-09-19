@@ -40,6 +40,7 @@ export type OptionalMemoryUtilityRole =
   | "CONTROL"
   | "QUERY_EMBED"
   | "QUERY_RESOLVE"
+  | "HISTORY_RELEVANCE"
   | "RERANK";
 
 const optionalUtilityBudget = Object.freeze({
@@ -60,6 +61,12 @@ const optionalUtilityBudget = Object.freeze({
   RERANK: {
     maximumMs: MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
     // Preserve time for authoritative rejoin and the synchronous packer.
+    reserveMs: 2_000
+  },
+  HISTORY_RELEVANCE: {
+    // This additional optional stage shares the existing reranker latency
+    // ceiling and must leave the authoritative rejoin/packing reserve intact.
+    maximumMs: MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
     reserveMs: 2_000
   }
 } satisfies Record<OptionalMemoryUtilityRole, Readonly<{
@@ -162,9 +169,12 @@ export async function runOptionalMemoryUtility<T>(
     : null;
   try {
     const pending = operation(controller.signal);
+    // Other utilities cancel the provider wait and finish their own durable
+    // settlement before returning; abandoning that work here could leave a
+    // live binding at the final context-attachment boundary.
     if (role !== "CONTROL") return await pending;
-    // MEMORY_CONTROL is read-only. Its service owns durable binding settlement
-    // and discards a late provider result after cancellation. Stop awaiting a
+    // Control is read-only. Its service owns binding settlement
+    // and discards late provider results after cancellation. Stop awaiting a
     // non-cooperative adapter here as well, so the result can never gain action
     // authority after its reserved read budget begins. Explicit handlers keep
     // late resolution/rejection observed without a bare Promise.race.

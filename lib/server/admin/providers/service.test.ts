@@ -467,7 +467,7 @@ describe("admin provider service", () => {
     const providers = service(repository({ activateCredentialCas, listConnections: async () => [connection] }),
       tester(), ["credential-new", "version-new"], { test });
     await providers.activateNewCredential({ connectionId: connection.id, label: "Main", secret: "candidate-secret" });
-    expect(test).toHaveBeenCalledWith(expect.objectContaining({ modelClasses: version === 0 ? ["reranker", "answer", "embedding", "image"] : ["reranker"] }));
+    expect(test).toHaveBeenCalledWith(expect.objectContaining({ modelClasses: version === 0 ? ["reranker", "answer", "embedding", "decision", "image"] : ["reranker"] }));
     const added = activateCredentialCas.mock.calls[0]![0].catalogAdditions?.map((model) => model.configuration.upstreamModelId) ?? [];
     if (version === 0) expect(added).toEqual(expect.arrayContaining([
         "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4.1-flash", "anthropic/claude-opus-5", "anthropic/claude-fable-5.1",
@@ -1000,6 +1000,7 @@ describe("admin provider service", () => {
       listEmbeddingModels,
       listModelEndpoints,
       listModels,
+      listDecisionModels: vi.fn(async () => []),
       listRerankModels: vi.fn(async () => [])
     }));
     const providers = createAdminProviderService({

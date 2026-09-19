@@ -1320,10 +1320,11 @@ export function createPrismaKnowledgeRetrievalStore(
             ? { exact: receipt.readReceipt }
             : receipt.operation === "discover_sources"
               ? { discovery: receipt.readReceipt }
-              : receipt.operation === "automatic_search" &&
-                  record(receipt.readReceipt) &&
-                  receipt.readReceipt.rerankerBinding !== undefined
-                ? { rerankerBinding: receipt.readReceipt.rerankerBinding }
+              : receipt.operation === "automatic_search" && record(receipt.readReceipt)
+                ? {
+                    ...(receipt.readReceipt.rerankerBinding !== undefined ? { rerankerBinding: receipt.readReceipt.rerankerBinding } : {}),
+                    ...(receipt.readReceipt.relevance !== undefined ? { relevance: receipt.readReceipt.relevance } : {})
+                  }
                 : {};
       return decodeKnowledgeRetrievalEvidence({
         ...common,
@@ -1901,6 +1902,9 @@ export function createPrismaKnowledgeRetrievalStore(
       if (input.evidence.version !== KNOWLEDGE_RESULT_VERSION) {
         throw new Error("knowledge_legacy_receipt_write_forbidden");
       }
+      if (input.evidence.relevance && decodeKnowledgeRetrievalEvidence(input.evidence) === null) {
+        throw new Error("knowledge_relevance_receipt_invalid");
+      }
       if (input.evidence.outcome === "search_unavailable" &&
         decodeKnowledgeRetrievalEvidence(input.evidence) === null) {
         throw new Error("knowledge_search_unavailable_receipt_unsafe");
@@ -1954,6 +1958,18 @@ export function createPrismaKnowledgeRetrievalStore(
           FOR UPDATE
         `);
         if (lockedRun.length !== 1) throw new Error("knowledge_run_context_unavailable");
+        if (input.evidence.relevance?.status === "complete") {
+          const relevance = input.evidence.relevance;
+          if (!input.budgetReservation) throw new Error("knowledge_relevance_receipt_invalid");
+          const attempts = await tx.knowledgeRelevanceAttempt.findMany({ where: {
+            reservationId: input.budgetReservation.reservationId, id: { in: [...relevance.attemptIds] }
+          }, orderBy: { ordinal: "asc" } });
+          if (attempts.length !== relevance.chunkIds.length || attempts.some((attempt, index) =>
+            attempt.id !== relevance.attemptIds[index] || attempt.ordinal !== index + 1 || attempt.state !== "settled" ||
+            attempt.failureCode !== null || attempt.usefulness !== relevance.scores[index])) {
+            throw new Error("knowledge_relevance_receipt_invalid");
+          }
+        }
         const call = await tx.modelRunToolCall.findFirst({
           select: { id: true },
           where: {
@@ -2270,8 +2286,9 @@ export function createPrismaKnowledgeRetrievalStore(
               ? {
                   readReceipt: json(evidence.read ?? evidence.exact ?? evidence.discovery)
                 }
-              : rerankerBinding
-                ? { readReceipt: json({ rerankerBinding }) }
+              : rerankerBinding || evidence.relevance
+                ? { readReceipt: json({ ...(rerankerBinding ? { rerankerBinding } : {}),
+                    ...(evidence.relevance ? { relevance: evidence.relevance } : {}) }) }
                 : {}),
           }
         });

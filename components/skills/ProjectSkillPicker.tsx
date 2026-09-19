@@ -5,9 +5,11 @@ import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 import { UiV2Button, UiV2IconButton } from "@/components/ui-v2";
 import { resolveEffectiveSkillIds, SKILL_MAX_SELECTED } from "@/lib/contracts/skills";
 import { SkillSelectionSummary, type SelectedSkillName } from "./SkillSelectionSummary";
+import { SkillSuggestions, type SkillSuggestionsProps } from "./SkillSuggestions";
 
 /** Receives only the currently authorized Project catalog; never reads a personal library. */
-export function ProjectSkillPicker({ resources, includedSkills, selectedSkills, state, onClose, onRetry, onSelectionChange, restoreFocus }: Readonly<{
+export function ProjectSkillPicker({ resources, includedSkills, selectedSkills, state, onClose, onRetry, onSelectionChange, restoreFocus, suggestions }: Readonly<{
+  suggestions?: Pick<SkillSuggestionsProps, "request" | "onUse">;
   resources: readonly Readonly<{ id: string; name: string; description: string; available: boolean }>[];
   includedSkills: readonly SelectedSkillName[];
   selectedSkills: readonly SelectedSkillName[];
@@ -39,6 +41,8 @@ export function ProjectSkillPicker({ resources, includedSkills, selectedSkills, 
           : state === "error" ? <div role="alert"><p>Project Skills could not be loaded.</p><UiV2Button onClick={onRetry}>Try again</UiV2Button></div>
           : state === "unavailable" ? <p role="alert">This Project is no longer available.</p>
           : <>
+            {suggestions ? <SkillSuggestions key={suggestions.request.requestId} {...suggestions}
+              excludedIds={effectiveIds} atLimit={effectiveIds.length >= SKILL_MAX_SELECTED} /> : null}
             <label className="v2-resource-search"><span>Search Skills</span><input aria-label="Search Project Skills"
               type="search" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
             {!visible.length ? <p>{normalizedQuery ? "No matching Skills." : "No Skills have been shared with this Project."}</p>

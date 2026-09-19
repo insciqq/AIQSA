@@ -8,7 +8,7 @@ import { ProviderStreamSafetyError } from "./streamSafety";
 import observedFailureCodes from "../observability/failureCodes.json";
 type ObservedFailureCode = string;
 type FailureReason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response";
-type ProviderStage = "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank";
+type ProviderStage = "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions";
 type ProviderStatus = "completed" | "failed" | "cancelled" | "incomplete" | "queued" | "in_progress" | "retrying" | "unknown";
 type ProviderCause = "max_output_tokens" | "content_filter";
 type ProviderObservation = Readonly<{
@@ -232,7 +232,7 @@ function nativeTimeout(value: unknown): boolean {
 
 const deadlineCodes = new Set([
   "workspace_tool_timeout", "search_timeout", "provider_request_timed_out",
-  "embedding_request_timed_out", "rerank_request_timed_out"
+  "embedding_request_timed_out", "rerank_request_timed_out", "decision_request_timed_out"
 ]);
 
 export function observedFailure(value: unknown, signal?: AbortSignal): Readonly<{

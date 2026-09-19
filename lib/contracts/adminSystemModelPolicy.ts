@@ -1,7 +1,8 @@
 import type { AdminModelDefaultCandidate } from "./adminModelPolicy";
+import { decodeDecisionFeatureOverrides, type DecisionFeatureOverrides } from "./semanticDecisions";
 import { normalizeImageModelConfiguration, normalizeImageGenerationParameters, type ImageModelConfiguration, type ImageGenerationParameters } from "./imageGeneration";
 
-export type SystemModelVerificationRole = "chat_titles" | "memory" | "direct_pdf" | "vision" | "embedding" | "reranker" | "image";
+export type SystemModelVerificationRole = "chat_titles" | "memory" | "direct_pdf" | "vision" | "embedding" | "reranker" | "decision" | "image";
 export type ChatPdfProcessingMode = "prefer_chat_model" | "use_pdf_reader" | "read_page_images";
 export type ChatPdfFallbackMethod = "pdf_reader" | "page_images";
 
@@ -91,8 +92,11 @@ export type AdminSystemModelPolicyCatalog = {
   /** Every answer deployment that is not ready for the role, with the reason. */
   ineligible: Record<AdminSystemModelEligibilityRole, AdminSystemModelIneligibleCandidate[]>;
   rerankerCandidates: AdminRerankerModelCandidate[];
+  decisionCandidates?: AdminModelDefaultCandidate[];
   imageCandidates?: AdminImageModelCandidate[];
   policy: {
+    decisionModel?: (AdminModelDefaultCandidate & { available: boolean }) | null;
+    decisionFeatures?: DecisionFeatureOverrides;
     imageModel?: (AdminImageModelCandidate & { available: boolean }) | null;
     imageParameters?: ImageGenerationParameters;
     chatTitleModel: (AdminSystemModelCandidate & { available: boolean }) | null;
@@ -233,6 +237,10 @@ export function decodeAdminSystemModelPolicyResponse(
     !catalog.rerankerCandidates.every(baseCandidate) ||
     !record(catalog.policy)) return null;
   const policy = catalog.policy;
+  if (catalog.decisionCandidates !== undefined && (!Array.isArray(catalog.decisionCandidates) || !catalog.decisionCandidates.every(baseCandidate)) ||
+    policy.decisionModel !== undefined && policy.decisionModel !== null && (!record(policy.decisionModel) ||
+      !baseCandidate(policy.decisionModel) || typeof policy.decisionModel.available !== "boolean") ||
+    policy.decisionFeatures !== undefined && !decodeDecisionFeatureOverrides(policy.decisionFeatures)) return null;
   if (catalog.imageCandidates !== undefined && (!Array.isArray(catalog.imageCandidates) || !catalog.imageCandidates.every(imageCandidate)) ||
     policy.imageModel !== undefined && policy.imageModel !== null && (!imageCandidate(policy.imageModel) || typeof (policy.imageModel as Record<string, unknown>).available !== "boolean")) return null;
   if (policy.imageParameters !== undefined) {
@@ -303,8 +311,11 @@ export function decodeAdminSystemModelPolicyResponse(
       verificationCandidates: catalog.verificationCandidates,
       ineligible,
       rerankerCandidates: catalog.rerankerCandidates,
+      ...(catalog.decisionCandidates === undefined ? {} : { decisionCandidates: catalog.decisionCandidates as AdminModelDefaultCandidate[] }),
       imageCandidates: (catalog.imageCandidates ?? []) as AdminImageModelCandidate[],
       policy: {
+        ...(policy.decisionModel === undefined ? {} : { decisionModel: policy.decisionModel as AdminSystemModelPolicyCatalog["policy"]["decisionModel"] }),
+        ...(policy.decisionFeatures === undefined ? {} : { decisionFeatures: decodeDecisionFeatureOverrides(policy.decisionFeatures)! }),
         imageModel: (policy.imageModel ?? null) as AdminSystemModelPolicyCatalog["policy"]["imageModel"],
         imageParameters: (policy.imageParameters ?? {}) as ImageGenerationParameters,
         chatTitleModel: policy.chatTitleModel as AdminSystemModelPolicyCatalog["policy"]["chatTitleModel"],

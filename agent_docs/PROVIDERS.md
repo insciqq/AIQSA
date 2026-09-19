@@ -3,15 +3,17 @@
 Owner: Provider integration maintainers
 Scope: Execution authority, capability evidence, transport and disclosure boundaries.
 
-Adapters and wire contracts: [provider code](../lib/server/providers/); accepted execution: [Run contracts](RUN_CONTRACTS.md); credentials and endpoint trust: [Security](SECURITY.md).
+Adapters: [code](../lib/server/providers/); execution: [Run contracts](RUN_CONTRACTS.md); credentials/endpoints: [Security](SECURITY.md).
 
 ## Authority And Capability
 
 Catalog discovery is availability evidence, never execution authority. Admission binds the exact tested connection/model/revision/credential and role, then rechecks revocation before outbound requests. Personal credential precedence is direct user, identical group grant, then an explicitly configured installation default. Project runs use canonical Project resources and shared authority only. Missing authority never selects another tier, model, endpoint or provider.
 
-Answer, embedding and rerank roles are distinct. Internal System Model, Memory Utility Model, Chat titles, chat PDF and Knowledge document assignments use their explicitly selected installation credentials, confer no user entitlement and do not inherit ordinary selector visibility. Chat titles use an independent nullable assignment with verified structured output; the stronger Memory requirements remain independent. An absent or unavailable title assignment keeps the heuristic name without fallback dispatch. A failed capability disables only that capability, preserving unrelated valid roles. Memory read admission is independent of the generation assignment; [Memory](MEMORY.md) owns action authority and optional ranking policy.
+Answer, embedding, rerank and Decisions roles are distinct. Internal roles use explicitly selected installation credentials, confer no user entitlement and ignore selector visibility. Chat titles independently require verified structured output; an absent or unavailable assignment preserves heuristic naming without fallback. A failed capability preserves unrelated roles. Memory reads are independent of generation; [Memory](MEMORY.md) owns action authority and optional ranking.
 
-Key replacement tests the active connection and publishes evidence atomically under exact version fences. Endpoint changes require fresh explicit secrets for every retained key, including disabled ones, before contacting the new destination. Stored secrets are never reused to discover or test changed endpoints. Search Save & Check likewise publishes only successfully validated configuration and evidence; a diagnostic run check does not publish configuration.
+Optional Decisions require independent disclosure, consumer-specific qualification and verified availability. Adoption, including one-time OpenRouter upgrades, preserves explicit choices; absence preserves ordinary functions. Executions pin served model/provider identities without granting truth, ownership or mutation authority. Claim before upgrade I/O; failures require explicit repair, never automatic replay or startup blocking.
+
+Key replacement tests the active connection and publishes evidence atomically under exact version fences. Endpoint changes require fresh explicit secrets for every retained key, including disabled ones, before contacting the new destination. Stored secrets are never reused to discover or test changed endpoints. Search Save & Check publishes validated configuration/evidence; diagnostic run checks never publish configuration.
 
 Capabilities require successful probes on the exact active connection/model/credential and route. Model names, administrator metadata and ordinary model access do not prove structured output, strict Memory actions, image or direct-PDF support. These capabilities are independent: ordinary function calling does not prove strict action support. PDF admission requires runtime opt-in as well as positive evidence; an image probe proves support, not maximum payload size. Stale evidence requires re-verification.
 

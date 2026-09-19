@@ -7,6 +7,9 @@ import { textMessageContent } from "@/lib/domain/content";
 import { agentLimits } from "./config";
 import { createAgentRunStore, interruptExpiredAgentRun } from "./store";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
+import { providerTemplateIds } from "../../domain/providerTemplates";
+import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
+import { createOptionalDecisionRepository } from "../providerRuntime/optionalDecisionRepository";
 import { lockRunSettlementScope } from "../runs/prismaRepositoryShared";
 
 const configuration = { ...agentLimits({ ...DEFAULT_AGENT_POLICY, limitsEnabled: true }, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
@@ -69,6 +72,31 @@ describe("durable Agent authority and accounting", () => {
       expect(await interruptExpiredAgentRun(prisma, { runId: run.id, userId: f.userId, now: new Date() })).toEqual({ kind: "active" });
       await run.store.revoke(false);
       await expect(run.store.reserveProvider(200)).rejects.toThrow("agent_authority_expired");
+    } finally { await f.dispose(); }
+  });
+
+  it("counts optional decision work without duplicating independently persisted charges", async () => {
+    const f = await fixture({ ...configuration, limitsEnabled: false, timeoutSeconds: null });
+    try {
+      const run = await f.run(); await run.store.arm(null);
+      const answer = await prisma.providerRunBinding.findUniqueOrThrow({ where: {
+        modelRunId_bindingKey: { modelRunId: run.id, bindingKey: "answer" }
+      } });
+      const snapshot = { ...normalizeProviderExecutionSnapshot(answer.executionSnapshot),
+        connectionId: providerTemplateIds.fakeConnection, providerModelId: providerTemplateIds.fakeModel };
+      const decisions = createOptionalDecisionRepository(prisma);
+      const owner = { userId: f.userId, runId: run.id, purpose: "mcp_discovery" as const, operationKey: "call" };
+      const claim = await decisions.start(owner, "b".repeat(64), snapshot);
+      if (claim.kind !== "new") throw new Error("fixture_claim_missing");
+      const attempt = await run.store.reserveProvider(32_000, { kind: "decision", snapshot });
+      await run.store.settleProvider(attempt, "COMPLETE", { inputTokens: 20, outputTokens: 4, totalTokens: 24 });
+      await decisions.settle(owner, claim.id, { receipt: { model: "fixture", provider: "fake", requestId: null,
+        usage: { inputTokens: 20, outputTokens: 4, costUsd: 0.00001 } }, answers: {}, failureCode: null, dispatched: true });
+      expect(await run.store.usage()).toEqual([]);
+      expect(await prisma.agentRunBinding.findUniqueOrThrow({ where: { modelRunId: run.id } }))
+        .toMatchObject({ modelCalls: 1, reservedTokens: 24n });
+      expect(await prisma.usageEvent.findMany({ where: { modelRunId: run.id } }))
+        .toEqual([expect.objectContaining({ optionalDecision: true, totalTokens: 24, estimatedCostMicros: 10 })]);
     } finally { await f.dispose(); }
   });
 

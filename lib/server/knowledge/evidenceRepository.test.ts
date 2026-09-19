@@ -691,8 +691,9 @@ function fakeProviderExecutionSnapshot() {
 describe("Knowledge Evidence v2 repository projection", () => {
   it.each([
     { modern: false, instructions: false }, { modern: false, instructions: true },
-    { modern: true, instructions: false }, { modern: true, instructions: true }
-  ])("publishes settled evidence answers without repeating providers (V2: $modern, instructions: $instructions)", async ({ modern, instructions }) => {
+    { modern: true, instructions: false }, { modern: true, instructions: true },
+    { modern: true, instructions: true, modelBudget: true }
+  ])("publishes settled evidence answers without repeating providers (V2: $modern, instructions: $instructions, budget: $modelBudget)", async ({ modern, instructions, modelBudget }) => {
     const evidenceRow = row().evidenceItems[0]!;
     const draft = packKnowledgeEvidenceDispatchManifest({
       candidates: [{ ambiguity: "none", evidenceId: "provider-call-1:result:1", exactExcerpt: evidenceRow.excerpt,
@@ -738,7 +739,9 @@ describe("Knowledge Evidence v2 repository projection", () => {
       ...(instructions ? { answerInstructions: { system: "Use concise paragraphs.", responseReminder: "Keep the requested format." } } : {}),
       executionPolicy: resolveKnowledgeGroundingExecutionPolicyV1({ modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false } }),
       modelRunId: "run-1", request: "Explain retention and its trend.", shouldAbort: () => false, transport: "native_strict" as const };
-    if (modern) await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...executionInput, workflowVersion: 11, refineEvidence: async () => null });
+    if (modern) await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...executionInput, workflowVersion: 11,
+      ...(modelBudget ? { generationBudget: { version: 1 as const, contextWindow: null, maxOutputTokens: 65_536, timeoutMs: 300_000 } } : {}),
+      refineEvidence: async () => null });
     else await executeKnowledgeEvidenceAnswerV1(executionInput);
     const database = client(row(), { attempts, providerExecutionSnapshot: fakeProviderExecutionSnapshot() });
     const result = await groundKnowledgeEvidenceRunAnswerV1(database, { runId: "run-1", userId: "user-1" });

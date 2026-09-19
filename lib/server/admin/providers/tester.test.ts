@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { jevModelConfiguration, JEV_MODEL_ID, JEV_SERVED_MODEL_ID } from "../../../domain/decisionModels";
 import * as visionProbe from "../../providers/visionInputProbe";
 import type { OpenRouterDiscoveryClient } from "../../providers/openRouterDiscovery";
 import {
@@ -49,6 +50,7 @@ function discovery(overrides: Partial<OpenRouterDiscoveryClient> = {}): OpenRout
     async listEmbeddingModels() { return []; },
     async listModelEndpoints() { return []; },
     async listRerankModels() { return []; },
+    async listDecisionModels() { return []; },
     async listModels() {
       return [{
         id: "vendor/model",
@@ -165,6 +167,52 @@ function strictToolChatResponse(
 }
 
 describe("admin provider draft tester", () => {
+  it.each(["valid", "missing catalog", "missing route", "wrong model", "wrong choice", "missing answer", "outage"])(
+    "checks the dedicated Decisions protocol and preserves failures (%s)", async (scenario) => {
+      const listDecisionModels = vi.fn(async () => scenario === "missing catalog" ? [] : [{
+        id: JEV_MODEL_ID, name: "Jev", inputModalities: ["text"], outputModalities: ["decisions"], pricing: {}, supportedParameters: []
+      }]);
+      const fetchFn = vi.fn<typeof fetch>(async () => scenario === "outage" ? Response.json({}, { status: 503 }) : Response.json({
+        model: scenario === "wrong model" ? "unexpected-model" : JEV_SERVED_MODEL_ID, provider: "TypeSafe",
+        answers: { useful: { type: "noul", noul: 0.95 }, ...(scenario === "missing answer" ? {} : {
+          relation: { type: "choice", choice: scenario === "wrong choice" ? "unrelated" : "useful" }
+        }) }, usage: { input_tokens: 18, output_tokens: 28 }
+      }));
+      const tester = createAdminProviderDraftTester({ createFetch: () => fetchFn,
+        createDiscoveryClient: () => discovery({ listDecisionModels,
+          listModelEndpoints: async () => scenario === "missing route" ? [] : [{ name: "TypeSafe", providerName: "TypeSafe", tag: "typesafe", supportedParameters: [] }] }) });
+      const pending = tester.test(input({ model: jevModelConfiguration() }));
+      if (["wrong model", "wrong choice", "missing answer", "outage"].includes(scenario)) {
+        await expect(pending).rejects.toThrow(/^decision_/);
+        expect(fetchFn).toHaveBeenCalledOnce();
+        return;
+      }
+      const result = await pending;
+      expect(listDecisionModels).toHaveBeenCalledOnce();
+      expect(result.status).toBe(scenario === "valid" ? "available" : "unavailable");
+      expect(fetchFn).toHaveBeenCalledTimes(["missing catalog", "missing route"].includes(scenario) ? 0 : 1);
+      if (scenario === "valid") {
+        expect(result.evidence.decisions).toEqual({ probeVersion: 1, adapterKind: "openrouter_decisions",
+          upstreamModelId: JEV_MODEL_ID, servedModelId: JEV_SERVED_MODEL_ID, provider: "TypeSafe", noul: true, choice: true });
+        expect(result.evidence.selectedProviders).toEqual(["typesafe"]);
+        expect(result.evidence.compatibility?.structuredOutput).toBe("not_supported");
+      } else expect(result.evidence.decisions).toBeUndefined();
+    }
+  );
+
+  it("reuses complete Decisions capability proof without repeating paid work", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ model: JEV_SERVED_MODEL_ID, provider: "TypeSafe",
+      answers: { useful: { type: "noul", noul: 0.95 }, relation: { type: "choice", choice: "useful" } },
+      usage: { input_tokens: 18, output_tokens: 28 }
+    }));
+    const tester = createAdminProviderDraftTester({ createFetch: () => fetchFn });
+    const request = input({ model: jevModelConfiguration(), initialSetup: true });
+    const first = await tester.test(request);
+    expect(first.status).toBe("available");
+    const second = await tester.test({ ...request, reuseSetupEvidence: first.evidence });
+    expect(second).toMatchObject(first);
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
   it.each([
     { efforts: ["none", "low", "high"], effort: "none", enabled: false },
     { efforts: ["low", "high"], effort: "low", enabled: true }

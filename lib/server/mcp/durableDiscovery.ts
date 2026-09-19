@@ -143,6 +143,7 @@ export async function executeDurableMcpDiscovery(
       onUsage: input.onUsage,
       router: input.router,
       routing: {
+        decisionOperationKey: input.modelRunToolCallId,
         activeToolNames: activeNames,
         context: mcpChatDiscoveryContext(input.request),
         goals: input.routingGoals ?? [parsed.goal],

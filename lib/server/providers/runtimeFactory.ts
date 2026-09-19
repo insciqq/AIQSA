@@ -1,4 +1,6 @@
 import { createAnthropicMessagesAdapter, createFetchAnthropicMessagesClient } from "./anthropicMessages";
+import { decodeDecisionEvidence } from "./decisionEvidence";
+import { decisionResponseModelMatches } from "../../domain/decisionModels";
 import { createAgentResponsesTransport, type AgentResponsesTransport } from "./agentResponses";
 import { createAnthropicMessagesSearchAdapter } from "./anthropicMessagesSearch";
 import {
@@ -77,6 +79,7 @@ export type ProviderExecutionSnapshot = Readonly<{
   connectionId: string;
   credentialId: string | null;
   credentialVersionId: string | null;
+  decisionVerification?: NonNullable<ReturnType<typeof decodeDecisionEvidence>>;
   model: ProviderModelConfiguration | Readonly<{
     adapterKind: "fake";
     capabilities: ProviderModelConfiguration["capabilities"];
@@ -165,6 +168,16 @@ export function normalizeProviderExecutionSnapshot(value: unknown): ProviderExec
   if (model.adapterKind !== "fake" && (!value.credentialId || !value.credentialVersionId)) {
     throw new Error("provider_execution_snapshot_invalid");
   }
+  const decisionVerification = decodeDecisionEvidence(value.decisionVerification);
+  if (model.adapterKind === "openrouter_decisions" && (
+    value.providerFamily !== "openrouter" || !decisionVerification ||
+    decisionVerification.upstreamModelId !== model.upstreamModelId ||
+    !decisionResponseModelMatches(model.upstreamModelId, decisionVerification.servedModelId) ||
+    model.openRouterRouting?.mode === "only_selected" && !model.openRouterRouting.providers.some((provider) =>
+      provider.toLocaleLowerCase("und") === decisionVerification.provider.toLocaleLowerCase("und"))
+  ) || value.decisionVerification !== undefined && model.adapterKind !== "openrouter_decisions") {
+    throw new Error("provider_execution_snapshot_invalid");
+  }
   const compatibleAdapter = model.adapterKind === "openai_chat_completions_compatible" ||
     model.adapterKind === "openai_responses_compatible" ||
     model.adapterKind === "openai_images_compatible" ||
@@ -214,6 +227,7 @@ export function normalizeProviderExecutionSnapshot(value: unknown): ProviderExec
     connectionId: value.connectionId.trim(),
     credentialId: value.credentialId,
     credentialVersionId: value.credentialVersionId,
+    ...(decisionVerification ? { decisionVerification } : {}),
     model,
     modelDisplayName: value.modelDisplayName.trim(),
     providerFamily: value.providerFamily.trim(),
@@ -493,6 +507,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
     }
     case "openai_embeddings_compatible":
     case "openrouter_rerank":
+    case "openrouter_decisions":
     case "openai_images_native":
     case "openai_images_compatible":
     case "gemini_images_native":

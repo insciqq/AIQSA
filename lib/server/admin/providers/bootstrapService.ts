@@ -8,13 +8,14 @@ import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 import type { createAdminKnowledgeProfileService } from "../knowledge/profileService";
 import { embeddingPresetsForFamily } from "../../../domain/embeddingModels";
 import { rerankerPresetsForFamily } from "../../../domain/rerankerModels";
+import { DEFAULT_DECISION_FEATURES, JEV_MODEL_ID } from "../../../domain/decisionModels";
 
 /** Finish setup through the ordinary, version-fenced owners. Existing
  * destinations stay operator-owned; an empty Knowledge profile adopts vision. */
 export function createAdminProviderBootstrap(input: {
   providers: { listConnections(): Promise<AdminProviderConnection[]> };
   chat: Pick<ReturnType<typeof createAdminModelPolicyService>, "list" | "update">;
-  roles: Pick<ReturnType<typeof createAdminSystemModelPolicyService>, "list" | "update" | "updateMemory" | "adoptChatTitle">;
+  roles: Pick<ReturnType<typeof createAdminSystemModelPolicyService>, "list" | "update" | "updateMemory" | "adoptChatTitle" | "adoptDecisionModel">;
   search: Pick<ReturnType<typeof createAdminSearchService>, "list" | "createDraft" | "saveAndCheck">;
   knowledge: Pick<ReturnType<typeof createAdminKnowledgeProfileService>, "list" | "activate">;
 }) {
@@ -82,6 +83,23 @@ export function createAdminProviderBootstrap(input: {
     } catch {
       value.signal.throwIfAborted();
       result.state = "partial";
+    }
+    if (connection.family === "openrouter" && DEFAULT_DECISION_FEATURES.length) {
+      try {
+        const roles = await input.roles.list();
+        const model = connection.models.find((entry) => entry.activeConfig?.upstreamModelId === JEV_MODEL_ID &&
+          eligible.has(entry.id) && roles.decisionCandidates?.some((candidate) => candidate.id === entry.id));
+        if (model && !roles.policy.decisionModel) {
+          value.signal.throwIfAborted();
+          if (await input.roles.adoptDecisionModel({ expectedVersion: roles.policy.version, providerModelId: model.id, userId: value.userId })) {
+            result.defaults.push(`Relevance checks: ${model.displayName}`);
+          }
+        }
+      } catch {
+        value.signal.throwIfAborted();
+        // The independently optional role cannot prevent ordinary setup.
+        result.state = "partial";
+      }
     }
     try {
       const roles = await input.roles.list();

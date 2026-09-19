@@ -21,6 +21,7 @@ import {
 import { createProviderSafeFetch } from "../../providers/providerSafeFetch";
 import { createOpenAICompatibleEmbeddingAdapter } from "../../providers/embeddings";
 import { createOpenRouterRerankAdapter } from "../../providers/rerank";
+import { createOpenRouterDecisionAdapter } from "../../providers/decisions";
 import type {
   ProviderConnectionConfiguration,
   ProviderModelConfiguration
@@ -712,6 +713,35 @@ async function testReranker(
   };
 }
 
+async function testDecisions(
+  input: AdminProviderDraftTesterInput, options: TesterOptions,
+  method: AdminProviderTestEvidence["method"], selectedProviders: string[]
+): Promise<AdminProviderDraftTestOutcome> {
+  const result = await createOpenRouterDecisionAdapter({
+    connection: input.connection, model: input.model,
+    network: { fetchFn: options.createFetch?.(input.connection) ?? createProviderSafeFetch({ configuration: input.connection }) },
+    secret: input.secret ?? (() => Promise.reject(new Error("provider_credential_missing")))
+  }).decide({ state: { query: "What color is the sign?", evidence: "The sign is blue." }, signal: input.signal,
+    questions: {
+      useful: { type: "noul", instructions: "Does evidence provide the information requested in query?" },
+      relation: { type: "choice", instructions: "How is evidence related to query?", criteria: {
+        useful: "Provides the information requested.", unrelated: "Does not help answer the query."
+      } }
+    }
+  });
+  if (result.answers.useful?.type !== "noul" || result.answers.useful.noul <= 0.5 ||
+    result.answers.relation?.type !== "choice" || result.answers.relation.choice !== "useful") {
+    throw new Error("decision_response_invalid");
+  }
+  return { status: "available", evidence: {
+    decisions: { probeVersion: 1, adapterKind: "openrouter_decisions", noul: true, choice: true,
+      upstreamModelId: input.model.upstreamModelId, servedModelId: result.model, provider: result.provider },
+    compatibility: { directPdf: "not_supported", modelAccess: "verified", probeVersion: ADMIN_PROVIDER_COMPATIBILITY_PROBE_VERSION,
+      streaming: "not_supported", structuredOutput: "not_supported", usage: "verified" },
+    detail: "ok", method, selectedProviders, upstreamModelId: input.model.upstreamModelId
+  } };
+}
+
 async function testVisionInput(input: AdminProviderDraftTesterInput, options: TesterOptions) {
   let visionInput: AdminProviderTestEvidence["visionInput"];
   if (input.model.capabilities.vision === true) {
@@ -973,6 +1003,7 @@ async function testSystemRole(
 ): Promise<AdminProviderDraftTestOutcome> {
   if (input.capabilityRole === "embedding") return testEmbedding(input, options, "tiny_generation", input.model.openRouterRouting?.providers ?? []);
   if (input.capabilityRole === "reranker") return testReranker(input, options, "tiny_generation", input.model.openRouterRouting?.providers ?? []);
+  if (input.capabilityRole === "decision") return testDecisions(input, options, "tiny_generation", input.model.openRouterRouting?.providers ?? []);
   const access = await withCapabilityRetries(input, options, () => runGenerationProbe(input, options, false));
   const structured = input.capabilityRole === "memory" || input.capabilityRole === "chat_titles" ? await withCapabilityRetries(input, options, () => testStructuredOutput(input, options)) : null;
   const forced = input.capabilityRole === "memory" ? await withCapabilityRetries(input, options, () => testForcedToolCall(input, options)) : null;
@@ -1004,6 +1035,7 @@ async function runTinyGeneration(
   if (input.model.modelClass === "reranker") {
     return testReranker(input, options, "tiny_generation", selectedProviders);
   }
+  if (input.model.modelClass === "decision") return testDecisions(input, options, "tiny_generation", selectedProviders);
   return testAnswerModel(input, options, "tiny_generation", selectedProviders);
 }
 
@@ -1034,6 +1066,7 @@ async function testOpenRouterCatalog(
     ? await client.listEmbeddingModels({ signal: input.signal })
     : input.model.modelClass === "reranker"
       ? await client.listRerankModels({ signal: input.signal })
+      : input.model.modelClass === "decision" ? await client.listDecisionModels({ signal: input.signal })
       : await client.listModels({ signal: input.signal });
   const model = models.find(({ id }) => id === input.model.upstreamModelId);
   if (!model) {
@@ -1075,6 +1108,7 @@ async function testOpenRouterCatalog(
   if (input.model.modelClass === "reranker") {
     return testReranker(input, options, "openrouter_account_catalog", selectedProviders);
   }
+  if (input.model.modelClass === "decision") return testDecisions(input, options, "openrouter_account_catalog", selectedProviders);
   return testAnswerModel(input, options, "openrouter_account_catalog", selectedProviders);
 }
 
@@ -1094,7 +1128,7 @@ export function createAdminProviderDraftTester(
       if (input.initialSetup && input.model.modelClass === "answer") return testAnswerCapabilities(input, resolvedOptions);
       if (input.initialSetup && input.model.modelClass !== "answer") {
         const previous = reusableCapabilitySetupEvidence(input.reuseSetupEvidence, input.model);
-        const capability = input.model.modelClass === "embedding" ? "embedding" : "reranking";
+        const capability = input.model.modelClass === "embedding" ? "embedding" : input.model.modelClass === "decision" ? "decisions" : "reranking";
         if (previous?.capabilitySetup?.checks[capability] === "verified") return { evidence: previous, status: "available" };
         const timeout = withTimeoutSignal(input.signal, Math.min(INITIAL_CAPABILITY_MODEL_TIMEOUT_MS,
           input.model.responseTimeoutMs ?? input.connection.responseTimeoutMs));

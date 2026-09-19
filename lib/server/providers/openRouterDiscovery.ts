@@ -63,6 +63,7 @@ export type OpenRouterDiscoveryClient = {
     options?: { signal?: AbortSignal }
   ): Promise<OpenRouterDiscoveredEndpoint[]>;
   listModels(options?: { signal?: AbortSignal }): Promise<OpenRouterDiscoveredModel[]>;
+  listDecisionModels(options?: { signal?: AbortSignal }): Promise<OpenRouterDiscoveredModel[]>;
   listRerankModels(
     options?: { signal?: AbortSignal }
   ): Promise<OpenRouterDiscoveredModel[]>;
@@ -380,6 +381,10 @@ export function createOpenRouterDiscoveryClient(input: {
     },
     async listModels(options) {
       return normalizeModels(await get("models/user", options?.signal));
+    },
+    async listDecisionModels(options) {
+      const models = normalizeModels(await get("models?output_modalities=decisions", options?.signal));
+      return models.filter((model) => model.outputModalities.includes("decisions"));
     },
     async listRerankModels(options) {
       // The upstream filter narrows the public catalog to the rerank output

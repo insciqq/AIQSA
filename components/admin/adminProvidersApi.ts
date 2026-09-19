@@ -83,7 +83,7 @@ function isModel(value: unknown): boolean {
     typeof value.draftConfig.answerSelectable === "boolean" &&
     (value.draftConfig.modelClass === "answer" ||
       value.draftConfig.modelClass === "embedding" ||
-      value.draftConfig.modelClass === "reranker" || value.draftConfig.modelClass === "image") &&
+      value.draftConfig.modelClass === "reranker" || value.draftConfig.modelClass === "decision" || value.draftConfig.modelClass === "image") &&
     optionalResponseTimeoutSeconds(value.draftConfig.responseTimeoutSeconds) &&
     typeof value.draftConfig.upstreamModelId === "string";
 }

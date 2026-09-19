@@ -12,6 +12,8 @@ export async function register(): Promise<void> {
     announceProcess({ attachments: "starting", memory: "unknown", knowledge: "starting", mcp: "starting", workspace: "unknown", email: "unknown" });
     const { startNativeRoutingAdoption } = await import("./lib/server/bootstrap/nativeRoutingAdoption");
     startNativeRoutingAdoption();
+    const { startDecisionModelAdoption } = await import("./lib/server/bootstrap/decisionModelAdoption");
+    startDecisionModelAdoption();
     const { startDefaultRunRecoveryScheduler } = await import(
       "./lib/server/runs/defaultRecoveryScheduler"
     );

@@ -160,6 +160,9 @@ function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSetti
           ...(Object.hasOwn(body, "rerankerProviderModelId") ? {
             rerankerModel: body.rerankerProviderModelId ? { ...roles.rerankerCandidates.find((item) => item.id === body.rerankerProviderModelId)!, available: true } : null
           } : {}),
+          ...(Object.hasOwn(body, "decisionProviderModelId") ? {
+            decisionModel: body.decisionProviderModelId ? { ...roles.decisionCandidates!.find((item) => item.id === body.decisionProviderModelId)!, available: true } : null
+          } : {}),
           ...(Object.hasOwn(body, "chatTitleProviderModelId") ? {
             chatTitleModel: body.chatTitleProviderModelId ? { ...pick(body.chatTitleProviderModelId)!, available: true } : null,
             chatTitleReasoningEffort: body.chatTitleReasoningEffort as string | null
@@ -319,10 +322,33 @@ describe("AdminRolesSection", () => {
       expectedMemoryVersion: 8, memoryProviderModelId: "luna", memoryReasoningEffort: null
     });
   });
-  it.each([["reranker", "reranker"], ["chat_titles", "chat-titles"], ["system", "system"], ["memory", "memory"]])("focuses the %s system role from an Overview target", async (resource, row) => {
+  it.each([["reranker", "reranker"], ["chat_titles", "chat-titles"], ["system", "system"], ["memory", "memory"], ["decisions", "decisions"]])("focuses the %s system role from an Overview target", async (resource, row) => {
     server();
     renderSection(groups, resource);
     await waitFor(() => expect(screen.getByTestId(`admin-role-${row}`)).toHaveFocus());
+  });
+
+  it("assigns and disables optional relevance checks without changing Memory, with Undo", async () => {
+    const catalog = rolesCatalog();
+    catalog.decisionCandidates = [{ ...voyage, id: "jev", displayName: "Jev" }];
+    const calls = server(catalog);
+    const { reportNotice } = renderSection();
+    const picker = await screen.findByRole("button", { name: "Relevance checks deployment" });
+    expect(screen.getByTestId("admin-role-decisions-status")).toHaveTextContent("Off");
+    fireEvent.click(picker);
+    fireEvent.click(await screen.findByRole("option", { name: /Jev/ }));
+    await waitFor(() => expect(picker).toHaveTextContent("Jev"));
+    expect(screen.getByTestId("admin-role-decisions-status")).toHaveTextContent("Ready");
+    fireEvent.click(screen.getByRole("button", { name: "Relevance checks actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Turn off relevance checks" }));
+    await waitFor(() => expect(screen.getByTestId("admin-role-decisions-status")).toHaveTextContent("Off"));
+    expect(screen.getByRole("button", { name: "Memory model deployment" })).toHaveTextContent("GPT Luna");
+    await act(async () => reportNotice.mock.calls.at(-1)?.[1]?.onSelect());
+    await waitFor(() => expect(picker).toHaveTextContent("Jev"));
+    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
+      { expectedVersion: 1, decisionProviderModelId: "jev" }, { expectedVersion: 2, decisionProviderModelId: null },
+      { expectedVersion: 3, decisionProviderModelId: "jev" }
+    ]);
   });
 
   it("changes and clears Memory independently with its own version and Undo", async () => {

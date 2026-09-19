@@ -84,6 +84,8 @@ export type McpRouterAttemptRecorder = (role: ProviderAdmissionRole, maxOutputTo
 
 export type McpSemanticRouter = Readonly<{
   route(input: Readonly<{
+    /** Private durable operation identity; never included in the provider prompt. */
+    decisionOperationKey?: string;
     activeToolNames: ReadonlySet<string>;
     catalog: McpCapabilityCatalog;
     goals: readonly string[];
@@ -97,6 +99,9 @@ export type McpSemanticRouter = Readonly<{
     timeoutMs?: number;
   }>): Promise<McpSemanticRouterResult>;
 }>;
+
+export type McpRouterModelResolution = Extract<SystemModelRoleResolution, { ok: false }> |
+  Pick<Extract<SystemModelRoleResolution, { ok: true }>, "ok" | "reasoningEffort" | "role">;
 
 type StructuredExecutor = (
   role: ProviderAdmissionRole,
@@ -363,7 +368,7 @@ function buildMcpRouterStructuredRequest(input: Readonly<{
 
 export function createMcpSemanticRouter(dependencies: Readonly<{
   executeStructuredOutput: StructuredExecutor;
-  resolveSystemModel(): Promise<SystemModelRoleResolution>;
+  resolveSystemModel(): Promise<McpRouterModelResolution>;
 }>): McpSemanticRouter {
   return {
     async route(input) {
@@ -374,7 +379,7 @@ export function createMcpSemanticRouter(dependencies: Readonly<{
       if (!structured) {
         return { toolNames: [], usageAttribution: null };
       }
-      let resolution: SystemModelRoleResolution;
+      let resolution: McpRouterModelResolution;
       try {
         resolution = await dependencies.resolveSystemModel();
       } catch {

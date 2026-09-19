@@ -117,6 +117,7 @@ export function AdminSystemRolesTable({
     ? { working: "Fallback ready", unavailable: "Fallback unavailable", not_assigned: "Fallback not set" }[pdfStatus]
     : { working: "Ready", unavailable: "Unavailable", not_assigned: "Not assigned" }[pdfStatus];
   const rerankerUndo = { rerankerProviderModelId: policy.rerankerModel?.id ?? null };
+  const decisionUndo = { decisionProviderModelId: policy.decisionModel?.id ?? null };
   const imageUndo = { imageProviderModelId: policy.imageModel?.id ?? null, imageParameters: policy.imageParameters ?? {} };
   const fallbacks = rerankerFallbacksLine(catalog);
 
@@ -382,6 +383,19 @@ export function AdminSystemRolesTable({
           testId="admin-reranker-picker"
         />
         {fallbacks ? <p className="text-xs leading-5 text-ink-muted" data-testid="admin-reranker-fallbacks">{fallbacks}</p> : null}
+      </RoleRow>
+
+      <RoleRow title="Relevance checks" testId="admin-role-decisions" status={roleStatus(policy.decisionModel ?? null)}
+        statusLabel={policy.decisionModel ? policy.decisionModel.available ? "Ready" : "Unavailable" : "Off"}
+        description="Optional checks send the query and candidate context to this provider. Chat and retrieval work without them."
+        menu={[{ disabled: !policy.decisionModel || busy, label: "Turn off relevance checks",
+          onSelect: () => void controller.assign({ decisionProviderModelId: null }, decisionUndo) }]}>
+        <AdminRolePicker busy={busy} items={(catalog.decisionCandidates ?? []).map((model) => ({ group: "ready", id: model.id, label: label(model) }))}
+          label="Relevance checks deployment" roleName="Relevance checks" testId="admin-decisions-picker"
+          selectedId={policy.decisionModel?.id ?? null} selectedLabel={policy.decisionModel ? label(policy.decisionModel) : null}
+          onSelect={(id) => void controller.assign({ decisionProviderModelId: id }, decisionUndo)} />
+        {policy.decisionModel && !policy.decisionModel.available ?
+          <p className="text-xs leading-5 text-ink-muted">Standard retrieval remains available. Check this model in Providers to restore optional checks.</p> : null}
       </RoleRow>
 
       <RoleRow title="Image generation" testId="admin-role-image" status={roleStatus(policy.imageModel ?? null)}

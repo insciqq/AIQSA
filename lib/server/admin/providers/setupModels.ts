@@ -3,6 +3,7 @@ import { ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS, type AdminProviderQuickSetupProvi
 import { embeddingModelConfiguration, embeddingPresetsForFamily } from "../../../domain/embeddingModels";
 import { providerModelTemplateId } from "../../../domain/providerTemplates";
 import { rerankerModelConfiguration, rerankerPresetsForFamily } from "../../../domain/rerankerModels";
+import { jevModelConfiguration } from "../../../domain/decisionModels";
 import type { ProviderModelConfiguration } from "../../providers/providerConfiguration";
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 
@@ -34,6 +35,7 @@ export function providerSetupModels(family: string, apiRoot?: string): readonly 
     ...embeddingPresetsForFamily(family).filter((preset) => preset.default).map((preset) => ({
       configuration: embeddingModelConfiguration(preset), displayName: preset.displayName
     })),
+    { configuration: jevModelConfiguration(), displayName: "Jev 1.13" },
     ...rerankerPresetsForFamily(family).filter((preset) => preset.default).map((preset) => ({
       configuration: rerankerModelConfiguration(preset), displayName: preset.displayName
     }))

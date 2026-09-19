@@ -1,3 +1,4 @@
+import { hasVerifiedDecisions } from "../../providers/decisionEvidence";
 import {
   ADMIN_PROVIDER_CAPABILITY_CHECKS,
   decodeAdminProviderCapabilityAttempts,
@@ -127,6 +128,10 @@ export function reusableCapabilitySetupEvidence(
     setup.attempts?.structuredOutput?.reason === "adapter_unsupported" &&
     supportsStructuredOutputAdapter(model.adapterKind)) checks.structuredOutput = "not_checked";
   const retained = { ...evidence, ...(evidence.compatibility ? { compatibility: { ...evidence.compatibility } } : {}) };
+  if (!hasVerifiedDecisions(evidence, model)) {
+    if (checks.decisions === "verified") checks.decisions = "not_checked";
+    delete retained.decisions;
+  }
   if (shouldProbeHostedSearch(model, connection) && (checks.hostedSearch === undefined ||
     checks.hostedSearch === "unsupported" && setup.attempts?.hostedSearch?.reason === "adapter_unsupported")) {
     checks.hostedSearch = "not_checked";

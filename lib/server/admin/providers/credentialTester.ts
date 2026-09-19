@@ -266,10 +266,10 @@ function requestedModelClasses(
   if (
     classes.length < 1 ||
     classes.some((modelClass) => modelClass !== "answer" &&
-      modelClass !== "embedding" && modelClass !== "reranker" && modelClass !== "image") ||
+      modelClass !== "embedding" && modelClass !== "reranker" && modelClass !== "decision" && modelClass !== "image") ||
     (family !== "openai" && family !== "openai_compatible" && family !== "openrouter") &&
       classes.includes("embedding") ||
-    family !== "openrouter" && classes.includes("reranker") ||
+    family !== "openrouter" && (classes.includes("reranker") || classes.includes("decision")) ||
     (family === "anthropic" || family === "deepseek") && classes.includes("image")
   ) {
     throw new AdminProviderCredentialTestError();
@@ -361,6 +361,14 @@ export function createAdminProviderCredentialTester(
           const rerankerModels = classes.includes("reranker")
             ? await load("models?output_modalities=rerank", "rerank")
             : [];
+          const decisionModels = classes.includes("decision")
+            ? await load("models?output_modalities=decisions", "decisions").catch((error: unknown) => {
+              // An optional catalog outage must not discard the already
+              // authenticated chat/retrieval catalogs. A decision-only check
+              // still needs its own authentication evidence.
+              if (input.signal?.aborted || !classes.some((kind) => kind !== "decision" && kind !== "image")) throw error;
+              return [];
+            }) : [];
           const imageModels = classes.includes("image") ? await createImageModelDiscovery({
             connection, family: input.family, secret, fetchFn
           }).models(timeout.signal).catch((error: unknown) => {
@@ -373,10 +381,11 @@ export function createAdminProviderCredentialTester(
             answer: classes.includes("answer") ? answerModels.map(({ id }) => id) : [],
             embedding: embeddingModels.map(({ id }) => id),
             reranker: rerankerModels.map(({ id }) => id),
+            ...(classes.includes("decision") ? { decision: decisionModels.map(({ id }) => id) } : {}),
             ...(classes.includes("image") ? { image: imageModels.map(({ id }) => id) } : {})
           };
           const models = [...new Map(
-            [...answerModels, ...embeddingModels, ...rerankerModels]
+            [...answerModels, ...embeddingModels, ...rerankerModels, ...decisionModels]
               .map((model) => [model.id, model])
           ).values()];
           const nativeRoutes: Record<string, NativeRouteDiscovery> = {};

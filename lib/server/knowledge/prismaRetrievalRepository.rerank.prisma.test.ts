@@ -13,6 +13,7 @@ import { KNOWLEDGE_RERANKER_EVIDENCE_VERSION } from "./rerankEvidence";
 import type { KnowledgeRerankExecutor } from "./rerankExecution";
 import { loadKnowledgeRerankOperationalMetrics } from "./rerankMetrics";
 import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
+import { knowledgeToolResultText } from "./toolResult";
 import {
   deleteKnowledgeSearchArtifacts,
   runKnowledgeSearchProjectionPass
@@ -438,17 +439,19 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
     await prisma.$disconnect();
   });
 
-  it("persists V2 reranker evidence with the receipt and replays it without a provider call", async () => {
+  it.each([false, true])("persists and replays reranker evidence with optional decision fallback %s", async optional => {
     const fixture = await createRunFixture("rerank question");
     const store = createPrismaKnowledgeRetrievalStore(prisma);
     const toolCallId = await createSearchToolCall(fixture.runId, 0);
     const binding = rerankerBinding("complete");
+    const draft = evidence(fixture, { binding, invocationOrdinal: 1,
+      results: [passage(fixture, "Exports are retained for 30 days.")] });
+    const relevance = { version: 1 as const, status: "unavailable" as const,
+      chunkIds: [draft.results[0]!.chunkId], attemptIds: [], scores: [],
+      failureCode: "decision_model_unavailable", durationMs: 1 };
+    const receipt = { ...draft, ...(optional ? { relevance } : {}) };
     const accepted = await store.persistReceipt({
-      evidence: evidence(fixture, {
-        binding,
-        invocationOrdinal: 1,
-        results: [passage(fixture, "Exports are retained for 30 days.")]
-      }),
+      evidence: { ...receipt, providerText: knowledgeToolResultText(receipt) },
       modelRunToolCallId: toolCallId,
       runId: fixture.runId,
       userId: fixture.userId
@@ -472,6 +475,46 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
     });
     expect(replayed?.rerankerBinding).toEqual(binding);
     expect(replayed?.results[0]).toMatchObject({ rerankScore: 0.91 });
+    if (optional) {
+      expect(replayed?.relevance).toEqual(relevance);
+      const rejected = { ...relevance, status: "complete", attemptIds: ["settled-decision"],
+        scores: [0.02], failureCode: null };
+      // The database may only record a nonempty search becoming empty with
+      // complete decision coverage. Missing or partial proof cannot do so.
+      await expect(prisma.knowledgeRun.update({ where: { modelRunToolCallId: toolCallId },
+        data: { outcome: "no_relevant_evidence", results: [] } })).rejects.toThrow();
+      await prisma.knowledgeRun.update({ where: { modelRunToolCallId: toolCallId }, data: {
+        outcome: "no_relevant_evidence", results: [], readReceipt: { rerankerBinding: binding, relevance: rejected }
+      } });
+      await expect(prisma.knowledgeRun.update({ where: { modelRunToolCallId: toolCallId }, data: {
+        readReceipt: { rerankerBinding: binding }
+      } })).rejects.toThrow();
+    }
+  });
+
+  it("validates complete ordered passage decisions and rejects unsafe partial or fabricated receipts", async () => {
+    const receipt = { version: 1, status: "complete", chunkIds: ["a", "b", "c"],
+      attemptIds: ["attempt-a", "attempt-b", "attempt-c"], scores: [0.9, 0.02, 0.1],
+      failureCode: null, durationMs: 10 };
+    const retained = [{ chunkId: "a" }, { chunkId: "c" }];
+    const valid = async (value: unknown, results: unknown = retained) => {
+      const rows = await prisma.$queryRaw<Array<{ valid: boolean }>>`
+        SELECT knowledge_relevance_evidence_valid_v1(${JSON.stringify(value)}::JSONB,
+          3, ${JSON.stringify(results)}::JSONB) AS valid`;
+      return rows[0]!.valid;
+    };
+    expect(await valid(receipt)).toBe(true);
+    expect(await valid({ ...receipt, scores: [0.02, 0.02, 0.02] }, [])).toBe(true);
+    expect(await valid({ ...receipt, status: "unavailable", scores: [], attemptIds: [],
+      failureCode: "decision_provider_request_failed" }, receipt.chunkIds.map(chunkId => ({ chunkId })))).toBe(true);
+    for (const malformed of [null, {}, { ...receipt, scores: [0.9] }, { ...receipt, scores: [0.9, -1, 0.1] },
+      { ...receipt, chunkIds: ["a", "a", "c"] }, { ...receipt, attemptIds: ["same", "same", "other"] },
+      { ...receipt, status: "unavailable" }, { ...receipt, status: null }, { ...receipt, failureCode: "failed" },
+      { ...receipt, durationMs: -1 }, { ...receipt, untrusted: "extra" }]) {
+      expect(await valid(malformed)).toBe(false);
+    }
+    expect(await valid(receipt, [...retained].reverse())).toBe(false);
+    expect(await valid(receipt, [{ chunkId: "a" }])).toBe(false);
   });
 
   it("marks the session degraded on reranker fallback and feeds aggregate metrics", async () => {

@@ -3162,6 +3162,40 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
+  it.each(["complete", "partial", "error"] as const)("preserves independent decision usage through %s accounting", async terminal => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const active = await createActiveRun(repository, userId, "Independent utility usage");
+      const utility = await prisma.usageEvent.create({ data: {
+        knowledgeRelevance: true, providerModelId: providerTemplateIds.fakeModel,
+        userId, chatId: active.chatId, modelRunId: active.runId,
+        provider: "fake", modelId: "utility", inputTokens: 80, outputTokens: 20,
+        totalTokens: 100, estimatedCostMicros: 17, usageCompleteness: "COMPLETE"
+      } });
+      const interactiveUtility = await prisma.usageEvent.create({ data: {
+        optionalDecision: true, providerModelId: providerTemplateIds.fakeModel,
+        userId, chatId: active.chatId, modelRunId: active.runId,
+        provider: "fake", modelId: "interactive-utility", inputTokens: 10, outputTokens: 2,
+        totalTokens: 12, estimatedCostMicros: 3, usageCompleteness: "COMPLETE"
+      } });
+      const completion = completionInput(active);
+      const usageAttributions = [{ provider: completion.provider, modelId: completion.modelId,
+        usage: completion.usage, estimatedCostMicros: completion.estimatedCostMicros }];
+      if (terminal === "complete") expect(await repository.completeRun(completion)).toBe(true);
+      else if (terminal === "partial") expect(await repository.recordRunUsageEvents({
+        chatId: active.chatId, runId: active.runId, userId, usageAttributions
+      })).toBe(true);
+      else expect(await repository.settleRecoveredRunError({ runId: active.runId, userId,
+        error: { code: "provider_failed", message: "Provider unavailable" }, outputEvents: [],
+        usageAttributions })).toBe(true);
+      expect(await prisma.usageEvent.findUnique({ where: { id: utility.id } })).toEqual(utility);
+      expect(await prisma.usageEvent.findUnique({ where: { id: interactiveUtility.id } })).toEqual(interactiveUtility);
+      const recovered = await repository.loadRunUsageAttributions({ runId: active.runId, userId });
+      expect(recovered).toHaveLength(1);
+      expect(recovered[0]?.modelId).toBe(completion.modelId);
+    });
+  });
+
   it("records split provider usage on a non-complete run without incrementing completed chat totals", async () => {
     await withRunUser(async ({ userId }) => {
       const repository = createPrismaRunRepository(prisma);

@@ -2,6 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
+import { createKnowledgeRelevanceRepository } from "./relevanceRepository";
+import { jevModelConfiguration, JEV_SERVED_MODEL_ID } from "../../domain/decisionModels";
+import { loadAcceptedKnowledgeRelevanceRole } from "./relevanceBinding";
+import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "./knowledgeBudget";
 import {
   createPrismaKnowledgeBudgetReservationRepository,
@@ -262,6 +266,48 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
       });
       expect(dispatch.kind).toBe("transitioned");
 
+      // Optional passage decisions inherit the same operation lease. Their
+      // per-call rows prevent duplicate dispatch and support late accounting.
+      const relevance = createKnowledgeRelevanceRepository(prisma);
+      const relevanceOwner = { runId: run.id, userId, reservationId: admitted.record.reservation.id,
+        leaseToken: admitted.record.leaseToken };
+      const snapshot: ProviderExecutionSnapshot = { ...(embeddingExecutionSnapshot({ connectionId, credentialId, credentialVersionId, modelId }) as unknown as ProviderExecutionSnapshot),
+        providerFamily: "openrouter", model: jevModelConfiguration(), decisionVerification: {
+          probeVersion: 1, adapterKind: "openrouter_decisions", upstreamModelId: "typesafe/jev-1.13",
+          servedModelId: JEV_SERVED_MODEL_ID, provider: "TypeSafe", noul: true, choice: true
+        } };
+      await prisma.providerRunBinding.create({ data: {
+        modelRunId: run.id, bindingKey: "knowledge_relevance_v1", role: "decision", credentialSource: "default",
+        connectionId, credentialId, credentialVersionId, providerModelId: modelId, executionSnapshot: json(snapshot)
+      } });
+      expect(await loadAcceptedKnowledgeRelevanceRole(prisma, { runId: run.id, userId }))
+        .toMatchObject({ ok: true, role: { snapshot } });
+      expect(await loadAcceptedKnowledgeRelevanceRole(prisma, { runId: run.id, userId: "unrelated-owner" }))
+        .toEqual({ ok: false, code: "decision_model_absent" });
+      const decisionInput = { ...relevanceOwner, ordinal: 1, inputHash: "f".repeat(64), executionSnapshot: snapshot };
+      expect(await relevance.start({ ...decisionInput, userId: "unrelated-owner" })).toBeNull();
+      expect(await relevance.start({ ...decisionInput, leaseToken: "stale-lease" })).toBeNull();
+      const decisionClaims = await Promise.all(Array.from({ length: 4 }, () => relevance.start(decisionInput)));
+      const decisionId = decisionClaims.find((id): id is string => id !== null)!;
+      expect(decisionClaims.filter(Boolean)).toHaveLength(1);
+      const unknown = { dispatched: true, failureCode: "knowledge_relevance_cancelled", receipt: null, usefulness: null };
+      await relevance.settle(relevanceOwner, decisionId, unknown);
+      const unavailableUsage = await prisma.usageEvent.findUniqueOrThrow({ where: { knowledgeRelevanceAttemptId: decisionId } });
+      expect(unavailableUsage.usageCompleteness).toBe("UNAVAILABLE");
+      expect(unavailableUsage.estimatedCostMicros).toBeNull();
+      const late = { ...unknown, receipt: { model: "typesafe/jev-1.13", provider: "TypeSafe", requestId: "synthetic-receipt",
+        usage: { inputTokens: 80, outputTokens: 20, costUsd: 0.000017 } } };
+      await Promise.all([relevance.settle(relevanceOwner, decisionId, late), relevance.settle(relevanceOwner, decisionId, late)]);
+      const recoveredUsage = await prisma.usageEvent.findUniqueOrThrow({ where: { knowledgeRelevanceAttemptId: decisionId } });
+      expect(recoveredUsage).toMatchObject({ id: unavailableUsage.id, inputTokens: 80, outputTokens: 20, totalTokens: 100,
+        estimatedCostMicros: 17, usageCompleteness: "COMPLETE", knowledgeRelevance: true, modelRunId: run.id, userId });
+      expect(await prisma.knowledgeRelevanceAttempt.findUnique({ where: { id: decisionId } })).toMatchObject({
+        state: "settled", usefulness: null, failureCode: "knowledge_relevance_cancelled" });
+      expect(await relevance.start(decisionInput)).toBeNull();
+      await expect(prisma.knowledgeRelevanceAttempt.update({ where: { id: decisionId }, data: { usefulness: 0.8 } })).rejects.toThrow();
+      await expect(prisma.usageEvent.update({ where: { id: recoveredUsage.id }, data: { chatId: null } })).rejects.toThrow();
+      await expect(relevance.settle({ ...relevanceOwner, userId: "unrelated-owner" }, decisionId, late)).rejects.toThrow("knowledge_relevance_attempt_missing");
+
       const knowledgeRunData = {
         baseEvidence: json([{ baseName: "Synthetic budget Base", ordinal: 0 }]),
         budgetEvidence: json({}),
@@ -353,6 +399,7 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
         receiptHash,
         state: "settled"
       });
+      expect(await relevance.start({ ...decisionInput, ordinal: 2 })).toBeNull();
     } finally {
       if (chatId) await prisma.chat.deleteMany({ where: { id: chatId, userId } });
       await prisma.user.deleteMany({ where: { id: userId } });

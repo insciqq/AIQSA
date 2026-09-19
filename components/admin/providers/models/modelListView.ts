@@ -17,13 +17,14 @@ import type {
 
 const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
-export const MODEL_GROUP_ORDER: readonly AdminProviderModelClass[] = ["answer", "image", "reranker", "embedding"];
+export const MODEL_GROUP_ORDER: readonly AdminProviderModelClass[] = ["answer", "image", "reranker", "embedding", "decision"];
 
 const groupTitles: Record<AdminProviderModelClass, string> = {
   answer: "Chat models",
   image: "Image models",
   embedding: "Embeddings",
-  reranker: "Rerankers"
+  reranker: "Rerankers",
+  decision: "Decision models"
 };
 
 export type ProviderModelGroup = Readonly<{
@@ -97,6 +98,7 @@ export function deriveModelUsage(sources: ProviderUsageSources): ModelUsageIndex
   add(roles?.chatTitleModel?.id, "Chat titles");
   add(roles?.chatPdfModel?.id, "Chat PDF");
   add(roles?.imageModel?.id, "Image generation");
+  add(roles?.decisionModel?.id, "Relevance checks");
   const route = roles?.rerankerRoute?.entries ?? [];
   if (route.length) {
     for (const entry of route) add(entry.id, entry.role === "primary" ? "Reranker · primary" : "Reranker · fallback");
@@ -146,6 +148,10 @@ export function turnOffConsequence(input: Readonly<{
   tags: readonly string[];
 }>): TurnOffConsequence | null {
   if (input.tags.length === 0) return null;
+  if (input.tags.every((tag) => tag === "Relevance checks")) return {
+    title: `Turn off ${input.model.displayName}?`,
+    body: "Optional relevance checks will be skipped. Normal chat and retrieval remain available. You can turn this model back on at any time."
+  };
   const roles = input.tags.filter((tag) => tag.startsWith("Reranker"));
   const uses: string[] = [];
   if (input.tags.includes("Default chat")) uses.push("the default chat model for new chats");
@@ -153,6 +159,7 @@ export function turnOffConsequence(input: Readonly<{
   if (input.tags.includes("Memory")) uses.push("Memory processing");
   if (input.tags.includes("Chat titles")) uses.push("the chat title model");
   if (input.tags.includes("Chat PDF")) uses.push("the chat PDF model");
+  if (input.tags.includes("Relevance checks")) uses.push("the optional relevance-check model");
   if (roles.length) {
     uses.push(roles.includes("Reranker · primary") || roles.includes("Reranker")
       ? "the primary reranker for Memory and Knowledge"
@@ -160,7 +167,7 @@ export function turnOffConsequence(input: Readonly<{
   }
   if (input.tags.includes("Knowledge docs")) uses.push("the Knowledge document model");
   if (input.tags.includes("Knowledge embeddings")) uses.push("the Knowledge embedding model");
-  const known = new Set(["Default chat", "System model", "Memory", "Chat titles", "Chat PDF", "Knowledge docs", "Knowledge embeddings"]);
+  const known = new Set(["Default chat", "System model", "Memory", "Chat titles", "Chat PDF", "Knowledge docs", "Knowledge embeddings", "Relevance checks"]);
   const searchSources = input.tags.filter((tag) => !known.has(tag) && !tag.startsWith("Reranker"));
   if (searchSources.length) {
     uses.push(`the model behind ${joinNames(searchSources.map((name) => `“${name}”`))} Search`);
@@ -254,6 +261,7 @@ function describeChips(chips: readonly ModelChip[], modelClass: AdminProviderMod
   }
   if (modelClass === "embedding") return "embeddings work.";
   if (modelClass === "reranker") return "reranking works.";
+  if (modelClass === "decision") return "semantic decisions work.";
   const missing = chips.filter((entry) => entry.tone !== "ok");
   const tools = chips.some((entry) => entry.key === "tools" && entry.tone === "ok");
   const json = chips.some((entry) => entry.key === "json" && entry.tone === "ok");

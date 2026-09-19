@@ -1775,7 +1775,8 @@ export function createPrismaRunRepository(
           totalTokens: true,
           usageCompleteness: true
         },
-        where: { chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false, modelRunId: input.runId, userId: input.userId }
+        where: { chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false,
+          knowledgeRelevance: false, optionalDecision: false, modelRunId: input.runId, userId: input.userId }
       }).catch(retainRunPrismaCode);
       return rows.map((row) => ({
         estimatedCostMicros: row.estimatedCostMicros,

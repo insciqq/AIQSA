@@ -1,5 +1,6 @@
 import { assertInstructionPresetSelection } from "../instructions/store";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
+import { insertAcceptedMcpRoutingBindings } from "../mcp/decisionBinding";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
 import { assertChatPdfClaim, insertChatPdfAdmissions, storeChatPdfAdmissionResult } from "../uploads/chatPdfPersistence";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
@@ -73,6 +74,8 @@ import {
   temporaryRetentionDeadline
 } from "../memory/temporaryRetention";
 import { MEMORY_DECAY_POLICY_VERSION } from "../../domain/memory/retrieval";
+import { MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES, MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES } from "../../domain/memory/retrieval/config";
+import { MEMORY_HISTORY_RELEVANCE_VERSION, qualifiedMemoryHistoryDecisionModel } from "../memory/retrieval/historyRelevancePolicy";
 import { scheduleMemoryDecayTouch } from "../memory/retrieval/decayTouch";
 import {
   MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION,
@@ -1127,6 +1130,9 @@ export async function admitProjectRunWithClient(
         runId: run.id,
         userId: input.userId
       });
+      if (input.normalizedRequest.mcpDiscovery || input.normalizedRequest.agent?.mcpMode === "auto") {
+        await insertAcceptedMcpRoutingBindings(tx, run.id);
+      }
       await insertAcceptedMcpRunBindings(tx, {
         bindings: input.mcpBindings ? [...input.mcpBindings] : undefined,
         tools: input.normalizedRequest.mcp?.tools ?? [],
@@ -1607,6 +1613,9 @@ export async function admitPreparingRunWithClient(
         runId: run.id,
         userId: input.userId
       });
+      if (input.normalizedRequest.mcpDiscovery || input.normalizedRequest.agent?.mcpMode === "auto") {
+        await insertAcceptedMcpRoutingBindings(tx, run.id);
+      }
       await insertAcceptedMcpRunBindings(tx, {
         bindings: input.mcpBindings ? [...input.mcpBindings] : undefined,
         tools: input.normalizedRequest.mcp?.tools ?? [],
@@ -1783,7 +1792,8 @@ const retrievalExecutionRoles = new Set([
   "MEMORY_CONTROL",
   "MEMORY_QUERY_EMBED",
   "MEMORY_QUERY_RESOLVE",
-  "MEMORY_RERANK"
+  "MEMORY_RERANK",
+  "MEMORY_HISTORY_RELEVANCE"
 ]);
 
 const rerankBatchPrimaryOrdinals = Array.from(
@@ -1827,6 +1837,10 @@ function dedicatedRerankPosition(binding: MemoryRetrievalExecutionPosition): boo
 }
 
 function validRetrievalExecutionPosition(binding: MemoryRetrievalExecutionPosition): boolean {
+  if (binding.logicalRole === "MEMORY_HISTORY_RELEVANCE") {
+    return binding.pipelineVersion === MEMORY_HISTORY_RELEVANCE_VERSION && Number.isSafeInteger(binding.ordinal) &&
+      binding.ordinal >= 1 && binding.ordinal <= MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES;
+  }
   if (binding.pipelineVersion === MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION) {
     return dedicatedRerankPosition(binding) && Number.isSafeInteger(binding.ordinal) &&
       binding.ordinal >= 2 && binding.ordinal < 2 + dedicatedRerankExecutionOrdinalCount;
@@ -1850,7 +1864,11 @@ export function validMemoryRetrievalExecutionSequence(
     : aggregationRequested
     ? maximumAggregationRetrievalBindings + (speculativeQueryResolverDeclared ? 1 : 0)
     : maximumTargetedRetrievalBindings;
-  if (bindings.length > maximumBindings) return false;
+  const history = bindings.filter(binding => binding.logicalRole === "MEMORY_HISTORY_RELEVANCE");
+  const historyLimit = aggregationRequested ? MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES
+    : MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES;
+  if (bindings.length > maximumBindings + history.length || history.length > historyLimit ||
+    history.some(binding => binding.ordinal > historyLimit)) return false;
   const positions = bindings.map((binding) =>
     `${binding.logicalRole}:${binding.ordinal}`);
   if (new Set(positions).size !== positions.length || bindings.some((binding) =>
@@ -1866,7 +1884,7 @@ export function validMemoryRetrievalExecutionSequence(
       binding.logicalRole === "MEMORY_QUERY_RESOLVE")) return false;
   if (profileRequested && bindings.some((binding) => {
     const position = `${binding.logicalRole}:${binding.ordinal}`;
-    return !dedicatedRerankPosition(binding) &&
+    return binding.logicalRole !== "MEMORY_HISTORY_RELEVANCE" && !dedicatedRerankPosition(binding) &&
       !profileRetrievalExecutionPositions.has(position) &&
       !(speculativeQueryResolverDeclared && position === "MEMORY_QUERY_RESOLVE:0");
   })) {
@@ -2242,6 +2260,7 @@ async function loadPreparingAttemptExecutionEvidence(
     const roles: string[] = [];
     const fingerprints = new Set<string>();
     const dedicatedRouteSnapshots = new Map<number, string>();
+    let historyRelevanceSnapshotHash: string | null = null;
     for (const binding of bindings) {
       const bindingAttemptId = binding.id === reusedControlBindingId
         ? reuseProof!.sourceAttemptId
@@ -2266,6 +2285,14 @@ async function loadPreparingAttemptExecutionEvidence(
       ) throw new Error("binding_invalid");
       const snapshot = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
       assertMemoryExecutionBindingLineage(binding, snapshot);
+      if (binding.logicalRole === "MEMORY_HISTORY_RELEVANCE") {
+        const hash = memoryPreparingHash(snapshot);
+        if (!qualifiedMemoryHistoryDecisionModel(snapshot.providerExecutionSnapshot) ||
+          historyRelevanceSnapshotHash !== null && historyRelevanceSnapshotHash !== hash) {
+          throw new Error("history_relevance_snapshot_invalid");
+        }
+        historyRelevanceSnapshotHash = hash;
+      }
       if (dedicatedRerankPosition(binding)) {
         const routeIndex = Math.floor((binding.ordinal - 2) / MEMORY_RERANK_AGGREGATION_MAX_BATCHES);
         const snapshotHash = memoryPreparingHash(snapshot);

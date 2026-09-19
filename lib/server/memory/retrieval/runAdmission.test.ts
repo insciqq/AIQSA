@@ -59,6 +59,8 @@ import type {
 } from "./queryResolver";
 import { MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT, type MemoryVectorProfile } from "./vector";
 import { memorySha256 } from "../persistence/lexical";
+import { emptyMemoryHistoryRelevanceDiagnostics } from "./historyRelevanceRuntime";
+import type { MemoryHistoryRelevanceResult } from "./historyRelevancePolicy";
 
 const now = new Date("2026-08-13T10:00:00.000Z");
 const currentControlContract = Object.freeze({
@@ -6062,5 +6064,83 @@ describe("Personal Memory v1 run admission", () => {
       expect.objectContaining({ factVersionId: "saved-name" }),
       expect.objectContaining({ factVersionId: "arbitrary-fact" })
     ]);
+  });
+});
+
+describe("optional history usefulness at native admission", () => {
+  const options = () => {
+    const base = retrievalOptions(["c0", "c1", "c2", "c3"]);
+    return { ...base, readUtilityPolicy: "DETERMINISTIC_READ_V1" as const };
+  };
+  const decision = (handles: readonly string[], usefulness = 0.02): MemoryHistoryRelevanceResult => ({
+    status: "READY", reason: null, scores: handles.map(handle => ({ handle, usefulness })),
+    diagnostics: { ...emptyMemoryHistoryRelevanceDiagnostics(handles.length), bindingCount: handles.length,
+      externalCallCount: handles.length, completedCallCount: handles.length }
+  });
+
+  it("filters ordinary history while preserving saved facts, exact anchors and source order", async () => {
+    const exact = { ...laneCandidate("exact-history"), deterministicMatch: "EXACT_TEXT" as const };
+    const local = repository({ candidates: [laneCandidate("noise"), exact, factLaneCandidate("saved", 0.9)] });
+    const base = options();
+    const historyRelevance = vi.fn(async (input: Parameters<NonNullable<MemoryRunUtilityService["historyRelevance"]>>[0]) =>
+      decision(input.passages.map(p => p.handle)));
+    const baseline = await createMemoryRunRetrievalService(local.value, base).retrieve(runInput("A self-contained question"));
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...options(), utilities: { ...options().utilities, historyRelevance }
+    }).retrieve(runInput("A self-contained question"));
+    expect(historyRelevance).toHaveBeenCalledOnce();
+    expect(historyRelevance.mock.calls[0]![0].passages).toHaveLength(1);
+    expect(historyRelevance.mock.calls[0]![0].passages[0]!.text).toContain("noise");
+    expect(result.items!.map(item => item.exactItemId)).toEqual(baseline.items!.filter(item => item.exactItemId !== "noise").map(item => item.exactItemId));
+    expect(result.items!.map(item => item.exactItemId)).toEqual(expect.arrayContaining(["exact-history", "saved"]));
+    expect(result.outcome).toBe("USED");
+    expect(result.budgetSnapshot).toMatchObject({ historyRelevanceProviderCalls: 1,
+      historyRelevance: { state: "READY", removedCount: 1 }, utilityEgressMode: "CONSENTED_EXTERNAL" });
+    expect(JSON.stringify(result.budgetSnapshot.historyRelevance)).not.toContain("noise");
+  });
+
+  it.each(["absent", "outage", "partial", "duplicate", "uncertain"])("preserves the full baseline pack for %s", async state => {
+    const local = repository({ candidates: [laneCandidate("first"), laneCandidate("second")] });
+    const baseline = await createMemoryRunRetrievalService(local.value, options()).retrieve(runInput("A current question"));
+    const historyRelevance = vi.fn(async (input: Parameters<NonNullable<MemoryRunUtilityService["historyRelevance"]>>[0]): Promise<MemoryHistoryRelevanceResult> => {
+      const ready = decision(input.passages.map(p => p.handle), state === "uncertain" ? 0.1 : 0.02);
+      if (state === "absent") return { ...ready, status: "SKIPPED", reason: "decision_model_absent", scores: [], diagnostics: emptyMemoryHistoryRelevanceDiagnostics(2) };
+      if (state === "outage") return { ...ready, status: "UNAVAILABLE", reason: "decision_provider_http_error", scores: [] };
+      if (state === "partial") return { ...ready, scores: ready.scores.slice(0, 1) };
+      if (state === "duplicate") return { ...ready, scores: [ready.scores[0]!, ready.scores[0]!] };
+      return ready;
+    });
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...options(), utilities: { ...options().utilities, historyRelevance }
+    }).retrieve(runInput("A current question"));
+    expect(historyRelevance).toHaveBeenCalledOnce();
+    expect(result.preparedContext).toEqual(baseline.preparedContext);
+    expect(result.items).toEqual(baseline.items);
+    expect(result.outcome).toBe(baseline.outcome);
+    expect(result.budgetSnapshot.historyRelevance).toMatchObject({ removedCount: 0 });
+  });
+
+  it("rejoins retained sources after classification so deleted history cannot regain authority", async () => {
+    const local = repository({ candidates: [laneCandidate("removed-source")] });
+    const historyRelevance = vi.fn(async (input: Parameters<NonNullable<MemoryRunUtilityService["historyRelevance"]>>[0]) => {
+      local.expand.mockResolvedValue([]);
+      return decision(input.passages.map(p => p.handle), 0.9);
+    });
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...options(), utilities: { ...options().utilities, historyRelevance }
+    }).retrieve(runInput("A current question"));
+    expect(historyRelevance).toHaveBeenCalledOnce();
+    expect(result.items).toEqual([]);
+    expect(result.preparedContext).toBeNull();
+  });
+
+  it.each(["TEMPORARY", "EXCLUDED"] as const)("never discloses history from %s chats", async chatMemoryMode => {
+    const local = repository({ candidates: [laneCandidate("private")] });
+    const historyRelevance = vi.fn();
+    const input = runInput("A current question");
+    const result = await createMemoryRunRetrievalService(local.value, {
+      ...options(), utilities: { ...options().utilities, historyRelevance }
+    }).retrieve({ ...input, expected: { ...input.expected, chatMemoryMode } });
+    expect(result.outcome).toBe("DISABLED"); expect(historyRelevance).not.toHaveBeenCalled();
   });
 });

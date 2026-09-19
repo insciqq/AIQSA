@@ -1,4 +1,5 @@
 import type { ImageGenerationParameters } from "@/lib/contracts/imageGeneration";
+import type { DecisionFeatureOverrides } from "@/lib/contracts/semanticDecisions";
 import {
   decodeAdminSystemModelPolicyResponse,
   type AdminSystemModelPolicyCatalog,
@@ -65,6 +66,8 @@ export function updateAdminSystemModelPolicy(input: Readonly<{
   providerModelId?: string | null;
   /** Omit to preserve the independent reranker role. */
   rerankerProviderModelId?: string | null;
+  decisionProviderModelId?: string | null;
+  decisionFeatures?: DecisionFeatureOverrides;
   reasoningEffort?: string | null;
 }>, fetcher: Fetcher = fetch) {
   return request({

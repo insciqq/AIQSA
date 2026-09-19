@@ -11,7 +11,7 @@ import { unsupportedAdminProviderCompatibilityEvidence } from "./compatibilityEv
 export function mergeSystemRoleEvidence(
   previous: unknown, next: AdminProviderTestEvidence, role: SystemModelVerificationRole
 ): AdminProviderTestEvidence {
-  if (role === "embedding" || role === "reranker" || role === "image") return next;
+  if (role === "embedding" || role === "reranker" || role === "decision" || role === "image") return next;
   if (typeof previous !== "object" || previous === null || Array.isArray(previous)) {
     throw new Error("system_role_evidence_missing");
   }

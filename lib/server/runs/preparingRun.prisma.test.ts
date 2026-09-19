@@ -449,6 +449,10 @@ async function createPreparingEmbeddingAuthority(userId: string): Promise<Readon
     },
     where: { id: "installation" }
   });
+  const originalMemoryPolicy = await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({
+    select: { providerModelId: true, reasoningEffort: true, updatedByUserId: true, assignmentSource: true },
+    where: { id: "installation" }
+  });
   await prisma.systemModelPolicy.update({
     data: {
       providerModelId: systemModelId,
@@ -456,6 +460,12 @@ async function createPreparingEmbeddingAuthority(userId: string): Promise<Readon
       updatedByUserId: null,
       version: { increment: 1 }
     },
+    where: { id: "installation" }
+  });
+  // Memory generation has independent authority; assigning only System no
+  // longer configures the control role used by these preparation fixtures.
+  await prisma.memoryUtilityModelPolicy.update({
+    data: { providerModelId: systemModelId, reasoningEffort: null, updatedByUserId: null, assignmentSource: "OPERATOR", version: { increment: 1 } },
     where: { id: "installation" }
   });
   await prisma.accessGrant.create({
@@ -496,6 +506,10 @@ async function createPreparingEmbeddingAuthority(userId: string): Promise<Readon
           updatedByUserId: originalSystemPolicy.updatedByUserId,
           version: { increment: 1 }
         },
+        where: { id: "installation" }
+      });
+      await prisma.memoryUtilityModelPolicy.update({
+        data: { ...originalMemoryPolicy, version: { increment: 1 } },
         where: { id: "installation" }
       });
       await prisma.userMemorySettings.updateMany({

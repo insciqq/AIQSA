@@ -30,6 +30,7 @@ import {
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
 import { DEFAULT_KNOWLEDGE_ANSWER_POLICY } from "../knowledge/answerPolicy";
+import { insertAcceptedKnowledgeRelevanceBinding } from "../knowledge/relevanceBinding";
 import {
   KNOWLEDGE_EVIDENCE_CITATION_CONTRACT,
   knowledgeSourceEvidenceKey
@@ -930,6 +931,7 @@ export async function insertAcceptedKnowledgeRunBindings(
   const sourceBindingStrategy = largeCanonicalScope
     ? KNOWLEDGE_SOURCE_BINDING_STRATEGY_DISCLOSED
     : KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER;
+  if (!fullContextPlan) await insertAcceptedKnowledgeRelevanceBinding(tx, input.runId);
   await tx.knowledgeRunScope.create({
     data: {
       answerPolicy: json(answerPolicy),

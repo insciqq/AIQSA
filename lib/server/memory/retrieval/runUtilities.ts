@@ -69,6 +69,10 @@ import {
   approvedRerankerDeployments
 } from "../../admin/providers/approvedRerankers";
 import { createRerankerModelRoleResolver } from "../../providerRuntime/rerankerModelRole";
+import { createDecisionModelRoleResolver } from "../../providerRuntime/decisionModelRole";
+import { createAcceptedDecisionRuntime } from "../../providerRuntime/decisionRuntime";
+import { createMemoryHistoryRelevanceService, type MemoryHistoryRelevanceInput } from "./historyRelevanceRuntime";
+import type { MemoryHistoryRelevanceResult } from "./historyRelevancePolicy";
 export const MEMORY_QUERY_EMBEDDING_PIPELINE_VERSION =
   "memory-query-embedding-v12";
 export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
@@ -276,6 +280,7 @@ type QueryEmbeddingBaseInput = Readonly<{
 );
 
 export type MemoryRunUtilityService = Readonly<{
+  historyRelevance?(input: MemoryHistoryRelevanceInput): Promise<MemoryHistoryRelevanceResult>;
   embedQuery(input: QueryEmbeddingBaseInput & Readonly<{
     profile: MemoryVectorProfile;
     purpose?: "ACTION_TARGET" | "RETRIEVAL";
@@ -2070,9 +2075,11 @@ export function createPrismaMemoryRunUtilityService(
   }> = {}
 ): MemoryRunUtilityService {
   const rerankerRoleResolver = createRerankerModelRoleResolver(client);
-  return createMemoryRunUtilityService({
+  const decisionRoleResolver = createDecisionModelRoleResolver(client);
+  const execution = options.execution ?? createPrismaMemoryExecutionService(authority, client);
+  const utilities = createMemoryRunUtilityService({
     embeddingRuntime: options.embeddingRuntime ?? createAcceptedEmbeddingRuntime(client),
-    execution: options.execution ?? createPrismaMemoryExecutionService(authority, client),
+    execution,
     provider: options.provider ?? createAcceptedMemoryRunUtilityProvider(client),
     rerankerRuntime: options.rerankerRuntime ?? createAcceptedRerankerRuntime(client),
     resolveDedicatedRerankRoute: options.resolveDedicatedRerankRoute ?? (async () => {
@@ -2097,4 +2104,8 @@ export function createPrismaMemoryRunUtilityService(
         : "GENERATIVE_COMPATIBILITY" as const;
     })
   });
+  return Object.freeze({ ...utilities, historyRelevance: createMemoryHistoryRelevanceService({
+    execution, runtime: createAcceptedDecisionRuntime(client),
+    resolveRole: () => decisionRoleResolver.resolve("memoryRelevance")
+  }) });
 }
