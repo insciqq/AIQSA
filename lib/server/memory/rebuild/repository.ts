@@ -82,6 +82,7 @@ import {
   type MemoryShadowRebuildOperation
 } from "./contract";
 import { MEMORY_SHADOW_CUTOVER_BLOCKING_JOB_KINDS } from "./wake";
+import { reconcileMemoryShadowGenerations } from "./lifecycle";
 import {
   advanceMemoryLexicalProjectionRevisionFence,
   initializeMemoryLexicalProjectionState
@@ -2067,6 +2068,11 @@ export function createPrismaMemoryRebuildRepository(
   }
 
   return Object.freeze({
+    reconcileShadows(userId: string) {
+      return withLockedMemoryTransaction(client, userId,
+        (tx) => reconcileMemoryShadowGenerations(tx, userId));
+    },
+
     async promoteCompatibleActiveGeneration(
       userId: string,
       now = new Date()
@@ -2326,6 +2332,7 @@ export function createPrismaMemoryRebuildRepository(
         if (settings.memoryRevision !== input.expectedMemoryRevision) {
           return { kind: "memory_revision_conflict" } as const;
         }
+        await reconcileMemoryShadowGenerations(tx, userId);
         const running = await tx.memoryJob.count({
           where: { kind: "REBUILD_INDEX", state: { in: [...nonterminalJobStates] }, userId }
         });

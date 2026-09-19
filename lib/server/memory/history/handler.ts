@@ -14,6 +14,8 @@ import {
 } from "../operational/counters";
 import {
   authorizeMemoryExecutionResultsForCommit,
+  MEMORY_EXECUTION_COMMIT_BATCH_SIZE,
+  memoryExecutionFailure,
   type MemoryExecutionAuthorityDependencies,
   type MemoryStructuredOutputProvider
 } from "../execution";
@@ -601,6 +603,9 @@ export function createMemoryHistoryIndexHandler(
           acceptedResultHash: plan.resultHash,
           apply: async (tx, acceptedClaim) => {
             if (executionResults.length > 0) {
+              if (new Set(executionResults.map(({ bindingId }) => bindingId)).size !== executionResults.length) {
+                return memoryExecutionFailure("memory_execution_input_invalid");
+              }
               if (!dependencies.authorizeResults) {
                 throw new Error("memory_history_classification_authority_missing");
               }
@@ -609,13 +614,18 @@ export function createMemoryHistoryIndexHandler(
                 acceptedClaim.userId,
                 true
               );
-              await dependencies.authorizeResults(
-                tx,
-                settings,
-                acceptedClaim.userId,
-                acceptedClaim.id,
-                executionResults
-              );
+              // Authorize every result before publication, on the same locked
+              // transaction. A failed batch rolls back the entire apply; no
+              // provider work or partial history commit occurs between batches.
+              for (let offset = 0; offset < executionResults.length; offset += MEMORY_EXECUTION_COMMIT_BATCH_SIZE) {
+                await dependencies.authorizeResults(
+                  tx,
+                  settings,
+                  acceptedClaim.userId,
+                  acceptedClaim.id,
+                  executionResults.slice(offset, offset + MEMORY_EXECUTION_COMMIT_BATCH_SIZE)
+                );
+              }
             }
             await dependencies.repository.apply(
               tx,

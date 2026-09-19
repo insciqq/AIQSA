@@ -241,6 +241,23 @@ function toolEventCandidate(id: string, rawScore: number): MemoryLaneCandidate {
 }
 
 describe("relative-rank Memory fusion", () => {
+  it.each(["RECALL_CHUNK", "RECALL_ROUND"] as const)(
+    "retains %s history recorded within one timestamp",
+    (itemType) => {
+      const base = historyCandidate("instant-history", 1);
+      const point = { ...base, itemType, metadata: {
+        ...base.metadata, occurredFrom: now, occurredTo: now
+      } };
+      const reversed = { ...point, itemId: "reversed-history", metadata: {
+        ...point.metadata, occurredTo: new Date(now.getTime() - 1)
+      } };
+      const ranked = fuseMemoryRetrievalCandidates(plan, [{
+        lane: base.lane, candidates: [point, reversed]
+      }], now);
+      expect(ranked.map(({ itemId }) => itemId)).toEqual([point.itemId]);
+    }
+  );
+
   it("uses only lane position and RRF, never raw score scale", () => {
     const first = fuseMemoryRetrievalCandidates(plan, [
       { lane: "FACT_LEXICAL_UNICODE", candidates: [candidate("a", "FACT_LEXICAL_UNICODE", 0.0001), candidate("b", "FACT_LEXICAL_UNICODE", 999)] },

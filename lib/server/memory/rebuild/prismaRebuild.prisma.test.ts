@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
+import { createPrismaAdminMemoryStatusRepository } from "../../admin/memory/statusRepository";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
 import type {
   MemoryDeletionClaim,
@@ -1736,6 +1737,73 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       await cleanupOwner(userId);
     }
   });
+
+  it.each(["BUILDING", "CATCHING_UP", "READY"] as const)(
+    "retires paused %s shadows and reconciles legacy orphans once after restart", async (state) => {
+      const userId = await createOwner("paused-shadow");
+      const rebuild = createPrismaMemoryRebuildRepository(prisma);
+      const settingsRepository = createPrismaMemorySettingsRepository(prisma);
+      const scopedClient = {
+        $queryRaw: async (query: Prisma.Sql) =>
+          (await prisma.$queryRaw<Array<{ userId?: string }>>(query))
+            .filter(candidate => candidate.userId === undefined || candidate.userId === userId),
+        $transaction: prisma.$transaction.bind(prisma),
+        memoryIndexGeneration: prisma.memoryIndexGeneration,
+        memoryJob: prisma.memoryJob,
+        userMemorySettings: prisma.userMemorySettings
+      } as unknown as typeof prisma;
+      const cutover = createPrismaMemoryRetrievalCutoverRepository(scopedClient);
+      const patch = async (enabled: boolean) => {
+        const current = await settingsRepository.get(userId);
+        return settingsRepository.patch(userId, { expectedMemoryRevision: current.memoryRevision,
+          expectedSettingsRevision: current.settingsRevision, useMemoryFacts: enabled });
+      };
+      try {
+        await saveExplicit(services().explicit, userId, "Keep reports concise.", "pause-shadow-fact");
+        const before = await settingsRepository.get(userId);
+        const admitted = await rebuild.admit(userId, {
+          expectedMemoryRevision: before.memoryRevision, expectedSettingsRevision: before.settingsRevision,
+          operation: "REBUILD_SEARCH_INDEX", requestIdentity: { nonce: randomUUID() }
+        });
+        if (admitted.kind !== "ok") throw new Error(admitted.kind);
+        const parent = await prisma.memoryJob.findUniqueOrThrow({ where: { id: admitted.jobId } });
+        const generationId = parseMemoryRebuildJobFingerprint(parent.idempotencyFingerprint)!.generationId;
+        const readyAt = state === "READY" ? new Date() : null;
+        await prisma.memoryIndexGeneration.update({ where: { id: generationId }, data: { state, readyAt } });
+        if (state !== "BUILDING") await prisma.memoryJob.update({ where: { id: parent.id },
+          data: { state: "SUCCEEDED", completedAt: new Date() } });
+        await patch(false);
+        expect(await prisma.memoryIndexGeneration.findUniqueOrThrow({ where: { id: generationId } }))
+          .toMatchObject({ state: "CANCELLED" });
+        expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: parent.id } }))
+          .toMatchObject({ state: "CANCELLED", errorCode: "memory_master_paused" });
+        expect((await settingsRepository.get(userId)).activeIndexGenerationId).toBe(before.activeIndexGenerationId);
+
+        // Reconstruct the exact old-writer orphan, without a migration or live SQL repair.
+        await prisma.memoryIndexGeneration.update({ where: { id: generationId }, data: { state, readyAt } });
+        await expect(cutover.reconcile({ limit: 100 })).resolves.toEqual([
+          expect.objectContaining({ kind: "disabled" })
+        ]);
+        expect(await prisma.memoryIndexGeneration.findUniqueOrThrow({ where: { id: generationId } }))
+          .toMatchObject({ state: "CANCELLED" });
+        expect(await rebuild.reconcileShadows(userId)).toBe(0);
+        await patch(true);
+        const attempts = await Promise.all([cutover.ensure(userId), cutover.ensure(userId)]);
+        const queued = attempts.find(result => result.kind === "queued");
+        expect(queued?.jobId).toBeTruthy();
+        expect(await prisma.memoryJob.count({ where: { userId, kind: "REBUILD_INDEX", state: "QUEUED" } })).toBe(1);
+        expect((await settingsRepository.get(userId)).activeIndexGenerationId).toBe(before.activeIndexGenerationId);
+        await processRebuildJob(queued!.jobId!, rebuild);
+        expect((await cutover.inventory(userId)).ready).toBe(true);
+        expect(await cutover.ensure(userId)).toMatchObject({ kind: "already_current" });
+        expect(await prisma.memoryIndexGeneration.count({ where: { userId, state: { in: ["BUILDING", "CATCHING_UP", "READY"] } } })).toBe(0);
+        const admin = await createPrismaAdminMemoryStatusRepository(prisma, async () => undefined).read(new Date());
+        expect(admin.index.rebuildCandidates.some(candidate => candidate.userId === userId)).toBe(false);
+      } finally {
+        await cleanupOwner(userId);
+      }
+    }
+  );
 
   it.each([
     { name: "history", setting: "referenceChatHistory", retainedHistory: true },

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import type { McpRunPlanRecord } from "./runPlan";
 import {
@@ -10,6 +10,7 @@ import {
 
 const now = new Date("2026-07-22T18:00:00.000Z");
 const hash = "a".repeat(64);
+afterEach(() => vi.unstubAllEnvs());
 
 function record(overrides: Partial<McpRunPlanRecord> = {}): McpRunPlanRecord {
   return {
@@ -39,6 +40,18 @@ function record(overrides: Partial<McpRunPlanRecord> = {}): McpRunPlanRecord {
 }
 
 describe("MCP run plans", () => {
+  it("materializes large schemas up to the configured inventory budget", async () => {
+    const tools = Array.from({ length: 8 }, (_, index) => ({ name: `tool_${index}`, definitionHash: hash,
+      description: null, inputSchema: { type: "object", description: "x".repeat(96 * 1024) } }));
+    const prepare = () => prepareMcpRunPlan({ isGenerationLive: () => true, now: () => now,
+      load: async () => [record({ inventory: { tools, version: 1 } })] });
+    const result = await prepare();
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.snapshot.tools).toHaveLength(8);
+    vi.stubEnv("AIQSA_MCP_LIST_TOOLS_RESPONSE_MAX_BYTES", String(512 * 1024));
+    await expect(prepare()).resolves.toMatchObject({ ok: false, code: "mcp_plan_too_large" });
+  });
+
   it.each(["idle", "queued", "starting", "ready", "restarting"] as const)(
     "recognizes enabled %s records as startable on demand",
     (readiness) => {

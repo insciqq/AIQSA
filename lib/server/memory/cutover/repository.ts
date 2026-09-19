@@ -19,6 +19,7 @@ import {
 } from "../history/rounds";
 import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
   "../history/segments";
+import { memoryOrphanShadowPredicate, memoryShadowCancelledByPausePredicate } from "../rebuild/lifecycle";
 
 export const MEMORY_RETRIEVAL_CUTOVER_VERSION =
   "memory-vnext-retrieval-cutover-v1";
@@ -59,6 +60,7 @@ export function createPrismaMemoryRetrievalCutoverRepository(
     userId: string,
     now = new Date()
   ): Promise<MemoryRetrievalCutoverResult> {
+    await rebuild.reconcileShadows(userId);
     let inventory = await rebuild.inventory(userId, now);
     if (!inventory.ready) {
       const promotion = await rebuild.promoteCompatibleActiveGeneration(
@@ -110,27 +112,19 @@ export function createPrismaMemoryRetrievalCutoverRepository(
         kind: "in_progress"
       };
     }
-    const failed = inventory.activeGenerationId
-      ? await client.memoryIndexGeneration.findFirst({
-          orderBy: [{ generation: "desc" }, { id: "desc" }],
-          select: { id: true },
-          where: {
-            OR: [
-              {
-                indexMode: "HYBRID",
-                retrievalPipelineVersion: MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
-              },
-              {
-                indexMode: "LEXICAL_ONLY",
-                retrievalPipelineVersion: MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION
-              }
-            ],
-            sourceIndexGenerationId: inventory.activeGenerationId,
-            state: { in: ["CANCELLED", "FAILED"] },
-            userId
-          }
-        })
-      : null;
+    const [failed] = inventory.activeGenerationId
+      ? await client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT failed.id FROM "MemoryIndexGeneration" failed
+          WHERE failed."userId" = ${userId}
+            AND failed."sourceIndexGenerationId" = ${inventory.activeGenerationId}
+            AND failed.state IN ('CANCELLED', 'FAILED')
+            AND failed."retrievalPipelineVersion" = CASE failed."indexMode"
+              WHEN 'HYBRID' THEN ${MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION}
+              ELSE ${MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION} END
+            AND NOT (${memoryShadowCancelledByPausePredicate(Prisma.sql`failed`)})
+          ORDER BY failed.generation DESC, failed.id DESC LIMIT 1
+        `)
+      : [];
     if (failed) {
       return {
         generationId: failed.id,
@@ -206,7 +200,11 @@ export function createPrismaMemoryRetrievalCutoverRepository(
           ON active."userId" = settings."userId"
           AND active."id" = settings."activeIndexGenerationId"
           AND active."state" = 'ACTIVE'::"MemoryIndexGenerationState"
-        WHERE settings."useMemoryFacts" = TRUE
+        WHERE EXISTS (
+          SELECT 1 FROM "MemoryIndexGeneration" shadow
+          WHERE shadow."userId" = settings."userId"
+            AND ${memoryOrphanShadowPredicate(Prisma.sql`shadow`)}
+        ) OR (settings."useMemoryFacts" = TRUE
           AND (
             active."id" IS NULL
             OR active."indexedThroughMemoryRevision" <> settings."memoryRevision"
@@ -260,12 +258,13 @@ export function createPrismaMemoryRetrievalCutoverRepository(
                 'FAILED'::"MemoryIndexGenerationState",
                 'CANCELLED'::"MemoryIndexGenerationState"
               )
+              AND NOT (${memoryShadowCancelledByPausePredicate(Prisma.sql`failed`)})
               AND failed."retrievalPipelineVersion" = CASE failed."indexMode"
                 WHEN 'HYBRID'::"MemoryIndexMode"
                   THEN ${MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION}
                 ELSE ${MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION}
               END
-          )
+          ))
         ORDER BY settings."userId"
         LIMIT ${limit}
       `);

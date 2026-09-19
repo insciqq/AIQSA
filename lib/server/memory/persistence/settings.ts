@@ -13,6 +13,7 @@ import { prisma } from "../../prisma";
 import { MEMORY_SYNTHESIS_POLICY_VERSION } from "../synthesis/policy";
 import { MEMORY_DECAY_POLICY_VERSION } from "../../../domain/memory/retrieval";
 import { memoryPersistenceFailure } from "./errors";
+import { reconcileMemoryShadowGenerations } from "../rebuild/lifecycle";
 import {
   advanceMemoryMutation,
   type LockedMemorySettings,
@@ -425,6 +426,7 @@ export function createPrismaMemorySettingsRepository(
               )
           `);
         }
+        if (masterPause) await reconcileMemoryShadowGenerations(tx, userId, cutoff);
         if (masterResume) {
           await closePauseAdmissionCutoff(tx, userId, "MASTER", cutoff);
         }

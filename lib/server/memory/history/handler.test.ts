@@ -212,6 +212,49 @@ function context() {
 }
 
 describe("Memory INDEX_HISTORY handler", () => {
+  it.each(["valid", "duplicate", "late_failure"] as const)(
+    "authorizes 37 results atomically across bounded batches: %s", async (scenario) => {
+      const currentClaim = claim();
+      const receipts = Array.from({ length: 37 }, () => ({
+        acceptedOutputHash: "a".repeat(64), bindingId: randomUUID()
+      }));
+      if (scenario === "duplicate") receipts[36] = receipts[0]!;
+      const steps: string[] = [];
+      const authorizeResults = vi.fn(async () => {
+        steps.push("authorize");
+        if (scenario === "late_failure" && steps.length === 2) throw new Error("invalid_result");
+      });
+      const handler = createMemoryHistoryIndexHandler({
+        authorizeResults,
+        clearResults: async () => { steps.push("clear"); },
+        digestGenerator: { generate: vi.fn(async () => ({
+          classificationRequired: false, digest: null, executions: receipts,
+          policyVersion: "test-policy", work: { digestSegmentsProcessed: 0, digestSourceChunksProcessed: 0 }
+        })) },
+        repository: {
+          prepare: vi.fn(async () => ({ plan: plan() })),
+          apply: async () => { steps.push("apply"); }
+        } as unknown as MemoryHistoryIndexRepository
+      });
+      const result = await handler.execute(currentClaim, context());
+      const settings = { ownerStatus: "active", userId: source.userId };
+      const tx = { $queryRaw: vi.fn(async () => [settings]) };
+      if (scenario === "valid") {
+        await result.apply!(tx as never, currentClaim);
+        expect(steps).toEqual(["authorize", "authorize", "apply", "clear"]);
+        expect(authorizeResults.mock.calls).toEqual([
+          [tx, { userId: source.userId }, source.userId, currentClaim.id, receipts.slice(0, 32)],
+          [tx, { userId: source.userId }, source.userId, currentClaim.id, receipts.slice(32)]
+        ]);
+      } else {
+        await expect(result.apply!(tx as never, currentClaim)).rejects.toThrow(
+          scenario === "duplicate" ? "memory_execution_input_invalid" : "invalid_result"
+        );
+        expect(steps).toEqual(scenario === "duplicate" ? [] : ["authorize", "authorize"]);
+      }
+    }
+  );
+
   it("suppresses secret chunks and canonicalizes legacy sensitive output", () => {
     const current = plan([chunk("chunk-sensitive", 0), chunk("chunk-secret", 1)]);
     const classified = applyMemoryHistoryClassifications(current, {

@@ -20,6 +20,7 @@ import {
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION
 } from "../../memory/persistence/lexical";
 import { memoryCanonicalGlobalScopePredicate } from "../../memory/persistence/scopes";
+import { memoryOrphanShadowPredicate } from "../../memory/rebuild/lifecycle";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from "../../memory/retrieval/vector";
 import {
   ADMIN_MEMORY_WORKER_PROGRESS_STALE_MS,
@@ -180,14 +181,12 @@ export function createPrismaAdminMemoryStatusRepository(
             }),
         ownerIds.length === 0
           ? Promise.resolve([])
-          : client.memoryIndexGeneration.findMany({
-              distinct: ["userId"],
-              select: { userId: true },
-              where: {
-                state: { in: ["BUILDING", "CATCHING_UP", "READY"] },
-                userId: { in: ownerIds }
-              }
-            }),
+          : client.$queryRaw<Array<{ userId: string }>>(Prisma.sql`
+              SELECT DISTINCT shadow."userId" FROM "MemoryIndexGeneration" shadow
+              WHERE shadow."userId" IN (${Prisma.join(ownerIds)})
+                AND shadow.state IN ('BUILDING', 'CATCHING_UP', 'READY')
+                AND NOT (${memoryOrphanShadowPredicate(Prisma.sql`shadow`)})
+            `),
         ownerIds.length === 0
           ? Promise.resolve([])
           : client.memoryJob.findMany({

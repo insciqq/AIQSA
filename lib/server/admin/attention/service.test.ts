@@ -511,6 +511,19 @@ describe("deriveAdminAttentionItems", () => {
     ]);
   });
 
+  it("keeps distinct history issues visible with stable separate identities", () => {
+    const result = items({ memory: { ...memoryOk, processing: { enabled: true, issues: [
+      { stage: "HISTORY", reason: "PROCESSING_FAILED", count: 1, oldestAgeSeconds: 300, severity: "bad" },
+      { stage: "HISTORY", reason: "HISTORY_INCOMPLETE", autoHeal: "UNAVAILABLE", count: 1, oldestAgeSeconds: 1800, severity: "warn" }
+    ] } } });
+    expect(result).toHaveLength(2);
+    expect(new Set(result.map(item => item.id)).size).toBe(2);
+    expect(result.map(item => [item.title, item.count, item.target.section])).toEqual([
+      ["Memory history processing failed", 1, "retrieval"],
+      ["Memory history enrichment is incomplete", 1, "retrieval"]
+    ]);
+  });
+
   it("reports live queue stalls without calling the process stopped or duplicating a stage alert", () => {
     const memory = { ...memoryOk, queue: { inProgress: 2, length: 0, oldestAgeSeconds: null },
       worker: memoryWorkerStatusFixture({ state: "STALLED", reason: "QUEUE_STALLED" }) };

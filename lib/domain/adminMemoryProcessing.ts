@@ -40,6 +40,8 @@ export function adminMemoryProcessingCopy(issue: AdminMemoryProcessingIssue) {
     section: configuration ? "roles" as const : "retrieval" as const,
     title: issue.autoHeal === "RETRYING" ? "Memory history is recovering automatically"
       : issue.autoHeal === "EXHAUSTED" ? "Memory history auto-heal failed"
+      : issue.stage === "HISTORY" && issue.reason === "PROCESSING_FAILED" ? "Memory history processing failed"
+      : issue.reason === "HISTORY_INCOMPLETE" || issue.reason === "OUTPUT_LIMIT" ? "Memory history enrichment is incomplete"
       : issue.stage === "LEARNING" && issue.severity === "warn"
       ? "Memory learning is delayed" : stages[issue.stage]
   };

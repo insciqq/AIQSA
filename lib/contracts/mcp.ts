@@ -416,7 +416,6 @@ export type UserMcpUpdateRequest = {
 };
 export const MCP_RUN_PLAN_LIMITS = Object.freeze({
   maxEnabledServers: 16,
-  maxToolSchemaBytes: 512 * 1_024,
   maxTools: 128
 });
 

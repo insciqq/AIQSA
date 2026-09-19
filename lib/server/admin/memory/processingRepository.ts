@@ -1,5 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type { AdminMemoryProcessingIssue, AdminMemoryStatus } from "../../../contracts/adminMemory";
+import { adminMemoryProcessingIssueKey, type AdminMemoryProcessingIssue, type AdminMemoryStatus } from "../../../contracts/adminMemory";
 import { currentMemoryJobsSql } from "../../memory/coordinator/currentJobs";
 import { memoryHistoryActiveWorkSql, memoryHistoryAutoHealAttemptsSql, memoryHistoryAutoHealProtectedSql, memoryHistoryIncompleteOutputSql } from "../../memory/history/autoHeal";
 import { MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS } from "../../memory/history/contract";
@@ -11,7 +11,6 @@ type Stage = AdminMemoryProcessingIssue["stage"];
 type Reason = AdminMemoryProcessingIssue["reason"];
 type Healing = NonNullable<AdminMemoryProcessingIssue["autoHeal"]>;
 type ProcessingRow = { stage: Stage; reason: Reason | null; autoHeal: Healing | null; count: bigint; oldestAt: Date };
-const healingPriority: Record<Healing, number> = { RETRYING: 0, EXHAUSTED: 1, UNAVAILABLE: 2 };
 const priority: Record<Reason, number> = {
   MODEL_UNAVAILABLE: 6, CAPABILITY_UNAVAILABLE: 5, CONFIGURATION_REQUIRED: 4,
   PROCESSING_FAILED: 3, STALLED: 2, RETRYING: 1, OUTPUT_LIMIT: 0, HISTORY_INCOMPLETE: 0
@@ -59,6 +58,10 @@ export async function readAdminMemoryProcessing(
           END AS reason,
           CASE WHEN ${memoryHistoryIncompleteOutputSql()} THEN CASE
             WHEN ${memoryHistoryActiveWorkSql()} THEN 'RETRYING'
+            WHEN EXISTS (SELECT 1 FROM current_jobs newer
+              WHERE newer."userId" = job."userId" AND newer.kind = job.kind AND newer."chatId" = job."chatId"
+                AND (newer."createdAt", newer.id) > (job."createdAt", job.id)
+                AND newer.state = 'TERMINAL_FAILED') THEN 'UNAVAILABLE'
             WHEN ${memoryHistoryAutoHealProtectedSql()} THEN 'UNAVAILABLE'
             WHEN ${memoryHistoryAutoHealAttemptsSql()} >= ${MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS.length} THEN 'EXHAUSTED'
             ELSE 'RETRYING' END ELSE NULL END AS "autoHeal"
@@ -85,7 +88,7 @@ export async function readAdminMemoryProcessing(
       FROM classified GROUP BY stage, reason, "autoHeal"
     `)
   ]);
-  const issues = new Map<Stage, AdminMemoryProcessingIssue>();
+  const issues = new Map<string, AdminMemoryProcessingIssue>();
   for (const row of rows) {
     const modelUnavailable = row.stage === "LEARNING" && !role.ok;
     const reason = modelUnavailable && row.reason !== "CAPABILITY_UNAVAILABLE"
@@ -93,25 +96,27 @@ export async function readAdminMemoryProcessing(
     if (!reason) continue;
     const count = Number(row.count);
     const oldestAgeSeconds = Math.max(0, Math.floor((now.getTime() - row.oldestAt.getTime()) / 1000));
-    const previous = issues.get(row.stage);
-    const selectedReason = previous && priority[previous.reason] > priority[reason] ? previous.reason : reason;
     const healing = row.autoHeal && !role.ok ? "UNAVAILABLE" : row.autoHeal;
-    const autoHeal = previous?.autoHeal && (!healing || healingPriority[previous.autoHeal] > healingPriority[healing])
-      ? previous.autoHeal : healing;
-    issues.set(row.stage, {
-      ...(autoHeal && (selectedReason === "OUTPUT_LIMIT" || selectedReason === "HISTORY_INCOMPLETE") ? { autoHeal } : {}),
-      count: (previous?.count ?? 0) + count,
-      oldestAgeSeconds: Math.max(previous?.oldestAgeSeconds ?? 0, oldestAgeSeconds),
-      reason: selectedReason,
-      severity: row.stage === "INDEXING" || selectedReason === "RETRYING" || selectedReason === "STALLED" || selectedReason === "OUTPUT_LIMIT" || selectedReason === "HISTORY_INCOMPLETE" ? "warn" : "bad",
+    const issue: AdminMemoryProcessingIssue = {
+      ...(healing && (reason === "OUTPUT_LIMIT" || reason === "HISTORY_INCOMPLETE") ? { autoHeal: healing } : {}),
+      count,
+      oldestAgeSeconds,
+      reason,
+      severity: row.stage === "INDEXING" || reason === "RETRYING" || reason === "STALLED" || reason === "OUTPUT_LIMIT" || reason === "HISTORY_INCOMPLETE" ? "warn" : "bad",
       stage: row.stage
-    });
+    };
+    const key = adminMemoryProcessingIssueKey(issue);
+    const previous = issues.get(key);
+    issues.set(key, { ...issue, count: (previous?.count ?? 0) + count,
+      oldestAgeSeconds: Math.max(previous?.oldestAgeSeconds ?? 0, oldestAgeSeconds) });
   }
-  if (!role.ok && Number(owners[0]?.learning ?? 0) > 0 && !issues.has("LEARNING")) {
-    issues.set("LEARNING", { count: 0, oldestAgeSeconds: null, reason: "MODEL_UNAVAILABLE", severity: "bad", stage: "LEARNING" });
+  if (!role.ok && Number(owners[0]?.learning ?? 0) > 0 && ![...issues.values()].some(issue => issue.stage === "LEARNING")) {
+    const issue = { count: 0, oldestAgeSeconds: null, reason: "MODEL_UNAVAILABLE", severity: "bad", stage: "LEARNING" } as const;
+    issues.set(adminMemoryProcessingIssueKey(issue), issue);
   }
   return {
     enabled: Number(owners[0]?.enabled ?? 0) > 0,
-    issues: [...issues.values()].sort((a, b) => a.severity.localeCompare(b.severity) || a.stage.localeCompare(b.stage))
+    issues: [...issues.values()].sort((a, b) => a.severity.localeCompare(b.severity) || a.stage.localeCompare(b.stage)
+      || priority[b.reason] - priority[a.reason] || adminMemoryProcessingIssueKey(a).localeCompare(adminMemoryProcessingIssueKey(b)))
   };
 }

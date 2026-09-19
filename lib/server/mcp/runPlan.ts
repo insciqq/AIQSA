@@ -1,4 +1,5 @@
 import { hashCanonicalMcpValue } from "./definitions";
+import { getMcpResponseWireLimits } from "./responseLimits";
 import type { McpRuntimeTimeouts } from "../../contracts/mcp";
 import {
   isMcpReadinessStartable,
@@ -339,7 +340,7 @@ export function buildMcpRunPlan(
     };
   }
   if (tools.length > MCP_RUN_PLAN_LIMITS.maxTools ||
-    schemaBytes > MCP_RUN_PLAN_LIMITS.maxToolSchemaBytes ||
+    schemaBytes > getMcpResponseWireLimits().listToolsResponseMaxBytes ||
     new Set(tools.map((tool) => tool.namespacedName)).size !== tools.length) {
     return { code: "mcp_plan_too_large", issues: issues(records), ok: false };
   }

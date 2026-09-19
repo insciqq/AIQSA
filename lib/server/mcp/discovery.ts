@@ -1,4 +1,4 @@
-import { getMcpRequestMaxBytes } from "./responseLimits";
+import { getMcpRequestMaxBytes, getMcpResponseWireLimits } from "./responseLimits";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import type {
@@ -107,7 +107,7 @@ export function mergeMcpRunPlanSnapshots(
     "utf8"
   ), 0);
   if (mergedTools.length > MCP_RUN_PLAN_LIMITS.maxTools ||
-    schemaBytes > MCP_RUN_PLAN_LIMITS.maxToolSchemaBytes) {
+    schemaBytes > getMcpResponseWireLimits().listToolsResponseMaxBytes) {
     throw new Error("mcp_plan_too_large");
   }
   return {

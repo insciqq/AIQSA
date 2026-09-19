@@ -41,6 +41,8 @@ function validUnit(value: number): boolean {
 function validOccurredInterval(value: MemoryCandidateMetadata): boolean {
   if (!value.occurredFrom || !value.occurredTo) return true;
   if (value.occurredFrom < value.occurredTo) return true;
+  if (value.sourceAuthority === "PAST_CHAT" &&
+    value.occurredFrom.getTime() === value.occurredTo.getTime()) return true;
   return value.occurredAt !== null &&
     value.occurredFrom.getTime() === value.occurredAt.getTime() &&
     value.occurredTo.getTime() === value.occurredAt.getTime();

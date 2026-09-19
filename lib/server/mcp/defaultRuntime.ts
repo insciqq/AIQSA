@@ -28,7 +28,6 @@ const DEFAULT_RUNTIME_LIMITS = {
   maxListPages: 16,
   get maxToolArgumentBytes() { return getMcpRequestMaxBytes(); },
   maxToolMetadataBytes: 256 * 1_024,
-  maxToolSchemaBytes: 64 * 1_024,
   maxTools: 256
 } as const;
 

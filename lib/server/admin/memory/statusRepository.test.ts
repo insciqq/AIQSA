@@ -31,6 +31,7 @@ function clientFixture(input: Readonly<{
       settingsRevision: 3,
       userId: "private-owner"
     }])
+    .mockResolvedValueOnce(input.shadowRebuilding ? [{ userId: "private-owner" }] : [])
     .mockResolvedValueOnce([])
     .mockResolvedValueOnce(input.staleChunk ? [{ userId: "private-owner" }] : [])
     .mockResolvedValueOnce([{
@@ -124,10 +125,10 @@ describe("Prisma administrator Memory status repository", () => {
     const rawQueries = (client.$queryRaw as unknown as {
       mock: { calls: Array<[Prisma.Sql]> };
     }).mock.calls;
-    const pendingClassificationSql = rawQueries[1]?.[0].strings.join("?") ?? "";
+    const pendingClassificationSql = rawQueries[2]?.[0].strings.join("?") ?? "";
     expect(pendingClassificationSql).toContain('scope."scopeType" = \'GLOBAL_USER\'');
     expect(pendingClassificationSql).toContain('evidence_chat."projectId" IS NULL');
-    const staleProjectionQuery = rawQueries[2]?.[0];
+    const staleProjectionQuery = rawQueries[3]?.[0];
     const staleProjectionSql = staleProjectionQuery?.strings.join("?") ?? "";
     expect(staleProjectionSql).toContain('chunk."chunkingVersion" <>');
     expect(staleProjectionSql).toContain('chunk."sourceProjectionVersion" <>');

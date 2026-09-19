@@ -18,6 +18,13 @@ export function memoryRecoverableFailureSql(): Prisma.Sql {
       AND job."pipelineVersion" IN ('memory-history-incremental-v8', 'memory-history-incremental-v9', ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION})
       AND job."errorCode" IN ('memory_job_commit_database_failed',
         'memory_job_commit_database_p2002', 'memory_execution_policy_drift'))
+    OR (job.kind = 'INDEX_HISTORY'::"MemoryJobKind" AND job."workStage" = 'lexical_apply'
+      AND job."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+      AND job."errorCode" = 'memory_execution_input_invalid'
+      AND (SELECT COUNT(*) FROM "MemoryExecutionBinding" execution
+        WHERE execution."userId" = job."userId" AND execution."memoryJobId" = job.id
+          AND execution."ownerType" = 'JOB' AND execution."logicalRole" = 'MEMORY_HISTORY_CLASSIFY'
+          AND execution.state = 'SUCCEEDED' AND execution."acceptedOutputHash" IS NOT NULL) > 32)
   ), FALSE))`;
 }
 
