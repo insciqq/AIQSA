@@ -30,6 +30,7 @@ function repository(
   overrides: Partial<MemoryRebuildRepository> = {}
 ): MemoryRebuildRepository {
   return {
+    reconcileShadows: vi.fn(async () => 0),
     admit: vi.fn(async () => ({ jobId: "job-1", kind: "ok" as const })),
     applyJob: vi.fn(async () => undefined),
     cancel: vi.fn(async () => status),

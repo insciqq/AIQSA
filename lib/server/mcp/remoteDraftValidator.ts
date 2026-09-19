@@ -43,7 +43,6 @@ const DEFAULT_LIMITS: McpClientSessionLimits = {
   maxListPages: 16,
   get maxToolArgumentBytes() { return getMcpRequestMaxBytes(); },
   maxToolMetadataBytes: 256 * 1_024,
-  maxToolSchemaBytes: 64 * 1_024,
   maxTools: MAX_EVIDENCE_TOOLS
 };
 

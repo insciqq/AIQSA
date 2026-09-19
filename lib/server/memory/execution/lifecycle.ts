@@ -26,6 +26,7 @@ import { isMemoryExecutionRole, type MemoryExecutionRole } from "./roles";
 import { parseMemoryExecutionSnapshot } from "./snapshot";
 
 export const MEMORY_EXECUTION_RECOVERY_HORIZON_MS = 24 * 60 * 60 * 1_000;
+export const MEMORY_EXECUTION_COMMIT_BATCH_SIZE = 32;
 
 const sha256 = /^[a-f0-9]{64}$/u;
 const safeCode = /^[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,63}$/u;
@@ -416,7 +417,7 @@ export async function authorizeMemoryExecutionResultsForCommit(
     settings.userId !== userId ||
     !isValidMemoryExecutionIdentifier(expected.memoryJobId) ||
     !isMemoryExecutionRole(expected.role) ||
-    inputs.length < 1 || inputs.length > 32 ||
+    inputs.length < 1 || inputs.length > MEMORY_EXECUTION_COMMIT_BATCH_SIZE ||
     new Set(inputs.map(({ bindingId }) => bindingId)).size !== inputs.length ||
     inputs.some((input) =>
       !isValidMemoryExecutionIdentifier(input.bindingId) ||

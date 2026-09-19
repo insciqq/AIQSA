@@ -1,4 +1,5 @@
 import { adminMemoryProcessingCopy } from "../../../domain/adminMemoryProcessing";
+import { adminMemoryProcessingIssueKey } from "../../../contracts/adminMemory";
 import type { AdminDashboard } from "../../../contracts/admin";
 import type {
   AdminAttention,
@@ -347,7 +348,7 @@ function memoryItems(memory: AdminMemoryStatus): AdminAttentionItem[] {
       code: "memory_processing_blocked",
       count: issue.count || null,
       detail: copy.detail,
-      id: `memory_processing_blocked:${issue.stage}`,
+      id: `memory_processing_blocked:${adminMemoryProcessingIssueKey(issue)}`,
       severity: issue.severity,
       target: { section: copy.section, ...(copy.section === "roles" ? { resource: "memory" } : {}) },
       title: copy.title

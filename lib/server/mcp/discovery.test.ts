@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   mcpCatalogToolsByNames,
   mcpFindToolsArguments,
   mergeMcpRunPlanSnapshots
 } from "./discovery";
 import type { McpCapabilityCatalog, McpRunPlanSnapshot } from "./runPlan";
+afterEach(() => vi.unstubAllEnvs());
 
 const catalog: McpCapabilityCatalog = {
   servers: [{
@@ -114,15 +115,16 @@ describe("MCP Auto discovery", () => {
     const first = snapshot("first", 1);
     const second = snapshot("second", 2);
 
-    expect(() => mergeMcpRunPlanSnapshots(
-      {
-        ...first,
-        tools: first.tools.map((tool) => ({ ...tool, inputSchema: largeSchema }))
-      },
-      {
-        ...second,
-        tools: second.tools.map((tool) => ({ ...tool, inputSchema: largeSchema }))
-      }
-    )).toThrow("mcp_plan_too_large");
+    const left = {
+      ...first,
+      tools: first.tools.map((tool) => ({ ...tool, inputSchema: largeSchema }))
+    };
+    const right = {
+      ...second,
+      tools: second.tools.map((tool) => ({ ...tool, inputSchema: largeSchema }))
+    };
+    expect(mergeMcpRunPlanSnapshots(left, right).tools).toHaveLength(2);
+    vi.stubEnv("AIQSA_MCP_LIST_TOOLS_RESPONSE_MAX_BYTES", String(512 * 1024));
+    expect(() => mergeMcpRunPlanSnapshots(left, right)).toThrow("mcp_plan_too_large");
   });
 });

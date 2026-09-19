@@ -106,4 +106,15 @@ describe("administrator Memory status contract", () => {
       processing: { enabled: true, issues: [{ ...issue, userId: "private-owner" }] }
     } })).toBeNull();
   });
+
+  it("accepts distinct causes and healing states in one stage, but rejects duplicate issues", () => {
+    const issue = { stage: "HISTORY", reason: "PROCESSING_FAILED", severity: "bad", count: 1, oldestAgeSeconds: 120 };
+    const incomplete = { ...issue, reason: "HISTORY_INCOMPLETE", severity: "warn", autoHeal: "UNAVAILABLE" };
+    const decode = (issues: unknown[]) => decodeAdminMemoryStatusResponse({ memory: {
+      ...response().memory, processing: { enabled: true, issues }
+    } });
+    expect(decode([issue, incomplete, { ...incomplete, autoHeal: "RETRYING" }])).not.toBeNull();
+    expect(decode([issue, { ...issue, count: 2 }])).toBeNull();
+    expect(decode([incomplete, { ...incomplete, oldestAgeSeconds: 60 }])).toBeNull();
+  });
 });

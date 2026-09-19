@@ -23,7 +23,7 @@ import type { AdminRoleStatus } from "@/components/admin/roles/rolesView";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { AdminFeedbackController } from "@/components/admin/useAdminFeedback";
 import { UiV2Button } from "@/components/ui-v2";
-import { ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS, type AdminMemoryStatus } from "@/lib/contracts/adminMemory";
+import { ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS, adminMemoryProcessingIssueKey, type AdminMemoryStatus } from "@/lib/contracts/adminMemory";
 import { adminMemoryProcessingCopy } from "@/lib/domain/adminMemoryProcessing";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
@@ -274,7 +274,7 @@ export function AdminMemoryHealthCard({
                 <ul className="grid gap-3">
                   {status.processing.issues.map((issue) => {
                     const issueCopy = adminMemoryProcessingCopy(issue);
-                    return <li className={issue.severity === "bad" ? "text-critical" : "text-caution"} key={issue.stage}>
+                    return <li className={issue.severity === "bad" ? "text-critical" : "text-caution"} key={adminMemoryProcessingIssueKey(issue)}>
                       <p>{issueCopy.title}</p>
                       <p className="mt-1 text-xs font-normal">{issueCopy.detail}</p>
                       <a className="v2-focusable mt-1 inline-block text-xs underline" href={`/admin?section=${issueCopy.section}${issueCopy.section === "roles" ? "&resource=memory" : ""}`}>{issueCopy.action}</a>

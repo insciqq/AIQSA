@@ -84,6 +84,30 @@ function renderSection() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("AdminRetrievalSection", () => {
+  it("shows mixed history causes separately and updates each issue on refresh", async () => {
+    const incomplete = { stage: "HISTORY", reason: "HISTORY_INCOMPLETE", severity: "warn",
+      autoHeal: "UNAVAILABLE", count: 1, oldestAgeSeconds: 1800 } as const;
+    server({ memory: memoryStatus({ processing: { enabled: true, issues: [
+      { stage: "HISTORY", reason: "PROCESSING_FAILED", severity: "bad", count: 1, oldestAgeSeconds: 300 }, incomplete
+    ] } }) });
+    renderSection();
+    await screen.findByText("Memory history processing failed");
+    expect(screen.getByText("Memory history enrichment is incomplete")).toBeInTheDocument();
+    const memory = screen.getByTestId("admin-retrieval-memory");
+    expect(memory).toHaveTextContent("1 affected job; oldest 5m");
+    expect(memory).toHaveTextContent("1 affected job; oldest 30m");
+    expect(memory).not.toHaveTextContent("2 affected jobs");
+    expect(within(memory).getAllByRole("link", { name: "Open Memory" })).toHaveLength(2);
+    server({ memory: memoryStatus({ processing: { enabled: true, issues: [{ ...incomplete, autoHeal: "RETRYING" }] } }) });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Memory status" }));
+    await screen.findByText("Memory history is recovering automatically");
+    expect(screen.queryByText("Memory history processing failed")).not.toBeInTheDocument();
+    server({ memory: memoryStatus() });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Memory status" }));
+    await waitFor(() => expect(screen.queryByText("Memory history is recovering automatically")).not.toBeInTheDocument());
+    expect(screen.getByTestId("memory-state")).toHaveTextContent("Working");
+  });
+
   it("retries eligible work independently of rebuild and preserves an unsaved timeout", async () => {
     const calls = server({ memory: memoryStatus({ recovery: memoryRecoveryStatusFixture({ eligible: 2 }) }) });
     const { reportNotice, requestConfirmation } = renderSection();

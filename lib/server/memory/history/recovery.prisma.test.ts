@@ -20,12 +20,14 @@ import type { MemoryJobHandler } from "../coordinator/types";
 import type { MemoryStructuredOutputProvider } from "../execution";
 import { createPrismaMemoryExecutionAdmission } from "../execution/admission";
 import { probeMemoryStructuredOutputAuthority, MemoryStructuredOutputProviderError } from "../execution/structuredClassifier";
-import { detachExpiredMemoryExecutionBindings, MEMORY_EXECUTION_RECOVERY_HORIZON_MS } from "../execution/lifecycle";
+import { authorizeMemoryExecutionResultsForCommit, detachExpiredMemoryExecutionBindings,
+  MEMORY_EXECUTION_RECOVERY_HORIZON_MS } from "../execution/lifecycle";
 import { createPrismaLocalMemoryRetrievalRepository } from "../retrieval/localRepository";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import { seedMemoryHistoryBackfill } from "./backfill";
 import { createPrismaMemoryHistoryIndexHandler } from "./handler";
-import { MEMORY_CONTEXTUAL_KEY_VERSIONS } from "./contextualKeys";
+import { createPrismaMemoryContextualKeyGenerator, MEMORY_CONTEXTUAL_KEY_VERSIONS,
+  type MemoryContextualKeyGenerator } from "./contextualKeys";
 import { inspectMemoryHistoryPurge, purgeMemoryHistorySelection } from "./purge";
 import { autoHealIncompleteMemoryHistory } from "./autoHeal";
 import { MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS, memoryHistoryAutoHealJobFingerprint } from "./contract";
@@ -33,6 +35,7 @@ import { resolveCurrentMemoryUtilityPolicy } from "../execution/policy";
 import { applyMemorySourceMutations, lockMemorySourceChat } from "../sourceState";
 import { defaultMemorySourceMutationHooks } from "../sourceHooks";
 import { parseMemoryExecutionSnapshot } from "../execution/snapshot";
+import { MEMORY_CONTEXTUAL_KEY_POLICY_VERSION } from "./rounds";
 
 let providerAuthority: TestProviderExecutionAuthority;
 let priorPolicy: { assignmentSource: import("@prisma/client").MemoryUtilityAssignmentSource; providerModelId: string | null; reasoningEffort: string | null; updatedAt: Date; version: number } | null;
@@ -82,7 +85,7 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-async function fixture() {
+async function fixture(roundCount = 1) {
   const userId = randomUUID();
   owners.add(userId);
   await prisma.user.create({ data: { id: userId, displayName: "History recovery fixture", status: "active" } });
@@ -94,6 +97,7 @@ async function fixture() {
   } });
   const answer = await prisma.message.create({ data: {
     chatId: chat.id, parentMessageId: message.id, role: "assistant", status: "complete",
+    createdAt: message.createdAt,
     content: textMessageContent("Your pottery class is on Saturday.")
   } });
   await prisma.modelRun.create({ data: {
@@ -103,7 +107,24 @@ async function fixture() {
       source: "standard_chat", timeZone: "UTC", timeZoneSource: "client"
     } } }
   } });
-  await prisma.chat.update({ data: { activeLeafMessageId: answer.id, memorySourceRevision: 2 }, where: { id: chat.id } });
+  let leaf = answer.id;
+  const messages: Prisma.MessageCreateManyInput[] = [];
+  const runs: Prisma.ModelRunCreateManyInput[] = [];
+  for (let index = 1; index < roundCount; index += 1) {
+    const userMessageId = randomUUID();
+    const assistantMessageId = randomUUID();
+    messages.push({ id: userMessageId, chatId: chat.id, parentMessageId: leaf,
+      role: "user", status: "complete", content: message.content as Prisma.InputJsonValue },
+    { id: assistantMessageId, chatId: chat.id, parentMessageId: userMessageId,
+      role: "assistant", status: "complete", content: answer.content as Prisma.InputJsonValue });
+    runs.push({ assistantMessageId, userMessageId, chatId: chat.id, userId,
+      modelId: "history-fixture-model", provider: "history-fixture-provider", status: "complete",
+      normalizedRequest: { prompt: { baseline: { source: "standard_chat", timeZone: "UTC", timeZoneSource: "client" } } } });
+    leaf = assistantMessageId;
+  }
+  await prisma.message.createMany({ data: messages });
+  await prisma.modelRun.createMany({ data: runs });
+  await prisma.chat.update({ data: { activeLeafMessageId: leaf, memorySourceRevision: roundCount * 2 }, where: { id: chat.id } });
   await withLockedMemoryTransaction(prisma, userId, (tx, settings) => seedMemoryHistoryBackfill(tx, settings));
   const job = await prisma.memoryJob.findFirstOrThrow({ where: { userId, kind: "INDEX_HISTORY" } });
   await prisma.memoryJob.update({ data: { attemptCount: 2 }, where: { id: job.id } });
@@ -126,8 +147,26 @@ async function fixture() {
         : { decisions: [], open_loops: [], topics: ["Pottery"], summary: "The user takes pottery classes on Saturdays at Pine studio." };
     return { output, providerResponseId: null, usage: { inputTokens: 20, outputTokens: 5, totalTokens: 25, completeness: "complete" } };
   });
+  const generator = createPrismaMemoryContextualKeyGenerator(prisma, { authority: { now }, provider: { run } });
+  // Force small provider batches to exercise 37 real governed results with a
+  // tiny source graph, independently of the generator's character heuristics.
+  const oneRoundPerBatch: MemoryContextualKeyGenerator = {
+    async generate(rounds, targets, options) {
+      const batches = [];
+      for (const target of targets) batches.push(await generator.generate(rounds, [target], options));
+      return {
+        policyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
+        executions: batches.flatMap(batch => batch.executions),
+        outputs: batches.flatMap(batch => batch.outputs),
+        fallbackRoundIds: batches.flatMap(batch => batch.fallbackRoundIds),
+        fallbackDiagnostics: batches.flatMap(batch => batch.fallbackDiagnostics ?? []),
+        providerRequests: batches.reduce((sum, batch) => sum + batch.providerRequests, 0)
+      };
+    }
+  };
   const handler = () => createPrismaMemoryHistoryIndexHandler(prisma, undefined, {
-    authority: { now }, structuredProvider: { run }
+    authority: { now }, structuredProvider: { run },
+    ...(roundCount > 1 ? { contextualKeyGenerator: oneRoundPerBatch } : {})
   });
   const repository = createPrismaMemoryCoordinatorRepository(prisma);
   const drive = async (selected: MemoryJobHandler = handler(), repo: MemoryCoordinatorRepository = repository) => {
@@ -163,13 +202,86 @@ async function assertRecall(f: Awaited<ReturnType<typeof fixture>>) {
   const result = await repository.retrieve({ assistantId: null, chatId: f.chat.id, now, plan, userId: f.userId });
   expect(result.lexicalState).toBe("READY");
   const selected = fuseMemoryRetrievalCandidates(plan, result.laneResults, now)
-    .find(({ itemType }) => itemType === "RECALL_ROUND");
-  expect(selected).toBeDefined();
+    .find(({ itemType }) => itemType === "RECALL_ROUND" || itemType === "RECALL_CHUNK");
+  expect(selected, JSON.stringify({ lexicalEvidence: result.lexicalEvidence,
+    digestEvidence: result.digestEvidence, lanes: result.laneResults.map(lane => ({
+      lane: lane.lane, candidates: lane.candidates.length
+    })) })).toBeDefined();
   const [expanded] = await repository.expand(result.snapshot, plan, [selected!]);
   expect(expanded?.safeText).toContain("I take pottery classes every Saturday at Pine studio.");
 }
 
 describe("history recovery without repeated provider work", () => {
+  it("keeps incomplete history and a failed auto-heal successor as separate admin issues", async () => {
+    const f = await fixture();
+    f.run.mockResolvedValueOnce({ output: {}, providerResponseId: null,
+      usage: { inputTokens: 20, outputTokens: 5, totalTokens: 25, completeness: "complete" } });
+    await f.drive();
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({ state: "SUCCEEDED" });
+    f.advance(MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS[0]);
+    expect(await autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: f.now() })).toBe(1);
+    await f.drive(f.handler(), { ...f.repository, commitJobSuccess: (input) => f.repository.commitJobSuccess({
+      ...input, apply: async (tx, claim) => {
+        await input.apply?.(tx, claim);
+        throw new MemoryCoordinatorError("memory_execution_input_invalid", false);
+      }
+    }) });
+    expect((await readAdminMemoryProcessing(prisma, f.now())).issues.filter(issue => issue.stage === "HISTORY"))
+      .toEqual([
+        expect.objectContaining({ reason: "PROCESSING_FAILED", severity: "bad", count: 1 }),
+        expect.objectContaining({ reason: "HISTORY_INCOMPLETE", severity: "warn", autoHeal: "UNAVAILABLE", count: 1 })
+      ]);
+    expect(await autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: f.now() })).toBe(0);
+    expect(await f.repository.recoverEligibleJobs({ limit: 8, now: f.now() })).toBe(0);
+    await assertRecall(f);
+  });
+
+  it.each(["fresh", "auto_heal", "recovery"] as const)(
+    "commits more than 32 governed results once through the %s path", async (mode) => {
+      const f = await fixture(18);
+      const produce = f.run.getMockImplementation()!;
+      if (mode === "auto_heal") {
+        f.run.mockResolvedValue({ output: {}, providerResponseId: null,
+          usage: { inputTokens: 20, outputTokens: 5, totalTokens: 25, completeness: "complete" } });
+        await f.drive();
+        expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({ state: "SUCCEEDED" });
+        f.run.mockImplementation(produce);
+        f.advance(MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS[0]);
+        expect(await autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: f.now() })).toBe(1);
+      }
+      if (mode === "recovery") {
+        await f.drive(f.handler(), { ...f.repository, commitJobSuccess: (input) => f.repository.commitJobSuccess({
+          ...input, apply: async (tx, claim) => {
+            await input.apply?.(tx, claim);
+            throw new MemoryCoordinatorError("memory_execution_input_invalid", false);
+          }
+        }) });
+        expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } }))
+          .toMatchObject({ state: "TERMINAL_FAILED", stage: "lexical_apply", errorCode: "memory_execution_input_invalid" });
+        expect(await prisma.memoryRecallRound.count({ where: { userId: f.userId } })).toBe(0);
+        const bindings = await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } });
+        const usage = await prisma.usageEvent.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } });
+        expect(bindings.length).toBeGreaterThanOrEqual(37);
+        f.advance();
+        await f.drive();
+        expect(f.run).toHaveBeenCalledTimes(bindings.length);
+        expect(await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } })).toEqual(bindings);
+        expect(await prisma.usageEvent.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } })).toEqual(usage);
+      } else await f.drive();
+      const completed = await prisma.memoryJob.findFirstOrThrow({ where: { userId: f.userId, kind: "INDEX_HISTORY" }, orderBy: { createdAt: "desc" } });
+      expect(completed).toMatchObject({ state: "SUCCEEDED", stage: "lexical_ready" });
+      expect(await prisma.memoryExecutionBinding.count({ where: { userId: f.userId, memoryJobId: completed.id, state: "SUCCEEDED" } })).toBeGreaterThanOrEqual(37);
+      expect(await prisma.memoryHistoryExecution.count({ where: { userId: f.userId, clearedAt: null } })).toBe(0);
+      expect(await prisma.memoryRecallRound.count({ where: { userId: f.userId, state: "ACTIVE" } })).toBe(18);
+      const calls = f.run.mock.calls.length;
+      await f.drive();
+      expect(f.run).toHaveBeenCalledTimes(calls);
+      expect(await prisma.memoryRecallRound.count({ where: { userId: f.userId, state: "ACTIVE" } })).toBe(18);
+      expect((await readAdminMemoryProcessing(prisma, f.now())).issues.filter(({ stage }) => stage === "HISTORY")).toEqual([]);
+      await assertRecall(f);
+    }, 30_000
+  );
+
   it.each(["memory_job_commit_database_p2002", "memory_execution_policy_drift"])(
     "recovers %s locally without buying completed stages again", async (code) => {
       const f = await fixture();
@@ -229,8 +341,8 @@ describe("history recovery without repeated provider work", () => {
             providerModelId: null, version: { increment: 1 }
           } });
           for (const binding of await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId } })) {
-            if (snapshotVersion === 2) await prisma.memoryExecutionBinding.update({ where: { id: binding.id }, data: {
-              secretFreeExecutionSnapshot: { ...(binding.secretFreeExecutionSnapshot as Prisma.JsonObject), version: 2 }
+            await prisma.memoryExecutionBinding.update({ where: { id: binding.id }, data: {
+              secretFreeExecutionSnapshot: { ...(binding.secretFreeExecutionSnapshot as Prisma.JsonObject), version: snapshotVersion }
             } });
             const snapshot = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
             await expect(createPrismaMemoryExecutionAdmission({ now: f.now }, prisma).bind(f.userId, {
@@ -659,10 +771,19 @@ describe("history recovery without repeated provider work", () => {
     const f = await fixture();
     await f.failCommit();
     const receipt = await prisma.memoryHistoryExecution.findFirstOrThrow({ where: { userId: f.userId } });
+    const authorize = (jobId = f.job.id, outputHash = receipt.acceptedOutputHash) =>
+      withLockedMemoryTransaction(prisma, f.userId, (tx, settings) =>
+        authorizeMemoryExecutionResultsForCommit({ now: f.now }, tx, settings, f.userId,
+          { memoryJobId: jobId, role: "MEMORY_HISTORY_CLASSIFY" },
+          [{ bindingId: receipt.executionBindingId, acceptedOutputHash: outputHash }]));
+    await expect(authorize()).resolves.toHaveLength(1);
+    await expect(authorize(randomUUID())).rejects.toMatchObject({ code: "memory_execution_state_conflict" });
+    await expect(authorize(f.job.id, "b".repeat(64))).rejects.toMatchObject({ code: "memory_execution_state_conflict" });
     await expect(prisma.$executeRaw`UPDATE "MemoryHistoryExecution" SET "acceptedOutput" = '{}'::jsonb WHERE id = ${receipt.id}`)
       .rejects.toMatchObject({ code: "P2010", meta: { code: "23514" } });
     await prisma.providerCredential.update({ where: { id: providerAuthority.credentialId }, data: { enabled: false } });
     try {
+      await expect(authorize()).rejects.toMatchObject({ code: "memory_execution_target_unavailable" });
       f.advance();
       await f.drive();
       expect(f.run).toHaveBeenCalledTimes(3);

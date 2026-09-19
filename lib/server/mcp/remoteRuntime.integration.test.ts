@@ -1,7 +1,7 @@
 import { createServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
-import { Server, type ListToolsResult } from "@modelcontextprotocol/server";
+import { Server, type ListToolsResult, type Tool } from "@modelcontextprotocol/server";
 import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRemoteMcpDraftValidator } from "./remoteDraftValidator";
@@ -30,7 +30,8 @@ async function startRemoteFixture(
   secret: string,
   echoSecret = false,
   toolDescription = "Create a task",
-  gitlabRecovery = false
+  gitlabRecovery = false,
+  inventory?: Tool[]
 ): Promise<Fixture> {
   const cursors: Array<string | undefined> = [];
   const observedStaticHeaders: Array<string | undefined> = [];
@@ -42,6 +43,7 @@ async function startRemoteFixture(
   server.setRequestHandler("tools/list", async (request): Promise<ListToolsResult> => {
     const cursor = request.params?.cursor;
     cursors.push(cursor);
+    if (inventory) return { tools: inventory };
     return cursor === undefined
       ? {
           nextCursor: "page-2",
@@ -125,13 +127,48 @@ afterEach(async () => {
 });
 
 describe("remote MCP runtime integration", () => {
+  it.each(["validation", "runtime"] as const)("accepts a 43-tool inventory with large input and output schemas during %s", async mode => {
+    const inventory: Tool[] = Array.from({ length: 43 }, (_, index) => ({
+      name: `tool_${index}`, inputSchema: { type: "object" }
+    }));
+    inventory[0] = { name: "tool_0",
+      inputSchema: { type: "object", properties: { title: { type: "string", description: "x".repeat(96 * 1024) } } },
+      outputSchema: { type: "object", description: "y".repeat(96 * 1024) }
+    };
+    const fixture = await startRemoteFixture("fixture", false, "Create a task", false, inventory);
+    const safeFetch = createMcpSafeFetch({ allowInsecureHttp: true, allowPrivateNetwork: true });
+    if (mode === "validation") {
+      const outcome = await createRemoteMcpDraftValidator({ fetch: safeFetch }).validate({
+        draft: { auth: { mode: "none" }, transport: "streamable_http", slots: [],
+          source: { kind: "remote", url: fixture.url.href },
+          runtime: { callTimeoutMs: 2_000, startupTimeoutMs: 2_000 } }, values: {}
+      });
+      expect(outcome.kind).toBe("ok");
+      if (outcome.kind === "ok") expect(outcome.toolInventory).toHaveLength(43);
+    } else {
+      const session = new McpClientSession({ fetch: safeFetch, url: fixture.url, requestTimeoutMs: 2_000,
+        limits: { maxListPages: 16, maxToolArgumentBytes: getMcpRequestMaxBytes(), maxToolMetadataBytes: 256 * 1024, maxTools: 256 }
+      });
+      try {
+        await session.initialize();
+        const tools = await session.listAllTools();
+        expect(tools).toHaveLength(43);
+        expect(tools[0]).toMatchObject(inventory[0]!);
+        expect((await session.listAllTools())[0]!.definitionHash).toBe(tools[0]!.definitionHash);
+        expect(session.inventoryStale).toBe(false);
+        await expect(session.callTool("tool_1", {})).resolves.toMatchObject({ isError: false, text: ["Accepted"] });
+        expect(fixture.receivedArgumentBytes).toEqual([2]);
+      } finally { await session.close(); }
+    }
+  });
+
   it("sends a request beyond the former small limits and rejects an oversized envelope before a second tool call", async () => {
     const fixture = await startRemoteFixture("fixture");
     const session = new McpClientSession({
       fetch: createMcpSafeFetch({ allowInsecureHttp: true, allowPrivateNetwork: true }),
       url: fixture.url, requestTimeoutMs: 900000,
       limits: { maxListPages: 16, maxToolArgumentBytes: getMcpRequestMaxBytes(),
-        maxToolMetadataBytes: 256 * 1024, maxToolSchemaBytes: 64 * 1024, maxTools: 256 }
+        maxToolMetadataBytes: 256 * 1024, maxTools: 256 }
     });
     try {
       await session.initialize();

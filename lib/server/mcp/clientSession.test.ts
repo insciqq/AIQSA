@@ -630,6 +630,32 @@ describe("McpClientSession", () => {
     await session.close();
   });
 
+  it("bounds the complete inventory across individually bounded pages", async () => {
+    const fixture = await startFixture({ listTools: cursor => ({
+      tools: [tool(cursor ? "second" : "first", { type: "object", description: "x".repeat(600) })],
+      ...(cursor ? {} : { nextCursor: "page-2" })
+    }) });
+    const session = createSession(fixture, { responseLimits: { listToolsResponseMaxBytes: 1_024 } });
+    await session.initialize();
+    await expect(session.listAllTools()).rejects.toMatchObject({ code: "mcp_inventory_response_too_large" });
+    expect(session.inventoryStale).toBe(true);
+    expect(session.isClosed()).toBe(true);
+  });
+
+  it.each(["depth", "nodes"] as const)("rejects excessive schema %s before compilation", async bound => {
+    let schema: Tool["inputSchema"] = { type: "object", examples: Array(100_001).fill(null) };
+    if (bound === "depth") {
+      schema = { type: "object" };
+      for (let depth = 0; depth < 65; depth++) schema = { type: "object", properties: { child: schema } } as Tool["inputSchema"];
+    }
+    const fixture = await startFixture({ listTools: () => ({ tools: [tool("complex", schema)] }) });
+    const session = createSession(fixture, { limits: { maxToolSchemaBytes: undefined } });
+    await session.initialize();
+    await expect(session.listAllTools()).rejects.toMatchObject({ code: "mcp_inventory_tool_invalid" });
+    expect(session.inventoryStale).toBe(true);
+    await session.close();
+  });
+
   it("retains a delivered MCP failure with explanatory text and an empty structured object", async () => {
     const message = "Validation error: Provide either url, or project_id, file_path, and ref";
     const callTool = vi.fn(() => ({ content: [{ type: "text" as const, text: message }], structuredContent: {}, isError: true }));

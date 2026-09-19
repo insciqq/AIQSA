@@ -49,6 +49,10 @@ export const adminMemoryProcessingIssueSchema = z.strictObject({
 
 export type AdminMemoryProcessingIssue = z.infer<typeof adminMemoryProcessingIssueSchema>;
 
+export function adminMemoryProcessingIssueKey(issue: AdminMemoryProcessingIssue): string {
+  return `${issue.stage}:${issue.reason}:${issue.autoHeal ?? "NONE"}`;
+}
+
 export const adminMemoryStatusSchema = z.strictObject({
   admissionTimeout: z.strictObject({
     seconds: safeInteger.min(ADMIN_MEMORY_ADMISSION_TIMEOUT_LIMITS.minSeconds)
@@ -57,7 +61,7 @@ export const adminMemoryStatusSchema = z.strictObject({
   }),
   processing: z.strictObject({
     enabled: z.boolean(),
-    issues: z.array(adminMemoryProcessingIssueSchema).max(6)
+    issues: z.array(adminMemoryProcessingIssueSchema).max(6 * 8 * 4)
   }),
   configuredTargets: z.array(z.strictObject({
     model: safeLabel,
@@ -95,9 +99,9 @@ export const adminMemoryStatusSchema = z.strictObject({
     activeStages: z.array(processingStage).max(6)
   })
 }).superRefine((value, context) => {
-  if (new Set(value.processing.issues.map((issue) => issue.stage)).size !== value.processing.issues.length ||
+  if (new Set(value.processing.issues.map(adminMemoryProcessingIssueKey)).size !== value.processing.issues.length ||
     value.processing.issues.some((issue) => (issue.count === 0) !== (issue.oldestAgeSeconds === null))) {
-    context.addIssue({ code: "custom", message: "Memory processing stages, counts and ages must agree" });
+    context.addIssue({ code: "custom", message: "Memory processing issues, counts and ages must agree" });
   }
   if ((value.queue.length === 0) !== (value.queue.oldestAgeSeconds === null)) {
     context.addIssue({

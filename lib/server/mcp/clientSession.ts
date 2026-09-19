@@ -24,6 +24,7 @@ import { logEvent } from "../observability";
 import { beginMcpToolStage, mcpToolFailure, observeMcpAbort } from "./toolObservability";
 import {
   McpResponseTooLargeError,
+  DEFAULT_MCP_RESPONSE_WIRE_LIMITS,
   resolveMcpResponseWireLimits,
   type McpResponseOperation,
   type McpResponseWireLimits
@@ -195,7 +196,8 @@ export type McpClientSessionLimits = Readonly<{
   maxToolMetadataBytes: number;
   /** Defaults to the configured tools/call wire limit. */
   maxToolResultBytes?: number;
-  maxToolSchemaBytes: number;
+  /** Optional stricter bound; otherwise the complete inventory budget applies. */
+  maxToolSchemaBytes?: number;
   maxTools: number;
 }>;
 
@@ -306,7 +308,7 @@ function validateOptions(options: McpClientSessionOptions): void {
     !positiveInteger(options.limits.maxToolArgumentBytes) ||
     !positiveInteger(options.limits.maxToolMetadataBytes) ||
     (options.limits.maxToolResultBytes !== undefined && !positiveInteger(options.limits.maxToolResultBytes)) ||
-    !positiveInteger(options.limits.maxToolSchemaBytes) ||
+    (options.limits.maxToolSchemaBytes !== undefined && !positiveInteger(options.limits.maxToolSchemaBytes)) ||
     !positiveInteger(options.limits.maxTools)
   ) {
     throw sessionError("mcp_session_configuration_invalid", "session");
@@ -382,6 +384,16 @@ function canonicalSchema(inputSchema: Record<string, unknown>): Readonly<{
   value: Readonly<Record<string, unknown>>;
 }> {
   try {
+    // Check structure before recursive canonicalization or validator compilation.
+    const pending: Array<{ value: unknown; depth: number }> = [{ value: inputSchema, depth: 0 }];
+    let nodes = 0;
+    while (pending.length) {
+      const { value, depth } = pending.pop()!;
+      if (++nodes > 100_000 || depth > 64) throw new Error("schema_structure_limit");
+      if (value && typeof value === "object") {
+        for (const child of Object.values(value)) pending.push({ value: child, depth: depth + 1 });
+      }
+    }
     const json = canonicalMcpJson(inputSchema);
     const value = JSON.parse(json) as unknown;
     if (!isRecord(value)) {
@@ -398,7 +410,9 @@ function canonicalSchema(inputSchema: Record<string, unknown>): Readonly<{
 }
 
 const MAX_CACHED_SCHEMA_VALIDATORS = 256;
+const MAX_CACHED_SCHEMA_BYTES = DEFAULT_MCP_RESPONSE_WIRE_LIMITS.listToolsResponseMaxBytes;
 const schemaValidators = new Map<string, JsonSchemaValidator<unknown>>();
+let cachedSchemaBytes = 0;
 
 function schemaValidator(schema: Readonly<Record<string, unknown>>): JsonSchemaValidator<unknown> {
   const key = canonicalMcpJson(schema);
@@ -407,13 +421,18 @@ function schemaValidator(schema: Readonly<Record<string, unknown>>): JsonSchemaV
 
   // Use the validator shipped with the pinned official MCP SDK. A separate
   // provider instance avoids cross-server $id collisions while keeping the
-  // cache bounded by the already bounded discovery schemas.
+  // cache bounded in both entries and bytes even with large discovery schemas.
   const validator = new AjvJsonSchemaValidator().getValidator<unknown>(schema as JsonSchemaType);
-  if (schemaValidators.size >= MAX_CACHED_SCHEMA_VALIDATORS) {
+  const bytes = Buffer.byteLength(key, "utf8");
+  if (bytes > MAX_CACHED_SCHEMA_BYTES) return validator;
+  while (schemaValidators.size >= MAX_CACHED_SCHEMA_VALIDATORS || cachedSchemaBytes + bytes > MAX_CACHED_SCHEMA_BYTES) {
     const oldest = schemaValidators.keys().next().value;
-    if (oldest !== undefined) schemaValidators.delete(oldest);
+    if (oldest === undefined) break;
+    cachedSchemaBytes -= Buffer.byteLength(oldest, "utf8");
+    schemaValidators.delete(oldest);
   }
   schemaValidators.set(key, validator);
+  cachedSchemaBytes += bytes;
   return validator;
 }
 
@@ -512,7 +531,7 @@ function normalizeTool(
     outputSchema?: Record<string, unknown>;
     title?: string;
   }>,
-  limits: Pick<McpClientSessionLimits, "maxToolMetadataBytes" | "maxToolSchemaBytes">
+  limits: Pick<Required<McpClientSessionLimits>, "maxToolMetadataBytes" | "maxToolSchemaBytes">
 ): AiqsaMcpToolDefinition {
   if (
     !TOOL_NAME_PATTERN.test(tool.name) ||
@@ -599,6 +618,7 @@ export class McpClientSession {
   private inventoryChangeVersion = 0;
   private inventoryStaleValue = true;
   private readonly limits: Required<McpClientSessionLimits>;
+  private readonly maxInventoryBytes: number;
   private readonly onInventoryStale: (() => void) | undefined;
   private fatalCauseExposed = false;
   private readonly responseGuard: McpResponseGuard;
@@ -609,8 +629,10 @@ export class McpClientSession {
     validateOptions(options);
     this.defaultRequestTimeoutMs = options.requestTimeoutMs;
     const responseLimits = resolveMcpResponseWireLimits(options.responseLimits);
+    this.maxInventoryBytes = responseLimits.listToolsResponseMaxBytes;
     this.limits = {
       ...options.limits,
+      maxToolSchemaBytes: options.limits.maxToolSchemaBytes ?? this.maxInventoryBytes,
       maxToolResultBytes: options.limits.maxToolResultBytes ?? responseLimits.callToolResponseMaxBytes
     };
     this.onInventoryStale = options.onInventoryStale;
@@ -844,6 +866,7 @@ export class McpClientSession {
     const cursors = new Set<string>();
     let cursor: string | undefined;
     let page = 0;
+    let inventoryBytes = 0;
 
     try {
       while (true) {
@@ -861,6 +884,12 @@ export class McpClientSession {
         );
         if (tools.length + result.tools.length > this.limits.maxTools) {
           throw sessionError("mcp_inventory_tool_limit", "list_tools");
+        }
+        // Pagination must not multiply the configured catalog memory budget.
+        inventoryBytes += Buffer.byteLength(JSON.stringify(result.tools), "utf8");
+        if (inventoryBytes > this.maxInventoryBytes) {
+          await this.close();
+          throw sessionError("mcp_inventory_response_too_large", "list_tools");
         }
 
         for (const tool of result.tools) {
