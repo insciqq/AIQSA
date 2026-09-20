@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import {
   memoryCategoryLabel,
   memoryUiCopy
@@ -182,7 +184,7 @@ export function LibraryV2({
               {subview.backLabel}
             </UiV2Button>
           ) : (
-            <UiV2Button icon="chevron-right" onClick={requestExit}>Back to chat</UiV2Button>
+            <div className="flex flex-wrap items-center gap-3"><Link className="v2-focusable text-sm text-control-accent" href="/artifacts">Artifacts</Link><UiV2Button icon="chevron-right" onClick={requestExit}>Back to chat</UiV2Button></div>
           )}
         </div>
         <div ref={tabListRef} className="v2-library-tabs-scroll" role="tablist" aria-label="Library sections">

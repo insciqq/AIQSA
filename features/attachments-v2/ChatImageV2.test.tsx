@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ChatImageV2 } from "./ChatImageV2";
 
 describe("chat images", () => {
@@ -16,5 +16,24 @@ describe("chat images", () => {
     await waitFor(() => expect(opener).toHaveFocus());
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("download");
+  });
+
+  it("attaches once while pending and allows retry after a failed attachment", async () => {
+    let rejectAttachment!: (error: Error) => void;
+    const onUseInArtifact = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectAttachment = reject; }))
+      .mockResolvedValue(undefined);
+    render(<ChatImageV2 attachmentId="generated-image" label="Generated" onUseInArtifact={onUseInArtifact} />);
+    fireEvent.click(screen.getByRole("button", { name: "Use in artifact" }));
+    const pending = screen.getByRole("button", { name: "Attaching…" });
+    expect(pending).toBeDisabled();
+    fireEvent.click(pending);
+    expect(onUseInArtifact).toHaveBeenCalledOnce();
+    rejectAttachment(new Error("attachment_unavailable"));
+    expect(await screen.findByRole("status")).toHaveTextContent("Could not attach this image");
+    fireEvent.click(screen.getByRole("button", { name: "Use in artifact" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Use in artifact" })).toBeEnabled());
+    expect(onUseInArtifact).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 });

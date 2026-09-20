@@ -94,6 +94,7 @@ export type ThreadAssistantIdentity = AssistantIdentity;
 
 export type ThreadArtifactSummary = {
   citations: ThreadCitation[];
+  generatedArtifacts?: ThreadGeneratedArtifact[];
   generatedFiles?: ThreadGeneratedFile[];
   generatedImages?: ThreadGeneratedImage[];
   groundingDisplay?: ThreadGroundingDisplay | null;
@@ -108,6 +109,15 @@ export type ThreadArtifactSummary = {
   workDurationMs?: number;
 };
 
+export type ThreadGeneratedArtifact = Readonly<{
+  artifactId: string;
+  entrypoint: string | null;
+  kind: "chart" | "game" | "html" | "image" | "slides" | "svg";
+  title: string;
+  versionId: string;
+  versionNumber: number;
+}>;
+
 export type ThreadKnowledgeAnswerState = Readonly<{
   answer: "answered" | "insufficient_evidence";
   scope: "partial_sources_ready" | "ready";
@@ -119,6 +129,7 @@ export type ThreadToolActivity = {
 };
 
 export type ThreadToolActivityOrigin =
+  | "artifact"
   | "image"
   | "discovery"
   | "knowledge"
@@ -130,7 +141,7 @@ export type ThreadToolActivityOrigin =
   | "workspace";
 
 export function isThreadToolActivityOrigin(value: unknown): value is ThreadToolActivityOrigin {
-  return value === "image" || value === "discovery" || value === "knowledge" || value === "mcp" ||
+  return value === "artifact" || value === "image" || value === "discovery" || value === "knowledge" || value === "mcp" ||
     value === "memory" || value === "session" || value === "tool" ||
     value === "web_search" || value === "workspace";
 }
@@ -698,6 +709,38 @@ function decodeThreadGroundingDisplay(
   };
 }
 
+/**
+ * Decode both the camel-case durable/client projection and the snake-case
+ * receipt emitted by the artifact tool. The latter is accepted only at this
+ * internal boundary; callers always receive the client-safe shape.
+ */
+export function decodeThreadGeneratedArtifact(value: unknown): ThreadGeneratedArtifact | null {
+  if (!isRecord(value)) return null;
+  const candidate = "artifactId" in value || "versionId" in value
+    ? value
+    : {
+        artifactId: value.artifact_id,
+        entrypoint: value.entrypoint,
+        kind: value.kind,
+        title: value.title,
+        versionId: value.version_id,
+        versionNumber: value.version_number
+      };
+  if (!requiredString(candidate.artifactId) || !requiredString(candidate.versionId) ||
+    !requiredString(candidate.title) || !Number.isSafeInteger(candidate.versionNumber) ||
+    (candidate.versionNumber as number) < 1 ||
+    !["chart", "game", "html", "image", "slides", "svg"].includes(String(candidate.kind)) ||
+    candidate.entrypoint !== null && candidate.entrypoint !== undefined && !requiredString(candidate.entrypoint)) return null;
+  return {
+    artifactId: candidate.artifactId as string,
+    entrypoint: candidate.entrypoint === undefined ? null : candidate.entrypoint as string | null,
+    kind: candidate.kind as ThreadGeneratedArtifact["kind"],
+    title: candidate.title as string,
+    versionId: candidate.versionId as string,
+    versionNumber: candidate.versionNumber as number
+  };
+}
+
 function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | null {
   if (
     !isRecord(value) ||
@@ -745,6 +788,15 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     ) {
       return null;
     }
+  }
+
+  let generatedArtifacts: ThreadGeneratedArtifact[] | undefined;
+  if (value.generatedArtifacts !== undefined) {
+    if (!Array.isArray(value.generatedArtifacts) || value.generatedArtifacts.length > 16) return null;
+    const decoded = value.generatedArtifacts.map(decodeThreadGeneratedArtifact);
+    if (decoded.some((artifact) => artifact === null)) return null;
+    generatedArtifacts = decoded.filter((artifact): artifact is ThreadGeneratedArtifact => artifact !== null);
+    if (new Set(generatedArtifacts.map((artifact) => artifact.versionId)).size !== generatedArtifacts.length) return null;
   }
 
   let knowledgeCitations: ThreadKnowledgeCitation[] | undefined;
@@ -812,6 +864,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     citations: citations.filter(
       (citation): citation is ThreadCitation => citation !== null
     ),
+    ...(generatedArtifacts ? { generatedArtifacts } : {}),
     ...(generatedImages ? { generatedImages: generatedImages as ThreadGeneratedImage[] } : {}),
     ...(generatedFiles !== undefined ? { generatedFiles } : {}),
     ...(groundingDisplay !== undefined ? { groundingDisplay } : {}),

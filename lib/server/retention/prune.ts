@@ -1,3 +1,4 @@
+import { ARTIFACT_WRITE_LEASE_MS } from "../artifacts/lifecycle";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { StorageAdapter } from "@/lib/server/uploads/storage";
@@ -507,6 +508,17 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
                 SELECT 1 FROM "KnowledgeUploadItem" AS upload
                 WHERE upload."storageKey" = job."storageKey"
               )
+              AND NOT EXISTS (
+                SELECT 1 FROM "ArtifactVersion" AS version
+                JOIN "Artifact" AS artifact ON artifact."id" = version."artifactId"
+                WHERE version."bundleStorageKey" = job."storageKey"
+                  AND (version."status" = 'READY' OR (version."status" = 'PENDING' AND version."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM "ArtifactPublication" AS publication
+                WHERE publication."bundleStorageKey" = job."storageKey"
+                  AND (publication."status" = 'READY' OR (publication."status" = 'PENDING' AND publication."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
+              )
             ORDER BY job."createdAt", job."id"
             FOR UPDATE SKIP LOCKED
             LIMIT ${limit}
@@ -678,6 +690,17 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
           AND NOT EXISTS (
             SELECT 1 FROM "KnowledgeUploadItem" AS upload
             WHERE upload."storageKey" = job."storageKey"
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM "ArtifactVersion" AS version
+            JOIN "Artifact" AS artifact ON artifact."id" = version."artifactId"
+            WHERE version."bundleStorageKey" = job."storageKey"
+              AND (version."status" = 'READY' OR (version."status" = 'PENDING' AND version."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM "ArtifactPublication" AS publication
+            WHERE publication."bundleStorageKey" = job."storageKey"
+              AND (publication."status" = 'READY' OR (publication."status" = 'PENDING' AND publication."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
           )
         ORDER BY job."createdAt", job."id"
         LIMIT ${limit}
@@ -1119,6 +1142,18 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
             WHERE "storageKey" = ${storageKey}
             FOR SHARE
           `;
+          const artifactVersionReferences = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT version."id" FROM "ArtifactVersion" AS version
+            JOIN "Artifact" AS artifact ON artifact."id" = version."artifactId"
+            WHERE version."bundleStorageKey" = ${storageKey}
+              AND (version."status" = 'READY' OR (version."status" = 'PENDING' AND version."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
+            FOR SHARE
+          `;
+          const artifactPublicationReferences = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id" FROM "ArtifactPublication"
+            WHERE "bundleStorageKey" = ${storageKey} AND ("status" = 'READY' OR ("status" = 'PENDING' AND "createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
+            FOR SHARE
+          `;
           if (
             remainingReferenceCount === 0 &&
             pdfReferences.length === 0 &&
@@ -1126,6 +1161,8 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
             knowledgeSourceVersionReferences.length === 0 &&
             knowledgeSourceArtifactReferences.length === 0 &&
             knowledgeUploadReferences.length === 0
+            && artifactVersionReferences.length === 0
+            && artifactPublicationReferences.length === 0
           ) {
             const existing = await tx.attachmentDeletionJob.findUnique({
               select: { id: true },
@@ -1254,12 +1291,26 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
               WHERE "storageKey" = ${storageKey}
               FOR SHARE
             `;
+            const artifactVersionReferences = await tx.$queryRaw<Array<{ id: string }>>`
+              SELECT version."id" FROM "ArtifactVersion" AS version
+              JOIN "Artifact" AS artifact ON artifact."id" = version."artifactId"
+              WHERE version."bundleStorageKey" = ${storageKey}
+                AND (version."status" = 'READY' OR (version."status" = 'PENDING' AND version."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
+              FOR SHARE
+            `;
+            const artifactPublicationReferences = await tx.$queryRaw<Array<{ id: string }>>`
+              SELECT "id" FROM "ArtifactPublication"
+              WHERE "bundleStorageKey" = ${storageKey} AND ("status" = 'READY' OR ("status" = 'PENDING' AND "createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
+              FOR SHARE
+            `;
             if (
               attachmentReferences.length === 0 &&
               knowledgeDocumentReferences.length === 0 &&
               knowledgeSourceVersionReferences.length === 0 &&
               knowledgeSourceArtifactReferences.length === 0 &&
               knowledgeUploadReferences.length === 0
+              && artifactVersionReferences.length === 0
+              && artifactPublicationReferences.length === 0
             ) {
               const existing = await tx.attachmentDeletionJob.findUnique({
                 select: { id: true },

@@ -3,6 +3,7 @@ import { knowledgeAnswerInstructions } from "../knowledge/answerInstructions";
 import { filterMcpProviderRequest } from "../mcp/toolAccessProjection";
 import { imageDispatchMustStop } from "../images/errors";
 import { imageGenerationTool, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
+import { artifactTool, ARTIFACT_TOOL_NAME } from "../tools/artifact";
 import { dispatchMcpTool } from "../mcp/toolExecutor";
 import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
 import type { ChatUpdateDataWire } from "../../contracts/chats";
@@ -231,6 +232,7 @@ export type RunExecutionRepository = Pick<
 
 export type RunExecutionInput = Readonly<{
   agentResponses?: AgentResponsesTransport;
+  artifacts?: Pick<import("../artifacts/service").ArtifactService, "execute" | "restore">;
   images?: import("../images/service").ImageGenerationService;
   adapter: ProviderAdapter;
   /** Names a personal chat after its first answer; absent on recovery paths. */
@@ -1747,8 +1749,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const isMcpDiscoveryCall = (name: string) =>
           name === MCP_FIND_TOOLS_NAME && activeMcpDiscovery !== undefined;
         const isImageCall = (name: string) => clientToolsEnabled && Boolean(normalizedRequest.imagePlan) && name === IMAGE_GENERATION_TOOL_NAME;
+        const isArtifactCall = (name: string) => clientToolsEnabled && normalizedRequest.artifactTool === true && name === ARTIFACT_TOOL_NAME;
         const tools: RunTool[] = [
           ...(clientToolsEnabled && normalizedRequest.imagePlan ? [imageGenerationTool(normalizedRequest.imagePlan)] : []),
+          ...(clientToolsEnabled && normalizedRequest.artifactTool ? [artifactTool()] : []),
           ...(normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
           ...knowledgeTools,
           ...(searchPlanRouter?.tools ?? []),
@@ -1933,6 +1937,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   }
                 }
               }
+              if (claim.kind === "ambiguous" && isArtifactCall(call.name) && input.artifacts) {
+                const restored = await input.artifacts.restore(call, { persistedToolCallId: persisted.id, request, runId, userId: input.userId });
+                if (restored) {
+                  const snapshot = snapshotToolExecutionResult(restored, toolLoopPersistenceLimits.resultBytes);
+                  const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id, result: snapshot, runId, state: "complete", userId: input.userId });
+                  if (settled === "settled" || settled === "reused") return { status: "complete", value: restored };
+                }
+              }
               if (claim.kind === "ambiguous") {
                 return {
                   error: {
@@ -2019,7 +2031,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
                   }
                 }
-                const externalCall = !preflightResult && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name);
+                const externalCall = !preflightResult && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isArtifactCall(call.name);
                 if (externalCall) {
                   if (!input.memoryEgress && process.env.NODE_ENV === "production") {
                     throw new Error("memory_egress_receipt_unavailable");
@@ -2125,6 +2137,9 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 }
                 if (preflightResult) {
                   result = preflightResult;
+                } else if (isArtifactCall(call.name)) {
+                  if (!input.artifacts) throw new Error("artifact_tool_unavailable");
+                  result = await input.artifacts.execute(call, executionContext);
                 } else if (isImageCall(call.name)) {
                   if (!input.images) throw new Error("image_tool_unavailable");
                   result = await input.images.execute(call, executionContext, signal);
@@ -2370,7 +2385,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                 if (!route && !isKnowledgeCall(call.name) &&
                   !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name) &&
-                  !isImageCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name)) {
+                  !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 return {
@@ -2475,7 +2490,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             for (const call of calls) {
               const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
               const registeredTool = tools.find((tool) => tool.name === call.name);
-              const builtInServer = isImageCall(call.name) ? "Images" : isSessionCall(call.name) ? "Chat context" : call.name === "find_tools"
+              const builtInServer = isArtifactCall(call.name) ? "Artifacts" : isImageCall(call.name) ? "Images" : isSessionCall(call.name) ? "Chat context" : call.name === "find_tools"
                 ? "Auto tools"
                 : isKnowledgeCall(call.name)
                   ? "Knowledge"
@@ -2659,7 +2674,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const hasClientKnowledge = !groundedKnowledgeAnswer && clientToolsEnabled &&
           admittedKnowledgeReady &&
           normalizedRequest.knowledgePlan.mode !== "none";
-        const hasClientTools = (clientToolsEnabled && normalizedRequest.imagePlan !== undefined) || normalizedRequest.sessionStatusTool === true || hasClientKnowledge || hasClientSearch ||
+        const hasClientTools = (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.sessionStatusTool === true || hasClientKnowledge || hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
           normalizedRequest.mcpDiscovery !== undefined ||
           normalizedRequest.workspace !== undefined;

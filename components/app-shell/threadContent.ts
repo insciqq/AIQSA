@@ -1,4 +1,5 @@
 import { decodeThreadGeneratedImage } from "@/lib/contracts/imageGeneration";
+import { decodeThreadGeneratedArtifact } from "@/lib/contracts/chats";
 import { decodeGroundingDisplay } from "../../lib/domain/groundingDisplay";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type {
@@ -117,6 +118,10 @@ export function summarizeThreadArtifacts(
     const image = decodeThreadGeneratedImage(artifactPayload(event));
     return image ? [[image.attachmentId, image] as const] : [];
   })).values()];
+  const generatedArtifacts = [...new Map(events.filter((event) => artifactTypeFromEvent(event) === "generated_artifact").flatMap((event) => {
+    const decoded = decodeThreadGeneratedArtifact(artifactPayload(event));
+    return decoded ? [[decoded.versionId, decoded] as const] : [];
+  })).values()];
   const reasoningText = events
     .filter((event) => artifactTypeFromEvent(event) === "reasoning")
     .map((event) => reasoningTextFromValue(artifactPayload(event)))
@@ -137,6 +142,7 @@ export function summarizeThreadArtifacts(
 
   if (
     generatedImages.length === 0 &&
+    generatedArtifacts.length === 0 &&
     citations.length === 0 &&
     sources.length === 0 &&
     reasoningText.length === 0 &&
@@ -149,6 +155,7 @@ export function summarizeThreadArtifacts(
     citations,
     groundingDisplay: grounding?.display ?? null,
     ...(generatedImages.length ? { generatedImages } : {}),
+    ...(generatedArtifacts.length ? { generatedArtifacts } : {}),
     reasoningText,
     sources
   };

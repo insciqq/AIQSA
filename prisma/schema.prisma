@@ -135,6 +135,27 @@ enum AttachmentOrigin {
   IMAGE_OUTPUT
 }
 
+enum ArtifactKind {
+  html
+  slides
+  game
+  svg
+  chart
+  image
+}
+
+enum ArtifactVersionStatus {
+  PENDING
+  READY
+  FAILED
+}
+
+enum ArtifactPublicationStatus {
+  PENDING
+  READY
+  REVOKED
+}
+
 enum WorkspaceSessionState {
   PENDING
   CREATING
@@ -776,6 +797,8 @@ enum MemoryToolEgressDispatchState {
 
 model User {
   announcementReads AnnouncementRead[]
+  artifacts Artifact[]
+  artifactPublications ArtifactPublication[]
   instructionPresets InstructionPreset[]
   chatContinuations ChatContinuation[]
   id                                  String                             @id @default(uuid())
@@ -869,6 +892,102 @@ model Announcement {
 
   @@index([published, publishedAt, id])
   @@index([createdAt, id])
+}
+
+/// A personal generated browser artifact. V1 intentionally has no Project or group scope.
+model Artifact {
+  id               String                @id @default(uuid())
+  ownerUserId      String
+  sourceChatId     String?
+  title            String                @db.VarChar(240)
+  kind             ArtifactKind
+  currentVersionId String?
+  archivedAt       DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  owner            User                  @relation(fields: [ownerUserId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  versions         ArtifactVersion[]
+  publications     ArtifactPublication[]
+  chatBindings     ArtifactChatBinding[]
+
+  @@index([ownerUserId, updatedAt])
+  @@index([ownerUserId, archivedAt, updatedAt])
+  @@index([sourceChatId])
+}
+
+/// Immutable validated source/bundle metadata. Bytes live in private object storage.
+model ArtifactVersion {
+  id               String                @id @default(uuid())
+  artifactId       String
+  versionNumber    Int
+  title            String                @db.VarChar(240)
+  kind             ArtifactKind
+  entrypoint       String?               @db.VarChar(192)
+  manifest         Json
+  bundleStorageKey String                @unique @db.VarChar(512)
+  checksum         String                @db.Char(64)
+  byteSize         Int
+  status           ArtifactVersionStatus @default(PENDING)
+  sourceModelRunId String?
+  sourceToolCallId String?               @unique
+  failureCode      String?                @db.VarChar(64)
+  createdAt        DateTime              @default(now())
+  readyAt          DateTime?
+  artifact         Artifact              @relation(fields: [artifactId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  publications     ArtifactPublication[]
+  chatBindings     ArtifactChatBinding[]
+
+  @@unique([artifactId, versionNumber])
+  @@unique([artifactId, id])
+  @@index([artifactId, createdAt])
+  @@index([sourceModelRunId])
+  @@index([sourceModelRunId, sourceToolCallId])
+  @@index([status, createdAt])
+}
+
+/// Immutable anonymous publication of one ready version. Only token hash is persisted.
+model ArtifactPublication {
+  id                String                    @id @default(uuid())
+  ownerUserId       String
+  artifactId        String
+  artifactVersionId String
+  tokenHash         String                    @unique @db.Char(64)
+  bundleStorageKey  String                    @unique @db.VarChar(512)
+  publicManifest    Json
+  title             String                    @db.VarChar(240)
+  kind              ArtifactKind
+  checksum          String                    @db.Char(64)
+  byteSize          Int
+  status            ArtifactPublicationStatus @default(PENDING)
+  expiresAt         DateTime?
+  revokedAt         DateTime?
+  createdAt         DateTime                  @default(now())
+  owner             User                      @relation(fields: [ownerUserId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  artifact          Artifact                  @relation(fields: [artifactId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  artifactVersion   ArtifactVersion           @relation(fields: [artifactVersionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@index([ownerUserId, createdAt])
+  @@index([artifactId, createdAt])
+  @@index([artifactVersionId])
+  @@index([status, expiresAt])
+}
+
+/// The exact artifact version available as bounded context in one personal chat.
+/// A continuation copies this row to the destination chat; the artifact bytes
+/// remain owned by ArtifactVersion and are never duplicated.
+model ArtifactChatBinding {
+  artifactId String
+  chatId     String
+  versionId  String
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+  artifact   Artifact        @relation(fields: [artifactId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  chat       Chat            @relation(fields: [chatId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  version    ArtifactVersion @relation(fields: [artifactId, versionId], references: [artifactId, id], onDelete: Cascade, onUpdate: Restrict, map: "ArtifactChatBinding_version_fkey")
+
+  @@id([artifactId, chatId])
+  @@index([chatId, updatedAt])
+  @@index([versionId])
 }
 
 model AnnouncementRead {
@@ -2748,6 +2867,7 @@ model SearchIntegrationRevision {
 }
 
 model Chat {
+  artifactBindings  ArtifactChatBinding[]
   continuations      ChatContinuation[] @relation("SourceChatContinuation")
   continuationSource ChatContinuation?  @relation("ContinuedChat")
   continuationWorkspaceSeeds ChatContinuationWorkspaceSeed[] @relation("ContinuationWorkspaceSeedSource")

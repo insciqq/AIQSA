@@ -5,6 +5,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { sessionStatusTool } from "../tools/sessionStatus";
+import { artifactTool } from "../tools/artifact";
 import { mixedToolsImagePlan, openRouterMixedTools } from "@/tests/support/openRouterTools";
 import {
   MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
@@ -1409,6 +1410,38 @@ const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
 };
 
 describe("run execution", () => {
+  it("persists and executes an admitted artifact tool and projects its ready version", async () => {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const prepared = { ...base,
+      normalizedRequest: { ...base.normalizedRequest, artifactTool: true as const },
+      providerRequest: { ...base.providerRequest, artifactTool: true as const, tools: [artifactTool()] }
+    };
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const payload = { artifact_id: "artifact-1", version_id: "version-1", version_number: 1, kind: "html", title: "Counter", entrypoint: "index.html" };
+    const execute = vi.fn<NonNullable<RunExecutionInput["artifacts"]>["execute"]>(async (call, context) => {
+      expect(context.persistedToolCallId).toBe("persisted-tool-call-1");
+      expect(context.userId).toBe("user-1");
+      return { callId: call.id, name: call.name, status: "complete", content: [{ type: "json", value: payload }],
+        artifacts: [{ type: "artifact", data: { artifactType: "generated_artifact", payload } }] };
+    });
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: {
+        intent: "create", kind: "html", title: "Counter", entrypoint: "index.html",
+        files: [{ path: "index.html", mimeType: "text/html", text: "<h1>Counter</h1>" }]
+      }, id: "artifact-call", name: "create_artifact" }] });
+      return providerResult({ finalText: "Saved your artifact." });
+    });
+    const events = parseSse(await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository }),
+      artifacts: { execute, restore: async () => null } }).text(), true);
+    expect(repository.failedRuns).toEqual([]);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(2);
+    expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ toolName: "create_artifact", state: "complete" })]);
+    expect(events).toContainEqual(expect.objectContaining({ type: "artifact", data: expect.objectContaining({ artifactType: "generated_artifact" }) }));
+    expect(repository.completeRuns).toHaveLength(1);
+  });
   it.each(["before_dispatch", "during_runtime_preparation", "after_first_call"] as const)("applies MCP revocation %s without stale schema exposure or extra calls", async (when) => {
     const namespacedName = "mcp_tracker_write";
     const fingerprint = "access-fingerprint";

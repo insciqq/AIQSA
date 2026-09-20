@@ -114,6 +114,10 @@ export type NormalizedRunWorkspace = Readonly<{
 
 export type NormalizedRunRequest = {
   agent?: import("../agents/config").NormalizedRunAgent;
+  /** Server-admitted provider-neutral browser artifact tool. */
+  artifactTool?: true;
+  /** Exact owner-authorized edit bases whose source was supplied at admission. */
+  artifactReferences?: readonly import("../../contracts/artifacts").ArtifactReference[];
   /** Owner selection fenced at initial acceptance; texts live in prompt. */
   instructionPreset?: Readonly<{ presetId: string | null; revision: number | null; selectionVersion: number }>;
   imagePlan?: import("../providerRuntime/imageModelRole").AcceptedImageGenerationPlan;

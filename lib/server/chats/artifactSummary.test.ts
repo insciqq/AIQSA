@@ -9,6 +9,23 @@ import { summarizeThreadArtifacts } from "../../../components/app-shell/threadCo
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 
 describe("summarizeMessageRunArtifacts", () => {
+  it("reloads a generated artifact receipt after durable projection", () => {
+    const event = projectRunOutputArtifactEvent({ type: "artifact", data: {
+      artifactType: "generated_artifact",
+      payload: {
+        artifact_id: "artifact-1", entrypoint: "index.html", kind: "slides",
+        title: "Roadmap", version_id: "version-1", version_number: 2,
+        providerPrivateField: "must be dropped"
+      }
+    } })!;
+    const live = summarizeThreadArtifacts([event]);
+    const reloaded = summarizeMessageRunArtifacts({
+      events: [{ eventType: "artifact", payload: event.data }], searchRuns: []
+    });
+    expect(reloaded?.generatedArtifacts).toEqual(live?.generatedArtifacts);
+    expect(JSON.stringify(reloaded)).not.toContain("providerPrivateField");
+  });
+
   it("reloads the same safe Gemini display and citations as the live stream", () => {
     const event = projectRunOutputArtifactEvent({ type: "grounding_display", data: {
       provider: "gemini",

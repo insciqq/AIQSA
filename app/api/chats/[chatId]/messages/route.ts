@@ -1,5 +1,6 @@
 import { agentPolicyRepository } from "@/lib/server/agents/defaultPolicy";
 import { imageGenerationForStorage } from "@/lib/server/images/defaultImages";
+import { artifactServiceForStorage } from "@/lib/server/artifacts/defaultArtifacts";
 import { getDefaultChatPdf } from "@/lib/server/uploads/defaultChatPdf";
 import { getDefaultWorkspaceFollowup } from "@/lib/server/runs/defaultWorkspaceFollowup";
 import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
@@ -49,6 +50,7 @@ export const POST: AsyncRouteHandler<ReturnType<typeof createSendMessageHandler>
   knowledgeExecutor: knowledgeToolExecutor,
   knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle,
   images: imageGenerationForStorage(storage),
+  artifacts: artifactServiceForStorage(storage),
   memoryEgress: defaultMemoryToolEgressReceiptService,
   mcp: defaultMcpRunPlan,
   chatPdf: getDefaultChatPdf(),

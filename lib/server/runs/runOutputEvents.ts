@@ -10,6 +10,7 @@ import { safeExternalHref } from "../../domain/links";
 import { projectThreadSearchSources } from "../../domain/searchSources";
 import { decodeSessionContextStatus, type SessionContextStatus } from "../../contracts/sessionStatus";
 import { decodeThreadGeneratedImage, type ThreadGeneratedImage } from "../../contracts/imageGeneration";
+import { decodeThreadGeneratedArtifact } from "../../contracts/chats";
 
 const citationTitleLimit = 500;
 const citationSnippetLimit = 2_000;
@@ -26,7 +27,17 @@ type RunOutputCitation = {
   url: string;
 };
 
+type RunOutputGeneratedArtifact = {
+  artifactId: string;
+  entrypoint: string | null;
+  kind: "chart" | "game" | "html" | "image" | "slides" | "svg";
+  title: string;
+  versionId: string;
+  versionNumber: number;
+};
+
 export type RunOutputArtifactEvent =
+  | { type: "artifact"; data: { artifactType: "generated_artifact"; payload: RunOutputGeneratedArtifact } }
   | { type: "artifact"; data: { artifactType: "image"; payload: ThreadGeneratedImage } }
   | { type: "artifact"; data: { artifactType: "context_status"; payload: SessionContextStatus } }
   | { type: "grounding_display"; data: GroundingDisplay }
@@ -139,6 +150,21 @@ function projectSearchSources(value: unknown): ThreadSearchSource[] {
   return action ? projectThreadSearchSources(action.sources) : [];
 }
 
+function projectGeneratedArtifact(value: unknown): RunOutputGeneratedArtifact | null {
+  const decoded = decodeThreadGeneratedArtifact(value);
+  if (!decoded || decoded.artifactId.length > 128 || decoded.versionId.length > 128 ||
+    decoded.title.length > 240 || decoded.versionNumber > 2_147_483_647 ||
+    decoded.entrypoint !== null && decoded.entrypoint.length > 192) return null;
+  return {
+    artifactId: decoded.artifactId,
+    entrypoint: decoded.entrypoint,
+    kind: decoded.kind,
+    title: decoded.title,
+    versionId: decoded.versionId,
+    versionNumber: decoded.versionNumber
+  };
+}
+
 function isExactCitation(value: unknown): value is RunOutputCitation {
   if (!isRecord(value) ||
     !hasOnlyKeys(value, ["index", "snippet", "source", "title", "url"])) return false;
@@ -194,6 +220,11 @@ export function projectRunOutputArtifactEvent(
   if (event.data.artifactType === "image") {
     const payload = decodeThreadGeneratedImage(event.data.payload);
     return payload ? { type: "artifact", data: { artifactType: "image", payload } } : null;
+  }
+
+  if (event.data.artifactType === "generated_artifact") {
+    const payload = projectGeneratedArtifact(event.data.payload);
+    return payload ? { type: "artifact", data: { artifactType: "generated_artifact", payload } } : null;
   }
 
   if (event.data.artifactType === "citation") {
@@ -261,6 +292,9 @@ export function isRunOutputArtifactEvent(
   if (event.type !== "artifact" ||
     !hasOnlyKeys(event.data, ["artifactType", "payload"])) return false;
 
+  if (event.data.artifactType === "generated_artifact") return isRecord(event.data.payload) &&
+    hasOnlyKeys(event.data.payload, ["artifactId", "entrypoint", "kind", "title", "versionId", "versionNumber"]) &&
+    projectGeneratedArtifact(event.data.payload) !== null;
   if (event.data.artifactType === "image") return decodeThreadGeneratedImage(event.data.payload) !== null;
   if (event.data.artifactType === "context_status") {
     return decodeSessionContextStatus(event.data.payload) !== null;

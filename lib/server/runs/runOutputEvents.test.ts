@@ -114,6 +114,30 @@ describe("durable run output events", () => {
     expect(reasoning && isRunOutputArtifactEvent(reasoning)).toBe(true);
   });
 
+  it("projects a bounded generated artifact receipt without exposing bundle contents", () => {
+    const raw: ModelRunSseEvent = {
+      type: "artifact",
+      data: {
+        artifactType: "generated_artifact",
+        payload: {
+          artifact_id: "artifact-1",
+          entrypoint: "index.html",
+          kind: "game",
+          title: "Tiny game",
+          version_id: "version-1",
+          version_number: 1,
+          privateBundle: "should not cross the boundary"
+        }
+      }
+    };
+    const projected = projectRunOutputArtifactEvent(raw);
+    expect(projected).toEqual({ type: "artifact", data: { artifactType: "generated_artifact", payload: {
+      artifactId: "artifact-1", entrypoint: "index.html", kind: "game", title: "Tiny game", versionId: "version-1", versionNumber: 1
+    } } });
+    expect(projected && isRunOutputArtifactEvent(projected)).toBe(true);
+    expect(JSON.stringify(projected)).not.toContain("privateBundle");
+  });
+
   it("retains only normalized safe sources from hosted-search events", () => {
     const rawEvent: ModelRunSseEvent = {
       data: {

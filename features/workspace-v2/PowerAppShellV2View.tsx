@@ -1,5 +1,8 @@
 "use client";
 
+import { appendArtifactDraft } from "@/components/artifacts/artifactDraft";
+import { prepareArtifactEdit } from "@/components/artifacts/artifactClient";
+import { composerSessionKey, useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
 import { AnnouncementsProvider } from "@/components/announcements/AnnouncementsProvider";
 
 import { ANSWER_SOUNDS } from "@/lib/contracts/answerSound";
@@ -335,6 +338,7 @@ export function SkillLibraryOverlayV2({
 export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const { branches, composer, overlays, session, settings, thread, workspace } = props;
   const refreshThreadLayout = thread.refreshLayout;
+  const artifactFixRequestRef = useRef<string | null>(null);
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
   const [projectsSurfaceOpen, setProjectsSurfaceOpen] = useState(false);
@@ -354,6 +358,35 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [composerLayer, setComposerLayer] = useState<ComposerV2Layer>(null);
   const [workspaceResetOpen, setWorkspaceResetOpen] = useState(false);
   const [exportHistoryChatId, setExportHistoryChatId] = useState<string | null>(null);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const intent = url.searchParams.get("artifactEdit");
+    if (intent !== "edit" && intent !== "runtime_error") return;
+    const chatId = url.searchParams.get("chat");
+    if (!chatId || session.activeChatId !== chatId || thread.activeChatDetailLoading) return;
+    const artifactId = url.searchParams.get("artifactId")?.trim() ?? "";
+    const versionId = url.searchParams.get("versionId")?.trim() ?? "";
+    if (!artifactId || !versionId || /[\u0000-\u001f\u007f]/u.test(artifactId + versionId) || artifactId.length > 256 || versionId.length > 256) return;
+    const requestKey = `${chatId}:${artifactId}:${versionId}:${intent}`;
+    if (artifactFixRequestRef.current === requestKey) return;
+    let active = true;
+    void prepareArtifactEdit(artifactId, versionId, chatId).then(() => {
+      if (!active || useWorkspaceStore.getState().activeChatId !== chatId) return;
+      artifactFixRequestRef.current = requestKey;
+      appendArtifactDraft(chatId, intent === "runtime_error"
+        ? `Fix the client-side runtime error in the current artifact. Preserve its existing files and images.`
+        : `Update the current artifact. Preserve its existing files and images. Apply this change: `);
+      const currentUrl = new URL(window.location.href);
+      for (const key of ["artifactEdit", "artifactId", "versionId"]) currentUrl.searchParams.delete(key);
+      window.history.replaceState(window.history.state, "", `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`);
+    }).catch((error: unknown) => {
+      if (!active) return;
+      useComposerSessionStore.getState().updateSession(composerSessionKey(chatId), {
+        operationError: error instanceof Error ? error.message : "Could not prepare this artifact for editing."
+      });
+    });
+    return () => { active = false; };
+  }, [session.activeChatId, thread.activeChatDetailLoading]);
   const mcpServers = useMcpSettingsStore((state) => state.servers);
   const skillCatalog = useSkillLibraryStore((state) => state.data);
   const mcpSelection = useComposerControlStore((state) => state.mcpSelection);
@@ -1050,7 +1083,23 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         actionsSlot={settled
           ? <>
               <SentAttachmentsV2 blocks={copiedAttachments} canSave={!projectContext && !temporarySession} />
-              <AnswerOutputsV2 artifact={artifact} canSaveFiles={!projectContext && !temporarySession} workspaceOutputStatus={workspaceActivity?.outputStatus ?? null} />
+              <AnswerOutputsV2
+                artifact={artifact}
+                canSaveFiles={!projectContext && !temporarySession}
+                onEditArtifact={projectContext || temporarySession ? undefined : async (generated) => {
+                  const chatId = session.activeChatId;
+                  if (!chatId) return;
+                  await prepareArtifactEdit(generated.artifactId, generated.versionId, chatId);
+                  appendArtifactDraft(chatId, `Update the artifact "${generated.title}" from version ${generated.versionNumber}. Preserve its existing files and images. Apply this change: `);
+                }}
+                onUseImageInArtifact={projectContext || temporarySession || !composer.reuseFile ? undefined : async (attachmentId) => {
+                  const chatId = session.activeChatId;
+                  if (chatId && await composer.reuseFile?.(attachmentId, "Generated image.png")) {
+                    appendArtifactDraft(chatId, "Create an artifact using the attached image. Make it self-contained and ready to preview. ");
+                  }
+                }}
+                workspaceOutputStatus={workspaceActivity?.outputStatus ?? null}
+              />
             </>
           : null}
         anchorId={source.id}

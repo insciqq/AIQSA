@@ -41,9 +41,10 @@ function continuationDetail(): ChatDetail {
 }
 
 describe("opening a continuation", () => {
-  afterEach(() => { vi.unstubAllGlobals(); sessionStorage.clear(); resetComposerControlStoreForTest(); });
+  afterEach(() => { vi.unstubAllGlobals(); sessionStorage.clear(); resetComposerControlStoreForTest(); window.history.replaceState(null, "", "/"); });
 
   it("opens the summary, preserves controls and moves current text and attachments with their handoff", async () => {
+    window.history.replaceState(null, "", "/?chat=chat-a&message=source-message&artifactEdit=edit&artifactId=artifact&versionId=version");
     const attachments: ComposerAttachment[] = [{ id: "one", fileName: "one.pdf", kind: "pdf" }, { id: "two", fileName: "two.pdf", kind: "pdf" }];
     const setup = useWorkspaceActionsForTest({ attachments, draft: "Unsent source draft" });
     const source = composerSessionKey("chat-a");
@@ -65,6 +66,7 @@ describe("opening a continuation", () => {
     await expect(opening).resolves.toBe(true);
     expect(fetch).not.toHaveBeenCalled();
     expect(useWorkspaceStore.getState().activeChatId).toBe("continuation");
+    expect(window.location.search).toBe("?chat=continuation");
     expect(useWorkspaceStore.getState().chats.find((chat) => chat.id === "continuation")).toMatchObject({ memoryMode: "TEMPORARY", hasContinuationSource: true });
     expect(useWorkspaceStore.getState().navigationChats.some((chat) => chat.id === "continuation")).toBe(false);
     expect(setup.session(source)).toMatchObject({ draft: "", attachments: [] });

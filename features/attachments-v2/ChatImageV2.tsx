@@ -1,13 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Download, X } from "lucide-react";
 import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
 import { SaveFileButtonV2 } from "./SaveFileButtonV2";
 
-type ImageProps = Readonly<{ attachmentId: string; label: string; canSave?: boolean; width?: number; height?: number }>;
+type ImageProps = Readonly<{ attachmentId: string; label: string; canSave?: boolean; onUseInArtifact?(): void | Promise<void>; width?: number; height?: number }>;
 
 function ImageViewer({ attachmentId, label, onClose }: ImageProps & { onClose(): void }) {
   const { portalReady, onDialogKeyDown, dialogRef, initialFocusRef } = useModalLayerV2({ onClose });
@@ -26,9 +26,19 @@ function ImageViewer({ attachmentId, label, onClose }: ImageProps & { onClose():
   </div>, document.body);
 }
 
-export function ChatImageV2({ attachmentId, label, canSave = false, width, height }: ImageProps) {
+export function ChatImageV2({ attachmentId, label, canSave = false, onUseInArtifact, width, height }: ImageProps) {
   const [open, setOpen] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [using, setUsing] = useState(false);
+  const [useFailed, setUseFailed] = useState(false);
+  const pending = useRef(false);
+  async function attachToArtifact() {
+    if (pending.current) return;
+    pending.current = true; setUsing(true); setUseFailed(false);
+    try { await onUseInArtifact?.(); }
+    catch { setUseFailed(true); }
+    finally { pending.current = false; setUsing(false); }
+  }
   const href = attachmentDownloadHref(attachmentId);
   return <figure className="v2-chat-image" data-testid="chat-image">
     {failed ? <p role="status">Image preview unavailable</p> : <button aria-label={`Open image: ${label}`} className="v2-chat-image-preview v2-focusable" onClick={() => setOpen(true)} type="button">
@@ -36,7 +46,9 @@ export function ChatImageV2({ attachmentId, label, canSave = false, width, heigh
       <img alt={label} height={height} loading="lazy" onError={() => setFailed(true)} src={`${href}?preview=image`} width={width} />
     </button>}
     <figcaption><a className="v2-focusable" download href={href}><Download aria-hidden="true" size={14} /> Download</a>
+      {onUseInArtifact ? <button className="v2-focusable v2-chat-image-use" disabled={using} onClick={() => void attachToArtifact()} type="button">{using ? "Attaching…" : "Use in artifact"}</button> : null}
       {canSave ? <SaveFileButtonV2 attachmentId={attachmentId} /> : null}</figcaption>
+    {useFailed ? <p role="status">Could not attach this image. Try again.</p> : null}
     {open ? <ImageViewer attachmentId={attachmentId} label={label} onClose={() => setOpen(false)} /> : null}
   </figure>;
 }

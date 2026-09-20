@@ -1,5 +1,6 @@
 import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
+import { artifactServiceForStorage } from "@/lib/server/artifacts/defaultArtifacts";
 import { createArchiveChatHandler, createGetChatHandler, createUpdateChatHandler } from "@/lib/server/chats/handlers";
 import { createPrismaChatRepository } from "@/lib/server/chats/prismaRepository";
 import { providerRuntimeResolver } from "@/lib/server/providerRuntime/defaultRuntime";
@@ -25,6 +26,7 @@ export const GET: AsyncRouteHandler<ReturnType<typeof createGetChatHandler>> = c
       knowledgeAdmission: knowledgeRunAdmissionService,
       knowledgeExecutor: knowledgeToolExecutor,
       knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle,
+      artifacts: artifactServiceForStorage(storage),
       memoryEgress: defaultMemoryToolEgressReceiptService,
       mcp: defaultMcpRunPlan,
       providerRuntime: providerRuntimeResolver,
