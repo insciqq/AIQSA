@@ -12,6 +12,30 @@ afterEach(() => {
 });
 
 describe("usePersonalChatDeepLink", () => {
+  it("opens an artifact's source chat without requiring a message anchor", async () => {
+    window.history.replaceState(null, "", "/?chat=artifact-chat&artifactEdit=edit&artifactId=artifact&versionId=version");
+    const activateChat = vi.fn(async () => true);
+    const revealMessage = vi.fn(async () => true);
+    const onAnchor = vi.fn();
+    const onUnavailable = vi.fn();
+    const { rerender } = renderHook(() => usePersonalChatDeepLink({ activateChat, revealMessage, onAnchor, onUnavailable, ready: true }));
+    await waitFor(() => expect(activateChat).toHaveBeenCalledWith("artifact-chat"));
+    rerender();
+    expect(activateChat).toHaveBeenCalledOnce();
+    expect(revealMessage).not.toHaveBeenCalled();
+    expect(onAnchor).not.toHaveBeenCalled();
+    expect(onUnavailable).not.toHaveBeenCalled();
+    expect(window.location.search).toContain("artifactEdit=edit");
+  });
+
+  it("fails closed when a plain chat link cannot be opened", async () => {
+    window.history.replaceState(null, "", "/?chat=unavailable&keep=yes");
+    const onUnavailable = vi.fn();
+    renderHook(() => usePersonalChatDeepLink({ activateChat: vi.fn(async () => false), revealMessage: vi.fn(async () => true), onAnchor: vi.fn(), onUnavailable, ready: true }));
+    await waitFor(() => expect(onUnavailable).toHaveBeenCalledOnce());
+    expect(window.location.search).toBe("?keep=yes");
+  });
+
   it("opens and anchors an explicit Library file source only after it is revealed", async () => {
     const activateChat = vi.fn(async () => true);
     const revealMessage = vi.fn(async () => true);

@@ -1,4 +1,5 @@
 import { imageGenerationTool, imageReferenceInstructions } from "../tools/imageGeneration";
+import { artifactTool } from "../tools/artifact";
 import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
 import type { AssistantIdentity } from "../../contracts/assistants";
 import { isChatPdfPolicyUnavailableError, type ChatPdfAttachmentAdmission, type ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
@@ -144,6 +145,7 @@ type RunPreparationRepository = Pick<
 > & Partial<Pick<RunRepository, "loadKnowledgeFullContextPassages">>;
 
 export type RunPreparationDeps = Readonly<{
+  artifacts?: import("../artifacts/service").ArtifactService;
   images?: import("../images/service").ImageGenerationService;
   allowFakeProvider?: boolean;
   assistants?: AssistantRunResolver;
@@ -1632,6 +1634,8 @@ export async function prepareRun(
 
   const imagePlan = !agentEnabled && body?.tools !== "none" && modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider })
     ? await deps.images?.resolve() ?? null : null;
+  const artifactToolAvailable = !project && resolvedChatMode.mode !== "TEMPORARY" && !agentEnabled && body?.tools !== "none" && Boolean(deps.artifacts) &&
+    modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
   let pdfRoute: ChatPdfRouteAdmission | undefined;
   let chatPdfAdmissions: ChatPdfAttachmentAdmission[] = [];
   let attachments: ProviderAttachment[];
@@ -1715,12 +1719,33 @@ export async function prepareRun(
 
   const referenceMessages = [...contextMessages, { id: input.source.kind === "send" ? "current" : input.source.source.userMessage.id, role: "user" as const, content }];
   const imageReferenceIds = [...new Set(referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks)))].slice(-256);
-  const imageRecords = imagePlan && imageReferenceIds.length ? await deps.repository.loadAttachments(input.userId, imageReferenceIds, project?.projectId) : [];
+  const imageRecords = (imagePlan || artifactToolAvailable) && imageReferenceIds.length
+    ? await deps.repository.loadAttachments(input.userId, imageReferenceIds, project?.projectId)
+    : [];
   const imageReferences = referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks).flatMap((id) => {
     const row = imageRecords.find((entry) => entry.id === id && entry.kind === "image" && entry.status === "ready");
     return row ? [{ attachmentId: id, messageId: message.id, fileName: row.fileName, origin: message.role === "assistant" ? "generated" as const : "upload" as const }] : [];
   })).slice(-256);
-  if (imagePlan) prompt = { ...prompt, system: [prompt.system, imageReferenceInstructions(imageReferences, modelCapabilities.vision === true)].filter(Boolean).join("\n\n") };
+  if (imagePlan || artifactToolAvailable) {
+    const imageGuidance = imageReferenceInstructions(imageReferences, modelCapabilities.vision === true);
+    const artifactImageGuidance = artifactToolAvailable
+      ? "When an artifact includes a conversation image, use its exact image_id as the file asset_ref. The server will verify ownership and copy the bytes; never use a URL, filename, or invented identifier."
+      : "";
+    prompt = { ...prompt, system: [prompt.system, imageGuidance, artifactImageGuidance].filter(Boolean).join("\n\n") };
+  }
+  let artifactReferences: NormalizedRunRequest["artifactReferences"];
+  if (artifactToolAvailable && deps.artifacts) {
+    const artifactContext = await deps.artifacts.contextForChat({ chatId: chat.id, ownerUserId: input.userId }).catch(() => []);
+    if (artifactContext.length > 0) {
+      artifactReferences = artifactContext.map((artifact) => ({ artifactId: artifact.artifact_id, versionId: artifact.base_version_id }));
+      prompt = {
+        ...prompt,
+        system: [prompt.system,
+          "Artifacts already created in this chat are private server-owned context. For an edit, use intent=update and the exact base_version_id; preserve useful files unless the user asks to replace them. Never invent asset references or URLs.\n" + JSON.stringify(artifactContext)
+        ].filter(Boolean).join("\n\n")
+      };
+    }
+  }
   let agent: NormalizedRunAgent | undefined;
   if (agentEnabled) {
     let limits: ReturnType<typeof agentLimits>;
@@ -1747,9 +1772,12 @@ export async function prepareRun(
   }
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(agent ? { agent } : {}),
+    ...(artifactToolAvailable ? { artifactTool: true as const } : {}),
+    ...(artifactReferences?.length ? { artifactReferences } : {}),
     ...(personalInstructions ? { instructionPreset: { presetId: personalInstructions.presetId,
       revision: personalInstructions.revision, selectionVersion: personalInstructions.selectionVersion } } : {}),
-    ...(imagePlan ? { imagePlan, imageReferences } : {}),
+    ...(imagePlan ? { imagePlan } : {}),
+    ...(imageReferences.length > 0 ? { imageReferences } : {}),
     ...(modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
       modelId: executionModelId, provider: executionProvider
     }) === true ? { sessionStatusTool: true as const } : {}),
@@ -1838,6 +1866,7 @@ export async function prepareRun(
     ...(baseNormalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
         ...(imagePlan ? [imageGenerationTool(imagePlan)] : []),
+        ...(baseNormalizedRequest.artifactTool ? [artifactTool()] : []),
         ...plannedSearchTools,
         ...(mcpDiscoveryEnabled ? [mcpFindToolsTool] : []),
         ...mcpRunTools(baseNormalizedRequest.mcp),

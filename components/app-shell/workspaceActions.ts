@@ -1333,6 +1333,15 @@ export function useWorkspaceActions({
       if (useComposerSessionStore.getState().moveUnsentInputIfTargetEmpty(sourceKey, composerSessionKey(chat.id))) {
         clearSessionExpiredDraftForSession(sourceKey);
       }
+      // A continued chat opened from an artifact/message link must also
+      // survive refresh without reopening the source conversation.
+      const url = new URL(window.location.href);
+      if (url.searchParams.has("chat")) {
+        url.searchParams.set("chat", chat.id);
+        url.searchParams.delete("message");
+        for (const key of ["artifactEdit", "artifactId", "versionId"]) url.searchParams.delete(key);
+        window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+      }
       return true;
     },
     activateBlankWorkspace,

@@ -16,6 +16,7 @@ import {
 } from "../knowledge/toolResult";
 
 const artifactTypes = new Set([
+  "generated_artifact",
   "image",
   "citation",
   "context_truncated",

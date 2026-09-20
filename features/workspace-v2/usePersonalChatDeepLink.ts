@@ -94,7 +94,7 @@ export function usePersonalChatDeepLink({
     const chatId = boundedId(rawChatId);
     const messageId = boundedId(rawMessageId);
     const key = `${rawChatId ?? ""}\u0000${rawMessageId ?? ""}`;
-    if (!chatId || !messageId) {
+    if (!chatId || rawMessageId !== null && !messageId) {
       if (requestRef.current?.key === key) return;
       requestRef.current = { key, phase: "handled" };
       url.searchParams.delete("chat");
@@ -111,15 +111,15 @@ export function usePersonalChatDeepLink({
       let revealed = false;
       try {
         const opened = await activateChat(chatId);
-        revealed = opened && await revealMessage(chatId, messageId);
+        revealed = opened && (!messageId || await revealMessage(chatId, messageId));
       } catch {
         revealed = false;
       }
       if (requestRef.current !== request) return;
       request.phase = "handled";
-      if (revealed) {
+      if (revealed && messageId) {
         onAnchor(chatId, messageId);
-      } else {
+      } else if (!revealed) {
         const currentUrl = new URL(window.location.href);
         if (
           currentUrl.searchParams.get("chat") === rawChatId &&

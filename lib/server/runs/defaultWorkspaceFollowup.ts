@@ -1,4 +1,5 @@
 import { imageGenerationForStorage } from "../images/defaultImages";
+import { artifactServiceForStorage } from "../artifacts/defaultArtifacts";
 import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
 import { knowledgeRunAdmissionService } from "../knowledge/runAdmission";
 import { knowledgeToolExecutor } from "../knowledge/defaultRetrieval";
@@ -27,6 +28,7 @@ function createDefaultWorkspaceFollowup() {
     registry: activeRunControllerRegistry, repository: followups,
     continueRun: createWorkspaceFollowupContinuation({
       images: imageGenerationForStorage(storage), chatTitleGenerator: createPrismaChatTitleGenerator(),
+      artifacts: artifactServiceForStorage(storage),
       knowledgeAdmission: knowledgeRunAdmissionService, knowledgeExecutor: knowledgeToolExecutor,
       knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle, memoryEgress: defaultMemoryToolEgressReceiptService,
       mcp: defaultMcpRunPlan, providerAdmission: providerAdmissionService, providerRuntime: providerRuntimeResolver,

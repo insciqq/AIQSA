@@ -1,6 +1,7 @@
 import { sumTokenUsage } from "../../domain/usage";
 import { chatTitleMetadataSelect, chatTitlePending } from "./titleMetadata";
 import { decodeThreadGeneratedImage } from "../../contracts/imageGeneration";
+import { decodeThreadGeneratedArtifact } from "../../contracts/chats";
 import { projectGroundingDisplay } from "../runs/runOutputEvents";
 import { decodeSessionContextStatus } from "../../contracts/sessionStatus";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
@@ -1244,6 +1245,13 @@ export function summarizeMessageRunArtifacts(
         }]
       : []
   );
+  const generatedArtifacts = [...new Map(run.events
+    .filter((event) => artifactType(event.payload) === "generated_artifact")
+    .map((event) => {
+      const decoded = decodeThreadGeneratedArtifact(artifactInnerPayload(event.payload));
+      return decoded ? [decoded.versionId, decoded] as const : null;
+    })
+    .filter((entry): entry is readonly [string, NonNullable<typeof entry>[1]] => Boolean(entry))).values()];
 
   const knowledgeRuns = (run.knowledgeRuns ?? [])
     .filter((knowledgeRun) =>
@@ -1292,6 +1300,7 @@ export function summarizeMessageRunArtifacts(
     citations.length === 0 &&
     generatedImages.length === 0 &&
     generatedFiles.length === 0 &&
+    generatedArtifacts.length === 0 &&
     sources.length === 0 &&
     reasoningTexts.length === 0 &&
     knowledgeCitations.length === 0 &&
@@ -1307,6 +1316,7 @@ export function summarizeMessageRunArtifacts(
 
   return {
     citations,
+    ...(generatedArtifacts.length > 0 ? { generatedArtifacts } : {}),
     ...(generatedImages.length > 0 ? { generatedImages } : {}),
     ...(generatedFiles.length > 0 ? { generatedFiles } : {}),
     ...(grounding ? { groundingDisplay: { provider: grounding.provider, suggestionsHtml: grounding.suggestionsHtml } } : {}),

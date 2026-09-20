@@ -532,6 +532,8 @@ export type PrismaRunToolLoopOperations = Pick<
 
 const normalizedRequestKeys = new Set([
   "agent",
+  "artifactTool",
+  "artifactReferences",
   "attachmentIds",
   "chatId",
   "content",
@@ -911,7 +913,9 @@ function decodeProviderDispatchRecoveryRequest(
     value.knowledgeSearchInstructionVersion !== undefined && value.knowledgeSearchInstructionVersion !== 2 && value.knowledgeSearchInstructionVersion !== 3 ||
     value.knowledgeQueryAnchorVersion !== undefined && value.knowledgeQueryAnchorVersion !== 2 ||
     value.imagePlan !== undefined && !decodeAcceptedImageGenerationPlan(value.imagePlan) ||
-    value.imageReferences !== undefined && (!value.imagePlan || !Array.isArray(value.imageReferences) || value.imageReferences.length > 256 || value.imageReferences.some((reference) => !isRecord(reference) || !onlyKnownKeys(reference, new Set(["attachmentId", "messageId", "fileName", "origin"])) || !nonBlank(reference.attachmentId, 128) || !nonBlank(reference.messageId, 128) || !nonBlank(reference.fileName, 256) || !["upload", "generated"].includes(String(reference.origin)))) ||
+    (value.artifactTool !== undefined && value.artifactTool !== true) ||
+    (value.artifactReferences !== undefined && (value.artifactTool !== true || !Array.isArray(value.artifactReferences) || value.artifactReferences.length > 8 || value.artifactReferences.some((reference) => !isRecord(reference) || !onlyKnownKeys(reference, new Set(["artifactId", "versionId"])) || !nonBlank(reference.artifactId, 128) || !nonBlank(reference.versionId, 128)))) ||
+    value.imageReferences !== undefined && (!value.imagePlan && value.artifactTool !== true || !Array.isArray(value.imageReferences) || value.imageReferences.length > 256 || value.imageReferences.some((reference) => !isRecord(reference) || !onlyKnownKeys(reference, new Set(["attachmentId", "messageId", "fileName", "origin"])) || !nonBlank(reference.attachmentId, 128) || !nonBlank(reference.messageId, 128) || !nonBlank(reference.fileName, 256) || !["upload", "generated"].includes(String(reference.origin)))) ||
     !validCapabilities(value.modelCapabilities) || !validWorkspace(value.workspace, identity.runId) ||
     (value.sessionStatusTool !== undefined && value.sessionStatusTool !== true) ||
     !isRecord(value.params) || !finiteJson(value.params) ||

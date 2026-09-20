@@ -26,6 +26,7 @@ const publicPrefixes = [
   "/manifest.webmanifest",
   "/login",
   "/s",
+  "/a",
   "/api/health",
   "/api/auth/login",
   "/api/auth/oauth",
@@ -36,6 +37,7 @@ const publicPrefixes = [
   "/api/auth/logout",
   "/api/test/auth-mails",
   "/api/public-shares",
+  "/api/artifact-public",
   // This endpoint authenticates short-lived, run-scoped bearer grants itself.
   "/api/internal/agent",
   "/.well-known/oauth-authorization-server",
@@ -65,18 +67,22 @@ function isPublicPath(
 }
 
 function isPublicSharePath(pathname: string): boolean {
-  return ["/s", "/api/public-shares"].some(
+  return ["/s", "/api/public-shares", "/a", "/api/artifact-public"].some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
   );
 }
 
-function secured(response: NextResponse): NextResponse {
+function secured(response: NextResponse, artifactViewer = false): NextResponse {
   applyRuntimeSecurityHeaders(response.headers);
+  // srcdoc remains available, but a script inside the opaque iframe must not
+  // navigate that frame to the app or an external site. Its own connect-src
+  // policy does not cover document navigation. Enforce this even in HTTP/dev.
+  if (artifactViewer) response.headers.append("Content-Security-Policy", "frame-src 'none'");
   return response;
 }
 
-function securedPublicShare(response: NextResponse): NextResponse {
-  secured(response);
+function securedPublicShare(response: NextResponse, artifactViewer = false): NextResponse {
+  secured(response, artifactViewer);
   applyPublicSharePrivacyHeaders(response.headers);
   return response;
 }
@@ -86,6 +92,9 @@ export function proxyWithEnv(
   env: Record<string, string | undefined>
 ) {
   const { pathname } = request.nextUrl;
+  const artifactViewer = ["/a", "/artifacts"].some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+  );
   const fixturePath = pathname === "/ui-v2-fixture" || pathname.startsWith("/ui-v2-fixture/");
 
   if (fixturePath && !isTestAuthAllowedEnv(env)) {
@@ -111,11 +120,11 @@ export function proxyWithEnv(
 
   if (isPublicPath(pathname, env)) {
     const response = NextResponse.next();
-    return isPublicSharePath(pathname) ? securedPublicShare(response) : secured(response);
+    return isPublicSharePath(pathname) ? securedPublicShare(response, artifactViewer) : secured(response);
   }
 
   if (request.cookies.has(SESSION_COOKIE_NAME)) {
-    return secured(NextResponse.next());
+    return secured(NextResponse.next(), artifactViewer);
   }
 
   if (pathname.startsWith("/api/")) {

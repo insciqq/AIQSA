@@ -1,5 +1,6 @@
 "use client";
 
+import { ArtifactShareDialog } from "@/components/artifacts/ArtifactShareDialog";
 import { ChatImageV2 } from "@/features/attachments-v2/ChatImageV2";
 import { SaveFileButtonV2 } from "@/features/attachments-v2/SaveFileButtonV2";
 
@@ -25,6 +26,7 @@ import {
 } from "@/components/ui-v2";
 import type {
   ThreadArtifactSummary,
+  ThreadGeneratedArtifact,
   ThreadKnowledgeAnswerState,
   ThreadKnowledgeCitation,
   ThreadSearchSource
@@ -534,10 +536,14 @@ export function useAnswerSourcesV2({ artifact, knowledgeReference }: Readonly<{
 export function AnswerOutputsV2({
   artifact,
   canSaveFiles = false,
+  onEditArtifact,
+  onUseImageInArtifact,
   workspaceOutputStatus = null
 }: Readonly<{
   artifact: ThreadArtifactSummary | null;
   canSaveFiles?: boolean;
+  onEditArtifact?(artifact: ThreadGeneratedArtifact): void | Promise<void>;
+  onUseImageInArtifact?(attachmentId: string): void | Promise<void>;
   /** Export state of the run's Workspace outputs; shown above the generated files. */
   workspaceOutputStatus?: ThreadWorkspaceOutputStatus | null;
 }>) {
@@ -549,6 +555,7 @@ export function AnswerOutputsV2({
     artifact.knowledgeState.scope === "partial_sources_ready"
   ));
   const hasGeneratedImages = (artifact?.generatedImages?.length ?? 0) > 0;
+  const hasGeneratedArtifacts = (artifact?.generatedArtifacts?.length ?? 0) > 0;
   const hasGeneratedFiles = (artifact?.generatedFiles?.length ?? 0) > 0;
   const outputStatusCopy = workspaceOutputStatusCopyV2(
     workspaceOutputStatus ?? undefined,
@@ -556,7 +563,7 @@ export function AnswerOutputsV2({
   );
 
   if ((!artifact || (
-    !hasSuggestions && !hasMemoryStatus && !hasKnowledgeState && !hasGeneratedFiles && !hasGeneratedImages
+    !hasSuggestions && !hasMemoryStatus && !hasKnowledgeState && !hasGeneratedFiles && !hasGeneratedImages && !hasGeneratedArtifacts
   )) && !outputStatusCopy) {
     return null;
   }
@@ -575,7 +582,8 @@ export function AnswerOutputsV2({
           {outputStatusCopy}
         </p>
       ) : null}
-      {artifact?.generatedImages?.map((image) => <ChatImageV2 key={image.attachmentId} attachmentId={image.attachmentId} label="Generated image" width={image.width} height={image.height} canSave={canSaveFiles} />)}
+      {artifact?.generatedImages?.map((image) => <ChatImageV2 key={image.attachmentId} attachmentId={image.attachmentId} label="Generated image" width={image.width} height={image.height} canSave={canSaveFiles} onUseInArtifact={onUseImageInArtifact ? () => onUseImageInArtifact(image.attachmentId) : undefined} />)}
+      {hasGeneratedArtifacts ? <GeneratedArtifactsV2 artifacts={artifact?.generatedArtifacts ?? []} onEditArtifact={onEditArtifact} /> : null}
       {hasGeneratedFiles ? (
         <GeneratedFilesV2 canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} />
       ) : null}
@@ -583,6 +591,41 @@ export function AnswerOutputsV2({
         <GeminiSearchSuggestionsV2 html={artifact.groundingDisplay.suggestionsHtml} />
       ) : null}
     </div>
+  );
+}
+
+function artifactKindLabel(kind: ThreadGeneratedArtifact["kind"]): string {
+  return kind === "html" ? "HTML" : kind[0]!.toUpperCase() + kind.slice(1);
+}
+
+function GeneratedArtifactsV2({ artifacts, onEditArtifact }: Readonly<{ artifacts: readonly ThreadGeneratedArtifact[]; onEditArtifact?(artifact: ThreadGeneratedArtifact): void | Promise<void> }>) {
+  const [sharing, setSharing] = useState<ThreadGeneratedArtifact | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const pending = useRef(false);
+  async function edit(artifact: ThreadGeneratedArtifact) {
+    if (pending.current) return;
+    pending.current = true; setEditing(artifact.versionId); setError(null);
+    try { await onEditArtifact?.(artifact); }
+    catch (error) { setError(error instanceof Error ? error.message : "Could not prepare this artifact for editing."); }
+    finally { pending.current = false; setEditing(null); }
+  }
+  return (
+    <section className="v2-generated-files v2-generated-artifacts" aria-label="Generated artifacts">
+      <h3>Generated artifacts</h3>
+      {error ? <p className="v2-generated-artifact-error" role="alert">{error}</p> : null}
+      <ul>{artifacts.map((artifact) => <li key={artifact.versionId}>
+        <UiV2Icon name={artifact.kind === "image" ? "image" : "file"} />
+        <span className="v2-generated-file-copy"><strong title={artifact.title}>{artifact.title}</strong><small>{artifactKindLabel(artifact.kind)} · v{artifact.versionNumber}</small></span>
+        <span className="v2-generated-file-actions">
+          <a className="v2-generated-file-download v2-focusable" href={`/artifacts/${encodeURIComponent(artifact.artifactId)}/versions/${encodeURIComponent(artifact.versionId)}`} target="_blank" rel="noreferrer">Open</a>
+          <a className="v2-generated-file-download v2-focusable" download href={`/api/artifacts/${encodeURIComponent(artifact.artifactId)}/versions/${encodeURIComponent(artifact.versionId)}/content?download=zip`}>Download</a>
+          {onEditArtifact ? <UiV2Button disabled={editing !== null} onClick={() => void edit(artifact)}>{editing === artifact.versionId ? "Preparing…" : "Edit with AI"}</UiV2Button> : null}
+          <UiV2Button onClick={() => setSharing(artifact)}>Share</UiV2Button>
+        </span>
+      </li>)}</ul>
+      {sharing ? <ArtifactShareDialog artifactId={sharing.artifactId} versionId={sharing.versionId} versionNumber={sharing.versionNumber} onClose={() => setSharing(null)} /> : null}
+    </section>
   );
 }
 

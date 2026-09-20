@@ -333,6 +333,10 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
           OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { gt: new Date() } }]
         } });
         if (!operation) throw new ChatContinuationError("chat_changed");
+        // Artifacts are chat context, not part of the summary prose. Carry the
+        // exact ready version that was attached to the source chat into the
+        // destination so the first follow-up can edit it without asking the
+        // model to guess an id or rereading the old chat.
         const newChatId = randomUUID();
         const requestMessageId = randomUUID();
         const messageId = randomUUID();
@@ -348,6 +352,15 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
           } : { userId: source.userId, folderId: chat.folderId }),
           ...(deadline ? { temporaryRetentionDeadline: deadline, temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } : {})
         } });
+        if (!chat.projectId) {
+          await tx.$executeRaw`INSERT INTO "ArtifactChatBinding" ("artifactId", "chatId", "versionId", "createdAt", "updatedAt")
+            SELECT binding."artifactId", ${newChatId}, binding."versionId", NOW(), binding."updatedAt"
+            FROM "ArtifactChatBinding" binding
+            JOIN "Artifact" artifact ON artifact."id" = binding."artifactId"
+            JOIN "ArtifactVersion" version ON version."artifactId" = binding."artifactId" AND version."id" = binding."versionId"
+            WHERE binding."chatId" = ${chat.id} AND artifact."ownerUserId" = ${source.userId}
+              AND artifact."archivedAt" IS NULL AND version."status" = 'READY'`;
+        }
         await tx.chatContinuationWorkspaceSeed.updateMany({ where: { continuationId: claim.id, status: "READY" },
           data: { newChatId, status: "TRANSFERRED" } });
         await tx.chatContinuationWorkspaceSeed.updateMany({ where: { continuationId: claim.id, status: { in: ["NO_SOURCE_DISK", "FAILED"] } },
