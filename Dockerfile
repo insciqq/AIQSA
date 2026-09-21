@@ -71,6 +71,8 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
   && MICROSANDBOX_VERSION="$(node -p "require('./node_modules/microsandbox/package.json').version")" \
   && MICROSANDBOX_MCP_VERSION="$(node -p "require('./node_modules/microsandbox-mcp/package.json').version")" \
   && SSH2_VERSION="$(node -p "require('./node_modules/ssh2/package.json').version")" \
+  && PG_VERSION="$(node -p "require('./node_modules/pg/package.json').version")" \
+  && YAML_VERSION="$(node -p "require('./node_modules/yaml/package.json').version")" \
   && npm pkg delete dependencies devDependencies \
   && npm pkg set \
     "dependencies.@napi-rs/canvas=$CANVAS_VERSION" \
@@ -89,6 +91,8 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
     "dependencies.microsandbox=$MICROSANDBOX_VERSION" \
     "dependencies.microsandbox-mcp=$MICROSANDBOX_MCP_VERSION" \
     "dependencies.ssh2=$SSH2_VERSION" \
+    "dependencies.pg=$PG_VERSION" \
+    "dependencies.yaml=$YAML_VERSION" \
     "dependencies.prisma=$PRISMA_VERSION" \
     "dependencies.tsx=$TSX_VERSION" \
     "dependencies.sharp=$SHARP_VERSION" \
