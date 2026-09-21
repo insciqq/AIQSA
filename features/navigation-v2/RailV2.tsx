@@ -9,12 +9,14 @@ export type RailSectionV2 = "chats" | "library" | "projects";
 function RailButton({
   active = false,
   className = "",
+  disabled = false,
   icon,
   label,
   onClick
 }: Readonly<{
   active?: boolean;
   className?: string;
+  disabled?: boolean;
   icon: UiV2IconName;
   label: string;
   onClick?(): void;
@@ -23,6 +25,7 @@ function RailButton({
     <button
       className={`v2-rail-button v2-focusable ${className}`}
       type="button"
+      disabled={disabled}
       aria-current={active ? "page" : undefined}
       aria-label={label}
       data-tooltip={label}
@@ -50,6 +53,7 @@ export function RailV2({
   accountLabel,
   active,
   adminEntryVisible = false,
+  navigationBusy = false,
   onChats,
   onLibrary,
   onNewChat,
@@ -59,6 +63,7 @@ export function RailV2({
   accountLabel?: string | null;
   active: RailSectionV2;
   adminEntryVisible?: boolean;
+  navigationBusy?: boolean;
   onChats(): void;
   onLibrary?(): void;
   onNewChat(): void;
@@ -67,14 +72,14 @@ export function RailV2({
 }>) {
   return (
     <nav className="v2-rail" aria-label="Workspace" data-testid="workspace-rail">
-      <RailButton className="v2-rail-brand" icon="brand" label="New chat" onClick={onNewChat} />
+      <RailButton disabled={navigationBusy} className="v2-rail-brand" icon="brand" label="New chat" onClick={onNewChat} />
       <div className="v2-rail-group">
-        <RailButton active={active === "chats"} icon="chat" label="Chats" onClick={onChats} />
+        <RailButton disabled={navigationBusy} active={active === "chats"} icon="chat" label="Chats" onClick={onChats} />
         {onProjects ? (
-          <RailButton active={active === "projects"} icon="layers" label="Projects" onClick={onProjects} />
+          <RailButton disabled={navigationBusy} active={active === "projects"} icon="layers" label="Projects" onClick={onProjects} />
         ) : null}
         {onLibrary ? (
-          <RailButton active={active === "library"} icon="library" label="Library" onClick={onLibrary} />
+          <RailButton disabled={navigationBusy} active={active === "library"} icon="studio" label="Studio" onClick={onLibrary} />
         ) : null}
       </div>
       <div className="v2-rail-group v2-rail-bottom">

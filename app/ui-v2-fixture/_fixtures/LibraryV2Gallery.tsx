@@ -8,15 +8,18 @@ import {
   FilesPanelV2,
   KnowledgePanelV2,
   LibraryV2,
+  SectionHeading,
   MemoryPanelV2
 } from "@/features/library-v2/LibraryV2";
 import type {
   LibraryNavigationIntentV2,
-  LibraryTabIdV2
+  LibraryTabIdV2,
+  LibraryTabV2
 } from "@/features/library-v2/contracts";
 import type { MemoryConsumerItem } from "@/lib/contracts/memoryConsumer";
 
 export type LibraryGalleryStateV2 =
+  | "all-sections"
   | "assistants"
   | "dirty"
   | "files"
@@ -177,7 +180,7 @@ const memoryItems: readonly MemoryConsumerItem[] = [
 ];
 
 export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGalleryStateV2 }) {
-  const initialTab: LibraryTabIdV2 = state === "memory-disabled" ? "memory" : state === "dirty" ? "assistants" : state;
+  const initialTab: LibraryTabIdV2 = state === "memory-disabled" ? "memory" : state === "dirty" || state === "all-sections" ? "assistants" : state;
   const [dirty, setDirty] = useState(state === "dirty");
   const [pending, setPending] = useState<Readonly<{
     intent: LibraryNavigationIntentV2;
@@ -223,6 +226,11 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
         }}
         onBack={() => setClosed(true)}
         tabs={[
+          ...(state === "all-sections" ? [
+            { id: "instructions", label: "Instructions" }, { id: "mcp", label: "MCP servers" },
+            { id: "secrets", label: "Secrets" }, { id: "defaults", label: "Chat defaults" },
+            { id: "artifacts", label: "Artifacts" }
+          ].map(tab => ({ ...tab, content: <SectionHeading description="Section composition fixture">{tab.label}</SectionHeading> })) as LibraryTabV2[] : []),
           {
             content: (
               <div>

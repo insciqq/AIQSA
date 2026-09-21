@@ -104,6 +104,7 @@ export type NavigationSidebarProps = Readonly<{
    */
   onLeaveProject?(): void;
   onLibrary?(): void;
+  navigationBusy?: boolean;
   onLoadMore(): void;
   /** Rail/drawer Projects: opens the dedicated Projects section. */
   onProjects?(): void;
@@ -185,6 +186,7 @@ export { flattenFolderTree, type FlattenedFolder };
 
 function ChatRow({
   active,
+  disabled,
   chat,
   chatStateFor,
   editing,
@@ -207,6 +209,7 @@ function ChatRow({
   onSelect
 }: {
   active: boolean;
+  disabled?: boolean;
   chat: ChatNavigationSummaryWire;
   chatStateFor?(chat: ChatNavigationSummaryWire): NavigationChatRowState | null;
   editing?: boolean;
@@ -270,6 +273,7 @@ function ChatRow({
     >
       <button
         aria-current={active ? "page" : undefined}
+        disabled={disabled}
         aria-label={displayTitle}
         aria-level={level}
         aria-selected={active}
@@ -510,6 +514,7 @@ function FolderGroup({
               onRename={props.onRenameChat}
               onSaveRename={props.onSaveChatRename}
               onShare={props.onShare}
+              disabled={props.navigationBusy}
               onSelect={props.onSelectChat}
             />
           ))}
@@ -711,6 +716,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
           <button
             className="v2-new-chat-main v2-focusable"
             type="button"
+            disabled={props.navigationBusy}
             onClick={() => props.onNewChat("NORMAL")}
           >
             <UiV2Icon name="plus" />
@@ -722,6 +728,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               type="button"
               aria-expanded={newChatMenuOpen}
               aria-haspopup="menu"
+              disabled={props.navigationBusy}
               aria-label="New chat mode"
               ref={newChatTriggerRef}
               onClick={() => setNewChatMenuOpen((open) => !open)}
@@ -854,6 +861,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 onRename={props.onRenameChat}
                 onSaveRename={props.onSaveChatRename}
                 onShare={props.onShare}
+                disabled={props.navigationBusy}
                 onSelect={selectChat}
               />
             ))}
@@ -897,6 +905,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                     onRename={props.onRenameChat}
                     onSaveRename={props.onSaveChatRename}
                     onShare={props.onShare}
+                    disabled={props.navigationBusy}
                     onSelect={selectChat}
                   />
                 ))}
@@ -984,13 +993,14 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             <button
               className="v2-navigation-destination v2-focusable"
               type="button"
+              disabled={props.navigationBusy}
               onClick={props.onProjects}
             >
               <UiV2Icon name="layers" /><span>Projects</span>
             </button>
             {props.onLibrary ? (
-              <button className="v2-navigation-destination v2-focusable" type="button" onClick={props.onLibrary}>
-                <UiV2Icon name="library" /><span>Library</span>
+              <button className="v2-navigation-destination v2-focusable" disabled={props.navigationBusy} type="button" onClick={props.onLibrary}>
+                <UiV2Icon name="studio" /><span>Studio</span>
               </button>
             ) : null}
             {props.onSettings ? (
@@ -1098,6 +1108,8 @@ type ReadingRoomShellV2Props = Omit<NavigationSidebarProps,
   children: ReactNode;
   /** Rail "Chats" while another section is open: returns to the chat. */
   onChats?(): void;
+  /** Guards the entire navigation action before changing any surface or drawer. */
+  onRequestNavigation?(proceed: () => void): void;
   /** Mirrors whether the Projects reading surface is open. */
   onProjectsSectionChange?(open: boolean): void;
   /** Optional controlled state for the Projects reading/column destination. */
@@ -1121,6 +1133,7 @@ export function ReadingRoomShellV2({
   chatActive = false,
   children,
   onChats,
+  onRequestNavigation,
   onProjectsSectionChange,
   projectsSectionOpen,
   section = "chats",
@@ -1264,7 +1277,7 @@ export function ReadingRoomShellV2({
   useEffect(() => {
     if (!drawerOpen) return;
     const keydown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       setMobileOpen(false);
       setCompactExpanded(false);
     };
@@ -1309,7 +1322,7 @@ export function ReadingRoomShellV2({
     };
     focusInitialControl();
     const trapFocus = (event: KeyboardEvent) => {
-      if (event.key !== "Tab") return;
+      if (event.key !== "Tab" || event.defaultPrevented || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       const items = focusable();
       const first = items[0];
       const last = items.at(-1);
@@ -1348,6 +1361,11 @@ export function ReadingRoomShellV2({
     if (composition === "desktop") setDesktopCollapsed(true);
     else closeDrawers();
   };
+  const requestNavigation = (proceed: () => void) => {
+    if (navigationOwnerProps.navigationBusy) return;
+    if (section === "library" && onRequestNavigation) onRequestNavigation(proceed);
+    else proceed();
+  };
   const projectSlot = navigationOwnerProps.projectsSlot;
   const navigationProjectsSlot = typeof projectSlot === "function"
     ? (_onNavigate: () => void, options: Readonly<{ landing: boolean }>) => projectSlot(() => {
@@ -1356,7 +1374,7 @@ export function ReadingRoomShellV2({
         if (composition !== "desktop") closeSidebar();
       }, options)
     : projectSlot;
-  const createPersonalChat = (mode: NewChatMode) => {
+  const createPersonalChat = (mode: NewChatMode) => requestNavigation(() => {
     navigationOwnerProps.onLeaveProject?.();
     setProjectsView(false);
     onProjectsSectionChange?.(false);
@@ -1364,7 +1382,7 @@ export function ReadingRoomShellV2({
     onNewChat(mode);
     closeDrawers();
     setFocusRequest((current) => ({ id: (current?.id ?? 0) + 1, target: "composer" }));
-  };
+  });
   const revealList = () => {
     setFocusRequest((current) => ({ id: (current?.id ?? 0) + 1, target: "sidebar" }));
     if (composition === "mobile") setMobileOpen(true);
@@ -1414,7 +1432,7 @@ export function ReadingRoomShellV2({
   }, []);
   // Projects owns the whole second column. The reading surface is mirrored to
   // the parent shell while a selected Project remains the contextual section.
-  const showChats = () => {
+  const showChats = () => requestNavigation(() => {
     navigationOwnerProps.onLeaveProject?.();
     setProjectsView(false);
     onProjectsSectionChange?.(false);
@@ -1424,13 +1442,13 @@ export function ReadingRoomShellV2({
       return;
     }
     if (collapsed) revealList();
-  };
-  const showProjects = () => {
+  });
+  const showProjects = () => requestNavigation(() => {
     if (section !== "chats") onChats?.();
     setProjectsView(true);
     onProjectsSectionChange?.(true);
     if (collapsed) revealList();
-  };
+  });
   const showLibrary = navigationOwnerProps.onLibrary
     ? () => {
         setProjectsView(false);
@@ -1459,14 +1477,15 @@ export function ReadingRoomShellV2({
         createPersonalChat(mode);
       }}
       onSettings={showSettings}
-      onSelectChat={(chat) => {
+      onBranches={navigationOwnerProps.onBranches ? chat => requestNavigation(() => navigationOwnerProps.onBranches?.(chat)) : undefined}
+      onSelectChat={(chat) => requestNavigation(() => {
         setProjectsView(false);
         onProjectsSectionChange?.(false);
         navigationOwnerProps.onSelectChat(chat);
         // A drawer (mobile, compact) yields to the chosen chat.
         setMobileOpen(false);
         if (composition === "compact") setCompactExpanded(false);
-      }}
+      })}
       view={projectsView ? "projects" : "chats"}
     />
   );
@@ -1496,6 +1515,7 @@ export function ReadingRoomShellV2({
         <RailV2
           accountLabel={navigationOwnerProps.accountLabel}
           active={resolvedSection}
+          navigationBusy={navigationOwnerProps.navigationBusy}
           adminEntryVisible={navigationOwnerProps.adminEntryVisible}
           onChats={showChats}
           onLibrary={showLibrary}

@@ -83,6 +83,47 @@ describe("Navigation v2", () => {
     vi.unstubAllGlobals();
   });
 
+  it.each(["Chats", "New chat", "Projects", "shortcut", "chat"])("defers the entire %s exit until Studio releases it", (destination) => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 1440));
+    useWorkspaceStore.getState().applyNavigationPage({ chats, folders: [], nextCursor: null }, false);
+    let pending: (() => void) | undefined;
+    const guard = vi.fn((proceed: () => void) => { pending = proceed; });
+    const onNewChat = vi.fn();
+    const onSelectChat = vi.fn();
+    const onChats = vi.fn();
+    const onProjectsSectionChange = vi.fn();
+    const onLeaveProject = vi.fn();
+    render(<ReadingRoomShellV2 section="library" onRequestNavigation={guard} onNewChat={onNewChat}
+      onSelectChat={onSelectChat} onChats={onChats} onProjectsSectionChange={onProjectsSectionChange}
+      onLeaveProject={onLeaveProject} projectsSlot={<p>Project catalog</p>}>
+      <main>Draft</main>
+    </ReadingRoomShellV2>);
+    if (destination === "shortcut") fireEvent.keyDown(window, { ctrlKey: true, shiftKey: true, key: "O" });
+    else if (destination === "chat") fireEvent.click(screen.getByRole("treeitem", { name: "Selected brief" }));
+    else fireEvent.click(within(screen.getByRole("navigation", { name: "Workspace" })).getByRole("button", { name: destination }));
+    expect(guard).toHaveBeenCalledOnce();
+    for (const callback of [onNewChat, onSelectChat, onChats, onProjectsSectionChange, onLeaveProject]) expect(callback).not.toHaveBeenCalled();
+    act(() => pending?.());
+    if (destination === "chat") expect(onSelectChat).toHaveBeenCalledWith(chats[1]);
+    else if (destination === "New chat" || destination === "shortcut") expect(onNewChat).toHaveBeenCalledWith("NORMAL");
+    else if (destination === "Projects") expect(onProjectsSectionChange).toHaveBeenLastCalledWith(true);
+    else expect(onChats).toHaveBeenCalledOnce();
+  });
+
+  it("disables pending exits without invoking a discard guard, while Settings remains an overlay", () => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 1440));
+    const guard = vi.fn();
+    const onSettings = vi.fn();
+    render(<ReadingRoomShellV2 section="library" navigationBusy onRequestNavigation={guard} onNewChat={vi.fn()}
+      onSelectChat={vi.fn()} onLibrary={vi.fn()} onSettings={onSettings} projectsSlot={<p>Projects</p>}><main>Saving</main></ReadingRoomShellV2>);
+    const rail = screen.getByRole("navigation", { name: "Workspace" });
+    for (const name of ["Chats", "New chat", "Projects", "Studio"]) expect(within(rail).getByRole("button", { name })).toBeDisabled();
+    fireEvent.keyDown(window, { ctrlKey: true, shiftKey: true, key: "O" });
+    expect(guard).not.toHaveBeenCalled();
+    fireEvent.click(within(rail).getByRole("button", { name: "Settings" }));
+    expect(onSettings).toHaveBeenCalledOnce();
+  });
+
   it("shares the announcement count between the closed mobile trigger and drawer bell", async () => {
     vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 390));
     const count = vi.spyOn(announcementsApi, "getAnnouncementUnreadCount").mockResolvedValue(3);
@@ -506,7 +547,7 @@ describe("Navigation v2", () => {
 
     const rail = screen.getByRole("navigation", { name: "Workspace" });
     expect(within(rail).getByRole("button", { name: "Chats" })).toHaveAttribute("aria-current", "page");
-    fireEvent.click(within(rail).getByRole("button", { name: "Library" }));
+    fireEvent.click(within(rail).getByRole("button", { name: "Studio" }));
     fireEvent.click(within(rail).getByRole("button", { name: "Settings" }));
     expect(onLibrary).toHaveBeenCalledOnce();
     expect(onSettings).toHaveBeenCalledOnce();
@@ -516,7 +557,7 @@ describe("Navigation v2", () => {
     expect(screen.getByRole("menu", { name: "Account" })).toHaveTextContent("Sign out");
     // The sidebar itself no longer carries the footer destinations on desktop.
     const navigation = screen.getByRole("complementary", { name: "Chat navigation" });
-    expect(within(navigation).queryByRole("button", { name: "Library" })).toBeNull();
+    expect(within(navigation).queryByRole("button", { name: "Studio" })).toBeNull();
     expect(within(navigation).getByText("Chats")).toBeVisible();
 
     // Collapsing hides only the list: the rail and the reopen control stay.
@@ -561,7 +602,7 @@ describe("Navigation v2", () => {
     const navigation = screen.getByRole("complementary", { name: "Chat navigation" });
     // Settings is a footer destination too (one tap, UX audit 2026-09-02 B8);
     // Control Center stays in the account menu, as on the rail.
-    for (const name of ["Projects", "Library", "Settings", "Account menu"]) {
+    for (const name of ["Projects", "Studio", "Settings", "Account menu"]) {
       expect(within(navigation).getByRole("button", { name })).toBeInTheDocument();
     }
     expect(within(navigation).queryByRole("button", { name: "Archived chats" })).toBeNull();
@@ -646,7 +687,7 @@ describe("Navigation v2", () => {
     );
 
     const rail = screen.getByRole("navigation", { name: "Workspace" });
-    fireEvent.click(within(rail).getByRole("button", { name: "Library" }));
+    fireEvent.click(within(rail).getByRole("button", { name: "Studio" }));
     expect(onLeaveProject).toHaveBeenCalledTimes(1);
     expect(onLibrary).toHaveBeenCalledTimes(1);
     expect(onLeaveProject.mock.invocationCallOrder[0]).toBeLessThan(onLibrary.mock.invocationCallOrder[0]!);
@@ -913,7 +954,7 @@ describe("Navigation v2", () => {
 
     openDrawer();
     fireEvent.click(within(screen.getByRole("navigation", { name: "Workspace" }))
-      .getByRole("button", { name: "Library" }));
+      .getByRole("button", { name: "Studio" }));
     expect(onLibrary).toHaveBeenCalledOnce();
     expect(shell).not.toHaveAttribute("data-sidebar-compact-expanded");
 

@@ -291,7 +291,7 @@ test("Library artifact rows support preview, rename, archive confirmation, resto
     const library = page.getByTestId("library-v2");
     const list = page.getByTestId("library-artifacts-panel");
     const openLibrary = async () => {
-      await page.getByRole("navigation", { name: "Workspace" }).getByRole("button", { name: "Library", exact: true }).click();
+      await page.getByRole("navigation", { name: "Workspace" }).getByRole("button", { name: "Studio", exact: true }).click();
       await library.getByRole("tab", { name: "Artifacts", exact: true }).click();
     };
     await openLibrary();

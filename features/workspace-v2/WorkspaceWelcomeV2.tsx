@@ -67,7 +67,8 @@ import type {
   LibraryTabV2,
   MemoryOverviewV2
 } from "@/features/library-v2/contracts";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEventCallback } from "@/components/app-shell/useEventCallback";
 
 function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: Readonly<{
   composer: ShellComposerView;
@@ -101,13 +102,14 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   const skillsMode = useComposerControlStore(state => state.skillsMode);
   const assistantView = settings.library;
   const knowledgeView = settings.knowledge;
-  const knowledgeExit = useKnowledgeLibraryExit(knowledgeView ?? null);
+  const knowledgeExit = useKnowledgeLibraryExit(knowledgeView ?? null, true);
   const initialTab: LibraryTabIdV2 = requestedInitialTab ?? (settings.memory.open
     ? "memory"
     : knowledgeView
       ? "knowledge"
       : "assistants");
-  const [activeTab, setActiveTab] = useState<LibraryTabIdV2>(initialTab);
+  const [localTab, setActiveTab] = useState<LibraryTabIdV2>(initialTab);
+  const activeTab = settings.studio?.tab ?? localTab;
   const artifactLibrary = useArtifactLibraryStore();
   const [artifactFilter, setArtifactFilter] = useState<ArtifactLibraryFilter>("recent");
   const artifactArchived = artifactFilter === "archived";
@@ -122,6 +124,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     if (activeTab === "artifacts") void refreshArtifactLibrary(artifactArchived, true);
   }, [activeTab, artifactArchived, session.accountId]);
   const closeLibrary = () => {
+    if (settings.studio) { settings.studio.exit(); return; }
     assistantView?.onBackToChat();
     knowledgeView?.onBackToChat();
     settings.closeMemory();
@@ -143,12 +146,33 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     if (assistantView.task === "editor") assistantView.editor?.onCancel();
   };
   const requestAssistantSubviewClose = () => {
+    if (assistantView?.busy || assistantView?.editor?.saving) return;
     if (assistantView?.task === "editor" && assistantView.editor?.dirty) {
       setAssistantExit(() => closeAssistantSubview);
       return;
     }
     closeAssistantSubview();
   };
+
+  const navigationBusy = Boolean(
+    assistantView?.busy || assistantView?.editor?.saving || knowledgeView?.busy || memoryBusy
+  );
+  const requestNavigation = useEventCallback((proceed: () => void) => {
+    if (navigationBusy) return;
+    if (activeTab === "knowledge" && knowledgeExit.dirty) knowledgeExit.requestExit(proceed);
+    else if (activeTab === "assistants" && assistantDirty) {
+      setAssistantExit(() => () => { assistantView?.editor?.onCancel(); proceed(); });
+    } else if (activeTab === "memory" && memoryDraftDirty) setMemoryExit(() => proceed);
+    else proceed();
+  });
+  const registerGuard = settings.studio?.registerGuard;
+  useLayoutEffect(() => {
+    registerGuard?.(requestNavigation, navigationBusy);
+    return () => registerGuard?.(null, false);
+  }, [navigationBusy, registerGuard, requestNavigation]);
+  useEffect(() => {
+    if (activeTab === "files") void refreshFileLibrary(true).catch(() => undefined);
+  }, [activeTab]);
 
   const assistants: AssistantSummaryV2[] = (assistantView?.list.assistants ?? composer.assistant.pickerItems)
     .map((assistant) => {
@@ -255,11 +279,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
             onUnavailableAction={(id, action) => dispatchAssistantUnavailableActionV2({
               action,
               assistantId: id,
-              onCloseLibrary() {
-                assistantView?.onBackToChat();
-                knowledgeView?.onBackToChat();
-                settings.closeMemory();
-              },
               onOpenEditor: (assistantId) => assistantView?.list.onEdit(assistantId),
               onOpenMcpSettings: settings.openMcp
             })}
@@ -307,9 +326,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
             void props.workspace.pane.actions.openChatMessage(file.chatId, file.messageId)
               .then((opened) => {
                 if (!opened) return;
-                assistantView?.onBackToChat();
-                knowledgeView?.onBackToChat();
-                settings.closeMemory();
+                closeLibrary();
               });
           }}
           onSave={(id) => void saveFileToLibrary(id)}
@@ -319,9 +336,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
             if (!file) return;
             void composer.reuseFile?.(id, file.fileName).then((used) => {
               if (!used) return;
-              assistantView?.onBackToChat();
-              knowledgeView?.onBackToChat();
-              settings.closeMemory();
+              closeLibrary();
             });
           } : undefined}
           useDisabled={composer.uploading || props.thread.activeChatStreaming}
@@ -392,10 +407,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
           }}
           onForget={requestForgetMemory}
           onLoadMore={() => void refreshMemoryList({ append: true }).catch(() => undefined)}
-          onOpenSettings={() => {
-            if (memoryDraftDirty) setMemoryExit(() => settings.openMemorySettingsTab);
-            else settings.openMemorySettingsTab();
-          }}
+          onOpenSettings={settings.openMemorySettingsTab}
           onQueryChange={setMemoryQuery}
           onRetry={() => void Promise.all([
             refreshMemorySettings(true).catch(() => null),
@@ -460,21 +472,13 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
         onRefresh={knowledgeView?.list.onRefresh}
       />
       <LibraryV2
-        key={initialTab}
+        activeTab={activeTab}
+        busy={navigationBusy}
         initialTab={initialTab}
         navigationGuard={(intent, proceed) => {
-          // A dirty Knowledge draft asks for an explicit discard before the
-          // section changes or the Library closes; a clean sub-view simply
-          // stays open behind the other tab.
-          if (activeTab === "knowledge" && knowledgeExit.dirty) knowledgeExit.requestExit(proceed);
-          else if (activeTab === "assistants" && assistantDirty) {
-            setAssistantExit(() => () => {
-              assistantView?.editor?.onCancel();
-              proceed();
-            });
-          }
-          else if (activeTab === "memory" && memoryDraftDirty) setMemoryExit(() => proceed);
-          else proceed();
+          if (!settings.studio) requestNavigation(proceed);
+          else if (intent.kind === "tab") settings.studio.open(intent.to, proceed);
+          else settings.studio.exit(proceed);
         }}
         subview={activeTab === "assistants" && assistantView?.task === "editor" && assistantView.editor
           ? {
@@ -494,22 +498,19 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
               onBack: () => { setArtifactSubview(null); artifactDetailRef.current = null; void refreshArtifactLibrary(artifactFilter === "archived", true); }
             } : null}
         tabs={tabs}
-        onBack={() => {
-          assistantView?.onBackToChat();
-          knowledgeView?.onBackToChat();
-          settings.closeMemory();
-        }}
+        onBack={() => { if (!settings.studio) closeLibrary(); }}
         onTabChange={(tab) => {
+          if (settings.studio) return;
           setActiveTab(tab);
           if (tab === "assistants") settings.openLibrary();
           if (tab === "knowledge") settings.openKnowledge();
-          if (tab === "files") void refreshFileLibrary(true).catch(() => undefined);
           if (tab === "memory") settings.openMemory();
         }}
       />
       {knowledgeExit.confirmation}
       {assistantExit ? (
         <DiscardChangesConfirmationDialog
+          portal
           label="assistant draft"
           onCancel={() => setAssistantExit(null)}
           onConfirm={() => {
@@ -521,6 +522,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
       ) : null}
       {memoryExit ? (
         <DiscardChangesConfirmationDialog
+          portal
           copy={{
             body: memoryUiCopy("manager.discardBody"),
             cancelLabel: memoryUiCopy("manager.keepEditing"),
@@ -546,7 +548,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
 export function dispatchAssistantUnavailableActionV2(input: Readonly<{
   action: "mcp-settings" | "open-editor";
   assistantId: string;
-  onCloseLibrary(): void;
   onOpenEditor(assistantId: string): void;
   onOpenMcpSettings(): void;
 }>): void {
@@ -554,7 +555,6 @@ export function dispatchAssistantUnavailableActionV2(input: Readonly<{
     input.onOpenEditor(input.assistantId);
     return;
   }
-  input.onCloseLibrary();
   input.onOpenMcpSettings();
 }
 

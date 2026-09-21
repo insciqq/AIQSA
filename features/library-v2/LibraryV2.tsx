@@ -48,22 +48,27 @@ import type {
 } from "./contracts";
 import { fileExtension, fileTypeLabel, groupLibraryFiles } from "./filePresentation";
 import { formatStudioDate, formatStudioTime } from "./studioDate";
+import { useEventCallback } from "@/components/app-shell/useEventCallback";
 
 function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
   return memoryUiCopy(key);
 }
 
-const tabOrder: readonly LibraryTabIdV2[] = ["assistants", "knowledge", "files", "artifacts", "memory", "skills"];
+export const libraryTabGroups: readonly Readonly<{ label: string | null; tabs: readonly LibraryTabIdV2[] }>[] = [
+  { label: "Behavior", tabs: ["assistants", "instructions", "skills"] },
+  { label: "Content", tabs: ["knowledge", "memory", "files", "artifacts"] },
+  { label: "Tools", tabs: ["mcp", "secrets"] },
+  { label: null, tabs: ["defaults"] }
+];
 const tabIcons: Record<LibraryTabIdV2, UiV2IconName> = {
-  assistants: "assistant",
-  artifacts: "artifact",
-  files: "file",
-  knowledge: "book",
-  memory: "memory",
-  skills: "wand"
+  assistants: "assistant", instructions: "file-text", skills: "wand",
+  knowledge: "book", memory: "memory", files: "file", artifacts: "artifact",
+  mcp: "plug", secrets: "key", defaults: "sliders"
 };
 
 export function LibraryV2({
+  activeTab: controlledTab,
+  busy = false,
   initialTab = "assistants",
   navigationGuard,
   onBack,
@@ -71,6 +76,8 @@ export function LibraryV2({
   subview = null,
   tabs
 }: Readonly<{
+  activeTab?: LibraryTabIdV2;
+  busy?: boolean;
   initialTab?: LibraryTabIdV2;
   navigationGuard?: LibraryNavigationGuardV2;
   onBack(): void;
@@ -79,13 +86,19 @@ export function LibraryV2({
   subview?: LibrarySubviewV2 | null;
   tabs: readonly LibraryTabV2[];
 }>) {
-  const [activeTab, setActiveTab] = useState<LibraryTabIdV2>(initialTab);
+  const [localTab, setActiveTab] = useState<LibraryTabIdV2>(initialTab);
+  const activeTab = controlledTab ?? localTab;
+  const previousInitialTab = useRef(initialTab);
   const tabListRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<Partial<Record<LibraryTabIdV2, HTMLButtonElement | null>>>({});
   const backRef = useRef<HTMLButtonElement>(null);
   const previousSubviewKey = useRef<string | null>(null);
-  const availableTabs = tabOrder.filter((id) => tabs.some((tab) => tab.id === id));
-  const selected = tabs.find((tab) => tab.id === activeTab) ?? tabs[0];
+  const groups = libraryTabGroups.map(group => ({ ...group, tabs: group.tabs.flatMap(id => {
+    const tab = tabs.find(candidate => candidate.id === id);
+    return tab ? [tab] : [];
+  }) })).filter(group => group.tabs.length > 0);
+  const availableTabs = groups.flatMap(group => group.tabs.map(tab => tab.id));
+  const selected = tabs.find((tab) => tab.id === activeTab) ?? tabs.find(tab => tab.id === "assistants") ?? groups[0]?.tabs[0];
   const subviewKey = subview?.key ?? null;
   const selectedId = selected?.id ?? null;
 
@@ -116,8 +129,8 @@ export function LibraryV2({
     return () => window.cancelAnimationFrame(frame);
   }, [selectedId]);
 
-  const commitTab = (next: LibraryTabIdV2, focusAfterCommit = false) => {
-    if (next === activeTab || !tabs.some((tab) => tab.id === next)) return;
+  const commitTab = useEventCallback((next: LibraryTabIdV2, focusAfterCommit = false) => {
+    if (busy || next === activeTab || !tabs.some((tab) => tab.id === next)) return;
     const proceed = () => {
       setActiveTab(next);
       onTabChange?.(next);
@@ -127,9 +140,16 @@ export function LibraryV2({
     };
     if (navigationGuard) navigationGuard({ from: activeTab, kind: "tab", to: next }, proceed);
     else proceed();
-  };
+  });
+
+  useEffect(() => {
+    if (previousInitialTab.current === initialTab) return;
+    previousInitialTab.current = initialTab;
+    if (controlledTab === undefined) commitTab(initialTab);
+  }, [commitTab, controlledTab, initialTab]);
 
   const requestExit = () => {
+    if (busy) return;
     if (navigationGuard) navigationGuard({ from: activeTab, kind: "exit" }, onBack);
     else onBack();
   };
@@ -164,9 +184,7 @@ export function LibraryV2({
           the section column (left); below 768px it stacks as before. */}
       <header className="v2-library-header">
         <div className="v2-library-heading-row">
-          <nav className="v2-library-crumb" aria-label="Library location" data-subview={subview ? "true" : undefined}>
-            <span>Library</span>
-            <span aria-hidden="true"> / </span>
+          <nav className="v2-library-crumb" aria-label="Studio location" data-subview={subview ? "true" : undefined}>
             {subview ? (
               <>
                 <span>{selected.label}</span>
@@ -180,34 +198,41 @@ export function LibraryV2({
             ) : <strong>{selected.label}</strong>}
           </nav>
           {subview ? (
-            <UiV2Button ref={backRef} disabled={subview.busy} icon="arrow-left" onClick={subview.onBack}>
+            <UiV2Button ref={backRef} disabled={busy || subview.busy} icon="arrow-left" onClick={subview.onBack}>
               {subview.backLabel}
             </UiV2Button>
           ) : (
-            <UiV2Button icon="chevron-right" onClick={requestExit}>Back to chat</UiV2Button>
+            <UiV2Button disabled={busy} icon="arrow-left" onClick={requestExit}>Back to chat</UiV2Button>
           )}
         </div>
-        <div ref={tabListRef} className="v2-library-tabs-scroll" role="tablist" aria-label="Library sections">
-          <p className="v2-library-column-title" aria-hidden="true">Library</p>
+        <div ref={tabListRef} className="v2-library-tabs-scroll" role="tablist" aria-label="Studio sections">
+          <p className="v2-library-column-title" aria-hidden="true">Studio</p>
           <div className="v2-library-tabs" role="presentation">
-            {tabs.map((tab) => (
-              <button
-                ref={(node) => { tabRefs.current[tab.id] = node; }}
-                aria-controls={`v2-library-panel-${tab.id}`}
-                aria-selected={tab.id === selected.id}
-                className="v2-library-tab v2-focusable"
-                data-selected={tab.id === selected.id || undefined}
-                id={`v2-library-tab-${tab.id}`}
-                key={tab.id}
-                role="tab"
-                tabIndex={tab.id === selected.id ? 0 : -1}
-                type="button"
-                onClick={() => commitTab(tab.id)}
-                onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
-              >
-                <UiV2Icon name={tabIcons[tab.id]} />
-                <span>{tab.label}</span>
-              </button>
+            {groups.map((group, groupIndex) => (
+              <div className="v2-library-tabs-group" key={group.label ?? "defaults"} role="presentation">
+                {group.label ? <p className="v2-library-column-label" aria-hidden="true">{group.label}</p>
+                  : groupIndex > 0 ? <span className="v2-library-tabs-divider" aria-hidden="true" /> : null}
+                {group.tabs.map((tab) => (
+                  <button
+                    ref={(node) => { tabRefs.current[tab.id] = node; }}
+                    aria-controls={`v2-library-panel-${tab.id}`}
+                    aria-selected={tab.id === selected.id}
+                    className="v2-library-tab v2-focusable"
+                    data-selected={tab.id === selected.id || undefined}
+                    disabled={busy}
+                    id={`v2-library-tab-${tab.id}`}
+                    key={tab.id}
+                    role="tab"
+                    tabIndex={tab.id === selected.id ? 0 : -1}
+                    type="button"
+                    onClick={() => commitTab(tab.id)}
+                    onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
+                  >
+                    <UiV2Icon name={tabIcons[tab.id]} />
+                    <span>{tab.label}</span>
+                  </button>
+                ))}
+              </div>
             ))}
           </div>
         </div>

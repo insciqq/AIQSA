@@ -85,7 +85,7 @@ export async function runOfficeUserScenarios(ctx: Context) {
   async function attachSaved(name: string, library = false) {
     ctx.setStep(library ? "reuse_from_library" : "reuse_from_picker");
     if (library) {
-      await page.getByRole("navigation", { name: "Workspace", exact: true }).getByRole("button", { name: "Library", exact: true }).click();
+      await page.getByRole("navigation", { name: "Workspace", exact: true }).getByRole("button", { name: "Studio", exact: true }).click();
       await page.getByRole("tab", { name: "Files", exact: true }).click();
       const row = page.getByRole("list", { name: "Files", exact: true }).getByRole("listitem")
         .filter({ has: page.getByRole("heading", { name, exact: true }) });

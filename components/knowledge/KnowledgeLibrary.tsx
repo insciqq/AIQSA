@@ -238,7 +238,7 @@ export function knowledgeSubviewChrome(view: KnowledgeLibraryView): Readonly<{
  * explicit discard before the task closes, whether the exit comes from the
  * Library's Back control, a tab change, or leaving the Library.
  */
-export function useKnowledgeLibraryExit(view: KnowledgeLibraryView | null): Readonly<{
+export function useKnowledgeLibraryExit(view: KnowledgeLibraryView | null, portal = false): Readonly<{
   confirmation: ReactNode;
   dirty: boolean;
   requestExit(after?: () => void): void;
@@ -260,6 +260,7 @@ export function useKnowledgeLibraryExit(view: KnowledgeLibraryView | null): Read
   };
   const confirmation = pending && view ? (
     <DiscardChangesConfirmationDialog
+      portal={portal}
       label={taskDiscardLabel(view)}
       onCancel={() => setPending(null)}
       onConfirm={() => {

@@ -9,7 +9,7 @@ export async function runAccountMenuAction(
   const rail = page.getByRole("navigation", { name: "Workspace" });
   let owner = rail;
   if (!(await rail.isVisible())) {
-    const navigation = page.getByRole("complementary", { name: "Chat navigation" });
+    const navigation = page.getByRole("complementary", { name: /^(Chat|Project) navigation$/ });
     if (!(await navigation.isVisible())) {
       await page.getByRole("button", { name: "Open sidebar" }).click();
       await expect(navigation).toBeVisible();
@@ -24,7 +24,7 @@ export async function runAccountMenuAction(
     return accountTrigger;
   }
 
-  const libraryTrigger = owner.getByRole("button", { name: "Library" });
+  const libraryTrigger = owner.getByRole("button", { name: "Studio" });
   await libraryTrigger.click();
   const library = page.getByTestId("library-v2");
   await expect(library).toBeVisible();
