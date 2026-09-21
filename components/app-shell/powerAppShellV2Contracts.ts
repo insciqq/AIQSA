@@ -319,6 +319,7 @@ export type ShellBranchesView = {
 };
 
 export type ShellSettingsView = {
+  studio?: import("@/features/library-v2/contracts").StudioNavigationV2;
   closeMemory(): void;
   closeSettings(): void;
   dismissNotice(): void;

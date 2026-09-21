@@ -743,7 +743,7 @@ test("manages a user-safe Knowledge base across themes and contract viewports", 
   await runAccountMenuAction(page, "Knowledge");
   const library = page.getByTestId("library-v2");
   await expect(library).toBeVisible();
-  await expect(page).toHaveTitle("Library · AIQSA");
+  await expect(page).toHaveTitle("Studio · AIQSA");
 
   for (const viewport of [
     { height: 844, width: 384 },
@@ -764,8 +764,8 @@ test("manages a user-safe Knowledge base across themes and contract viewports", 
   // Back control is the Library's and takes focus (UX audit 2026-09-02 A14).
   const knowledge = page.getByTestId("knowledge-library");
   await expect(knowledge).toBeVisible();
-  await expect(library.getByRole("navigation", { name: "Library location" }))
-    .toHaveText("Library / Knowledge / New Knowledge base");
+  await expect(library.getByRole("navigation", { name: "Studio location" }))
+    .toHaveText("Knowledge / New Knowledge base");
   await expect(library.getByRole("button", { name: "Back to Knowledge" })).toBeFocused();
   await expect(library.getByRole("button", { name: "Back to chat" })).toHaveCount(0);
   await expect(library.getByRole("tab", { name: "Knowledge" })).toHaveAttribute("aria-selected", "true");
@@ -780,8 +780,8 @@ test("manages a user-safe Knowledge base across themes and contract viewports", 
   await knowledge.getByRole("button", { name: "Create knowledge base" }).click();
 
   await expect(knowledge.getByRole("heading", { level: 2, name: "E2E runbooks" })).toBeVisible();
-  await expect(library.getByRole("navigation", { name: "Library location" }))
-    .toHaveText("Library / Knowledge / E2E runbooks");
+  await expect(library.getByRole("navigation", { name: "Studio location" }))
+    .toHaveText("Knowledge / E2E runbooks");
   await expect(library.getByRole("button", { name: "Back to Knowledge" })).toBeFocused();
   const partialFile = knowledge.getByTestId("knowledge-source-source-upload-1");
   await expect(partialFile.getByText("handbook.md", { exact: true })).toBeVisible();
@@ -800,8 +800,8 @@ test("manages a user-safe Knowledge base across themes and contract viewports", 
   await affectedFile.getByRole("button", { name: "More actions for incident.txt" }).click();
   await page.getByRole("menuitem", { name: "Open document" }).click();
   await expect(knowledge.getByRole("heading", { level: 2, name: "incident.txt" })).toBeVisible();
-  await expect(library.getByRole("navigation", { name: "Library location" }))
-    .toHaveText("Library / Knowledge / E2E runbooks / incident.txt");
+  await expect(library.getByRole("navigation", { name: "Studio location" }))
+    .toHaveText("Knowledge / E2E runbooks / incident.txt");
   await expect(knowledge).toContainText(`Support reference ${fileSupportReference}`);
   await knowledge.getByRole("button", { name: "Reprocess" }).click();
   await expect(knowledge.getByText("Ready", { exact: true }).first()).toBeVisible();
@@ -836,8 +836,8 @@ test("manages a user-safe Knowledge base across themes and contract viewports", 
 
   await library.getByRole("button", { name: "Back to Knowledge" }).click();
   await expect(knowledge).toHaveCount(0);
-  await expect(library.getByRole("navigation", { name: "Library location" }))
-    .toHaveText("Library / Knowledge");
+  await expect(library.getByRole("navigation", { name: "Studio location" }))
+    .toHaveText("Knowledge");
   await library.getByRole("button", { name: "Back to chat" }).click();
   await expect(page).toHaveTitle("New chat · AIQSA");
 
@@ -907,8 +907,8 @@ test("reuses one document across Bases with distinct Add, Move, and Remove journ
   const library = page.getByTestId("library-v2");
   await library.getByRole("button", { name: "All documents" }).click();
   const knowledge = page.getByTestId("knowledge-library");
-  await expect(library.getByRole("navigation", { name: "Library location" }))
-    .toHaveText("Library / Knowledge / Documents");
+  await expect(library.getByRole("navigation", { name: "Studio location" }))
+    .toHaveText("Knowledge / Documents");
 
   const sourceRow = knowledge.getByTestId("knowledge-source-source-e2e");
   await expect(sourceRow).toContainText("Reusable product guide");

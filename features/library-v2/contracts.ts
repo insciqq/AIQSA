@@ -2,7 +2,15 @@ import type { AssistantAvatarRecipe } from "@/lib/contracts/assistants";
 import type { AssistantUnavailabilityCopy } from "./assistantAvailabilityCopy";
 import type { ReactNode } from "react";
 
-export type LibraryTabIdV2 = "assistants" | "knowledge" | "files" | "artifacts" | "memory" | "skills";
+export type LibraryTabIdV2 = "assistants" | "instructions" | "skills" | "knowledge" | "memory" | "files" | "artifacts" | "mcp" | "secrets" | "defaults";
+
+export type StudioNavigationV2 = Readonly<{
+  tab: LibraryTabIdV2;
+  busy: boolean;
+  open(tab?: LibraryTabIdV2, afterSelect?: () => void): void;
+  exit(proceed?: () => void): void;
+  registerGuard(guard: ((proceed: () => void) => void) | null, busy: boolean): void;
+}>;
 
 export type LibraryNavigationIntentV2 =
   | Readonly<{ from: LibraryTabIdV2; kind: "exit" }>

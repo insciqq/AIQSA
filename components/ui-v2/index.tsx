@@ -44,7 +44,10 @@ export type UiV2IconName =
   | "history"
   | "image"
   | "layers"
+  | "studio"
   | "library"
+  | "file-text"
+  | "key"
   | "link"
   | "lock"
   | "logout"
@@ -195,6 +198,15 @@ export function UiV2IconSprite() {
         </symbol>
         <symbol id="v2-icon-library" viewBox="0 0 24 24">
           <path d="M5 4h3v16H5zM10.5 4h3v16h-3zM16 5l3-.8L22 19l-3 .8z" />
+        </symbol>
+        <symbol id="v2-icon-studio" viewBox="0 0 24 24">
+          <path d="M12 3l4.5 7.5h-9z" /><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5" /><circle cx="17.25" cy="17.25" r="3.75" />
+        </symbol>
+        <symbol id="v2-icon-file-text" viewBox="0 0 24 24">
+          <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7zM14 2v4a2 2 0 0 0 2 2h4M10 9H8M16 13H8M16 17H8" />
+        </symbol>
+        <symbol id="v2-icon-key" viewBox="0 0 24 24">
+          <path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4m2-2-9.6 9.6" /><circle cx="7.5" cy="15.5" r="5.5" />
         </symbol>
         <symbol id="v2-icon-link" viewBox="0 0 24 24">
           <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />

@@ -1,8 +1,35 @@
 import type { ComposerSessionKey } from "@/components/app-shell/composerSessionStore";
+import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
 
 const AIQSA_ACTIVE_CHAT_STORAGE_KEY = "aiqsa.activeChatId";
 export const AIQSA_SESSION_EXPIRED_DRAFT_STORAGE_KEY = "aiqsa.sessionExpiredDraft.v1";
 const SESSION_EXPIRED_DRAFT_MAX_AGE_MS = 30 * 60 * 1000;
+const STUDIO_SECTION_KEY = "aiqsa.studio.section";
+
+export function storedStudioSection(available: readonly LibraryTabIdV2[]): LibraryTabIdV2 | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const saved = window.localStorage.getItem(STUDIO_SECTION_KEY);
+    return available.find(id => id === saved) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function rememberStudioSection(section: LibraryTabIdV2): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(STUDIO_SECTION_KEY, section);
+  } catch {
+    // Browser storage is optional presentation state.
+  }
+}
+
+export function initialStudioSection(available: readonly LibraryTabIdV2[], target?: LibraryTabIdV2): LibraryTabIdV2 | undefined {
+  return (target && available.includes(target) ? target : undefined)
+    ?? storedStudioSection(available)
+    ?? (available.includes("assistants") ? "assistants" : available[0]);
+}
 
 export type StoredSessionExpiredDraft = {
   accountEmail: string;

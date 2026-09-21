@@ -7,6 +7,7 @@ import {
   FilesPanelV2,
   KnowledgePanelV2,
   LibraryV2,
+  libraryTabGroups,
   MemoryPanelV2
 } from "./LibraryV2";
 import type { LibraryNavigationGuardV2, MemoryOverviewV2 } from "./contracts";
@@ -66,6 +67,38 @@ function memoryStatusElement(container: HTMLElement): HTMLElement {
 }
 
 describe("LibraryV2", () => {
+  it("renders ten sections in visual keyboard order even when supplied in reverse", () => {
+    const ids = libraryTabGroups.flatMap(group => group.tabs);
+    render(<LibraryV2 onBack={vi.fn()} tabs={[...ids].reverse().map(id => ({ id, label: id, content: <p>{id} content</p> }))} />);
+    expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(ids);
+    for (const label of ["Behavior", "Content", "Tools"]) expect(screen.getByText(label)).not.toHaveAttribute("tabindex");
+    fireEvent.keyDown(screen.getByRole("tab", { name: "assistants" }), { key: "End" });
+    expect(screen.getByRole("tab", { name: "defaults" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(screen.getByRole("tab", { name: "defaults" }), { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "assistants" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("guards changed initial targets without remounting a draft and disables busy navigation", () => {
+    let release: (() => void) | undefined;
+    const guard = vi.fn<LibraryNavigationGuardV2>((_intent, proceed) => { release = proceed; });
+    const onBack = vi.fn();
+    const tabs = [{ id: "assistants" as const, label: "Assistants", content: <input aria-label="Draft" defaultValue="" /> },
+      { id: "files" as const, label: "Files", content: <p>Files content</p> }];
+    const { rerender } = render(<LibraryV2 initialTab="assistants" navigationGuard={guard} tabs={tabs} onBack={onBack} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "Draft" }), { target: { value: "Unsaved" } });
+    rerender(<LibraryV2 initialTab="files" navigationGuard={guard} tabs={tabs} onBack={onBack} />);
+    expect(screen.getByRole("textbox", { name: "Draft" })).toHaveValue("Unsaved");
+    expect(guard).toHaveBeenCalledOnce();
+    act(() => release?.());
+    expect(screen.getByText("Files content")).toBeVisible();
+    rerender(<LibraryV2 busy initialTab="files" navigationGuard={guard} tabs={tabs} onBack={onBack} />);
+    expect(screen.getByRole("button", { name: "Back to chat" })).toBeDisabled();
+    for (const tab of screen.getAllByRole("tab")) expect(tab).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Files" }), { key: "Home" });
+    expect(guard).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Tools")).toBeNull();
+  });
+
   it("keeps Artifacts between Files and Memory in keyboard navigation", () => {
     render(<LibraryV2 initialTab="files" onBack={vi.fn()} tabs={[
       { id: "files", label: "Files", content: <p>Files</p> },
@@ -95,8 +128,8 @@ describe("LibraryV2", () => {
     const assistants = screen.getByRole("tab", { name: "Assistants" });
     expect(assistants).toHaveAttribute("aria-selected", "true");
     fireEvent.keyDown(assistants, { key: "End" });
-    expect(screen.getByRole("tab", { name: "Memory" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByText("Memory owner")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Files" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Files owner")).toBeInTheDocument();
   });
 
   it.each(["create", "edit", "forget"] as const)("blocks an unknown %s outcome while keeping the exit available", (rowMode) => {
@@ -144,7 +177,7 @@ describe("LibraryV2", () => {
         />
       );
 
-      const tabList = screen.getByRole("tablist", { name: "Library sections" });
+      const tabList = screen.getByRole("tablist", { name: "Studio sections" });
       Object.defineProperties(tabList, {
         clientWidth: { configurable: true, value: 200 },
         scrollWidth: { configurable: true, value: 500 }
@@ -172,19 +205,19 @@ describe("LibraryV2", () => {
         onBack={vi.fn()}
         tabs={[
           { content: <p>Assistant owner</p>, id: "assistants", label: "Assistants" },
-          { content: <p>Skill owner</p>, id: "skills", label: "Skill library" }
+          { content: <p>Skill owner</p>, id: "skills", label: "Skills" }
         ]}
       />
     );
 
-    const skills = screen.getByRole("tab", { name: "Skill library" });
+    const skills = screen.getByRole("tab", { name: "Skills" });
     fireEvent.click(skills);
 
     expect(skills).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("Skill owner")).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "Skills" })).not.toBeInTheDocument();
-    expect(screen.getByRole("navigation", { name: "Library location" })).toHaveTextContent(
-      "Library / Skill library"
+    expect(screen.getByRole("navigation", { name: "Studio location" })).toHaveTextContent(
+      "Skills"
     );
   });
 
@@ -236,7 +269,7 @@ describe("Library sub-views", () => {
       />
     );
 
-    expect(screen.getByRole("navigation", { name: "Library location" })).toHaveTextContent("Library / Knowledge / Product docs");
+    expect(screen.getByRole("navigation", { name: "Studio location" })).toHaveTextContent("Knowledge / Product docs");
     const back = screen.getByRole("button", { name: "Back to Knowledge" });
     expect(back).toHaveFocus();
     expect(screen.queryByRole("button", { name: "Back to chat" })).not.toBeInTheDocument();
@@ -245,7 +278,7 @@ describe("Library sub-views", () => {
     expect(onBack).not.toHaveBeenCalled();
 
     rerender(<LibraryV2 initialTab="knowledge" onBack={onBack} subview={null} tabs={tabs} />);
-    expect(screen.getByRole("navigation", { name: "Library location" })).toHaveTextContent("Library / Knowledge");
+    expect(screen.getByRole("navigation", { name: "Studio location" })).toHaveTextContent("Knowledge");
     expect(screen.getByRole("button", { name: "Back to chat" })).toBeVisible();
     expect(screen.getByRole("tab", { name: "Knowledge" })).toHaveFocus();
   });

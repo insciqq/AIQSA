@@ -45,9 +45,9 @@ export const useSettingsDestinationStore = create<SettingsDestinationStore>((set
     set({ settingsOpen: true, settingsSection: "memory" });
   },
   openMcpSettings() {
-    set({ memoryOpen: false, settingsOpen: true, settingsSection: "mcp" });
+    set({ settingsOpen: true, settingsSection: "mcp" });
   },
   openSettings() {
-    set({ memoryOpen: false, settingsOpen: true, settingsSection: "general" });
+    set({ settingsOpen: true, settingsSection: "general" });
   }
 }));

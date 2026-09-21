@@ -23,7 +23,7 @@
     max(1rem, env(safe-area-inset-left));
 }
 
-/* Crumb row: "Library / Assistants" on the left, Back to chat on the right. */
+/* Section crumb on the left, Back to chat on the right. */
 .v2-library-heading-row {
   display: flex;
   width: min(100%, var(--v2-wide-measure));
@@ -32,10 +32,6 @@
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-}
-
-.v2-library-heading-row > .v2-button .v2-icon {
-  transform: rotate(180deg);
 }
 
 .v2-library-crumb {
@@ -123,7 +119,7 @@
   color: var(--v2-color-text3);
 }
 
-.v2-library-tab:hover {
+.v2-library-tab:hover:not(:disabled) {
   color: var(--v2-color-text);
 }
 
@@ -2339,3 +2335,21 @@
 .v2-artifact-library-error { color: var(--v2-color-danger); font-size: 0.8125rem; }
 .v2-library-panel[data-artifact-viewer] { padding: 0; overflow: hidden; }
 .v2-library-panel[data-artifact-viewer] > .v2-library-content { height: 100%; max-width: none; }
+
+.v2-library-tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.v2-library-tabs-divider {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .v2-library-tabs-divider {
+    display: block;
+    height: 1px;
+    margin: 0.75rem 0.625rem;
+    background: var(--v2-color-border);
+  }
+}

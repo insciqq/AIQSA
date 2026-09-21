@@ -230,7 +230,7 @@ test("artifact requests and independent navigation remain blocked on every viewe
       await page.goto(surface === "standalone" ? fixture.privatePath : surface === "public" ? publication : "/");
       if (surface === "chat") await page.getByRole("button", { name: "Open artifact: " + fixture.artifact.title, exact: true }).click();
       if (surface === "library") {
-        await page.getByRole("navigation", { name: "Workspace" }).getByRole("button", { name: "Library", exact: true }).click();
+        await page.getByRole("navigation", { name: "Workspace" }).getByRole("button", { name: "Studio", exact: true }).click();
         await page.getByTestId("library-v2").getByRole("tab", { name: "Artifacts", exact: true }).click();
         await page.getByTestId("library-artifacts-panel").getByRole("searchbox", { name: "Search artifacts" }).fill(fixture.artifact.title);
         await page.getByRole("button", { name: "Open " + fixture.artifact.title, exact: true }).click();

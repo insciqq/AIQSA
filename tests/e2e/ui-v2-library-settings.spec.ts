@@ -30,7 +30,7 @@ test("Library tab state is keyboard-owned and dirty resource exit remains explic
 
   await assistants.press("End");
   await confirmation.getByRole("button", { name: "Discard changes" }).click();
-  await expect(page.getByRole("tab", { name: "Skills" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Files" })).toHaveAttribute("aria-selected", "true");
 });
 
 test("Files keep one privacy disclosure and a reachable mobile row menu", async ({ page }) => {

@@ -1166,3 +1166,11 @@ html[data-motion="off"] .v2-chat-pulse {
     height: 2.75rem;
   }
 }
+.v2-rail-button:disabled,
+.v2-navigation-destination:disabled,
+.v2-chat-row:disabled,
+.v2-new-chat-main:disabled,
+.v2-new-chat-menu-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

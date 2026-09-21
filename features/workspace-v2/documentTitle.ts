@@ -11,7 +11,7 @@ export function documentTitleV2(input: Readonly<{
   activeChatTitle: string;
   libraryOpen: boolean;
 }>): string {
-  if (input.libraryOpen) return "Library · AIQSA";
+  if (input.libraryOpen) return "Studio · AIQSA";
   const title = input.activeChatId ? chatTitleForDisplay(input.activeChatTitle) : "New chat";
   return `${title} · AIQSA`;
 }

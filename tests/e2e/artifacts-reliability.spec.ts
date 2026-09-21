@@ -170,7 +170,7 @@ test("runtime repair carries details through tab storage, and duplicate thumbnai
     await page.getByRole("button", { name: "Remove artifact edit" }).click();
     const close = page.getByRole("button", { name: "Close artifact", exact: true });
     if (await close.isVisible()) await close.click();
-    await page.getByRole("navigation", { name: "Workspace" }).getByRole("button", { name: "Library", exact: true }).click();
+    await page.getByRole("navigation", { name: "Workspace" }).getByRole("button", { name: "Studio", exact: true }).click();
     const library = page.getByTestId("library-v2");
     await library.getByRole("tab", { name: "Artifacts", exact: true }).click();
     const list = page.getByTestId("library-artifacts-panel");

@@ -41,6 +41,6 @@ describe("Document title v2", () => {
       activeChatId: "chat-1",
       activeChatTitle: "Release checklist",
       libraryOpen: true
-    })).toBe("Library · AIQSA");
+    })).toBe("Studio · AIQSA");
   });
 });

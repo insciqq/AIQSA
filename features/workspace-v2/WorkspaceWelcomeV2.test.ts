@@ -15,41 +15,32 @@ afterEach(() => {
 
 describe("Assistant unavailable action routing", () => {
   it("opens the owned Assistant editor for a fixable saved setup", () => {
-    const onCloseLibrary = vi.fn();
     const onOpenEditor = vi.fn();
     const onOpenMcpSettings = vi.fn();
 
     dispatchAssistantUnavailableActionV2({
       action: "open-editor",
       assistantId: "assistant-1",
-      onCloseLibrary,
       onOpenEditor,
       onOpenMcpSettings
     });
 
     expect(onOpenEditor).toHaveBeenCalledWith("assistant-1");
-    expect(onCloseLibrary).not.toHaveBeenCalled();
     expect(onOpenMcpSettings).not.toHaveBeenCalled();
   });
 
-  it("closes Library before opening MCP Settings", () => {
-    const onCloseLibrary = vi.fn();
+  it("opens MCP Settings over the current section", () => {
     const onOpenEditor = vi.fn();
     const onOpenMcpSettings = vi.fn();
 
     dispatchAssistantUnavailableActionV2({
       action: "mcp-settings",
       assistantId: "assistant-1",
-      onCloseLibrary,
       onOpenEditor,
       onOpenMcpSettings
     });
 
-    expect(onCloseLibrary).toHaveBeenCalledOnce();
     expect(onOpenMcpSettings).toHaveBeenCalledOnce();
-    expect(onCloseLibrary.mock.invocationCallOrder[0]).toBeLessThan(
-      onOpenMcpSettings.mock.invocationCallOrder[0]!
-    );
     expect(onOpenEditor).not.toHaveBeenCalled();
   });
 });

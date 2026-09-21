@@ -1,5 +1,8 @@
 "use client";
 
+import { libraryTabGroups } from "@/features/library-v2/LibraryV2";
+import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
+
 import { setArtifactEditSession } from "@/components/artifacts/artifactEditSession";
 import { artifactUnavailableReason } from "@/components/artifacts/artifactAvailability";
 import { consumeArtifactRuntimeError } from "@/components/artifacts/artifactRuntimeSession";
@@ -348,8 +351,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const { branches, composer, overlays, session, settings, thread, workspace } = props;
   const refreshThreadLayout = thread.refreshLayout;
   const artifactFixRequestRef = useRef<string | null>(null);
-  const [libraryInitialTab, setLibraryInitialTab] = useState<"artifacts" | undefined>(() =>
-    typeof window !== "undefined" && new URL(window.location.href).searchParams.get("library") === "artifacts" ? "artifacts" : undefined);
+  const [libraryInitialTab, setLibraryInitialTab] = useState<LibraryTabIdV2 | undefined>(() => {
+    if (typeof window === "undefined") return undefined;
+    const target = new URL(window.location.href).searchParams.get("library");
+    return libraryTabGroups.flatMap(group => group.tabs).find(id => id === target);
+  });
   const artifactPanel = useArtifactPanelStore(state => state.open);
   const composerArtifactEdit = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.artifactEdit ?? null);
   const composerArtifactCreate = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.artifactCreate ?? null);
@@ -372,10 +378,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   }, [session.accountId]);
   useEffect(() => {
     const url = new URL(window.location.href);
-    if (url.searchParams.get("library") !== "artifacts") return;
-    settings.openLibrary();
+    if (!url.searchParams.has("library")) return;
+    const target = libraryTabGroups.flatMap(group => group.tabs).find(id => id === url.searchParams.get("library"));
     url.searchParams.delete("library");
     window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    if (!target) return;
+    if (settings.studio) settings.studio.open(target);
+    else settings.openLibrary();
   }, [settings]);
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
@@ -1314,7 +1323,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           projectsSectionOpen={projectsSurfaceOpen}
           section={libraryOpen && !projectContext ? "library" : "chats"}
           onProjectsSectionChange={setProjectsSurfaceOpen}
+          navigationBusy={settings.studio?.busy}
+          onRequestNavigation={settings.studio?.exit}
           onChats={() => {
+            if (settings.studio) return;
             settings.library?.onBackToChat();
             settings.knowledge?.onBackToChat();
             settings.closeMemory();
@@ -1368,7 +1380,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             if (full) workspace.pane.actions.openProjectSettings(full);
           }}
           onLeaveProject={projectContext ? workspace.projects.actions.leave : undefined}
-          onLibrary={() => { setLibraryInitialTab(undefined); settings.openLibrary(); }}
+          onLibrary={() => {
+            if (settings.studio) settings.studio.open();
+            else { setLibraryInitialTab(undefined); settings.openLibrary(); }
+          }}
           onMemoryMode={projectContext ? undefined : setNavigationMemoryMode}
           onMove={(chat, folderId) => {
             const full = currentWorkspaceChat(chat.id);
@@ -1694,7 +1709,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       <CreateProjectDialogV2 controller={workspace.projects} />
       <ProjectSettingsDialogV2 controller={workspace.projects} />
 
-      {settings.settings.open && (!libraryOpen || personalMemoryOpen) ? (
+      {settings.settings.open ? (
         <SettingsV2
           busy={mcpBusy || connectedAppsBusy || secretsBusy || instructionsBusy}
           busyMessage={instructionsBusy ? "Updating instructions…" : secretsBusy ? "Updating Workspace secrets…" : connectedAppsBusy ? "Revoking app access…" : "Updating MCP…"}

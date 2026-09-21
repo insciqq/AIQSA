@@ -1,3 +1,5 @@
+import { createPortal } from "react-dom";
+import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
 import { AlertTriangle, Archive, Check, RotateCcw, Trash2, X } from "lucide-react";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import { useDialogFocus } from "./useDialogFocus";
@@ -6,6 +8,7 @@ type ConfirmationTone = "destructive" | "warning";
 
 type ConfirmationDialogProps = {
   busy?: boolean;
+  portal?: boolean;
   cancelLabel?: string;
   children: string;
   confirmAriaLabel?: string;
@@ -22,6 +25,7 @@ type ConfirmationDialogProps = {
 
 export function ConfirmationDialog({
   busy = false,
+  portal = false,
   cancelLabel = "Cancel",
   children,
   confirmAriaLabel,
@@ -38,7 +42,9 @@ export function ConfirmationDialog({
   const close = () => {
     if (!busy) onCancel();
   };
+  const { dialogRef: portalDialogRef, initialFocusRef, onDialogKeyDown, portalReady } = useModalLayerV2({ enabled: portal, closeBlocked: busy, onClose: close });
   const dialogRef = useDialogFocus<HTMLDivElement>({
+    active: !portal,
     onClose: close,
     restoreFocus
   });
@@ -60,7 +66,7 @@ export function ConfirmationDialog({
         ? RotateCcw
         : Trash2;
 
-  return (
+  const content = (
     <div
       className="fixed inset-0 z-50 flex items-end justify-center bg-scrim/70 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[max(.75rem,env(safe-area-inset-top))] sm:items-center sm:pb-[max(.75rem,env(safe-area-inset-bottom))] sm:pl-[max(.75rem,env(safe-area-inset-left))] sm:pr-[max(.75rem,env(safe-area-inset-right))]"
       data-testid={testId}
@@ -68,7 +74,8 @@ export function ConfirmationDialog({
       onMouseDown={close}
     >
       <div
-        ref={dialogRef}
+        ref={(node) => { dialogRef.current = node; portalDialogRef.current = node; }}
+        onKeyDown={portal ? onDialogKeyDown : undefined}
         className="pop-enter max-h-[calc(100dvh-max(.75rem,env(safe-area-inset-top)))] w-full max-w-lg overflow-y-auto overscroll-contain rounded-t-panel border border-b-0 border-trace-subtle bg-overlay-surface px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 text-ink shadow-overlay sm:rounded-panel sm:border sm:p-5 [@media(max-height:32rem)]:max-h-[calc(100dvh-1rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))]"
         role="dialog"
         aria-modal="true"
@@ -86,6 +93,7 @@ export function ConfirmationDialog({
         </div>
         <div className="mt-4 flex justify-end gap-2">
           <button
+            ref={portal ? initialFocusRef : undefined}
             className="flex h-touch items-center justify-center gap-1.5 rounded-control bg-control-surface px-3 text-sm font-medium text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-overlay-surface sm:h-control [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch"
             disabled={busy}
             type="button"
@@ -110,6 +118,7 @@ export function ConfirmationDialog({
       </div>
     </div>
   );
+  return portal ? portalReady ? createPortal(content, document.body) : null : content;
 }
 
 export function MemoryResumeConfirmationDialog({
@@ -211,11 +220,13 @@ export function MessageDeleteConfirmationDialog({
 }
 
 export function DiscardChangesConfirmationDialog({
+  portal = false,
   copy,
   label,
   onCancel,
   onConfirm
 }: {
+  portal?: boolean;
   copy?: Readonly<{
     body: string;
     cancelLabel: string;
@@ -229,6 +240,7 @@ export function DiscardChangesConfirmationDialog({
 }) {
   return (
     <ConfirmationDialog
+      portal={portal}
       cancelLabel={copy?.cancelLabel ?? "Keep editing"}
       confirmLabel={copy?.confirmLabel ?? "Discard changes"}
       dialogLabel={copy?.dialogLabel ?? `Discard ${label} changes`}

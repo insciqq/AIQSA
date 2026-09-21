@@ -1,5 +1,7 @@
 "use client";
 
+import { useStudioNavigation } from "@/features/library-v2/useStudioNavigation";
+
 import { removePermanentlyDeletedChat } from "@/components/app-shell/permanentChatDeletionReconciliation";
 import { useComposerContextConfigurationKey } from "@/components/app-shell/composerContextConfiguration";
 import { useChatTitleReconciliation } from "@/components/app-shell/useChatTitleReconciliation";
@@ -979,10 +981,7 @@ export function PowerAppShellV2({
     })),
     knowledgeDataError: knowledgeSnapshot.dataError,
     knowledgeDataState: knowledgeSnapshot.dataState,
-    openMcpSettings: () => {
-      useAssistantLibraryStore.getState().patch({ editor: null, open: false, task: "list" });
-      openMcpSettings();
-    },
+    openMcpSettings,
     retryCatalog: () => void retryCatalog(),
     retryKnowledge: () => void knowledgeLibraryActions.refreshList(),
     setShellNotice: setNotice,
@@ -1160,43 +1159,45 @@ export function PowerAppShellV2({
     selectProject,
     selectProjectChat
   ]);
-  const openAssistantLibrary = () => {
-    closeMemoryLibrary();
-    closeGeneralSettings();
-    knowledgeLibraryActions.closeLibrary();
-    assistantLibraryActions.openLibrary("discover");
-  };
-  const openKnowledgeLibrary = () => {
-    closeMemoryLibrary();
-    closeGeneralSettings();
-    assistantLibraryActions.closeLibrary();
-    knowledgeLibraryActions.openLibrary();
-  };
+  const studio = useStudioNavigation({
+    available: ["assistants", "skills", "knowledge", "memory", "files", "artifacts"],
+    onExit() {
+      assistantLibraryActions.closeLibrary();
+      knowledgeLibraryActions.closeLibrary();
+      closeMemoryLibrary();
+    },
+    onSelect(tab) {
+      if (projectWorkspace.selectedProjectId) projectWorkspace.actions.leave();
+      closeGeneralSettings();
+      if (tab !== "memory") closeMemoryLibrary();
+      if (tab === "knowledge") {
+        assistantLibraryActions.closeLibrary();
+        if (!knowledgeSnapshot.open) knowledgeLibraryActions.openLibrary();
+      } else if (tab === "memory") {
+        assistantLibraryActions.closeLibrary();
+        knowledgeLibraryActions.closeLibrary();
+        openMemoryLibrary();
+      } else {
+        knowledgeLibraryActions.closeLibrary();
+        if (!librarySnapshot.open) assistantLibraryActions.openLibrary("discover");
+      }
+    }
+  });
+  const openAssistantLibrary = () => studio.open("assistants");
+  const openKnowledgeLibrary = () => studio.open("knowledge");
   const openKnowledgeLibrarySource = (sourceId: string) => {
-    openKnowledgeLibrary();
-    knowledgeLibraryActions.openSourceDetail(sourceId);
+    studio.open("knowledge", () => knowledgeLibraryActions.openSourceDetail(sourceId));
   };
   const openMemoryLibraryDestination = () => {
-    // Personal Memory is not a Project capability. This callback is also
-    // passed to answer actions, so guard it even when a stale action arrives
-    // after navigation into a shared Project.
-    if (activeChat?.projectId || (!activeChat && projectWorkspace.selectedProjectId)) {
-      closeMemoryLibrary();
-      return;
-    }
-    assistantLibraryActions.closeLibrary();
-    knowledgeLibraryActions.closeLibrary();
-    openMemoryLibrary();
+    // Personal Memory is never a Project capability, including stale callbacks.
+    if (activeChat?.projectId || (!activeChat && projectWorkspace.selectedProjectId)) return;
+    studio.open("memory");
   };
   const openMemorySettingsTab = () => {
     if (activeChat?.projectId || (!activeChat && projectWorkspace.selectedProjectId)) return;
     openMemoryTab();
   };
-  const openSettingsDestination = () => {
-    assistantLibraryActions.closeLibrary();
-    knowledgeLibraryActions.closeLibrary();
-    openGeneralSettings();
-  };
+  const openSettingsDestination = () => openGeneralSettings();
   const [assistantPickerOpen, setAssistantPickerOpen] = useState(false);
   const [recentAssistantIds, setRecentAssistantIds] = useState<string[]>([]);
   const setAssistantPickerOpenEvent = useEventCallback((open: boolean) => {
@@ -1842,10 +1843,7 @@ export function PowerAppShellV2({
           projectWorkspace.actions.openSettings();
           return;
         }
-        closeMemoryLibrary();
-        closeGeneralSettings();
-        knowledgeLibraryActions.closeLibrary();
-        void assistantLibraryActions.openAssistantEditor(assistantId);
+        studio.open("assistants", () => { void assistantLibraryActions.openAssistantEditor(assistantId); });
       },
       openLibrary: projectContext ? projectWorkspace.actions.openSettings : openAssistantLibrary,
       openPicker: assistantPickerOpen,
@@ -1877,7 +1875,7 @@ export function PowerAppShellV2({
       startFromCurrentSetup: () => {
         setAssistantPickerOpen(false);
         if (projectContext) projectWorkspace.actions.openSettings();
-        else assistantLibraryActions.openNewAssistantFromCurrentSetup();
+        else studio.open("assistants", () => assistantLibraryActions.openNewAssistantFromCurrentSetup());
       }
     },
     composerContextStats,
@@ -2026,6 +2024,7 @@ export function PowerAppShellV2({
   } satisfies ShellBranchesView;
 
   const settingsView = {
+    studio,
     closeMemory: closeMemoryLibrary,
     closeSettings: closeGeneralSettings,
     dismissNotice: () => setSettingsNotice(null),
@@ -2048,10 +2047,7 @@ export function PowerAppShellV2({
         })),
         knowledgeDataError: knowledgeSnapshot.dataError,
         knowledgeDataState: knowledgeSnapshot.dataState,
-        openMcpSettings: () => {
-          useAssistantLibraryStore.getState().patch({ editor: null, open: false, task: "list" });
-          openMcpSettings();
-        },
+        openMcpSettings,
         retryCatalog: () => void retryCatalog(),
         retryKnowledge: () => void knowledgeLibraryActions.refreshList(),
         setShellNotice: setNotice,
