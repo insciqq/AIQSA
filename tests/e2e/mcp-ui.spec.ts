@@ -417,7 +417,7 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await expect(skillsIndicator).toHaveAccessibleDescription(/Skills: Auto · 1 pinned \(always loaded\)/);
   await page.setViewportSize({ height: 844, width: 390 });
   await skillsIndicator.click();
-  await page.getByRole("menuitem", { name: /Skill library/ }).click();
+  await page.getByRole("menuitem", { name: /^Skills…/ }).click();
   skillLibrary = page.getByRole("dialog", { name: "Skills" });
   await expectWithinViewport(page, skillLibrary);
   await expectNoHorizontalOverflow(page);

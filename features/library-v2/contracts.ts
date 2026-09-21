@@ -82,12 +82,14 @@ export type KnowledgeSummaryV2 = Readonly<{
 }>;
 
 export type FileSummaryV2 = Readonly<{
+  byteSize: number;
   canOpenChat: boolean;
+  chatId: string | null;
+  chatTitle: string | null;
+  createdAt: string;
   id: string;
-  meta: string;
   name: string;
-  private: boolean;
-  saved: boolean;
+  savedAt: string | null;
   mutation?: "saving" | "saved" | "removing" | "error";
   status: "failed" | "processing" | "ready";
 }>;

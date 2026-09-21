@@ -159,7 +159,7 @@ test("v2 Knowledge picker keeps exact mixed selections and explicit inherited ov
   await expect(picker.getByText("Single documents", { exact: true })).toBeVisible();
   await expect(picker.getByText("Type to find any of your other 84 documents.", { exact: true })).toBeVisible();
   await expect(picker.getByText("Applies to your next message.", { exact: true })).toBeVisible();
-  await expect(picker.getByRole("menuitem", { name: "Manage in Library" })).toBeVisible();
+  await expect(picker.getByRole("menuitem", { name: "Manage Knowledge" })).toBeVisible();
   const desktopBox = await picker.boundingBox();
   expect(desktopBox).not.toBeNull();
   expect(desktopBox!.width).toBeLessThan(500);
@@ -573,7 +573,7 @@ test("v2 live citation reauthorizes its canonical Library destination", async ({
   await page.getByRole("button", { name: "Open document K1.1" }).click();
 
   const viewer = page.getByRole("dialog", { name: "Knowledge document viewer" });
-  await viewer.getByRole("button", { name: "Open in Library" }).click();
+  await viewer.getByRole("button", { name: "Open in Knowledge" }).click();
 
   await expect(viewer).toBeHidden();
   await expect(page.getByTestId("ui-v2-answer-outputs-gallery"))

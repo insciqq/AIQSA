@@ -192,7 +192,7 @@ export function AssistantPickerV2({
         <footer className="v2-assistant-picker-actions" data-testid="assistant-picker-actions">
           <p>Use applies to your next message only.</p>
           <button className="v2-focusable" type="button" onClick={onManage}>
-            Manage in Library <span aria-hidden="true">›</span>
+            Manage Assistants <span aria-hidden="true">›</span>
           </button>
         </footer>
       </section>

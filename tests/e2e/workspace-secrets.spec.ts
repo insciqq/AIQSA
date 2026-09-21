@@ -49,6 +49,11 @@ for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 39
       await openSecrets(page);
       const panel = page.getByTestId("workspace-secrets-panel");
       await expect(panel.getByText("No saved Workspace secrets.")).toBeVisible();
+      await panel.getByRole("button", { name: "Add secret" }).click();
+      await page.getByRole("button", { name: "Close settings" }).click();
+      await expect(page.getByRole("alertdialog", { name: "Unsaved Workspace secret" })).toHaveCount(0);
+      await expect(panel).toBeHidden();
+      await openSecrets(page);
       const add = async (kind: string, name: string) => {
         await panel.getByRole("button", { name: "Add secret" }).click();
         await expect(panel.getByLabel("Name", { exact: true })).toBeFocused();

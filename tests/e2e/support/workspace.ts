@@ -19,6 +19,8 @@ export async function loginWithPassword(
   await page.getByLabel("Password", { exact: true }).fill(user.password);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
+  // The server shell is visible before the client composer and navigation hydrate.
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 30_000 });
   await disableMemoryRecall(page);
 }
 

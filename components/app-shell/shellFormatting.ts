@@ -57,7 +57,7 @@ export function humanizeErrorCode(code: string): string {
     return "A newer version exists. Open the current version and choose Edit with AI again.";
   }
   if (raw === "artifact_edit_unavailable") {
-    return "This artifact is no longer available for editing. Remove the artifact edit to send your message, or choose an available artifact in Library.";
+    return "This artifact is no longer available for editing. Remove the artifact edit to send your message, or choose an available artifact in Artifacts.";
   }
   if (raw === "artifact_edit_invalid") {
     return "The artifact edit could not be started. Remove the artifact edit, reopen the artifact, and choose Edit with AI again.";

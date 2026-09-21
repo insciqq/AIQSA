@@ -316,7 +316,7 @@ export function RunAnswerV2({
             </div>
           ) : null}
           {(artifact?.skillCatalogOmittedCount ?? 0) > 0 ? <p className="v2-tool-budget-warning" role="status">
-            {artifact!.skillCatalogOmittedCount} enabled Skills were omitted from Auto discovery for this response because the Skill descriptions exceeded its budget. Choose Always use in the Skill library to include a specific Skill.
+            {artifact!.skillCatalogOmittedCount} enabled Skills were omitted from Auto discovery for this response because the Skill descriptions exceeded its budget. Choose Always use in Skills to include a specific Skill.
           </p> : null}
           {noticeSlot}
         </>

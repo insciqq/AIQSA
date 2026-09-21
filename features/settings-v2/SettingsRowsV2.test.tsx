@@ -60,12 +60,18 @@ describe("ChatDefaultsRowsV2", () => {
         onSearchPlan={onSearchPlan}
       />
     );
-    const search = within(screen.getByRole("radiogroup", { name: "Web search default" }));
-    expect(search.getAllByRole("radio")).toHaveLength(3);
-    expect(search.getByRole("radio", { name: "Web search" })).toHaveAttribute("aria-checked", "true");
-    fireEvent.click(search.getByRole("radio", { name: "Off" }));
+    const search = screen.getByRole("button", { name: "Web search default" });
+    expect(search).toHaveTextContent("Web search");
+    fireEvent.click(search);
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Off",
+      "Web search",
+      "Google"
+    ]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Off" }));
     expect(onSearchPlan).toHaveBeenCalledWith({ mode: "all_selected", optionIds: [] });
-    fireEvent.click(search.getByRole("radio", { name: "Google" }));
+    fireEvent.click(search);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Google" }));
     expect(onSearchPlan).toHaveBeenLastCalledWith({ mode: "all_selected", optionIds: ["google"] });
 
     fireEvent.keyDown(within(screen.getByRole("radiogroup", { name: "MCP tools default" })).getByRole("radio", { name: "Auto" }), { key: "ArrowRight" });
@@ -111,9 +117,7 @@ describe("ChatDefaultsRowsV2", () => {
     fireEvent.click(knowledge);
     expect(screen.getByRole("menuitem", { name: "Unavailable base" })).toHaveAttribute("aria-current", "true");
     fireEvent.keyDown(screen.getByRole("menu", { name: "Knowledge default" }), { key: "Escape" });
-    expect(
-      within(screen.getByRole("radiogroup", { name: "Web search default" })).getByRole("radio", { name: "Off" })
-    ).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("button", { name: "Web search default" })).toHaveTextContent("Off");
     expect(
       within(screen.getByRole("radiogroup", { name: "MCP tools default" })).getByRole("radio", { name: "Off" })
     ).toHaveAttribute("aria-checked", "true");

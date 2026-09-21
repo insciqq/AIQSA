@@ -30,7 +30,7 @@ test("Library tab state is keyboard-owned and dirty resource exit remains explic
 
   await assistants.press("End");
   await confirmation.getByRole("button", { name: "Discard changes" }).click();
-  await expect(page.getByRole("tab", { name: "Skill library" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Skills" })).toHaveAttribute("aria-selected", "true");
 });
 
 test("Files keep one privacy disclosure and a reachable mobile row menu", async ({ page }) => {
@@ -38,7 +38,7 @@ test("Files keep one privacy disclosure and a reachable mobile row menu", async 
   await page.goto("/ui-v2-fixture?fixture=library&state=files");
 
   const panel = page.getByTestId("library-files-panel");
-  await expect(panel.getByText("Files are private and visible only to you.")).toBeVisible();
+  await expect(panel.getByText(/Files are private and visible only to you\./)).toBeVisible();
   await expect(panel.getByText("Upload · Private")).toHaveCount(0);
   const more = panel.getByRole("button", { name: "More actions for sales_q3.csv" });
   const moreBox = await more.boundingBox();

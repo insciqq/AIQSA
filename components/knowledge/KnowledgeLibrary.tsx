@@ -398,7 +398,7 @@ export function KnowledgeLibrary({
           title="Remove document from this base?"
           tone="warning"
         >
-          The document stays in your library and in its other bases. Future chats using this base will no longer include it; accepted chats are unchanged.
+          The document stays in Knowledge and in its other bases. Future chats using this base will no longer include it; accepted chats are unchanged.
         </ConfirmationDialog>
       ) : null}
       {lifecycleTarget ? (
@@ -437,7 +437,7 @@ export function KnowledgeLibrary({
             ? `This document belongs to ${lifecycleTarget.membershipCount ?? 0} bases. Restoring it makes the current ready file available to future chats in each accessible base.`
             : lifecycleTarget.action === "delete"
             ? lifecycleTarget.kind === "base"
-              ? "This cannot be undone. The base and its document memberships will be removed. The reusable documents stay in your Library. Past answers remain unchanged."
+              ? "This cannot be undone. The base and its document memberships will be removed. The reusable documents stay in Knowledge. Past answers remain unchanged."
               : "This cannot be undone. The document, its history, and its stored files will be removed. Past answer text remains, but its cited evidence will no longer open."
             : lifecycleTarget.kind === "base"
               ? "Future chats stop using this base immediately. You can restore its document memberships and sharing settings from Trash."

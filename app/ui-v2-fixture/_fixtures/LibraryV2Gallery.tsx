@@ -89,21 +89,36 @@ const bases = [
 
 const files = [
   {
-    canOpenChat: true,
-    saved: false,
-    id: "sales",
-    meta: "From chat “Quarterly product brief” · 214 kB",
-    name: "sales_q3.csv",
-    private: true,
+    byteSize: 1240,
+    canOpenChat: false,
+    chatId: null,
+    chatTitle: null,
+    createdAt: "2026-09-01T09:00:00.000Z",
+    id: "template",
+    name: "prompt_template.md",
+    savedAt: "2026-09-12T09:00:00.000Z",
     status: "ready" as const
   },
   {
+    byteSize: 214000,
+    canOpenChat: true,
+    chatId: "quarterly",
+    chatTitle: "Quarterly product brief",
+    createdAt: "2026-09-21T14:31:00.000Z",
+    id: "sales",
+    name: "sales_q3.csv",
+    savedAt: null,
+    status: "ready" as const
+  },
+  {
+    byteSize: 2048000,
     id: "scan",
     canOpenChat: true,
-    saved: false,
-    meta: "OCR and text extraction",
+    chatId: "quarterly",
+    chatTitle: "Quarterly product brief",
+    createdAt: "2026-09-21T14:02:00.000Z",
     name: "contract_scan.pdf",
-    private: true,
+    savedAt: null,
     status: "processing" as const
   }
 ] as const;
@@ -179,12 +194,21 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
   }>>({ memoryRef: null, mode: null });
   const [selectedSkillIds, setSelectedSkillIds] = useState<readonly string[]>([]);
   const disabled = state === "memory-disabled";
+  const sectionLabel = initialTab === "assistants"
+    ? "Assistants"
+    : initialTab === "knowledge"
+      ? "Knowledge"
+      : initialTab === "files"
+        ? "Files"
+        : initialTab === "memory"
+          ? "Memory"
+          : "Skills";
 
   if (closed) {
     return (
       <main className="v2-library-fixture-return">
         <p>The chat is open again.</p>
-        <UiV2Button onClick={() => setClosed(false)}>Open Library</UiV2Button>
+        <UiV2Button onClick={() => setClosed(false)}>Open {sectionLabel}</UiV2Button>
       </main>
     );
   }
@@ -215,7 +239,7 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
           },
           { content: <KnowledgePanelV2 bases={bases} />, id: "knowledge", label: "Knowledge" },
           {
-            content: <FilesPanelV2 files={files} onOpen={() => setClosed(true)} />,
+            content: <FilesPanelV2 files={files} onOpen={() => setClosed(true)} onUse={() => setClosed(true)} />,
             id: "files",
             label: "Files"
           },
@@ -296,7 +320,7 @@ export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGall
               />
             ),
             id: "skills",
-            label: "Skill library"
+            label: "Skills"
           }
         ]}
       />

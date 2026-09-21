@@ -5,7 +5,7 @@ import { chatTitleForDisplay, exportFileBaseName, formatTokenCount, humanizeErro
 describe("shell error formatting", () => {
   it.each([
     ["artifact_version_conflict", "A newer version exists. Open the current version and choose Edit with AI again."],
-    ["artifact_edit_unavailable", "This artifact is no longer available for editing. Remove the artifact edit to send your message, or choose an available artifact in Library."],
+    ["artifact_edit_unavailable", "This artifact is no longer available for editing. Remove the artifact edit to send your message, or choose an available artifact in Artifacts."],
     ["artifact_edit_invalid", "The artifact edit could not be started. Remove the artifact edit, reopen the artifact, and choose Edit with AI again."]
   ])("offers recovery for %s without exposing a technical code", async (code, message) => {
     expect(humanizeErrorCode(code)).toBe(message);

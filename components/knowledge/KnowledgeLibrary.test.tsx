@@ -632,7 +632,7 @@ describe("KnowledgeLibrary", () => {
     const deleteConfirmation = screen.getByRole("dialog", {
       name: "Permanently delete Product docs"
     });
-    expect(deleteConfirmation).toHaveTextContent("reusable documents stay in your Library");
+    expect(deleteConfirmation).toHaveTextContent("reusable documents stay in Knowledge");
     expect(deleteConfirmation).toHaveTextContent("Past answers remain unchanged");
     expect(deleteConfirmation).not.toHaveTextContent(/generic citation handles/iu);
     fireEvent.click(within(deleteConfirmation).getByRole("button", {
@@ -717,7 +717,7 @@ describe("KnowledgeLibrary", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     const confirmation = screen.getByRole("dialog", { name: "Remove Product guide from Product docs" });
-    expect(confirmation).toHaveTextContent("stays in your library and in its other bases");
+    expect(confirmation).toHaveTextContent("stays in Knowledge and in its other bases");
     fireEvent.click(within(confirmation).getByRole("button", { name: "Confirm remove from base" }));
     expect(detailView.onRemoveFromBase).toHaveBeenCalledWith("base-1");
   });

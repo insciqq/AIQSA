@@ -45,6 +45,22 @@ function content(draft: Draft): WorkspaceSecretValue {
   }
 }
 
+function sameDraft(left: Draft, right: Draft | null) {
+  if (!right || left.original?.id !== right.original?.id || left.kind !== right.kind || left.name !== right.name
+    || left.description !== right.description || left.replace !== right.replace) return false;
+  if (!left.replace) return true;
+  switch (left.kind) {
+    case "ssh_key": return left.privateKey === right.privateKey && left.passphrase === right.passphrase;
+    case "env": return left.entries.length === right.entries.length && left.entries.every((entry, index) => {
+      const other = right.entries[index];
+      return entry.name === other?.name && entry.value === other.value;
+    });
+    case "text": return left.text === right.text;
+    case "file":
+    case "browser_session": return left.fileName === right.fileName && left.base64 === right.base64;
+  }
+}
+
 export function WorkspaceSecretsPanel({ onBusyChange, onDirtyChange }: Readonly<{
   onBusyChange?(busy: boolean): void;
   onDirtyChange?(dirty: boolean): void;
@@ -55,6 +71,7 @@ export function WorkspaceSecretsPanel({ onBusyChange, onDirtyChange }: Readonly<
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [initialDraft, setInitialDraft] = useState<Draft | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const active = useRef(false);
   const pending = useRef(false);
@@ -63,6 +80,7 @@ export function WorkspaceSecretsPanel({ onBusyChange, onDirtyChange }: Readonly<
   const headings = useRef(new Map<string, HTMLHeadingElement>());
   const restoreFocus = useRef<string | null>(null);
   const formId = draft ? draft.original?.id ?? "new" : null;
+  const dirty = draft !== null && !sameDraft(draft, initialDraft);
 
   useEffect(() => {
     active.current = true;
@@ -73,7 +91,7 @@ export function WorkspaceSecretsPanel({ onBusyChange, onDirtyChange }: Readonly<
     return () => { active.current = false; controller.abort(); };
   }, []);
   useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
-  useEffect(() => { onDirtyChange?.(Boolean(draft)); return () => onDirtyChange?.(false); }, [draft, onDirtyChange]);
+  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
   useEffect(() => {
     if (formId) nameInput.current?.focus();
     else if (restoreFocus.current) {
@@ -86,11 +104,11 @@ export function WorkspaceSecretsPanel({ onBusyChange, onDirtyChange }: Readonly<
   function open(original: WorkspaceSecretSummary | null) {
     const next = blankDraft(original);
     if (!original && secrets.filter((entry) => entry.kind !== "browser_session").length >= WORKSPACE_SECRET_MAX_COUNT) next.kind = "browser_session";
-    setError(null); setNotice(null); setDeleting(null); setDraft(next);
+    setInitialDraft(next); setError(null); setNotice(null); setDeleting(null); setDraft(next);
   }
   function close() {
     restoreFocus.current = draft?.original?.id ?? "add";
-    setDraft(null); setError(null);
+    setInitialDraft(null); setDraft(null); setError(null);
   }
 
   async function refresh() {
@@ -117,7 +135,7 @@ export function WorkspaceSecretsPanel({ onBusyChange, onDirtyChange }: Readonly<
       if (!active.current) return;
       restoreFocus.current = mutation.action === "delete" ? "add" : mutation.action === "update" ? mutation.id
         : rows.find(({ id }) => !secrets.some((old) => old.id === id))?.id ?? "add";
-      setSecrets(rows); setDraft(null); setDeleting(null);
+      setInitialDraft(null); setSecrets(rows); setDraft(null); setDeleting(null);
       setNotice(mutation.action === "delete" ? "Secret deleted. Future requests will use the updated set." : "Secret saved. Available automatically in your personal Workspace requests.");
     } catch (failure) { if (active.current) setError(failure instanceof Error ? failure.message : workspaceSecretErrorMessage(null)); }
     finally { pending.current = false; if (active.current) setBusy(false); }

@@ -12,7 +12,7 @@ export function SaveFileButtonV2({ attachmentId }: Readonly<{ attachmentId: stri
         aria-busy={state === "saving" || undefined}
         onClick={() => void saveFileToLibrary(attachmentId)}
       >
-        {state === "saved" ? "Saved to Library" : "Save to Library"}
+        {state === "saved" ? "Saved" : "Save file"}
       </UiV2Button>
       {state === "error" ? <small role="alert">Could not save. Try again.</small> : null}
     </span>

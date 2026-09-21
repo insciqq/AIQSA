@@ -339,6 +339,23 @@ describe("MarkdownMessage", () => {
     expect(quotes[1]).toHaveTextContent("b");
   });
 
+  it("bounds deeply nested blockquotes and keeps excess markers literal", () => {
+    const content = `${">".repeat(3000)} deep quote`;
+    const { container } = render(<MarkdownMessage content={content} />);
+
+    expect(container.querySelectorAll("blockquote")).toHaveLength(32);
+    expect(container).toHaveTextContent(`${">".repeat(2968)} deep quote`);
+  });
+
+  it("bounds deeply nested lists and keeps excess list lines literal", () => {
+    const content = Array.from({ length: 96 }, (_, depth) => `${"  ".repeat(depth)}- level ${depth + 1}`).join("\n");
+    const { container } = render(<MarkdownMessage content={content} />);
+
+    expect(container.querySelectorAll("ul")).toHaveLength(32);
+    expect(container.textContent).toContain(`${"  ".repeat(32)}- level 33`);
+    expect(container.textContent).toContain(`${"  ".repeat(95)}- level 96`);
+  });
+
   it("keeps underscores inside exact tokens literal", () => {
     render(<MarkdownMessage content="Reply exactly: AIQSA_OPENAI_NO_SEARCH" />);
 

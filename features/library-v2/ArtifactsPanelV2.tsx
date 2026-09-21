@@ -8,6 +8,7 @@ import { UiV2Button, UiV2Icon, UiV2IconButton, UiV2MenuItem, UiV2MenuSeparator }
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { SectionHeading } from "./LibraryV2";
+import { formatStudioDate } from "./studioDate";
 
 export type ArtifactLibraryFilter = "recent" | "published" | "archived";
 type Change = { title: string } | { archived: boolean } | "delete" | "duplicate";
@@ -101,7 +102,7 @@ function ArtifactRow({ item, archived, busy, onOpen, onOpenChat, onChange }: Rea
       <button className="v2-artifact-library-open v2-focusable" type="button" aria-label={`Open ${item.title}`}
         disabled={archived} title={archived ? "Restore this artifact to open it" : undefined} onClick={onOpen}>
         <ArtifactThumbnailV2 artifactId={item.id} versionId={item.currentVersionId} kind={item.kind} byteSize={archived ? undefined : item.byteSize} />
-        <span className="v2-artifact-library-copy"><h3 title={item.title}>{item.title}</h3><span>{artifactKindLabel(item.kind)} · v{item.version.versionNumber} · Updated {new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(item.updatedAt))}
+        <span className="v2-artifact-library-copy"><h3 title={item.title}>{item.title}</h3><span>{artifactKindLabel(item.kind)} · v{item.version.versionNumber} · Updated {formatStudioDate(item.updatedAt)}
           {item.publicationCount > 0 ? ` · ${item.publicationCount} published ${item.publicationCount === 1 ? "link" : "links"}` : ""}</span></span>
       </button>
       <UiV2IconButton icon="more" label={`Actions for ${item.title}`} ref={triggerRef} aria-haspopup="menu" aria-expanded={menuOpen}

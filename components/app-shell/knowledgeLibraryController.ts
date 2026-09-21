@@ -1045,7 +1045,7 @@ export function createKnowledgeLibraryActions() {
       detail: null,
       notice: {
         kind: "success",
-        text: "Permanent base deletion started. Its canonical documents remain in your library."
+        text: "Permanent base deletion started. Its canonical documents remain in Knowledge."
       },
       task: "list"
     });

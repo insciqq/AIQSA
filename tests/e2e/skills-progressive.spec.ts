@@ -28,7 +28,7 @@ async function createSkill(page: Page, name: string): Promise<{ id: string; name
 
 async function openPins(page: Page) {
   await page.getByRole("button", { name: "Change Skills mode" }).click();
-  await page.getByRole("menuitem", { name: /Skill library/ }).click();
+  await page.getByRole("menuitem", { name: /^Skills…/ }).click();
   return page.getByRole("dialog", { name: "Skills", exact: true });
 }
 

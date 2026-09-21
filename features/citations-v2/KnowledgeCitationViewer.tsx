@@ -641,7 +641,7 @@ function ViewerRail({
             ) : null}
             {libraryOpenStatus === "error" ? (
               <p className="mt-1 text-[11px] text-danger" role="alert">
-                This document could not be opened in Library.
+                This document could not be opened in Knowledge.
               </p>
             ) : null}
           </div>
@@ -652,7 +652,7 @@ function ViewerRail({
               onClick={onOpenInLibrary}
               type="button"
             >
-              {libraryOpenStatus === "loading" ? "Opening…" : "Open in Library"}
+              {libraryOpenStatus === "loading" ? "Opening…" : "Open in Knowledge"}
             </button>
           ) : null}
           <button

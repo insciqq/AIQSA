@@ -21,7 +21,7 @@ import {
 import { DiscardChangesConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
-import { formatAttachmentBytes } from "@/components/app-shell/attachmentLimitUsage";
+import { formatStudioDate } from "@/features/library-v2/studioDate";
 import {
   refreshFileLibrary,
   loadMoreFileLibrary,
@@ -207,13 +207,15 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     task: knowledgeTask
   });
   const files: FileSummaryV2[] = (fileData?.files ?? []).map((file) => ({
+    byteSize: file.byteSize,
     canOpenChat: Boolean(file.chatId && file.messageId),
+    chatId: file.chatId,
+    chatTitle: file.chatTitle,
+    createdAt: file.createdAt,
     id: file.id,
-    meta: `${formatAttachmentBytes(file.byteSize)} · ${file.savedAt ? "Saved" : file.chatTitle} · ${formatLibraryDate(file.savedAt ?? file.createdAt)}`,
     mutation: fileMutations[file.id],
     name: file.fileName,
-    private: true,
-    saved: Boolean(file.savedAt),
+    savedAt: file.savedAt,
     status: file.status
   }));
   const memory: MemoryOverviewV2 = memoryData ? {
@@ -297,6 +299,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
       content: (
         <FilesPanelV2
           files={files}
+          complete={fileData?.nextCursor === null}
           loadState={fileLoadState}
           onOpen={(id) => {
             const file = fileData?.files.find((candidate) => candidate.id === id);
@@ -446,7 +449,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
         />
       ),
       id: "skills",
-      label: "Skill library"
+      label: "Skills"
     }
   ];
 
@@ -661,7 +664,7 @@ export function CompactKnowledgePollingV2({
 }
 
 export function formatLibraryDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(value));
+  return formatStudioDate(value);
 }
 
 export function memoryManagerErrorCopy(code: string | null): string | null {

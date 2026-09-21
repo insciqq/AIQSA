@@ -18,7 +18,7 @@ async function openOwnerDetail(page: Page, name: string): Promise<Locator> {
   await page.goto("/");
   await expect(page.getByTestId("app-shell")).toBeVisible();
   await runAccountMenuAction(page, "Assistants");
-  await page.getByTestId("library-v2").getByRole("tab", { name: "Skill library", exact: true }).click();
+  await page.getByTestId("library-v2").getByRole("tab", { name: "Skills", exact: true }).click();
   const library = page.getByTestId("skill-library-section");
   await library.getByRole("searchbox", { name: "Search Skills" }).fill(name);
   await library.getByRole("button", { name: `Open ${name}`, exact: true }).click();
