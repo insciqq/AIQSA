@@ -34,6 +34,24 @@ async function main() {
   const sharp = roleRequire("sharp");
   assert.equal(Boolean(sharp.versions.emscripten), false, "vision_release_wasm_fallback");
 
+  if (role === "worker") {
+    // Worker entrypoints execute from /app, independently of Next's standalone
+    // closure. Keep their direct roots in the pruned image and import the
+    // coordinator graph before publishing so a missing worker dependency cannot
+    // be hidden by an otherwise healthy web process.
+    for (const dependency of ["pg", "yaml"]) {
+      roleRequire.resolve(dependency);
+    }
+    const workerCheck = spawnSync(process.execPath, ["--import", "tsx", "scripts/memory-coordinator.ts"], {
+      cwd: root,
+      env: { ...process.env, AIQSA_RELEASE_DEPENDENCY_CHECK: "1", TSX_DISABLE_CACHE: "1" },
+      encoding: "utf8",
+      timeout: 30_000,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    assert.equal(workerCheck.status, 0, "release_memory_worker_dependency_graph_failed");
+  }
+
   // Execute the image producer shipped in this image, using precisely the
   // application's or worker's sharp resolution, never developer dependencies.
   registerHooks({

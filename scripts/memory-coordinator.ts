@@ -33,10 +33,12 @@ async function main(): Promise<void> {
   await prisma.$disconnect();
 }
 
-void main().catch(async () => {
-  reportSubsystemFailure({ subsystem: "memory", stage: "startup", code: "memory_coordinator_startup_failed", action: "stop" });
-  process.exitCode = 1;
-  await stopDefaultMemoryCoordinator().catch(() => undefined);
-  await defaultMemoryWorkerHeartbeat.stop().catch(() => undefined);
-  await prisma.$disconnect().catch(() => undefined);
-});
+if (process.env.AIQSA_RELEASE_DEPENDENCY_CHECK !== "1") {
+  void main().catch(async () => {
+    reportSubsystemFailure({ subsystem: "memory", stage: "startup", code: "memory_coordinator_startup_failed", action: "stop" });
+    process.exitCode = 1;
+    await stopDefaultMemoryCoordinator().catch(() => undefined);
+    await defaultMemoryWorkerHeartbeat.stop().catch(() => undefined);
+    await prisma.$disconnect().catch(() => undefined);
+  });
+}
