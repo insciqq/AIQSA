@@ -159,7 +159,10 @@ import {
   type RunTool,
   type ToolExecutionResult
 } from "../tools/types";
-import { artifactTool, ARTIFACT_TOOL_NAME } from "../tools/artifact";
+import { artifactTool, readArtifactTool, READ_ARTIFACT_TOOL_NAME, ARTIFACT_TOOL_NAME } from "../tools/artifact";
+import { acceptsSkillTool, isSkillToolName, skillToolsForRequest } from "../tools/skill";
+import { createSkillToolResultBudget } from "../skills/toolResultBudget";
+import { deliverSkillWorkspaceBundle } from "../skills/workspaceDelivery";
 import type { StorageAdapter } from "../uploads/storage";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
@@ -294,6 +297,7 @@ export type RunRecoveryMcpRuntime = Readonly<{
 }>;
 
 export type RunRecoveryDeps = Readonly<{
+  skillTools?: import("../skills/toolService").SkillToolService;
   artifacts?: import("../artifacts/service").ArtifactService;
   images?: import("../images/service").ImageGenerationService;
   getAttachmentLimits?: () => RunAttachmentLimits;
@@ -776,6 +780,7 @@ type RecoverySearchExecutor = Readonly<{
 }>;
 
 type RecoveryToolContext = {
+  skillResultBudget: ReturnType<typeof createSkillToolResultBudget>;
   activeMcpDiscovery: McpDiscoveryState | undefined;
   activeMcpSnapshot: McpRunPlanSnapshot | undefined;
   deps: RunRecoveryDeps;
@@ -810,7 +815,11 @@ function isRecoveredWorkspaceCall(context: RecoveryToolContext, name: string): b
 }
 
 function isRecoveredArtifactCall(context: RecoveryToolContext, name: string): boolean {
-  return context.run.normalizedRequest.artifactTool === true && name === ARTIFACT_TOOL_NAME;
+  return context.run.normalizedRequest.artifactTool === true && (name === ARTIFACT_TOOL_NAME || name === READ_ARTIFACT_TOOL_NAME && Boolean(context.run.normalizedRequest.artifactReferences?.length));
+}
+
+function isRecoveredSkillCall(context: RecoveryToolContext, name: string): boolean {
+  return acceptsSkillTool(context.run.normalizedRequest, name);
 }
 
 function isRecoveredMcpDiscoveryCall(
@@ -1373,7 +1382,7 @@ async function executePersistedToolCallInContext(
         callId: persisted.id,
         result: snapshot,
         runId: context.run.id,
-        state: "complete",
+        state: restored.status,
         userId: context.run.userId
       });
       if (settled === "settled" || settled === "reused") {
@@ -1402,6 +1411,7 @@ async function executePersistedToolCallInContext(
         "A persisted tool result is invalid and cannot be replayed safely."
       );
     }
+    context.skillResultBudget.restore(result);
     if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
       await recordRecoveredSearchResult({
         context,
@@ -1461,7 +1471,7 @@ async function executePersistedToolCallInContext(
     }
     const isImageCall = Boolean(context.run.normalizedRequest.imagePlan) && call.name === IMAGE_GENERATION_TOOL_NAME;
     const isSessionCall = context.run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME;
-    const externalCall = !preflightResult && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredArtifactCall(context, call.name);
+    const externalCall = !preflightResult && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredArtifactCall(context, call.name) && !isRecoveredSkillCall(context, call.name);
     if (externalCall) {
       if (!context.deps.memoryEgress && process.env.NODE_ENV === "production") {
         throw new Error("memory_egress_receipt_unavailable");
@@ -1565,9 +1575,13 @@ async function executePersistedToolCallInContext(
     }
     if (preflightResult) {
       result = preflightResult;
+    } else if (isRecoveredSkillCall(context, call.name)) {
+      if (!context.deps.skillTools) throw new Error("skill_tool_unavailable");
+      result = await context.deps.skillTools.execute(call, { ...executionContext,
+        ...(context.run.project ? { projectId: context.run.project.projectId } : {}) });
     } else if (isRecoveredArtifactCall(context, call.name)) {
       if (!context.deps.artifacts) throw new Error("artifact_tool_unavailable");
-      result = await context.deps.artifacts.execute(call, executionContext);
+      result = await context.deps.artifacts.execute(call, executionContext, { signal });
     } else if (isImageCall) {
       if (!context.deps.images) throw new Error("image_tool_unavailable");
       result = await context.deps.images.execute(call, executionContext, signal);
@@ -1696,6 +1710,19 @@ async function executePersistedToolCallInContext(
   }
   if (signal.aborted) throw new ToolLoopRecoveryStopped();
 
+  result = context.skillResultBudget.accept(result);
+  try {
+    result = await deliverSkillWorkspaceBundle({ call, result, request: context.run.normalizedRequest,
+      coordinator: context.deps.workspace, runId: context.run.id, userId: context.run.userId, signal,
+      onActivity: async (entry) => {
+        const event = projectRunOutputArtifactEvent(workspaceActivityEvent(entry));
+        if (event) await context.deps.repository.appendRunOutputEvent(context.run.id, event);
+      } });
+  } catch (error) {
+    if (signal.aborted) throw new ToolLoopRecoveryStopped();
+    throw error;
+  }
+  context.skillResultBudget.restore(result);
   const stored = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
   if (stored === null) {
     throw new ToolLoopRecoveryError(
@@ -1736,8 +1763,14 @@ async function executePersistedToolBatch(
   signal: AbortSignal
 ): Promise<readonly ToolLoopSettledCall<ToolExecutionResult>[]> {
   const ordered = [...calls].sort((left, right) => left.ordinal - right.ordinal);
+  if (context.sessionToolBridge) context.skillResultBudget.begin({
+    request: context.sessionRequest ?? context.providerRequest, bridge: context.sessionToolBridge,
+    calls: ordered.map((call) => ({ id: call.providerCallId, name: call.toolName }))
+  });
   const ambiguous = ordered.find((call) =>
     call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME &&
+    !isSkillToolName(call.toolName) &&
+    !isRecoveredArtifactCall(context, call.toolName) &&
     !isRecoveredKnowledgeCall(context, call.toolName));
   if (ambiguous) {
     throw new ToolLoopRecoveryError(
@@ -1751,14 +1784,16 @@ async function executePersistedToolBatch(
   registerRecoveredMcpDiscoveryBatch(ordered, context);
 
   const results = new Array<ToolLoopSettledCall<ToolExecutionResult> | undefined>(ordered.length);
+  const immediate = ordered.map((call, index) => ({ call, index })).filter(({ call }) => !isSkillToolName(call.toolName));
+  const deferred = ordered.map((call, index) => ({ call, index })).filter(({ call }) => isSkillToolName(call.toolName));
   let cursor = 0;
   let firstError: unknown;
-  async function worker(): Promise<void> {
+  async function worker(entries: typeof immediate): Promise<void> {
     while (firstError === undefined) {
-      const index = cursor;
+      const entry = entries[cursor];
       cursor += 1;
-      const call = ordered[index];
-      if (!call) return;
+      if (!entry) return;
+      const { call, index } = entry;
       try {
         results[index] = await executePersistedToolCall(call, context, signal);
       } catch (error) {
@@ -1767,8 +1802,10 @@ async function executePersistedToolBatch(
     }
   }
   await Promise.all(
-    Array.from({ length: Math.min(4, ordered.length) }, () => worker())
+    Array.from({ length: Math.min(4, immediate.length) }, () => worker(immediate))
   );
+  cursor = 0;
+  await worker(deferred);
   if (firstError !== undefined) throw firstError;
   if (results.some((result) => result === undefined)) {
     throw new ToolLoopRecoveryError(
@@ -2012,8 +2049,9 @@ async function recoverCheckpointedToolLoop(
         })
       : [];
     const tools: RunTool[] = [
+      ...skillToolsForRequest(run.normalizedRequest),
       ...(clientToolsEnabled && run.normalizedRequest.imagePlan ? [imageGenerationTool(run.normalizedRequest.imagePlan)] : []),
-      ...(clientToolsEnabled && run.normalizedRequest.artifactTool ? [artifactTool()] : []),
+      ...(clientToolsEnabled && run.normalizedRequest.artifactTool ? [artifactTool(run.normalizedRequest.artifactToolDescription), ...(run.normalizedRequest.artifactReferences?.length ? [readArtifactTool()] : [])] : []),
       ...(run.normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
       ...(recoveredKnowledgeEnabled
         ? knowledgeRetrievalToolsForRequest(run.normalizedRequest, deps.knowledgeExecutor?.tools ?? [])
@@ -2030,7 +2068,7 @@ async function recoverCheckpointedToolLoop(
       );
     }
     const externalToolsPresent = tools.some((tool) =>
-      tool.capability !== "artifact" && tool.capability !== "memory" && tool.capability !== "session"
+      tool.capability !== "artifact" && tool.capability !== "memory" && tool.capability !== "session" && tool.capability !== "skill"
     );
     const hostedSearchPresent = requestHasHostedSearchCapability(providerRequest);
     const egressReceiptRequired = externalToolsPresent ||
@@ -2046,6 +2084,7 @@ async function recoverCheckpointedToolLoop(
     assertPersonalContextEgressSafe(providerRequest);
     let runtime = deps.mcpRuntime;
     const context: RecoveryToolContext = {
+      skillResultBudget: createSkillToolResultBudget(),
       activeMcpDiscovery,
       activeMcpSnapshot: run.normalizedRequest.mcp,
       deps,
@@ -2463,6 +2502,8 @@ async function recoverCheckpointedToolLoop(
       continuation: ProviderToolLoopContinuation,
       round: number
     ): Promise<readonly PersistedToolLoopCall[]> {
+      context.sessionRequest = { ...(context.sessionRequest ?? context.providerRequest), providerToolMessages: [...continuation.providerToolMessages] };
+      context.skillResultBudget.begin({ calls, request: context.sessionRequest, bridge });
       const persisted = await deps.repository.persistToolLoopCallBatch({
         calls: calls.map((call, ordinal) => {
           const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
@@ -2472,6 +2513,7 @@ async function recoverCheckpointedToolLoop(
             !(run.normalizedRequest.imagePlan && call.name === IMAGE_GENERATION_TOOL_NAME) &&
             !isRecoveredArtifactCall(context, call.name) &&
             !isRecoveredWorkspaceCall(context, call.name) &&
+            !isRecoveredSkillCall(context, call.name) &&
             !(run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME)) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
@@ -2745,6 +2787,7 @@ async function recoverCheckpointedToolLoop(
     currentProviderResponseId = null;
 
     const outcome = await runProviderToolLoop({
+      deferToolUntilBatchEnd: (call) => isSkillToolName(call.name),
       toolObservation(call) {
         const persisted = persistedCalls.get(call.id);
         if (!persisted) return undefined;

@@ -1,6 +1,6 @@
 # FRONTEND
 
-Owns presentation intent and interaction boundaries. Exact components, stores, copy, layout values, and test cases belong in [components](../components/AGENTS.md), [client-safe contracts](../lib/contracts/), and [design tokens](../styles/tokens-v2.css).
+Owns presentation and interaction rules. [Components](../components/AGENTS.md), [contracts](../lib/contracts/), and [tokens](../styles/tokens-v2.css) own implementation.
 
 ## State And Trust
 
@@ -11,7 +11,7 @@ Owns presentation intent and interaction boundaries. Exact components, stores, c
 
 ## Conversation And Workspace
 
-Chat and composer remain primary, navigation secondary. Preserve one reachable path to supported capabilities across desktop, compact, and mobile layouts. The concrete model is selected from the chat header; this message's tools belong near the composer. Assistants are opt-in; advanced next-run controls use bounded setup. Branches and output previews are temporary overlays, not pinned diagnostic columns.
+Chat/composer stay primary across layouts. Models belong in the header, tools near the composer; Assistants are opt-in. Branches/previews are temporary overlays. Artifact previews open by user action in a closable side panel or compact full-screen sheet, preserving focus, draft and scroll across version changes.
 
 The composer preserves one keyed draft and the user's explicit model, Assistant, tools, and run controls. Unavailable configuration never silently substitutes another target. MCP retry must not switch Auto to Load all without an explicit action. Editing a sent message uses its own inline draft, preserves sent attachments and the composer draft, and clearly creates a branch. Keyboard submission respects IME and multiline entry.
 
@@ -24,6 +24,8 @@ Server-confirmed final text releases Send while Workspace cleanup continues. Pre
 An answer is a readable document: one process disclosure above the body, ordinary message actions below, Sources only when present, and generated downloads. Process details may show thinking, user-legible tool/server names, state, round, and duration. Past chats and Memory have independent bounded disclosures; their counts describe supplied context, not proven influence. Explicit Memory mutation feedback stays visible. Raw requests, tool payloads, retrieval scores, event histories, private identifiers, and per-answer usage are not hidden inspection surfaces.
 
 Workspace has a deliberate exception for useful execution activity: structured file/command cards may show relative paths and bounded command output. Runtime identities and unbounded output remain private. Generated files have authenticated settled downloads that survive sandbox loss; `sandbox:` links resolve only to an exact file from that answer's run. Pending/failed exports remain truthful and never promise exhausted retries. Refresh preserves ready downloads and ends when outputs settle, navigation changes, or authorization is lost.
+
+Artifact Code previews expose only bounded authored text, remaining inert until READY. Thumbnails never execute scripts. Runtime repair details enter editable drafts through private tab state, never URLs.
 
 Workspace is a persistent chat toggle projecting availability, session and read-only internet policy. Its chip and other controls wrap whole; no More menu or horizontal scrolling hides capabilities. Only enabled Workspace admits opaque uploads. Stop preserves files; branching/regeneration never rolls them back. Reset confirms filesystem loss while preserving messages, attachments and outputs. Download workspace is a separate action, not an LLM run. Saved-file reuse is explicit; matching names imply no version chain.
 When a continuation carries Workspace, the new chat projects the seed as pending (“files from the previous chat will be restored”), restored, skipped because the source disk is gone, or failed with a bounded reason. A failed or skipped copy opens with an empty Workspace and never claims that files survived; the private seed is never shown as an attachment or staged input.
@@ -40,7 +42,7 @@ Keep configuration where it is owned: provider deployments in Providers, role/de
 
 Knowledge management shows current documents, readiness, access, and product actions. A usable artifact remains Ready; Needs attention requires an executable recovery action. Otherwise unavailable remains unavailable. Keep technical profiles, generations, chunks, scores, raw failures, and processing internals out of ordinary surfaces; support references are opaque. Separate Base membership changes from canonical document deletion, make multi-membership restore consequences explicit, and show permanent deletion as a durable pending operation. Technical retrieval failure never becomes “the documents contain no answer.” Authenticated citations may expose exact source/locator/excerpt context, without a diagnostic inspector.
 
-Assistant editing changes live future use while historical answers retain accepted identity. Skills stay text-only and explicitly selected, with Assistant-included Skills read-only and manual selections separate. Do not introduce revision machinery, executable Skills, or automatic activation through presentation changes.
+Assistant edits and Skill pins affect future runs. Auto/Off is independent of pins; personal Enabled preferences exclude Projects/Assistants. Assistant links stay read-only in the composer. Import needs no review gate. Show limits; omit revision/bundle editors.
 
 Keep external client permissions in Connected apps and name each permission's resource in consent and revocation. Memory consent names fact read/add/change/delete authority and excludes chat history; revocation preserves facts. MCP enablement applies to chats and authorized Hub clients. MCP Active requires fresh protocol evidence, independent of enablement. Opening Settings must not wake idle servers. Admin Test & Save validates before replacing active settings and preserves intentional disablement.
 

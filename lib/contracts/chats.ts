@@ -93,6 +93,7 @@ export type ThreadMessage = {
 export type ThreadAssistantIdentity = AssistantIdentity;
 
 export type ThreadArtifactSummary = {
+  skillCatalogOmittedCount?: number;
   citations: ThreadCitation[];
   generatedArtifacts?: ThreadGeneratedArtifact[];
   generatedFiles?: ThreadGeneratedFile[];
@@ -110,6 +111,7 @@ export type ThreadArtifactSummary = {
 };
 
 export type ThreadGeneratedArtifact = Readonly<{
+  byteSize?: number;
   artifactId: string;
   entrypoint: string | null;
   kind: "chart" | "game" | "html" | "image" | "slides" | "svg";
@@ -136,17 +138,21 @@ export type ThreadToolActivityOrigin =
   | "mcp"
   | "memory"
   | "session"
+  | "skill"
   | "tool"
   | "web_search"
   | "workspace";
 
 export function isThreadToolActivityOrigin(value: unknown): value is ThreadToolActivityOrigin {
   return value === "artifact" || value === "image" || value === "discovery" || value === "knowledge" || value === "mcp" ||
-    value === "memory" || value === "session" || value === "tool" ||
+    value === "memory" || value === "session" || value === "skill" || value === "tool" ||
     value === "web_search" || value === "workspace";
 }
 
 export type ThreadToolActivityCall = {
+  skillId?: string;
+  skillName?: string;
+  skillPath?: string;
   durationMs?: number;
   origin?: ThreadToolActivityOrigin;
   round: number;
@@ -719,6 +725,7 @@ export function decodeThreadGeneratedArtifact(value: unknown): ThreadGeneratedAr
   const candidate = "artifactId" in value || "versionId" in value
     ? value
     : {
+        byteSize: value.byte_size,
         artifactId: value.artifact_id,
         entrypoint: value.entrypoint,
         kind: value.kind,
@@ -726,12 +733,14 @@ export function decodeThreadGeneratedArtifact(value: unknown): ThreadGeneratedAr
         versionId: value.version_id,
         versionNumber: value.version_number
       };
+  if (candidate.byteSize !== undefined && (!Number.isSafeInteger(candidate.byteSize) || Number(candidate.byteSize) < 0 || Number(candidate.byteSize) > 32 * 1024 * 1024)) return null;
   if (!requiredString(candidate.artifactId) || !requiredString(candidate.versionId) ||
     !requiredString(candidate.title) || !Number.isSafeInteger(candidate.versionNumber) ||
     (candidate.versionNumber as number) < 1 ||
     !["chart", "game", "html", "image", "slides", "svg"].includes(String(candidate.kind)) ||
     candidate.entrypoint !== null && candidate.entrypoint !== undefined && !requiredString(candidate.entrypoint)) return null;
   return {
+    ...(candidate.byteSize !== undefined ? { byteSize: Number(candidate.byteSize) } : {}),
     artifactId: candidate.artifactId as string,
     entrypoint: candidate.entrypoint === undefined ? null : candidate.entrypoint as string | null,
     kind: candidate.kind as ThreadGeneratedArtifact["kind"],
@@ -756,6 +765,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
   }
 
   const citations = value.citations.map(decodeThreadCitation);
+  if (value.skillCatalogOmittedCount !== undefined && (!Number.isSafeInteger(value.skillCatalogOmittedCount) || Number(value.skillCatalogOmittedCount) < 0)) return null;
   const sources = value.sources.map(decodeThreadSearchSource);
   if (
     citations.some((citation) => citation === null) ||
@@ -864,6 +874,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     citations: citations.filter(
       (citation): citation is ThreadCitation => citation !== null
     ),
+    ...(typeof value.skillCatalogOmittedCount === "number" ? { skillCatalogOmittedCount: value.skillCatalogOmittedCount } : {}),
     ...(generatedArtifacts ? { generatedArtifacts } : {}),
     ...(generatedImages ? { generatedImages: generatedImages as ThreadGeneratedImage[] } : {}),
     ...(generatedFiles !== undefined ? { generatedFiles } : {}),
@@ -913,6 +924,9 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
       (candidate.serverName !== undefined && !serverName) ||
       (candidate.durationMs !== undefined && durationMs === null)) return null;
     calls.push({
+      ...(candidate.origin === "skill" && typeof candidate.skillId === "string" && candidate.skillId.length <= 64 ? { skillId: candidate.skillId } : {}),
+      ...(candidate.origin === "skill" && typeof candidate.skillName === "string" && candidate.skillName.length <= 160 ? { skillName: candidate.skillName } : {}),
+      ...(candidate.origin === "skill" && typeof candidate.skillPath === "string" && candidate.skillPath.length <= 256 ? { skillPath: candidate.skillPath } : {}),
       ...(typeof durationMs === "number" ? { durationMs } : {}),
       ...(candidate.origin !== undefined ? { origin: candidate.origin } : {}),
       round,

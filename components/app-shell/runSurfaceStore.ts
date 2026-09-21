@@ -1,11 +1,14 @@
 import { appendCompactRunEvent } from "@/components/app-shell/runState";
 import type { RunEventView } from "@/components/app-shell/types";
 import { create } from "zustand";
+import { decodeArtifactGenerationEvent } from "@/lib/contracts/artifactGeneration";
+import { applyArtifactGenerationEvent, endArtifactGeneration, type ArtifactGenerationDraft } from "@/components/artifacts/artifactGenerationState";
 
 export type RunSurfaceSnapshot = {
   /** Controls captured at send time; survives preparation and message-id reconciliation. */
   contextConfigurationKey?: string;
   contextMessageId?: string;
+  artifactDrafts?: readonly ArtifactGenerationDraft[];
   /** Client clock when the current round's first answer token arrived; a round reset clears it. */
   answerStartedAt: number | null;
   events: RunEventView[];
@@ -16,6 +19,7 @@ export type RunSurfaceSnapshot = {
 export type RunSurfaceStore = {
   surfacesByChatId: Record<string, RunSurfaceSnapshot>;
   appendEvent(chatId: string, event: RunEventView): void;
+  endArtifactStream(chatId: string, status: "complete" | "error" | "cancelled" | "interrupted"): void;
   bindContextMessage(chatId: string, previousMessageId: string, messageId: string): void;
   removeSurface(chatId: string): void;
   resetSurface(chatId: string, contextConfigurationKey?: string, contextMessageId?: string): void;
@@ -55,11 +59,21 @@ export const useRunSurfaceStore = create<RunSurfaceStore>((set) => ({
     set((state) => {
       const current = selectRunSurface(state, chatId);
       const now = Date.now();
+      if (event.type === "artifact_generation") {
+        const decoded = decodeArtifactGenerationEvent(event.data);
+        if (!decoded) return state;
+        const artifactDrafts = applyArtifactGenerationEvent(current.artifactDrafts ?? [], decoded);
+        return { surfacesByChatId: { ...state.surfacesByChatId, [chatId]: { ...current, artifactDrafts } } };
+      }
+      const terminal = event.type === "error" ? "error" : event.type === "done" && event.data && typeof event.data === "object" && "status" in event.data
+        ? event.data.status : null;
       return {
         surfacesByChatId: {
           ...state.surfacesByChatId,
           [chatId]: {
             ...current,
+            ...(current.artifactDrafts && (terminal === "error" || terminal === "cancelled" || terminal === "complete")
+              ? { artifactDrafts: endArtifactGeneration(current.artifactDrafts, terminal) } : {}),
             answerStartedAt: event.type === "message_reset"
               ? null
               : event.type === "token"
@@ -70,6 +84,14 @@ export const useRunSurfaceStore = create<RunSurfaceStore>((set) => ({
           }
         }
       };
+    });
+  },
+  endArtifactStream(chatId, status) {
+    set(state => {
+      const current = selectRunSurface(state, chatId);
+      if (!current.artifactDrafts?.some(draft => draft.status === "pending")) return state;
+      return { surfacesByChatId: { ...state.surfacesByChatId,
+        [chatId]: { ...current, artifactDrafts: endArtifactGeneration(current.artifactDrafts, status) } } };
     });
   },
   bindContextMessage(chatId, previousMessageId, messageId) {

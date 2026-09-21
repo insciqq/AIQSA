@@ -126,7 +126,39 @@ export type WorkspaceOperationInput = Readonly<{
   sessionId: string;
 }>;
 
+export type WorkspaceSkillRunIdentity = Readonly<{
+  modelRunId: string;
+  manifestHash: string;
+  runtimeSandboxId: string;
+  sessionId: string;
+  operation?: WorkspaceOperation;
+  signal?: AbortSignal;
+}>;
+
+export type WorkspaceSkillBundleRef = Readonly<{
+  alias: string;
+  revisionId: string;
+  bundleDigest: string;
+  /** Only accepted available Skills in Agent mode enter native discovery. */
+  discover: boolean;
+}>;
+
+export type WorkspaceSkillRunPreparation = WorkspaceSkillRunIdentity & Readonly<{
+  initial: readonly WorkspaceSkillBundleRef[];
+}>;
+
+export type WorkspaceSkillBundleInstall = WorkspaceSkillRunIdentity & Readonly<{
+  bundle: WorkspaceSkillBundleRef;
+  archive: ReadableStream<Uint8Array>;
+  byteSize: number;
+  checksum: string;
+}>;
+
 export interface WorkspaceRuntime {
+  /** Private preparation transport; these operations never become model tools. */
+  prepareSkillRun(input: WorkspaceSkillRunPreparation): Promise<Readonly<{ state: "preparing" | "ready" }>>;
+  installSkillBundle(input: WorkspaceSkillBundleInstall): Promise<Readonly<{ workspacePath: string }>>;
+  completeSkillRunPreparation(input: WorkspaceSkillRunIdentity): Promise<void>;
   /** Private raw byte transport; never a model-visible Workspace MCP tool. */
   startAgent?(input: WorkspaceAgentStart): Promise<void>;
   pollAgent?(input: WorkspaceAgentIdentity & Readonly<{ cursor: number }>): Promise<AgentExecutionOutputPage>;
@@ -278,6 +310,9 @@ export class WorkspaceRuntimeError extends Error {
     | "workspace_agent_output_invalid"
     | "workspace_attachment_unavailable"
     | "workspace_secrets_prepare_failed"
+    | "workspace_skills_prepare_failed"
+    | "workspace_skill_bundle_invalid"
+    | "workspace_skill_bundle_limit_exceeded"
     | "workspace_archive_limit_exceeded"
     | "workspace_archive_invalid"
     | "workspace_archive_restore_failed"

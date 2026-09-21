@@ -5,9 +5,9 @@ Scope: Dependency direction, deployment shape, and data/egress ownership.
 
 ## Architectural Stance
 
-AIQSA is a Next.js modular monolith for authenticated users in an operator-managed organization. The supported production shape is one hardened, single-host, single-replica Compose installation. Process-local cancellation and external sessions do not support replica handover. Revisit admission, scheduling, recovery, and isolation before adding replicas, untrusted tenancy, or spend/latency guarantees.
+AIQSA is an operator-managed Next.js modular monolith with authenticated users and hardened single-host, single-replica Compose deployment. Process-local cancellation/external sessions preclude replica handover. Revisit admission, scheduling, recovery and isolation before adding replicas, untrusted tenancy or spend/latency guarantees.
 
-Do not split services or introduce a remote control plane without a measured blocker and an explicit design for authentication, ownership, networking, deployment, recovery, and observability.
+Splitting services or adding remote control requires a measured blocker and explicit auth, ownership, network, deployment, recovery and observability design.
 
 ## Dependency Direction
 
@@ -32,6 +32,7 @@ Sidecars are bounded helpers, never tenancy or durable-state authorities. Option
 - OpenSearch is a rebuildable candidate projection, never canonical content or authority. PostgreSQL reauthorizes every hit. Knowledge passage retrieval has no alternate lexical backend; Memory fallback/rollout belongs to [Memory](MEMORY.md) and [Environment](ENV_VARIABLES.md).
 - Browsers receive explicit allowlisted projections. Storage objects and upstream formats do not become client contracts by existing.
 - External I/O crosses authorized, bounded server adapters. Knowledge embedding/indexing has an independently disclosed installation-profile destination; answer-model selection does not authorize it.
+- Artifact vendoring sends model-selected URLs to operator-allowlisted public CDNs at version creation. Restricted grammar cannot prevent URL disclosure. Failures return tool errors; frozen bytes share version lifetime. Offline viewers disclose no IP to CDNs.
 - Parsers receive bounded documents without data credentials or durable document state. Workspace receives opaque runtime identity, bounded streams, and allowlisted tools, never application/data credentials. Guest disks are operational state outside backup authority.
 
 No new destination, credential audience, public projection, or durable store is implicit: define its privacy, failure, retention, and operator boundary. Execution semantics belong to [Run contracts](RUN_CONTRACTS.md); lifecycle and recovery operations belong to [Persistence](PERSISTENCE.md).

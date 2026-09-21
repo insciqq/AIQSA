@@ -51,6 +51,7 @@ export type ModelRunChatUpdateData = {
 };
 
 export type ModelRunSseEvent =
+  | { type: "artifact_generation"; data: import("../contracts/artifactGeneration").ArtifactGenerationEvent }
   | {
       type: "run_start";
       data: {

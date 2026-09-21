@@ -67,6 +67,7 @@ export type GeminiInteractionsResponseContext = Readonly<{
 }>;
 
 export type ParseGeminiInteractionsSseInput = Readonly<{
+  onToolArguments?: import("./types").ProviderToolArgumentObserver;
   groundingExpected: boolean;
   modelId: string;
   responseBody: ReadableStream<Uint8Array>;
@@ -1159,6 +1160,9 @@ export async function* parseGeminiInteractionsSse(
         snapshot
       );
       activeSteps.set(index, accumulator);
+      if (accumulator.step.type === "function_call") await input.onToolArguments?.({ callIndex: index,
+        callId: String(accumulator.step.id), name: String(accumulator.step.name),
+        ...(isRecord(accumulator.step.arguments) && Object.keys(accumulator.step.arguments).length ? { snapshot: accumulator.step.arguments } : {}) });
       if (accumulator.step.type === "google_search_call") {
         groundingProven = true;
         groundingDecisionPending = false;
@@ -1205,6 +1209,9 @@ export async function* parseGeminiInteractionsSse(
         reasoningText,
         snapshot
       );
+      if (accumulator.step.type === "function_call" && isRecord(parsed.delta) && parsed.delta.type === "arguments_delta" && typeof parsed.delta.arguments === "string") {
+        await input.onToolArguments?.({ callIndex: index, callId: String(accumulator.step.id), name: String(accumulator.step.name), delta: parsed.delta.arguments });
+      }
       if (accumulator.step.type === "google_search_call") {
         searchQueryCount += queryCountFromSearchCall(accumulator.step) - previousQueryCount;
         if (searchQueryCount < 0 || searchQueryCount > MAX_SEARCH_QUERY_COUNT) {

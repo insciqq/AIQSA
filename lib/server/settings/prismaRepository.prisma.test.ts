@@ -306,24 +306,26 @@ describe("Prisma-backed settings repository", () => {
         settingsRepository.updateSettings(userId, {
           defaultKnowledgePlan: plan,
           defaultMcpMode: "load_all",
+          defaultSkillsMode: "off",
           sendWithEnter: false
         })
       ).resolves.toMatchObject({
         kind: "updated",
-        settings: { defaultKnowledgePlan: plan, defaultMcpMode: "load_all", sendWithEnter: false }
+        settings: { defaultKnowledgePlan: plan, defaultMcpMode: "load_all", defaultSkillsMode: "off", sendWithEnter: false }
       });
       await expect(
         settingsRepository.updateSettings(userId, { defaultKnowledgePlan: null })
       ).resolves.toMatchObject({
         kind: "updated",
-        settings: { defaultKnowledgePlan: null, defaultMcpMode: "load_all", sendWithEnter: false }
+        settings: { defaultKnowledgePlan: null, defaultMcpMode: "load_all", defaultSkillsMode: "off", sendWithEnter: false }
       });
       await expect(
         prisma.userSettings.findUniqueOrThrow({
-          select: { defaultKnowledgePlan: true, defaultMcpMode: true, sendWithEnter: true },
+          select: { defaultKnowledgePlan: true, defaultMcpMode: true, defaultSkillsMode: true, sendWithEnter: true },
           where: { userId }
         })
-      ).resolves.toEqual({ defaultKnowledgePlan: null, defaultMcpMode: "load_all", sendWithEnter: false });
+      ).resolves.toEqual({ defaultKnowledgePlan: null, defaultMcpMode: "load_all", defaultSkillsMode: "off", sendWithEnter: false });
+      await expect(prisma.$executeRaw`UPDATE "UserSettings" SET "defaultSkillsMode" = 'always' WHERE "userId" = ${userId}`).rejects.toThrow();
       await expect(
         prisma.$executeRaw`UPDATE "UserSettings" SET "defaultMcpMode" = 'always' WHERE "userId" = ${userId}`
       ).rejects.toThrow();

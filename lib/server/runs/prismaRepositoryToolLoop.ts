@@ -1,4 +1,7 @@
 import { isMcpRuntimeTimeouts } from "../../contracts/mcp";
+import { decodeFrozenSkillManifest } from "../skills/runManifest";
+import { isSkillToolName, LOAD_SKILL_TOOL_NAME } from "../tools/skill";
+import { decodeArtifactEdit } from "../../contracts/artifacts";
 import { isModelGenerationBudget } from "../providers/modelOutputAllowance";
 import { validAcceptedInstructions } from "../instructions/snapshot";
 import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
@@ -533,7 +536,11 @@ export type PrismaRunToolLoopOperations = Pick<
 const normalizedRequestKeys = new Set([
   "agent",
   "artifactTool",
+  "artifactToolDescription",
+  "artifactIntent",
+  "artifactFocus",
   "artifactReferences",
+  "artifactEdit",
   "attachmentIds",
   "chatId",
   "content",
@@ -701,7 +708,7 @@ function validContext(value: unknown): boolean {
       !nonBlank(message.id, 1_024) ||
       (message.role !== "assistant" && message.role !== "user") ||
       (message.purpose !== undefined && message.purpose !== "knowledge_evidence" &&
-        message.purpose !== "skill_context") ||
+        message.purpose !== "skill_context" && message.purpose !== "skill_catalog") ||
       !isRecord(message.content) || !onlyKnownKeys(message.content, new Set(["blocks"])) ||
       !Array.isArray(message.content.blocks) || !finiteJson(message.content.blocks)) return false;
   }
@@ -914,7 +921,15 @@ function decodeProviderDispatchRecoveryRequest(
     value.knowledgeQueryAnchorVersion !== undefined && value.knowledgeQueryAnchorVersion !== 2 ||
     value.imagePlan !== undefined && !decodeAcceptedImageGenerationPlan(value.imagePlan) ||
     (value.artifactTool !== undefined && value.artifactTool !== true) ||
+    (value.artifactToolDescription !== undefined && (value.artifactTool !== true || !nonBlank(value.artifactToolDescription, 16_384))) ||
+    (value.artifactIntent !== undefined && (value.artifactTool !== true || value.artifactIntent !== "create" || value.artifactEdit !== undefined)) ||
+    (value.artifactFocus !== undefined && (!decodeArtifactEdit(value.artifactFocus) || !Array.isArray(value.artifactReferences) ||
+      !value.artifactReferences.some((reference) => isRecord(reference) && isRecord(value.artifactFocus) &&
+        reference.artifactId === value.artifactFocus.artifactId && reference.versionId === value.artifactFocus.versionId))) ||
     (value.artifactReferences !== undefined && (value.artifactTool !== true || !Array.isArray(value.artifactReferences) || value.artifactReferences.length > 8 || value.artifactReferences.some((reference) => !isRecord(reference) || !onlyKnownKeys(reference, new Set(["artifactId", "versionId"])) || !nonBlank(reference.artifactId, 128) || !nonBlank(reference.versionId, 128)))) ||
+    (value.artifactEdit !== undefined && (!decodeArtifactEdit(value.artifactEdit) || !Array.isArray(value.artifactReferences) ||
+      !value.artifactReferences.some((reference) => isRecord(reference) && isRecord(value.artifactEdit) &&
+        reference.artifactId === value.artifactEdit.artifactId && reference.versionId === value.artifactEdit.versionId))) ||
     value.imageReferences !== undefined && (!value.imagePlan && value.artifactTool !== true || !Array.isArray(value.imageReferences) || value.imageReferences.length > 256 || value.imageReferences.some((reference) => !isRecord(reference) || !onlyKnownKeys(reference, new Set(["attachmentId", "messageId", "fileName", "origin"])) || !nonBlank(reference.attachmentId, 128) || !nonBlank(reference.messageId, 128) || !nonBlank(reference.fileName, 256) || !["upload", "generated"].includes(String(reference.origin)))) ||
     !validCapabilities(value.modelCapabilities) || !validWorkspace(value.workspace, identity.runId) ||
     (value.sessionStatusTool !== undefined && value.sessionStatusTool !== true) ||
@@ -1018,9 +1033,7 @@ function decodeProviderDispatchRecoveryRequest(
     typeof personalContext.text !== "string" ||
     ["approxTokens", "itemCount", "memoryGeneration", "memoryRevision"].some((key) =>
       !Number.isSafeInteger(personalContext[key]) || Number(personalContext[key]) < 0))) return null;
-  if (value.skills !== undefined && (!Array.isArray(value.skills) || value.skills.some((skill) =>
-    !isRecord(skill) || !onlyKnownKeys(skill, new Set(["name", "revisionId", "skillId"])) ||
-    !nonBlank(skill.name) || !nonBlank(skill.revisionId) || !nonBlank(skill.skillId)))) return null;
+  if (decodeFrozenSkillManifest(value.skills) === null) return null;
   return value as unknown as NormalizedRunRequest;
 }
 
@@ -1253,7 +1266,7 @@ export function createPrismaRunToolLoopOperations(
       if (call.state === "complete" || call.state === "error") {
         return { call: persistedToolLoopCall(call), kind: "settled" as const };
       }
-      if (call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME && call.toolName !== "get_session_status") {
+      if (call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME && call.toolName !== "get_session_status" && !isSkillToolName(call.toolName)) {
         const history = await tx.memoryHistoryRun.findUnique({
           select: {
             completedAt: true,
@@ -2111,7 +2124,7 @@ export function createPrismaRunToolLoopOperations(
         const run = await lockToolLoopRun(tx, input);
         if (!run) return "not_found" as const;
         const call = await tx.modelRunToolCall.findFirst({
-          select: { id: true, result: true, state: true },
+          select: { id: true, result: true, state: true, toolName: true, arguments: true },
           where: { id: input.callId, modelRunId: input.runId }
         });
         if (!call) return "not_found" as const;
@@ -2126,6 +2139,23 @@ export function createPrismaRunToolLoopOperations(
             : "conflict" as const;
         }
         if (call.state !== "running") return "conflict" as const;
+        if (call.toolName === LOAD_SKILL_TOOL_NAME && input.state === "complete") {
+          const accepted = await tx.modelRun.findUnique({ select: { normalizedRequest: true }, where: { id: input.runId } });
+          const request = accepted?.normalizedRequest;
+          const manifest = isRecord(request) ? decodeFrozenSkillManifest(request.skills) : null;
+          const alias = isRecord(call.arguments) ? call.arguments.skill : undefined;
+          const reference = manifest?.available.find((skill) => skill.alias === alias);
+          const content = isRecord(result) && result.status === "complete" && Array.isArray(result.content) ? result.content[0] : null;
+          const loaded = isRecord(content) && content.type === "json" && isRecord(content.value) ? content.value : null;
+          if (reference && loaded && loaded.skill === alias && typeof loaded.instructions === "string") {
+            await tx.modelRunSkillBinding.upsert({
+              where: { modelRunId_skillId: { modelRunId: input.runId, skillId: reference.skillId } },
+              create: { modelRunId: input.runId, skillId: reference.skillId, revisionId: reference.revisionId,
+                alias: reference.alias, mode: "loaded", modelRunToolCallId: call.id },
+              update: {}
+            });
+          }
+        }
         await tx.modelRunToolCall.update({
           data: {
             completedAt: new Date(),

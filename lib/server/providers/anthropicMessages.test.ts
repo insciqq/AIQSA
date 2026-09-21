@@ -1971,3 +1971,25 @@ describe("Anthropic Messages adapter", () => {
     await expect(truncatedClient.stream({}).next()).rejects.toThrow("anthropic_stream_truncated");
   });
 });
+
+
+it("observes Anthropic input_json_delta privately with early tool identity", async () => {
+  const observations: import("./types").ProviderToolArgumentEvent[] = [];
+  const argumentsText = '{"files":[{"text":"private-code-canary"}]}';
+  const client: AnthropicMessagesClient = { stream: () => events([
+    { type: "message_start", message: { id: "message-1", model: "claude", content: [], usage: { input_tokens: 1, output_tokens: 0 } } },
+    { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "call-1", name: "create_artifact", input: {} } },
+    { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: argumentsText } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 1 } },
+    { type: "message_stop" }
+  ]) };
+  const stream = createAnthropicMessagesAdapter({ client }).stream(request({ tools: [{ ...mcpTool, name: "create_artifact" }] }), {
+    onToolArguments: async event => { observations.push(event); }
+  });
+  const outputs = [];
+  let next = await stream.next();
+  while (!next.done) { outputs.push(next.value); next = await stream.next(); }
+  expect(observations).toMatchObject([{ name: "create_artifact", callId: "call-1" }, { delta: argumentsText }]);
+  expect(JSON.stringify(outputs)).not.toContain("private-code-canary");
+});

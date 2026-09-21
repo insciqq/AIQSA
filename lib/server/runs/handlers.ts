@@ -1,5 +1,7 @@
 import { McpToolAccessDeniedError } from "../mcp/toolAccess";
+import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
 import { InstructionPresetError } from "../instructions/store";
+import { decodeArtifactEdit } from "../../contracts/artifacts";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { isChatPdfPolicyUnavailableError, chatPdfFingerprint } from "../uploads/chatPdfAdmission";
@@ -114,6 +116,8 @@ export type RunHandlerDeps = {
   runPolicy?: RunPreparationDeps["runPolicy"];
   searchProviders?: Record<string, ProviderSearchAdapter>;
   skills?: RunPreparationDeps["skills"];
+  skillCatalogRelevance?: RunPreparationDeps["skillCatalogRelevance"];
+  skillTools?: import("../skills/toolService").SkillToolService;
   storage?: StorageAdapter;
   workspace?: RunPreparationDeps["workspace"];
   workspaceCoordinator?: WorkspaceCoordinator;
@@ -167,6 +171,12 @@ async function readJson(
   request: Request
 ): Promise<readonly [Record<string, unknown> | null, Response | null]> {
   const value = await readJsonBodyOrNull(request, "json");
+  if (value && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value, "artifactIntent") &&
+    (value as Record<string, unknown>).artifactIntent !== "create") return [null, Response.json({ error: "artifact_intent_invalid" }, { status: 400 })];
+  if (value && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value, "artifactEdit") &&
+    !decodeArtifactEdit((value as Record<string, unknown>).artifactEdit)) {
+    return [null, Response.json({ error: "artifact_edit_invalid" }, { status: 400 })];
+  }
   return [
     typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null,
     requestBodyErrorResponse(value)
@@ -179,6 +189,10 @@ function runPreparationFailureResponse(failure: RunPreparationFailure): Response
       ...(failure.actual ? { actual: failure.actual } : {}),
       error: failure.code,
       ...(failure.limits ? { limits: failure.limits } : {}),
+      ...(failure.skillBudget ?? {}),
+      ...(failure.skillValidation ? {
+        field: failure.skillValidation.field, actual: failure.skillValidation.actual, limit: failure.skillValidation.limit
+      } : {}),
       ...(failure.message ? { message: failure.message } : {})
     },
     { status: failure.status }
@@ -245,6 +259,7 @@ function recoveryDeps(
     | "knowledgeExecutor"
     | "knowledgeProviderDispatch"
     | "artifacts"
+    | "skillTools"
     | "images"
     | "memoryEgress"
     | "mcp"
@@ -266,6 +281,7 @@ function recoveryDeps(
       : {}),
     ...(deps.images ? { images: deps.images } : {}),
     ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
+    ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
     ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
     ...(deps.mcp ? { mcp: deps.mcp } : {}),
     ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
@@ -583,8 +599,27 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     if (!expectedActiveLeaf.ok) {
       return Response.json({ error: "expected_active_leaf_invalid" }, { status: 400 });
     }
+    const scopeFingerprint = chatPdfFingerprint({ chatId: chat.id, project: chat.project ?? null, memoryMode: chat.memoryMode ?? null });
     const preparation = await prepareRun(deps, {
       body,
+      skillCatalogDecision: {
+        operationKey: admissionKey,
+        authorizeScope: async () => {
+          const currentAuth = await deps.resolveAuth(request);
+          if (currentAuth?.userId !== auth.userId) throw new SkillCatalogAuthorityChangedError();
+          const current = personalChat && personalDraft
+            ? await deps.repository.loadPersonalFirstSend?.({ chatId: params.chatId,
+                folderId: personalDraft.folderId, memoryMode: personalDraft.memoryMode, userId: auth.userId })
+            : projectChat && projectDraft
+              ? await deps.repository.loadProjectFirstSend?.({ chatId: params.chatId,
+                  folderId: projectDraft.folderId, projectId: projectDraft.projectId, userId: auth.userId })
+              : await deps.repository.findOwnedChat(params.chatId, auth.userId);
+          if (!current || current.activeLeafMessageId !== expectedActiveLeaf.value ||
+            chatPdfFingerprint({ chatId: current.id, project: current.project ?? null, memoryMode: current.memoryMode ?? null }) !== scopeFingerprint) {
+            throw new SkillCatalogAuthorityChangedError();
+          }
+        }
+      },
       signal: request.signal,
       source: {
         chat: {
@@ -727,6 +762,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
       ...(deps.images ? { images: deps.images } : {}),
       ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
+      ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
       ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
@@ -789,10 +825,38 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     if (body?.retryPdfPreparation === true && !retry) {
       return Response.json({ error: "pdf_preparation_unavailable" }, { status: 409 });
     }
+    if (retry && "prepared" in retry) {
+      if (body?.artifactIntent !== undefined && body.artifactIntent !== retry.prepared.normalizedRequest.artifactIntent) return Response.json({ error: "artifact_intent_unavailable" }, { status: 409 });
+      const artifactEdit = retry.prepared.normalizedRequest.artifactEdit;
+      const requestedEdit = body?.artifactEdit === undefined ? undefined : decodeArtifactEdit(body.artifactEdit);
+      if (requestedEdit && (!artifactEdit || requestedEdit.artifactId !== artifactEdit.artifactId || requestedEdit.versionId !== artifactEdit.versionId)) {
+        return Response.json({ error: "artifact_edit_unavailable" }, { status: 409 });
+      }
+      if (artifactEdit) {
+        const target = await deps.artifacts?.validateEditTarget({ ...artifactEdit, chatId: source.chat.id, ownerUserId: auth.userId });
+        if (!target?.ok) return Response.json({ error: target?.code ?? "artifact_edit_unavailable" }, { status: 409 });
+      }
+    }
+    const scopeFingerprint = chatPdfFingerprint({ chatId: source.chat.id, project: source.chat.project ?? null,
+      memoryMode: source.chat.memoryMode ?? null, userMessage: source.userMessage });
     const preparation = retry && "prepared" in retry ? { ok: true as const, ...retry } : await prepareRun(deps, {
       body: retry && "assistantId" in retry
-        ? { assistantId: retry.assistantId, skillIds: retry.skillIds }
+        ? { assistantId: retry.assistantId, skillIds: retry.skillIds,
+            ...(body?.artifactEdit !== undefined ? { artifactEdit: body.artifactEdit } : {}),
+            ...(body?.artifactIntent !== undefined ? { artifactIntent: body.artifactIntent } : {}) }
         : body,
+      skillCatalogDecision: {
+        operationKey: admissionKey,
+        authorizeScope: async () => {
+          const currentAuth = await deps.resolveAuth(request);
+          if (currentAuth?.userId !== auth.userId) throw new SkillCatalogAuthorityChangedError();
+          const current = await deps.repository.findRegenerationSource(params.messageId, auth.userId);
+          if (!current || chatPdfFingerprint({ chatId: current.chat.id, project: current.chat.project ?? null,
+            memoryMode: current.chat.memoryMode ?? null, userMessage: current.userMessage }) !== scopeFingerprint) {
+            throw new SkillCatalogAuthorityChangedError();
+          }
+        }
+      },
       signal: request.signal,
       source: {
         kind: "regenerate",
@@ -916,6 +980,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
       ...(deps.images ? { images: deps.images } : {}),
       ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
+      ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
       ...(deps.memoryEgress ? { memoryEgress: deps.memoryEgress } : {}),
       ...(deps.mcp ? { mcp: deps.mcp } : {}),
       ...(deps.providerAdmission ? { providerAdmission: deps.providerAdmission } : {}),
@@ -939,6 +1004,7 @@ export function createGetModelRunHandler(
     | "knowledgeExecutor"
     | "knowledgeProviderDispatch"
     | "artifacts"
+    | "skillTools"
     | "images"
     | "memoryEgress"
     | "mcp"

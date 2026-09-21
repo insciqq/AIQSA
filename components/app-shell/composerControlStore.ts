@@ -8,6 +8,7 @@ import {
   type KnowledgeSelection
 } from "@/lib/contracts/knowledge";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
+import type { SkillsMode, AssistantSkillMode } from "@/lib/contracts/skills";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import { create } from "zustand";
 
@@ -39,7 +40,8 @@ export type ComposerAssistantSelection = {
   avatar: AssistantAvatarRecipe;
   description: string;
   id: string;
-  includedSkills?: { id: string; name: string }[];
+  includedSkills?: { id: string; name: string; mode?: AssistantSkillMode; instructionApproxTokens?: number }[];
+  skillsMode?: SkillsMode;
   /** Safe summary copy such as "Knowledge · 2"; never dependency ids/names. */
   knowledgeLabel?: string | null;
   knowledgeResourceCount?: number;
@@ -55,6 +57,7 @@ export type ComposerSkillSelection = {
   description: string;
   id: string;
   name: string;
+  instructionApproxTokens?: number;
   promptCharacterCount: number;
 };
 
@@ -69,6 +72,7 @@ export type ComposerManualDraftBackup = {
   selectedModelId: string;
   selectedKnowledgeBaseIds: string[];
   mcpSelection: ComposerMcpSelection;
+  skillsMode: SkillsMode;
   selectedProvider: string;
   selectedSearchOptionIds: string[];
   selectedSkills: ComposerSkillSelection[];
@@ -88,6 +92,7 @@ export type ComposerControlSnapshot = {
   selectedAssistant: ComposerAssistantSelection | null;
   selectedKnowledgeBaseIds: string[];
   mcpSelection: ComposerMcpSelection;
+  skillsMode: SkillsMode;
   selectedModelId: string;
   selectedProvider: string;
   selectedSearchOptionIds: string[];
@@ -120,6 +125,7 @@ export type ComposerControlStore = ComposerControlSnapshot & {
   setBackgroundMode(value: boolean): void;
   setMaxOutputTokens(value: string): void;
   setMcpSelection(value: ComposerMcpSelection): void;
+  setSkillsMode(value: SkillsMode): void;
   setSelectedKnowledgePlan(
     selection: KnowledgeSelection | readonly string[],
     source?: Exclude<ComposerKnowledgePlanSource, "assistant">,
@@ -147,6 +153,7 @@ export const initialComposerControlSnapshot: ComposerControlSnapshot = {
   backgroundMode: true,
   maxOutputTokens: String(DEFAULT_CHAT_MAX_OUTPUT_TOKENS),
   mcpSelection: { mode: "auto" },
+  skillsMode: "auto",
   knowledgePlanSource: "off",
   knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
   reasoningEffort: "medium",
@@ -181,6 +188,7 @@ function manualBackupFrom(state: ComposerControlSnapshot): ComposerManualDraftBa
     backgroundMode: state.backgroundMode,
     maxOutputTokens: state.maxOutputTokens,
     mcpSelection: { ...state.mcpSelection },
+    skillsMode: state.skillsMode,
     knowledgeSelection: clonedKnowledgeSelection(state.knowledgeSelection),
     knowledgePlanSource: state.knowledgePlanSource === "assistant" ? "off" : state.knowledgePlanSource,
     reasoningEffort: state.reasoningEffort,
@@ -315,6 +323,7 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
               backgroundMode: backup.backgroundMode,
               maxOutputTokens: backup.maxOutputTokens,
               mcpSelection: { ...backup.mcpSelection },
+              skillsMode: backup.skillsMode,
               knowledgeSelection: clonedKnowledgeSelection(backup.knowledgeSelection),
               knowledgePlanSource: backup.knowledgePlanSource,
               reasoningEffort: backup.reasoningEffort,
@@ -344,6 +353,9 @@ export const useComposerControlStore = create<ComposerControlStore>((set) => ({
       : {
           mcpSelection: { ...mcpSelection }
         });
+  },
+  setSkillsMode(skillsMode) {
+    set(state => state.selectedAssistant ? {} : { skillsMode });
   },
   setSelectedKnowledgePlan(selection, source = "explicit", origin = "user") {
     const decoded = decodeKnowledgePlan(Array.isArray(selection)

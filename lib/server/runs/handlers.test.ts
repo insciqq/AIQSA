@@ -881,6 +881,60 @@ describe("model run route handlers", () => {
     resetBootOrphanSweepForTest();
   });
 
+  it.each(["send", "regenerate"] as const)("reauthorizes the request owner and source during optional catalog relevance for %s", async kind => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, {
+      toolCalling: true, contextWindow: 32_768, nativePdfInput: false, nativeSearch: false,
+      pdf: true, reasoning: true, streaming: true, vision: true
+    });
+    const resolveAuth = vi.fn(auth.resolveAuth);
+    let admissionKey = "";
+    let query = "";
+    let authorizationError: unknown;
+    const skillCatalogRelevance: NonNullable<RunHandlerDeps["skillCatalogRelevance"]> = async input => {
+      query = input.query;
+      admissionKey = input.operationKey;
+      try { await input.authorize(); } catch (error) { authorizationError = error; throw error; }
+      resolveAuth.mockResolvedValueOnce(null);
+      await input.authorize();
+      return [];
+    };
+    const skills = { resolveForRun: vi.fn(async () => ({ ok: true as const, skills: [] })),
+      listEnabledForRun: vi.fn(async () => [{ skillId: "a", revisionId: "r", name: "A", description: "Procedure A" }]) };
+    const deps = { ...authDeps, resolveAuth, repository, providers: { fake: createFakeProviderAdapter() }, skills, skillCatalogRelevance };
+    const request = new Request("http://app.local/api/model-runs/relevance", {
+      method: "POST", headers: { cookie: authCookie() },
+      body: JSON.stringify({ text: "New question", expectedActiveLeafId: null, admissionId: "relevance-request" })
+    });
+    const response = kind === "send"
+      ? await createSendMessageHandler(deps)(request, { params: { chatId: "chat-1" } })
+      : await createRegenerateModelRunHandler(deps)(request, { params: { messageId: "assistant-message-1" } });
+    expect(authorizationError).toBeUndefined();
+    expect(query).toBe(kind === "send" ? "New question" : "Original question");
+    expect(admissionKey).toMatch(/^[a-f0-9]{64}$/u);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: "skill_not_available" });
+    expect(admissionKey).not.toBe("");
+    expect(state.created).toBeNull(); expect(state.regenerated).toBeNull();
+  });
+
+  it.each(["send", "regenerate"] as const)("rejects malformed artifact edit intent before %s admission", async (kind) => {
+    const { repository, state } = createMemoryRepository();
+    const deps = { ...authDeps, repository, providers: { fake: createFakeProviderAdapter() } };
+    const request = new Request("http://app.local/api/model-runs/artifact-edit", {
+      method: "POST", headers: { cookie: authCookie() }, body: JSON.stringify({
+        text: "Change the title", artifactEdit: { artifactId: "artifact", versionId: "version\n" }, retryPdfPreparation: true
+      })
+    });
+    const response = kind === "send"
+      ? await createSendMessageHandler(deps)(request, { params: { chatId: "chat-1" } })
+      : await createRegenerateModelRunHandler(deps)(request, { params: { messageId: "assistant-1" } });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "artifact_edit_invalid" });
+    expect(state.bootSweeps).toEqual([]);
+    expect(state.created).toBeNull();
+    expect(state.regenerated).toBeNull();
+  });
+
   it.each(["send", "regenerate"] as const)(
     "rejects an oversized %s body before recovery or repository work",
     async (kind) => {
@@ -1474,6 +1528,22 @@ describe("model run route handlers", () => {
     }));
     expect(resolveCurrentRoute).not.toHaveBeenCalled();
     expect(stream).not.toHaveBeenCalled();
+
+    const artifactEdit = { artifactId: "artifact-one", versionId: "version-one" };
+    const validateEditTarget = vi.fn(async () => ({ ok: false as const, code: "artifact_version_conflict" as const }));
+    const artifactRetry = createRegenerateModelRunHandler({ ...authDeps, repository, providers: { fake: adapter },
+      artifacts: { validateEditTarget } as unknown as NonNullable<RunHandlerDeps["artifacts"]>,
+      chatPdf: { kick, findAdmission: async () => null, resolve: resolveCurrentRoute,
+        loadRetry: async () => ({ adapter, prepared: { ...saved.prepared, defaults: null, sourceKind: "regenerate",
+          normalizedRequest: { ...saved.prepared.normalizedRequest, artifactTool: true, artifactReferences: [artifactEdit], artifactEdit } } }) } });
+    const admissionsBeforeArtifactRetry = vi.mocked(repository.createRegenerationRun).mock.calls.length;
+    const staleArtifactRetry = await artifactRetry(new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
+      method: "POST", headers: { cookie: authCookie() }, body: JSON.stringify({ retryPdfPreparation: true })
+    }), { params: { messageId: "assistant-message-1" } });
+    expect(staleArtifactRetry.status).toBe(409);
+    await expect(staleArtifactRetry.json()).resolves.toEqual({ error: "artifact_version_conflict" });
+    expect(validateEditTarget).toHaveBeenCalledWith({ ...artifactEdit, chatId: "chat-1", ownerUserId: config.bootstrapUserId });
+    expect(repository.createRegenerationRun).toHaveBeenCalledTimes(admissionsBeforeArtifactRetry);
 
     const resolveAssistant = vi.fn().mockResolvedValue({ ok: false,
       code: "assistant_not_available", status: 404 });

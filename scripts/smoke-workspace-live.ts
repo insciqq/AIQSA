@@ -24,6 +24,7 @@ import {
   type WorkspaceRuntime,
   type WorkspaceToolResult
 } from "@/lib/server/workspace/runtime";
+import { probeWorkspaceSkillDiscovery } from "./workspace-skill-discovery-probe";
 
 if (process.env.AIQSA_WORKSPACE_LIVE_E2E !== "DISPOSABLE") {
   throw new Error("workspace_live_e2e_requires_disposable_confirmation");
@@ -173,6 +174,7 @@ try {
   await ensureImage();
   const health = await runtime.health();
   assert.deepEqual(health, {
+    agentReady: config.agentGatewayEnabled === true,
     imageReady: true,
     mcpVersion: "0.6.16",
     runtimeVersion: "0.6.16",
@@ -508,6 +510,11 @@ try {
   });
   assert.equal(noNetwork.success, true);
 
+  const skillDiscovery = await probeWorkspaceSkillDiscovery({
+    runtime, sessionId: offlineSessionId, runtimeSandboxId: offlineRuntimeId,
+    runIdPrefix: `${prefix}-skills`
+  });
+
   await cleanup();
   await absent(onlineSandboxName);
   await absent(offlineSandboxName);
@@ -516,6 +523,7 @@ try {
     catalogHash: catalog.hash,
     outputChecksum: outputs[0]!.checksum,
     outputCount: outputs.length,
+    skillDiscovery,
     status: "passed"
   }) + "\n");
 } catch (error) {

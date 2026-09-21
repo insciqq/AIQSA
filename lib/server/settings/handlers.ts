@@ -1,6 +1,7 @@
 import { DEFAULT_ANSWER_SOUND, isAnswerSoundId, type AnswerSoundPreferences } from "../../contracts/answerSound";
 import type { CatalogWireModel } from "../../contracts/catalog";
 import type { UserSettingsWire } from "../../contracts/settings";
+import type { SkillsMode } from "../../contracts/skills";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import {
   readJsonBodyOrNull,
@@ -35,6 +36,7 @@ export type UserSettingsUpdate = Partial<AnswerSoundPreferences & {
   defaultControlValues: Record<string, unknown>;
   defaultKnowledgePlan: KnowledgeSelection | null;
   defaultMcpMode: ChatDefaultMcpMode;
+  defaultSkillsMode: SkillsMode;
   defaultWorkspaceEnabled: boolean;
   defaultProviderModelId: string | null;
   defaultSearchPlan: SearchPlan | null;
@@ -187,6 +189,7 @@ function buildSettingsUpdate(
     "defaultControlValues",
     "defaultKnowledgePlan",
     "defaultMcpMode",
+    "defaultSkillsMode",
     "defaultWorkspaceEnabled",
     "defaultProviderModelId",
     "defaultSearchPlan",
@@ -253,6 +256,10 @@ function buildSettingsUpdate(
     }
     update.defaultMcpMode = mode;
   }
+  if ("defaultSkillsMode" in body) {
+    if (body.defaultSkillsMode !== "auto" && body.defaultSkillsMode !== "off") return { error: "default_skills_mode_invalid" };
+    update.defaultSkillsMode = body.defaultSkillsMode;
+  }
 
   if ("answerSoundEnabled" in body) {
     if (typeof body.answerSoundEnabled !== "boolean") return { error: "answer_sound_enabled_boolean_required" };
@@ -316,6 +323,7 @@ function serializeSettings(
     defaultControlValues: resolveCurrentUserControlValues({ ...data, settings }, selection),
     defaultKnowledgePlan: chatDefaults.knowledgePlan,
     defaultMcpMode: chatDefaults.mcpMode,
+    defaultSkillsMode: chatDefaults.skillsMode,
     defaultWorkspaceEnabled: settings.defaultWorkspaceEnabled ?? true,
     hasPersonalModelDefault: selection.hasPersonalModelDefault,
     modelPreferenceSource: selection.modelPreferenceSource,

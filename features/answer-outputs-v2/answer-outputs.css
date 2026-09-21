@@ -901,3 +901,16 @@
     height: 2.5rem;
   }
 }
+.v2-generated-artifacts > ul { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+.v2-generated-artifact-card { display: flex; min-width: 0; align-items: center; gap: 0.25rem; padding-right: 0.5rem; border: 1px solid var(--v2-color-border2); border-radius: var(--v2-radius-m); }
+.v2-generated-artifact-card[data-active] { border-color: var(--v2-color-accent); }
+.v2-generated-artifact-open { display: flex; min-width: 0; flex: 1; align-items: center; gap: 0.75rem; padding: 0.75rem; border: 0; border-radius: var(--v2-radius-m); background: transparent; color: var(--v2-color-text); font: inherit; text-align: left; cursor: pointer; }
+.v2-generated-artifact-open:hover { background: var(--v2-color-hover); }
+.v2-generated-artifact-tile { display: grid; width: 2.5rem; height: 2.5rem; flex: 0 0 auto; place-items: center; border-radius: var(--v2-radius-m); color: var(--v2-color-accent); background: var(--v2-color-accent-dim); }
+.v2-generated-artifact-copy { display: grid; min-width: 0; flex: 1; gap: 0.25rem; }
+.v2-generated-artifact-copy strong { overflow: hidden; font-size: 0.875rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.v2-generated-artifact-copy small { color: var(--v2-color-text3); font-size: 0.75rem; }
+.v2-generated-artifact-open > .v2-icon, .v2-generated-artifact-card > button:last-of-type { flex: 0 0 auto; }
+
+.v2-answer-skill-pin { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.25rem; }
+.v2-answer-skill-pin [role="alert"] { color: var(--v2-color-danger); overflow-wrap: anywhere; }

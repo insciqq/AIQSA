@@ -127,6 +127,7 @@ export function createCompatibleResponsesAdapter(
           throw new Error("compatible_responses_stream_body_missing");
         }
         return yield* parseOpenAIResponsesSse({
+          onToolArguments: runOptions.onToolArguments,
           background: false,
           provider: "openai-compatible",
           responseBody: response.body,

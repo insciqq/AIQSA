@@ -26,6 +26,7 @@ describe("ChatDefaultsRowsV2", () => {
   it("persists the search engine, MCP mode and knowledge default without touching the composer", () => {
     const onSearchPlan = vi.fn();
     const onMcpMode = vi.fn();
+    const onSkillsMode = vi.fn();
     const onKnowledgePlan = vi.fn();
     render(
       <ChatDefaultsRowsV2
@@ -55,6 +56,7 @@ describe("ChatDefaultsRowsV2", () => {
         searchStrategies={strategies}
         onKnowledgePlan={onKnowledgePlan}
         onMcpMode={onMcpMode}
+        onSkillsMode={onSkillsMode}
         onSearchPlan={onSearchPlan}
       />
     );
@@ -66,8 +68,10 @@ describe("ChatDefaultsRowsV2", () => {
     fireEvent.click(search.getByRole("radio", { name: "Google" }));
     expect(onSearchPlan).toHaveBeenLastCalledWith({ mode: "all_selected", optionIds: ["google"] });
 
-    fireEvent.keyDown(screen.getByRole("radio", { name: "Auto" }), { key: "ArrowRight" });
+    fireEvent.keyDown(within(screen.getByRole("radiogroup", { name: "MCP tools default" })).getByRole("radio", { name: "Auto" }), { key: "ArrowRight" });
     expect(onMcpMode).toHaveBeenCalledWith("load_all");
+    fireEvent.keyDown(within(screen.getByRole("radiogroup", { name: "Skills default" })).getByRole("radio", { name: "Auto" }), { key: "ArrowRight" });
+    expect(onSkillsMode).toHaveBeenCalledWith("off");
 
     // The Knowledge default is a Signal select: a menu trigger showing the
     // current choice, options as menu items.

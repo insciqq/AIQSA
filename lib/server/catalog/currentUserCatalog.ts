@@ -28,6 +28,7 @@ export type CatalogSettingsRecord = Partial<AnswerSoundPreferences> & {
   /** Persisted knowledge selection for new chats; absent or invalid means none. */
   defaultKnowledgePlan?: unknown;
   defaultMcpMode?: string | null;
+  defaultSkillsMode?: string | null;
   defaultWorkspaceEnabled?: boolean;
   defaultProviderModelId: string | null;
   defaultSearchPlan: unknown;
@@ -38,7 +39,7 @@ export type CatalogSettingsRecord = Partial<AnswerSoundPreferences> & {
 
 /** Personal chat defaults from the settings row; unreadable values fall back to the installation defaults. */
 export function resolveChatDefaults(
-  settings: Pick<CatalogSettingsRecord, "defaultKnowledgePlan" | "defaultMcpMode" | "sendWithEnter">
+  settings: Pick<CatalogSettingsRecord, "defaultKnowledgePlan" | "defaultMcpMode" | "defaultSkillsMode" | "sendWithEnter">
 ): ChatDefaults {
   const decodedPlan = settings.defaultKnowledgePlan === null || settings.defaultKnowledgePlan === undefined
     ? null
@@ -49,6 +50,7 @@ export function resolveChatDefaults(
   return {
     knowledgePlan,
     mcpMode: decodeChatDefaultMcpMode(settings.defaultMcpMode) ?? INSTALLATION_CHAT_DEFAULTS.mcpMode,
+    skillsMode: settings.defaultSkillsMode === "off" ? "off" : "auto",
     sendWithEnter: settings.sendWithEnter ?? INSTALLATION_CHAT_DEFAULTS.sendWithEnter
   };
 }

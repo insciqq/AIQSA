@@ -33,7 +33,9 @@ const adminSections = [
   { id: "users", label: "Users" },
   { id: "groups", label: "Groups" },
   { id: "access-rules", label: "Sign-up rules" },
+  { id: "announcements", label: "Announcements" },
   { id: "mcp", label: "MCP servers" },
+  { id: "skills", label: "Skills" },
   { id: "workspace", label: "Workspace" },
   { id: "email", label: "Email" },
   { id: "usage", label: "Usage" }

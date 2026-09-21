@@ -42,6 +42,15 @@ describe("UI v2 primitives", () => {
     );
   });
 
+  it("provides stroke-only artifact controls in the shared sprite", () => {
+    const { container } = render(<UiV2IconSprite />);
+    for (const name of ["artifact", "expand", "collapse", "external", "gamepad", "chart"]) {
+      const symbol = container.querySelector(`#v2-icon-${name}`);
+      expect(symbol).toHaveAttribute("viewBox", "0 0 24 24");
+      expect(symbol?.querySelector("[fill='currentColor']")).toBeNull();
+    }
+  });
+
   it("keeps icon controls non-submitting by default while allowing explicit submit", () => {
     const onSubmit = vi.fn((event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();

@@ -26,7 +26,7 @@ test("Project Skill selection stays scoped, reaches admission and responds to re
     const shared = skills[1]!;
     await page.getByRole("button", { name: "Add", exact: true }).click();
     await page.getByRole("menuitem", { name: /^Skills…/ }).click();
-    await page.getByRole("button", { name: `Use ${personal.name}`, exact: true }).click();
+    await page.getByRole("button", { name: `Always use ${personal.name}`, exact: true }).click();
     await page.keyboard.press("Escape");
 
     const created = await page.request.post("/api/projects", {
@@ -48,20 +48,21 @@ test("Project Skill selection stays scoped, reaches admission and responds to re
     const picker = page.getByRole("dialog", { name: "Project Skills", exact: true });
     await expect(picker.getByText(personal.name, { exact: true })).toHaveCount(0);
     await expect(picker.getByRole("button", { name: "Close Skills" })).toBeFocused();
-    await picker.getByRole("button", { name: `Use ${shared.name}`, exact: true }).click();
+    await picker.getByRole("button", { name: `Always use ${shared.name}`, exact: true }).click();
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("button", { name: "Manage selected Skills" })).toHaveText("Skills: 1");
+    await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveText("Skills: Auto · 1");
     await expect(message).toHaveValue("Summarize the shared checklist.");
     await page.setViewportSize({ width: 390, height: 844 });
     await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; });
-    await page.getByRole("button", { name: "Manage selected Skills" }).click();
+    await page.getByRole("button", { name: "Change Skills mode" }).click();
+    await page.getByRole("menuitem", { name: /Skill library/ }).click();
     await expectWithinViewport(page, picker);
     await expectNoHorizontalOverflow(page);
     await picker.getByRole("button", { name: `Remove manual ${shared.name}` }).click();
-    await expect(picker.getByRole("button", { name: `Use ${shared.name}`, exact: true })).toBeEnabled();
-    await picker.getByRole("button", { name: `Use ${shared.name}`, exact: true }).click();
+    await expect(picker.getByRole("button", { name: `Always use ${shared.name}`, exact: true })).toBeEnabled();
+    await picker.getByRole("button", { name: `Always use ${shared.name}`, exact: true }).click();
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("button", { name: "Manage selected Skills" })).toBeFocused();
+    await expect(page.getByRole("button", { name: "Change Skills mode" })).toBeFocused();
     const sent = page.waitForResponse((response) => response.request().method() === "POST" &&
       /^\/api\/chats\/[^/]+\/messages$/u.test(new URL(response.url()).pathname));
     await page.getByRole("button", { name: "Send message" }).click();
@@ -70,7 +71,8 @@ test("Project Skill selection stays scoped, reaches admission and responds to re
     expect(admitted.request().postDataJSON().skillIds).toEqual([shared.id]);
     await expect(page.getByRole("button", { name: "Send message" })).toBeVisible({ timeout: 30_000 });
 
-    await page.getByRole("button", { name: "Manage selected Skills" }).click();
+    await page.getByRole("button", { name: "Change Skills mode" }).click();
+    await page.getByRole("menuitem", { name: /Skill library/ }).click();
     const current = (await (await page.request.get(`/api/projects/${project.id}`)).json()).project;
     const binding = current.resources.find((resource: { resourceId: string }) => resource.resourceId === shared.id);
     const removed = await page.request.delete(`/api/projects/${project.id}/resources/${binding.id}?expectedPolicyRevision=${current.policyRevision}`);
@@ -80,7 +82,8 @@ test("Project Skill selection stays scoped, reaches admission and responds to re
     await page.keyboard.press("Escape");
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.getByRole("button", { name: "Chats", exact: true }).click();
-    await page.getByRole("button", { name: "Manage selected Skills" }).click();
+    await page.getByRole("button", { name: "Change Skills mode" }).click();
+    await page.getByRole("menuitem", { name: /Skill library/ }).click();
     await expect(page.getByRole("dialog", { name: "Skills", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: `Remove manual ${personal.name}` })).toBeVisible();
   } finally {
@@ -101,13 +104,15 @@ test("Assistant selection preserves manual Skills and permits recovery from the 
   let assistantId: string | undefined;
   let chatId: string | null = null;
   try {
-    for (let index = 0; index < 9; index += 1) {
+    for (let index = 0; index < 33; index += 1) {
       const response = await page.request.post("/api/me/skills", {
         data: { name: `Limit ${suffix} ${index + 1}`, description: "Synthetic limit fixture", instructions: "Keep the response concise." }
       });
       expect(response.status()).toBe(201);
       skills.push((await response.json()).skill);
     }
+    const included = skills.slice(0, 30);
+    const manual = skills.slice(30);
     const created = await page.request.post("/api/me/assistants", { data: {
       avatar: { accents: [0, 2], backgroundShape: "circle", foregroundShape: "diamond", kind: "generated",
         paletteId: "ocean", recipeVersion: 1, rotations: [0, 1] },
@@ -115,7 +120,7 @@ test("Assistant selection preserves manual Skills and permits recovery from the 
       knowledgeSelection: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
       mcpServerIds: [], name: `Skill limit ${suffix}`, providerModelId: model.modelId,
       runControls: { reasoningEffort: "medium" }, searchPlan: { mode: "all_selected", optionIds: [] },
-      skillIds: skills.slice(0, 6).map(({ id }) => id), starterPrompts: [], systemPrompt: "You are terse."
+      skillIds: included.map(({ id }) => id), starterPrompts: [], systemPrompt: "You are terse."
     } });
     expect(created.status()).toBe(201);
     assistantId = (await created.json()).assistant.id;
@@ -124,34 +129,50 @@ test("Assistant selection preserves manual Skills and permits recovery from the 
     await page.getByRole("button", { name: "Add", exact: true }).click();
     await page.getByRole("menuitem", { name: /^Skills…/ }).click();
     const picker = page.getByRole("dialog", { name: "Skills", exact: true });
-    for (const skill of skills.slice(6)) {
-      await picker.getByRole("button", { name: `Use ${skill.name}`, exact: true }).click();
+    const searchResult = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return response.request().method() === "GET" && url.pathname === "/api/me/skills" &&
+        url.searchParams.get("q") === `Limit ${suffix}`;
+    });
+    await picker.getByRole("searchbox", { name: "Search Skills" }).fill(`Limit ${suffix}`);
+    expect((await searchResult).ok()).toBe(true);
+    for (const skill of manual) {
+      await picker.getByRole("button", { name: `Always use ${skill.name}`, exact: true }).click();
     }
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("button", { name: "Manage selected Skills" })).toHaveText("Skills: 3");
+    await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveText("Skills: Auto · 3");
     await page.getByRole("button", { name: "Add", exact: true }).click();
     await page.getByRole("menuitem", { name: /Use an Assistant/ }).click();
     await page.getByTestId(`assistant-picker-row-${assistantId}`).click();
     await expect(page.getByTestId("assistant-picker")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Manage selected Skills" })).toHaveText("Skills: 9");
-    await expect(page.getByRole("button", { name: "Send message" })).toBeDisabled();
-    await expect(page.getByTestId("composer-v2-surface").getByRole("alert")).toHaveText(
-      "Choose at most 8 Skills. Remove manual selections or change the Assistant before sending."
-    );
+    await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveText("Skills: Auto · 33");
+    await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
+    const rejection = page.waitForResponse(response => response.request().method() === "POST" && /^\/api\/chats\/[^/]+\/messages$/u.test(new URL(response.url()).pathname));
+    await page.getByRole("button", { name: "Send message" }).click();
+    const rejected = await rejection;
+    expect(rejected.status()).toBe(400);
+    chatId = new URL(rejected.url()).pathname.split("/")[3]!;
+    await expect(page.getByRole("region", { name: "Conversation", exact: true }).getByRole("alert").getByText(
+      "33 Skills are pinned; the limit is 32, including Assistant Skills. Unpin Skills and try again.", { exact: true }
+    )).toBeVisible();
     await expect(message).toHaveValue("Keep this draft while fixing the selection.");
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole("button", { name: "Manage selected Skills" }).click();
+    await page.getByRole("button", { name: "Change Skills mode" }).click();
+    await page.getByRole("menuitem", { name: /Skill library/ }).click();
     await expectWithinViewport(page, picker);
     const selection = picker.getByRole("region", { name: "Selected Skills" });
-    await expect(selection).toContainText("Included by Assistant");
-    await expect(selection).toContainText("Added manually");
+    await expect(selection).toContainText("Always from Assistant");
+    await expect(selection).toContainText("33 always included ·");
     await expect(selection.getByRole("button", { name: /^Remove manual/ })).toHaveCount(3);
-    for (const skill of skills.slice(0, 6)) await expect(selection).toContainText(skill.name);
-    await selection.getByRole("button", { name: `Remove manual ${skills[8]!.name}` }).click();
-    await expect(selection).toContainText("8 of 8 Skills selected.");
-    await expect(picker.getByRole("button", { name: `Use ${skills[8]!.name}`, exact: true })).toBeDisabled();
+    for (const skill of included) await expect(selection).toContainText(skill.name);
+    await selection.getByRole("button", { name: `Remove manual ${manual[2]!.name}` }).click();
+    await expect(selection).toContainText("32 always included ·");
+    await expect(selection).toContainText("instruction tokens");
+    await expect(selection).toContainText("Skill limit reached. Unpin a Skill to add another.");
+    await expect(selection.getByRole("button", { name: /^Remove manual/ })).toHaveCount(2);
+    await expect(picker.getByRole("button", { name: `Always use ${manual[2]!.name}`, exact: true })).toBeDisabled();
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("button", { name: "Manage selected Skills" })).toBeFocused();
+    await expect(page.getByRole("button", { name: "Change Skills mode" })).toBeFocused();
     await expect(message).toHaveValue("Keep this draft while fixing the selection.");
     await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
     const sent = page.waitForResponse((response) => response.request().method() === "POST" &&
@@ -160,10 +181,10 @@ test("Assistant selection preserves manual Skills and permits recovery from the 
     const admitted = await sent;
     chatId = new URL(admitted.url()).pathname.split("/")[3]!;
     expect(admitted.ok()).toBe(true);
-    expect(admitted.request().postDataJSON().skillIds).toEqual(skills.slice(6, 8).map(({ id }) => id));
+    expect(admitted.request().postDataJSON().skillIds).toEqual(manual.slice(0, 2).map(({ id }) => id));
     await expect(page.getByRole("button", { name: "Send message" })).toBeVisible({ timeout: 30_000 });
   } finally {
-    if (chatId) expect((await page.request.delete(`/api/chats/${chatId}`)).ok()).toBe(true);
+    if (chatId) { const deleted = await page.request.delete(`/api/chats/${chatId}`); expect(deleted.ok() || deleted.status() === 404).toBe(true); }
     if (assistantId) {
       const response = await page.request.get(`/api/me/assistants/${assistantId}`);
       expect(response.ok()).toBe(true);

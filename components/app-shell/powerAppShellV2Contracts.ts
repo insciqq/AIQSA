@@ -63,6 +63,7 @@ export type ShellWorkspacePaneState = {
 };
 
 export type ShellWorkspacePaneActions = {
+  openChat?(chatId: string): Promise<boolean>;
   openContinuedChat?(chat: ChatDetail, sourceKey: ComposerSessionKey): Promise<boolean>;
   activateChat(chat: WorkspaceChatSummary): void;
   cancelChatEdit(): void;
@@ -125,6 +126,8 @@ export type ShellWorkspaceView = {
 };
 
 export type ShellThreadView = {
+  artifactDrafts?: readonly import("@/components/artifacts/artifactGenerationState").ArtifactGenerationDraft[];
+  artifactDraftMessageId?: string;
   activeChatDetailError: string | null;
   activeChatDetailLoading: boolean;
   activeChatStreaming: boolean;
@@ -221,9 +224,11 @@ export type ShellComposerView = {
   chatDefaults?: {
     knowledgePlan: KnowledgeSelection | null;
     mcpMode: ChatDefaultMcpMode;
+    skillsMode?: "auto" | "off";
     searchPlan: SearchPlan;
     setKnowledgePlan(plan: KnowledgeSelection | null): void;
     setMcpMode(mode: ChatDefaultMcpMode): void;
+    setSkillsMode?(mode: "auto" | "off"): void;
     setSearchPlan(plan: SearchPlan): void;
   };
   currentModel: CatalogModel | undefined;

@@ -23,6 +23,9 @@ class UnavailableWorkspaceRuntime implements WorkspaceRuntime {
   async listStagedAttachments(): Promise<never> { return this.unavailable(); }
   async stageAttachments(): Promise<never> { return this.unavailable(); }
   async syncPersonalSecrets(): Promise<never> { return this.unavailable(); }
+  async prepareSkillRun(): Promise<never> { return this.unavailable(); }
+  async installSkillBundle(): Promise<never> { return this.unavailable(); }
+  async completeSkillRunPreparation(): Promise<never> { return this.unavailable(); }
   async loadBoundTools(): Promise<never> { return this.unavailable(); }
   async callBoundTool(): Promise<never> { return this.unavailable(); }
   async cancelToolCall(): Promise<never> { return this.unavailable(); }

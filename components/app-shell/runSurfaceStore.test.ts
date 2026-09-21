@@ -12,6 +12,26 @@ function surface(chatId: string | null) {
 }
 
 describe("run surface store", () => {
+  it("keeps validated code transient, drops unsafe frames and preserves draft text across answer round resets", () => {
+    const store = useRunSurfaceStore.getState();
+    store.resetSurface("chat-a", "config", "answer");
+    const emit = (data: object) => store.appendEvent("chat-a", { type: "artifact_generation", data });
+    emit({ draftId: "draft", phase: "started" });
+    emit({ draftId: "draft", phase: "metadata", title: "Counter", kind: "game" });
+    emit({ draftId: "draft", phase: "file", index: 0, offset: 0, path: "index.html", text: "<h1>Count" });
+    emit({ draftId: "draft", phase: "file", index: 0, offset: 9, text: "x".repeat(8193) });
+    expect(surface("chat-a").events).toEqual([]);
+    expect(surface("chat-a").artifactDrafts?.[0]).toMatchObject({ title: "Counter", files: [{ text: "<h1>Count" }] });
+    store.appendEvent("chat-a", { type: "message_reset", data: {} });
+    expect(surface("chat-a").artifactDrafts?.[0].files[0].text).toBe("<h1>Count");
+    expect(surface("chat-b").artifactDrafts).toBeUndefined();
+    store.endArtifactStream("chat-a", "interrupted");
+    expect(surface("chat-a").artifactDrafts?.[0]).toMatchObject({ status: "interrupted", files: [] });
+    store.appendEvent("chat-a", { type: "done", data: { status: "cancelled" } });
+    expect(surface("chat-a").artifactDrafts?.[0].status).toBe("cancelled");
+    store.resetSurface("chat-a");
+    expect(surface("chat-a").artifactDrafts).toBeUndefined();
+  });
   afterEach(() => {
     resetRunSurfaceStoreForTest();
   });

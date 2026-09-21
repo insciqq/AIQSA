@@ -33,6 +33,7 @@ import type {
 import type { ProviderToolBridge } from "../tools/types";
 import type { SessionContextStatus } from "../../contracts/sessionStatus";
 import { getAttachmentTextConfig } from "../uploads/attachmentTextConfig";
+import type { SkillBudgetFacts } from "../../contracts/skills";
 
 // Matches the former 20,000-character ASCII ceiling under the shared
 // estimator, but applies once across every selected text attachment and is
@@ -307,7 +308,7 @@ export type ProviderRequestContextBudgetResult =
       request: ProviderRunRequest;
     }>
   | Readonly<{
-      error: Readonly<{ code: "context_too_large"; message: string }>;
+      error: Readonly<{ code: "context_too_large" | "skills_budget_exceeded"; message: string; skillBudget?: SkillBudgetFacts }>;
       ok: false;
       status: 400;
     }>;
@@ -465,6 +466,32 @@ function fitProviderAttachmentText(input: Readonly<{
 
 /** Budgets the exact provider-facing client tools and retained tool transcript. */
 export function applyProviderRequestContextBudget(input: Readonly<{
+  bridge?: ProviderToolBridge;
+  request: ProviderRunRequest;
+}>): ProviderRequestContextBudgetResult {
+  const result = applyProviderRequestContextBudgetCore(input);
+  if (result.ok || input.request.agent) return result;
+  const messages = input.request.context?.messages ?? [];
+  const pinned = messages.filter((message) => message.purpose === "skill_context");
+  const catalog = messages.filter((message) => message.purpose === "skill_catalog");
+  if (!pinned.length && !catalog.length) return result;
+  const withoutSkills = applyProviderRequestContextBudgetCore({ ...input, request: {
+    ...input.request, context: { ...input.request.context!, messages: messages.filter((message) => message.purpose !== "skill_context" && message.purpose !== "skill_catalog") }
+  } });
+  if (!withoutSkills.ok) return result;
+  const limits = calculateContextBudgetLimits({
+    contextWindow: input.request.modelCapabilities.contextWindow ?? 0,
+    maxOutputTokens: maxOutputTokensForBudget(input.request.params, input.request.modelCapabilities, input.request.provider),
+    provider: input.request.provider
+  });
+  return { ok: false, status: 400, error: {
+    code: "skills_budget_exceeded", message: "Pinned Skills exceed the model context budget. Unpin Skills or choose a model with a larger context window.",
+    skillBudget: { pinnedTokens: pinned.reduce((sum, message) => sum + estimateApproxTokens(message.content), 0),
+      catalogTokens: catalog.reduce((sum, message) => sum + estimateApproxTokens(message.content), 0), budgetTokens: limits.budgetTokens }
+  } };
+}
+
+function applyProviderRequestContextBudgetCore(input: Readonly<{
   bridge?: ProviderToolBridge;
   request: ProviderRunRequest;
 }>): ProviderRequestContextBudgetResult {

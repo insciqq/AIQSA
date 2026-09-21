@@ -5,11 +5,13 @@ export const DEFAULT_CHAT_MAX_OUTPUT_TOKENS = 65_536;
 
 /** MCP discovery mode a new chat starts with; mirrors the run selection vocabulary. */
 export type ChatDefaultMcpMode = "auto" | "load_all" | "off";
+export type ChatDefaultSkillsMode = "auto" | "off";
 
 export type ChatDefaults = Readonly<{
   /** Knowledge selection attached to new chats; null starts new chats without Knowledge. */
   knowledgePlan: KnowledgeSelection | null;
   mcpMode: ChatDefaultMcpMode;
+  skillsMode: ChatDefaultSkillsMode;
   /** Composer keyboard contract: Enter sends (true) or inserts a newline while Ctrl/⌘+Enter sends. */
   sendWithEnter: boolean;
 }>;
@@ -17,6 +19,7 @@ export type ChatDefaults = Readonly<{
 export const INSTALLATION_CHAT_DEFAULTS: ChatDefaults = Object.freeze({
   knowledgePlan: null,
   mcpMode: "auto",
+  skillsMode: "auto",
   sendWithEnter: true
 });
 
@@ -32,6 +35,7 @@ export function decodeChatDefaultMcpMode(value: unknown): ChatDefaultMcpMode | n
 export function decodeOptionalChatDefaults(input: Readonly<{
   knowledgePlan: unknown;
   mcpMode: unknown;
+  skillsMode?: unknown;
   sendWithEnter: unknown;
 }>): ChatDefaults | null {
   let knowledgePlan: KnowledgeSelection | null = null;
@@ -44,10 +48,13 @@ export function decodeOptionalChatDefaults(input: Readonly<{
     ? INSTALLATION_CHAT_DEFAULTS.mcpMode
     : decodeChatDefaultMcpMode(input.mcpMode);
   if (!mcpMode) return null;
+  const skillsMode = input.skillsMode === undefined ? INSTALLATION_CHAT_DEFAULTS.skillsMode : input.skillsMode;
+  if (skillsMode !== "auto" && skillsMode !== "off") return null;
   if (input.sendWithEnter !== undefined && typeof input.sendWithEnter !== "boolean") return null;
   return {
     knowledgePlan,
     mcpMode,
+    skillsMode,
     sendWithEnter: input.sendWithEnter ?? INSTALLATION_CHAT_DEFAULTS.sendWithEnter
   };
 }

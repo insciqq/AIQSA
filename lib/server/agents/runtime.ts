@@ -11,6 +11,7 @@ export type WorkspaceAgentIdentity = Readonly<{
 }>;
 
 export type WorkspaceAgentStart = WorkspaceAgentIdentity & Readonly<{
+  skillManifestHash: string;
   profile: CodexManagedProfile;
   prompt: string;
   runToken: string;

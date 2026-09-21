@@ -340,6 +340,12 @@ function previewStep(value: Record<string, unknown>): Record<string, unknown> {
   if (step.type === "google_search_result") {
     delete step.result;
   }
+  if (step.type === "function_call") {
+    delete step.arguments;
+  }
+  if (step.type === "function_result") {
+    step.result = "[tool output omitted]";
+  }
   return step;
 }
 

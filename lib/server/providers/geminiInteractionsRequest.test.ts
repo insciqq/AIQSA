@@ -150,8 +150,8 @@ describe("Gemini Interactions request builder", () => {
     expect(buildGeminiInteractionsRequestPreview(runRequest).body.input.slice(-4)).toEqual([
       { type: "thought" },
       { content: [{ text: "I will use the tool.", type: "text" }], type: "model_output" },
-      { arguments: { id: "42" }, id: "call-1", name: tool.name, type: "function_call" },
-      { call_id: "call-1", name: tool.name, result: "record 42", type: "function_result" }
+      { id: "call-1", name: tool.name, type: "function_call" },
+      { call_id: "call-1", name: tool.name, result: "[tool output omitted]", type: "function_result" }
     ]);
   });
 

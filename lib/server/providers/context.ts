@@ -7,7 +7,7 @@ import type { ProviderConversationMessage, ProviderRunRequest } from "./types";
 export type TextConversationMessage = {
   content: string;
   id: string;
-  purpose?: "knowledge_evidence" | "skill_context";
+  purpose?: "knowledge_evidence" | "skill_context" | "skill_catalog";
   role: "assistant" | "user";
 };
 
@@ -47,7 +47,7 @@ export function textConversationForRequest(
 ): TextConversationMessage[] {
   return conversationMessagesForRequest(request)
     .map((message) => ({
-      content: options.redactSkillContext && message.purpose === "skill_context"
+      content: options.redactSkillContext && (message.purpose === "skill_context" || message.purpose === "skill_catalog")
         ? SKILL_CONTEXT_PREVIEW_PLACEHOLDER
         : options.redactSkillContext && message.purpose === "knowledge_evidence"
           ? KNOWLEDGE_EVIDENCE_PREVIEW_PLACEHOLDER

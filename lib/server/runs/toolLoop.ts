@@ -118,6 +118,8 @@ export type ToolLoopOutcome<FinalValue> =
       }>);
 
 export type ContinueToolLoopInput<Continuation, ToolValue, FinalValue> = Readonly<{
+  /** Read-only context expansion waits for other results, then settles serially. */
+  deferToolUntilBatchEnd?(call: ToolLoopCall): boolean;
   toolObservation?(call: ToolLoopCall): ToolLoopObservation | undefined;
   afterToolBatch?(input: Readonly<{
     continuation: Continuation;
@@ -424,6 +426,7 @@ async function settleToolCall<ToolValue>(input: Readonly<{
 
 async function settleToolBatch<ToolValue>(input: Readonly<{
   calls: readonly ToolLoopCall[];
+  deferToolUntilBatchEnd?: ContinueToolLoopInput<unknown, ToolValue, unknown>["deferToolUntilBatchEnd"];
   executeTool: ContinueToolLoopInput<unknown, ToolValue, unknown>["executeTool"];
   maxConcurrency: number;
   parentSignal?: AbortSignal;
@@ -432,16 +435,18 @@ async function settleToolBatch<ToolValue>(input: Readonly<{
   toolObservation?: ContinueToolLoopInput<unknown, ToolValue, unknown>["toolObservation"];
 }>): Promise<Array<ToolLoopSettledCall<ToolValue> | undefined>> {
   const results = new Array<ToolLoopSettledCall<ToolValue> | undefined>(input.calls.length);
+  const immediate = input.calls.map((call, ordinal) => ({ call, ordinal })).filter(({ call }) => !input.deferToolUntilBatchEnd?.(call));
+  const deferred = input.calls.map((call, ordinal) => ({ call, ordinal })).filter(({ call }) => input.deferToolUntilBatchEnd?.(call));
   let cursor = 0;
 
-  async function worker(): Promise<void> {
+  async function worker(entries: typeof immediate): Promise<void> {
     while (!input.parentSignal?.aborted) {
-      const ordinal = cursor;
+      const entry = entries[cursor];
       cursor += 1;
-      const call = input.calls[ordinal];
-      if (!call) {
+      if (!entry) {
         return;
       }
+      const { call, ordinal } = entry;
 
       let observation: ToolLoopObservation | undefined;
       try { observation = input.toolObservation?.(call); } catch { /* Diagnostics cannot prevent dispatch. */ }
@@ -459,10 +464,12 @@ async function settleToolBatch<ToolValue>(input: Readonly<{
   }
 
   const workers = Array.from(
-    { length: Math.min(input.maxConcurrency, input.calls.length) },
-    () => worker()
+    { length: Math.min(input.maxConcurrency, immediate.length) },
+    () => worker(immediate)
   );
   await Promise.all(workers);
+  cursor = 0;
+  await worker(deferred);
   return results;
 }
 
@@ -664,6 +671,7 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
     const results = await settleToolBatch({
       calls,
       executeTool: input.executeTool,
+      deferToolUntilBatchEnd: input.deferToolUntilBatchEnd,
       maxConcurrency: providerResult.parallelToolCalls === false ? 1 : input.budgets.maxConcurrency,
       parentSignal: input.signal,
       round: toolRound,

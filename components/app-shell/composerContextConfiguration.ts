@@ -1,4 +1,9 @@
-import type { ComposerControlSnapshot } from "./composerControlStore";
+import { useComposerControlStore, type ComposerControlSnapshot } from "./composerControlStore";
+
+/** Keep the displayed context bound to every control that affects admission. */
+export function useComposerContextConfigurationKey(chat: Parameters<typeof composerContextConfigurationKey>[1]): string {
+  return useComposerControlStore(controls => composerContextConfigurationKey(controls, chat));
+}
 
 /** Browser-only binding captured with the submitted controls, before any await.
  * Neither this key nor the control summaries are sent back as server authority. */
@@ -16,6 +21,7 @@ export function composerContextConfigurationKey(
     knowledgePlanSource: controls.knowledgePlanSource,
     maxOutputTokens: controls.maxOutputTokens,
     mcpSelection: controls.mcpSelection,
+    skillsMode: controls.selectedAssistant?.skillsMode ?? controls.skillsMode,
     memoryMode: chat.memoryMode,
     modelId: controls.selectedModelId,
     provider: controls.selectedProvider,

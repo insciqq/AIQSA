@@ -73,7 +73,7 @@ function errorJson(
   code: string,
   status: number,
   message?: string,
-  metadata: { field?: AssistantRunControlField; limit?: number } = {}
+  metadata: { field?: AssistantRunControlField | "pinned" | "available"; actual?: number; limit?: number } = {}
 ): Response {
   return Response.json(
     { error: code, ...(message ? { message } : {}), ...metadata },
@@ -327,6 +327,9 @@ function definitionContent(
           )
         },
     skillIds: options.owned ? [...content.skillIds] : (content.skillSummaries ?? []).map(({ id }) => id),
+    skillModes: Object.fromEntries((options.owned ? content.skillIds : (content.skillSummaries ?? []).map(({ id }) => id))
+      .map((id) => [id, content.skillModes?.[id] ?? "pinned"])),
+    skills: content.skills ?? { mode: "auto" },
     starterPrompts: [...content.starterPrompts],
     systemPrompt: content.systemPrompt
   };
@@ -447,7 +450,9 @@ export function createCreateAssistantHandler(deps: AssistantHandlerDeps) {
     const decoded = decodeAssistantDraft(body ?? {});
     if (!decoded.ok) {
       return errorJson(decoded.code, 400, undefined, {
-        ...(decoded.field ? { field: decoded.field } : {})
+        ...(decoded.field ? { field: decoded.field } : {}),
+        ...(decoded.actual === undefined ? {} : { actual: decoded.actual }),
+        ...(decoded.limit === undefined ? {} : { limit: decoded.limit })
       });
     }
     const invalid = validateDraftAgainstCatalog(decoded.draft, resolved.view);
@@ -507,7 +512,9 @@ export function createUpdateAssistantHandler(deps: AssistantHandlerDeps) {
       const decoded = decodeAssistantDraft(body.content);
       if (!decoded.ok) {
         return errorJson(decoded.code, 400, undefined, {
-          ...(decoded.field ? { field: decoded.field } : {})
+          ...(decoded.field ? { field: decoded.field } : {}),
+          ...(decoded.actual === undefined ? {} : { actual: decoded.actual }),
+          ...(decoded.limit === undefined ? {} : { limit: decoded.limit })
         });
       }
       const invalid = validateDraftAgainstCatalog(decoded.draft, resolved.view);

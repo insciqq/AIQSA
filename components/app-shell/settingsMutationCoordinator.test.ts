@@ -43,6 +43,16 @@ afterEach(() => {
 });
 
 describe("settings mutation coordinator", () => {
+  it("persists the Skills default separately from MCP and reconciles the saved mode", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => Response.json({ settings: settings({ defaultSkillsMode: "off" }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onReconcile = vi.fn();
+    const coordinator = createSettingsMutationCoordinator({ callbacks: { onReconcile, onFailure: vi.fn(), onRecovered: vi.fn() } });
+    await coordinator.enqueue({ skillsMode: "off" });
+    expect(JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual({ defaultSkillsMode: "off" });
+    expect(onReconcile).toHaveBeenCalledWith({ skillsMode: "off" }, new Set());
+  });
+
   it("retries a failed Workspace preference and reconciles the server's saved choice", async () => {
     const onReconcile = vi.fn(), onFailure = vi.fn(), onRecovered = vi.fn();
     const fetchMock = vi.fn()

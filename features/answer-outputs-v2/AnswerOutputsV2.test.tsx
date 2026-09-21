@@ -4,7 +4,7 @@ import type { MemoryAnswerSource } from "@/lib/contracts/memoryClient";
 import { KnowledgeCitationViewerProvider } from "@/features/citations-v2/KnowledgeCitationViewer";
 import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { describe, expect, it, vi } from "vitest";
-import { AnswerOutputsV2 } from "./AnswerOutputsV2";
+import { AnswerOutputsV2, ArtifactGenerationCardsV2 } from "./AnswerOutputsV2";
 import { AnswerProcessV2 } from "./AnswerProcessV2";
 
 const shellFetch = vi.hoisted(() => vi.fn());
@@ -56,6 +56,41 @@ function pickMemoryAction(name: string, index = 0) {
 }
 
 describe("answer outputs v2", () => {
+  it("shows pending and stopped creation honestly, then replaces it with the authoritative saved card", () => {
+    const onOpen = vi.fn();
+    const onOpenArtifact = vi.fn();
+    const pending = { draftId: "draft", status: "pending" as const, title: "Notebook", files: [] };
+    const { rerender } = render(<ArtifactGenerationCardsV2 drafts={[pending]} onOpen={onOpen} onOpenArtifact={onOpenArtifact} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Creating artifact…");
+    const card = screen.getByRole("button", { name: "Open artifact code: Notebook" });
+    fireEvent.click(card);
+    expect(onOpen).toHaveBeenCalledWith("draft", card);
+    rerender(<ArtifactGenerationCardsV2 drafts={[{ ...pending, status: "cancelled" }]} onOpen={onOpen} onOpenArtifact={onOpenArtifact} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Artifact wasn’t created. Creation was stopped.");
+    const saved = { artifactId: "saved", versionId: "v1", versionNumber: 1, title: "Notebook", kind: "html" as const, entrypoint: "index.html" };
+    rerender(<ArtifactGenerationCardsV2 drafts={[{ ...pending, status: "ready", artifact: saved }]} onOpen={onOpen} onOpenArtifact={onOpenArtifact} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open artifact: Notebook" }));
+    expect(onOpenArtifact).toHaveBeenCalledWith(saved, expect.any(HTMLElement));
+    expect(screen.queryByText("Creating artifact…")).not.toBeInTheDocument();
+    rerender(<ArtifactGenerationCardsV2 drafts={[{ ...pending, status: "ready", artifact: saved }]} savedArtifacts={[saved]} onOpen={onOpen} onOpenArtifact={onOpenArtifact} />);
+    expect(screen.queryByRole("button", { name: "Open artifact: Notebook" })).not.toBeInTheDocument();
+  });
+  it("opens an artifact card in place and reserves a new tab for its explicit menu action", () => {
+    const generated = { artifactId: "artifact", versionId: "v1", versionNumber: 1, title: "A small game", kind: "game" as const, entrypoint: "index.html" };
+    const onOpenArtifact = vi.fn();
+    const onEditArtifact = vi.fn();
+    render(<AnswerOutputsV2 artifact={{ citations: [], sources: [], reasoningText: [], generatedArtifacts: [generated] }}
+      onOpenArtifact={onOpenArtifact} onEditArtifact={onEditArtifact} />);
+    const card = screen.getByRole("button", { name: "Open artifact: A small game" });
+    fireEvent.click(card);
+    expect(onOpenArtifact).toHaveBeenCalledWith(generated, card);
+    expect(screen.queryByText("Generated artifacts")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Actions for artifact: A small game" }));
+    expect(screen.getByRole("menuitem", { name: "Open in new tab" })).toHaveAttribute("target", "_blank");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit with AI" }));
+    expect(onEditArtifact).toHaveBeenCalledWith(generated);
+  });
+
   it("shows safe Sources under the actions row, reauthorized Project evidence, and Thinking above", async () => {
     shellFetch.mockResolvedValue(new Response(JSON.stringify({
       citation: {

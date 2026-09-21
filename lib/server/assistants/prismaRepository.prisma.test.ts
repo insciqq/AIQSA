@@ -3,6 +3,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { AssistantDraft } from "../../contracts/assistants";
 import { prisma } from "../prisma";
 import { createPrismaSkillRepository } from "../skills/prismaRepository";
+import { createSkillSharingService } from "../skills/shareRequests";
 import { assertAssistantRunProvenance } from "../runs/prismaRepositoryBindings";
 import { createPrismaAssistantRepository } from "./prismaRepository";
 
@@ -147,6 +148,16 @@ describe("Prisma Assistant Skill links", () => {
       });
       expect(livePublication.kind).toBe("ok");
 
+      // Audience rows alone cannot publish an Assistant dependency before
+      // those Skill revisions have been reviewed.
+      await expect(assistantRepository.publish({ actorIsAdmin: false, assistantId,
+        groupId: group.id, scope: "group", userId: ownerUserId }))
+        .resolves.toEqual({ kind: "skill_audience_mismatch" });
+      await prisma.user.update({ where: { id: ownerUserId }, data: { role: "admin" } });
+      for (const skillId of [firstSkillId, liveSkillId]) {
+        await createSkillSharingService(prisma).request(ownerUserId, skillId, 1);
+      }
+
       const published = await assistantRepository.publish({
         actorIsAdmin: false,
         assistantId,
@@ -159,18 +170,20 @@ describe("Prisma Assistant Skill links", () => {
 
       const version = (await prisma.assistantDefinition.findUniqueOrThrow({ where: { id: assistantId } })).version;
       const edited = { ...assistantDraft(providerModelId, [liveSkillId, firstSkillId]),
+        skills: { mode: "off" as const }, skillModes: { [liveSkillId]: "available" as const, [firstSkillId]: "pinned" as const },
         name: "Updated workflow", systemPrompt: "Use the updated workflow.", responseReminder: "End with a next step." };
       await expect(assistantRepository.update(ownerUserId, assistantId, version, edited))
         .resolves.toEqual({ assistantId, kind: "ok" });
       await expect(assistantRepository.resolveForRun(memberUserId, assistantId)).resolves.toMatchObject({
         ok: true, assistant: { name: "Updated workflow", systemPrompt: "Use the updated workflow.", responseReminder: "End with a next step.",
+          skills: { mode: "off" }, skillModes: { [liveSkillId]: "available", [firstSkillId]: "pinned" },
           identity: { name: "Updated workflow" } }
       });
       await expect(assistantRepository.update(ownerUserId, assistantId, version, edited))
         .resolves.toEqual({ kind: "version_conflict" });
 
       const privateSkill = await skillRepository.create(ownerUserId, {
-        name: "Private workflow", description: "", instructions: "Private instructions"
+        name: "Private workflow", description: "Private synthetic procedure", instructions: "Private instructions"
       });
       skillIds.push(privateSkill);
       const currentVersion = (await prisma.assistantDefinition.findUniqueOrThrow({ where: { id: assistantId } })).version;
@@ -223,9 +236,10 @@ describe("Prisma Assistant Skill links", () => {
       for (const userId of [ownerUserId, memberUserId]) {
         expect((await assistantRepository.listForUser(userId)).find((entry) => entry.id === assistantId)?.dependencyAvailability?.skills).toBe(false);
         expect((await assistantRepository.getDetail(userId, assistantId))?.dependencyAvailability?.skills).toBe(false);
+        expect((await assistantRepository.resolveForRun(userId, assistantId)).ok).toBe(false);
       }
       expect((await assistantRepository.getDetail(memberUserId, assistantId))?.content.skillSummaries)
-        .toEqual([{ id: firstSkillId, name: "Action closer", available: true }]);
+        .toEqual([{ id: firstSkillId, name: "Action closer", available: true, mode: "pinned", instructionApproxTokens: 8 }]);
       await expect(skillRepository.setArchived(ownerUserId, liveSkillId, liveSkillVersion + 1, false)).resolves.toMatchObject({ kind: "ok" });
       expect((await assistantRepository.getDetail(memberUserId, assistantId))?.dependencyAvailability?.skills).toBe(true);
 
@@ -233,7 +247,7 @@ describe("Prisma Assistant Skill links", () => {
       await prisma.skillPublication.delete({ where: { id: revoked.id } });
       expect((await assistantRepository.getDetail(memberUserId, assistantId))?.dependencyAvailability?.skills).toBe(false);
       expect((await assistantRepository.getDetail(memberUserId, assistantId))?.content.skillSummaries)
-        .toEqual([{ id: firstSkillId, name: "Action closer", available: true }]);
+        .toEqual([{ id: firstSkillId, name: "Action closer", available: true, mode: "pinned", instructionApproxTokens: 8 }]);
       await prisma.skillPublication.create({ data: revoked });
       expect((await assistantRepository.getDetail(memberUserId, assistantId))?.dependencyAvailability?.skills).toBe(true);
       const beforeEdit = await skillRepository.resolveForRun(
@@ -253,6 +267,10 @@ describe("Prisma Assistant Skill links", () => {
         instructions: "Verify every factual claim and cite its source.",
         name: "Careful reviewer"
       })).resolves.toEqual({ kind: "ok", skillId: liveSkillId });
+      await expect(skillRepository.resolveForRun(memberUserId, [liveSkillId])).resolves.toMatchObject({
+        skills: [{ revisionId: acceptedLiveRevisionId, instructions: "Verify every factual claim." }]
+      });
+      await createSkillSharingService(prisma).request(ownerUserId, liveSkillId, editableSkillVersion + 1);
       const afterEditAssistant = await assistantRepository.resolveForRun(memberUserId, assistantId);
       expect(afterEditAssistant).toMatchObject({
         assistant: { skillIds: [liveSkillId, firstSkillId] },
@@ -358,9 +376,10 @@ describe("Prisma Assistant Skill links", () => {
 
       await prisma.skillPublication.deleteMany({ where: { skillId: { in: skillIds } } });
       await prisma.skillDefinition.updateMany({
-        data: { currentRevisionId: null },
+        data: { currentRevisionId: null, sharedRevisionId: null },
         where: { id: { in: skillIds } }
       });
+      await prisma.skillShareRequest.deleteMany({ where: { skillId: { in: skillIds } } });
       await prisma.skillRevision.deleteMany({ where: { skillId: { in: skillIds } } });
       await prisma.skillDefinition.deleteMany({ where: { id: { in: skillIds } } });
       await prisma.providerModel.deleteMany({ where: { id: providerModelId } });

@@ -66,6 +66,19 @@ function memoryStatusElement(container: HTMLElement): HTMLElement {
 }
 
 describe("LibraryV2", () => {
+  it("keeps Artifacts between Files and Memory in keyboard navigation", () => {
+    render(<LibraryV2 initialTab="files" onBack={vi.fn()} tabs={[
+      { id: "files", label: "Files", content: <p>Files</p> },
+      { id: "artifacts", label: "Artifacts", content: <p>Saved artifacts</p> },
+      { id: "memory", label: "Memory", content: <p>Memory</p> }
+    ]} />);
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Files" }), { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "Artifacts" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("link", { name: "Artifacts" })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Artifacts" }), { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "Memory" })).toHaveAttribute("aria-selected", "true");
+  });
+
   it("keeps selected tab local and supports roving keyboard navigation", () => {
     render(
       <LibraryV2

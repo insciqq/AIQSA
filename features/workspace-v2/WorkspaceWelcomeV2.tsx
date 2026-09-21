@@ -31,6 +31,13 @@ import {
 } from "@/components/app-shell/fileLibraryStore";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { useSkillLibraryStore } from "@/components/app-shell/skillLibraryStore";
+import { activateArtifactLibraryAccount, mutateArtifactLibrary, refreshArtifactLibrary, useArtifactLibraryStore } from "@/components/app-shell/artifactLibraryStore";
+import { ArtifactViewerV2 } from "@/components/artifacts/ArtifactViewerV2";
+import { prepareArtifactEdit } from "@/components/artifacts/artifactClient";
+import { openArtifactPanel } from "@/components/artifacts/artifactPanelStore";
+import { setArtifactEditSession } from "@/components/artifacts/artifactEditSession";
+import type { ArtifactDetail } from "@/lib/contracts/artifacts";
+import { ArtifactsPanelV2, type ArtifactLibraryFilter } from "@/features/library-v2/ArtifactsPanelV2";
 import type {
   PowerAppShellV2Props,
   ShellComposerView
@@ -62,9 +69,10 @@ import type {
 } from "@/features/library-v2/contracts";
 import { useEffect, useRef, useState } from "react";
 
-function LibrarySurfaceV2({ composer, props }: Readonly<{
+function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: Readonly<{
   composer: ShellComposerView;
   props: PowerAppShellV2Props;
+  initialTab?: LibraryTabIdV2;
 }>) {
   const { session, settings } = props;
   const memoryData = useMemorySettingsStore((state) => state.data);
@@ -90,15 +98,38 @@ function LibrarySurfaceV2({ composer, props }: Readonly<{
   const fileMutations = useFileLibraryStore((state) => state.mutations);
   const skillCatalog = useSkillLibraryStore((state) => state.data);
   const selectedSkills = useComposerControlStore((state) => state.selectedSkills);
+  const skillsMode = useComposerControlStore(state => state.skillsMode);
   const assistantView = settings.library;
   const knowledgeView = settings.knowledge;
   const knowledgeExit = useKnowledgeLibraryExit(knowledgeView ?? null);
-  const initialTab: LibraryTabIdV2 = settings.memory.open
+  const initialTab: LibraryTabIdV2 = requestedInitialTab ?? (settings.memory.open
     ? "memory"
     : knowledgeView
       ? "knowledge"
-      : "assistants";
+      : "assistants");
   const [activeTab, setActiveTab] = useState<LibraryTabIdV2>(initialTab);
+  const artifactLibrary = useArtifactLibraryStore();
+  const [artifactFilter, setArtifactFilter] = useState<ArtifactLibraryFilter>("recent");
+  const artifactArchived = artifactFilter === "archived";
+  const [artifactSubview, setArtifactSubview] = useState<{ id: string; title: string; versionId: string } | null>(null);
+  const artifactDetailRef = useRef<ArtifactDetail | null>(null);
+  const artifactNavigationEpoch = useRef(0);
+  useEffect(() => () => { artifactNavigationEpoch.current += 1; }, [activeTab, artifactSubview?.id, artifactSubview?.versionId, session.accountId]);
+  useEffect(() => { activateArtifactLibraryAccount(session.accountId); }, [session.accountId]);
+  useEffect(() => {
+    // Retain cached rows while checking for versions created since the user
+    // last visited Library. Recent and Published share this request.
+    if (activeTab === "artifacts") void refreshArtifactLibrary(artifactArchived, true);
+  }, [activeTab, artifactArchived, session.accountId]);
+  const closeLibrary = () => {
+    assistantView?.onBackToChat();
+    knowledgeView?.onBackToChat();
+    settings.closeMemory();
+  };
+  const openArtifactChat = async (chatId: string) => {
+    if (!await props.workspace.pane.actions.openChat?.(chatId)) throw new Error("This chat is no longer available.");
+    closeLibrary();
+  };
   const [assistantExit, setAssistantExit] = useState<(() => void) | null>(null);
   const [memoryExit, setMemoryExit] = useState<(() => void) | null>(null);
   useBeforeUnloadGuard(memoryDraftDirty);
@@ -299,6 +330,36 @@ function LibrarySurfaceV2({ composer, props }: Readonly<{
       label: "Files"
     },
     {
+      content: artifactSubview ? <ArtifactViewerV2 artifactId={artifactSubview.id} versionId={artifactSubview.versionId}
+        host="library" onVersionChange={versionId => setArtifactSubview(current => current ? { ...current, versionId } : null)}
+        onOpenSourceChat={openArtifactChat}
+        onDetailChange={detail => { artifactDetailRef.current = detail; }}
+        onEditRequest={async (intent, error) => {
+          const navigationEpoch = artifactNavigationEpoch.current;
+          const selected = artifactSubview;
+          const detail = artifactDetailRef.current;
+          const version = detail?.id === selected.id ? detail.versions.find(version => version.id === selected.versionId) : null;
+          if (!version) throw new Error("This artifact is no longer available.");
+          const chatId = await prepareArtifactEdit(selected.id, selected.versionId);
+          if (navigationEpoch !== artifactNavigationEpoch.current) return;
+          await openArtifactChat(chatId);
+          setArtifactEditSession(chatId, { artifactId: selected.id, versionId: selected.versionId, title: detail?.title ?? selected.title, versionNumber: version.versionNumber }, intent, error);
+          // The compact viewer yields to the composer for this explicit edit action.
+          requestAnimationFrame(() => {
+            const workspace = document.querySelector<HTMLElement>(".v2-live-workspace");
+            if (workspace && workspace.getBoundingClientRect().width >= 896) openArtifactPanel({ chatId, artifactId: selected.id, versionId: selected.versionId });
+            document.querySelector<HTMLTextAreaElement>('[data-testid="composer-v2"] textarea')?.focus({ preventScroll: true });
+          });
+        }} /> : <ArtifactsPanelV2 recent={artifactLibrary.data.recent} archived={artifactLibrary.data.archived}
+        error={artifactLibrary.errors[artifactFilter === "archived" ? "archived" : "recent"]}
+        loadState={artifactLibrary.loadState[artifactFilter === "archived" ? "archived" : "recent"]}
+        filter={artifactFilter} mutations={artifactLibrary.mutations} onFilterChange={setArtifactFilter}
+        onRetry={() => void refreshArtifactLibrary(artifactFilter === "archived", true)} onChange={mutateArtifactLibrary}
+        onOpenChat={openArtifactChat} onOpen={item => { artifactDetailRef.current = null; setArtifactSubview({ id: item.id, title: item.title, versionId: item.currentVersionId }); }} />,
+      id: "artifacts",
+      label: "Artifacts"
+    },
+    {
       content: (
         <MemoryPanelV2
           activeRef={activeMemory?.memoryRef ?? null}
@@ -356,6 +417,11 @@ function LibrarySurfaceV2({ composer, props }: Readonly<{
     {
       content: (
         <SkillLibrarySection
+          includedSkills={composer.assistant.selected?.includedSkills}
+          selectedSkills={selectedSkills}
+          skillsMode={composer.assistant.selected?.skillsMode ?? skillsMode}
+          availableCount={composer.assistant.selected ? (composer.assistant.selected.includedSkills ?? []).filter(skill => skill.mode === "available" && !selectedSkills.some(selected => selected.id === skill.id)).length : undefined}
+          modelContextWindow={composer.currentModel?.contextWindow ?? undefined}
           selectedIds={selectedSkills.map((skill) => skill.id)}
           onSelectionChange={(ids) => {
             const catalogById = new Map(
@@ -369,7 +435,8 @@ function LibrarySurfaceV2({ composer, props }: Readonly<{
                   description: skill.description,
                   id: skill.id,
                   name: skill.name,
-                  promptCharacterCount: skill.instructionCharacterCount
+                  promptCharacterCount: skill.instructionCharacterCount,
+                  instructionApproxTokens: skill.instructionApproxTokens
                 }] : [];
               }
               const selected = selectedById.get(id);
@@ -419,7 +486,10 @@ function LibrarySurfaceV2({ composer, props }: Readonly<{
               busy: knowledgeView.busy,
               onBack: () => knowledgeExit.requestExit()
             }
-          : null}
+          : activeTab === "artifacts" && artifactSubview ? {
+              backLabel: "Back to artifacts", key: `artifact-${artifactSubview.id}`, label: artifactSubview.title,
+              onBack: () => { setArtifactSubview(null); artifactDetailRef.current = null; void refreshArtifactLibrary(artifactFilter === "archived", true); }
+            } : null}
         tabs={tabs}
         onBack={() => {
           assistantView?.onBackToChat();

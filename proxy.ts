@@ -12,6 +12,7 @@ import {
   isProtectedMutationPath
 } from "./lib/server/auth/csrf";
 import { applyRuntimeSecurityHeaders } from "./lib/server/security/headers";
+import { ARTIFACT_RESPONSE_CSP } from "./lib/server/artifacts/contentSecurity";
 import { applyPublicSharePrivacyHeaders } from "./lib/server/shares/privacy";
 
 const publicPrefixes = [
@@ -72,8 +73,9 @@ function isPublicSharePath(pathname: string): boolean {
   );
 }
 
-function secured(response: NextResponse, artifactViewer = false): NextResponse {
+function secured(response: NextResponse, artifactViewer = false, artifactContent = false): NextResponse {
   applyRuntimeSecurityHeaders(response.headers);
+  if (artifactContent) response.headers.set("Content-Security-Policy", ARTIFACT_RESPONSE_CSP);
   // srcdoc remains available, but a script inside the opaque iframe must not
   // navigate that frame to the app or an external site. Its own connect-src
   // policy does not cover document navigation. Enforce this even in HTTP/dev.
@@ -81,8 +83,8 @@ function secured(response: NextResponse, artifactViewer = false): NextResponse {
   return response;
 }
 
-function securedPublicShare(response: NextResponse, artifactViewer = false): NextResponse {
-  secured(response, artifactViewer);
+function securedPublicShare(response: NextResponse, artifactViewer = false, artifactContent = false): NextResponse {
+  secured(response, artifactViewer, artifactContent);
   applyPublicSharePrivacyHeaders(response.headers);
   return response;
 }
@@ -92,9 +94,11 @@ export function proxyWithEnv(
   env: Record<string, string | undefined>
 ) {
   const { pathname } = request.nextUrl;
-  const artifactViewer = ["/a", "/artifacts"].some(
+  const artifactViewer = pathname === "/" || ["/a", "/artifacts"].some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
   );
+  const artifactContent = /^\/api\/artifacts\/[^/]+\/versions\/[^/]+\/content\/?$/u.test(pathname) ||
+    /^\/api\/artifact-public\/[^/]+\/?$/u.test(pathname);
   const fixturePath = pathname === "/ui-v2-fixture" || pathname.startsWith("/ui-v2-fixture/");
 
   if (fixturePath && !isTestAuthAllowedEnv(env)) {
@@ -120,11 +124,11 @@ export function proxyWithEnv(
 
   if (isPublicPath(pathname, env)) {
     const response = NextResponse.next();
-    return isPublicSharePath(pathname) ? securedPublicShare(response, artifactViewer) : secured(response);
+    return isPublicSharePath(pathname) ? securedPublicShare(response, artifactViewer, artifactContent) : secured(response);
   }
 
   if (request.cookies.has(SESSION_COOKIE_NAME)) {
-    return secured(NextResponse.next(), artifactViewer);
+    return secured(NextResponse.next(), artifactViewer, artifactContent);
   }
 
   if (pathname.startsWith("/api/")) {
@@ -143,7 +147,14 @@ export function proxyWithEnv(
   return secured(NextResponse.redirect(loginUrl));
 }
 
-export function proxy(request: NextRequest) {
+export async function proxy(request: NextRequest) {
+  if (["/a", "/api/artifact-public"].some(prefix => request.nextUrl.pathname === prefix || request.nextUrl.pathname.startsWith(`${prefix}/`))) {
+    const { publicArtifactRateLimit } = await import("./lib/server/artifacts/publicRateLimit");
+    const decision = await publicArtifactRateLimit(request).catch(() => ({ allowed: false, retryAfterSeconds: 60 }));
+    if (!decision.allowed) return securedPublicShare(NextResponse.json({ error: "rate_limit_exceeded" }, {
+      status: 429, headers: { "Retry-After": String(decision.retryAfterSeconds) }
+    }), request.nextUrl.pathname.startsWith("/a/"));
+  }
   return proxyWithEnv(request, process.env);
 }
 

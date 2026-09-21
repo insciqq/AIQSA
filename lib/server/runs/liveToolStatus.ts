@@ -10,6 +10,9 @@ export function liveToolCallStatus(
     round?: number;
     serverName?: string;
     toolName?: string;
+    skillId?: string;
+    skillName?: string;
+    skillPath?: string;
   }> = {}
 ): ModelRunSseEvent {
   return {
@@ -22,6 +25,11 @@ export function liveToolCallStatus(
           ? { round: activity.round }
           : {}),
         ...(activity.serverName ? { serverName: activity.serverName } : {}),
+        ...(activity.origin === "skill" ? {
+          ...(activity.skillId ? { skillId: activity.skillId } : {}),
+          ...(activity.skillName ? { skillName: activity.skillName } : {}),
+          ...(activity.skillPath ? { skillPath: activity.skillPath } : {})
+        } : {}),
         status: "requested"
       }
     },

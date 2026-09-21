@@ -142,6 +142,21 @@ function view(overrides: Partial<AssistantLibraryView> = {}): AssistantLibraryVi
 afterEach(() => { resetSkillLibraryStoreForTest(); vi.unstubAllGlobals(); });
 
 describe("Assistant Library subviews", () => {
+  it("sets Assistant Auto/Off and per-link delivery without dropping any dependency", () => {
+    const current = editor({ draft: draft({ skillIds: ["always", "optional"], skillModes: { always: "pinned", optional: "available" }, skills: { mode: "auto" } }) });
+    current.options.selectedSkills = [{ id: "always", name: "Review", available: true }, { id: "optional", name: "Charts", available: true }];
+    render(<AssistantLibrary view={view({ editor: current, task: "editor" })} />);
+    const row = screen.getByText("Skills", { exact: true }).closest("section")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Change" }));
+    expect(within(row).getByText("1 of 32 Always · 1 of 64 On demand")).toBeVisible();
+    expect(within(row).getByRole("combobox", { name: "Delivery for Charts" })).toHaveValue("available");
+    fireEvent.change(within(row).getByRole("combobox", { name: "Delivery for Review" }), { target: { value: "available" } });
+    expect(current.onChange).toHaveBeenCalledWith({ skillModes: { always: "available", optional: "available" } });
+    fireEvent.click(within(row).getByRole("radio", { name: "Off" }));
+    expect(current.onChange).toHaveBeenCalledWith({ skills: { mode: "off" } });
+    expect(within(row).getAllByRole("checkbox")).toHaveLength(2);
+  });
+
   it("keeps selected off-page names and unavailable removal alongside the bounded Skill picker", async () => {
     const fetchMock = vi.fn(async () => Response.json({ nextCursor: null, skills: [],
       publishableWorkspaces: [], viewer: { canPublishInstallation: false } }));
@@ -155,7 +170,7 @@ describe("Assistant Library subviews", () => {
     expect(within(row).getByRole("checkbox", { name: /Older workflow · unavailable/ })).toBeChecked();
     expect(within(row).getByRole("checkbox", { name: /Older workflow/ })).toBeChecked();
     fireEvent.click(within(row).getByRole("checkbox", { name: /Unavailable Skill/ }));
-    expect(current.onChange).toHaveBeenCalledWith({ skillIds: ["older"] });
+    expect(current.onChange).toHaveBeenCalledWith({ skillIds: ["older"], skillModes: { older: "pinned" } });
     const opener = within(row).getByRole("button", { name: "Browse Skills" });
     opener.focus();
     fireEvent.click(opener);

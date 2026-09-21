@@ -5,6 +5,7 @@ import { textMessageContent } from "../../domain/content";
 import { prisma } from "../prisma";
 import { createPrismaProjectRepository } from "../projects/prismaRepository";
 import type { ProviderAdmissionRole } from "../providerRuntime/admission";
+import type { ProviderRunRequest } from "../providers/types";
 import { ChatContinuationError, createChatContinuationService } from "./continuation";
 import { continuationSourceHref, createChatContinuationRepository } from "./continuationRepository";
 import { createChatContinuationHandler } from "./continuationHandlers";
@@ -99,6 +100,7 @@ async function fixture(run: (data: { userId: string; chatId: string; leafId: str
       await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
     }
     await prisma.user.deleteMany({ where: { id: userId } });
+    await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: { contains: userId } } });
   }
 }
 
@@ -359,8 +361,8 @@ it("serves one visible summary from the active branch, preserving source, scope,
 it("carries exact artifact context into a summarized chat and keeps it after source deletion", () => fixture(async ({ userId, chatId, leafId }) => {
   const storage = createMemoryStorageAdapter();
   const artifacts = createArtifactService(prisma, storage);
-  const operation: ArtifactOperation = { intent: "create", kind: "slides", title: "Release deck", entrypoint: "index.html",
-    files: [{ path: "index.html", mimeType: "text/html", text: "<main><h1>Release</h1><img src=\"picture.png\"></main>" }] };
+  const operation = { intent: "create", kind: "slides", title: "Release deck", entrypoint: "index.html",
+    files: [{ path: "index.html", mimeType: "text/html", text: "<main><h1>Release</h1><img src=\"picture.png\"></main>" }] } satisfies ArtifactOperation;
   const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a4n8AAAAASUVORK5CYII=", "base64");
   const image = await prisma.attachment.create({ data: { userId, chatId, status: "ready", kind: "image",
     fileName: "private-image.png", mimeType: "image/png", byteSize: bytes.length, storageKey: `continuation-test/${userId}/image.png`, metadata: {} } });
@@ -369,15 +371,34 @@ it("carries exact artifact context into a summarized chat and keeps it after sou
   const version = await artifacts.createVersion({ ownerUserId: userId, sourceChatId: chatId, operation: withImage });
   const publication = await artifacts.publish({ artifactId: version!.artifactId, versionId: version!.id, ownerUserId: userId });
   const originalPublic = await artifacts.publicBundle(publication.shareToken);
+  expect(originalPublic?.body.toString()).toContain(`data:image/png;base64,${bytes.toString("base64")}`);
   const f = service();
   const result = await f.continueChat({ chatId, userId, expectedLeafMessageId: leafId, requestId: randomUUID() });
   if (result.status !== "complete") throw new Error("summary missing");
 
   expect(await prisma.artifactChatBinding.findMany({ where: { artifactId: version!.artifactId }, select: { chatId: true, versionId: true } }))
     .toEqual(expect.arrayContaining([{ chatId, versionId: version!.id }, { chatId: result.chatId, versionId: version!.id }]));
-  expect(await artifacts.contextForChat({ ownerUserId: userId, chatId: result.chatId })).toEqual([expect.objectContaining({
+  const compactContext = await artifacts.contextForChat({ ownerUserId: userId, chatId: result.chatId, maxInlineSourceBytes: 0 });
+  expect(compactContext).toEqual([expect.objectContaining({
     artifact_id: version!.artifactId, base_version_id: version!.id, title: "Release deck", version_number: 1
   })]);
+  expect(compactContext[0]!.files).toEqual([
+    { path: "index.html", mimeType: "text/html", bytes: Buffer.byteLength(operation.files[0]!.text) },
+    expect.objectContaining({ path: "picture.png", mimeType: "image/png", bytes: bytes.length, binary: true })
+  ]);
+  expect(compactContext[0]!.files.every(file => file.text === undefined)).toBe(true);
+
+  const readRequest: ProviderRunRequest = {
+    artifactTool: true, artifactReferences: [{ artifactId: version!.artifactId, versionId: version!.id }],
+    attachmentIds: [], attachments: [], chatId: result.chatId,
+    content: textMessageContent("Read the accepted release deck."),
+    knowledgePlan: { version: 1, mode: "none", baseIds: [], sourceIds: [] },
+    modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, toolCalling: true, vision: false },
+    modelId: "continuation-artifact-read", provider: "fake", params: {},
+    prompt: { system: null, developer: null }, searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto"
+  };
+  const readAcceptedVersion = () => artifacts.execute({ id: "read-deck", name: "read_artifact",
+    arguments: { artifact_id: version!.artifactId } }, { userId, runId: "continuation-read-run", request: readRequest });
 
   await prisma.chat.delete({ where: { id: chatId } });
   await prisma.attachment.deleteMany({ where: { id: image.id } });
@@ -385,9 +406,21 @@ it("carries exact artifact context into a summarized chat and keeps it after sou
   expect(await artifacts.contextForChat({ ownerUserId: userId, chatId: result.chatId })).toEqual([expect.objectContaining({
     artifact_id: version!.artifactId, base_version_id: version!.id
   })]);
+  const originalRead = await readAcceptedVersion();
+  expect(originalRead).toMatchObject({ status: "complete", content: [{ type: "json", value: {
+    artifact_id: version!.artifactId, version_id: version!.id, truncated: false, files: [
+      { path: "index.html", mimeType: "text/html", offset: 0, bytes: Buffer.byteLength(operation.files[0]!.text), text: operation.files[0]!.text },
+      { path: "picture.png", mimeType: "image/png", offset: 0, bytes: bytes.length, binary: true }
+    ]
+  } }] });
   const next = await artifacts.createVersion({ ownerUserId: userId, sourceChatId: result.chatId, allowedAssetRefs: [],
-    operation: { ...withImage, intent: "update", baseVersionId: version!.id, title: "Updated release deck" } });
+    operation: { intent: "update", baseVersionId: version!.id, title: "Updated release deck",
+      edits: [{ path: "index.html", old_string: "<h1>Release</h1>", new_string: "<h1>Ready</h1>" }] } });
   expect(next).toMatchObject({ artifactId: version!.artifactId, versionNumber: 2 });
+  const updatedBundle = await artifacts.getPrivateBundle({ ownerUserId: userId, artifactId: version!.artifactId, versionId: next!.id });
+  expect(updatedBundle?.body.toString()).toContain("<h1>Ready</h1>");
+  expect(updatedBundle?.body.toString()).toContain(`data:image/png;base64,${bytes.toString("base64")}`);
+  expect(await readAcceptedVersion()).toEqual(originalRead);
   const continued = await prisma.chat.findUniqueOrThrow({ where: { id: result.chatId } });
   const twice = await f.continueChat({ userId, chatId: continued.id, expectedLeafMessageId: continued.activeLeafMessageId!, requestId: randomUUID() });
   if (twice.status !== "complete") throw new Error("second summary missing");
@@ -397,7 +430,6 @@ it("carries exact artifact context into a summarized chat and keeps it after sou
   expect(await artifacts.contextForChat({ ownerUserId: randomUUID(), chatId: twice.chatId })).toEqual([]);
   expect((await artifacts.publicBundle(publication.shareToken))?.body).toEqual(originalPublic?.body);
   await artifacts.archive({ artifactId: version!.artifactId, ownerUserId: userId });
-  await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: { contains: userId } } });
 }));
 
 it("serializes concurrent claims and rejects other owners, active runs, source changes and cancelled operations", () => fixture(async ({ userId, chatId, leafId }) => {

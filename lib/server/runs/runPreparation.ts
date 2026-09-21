@@ -1,5 +1,6 @@
 import { imageGenerationTool, imageReferenceInstructions } from "../tools/imageGeneration";
-import { artifactTool } from "../tools/artifact";
+import { artifactTool, describeArtifactTool, readArtifactTool } from "../tools/artifact";
+import { decodeArtifactEdit } from "../../contracts/artifacts";
 import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
 import type { AssistantIdentity } from "../../contracts/assistants";
 import { isChatPdfPolicyUnavailableError, type ChatPdfAttachmentAdmission, type ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
@@ -16,7 +17,7 @@ import {
   type KnowledgePlan
 } from "../../contracts/knowledge";
 import { decodeMcpRunSelection } from "../../contracts/mcp";
-import { decodeSkillIds, resolveEffectiveSkillIds, SKILL_MAX_SELECTED } from "../../contracts/skills";
+import { decodeSkillIds, resolveEffectiveSkillIds, SKILL_MAX_PINNED, SKILL_MAX_AVAILABLE, type SkillBudgetFacts, type SkillValidationError } from "../../contracts/skills";
 import { resolveStandardChatBaseline, VISIBLE_ANSWER_CONTRACT } from "../../domain/promptTemplates";
 import type { AssistantRunControls } from "../../contracts/assistants";
 import { materializeAssistantRunParams } from "../assistants/runControlMaterialization";
@@ -74,9 +75,16 @@ import { mcpRunTools } from "../mcp/toolExecutor";
 import type { ProviderToolBridge } from "../tools/types";
 import type {
   SkillRunMaterialization,
+  SkillRunCatalogEntry,
   SkillRunResolver
 } from "../skills/runMaterialization";
 import { withSelectedSkillContext } from "../skills/userContext";
+import { freezeSkillManifest } from "../skills/runManifest";
+import { skillCatalogAuthorization } from "../skills/catalogRelevanceAuthority";
+import { SkillCatalogAuthorityChangedError, type SkillCatalogRelevanceService } from "../skills/catalogRelevanceService";
+import { skillWorkspacePath } from "../../domain/skillBundlePaths";
+import { CODEX_MANAGED_PROFILE_VERSION } from "../agents/codexProfile";
+import { skillToolsForRequest } from "../tools/skill";
 import { agentLimits, type NormalizedRunAgent } from "../agents/config";
 import { agentPrompts } from "../agents/prompt";
 import { supportsAgentResponses } from "../providers/agentResponses";
@@ -202,6 +210,7 @@ export type RunPreparationDeps = Readonly<{
     load(): Promise<ToolRunBudgets>;
   }>;
   skills?: SkillRunResolver;
+  skillCatalogRelevance?: SkillCatalogRelevanceService;
   storage?: Pick<StorageAdapter, "getObject">;
   workspace?: WorkspaceAdmissionService;
 }>;
@@ -228,6 +237,8 @@ export type SendRunPreparationSource = Readonly<{
 export type RegenerateRunPreparationSource = Readonly<{
   kind: "regenerate";
   source: Readonly<{
+    artifactEdit?: unknown;
+    artifactIntent?: unknown;
     assistantMessage: Readonly<{
       modelId: string | null;
       provider: string | null;
@@ -252,6 +263,7 @@ export type RegenerateRunPreparationSource = Readonly<{
 
 export type RunPreparationInput = Readonly<{
   body: Readonly<Record<string, unknown>> | null;
+  skillCatalogDecision?: Readonly<{ operationKey: string; authorizeScope(): Promise<void> }>;
   signal?: AbortSignal;
   source: SendRunPreparationSource | RegenerateRunPreparationSource;
   userId: string;
@@ -307,6 +319,8 @@ export type RunPreparationFailure = Readonly<{
   message?: string;
   ok: false;
   status: 400 | 403 | 404 | 409 | 413 | 503;
+  skillBudget?: SkillBudgetFacts;
+  skillValidation?: SkillValidationError;
 }>;
 
 export type RunPreparationResult =
@@ -829,6 +843,7 @@ const assistantGovernedBodyKeys = [
   "searchPlan",
   "searchPreferencePlan",
   "searchPreferenceSource",
+  "skills",
   "tools"
 ] as const;
 
@@ -995,6 +1010,15 @@ export async function prepareRun(
   input: RunPreparationInput
 ): Promise<RunPreparationResult> {
   const body = input.body;
+  const artifactIntentValue = body && Object.hasOwn(body, "artifactIntent") ? body.artifactIntent
+    : input.source.kind === "regenerate" ? input.source.source.artifactIntent : undefined;
+  if (artifactIntentValue !== undefined && artifactIntentValue !== "create") return failure("artifact_intent_invalid", 400);
+  const artifactIntent = artifactIntentValue as "create" | undefined;
+  const artifactEditValue = body && Object.hasOwn(body, "artifactEdit")
+    ? body.artifactEdit
+    : input.source.kind === "regenerate" ? input.source.source.artifactEdit : undefined;
+  const artifactEdit = artifactEditValue === undefined ? undefined : decodeArtifactEdit(artifactEditValue);
+  if (artifactEdit === null) return failure("artifact_edit_invalid", 400);
   const toolBudgets = deps.runPolicy
     ? await deps.runPolicy.load()
     : DEFAULT_TOOL_RUN_BUDGETS;
@@ -1060,26 +1084,40 @@ export async function prepareRun(
   let manualSkillIds: string[] = [];
   if (body && Object.prototype.hasOwnProperty.call(body, "skillIds")) {
     const decoded = decodeSkillIds(body.skillIds);
-    if (!decoded.ok) return failure(decoded.code, 400);
+    if (!decoded.ok) return { ...failure(decoded.code, 400), skillValidation: decoded };
     manualSkillIds = decoded.ids;
   }
-  const effectiveSkillIds = resolveEffectiveSkillIds(assistantRun?.skillIds ?? [], manualSkillIds);
-  if (effectiveSkillIds.length > SKILL_MAX_SELECTED) {
-    return failure("skills_invalid", 400);
+  const rawSkillsMode = body?.skills;
+  if (rawSkillsMode !== undefined && (!isRecord(rawSkillsMode) ||
+    Object.keys(rawSkillsMode).some((key) => key !== "mode") ||
+    (rawSkillsMode.mode !== "auto" && rawSkillsMode.mode !== "off"))) return failure("skills_mode_invalid", 400);
+  const skillsMode = assistantRun?.skills?.mode ?? (isRecord(rawSkillsMode) && rawSkillsMode.mode === "off" ? "off" : "auto");
+  const assistantPinnedIds = assistantRun?.skillIds.filter((id) => assistantRun.skillModes?.[id] !== "available") ?? [];
+  const assistantAvailableIds = assistantRun?.skillIds.filter((id) => assistantRun.skillModes?.[id] === "available") ?? [];
+  const effectiveSkillIds = resolveEffectiveSkillIds(assistantPinnedIds, manualSkillIds);
+  if (effectiveSkillIds.length > SKILL_MAX_PINNED) {
+    return { ...failure("skills_count_exceeded", 400), skillValidation: {
+      code: "skills_count_exceeded", field: "pinned", actual: effectiveSkillIds.length, limit: SKILL_MAX_PINNED
+    } };
   }
+  const catalogIds = assistantRun ? assistantAvailableIds : project && skillsMode === "auto" ? project.skillIds ?? [] : [];
+  const requiredSkillIds = resolveEffectiveSkillIds(effectiveSkillIds, catalogIds);
   let skillRuns: SkillRunMaterialization[] = [];
-  if (effectiveSkillIds.length > 0) {
+  let availableSkillRuns: SkillRunCatalogEntry[] = [];
+  if (requiredSkillIds.length > 0) {
     if (!deps.skills) return failure("skill_not_available", 404);
-    if (project && effectiveSkillIds.some((skillId) => !project.skillIds?.includes(skillId))) {
+    if (project && requiredSkillIds.some((skillId) => !project.skillIds?.includes(skillId))) {
       return failure("skill_not_available", 404);
     }
     const resolution = project
       ? deps.skills.resolveForProject
-        ? await deps.skills.resolveForProject(project.projectId, effectiveSkillIds)
+        ? await deps.skills.resolveForProject(project.projectId, requiredSkillIds)
         : { code: "skill_not_available" as const, ok: false as const, status: 404 as const }
-      : await deps.skills.resolveForRun(input.userId, effectiveSkillIds);
+      : await deps.skills.resolveForRun(input.userId, requiredSkillIds);
     if (!resolution.ok) return failure(resolution.code, resolution.status);
-    skillRuns = resolution.skills;
+    skillRuns = effectiveSkillIds.map((id) => resolution.skills.find((skill) => skill.skillId === id)!);
+    if (skillRuns.some((skill) => !skill)) return failure("skill_not_available", 404);
+    availableSkillRuns = resolution.skills.filter((skill) => !effectiveSkillIds.includes(skill.skillId));
   }
 
   if (project && (
@@ -1542,7 +1580,45 @@ export async function prepareRun(
           input.userId,
           input.source.source.userMessage.id
         );
-  const contextMessages = withSelectedSkillContext(conversationMessages, skillRuns);
+  const skillToolsSupported = !agentEnabled && body?.tools !== "none" && modelCapabilities.toolCalling === true &&
+    toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
+  const skillCatalogSupported = skillToolsSupported || agentEnabled;
+  if (skillsMode === "auto" && skillCatalogSupported && !assistantRun && !project && deps.skills?.listEnabledForRun) {
+    availableSkillRuns = (await deps.skills.listEnabledForRun(input.userId)).filter((skill) => !effectiveSkillIds.includes(skill.skillId));
+  }
+  if (skillsMode === "auto" && skillCatalogSupported && availableSkillRuns.length > SKILL_MAX_AVAILABLE) {
+    return { ...failure("skills_count_exceeded", 400), skillValidation: {
+      code: "skills_count_exceeded", field: "available", actual: availableSkillRuns.length, limit: SKILL_MAX_AVAILABLE
+    } };
+  }
+  let rankedAvailableSkillIds: readonly string[] | undefined;
+  if (skillsMode === "auto" && skillCatalogSupported && deps.skills && deps.skillCatalogRelevance && input.skillCatalogDecision) {
+    try {
+      rankedAvailableSkillIds = await deps.skillCatalogRelevance({
+        userId: input.userId, operationKey: input.skillCatalogDecision.operationKey,
+        query: textFromContentBlocks(content), candidates: availableSkillRuns, signal: input.signal,
+        authorize: skillCatalogAuthorization({
+          userId: input.userId, ...(project ? { projectId: project.projectId } : {}),
+          assistant: assistantRun, assistants: deps.assistants, skills: deps.skills,
+          pinned: skillRuns, available: availableSkillRuns, authorizeScope: input.skillCatalogDecision.authorizeScope
+        })
+      }) ?? undefined;
+    } catch (error) {
+      if (error instanceof SkillCatalogAuthorityChangedError) return failure("skill_not_available", 404);
+      throw error;
+    }
+  }
+  const loadedBefore = !agentEnabled && deps.skills?.loadedBeforeForMessages && availableSkillRuns.length > 0
+    ? new Set(await deps.skills.loadedBeforeForMessages(input.userId, chat.id, conversationMessages.map((message) => message.id))) : undefined;
+  const frozenSkills = freezeSkillManifest({
+    mode: skillsMode, pinned: skillRuns, available: availableSkillRuns, toolsSupported: skillToolsSupported,
+    contextWindow: modelCapabilities.contextWindow, loadedBefore, nativeDiscovery: agentEnabled, rankedAvailableSkillIds
+  });
+  skillRuns = frozenSkills.pinned.map(skill => workspaceEnabled && skill.alias
+    ? { ...skill, workspacePath: skillWorkspacePath(skill.alias)! } : skill);
+  const contextMessages = withSelectedSkillContext(conversationMessages, skillRuns, {
+    canReadFiles: Boolean(frozenSkills.manifest.tools), catalog: frozenSkills.catalog
+  });
   const parameterControls = parameterControlsForModel({
     adapterKind: executionAdapterKind,
     defaultParams,
@@ -1636,6 +1712,18 @@ export async function prepareRun(
     ? await deps.images?.resolve() ?? null : null;
   const artifactToolAvailable = !project && resolvedChatMode.mode !== "TEMPORARY" && !agentEnabled && body?.tools !== "none" && Boolean(deps.artifacts) &&
     modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
+  if (artifactIntent && (!artifactToolAvailable || artifactEdit)) return failure("artifact_intent_unavailable", 409, "Artifact creation is unavailable with this message configuration.");
+  if (artifactEdit) {
+    if (!artifactToolAvailable || !deps.artifacts) {
+      return failure("artifact_edit_unavailable", 409, "This artifact is unavailable for editing in this chat.");
+    }
+    const target = await deps.artifacts.validateEditTarget({ ...artifactEdit, chatId: chat.id, ownerUserId: input.userId });
+    if (!target.ok) {
+      return target.code === "artifact_version_conflict"
+        ? failure(target.code, 409, "The artifact changed. Open its current version and try the edit again.")
+        : failure("artifact_edit_unavailable", 404, "This artifact is unavailable for editing in this chat.");
+    }
+  }
   let pdfRoute: ChatPdfRouteAdmission | undefined;
   let chatPdfAdmissions: ChatPdfAttachmentAdmission[] = [];
   let attachments: ProviderAttachment[];
@@ -1733,15 +1821,30 @@ export async function prepareRun(
       : "";
     prompt = { ...prompt, system: [prompt.system, imageGuidance, artifactImageGuidance].filter(Boolean).join("\n\n") };
   }
+  if (artifactIntent) prompt = { ...prompt, system: `${prompt.system}\n\nThe user explicitly asked for an artifact: call create_artifact for this message.` };
   let artifactReferences: NormalizedRunRequest["artifactReferences"];
+  let artifactFocus: NormalizedRunRequest["artifactFocus"];
+  let artifactCompactSystem: string | undefined;
+  const beforeArtifactSystem = prompt.system;
   if (artifactToolAvailable && deps.artifacts) {
-    const artifactContext = await deps.artifacts.contextForChat({ chatId: chat.id, ownerUserId: input.userId }).catch(() => []);
+    const artifactContext = await deps.artifacts.contextForChat({ chatId: chat.id, ownerUserId: input.userId,
+      ...(artifactEdit ? { requiredArtifactId: artifactEdit.artifactId } : {}) }).catch(() => []);
+    if (artifactEdit && !artifactContext.some((artifact) =>
+      artifact.artifact_id === artifactEdit.artifactId && artifact.base_version_id === artifactEdit.versionId)) {
+      return failure("artifact_edit_unavailable", 409, "This artifact is unavailable for editing in this chat.");
+    }
     if (artifactContext.length > 0) {
       artifactReferences = artifactContext.map((artifact) => ({ artifactId: artifact.artifact_id, versionId: artifact.base_version_id }));
+      artifactFocus = artifactReferences[0];
+      const guidance = "Artifacts already created in this chat are private server-owned context. Use read_artifact for omitted file text, and edits with the exact base_version_id for changes; unmentioned files and assets are preserved. Never invent asset references or URLs.";
+      const editGuidance = artifactEdit ? `The user's current message edits artifact_id=${JSON.stringify(artifactEdit.artifactId)} from base_version_id=${JSON.stringify(artifactEdit.versionId)}; update that artifact with intent=update unless the message clearly asks for something else.` : "";
+      artifactCompactSystem = [beforeArtifactSystem, guidance + "\n" + JSON.stringify(artifactContext.map(artifact => ({ ...artifact,
+        files: artifact.files.map(file => { const { text: _text, ...metadata } = file; return metadata; }) }))), editGuidance].filter(Boolean).join("\n\n");
       prompt = {
         ...prompt,
         system: [prompt.system,
-          "Artifacts already created in this chat are private server-owned context. For an edit, use intent=update and the exact base_version_id; preserve useful files unless the user asks to replace them. Never invent asset references or URLs.\n" + JSON.stringify(artifactContext)
+          "Artifacts already created in this chat are private server-owned context. For an edit, use intent=update and the exact base_version_id; preserve useful files unless the user asks to replace them. Never invent asset references or URLs.\n" + JSON.stringify(artifactContext),
+          editGuidance
         ].filter(Boolean).join("\n\n")
       };
     }
@@ -1760,11 +1863,14 @@ export async function prepareRun(
       maxOutputTokens: Math.min(limits.limitsEnabled ? limits.maxOutputTokens : Infinity,
         typeof runParams.maxOutputTokens === "number" ? runParams.maxOutputTokens : parameterControls.maxOutputTokens.defaultValue),
       compatibilityHash: hashCanonicalMcpValue({
-        version: limits.codexVersion, provider: admissionPlan.answer.snapshot,
+        version: limits.codexVersion, managedProfileVersion: CODEX_MANAGED_PROFILE_VERSION,
+        provider: admissionPlan.answer.snapshot,
         workspace: { image: workspaceAdmissionPlan.normalized.imageRef, internet: true },
         gateway: limits.gatewayOrigin, reasoning: acceptedReasoning.reasoningEffort ?? null,
         personalInstructions: personalInstructions ?? null,
-        skills: skillRuns.map((skill) => ({ id: skill.skillId, revision: skill.revisionId })),
+        skills: { mode: frozenSkills.manifest.mode,
+          pinned: frozenSkills.manifest.pinned.map(({ skillId, revisionId, alias }) => ({ skillId, revisionId, alias })),
+          available: frozenSkills.manifest.available.map(({ skillId, revisionId, alias }) => ({ skillId, revisionId, alias })) },
         search: admissionPlan.searches, searchMode: acceptedSearchPlan.mode,
         mcpMode, mcp: mcpCatalog ?? mcpPlan ?? null
       })
@@ -1772,8 +1878,11 @@ export async function prepareRun(
   }
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(agent ? { agent } : {}),
-    ...(artifactToolAvailable ? { artifactTool: true as const } : {}),
+    ...(artifactToolAvailable ? { artifactTool: true as const, artifactToolDescription: describeArtifactTool() } : {}),
     ...(artifactReferences?.length ? { artifactReferences } : {}),
+    ...(artifactEdit ? { artifactEdit } : {}),
+    ...(artifactIntent ? { artifactIntent } : {}),
+    ...(artifactFocus ? { artifactFocus } : {}),
     ...(personalInstructions ? { instructionPreset: { presetId: personalInstructions.presetId,
       revision: personalInstructions.revision, selectionVersion: personalInstructions.selectionVersion } } : {}),
     ...(imagePlan ? { imagePlan } : {}),
@@ -1808,15 +1917,7 @@ export async function prepareRun(
     ...(mcpPlan?.ok && mcpPlan.snapshot.servers.length
       ? { mcp: mcpPlan.snapshot }
       : {}),
-    ...(skillRuns.length > 0
-      ? {
-          skills: skillRuns.map((skill) => ({
-            name: skill.name,
-            revisionId: skill.revisionId,
-            skillId: skill.skillId
-          }))
-        }
-      : {}),
+    skills: frozenSkills.manifest,
     params: runParams,
     prompt,
     provider: executionProvider,
@@ -1863,10 +1964,11 @@ export async function prepareRun(
     runtimes: {}
   })?.tools ?? [];
   const nonKnowledgeClientTools = [
+    ...skillToolsForRequest(baseNormalizedRequest),
     ...(baseNormalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
         ...(imagePlan ? [imageGenerationTool(imagePlan)] : []),
-        ...(baseNormalizedRequest.artifactTool ? [artifactTool()] : []),
+        ...(baseNormalizedRequest.artifactTool ? [artifactTool(baseNormalizedRequest.artifactToolDescription), ...(artifactReferences?.length ? [readArtifactTool()] : [])] : []),
         ...plannedSearchTools,
         ...(mcpDiscoveryEnabled ? [mcpFindToolsTool] : []),
         ...mcpRunTools(baseNormalizedRequest.mcp),
@@ -1955,12 +2057,16 @@ export async function prepareRun(
     });
     budgetedAnswer = budgetAnsweringRequest(answeringPlan);
   }
+  if (!budgetedAnswer.budget.ok && artifactCompactSystem) {
+    baseNormalizedRequest.prompt = { ...baseNormalizedRequest.prompt, system: artifactCompactSystem };
+    budgetedAnswer = budgetAnsweringRequest(answeringPlan);
+  }
   if (!budgetedAnswer.budget.ok) {
-    return failure(
+    return { ...failure(
       budgetedAnswer.budget.error.code,
       budgetedAnswer.budget.status,
       budgetedAnswer.budget.error.message
-    );
+    ), ...(budgetedAnswer.budget.error.skillBudget ? { skillBudget: budgetedAnswer.budget.error.skillBudget } : {}) };
   }
   if (!budgetedAnswer.exactEvidenceRetained) {
     return failure("context_too_large", 400, "The exact Knowledge evidence did not fit.");
@@ -2027,6 +2133,7 @@ export async function prepareRun(
     ...(skillRuns.length > 0
       ? {
           skillBindings: skillRuns.map((skill) => ({
+            alias: skill.alias!,
             revisionId: skill.revisionId,
             skillId: skill.skillId
           }))

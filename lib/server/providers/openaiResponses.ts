@@ -136,6 +136,7 @@ export function createOpenAIResponsesAdapter(options: OpenAIResponsesAdapterOpti
         }
 
         return yield* parseOpenAIResponsesSse({
+          onToolArguments: runOptions.onToolArguments,
           background: body.background,
           responseBody: response.body,
           signal: runOptions.signal,

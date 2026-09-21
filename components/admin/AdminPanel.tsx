@@ -7,6 +7,7 @@ import { AdminEmailSection } from "@/components/admin/email/AdminEmailSection";
 import { AdminFeedbackHost } from "@/components/admin/AdminFeedbackHost";
 import { AdminGroupsSection } from "@/components/admin/groups/AdminGroupsSection";
 import { AdminMcpSection } from "@/components/admin/mcp/AdminMcpSection";
+import { AdminSkillsSection } from "@/components/admin/skills/AdminSkillsSection";
 import { AdminOverviewSection } from "@/components/admin/AdminOverviewSection";
 import { AdminProvidersSection } from "@/components/admin/providers/AdminProvidersSection";
 import { AdminRetrievalSection } from "@/components/admin/retrieval/AdminRetrievalSection";
@@ -196,6 +197,10 @@ function AdminSectionContent({
           resource={navigation.activeResource}
         />
       );
+    case "skills":
+      return <AdminSkillsSection resource={navigation.activeResource} filter={navigation.activeFilter}
+        onSelectResource={navigation.selectResource} onSelectFilter={navigation.selectFilter}
+        onMutationCommitted={onMutationCommitted} />;
     case "workspace":
       return <AdminWorkspaceSection reportNotice={reportNotice} />;
     case "email":
@@ -314,11 +319,11 @@ export function AdminPanel({ adminEmail, adminUserId }: AdminPanelProps) {
   const jumpToTarget = useCallback((target: AdminAttentionTarget) => {
     // Resource pages and role rows preserve the attention item's exact target.
     const hasResourcePages = target.section === "providers" || target.section === "search" ||
-      target.section === "users" || target.section === "groups" || target.section === "mcp" || target.section === "roles";
+      target.section === "users" || target.section === "groups" || target.section === "mcp" || target.section === "roles" || target.section === "skills";
     selectSection(
       target.section,
       hasResourcePages ? target.resource ?? null : null,
-      target.section === "users" ? target.filter ?? null : null
+      target.section === "users" || target.section === "skills" ? target.filter ?? null : null
     );
   }, [selectSection]);
 

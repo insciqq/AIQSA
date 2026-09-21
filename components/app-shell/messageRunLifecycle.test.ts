@@ -33,6 +33,36 @@ function surfaceEvents(chatId = "chat-1") {
 }
 
 describe("message run lifecycle", () => {
+  it("reports streaming admission once while the answer and stream remain pending", async () => {
+    prepareThread();
+    let release!: () => void;
+    const stream = new Promise<void>(resolve => { release = resolve; });
+    let admitted!: () => void;
+    const admission = new Promise<void>(resolve => { admitted = resolve; });
+    const onRunAdmitted = vi.fn(() => admitted());
+    const onAnswerPublished = vi.fn();
+    const activeStreamAbortRef = { current: new Map<string, AbortController>() };
+    const running = executeMessageRunLifecycle({ chatId: "chat-1", activeChatIdRef: { current: "chat-1" },
+      activeStreamAbortRef, failurePrefix: "send_failed", fetchRun: vi.fn(async () => null), notifyAnswerReady: vi.fn(),
+      onRunAdmitted, onAnswerPublished, optimisticAssistantMessageId: "assistant-optimistic", primeAnswerSound: vi.fn(),
+      createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }), refreshActiveChat: vi.fn(),
+      request: async () => new Response(""), reconcileMessageIds: vi.fn(),
+      consumeRunStream: async ({ onRunId }) => {
+        onRunId("accepted-run");
+        onRunId("accepted-run");
+        await stream;
+        return { failed: false, receivedChatUpdate: true, runId: "accepted-run", terminalStatus: "complete" };
+      }
+    });
+    await admission;
+    expect(onRunAdmitted).toHaveBeenCalledExactlyOnceWith("accepted-run");
+    expect(onAnswerPublished).not.toHaveBeenCalled();
+    expect(activeStreamAbortRef.current.has("chat-1")).toBe(true);
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1").messages[0]?.status).toBe("streaming");
+    release();
+    await running;
+  });
+
   it.each(["complete", "error", "disconnect"] as const)("preserves the published answer and next producer after late %s", async (terminal) => {
     prepareThread();
     const activeStreamAbortRef = { current: new Map<string, AbortController>() };
@@ -89,6 +119,7 @@ describe("message run lifecycle", () => {
     prepareThread();
     const consumeRunStream = vi.fn();
     const notifyAnswerReady = vi.fn();
+    const onRunAdmitted = vi.fn();
     const refreshActiveChat = vi.fn(async () => ({ id: "chat-1" }));
     const pdfPreparation = [{ completedPages: 0, pageCount: 21, phase: "checking", retryable: false,
       route: "local_text", limitedReadingQuality: true, longDocument: true }];
@@ -96,7 +127,7 @@ describe("message run lifecycle", () => {
       activeChatIdRef: { current: "chat-1" }, activeStreamAbortRef: { current: new Map() }, chatId: "chat-1",
       consumeRunStream, createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() } as never),
       contextConfigurationKey: "accepted-controls",
-      failurePrefix: "send_failed", fetchRun: vi.fn(), notifyAnswerReady,
+      failurePrefix: "send_failed", fetchRun: vi.fn(), notifyAnswerReady, onRunAdmitted,
       optimisticAssistantMessageId: "assistant-optimistic", primeAnswerSound: vi.fn(),
       reconcileMessageIds: ({ assistantMessageId }) => useThreadStore.getState().updateMessages("chat-1", (messages) =>
         messages.map((message) => ({ ...message, id: assistantMessageId }))),
@@ -105,6 +136,7 @@ describe("message run lifecycle", () => {
     });
     expect(result).toMatchObject({ failed: false, cancelled: false, runId: "run-1", assistantMessageId: "assistant-committed" });
     expect(consumeRunStream).not.toHaveBeenCalled();
+    expect(onRunAdmitted).toHaveBeenCalledExactlyOnceWith("run-1");
     expect(notifyAnswerReady).not.toHaveBeenCalled();
     expect(refreshActiveChat).not.toHaveBeenCalled();
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1").messages[0]).toMatchObject({

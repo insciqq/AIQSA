@@ -1,5 +1,6 @@
 import { imageGenerationForStorage } from "@/lib/server/images/defaultImages";
 import { artifactServiceForStorage } from "@/lib/server/artifacts/defaultArtifacts";
+import { defaultSkillTools } from "@/lib/server/skills/defaultSkillTools";
 import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
@@ -26,6 +27,7 @@ export const GET: AsyncRouteHandler<ReturnType<typeof createGetModelRunHandler>>
   knowledgeProviderDispatch: knowledgeProviderDispatchLifecycle,
   images: imageGenerationForStorage(storage),
   artifacts: artifactServiceForStorage(storage),
+  skillTools: defaultSkillTools,
   memoryEgress: defaultMemoryToolEgressReceiptService,
   mcp: defaultMcpRunPlan,
   providerAdmission: providerAdmissionService,

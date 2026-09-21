@@ -1,7 +1,8 @@
 "use client";
 
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
-import { UiV2Icon } from "@/components/ui-v2";
+import { useState } from "react";
+import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import type { MemoryAnswerSource } from "@/lib/contracts/memoryClient";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
@@ -50,9 +51,23 @@ function ToolCallMarkV2({ status }: { status: ToolCallV2["status"] }) {
   );
 }
 
+function SkillPinV2({ skillId, pinned, onPin }: Readonly<{ skillId: string; pinned: boolean; onPin(skillId: string): Promise<void> }>) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return <span className="v2-answer-skill-pin">
+    <UiV2Button disabled={pending || pinned} aria-label={pinned ? "Skill pinned for next turn" : "Pin Skill for next turn"}
+      onClick={() => { setPending(true); setError(null); void onPin(skillId).catch((reason: unknown) => {
+        setError(reason instanceof Error ? reason.message : "Could not pin this Skill. Try again.");
+      }).finally(() => setPending(false)); }}>{pinned ? "Pinned" : pending ? "Pinning…" : "Pin"}</UiV2Button>
+    {error ? <span role="alert">{error}</span> : null}
+  </span>;
+}
+
 export type AnswerProcessV2Props = Readonly<{
   /** Live status while the run works; it occupies the settled line's place. */
   liveLabel?: string | null;
+  onPinSkill?(skillId: string): Promise<void>;
+  pinnedSkillIds?: readonly string[];
   memorySources?: readonly MemoryAnswerSource[];
   reasoningTexts?: readonly string[];
   toolActivity?: ThreadToolActivity | null;
@@ -70,6 +85,8 @@ export type AnswerProcessV2Props = Readonly<{
  */
 export function AnswerProcessV2({
   liveLabel = null,
+  onPinSkill,
+  pinnedSkillIds = [],
   memorySources = [],
   reasoningTexts = [],
   toolActivity = null,
@@ -162,6 +179,8 @@ export function AnswerProcessV2({
                         )}
                       </span>
                       <span className="v2-answer-process-step-meta">{toolMeta(call)}</span>
+                      {onPinSkill && call.origin === "skill" && call.toolName === "load_skill" && call.status === "complete" && call.skillId
+                        ? <SkillPinV2 skillId={call.skillId} pinned={pinnedSkillIds.includes(call.skillId)} onPin={onPinSkill} /> : null}
                     </span>
                   </li>
                 ))}

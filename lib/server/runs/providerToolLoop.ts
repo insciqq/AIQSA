@@ -34,6 +34,7 @@ export type ProviderToolLoopResume = Readonly<{
 }>;
 
 export type ProviderToolLoopInput = Readonly<{
+  deferToolUntilBatchEnd?(call: ToolLoopCall): boolean;
   toolObservation?(call: ToolLoopCall): ToolLoopObservation | undefined;
   adapter: ProviderAdapter;
   bridge: ProviderToolBridge;
@@ -43,6 +44,7 @@ export type ProviderToolLoopInput = Readonly<{
     context: Readonly<{ ordinal: number; round: number; signal: AbortSignal }>
   ): Promise<ToolLoopToolResult<ToolExecutionResult>>;
   initialRequest: ProviderRunRequest;
+  onToolArguments?(input: { round: number; event: import("../providers/types").ProviderToolArgumentEvent }): Promise<void>;
   onEvent?(event: ModelRunSseEvent): Promise<void> | void;
   onFinalSynthesis?(budget: NonNullable<ReturnType<typeof reachedToolLoopBudget>>): Promise<void> | void;
   onProviderResult?(input: Readonly<{
@@ -168,6 +170,7 @@ export async function runProviderToolLoop(
   };
 
   return continueToolLoop({
+    deferToolUntilBatchEnd: input.deferToolUntilBatchEnd,
     toolObservation: input.toolObservation,
     afterToolBatch: input.afterToolBatch,
     budgets: input.budgets,
@@ -220,7 +223,9 @@ export async function runProviderToolLoop(
       });
       if (budget) await input.onFinalSynthesis?.(budget);
 
-      const stream = input.adapter.stream(roundRequest, { signal });
+      const stream = input.adapter.stream(roundRequest, { signal,
+        ...(input.onToolArguments && toolChoice !== "none" && advertisedToolNames.has("create_artifact")
+          ? { onToolArguments: (event: import("../providers/types").ProviderToolArgumentEvent) => input.onToolArguments!({ round, event }) } : {}) });
       let emittedText = "";
       let lastReportedUsage: ModelRunUsage | null = null;
       let next: IteratorResult<ModelRunSseEvent, ProviderRunResult>;

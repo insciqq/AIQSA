@@ -1,7 +1,14 @@
 "use client";
 
-import { appendArtifactDraft } from "@/components/artifacts/artifactDraft";
-import { prepareArtifactEdit } from "@/components/artifacts/artifactClient";
+import { setArtifactEditSession } from "@/components/artifacts/artifactEditSession";
+import { artifactUnavailableReason } from "@/components/artifacts/artifactAvailability";
+import { consumeArtifactRuntimeError } from "@/components/artifacts/artifactRuntimeSession";
+import type { ArtifactRuntimeError } from "@/lib/contracts/artifactRuntime";
+import { loadArtifactDetail, prepareArtifactEdit } from "@/components/artifacts/artifactClient";
+import { ArtifactPanelV2 } from "@/components/artifacts/ArtifactPanelV2";
+import { closeArtifactPanel, openArtifactPanel, useArtifactPanelStore } from "@/components/artifacts/artifactPanelStore";
+import { activateArtifactLibraryAccount } from "@/components/app-shell/artifactLibraryStore";
+import type { ThreadGeneratedArtifact } from "@/lib/contracts/chats";
 import { composerSessionKey, useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
 import { AnnouncementsProvider } from "@/components/announcements/AnnouncementsProvider";
 
@@ -46,12 +53,10 @@ import {
 } from "@/components/app-shell/mcpSettingsStore";
 import { mcpSetupAttention } from "@/components/app-shell/mcpReadiness";
 import {
-  loadSkillDetail,
   useSkillLibraryStore
 } from "@/components/app-shell/skillLibraryStore";
-import { resolveEffectiveSkillIds, SKILL_MAX_SELECTED } from "@/lib/contracts/skills";
-import type { SkillSuggestionRequest } from "@/lib/contracts/skillSuggestions";
-import type { SkillSuggestionsProps } from "@/components/skills/SkillSuggestions";
+import { resolveEffectiveSkillIds } from "@/lib/contracts/skills";
+import { pinSkillForNextTurn } from "@/components/app-shell/skillPinActions";
 import type { PowerAppShellV2Props, ShellComposerView } from "@/components/app-shell/powerAppShellV2Contracts";
 import type {
   WorkspaceChatSummary,
@@ -88,7 +93,8 @@ import {
   type ConversationMessageV2
 } from "@/features/conversation-v2/ConversationV2";
 import {
-  AnswerOutputsV2
+  AnswerOutputsV2,
+  ArtifactGenerationCardsV2
 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
 import { MemoryActionConfirmationV2 } from "@/features/answer-outputs-v2/MemoryActionConfirmationV2";
 import {
@@ -310,9 +316,11 @@ export function SkillLibraryOverlayV2({
   selectedSkills,
   includedSkills,
   restoreFocus,
-  suggestions
+  modelContextWindow, skillsMode, availableCount
 }: Readonly<{
-  suggestions?: Pick<SkillSuggestionsProps, "request" | "onUse">;
+  skillsMode?: "auto" | "off";
+  availableCount?: number;
+  modelContextWindow?: number;
   selectedSkills?: readonly SelectedSkillName[];
   includedSkills?: readonly SelectedSkillName[];
   restoreFocus?(): HTMLElement | null;
@@ -323,7 +331,8 @@ export function SkillLibraryOverlayV2({
 }>) {
   return open ? (
     <SkillLibraryDialog
-      suggestions={suggestions}
+      modelContextWindow={modelContextWindow}
+      skillsMode={skillsMode} availableCount={availableCount}
       includedSkills={includedSkills}
       selectedSkills={selectedSkills}
       restoreFocus={restoreFocus}
@@ -339,6 +348,35 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const { branches, composer, overlays, session, settings, thread, workspace } = props;
   const refreshThreadLayout = thread.refreshLayout;
   const artifactFixRequestRef = useRef<string | null>(null);
+  const [libraryInitialTab, setLibraryInitialTab] = useState<"artifacts" | undefined>(() =>
+    typeof window !== "undefined" && new URL(window.location.href).searchParams.get("library") === "artifacts" ? "artifacts" : undefined);
+  const artifactPanel = useArtifactPanelStore(state => state.open);
+  const composerArtifactEdit = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.artifactEdit ?? null);
+  const composerArtifactCreate = useComposerSessionStore(state => state.sessionsByKey[state.activeSessionKey]?.artifactCreate ?? null);
+  const skillsMode = useComposerControlStore(state => state.skillsMode);
+  const liveWorkspaceRef = useRef<HTMLElement | null>(null);
+  const [workspaceWidth, setWorkspaceWidth] = useState(0);
+  const setLiveWorkspaceRef = useCallback((node: HTMLElement | null) => {
+    liveWorkspaceRef.current = node;
+    if (!node) return;
+    const measure = () => setWorkspaceWidth(node.getBoundingClientRect().width);
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(node);
+    window.addEventListener("resize", measure);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", measure); };
+  }, []);
+  useEffect(() => {
+    activateArtifactLibraryAccount(session.accountId);
+    closeArtifactPanel(false);
+  }, [session.accountId]);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("library") !== "artifacts") return;
+    settings.openLibrary();
+    url.searchParams.delete("library");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [settings]);
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
   const [projectsSurfaceOpen, setProjectsSurfaceOpen] = useState(false);
@@ -353,7 +391,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [secretsKey, setSecretsKey] = useState(0);
   const [dataSubview, setDataSubview] = useState<null | "archived">(null);
   const [skillLibraryScope, setSkillLibraryScope] = useState<string | null>(null);
-  const [skillSuggestionInput, setSkillSuggestionInput] = useState<Readonly<{ scope: string; request: SkillSuggestionRequest }> | null>(null);
   const [composerDockHeight, setComposerDockHeight] = useState(0);
   const [composerLayer, setComposerLayer] = useState<ComposerV2Layer>(null);
   const [workspaceResetOpen, setWorkspaceResetOpen] = useState(false);
@@ -366,16 +403,20 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     if (!chatId || session.activeChatId !== chatId || thread.activeChatDetailLoading) return;
     const artifactId = url.searchParams.get("artifactId")?.trim() ?? "";
     const versionId = url.searchParams.get("versionId")?.trim() ?? "";
-    if (!artifactId || !versionId || /[\u0000-\u001f\u007f]/u.test(artifactId + versionId) || artifactId.length > 256 || versionId.length > 256) return;
+    if (!artifactId || !versionId || /[\u0000-\u001f\u007f]/u.test(artifactId + versionId) || artifactId.length > 128 || versionId.length > 128) return;
     const requestKey = `${chatId}:${artifactId}:${versionId}:${intent}`;
     if (artifactFixRequestRef.current === requestKey) return;
     let active = true;
-    void prepareArtifactEdit(artifactId, versionId, chatId).then(() => {
+    const controller = new AbortController();
+    void prepareArtifactEdit(artifactId, versionId, chatId).then(() => loadArtifactDetail(artifactId, controller.signal)).then(detail => {
       if (!active || useWorkspaceStore.getState().activeChatId !== chatId) return;
+      const version = detail.versions.find(version => version.id === versionId);
+      if (!version) throw new Error("This artifact is no longer available.");
       artifactFixRequestRef.current = requestKey;
-      appendArtifactDraft(chatId, intent === "runtime_error"
-        ? `Fix the client-side runtime error in the current artifact. Preserve its existing files and images.`
-        : `Update the current artifact. Preserve its existing files and images. Apply this change: `);
+      setArtifactEditSession(chatId, { artifactId, versionId, title: detail.title, versionNumber: version.versionNumber }, intent,
+        intent === "runtime_error" ? consumeArtifactRuntimeError(versionId) : undefined);
+      if ((liveWorkspaceRef.current?.getBoundingClientRect().width ?? 0) >= 896) openArtifactPanel({ chatId, artifactId, versionId });
+      requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('[data-testid="composer-v2"] textarea')?.focus({ preventScroll: true }));
       const currentUrl = new URL(window.location.href);
       for (const key of ["artifactEdit", "artifactId", "versionId"]) currentUrl.searchParams.delete(key);
       window.history.replaceState(window.history.state, "", `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`);
@@ -385,7 +426,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         operationError: error instanceof Error ? error.message : "Could not prepare this artifact for editing."
       });
     });
-    return () => { active = false; };
+    return () => { active = false; controller.abort(); };
   }, [session.activeChatId, thread.activeChatDetailLoading]);
   const mcpServers = useMcpSettingsStore((state) => state.servers);
   const skillCatalog = useSkillLibraryStore((state) => state.data);
@@ -450,6 +491,37 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const projectContext = Boolean(
     activeChatSummary?.projectId || (!activeChatSummary && workspace.projects.selectedProjectId)
   );
+  const artifactPanelAllowed = !projectContext && composer.memory.mode !== "TEMPORARY" && !libraryOpen && !projectsSurfaceOpen && !settings.settings.open;
+  const visibleArtifactPanel = artifactPanelAllowed && artifactPanel?.chatId === session.activeChatId ? artifactPanel : null;
+  useEffect(() => {
+    if (artifactPanel && (!artifactPanelAllowed || artifactPanel.chatId !== session.activeChatId)) closeArtifactPanel(false);
+  }, [artifactPanel, artifactPanelAllowed, session.activeChatId]);
+  useLayoutEffect(() => { refreshThreadLayout(); }, [visibleArtifactPanel, workspaceWidth, refreshThreadLayout]);
+  useEffect(() => {
+    if (!visibleArtifactPanel?.draftId) return;
+    const draft = thread.artifactDrafts?.find(draft => draft.draftId === visibleArtifactPanel.draftId);
+    if (draft?.status !== "interrupted") return;
+    const saved = thread.visibleMessages.find(message => message.id === thread.artifactDraftMessageId)?.artifactSummary?.generatedArtifacts ?? [];
+    const matching = draft.title ? saved.filter(artifact => artifact.title === draft.title && (!draft.kind || artifact.kind === draft.kind)) : saved;
+    if (matching.length === 1) useArtifactPanelStore.setState({ open: { chatId: visibleArtifactPanel.chatId, artifactId: matching[0].artifactId, versionId: matching[0].versionId } });
+  }, [visibleArtifactPanel, thread.artifactDrafts, thread.artifactDraftMessageId, thread.visibleMessages]);
+  const latestPanelArtifact = useMemo(() => {
+    if (!visibleArtifactPanel) return null;
+    return [...thread.visibleMessages.flatMap(message => message.artifactSummary?.generatedArtifacts ?? []),
+      ...(thread.liveArtifactSummary?.generatedArtifacts ?? [])]
+      .filter(artifact => artifact.artifactId === visibleArtifactPanel.artifactId)
+      .sort((left, right) => right.versionNumber - left.versionNumber)[0] ?? null;
+  }, [thread.liveArtifactSummary, thread.visibleMessages, visibleArtifactPanel]);
+  const editArtifact = async (generated: ThreadGeneratedArtifact, intent: "edit" | "runtime_error" = "edit", error?: ArtifactRuntimeError) => {
+    const chatId = session.activeChatId;
+    if (!chatId || !artifactPanelAllowed) return;
+    await prepareArtifactEdit(generated.artifactId, generated.versionId, chatId);
+    if (useWorkspaceStore.getState().activeChatId !== chatId) return;
+    setArtifactEditSession(chatId, generated, intent, error);
+    if (workspaceWidth >= 896) openArtifactPanel({ chatId, artifactId: generated.artifactId, versionId: generated.versionId });
+    else closeArtifactPanel(false);
+    requestAnimationFrame(() => composerDockRef.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true }));
+  };
   const activeProjectChat = activeChatSummary?.projectId
     ? workspace.projects.workspace?.chats.find((chat) => chat.id === activeChatSummary.id) ?? null
     : null;
@@ -466,15 +538,17 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     setSkillLibraryScope(null);
   }
   const restoreSkillFocus = () =>
-    composerDockRef.current?.querySelector<HTMLElement>('[aria-label="Manage selected Skills"]') ??
+    composerDockRef.current?.querySelector<HTMLElement>('[aria-label="Change Skills mode"]') ??
     composerDockRef.current?.querySelector<HTMLElement>('[aria-label="Add"]') ?? null;
   function selectManualSkills(ids: readonly string[]) {
     if (skillScopeRef.current !== skillScopeKey) return;
     const byId = new Map((projectContext
       ? (activeProject?.resources ?? []).flatMap((resource) => resource.type === "skill" && resource.available
-        ? [{ id: resource.resourceId, name: resource.label, description: resource.description ?? "", promptCharacterCount: resource.promptCharacterCount ?? 0 }] : [])
+        ? [{ id: resource.resourceId, name: resource.label, description: resource.description ?? "", promptCharacterCount: resource.promptCharacterCount ?? 0,
+          instructionApproxTokens: resource.instructionApproxTokens }] : [])
       : (skillCatalog?.skills ?? []).filter((skill) => !skill.archived).map((skill) => ({
-        id: skill.id, name: skill.name, description: skill.description, promptCharacterCount: skill.instructionCharacterCount
+        id: skill.id, name: skill.name, description: skill.description, promptCharacterCount: skill.instructionCharacterCount,
+        instructionApproxTokens: skill.instructionApproxTokens
       }))).map((skill) => [skill.id, skill]));
     const previous = new Map(useComposerControlStore.getState().selectedSkills.map((skill) => [skill.id, skill]));
     useComposerControlStore.getState().setSelectedSkills(ids.flatMap((id) => {
@@ -482,54 +556,17 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       return skill ? [skill] : [];
     }));
   }
+  const pinnedSkillIds = resolveEffectiveSkillIds((composer.assistant.selected?.includedSkills ?? []).filter(skill => skill.mode !== "available").map(skill => skill.id), selectedSkills.map(skill => skill.id));
+  const pinLoadedSkill = (skillId: string) => pinSkillForNextTurn({
+    skillId, isCurrentScope: () => skillScopeRef.current === skillScopeKey,
+    ...(projectContext ? { projectSkills: (activeProject?.resources ?? []).flatMap(resource => resource.type === "skill"
+      ? [{ id: resource.resourceId, name: resource.label, description: resource.description ?? "", promptCharacterCount: resource.promptCharacterCount ?? 0,
+        instructionApproxTokens: resource.instructionApproxTokens, available: resource.available }] : []) } : {})
+  });
   const latestMessage = thread.visibleMessages.at(-1);
-  const suggestionDraftRef = useRef(composer.draft);
-  useLayoutEffect(() => { suggestionDraftRef.current = composer.draft; }, [composer.draft]);
-  function openSkillLibrary() {
-    setSkillLibraryScope(skillScopeKey);
-    if (!composer.draft.trim() || thread.activeChatStreaming || thread.activeChatDetailLoading || thread.activeChatDetailError ||
-      projectContext && !activeProject?.capabilities.mutateChats) {
-      setSkillSuggestionInput(null); return;
-    }
-    const input = { draft: composer.draft, chatId: session.activeChatId,
-      projectId: projectContext ? activeProject?.id ?? null : null,
-      expectedActiveLeafMessageId: session.activeChatId ? latestMessage?.id ?? null : null,
-      excludedIds: resolveEffectiveSkillIds(composer.assistant.selected?.includedSkills?.map(skill => skill.id) ?? [], selectedSkills.map(skill => skill.id)) };
-    setSkillSuggestionInput(previous => {
-      if (previous?.scope === skillScopeKey && JSON.stringify({ ...previous.request, requestId: undefined }) === JSON.stringify(input)) return previous;
-      return { scope: skillScopeKey, request: { ...input, requestId: crypto.randomUUID() } };
-    });
-  }
-  const skillSuggestions = skillSuggestionInput?.scope === skillScopeKey && skillSuggestionInput.request.draft === composer.draft
-    ? { request: skillSuggestionInput.request, async onUse(id: string, signal: AbortSignal) {
-      const checkCurrent = () => {
-        signal.throwIfAborted();
-        if (skillScopeRef.current !== skillScopeKey || suggestionDraftRef.current !== skillSuggestionInput.request.draft) {
-          throw new Error("skill_selection_context_changed");
-        }
-      };
-      checkCurrent();
-      const included = composer.assistant.selected?.includedSkills?.map(skill => skill.id) ?? [];
-      if (projectContext) {
-        if (!activeProject?.resources.some(resource => resource.type === "skill" && resource.resourceId === id && resource.available)) {
-          throw new Error("skill_not_available");
-        }
-        const current = useComposerControlStore.getState().selectedSkills;
-        const effective = resolveEffectiveSkillIds(included, current.map(skill => skill.id));
-        if (!effective.includes(id) && effective.length < SKILL_MAX_SELECTED) selectManualSkills([...current.map(skill => skill.id), id]);
-        return;
-      }
-      // Suggestions may refer to a later library page. Resolve the authorized
-      // current detail on explicit Use instead of silently dropping that ID.
-      const detail = await loadSkillDetail(id, signal);
-      checkCurrent();
-      if (detail.archived) throw new Error("skill_not_available");
-      const current = useComposerControlStore.getState().selectedSkills;
-      const effective = resolveEffectiveSkillIds(included, current.map(skill => skill.id));
-      if (effective.includes(id) || effective.length >= SKILL_MAX_SELECTED) return;
-      useComposerControlStore.getState().setSelectedSkills([...current, { id: detail.id, name: detail.name,
-        description: detail.description, promptCharacterCount: detail.instructionCharacterCount }]);
-    } } : undefined;
+  function openSkillLibrary() { setSkillLibraryScope(skillScopeKey); }
+  const effectiveSkillsMode = composer.assistant.selected?.skillsMode ?? skillsMode;
+  const assistantAvailableSkills = composer.assistant.selected ? (composer.assistant.selected.includedSkills ?? []).filter(skill => skill.mode === "available" && !selectedSkills.some(selected => selected.id === skill.id)).length : undefined;
   const continuationEligible = Boolean(workspace.pane.actions.openContinuedChat && session.activeChatId && latestMessage?.role === "assistant" &&
     latestMessage.status === "complete" && !thread.activeChatStreaming && !thread.activeChatDetailLoading &&
     !thread.activeChatDetailError && !activeProjectChat?.archived &&
@@ -618,7 +655,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               description: resource.description ?? "",
               id: resource.resourceId,
               name: resource.label,
-              promptCharacterCount: resource.promptCharacterCount ?? 0
+              promptCharacterCount: resource.promptCharacterCount ?? 0,
+              instructionApproxTokens: resource.instructionApproxTokens
             }] as const]
           : []
       ));
@@ -630,6 +668,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         skill.id !== selectedSkills[index]?.id ||
         skill.name !== selectedSkills[index]?.name ||
         skill.description !== selectedSkills[index]?.description ||
+        skill.instructionApproxTokens !== selectedSkills[index]?.instructionApproxTokens ||
         skill.promptCharacterCount !== selectedSkills[index]?.promptCharacterCount
       )) {
         useComposerControlStore.getState().setSelectedSkills(next);
@@ -645,12 +684,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         description: skill.description,
         id: skill.id,
         name: skill.name,
+        instructionApproxTokens: skill.instructionApproxTokens,
         promptCharacterCount: skill.instructionCharacterCount
       }] : [];
     });
     if (next.length !== selectedSkills.length || next.some((skill, index) =>
       skill.name !== selectedSkills[index]?.name ||
       skill.description !== selectedSkills[index]?.description ||
+      skill.instructionApproxTokens !== selectedSkills[index]?.instructionApproxTokens ||
       skill.promptCharacterCount !== selectedSkills[index]?.promptCharacterCount)) {
       useComposerControlStore.getState().setSelectedSkills(next);
     }
@@ -721,6 +762,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 description: resource.description ?? "",
                 id: resource.resourceId,
                 instructionCharacterCount: resource.promptCharacterCount ?? 0,
+                instructionApproxTokens: resource.instructionApproxTokens,
                 name: resource.label,
                 owned: false,
                 ownerDisplayName: "Project",
@@ -797,6 +839,23 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const composerSurface = (
     <ComposerV2
       activeRun={thread.activeChatStreaming && !thread.answerComplete}
+      skillsMode={skillsMode}
+      onSelectSkillsMode={mode => useComposerControlStore.getState().setSkillsMode(mode)}
+      artifactEdit={composerArtifactEdit}
+      artifactCreate={Boolean(composerArtifactCreate)}
+      artifactUnavailableReason={artifactUnavailableReason({ agent: Boolean(composer.agent?.enabled), project: projectContext, temporary: composer.memory.mode === "TEMPORARY" })}
+      onCreateArtifact={() => {
+        const store = useComposerSessionStore.getState();
+        store.updateSession(store.activeSessionKey, { artifactCreate: { intent: "create" }, artifactEdit: null });
+      }}
+      onRemoveArtifactCreate={() => {
+        const store = useComposerSessionStore.getState();
+        store.updateSession(store.activeSessionKey, { artifactCreate: null });
+      }}
+      onRemoveArtifactEdit={() => {
+        const store = useComposerSessionStore.getState();
+        store.updateSession(store.activeSessionKey, { artifactEdit: null });
+      }}
       assistantRemovedNotice={composer.assistant.removedNotice}
       attachmentItems={attachmentItems}
       attachmentLimitUsage={attachmentUsage}
@@ -1080,30 +1139,35 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     return (
       <RunAnswerV2
         actions={settled ? actions : undefined}
-        actionsSlot={settled
-          ? <>
-              <SentAttachmentsV2 blocks={copiedAttachments} canSave={!projectContext && !temporarySession} />
+        actionsSlot={<>
+              {settled ? <><SentAttachmentsV2 blocks={copiedAttachments} canSave={!projectContext && !temporarySession} />
               <AnswerOutputsV2
                 artifact={artifact}
                 canSaveFiles={!projectContext && !temporarySession}
-                onEditArtifact={projectContext || temporarySession ? undefined : async (generated) => {
-                  const chatId = session.activeChatId;
-                  if (!chatId) return;
-                  await prepareArtifactEdit(generated.artifactId, generated.versionId, chatId);
-                  appendArtifactDraft(chatId, `Update the artifact "${generated.title}" from version ${generated.versionNumber}. Preserve its existing files and images. Apply this change: `);
+                onEditArtifact={projectContext || temporarySession ? undefined : generated => editArtifact(generated)}
+                onOpenArtifact={projectContext || temporarySession ? undefined : (generated, source) => {
+                  if (session.activeChatId) openArtifactPanel({ chatId: session.activeChatId, artifactId: generated.artifactId, versionId: generated.versionId }, source);
                 }}
                 onUseImageInArtifact={projectContext || temporarySession || !composer.reuseFile ? undefined : async (attachmentId) => {
                   const chatId = session.activeChatId;
                   if (chatId && await composer.reuseFile?.(attachmentId, "Generated image.png")) {
-                    appendArtifactDraft(chatId, "Create an artifact using the attached image. Make it self-contained and ready to preview. ");
+                    useComposerSessionStore.getState().updateSession(composerSessionKey(chatId), current => ({
+                      draft: [current.draft, "Create an artifact using the attached image."].filter(Boolean).join("\n\n")
+                    }));
                   }
                 }}
                 workspaceOutputStatus={workspaceActivity?.outputStatus ?? null}
-              />
-            </>
-          : null}
+              /></> : null}
+              {source.id === thread.artifactDraftMessageId && thread.artifactDrafts?.length ? <ArtifactGenerationCardsV2
+                drafts={thread.artifactDrafts} savedArtifacts={settled ? artifact?.generatedArtifacts ?? [] : []}
+                onOpen={(draftId, source) => { if (session.activeChatId) openArtifactPanel({ chatId: session.activeChatId, draftId }, source); }}
+                onOpenArtifact={(generated, source) => { if (session.activeChatId) openArtifactPanel({ chatId: session.activeChatId, artifactId: generated.artifactId, versionId: generated.versionId }, source); }}
+              /> : null}
+            </>}
         anchorId={source.id}
         artifact={artifact}
+        onPinSkill={composer.agent?.enabled ? undefined : pinLoadedSkill}
+        pinnedSkillIds={pinnedSkillIds}
         content={messageText(source)}
         knowledgeReference={knowledgeReference}
         leadingSlot={leadingSlot}
@@ -1303,7 +1367,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             if (full) workspace.pane.actions.openProjectSettings(full);
           }}
           onLeaveProject={projectContext ? workspace.projects.actions.leave : undefined}
-          onLibrary={settings.openLibrary}
+          onLibrary={() => { setLibraryInitialTab(undefined); settings.openLibrary(); }}
           onMemoryMode={projectContext ? undefined : setNavigationMemoryMode}
           onMove={(chat, folderId) => {
             const full = currentWorkspaceChat(chat.id);
@@ -1368,6 +1432,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           {libraryOpen && !projectContext ? (
             <LibrarySurfaceV2
               composer={composer}
+              initialTab={libraryInitialTab}
               props={props}
             />
           ) : projectsSurfaceOpen ? (
@@ -1406,9 +1471,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               }}
             />
           ) : (
-          <section className="v2-live-workspace" data-project-context={projectContext || undefined}
+          <section className="v2-live-workspace" ref={setLiveWorkspaceRef} data-project-context={projectContext || undefined}
+            data-artifact-docked={Boolean(visibleArtifactPanel && workspaceWidth >= 896) || undefined}
+            data-streaming={thread.activeChatStreaming || undefined}
             style={conversationMessages.length > 0 && composerDockHeight > 0
               ? { "--v2-live-dock-height": `${composerDockHeight}px` } as CSSProperties : undefined}>
+            <div className="v2-live-conversation">
             <WorkspaceHeaderV2
               active={Boolean(session.activeChatId)}
               contextStats={composer.composerContextStats}
@@ -1541,6 +1609,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 {composerSurface}
               </div>
             ) : null}
+            </div>
+            {visibleArtifactPanel ? <ArtifactPanelV2 key={`${visibleArtifactPanel.chatId}:${visibleArtifactPanel.draftId ?? visibleArtifactPanel.artifactId}`}
+              target={visibleArtifactPanel} compact={workspaceWidth < 896} latest={latestPanelArtifact} onEdit={editArtifact}
+              draft={thread.artifactDrafts?.find(draft => draft.draftId === visibleArtifactPanel.draftId)} /> : null}
           </section>
           )}
         </ReadingRoomShellV2>
@@ -1594,9 +1666,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       ) : null}
       {skillLibraryScope === skillScopeKey && projectContext ? (
         <ProjectSkillPicker key={`project:${skillScopeKey}`}
-          suggestions={skillSuggestions}
+          skillsMode={effectiveSkillsMode} availableCount={assistantAvailableSkills} modelContextWindow={composer.currentModel?.contextWindow ?? undefined}
           resources={(activeProject?.resources ?? []).flatMap((resource) => resource.type === "skill" ? [{
-            id: resource.resourceId, name: resource.label, description: resource.description ?? "", available: resource.available
+            id: resource.resourceId, name: resource.label, description: resource.description ?? "", available: resource.available,
+            instructionApproxTokens: resource.instructionApproxTokens
           }] : [])}
           includedSkills={composer.assistant.selected?.includedSkills ?? []}
           selectedSkills={selectedSkills}
@@ -1607,7 +1680,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         />
       ) : null}
       <SkillLibraryOverlayV2 key={`personal:${skillScopeKey}`}
-        suggestions={skillSuggestions}
+        skillsMode={effectiveSkillsMode} availableCount={assistantAvailableSkills}
+        modelContextWindow={composer.currentModel?.contextWindow ?? undefined}
         open={skillLibraryScope === skillScopeKey && !projectContext}
         includedSkills={composer.assistant.selected?.includedSkills}
         selectedSkills={selectedSkills}
@@ -1738,6 +1812,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                     knowledgeBases={config?.knowledgeBases ?? []}
                     knowledgePlan={composer.chatDefaults.knowledgePlan}
                     mcpMode={composer.chatDefaults.mcpMode}
+                    skillsMode={composer.chatDefaults.skillsMode}
+                    onSkillsMode={composer.chatDefaults.setSkillsMode}
                     searchPlan={composer.chatDefaults.searchPlan}
                     searchStrategies={composer.catalog?.searchStrategies ?? []}
                     onKnowledgePlan={composer.chatDefaults.setKnowledgePlan}

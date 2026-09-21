@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { cache } from "react";
 import { unstable_noStore as noStore } from "next/cache";
 import { notFound } from "next/navigation";
 import { PublicArtifactView } from "@/components/artifacts/PublicArtifactView";
@@ -9,16 +10,20 @@ import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-export const metadata: Metadata = { title: "Public artifact", robots: { follow: false, index: false, nocache: true } };
 const service = createArtifactService(prisma, createS3StorageAdapter());
+const loadPublicArtifact = cache((token: string) => service.publicManifest(token).catch(() => null));
 
-function base64(body: Buffer): string { return body.toString("base64"); }
+export async function generateMetadata({ params }: { params: Promise<{ artifactToken: string }> }): Promise<Metadata> {
+  noStore();
+  const { artifactToken } = await params;
+  const result = await loadPublicArtifact(artifactToken);
+  return { title: { absolute: result ? `${result.title} · AIQSA` : "AIQSA" }, robots: { follow: false, index: false, nocache: true }, referrer: "no-referrer" };
+}
 
 export default async function PublicArtifactPage({ params }: { params: Promise<{ artifactToken: string }> }) {
   noStore();
   const { artifactToken } = await params;
-  const result = await service.publicBundle(artifactToken).catch(() => null);
+  const result = await loadPublicArtifact(artifactToken);
   if (!result) notFound();
-  const isImage = result.contentType.startsWith("image/");
-  return <PublicArtifactView body={isImage ? base64(result.body) : result.body.toString("utf8")} contentType={result.contentType} kind={String(result.kind)} title={result.title} token={artifactToken} />;
+  return <PublicArtifactView key={artifactToken} initialManifest={result} token={artifactToken} />;
 }

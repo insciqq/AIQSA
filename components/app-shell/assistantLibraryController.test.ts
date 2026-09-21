@@ -601,14 +601,14 @@ describe("assistantLibraryController", () => {
     expect(mocks.fetchAssistantDetail).toHaveBeenCalledOnce();
   });
 
-  it("resolves ordered Assistant Skill names when the Assistant is used", async () => {
+  it("resolves ordered Assistant Skill estimates even outside the currently loaded library page", async () => {
     mocks.fetchAssistantDetail.mockResolvedValue({
       data: {
         ...detail(),
         content: { ...content(), skillIds: ["skill-incident", "skill-review"] },
         skills: [
-          { id: "skill-incident", name: "Incident brief" },
-          { id: "skill-review", name: "Careful reviewer" }
+          { id: "skill-incident", name: "Incident brief", instructionApproxTokens: 201 },
+          { id: "skill-review", name: "Careful reviewer", instructionApproxTokens: 50 }
         ]
       },
       ok: true
@@ -621,8 +621,8 @@ describe("assistantLibraryController", () => {
     expect(input.applyAssistantToComposer).toHaveBeenCalledWith(expect.objectContaining({
       assistant: expect.objectContaining({
         includedSkills: [
-          { id: "skill-incident", name: "Incident brief" },
-          { id: "skill-review", name: "Careful reviewer" }
+          { id: "skill-incident", name: "Incident brief", mode: "pinned", instructionApproxTokens: 201 },
+          { id: "skill-review", name: "Careful reviewer", mode: "pinned", instructionApproxTokens: 50 }
         ]
       })
     }));

@@ -131,6 +131,7 @@ describe("catalog handler", () => {
       "searchPreferenceSource",
       "knowledgePlan",
       "mcpMode",
+      "skillsMode",
       "sendWithEnter",
       "workspaceEnabled",
       "showCitations",

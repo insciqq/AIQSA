@@ -473,8 +473,8 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
   return {
     async claimAttachmentDeletionJobs({ claimableBefore, limit, now }) {
       const claimToken = randomUUID();
-      const rows = await prisma.$transaction((tx) =>
-        tx.$queryRaw<Array<{
+      const rows = await prisma.$transaction(async (tx) => {
+        const claims = await tx.$queryRaw<Array<{
           id: string;
           multipartUploadId: string | null;
           storageKey: string;
@@ -488,6 +488,8 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
                 WHERE attachment."storageKey" = job."storageKey"
                 UNION ALL SELECT 1 FROM "ChatPdfArtifact" AS pdf_artifact
                 WHERE pdf_artifact."storageKey" = job."storageKey"
+                UNION ALL SELECT 1 FROM "SkillRevisionFile" AS skill_file
+                WHERE skill_file."storageKey" = job."storageKey"
                 UNION ALL SELECT 1 FROM "ChatContinuationWorkspaceSeed" AS seed
                 WHERE seed."storageKey" = job."storageKey" AND seed."status" IN ('CAPTURING','READY','TRANSFERRED','RESTORING','RESTORED')
               )
@@ -507,6 +509,15 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
               AND NOT EXISTS (
                 SELECT 1 FROM "KnowledgeUploadItem" AS upload
                 WHERE upload."storageKey" = job."storageKey"
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM "ArtifactBlob" AS blob JOIN "ArtifactVersionBlob" AS reference ON reference."blobId" = blob."id"
+                JOIN "ArtifactVersion" AS blob_version ON blob_version."id" = reference."versionId"
+                WHERE blob."storageKey" = job."storageKey"
+                  AND (blob_version."status" = 'READY' OR (blob_version."status" = 'PENDING' AND blob_version."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM "ArtifactRender" AS render WHERE render."renderedStorageKey" = job."storageKey"
               )
               AND NOT EXISTS (
                 SELECT 1 FROM "ArtifactVersion" AS version
@@ -534,8 +545,23 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
           FROM candidates
           WHERE job."id" = candidates."id"
           RETURNING job."id", job."multipartUploadId", job."storageKey"
-        `
-      );
+        `;
+        const allowed = [];
+        for (const claim of claims) {
+          // Serialize a deduplication reference against retirement. Deleting
+          // the orphan row forces any future writer to allocate a fresh key.
+          const blobs = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "ArtifactBlob" WHERE "storageKey" = ${claim.storageKey} FOR UPDATE`;
+          if (blobs.length) await tx.artifactVersionBlob.deleteMany({ where: { blobId: { in: blobs.map(blob => blob.id) },
+            version: { OR: [{ status: "FAILED" }, { status: "PENDING", createdAt: { lte: new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS) } }] } } });
+          if (blobs.length && await tx.artifactVersionBlob.count({ where: { blobId: { in: blobs.map(blob => blob.id) } } })) {
+            await tx.attachmentDeletionJob.updateMany({ where: { id: claim.id, claimToken }, data: { claimedAt: null, claimToken: null } });
+            continue;
+          }
+          if (blobs.length) await tx.artifactBlob.deleteMany({ where: { id: { in: blobs.map(blob => blob.id) }, versions: { none: {} } } });
+          allowed.push(claim);
+        }
+        return allowed;
+      });
 
       return rows.map((row) => ({
         claimToken,
@@ -671,6 +697,8 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
             WHERE attachment."storageKey" = job."storageKey"
             UNION ALL SELECT 1 FROM "ChatPdfArtifact" AS pdf_artifact
             WHERE pdf_artifact."storageKey" = job."storageKey"
+            UNION ALL SELECT 1 FROM "SkillRevisionFile" AS skill_file
+            WHERE skill_file."storageKey" = job."storageKey"
             UNION ALL SELECT 1 FROM "ChatContinuationWorkspaceSeed" AS seed
             WHERE seed."storageKey" = job."storageKey" AND seed."status" IN ('CAPTURING','READY','TRANSFERRED','RESTORING','RESTORED')
           )
@@ -690,6 +718,15 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
           AND NOT EXISTS (
             SELECT 1 FROM "KnowledgeUploadItem" AS upload
             WHERE upload."storageKey" = job."storageKey"
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM "ArtifactBlob" AS blob JOIN "ArtifactVersionBlob" AS reference ON reference."blobId" = blob."id"
+            JOIN "ArtifactVersion" AS blob_version ON blob_version."id" = reference."versionId"
+            WHERE blob."storageKey" = job."storageKey"
+              AND (blob_version."status" = 'READY' OR (blob_version."status" = 'PENDING' AND blob_version."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM "ArtifactRender" AS render WHERE render."renderedStorageKey" = job."storageKey"
           )
           AND NOT EXISTS (
             SELECT 1 FROM "ArtifactVersion" AS version
@@ -1142,6 +1179,15 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
             WHERE "storageKey" = ${storageKey}
             FOR SHARE
           `;
+          const artifactBlobReferences = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT blob."id" FROM "ArtifactBlob" AS blob JOIN "ArtifactVersionBlob" AS reference ON reference."blobId" = blob."id"
+            JOIN "ArtifactVersion" AS blob_version ON blob_version."id" = reference."versionId"
+            WHERE blob."storageKey" = ${storageKey}
+              AND (blob_version."status" = 'READY' OR (blob_version."status" = 'PENDING' AND blob_version."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)})) FOR SHARE
+          `;
+          const artifactRenderReferences = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT "id" FROM "ArtifactRender" WHERE "renderedStorageKey" = ${storageKey} FOR SHARE
+          `;
           const artifactVersionReferences = await tx.$queryRaw<Array<{ id: string }>>`
             SELECT version."id" FROM "ArtifactVersion" AS version
             JOIN "Artifact" AS artifact ON artifact."id" = version."artifactId"
@@ -1154,7 +1200,11 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
             WHERE "bundleStorageKey" = ${storageKey} AND ("status" = 'READY' OR ("status" = 'PENDING' AND "createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
             FOR SHARE
           `;
+          const skillFileReferences = await tx.$queryRaw<Array<{ revisionId: string }>>`
+            SELECT "revisionId" FROM "SkillRevisionFile" WHERE "storageKey" = ${storageKey} FOR SHARE
+          `;
           if (
+            skillFileReferences.length === 0 &&
             remainingReferenceCount === 0 &&
             pdfReferences.length === 0 &&
             knowledgeDocumentReferences.length === 0 &&
@@ -1162,6 +1212,7 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
             knowledgeSourceArtifactReferences.length === 0 &&
             knowledgeUploadReferences.length === 0
             && artifactVersionReferences.length === 0
+            && artifactBlobReferences.length === 0 && artifactRenderReferences.length === 0
             && artifactPublicationReferences.length === 0
           ) {
             const existing = await tx.attachmentDeletionJob.findUnique({
@@ -1291,6 +1342,15 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
               WHERE "storageKey" = ${storageKey}
               FOR SHARE
             `;
+            const artifactBlobReferences = await tx.$queryRaw<Array<{ id: string }>>`
+              SELECT blob."id" FROM "ArtifactBlob" AS blob JOIN "ArtifactVersionBlob" AS reference ON reference."blobId" = blob."id"
+              JOIN "ArtifactVersion" AS blob_version ON blob_version."id" = reference."versionId"
+              WHERE blob."storageKey" = ${storageKey}
+                AND (blob_version."status" = 'READY' OR (blob_version."status" = 'PENDING' AND blob_version."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)})) FOR SHARE
+            `;
+            const artifactRenderReferences = await tx.$queryRaw<Array<{ id: string }>>`
+              SELECT "id" FROM "ArtifactRender" WHERE "renderedStorageKey" = ${storageKey} FOR SHARE
+            `;
             const artifactVersionReferences = await tx.$queryRaw<Array<{ id: string }>>`
               SELECT version."id" FROM "ArtifactVersion" AS version
               JOIN "Artifact" AS artifact ON artifact."id" = version."artifactId"
@@ -1303,13 +1363,18 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
               WHERE "bundleStorageKey" = ${storageKey} AND ("status" = 'READY' OR ("status" = 'PENDING' AND "createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
               FOR SHARE
             `;
+            const skillFileReferences = await tx.$queryRaw<Array<{ revisionId: string }>>`
+              SELECT "revisionId" FROM "SkillRevisionFile" WHERE "storageKey" = ${storageKey} FOR SHARE
+            `;
             if (
+              skillFileReferences.length === 0 &&
               attachmentReferences.length === 0 &&
               knowledgeDocumentReferences.length === 0 &&
               knowledgeSourceVersionReferences.length === 0 &&
               knowledgeSourceArtifactReferences.length === 0 &&
               knowledgeUploadReferences.length === 0
               && artifactVersionReferences.length === 0
+              && artifactBlobReferences.length === 0 && artifactRenderReferences.length === 0
               && artifactPublicationReferences.length === 0
             ) {
               const existing = await tx.attachmentDeletionJob.findUnique({

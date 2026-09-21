@@ -1,6 +1,12 @@
 "use client";
 
 import { ArtifactShareDialog } from "@/components/artifacts/ArtifactShareDialog";
+import { artifactKindLabel } from "@/components/artifacts/artifactPresentation";
+import { artifactGenerationStatus, type ArtifactGenerationDraft } from "@/components/artifacts/artifactGenerationState";
+import { ArtifactThumbnailV2 } from "@/components/artifacts/ArtifactThumbnailV2";
+import { useArtifactPanelStore } from "@/components/artifacts/artifactPanelStore";
+import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
+import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { ChatImageV2 } from "@/features/attachments-v2/ChatImageV2";
 import { SaveFileButtonV2 } from "@/features/attachments-v2/SaveFileButtonV2";
 
@@ -19,6 +25,7 @@ import {
   UiV2Icon,
   UiV2IconButton,
   UiV2MenuActions,
+  UiV2MenuItem,
   UiV2MenuSurface,
   UiV2Monogram,
   moveMenuFocusV2,
@@ -537,12 +544,14 @@ export function AnswerOutputsV2({
   artifact,
   canSaveFiles = false,
   onEditArtifact,
+  onOpenArtifact,
   onUseImageInArtifact,
   workspaceOutputStatus = null
 }: Readonly<{
   artifact: ThreadArtifactSummary | null;
   canSaveFiles?: boolean;
   onEditArtifact?(artifact: ThreadGeneratedArtifact): void | Promise<void>;
+  onOpenArtifact?(artifact: ThreadGeneratedArtifact, source: HTMLElement): void;
   onUseImageInArtifact?(attachmentId: string): void | Promise<void>;
   /** Export state of the run's Workspace outputs; shown above the generated files. */
   workspaceOutputStatus?: ThreadWorkspaceOutputStatus | null;
@@ -583,7 +592,7 @@ export function AnswerOutputsV2({
         </p>
       ) : null}
       {artifact?.generatedImages?.map((image) => <ChatImageV2 key={image.attachmentId} attachmentId={image.attachmentId} label="Generated image" width={image.width} height={image.height} canSave={canSaveFiles} onUseInArtifact={onUseImageInArtifact ? () => onUseImageInArtifact(image.attachmentId) : undefined} />)}
-      {hasGeneratedArtifacts ? <GeneratedArtifactsV2 artifacts={artifact?.generatedArtifacts ?? []} onEditArtifact={onEditArtifact} /> : null}
+      {hasGeneratedArtifacts ? <GeneratedArtifactsV2 artifacts={artifact?.generatedArtifacts ?? []} onEditArtifact={onEditArtifact} onOpenArtifact={onOpenArtifact} /> : null}
       {hasGeneratedFiles ? (
         <GeneratedFilesV2 canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} />
       ) : null}
@@ -594,11 +603,33 @@ export function AnswerOutputsV2({
   );
 }
 
-function artifactKindLabel(kind: ThreadGeneratedArtifact["kind"]): string {
-  return kind === "html" ? "HTML" : kind[0]!.toUpperCase() + kind.slice(1);
+export function ArtifactGenerationCardsV2({ drafts, savedArtifacts = [], onOpen, onOpenArtifact }: Readonly<{
+  drafts: readonly ArtifactGenerationDraft[];
+  savedArtifacts?: readonly ThreadGeneratedArtifact[];
+  onOpen(draftId: string, source: HTMLElement): void;
+  onOpenArtifact(artifact: ThreadGeneratedArtifact, source: HTMLElement): void;
+}>) {
+  const ready = drafts.flatMap(draft => draft.artifact && !savedArtifacts.some(saved => saved.versionId === draft.artifact?.versionId) ? [draft.artifact] : []);
+  const pending = drafts.filter(draft => draft.status !== "ready" && !(draft.status === "interrupted" && savedArtifacts.length > 0));
+  return <>
+    {ready.length ? <GeneratedArtifactsV2 artifacts={ready} onOpenArtifact={onOpenArtifact} /> : null}
+    {pending.length ? <section className="v2-generated-artifacts" aria-label="Artifact creation"><ul>
+      {pending.map(draft => <li className="v2-generated-artifact-card" key={draft.draftId}>
+        <button type="button" className="v2-generated-artifact-open v2-focusable" onClick={event => onOpen(draft.draftId, event.currentTarget)} aria-label={`Open artifact code: ${draft.title ?? "Artifact"}`}>
+          <span className="v2-generated-artifact-tile" aria-hidden="true">{draft.status === "pending" ? <span className="v2-spinner" /> : <UiV2Icon name="artifact" />}</span>
+          <span className="v2-generated-artifact-copy"><strong>{draft.title ?? "Artifact"}</strong><small role="status">{artifactGenerationStatus(draft)}</small></span>
+          <UiV2Icon name="chevron-right" />
+        </button>
+      </li>)}
+    </ul></section> : null}
+  </>;
 }
 
-function GeneratedArtifactsV2({ artifacts, onEditArtifact }: Readonly<{ artifacts: readonly ThreadGeneratedArtifact[]; onEditArtifact?(artifact: ThreadGeneratedArtifact): void | Promise<void> }>) {
+function GeneratedArtifactsV2({ artifacts, onEditArtifact, onOpenArtifact }: Readonly<{
+  artifacts: readonly ThreadGeneratedArtifact[];
+  onEditArtifact?(artifact: ThreadGeneratedArtifact): void | Promise<void>;
+  onOpenArtifact?(artifact: ThreadGeneratedArtifact, source: HTMLElement): void;
+}>) {
   const [sharing, setSharing] = useState<ThreadGeneratedArtifact | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -611,22 +642,43 @@ function GeneratedArtifactsV2({ artifacts, onEditArtifact }: Readonly<{ artifact
     finally { pending.current = false; setEditing(null); }
   }
   return (
-    <section className="v2-generated-files v2-generated-artifacts" aria-label="Generated artifacts">
-      <h3>Generated artifacts</h3>
+    <section className="v2-generated-artifacts" aria-label="Artifacts">
       {error ? <p className="v2-generated-artifact-error" role="alert">{error}</p> : null}
-      <ul>{artifacts.map((artifact) => <li key={artifact.versionId}>
-        <UiV2Icon name={artifact.kind === "image" ? "image" : "file"} />
-        <span className="v2-generated-file-copy"><strong title={artifact.title}>{artifact.title}</strong><small>{artifactKindLabel(artifact.kind)} · v{artifact.versionNumber}</small></span>
-        <span className="v2-generated-file-actions">
-          <a className="v2-generated-file-download v2-focusable" href={`/artifacts/${encodeURIComponent(artifact.artifactId)}/versions/${encodeURIComponent(artifact.versionId)}`} target="_blank" rel="noreferrer">Open</a>
-          <a className="v2-generated-file-download v2-focusable" download href={`/api/artifacts/${encodeURIComponent(artifact.artifactId)}/versions/${encodeURIComponent(artifact.versionId)}/content?download=zip`}>Download</a>
-          {onEditArtifact ? <UiV2Button disabled={editing !== null} onClick={() => void edit(artifact)}>{editing === artifact.versionId ? "Preparing…" : "Edit with AI"}</UiV2Button> : null}
-          <UiV2Button onClick={() => setSharing(artifact)}>Share</UiV2Button>
-        </span>
-      </li>)}</ul>
+      <ul>{artifacts.map(artifact => <GeneratedArtifactCardV2 key={artifact.versionId} artifact={artifact}
+        editing={editing !== null} onEdit={onEditArtifact ? () => void edit(artifact) : undefined}
+        onOpen={source => onOpenArtifact?.(artifact, source)} onShare={() => setSharing(artifact)} />)}</ul>
       {sharing ? <ArtifactShareDialog artifactId={sharing.artifactId} versionId={sharing.versionId} versionNumber={sharing.versionNumber} onClose={() => setSharing(null)} /> : null}
     </section>
   );
+}
+
+function GeneratedArtifactCardV2({ artifact, editing, onOpen, onEdit, onShare }: Readonly<{
+  artifact: ThreadGeneratedArtifact;
+  editing: boolean;
+  onOpen(source: HTMLElement): void;
+  onEdit?(): void;
+  onShare(): void;
+}>) {
+  const open = useArtifactPanelStore(state => state.open);
+  const active = open?.artifactId === artifact.artifactId && open.versionId === artifact.versionId;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const { menuRef, triggerRef, closeForAction } = useMenuDismissalV2({ open: menuOpen, onClose: () => setMenuOpen(false) });
+  return <li className="v2-generated-artifact-card" data-active={active || undefined}>
+    <button type="button" className="v2-generated-artifact-open v2-focusable" aria-label={`Open artifact: ${artifact.title}`}
+      aria-expanded={active} onMouseDown={event => { if (document.activeElement instanceof HTMLTextAreaElement) event.preventDefault(); }}
+      onClick={event => onOpen(event.currentTarget)}>
+      <ArtifactThumbnailV2 artifactId={artifact.artifactId} versionId={artifact.versionId} kind={artifact.kind} byteSize={artifact.byteSize} />
+      <span className="v2-generated-artifact-copy"><strong title={artifact.title}>{artifact.title}</strong><small>{artifactKindLabel(artifact.kind)} · v{artifact.versionNumber}</small></span>
+      <UiV2Icon name="chevron-right" />
+    </button>
+    <UiV2IconButton ref={triggerRef} icon="more" label={`Actions for artifact: ${artifact.title}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)} />
+    {menuOpen ? <UiV2ResponsiveMenu anchorRef={triggerRef} menuRef={menuRef} label={`Actions for ${artifact.title}`} onClose={() => setMenuOpen(false)}>
+      {onEdit ? <UiV2MenuItem disabled={editing} onClick={() => { closeForAction(); onEdit(); }}>Edit with AI</UiV2MenuItem> : null}
+      <UiV2MenuItem onClick={() => { closeForAction(); onShare(); }}>Share…</UiV2MenuItem>
+      <a className="v2-menu-item v2-focusable" role="menuitem" download href={`/api/artifacts/${encodeURIComponent(artifact.artifactId)}/versions/${encodeURIComponent(artifact.versionId)}/content?download=zip`} onClick={closeForAction}>Download ZIP</a>
+      <a className="v2-menu-item v2-focusable" role="menuitem" href={`/artifacts/${encodeURIComponent(artifact.artifactId)}/versions/${encodeURIComponent(artifact.versionId)}`} target="_blank" rel="noreferrer" onClick={closeForAction}>Open in new tab</a>
+    </UiV2ResponsiveMenu> : null}
+  </li>;
 }
 
 function generatedFileType(file: ThreadGeneratedFile): string {

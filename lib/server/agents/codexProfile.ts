@@ -1,6 +1,9 @@
 import { WORKSPACE_PROJECT_DIRECTORY } from "@/lib/domain/workspace";
 
 export const CODEX_VERSION = "0.154.0";
+/** Bump when managed profile semantics change; accepted thread compatibility includes it. */
+export const CODEX_MANAGED_PROFILE_VERSION = 2;
+export const CODEX_PROVIDER_MAX_RETRIES = 2;
 export const CODEX_HOME_DIRECTORY = "/workspace/.aiqsa/codex";
 export const CODEX_RUN_TOKEN_ENV = "AIQSA_AGENT_TOKEN";
 
@@ -75,8 +78,10 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
     'wire_api = "responses"',
     'supports_websockets = false',
     `supports_standalone_web_search = ${input.standaloneWebSearch === true}`,
+    // One retry owner: Codex retains completed tool results when reconnecting.
+    // Nested HTTP retries would multiply physical dispatches behind this bound.
     'request_max_retries = 0',
-    'stream_max_retries = 0',
+    `stream_max_retries = ${CODEX_PROVIDER_MAX_RETRIES}`,
     "",
     "[shell_environment_policy]",
     'inherit = "all"',
@@ -91,6 +96,9 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
     'memories = false',
     "",
     "[agents]",
+    'enabled = false',
+    "",
+    "[skills.bundled]",
     'enabled = false',
     "",
     "[analytics]",

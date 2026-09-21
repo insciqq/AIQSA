@@ -8,6 +8,7 @@ import { adminSearchService } from "@/lib/server/admin/search/defaultService";
 import { adminRepository, resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { adminEmailService } from "@/lib/server/email/defaultEmail";
 import { mcpRepository } from "@/lib/server/mcp/defaultMcp";
+import { prisma } from "@/lib/server/prisma";
 
 export const runtime = "nodejs";
 
@@ -24,7 +25,8 @@ const service = createAdminAttentionService({
     memory: () => defaultAdminMemoryStatusService.get(),
     providers: () => adminProviderService.listConnections(),
     search: (actingAdminUserId) => adminSearchService.list({ userId: actingAdminUserId }),
-    systemRoles: () => adminSystemModelPolicyService.list()
+    systemRoles: () => adminSystemModelPolicyService.list(),
+    skills: () => prisma.skillShareRequest.count({ where: { state: "pending", skill: { archivedAt: null, deletedAt: null } } })
   }
 });
 

@@ -11,6 +11,7 @@ export type UserSettingsWire = AnswerSoundPreferences & {
   /** Knowledge selection attached to new chats; null starts them without Knowledge. */
   defaultKnowledgePlan: KnowledgeSelection | null;
   defaultMcpMode: ChatDefaultMcpMode;
+  defaultSkillsMode?: import("./chatDefaults").ChatDefaultSkillsMode;
   defaultWorkspaceEnabled?: boolean;
   hasPersonalModelDefault: boolean;
   modelPreferenceSource: "none" | "organization" | "personal";
@@ -55,6 +56,7 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   const chatDefaults = decodeOptionalChatDefaults({
     knowledgePlan: settings.defaultKnowledgePlan,
     mcpMode: settings.defaultMcpMode,
+    skillsMode: settings.defaultSkillsMode,
     sendWithEnter: settings.sendWithEnter
   });
   if (
@@ -85,6 +87,7 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
       defaultControlValues: { ...settings.defaultControlValues },
       defaultKnowledgePlan: chatDefaults.knowledgePlan,
       defaultMcpMode: chatDefaults.mcpMode,
+      defaultSkillsMode: chatDefaults.skillsMode,
       defaultWorkspaceEnabled: settings.defaultWorkspaceEnabled ?? false,
       hasPersonalModelDefault: settings.hasPersonalModelDefault,
       modelPreferenceSource: settings.modelPreferenceSource,

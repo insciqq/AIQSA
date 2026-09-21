@@ -29,6 +29,9 @@ import { RunRecoveryScheduler } from "./recoveryScheduler";
 import { getContext, runInBackground, runWithContext } from "../observability";
 import { rememberDatabaseFailure } from "../observability/databaseFailure";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
+import type { FrozenSkillManifest } from "../skills/runManifest";
+import { createSkillToolService, type SkillToolRepository } from "../skills/toolService";
+import { isSkillToolName } from "../tools/skill";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
   FocusedKnowledgeRecoveryScope,
@@ -1454,7 +1457,7 @@ function installCheckpointState(
   const claimToolLoopCall: RunRecoveryRepository["claimToolLoopCall"] = async ({ callId }) => {
     const call = calls.find((candidate) => candidate.id === callId);
     if (!call) return { kind: "not_found" };
-    if (call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME) {
+    if (call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME && !isSkillToolName(call.toolName)) {
       return { call, kind: "ambiguous" };
     }
     if (call.state === "cancelled") return { call, kind: "cancelled" };
@@ -1541,6 +1544,56 @@ function installCheckpointState(
     calls: () => calls,
     checkpoint: () => currentCheckpoint
   };
+}
+
+function createSkillRecoveryFixture() {
+  const reference = Object.freeze({
+    alias: "accepted-review", name: "Accepted review", skillId: "skill-accepted",
+    revisionId: "revision-accepted", fileCount: 1
+  });
+  const manifest: FrozenSkillManifest = Object.freeze({
+    version: 2, mode: "auto", tools: "load_and_read", omittedCount: 2,
+    pinned: Object.freeze([Object.freeze({
+      alias: "manual-guide", name: "Manual guide", skillId: "skill-pinned",
+      revisionId: "revision-pinned", fileCount: 0
+    })]),
+    available: Object.freeze([Object.freeze({
+      ...reference, description: "Review using the accepted checklist.",
+      hasExecutables: false, loadedBefore: true
+    })])
+  });
+  const request: ProviderRunRequest = {
+    ...normalizedToolRequest(), attachments: [], mcp: undefined, skills: manifest
+  };
+  const fileText = "Accepted private reference page.\n";
+  const content = {
+    instructions: "Accepted private Skill instructions.", name: reference.name,
+    files: [{ path: "references/checklist.md", byteSize: Buffer.byteLength(fileText),
+      kind: "text" as const, executable: false }]
+  };
+  const repository = {
+    resolveFrozen: vi.fn<SkillToolRepository["resolveFrozen"]>(async (input) =>
+      input.skillId === reference.skillId && input.revisionId === reference.revisionId ? content : null),
+    isLoaded: vi.fn<SkillToolRepository["isLoaded"]>(async () => true),
+    readText: vi.fn<SkillToolRepository["readText"]>(async (input) =>
+      input.revisionId === reference.revisionId && input.path === content.files[0]!.path ? fileText : null)
+  };
+  const service = createSkillToolService(repository);
+  const call = (toolName: "load_skill" | "read_skill_file", state: PersistedToolLoopCall["state"]): PersistedToolLoopCall => ({
+    ...persistedRecoveryCall(state), mcpBinding: null, toolName,
+    arguments: toolName === "load_skill" ? { skill: reference.alias }
+      : { skill: reference.alias, path: content.files[0]!.path, offset: 0 }
+  });
+  const run = (persisted: PersistedToolLoopCall): CheckpointedToolLoopRun => ({
+    ...checkpointedRun({
+      calls: [persisted], phase: "tools_running", providerToolMessages: [{
+        type: "function_call", call_id: persisted.providerCallId, name: persisted.toolName,
+        arguments: JSON.stringify(persisted.arguments)
+      }]
+    }),
+    normalizedRequest: request
+  });
+  return { call, content, fileText, manifest, reference, repository, request, run, service };
 }
 
 const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
@@ -7939,6 +7992,181 @@ describe("run recovery", () => {
         usageAttributions: []
       })
     ]);
+  });
+
+  it.each(["load_skill", "read_skill_file"] as const)("safely replays a running %s from its frozen manifest after a crash", async (toolName) => {
+    const skill = createSkillRecoveryFixture();
+    const acceptedManifest = JSON.stringify(skill.manifest);
+    const execute = vi.spyOn(skill.service, "execute");
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: {
+      buildRequestPreview: () => ({}),
+      async *stream(request) { requests.push(request); return providerResult; }
+    } } });
+    const call = skill.call(toolName, "running");
+    const checkpointState = installCheckpointState(harness, skill.run(call));
+
+    await refreshProviderRunIfNeeded({ ...harness.deps, skillTools: skill.service }, runId, userId);
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledWith({
+      id: call.providerCallId, name: toolName, arguments: call.arguments
+    }, expect.objectContaining({ userId, runId, request: expect.objectContaining({ skills: skill.manifest }) }));
+    expect(skill.repository.resolveFrozen).toHaveBeenCalledExactlyOnceWith({
+      userId, skillId: skill.reference.skillId, revisionId: skill.reference.revisionId
+    });
+    if (toolName === "read_skill_file") {
+      expect(skill.repository.isLoaded).toHaveBeenCalledExactlyOnceWith({ runId, skillId: skill.reference.skillId });
+      expect(skill.repository.readText).toHaveBeenCalledExactlyOnceWith({
+        revisionId: skill.reference.revisionId, path: "references/checklist.md"
+      });
+    } else {
+      expect(skill.repository.readText).not.toHaveBeenCalled();
+    }
+    expect(checkpointState.calls()).toEqual([expect.objectContaining({
+      id: call.id, state: "complete", result: expect.objectContaining({ status: "complete", name: toolName })
+    })]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.providerToolMessages).toEqual([
+      expect.objectContaining({ call_id: call.providerCallId, type: "function_call" }),
+      expect.objectContaining({ call_id: call.providerCallId, type: "function_call_output",
+        output: expect.stringContaining(toolName === "load_skill" ? skill.content.instructions : skill.fileText.trim()) })
+    ]);
+    expect(requests[0]!.skills).toEqual(skill.manifest);
+    expect(requests[0]!.tools?.map((tool) => tool.name)).toEqual(["load_skill", "read_skill_file"]);
+    expect(JSON.stringify(skill.manifest)).toBe(acceptedManifest);
+    expect(JSON.stringify(harness.state.events)).not.toContain("Accepted private");
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(harness.state.completed).toMatchObject({ finalText: providerResult.finalText });
+  });
+
+  it.each(["load_skill", "read_skill_file"] as const)("restores settled %s after revocation without executing or reauthorizing the accepted result", async (toolName) => {
+    const skill = createSkillRecoveryFixture();
+    const call = skill.call(toolName, "complete");
+    const result = await skill.service.execute({
+      id: call.providerCallId, name: toolName, arguments: call.arguments
+    }, { request: skill.request, runId, userId });
+    expect(result.status).toBe("complete");
+    const stored = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    expect(stored).not.toBeNull();
+    const acceptedManifest = JSON.stringify(skill.manifest);
+    skill.repository.resolveFrozen.mockClear().mockResolvedValue(null);
+    skill.repository.isLoaded.mockClear();
+    skill.repository.readText.mockClear();
+    const execute = vi.spyOn(skill.service, "execute");
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: {
+      buildRequestPreview: () => ({}),
+      async *stream(request) { requests.push(request); return providerResult; }
+    } } });
+    const checkpointState = installCheckpointState(harness, skill.run({ ...call, result: stored }));
+
+    await refreshProviderRunIfNeeded({ ...harness.deps, skillTools: skill.service }, runId, userId);
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(skill.repository.resolveFrozen).not.toHaveBeenCalled();
+    expect(skill.repository.isLoaded).not.toHaveBeenCalled();
+    expect(skill.repository.readText).not.toHaveBeenCalled();
+    expect(checkpointState.calls()[0]!.result).toEqual(stored);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.providerToolMessages).toEqual([
+      expect.objectContaining({ call_id: call.providerCallId, type: "function_call" }),
+      expect.objectContaining({ call_id: call.providerCallId, type: "function_call_output",
+        output: expect.stringContaining(toolName === "load_skill" ? skill.content.instructions : skill.fileText.trim()) })
+    ]);
+    expect(requests[0]!.skills).toEqual(skill.manifest);
+    expect(JSON.stringify(skill.manifest)).toBe(acceptedManifest);
+    expect(JSON.stringify(harness.state.events)).not.toContain("Accepted private");
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(harness.state.completed).toMatchObject({ finalText: providerResult.finalText });
+  });
+
+  it.each(["load_skill", "read_skill_file"] as const)("reauthorizes a new %s after recovery and returns an ordinary tool error when access was revoked", async (toolName) => {
+    const skill = createSkillRecoveryFixture();
+    const settledCall = skill.call("load_skill", "complete");
+    const settledResult = await skill.service.execute({
+      id: settledCall.providerCallId, name: settledCall.toolName, arguments: settledCall.arguments
+    }, { request: skill.request, runId, userId });
+    expect(settledResult.status).toBe("complete");
+    const stored = snapshotToolExecutionResult(settledResult, toolLoopPersistenceLimits.resultBytes);
+    expect(stored).not.toBeNull();
+    const acceptedManifest = JSON.stringify(skill.manifest);
+    skill.repository.resolveFrozen.mockClear().mockResolvedValue(null);
+    skill.repository.isLoaded.mockClear();
+    skill.repository.readText.mockClear();
+    const execute = vi.spyOn(skill.service, "execute");
+    const nextCall = { ...skill.call(toolName, "pending"), providerCallId: "provider-call-after-recovery" };
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: {
+      buildRequestPreview: () => ({}),
+      async *stream(request) {
+        requests.push(request);
+        if (requests.length === 1) return {
+          ...providerResult, finalText: "", providerResponseId: "response-skill-revoked",
+          providerToolCallMessage: [{ type: "function_call", name: toolName,
+            call_id: nextCall.providerCallId, arguments: JSON.stringify(nextCall.arguments) }],
+          toolCalls: [{ id: nextCall.providerCallId, name: toolName, arguments: nextCall.arguments }]
+        };
+        return providerResult;
+      }
+    } } });
+    const checkpointState = installCheckpointState(harness, skill.run({ ...settledCall, result: stored }));
+
+    await refreshProviderRunIfNeeded({ ...harness.deps, skillTools: skill.service }, runId, userId);
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ id: nextCall.providerCallId, name: toolName }),
+      expect.objectContaining({ request: expect.objectContaining({ skills: skill.manifest }) }));
+    expect(skill.repository.resolveFrozen).toHaveBeenCalledExactlyOnceWith({
+      userId, skillId: skill.reference.skillId, revisionId: skill.reference.revisionId
+    });
+    expect(skill.repository.isLoaded).not.toHaveBeenCalled();
+    expect(skill.repository.readText).not.toHaveBeenCalled();
+    expect(checkpointState.calls()).toEqual([
+      expect.objectContaining({ providerCallId: settledCall.providerCallId, state: "complete", result: stored }),
+      expect.objectContaining({ providerCallId: nextCall.providerCallId, state: "error",
+        result: { callId: nextCall.providerCallId, name: toolName, status: "error",
+          content: [{ type: "json", value: { error: "skill_not_available" } }] } })
+    ]);
+    expect(requests).toHaveLength(2);
+    expect(requests[0]!.providerToolMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ call_id: settledCall.providerCallId, type: "function_call_output",
+        output: expect.stringContaining(skill.content.instructions) })
+    ]));
+    expect(requests[1]!.providerToolMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ call_id: nextCall.providerCallId, type: "function_call_output",
+        output: expect.stringContaining("skill_not_available") })
+    ]));
+    for (const request of requests) expect(request.skills).toEqual(skill.manifest);
+    expect(JSON.stringify(skill.manifest)).toBe(acceptedManifest);
+    expect(JSON.stringify(harness.state.events)).not.toContain("Accepted private");
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(harness.state.completed).toMatchObject({ finalText: providerResult.finalText });
+  });
+
+  it.each(["create_artifact", "read_artifact"])("recovers %s through its exact-version receipt without repeating a mutation", async toolName => {
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}), async *stream(request) { requests.push(request); return providerResult; } } } });
+    const call = { ...persistedRecoveryCall("running"), mcpBinding: null, toolName, arguments: { artifact_id: "artifact" } };
+    const initial = checkpointedRun({ phase: "tools_running", calls: [call], providerToolMessages: [{ type: "function_call", name: toolName, call_id: call.providerCallId, arguments: JSON.stringify(call.arguments) }] });
+    installCheckpointState(harness, { ...initial, normalizedRequest: { ...initial.normalizedRequest, mcp: undefined, artifactTool: true,
+      artifactToolDescription: "Frozen artifact policy at admission",
+      artifactReferences: [{ artifactId: "artifact", versionId: "accepted-version" }] } });
+    const restore = vi.fn(async () => ({ callId: call.providerCallId, name: toolName, status: "complete" as const,
+      content: [{ type: "json" as const, value: { artifact_id: "artifact", version_id: "accepted-version", text: "private-read-canary" } }] }));
+    const execute = vi.fn();
+    await refreshProviderRunIfNeeded({ ...harness.deps, artifacts: { restore, execute } as unknown as NonNullable<RunRecoveryDeps["artifacts"]> }, runId, userId);
+    expect(restore).toHaveBeenCalledOnce();
+    expect(restore).toHaveBeenCalledWith(expect.objectContaining({ name: toolName }), expect.objectContaining({
+      request: expect.objectContaining({ artifactReferences: [{ artifactId: "artifact", versionId: "accepted-version" }] })
+    }));
+    expect(execute).not.toHaveBeenCalled();
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(harness.state.completed).not.toBeNull();
+    expect(requests).toHaveLength(1);
+    expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("accepted-version");
+    expect(requests[0]!.tools).toContainEqual(expect.objectContaining({ name: "create_artifact", description: "Frozen artifact policy at admission" }));
+    expect(JSON.stringify(harness.state.events)).not.toContain("private-read-canary");
   });
 
   it("never repeats a call left running across a process crash", async () => {

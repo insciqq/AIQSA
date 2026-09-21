@@ -28,6 +28,15 @@ function validResponse(): UpdateSettingsResponse {
 }
 
 describe("settings wire contract", () => {
+  it("defaults Skills to Auto and accepts only explicit Auto or Off", () => {
+    const response = validResponse();
+    expect(decodeUpdateSettingsResponse(response)?.settings.defaultSkillsMode).toBe("auto");
+    expect(decodeUpdateSettingsResponse({ settings: { ...response.settings, defaultSkillsMode: "off" } })?.settings.defaultSkillsMode).toBe("off");
+    for (const value of [null, "load_all", false, {}, 0]) {
+      expect(decodeUpdateSettingsResponse({ settings: { ...response.settings, defaultSkillsMode: value } })).toBeNull();
+    }
+  });
+
   it("defaults Workspace to Off and rejects malformed saved choices", () => {
     const response = validResponse();
     expect(decodeUpdateSettingsResponse(response)?.settings.defaultWorkspaceEnabled).toBe(false);

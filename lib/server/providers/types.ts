@@ -116,8 +116,14 @@ export type NormalizedRunRequest = {
   agent?: import("../agents/config").NormalizedRunAgent;
   /** Server-admitted provider-neutral browser artifact tool. */
   artifactTool?: true;
+  /** Exact private tool guidance from the resource policy at admission. */
+  artifactToolDescription?: string;
+  artifactIntent?: "create";
+  artifactFocus?: import("../../contracts/artifacts").ArtifactReference;
   /** Exact owner-authorized edit bases whose source was supplied at admission. */
   artifactReferences?: readonly import("../../contracts/artifacts").ArtifactReference[];
+  /** Explicit user target, revalidated against the chat binding at admission. */
+  artifactEdit?: import("../../contracts/artifacts").ArtifactEdit;
   /** Owner selection fenced at initial acceptance; texts live in prompt. */
   instructionPreset?: Readonly<{ presetId: string | null; revision: number | null; selectionVersion: number }>;
   imagePlan?: import("../providerRuntime/imageModelRole").AcceptedImageGenerationPlan;
@@ -188,11 +194,7 @@ export type NormalizedRunRequest = {
     mode: "prefetched";
     text: string;
   }>;
-  skills?: ReadonlyArray<Readonly<{
-    name: string;
-    revisionId: string;
-    skillId: string;
-  }>>;
+  skills?: import("../skills/runManifest").FrozenSkillManifest | import("../skills/runManifest").LegacySkillManifest;
   params: Record<string, unknown>;
   /** Provider-neutral reasoning control frozen at admission. Historical
    * accepted requests may omit it and are decoded from their exact params. */
@@ -291,7 +293,7 @@ export type ProviderConversationMessage = {
   };
   id: string;
   /** Internal provider-facing context that is never rendered as a chat message. */
-  purpose?: "knowledge_evidence" | "skill_context";
+  purpose?: "knowledge_evidence" | "skill_context" | "skill_catalog";
   role: "assistant" | "user";
 };
 
@@ -314,7 +316,12 @@ export type ProviderRunResult = {
   usage: ModelRunUsage;
 };
 
+/** Private parser observation; never a run/SSE event or persistence payload. */
+export type ProviderToolArgumentEvent = Readonly<{ callIndex: number; callId?: string; name?: string; delta?: string; snapshot?: string | Record<string, unknown> }>;
+export type ProviderToolArgumentObserver = (event: ProviderToolArgumentEvent) => Promise<void>;
+
 export type ProviderRunOptions = {
+  onToolArguments?: ProviderToolArgumentObserver;
   signal?: AbortSignal;
   timeoutMs?: number;
 };

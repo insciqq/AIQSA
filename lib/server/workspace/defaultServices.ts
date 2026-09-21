@@ -18,6 +18,7 @@ import {
 } from "./coordinator";
 import { createPrismaWorkspaceExecutionRegistry } from "./executionRegistry";
 import { createWorkspaceLifecycleService } from "./lifecycle";
+import { createWorkspaceSkillBundles } from "../skills/workspaceBundles";
 
 export const workspaceConfig = getWorkspaceConfig();
 // Each server bundle (route handlers, the instrumentation scheduler) builds
@@ -52,6 +53,7 @@ export function workspaceCoordinatorForStorage(storage: StorageAdapter) {
     config: workspaceConfig,
     registry: createPrismaWorkspaceExecutionRegistry(prisma),
     repository: createPrismaWorkspaceCoordinatorRepository(prisma),
+    skills: createWorkspaceSkillBundles(prisma, storage),
     runtime: workspaceRuntime,
     storage
   });

@@ -946,3 +946,20 @@ describe("Gemini Interactions response normalization", () => {
     expect((failure as Error).message).not.toContain(remoteSecret);
   });
 });
+
+
+it("observes Gemini argument deltas privately before requiring terminal proof", async () => {
+  const observations: import("./types").ProviderToolArgumentEvent[] = [];
+  const argumentsText = '{"files":[{"text":"private-code-canary"}]}';
+  const normalized = await collect(parseGeminiInteractionsSse({ groundingExpected: false, modelId: "gemini", streamLimits: DEFAULT_PROVIDER_STREAM_LIMITS,
+    onToolArguments: async event => { observations.push(event); }, responseBody: sseResponse([
+      frame("interaction.created", { event_type: "interaction.created", interaction: { id: "interaction-1", status: "in_progress" } }),
+      frame("step.start", { event_type: "step.start", index: 0, step: { type: "function_call", id: "call-1", name: "create_artifact" } }),
+      frame("step.delta", { event_type: "step.delta", index: 0, delta: { type: "arguments_delta", arguments: argumentsText } }),
+      frame("step.stop", { event_type: "step.stop", index: 0 }),
+      frame("interaction.completed", { event_type: "interaction.completed", interaction: { id: "interaction-1", status: "requires_action" } }),
+      frame("done", "[DONE]")
+    ]) }));
+  expect(observations).toMatchObject([{ name: "create_artifact", callId: "call-1" }, { delta: argumentsText }]);
+  expect(JSON.stringify(normalized.events)).not.toContain("private-code-canary");
+});

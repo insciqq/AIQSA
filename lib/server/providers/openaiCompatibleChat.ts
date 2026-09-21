@@ -51,7 +51,8 @@ export function createOpenAICompatibleChatAdapter(
           response,
           request,
           runOptions.signal,
-          providerStreamTimingLimits(runOptions.timeoutMs)
+          providerStreamTimingLimits(runOptions.timeoutMs),
+          runOptions.onToolArguments
         );
       }
 

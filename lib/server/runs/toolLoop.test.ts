@@ -31,6 +31,22 @@ function deferred() {
 }
 
 describe("provider-neutral tool loop", () => {
+  it("settles deferred context reads after the other results while retaining provider ordinals", async () => {
+    const executed: string[] = [];
+    const settled: number[][] = [];
+    const outcome = await continueToolLoop({
+      budgets: defaultBudgets, initialContinuation: null,
+      deferToolUntilBatchEnd: (entry) => entry.id.startsWith("skill"),
+      executeTool: async (entry, context) => { executed.push(entry.id); return { status: "complete", value: context.ordinal }; },
+      onToolBatchSettled: ({ results }) => { settled.push(results.map((entry) => entry.ordinal)); },
+      runProviderRound: async ({ round }) => round === 1
+        ? { status: "tool_calls", continuation: null, calls: [call("skill-1"), call("external"), call("skill-2")] }
+        : { status: "complete", final: "done" }
+    });
+    expect(outcome.status).toBe("complete");
+    expect(executed).toEqual(["external", "skill-1", "skill-2"]);
+    expect(settled).toEqual([[0, 1, 2]]);
+  });
   it("checkpoints a complete batch before dispatch and resumes accumulated progress", async () => {
     const order: string[] = [];
     const outcome = await continueToolLoop({

@@ -349,8 +349,9 @@ describe("provider request context budget", () => {
 
     expect(budgeted).toMatchObject({
       error: {
-        code: "context_too_large",
-        message: expect.stringContaining("Reduce selected context")
+        code: "skills_budget_exceeded",
+        message: expect.stringContaining("Unpin Skills"),
+        skillBudget: { pinnedTokens: expect.any(Number), catalogTokens: 0, budgetTokens: expect.any(Number) }
       },
       ok: false
     });

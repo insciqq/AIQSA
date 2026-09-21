@@ -1,4 +1,4 @@
-export const DECISION_FEATURES = ["memoryRelevance", "knowledgeRelevance", "toolDiscovery", "skillSuggestions"] as const;
+export const DECISION_FEATURES = ["memoryRelevance", "knowledgeRelevance", "toolDiscovery", "skillSuggestions", "skillCatalogRelevance"] as const;
 export type DecisionFeature = typeof DECISION_FEATURES[number];
 export type DecisionFeatureOverrides = Partial<Record<DecisionFeature, boolean>>;
 

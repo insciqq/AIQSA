@@ -8,6 +8,7 @@ import {
 } from "../runs/prismaRepositoryBindings";
 import { SkillRunConflictError } from "../runs/runRepositoryContract";
 import { createPrismaSkillRepository } from "./prismaRepository";
+import { createSkillSharingService } from "./shareRequests";
 
 describe("Prisma Skill repository", () => {
   afterAll(async () => {
@@ -26,6 +27,7 @@ describe("Prisma Skill repository", () => {
     await prisma.user.createMany({
       data: [{
         displayName: "Skill owner",
+        role: "admin",
         id: ownerUserId,
         status: "active"
       }, {
@@ -95,6 +97,10 @@ describe("Prisma Skill repository", () => {
         instructions: "Verify every factual claim and cite its source.",
         name: "Careful editor"
       })).resolves.toEqual({ kind: "ok", skillId });
+      await expect(repository.resolveForRun(memberUserId, [skillId])).resolves.toMatchObject({
+        skills: [{ revisionId: firstRevisionId, instructions: "Verify every factual claim." }]
+      });
+      await createSkillSharingService(prisma).request(ownerUserId, skillId, 2);
       await expect(repository.resolveForRun(memberUserId, [skillId])).resolves.toMatchObject({
         ok: true,
         skills: [{
@@ -185,9 +191,10 @@ describe("Prisma Skill repository", () => {
       if (skillId) {
         await prisma.skillPublication.deleteMany({ where: { skillId } });
         await prisma.skillDefinition.updateMany({
-          data: { currentRevisionId: null },
+          data: { currentRevisionId: null, sharedRevisionId: null },
           where: { id: skillId }
         });
+        await prisma.skillShareRequest.deleteMany({ where: { skillId } });
         await prisma.skillRevision.deleteMany({ where: { skillId } });
         await prisma.skillDefinition.deleteMany({ where: { id: skillId } });
       }
@@ -208,6 +215,7 @@ describe("Prisma Skill repository", () => {
     await prisma.user.createMany({
       data: [{
         displayName: ownerDisplayName,
+        role: "admin",
         id: ownerUserId,
         status: "active"
       }, {
@@ -291,9 +299,10 @@ describe("Prisma Skill repository", () => {
     } finally {
       await prisma.skillPublication.deleteMany({ where: { skillId: { in: skillIds } } });
       await prisma.skillDefinition.updateMany({
-        data: { currentRevisionId: null },
+        data: { currentRevisionId: null, sharedRevisionId: null },
         where: { id: { in: skillIds } }
       });
+      await prisma.skillShareRequest.deleteMany({ where: { skillId: { in: skillIds } } });
       await prisma.skillRevision.deleteMany({ where: { skillId: { in: skillIds } } });
       await prisma.skillDefinition.deleteMany({ where: { id: { in: skillIds } } });
       await prisma.group.deleteMany({ where: { id: group.id } });

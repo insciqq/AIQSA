@@ -81,6 +81,9 @@ describe("Prisma Workspace lifecycle", () => {
       removeSession: vi.fn(async () => undefined),
       stageAttachments: vi.fn(async () => undefined),
       syncPersonalSecrets: vi.fn(async () => undefined),
+      prepareSkillRun: vi.fn(async () => { throw new Error("unused"); }),
+      installSkillBundle: vi.fn(async () => { throw new Error("unused"); }),
+      completeSkillRunPreparation: vi.fn(async () => { throw new Error("unused"); }),
       collectBrowserSessions: vi.fn(async () => ({ files: [], skipped: [] })),
       stopSession: vi.fn(async () => undefined)
     });

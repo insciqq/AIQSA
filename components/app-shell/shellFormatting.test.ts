@@ -3,6 +3,27 @@ import type { CatalogModel } from "./types";
 import { chatTitleForDisplay, exportFileBaseName, formatTokenCount, humanizeErrorCode, modelCapabilityDescription, modelCapabilityLabel, modelCapabilityLabels, responseErrorMessage } from "./shellFormatting";
 
 describe("shell error formatting", () => {
+  it.each([
+    ["artifact_version_conflict", "A newer version exists. Open the current version and choose Edit with AI again."],
+    ["artifact_edit_unavailable", "This artifact is no longer available for editing. Remove the artifact edit to send your message, or choose an available artifact in Library."],
+    ["artifact_edit_invalid", "The artifact edit could not be started. Remove the artifact edit, reopen the artifact, and choose Edit with AI again."]
+  ])("offers recovery for %s without exposing a technical code", async (code, message) => {
+    expect(humanizeErrorCode(code)).toBe(message);
+    const formatted = await responseErrorMessage(Response.json({ error: code }, { status: 409 }), "send_failed_409");
+    expect(formatted).toBe(message);
+    expect(formatted).not.toContain(code);
+  });
+
+  it("keeps concrete Skill admission limits visible in the composer", async () => {
+    expect(await responseErrorMessage(Response.json({ error: "skills_count_exceeded", actual: 33, limit: 32 }), "send_failed_400"))
+      .toContain("33 Skills are pinned; the limit is 32");
+    expect(await responseErrorMessage(Response.json({ error: "skills_budget_exceeded",
+      pinnedTokens: 4000, catalogTokens: 1000, budgetTokens: 8192
+    }), "send_failed_400")).toContain("approximately 5k tokens");
+    expect(await responseErrorMessage(Response.json({ error: "skills_budget_exceeded",
+      pinnedTokens: "private data", catalogTokens: 0, budgetTokens: 8192
+    }), "send_failed_400")).not.toContain("private data");
+  });
   it("explains MCP tool denial at send and regeneration admission", async () => {
     for (const fallback of ["send_failed_409", "regenerate_failed_409"]) {
       expect(await responseErrorMessage(Response.json({ error: "mcp_tool_access_denied" }, { status: 409 }), fallback))

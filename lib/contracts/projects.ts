@@ -214,6 +214,7 @@ export type ProjectResourceWire = Readonly<{
   label: string;
   modelId?: string;
   promptCharacterCount?: number;
+  instructionApproxTokens?: number;
   provider?: string;
   reason: string | null;
   resourceId: string;
@@ -546,6 +547,7 @@ function decodeProjectResource(value: unknown): ProjectResourceWire | null {
     typeof value.id !== "string" || typeof value.label !== "string" ||
     !(value.modelId === undefined || typeof value.modelId === "string") ||
     !(value.provider === undefined || typeof value.provider === "string") ||
+    !(value.instructionApproxTokens === undefined || Number.isSafeInteger(value.instructionApproxTokens) && Number(value.instructionApproxTokens) >= 0) ||
     !nullableString(value.reason) || typeof value.resourceId !== "string" ||
     !["assistant", "knowledge", "mcp", "model", "search", "skill"].includes(String(value.type)) ||
     !(value.revisionId === undefined || typeof value.revisionId === "string")) return null;

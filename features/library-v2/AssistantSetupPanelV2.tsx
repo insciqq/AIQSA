@@ -14,7 +14,7 @@ import {
 } from "@/lib/contracts/knowledge";
 import { isMcpReadinessStartable } from "@/lib/contracts/mcp";
 import { SkillLibraryDialog } from "@/components/skills/SkillLibraryDialog";
-import { SKILL_MAX_SELECTED } from "@/lib/contracts/skills";
+import { SKILL_MAX_PINNED, SKILL_ASSISTANT_MAX_AVAILABLE } from "@/lib/contracts/skills";
 import { MAX_SEARCH_PLAN_OPTIONS } from "@/lib/domain/search";
 import { useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -112,6 +112,8 @@ export function AssistantSetupPanelV2({
     const skill = options.selectedSkills.find((item) => item.id === id);
     return `${skill?.name ?? "Selected Skill"}${skill?.available === false ? " · unavailable" : ""}`;
   });
+  const availableSkillCount = draft.skillIds.filter(id => draft.skillModes?.[id] === "available").length;
+  const pinnedSkillCount = draft.skillIds.length - availableSkillCount;
   const capabilityLine = selectedModel ? [
     selectedModel.capabilities.reasoning ? "Reasoning" : null,
     selectedModel.capabilities.toolCalling ? "tools" : null,
@@ -148,9 +150,11 @@ export function AssistantSetupPanelV2({
       ? [...draft.searchOptionIds, optionId]
       : draft.searchOptionIds.filter((id) => id !== optionId)
   });
-  const removeSkill = (skillId: string) => editor.onChange({
-    skillIds: draft.skillIds.filter((id) => id !== skillId)
+  const selectSkills = (ids: readonly string[]) => editor.onChange({
+    skillIds: [...ids],
+    skillModes: Object.fromEntries(ids.map(id => [id, draft.skillModes?.[id] ?? "pinned"]))
   });
+  const removeSkill = (skillId: string) => selectSkills(draft.skillIds.filter(id => id !== skillId));
 
   return (
     <aside className="v2-assistant-setup" aria-labelledby="assistant-setup-heading">
@@ -342,32 +346,43 @@ export function AssistantSetupPanelV2({
           icon="wand"
           label="Skills"
           open={openResource === "skills"}
-          summary={joinedSummary(selectedSkillLabels)}
+          summary={draft.skillIds.length ? `${pinnedSkillCount} Always · ${availableSkillCount} On demand` : "None"}
           onToggle={() => toggleResource("skills")}
         >
+          <fieldset>
+            <legend>Skills mode</legend>
+            {(["auto", "off"] as const).map(mode => <label key={mode}>
+              <input type="radio" name="assistant-skills-mode" checked={(draft.skills?.mode ?? "auto") === mode}
+                disabled={locked || (mode === "auto" && !selectedModel?.capabilities.toolCalling)}
+                onChange={() => editor.onChange({ skills: { mode } })} />
+              <span>{mode === "auto" ? "Auto" : "Off"}</span>
+            </label>)}
+            {!selectedModel?.capabilities.toolCalling ? <small>This model cannot load Skills on demand. Always instructions still apply.</small> : null}
+            <small>Off keeps Always instructions and excludes on-demand Skills.</small>
+          </fieldset>
           <UiV2Button ref={skillPickerOpener} disabled={locked} onClick={() => setSkillPickerOpen(true)}>Browse Skills</UiV2Button>
           <fieldset>
             <legend>Included Skills</legend>
             {draft.skillIds.length === 0 ? <p>No Skills selected.</p> : null}
             {draft.skillIds.map((id, index) => {
               const name = selectedSkillLabels[index]!;
-              return (
-                <label key={id}>
-                  <input
-                    checked
-                    disabled={locked}
-                    type="checkbox"
-                    onChange={() => removeSkill(id)}
-                  />
-                  <span>
-                    {name}
-                    <small>Order {index + 1}</small>
-                  </span>
+              const mode = draft.skillModes?.[id] ?? "pinned";
+              return <div className="v2-assistant-skill-link" key={id}>
+                <label>
+                  <input checked disabled={locked} type="checkbox" onChange={() => removeSkill(id)} />
+                  <span>{name}<small>Order {index + 1}</small></span>
                 </label>
-              );
+                <select aria-label={`Delivery for ${name}`} value={mode} disabled={locked}
+                  onChange={event => editor.onChange({ skillModes: { ...draft.skillModes, [id]: event.currentTarget.value as "pinned" | "available" } })}>
+                  <option value="pinned" disabled={mode !== "pinned" && pinnedSkillCount >= SKILL_MAX_PINNED}>Always</option>
+                  <option value="available" disabled={mode !== "available" && availableSkillCount >= SKILL_ASSISTANT_MAX_AVAILABLE}>On demand</option>
+                </select>
+              </div>;
             })}
           </fieldset>
-          <small>{draft.skillIds.length} of {SKILL_MAX_SELECTED} Skills selected. Skills run in the order selected.</small>
+          <small>{pinnedSkillCount} of {SKILL_MAX_PINNED} Always · {availableSkillCount} of {SKILL_ASSISTANT_MAX_AVAILABLE} On demand</small>
+          {pinnedSkillCount > SKILL_MAX_PINNED || availableSkillCount > SKILL_ASSISTANT_MAX_AVAILABLE
+            ? <p role="alert">Choose up to {SKILL_MAX_PINNED} Always and {SKILL_ASSISTANT_MAX_AVAILABLE} On demand Skills. Change delivery or remove a Skill before saving.</p> : null}
         </SetupRowV2>
       </div>
 
@@ -376,7 +391,8 @@ export function AssistantSetupPanelV2({
         <span>Only models and tools you can use yourself are offered here. If your access changes later, the assistant says so before you run it.</span>
       </p>
       {skillPickerOpen ? createPortal(<SkillLibraryDialog selectedIds={draft.skillIds} selectedSkills={options.selectedSkills}
-        onSelectionChange={(ids) => { if (!locked) editor.onChange({ skillIds: [...ids] }); }}
+        assistantSelection selectionLimit={SKILL_MAX_PINNED + SKILL_ASSISTANT_MAX_AVAILABLE}
+        onSelectionChange={(ids) => { if (!locked) selectSkills(ids); }}
         onClose={() => setSkillPickerOpen(false)} restoreFocus={() => skillPickerOpener.current} />, document.body) : null}
     </aside>
   );

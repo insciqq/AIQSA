@@ -1,7 +1,5 @@
 "use client";
 
-import Link from "next/link";
-
 import {
   memoryCategoryLabel,
   memoryUiCopy
@@ -52,9 +50,10 @@ function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
   return memoryUiCopy(key);
 }
 
-const tabOrder: readonly LibraryTabIdV2[] = ["assistants", "knowledge", "files", "memory", "skills"];
+const tabOrder: readonly LibraryTabIdV2[] = ["assistants", "knowledge", "files", "artifacts", "memory", "skills"];
 const tabIcons: Record<LibraryTabIdV2, UiV2IconName> = {
   assistants: "assistant",
+  artifacts: "artifact",
   files: "file",
   knowledge: "book",
   memory: "memory",
@@ -184,7 +183,7 @@ export function LibraryV2({
               {subview.backLabel}
             </UiV2Button>
           ) : (
-            <div className="flex flex-wrap items-center gap-3"><Link className="v2-focusable text-sm text-control-accent" href="/artifacts">Artifacts</Link><UiV2Button icon="chevron-right" onClick={requestExit}>Back to chat</UiV2Button></div>
+            <UiV2Button icon="chevron-right" onClick={requestExit}>Back to chat</UiV2Button>
           )}
         </div>
         <div ref={tabListRef} className="v2-library-tabs-scroll" role="tablist" aria-label="Library sections">
@@ -236,6 +235,8 @@ export function LibraryV2({
       <section
         aria-labelledby={`v2-library-tab-${selected.id}`}
         className="v2-library-panel"
+        data-artifact-viewer={selected.id === "artifacts" && Boolean(subview) || undefined}
+        data-library-tab={selected.id}
         id={`v2-library-panel-${selected.id}`}
         key={selected.id}
         role="tabpanel"
@@ -247,7 +248,7 @@ export function LibraryV2({
   );
 }
 
-function SectionHeading({
+export function SectionHeading({
   action,
   children,
   description,

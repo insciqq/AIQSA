@@ -59,6 +59,7 @@ type ExecuteMessageRunLifecycleInput = {
   fetchRun(runId: string, chatId: string): Promise<unknown>;
   notifyAnswerReady(): Promise<void>;
   onAnswerPublished?(runId: string): void;
+  onRunAdmitted?(runId: string): void;
   optimisticAssistantMessageId: string;
   primeAnswerSound(): Promise<void>;
   reconcileMessageIds(input: ReconcileMessageIdsInput): void;
@@ -180,6 +181,7 @@ export async function executeMessageRunLifecycle({
   fetchRun,
   notifyAnswerReady,
   onAnswerPublished,
+  onRunAdmitted,
   optimisticAssistantMessageId,
   primeAnswerSound,
   reconcileMessageIds,
@@ -192,6 +194,7 @@ export async function executeMessageRunLifecycle({
   let failed = false;
   let deferred = false;
   let answerPublished = false;
+  let admissionNotified = false;
   let failureMessage: string | null = null;
   let failureCode: string | null = null;
   let receivedChatUpdate = false;
@@ -201,6 +204,11 @@ export async function executeMessageRunLifecycle({
   let userFacingFailureMessage: string | null = null;
   const abortController = new AbortController();
   const ownsStream = () => activeStreamAbortRef.current.get(chatId) === abortController;
+  const notifyAdmission = (acceptedRunId: string) => {
+    if (admissionNotified) return;
+    admissionNotified = true;
+    onRunAdmitted?.(acceptedRunId);
+  };
 
   useRunSurfaceStore.getState().resetSurface(chatId, contextConfigurationKey, optimisticAssistantMessageId);
   useRunLifecycleStore.getState().streamStarted({
@@ -238,6 +246,7 @@ export async function executeMessageRunLifecycle({
       reconcileMessageIds({ assistantMessageId, currentRunId: runId,
         messageIds: { assistantMessageId, userMessageId: admitted.userMessageId }, optimisticAssistantMessageId });
       useRunLifecycleStore.getState().runIdReceived({ chatId, runId });
+      notifyAdmission(runId);
       updateStreamChatMessages(chatId, (messages) => messages.map((message) => message.id === assistantMessageId
         ? { ...message, runId, ...(admitted.run.workspacePreparation ? { workspacePreparation: true } : {}),
             ...(admitted.run.pdfPreparation ? { pdfPreparation: admitted.run.pdfPreparation } : {}) }
@@ -280,6 +289,7 @@ export async function executeMessageRunLifecycle({
       onRunId(nextRunId) {
         runId = nextRunId;
         useRunLifecycleStore.getState().runIdReceived({ chatId, runId: nextRunId });
+        notifyAdmission(nextRunId);
         updateStreamChatMessages(chatId, (current) =>
           current.map((message) =>
             message.id === assistantMessageId ? { ...message, runId: nextRunId } : message

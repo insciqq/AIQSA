@@ -2,8 +2,35 @@ import { describe, expect, it } from "vitest";
 import type { ProviderRunRequest } from "../providers/types";
 import { textMessageContent } from "@/lib/domain/content";
 import { agentPrompts } from "./prompt";
+import { withSelectedSkillContext } from "../skills/userContext";
 
 describe("Codex conversation delivery", () => {
+  it("keeps pinned bundles at user authority and delegates available discovery to Codex on start and resume", () => {
+    const messages = withSelectedSkillContext([
+      { id: "earlier", role: "assistant", content: textMessageContent("Earlier answer") },
+      { id: "current", role: "user", content: textMessageContent("Use the reference when needed") }
+    ], [{ skillId: "pin", revisionId: "revision", name: "Pinned guide", instructions: "PINNED_BODY_CANARY",
+      alias: "pinned-guide", workspacePath: "/workspace/.aiqsa/skills/pinned-guide", fileCount: 1,
+      files: [{ path: "references/guide.txt", byteSize: 23, executable: false, kind: "text" }] }], {
+      catalog: "<available_skills>ORDINARY_CATALOG_CANARY</available_skills>"
+    });
+    const request = { content: textMessageContent("Use the reference when needed"), attachments: [],
+      prompt: { system: "baseline" }, context: { messages } } as unknown as ProviderRunRequest;
+    const result = agentPrompts(request);
+    expect(result.previousAssistantMessageId).toBe("earlier");
+    for (const prompt of [result.prompt, result.resumePrompt]) {
+      expect(prompt.match(/PINNED_BODY_CANARY/gu)).toHaveLength(1);
+      expect(prompt).toContain('bundle_path=\\"/workspace/.aiqsa/skills/pinned-guide\\"');
+      expect(prompt).toContain('"role":"user"');
+      expect(prompt).not.toContain("ORDINARY_CATALOG_CANARY");
+      expect(prompt).not.toMatch(/load_skill|read_skill_file/u);
+    }
+    expect(result.developerInstructions).not.toContain("PINNED_BODY_CANARY");
+    expect(result.developerInstructions).not.toContain("references/guide.txt");
+    expect(result.developerInstructions).toContain("current native Codex catalog");
+    expect(result.developerInstructions).toContain("user-level guidance");
+    expect(result.developerInstructions).not.toMatch(/load_skill|read_skill_file|ORDINARY_CATALOG_CANARY/u);
+  });
   it("does not advertise a missing message manifest on attachment-free turns", () => {
     const request = { content: textMessageContent("Read an issue"), attachments: [], prompt: { system: "baseline" },
       workspace: { outputDirectory: "/workspace/output/current", inboxIndexPath: "/workspace/inbox/index.json",

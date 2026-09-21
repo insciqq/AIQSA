@@ -154,6 +154,25 @@ export async function assertAssistantRunProvenance(
     `;
     const definition = definitions[0];
     if (!definition) throw new AssistantRunConflictError();
+    const dependencies = await tx.$queryRaw<Array<{ skillId: string; revisionId: string | null }>>`
+      SELECT link."skillId", CASE WHEN skill."ownerUserId" = ${input.userId}
+        THEN skill."currentRevisionId" ELSE skill."sharedRevisionId" END AS "revisionId"
+      FROM "AssistantSkill" AS link
+      INNER JOIN "SkillDefinition" AS skill ON skill."id" = link."skillId"
+      WHERE link."assistantId" = ${input.assistantId}
+      ORDER BY link."skillId"
+      FOR SHARE OF link, skill
+    `;
+    for (const dependency of dependencies) {
+      if (!dependency.revisionId) throw new AssistantRunConflictError();
+      try {
+        await assertSkillRunProvenance(tx, { ...dependency, revisionId: dependency.revisionId,
+          userId: input.userId, admission: true });
+      } catch (error) {
+        if (error instanceof SkillRunConflictError) throw new AssistantRunConflictError();
+        throw error;
+      }
+    }
     if (definition.ownerUserId === input.userId) return;
 
     const installationPublications = await tx.$queryRaw<Array<{ id: string }>>`
@@ -211,6 +230,23 @@ export async function assertProjectAssistantRunProvenance(
     FOR SHARE OF project_binding, definition
   `;
   if (!bindings[0]) throw new AssistantRunConflictError();
+  const dependencies = await tx.$queryRaw<Array<{ skillId: string }>>`
+    SELECT "skillId" FROM "AssistantSkill" WHERE "assistantId" = ${input.assistantId}
+    ORDER BY "skillId" FOR SHARE
+  `;
+  for (const dependency of dependencies) {
+    const available = await tx.$queryRaw<Array<{ skillId: string }>>`
+      SELECT skill."id" AS "skillId"
+      FROM "SkillDefinition" AS skill
+      INNER JOIN "ProjectSkillBinding" AS binding ON binding."skillId" = skill."id"
+      INNER JOIN "SkillRevision" AS revision ON revision."id" = skill."sharedRevisionId"
+        AND revision."skillId" = skill."id" AND revision."bundleReady" = true
+      WHERE skill."id" = ${dependency.skillId} AND binding."projectId" = ${input.projectId}
+        AND skill."archivedAt" IS NULL AND skill."deletedAt" IS NULL
+      FOR SHARE OF skill, binding
+    `;
+    if (!available[0]) throw new AssistantRunConflictError();
+  }
 }
 
 export function serializeRunAssistantIdentity(modelRun: {
@@ -363,9 +399,17 @@ export async function insertAcceptedSkillRunBindings(
   for (const binding of [...bindings].sort((left, right) =>
     left.skillId.localeCompare(right.skillId))) {
     if (input.projectId) {
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT definition."id" FROM "SkillDefinition" AS definition
+        JOIN "ProjectSkillBinding" AS binding ON binding."skillId" = definition."id"
+        WHERE definition."id" = ${binding.skillId} AND binding."projectId" = ${input.projectId}
+          AND definition."sharedRevisionId" = ${binding.revisionId}
+          AND definition."archivedAt" IS NULL AND definition."deletedAt" IS NULL
+        FOR SHARE OF definition, binding`;
+      if (!locked[0]) throw new SkillRunConflictError();
       const inserted = await tx.$executeRaw`
-        INSERT INTO "ModelRunSkillBinding" ("modelRunId", "skillId", "revisionId")
-        SELECT run."id", revision."skillId", revision."id"
+        INSERT INTO "ModelRunSkillBinding" ("modelRunId", "skillId", "revisionId", "alias")
+        SELECT run."id", revision."skillId", revision."id", ${binding.alias ?? ""}
         FROM "ModelRun" AS run
         INNER JOIN "ProjectSkillBinding" AS project_binding
           ON project_binding."projectId" = ${input.projectId}
@@ -374,10 +418,10 @@ export async function insertAcceptedSkillRunBindings(
           ON definition."id" = project_binding."skillId"
          AND definition."archivedAt" IS NULL
          AND definition."deletedAt" IS NULL
-         AND definition."currentRevisionId" = ${binding.revisionId}
+         AND definition."sharedRevisionId" = ${binding.revisionId}
         INNER JOIN "SkillRevision" AS revision
           ON revision."skillId" = definition."id"
-         AND revision."id" = definition."currentRevisionId"
+         AND revision."id" = definition."sharedRevisionId"
         WHERE run."id" = ${input.runId}
           AND run."userId" = ${input.userId}
       `;
@@ -387,18 +431,21 @@ export async function insertAcceptedSkillRunBindings(
     await assertSkillRunProvenance(tx, {
       revisionId: binding.revisionId,
       skillId: binding.skillId,
-      userId: input.userId
+      userId: input.userId,
+      admission: true
     });
     const inserted = await tx.$executeRaw`
       INSERT INTO "ModelRunSkillBinding" (
         "modelRunId",
         "skillId",
-        "revisionId"
+        "revisionId",
+        "alias"
       )
       SELECT
         run."id",
         revision."skillId",
-        revision."id"
+        revision."id",
+        ${binding.alias ?? ""}
       FROM "ModelRun" AS run
       INNER JOIN "User" AS runner
         ON runner."id" = run."userId"
@@ -442,7 +489,7 @@ export async function insertAcceptedSkillRunBindings(
 
 async function assertSkillRunProvenance(
   tx: Pick<Prisma.TransactionClient, "$queryRaw">,
-  input: AcceptedSkillRun & { userId: string }
+  input: AcceptedSkillRun & { userId: string; admission?: boolean }
 ): Promise<void> {
   try {
     const definitions = await tx.$queryRaw<Array<{ ownerUserId: string }>>`
@@ -451,9 +498,13 @@ async function assertSkillRunProvenance(
       INNER JOIN "SkillRevision" AS revision
         ON revision."skillId" = definition."id"
        AND revision."id" = ${input.revisionId}
+       AND revision."bundleReady" = true
       WHERE definition."id" = ${input.skillId}
         AND definition."archivedAt" IS NULL
         AND definition."deletedAt" IS NULL
+        AND (${input.admission === true} = false OR revision."id" = CASE
+          WHEN definition."ownerUserId" = ${input.userId} THEN definition."currentRevisionId"
+          ELSE definition."sharedRevisionId" END)
       FOR SHARE OF definition
     `;
     const definition = definitions[0];

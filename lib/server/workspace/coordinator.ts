@@ -7,6 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { agentExecutionId } from "../agents/runtime";
 import { CodexJsonlDecoder, type CodexEvent } from "../agents/codexProtocol";
 import type { CodexManagedProfile } from "../agents/codexProfile";
+import { workspaceSkillPath, type WorkspaceSkillBundles, type WorkspaceSkillPlan } from "../skills/workspaceBundles";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
   ThreadGeneratedFile,
@@ -1001,6 +1002,16 @@ export type WorkspaceSettlementResult = Readonly<{
 }>;
 
 export type WorkspaceCoordinator = Readonly<{
+  /** Deliver only a frozen, server-resolved bundle after the tool result budget accepts it. */
+  skillBundlePath?(input: Readonly<{
+    alias: string;
+    install: boolean;
+    onActivity?: WorkspaceActivityListener;
+    runId: string;
+    signal?: AbortSignal;
+    userId: string;
+    workspace: NormalizedRunWorkspace;
+  }>): Promise<string>;
   /** One native Codex turn. The caller has persisted its dispatch obligation. */
   executeAgent?(input: Readonly<{
     modelRunToolCallId: string;
@@ -1194,10 +1205,12 @@ export function createWorkspaceCoordinator(input: Readonly<{
   registry: WorkspaceExecutionRegistry;
   repository: WorkspaceCoordinatorRepository;
   runtime: WorkspaceRuntime;
+  skills?: WorkspaceSkillBundles;
   storage: StorageAdapter;
 }>): WorkspaceCoordinator {
   const initializing = new Map<string, Promise<WorkspaceExecutionBinding>>();
   const initialized = new Map<string, WorkspaceExecutionBinding>();
+  const skillPlans = new Map<string, WorkspaceSkillPlan>();
   // Projection state for the activity timeline: original inbox filenames per
   // guest path and bounded output buffers per long-lived execution.
   const inboxNamesByRun = new Map<string, Map<string, string>>();
@@ -1217,6 +1230,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
   function forgetRun(runId: string): void {
     initializing.delete(runId);
     initialized.delete(runId);
+    skillPlans.delete(runId);
     inboxNamesByRun.delete(runId);
     execOutputsByRun.delete(runId);
     activityTextByRun.delete(runId);
@@ -1247,7 +1261,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
 
   async function initialize(
     binding: WorkspaceExecutionBinding,
-    _workspace: NormalizedRunWorkspace | null,
+    purpose: "execution" | "export",
     signal?: AbortSignal,
     onActivity?: WorkspaceActivityListener
   ): Promise<WorkspaceExecutionBinding> {
@@ -1258,12 +1272,18 @@ export function createWorkspaceCoordinator(input: Readonly<{
       ready.operationGeneration === binding.operationGeneration &&
       ready.operationOwner === binding.operationOwner &&
       ready.runtimeSandboxId !== null &&
-      ready.runtimeSandboxId === binding.runtimeSandboxId
+      ready.runtimeSandboxId === binding.runtimeSandboxId &&
+      (purpose === "export" || skillPlans.has(binding.runId))
     ) {
       return ready;
     }
     const pending = initializing.get(binding.runId);
-    if (pending) return pending;
+    if (pending) {
+      const resolved = await pending;
+      if (purpose === "export" || skillPlans.has(binding.runId)) return resolved;
+      return initialize(resolved, purpose, signal, onActivity);
+    }
+    skillPlans.delete(binding.runId);
     const operation = (async () => {
       const startedAt = new Date();
       const startOrdinal = nextLifecycleOrdinal(binding.runId);
@@ -1492,6 +1512,30 @@ export function createWorkspaceCoordinator(input: Readonly<{
             startedAt: prepareStartedAt
           });
         }
+        // Export settles an accepted output obligation, including after access
+        // revocation. It must not authorize or redeliver Skill instructions.
+        if (purpose === "execution") {
+          const skillPlan = input.skills ? await input.skills.plan({ runId: binding.runId, userId: binding.userId })
+            : { agent: false, initial: [], manifestHash: hashCanonicalMcpValue({ version: 1, skills: [] }) };
+          const skillIdentity = { modelRunId: binding.runId, manifestHash: skillPlan.manifestHash,
+            runtimeSandboxId: session.runtimeSandboxId, operation: ownedOperation(binding), sessionId: binding.sessionId, signal };
+          const skillState = await input.runtime.prepareSkillRun({ ...skillIdentity, initial: skillPlan.initial });
+          // The guest's durable marker is authoritative after app/runner restart.
+          // Replaying a settled load must preserve edits in that same guest.
+          if (skillState.state !== "ready") {
+            for (const expected of skillPlan.initial) {
+              const archive = await input.skills!.archive({ runId: binding.runId, userId: binding.userId, alias: expected.alias, signal });
+              if (hashCanonicalMcpValue(archive.bundle) !== hashCanonicalMcpValue(expected)) {
+                await archive.archive.cancel().catch(() => undefined);
+                throw new WorkspaceRuntimeError("workspace_skill_bundle_invalid");
+              }
+              const installed = await input.runtime.installSkillBundle({ ...skillIdentity, ...archive });
+              if (installed.workspacePath !== workspaceSkillPath(expected.alias)) throw new WorkspaceRuntimeError("workspace_skill_bundle_invalid");
+            }
+            await input.runtime.completeSkillRunPreparation(skillIdentity);
+          }
+          skillPlans.set(binding.runId, skillPlan);
+        }
         const catalog = await input.runtime.loadBoundTools({
           runtimeSandboxId: session.runtimeSandboxId,
           operation: ownedOperation(binding), sessionId: binding.sessionId,
@@ -1570,7 +1614,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
     let recreated = binding.runtimeSandboxId === null && binding.sessionErrorCode === "workspace_session_lost";
     let ready: WorkspaceExecutionBinding;
     try {
-      ready = await initialize(binding, workspace, signal, onActivity);
+      ready = await initialize(binding, "execution", signal, onActivity);
     } catch (error) {
       if (
         !(error instanceof WorkspaceRuntimeError) ||
@@ -1581,7 +1625,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
       }
       const fresh = await requireBinding(binding.runId, binding.userId, workspace);
       if (fresh.runtimeSandboxId !== null) throw error;
-      ready = await initialize(fresh, workspace, signal, onActivity);
+      ready = await initialize(fresh, "execution", signal, onActivity);
       recreated = true;
     }
     if (recreated) {
@@ -1716,6 +1760,32 @@ export function createWorkspaceCoordinator(input: Readonly<{
   }
 
   return {
+    async skillBundlePath(request) {
+      if (!input.skills) throw new WorkspaceRuntimeError("workspace_skills_prepare_failed");
+      const initial = await requireBinding(request.runId, request.userId, request.workspace);
+      const { binding } = await initializeWithLostSessionRecovery(initial, request.workspace, request.signal, request.onActivity);
+      const plan = skillPlans.get(request.runId);
+      if (!binding.runtimeSandboxId || !plan) throw new WorkspaceRuntimeError("workspace_skills_prepare_failed");
+      const path = workspaceSkillPath(request.alias);
+      if (!request.install) {
+        const current = await input.skills.plan({ runId: request.runId, userId: request.userId });
+        if (current.manifestHash !== plan.manifestHash || !current.initial.some(bundle => bundle.alias === request.alias)) {
+          throw new WorkspaceRuntimeError("workspace_skill_bundle_invalid");
+        }
+        return path;
+      }
+      const archive = await input.skills.archive({ runId: request.runId, userId: request.userId,
+        alias: request.alias, currentAccess: true, signal: request.signal });
+      if (archive.bundle.alias !== request.alias) {
+        await archive.archive.cancel().catch(() => undefined);
+        throw new WorkspaceRuntimeError("workspace_skill_bundle_invalid");
+      }
+      const installed = await input.runtime.installSkillBundle({ ...archive,
+        modelRunId: request.runId, manifestHash: plan.manifestHash, runtimeSandboxId: binding.runtimeSandboxId,
+        operation: ownedOperation(binding), sessionId: binding.sessionId, signal: request.signal });
+      if (installed.workspacePath !== path) throw new WorkspaceRuntimeError("workspace_skill_bundle_invalid");
+      return path;
+    },
     async executeAgent(request) {
       if (!input.runtime.startAgent || !input.runtime.pollAgent) {
         throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
@@ -1739,6 +1809,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
       };
       const threadId = recreated ? undefined : request.threadId;
       await input.runtime.startAgent({ ...identity, profile: request.profile,
+        skillManifestHash: skillPlans.get(request.runId)!.manifestHash,
         prompt: threadId ? request.resumePrompt : request.prompt, threadId,
         runToken: request.runToken, timeoutSeconds: request.timeoutSeconds });
       const decoder = new CodexJsonlDecoder();
@@ -2103,7 +2174,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         // the runner itself was restarted. Reconnect and restage originals
         // before collecting output, but never recreate a genuinely lost VM:
         // doing so would silently turn missing deliverables into a success.
-        const binding = await initialize(initial, workspace ?? null, exportSignal);
+        const binding = await initialize(initial, "export", exportSignal);
         if (!binding.runtimeSandboxId) {
           throw new WorkspaceRuntimeError("workspace_session_lost");
         }

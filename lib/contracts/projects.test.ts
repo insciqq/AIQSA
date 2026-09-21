@@ -46,6 +46,17 @@ function projectResponse(unavailableDefaults?: unknown) {
 }
 
 describe("Project wire contracts", () => {
+  it("preserves approved Skill instruction estimates and rejects malformed budgets", () => {
+    const input = projectResponse();
+    const resource = { id: "binding", resourceId: "skill", type: "skill", label: "Approved Skill",
+      available: true, reason: null, instructionApproxTokens: 42 };
+    const response = { project: { ...input.project, resources: [resource] } };
+    expect(decodeProjectResponse(response)?.project.resources[0]?.instructionApproxTokens).toBe(42);
+    for (const instructionApproxTokens of [-1, 1.5, "42", null, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(decodeProjectResponse({ project: { ...input.project, resources: [{ ...resource, instructionApproxTokens }] } })).toBeNull();
+    }
+  });
+
   it("normalizes bounded defaults and keeps Off explicit", () => {
     expect(decodeProjectDefaults({})).toEqual({
       defaults: {

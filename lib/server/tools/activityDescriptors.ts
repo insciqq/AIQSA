@@ -2,6 +2,9 @@ import { WORKSPACE_MCP_TOOL_ALLOWLIST } from "@/lib/domain/workspace";
 import type { ThreadToolActivityOrigin } from "@/lib/contracts/chats";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { plainWorkspaceActivityText } from "../workspace/activityText";
+import { decodeFrozenSkillManifest } from "../skills/runManifest";
+import { isSkillToolName, READ_SKILL_FILE_TOOL_NAME } from "./skill";
+import { skillTarPath } from "../../domain/skillBundlePaths";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -83,6 +86,8 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
   }
 
   descriptors.set("find_tools", { origin: "discovery", serverName: "Auto tools", toolName: "find_tools" });
+  descriptors.set("load_skill", { origin: "skill", serverName: "Skills", toolName: "load_skill" });
+  descriptors.set("read_skill_file", { origin: "skill", serverName: "Skills", toolName: "read_skill_file" });
   if (normalizedRequest.imagePlan) descriptors.set("generate_image", { origin: "image", serverName: "Images", toolName: "generate_image" });
   descriptors.set("search_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
   descriptors.set("retrieve_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
@@ -97,4 +102,17 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
     descriptors.set(name, { origin: "memory", serverName: "Memory", toolName: name });
   }
   return descriptors;
+}
+
+/** User-visible facts derived from admitted aliases, never arbitrary arguments. */
+export function skillToolActivityFacts(normalizedRequest: unknown, toolName: string, argumentsValue: unknown): {
+  skillId?: string; skillName?: string; skillPath?: string;
+} {
+  if (!isSkillToolName(toolName) || !isRecord(normalizedRequest) || !isRecord(argumentsValue)) return {};
+  const manifest = decodeFrozenSkillManifest(normalizedRequest.skills);
+  const skill = manifest && [...manifest.pinned, ...manifest.available].find((entry) => entry.alias === argumentsValue.skill);
+  if (!skill) return {};
+  const path = toolName === READ_SKILL_FILE_TOOL_NAME && typeof argumentsValue.path === "string" &&
+    argumentsValue.path.length <= 256 && skillTarPath(argumentsValue.path) ? argumentsValue.path : null;
+  return { skillId: skill.skillId, skillName: activityName(skill.name, "Skill"), ...(path ? { skillPath: path } : {}) };
 }

@@ -110,6 +110,12 @@ function sourceValuesFromSearchEvent(event: RunEventView): unknown[] {
 export function summarizeThreadArtifacts(
   events: RunEventView[]
 ): ThreadArtifactSummary | null {
+  const skillCatalogOmittedCount = events.flatMap((event) => {
+    const payload = artifactPayload(event);
+    return artifactTypeFromEvent(event) === "summary" && isRecord(payload) &&
+      Number.isSafeInteger(payload.skillCatalogOmittedCount) && Number(payload.skillCatalogOmittedCount) > 0
+      ? [Number(payload.skillCatalogOmittedCount)] : [];
+  }).at(-1);
   const grounding = events
     .map(groundingDisplayFromEvent)
     .filter((value): value is NonNullable<typeof value> => Boolean(value))
@@ -142,6 +148,7 @@ export function summarizeThreadArtifacts(
 
   if (
     generatedImages.length === 0 &&
+    !skillCatalogOmittedCount &&
     generatedArtifacts.length === 0 &&
     citations.length === 0 &&
     sources.length === 0 &&
@@ -153,6 +160,7 @@ export function summarizeThreadArtifacts(
 
   return {
     citations,
+    ...(skillCatalogOmittedCount ? { skillCatalogOmittedCount } : {}),
     groundingDisplay: grounding?.display ?? null,
     ...(generatedImages.length ? { generatedImages } : {}),
     ...(generatedArtifacts.length ? { generatedArtifacts } : {}),

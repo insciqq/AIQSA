@@ -23,6 +23,7 @@ export type AdminAttentionCode =
   | "provider_catalog_models_available"
   | "provider_key_rejected"
   | "search_source_model_off"
+  | "skills_pending_approval"
   | "system_role_not_assigned"
   | "system_role_unavailable"
   | "users_pending_approval"
@@ -36,6 +37,7 @@ export const adminAttentionSections = [
   "retrieval",
   "roles",
   "search",
+  "skills",
   "users"
 ] as const;
 
@@ -69,6 +71,7 @@ export const adminAttentionSources = [
   "memory",
   "providers",
   "search",
+  "skills",
   "system_roles"
 ] as const;
 
@@ -103,6 +106,7 @@ const ATTENTION_CODES = new Set<AdminAttentionCode>([
   "provider_catalog_models_available",
   "provider_key_rejected",
   "search_source_model_off",
+  "skills_pending_approval",
   "system_role_not_assigned",
   "system_role_unavailable",
   "users_pending_approval",
@@ -121,6 +125,7 @@ export function adminAttentionItemSource(item: AdminAttentionItem): AdminAttenti
   if (item.code.startsWith("knowledge_")) return "knowledge";
   if (item.code.startsWith("mcp_")) return "mcp";
   if (item.code.startsWith("search_")) return "search";
+  if (item.code.startsWith("skills_")) return "skills";
   return "email";
 }
 

@@ -7,7 +7,6 @@ import { textMessageContent } from "@/lib/domain/content";
 import { agentLimits } from "./config";
 import { createAgentRunStore, interruptExpiredAgentRun } from "./store";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
-import { providerTemplateIds } from "../../domain/providerTemplates";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { createOptionalDecisionRepository } from "../providerRuntime/optionalDecisionRepository";
 import { lockRunSettlementScope } from "../runs/prismaRepositoryShared";
@@ -54,6 +53,58 @@ async function fixture(runConfiguration = configuration) {
 describe("durable Agent authority and accounting", () => {
   afterAll(() => prisma.$disconnect());
 
+  it("bounds native provider reconnects across stores, retains unknown usage, and resets only after generation succeeds", async () => {
+    const f = await fixture({ ...configuration, limitsEnabled: false, timeoutSeconds: null });
+    try {
+      const run = await f.run(); await run.store.arm(null);
+      const another = createAgentRunStore(prisma, { runId: run.id, userId: f.userId,
+        configuration: { ...configuration, limitsEnabled: false, timeoutSeconds: null } });
+      const attempts: string[] = [];
+      for (let index = 0; index < 3; index++) {
+        const id = await run.store.reserveProvider(200); attempts.push(id);
+        expect(await another.canRetryProvider(id)).toBe(false);
+        await run.store.settleProvider(id, index === 1 ? "ERROR" : "UNKNOWN", null);
+        // Independently billed search work must not reset the reconnect limit.
+        const search = await run.store.reserveProvider(20, { kind: "native_search" });
+        await run.store.settleProvider(search, "COMPLETE", { inputTokens: 2, outputTokens: 1, totalTokens: 3 });
+        expect(await another.canRetryProvider(id)).toBe(index < 2);
+      }
+      expect(await run.store.failure()).toBeNull();
+      expect(await prisma.agentProviderAttempt.count({ where: { id: { in: attempts }, state: "UNKNOWN" } })).toBe(2);
+      expect((await run.store.usage()).filter(item => item.usage.totalTokens === null)).toHaveLength(3);
+      const success = await run.store.reserveProvider(200);
+      await run.store.settleProvider(success, "COMPLETE", { inputTokens: 10, outputTokens: 2, totalTokens: 12 });
+      expect(await another.canRetryProvider(success)).toBe(false);
+      expect(await another.canRetryProvider(attempts[0]!)).toBe(false);
+      // Distinct persisted timestamps make this a new generation; timestamp
+      // ties intentionally consume the previous failures conservatively.
+      const completedAt = new Date(Date.now() - 1000);
+      await prisma.agentProviderAttempt.updateMany({ where: { id: { in: attempts } }, data: { createdAt: new Date(completedAt.getTime() - 1000) } });
+      await prisma.agentProviderAttempt.update({ where: { id: success }, data: { createdAt: completedAt } });
+      const next = await run.store.reserveProvider(200);
+      await run.store.settleProvider(next, "UNKNOWN", null);
+      expect(await another.canRetryProvider(next)).toBe(true);
+      await run.store.revoke(false);
+      await expect(another.canRetryProvider(next)).rejects.toThrow("agent_authority_expired");
+      await expect(another.reserveProvider(200)).rejects.toThrow("agent_authority_expired");
+    } finally { await f.dispose(); }
+  });
+
+  it("charges each retry against the existing provider-call budget", async () => {
+    const f = await fixture();
+    try {
+      const run = await f.run(); await run.store.arm(null);
+      for (let index = 0; index < 2; index++) {
+        const attempt = await run.store.reserveProvider(200);
+        await run.store.settleProvider(attempt, "UNKNOWN", null);
+        expect(await run.store.canRetryProvider(attempt)).toBe(true);
+      }
+      await expect(run.store.reserveProvider(200)).rejects.toThrow("agent_model_call_limit");
+      expect(await run.store.failure()).toBe("agent_model_call_limit");
+      expect(await prisma.agentProviderAttempt.count({ where: { modelRunId: run.id } })).toBe(2);
+    } finally { await f.dispose(); }
+  });
+
   it("disables budgets and the deadline without disabling accounting, lease recovery or Stop", async () => {
     const f = await fixture({ ...configuration, limitsEnabled: false, timeoutSeconds: null,
       maxModelCalls: 1, maxToolCalls: 1, tokenBudget: 1 });
@@ -77,13 +128,17 @@ describe("durable Agent authority and accounting", () => {
 
   it("counts optional decision work without duplicating independently persisted charges", async () => {
     const f = await fixture({ ...configuration, limitsEnabled: false, timeoutSeconds: null });
+    const connectionId = randomUUID(), modelId = randomUUID();
     try {
+      // This test also runs on an empty migrated target, independently of seed.
+      await prisma.providerConnection.create({ data: { id: connectionId, displayName: "Agent decision fixture", family: "fake",
+        models: { create: { id: modelId, provider: "fake", modelId: "fixture", displayName: "Fixture", capabilities: {}, defaultParams: {} } } } });
       const run = await f.run(); await run.store.arm(null);
       const answer = await prisma.providerRunBinding.findUniqueOrThrow({ where: {
         modelRunId_bindingKey: { modelRunId: run.id, bindingKey: "answer" }
       } });
       const snapshot = { ...normalizeProviderExecutionSnapshot(answer.executionSnapshot),
-        connectionId: providerTemplateIds.fakeConnection, providerModelId: providerTemplateIds.fakeModel };
+        connectionId, providerModelId: modelId };
       const decisions = createOptionalDecisionRepository(prisma);
       const owner = { userId: f.userId, runId: run.id, purpose: "mcp_discovery" as const, operationKey: "call" };
       const claim = await decisions.start(owner, "b".repeat(64), snapshot);
@@ -97,7 +152,11 @@ describe("durable Agent authority and accounting", () => {
         .toMatchObject({ modelCalls: 1, reservedTokens: 24n });
       expect(await prisma.usageEvent.findMany({ where: { modelRunId: run.id } }))
         .toEqual([expect.objectContaining({ optionalDecision: true, totalTokens: 24, estimatedCostMicros: 10 })]);
-    } finally { await f.dispose(); }
+    } finally {
+      await f.dispose();
+      await prisma.providerModel.deleteMany({ where: { id: modelId } });
+      await prisma.providerConnection.deleteMany({ where: { id: connectionId } });
+    }
   });
 
   it("keeps the first terminal budget cause through revocation and recovery", async () => {

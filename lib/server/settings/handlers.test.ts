@@ -240,6 +240,7 @@ describe("settings handler", () => {
       "defaultControlValues",
       "defaultKnowledgePlan",
       "defaultMcpMode",
+      "defaultSkillsMode",
       "defaultWorkspaceEnabled",
       "hasPersonalModelDefault",
       "modelPreferenceSource",
@@ -274,18 +275,21 @@ describe("settings handler", () => {
     const response = await send({
       defaultKnowledgePlan: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [], version: 1 },
       defaultMcpMode: "load_all",
+      defaultSkillsMode: "off",
       sendWithEnter: false
     });
     expect(response.status).toBe(200);
     expect(captured).toEqual({
       defaultKnowledgePlan: { baseIds: ["kb-1"], mode: "explicit", sourceIds: [], version: 1 },
       defaultMcpMode: "load_all",
+      defaultSkillsMode: "off",
       sendWithEnter: false
     });
     await expect(response.json()).resolves.toMatchObject({
       settings: {
         defaultKnowledgePlan: { baseIds: ["kb-1"], mode: "explicit" },
         defaultMcpMode: "load_all",
+        defaultSkillsMode: "off",
         sendWithEnter: false
       }
     });
@@ -295,6 +299,7 @@ describe("settings handler", () => {
     expect(captured).toEqual({ defaultKnowledgePlan: null, defaultMcpMode: "auto", sendWithEnter: true });
 
     expect((await send({ defaultMcpMode: "always" })).status).toBe(400);
+    expect((await send({ defaultSkillsMode: "always" })).status).toBe(400);
     expect((await send({ sendWithEnter: "yes" })).status).toBe(400);
     expect((await send({
       defaultKnowledgePlan: { baseIds: [], inheritedFrom: "project", mode: "inherited", sourceIds: [], version: 1 }

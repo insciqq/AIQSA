@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -51,6 +51,10 @@ import type { WorkspaceBrowserSkipCode } from "./secrets/browserSession";
 import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide, WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./secrets/manifest";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
 import { PROJECT_ARCHIVE_MAX_ENTRIES, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
+import { WorkspaceSkillRunState } from "./skillRunState";
+import { WORKSPACE_SKILL_GUEST_SCRIPT } from "./skillGuest";
+import { parseSkillArchive, readSkillArchive, SKILL_RUNTIME_JSON_MAX_BYTES,
+  skillOperationSignal, skillPreparationFailed, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
 import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION } from "./config";
 import {
   bindOfficialWorkspaceTools,
@@ -418,11 +422,88 @@ export async function loadPinnedOfficialWorkspaceToolCatalog(): Promise<Workspac
 export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   private readonly sessions = new Map<string, LocalSession>();
   private readonly initializing = new Map<string, Promise<WorkspaceRuntimeSession>>();
+  private skills: WorkspaceSkillRunState | undefined;
 
   private captures: WorkspaceOutputCaptureStore | undefined;
   private inventoryRequest: { cursor: string | undefined; promise: Promise<WorkspaceRuntimeInventoryPage> } | null = null;
 
-  constructor(private readonly config: WorkspaceConfig, private readonly captureDirectory?: string) {}
+  constructor(private readonly config: WorkspaceConfig, private readonly captureDirectory?: string, private readonly skillDirectory?: string) {}
+
+  private skillState(): WorkspaceSkillRunState {
+    const directory = this.skillDirectory ?? (process.env.MSB_HOME?.trim() ? join(process.env.MSB_HOME.trim(), "workspace-skills") : null);
+    if (!directory) return skillPreparationFailed();
+    return this.skills ??= new WorkspaceSkillRunState(directory);
+  }
+
+  private noAgent(session: LocalSession): void {
+    if (session.agents?.size) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+  }
+
+  private async withSkillGuestOperation<T>(session: LocalSession, signal: AbortSignal | undefined, action: () => Promise<T>): Promise<T> {
+    signal?.throwIfAborted();
+    // Native fs/exec calls have no AbortSignal API. Stop this exact guest on
+    // cancellation so an interrupted upload cannot outlive its receiver claim.
+    let stopping: Promise<void> | undefined;
+    let cleanupFailed = false;
+    const abort = () => { stopping ??= session.sandbox.stopWithTimeout(10_000).catch(() => { cleanupFailed = true; }); };
+    signal?.addEventListener("abort", abort, { once: true });
+    let result!: T; let failed = false; let failure: unknown;
+    try { result = await action(); } catch (error) { failed = true; failure = error; } finally {
+      signal?.removeEventListener("abort", abort);
+      await stopping;
+    }
+    if (cleanupFailed) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+    if (failed) throw failure;
+    return result;
+  }
+
+  private async skillGuest(session: LocalSession, data: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    const payload = Buffer.from(JSON.stringify(data));
+    if (payload.byteLength > SKILL_RUNTIME_JSON_MAX_BYTES) return skillPreparationFailed();
+    const result = await session.sandbox.execWith("/usr/bin/python3", builder => builder
+      .args(["-I", "-c", WORKSPACE_SKILL_GUEST_SCRIPT]).timeout(30_000).stdinBytes(payload));
+    signal?.throwIfAborted();
+    if (!result.success) throw new WorkspaceRuntimeError(result.code === 67 ? "workspace_skill_bundle_limit_exceeded" : "workspace_skill_bundle_invalid");
+  }
+
+  async prepareSkillRun(input: Parameters<WorkspaceRuntime["prepareSkillRun"]>[0]) {
+    input = { ...input, signal: skillOperationSignal(input.signal) };
+    this.session(input.sessionId, input.runtimeSandboxId);
+    return this.skillState().prepare(input, async () => {
+      const session = await this.runningSession(input); this.noAgent(session);
+      await this.withSkillGuestOperation(session, input.signal, () => this.skillGuest(session, { action: "reset" }, input.signal));
+    }, async () => this.noAgent(this.session(input.sessionId, input.runtimeSandboxId)));
+  }
+
+  async installSkillBundle(input: Parameters<WorkspaceRuntime["installSkillBundle"]>[0]) {
+    input = { ...input, signal: skillOperationSignal(input.signal) };
+    return this.skillState().install(input, input.bundle, async () => {
+      const session = await this.runningSession(input); this.noAgent(session);
+      return this.withSkillGuestOperation(session, input.signal, async () => {
+        const archive = await readSkillArchive(input);
+        parseSkillArchive(archive);
+        const archivePath = `/tmp/aiqsa-skill-${randomUUID()}.tar.gz`;
+        const fs = session.sandbox.fs();
+        try {
+          await this.skillGuest(session, { action: "stage", archivePath }, input.signal);
+          const sink = await fs.writeStream(archivePath);
+          try { await sink.write(archive); await sink.close(); } finally { await sink[Symbol.asyncDispose]().catch(() => undefined); }
+          await this.skillGuest(session, { action: "install", alias: input.bundle.alias, archivePath,
+            byteSize: input.byteSize, checksum: input.checksum }, input.signal);
+          return { workspacePath: `${WORKSPACE_SKILLS_DIRECTORY}/${input.bundle.alias}` };
+        } finally { await fs.remove(archivePath).catch(() => undefined); }
+      });
+    });
+  }
+
+  async completeSkillRunPreparation(input: Parameters<WorkspaceRuntime["completeSkillRunPreparation"]>[0]): Promise<void> {
+    input = { ...input, signal: skillOperationSignal(input.signal) };
+    await this.skillState().complete(input, async refs => {
+      const session = await this.runningSession(input); this.noAgent(session);
+      await this.withSkillGuestOperation(session, input.signal, () => this.skillGuest(session, { action: "links", aliases: refs.map(ref => ref.alias) }, input.signal));
+    });
+  }
 
   async listSessions(input: WorkspaceRuntimeInventoryInput): Promise<WorkspaceRuntimeInventoryPage> {
     if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
@@ -853,6 +934,10 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
   }
 
   async startAgent(input: WorkspaceAgentStart): Promise<void> {
+    return this.skillState().start({ ...input, manifestHash: input.skillManifestHash }, () => this.startPreparedAgent(input));
+  }
+
+  private async startPreparedAgent(input: WorkspaceAgentStart): Promise<void> {
     if (!this.config.agentGatewayEnabled || input.profile.gatewayOrigin !== AGENT_GATEWAY_ORIGIN) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
@@ -879,7 +964,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     input.signal?.throwIfAborted();
     const handle = await session.sandbox.execStreamWith("/usr/local/bin/codex", (builder) => {
       const command = builder.args(args).cwd(WORKSPACE_PROJECT_DIRECTORY)
-        .envs({ ...environment, CODEX_HOME: CODEX_HOME_DIRECTORY, [CODEX_RUN_TOKEN_ENV]: input.runToken })
+        .envs({ ...environment, HOME: "/root", CODEX_HOME: CODEX_HOME_DIRECTORY, [CODEX_RUN_TOKEN_ENV]: input.runToken })
         .stdinBytes(Buffer.from(input.prompt));
       return input.timeoutSeconds === null ? command : command.timeout(input.timeoutSeconds * 1000);
     });
@@ -1402,6 +1487,9 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     } finally {
       if (removed) {
         if (this.sessions.get(input.sessionId) === session) this.sessions.delete(input.sessionId);
+        if (this.skills || this.skillDirectory || process.env.MSB_HOME?.trim()) {
+          await this.skillState().removeSession({ ...input, runtimeSandboxId: expectedId ?? null });
+        }
         if (this.captures || this.captureDirectory || process.env.MSB_HOME?.trim()) {
           await this.outputCaptures().removeSession({ ...input, runtimeSandboxId: expectedId ?? null });
         }

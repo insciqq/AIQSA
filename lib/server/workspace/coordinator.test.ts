@@ -269,6 +269,9 @@ function fixture() {
     })),
     health: vi.fn(async () => ({ state: "ready" as const })),
     listStagedAttachments: vi.fn(async () => []),
+    prepareSkillRun: vi.fn(async () => ({ state: "preparing" as const })),
+    installSkillBundle: vi.fn(async ({ bundle }) => ({ workspacePath: `/workspace/.aiqsa/skills/${bundle.alias}` })),
+    completeSkillRunPreparation: vi.fn(async () => undefined),
     loadBoundTools: vi.fn(async () => ({
       hash: workspace.toolCatalogHash,
       mcpVersion: workspace.mcpVersion,
@@ -307,6 +310,41 @@ function fixture() {
 
 describe("Workspace coordinator", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  it("prepares frozen bundles before tools, preserves a ready guest on recovery and reinstalls only an explicit load", async () => {
+    const value = fixture();
+    const ref = { alias: "review", revisionId: "revision", bundleDigest: "b".repeat(64), discover: false };
+    const plan = { agent: false, manifestHash: "a".repeat(64), initial: [ref] };
+    const skills = { plan: vi.fn(async () => plan), archive: vi.fn(async () => ({ bundle: ref, byteSize: 1,
+      checksum: "c".repeat(64), archive: new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array([1])); controller.close(); } }) })) };
+    const coordinator = createWorkspaceCoordinator({ ...value, skills });
+    const request = { runId: value.runId, userId: "user_1", workspace: value.workspace, alias: "review", install: false };
+    expect(await coordinator.skillBundlePath!(request)).toBe("/workspace/.aiqsa/skills/review");
+    expect(value.runtime.installSkillBundle).toHaveBeenCalledOnce();
+    expect(vi.mocked(value.runtime.completeSkillRunPreparation).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(value.runtime.loadBoundTools).mock.invocationCallOrder[0]!);
+    vi.mocked(value.runtime.prepareSkillRun).mockResolvedValue({ state: "ready" });
+    const restarted = createWorkspaceCoordinator({ ...value, skills });
+    expect(await restarted.skillBundlePath!(request)).toBe("/workspace/.aiqsa/skills/review");
+    expect(value.runtime.installSkillBundle).toHaveBeenCalledOnce();
+    expect(value.runtime.completeSkillRunPreparation).toHaveBeenCalledOnce();
+    await restarted.skillBundlePath!({ ...request, install: true });
+    expect(value.runtime.installSkillBundle).toHaveBeenCalledTimes(2);
+    expect(skills.archive).toHaveBeenLastCalledWith(expect.objectContaining({ alias: "review", currentAccess: true }));
+  });
+
+  it("does not publish preparation or execute tools after a failed bundle transfer", async () => {
+    const value = fixture();
+    const ref = { alias: "review", revisionId: "revision", bundleDigest: "b".repeat(64), discover: false };
+    const skills = { plan: vi.fn(async () => ({ agent: false, manifestHash: "a".repeat(64), initial: [ref] })),
+      archive: vi.fn(async () => { throw new WorkspaceRuntimeError("workspace_skill_bundle_invalid"); }) };
+    const coordinator = createWorkspaceCoordinator({ ...value, skills });
+    await expect(coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },
+      modelRunToolCallId: "call", runId: value.runId, userId: "user_1", workspace: value.workspace }))
+      .rejects.toMatchObject({ code: "workspace_skill_bundle_invalid" });
+    expect(value.runtime.completeSkillRunPreparation).not.toHaveBeenCalled();
+    expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
+  });
 
   it.each([false, true])("settles a continuation restore before exposing tools (restore failure=%s)", async (failed) => {
     const value = fixture();
@@ -1102,6 +1140,22 @@ describe("Workspace coordinator incremental staging", () => {
 });
 
 describe("Workspace coordinator export settlement", () => {
+  it("recovers owed outputs without requiring current Skill access or changing managed bundles", async () => {
+    const value = fixture();
+    value.setRuntimeSandboxId("runtime_1");
+    const skills = { plan: vi.fn().mockRejectedValue(new Error("skill_not_available")), archive: vi.fn() };
+    const fresh = createWorkspaceCoordinator({ ...value, skills });
+    vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("report", "report.txt")]);
+    await expect(fresh.finalize({ recovery: true, runId: value.runId, userId: "user_1" }))
+      .resolves.toMatchObject({ status: "complete", files: [{ relativePath: "report.txt" }] });
+    expect(skills.plan).not.toHaveBeenCalled();
+    expect(skills.archive).not.toHaveBeenCalled();
+    expect(value.runtime.prepareSkillRun).not.toHaveBeenCalled();
+    expect(value.runtime.installSkillBundle).not.toHaveBeenCalled();
+    expect(value.runtime.completeSkillRunPreparation).not.toHaveBeenCalled();
+    expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
+  });
+
   it("retires the generation advanced by confirmed disk loss during handoff", async () => {
     const value = fixture();
     value.setRuntimeSandboxId("runtime_lost");

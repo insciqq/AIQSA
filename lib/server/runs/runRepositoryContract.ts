@@ -286,6 +286,7 @@ export type AcceptedAssistantRun = {
 };
 
 export type AcceptedSkillRun = {
+  alias?: string;
   revisionId: string;
   skillId: string;
 };
@@ -637,6 +638,8 @@ export type RunRepository = {
     sourceMessageId: string,
     userId: string
   ): Promise<{
+    artifactEdit?: unknown;
+    artifactIntent?: unknown;
     assistantMessage: {
       id: string;
       modelId: string | null;

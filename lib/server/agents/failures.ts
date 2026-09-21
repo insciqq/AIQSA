@@ -7,6 +7,7 @@ const messages = {
   agent_generation_output_limit: "The model stopped because its output token limit was reached.",
   agent_provider_failed: "The admitted model request could not complete.",
   agent_provider_dns_failed: "The server could not resolve the model provider's address (DNS). Check the server's internet connection and DNS settings before trying again.",
+  agent_provider_connection_lost: "The connection to the model provider was interrupted before its response finished. Continue in this chat to use files already created in Workspace.",
   agent_search_failed: "The admitted search request could not complete.",
   agent_provider_interrupted: "The model request was interrupted.",
   agent_authority_expired: "Agent execution was interrupted because its workspace authorization expired.",

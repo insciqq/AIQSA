@@ -12,6 +12,7 @@ import { resolveMcpRunTool } from "../mcp/toolExecutor";
 import type { McpRunPlanResult } from "../mcp/runPlan";
 import { AGENT_GRANT_LEASE_MS, type NormalizedRunAgent } from "./config";
 import { AgentExecutionError, agentFailureCode, type AgentFailureCode } from "./failures";
+import { CODEX_PROVIDER_MAX_RETRIES } from "./codexProfile";
 
 export function agentTokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -187,6 +188,24 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
           reservedTokens: { increment: consumed - attempt.reservedTokens },
           ...(attempt.providerBindingKey === "answer" ? { providerInFlight: false } : {})
         } });
+      });
+    },
+    async canRetryProvider(attemptId: string) {
+      return locked(async (tx) => {
+        const current = await assertActive(tx);
+        if (current.providerInFlight) return false;
+        const attempt = await tx.agentProviderAttempt.findFirst({ where: { id: attemptId, modelRunId: runId,
+          providerBindingKey: "answer", state: { in: ["ERROR", "UNKNOWN"] } }, select: { createdAt: true } });
+        if (!attempt) return false;
+        const completed = await tx.agentProviderAttempt.findFirst({ where: { modelRunId: runId,
+          providerBindingKey: "answer", state: "COMPLETE" }, orderBy: { createdAt: "desc" }, select: { createdAt: true } });
+        if (completed && completed.createdAt >= attempt.createdAt) return false;
+        // Receipts, not process-local counters, bound reconnects across gateway
+        // instances. Include timestamp ties conservatively; utility success
+        // cannot reset generation's retry budget or erase unknown usage.
+        const failures = await tx.agentProviderAttempt.count({ where: { modelRunId: runId, providerBindingKey: "answer",
+          state: { in: ["ERROR", "UNKNOWN"] }, ...(completed ? { createdAt: { gte: completed.createdAt } } : {}) } });
+        return failures <= CODEX_PROVIDER_MAX_RETRIES;
       });
     },
     async toolCall(toolName: string, args: unknown, workspace = false, deliveryId?: string) {

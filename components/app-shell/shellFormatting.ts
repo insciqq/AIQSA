@@ -53,6 +53,16 @@ export function humanizeErrorCode(code: string): string {
     return raw;
   }
 
+  if (raw === "artifact_version_conflict") {
+    return "A newer version exists. Open the current version and choose Edit with AI again.";
+  }
+  if (raw === "artifact_edit_unavailable") {
+    return "This artifact is no longer available for editing. Remove the artifact edit to send your message, or choose an available artifact in Library.";
+  }
+  if (raw === "artifact_edit_invalid") {
+    return "The artifact edit could not be started. Remove the artifact edit, reopen the artifact, and choose Edit with AI again.";
+  }
+
   if (raw === "active_run_in_progress") {
     return "Another response is still running. Stop it or wait for it to finish before sending. (active_run_in_progress)";
   }
@@ -113,7 +123,9 @@ export function humanizeErrorCode(code: string): string {
     settings_malformed: "Settings response was malformed",
     skill_not_available:
       "A selected Skill is no longer available. Review Skills and try again",
-    skills_invalid: "Choose up to 8 distinct Skills and try again",
+    skills_invalid: "Choose distinct Skills and try again",
+    skills_count_exceeded: "Pin up to 32 Skills, including Assistant Skills, and try again",
+    skills_budget_exceeded: "Pinned Skills exceed the model context budget. Unpin Skills or choose a model with a larger context window",
     sources_processing:
       "The selected documents are still processing. Try again when they are ready",
     structured_output_not_supported:
@@ -206,6 +218,17 @@ export async function responseErrorMessageDetails(
   try {
     const body = JSON.parse(text) as unknown;
     if (isRecord(body) && typeof body.error === "string") {
+      const boundedCount = (value: unknown): value is number => typeof value === "number" &&
+        Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000;
+      if (body.error === "skills_count_exceeded" && boundedCount(body.actual) && boundedCount(body.limit)) {
+        return { code: body.error, preserveForComposer: true,
+          message: `${body.actual} Skills are pinned; the limit is ${body.limit}, including Assistant Skills. Unpin Skills and try again.` };
+      }
+      if (body.error === "skills_budget_exceeded" &&
+        [body.pinnedTokens, body.catalogTokens, body.budgetTokens].every(boundedCount)) {
+        return { code: body.error, preserveForComposer: true,
+          message: `Skills use approximately ${formatTokenCount(Number(body.pinnedTokens) + Number(body.catalogTokens))} tokens; the model input budget is ${formatTokenCount(Number(body.budgetTokens))}. Unpin Skills or choose a model with a larger context window.` };
+      }
       const attachmentLimitErrors = new Set([
         "attachment_count_limit_exceeded",
         "attachment_encoded_size_limit_exceeded",

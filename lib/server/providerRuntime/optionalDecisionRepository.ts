@@ -6,7 +6,7 @@ import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 export type OptionalDecisionOwner = Readonly<{
   userId: string;
   runId?: string;
-  purpose: "mcp_discovery" | "skill_suggestions";
+  purpose: "mcp_discovery" | "skill_suggestions" | "skill_catalog_relevance";
   operationKey: string;
 }>;
 export type OptionalDecisionSettlement = Readonly<{

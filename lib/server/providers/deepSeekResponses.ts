@@ -43,6 +43,7 @@ export function createDeepSeekResponsesAdapter(
         if (!response.body) throw new Error("deepseek_stream_body_missing");
         try {
           return yield* parseOpenAIResponsesSse({
+            onToolArguments: runOptions.onToolArguments,
             background: false,
             provider: "deepseek",
             responseBody: response.body,

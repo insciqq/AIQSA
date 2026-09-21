@@ -30,6 +30,7 @@ export type AdminAttentionSources = Readonly<{
   providers(): Promise<readonly AdminProviderConnection[]>;
   search(actingAdminUserId: string): Promise<AdminSearchCatalog>;
   systemRoles(): Promise<AdminSystemModelPolicyCatalog>;
+  skills?(actingAdminUserId: string): Promise<number>;
 }>;
 
 export type AdminAttentionInputs = Readonly<{
@@ -42,6 +43,7 @@ export type AdminAttentionInputs = Readonly<{
   providers: readonly AdminProviderConnection[] | null;
   search: AdminSearchCatalog | null;
   systemRoles: AdminSystemModelPolicyCatalog | null;
+  skills?: number | null;
 }>;
 
 export type AdminAttentionService = Readonly<{
@@ -460,7 +462,11 @@ export function deriveAdminAttentionItems(inputs: AdminAttentionInputs): AdminAt
     ...(inputs.knowledge ? knowledgeItems(inputs.knowledge) : []),
     ...(inputs.memory ? memoryItems(inputs.memory) : []),
     ...(inputs.mcp ? mcpItems(inputs.mcp) : []),
-    ...(inputs.email ? emailItems(inputs.email) : [])
+    ...(inputs.email ? emailItems(inputs.email) : []),
+    ...(inputs.skills ? [{ action: "Review Skills", code: "skills_pending_approval" as const,
+      count: inputs.skills, detail: `${plural(inputs.skills, "Skill revision")} waiting for approval`,
+      id: "skills_pending_approval", severity: "warn" as const,
+      target: { section: "skills" as const, filter: "pending" }, title: "Skills are waiting for approval" }] : [])
   ];
 }
 
@@ -482,7 +488,7 @@ export function createAdminAttentionService(input: Readonly<{
           return null;
         }
       }
-      const [dashboard, providers, search, systemRoles, knowledge, memory, mcp, email] = await Promise.all([
+      const [dashboard, providers, search, systemRoles, knowledge, memory, mcp, email, skills] = await Promise.all([
         load("dashboard", () => sources.dashboard(actingAdminUserId)),
         load("providers", () => sources.providers()),
         load("search", () => sources.search(actingAdminUserId)),
@@ -490,7 +496,8 @@ export function createAdminAttentionService(input: Readonly<{
         load("knowledge", () => sources.knowledge()),
         load("memory", () => sources.memory()),
         load("mcp", () => sources.mcp(actingAdminUserId)),
-        load("email", () => sources.email())
+        load("email", () => sources.email()),
+        sources.skills ? load("skills", () => sources.skills!(actingAdminUserId)) : Promise.resolve(0)
       ]);
       return {
         checkedAt: now().toISOString(),
@@ -503,7 +510,8 @@ export function createAdminAttentionService(input: Readonly<{
           memory,
           providers,
           search,
-          systemRoles
+          systemRoles,
+          skills
         }),
         unavailable
       };

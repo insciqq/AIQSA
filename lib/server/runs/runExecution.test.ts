@@ -5,6 +5,8 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { sessionStatusTool } from "../tools/sessionStatus";
+import { loadSkillTool, readSkillFileTool } from "../tools/skill";
+import { freezeSkillManifest } from "../skills/runManifest";
 import { artifactTool } from "../tools/artifact";
 import { mixedToolsImagePlan, openRouterMixedTools } from "@/tests/support/openRouterTools";
 import {
@@ -1410,11 +1412,12 @@ const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
 };
 
 describe("run execution", () => {
-  it("persists and executes an admitted artifact tool and projects its ready version", async () => {
+  it.each([false, true])("projects pending and ready artifact states with argument streaming=%s", async streaming => {
     const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const artifactToolDescription = "Frozen artifact policy at admission";
     const prepared = { ...base,
-      normalizedRequest: { ...base.normalizedRequest, artifactTool: true as const },
-      providerRequest: { ...base.providerRequest, artifactTool: true as const, tools: [artifactTool()] }
+      normalizedRequest: { ...base.normalizedRequest, artifactTool: true as const, artifactToolDescription },
+      providerRequest: { ...base.providerRequest, artifactTool: true as const, artifactToolDescription, tools: [artifactTool(artifactToolDescription)] }
     };
     const requests: ProviderRunRequest[] = [];
     const repository = createRepository();
@@ -1425,8 +1428,13 @@ describe("run execution", () => {
       return { callId: call.id, name: call.name, status: "complete", content: [{ type: "json", value: payload }],
         artifacts: [{ type: "artifact", data: { artifactType: "generated_artifact", payload } }] };
     });
-    const adapter = createAdapter(async function* (request) {
+    const adapter = createAdapter(async function* (request, options) {
       requests.push(request);
+      if (requests.length === 1 && streaming) {
+        expect(options?.onToolArguments).toBeTypeOf("function");
+        await options?.onToolArguments?.({ callIndex: 0, callId: "artifact-call", name: "create_artifact",
+          delta: JSON.stringify({ private_field: "RAW_ARGUMENT_CANARY", files: [{ path: "index.html", text: "LIVE_CODE_CANARY" }] }) });
+      }
       if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: {
         intent: "create", kind: "html", title: "Counter", entrypoint: "index.html",
         files: [{ path: "index.html", mimeType: "text/html", text: "<h1>Counter</h1>" }]
@@ -1438,10 +1446,44 @@ describe("run execution", () => {
     expect(repository.failedRuns).toEqual([]);
     expect(execute).toHaveBeenCalledOnce();
     expect(requests).toHaveLength(2);
+    for (const request of requests) expect(request.tools).toContainEqual(expect.objectContaining({ name: "create_artifact", description: artifactToolDescription }));
     expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ toolName: "create_artifact", state: "complete" })]);
     expect(events).toContainEqual(expect.objectContaining({ type: "artifact", data: expect.objectContaining({ artifactType: "generated_artifact" }) }));
+    const generation = events.filter(event => event.type === "artifact_generation");
+    expect(generation[0]).toMatchObject({ data: { phase: "started" } });
+    expect(generation.at(-1)).toMatchObject({ data: { phase: "settled", status: "ready", artifact: { versionId: "version-1" } } });
+    expect(JSON.stringify(generation).includes("LIVE_CODE_CANARY")).toBe(streaming);
+    expect(JSON.stringify(events)).not.toContain("RAW_ARGUMENT_CANARY");
+    expect(JSON.stringify(repository.persistedEvents)).not.toContain("LIVE_CODE_CANARY");
+    expect(repository.persistedEvents.some(({ event }) => event.type === "artifact_generation")).toBe(false);
     expect(repository.completeRuns).toHaveLength(1);
   });
+  it("aborts an in-flight artifact resource operation on Stop without another provider dispatch", async () => {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, artifactTool: true as const },
+      providerRequest: { ...base.providerRequest, artifactTool: true as const, tools: [artifactTool()] } };
+    const repository = createRepository();
+    let dispatches = 0;
+    const adapter = createAdapter(async function* () {
+      dispatches++;
+      return providerResult({ finalText: "", toolCalls: [{ id: "artifact-stop", name: "create_artifact", arguments: { intent: "create" } }] });
+    });
+    const execute = vi.fn<NonNullable<RunExecutionInput["artifacts"]>["execute"]>(async (_call, _context, options) => {
+      if (!options?.signal) throw new Error("artifact_signal_required");
+      expect(options.signal.aborted).toBe(false);
+      expect(activeRunControllerRegistry.abort("run-1")).toBe(true);
+      expect(options.signal.aborted).toBe(true);
+      options.signal.throwIfAborted();
+      throw new Error("cancelled_artifact_continued");
+    });
+    const events = parseSse(await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository }),
+      artifacts: { execute, restore: async () => null } }).text(), true);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(dispatches).toBe(1);
+    expect(repository.completeRuns).toEqual([]);
+    expect(events.at(-1)?.data).toEqual({ runId: "run-1", status: "cancelled" });
+  });
+
   it.each(["before_dispatch", "during_runtime_preparation", "after_first_call"] as const)("applies MCP revocation %s without stale schema exposure or extra calls", async (when) => {
     const namespacedName = "mcp_tracker_write";
     const fingerprint = "access-fingerprint";
@@ -1567,6 +1609,30 @@ describe("run execution", () => {
     } } });
     expect(repository.persistedEvents.filter(({ event }) => isContextEvent(event))).toHaveLength(3);
     expect(events.at(-1)?.type).toBe("done");
+  });
+
+  it("loads Skills through the durable loop without exposing their bodies or file arguments in SSE", async () => {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const { manifest } = freezeSkillManifest({ mode: "auto", pinned: [], toolsSupported: true,
+      available: [{ skillId: "skill-1", revisionId: "revision-1", name: "review", description: "Review answers", fileCount: 1 }] });
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, skills: manifest },
+      providerRequest: { ...base.providerRequest, skills: manifest, tools: [loadSkillTool, readSkillFileTool] } };
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const skillTools = { execute: vi.fn(async (call: import("../tools/types").ModelToolCall) => ({ callId: call.id, name: call.name, status: "complete" as const,
+      content: [{ type: "json" as const, value: { skill: "review", instructions: "PRIVATE_SKILL_BODY", files: [{ path: "private-file.txt" }] } }] })) };
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: { skill: "review" }, id: "load", name: "load_skill" }] });
+      return providerResult({ finalText: "I reviewed the answer." });
+    });
+    const events = await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository }), skillTools }).text();
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(skillTools.execute).toHaveBeenCalledOnce();
+    expect(JSON.stringify(requests[1]?.providerToolMessages)).toContain("PRIVATE_SKILL_BODY");
+    expect(events).not.toMatch(/PRIVATE_SKILL_BODY|private-file.txt/);
+    expect(events).toContain('"skillId":"skill-1"');
   });
 
   it("publishes the prepared request context before the first provider token and replaces it on completion", async () => {

@@ -51,6 +51,7 @@ export function createGeminiInteractionsAdapter(
           throw new Error("gemini_interactions_stream_body_missing");
         }
         return yield* parseGeminiInteractionsSse({
+          onToolArguments: runOptions.onToolArguments,
           groundingExpected,
           modelId: request.modelId,
           responseBody: response.body,
